@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hello-cube — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#3b82f6}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.7;margin:0 0 26px}
+  /* The 3D element: an ordinary bordered canvas inside a normal 2D page. On the DisplayXR
+     Browser + hardware it weaves glasses-free; everywhere else it's a flat spinning cube. */
+  .stage{margin:22px 0}
+  #cube{display:block;width:100%;max-width:640px;aspect-ratio:2/1;margin:0 auto;
+        border:2px solid #3b82f6;border-radius:12px;background:#0b1020}
+  .badge{max-width:640px;margin:8px auto 0;font-size:13px;opacity:.75;text-align:center}
+  .badge b{font-weight:600}
+  .cols{display:flex;gap:18px;flex-wrap:wrap;margin-top:26px}
+  .cols div{flex:1;min-width:220px}
+  h2{font-size:18px;margin:0 0 4px}
+  code{background:#8882;padding:1px 5px;border-radius:4px}
+  .foot{margin-top:34px;font-size:14px;opacity:.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>hello-cube</h1>
+  <p class="sub">A glasses-free 3D element inside an ordinary web page — the DisplayXR inline-3D
+     "hello world".</p>
+
+  <p>Everything on this page is flat 2D HTML — this paragraph, the headings, the two columns below.
+     The one exception is the bordered canvas: it requests an <code>inline-3d</code> WebXR session, binds
+     an <code>XRDisplayLayer</code>, and renders a rotating cube as a stereo pair re-projected
+     <b>off-axis from your eyes every frame</b>. In the DisplayXR Browser on a DisplayXR display it
+     weaves to glasses-free 3D and looks-around as you move; in any other browser it degrades to a plain
+     spinning cube.</p>
+
+  <div class="stage">
+    <canvas id="cube" width="1280" height="640"></canvas>
+    <div class="badge" id="status">initializing…</div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>What to look for</h2>
+      <p>On hardware, the cube should have real depth and shift perspective as you move your head — the
+         2D text around it stays flat. That look-around is the session feeding the page your eye
+         positions each frame.</p>
+    </div>
+    <div>
+      <h2>How it works</h2>
+      <p>The page does normal WebGL rendering into the canvas; the browser's compositor weaves that
+         element's rectangle. No special GPU code in the page — just the <code>inline-3d</code> session
+         + <code>XRDisplayLayer</code>. See the
+         <a href="https://github.com/DisplayXR/displayxr-web">source</a>.</p>
+    </div>
+  </div>
+
+  <p class="foot">← <a href="../../">All samples</a> ·
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a></p>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js" } }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
