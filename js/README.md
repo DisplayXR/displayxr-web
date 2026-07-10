@@ -16,3 +16,8 @@ import { startInline3D } from '../../js/displayxr-inline3d.js';
 ```
 See `samples/hello-cube/app.js` for the full render loop (per-eye viewport + camera from
 `view.projectionMatrix` / `view.transform`).
+
+**`version-check.js`** — the DisplayXR Browser's lightweight update check (no silent auto-updater):
+`checkForUpdate()` compares the running Chromium version against the latest `displayxr-browser` GitHub
+Release; `showUpdateBanner()` renders a dismissible "new version → download" banner iff one exists. Meant
+to run on the browser's start page. Never throws (offline / rate-limited / not-the-browser → no-op).
