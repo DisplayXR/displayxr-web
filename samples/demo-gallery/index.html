@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — inline-3D demo gallery</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.6 system-ui,-apple-system,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:980px;margin:0 auto;padding:36px 20px 64px}
+  a{color:#5aa8ff;text-decoration:none}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:-.5px}
+  .lede{opacity:.72;margin:0 0 18px;max-width:66ch}
+  .status{font:13px/1.5 system-ui;padding:9px 13px;border-radius:8px;margin:0 0 26px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:18px}
+  .tile{display:flex;gap:16px;align-items:center;padding:16px;border:1px solid #ffffff14;
+        border-radius:14px;background:#181a21;transition:border-color .15s,transform .15s;color:inherit}
+  .tile:hover{border-color:#5aa8ff88;transform:translateY(-2px)}
+  /* Square stage; the 1024x512 SBS canvas is squished into it, and the weave
+     interlaces it back to a correct square 3D logo on DisplayXR hardware. */
+  .stage{flex:0 0 auto;width:132px;height:132px;border-radius:10px;overflow:hidden;
+         background:#000;border:1px solid #ffffff10}
+  .stage canvas.logo{display:block;width:100%;height:100%}
+  .meta{min-width:0}
+  .meta h2{margin:0 0 3px;font-size:17px}
+  .meta p{margin:0 0 8px;font-size:13.5px;opacity:.72;line-height:1.45}
+  .repo{font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.55}
+
+  footer{margin-top:34px;font-size:13px;opacity:.6;line-height:1.6}
+  footer code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>DisplayXR demos, in glasses-free 3D</h1>
+  <p class="lede">Each demo below is introduced by its own <strong>3D workspace logo, woven inline</strong> —
+     real glasses-free 3D on a DisplayXR display, a flat 2D image everywhere else. Click a logo to open its
+     source on GitHub.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <div id="grid" class="grid"></div>
+
+  <footer>
+    Rendered with the DisplayXR <code>inline-3d</code> WebXR session: one session, one
+    <code>XRDisplayLayer</code> per logo canvas. The logos are the demos' shipped 2-view assets
+    (1024×512 side-by-side), so this page also serves as the first multi-element weave exercise.
+    Get the <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a> ·
+    browse all <a href="https://github.com/orgs/DisplayXR/repositories?q=displayxr-demo">demos</a>.
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
