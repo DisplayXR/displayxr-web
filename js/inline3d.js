@@ -307,10 +307,14 @@ class Inline3D {
       if (!win.layer) continue;
       if (win.kind === 'scene') {
         if (views && win.onFrame) win.onFrame(views, win.layer, f);
-      } else if (win.kind === 'video') {
-        this._paint(win, views); // pull the current video frame
+      } else {
+        // Repaint image AND video every frame. The weave reads each window's
+        // composited canvas quad per frame; a canvas that isn't redrawn can have
+        // its layer dropped from the aggregated frame, so the weave reads a stale
+        // sub-rect and the window flickers to a horizontal smear. A still image's
+        // redraw is one cheap GPU drawImage — keep it live.
+        this._paint(win, views);
       }
-      // still images: painted once on activate; nothing to do per-frame.
     }
   }
 
