@@ -53,6 +53,30 @@ const SBS_W = 1024;
 const SBS_H = 512;
 const EYE_W = SBS_W / 2; // 512
 
+// Rounded corners must be baked PER EYE in buffer space: a CSS border-radius
+// (or any clip of the composited canvas) rounds the packed SBS square's OUTER
+// corners, so after the eye-split the left view is rounded only on its left
+// corners and the right view only on its right. Each eye square (512) maps
+// uniformly onto the woven on-screen square (132 CSS px), so a circular
+// buffer-space radius stays circular after the weave.
+const STAGE_PX = 132;  // .stage box size (index.html)
+const CORNER_PX = 10;  // .stage border-radius (index.html)
+const EYE_R = Math.round(CORNER_PX * (SBS_H / STAGE_PX)); // ~39
+
+// Draw one eye of the logo with baked rounded corners. Source and destination
+// rects are the same-size eye square; corners are left transparent (the canvas
+// is alpha so they show the stage background, exactly like the CSS radius did).
+function drawEyeRounded(ctx, img, sx, dx, w, h) {
+  ctx.save();
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(dx, 0, w, h, EYE_R);
+    ctx.clip();
+  }
+  ctx.drawImage(img, sx, 0, EYE_W, SBS_H, dx, 0, w, h);
+  ctx.restore();
+}
+
 // Paint a tile's logo in its current mode. |tile.sbs| true -> full side-by-side
 // buffer (the weave input); false -> left (L) half only (flat 2D fallback).
 function paintLogo(tile) {
@@ -61,10 +85,12 @@ function paintLogo(tile) {
     return;
   }
   const c = ctx.canvas;
+  ctx.clearRect(0, 0, c.width, c.height);
   if (tile.sbs) {
-    ctx.drawImage(img, 0, 0, SBS_W, SBS_H, 0, 0, c.width, c.height); // full SBS
+    drawEyeRounded(ctx, img, 0, 0, c.width / 2, c.height);         // L eye
+    drawEyeRounded(ctx, img, EYE_W, c.width / 2, c.width / 2, c.height); // R eye
   } else {
-    ctx.drawImage(img, 0, 0, EYE_W, SBS_H, 0, 0, c.width, c.height); // L eye only
+    drawEyeRounded(ctx, img, 0, 0, c.width, c.height); // L eye only
   }
 }
 
@@ -108,7 +134,8 @@ function buildTiles() {
 
     const img = new Image();
     img.src = `assets/${demo.key}.png`;
-    const tile = { demo, canvas, ctx: canvas.getContext('2d', { alpha: false }), img, sbs: false };
+    // alpha:true — the baked rounded corners stay transparent (stage bg shows).
+    const tile = { demo, canvas, ctx: canvas.getContext('2d'), img, sbs: false };
     setMode(tile, false); // default to a valid flat buffer until the mode resolves
     img.onload = () => paintLogo(tile);
     tiles.push(tile);
