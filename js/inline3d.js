@@ -151,14 +151,21 @@ class Inline3D {
    * the two eye views. Render each view into `layer.getViewport(view)` (an {x,y,width,
    * height} into the canvas) using `view.projectionMatrix` + `view.transform.matrix`.
    * See inline3d-three.js for three.js glue (camera + element-scale helpers).
+   * The session reports per-eye off-axis (Kooima) views already scaled to your scene by
+   * `virtualDisplayHeight` (the display-rig m2v knob): author your scene in metres for a
+   * display that tall, put focused content at z=0, and render the views DIRECTLY — the
+   * runtime owns the projection AND the scale, so there is no per-frame world scaling in
+   * your app.
    * @param {HTMLCanvasElement} canvas
    * @param {(views:XRView[], layer:XRDisplayLayer, frame:XRFrame)=>void} onFrame
    * @param {object} [opts]
+   * @param {number} [opts.virtualDisplayHeight=0.24]  metres of virtual display the scene is
+   *        composed for. Larger = the element shows a bigger slice of the world.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
    * @returns {{remove():void}}
    */
   addScene(canvas, onFrame, opts = {}) {
-    const win = this._register(canvas, 'scene', opts);
+    const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
     return { remove: () => this._remove(canvas) };
@@ -193,6 +200,7 @@ class Inline3D {
       cornerRadius: opts.cornerRadius || 0,
       reqW: opts.width || 0,
       reqH: opts.height || 0,
+      virtualDisplayHeight: opts.virtualDisplayHeight || 0,
       observeEl: opts.observe || canvas,
       ctx: kind === 'scene' ? null : canvas.getContext('2d'),
       repaint: () => this._paint(win, null),
@@ -233,7 +241,11 @@ class Inline3D {
   _activate(win) {
     if (win.layer) return;
     try {
-      win.layer = new XRDisplayLayer(this.session, win.canvas);
+      // virtualDisplayHeight (display-rig m2v) tells the runtime what scale this
+      // window's scene is authored at, so it returns render-ready scaled views.
+      const init =
+        win.virtualDisplayHeight > 0 ? { virtualDisplayHeight: win.virtualDisplayHeight } : {};
+      win.layer = new XRDisplayLayer(this.session, win.canvas, init);
     } catch {
       win.layer = null;
       return;

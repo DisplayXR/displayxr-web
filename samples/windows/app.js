@@ -79,17 +79,18 @@ function buildScene(canvas) {
   dir.position.set(0.3, 0.8, 0.5);
   scene.add(dir);
 
-  const world = new THREE.Group(); // authored at 0.24 m virtual height; fit each frame
+  // Authored in metres for a 0.24 m virtual display (addScene's virtualDisplayHeight); the
+  // runtime scales the eye poses so this renders correctly with NO app-side scaling. Matches
+  // the cube_handle reference: a 6 cm crate on the z=0 plane over a 0.5 m grid.
   const cube = new THREE.Mesh(
     new THREE.BoxGeometry(0.06, 0.06, 0.06),
     new THREE.MeshStandardMaterial({ color: 0xb9884e, roughness: 0.7, metalness: 0.05 })
   );
   cube.position.set(0, 0.03, 0); // z=0 → on the zero-disparity plane
-  world.add(cube);
+  scene.add(cube);
   const grid = new THREE.GridHelper(0.5, 10, 0x4d4d59, 0x4d4d59);
   grid.position.y = -0.05;
-  world.add(grid);
-  scene.add(world);
+  scene.add(grid);
 
   function size() {
     const w = canvas.clientWidth || 256, h = canvas.clientHeight || 256;
@@ -112,8 +113,7 @@ function buildScene(canvas) {
       if (!vp) continue;
       renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
       renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
-      eye.setFromView(view);
-      eye.fitToElement(world); // scene → element rect
+      eye.setFromView(view); // projection + pose already scaled by the runtime rig
       renderer.render(scene, eye.camera);
     }
     renderer.setScissorTest(false);

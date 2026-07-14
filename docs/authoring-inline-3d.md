@@ -75,8 +75,8 @@ layer, frame)` each frame with the two eye `XRView`s. Render each into
 `layer.getViewport(view)` — an `{x, y, width, height}` sub-rect of the canvas — using the
 view's `projectionMatrix` and `transform.matrix`.
 
-For three.js, `js/inline3d-three.js` provides an `EyeCamera` that removes the matrix plumbing
-**and** the scene-scaling (see next). Minimal loop:
+For three.js, `js/inline3d-three.js` provides an `EyeCamera` that removes the matrix plumbing.
+Minimal loop:
 
 ```js
 import * as THREE from 'three';
@@ -84,29 +84,31 @@ import { createInline3D } from './js/inline3d.js';
 import { EyeCamera } from './js/inline3d-three.js';
 
 const eye = new EyeCamera(THREE);
-wall.addScene(canvas, (views, layer) => {
+wall.addScene(canvas, (views, layer) => {   // addScene sets virtualDisplayHeight = 0.24 m
   renderer.clear();
   renderer.setScissorTest(true);
   for (const view of views) {
     const vp = layer.getViewport(view);
     renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
     renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
-    eye.setFromView(view);
-    eye.fitToElement(world);           // world = a THREE.Group holding your scene
-    renderer.render(scene, eye.camera);
+    eye.setFromView(view);             // projection + pose straight from the view
+    renderer.render(scene, eye.camera); // author in metres; NO per-frame scaling
   }
   renderer.setScissorTest(false);
 });
 ```
 
-**Scene scale is the one hard part.** The session's views are in **display-local metres**:
-the canvas plane is world `z=0` (the zero-disparity / in-focus plane) and the eye sits a few
-tens of cm in front. The frustum is scoped to the canvas element's *physical* rect — often a
-few centimetres of glass — so a scene authored at "1 metre" would put the viewer inside it.
-Author your scene at a fixed virtual height (`0.24 m` by default, matching the DisplayXR
-reference apps) inside a `THREE.Group`, and `EyeCamera.fitToElement(group)` rescales it to
-the element's real size each frame. Put content you want "in focus" at `z=0`; positive `z` is
-behind the glass, negative `z` floats in front.
+**Scene scale is the runtime's job — don't do it in your app.** The session's views are in
+**display-local metres**: the canvas plane is world `z = 0` (the zero-disparity / in-focus
+plane) and the eye sits a few tens of cm in front. Author your scene in metres for a **virtual
+display height** — `0.24 m` by default (`addScene`'s `virtualDisplayHeight` option; the same
+`m2v` knob the native `XR_DXR_view_rig` extension exposes) — put focused content at `z = 0`
+(`+z` behind the glass, `−z` in front), and **render the views directly**. The runtime scales
+each eye pose by `virtualDisplayHeight / element_physical_height`, so the `z = 0` plane spans
+that virtual display and the scene renders at its authored scale with **no per-frame world
+scaling**. A bigger `virtualDisplayHeight` shows a larger slice of the world in the element.
+This mirrors the native reference apps (`cube_handle`): the app supplies one scale number and
+consumes render-ready views — it never re-derives the projection or scales the scene.
 
 ## Many windows, and how batching helps
 
