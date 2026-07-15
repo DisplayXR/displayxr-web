@@ -26,28 +26,45 @@ renderer.autoClear = false;                     // we clear once per frame, then
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1020);
 
+// SCENE SCALE IS THE RUNTIME'S JOB. startInline3D declares virtualDisplayHeight = 0.24, so
+// author in METRES for a 24 cm-tall display and render the reported views as-is — no app-side
+// scaling. These are the native cube_handle reference's numbers: a 6 cm crate sitting on the
+// z=0 (zero-disparity) plane over a 0.5 m grid, so the browser and native scenes match.
+// (A metre-scale scene here would be ~4x the whole virtual display and render enormous.)
+const tex = new THREE.TextureLoader();
+const load = (f, srgb) => {
+  const t = tex.load(`./textures/Wood_Crate_001_${f}.jpg`);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;  // basecolor only; normal/AO are raw data
+  t.anisotropy = 4;
+  return t;
+};
 const cube = new THREE.Mesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshStandardMaterial({ color: 0x3b82f6, metalness: 0.25, roughness: 0.35 }),
+  new THREE.BoxGeometry(0.06, 0.06, 0.06),
+  new THREE.MeshStandardMaterial({
+    map: load('basecolor', true),
+    normalMap: load('normal', false),
+    aoMap: load('ambientOcclusion', false),
+    roughness: 0.7,
+    metalness: 0.05,
+  }),
 );
+cube.geometry.setAttribute('uv2', cube.geometry.attributes.uv);  // aoMap samples uv2
+cube.position.set(0, 0.03, 0);   // bottom on z=0; +z is behind the glass, -z in front
 scene.add(cube);
 
-// Depth cues so parallax/look-around is obvious: an edge outline + a receding grid floor.
-cube.add(new THREE.LineSegments(
-  new THREE.EdgesGeometry(cube.geometry),
-  new THREE.LineBasicMaterial({ color: 0x9ecbff }),
-));
-const grid = new THREE.GridHelper(10, 20, 0x274060, 0x1a2740);
-grid.position.y = -1.2;
+// Depth cue so parallax/look-around is obvious: a receding grid floor.
+const grid = new THREE.GridHelper(0.5, 10, 0x4d4d59, 0x4d4d59);
+grid.position.y = -0.05;
 scene.add(grid);
 
-scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 1.1));
-const key = new THREE.DirectionalLight(0xffffff, 1.4); key.position.set(2, 3, 2); scene.add(key);
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 0.9));
+const key = new THREE.DirectionalLight(0xffffff, 0.7); key.position.set(0.3, 0.8, 0.5); scene.add(key);
 
-// Mono fallback camera (also the initial framing before an eye pose arrives).
-const monoCam = new THREE.PerspectiveCamera(45, 2, 0.05, 100);
-monoCam.position.set(0, 0.25, 3.2);
-monoCam.lookAt(0, 0, 0);
+// Mono fallback camera (also the initial framing before an eye pose arrives). Framed for the
+// same 0.24 m virtual display: ~0.6 m back is the nominal viewing distance.
+const monoCam = new THREE.PerspectiveCamera(45, 2, 0.01, 100);
+monoCam.position.set(0, 0.03, 0.35);
+monoCam.lookAt(0, 0.03, 0);
 
 // ---- per-eye camera driven by the session's reported views --------------------------------
 const eyeCam = new THREE.PerspectiveCamera();
@@ -117,7 +134,12 @@ function onMonoFrame(now) {
 
 // ---- boot ----------------------------------------------------------------------------------
 (async () => {
-  const xr = await startInline3D(canvas, { onFrame: onXRFrame });
+  // virtualDisplayHeight: this scene is composed for a 24 cm-tall display (see the scene block).
+  // The runtime scales the eye poses it reports to match, so the views render as-is.
+  const xr = await startInline3D(canvas, {
+    onFrame: onXRFrame,
+    virtualDisplayHeight: 0.24,
+  });
   if (xr.supported) {
     // Only now do we know we render side-by-side — re-size the backing store to 2x width.
     sbsMode = true;
