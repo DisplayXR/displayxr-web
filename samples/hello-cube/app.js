@@ -32,8 +32,8 @@ const scene = new THREE.Scene();
 // rectangle. The CSS box keeps a flat backdrop for the mono fallback.
 scene.background = null;
 
-// SCENE SCALE IS THE RUNTIME'S JOB. startInline3D declares virtualDisplayHeight = 0.24, so
-// author in METRES for a 24 cm-tall display and render the reported views as-is — no app-side
+// SCENE SCALE IS THE RUNTIME'S JOB. startInline3D declares virtualDisplayHeight = 0.12, so
+// author in METRES for a 12 cm-tall display and render the reported views as-is — no app-side
 // scaling. These are the native cube_handle reference's numbers: a 6 cm crate straddling the
 // z=0 (zero-disparity) plane. Same crate as the native cube_handle reference and samples/windows.
 // (A metre-scale scene here would be ~4x the whole virtual display and render enormous.)
@@ -66,7 +66,7 @@ scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 0.9));
 const key = new THREE.DirectionalLight(0xffffff, 0.7); key.position.set(0.3, 0.8, 0.5); scene.add(key);
 
 // Mono fallback camera (also the initial framing before an eye pose arrives). Framed for the
-// same 0.24 m virtual display: ~0.6 m back is the nominal viewing distance.
+// same 0.12 m virtual display: ~0.6 m back is the nominal viewing distance.
 const monoCam = new THREE.PerspectiveCamera(45, 2, 0.01, 100);
 monoCam.position.set(0, 0, 0.35);
 monoCam.lookAt(0, 0, 0);
@@ -145,11 +145,16 @@ function onMonoFrame(now) {
 
 // ---- boot ----------------------------------------------------------------------------------
 (async () => {
-  // virtualDisplayHeight: this scene is composed for a 24 cm-tall display (see the scene block).
+  // virtualDisplayHeight: this scene is composed for a 12 cm-tall display (see the scene block).
   // The runtime scales the eye poses it reports to match, so the views render as-is.
+  //
+  // It is the ZOOM knob: m2v = virtualDisplayHeight / the element's physical height, so HALVING
+  // this doubles how much of the window a given object fills. The 6 cm crate spans half of a
+  // 12 cm virtual display; at 0.24 it spanned a quarter. Same scene, same units — only the
+  // declared size of the display it is composed for changes.
   const xr = await startInline3D(canvas, {
     onFrame: onXRFrame,
-    virtualDisplayHeight: 0.24,
+    virtualDisplayHeight: 0.12,
   });
   if (xr.supported) {
     // Only now do we know we render side-by-side — re-size the backing store to 2x width.
