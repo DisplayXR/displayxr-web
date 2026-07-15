@@ -80,10 +80,15 @@ export async function createInline3D(opts = {}) {
  *   createInline3D({lazy:false}) → addScene(canvas, onFrame).
  * Returns { supported, close() } (plus the manager as .wall) or { supported:false }.
  */
-export async function startInline3D(canvas, { onFrame, referenceSpace = 'viewer' } = {}) {
+export async function startInline3D(
+  canvas,
+  { onFrame, referenceSpace = 'viewer', virtualDisplayHeight = 0.24 } = {}
+) {
   const wall = await createInline3D({ referenceSpace, lazy: false });
   if (!wall.supported) return wall;
-  wall.addScene(canvas, onFrame);
+  // Forward the scene-scale knob: without it addScene's default applies, and a caller who
+  // authored for a different virtual display size has no way to say so.
+  wall.addScene(canvas, onFrame, { virtualDisplayHeight });
   return { supported: true, wall, session: wall.session, close: () => wall.close() };
 }
 
@@ -121,6 +126,11 @@ class Inline3D {
    * @param {number} [opts.cornerRadius=0]  round each eye's corners in buffer px (CSS
    *        border-radius can't: it would round the packed SBS square's outer corners and
    *        come out lopsided after the eye-split).
+   * @param {number} [opts.feather=0]  fade each eye's outer edges to transparent over this
+   *        many buffer px, so the 3D window dissolves into the page instead of ending at a
+   *        hard rectangle. Same reason CSS can't do it: a mask/filter on the canvas applies
+   *        across the packed SBS pair, so each eye would get an inner fade along the split
+   *        line and only half its outer edge.
    * @returns {{remove():void}}
    */
   addImage(canvas, source, opts = {}) {
@@ -198,6 +208,7 @@ class Inline3D {
       ready: null,
       ownsBuffer: kind !== 'scene',
       cornerRadius: opts.cornerRadius || 0,
+      feather: opts.feather || 0,
       reqW: opts.width || 0,
       reqH: opts.height || 0,
       virtualDisplayHeight: opts.virtualDisplayHeight || 0,
@@ -296,15 +307,16 @@ class Inline3D {
     ctx.clearRect(0, 0, c.width, c.height);
     if (!win.sbs) {
       // Flat fallback: left eye only, stretched to the square buffer.
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, c.width, c.height, win.cornerRadius);
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, c.width, c.height, win.cornerRadius, win.feather);
       return;
     }
     const halfDst = c.width / 2;
     // A single stretched draw maps SBS source → SBS buffer (left→left, right→right); the
-    // per-eye path is only needed to bake rounded corners.
-    if (win.cornerRadius > 0) {
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, win.cornerRadius); // L
-      drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, win.cornerRadius); // R
+    // per-eye path is only needed to bake decoration (rounded corners / edge feather), which
+    // MUST be applied to each eye separately — see drawEye/featherEye.
+    if (win.cornerRadius > 0 || win.feather > 0) {
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, win.cornerRadius, win.feather); // L
+      drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, win.cornerRadius, win.feather); // R
     } else {
       ctx.drawImage(src, 0, 0, srcW, srcH, 0, 0, c.width, c.height);
     }
@@ -363,7 +375,7 @@ function loadImage(source) {
 
 // Draw one eye region with optional baked rounded corners. Corners are left transparent so
 // the canvas's page background shows through (as a CSS radius would have).
-function drawEye(ctx, src, sx, sy, sw, sh, dx, dy, dw, dh, radius) {
+function drawEye(ctx, src, sx, sy, sw, sh, dx, dy, dw, dh, radius, feather) {
   if (radius > 0 && ctx.roundRect) {
     ctx.save();
     ctx.beginPath();
@@ -374,4 +386,41 @@ function drawEye(ctx, src, sx, sy, sw, sh, dx, dy, dw, dh, radius) {
   } else {
     ctx.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
   }
+  if (feather > 0) {
+    featherEye(ctx, dx, dy, dw, dh, feather);
+  }
+}
+
+// Fade this EYE's outer edges to transparent, so the 3D window dissolves into the page
+// instead of ending at a hard rectangle. Same spirit as the runtime feathering a 3D zone's
+// edge — but note that is the hardware WISH MASK (lens control, never content); this is the
+// content-side equivalent, and the two are independent.
+//
+// Per-eye, like cornerRadius, and for the same reason: the weave splits the element's rect
+// down the middle, so anything applied across the whole (side-by-side) buffer gets halved —
+// each eye would get an inner fade along the split line that must not exist, and only half
+// its outer edge. A CSS mask/filter on the canvas has exactly that bug.
+//
+// destination-out with an alpha ramp erases toward transparent, so it works on top of
+// whatever was just drawn (image, video frame) without knowing the content.
+function featherEye(ctx, x, y, w, h, px) {
+  const f = Math.min(px, Math.floor(Math.min(w, h) / 2));
+  if (f <= 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-out';
+  const edges = [
+    // [x, y, w, h, gradient-from, gradient-to]
+    [x, y, w, f, [x, y], [x, y + f]],                       // top
+    [x, y + h - f, w, f, [x, y + h], [x, y + h - f]],       // bottom
+    [x, y, f, h, [x, y], [x + f, y]],                       // left
+    [x + w - f, y, f, h, [x + w, y], [x + w - f, y]],       // right
+  ];
+  for (const [ex, ey, ew, eh, from, to] of edges) {
+    const g = ctx.createLinearGradient(from[0], from[1], to[0], to[1]);
+    g.addColorStop(0, 'rgba(0,0,0,1)');   // fully erased at the outer edge
+    g.addColorStop(1, 'rgba(0,0,0,0)');   // untouched inside
+    ctx.fillStyle = g;
+    ctx.fillRect(ex, ey, ew, eh);
+  }
+  ctx.restore();
 }
