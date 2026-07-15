@@ -34,8 +34,8 @@ scene.background = null;
 
 // SCENE SCALE IS THE RUNTIME'S JOB. startInline3D declares virtualDisplayHeight = 0.24, so
 // author in METRES for a 24 cm-tall display and render the reported views as-is — no app-side
-// scaling. These are the native cube_handle reference's numbers: a 6 cm crate sitting on the
-// z=0 (zero-disparity) plane over a 0.5 m grid, so the browser and native scenes match.
+// scaling. These are the native cube_handle reference's numbers: a 6 cm crate straddling the
+// z=0 (zero-disparity) plane. Same crate as the native cube_handle reference and samples/windows.
 // (A metre-scale scene here would be ~4x the whole virtual display and render enormous.)
 const tex = new THREE.TextureLoader();
 const load = (f, srgb) => {
@@ -55,13 +55,12 @@ const cube = new THREE.Mesh(
   }),
 );
 cube.geometry.setAttribute('uv2', cube.geometry.attributes.uv);  // aoMap samples uv2
-cube.position.set(0, 0.03, 0);   // bottom on z=0; +z is behind the glass, -z in front
+// Centred on the zero-disparity plane: the cube straddles z=0, so it reads half in front of the
+// glass and half behind — the strongest depth cue available without a floor. (It used to be
+// lifted to y=0.03 to stand ON the grid; with the grid gone that would just sit it high.)
+cube.position.set(0, 0, 0);
 scene.add(cube);
 
-// Depth cue so parallax/look-around is obvious: a receding grid floor.
-const grid = new THREE.GridHelper(0.5, 10, 0x4d4d59, 0x4d4d59);
-grid.position.y = -0.05;
-scene.add(grid);
 
 scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 0.9));
 const key = new THREE.DirectionalLight(0xffffff, 0.7); key.position.set(0.3, 0.8, 0.5); scene.add(key);
@@ -69,8 +68,8 @@ const key = new THREE.DirectionalLight(0xffffff, 0.7); key.position.set(0.3, 0.8
 // Mono fallback camera (also the initial framing before an eye pose arrives). Framed for the
 // same 0.24 m virtual display: ~0.6 m back is the nominal viewing distance.
 const monoCam = new THREE.PerspectiveCamera(45, 2, 0.01, 100);
-monoCam.position.set(0, 0.03, 0.35);
-monoCam.lookAt(0, 0.03, 0);
+monoCam.position.set(0, 0, 0.35);
+monoCam.lookAt(0, 0, 0);
 
 // ---- per-eye camera driven by the session's reported views --------------------------------
 const eyeCam = new THREE.PerspectiveCamera();
