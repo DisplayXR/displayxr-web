@@ -8,5 +8,6 @@ more) `inline-3d` element(s); open them in the DisplayXR Browser on a DisplayXR 
 |---|---|
 | [`hello-cube/`](hello-cube/) | The "hello world": a bordered `<canvas>` requesting an `inline-3d` session + `XRDisplayLayer`, rendering a rotating cube as an off-axis stereo pair (look-around) inside an otherwise flat 2D page. |
 
-All samples use the thin helper in [`../js/displayxr-inline3d.js`](../js/displayxr-inline3d.js). three.js
-is loaded from a pinned CDN via an import map — no build step.
+All samples use the SDK in [`../js/inline3d.js`](../js/inline3d.js) (plus the optional three.js glue in
+[`../js/inline3d-three.js`](../js/inline3d-three.js)). three.js is loaded from a pinned CDN via an
+import map — no build step.
