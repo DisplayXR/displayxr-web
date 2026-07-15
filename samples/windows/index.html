@@ -50,8 +50,9 @@
 
   <h2 class="section">3D video — <code>wall.addVideo()</code></h2>
   <div class="grid"><div class="stage wide"><canvas id="movie"></canvas></div></div>
-  <p class="cap">A live side-by-side source (generated in-page via <code>captureStream()</code> to prove the
-     per-frame video path); a real SBS <code>.mp4</code> drops into the same call.</p>
+  <p class="cap">A side-by-side <code>.mp4</code> played straight into the same one-line call — the SDK
+     re-draws the <code>&lt;video&gt;</code> into its canvas each frame, so live video weaves exactly like a
+     still.</p>
 
   <footer>
     Built on <a href="../../docs/authoring-inline-3d.md">the inline-3D SDK</a>

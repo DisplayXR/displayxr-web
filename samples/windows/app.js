@@ -28,42 +28,31 @@ function buildPhotoTiles() {
   return tiles;
 }
 
-// A synthetic side-by-side "3D video": an offscreen canvas animates a shape with horizontal
-// PARALLAX between the left and right halves (nearer = more offset), captured as a real
-// MediaStream video. This exercises addVideo's per-frame drawImage(videoEl) path with real
-// decoded frames — a shipped SBS .mp4 would be wired identically.
+// A real side-by-side 3D video, 1280x360 (640x360 per eye).
+//
+// SIZE: the tile is ~1208x680 device px, but a 3D display's recommended render scale is
+// ~0.5x0.5 — after the interlace each eye only receives about half the panel's samples — so
+// ~604x340 of real detail per eye is all that survives. Encoding past that is download weight
+// for pixels the weave throws away. Hence 640x360/eye, and 5 MB instead of 32.
+//
+// CODEC: VP9/WebM, not H.264/mp4. Stock Chromium builds ship ffmpeg_branding="Chromium" with
+// proprietary_codecs off, so an .mp4 fails with MEDIA_ERR_SRC_NOT_SUPPORTED in any dev build.
+// VP9 is royalty-free and always compiled in, so this plays everywhere the SDK does.
+//
+// addVideo() re-draws the <video> into its canvas every frame, so a plain muted+looping
+// element is all the SDK needs; no MediaStream, no captureStream.
 function makeSbsVideo() {
-  const src = document.createElement('canvas');
-  src.width = 1280;
-  src.height = 360; // 2:1-ish SBS (each 640×360 eye = 16:9)
-  const ctx = src.getContext('2d');
-  const eyeW = src.width / 2;
-  let t = 0;
-  function draw() {
-    t += 0.016;
-    for (let eye = 0; eye < 2; eye++) {
-      const ox = eye * eyeW;
-      ctx.fillStyle = '#0b1020';
-      ctx.fillRect(ox, 0, eyeW, src.height);
-      // Two orbiting discs at different depths → different L/R parallax.
-      for (const d of [{ r: 46, depth: 26, col: '#5aa8ff', ph: 0 },
-                       { r: 30, depth: 10, col: '#f0a35a', ph: 2.1 }]) {
-        const cx = ox + eyeW / 2 + Math.cos(t + d.ph) * 120 - (eye === 1 ? d.depth : -d.depth);
-        const cy = src.height / 2 + Math.sin(t + d.ph) * 60;
-        ctx.beginPath();
-        ctx.arc(cx, cy, d.r, 0, Math.PI * 2);
-        ctx.fillStyle = d.col;
-        ctx.fill();
-      }
-    }
-    requestAnimationFrame(draw);
-  }
-  draw();
   const video = document.createElement('video');
-  video.muted = true;
+  video.src = './assets/flymetothemoon_sbs.webm';
+  video.muted = true;      // required for autoplay
+  video.loop = true;
   video.playsInline = true;
-  video.srcObject = src.captureStream(30);
-  video.play().catch(() => {});
+  video.preload = 'auto';
+  video.play().catch(() => {
+    // Autoplay can still be refused; start on the first user gesture instead.
+    const kick = () => { video.play().catch(() => {}); window.removeEventListener('pointerdown', kick); };
+    window.addEventListener('pointerdown', kick, { once: true });
+  });
   return video;
 }
 
