@@ -25,12 +25,23 @@
     <code>immersive-web/webxr-samples</code>.</p>
 
   <div class="card">
-    <h2>hello-cube <span class="soon">— coming soon</span></h2>
-    <p>Minimal three.js <code>inline-3d</code> cube: a bordered canvas woven to glasses-free 3D while the
-       surrounding page stays flat. Doubles as the Step-B look-around eyeball.</p>
+    <h2><a href="samples/windows/">mixed 3D windows</a></h2>
+    <p>Still 3D photos, a live 3D video, and a real-time three.js scene — every kind of glasses-free-3D
+       content, each woven with one <a href="docs/authoring-inline-3d.md">SDK</a> call, all on one session.
+       The runtime batches every visible window into a single weave per frame, so it scales to a wall.</p>
   </div>
 
-  <p class="sub">Scaffolding — samples land in a follow-up session. See the
+  <div class="card">
+    <h2>The SDK — <code>js/inline3d.js</code></h2>
+    <p>A dependency-free helper over the <code>inline-3d</code> WebXR surface:
+       <code>wall.addImage()</code> / <code>addVideo()</code> / <code>addScene()</code> turn any canvas into a
+       weaved 3D window and manage the side-by-side buffer, feature detection, and (for many windows) a lazy
+       create/close lifecycle. Optional three.js glue in <code>js/inline3d-three.js</code>.
+       Start here: <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
+  </div>
+
+  <p class="sub">More samples (hello-cube, the demo gallery, a scroll-wall) land as their branches merge.
+    See the
     <a href="https://github.com/DisplayXR/displayxr-runtime/blob/main/docs/roadmap/displayxr-browser-preview.md">packaging plan</a>
     and <a href="https://github.com/DisplayXR/displayxr-runtime/issues/733">tracking issue #733</a>.</p>
 </div>
