@@ -36,6 +36,15 @@
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
+  <!-- Scene first: it is the only window that consumes the session's off-axis
+       views, so keeping it above the fold means its layer registers at load
+       (the lazy observer only arms visible windows) and the look-around works
+       without scrolling. -->
+  <h2 class="section">Live three.js scene — <code>wall.addScene()</code></h2>
+  <div class="grid"><div class="stage"><canvas id="scene"></canvas></div></div>
+  <p class="cap">A spinning crate rendered twice per frame into the two eye viewports, off-axis from your
+     tracked eyes — move your head to look around it.</p>
+
   <h2 class="section">3D photos — <code>wall.addImage()</code></h2>
   <div id="photos" class="grid"></div>
 
@@ -43,11 +52,6 @@
   <div class="grid"><div class="stage wide"><canvas id="movie"></canvas></div></div>
   <p class="cap">A live side-by-side source (generated in-page via <code>captureStream()</code> to prove the
      per-frame video path); a real SBS <code>.mp4</code> drops into the same call.</p>
-
-  <h2 class="section">Live three.js scene — <code>wall.addScene()</code></h2>
-  <div class="grid"><div class="stage"><canvas id="scene"></canvas></div></div>
-  <p class="cap">A spinning crate rendered twice per frame into the two eye viewports, off-axis from your
-     tracked eyes — move your head to look around it.</p>
 
   <footer>
     Built on <a href="../../docs/authoring-inline-3d.md">the inline-3D SDK</a>

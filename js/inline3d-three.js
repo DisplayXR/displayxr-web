@@ -9,6 +9,11 @@
 //   import { createInline3D } from '../js/inline3d.js';
 //   import { EyeCamera } from '../js/inline3d-three.js';
 //
+//   // TWO bits of renderer setup are load-bearing (see "VIEWPORTS" below):
+//   renderer.setPixelRatio(1);                  // getViewport() is already in device px
+//   const dpr = window.devicePixelRatio || 1;   // SBS store: DOUBLE-WIDTH, device-res
+//   renderer.setSize(canvas.clientWidth * dpr * 2, canvas.clientHeight * dpr, false);
+//
 //   const eye = new EyeCamera(THREE);           // one reusable off-axis camera
 //   wall.addScene(canvas, (views, layer) => {   // addScene sets virtualDisplayHeight = 0.24 m
 //     renderer.clear();
@@ -22,6 +27,15 @@
 //     }
 //     renderer.setScissorTest(false);
 //   });
+//
+// VIEWPORTS — the one trap. layer.getViewport() returns BACKING-STORE pixels, but three.js's
+// setViewport()/setScissor() multiply what you pass them by the renderer's pixelRatio. So
+// setPixelRatio(anything but 1) silently scales every eye viewport: at dpr 2 the left eye
+// covers the WHOLE canvas and overflows vertically, and the weave then shows you a stretched
+// slice of it. The tell is nasty — the scene still head-tracks perfectly (the pose and the
+// off-axis projection are untouched), it is just zoomed and off-centre — so it looks like a
+// projection/rig bug when it is purely a viewport one. Keep pixelRatio at 1 and size the
+// backing store in device pixels yourself.
 //
 // SCENE SCALE IS THE RUNTIME'S JOB (display-rig m2v). The inline-3D views the session reports
 // are already scaled to your scene by the layer's `virtualDisplayHeight` (see addScene) — the

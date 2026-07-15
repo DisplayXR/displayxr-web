@@ -70,7 +70,13 @@ function makeSbsVideo() {
 // ---- three.js scene (crate) ----------------------------------------------------------------
 function buildScene(canvas) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // pixelRatio MUST be 1. layer.getViewport() hands back BACKING-STORE pixels, and
+  // three.js's setViewport()/setScissor() multiply whatever you give them by the
+  // renderer's pixelRatio — so any other value silently scales each eye's viewport
+  // (at dpr 2 the left eye covers the whole canvas and overflows vertically, which
+  // reads on screen as a zoomed, off-centre scene that still head-tracks correctly).
+  // We size the backing store in device pixels ourselves below instead.
+  renderer.setPixelRatio(1);
   renderer.autoClear = false;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d0d40);
@@ -82,19 +88,45 @@ function buildScene(canvas) {
   // Authored in metres for a 0.24 m virtual display (addScene's virtualDisplayHeight); the
   // runtime scales the eye poses so this renders correctly with NO app-side scaling. Matches
   // the cube_handle reference: a 6 cm crate on the z=0 plane over a 0.5 m grid.
+  // Same wood-crate PBR set the native cube_handle reference app uses, so the
+  // browser scene and the native scene show the identical object.
+  const tex = new THREE.TextureLoader();
+  const load = (f, srgb) => {
+    const t = tex.load(`./assets/Wood_Crate_001_${f}.jpg`);
+    // Only the basecolor carries colour; normal/AO are raw data and must stay linear.
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    return t;
+  };
   const cube = new THREE.Mesh(
     new THREE.BoxGeometry(0.06, 0.06, 0.06),
-    new THREE.MeshStandardMaterial({ color: 0xb9884e, roughness: 0.7, metalness: 0.05 })
+    new THREE.MeshStandardMaterial({
+      map: load('basecolor', true),
+      normalMap: load('normal', false),
+      aoMap: load('ambientOcclusion', false),
+      roughness: 0.7,
+      metalness: 0.05,
+    })
   );
+  // aoMap samples uv2; BoxGeometry only ships uv, so alias it.
+  cube.geometry.setAttribute('uv2', cube.geometry.attributes.uv);
   cube.position.set(0, 0.03, 0); // z=0 → on the zero-disparity plane
   scene.add(cube);
   const grid = new THREE.GridHelper(0.5, 10, 0x4d4d59, 0x4d4d59);
   grid.position.y = -0.05;
   scene.add(grid);
 
+  // Side-by-side backing store: DOUBLE-WIDTH in device pixels (left eye | right eye).
+  // getViewport() splits canvas.width in half, so each eye then gets a full
+  // tile-resolution square. The browser squashes the 2:1 buffer into the 1:1 CSS box —
+  // which IS the SBS squeeze — and the weave un-squeezes it back. Sizing to the CSS box
+  // instead would render each eye at half width and upscale it on the way out.
+  // updateStyle=false: the layout owns the CSS box, never the renderer.
   function size() {
-    const w = canvas.clientWidth || 256, h = canvas.clientHeight || 256;
-    renderer.setSize(w, h, false);
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round((canvas.clientWidth || 256) * dpr);
+    const h = Math.round((canvas.clientHeight || 256) * dpr);
+    renderer.setSize(w * 2, h, false);
   }
   window.addEventListener('resize', size);
   size();
