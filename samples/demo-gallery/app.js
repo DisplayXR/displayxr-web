@@ -15,6 +15,8 @@
 // squishes it 2:1 into the square box and the weave interlaces L|R back to a correct
 // square 3D logo. Elsewhere we paint only the LEFT half (a normal square 2D logo).
 
+import { createInline3D } from '../../js/inline3d.js';
+
 const DEMOS = [
   {
     key: 'mediaplayer',
@@ -63,44 +65,21 @@ const STAGE_PX = 132;  // .stage box size (index.html)
 const CORNER_PX = 10;  // .stage border-radius (index.html)
 const EYE_R = Math.round(CORNER_PX * (SBS_H / STAGE_PX)); // ~39
 
-// Draw one eye of the logo with baked rounded corners. Source and destination
-// rects are the same-size eye square; corners are left transparent (the canvas
-// is alpha so they show the stage background, exactly like the CSS radius did).
-function drawEyeRounded(ctx, img, sx, dx, w, h) {
+// Flat 2D fallback ONLY (no DisplayXR Browser): paint the LEFT eye into a square buffer, with
+// the same rounded corners baked in. The woven path is the SDK's job -- wall.addImage() owns the
+// side-by-side buffer, the per-eye corner radius, and the per-frame repaint that keeps each
+// canvas in the compositor's aggregated frame.
+function paintFlat(tile) {
+  const { ctx, img } = tile;
+  if (!img.complete || img.naturalWidth === 0) return;
+  const c = ctx.canvas;
+  c.width = EYE_W; c.height = SBS_H;
+  ctx.clearRect(0, 0, c.width, c.height);
   ctx.save();
   ctx.beginPath();
-  if (ctx.roundRect) {
-    ctx.roundRect(dx, 0, w, h, EYE_R);
-    ctx.clip();
-  }
-  ctx.drawImage(img, sx, 0, EYE_W, SBS_H, dx, 0, w, h);
+  if (ctx.roundRect) { ctx.roundRect(0, 0, c.width, c.height, EYE_R); ctx.clip(); }
+  ctx.drawImage(img, 0, 0, EYE_W, SBS_H, 0, 0, c.width, c.height);  // L eye only
   ctx.restore();
-}
-
-// Paint a tile's logo in its current mode. |tile.sbs| true -> full side-by-side
-// buffer (the weave input); false -> left (L) half only (flat 2D fallback).
-function paintLogo(tile) {
-  const { ctx, img } = tile;
-  if (!img.complete || img.naturalWidth === 0) {
-    return;
-  }
-  const c = ctx.canvas;
-  ctx.clearRect(0, 0, c.width, c.height);
-  if (tile.sbs) {
-    drawEyeRounded(ctx, img, 0, 0, c.width / 2, c.height);         // L eye
-    drawEyeRounded(ctx, img, EYE_W, c.width / 2, c.width / 2, c.height); // R eye
-  } else {
-    drawEyeRounded(ctx, img, 0, 0, c.width, c.height); // L eye only
-  }
-}
-
-// Switch a tile between the 2:1 SBS buffer (woven) and the square left-eye buffer
-// (flat). The on-screen box stays square via CSS; only the backing buffer changes.
-function setMode(tile, sbs) {
-  tile.sbs = sbs;
-  tile.canvas.width = sbs ? SBS_W : EYE_W;
-  tile.canvas.height = SBS_H;
-  paintLogo(tile);
 }
 
 function buildTiles() {
@@ -135,9 +114,8 @@ function buildTiles() {
     const img = new Image();
     img.src = `assets/${demo.key}.png`;
     // alpha:true — the baked rounded corners stay transparent (stage bg shows).
-    const tile = { demo, canvas, ctx: canvas.getContext('2d'), img, sbs: false };
-    setMode(tile, false); // default to a valid flat buffer until the mode resolves
-    img.onload = () => paintLogo(tile);
+    const tile = { demo, canvas, ctx: canvas.getContext('2d'), img };
+    paintFlat(tile);   // a valid (empty) flat buffer until main() resolves the mode
     tiles.push(tile);
   }
   return tiles;
@@ -152,52 +130,33 @@ function setStatus(mode, detail) {
 (async function main() {
   const tiles = buildTiles();
 
-  // Detect the DisplayXR Browser by actually opening an inline-3D session. Unlike
-  // isSessionSupported() (an async round-trip to the browser weave client, which
-  // may not be bound yet at page load -> a false negative), requestSession is
-  // Blink-local and resolves immediately when the feature is present. On an
-  // ordinary browser navigator.xr is absent or the unknown mode rejects -> flat.
-  let session = null;
-  if (navigator.xr) {
-    try {
-      session = await navigator.xr.requestSession('inline-3d');
-    } catch (e) {
-      session = null;
+  // createInline3D detects by actually opening a session. (It deliberately avoids
+  // isSessionSupported(), an async round-trip that resolves FALSE if it runs before the OS
+  // weave service has bound -- a false negative that silently drops the page to 2D.)
+  // lazy:false: five tiles, all on screen; no point arming an IntersectionObserver.
+  const wall = await createInline3D({ lazy: false });
+
+  if (!wall.supported) {
+    // Flat: WE own the canvases. Paint the left eye once loaded (they may already be).
+    for (const tile of tiles) {
+      if (tile.img.complete) paintFlat(tile); else tile.img.onload = () => paintFlat(tile);
     }
-  }
-
-  if (!session) {
     setStatus('flat',
-      'Flat 2D preview — open in the DisplayXR Browser on a 3D display to see the logos woven in glasses-free 3D.');
-    return; // tiles already painted flat (left eye)
+      'Flat 2D preview - open in the DisplayXR Browser on a 3D display to see the logos woven in glasses-free 3D.');
+    return;
   }
 
-  // DisplayXR Browser: switch every tile to its SBS buffer and weave.
-  tiles.forEach((t) => setMode(t, true));
-  setStatus('woven', 'DisplayXR Browser detected — weaving ' + tiles.length + ' 3D logos inline.');
+  // Woven: the SDK owns the canvases from here (buffer size, paint, repaint). Nothing else may
+  // touch them -- a stray paintFlat would resize the SBS buffer back to a flat square.
 
-  // A reference space is required before requestAnimationFrame will fire.
-  await session.requestReferenceSpace('viewer').catch(() => null);
-
-  // One XRDisplayLayer per canvas. The session tracks the whole set and reports
-  // every canvas rect to the compositor each XR frame (multi-element weave).
-  const layers = tiles.map((t) => new XRDisplayLayer(session, t.canvas, {}));
-  window.__gallery = { session, layers, tiles, xrFrames: 0 };
-
-  // Repaint the (static) SBS logos every frame so each canvas layer stays live and
-  // keeps producing a composited quad for the weave to read.
-  function paintFrame() {
-    tiles.forEach(paintLogo);
-    requestAnimationFrame(paintFrame);
+  // One call per logo. The SDK owns the SBS buffer, the per-eye rounded corners, the layer, and
+  // the per-frame repaint; the runtime batches all five into ONE weave per frame.
+  // width/height are PER EYE: the assets are natively 1024x512 SBS, so 512x512 per eye means no
+  // resampling, and EYE_R is in those buffer px.
+  for (const tile of tiles) {
+    wall.addImage(tile.canvas, `assets/${tile.demo.key}.png`,
+                  { width: EYE_W, height: SBS_H, cornerRadius: EYE_R });
   }
-  requestAnimationFrame(paintFrame);
-
-  // Drive the XR session frame loop: this is what makes XRSession report the set
-  // of inline-3d rects to Viz each frame (rects=N). Without it no rect reaches
-  // the compositor and nothing weaves.
-  function onXRFrame(t, frame) {
-    window.__gallery.xrFrames++;
-    session.requestAnimationFrame(onXRFrame);
-  }
-  session.requestAnimationFrame(onXRFrame);
+  window.__gallery = { wall, tiles };
+  setStatus('woven', 'DisplayXR Browser detected - weaving ' + tiles.length + ' 3D logos inline.');
 })();
