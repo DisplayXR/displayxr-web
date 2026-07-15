@@ -1,16 +1,21 @@
 // DisplayXR inline-3D picture wall — the lazy-load stress sample (#625).
 //
-// A long scrolling grid of side-by-side 3D pictures. Each tile gets its
-// XRDisplayLayer ONLY while it is (near-)visible: an IntersectionObserver
-// creates the layer on viewport enter and close()s it on leave, so the weave
-// works only on what is on screen. With the batched submit (XR_DXR_weave spec
-// v3) every visible rect weaves in ONE runtime call per frame, so the wall
-// scales far past the old ~8-12 visible-element ceiling.
+// A long scrolling grid of side-by-side 3D pictures. Each tile is woven ONLY while it is
+// (near-)visible -- the SDK's lazy mode creates a window's weave layer as it approaches the
+// viewport and closes it on leave, so the page pays only for what is on screen. With the
+// batched submit (XR_DXR_weave spec v3) every visible rect weaves in ONE runtime call per
+// frame, so the wall scales far past the old ~8-12 visible-element ceiling.
+//
+// This is the SDK's whole reason to exist, so the sample is deliberately thin: build 60
+// canvases, hand each to wall.addImage(), done. The lazy lifecycle, the SBS buffer, the per-eye
+// corner radius and the per-frame repaint are all createInline3D's.
 //
 // Pictures reuse the demo-gallery's shipped 2-view logo assets (1024x512
 // side-by-side L|R), tiled WALL_REPEATS times. Painting a fixed SBS image into
 // an inline-3d canvas is the proven per-element weave path — no eye/rig
 // consumption, pure multi-element scale.
+
+import { createInline3D } from '../../js/inline3d.js';
 
 const PICS = ['mediaplayer', 'avatar', 'gaussiansplat', 'modelviewer', 'earthview'];
 const WALL_REPEATS = 12; // 60 tiles total; ~15-25 visible at typical sizes
@@ -26,37 +31,20 @@ const EYE_W = SBS_W / 2;
 const CORNER_FRAC = 10 / 132; // same visual radius as the demo gallery
 const EYE_R = Math.round(CORNER_FRAC * SBS_H);
 
-function drawEyeRounded(ctx, img, sx, dx, w, h) {
+// Flat 2D fallback ONLY (no DisplayXR Browser): the LEFT eye in a square buffer.
+// When inline-3D is live the SDK owns these canvases outright -- do not touch them, or a stray
+// paint resizes the SBS buffer back to a flat square.
+function paintFlat(tile) {
+  const { ctx, img } = tile;
+  if (!img.complete || img.naturalWidth === 0) return;
+  const c = ctx.canvas;
+  c.width = EYE_W; c.height = SBS_H;
+  ctx.clearRect(0, 0, c.width, c.height);
   ctx.save();
   ctx.beginPath();
-  if (ctx.roundRect) {
-    ctx.roundRect(dx, 0, w, h, EYE_R);
-    ctx.clip();
-  }
-  ctx.drawImage(img, sx, 0, EYE_W, SBS_H, dx, 0, w, h);
+  if (ctx.roundRect) { ctx.roundRect(0, 0, c.width, c.height, EYE_R); ctx.clip(); }
+  ctx.drawImage(img, 0, 0, EYE_W, SBS_H, 0, 0, c.width, c.height);
   ctx.restore();
-}
-
-function paintPic(tile) {
-  const { ctx, img } = tile;
-  if (!img.complete || img.naturalWidth === 0) {
-    return;
-  }
-  const c = ctx.canvas;
-  ctx.clearRect(0, 0, c.width, c.height);
-  if (tile.sbs) {
-    drawEyeRounded(ctx, img, 0, 0, c.width / 2, c.height);              // L eye
-    drawEyeRounded(ctx, img, EYE_W, c.width / 2, c.width / 2, c.height); // R eye
-  } else {
-    drawEyeRounded(ctx, img, 0, 0, c.width, c.height); // L eye only (flat 2D)
-  }
-}
-
-function setMode(tile, sbs) {
-  tile.sbs = sbs;
-  tile.canvas.width = sbs ? SBS_W : EYE_W;
-  tile.canvas.height = SBS_H;
-  paintPic(tile);
 }
 
 function buildWall() {
@@ -80,17 +68,7 @@ function buildWall() {
       stage.appendChild(canvas);
       grid.appendChild(stage);
 
-      const img = images.get(key);
-      const tile = {
-        canvas,
-        ctx: canvas.getContext('2d'),
-        img,
-        sbs: false,
-        layer: null,    // live XRDisplayLayer while (near-)visible
-        visible: false,
-      };
-      setMode(tile, false);
-      img.addEventListener('load', () => paintPic(tile));
+      const tile = { key, canvas, ctx: canvas.getContext('2d'), img: images.get(key) };
       tiles.push(tile);
     }
   }
@@ -106,83 +84,30 @@ function setStatus(mode, detail) {
 (async function main() {
   const tiles = buildWall();
 
-  // Detect the DisplayXR Browser by opening the inline-3d session directly
-  // (requestSession is Blink-local; isSessionSupported can false-negative at
-  // load — see demo-gallery).
-  let session = null;
-  if (navigator.xr) {
-    try {
-      session = await navigator.xr.requestSession('inline-3d');
-    } catch (e) {
-      session = null;
-    }
-  }
+  // Lazy is the DEFAULT (rootMargin '50% 0px' pre-arms a window half a viewport early, so a fast
+  // scroll never reveals a raw un-woven tile). Detection opens a real session -- createInline3D
+  // avoids isSessionSupported(), which false-negatives before the OS weave service binds.
+  const wall = await createInline3D();
 
-  if (!session) {
+  if (!wall.supported) {
+    for (const t of tiles) {
+      if (t.img.complete) paintFlat(t); else t.img.addEventListener('load', () => paintFlat(t));
+    }
     setStatus('flat',
-      'Flat 2D preview — open in the DisplayXR Browser on a 3D display for the woven 3D wall.');
+      'Flat 2D preview - open in the DisplayXR Browser on a 3D display for the woven 3D wall.');
     return;
   }
 
-  await session.requestReferenceSpace('viewer').catch(() => null);
-
-  let liveCount = 0;
-  const refreshStatus = () => setStatus('woven',
-    `DisplayXR Browser — ${tiles.length}-picture wall, ${liveCount} woven (visible) layers live.`);
-  refreshStatus();
-
-  // Lazy layer lifecycle: create the XRDisplayLayer as a tile approaches the
-  // viewport, close it as it leaves. rootMargin pre-arms tiles half a viewport
-  // early so a fast scroll never shows an un-woven (raw SBS) tile.
-  const observer = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      const tile = tiles.find((t) => t.canvas.parentElement === entry.target);
-      if (!tile) {
-        continue;
-      }
-      tile.visible = entry.isIntersecting;
-      if (entry.isIntersecting && !tile.layer) {
-        setMode(tile, true); // SBS buffer only while woven
-        try {
-          tile.layer = new XRDisplayLayer(session, tile.canvas, {});
-          liveCount++;
-        } catch (e) {
-          tile.layer = null;
-          setMode(tile, false);
-        }
-      } else if (!entry.isIntersecting && tile.layer) {
-        try {
-          tile.layer.close();
-        } catch (e) { /* already closed */ }
-        tile.layer = null;
-        liveCount--;
-        setMode(tile, false); // flat left-eye buffer while off screen
-      }
-    }
-    refreshStatus();
-  }, { rootMargin: '50% 0px' });
-  tiles.forEach((t) => observer.observe(t.canvas.parentElement));
-
-  window.__wall = { session, tiles, xrFrames: 0,
-                    get live() { return liveCount; } };
-
-  // Repaint only the woven (visible) tiles each frame so their canvas layers
-  // stay live and keep producing composited quads for the weave to read.
-  function paintFrame() {
-    for (const t of tiles) {
-      if (t.layer) {
-        paintPic(t);
-      }
-    }
-    requestAnimationFrame(paintFrame);
+  // 60 pictures, one call each. width/height are PER EYE, so the buffer is the assets' native
+  // 1024x512 SBS (no resampling) and EYE_R stays in those buffer px.
+  for (const tile of tiles) {
+    wall.addImage(tile.canvas, `../demo-gallery/assets/${tile.key}.png`,
+                  { width: EYE_W, height: SBS_H, cornerRadius: EYE_R });
   }
-  requestAnimationFrame(paintFrame);
+  window.__wall = wall;
 
-  // Drive the XR session frame loop — this is what reports the inline-3d rect
-  // set to the compositor each frame.
-  function onXRFrame(t, frame) {
-    window.__wall.xrFrames++;
-    session.requestAnimationFrame(onXRFrame);
-  }
-  session.requestAnimationFrame(onXRFrame);
+  const refresh = () => setStatus('woven',
+    `DisplayXR Browser - ${tiles.length}-picture wall, ${wall.liveCount} woven (visible) layers live.`);
+  refresh();
+  setInterval(refresh, 500);   // liveCount changes as you scroll
 })();
