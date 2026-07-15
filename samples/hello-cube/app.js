@@ -8,12 +8,16 @@
 
 import * as THREE from 'three';
 import { startInline3D } from '../../js/inline3d.js';
+import { EdgeFeather } from '../../js/inline3d-three.js';
 
 const canvas = document.getElementById('cube');
 const statusEl = document.getElementById('status');
 
 // ---- scene ---------------------------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+// alpha: true + a 0-alpha clear so the edges can fade to TRANSPARENT and let the page show
+// through (see EdgeFeather below). An opaque scene.background would defeat it.
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setClearColor(0x000000, 0);
 // pixelRatio MUST be 1. layer.getViewport() hands back BACKING-STORE pixels, and three.js's
 // setViewport()/setScissor() multiply what you give them by the renderer's pixelRatio — so any
 // other value silently scales each eye's viewport (at dpr 2 the left eye covers the whole canvas
@@ -24,7 +28,9 @@ renderer.setPixelRatio(1);
 renderer.autoClear = false;                     // we clear once per frame, then draw N eye viewports
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b1020);
+// No background: the window dissolves into the page at its edges instead of ending at a hard
+// rectangle. The CSS box keeps a flat backdrop for the mono fallback.
+scene.background = null;
 
 // SCENE SCALE IS THE RUNTIME'S JOB. startInline3D declares virtualDisplayHeight = 0.24, so
 // author in METRES for a 24 cm-tall display and render the reported views as-is — no app-side
@@ -98,6 +104,11 @@ sizeToCanvas();
 
 function spin(dt) { cube.rotation.y += dt * 0.7; cube.rotation.x += dt * 0.25; }
 
+// Per-eye edge fade. MUST be per-eye: each eye's image spans the whole window, so each needs a
+// fade on all four of ITS edges — a CSS mask on the canvas would fade only the element box's
+// outer edges (left eye faded on its left, not its right) and would wrongly fade the split line.
+const feather = new EdgeFeather(THREE, { px: 26 });
+
 // ---- inline-3D path (two off-axis eye viewports) ------------------------------------------
 let last = 0;
 function onXRFrame(views, layer) {
@@ -112,6 +123,7 @@ function onXRFrame(views, layer) {
     renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
     setCameraFromView(view);
     renderer.render(scene, eyeCam);
+    feather.render(renderer, vp);   // fade THIS eye's edges to transparent
   }
   renderer.setScissorTest(false);
 }

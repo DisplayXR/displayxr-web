@@ -14,17 +14,21 @@
   /* The 3D element: an ordinary canvas inside a normal 2D page. On the DisplayXR Browser +
      hardware it weaves glasses-free; everywhere else it's a flat spinning cube.
 
-     THE CANVAS ITSELF MUST BE VISUALLY BARE. The weave takes the element's rect as a
-     side-by-side pair and splits it down the middle, so any spatially-varying CSS on the
-     canvas — border, border-radius, shadow — is composited INTO that pair and then halved:
-     each eye gets one edge of the border and two of the four corners, stretched 2x by the
-     un-squeeze. Decoration has to live either on a WRAPPER outside the woven rect (as here)
-     or be drawn per-eye into the canvas buffer (what the SDK does for image corner radius).
-     A flat background is the one safe exception — both eyes get the same colour. */
+     No border, no radius — the scene FEATHERS ITS OWN EDGES to transparent per eye (see
+     EdgeFeather in app.js), so the 3D window dissolves into the page instead of ending at a
+     hard rectangle.
+
+     THE CANVAS MUST STAY VISUALLY BARE. The weave takes the element's rect as a side-by-side
+     pair and splits it down the middle, so any spatially-varying CSS here — border, radius,
+     shadow, mask — is composited INTO that pair and then halved: each eye gets one edge and
+     two of the four corners, stretched 2x by the un-squeeze. That is also why the fade has to
+     be a per-eye render pass and not a CSS mask.
+
+     And NO background either: the canvas is transparent so the fade reaches the PAGE. A CSS
+     background here would just be a hard-edged rectangle behind the feathered content, which
+     is the very thing we removed the border to avoid. */
   .stage{margin:22px 0}
-  .frame{width:100%;max-width:644px;margin:0 auto;padding:2px;background:#3b82f6;
-         border-radius:12px;line-height:0}
-  #cube{display:block;width:100%;aspect-ratio:2/1;background:#0b1020}
+  #cube{display:block;width:100%;max-width:640px;aspect-ratio:2/1;margin:0 auto}
   .badge{max-width:640px;margin:8px auto 0;font-size:13px;opacity:.75;text-align:center}
   .badge b{font-weight:600}
   .cols{display:flex;gap:18px;flex-wrap:wrap;margin-top:26px}
@@ -41,15 +45,14 @@
      "hello world".</p>
 
   <p>Everything on this page is flat 2D HTML — this paragraph, the headings, the two columns below.
-     The one exception is the bordered canvas: it requests an <code>inline-3d</code> WebXR session, binds
+     The one exception is the canvas: it requests an <code>inline-3d</code> WebXR session, binds
      an <code>XRDisplayLayer</code>, and renders a rotating cube as a stereo pair re-projected
      <b>off-axis from your eyes every frame</b>. In the DisplayXR Browser on a DisplayXR display it
      weaves to glasses-free 3D and looks-around as you move; in any other browser it degrades to a plain
      spinning cube.</p>
 
   <div class="stage">
-    <!-- The frame draws the border AROUND the woven rect; the canvas stays bare. -->
-    <div class="frame"><canvas id="cube" width="1280" height="640"></canvas></div>
+    <canvas id="cube" width="1280" height="640"></canvas>
     <div class="badge" id="status">initializing…</div>
   </div>
 

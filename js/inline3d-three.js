@@ -69,3 +69,86 @@ export class EyeCamera {
     return cam;
   }
 }
+
+/**
+ * Fade a rendered eye's edges to transparent, so a 3D window dissolves into the page instead of
+ * ending at a hard rectangle. The WebGL counterpart of the SDK's `feather` option for
+ * image/video windows (which the SDK bakes itself, since it owns those 2D buffers — for a scene,
+ * YOU own the canvas, so the pass has to run here).
+ *
+ * PER EYE, and that is not a detail: each eye's image spans the WHOLE window, so each needs a
+ * fade on all four of ITS OWN edges. A CSS mask/filter on the canvas fades only the element
+ * box's outer edges — the left eye would get a fade on its left and none on its right, and the
+ * split line would fade when it must not. Same reason cornerRadius is per-eye.
+ *
+ * Call once per eye, straight after renderer.render(scene, eye.camera), with the SAME viewport
+ * still set. Multiplies the framebuffer by an edge ramp (dst *= ramp) via ZeroFactor/SrcAlpha
+ * blending, so it works on whatever you drew without knowing anything about it.
+ *
+ * Requires a transparent canvas to fade INTO: WebGLRenderer({ alpha: true }),
+ * renderer.setClearColor(0x000000, 0), and no opaque scene.background.
+ *
+ *   const feather = new EdgeFeather(THREE, { px: 28 });
+ *   ...
+ *   renderer.render(scene, eye.camera);
+ *   feather.render(renderer, vp);      // vp = layer.getViewport(view)
+ */
+export class EdgeFeather {
+  /**
+   * @param {object} THREE  your imported three.js module namespace.
+   * @param {object} [opts]
+   * @param {number} [opts.px=24]  fade width in BUFFER px (the same units getViewport reports).
+   */
+  constructor(THREE, { px = 24 } = {}) {
+    this._THREE = THREE;
+    this.px = px;
+    this._cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this._mat = new THREE.ShaderMaterial({
+      uniforms: { fx: { value: 0.1 }, fy: { value: 0.1 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+      `,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform float fx;
+        uniform float fy;
+        void main() {
+          // 1 inside, ramping to 0 at each edge. smoothstep gives a soft, banding-free falloff.
+          float ax = smoothstep(0.0, fx, vUv.x) * smoothstep(0.0, fx, 1.0 - vUv.x);
+          float ay = smoothstep(0.0, fy, vUv.y) * smoothstep(0.0, fy, 1.0 - vUv.y);
+          gl_FragColor = vec4(1.0, 1.0, 1.0, ax * ay);
+        }
+      `,
+      // dst_new = src*0 + dst*src.a  =>  multiply the framebuffer (colour AND alpha) by the ramp.
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.ZeroFactor,
+      blendDst: THREE.SrcAlphaFactor,
+      blendSrcAlpha: THREE.ZeroFactor,
+      blendDstAlpha: THREE.SrcAlphaFactor,
+    });
+    this._quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._mat);
+    this._quad.frustumCulled = false;
+    this._scene = new THREE.Scene();
+    this._scene.add(this._quad);
+  }
+
+  /**
+   * @param {THREE.WebGLRenderer} renderer
+   * @param {{x:number,y:number,width:number,height:number}} vp  this eye's viewport.
+   */
+  render(renderer, vp) {
+    if (!vp || this.px <= 0) return;
+    // Ramp width as a fraction of THIS eye's viewport, so the fade is px-uniform on screen even
+    // though the eye is horizontally squeezed (a half-width viewport stretched 2x by the weave).
+    this._mat.uniforms.fx.value = Math.min(0.5, this.px / Math.max(1, vp.width));
+    this._mat.uniforms.fy.value = Math.min(0.5, this.px / Math.max(1, vp.height));
+    const prevAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.render(this._scene, this._cam);
+    renderer.autoClear = prevAutoClear;
+  }
+}
