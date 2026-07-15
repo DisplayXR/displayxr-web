@@ -14,7 +14,13 @@ const statusEl = document.getElementById('status');
 
 // ---- scene ---------------------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+// pixelRatio MUST be 1. layer.getViewport() hands back BACKING-STORE pixels, and three.js's
+// setViewport()/setScissor() multiply what you give them by the renderer's pixelRatio — so any
+// other value silently scales each eye's viewport (at dpr 2 the left eye covers the whole canvas
+// and overflows vertically). It fails deceptively: the scene still head-tracks perfectly, it is
+// just zoomed and off-centre, so it reads as a projection bug rather than a viewport one. We size
+// the backing store in device pixels ourselves below instead.
+renderer.setPixelRatio(1);
 renderer.autoClear = false;                     // we clear once per frame, then draw N eye viewports
 
 const scene = new THREE.Scene();
@@ -55,9 +61,19 @@ function setCameraFromView(view) {
   eyeCam.matrixWorldInverse.copy(eyeCam.matrixWorld).invert();
 }
 
+// In inline-3D the backing store is DOUBLE-WIDTH in device pixels (left eye | right eye):
+// getViewport() splits canvas.width in half, so each eye then gets a full-resolution half, and
+// the browser squashing that 2:1 buffer into the 1:1 CSS box IS the SBS squeeze the weave
+// un-squeezes. Sizing to the CSS box instead renders each eye at half width and upscales it.
+//
+// Mono stays 1:1 — the flat fallback draws the whole canvas, so a 2:1 store would just stretch
+// it. updateStyle=false: the layout owns the CSS box, never the renderer.
+let sbsMode = false;
 function sizeToCanvas() {
-  const w = canvas.clientWidth || 1280, h = canvas.clientHeight || 640;
-  renderer.setSize(w, h, false);
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round((canvas.clientWidth || 512) * dpr);
+  const h = Math.round((canvas.clientHeight || 256) * dpr);
+  renderer.setSize(sbsMode ? w * 2 : w, h, false);
   monoCam.aspect = w / h; monoCam.updateProjectionMatrix();
 }
 window.addEventListener('resize', sizeToCanvas);
@@ -103,6 +119,9 @@ function onMonoFrame(now) {
 (async () => {
   const xr = await startInline3D(canvas, { onFrame: onXRFrame });
   if (xr.supported) {
+    // Only now do we know we render side-by-side — re-size the backing store to 2x width.
+    sbsMode = true;
+    sizeToCanvas();
     statusEl.innerHTML = '<b style="color:#4ade80">inline-3D active</b> — weaving glasses-free 3D · ' +
       'move your head to look around';
   } else {
