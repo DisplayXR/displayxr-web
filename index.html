@@ -22,7 +22,10 @@
   <h1>DisplayXR — inline-3D web samples</h1>
   <p class="sub">Glasses-free 3D elements inside ordinary web pages, for the
     <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>. The analog of
-    <code>immersive-web/webxr-samples</code>.</p>
+    <code>immersive-web/webxr-samples</code>.
+    <br><strong><a href="https://github.com/DisplayXR/displayxr-browser/releases">Get the DisplayXR Browser</a></strong>
+    and open a sample below on DisplayXR hardware to see it in glasses-free 3D — in any other browser the
+    pages render as normal 2D, so they're safe to view anywhere.</p>
 
   <div class="card">
     <h2><a href="samples/windows/">mixed 3D windows</a></h2>
@@ -40,10 +43,16 @@
        Start here: <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
   </div>
 
-  <p class="sub">More samples (hello-cube, the demo gallery, a scroll-wall) land as their branches merge.
-    See the
-    <a href="https://github.com/DisplayXR/displayxr-runtime/blob/main/docs/roadmap/displayxr-browser-preview.md">packaging plan</a>
-    and <a href="https://github.com/DisplayXR/displayxr-runtime/issues/733">tracking issue #733</a>.</p>
+  <div class="card">
+    <h2>Build your own</h2>
+    <p>Clone <a href="https://github.com/DisplayXR/displayxr-web"><code>displayxr-web</code></a> and turn any
+       canvas into a woven 3D window with one SDK call:</p>
+    <pre style="background:#8882;padding:12px;border-radius:8px;overflow:auto"><code>import { createInline3D } from './js/inline3d.js';
+const wall = await createInline3D();
+if (wall.supported) wall.addImage(canvas, 'photo-sbs.png');</code></pre>
+    <p>Full API in the <a href="js/README.md">SDK reference</a>, authoring details in
+       <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
+  </div>
 </div>
 </body>
 </html>
