@@ -49,6 +49,17 @@ export function inline3DAvailable() {
 }
 
 /**
+ * True when this browser supports 2D-overlay exclusion (browser#18) — putting a
+ * 2D element ON a woven tile (hover plate, badge) so it composites as crisp 2D
+ * over the woven 3D instead of being woven. Use it to choose the on-image
+ * overlay path when available and a weave-safe fallback (e.g. a caption band
+ * below the tile) otherwise. Implies inline3DAvailable(). Sync + cheap.
+ */
+export function inline3dOverlaySupported() {
+  return hasExclusion();
+}
+
+/**
  * Open the page's inline-3D session and return a manager you add windows to.
  *
  * @param {object} [opts]
