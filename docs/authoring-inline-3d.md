@@ -159,6 +159,43 @@ applies to any decoration: a border/background drawn in CSS is woven with the el
 silhouette only rounds the packed rect — keep the stage visually bare and bake decoration
 into the canvas.
 
+## 2D overlays ON a 3D window — overlay exclusion
+
+An Instagram-style hover plate, a play badge, a like animation — 2D DOM positioned **over**
+a weaved window — would by default be woven along with the content and come out interleaved.
+Overlay exclusion (browser#18) fixes this: the browser punches a **per-pixel 2D hole** in the
+weave under the overlay's rect — the zone formalism `final = M·weave + (1−M)·2D`, with `M=0`
+under the overlay, so the plate composites as crisp 2D **over** the weave (`M` is binary
+today; 2D-*under* is reserved).
+
+Two ways to use it:
+
+```html
+<!-- Declarative (preferred): mark the overlay; the SDK auto-excludes marked
+     descendants of the canvas's container while the window is woven. -->
+<div class="stage">
+  <canvas class="pic"></canvas>
+  <div class="plate" data-inline3d-overlay>Golden Gate · f/8 · 1/500s</div>
+</div>
+```
+
+```js
+// Imperative: the handle returned by addImage/addVideo/addScene.
+const win = wall.addImage(canvas, url);
+win.exclude(plateEl);     // and win.unexclude(plateEl) to undo
+```
+
+Rules of the road:
+
+- **Hide with `display:none`, not `opacity`/`visibility`.** Only `display:none` reports an
+  empty rect; an `opacity:0` plate keeps its hole punched — you'd see a band of un-woven 2D
+  under an invisible plate. Mark the plate once, toggle `display` on hover.
+- **What shows under a semi-transparent plate is the flat 2D composite** of the content (the
+  overlay wins the whole pixel), not woven 3D. Solid or gradient-scrim plates look right;
+  feathered/fractional blending is a future rev of the same formalism.
+- **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
+  before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
+
 ## Gotchas checklist
 
 - **Buffer is 2:1 (or 2× the box's aspect), not 1:1.** `addImage`/`addVideo` handle it; only

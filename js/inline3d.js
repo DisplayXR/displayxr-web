@@ -27,6 +27,13 @@
 const hasWebXR = () => typeof navigator !== 'undefined' && !!navigator.xr;
 const hasLayer = () =>
   typeof window !== 'undefined' && typeof window.XRDisplayLayer === 'function';
+// Overlay exclusion (browser#18): 2D DOM painted OVER a weaved window (hover plates,
+// badges) would otherwise be woven along with the content and come out garbled. Browsers
+// with XRDisplayLayer.excludeElement punch a per-pixel 2D hole in the weave there
+// (final = M·weave + (1−M)·2D, M=0 inside the overlay rect). Older browsers: silent
+// no-op — the page still works, the overlay just weaves like before.
+const hasExclusion = () =>
+  hasLayer() && 'excludeElement' in window.XRDisplayLayer.prototype;
 
 /**
  * Cheap, synchronous "can this browser even attempt inline-3D?" gate — true only in the
@@ -139,7 +146,7 @@ class Inline3D {
       win.img = img;
       win.repaint();
     });
-    return { remove: () => this._remove(canvas) };
+    return this._handle(canvas, win);
   }
 
   /**
@@ -152,7 +159,7 @@ class Inline3D {
   addVideo(canvas, video, opts = {}) {
     const win = this._register(canvas, 'video', opts);
     win.video = video;
-    return { remove: () => this._remove(canvas) };
+    return this._handle(canvas, win);
   }
 
   /**
@@ -178,7 +185,31 @@ class Inline3D {
     const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
-    return { remove: () => this._remove(canvas) };
+    return this._handle(canvas, win);
+  }
+
+  /**
+   * The handle every add*() returns. `exclude(el)` marks 2D DOM painted over this window
+   * (a hover plate, a play badge) so the weave leaves it crisp 2D instead of garbling it
+   * (browser#18). Queued if the layer isn't live yet (lazy mode) and re-applied on every
+   * re-activate; a browser without excludeElement silently ignores it (the overlay weaves
+   * like before — progressive enhancement, like the rest of this SDK). Prefer the
+   * declarative `data-inline3d-overlay` attribute (see _startOverlayScan) unless you need
+   * to exclude an element outside the window's container.
+   */
+  _handle(canvas, win) {
+    return {
+      remove: () => this._remove(canvas),
+      exclude: (el) => {
+        if (!el) return;
+        win.excluded.add(el);
+        this._applyExclusion(win, el);
+      },
+      unexclude: (el) => {
+        if (!el || !win.excluded.delete(el)) return;
+        this._dropExclusion(win, el);
+      },
+    };
   }
 
   close() {
@@ -215,6 +246,12 @@ class Inline3D {
       observeEl: opts.observe || canvas,
       ctx: kind === 'scene' ? null : canvas.getContext('2d'),
       repaint: () => this._paint(win, null),
+      // Overlay exclusion (browser#18): explicit handle.exclude() elements and
+      // [data-inline3d-overlay] descendants found by the auto-scan. Applied to the
+      // layer on every (re-)activate; the browser clears its own set on layer close.
+      excluded: new Set(),
+      autoExcluded: new Set(),
+      overlayObserver: null,
     };
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
@@ -261,6 +298,11 @@ class Inline3D {
       win.layer = null;
       return;
     }
+    // Re-apply overlay exclusions (browser#18): the browser's layer-side set died with
+    // the previous layer (lazy close), so a re-activated window must re-declare both the
+    // explicit and the attribute-scanned overlays, then resume watching for changes.
+    for (const el of win.excluded) this._applyExclusion(win, el);
+    this._startOverlayScan(win);
     if (win.ownsBuffer) {
       this._sizeBuffer(win, /*sbs*/ true);
       this._paint(win, null); // first SBS paint (video will refresh each frame)
@@ -268,6 +310,7 @@ class Inline3D {
   }
 
   _deactivate(win) {
+    this._stopOverlayScan(win);
     if (win.layer) {
       try {
         win.layer.close();
@@ -281,6 +324,73 @@ class Inline3D {
       this._sizeBuffer(win, /*sbs*/ false);
       this._paint(win, null);
     }
+  }
+
+  // ── overlay exclusion (browser#18) ─────────────────────────────────────────────────
+
+  _applyExclusion(win, el) {
+    if (!win.layer || !hasExclusion()) return;
+    try {
+      win.layer.excludeElement(el);
+    } catch {
+      /* closed layer / detached element — the per-frame report drops empties anyway */
+    }
+  }
+
+  _dropExclusion(win, el) {
+    if (!win.layer || !hasExclusion()) return;
+    try {
+      win.layer.unexcludeElement(el);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Declarative overlays: any element marked `data-inline3d-overlay` inside the window's
+  // container (the canvas's parent — where an over-the-window plate must live to be
+  // positioned over it) is auto-excluded while the window is live, and tracked through
+  // add/remove/toggle by one MutationObserver per active window. Hidden overlays cost
+  // nothing: a display:none element reports an empty rect browser-side, so show/hide of a
+  // hover plate needs no attribute churn — mark it once, toggle `display` freely. (Hide
+  // with display, not opacity/visibility: those still report a full rect, so the weave
+  // hole would stay punched under an invisible plate.)
+  _startOverlayScan(win) {
+    if (!hasExclusion() || typeof MutationObserver !== 'function') return;
+    const container = win.canvas.parentElement;
+    if (!container) return;
+    const sync = () => {
+      const marked = new Set(container.querySelectorAll('[data-inline3d-overlay]'));
+      for (const el of win.autoExcluded) {
+        if (!marked.has(el)) {
+          win.autoExcluded.delete(el);
+          this._dropExclusion(win, el);
+        }
+      }
+      for (const el of marked) {
+        if (!win.autoExcluded.has(el)) {
+          win.autoExcluded.add(el);
+          this._applyExclusion(win, el);
+        }
+      }
+    };
+    sync();
+    win.overlayObserver = new MutationObserver(sync);
+    win.overlayObserver.observe(container, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-inline3d-overlay'],
+    });
+  }
+
+  _stopOverlayScan(win) {
+    if (win.overlayObserver) {
+      win.overlayObserver.disconnect();
+      win.overlayObserver = null;
+    }
+    // The browser clears the layer-side set on close; mirror that so a re-activate
+    // re-scans from scratch (the container's overlays may have changed while dark).
+    win.autoExcluded.clear();
   }
 
   _sizeBuffer(win, sbs) {
@@ -347,6 +457,7 @@ class Inline3D {
     this._running = false;
     if (this._observer) this._observer.disconnect();
     for (const win of this._windows.values()) {
+      this._stopOverlayScan(win);
       if (win.layer) {
         try {
           win.layer.close();
