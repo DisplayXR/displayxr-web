@@ -330,6 +330,21 @@ class Inline3D {
 
   _applyExclusion(win, el) {
     if (!win.layer || !hasExclusion()) return;
+    // Force the overlay onto its OWN composited layer so the browser can grab it
+    // as an isolated resource (the element rastered on transparency) and
+    // composite it OVER the woven 3D — final = plate + (1−plate.a)·woven, true
+    // 2D-over-3D. `will-change: transform` reliably promotes to a compositing
+    // layer even in the single-render-pass weave config (a CSS filter does NOT —
+    // its render surface is flattened away there). Remember we set it so
+    // unexclude can restore.
+    if (!el.dataset.inline3dIsolated) {
+      el.dataset.inline3dPriorWillChange = el.style.willChange || '';
+      const wc = el.style.willChange && el.style.willChange !== 'auto'
+        ? el.style.willChange + ', transform'
+        : 'transform';
+      el.style.willChange = wc;
+      el.dataset.inline3dIsolated = '1';
+    }
     try {
       win.layer.excludeElement(el);
     } catch {
@@ -338,6 +353,11 @@ class Inline3D {
   }
 
   _dropExclusion(win, el) {
+    if (el.dataset.inline3dIsolated) {
+      el.style.willChange = el.dataset.inline3dPriorWillChange || '';
+      delete el.dataset.inline3dPriorWillChange;
+      delete el.dataset.inline3dIsolated;
+    }
     if (!win.layer || !hasExclusion()) return;
     try {
       win.layer.unexcludeElement(el);

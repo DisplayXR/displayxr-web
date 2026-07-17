@@ -163,10 +163,12 @@ into the canvas.
 
 An Instagram-style hover plate, a play badge, a like animation — 2D DOM positioned **over**
 a weaved window — would by default be woven along with the content and come out interleaved.
-Overlay exclusion (browser#18) fixes this: the browser punches a **per-pixel 2D hole** in the
-weave under the overlay's rect — the zone formalism `final = M·weave + (1−M)·2D`, with `M=0`
-under the overlay, so the plate composites as crisp 2D **over** the weave (`M` is binary
-today; 2D-*under* is reserved).
+Overlay exclusion (browser#18) fixes this: the browser grabs the overlay as its own isolated
+layer and composites it **over** the woven 3D — `final = plate + (1−plate.a)·woven`, true
+2D-over-3D. It also feeds the weave the canvas's clean pixels (without the overlay), so the 3D
+**under** a translucent overlay is clean woven 3D, not a woven copy of the plate. Result: an
+opaque plate is crisp, a gradient scrim reveals the 3D through its transparent part, exactly as
+you'd expect from stacking 2D over 3D. (2D-*under* is reserved for a future release.)
 
 Two ways to use it:
 
@@ -188,11 +190,15 @@ win.exclude(plateEl);     // and win.unexclude(plateEl) to undo
 Rules of the road:
 
 - **Hide with `display:none`, not `opacity`/`visibility`.** Only `display:none` reports an
-  empty rect; an `opacity:0` plate keeps its hole punched — you'd see a band of un-woven 2D
-  under an invisible plate. Mark the plate once, toggle `display` on hover.
-- **What shows under a semi-transparent plate is the flat 2D composite** of the content (the
-  overlay wins the whole pixel), not woven 3D. Solid or gradient-scrim plates look right;
-  feathered/fractional blending is a future rev of the same formalism.
+  empty rect; an `opacity:0` plate is still "there" and keeps compositing over the weave. Mark
+  the plate once, toggle `display` on hover.
+- **Translucent plates reveal the 3D underneath, cleanly.** Where the plate is transparent the
+  woven 3D shows; where opaque the plate is crisp; a gradient scrim blends — no artifact under
+  the scrim (the weave never sees the plate). The SDK promotes the overlay onto its own
+  compositing layer for you with `will-change: transform`; if you call `layer.excludeElement`
+  by hand, set `will-change: transform` on the element yourself, or it will weave instead of
+  compositing over. (A CSS `filter` does **not** work here — its render surface is flattened
+  away in the weave path; `will-change: transform` is the reliable promotion.)
 - **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
   before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
 
