@@ -116,6 +116,7 @@ class Inline3D {
     this.session = session;
     this.refSpace = refSpace;
     this._windows = new Map(); // canvas -> window record
+    this._globalOverlays = new Set(); // page-global overlays excluded from EVERY window
     this._running = true;
     this._lazy = lazy;
     this._observer =
@@ -131,6 +132,30 @@ class Inline3D {
     let n = 0;
     for (const w of this._windows.values()) if (w.layer) n++;
     return n;
+  }
+
+  /**
+   * Register a PAGE-GLOBAL 2D overlay (a fixed/sticky header, a floating toolbar) —
+   * an element that lives OUTSIDE any tile's container and can overlap MANY tiles as
+   * they scroll under it. It's excluded from every window's weave (current and future),
+   * re-applied automatically whenever a lazy window re-activates, so you register it ONCE
+   * instead of calling handle.exclude(el) per tile (which races window lifecycles).
+   *
+   * Note (browser#18, pre-#22): this keeps the element out of each tile's SBS weave input,
+   * but the per-tile present can still seam page-global chrome that spans tile gaps during
+   * scroll — the systematic fix is the DP-composited whole-window present (browser#22).
+   * No-op on browsers without excludeElement (progressive enhancement).
+   */
+  addGlobalOverlay(el) {
+    if (!el || this._globalOverlays.has(el)) return;
+    this._globalOverlays.add(el);
+    for (const win of this._windows.values()) if (win.layer) this._applyExclusion(win, el);
+  }
+
+  /** Stop treating `el` as a page-global overlay and drop it from every live window. */
+  removeGlobalOverlay(el) {
+    if (!el || !this._globalOverlays.delete(el)) return;
+    for (const win of this._windows.values()) if (win.layer) this._dropExclusion(win, el);
   }
 
   /**
@@ -310,9 +335,11 @@ class Inline3D {
       return;
     }
     // Re-apply overlay exclusions (browser#18): the browser's layer-side set died with
-    // the previous layer (lazy close), so a re-activated window must re-declare both the
-    // explicit and the attribute-scanned overlays, then resume watching for changes.
+    // the previous layer (lazy close), so a re-activated window must re-declare its own
+    // explicit exclusions, the page-global overlays, and the attribute-scanned overlays,
+    // then resume watching for changes.
     for (const el of win.excluded) this._applyExclusion(win, el);
+    for (const el of this._globalOverlays) this._applyExclusion(win, el);
     this._startOverlayScan(win);
     if (win.ownsBuffer) {
       this._sizeBuffer(win, /*sbs*/ true);
