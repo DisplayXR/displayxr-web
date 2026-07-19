@@ -117,6 +117,14 @@ class Inline3D {
     this.refSpace = refSpace;
     this._windows = new Map(); // canvas -> window record
     this._globalOverlays = new Set(); // page-global overlays excluded from EVERY window
+    // el -> Set(window) currently excluding it. Isolation (will-change) is a GLOBAL
+    // property of the element while exclusion is PER-WINDOW, so the promotion has to
+    // be reference-counted: without this the first window to drop an element
+    // un-promotes it while other windows still need it isolated, and the element
+    // silently falls back into the canvas layer (→ it lands in that tile's SBS weave
+    // input and gets woven). Page-global overlays span many windows, so they are
+    // exactly the case that breaks.
+    this._isolatedBy = new WeakMap();
     this._running = true;
     this._lazy = lazy;
     this._observer =
@@ -375,6 +383,12 @@ class Inline3D {
     // layer even in the single-render-pass weave config (a CSS filter does NOT —
     // its render surface is flattened away there). Remember we set it so
     // unexclude can restore.
+    let refs = this._isolatedBy.get(el);
+    if (!refs) {
+      refs = new Set();
+      this._isolatedBy.set(el, refs);
+    }
+    refs.add(win);
     if (!el.dataset.inline3dIsolated) {
       el.dataset.inline3dPriorWillChange = el.style.willChange || '';
       const wc = el.style.willChange && el.style.willChange !== 'auto'
@@ -391,7 +405,10 @@ class Inline3D {
   }
 
   _dropExclusion(win, el) {
-    if (el.dataset.inline3dIsolated) {
+    const refs = this._isolatedBy.get(el);
+    if (refs) refs.delete(win);
+    // Only un-promote once NO window needs this element isolated any more.
+    if ((!refs || refs.size === 0) && el.dataset.inline3dIsolated) {
       el.style.willChange = el.dataset.inline3dPriorWillChange || '';
       delete el.dataset.inline3dPriorWillChange;
       delete el.dataset.inline3dIsolated;
