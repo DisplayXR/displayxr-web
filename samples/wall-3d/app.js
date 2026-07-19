@@ -66,6 +66,19 @@ function buildWall() {
       canvas.style.willChange = 'transform';
       canvas.style.transform = 'translateZ(0)';
       stage.appendChild(canvas);
+      // Hover metadata plate ON the picture (browser#18). data-inline3d-overlay is
+      // all it takes: the SDK auto-excludes marked descendants of the canvas's
+      // container while the window is woven, so the plate composites as crisp 2D
+      // over the weave (final = M·weave + (1−M)·2D, M=0 under the plate) instead
+      // of being interleaved. Show/hide is pure CSS — a hidden plate reports an
+      // empty rect and costs nothing.
+      const plate = document.createElement('div');
+      plate.className = 'plate';
+      plate.setAttribute('data-inline3d-overlay', '');
+      plate.innerHTML =
+        `<div class="title">${key}</div>` +
+        `<div class="meta">2-view SBS · tile ${r * PICS.length + PICS.indexOf(key) + 1}</div>`;
+      stage.appendChild(plate);
       grid.appendChild(stage);
 
       const tile = { key, canvas, ctx: canvas.getContext('2d'), img: images.get(key) };

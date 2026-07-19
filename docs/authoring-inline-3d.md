@@ -159,6 +159,49 @@ applies to any decoration: a border/background drawn in CSS is woven with the el
 silhouette only rounds the packed rect — keep the stage visually bare and bake decoration
 into the canvas.
 
+## 2D overlays ON a 3D window — overlay exclusion
+
+An Instagram-style hover plate, a play badge, a like animation — 2D DOM positioned **over**
+a weaved window — would by default be woven along with the content and come out interleaved.
+Overlay exclusion (browser#18) fixes this: the browser grabs the overlay as its own isolated
+layer and composites it **over** the woven 3D — `final = plate + (1−plate.a)·woven`, true
+2D-over-3D. It also feeds the weave the canvas's clean pixels (without the overlay), so the 3D
+**under** a translucent overlay is clean woven 3D, not a woven copy of the plate. Result: an
+opaque plate is crisp, a gradient scrim reveals the 3D through its transparent part, exactly as
+you'd expect from stacking 2D over 3D. (2D-*under* is reserved for a future release.)
+
+Two ways to use it:
+
+```html
+<!-- Declarative (preferred): mark the overlay; the SDK auto-excludes marked
+     descendants of the canvas's container while the window is woven. -->
+<div class="stage">
+  <canvas class="pic"></canvas>
+  <div class="plate" data-inline3d-overlay>Golden Gate · f/8 · 1/500s</div>
+</div>
+```
+
+```js
+// Imperative: the handle returned by addImage/addVideo/addScene.
+const win = wall.addImage(canvas, url);
+win.exclude(plateEl);     // and win.unexclude(plateEl) to undo
+```
+
+Rules of the road:
+
+- **Hide with `display:none`, not `opacity`/`visibility`.** Only `display:none` reports an
+  empty rect; an `opacity:0` plate is still "there" and keeps compositing over the weave. Mark
+  the plate once, toggle `display` on hover.
+- **Translucent plates reveal the 3D underneath, cleanly.** Where the plate is transparent the
+  woven 3D shows; where opaque the plate is crisp; a gradient scrim blends — no artifact under
+  the scrim (the weave never sees the plate). The SDK promotes the overlay onto its own
+  compositing layer for you with `will-change: transform`; if you call `layer.excludeElement`
+  by hand, set `will-change: transform` on the element yourself, or it will weave instead of
+  compositing over. (A CSS `filter` does **not** work here — its render surface is flattened
+  away in the weave path; `will-change: transform` is the reliable promotion.)
+- **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
+  before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
+
 ## Gotchas checklist
 
 - **Buffer is 2:1 (or 2× the box's aspect), not 1:1.** `addImage`/`addVideo` handle it; only
