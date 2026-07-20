@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>overlay-aspect-test — DisplayXR inline-3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#101418;font:15px/1.3 system-ui,sans-serif;color:#e8eef4}
+  #stage{position:fixed;inset:0}
+  #tile{display:block;width:100%;height:100%}
+
+  /* Every probe is a bar/box with an inscribed circle (diameter = box HEIGHT) + a label.
+     If the overlay path squishes in Y, the circle becomes a WIDE ELLIPSE and the box's
+     height shrinks. Each probe varies ONE factor from the known-good 300x300 square. */
+  .probe{position:fixed; box-sizing:border-box; border:3px solid #ff3b6b;
+         background:#0d1117ee; display:flex; align-items:center; gap:12px; padding:0 12px;
+         color:#cfe0f0; font-weight:600; overflow:hidden}
+  .probe .o{flex:0 0 auto; border:3px solid #38e08a; border-radius:50%;}
+  .probe .sq{flex:0 0 auto; border:3px solid #4aa3ff}
+
+  /* P1: full-width, TOP edge (y=0), short  — the reproducing case */
+  #p1{left:0; right:0; top:0; height:56px}
+  #p1 .o,#p1 .sq{width:36px;height:36px}
+
+  /* P2: full-width, MID screen, short       — isolates "top edge" */
+  #p2{left:0; right:0; top:430px; height:56px}
+  #p2 .o,#p2 .sq{width:36px;height:36px}
+
+  /* P3: NARROW (420px), TOP edge, short      — isolates "full width" (at top) */
+  #p3{left:40px; width:420px; top:80px; height:56px}
+  #p3 .o,#p3 .sq{width:36px;height:36px}
+
+  /* P4: NARROW (420px), MID, short           — narrow wide-short control */
+  #p4{left:40px; width:420px; top:520px; height:56px}
+  #p4 .o,#p4 .sq{width:36px;height:36px}
+
+  /* P5: the known-GOOD 300x300 square (mid) */
+  #p5{left:520px; top:160px; width:300px; height:300px; align-items:flex-end}
+  #p5 .o{width:220px;height:220px; position:absolute; left:37px; top:37px}
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="tile"></canvas></div>
+
+  <div class="probe" id="p1"><span class="o"></span><span class="sq"></span>P1 full-width · TOP · AaGg0O</div>
+  <div class="probe" id="p2"><span class="o"></span><span class="sq"></span>P2 full-width · MID · AaGg0O</div>
+  <div class="probe" id="p3"><span class="o"></span><span class="sq"></span>P3 narrow · TOP</div>
+  <div class="probe" id="p4"><span class="o"></span><span class="sq"></span>P4 narrow · MID</div>
+  <div class="probe" id="p5"><span class="o"></span>P5 300×300 GOOD</div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

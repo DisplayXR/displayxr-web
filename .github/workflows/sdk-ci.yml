@@ -1,0 +1,34 @@
+name: SDK CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "js/**"
+      - "*.d.ts"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/sdk-ci.yml"
+  pull_request:
+    paths:
+      - "js/**"
+      - "*.d.ts"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/sdk-ci.yml"
+
+jobs:
+  typecheck:
+    name: Typecheck public API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install typecheck deps
+        run: npm install --no-save typescript@^5.4.0 @types/webxr@^0.5.0
+      - name: Typecheck .d.ts against tsconfig
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: Verify package publishes only the intended files
+        run: npm pack --dry-run
