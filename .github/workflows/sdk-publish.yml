@@ -1,0 +1,64 @@
+name: Publish SDK to npm
+
+# Publishes @displayxr/inline3d to npm from CI, so no developer box ever needs an
+# npm token. Set the repo secret NPM_TOKEN once (an npm "Automation" token for the
+# @displayxr org); then a release is just:
+#     git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z
+# The tag version MUST match package.json "version" (checked below).
+#
+# workflow_dispatch with dry_run=true does everything except the upload — use it to
+# validate the token + package before the first real tag.
+
+on:
+  push:
+    tags:
+      - "sdk-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack + typecheck but do NOT publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # npm provenance (public repo)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Typecheck public API
+        run: |
+          npm install --no-save typescript@^5.4.0 @types/webxr@^0.5.0
+          npx tsc --noEmit -p tsconfig.json
+
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          PKG_VER="$(node -p "require('./package.json').version")"
+          TAG_VER="${GITHUB_REF_NAME#sdk-v}"
+          echo "package.json=$PKG_VER  tag=$TAG_VER"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::tag sdk-v$TAG_VER does not match package.json version $PKG_VER"
+            exit 1
+          fi
+
+      - name: Publish (dry run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: npm publish --provenance --access public --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
