@@ -1,43 +1,48 @@
 # Publishing `@displayxr/inline3d`
 
-Publishing runs in **CI** (`.github/workflows/sdk-publish.yml`), so **no developer box needs an
-npm token** — not this one, not the Mac. You provision one token once as a repo secret; after that
-a release is a tag push from anywhere.
+Publishing runs in **CI** (`.github/workflows/sdk-publish.yml`) via **npm Trusted Publishing
+(OIDC)** — **no npm token exists anywhere**: no repo secret, nothing on the Mac or Win box, nothing
+to sync or rotate. npm links the package to this repo + workflow and CI authenticates per-run with a
+short-lived OIDC token. (We chose this over an Automation token because npm is restricting
+2FA-bypass tokens — account changes Aug 2026, direct publishing Jan 2027.)
 
 ## One-time setup (account owner)
 
-1. **Create the npm account/org.** On [npmjs.com](https://www.npmjs.com/), sign in (or sign up),
-   then create the **`displayxr`** organization (Add Organization → name `displayxr` → **Free** plan;
-   Free covers unlimited **public** packages). This claims the `@displayxr` scope. The package is
-   already marked public (`publishConfig.access=public`).
-2. **Mint an automation token.** npm → **Access Tokens** → **Generate New Token** → **Automation**
-   (bypasses 2FA in CI). Copy it.
-3. **Add it as a repo secret.** GitHub → `DisplayXR/displayxr-web` → Settings → Secrets and
-   variables → Actions → **New repository secret** → name **`NPM_TOKEN`**, value = the token.
+The npm account `dfattal` + the **`displayxr`** org (Free plan) already exist, so the `@displayxr`
+scope is claimed. What's left is a bootstrap, because a Trusted Publisher attaches **per package**
+and the package must exist before you can configure it (there is no org-level trusted-publisher
+setting):
 
-That's it — the token lives only in GitHub, never on a laptop, so there's nothing to sync to the
-Mac box over Slack.
+1. **Publish a throwaway stub manually** so the package name exists. From a checkout on `main`:
+   ```sh
+   npm version 0.0.1 --no-git-tag-version   # temporarily; do NOT commit this
+   npm login                                 # interactive, uses your 2FA (no token stored)
+   npm publish --access public
+   git checkout -- package.json              # restore version to 1.0.0
+   ```
+2. **Configure the Trusted Publisher** on npm: npmjs.com → the `@displayxr/inline3d` package →
+   Settings → **Trusted Publishers** → add GitHub Actions →
+   - Repository: `DisplayXR/displayxr-web`
+   - Workflow: `.github/workflows/sdk-publish.yml`
+3. **Deprecate the stub** (optional, tidy): `npm deprecate @displayxr/inline3d@0.0.1 "bootstrap stub — use >=1.0.0"`.
+
+After this the real `1.0.0` (and every future version) publishes from CI with full provenance, and
+no token ever exists.
 
 ## Cutting a release
 
-1. Bump `version` in `package.json` (SemVer — see [`sdk-stability.md`](sdk-stability.md) for what a
-   major/minor/patch means here).
+1. Bump `version` in `package.json` (SemVer — see [`sdk-stability.md`](sdk-stability.md)).
 2. Commit, then tag and push — CI publishes:
    ```sh
    git tag sdk-v1.0.0
    git push origin sdk-v1.0.0
    ```
-   The workflow typechecks, verifies the tag matches `package.json`, and runs
-   `npm publish --provenance --access public`. npm rejects a re-publish of an existing version, so a
-   duplicate tag is a safe no-op.
+   The workflow (Node 22, npm ≥ 11.5.1) typechecks, verifies the tag matches `package.json`, and
+   runs `npm publish --provenance --access public` authenticated by OIDC. npm rejects a re-publish
+   of an existing version, so a duplicate tag is a safe no-op.
 
 ## Validate before the first real publish
 
-Once `NPM_TOKEN` is set, run the workflow manually with **dry run** (Actions → *Publish SDK to npm*
-→ Run workflow → `dry_run: true`). It packs + auths without uploading, confirming the token and
-package are good. Then push the real tag.
-
-## Publishing locally (optional, discouraged)
-
-If you ever must publish from a box instead of CI: `npm login` (or an `~/.npmrc` `_authToken`), then
-`npm publish` from the repo root on `main`. Prefer the CI path so no laptop holds the token.
+After the Trusted Publisher is configured, run the workflow manually with **dry run** (Actions →
+*Publish SDK to npm* → Run workflow → `dry_run: true`). It exercises OIDC auth + packs without
+uploading. Then push the real tag.

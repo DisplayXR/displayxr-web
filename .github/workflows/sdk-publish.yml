@@ -1,13 +1,18 @@
 name: Publish SDK to npm
 
-# Publishes @displayxr/inline3d to npm from CI, so no developer box ever needs an
-# npm token. Set the repo secret NPM_TOKEN once (an npm "Automation" token for the
-# @displayxr org); then a release is just:
+# Publishes @displayxr/inline3d to npm from CI via TRUSTED PUBLISHING (OIDC) — no
+# npm token exists anywhere (no repo secret, nothing on any dev box). npm links the
+# package to this repo + workflow; CI authenticates per-run with a short-lived OIDC
+# token. Once a Trusted Publisher is configured on npm for the package, a release is:
 #     git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z
 # The tag version MUST match package.json "version" (checked below).
 #
+# One-time bootstrap (a trusted publisher attaches per-package, so the package must
+# exist first): publish a 0.0.1 stub manually, configure the Trusted Publisher in the
+# npm UI, then CI publishes the real version with provenance. See docs/publishing.md.
+#
 # workflow_dispatch with dry_run=true does everything except the upload — use it to
-# validate the token + package before the first real tag.
+# validate OIDC + package before the first real tag.
 
 on:
   push:
@@ -32,8 +37,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships 10.x.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
 
       - name: Typecheck public API
         run: |
@@ -51,14 +60,14 @@ jobs:
             exit 1
           fi
 
+      # No NODE_AUTH_TOKEN: authentication is per-run OIDC (trusted publishing).
+      # Requires a Trusted Publisher configured on npm for this package, pointing at
+      # DisplayXR/displayxr-web + this workflow file. --provenance is implied by
+      # trusted publishing but kept explicit.
       - name: Publish (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --provenance --access public --dry-run
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
