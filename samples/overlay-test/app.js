@@ -7,7 +7,7 @@
 // Raw WebGL (no three.js) so there is nothing app-side that could distort aspect — if the
 // square/circle render squished, it is the browser's overlay path, not this page.
 
-import { startInline3D } from '../../js/inline3d.js';
+import { startInline3D } from '@displayxr/inline3d';
 
 const canvas = document.getElementById('tile');
 const gl = canvas.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: true });

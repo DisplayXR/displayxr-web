@@ -15,7 +15,7 @@
 // squishes it 2:1 into the square box and the weave interlaces L|R back to a correct
 // square 3D logo. Elsewhere we paint only the LEFT half (a normal square 2D logo).
 
-import { createInline3D } from '../../js/inline3d.js';
+import { createInline3D } from '@displayxr/inline3d';
 
 const DEMOS = [
   {

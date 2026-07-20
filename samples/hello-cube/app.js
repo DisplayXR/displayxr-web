@@ -7,8 +7,8 @@
 // so the page still shows a spinning cube in any browser.
 
 import * as THREE from 'three';
-import { startInline3D } from '../../js/inline3d.js';
-import { EdgeFeather } from '../../js/inline3d-three.js';
+import { startInline3D } from '@displayxr/inline3d';
+import { EdgeFeather } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('cube');
 const statusEl = document.getElementById('status');

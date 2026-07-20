@@ -2,8 +2,8 @@
 // still SBS photos, a live SBS video, and a real-time three.js scene, all on one session.
 
 import * as THREE from 'three';
-import { createInline3D } from '../../js/inline3d.js';
-import { EyeCamera } from '../../js/inline3d-three.js';
+import { createInline3D } from '@displayxr/inline3d';
+import { EyeCamera } from '@displayxr/inline3d/three';
 
 const PHOTOS = ['avatar', 'gaussiansplat', 'modelviewer', 'earthview', 'mediaplayer'];
 

@@ -15,7 +15,7 @@
 // an inline-3d canvas is the proven per-element weave path — no eye/rig
 // consumption, pure multi-element scale.
 
-import { createInline3D } from '../../js/inline3d.js';
+import { createInline3D } from '@displayxr/inline3d';
 
 const PICS = ['mediaplayer', 'avatar', 'gaussiansplat', 'modelviewer', 'earthview'];
 const WALL_REPEATS = 12; // 60 tiles total; ~15-25 visible at typical sizes
