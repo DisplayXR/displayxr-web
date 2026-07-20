@@ -1,0 +1,69 @@
+{
+  "name": "@displayxr/inline3d",
+  "version": "1.0.0",
+  "description": "Turn any HTML <canvas> into a glasses-free-3D window on a DisplayXR display, inside an ordinary web page. Dependency-free; progressive enhancement (falls back to plain 2D everywhere else).",
+  "type": "module",
+  "types": "./index.d.ts",
+  "main": "./js/inline3d.js",
+  "module": "./js/inline3d.js",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./js/inline3d.js"
+    },
+    "./three": {
+      "types": "./three.d.ts",
+      "import": "./js/inline3d-three.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "js/inline3d.js",
+    "js/inline3d-three.js",
+    "index.d.ts",
+    "three.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "displayxr",
+    "webxr",
+    "inline-3d",
+    "glasses-free-3d",
+    "stereo",
+    "3d-display",
+    "lightfield",
+    "three"
+  ],
+  "homepage": "https://displayxr.github.io/displayxr-web/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DisplayXR/displayxr-web.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DisplayXR/displayxr-browser/issues"
+  },
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "three": ">=0.150.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/webxr": "^0.5.0"
+  }
+}

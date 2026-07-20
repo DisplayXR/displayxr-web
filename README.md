@@ -11,13 +11,36 @@ live demos.
 glasses-free 3D; in any other browser the pages render as a normal 2D fallback, so they're safe to view
 anywhere.
 
+## Install
+
+The SDK is published as **[`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d)**
+(dependency-free ESM, ships its own TypeScript types):
+
+```sh
+npm install @displayxr/inline3d
+```
+
+```js
+import { createInline3D } from '@displayxr/inline3d';
+import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three'; // optional three.js glue
+```
+
+No build step or bundler required — it's plain ES modules. You can also import a pinned version by
+URL from a CDN (jsDelivr / unpkg) without npm. The samples in this repo import the SDK by relative
+path (`./js/inline3d.js`) so they run straight off GitHub Pages; in your own app prefer the package.
+
+`three` is an **optional peer dependency** — only the `@displayxr/inline3d/three` helpers need it.
+
+Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
+that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
+
 ## Quick start
 
 One SDK call turns a `<canvas>` into a glasses-free-3D window. Everything degrades to plain 2D on a
 non-DisplayXR browser, so a page is safe to ship anywhere.
 
 ```js
-import { createInline3D } from './js/inline3d.js';
+import { createInline3D } from '@displayxr/inline3d';
 
 const wall = await createInline3D();       // opens an inline-3d session (detects support)
 if (!wall.supported) {
