@@ -23,7 +23,9 @@ setting):
 2. **Configure the Trusted Publisher** on npm: npmjs.com → the `@displayxr/inline3d` package →
    Settings → **Trusted Publishers** → add GitHub Actions →
    - Repository: `DisplayXR/displayxr-web`
-   - Workflow: `.github/workflows/sdk-publish.yml`
+   - Workflow: **`sdk-publish.yml`** — filename only, NOT the full path (npm's UI: "Filename
+     only (e.g., publish.yml). Must exist in `.github/workflows/` in your repository." A full
+     path is rejected.)
 3. **Deprecate the stub** (optional, tidy): `npm deprecate @displayxr/inline3d@0.0.1 "bootstrap stub — use >=1.0.0"`.
 
 After this the real `1.0.0` (and every future version) publishes from CI with full provenance, and
