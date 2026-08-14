@@ -111,6 +111,15 @@ export interface CreateInline3DOptions {
   lazy?: boolean;
   /** IntersectionObserver margin for lazy mode (default `"50% 0px"`). */
   rootMargin?: string;
+  /**
+   * Auto-exclude page chrome (default `true`): sticky/fixed elements near the top of
+   * the DOM (headers, toolbars) are registered as page-global overlays automatically —
+   * the bar plus its text/replaced descendants — so woven windows scroll UNDER the
+   * chrome with no per-app wiring. Opt an element (and its subtree) out with
+   * `data-inline3d-no-overlay`; set `false` to manage chrome exclusively via
+   * `addGlobalOverlay()` / `data-inline3d-overlay`.
+   */
+  autoChrome?: boolean;
 }
 
 /** The return of {@link startInline3D}. */
