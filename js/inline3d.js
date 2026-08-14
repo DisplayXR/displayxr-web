@@ -70,10 +70,16 @@ export function inline3dOverlaySupported() {
  * @param {string} [opts.rootMargin='50% 0px']  IntersectionObserver margin for lazy mode;
  *        the default pre-arms a window half a viewport early so a fast scroll never shows a
  *        raw (un-woven) frame.
+ * @param {boolean} [opts.autoChrome=true]  Auto-exclude page chrome: sticky/fixed elements
+ *        near the top of the DOM (headers, toolbars) are registered as page-global overlays
+ *        automatically — the bar itself plus its text/replaced descendants — so woven
+ *        windows scroll UNDER the chrome without any per-app wiring. Opt an element (and
+ *        its subtree) out with `data-inline3d-no-overlay`; set false to manage chrome
+ *        exclusively via addGlobalOverlay()/data-inline3d-overlay.
  * @returns {Promise<Inline3D | {supported:false, error?:Error}>}
  */
 export async function createInline3D(opts = {}) {
-  const { referenceSpace = 'viewer', lazy = true, rootMargin = '50% 0px' } = opts;
+  const { referenceSpace = 'viewer', lazy = true, rootMargin = '50% 0px', autoChrome = true } = opts;
   if (!inline3DAvailable()) return { supported: false };
   let session;
   try {
@@ -89,7 +95,7 @@ export async function createInline3D(opts = {}) {
   } catch {
     /* rAF still fires without a ref space; views are just null (fine for image/video). */
   }
-  return new Inline3D(session, refSpace, { lazy, rootMargin });
+  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome });
 }
 
 /**
@@ -110,8 +116,34 @@ export async function startInline3D(
   return { supported: true, wall, session: wall.session, close: () => wall.close() };
 }
 
+/**
+ * Elements inside `root` worth their own overlay plate: anything with a direct
+ * non-whitespace text node, plus replaced/painted elements (img, svg, video,
+ * canvas, form controls). See _scanChrome for why chrome text is plated
+ * per-element instead of relying on the bar's own raster (browser#83).
+ */
+const CHROME_REPLACED = new Set(['IMG', 'SVG', 'VIDEO', 'CANVAS', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA']);
+function chromeTextPlates(root) {
+  const plates = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+    if (el.closest('[data-inline3d-no-overlay]')) continue;
+    if (CHROME_REPLACED.has(el.tagName.toUpperCase())) {
+      plates.push(el);
+      continue;
+    }
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim()) {
+        plates.push(el);
+        break;
+      }
+    }
+  }
+  return plates;
+}
+
 class Inline3D {
-  constructor(session, refSpace, { lazy, rootMargin }) {
+  constructor(session, refSpace, { lazy, rootMargin, autoChrome = true }) {
     this.supported = true;
     this.session = session;
     this.refSpace = refSpace;
@@ -125,6 +157,12 @@ class Inline3D {
     // input and gets woven). Page-global overlays span many windows, so they are
     // exactly the case that breaks.
     this._isolatedBy = new WeakMap();
+    // Auto-chrome (sticky/fixed page furniture found by _scanChrome). Tracked apart
+    // from _globalOverlays so pruning disconnected chrome never touches overlays the
+    // app registered itself.
+    this._autoChrome = autoChrome;
+    this._autoChromeEls = new Set();
+    this._lastChromeScan = 0;
     this._running = true;
     this._lazy = lazy;
     this._observer =
@@ -132,6 +170,7 @@ class Inline3D {
         ? new IntersectionObserver((entries) => this._onIntersect(entries), { rootMargin })
         : null;
     session.addEventListener('end', () => this._teardown());
+    this._scanChrome(); // page chrome usually exists before the session does
     session.requestAnimationFrame((t, f) => this._frame(t, f));
   }
 
@@ -164,6 +203,80 @@ class Inline3D {
   removeGlobalOverlay(el) {
     if (!el || !this._globalOverlays.delete(el)) return;
     for (const win of this._windows.values()) if (win.layer) this._dropExclusion(win, el);
+  }
+
+  /**
+   * Auto-chrome scan: find sticky/fixed page furniture and register it as page-global
+   * overlays, no app wiring required. Runs at session start and again on every layer
+   * activation (throttled) so late-mounted chrome is picked up as tiles churn.
+   *
+   * Two deliberate choices:
+   *  - SHALLOW scan (top 3 DOM levels under <body>): page chrome lives there; a deep
+   *    sticky element (a table header inside a scroller) is content, not chrome.
+   *  - Besides the chrome element itself, its TEXT / replaced descendants are registered
+   *    individually (browser#83): the browser re-composites an excluded element by
+   *    geometrically matching its rect to a composited-layer quad (>=70% area overlap),
+   *    and a full-width bar can raster as several cc tile quads — each a fraction of the
+   *    bar's rect, so none match and the bar never stages. A near-solid bar hides that
+   *    failure everywhere except its text (a uniform color weaves to itself). The small
+   *    per-text plates each promote to their own layer and match ~1:1, closing the
+   *    visible failure regardless of how the bar rasters.
+   *
+   * Opt-out: `data-inline3d-no-overlay` on an element skips it and its whole subtree.
+   * Elements containing a woven window are never plated (that would hand the weave
+   * input back to the compositor as crisp 2D).
+   */
+  _scanChrome() {
+    if (!this._autoChrome || !hasExclusion() || typeof document === 'undefined') return;
+    const now = Date.now();
+    if (now - this._lastChromeScan < 1000) return; // activations burst during scroll
+    this._lastChromeScan = now;
+    const body = document.body;
+    if (!body) return;
+    const found = new Set();
+    const candidates = body.querySelectorAll(':scope > *, :scope > * > *, :scope > * > * > *');
+    for (const el of candidates) {
+      if (el.closest('[data-inline3d-no-overlay]')) continue;
+      const pos = getComputedStyle(el).position;
+      if (pos !== 'fixed' && pos !== 'sticky') continue;
+      let containsWindow = false;
+      for (const canvas of this._windows.keys()) {
+        if (el === canvas || el.contains(canvas)) {
+          containsWindow = true;
+          break;
+        }
+      }
+      if (containsWindow) continue;
+      found.add(el);
+      for (const plate of chromeTextPlates(el)) found.add(plate);
+    }
+    // Prune auto-registrations that (a) left the document, or (b) NOW contain a woven
+    // window (windows register after the constructor's first scan — leaving such a
+    // wrapper plated would hand the tile back to the compositor as crisp 2D). Connected,
+    // window-free elements are left alone even when no longer detected: a still-connected
+    // element may also have been registered by the app, and _globalOverlays is one set —
+    // never yank something the app might be counting on.
+    for (const el of this._autoChromeEls) {
+      let containsWindow = false;
+      if (el.isConnected) {
+        for (const canvas of this._windows.keys()) {
+          if (el === canvas || el.contains(canvas)) {
+            containsWindow = true;
+            break;
+          }
+        }
+      }
+      if (!el.isConnected || containsWindow) {
+        this._autoChromeEls.delete(el);
+        this.removeGlobalOverlay(el);
+      }
+    }
+    for (const el of found) {
+      if (!this._globalOverlays.has(el)) {
+        this._autoChromeEls.add(el);
+        this.addGlobalOverlay(el);
+      }
+    }
   }
 
   /**
@@ -332,6 +445,9 @@ class Inline3D {
 
   _activate(win) {
     if (win.layer) return;
+    // Pick up page chrome (incl. late-mounted) before the exclusion loop below —
+    // layers churn with scroll, so activations double as cheap rescan points.
+    this._scanChrome();
     try {
       // virtualDisplayHeight (display-rig m2v) tells the runtime what scale this
       // window's scene is authored at, so it returns render-ready scaled views.
