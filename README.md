@@ -23,13 +23,19 @@ npm install @displayxr/inline3d
 ```js
 import { createInline3D } from '@displayxr/inline3d';
 import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three'; // optional three.js glue
+import { addSplat } from '@displayxr/inline3d/splat';               // experimental: 3DGS in a tile
+import { SceneViewer } from '@displayxr/inline3d/viewer';           // experimental: framing + orbit
 ```
 
 No build step or bundler required — it's plain ES modules. You can also import a pinned version by
 URL from a CDN (jsDelivr / unpkg) without npm. The samples in this repo import the SDK by relative
 path (`./js/inline3d.js`) so they run straight off GitHub Pages; in your own app prefer the package.
 
-`three` is an **optional peer dependency** — only the `@displayxr/inline3d/three` helpers need it.
+`three` and `@sparkjsdev/spark` are **optional peer dependencies** — the core is dependency-free
+and only the `/three`, `/viewer` and `/splat` subpaths need them. The two viewer subpaths are
+**experimental**: they turn "one object in a tile, look around it, drag to spin" into a single
+call (auto-framing on the zero-disparity plane, orbit, idle turntable, mono fallback), but their
+API is not yet covered by the semver promise below.
 
 Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
 that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
@@ -71,10 +77,13 @@ index.html            landing (Pages entry point)
 samples/
   windows/            mixed 3D windows — still photos + a live video + a real-time three.js scene,
                       each woven with one SDK call, all on one session
+  splat/              a 3D Gaussian splat in a tile, auto-framed, with a 2D price plate over it
 js/
   inline3d.js         the SDK: createInline3D() → { addImage, addVideo, addScene }, feature-detect,
                       SBS buffer management, and a lazy create/close lifecycle for many windows
   inline3d-three.js   optional three.js helper (EyeCamera: off-axis projection from the session's eyes)
+  inline3d-viewer.js  experimental: SceneViewer — framing, orbit, idle turntable, mono fallback
+  inline3d-splat.js   experimental: addSplat() — a Gaussian splat window via Spark
 docs/
   authoring-inline-3d.md   the authoring guide
 ```
