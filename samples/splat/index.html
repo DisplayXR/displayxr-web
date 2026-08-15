@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>splat — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#3b82f6}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.7;margin:0 0 26px}
+  h2{font-size:18px;margin:0 0 4px}
+  code{background:#8882;padding:1px 5px;border-radius:4px}
+  .foot{margin-top:34px;font-size:14px;opacity:.7}
+  .cols{display:flex;gap:18px;flex-wrap:wrap;margin-top:26px}
+  .cols div{flex:1;min-width:220px}
+
+  /* The tile is positioned so a 2D overlay can sit ON it — see #buy below. */
+  .stage{margin:22px auto 0;max-width:520px;position:relative}
+  /* THE CANVAS MUST STAY VISUALLY BARE. The weave takes this element's rect as a side-by-side
+     pair and splits it down the middle, so any spatially-varying CSS here — border, radius,
+     shadow, mask — is composited INTO that pair and then halved: each eye gets one edge and two
+     of four corners, stretched 2x by the un-squeeze. Decoration belongs in the buffer (the
+     viewer's `feather` option), never in CSS. */
+  #tile{display:block;width:100%;aspect-ratio:1/1;cursor:grab}
+  #tile:active{cursor:grabbing}
+
+  /* A 2D price plate painted OVER the woven 3D. app.js hands it to handle.exclude(), so the
+     weave leaves these pixels as crisp composited 2D instead of garbling them into the stereo
+     pair. This is the pattern a product page uses for price + Add to Cart. */
+  #buy{position:absolute;left:16px;bottom:16px;display:flex;gap:10px;align-items:center;
+       background:#111c;color:#fff;border-radius:8px;padding:8px 12px;backdrop-filter:none}
+  #buy .price{font-weight:700;font-variant-numeric:tabular-nums}
+  #buy button{font:inherit;font-weight:600;border:0;border-radius:6px;padding:6px 12px;
+              background:#3b82f6;color:#fff;cursor:pointer}
+  #buy button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+
+  .badge{margin:10px auto 0;max-width:520px;font-size:13px;opacity:.75;text-align:center}
+  .ctl{margin:14px auto 0;max-width:520px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  .ctl button{font:inherit;font-size:14px;border:1px solid #8886;background:transparent;
+              color:inherit;border-radius:6px;padding:5px 12px;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>splat</h1>
+  <p class="sub">A 3D Gaussian splat as a glasses-free 3D element, in one SDK call.</p>
+
+  <p>The page is ordinary flat HTML. The tile below is a <code>&lt;canvas&gt;</code> handed to
+     <code>addSplat()</code>, which loads the splat with
+     <a href="https://sparkjs.dev/">Spark</a>, frames the subject on the zero-disparity plane,
+     and renders it once per eye. On the DisplayXR Browser it weaves to glasses-free 3D and
+     looks-around as you move; in any other browser you get the same asset, flat and orbitable.
+     Drag to spin, scroll to zoom — leave it alone and it turns by itself.</p>
+
+  <div class="stage">
+    <canvas id="tile" width="1024" height="512"></canvas>
+    <div id="buy">
+      <span class="price">$129.99</span>
+      <button type="button">Add to Cart</button>
+    </div>
+  </div>
+  <div class="badge" id="status">initializing…</div>
+  <div class="ctl">
+    <button type="button" id="reset">Reset view</button>
+    <button type="button" id="spin">Pause turntable</button>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>What to look for</h2>
+      <p>On hardware the subject should have real depth and shift perspective as you move your
+         head, while the price plate over it stays perfectly crisp 2D. That plate is registered
+         with <code>handle.exclude()</code> — the weave composites it rather than interlacing
+         it.</p>
+    </div>
+    <div>
+      <h2>Bring your own splat</h2>
+      <p>Append <code>?url=…</code> to load any <code>.sog</code>, <code>.spz</code>,
+         <code>.ply</code>, <code>.splat</code> or <code>.ksplat</code>. Same-origin or
+         CORS-enabled. <code>.sog</code> is the one to prefer — it is Morton-ordered and roughly
+         15–20&times; smaller than the equivalent PLY.</p>
+    </div>
+  </div>
+
+  <p class="foot">← <a href="../../">All samples</a> ·
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a></p>
+</div>
+
+<!-- The SDK is mapped to THIS repo's sources rather than a jsDelivr pin, because ./viewer and
+     ./splat are not in the published 1.0.0 yet. The app code below still imports the bare
+     specifiers a real consumer writes, so nothing about it changes when the pin catches up.
+
+     three is pinned to 0.180 — Spark's peer floor, above the 0.161 the older samples use.
+     Spark itself comes from its own CDN, not jsDelivr's npm mirror: it ships a Rust/Wasm
+     component alongside the module, and the vendored release URL is the one that resolves it.
+
+     The "three/addons/" trailing-slash entry is REQUIRED, not tidiness: Spark reaches into
+     three/addons/postprocessing/Pass.js internally, and without the prefix mapping the page
+     dies at import time with "Failed to resolve module specifier". Bundler users get this for
+     free; anyone on a bare importmap has to declare it. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js",
+  "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js",
+  "@displayxr/inline3d/splat": "../../js/inline3d-splat.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

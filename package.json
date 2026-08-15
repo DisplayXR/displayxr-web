@@ -14,14 +14,26 @@
     "./three": {
       "types": "./three.d.ts",
       "import": "./js/inline3d-three.js"
+    },
+    "./viewer": {
+      "types": "./viewer.d.ts",
+      "import": "./js/inline3d-viewer.js"
+    },
+    "./splat": {
+      "types": "./splat.d.ts",
+      "import": "./js/inline3d-splat.js"
     }
   },
   "sideEffects": false,
   "files": [
     "js/inline3d.js",
     "js/inline3d-three.js",
+    "js/inline3d-viewer.js",
+    "js/inline3d-splat.js",
     "index.d.ts",
     "three.d.ts",
+    "viewer.d.ts",
+    "splat.d.ts",
     "README.md",
     "LICENSE"
   ],
@@ -45,10 +57,14 @@
   },
   "license": "Apache-2.0",
   "peerDependencies": {
-    "three": ">=0.150.0"
+    "three": ">=0.150.0",
+    "@sparkjsdev/spark": ">=2.0.0"
   },
   "peerDependenciesMeta": {
     "three": {
+      "optional": true
+    },
+    "@sparkjsdev/spark": {
       "optional": true
     }
   },
