@@ -49,9 +49,12 @@ const FRAME_SAMPLE_CAP = 200000;
  * @param {boolean} [opts.flipY=true]  apply the 180° X flip that most splat exports need.
  * @param {number} [opts.idleSpin=8]  degrees/second of turntable once idle. 0 to disable.
  * @param {boolean} [opts.orbit=true]  drag to spin, wheel to zoom.
- * @param {'contain'|'cover'|'none'} [opts.fit='contain']
- * @param {number} [opts.margin=0.9]  fraction of the tile the subject fills.
- * @param {number} [opts.depthLimit=1.0]  max subject depth in display-height units.
+ * @param {'contain'|'height'|'cover'|'none'} [opts.fit='contain']
+ * @param {number} [opts.margin=0.8]  fraction of the tile the subject may occupy — neither its
+ *        width nor its height exceeds this, whatever its proportions.
+ * @param {number} [opts.depthLimit=4.0]  backstop on total depth; rarely binds.
+ * @param {boolean} [opts.fitSweep=true]  fit the horizontal against the box's diagonal, so a
+ *        long subject still fits once the turntable turns it.
  * @param {number} [opts.renderScale=1]  per-eye buffer scale; 0.5–0.7 is usually free.
  * @param {number} [opts.feather=0]  edge fade in buffer px.
  * @param {number} [opts.sortIntervalMs=16]  see DEFAULT_SORT_INTERVAL_MS.
@@ -76,8 +79,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
     idleSpin = 8,
     orbit = true,
     fit = 'contain',
-    margin = 0.9,
-    depthLimit = 1.0,
+    margin = 0.8,
+    depthLimit = 4.0,
+    fitSweep = true,
     renderScale = 1,
     feather = 0,
     sortIntervalMs = DEFAULT_SORT_INTERVAL_MS,
@@ -89,6 +93,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     fit,
     margin,
     depthLimit,
+    fitSweep,
     orbit,
     idleSpin,
     renderScale,
@@ -171,6 +176,10 @@ export function addSplat(wall, canvas, src, opts = {}) {
  * columns rather than being re-projected onto world axes: same convention the native
  * ComputeAutoFrame uses, and exact for the axis-aligned flips that actually occur.
  */
+export function measureSplatBounds(mesh, three = THREE) {
+  return measureBounds(mesh, three);
+}
+
 function measureBounds(mesh, THREE) {
   const total = mesh.numSplats || 0;
   if (!total) return null;

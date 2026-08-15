@@ -37,8 +37,12 @@
 // origin and scale it, instead of moving the display to the content. Identical framing, no
 // browser or runtime change.
 
-/** How far the subject may extend through the glass, as a multiple of the display height. */
-const DEFAULT_DEPTH_LIMIT = 1.0;
+/**
+ * Backstop on total subject depth, as a multiple of the display height. Generous on purpose:
+ * depth placement is a z decision (see fitTo), not a scale one, so this only catches the
+ * pathological case where a subject is so deep that no placement helps.
+ */
+const DEFAULT_DEPTH_LIMIT = 4.0;
 /** Milliseconds of no interaction before the idle turntable starts. */
 const IDLE_DELAY_MS = 2500;
 
@@ -97,10 +101,17 @@ export class SceneViewer {
    * @param {object} [opts]
    * @param {number} [opts.virtualDisplayHeight=0.24]  metres of world the tile's HEIGHT spans.
    *        Pass the SAME value to addScene — this module frames against it but does not set it.
-   * @param {'contain'|'cover'|'none'} [opts.fit='contain']  how fitTo() sizes the subject.
-   * @param {number} [opts.margin=0.9]  fraction of the tile the subject fills when fit.
-   * @param {number} [opts.depthLimit=1.0]  max subject depth as a multiple of the display
-   *        height. Stereo comfort, not framing — see fitTo().
+   * @param {'contain'|'height'|'cover'|'none'} [opts.fit='contain']  how fitTo() sizes the
+   *        subject. `contain` caps BOTH dimensions at `margin` of the tile — neither width nor
+   *        height exceeds it, whatever the subject's proportions. `height` instead pins the
+   *        height to `margin` and only guards against running off the sides, which gives a
+   *        consistent apparent size across a catalogue at the cost of letting wide subjects run
+   *        to the edges.
+   * @param {number} [opts.margin=0.8]  fraction of the tile the subject may occupy.
+   * @param {number} [opts.depthLimit=4.0]  backstop on total subject depth, in display heights.
+   *        Rarely binds — depth placement is a z decision, not a scale one. See fitTo().
+   * @param {boolean} [opts.fitSweep=true]  fit the horizontal against the box's DIAGONAL
+   *        (width and depth), so a long subject still fits once the turntable turns it.
    * @param {boolean} [opts.orbit=true]  drag to spin, wheel/pinch to zoom.
    * @param {number} [opts.idleSpin=0]  degrees/second of turntable after IDLE_DELAY_MS.
    *        Ignored under prefers-reduced-motion.
@@ -114,8 +125,9 @@ export class SceneViewer {
     const {
       virtualDisplayHeight = 0.24,
       fit = 'contain',
-      margin = 0.9,
+      margin = 0.8,
       depthLimit = DEFAULT_DEPTH_LIMIT,
+      fitSweep = true,
       orbit = true,
       idleSpin = 0,
       renderScale = 1,
@@ -129,6 +141,7 @@ export class SceneViewer {
     this.fit = fit;
     this.margin = margin;
     this.depthLimit = depthLimit;
+    this.fitSweep = fitSweep;
     this.renderScale = renderScale;
     this.pitchLimit = pitchLimit;
     this.idleSpin = idleSpin;
@@ -213,17 +226,55 @@ export class SceneViewer {
 
     if (this.fit === 'none') {
       this._fitScale = 1;
+      this._pivot.position.z = 0;
     } else {
       const box = this.canvas.getBoundingClientRect();
       const aspect = box.height > 0 ? box.width / box.height : 1;
       const vH = this.vH;
       const vW = vH * aspect;
-      const sy = vH / Math.max(e[1], 1e-6);
-      const sx = vW / Math.max(e[0], 1e-6);
-      let s = this.fit === 'cover' ? Math.max(sx, sy) : Math.min(sx, sy);
-      s *= this.margin;
-      // Depth comfort clamp — never scales the subject UP, only down.
-      const sz = (this.depthLimit * vH) / Math.max(e[2], 1e-6);
+      const ex = Math.max(e[0], 1e-6);
+      const ey = Math.max(e[1], 1e-6);
+      const ez = Math.max(e[2], 1e-6);
+
+      // THE HORIZONTAL EXTENT IS NOT THE WIDTH — it is the width the subject will occupy once
+      // it turns. Both the idle turntable and drag-orbit rotate about Y, which swings DEPTH into
+      // the horizontal, so fitting to `ex` alone means anything long fits face-on and then hangs
+      // out of the tile the moment it moves. A fox 25 wide and 155 deep is 1.57x the tile width
+      // at 90 degrees. Use the box's horizontal diagonal, which bounds every yaw.
+      const horiz = this.fitSweep ? Math.hypot(ex, ez) : ex;
+
+      let s;
+      if (this.fit === 'cover') {
+        s = Math.max((this.margin * vH) / ey, (this.margin * vW) / horiz);
+      } else if (this.fit === 'contain') {
+        s = Math.min((this.margin * vH) / ey, (this.margin * vW) / horiz);
+      } else {
+        // 'height' (the default): the subject occupies `margin` of the tile's HEIGHT, whatever
+        // its proportions. This is the only mode that gives a consistent APPARENT SIZE across a
+        // catalogue — 'contain' hands the decision to whichever axis happens to bind, so a wide
+        // subject and a deep one end up visibly different sizes for no reason a shopper can see.
+        s = (this.margin * vH) / ey;
+        // Hard guard at the full tile width (not margin-reduced): a wide subject may run to the
+        // edges, it may not run past them.
+        if (horiz * s > vW) s = vW / horiz;
+      }
+
+      // DEPTH: the subject sits CENTRED on the zero-disparity plane, and that is the whole rule.
+      //
+      // It is the native convention — displayxr-demo-gaussiansplat sets the rig pose to the
+      // subject centre on all three axes, and displayxr-demo-modelviewer states it outright:
+      // "subject stays pinned + centered at the ZDP". Those apps also take vH straight from the
+      // subject height (`kAutoFitVerticalComfort = 1.0`) with no width or depth constraint; the
+      // margin and the swept-width fit above are this SDK's refinement, but the z convention is
+      // theirs and matching it keeps web and native looking alike.
+      //
+      // A biased variant that slid the subject behind the glass was tried and dropped: on
+      // hardware it read WORSE, and it moved content the wrong way besides. Do not re-add it
+      // without a hardware comparison.
+      this._pivot.position.z = 0;
+
+      // Backstop only: something pathologically deep still gets scaled down.
+      const sz = (this.depthLimit * vH) / ez;
       if (sz < s) s = sz;
       this._fitScale = s;
     }

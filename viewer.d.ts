@@ -10,12 +10,21 @@ export interface SubjectBounds {
 export interface SceneViewerOptions {
   /** Metres of world the tile's HEIGHT spans. Pass the same value to addScene. */
   virtualDisplayHeight?: number;
-  /** How `fitTo` sizes the subject against the tile. */
-  fit?: 'contain' | 'cover' | 'none';
-  /** Fraction of the tile the subject fills when fit (default 0.9). */
+  /**
+   * How `fitTo` sizes the subject. `contain` caps BOTH width and height at `margin` of the tile.
+   * `height` pins height to `margin` and only guards against running off the sides, giving a
+   * consistent apparent size across a catalogue.
+   */
+  fit?: 'contain' | 'height' | 'cover' | 'none';
+  /** Fraction of the tile the subject may occupy (default 0.8). */
   margin?: number;
-  /** Max subject depth as a multiple of the display height — stereo comfort (default 1.0). */
+  /** Backstop on total subject depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
+  /**
+   * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
+   * so a long subject still fits once the turntable turns it (default true).
+   */
+  fitSweep?: boolean;
   /** Drag to spin, wheel/pinch to zoom (default true). */
   orbit?: boolean;
   /** Degrees/second of turntable once idle. Ignored under prefers-reduced-motion. */

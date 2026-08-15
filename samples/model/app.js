@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { createInline3D } from '@displayxr/inline3d';
 import { addModel } from '@displayxr/inline3d/model';
+import { measureSplatBounds } from '@displayxr/inline3d/splat';
 
 const GLB = './assets/Fox.glb';
 const SPLAT = 'https://sparkjs.dev/assets/splats/butterfly.spz';
@@ -28,8 +29,12 @@ report(a.ready, 'noteA', () => {
 // ── B. the same viewer, with a splat added alongside the mesh ───────────────────────────────
 // addModel/addSplat each own a viewer, but the viewer's `scene` and `content` are public on
 // purpose: composing beyond what the two wrappers do is meant to be a few lines, not a fork.
+// SAME virtualDisplayHeight as tile A, deliberately. The fit normalises apparent size against
+// vH, so a different value does not change how big anything looks — but it does change the
+// world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
+// them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
 const b = addModel(wall, document.getElementById('tileB'), GLB, {
-  virtualDisplayHeight: 0.22,
+  virtualDisplayHeight: 0.16,
   idleSpin: 12,
   feather: 24,
   renderScale: 0.6,
@@ -44,11 +49,38 @@ const mixed = b.ready.then(async () => {
   splat.quaternion.set(1, 0, 0, 0); // most exports are Y-down; three.js is Y-up
   await splat.initialized;
 
-  // Park it beside the mesh, in the mesh's own units, so the two are unambiguously in one space.
-  const e = b.frame.extent;
-  splat.scale.setScalar(Math.max(...e) * 0.9);
-  splat.position.set(e[0] * 0.75, e[1] * 0.35, -e[2] * 0.25);
+  // Size it RELATIVE TO THE MESH, by measuring the splat's own bounds rather than guessing.
+  // Scaling by some fraction of the mesh's extent is meaningless — the two assets are in
+  // unrelated unit systems, which is exactly how you end up with a splat towering over a model.
+  const sb = measureSplatBounds(splat, THREE);
+  const mesh = b.frame;
+  const scale = (mesh.extent[1] * 0.45) / (sb?.extent[1] || 1); // ~half the mesh's height
+  splat.scale.setScalar(scale);
+  splat.position.set(mesh.extent[0] * 0.9, mesh.extent[1] * 0.3, 0);
   b.viewer.content.add(splat);
+
+  // TWO SUBJECTS, ONE FRAME. Fitting to the mesh alone would let the splat hang out of the
+  // tile — whatever is in the window has to be inside the fit, so re-fit to the union of both
+  // boxes. Everything is already in the content group's space, so this is plain arithmetic.
+  if (sb) {
+    const half = (o, i) => (o.extent[i] / 2);
+    const sCenter = [
+      sb.center[0] * scale + splat.position.x,
+      sb.center[1] * scale + splat.position.y,
+      sb.center[2] * scale + splat.position.z,
+    ];
+    const min = [], max = [];
+    for (let i = 0; i < 3; i++) {
+      min[i] = Math.min(mesh.center[i] - half(mesh, i), sCenter[i] - (sb.extent[i] * scale) / 2);
+      max[i] = Math.max(mesh.center[i] + half(mesh, i), sCenter[i] + (sb.extent[i] * scale) / 2);
+    }
+    const union = {
+      center: [0, 1, 2].map((i) => (min[i] + max[i]) / 2),
+      extent: [0, 1, 2].map((i) => Math.max(max[i] - min[i], 1e-6)),
+    };
+    b.union = union;
+    b.viewer.fitTo(union.center, union.extent);
+  }
   return splat;
 });
 
@@ -66,5 +98,50 @@ function report(p, id, ok) {
     el.textContent = `failed: ${err?.message || err}`;
   });
 }
+
+// ── fit A/B ─────────────────────────────────────────────────────────────────────────────────
+// The subject sits centred on the zero-disparity plane — the native convention, and the one
+// that read better on hardware. What IS worth toggling is the horizontal fit, because the
+// difference only shows once something turns.
+//
+//   swept  — fit the box's horizontal DIAGONAL, so the subject stays inside the tile at every
+//            yaw. The Fox is 25 wide but 155 deep: fit its width and it looks right face-on,
+//            then swings a metre and a half out of frame as the turntable turns it.
+//   width  — fit the width only. Bigger face-on, wrong the moment it moves.
+const sweepBtn = document.getElementById('sweep');
+const zNote = document.getElementById('noteZ');
+let swept = true;
+
+const refit = (h) => {
+  const bounds = h === b && b.union ? b.union : h.frame;
+  if (bounds) h.viewer.fitTo(bounds.center, bounds.extent);
+};
+
+const applyFit = () => {
+  for (const h of [a, b]) {
+    h.viewer.fitSweep = swept;
+    refit(h);
+  }
+  sweepBtn.textContent = swept ? 'Fit: swept (turn-safe)' : 'Fit: width only';
+  if (a.frame) {
+    const v = a.viewer, e = a.frame.extent, s = v._fitScale;
+    const box = v.canvas.getBoundingClientRect();
+    const vW = v.vH * (box.width / box.height);
+    zNote.textContent =
+      `Fox is ${e[0].toFixed(0)} wide and ${e[2].toFixed(0)} deep. ` +
+      `Face-on it spans ${((e[0] * s) / vW * 100).toFixed(0)}% of the tile width; ` +
+      `turned side-on, ${((e[2] * s) / vW * 100).toFixed(0)}%.`;
+  }
+};
+
+sweepBtn.addEventListener('click', () => {
+  swept = !swept;
+  applyFit();
+});
+document.getElementById('reset').addEventListener('click', () => {
+  a.resetPose();
+  b.resetPose();
+});
+Promise.allSettled([a.ready, mixed]).then(applyFit);
 
 Object.assign(window, { __model: a, __mixed: b, __THREE: THREE }); // debug hooks, as in other samples
