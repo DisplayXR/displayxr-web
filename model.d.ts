@@ -50,7 +50,7 @@ export interface ModelHandle {
  * flat, orbitable view instead, so pages need no branch.
  */
 export function addModel(
-  wall: object,
+  wall: object | null | undefined,
   canvas: HTMLCanvasElement,
   src: string,
   opts?: ModelOptions,
