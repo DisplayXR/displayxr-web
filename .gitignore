@@ -7,3 +7,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# local test artifacts, never committed
+_scratch/

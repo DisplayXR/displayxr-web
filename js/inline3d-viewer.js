@@ -392,7 +392,18 @@ export class SceneViewer {
   _applyTransform() {
     const s = this._fitScale * this._zoom;
     this._pivot.scale.setScalar(s);
-    this._pivot.rotation.set((this._pitch * Math.PI) / 180, (this._yaw * Math.PI) / 180, 0, 'YXZ');
+    // Order 'XYZ' == R = Rx(pitch) · Ry(yaw), and the order is the whole point.
+    //
+    // Yaw must act in the subject's OWN frame (spin it on its axis); pitch must act in the
+    // VIEWER's frame (tilt it toward or away from you), and stay screen-horizontal however far
+    // the subject has been spun. Rx outermost gives exactly that: Ry never moves the Y axis, so
+    // the subject's up-vector after the pair is Rx(pitch)·(0,1,0) — independent of yaw.
+    //
+    // 'YXZ' (R = Ry · Rx) was the bug: it applies pitch INSIDE the yawed frame, so the pitch
+    // axis is itself yawed. At yaw 90° that axis has swung onto world Z and dragging up/down
+    // rolls the subject instead of tilting it. Correct head-on, wrong the moment you turn it —
+    // which is why it survived review and only showed up when two controls were combined.
+    this._pivot.rotation.set((this._pitch * Math.PI) / 180, (this._yaw * Math.PI) / 180, 0, 'XYZ');
   }
 
   /**
@@ -447,9 +458,15 @@ export class SceneViewer {
       if (!dragging) return;
       const box = el.getBoundingClientRect();
       // A full drag across the tile is a half turn — predictable regardless of tile size.
+      //
+      // BOTH axes must make the near face follow the cursor, and the signs are not symmetric.
+      // Ry(+yaw) swings the near face toward +x (right), so yaw ADDS dx. Rx(+pitch) swings it
+      // toward −y (down), so pitch must also ADD dy — subtracting it sends the face the wrong
+      // way and reads as an inverted axis next to a correct one, which is worse than both being
+      // inverted.
       this._targetYaw += ((ev.clientX - lastX) / Math.max(box.width, 1)) * 180;
       this._targetPitch = clamp(
-        this._targetPitch - ((ev.clientY - lastY) / Math.max(box.height, 1)) * 180,
+        this._targetPitch + ((ev.clientY - lastY) / Math.max(box.height, 1)) * 180,
         this.pitchLimit[0],
         this.pitchLimit[1],
       );
