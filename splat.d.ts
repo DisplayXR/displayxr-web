@@ -17,9 +17,16 @@ export interface SplatOptions {
   /** Degrees/second of turntable once idle (default 8). */
   idleSpin?: number;
   orbit?: boolean;
-  fit?: 'contain' | 'cover' | 'none';
+  fit?: 'contain' | 'height' | 'cover' | 'none';
+  /** Fraction of the tile the subject may occupy (default 0.8) — width AND height. */
   margin?: number;
+  /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
+  /**
+   * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
+   * so a long subject still fits once the turntable turns it (default true).
+   */
+  fitSweep?: boolean;
   /** Per-eye buffer scale; 0.5–0.7 is usually free (default 1). */
   renderScale?: number;
   feather?: number;
@@ -61,3 +68,6 @@ export function addSplat(
   src: string,
   opts?: SplatOptions,
 ): SplatHandle;
+
+/** Robust model-space bounds of a loaded SplatMesh, lifted through its own matrix. */
+export function measureSplatBounds(mesh: object, three?: object): SubjectBounds | null;
