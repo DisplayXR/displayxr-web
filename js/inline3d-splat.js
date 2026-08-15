@@ -85,6 +85,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     renderScale = 1,
     feather = 0,
     sortIntervalMs = DEFAULT_SORT_INTERVAL_MS,
+    fileName,
     observe,
   } = opts;
 
@@ -106,12 +107,32 @@ export function addSplat(wall, canvas, src, opts = {}) {
   const spark = new SparkRenderer({ renderer: viewer.renderer, minSortIntervalMs: sortIntervalMs });
   viewer.scene.add(spark);
 
-  const mesh = new SplatMesh({ url: src });
-  // Most exporters write splats Y-down (the original 3DGS convention); three.js is Y-up. Without
-  // this every capture arrives upside down, which reads as a broken asset rather than a
-  // convention mismatch. w=0,x=1 is a half turn about X.
-  if (flipY) mesh.quaternion.set(1, 0, 0, 0);
-  viewer.content.add(mesh);
+  // `src` may be a URL or the bytes themselves.
+  //
+  // Bytes matter for anything GENERATED rather than fetched: a freshly converted splat lives in
+  // a Blob, and the obvious move — URL.createObjectURL() — hands Spark a `blob:…` URL with no
+  // extension. Spark infers format partly from the URL, so that fails with "Unknown file type"
+  // from inside its worker, which reads like a corrupt file rather than a missing hint. Passing
+  // fileBytes lets it sniff the content instead. `fileName` is only needed to disambiguate
+  // .splat/.ksplat, which content-sniffing cannot separate.
+  let mesh = null;
+  const meshReady = (async () => {
+    let init;
+    if (typeof src === 'string') {
+      init = { url: src };
+    } else {
+      const buf = src instanceof Blob ? await src.arrayBuffer() : src;
+      init = { fileBytes: new Uint8Array(buf), ...(fileName ? { fileName } : {}) };
+    }
+    mesh = new SplatMesh(init);
+    // Most exporters write splats Y-down (the original 3DGS convention); three.js is Y-up.
+    // Without this every capture arrives upside down, which reads as a broken asset rather than
+    // a convention mismatch. w=0,x=1 is a half turn about X.
+    if (flipY) mesh.quaternion.set(1, 0, 0, 0);
+    viewer.content.add(mesh);
+    out.mesh = mesh;
+    return mesh;
+  })();
 
   // Create the window NOW and frame it when the asset lands. Waiting for the load first would
   // mean a grid of tiles appears one at a time in download order — and it is how addImage
@@ -128,7 +149,8 @@ export function addSplat(wall, canvas, src, opts = {}) {
 
   const out = {
     viewer,
-    mesh,
+    // null until the bytes are read and the mesh is constructed; use `ready` to await it.
+    mesh: null,
     spark,
     frame: null,
     setPose: (p) => viewer.setPose(p),
@@ -136,15 +158,19 @@ export function addSplat(wall, canvas, src, opts = {}) {
     remove() {
       handle?.remove();
       viewer.dispose();
-      mesh.dispose?.();
+      out.mesh?.dispose?.();
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
   };
 
-  out.ready = mesh.initialized
+  // Await the MESH first, then its load. Reading `mesh.initialized` here directly would
+  // dereference null: constructing from bytes is async (the Blob has to be read), so `mesh` does
+  // not exist yet on this line — only inside meshReady.
+  out.ready = meshReady
+    .then((m) => m.initialized)
     .then(() => {
-      const bounds = frame || measureBounds(mesh, THREE);
+      const bounds = frame || measureBounds(out.mesh, THREE);
       if (bounds) {
         out.frame = bounds;
         viewer.fitTo(bounds.center, bounds.extent);

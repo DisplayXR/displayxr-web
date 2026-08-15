@@ -32,6 +32,11 @@ export interface SplatOptions {
   feather?: number;
   /** Minimum ms between splat sorts. Defaults to 16 so both eyes share one sort per frame. */
   sortIntervalMs?: number;
+  /**
+   * Disambiguates .splat from .ksplat when passing BYTES — content-sniffing cannot separate
+   * those two. Unnecessary for .sog/.ply/.spz, which are identifiable by magic number.
+   */
+  fileName?: string;
   /** Element whose visibility gates the lazy create/close lifecycle. */
   observe?: Element;
 }
@@ -65,7 +70,15 @@ export interface SplatHandle {
 export function addSplat(
   wall: object | null | undefined,
   canvas: HTMLCanvasElement,
-  src: string,
+  /**
+   * A URL, or the bytes themselves.
+   *
+   * Prefer BYTES for anything generated rather than fetched. Spark reads a splat's format from
+   * the URL path, so an object URL from URL.createObjectURL() — which has no extension — fails
+   * with "Unknown file type" before it fetches anything, and that reads like a corrupt asset
+   * rather than a missing hint. Given bytes, Spark sniffs the magic number instead.
+   */
+  src: string | Blob | ArrayBuffer,
   opts?: SplatOptions,
 ): SplatHandle;
 
