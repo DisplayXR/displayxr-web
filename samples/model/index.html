@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>model — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#3b82f6}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.7;margin:0 0 26px}
+  h2{font-size:18px;margin:0 0 4px}
+  code{background:#8882;padding:1px 5px;border-radius:4px}
+  .foot{margin-top:34px;font-size:14px;opacity:.7}
+
+  .pair{display:flex;gap:26px;flex-wrap:wrap;margin:24px 0 0}
+  .cell{flex:1;min-width:300px}
+  .cell h2{margin-bottom:8px}
+  .stage{position:relative}
+  /* Bare, as every woven canvas must be — the weave halves this rect, so spatially-varying CSS
+     lands on one eye. Decoration belongs in the buffer (the viewer's `feather`). */
+  canvas.tile{display:block;width:100%;aspect-ratio:1/1;cursor:grab}
+  canvas.tile:active{cursor:grabbing}
+  .plate{position:absolute;left:14px;bottom:14px;display:flex;gap:10px;align-items:center;
+         background:#111c;color:#fff;border-radius:8px;padding:7px 11px;font-size:14px}
+  .plate .price{font-weight:700;font-variant-numeric:tabular-nums}
+  .plate button{font:inherit;font-weight:600;border:0;border-radius:6px;padding:5px 10px;
+                background:#3b82f6;color:#fff;cursor:pointer}
+  .note{font-size:13px;opacity:.75;margin-top:8px;min-height:2.6em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>model</h1>
+  <p class="sub">A glTF mesh as a glasses-free 3D element — and a splat and a mesh sharing one scene.</p>
+
+  <p>Left is <code>addModel()</code>: same options, same handle and same framing as
+     <code>addSplat()</code>, so a catalogue switches a product between a captured splat and a
+     vendor mesh by changing one word. Right is both at once, in a single three.js scene, sorting
+     against each other — which is what makes a mixed catalogue possible instead of forcing every
+     product into one representation.</p>
+
+  <div class="pair">
+    <div class="cell">
+      <h2>glTF mesh</h2>
+      <div class="stage">
+        <canvas id="tileA" class="tile" width="1024" height="512"></canvas>
+        <div class="plate" id="plateA">
+          <span class="price">$64.00</span>
+          <button type="button">Add to Cart</button>
+        </div>
+      </div>
+      <div class="note" id="noteA">loading…</div>
+    </div>
+
+    <div class="cell">
+      <h2>mesh + splat, one scene</h2>
+      <div class="stage">
+        <canvas id="tileB" class="tile" width="1024" height="512"></canvas>
+      </div>
+      <div class="note" id="noteB">loading…</div>
+    </div>
+  </div>
+
+  <p class="foot">← <a href="../../">All samples</a> ·
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a><br>
+     <span style="font-size:13px">Fox model © PixelMannen,
+     <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via Khronos
+     glTF-Sample-Assets. Splat is Spark's public demo asset.</span></p>
+</div>
+
+<!-- three/addons/ is REQUIRED: GLTFLoader lives there, and Spark reaches into
+     three/addons/postprocessing/Pass.js internally. Without the prefix mapping the page dies at
+     import time with "Failed to resolve module specifier". Bundler users get it free.
+     SDK is mapped to this repo's sources — ./viewer, ./splat and ./model are not in the
+     published 1.0.0 yet. The app code still imports the bare specifiers a consumer writes. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js",
+  "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js",
+  "@displayxr/inline3d/splat": "../../js/inline3d-splat.js",
+  "@displayxr/inline3d/model": "../../js/inline3d-model.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -22,6 +22,10 @@
     "./splat": {
       "types": "./splat.d.ts",
       "import": "./js/inline3d-splat.js"
+    },
+    "./model": {
+      "types": "./model.d.ts",
+      "import": "./js/inline3d-model.js"
     }
   },
   "sideEffects": false,
@@ -30,10 +34,12 @@
     "js/inline3d-three.js",
     "js/inline3d-viewer.js",
     "js/inline3d-splat.js",
+    "js/inline3d-model.js",
     "index.d.ts",
     "three.d.ts",
     "viewer.d.ts",
     "splat.d.ts",
+    "model.d.ts",
     "README.md",
     "LICENSE"
   ],

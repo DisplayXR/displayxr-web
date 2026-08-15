@@ -11,5 +11,5 @@
     "checkJs": false,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["index.d.ts", "three.d.ts", "viewer.d.ts", "splat.d.ts"]
+  "include": ["index.d.ts", "three.d.ts", "viewer.d.ts", "splat.d.ts", "model.d.ts"]
 }
