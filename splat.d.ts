@@ -56,7 +56,7 @@ export interface SplatHandle {
  * flat, orbitable view instead, so pages need no branch.
  */
 export function addSplat(
-  wall: object,
+  wall: object | null | undefined,
   canvas: HTMLCanvasElement,
   src: string,
   opts?: SplatOptions,
