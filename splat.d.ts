@@ -37,6 +37,11 @@ export interface SplatOptions {
    * those two. Unnecessary for .sog/.ply/.spz, which are identifiable by magic number.
    */
   fileName?: string;
+  /**
+   * Container format, when passing bytes. Usually unnecessary — the magic number is sniffed —
+   * but note Spark's names are not the file extensions: a `.sog` is `pcsogszip`.
+   */
+  fileType?: 'ply' | 'spz' | 'splat' | 'ksplat' | 'pcsogs' | 'pcsogszip' | 'rad';
   /** Element whose visibility gates the lazy create/close lifecycle. */
   observe?: Element;
 }

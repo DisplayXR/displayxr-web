@@ -37,6 +37,33 @@ const DEFAULT_SORT_INTERVAL_MS = 16;
 const FRAME_SAMPLE_CAP = 200000;
 
 /**
+ * Identify a splat container from its first bytes.
+ *
+ * Spark resolves a file's format from the URL PATH, and has a magic-byte sniffer it does not
+ * apply to the fileBytes route — so bytes arrive as "Unknown file type" unless someone says what
+ * they are. That is a trap for exactly the interesting case: a URL ending in `.sog` loads fine
+ * while the identical bytes in a Blob do not.
+ *
+ * Rather than make every caller know Spark's type names (which are not the file extensions —
+ * a `.sog` is `pcsogszip`), work it out here.
+ */
+function sniffFileType(bytes) {
+  if (!bytes || bytes.length < 4) return undefined;
+  const [b0, b1, b2, b3] = bytes;
+  // PK 03 04 — a PKZip. A .sog from splat-transform is a zip of webp planes + meta.json.
+  if (b0 === 0x50 && b1 === 0x4b && b2 === 0x03 && b3 === 0x04) return 'pcsogszip';
+  // "ply" — ASCII header
+  if (b0 === 0x70 && b1 === 0x6c && b2 === 0x79) return 'ply';
+  // gzip — .spz is gzipped
+  if (b0 === 0x1f && b1 === 0x8b) return 'spz';
+  // "RAD0"
+  if (b0 === 0x52 && b1 === 0x41 && b2 === 0x44 && b3 === 0x30) return 'rad';
+  // .splat / .ksplat are raw arrays with no magic — indistinguishable by content, which is
+  // exactly what `fileName` is for.
+  return undefined;
+}
+
+/**
  * Load a splat into an inline-3D window.
  *
  * @param {object} wall  the manager from createInline3D(), supported or not.
@@ -86,6 +113,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     feather = 0,
     sortIntervalMs = DEFAULT_SORT_INTERVAL_MS,
     fileName,
+    fileType,
     observe,
   } = opts;
 
@@ -122,7 +150,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
       init = { url: src };
     } else {
       const buf = src instanceof Blob ? await src.arrayBuffer() : src;
-      init = { fileBytes: new Uint8Array(buf), ...(fileName ? { fileName } : {}) };
+      const fileBytes = new Uint8Array(buf);
+      const sniffed = fileType || sniffFileType(fileBytes);
+      init = {
+        fileBytes,
+        ...(sniffed ? { fileType: sniffed } : {}),
+        ...(fileName ? { fileName } : {}),
+      };
     }
     mesh = new SplatMesh(init);
     // Most exporters write splats Y-down (the original 3DGS convention); three.js is Y-up.
