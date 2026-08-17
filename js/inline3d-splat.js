@@ -135,6 +135,36 @@ export function addSplat(wall, canvas, src, opts = {}) {
   const spark = new SparkRenderer({ renderer: viewer.renderer, minSortIntervalMs: sortIntervalMs });
   viewer.scene.add(spark);
 
+  // THE HANDLE IS DECLARED BEFORE THE LOADER, and that is load-bearing — not style.
+  //
+  // The loader below is an async IIFE that assigns `out.mesh`. An async function body runs
+  // SYNCHRONOUSLY up to its first `await`, and the URL path has no await at all: `init = {url}`,
+  // construct, add to the scene, assign. So with `out` declared after it, that assignment lands
+  // in `out`'s temporal dead zone and throws ReferenceError — on the URL path only, which is
+  // every ordinary page, while the Blob path (which awaits arrayBuffer()) sails through.
+  //
+  // The failure was near-invisible and cost days: the throw escapes into meshReady, so `ready`
+  // rejects while the mesh is ALREADY in the scene from the line above — the splat renders, just
+  // never framed, i.e. at raw model scale. A subject that reads "far too large" with no error on
+  // the console and a fit pipeline that provably never executed.
+  let handle = null;
+  const out = {
+    viewer,
+    // null until the bytes are read and the mesh is constructed; use `ready` to await it.
+    mesh: null,
+    spark,
+    frame: null,
+    setPose: (p) => viewer.setPose(p),
+    resetPose: () => viewer.resetPose(),
+    remove() {
+      handle?.remove();
+      viewer.dispose();
+      out.mesh?.dispose?.();
+    },
+    exclude: (el) => handle?.exclude(el),
+    unexclude: (el) => handle?.unexclude(el),
+  };
+
   // `src` may be a URL or the bytes themselves.
   //
   // Bytes matter for anything GENERATED rather than fetched: a freshly converted splat lives in
@@ -171,7 +201,6 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // Create the window NOW and frame it when the asset lands. Waiting for the load first would
   // mean a grid of tiles appears one at a time in download order — and it is how addImage
   // already behaves: return a handle immediately, paint when the source is ready.
-  let handle = null;
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {
       virtualDisplayHeight,
@@ -180,23 +209,6 @@ export function addSplat(wall, canvas, src, opts = {}) {
   } else {
     viewer.startMono();
   }
-
-  const out = {
-    viewer,
-    // null until the bytes are read and the mesh is constructed; use `ready` to await it.
-    mesh: null,
-    spark,
-    frame: null,
-    setPose: (p) => viewer.setPose(p),
-    resetPose: () => viewer.resetPose(),
-    remove() {
-      handle?.remove();
-      viewer.dispose();
-      out.mesh?.dispose?.();
-    },
-    exclude: (el) => handle?.exclude(el),
-    unexclude: (el) => handle?.unexclude(el),
-  };
 
   // Await the MESH first, then its load. Reading `mesh.initialized` here directly would
   // dereference null: constructing from bytes is async (the Blob has to be read), so `mesh` does
@@ -217,12 +229,21 @@ export function addSplat(wall, canvas, src, opts = {}) {
       if (bounds) {
         out.frame = bounds;
         viewer.fitTo(bounds.center, bounds.extent);
+      } else {
+        // Unframed means drawn at raw MODEL scale, which for a typical capture is several times
+        // the tile. Say so: silence here is what made the same condition read as a fit bug.
+        console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
       }
       return out;
     })
     .catch((err) => {
-      // A failed load must not take the page down. The tile stays empty, `ready` rejects, and
-      // the caller decides whether that is a placeholder or an error state.
+      // A failed load must not take the page down: `ready` rejects and the caller decides whether
+      // that is a placeholder or an error state.
+      //
+      // Detach the mesh, because failure can happen AFTER it joined the scene — and an unframed
+      // mesh is not a blank tile, it is a subject at model scale spilling out of the window. An
+      // error state the caller paints over a giant splat is worse than an empty one.
+      if (mesh) viewer.content.remove(mesh);
       console.warn('[inline3d/splat] failed to load', src, err);
       throw err;
     });
