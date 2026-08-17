@@ -204,7 +204,16 @@ export function addSplat(wall, canvas, src, opts = {}) {
   out.ready = meshReady
     .then((m) => m.initialized)
     .then(() => {
-      const bounds = frame || measureBounds(out.mesh, THREE);
+      // MEASURE FIRST, always. `frame` is only a fallback.
+      //
+      // A supplied frame has to survive two coordinate changes to be usable — the converter's
+      // space to the file's, and the file's to whatever the loader normalises to internally —
+      // and getting either wrong produces a subject that is mis-scaled and off-centre with no
+      // error anywhere. That was got wrong twice here. Measuring the splats as they actually
+      // sit in the loaded mesh cannot be in the wrong space by construction: it reads the same
+      // positions the renderer draws. It costs one pass over (a sample of) the centres at load,
+      // which is what the working reference sample has always done.
+      const bounds = measureBounds(out.mesh, THREE) || (frame ? liftBounds(frame, out.mesh, THREE) : null);
       if (bounds) {
         out.frame = bounds;
         viewer.fitTo(bounds.center, bounds.extent);
@@ -236,6 +245,17 @@ export function addSplat(wall, canvas, src, opts = {}) {
  * columns rather than being re-projected onto world axes: same convention the native
  * ComputeAutoFrame uses, and exact for the axis-aligned flips that actually occur.
  */
+/** Map model-space bounds through a mesh's own transform, matching the native ComputeAutoFrame. */
+function liftBounds(b, mesh, THREE) {
+  if (!b || !mesh) return b;
+  mesh.updateMatrix();
+  const m = mesh.matrix;
+  const c = new THREE.Vector3(b.center[0], b.center[1], b.center[2]).applyMatrix4(m);
+  const col = new THREE.Vector3();
+  const e = [0, 1, 2].map((axis) => col.setFromMatrixColumn(m, axis).length() * b.extent[axis]);
+  return { center: [c.x, c.y, c.z], extent: e };
+}
+
 export function measureSplatBounds(mesh, three = THREE) {
   return measureBounds(mesh, three);
 }
