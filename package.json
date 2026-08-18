@@ -1,6 +1,6 @@
 {
   "name": "@displayxr/inline3d",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Turn any HTML <canvas> into a glasses-free-3D window on a DisplayXR display, inside an ordinary web page. Dependency-free; progressive enhancement (falls back to plain 2D everywhere else).",
   "type": "module",
   "types": "./index.d.ts",
@@ -40,6 +40,7 @@
     "viewer.d.ts",
     "splat.d.ts",
     "model.d.ts",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],

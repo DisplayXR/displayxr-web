@@ -37,6 +37,17 @@ const DEFAULT_SORT_INTERVAL_MS = 16;
 const FRAME_SAMPLE_CAP = 200000;
 
 /**
+ * three.js floor for THIS subpath — Spark's own floor, above the package-wide >=0.150 that the
+ * core and ./three ask for.
+ *
+ * npm cannot express a peer range per export, so the manifest has to state the LOWER bound and a
+ * consumer on 0.16x installs cleanly, then fails somewhere inside a Spark worker with a message
+ * about neither three nor versions. Checking here turns that into one sentence naming the actual
+ * problem. Kept as a number: THREE.REVISION is a bare string like "180", not a semver triple.
+ */
+const THREE_MIN_REVISION = 180;
+
+/**
  * Identify a splat container from its first bytes.
  *
  * Spark resolves a file's format from the URL PATH, and has a magic-byte sniffer it does not
@@ -99,6 +110,19 @@ function sniffFileType(bytes) {
  * good enough for a clean, isolated capture, weaker on a scene with a background wall.
  */
 export function addSplat(wall, canvas, src, opts = {}) {
+  // Fail here, synchronously, and not through `ready`: a peer too old is an install-time mistake
+  // in the page's dependencies, not a condition of this asset, and it will be true of every call.
+  // Surfacing it as a load rejection would let a caller render an "asset unavailable" placeholder
+  // over what is really a version problem.
+  const rev = parseInt(THREE.REVISION, 10);
+  if (Number.isFinite(rev) && rev < THREE_MIN_REVISION) {
+    throw new Error(
+      `@displayxr/inline3d/splat needs three >= 0.${THREE_MIN_REVISION} (Spark's floor); ` +
+      `found 0.${THREE.REVISION}. The package-wide peer range is >=0.150 because the core and ` +
+      `./three work there — this subpath does not. Upgrade three, or use ./model for meshes.`,
+    );
+  }
+
   const {
     virtualDisplayHeight = 0.24,
     frame = null,
