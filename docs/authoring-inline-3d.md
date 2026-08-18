@@ -134,6 +134,16 @@ if (wall.supported) {
 Call `handle.remove()` (returned by each `add*`) to drop one window, or `wall.close()` to
 end the session and release everything.
 
+**Navigation and resize are handled for you.** A window's rect reaches the compositor from the
+session's own animation frames, so a page that stops running frames leaves its last rects
+weaving — which is what a back-navigation into the bfcache used to do (ghost 3D windows on the
+next page, browser#87). The SDK releases every live window on `pagehide`/`freeze` and re-arms
+them on `pageshow`/`resume` through the same lazy logic, so you neither see the ghosts nor have
+to wire anything. Likewise a live window whose CSS box or `devicePixelRatio` changes — a
+responsive reflow, a browser zoom, a drag to a different-scale monitor — has its SBS buffer
+re-derived and repainted; that's for `addImage`/`addVideo` windows, whose buffer the SDK owns.
+An `addScene` canvas is yours: resize its buffer yourself, keeping the 2× width.
+
 ## Detecting support — do this, not that
 
 Use **`createInline3D()`** (or `inline3DAvailable()` for a synchronous pre-gate). If it
@@ -199,8 +209,79 @@ Rules of the road:
   by hand, set `will-change: transform` on the element yourself, or it will weave instead of
   compositing over. (A CSS `filter` does **not** work here — its render surface is flattened
   away in the weave path; `will-change: transform` is the reliable promotion.)
+- **An overlay must be a PARTIAL region of the tile — never the whole tile.** The browser
+  re-composites an excluded element by *geometrically matching* its rect to a composited-layer
+  quad (≥70% area overlap). A plate that covers the whole canvas matches the **canvas's own**
+  quad, so the canvas is staged as the overlay: it leaves the weave input and the tile presents
+  its raw side-by-side buffer — two squished halves, no 3D. A caption band, a badge, a corner
+  plate, a bottom scrim are all fine; a full-bleed hover layer over the picture is not. Cover
+  the tile with a **partial** plate plus a background on the plate, or put the element outside
+  the tile as page chrome (below). The SDK measures this and refuses a full-tile exclusion with
+  a console warning rather than destroying the tile — but it can only judge the rect it can
+  measure, so a plate that is `display:none` at registration and becomes full-tile when shown
+  slips through. The rule is yours to keep.
+- **A `backdrop-filter` element can never be an overlay.** Exclusion needs the element as an
+  isolated composited resource — the element rastered on transparency. `backdrop-filter` is
+  defined as a function *of what is behind it*, so it has no such resource: the browser has
+  nothing to hand the compositor, and the element either weaves anyway or drops out. There is
+  no flag for this. On the woven path, drop the blur and use a near-solid background
+  (`rgba(16,17,22,.92)` reads much like a frosted bar) — and if you want the blur off the
+  woven path, keep it on a surface that never overlaps a tile.
 - **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
   before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
+
+## Page chrome — headers, toolbars, floating bars
+
+The overlays above live *inside* a tile's container. Page **chrome** is the other case: a
+sticky header, a floating toolbar, a bottom bar — furniture that sits outside every tile and
+overlaps *many* of them as they scroll under it. Excluding it per tile would race the lazy
+lifecycle (a tile that re-activates has a fresh layer and a fresh, empty exclusion set), so
+chrome is registered **page-globally** instead: excluded from every window, current and future,
+and re-applied automatically on every re-activate.
+
+**By default the SDK finds it for you.** `createInline3D({ autoChrome: true })` — the default —
+scans for page chrome at session start and again as tiles activate:
+
+- **Shallow scan:** the top **three DOM levels** under `<body>`, keeping elements whose
+  computed `position` is `fixed` or `sticky`. Page chrome lives there; a sticky element deeper
+  in the tree (a table header inside a scroller) is *content*, not chrome, and is left alone.
+- **Per-element text plates:** besides the bar itself, its text-bearing and replaced
+  descendants (`img`, `svg`, `video`, `canvas`, form controls) are registered individually. A
+  full-width bar can raster as several compositor tile quads, each a fraction of the bar's
+  rect — so none of them matches the bar's rect and the bar never stages. The small per-text
+  plates each promote to their own layer and match ~1:1, which is what closes the visible
+  failure (a near-solid bar hides everything *except* its text, because a uniform colour weaves
+  to itself).
+- **Throttled to once a second:** layer activations burst during a scroll, and each one is a
+  rescan point, so late-mounted chrome is picked up without rescanning per tile.
+- **Opt out** with `data-inline3d-no-overlay` on an element — it and its whole subtree are
+  skipped. An element that *contains* a woven window is never plated (that would hand the
+  weave input back to the compositor as crisp 2D).
+
+Its limits, all consequences of "shallow, throttled, computed-position": chrome deeper than
+three levels, chrome that is neither `fixed` nor `sticky` (a `position:absolute` bar in a
+scroll container), and chrome that mounts and then *moves* within the same second are not
+covered. Register those yourself:
+
+```js
+const wall = await createInline3D();                       // autoChrome on by default
+wall.addGlobalOverlay(document.querySelector('.deep .toolbar'));
+// …and to stop:
+wall.removeGlobalOverlay(el);
+```
+
+`addGlobalOverlay(el)` is also the right call whenever you want chrome handled *explicitly* —
+pass `autoChrome: false` and register every bar by hand if you'd rather the SDK never touch
+your DOM's `will-change`. Both paths are no-ops on a browser without overlay exclusion.
+
+Two things to know about chrome specifically:
+
+- **Keep `backdrop-filter` off it.** A blurred sticky header is the single most common chrome
+  mistake: it cannot be excluded at all (see the rule above), so tiles weave straight through
+  it. Use a near-solid background instead.
+- **Seams during scroll.** Exclusion keeps chrome out of each tile's weave input, but the
+  per-tile present can still seam a page-global bar where it spans the gap between two tiles.
+  The systematic fix is the whole-window composited present (browser#22).
 
 ## Gotchas checklist
 
@@ -212,6 +293,15 @@ Rules of the road:
   content at `z=0`.
 - **Compositor layer:** the SDK sets `will-change:transform; transform:translateZ(0)` on
   managed canvases so each is a distinct weave target — keep it if you build windows manually.
+- **Overlays are partial regions of a tile, never the whole tile.** A full-tile plate matches
+  the canvas's own quad and the tile falls out of the weave.
+- **No `backdrop-filter` on anything that overlaps a tile** — it has no isolated composited
+  resource, so it can never be excluded. Near-solid background instead.
+- **Page chrome is page-global, not per-tile.** `autoChrome` covers sticky/fixed furniture in
+  the top three DOM levels; anything else goes through `addGlobalOverlay()`.
+- **One `createInline3D()` per document.** The element-rect channel is a whole-widget setter,
+  so two live managers overwrite each other every frame (the SDK warns). Sequential sessions
+  across routes are fine — `close()` the old one first.
 - **The page still works in 2D.** Always ship a fallback for `{ supported:false }`.
 
 ## Under the hood (raw WebXR)

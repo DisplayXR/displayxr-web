@@ -20,6 +20,24 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   Spark's floor. npm cannot express a peer range per export, so the manifest states the
   package-wide `>=0.150` and an install on 0.16x succeeds; the failure used to surface from inside
   a Spark worker as something unrelated to versions. *(preview)*
+- **A live window now tracks its own box and `devicePixelRatio`.** `addImage`/`addVideo` windows
+  get a `ResizeObserver` while active, plus a `(resolution: Ndppx)` media query for the changes a
+  `ResizeObserver` cannot see (browser zoom, a drag to a different-scale monitor); the
+  side-by-side buffer is re-derived and repainted on the next animation frame. `addScene`
+  canvases and windows given an explicit `{ width, height }` are box-independent and untouched.
+  *(core tier — additive; no API change)*
+- **Creating a second manager while one is live warns.** The browser's element-rect channel is a
+  whole-widget setter, so two live sessions in one document overwrite each other's rect list
+  every frame and neither one's tiles hold still. One `console.warn` says so; nothing is refused,
+  because a route change that closes one manager and opens the next is the normal case.
+  *(core tier)*
+- **A full-tile overlay is refused with an explanation instead of destroying the tile.** The
+  browser matches an excluded element to a composited quad by ≥70% area overlap, so a plate
+  congruent with its own canvas matches the **canvas** — which then leaves the weave input and
+  presents its raw side-by-side buffer. Both the imperative `exclude()` and the
+  `data-inline3d-overlay` scan now measure mutual overlap and skip such an element. The test is
+  mutual, so page-global chrome that fully covers a small tile is unaffected. Make the overlay a
+  partial region of the tile, or page chrome via `addGlobalOverlay()`. *(core tier)*
 
 ### Changed — this moves existing pixels
 
@@ -41,6 +59,20 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ### Fixed
 
+- **Back-navigation left ghost 3D windows woven over the next page.** A window's rect reaches the
+  compositor from the session's own animation frames, and the only way to clear a rect is to push
+  a list without it — so a page frozen into the bfcache mid-loop leaves its last list standing and
+  its tiles keep weaving over whatever is on screen now (context:
+  [displayxr-browser#87](https://github.com/DisplayXR/displayxr-browser/issues/87)). Every live
+  window is now released on `pagehide` (and `freeze`, for a tab frozen without one) while frames
+  still run, so the outgoing frames report an empty list, and re-armed on `pageshow`/`resume`
+  through the existing lazy logic — re-observing re-delivers the current intersection state, so a
+  tile scrolled away before leaving stays dark. Page chrome is rescanned on restore. *(core tier)*
+- **A restored page could come back alive but never paint.** A bfcache restore can hand back a
+  session whose pending animation frame never arrives, leaving the manager nominally running with
+  a dead loop. A persisted `pageshow` now gives it a second to prove otherwise and then starts a
+  fresh loop; loops carry an id and only the current one re-arms, so a stalled predecessor cannot
+  double the loop if it later fires. *(core tier)*
 - `addSplat` threw a `ReferenceError` on the **URL path** — every ordinary page — because the
   loader assigned `out.mesh` before `const out` was initialised. An async body runs synchronously
   to its first `await`, and the URL path has none. The throw escaped into `ready` *after* the mesh
