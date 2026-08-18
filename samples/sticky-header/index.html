@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — sticky header over a woven wall (chrome occlusion)</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.6 system-ui,-apple-system,sans-serif;background:#0f1014;color:#e8e8ea}
+  a{color:#5aa8ff;text-decoration:none}
+
+  /* ── The sticky header under test ────────────────────────────────────────
+     TRANSLUCENT ON PURPOSE: the tiles must be visible through it, which is
+     what makes the occlusion path observable at all. But NO backdrop-filter,
+     ever: overlay exclusion needs the element as an ISOLATED composited
+     resource (rastered on transparency) and a backdrop filter is by
+     definition a function of what is BEHIND it, so there is no such resource
+     to hand the compositor — the bar cannot be excluded and the tiles weave
+     straight through it. A near-solid background reads like a frosted bar
+     anyway. Nothing here registers the header: auto-chrome (on by default)
+     finds it because it is position:sticky in the top DOM levels. */
+  header{position:sticky;top:0;z-index:10;
+         background:rgba(16,17,22,.92);
+         border-bottom:1px solid #ffffff1f;
+         display:flex;align-items:center;gap:14px;
+         padding:11px 20px}
+  header .brand{font-weight:650;letter-spacing:-.2px}
+  header .brand .dot{color:#5aa8ff}
+  header nav{display:flex;gap:6px;margin-left:auto;font-size:13.5px}
+  header nav span{padding:5px 11px;border-radius:999px;background:#ffffff14}
+  header nav span.on{background:#5aa8ff2e;color:#a8d0ff}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:24px 20px 64px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.5px}
+  .lede{opacity:.72;margin:0 0 16px;max-width:70ch}
+  .status{font:13px/1.5 system-ui;padding:9px 13px;border-radius:8px;margin:0 0 24px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}
+  /* The stage stays VISUALLY BARE (no background, border, radius or overflow
+     clip): the weave rect covers the whole canvas box, so stage decoration is
+     woven with it. Corners are baked per eye in app.js. */
+  .stage{aspect-ratio:1/1;position:relative}
+  .stage canvas.pic{display:block;width:100%;height:100%}
+
+  /* Caption band — a PARTIAL region of the tile, which is the only legal shape
+     for an on-tile overlay. A plate congruent with the canvas would match the
+     CANVAS's own quad in the browser's >=70% geometric matcher, the canvas
+     would leave the weave input, and the tile would present its raw
+     side-by-side buffer. Hence: a band, not a full-bleed layer. Hide with
+     DISPLAY (only display:none reports an empty rect). */
+  .plate{position:absolute;left:0;right:0;bottom:0;padding:9px 12px 7px;
+         background:linear-gradient(transparent,rgba(10,11,16,.88));
+         color:#fff;font:12.5px/1.4 system-ui;display:none;pointer-events:none}
+  .plate .title{font-weight:600}
+  .plate .meta{opacity:.75}
+  .stage:hover .plate{display:block}
+
+  footer{margin-top:32px;font-size:13px;opacity:.6;line-height:1.6}
+  footer code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">DisplayXR<span class="dot">.</span> sticky-header</div>
+  <nav><span class="on">Wall</span><span>About</span></nav>
+</header>
+
+<div class="wrap">
+  <h1>Sticky header over a woven wall</h1>
+  <p class="lede">Scroll. The 3D tiles must pass <em>under</em> the translucent bar as flat 2D —
+     never woven over it, never seaming into it. The bar is ordinary sticky HTML with no
+     inline-3D wiring at all: auto-chrome finds it and excludes it from every tile's weave.
+     This is the chrome-over-scrolling-tile occlusion path, in a page you can read.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <div id="grid" class="grid"></div>
+
+  <footer>
+    One <code>inline-3d</code> session; auto-chrome registers the sticky bar (and its text) as
+    page-global overlays, so each tile's weave input excludes it and the bar composites as crisp
+    2D over the woven 3D. Uses the LOCAL <code>js/inline3d.js</code> — this sample exercises the
+    unreleased lifecycle + overlay-guard work, so it must not pin a published version.
+    Get the <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>.
+  </footer>
+</div>
+
+<script type="importmap">
+{ "imports": { "@displayxr/inline3d": "../../js/inline3d.js" } }
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
