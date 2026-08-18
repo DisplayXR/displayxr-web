@@ -51,8 +51,17 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 /**
  * Robust model-space bounds from a flat array of splat/vertex centres.
  *
- * A raw bounding box is useless on captured content: one stray floater a hundred metres out
- * and the subject shrinks to a speck. This drops the tails per axis and returns the core.
+ * TWO STAGES, because one percentile box cannot do both jobs. A raw min/max is useless on
+ * captured content — one stray floater a hundred metres out and the subject shrinks to a speck —
+ * but a trimmed box is equally useless as an EXTENT, because the tail it drops on a dense subject
+ * is the subject's own outer shell. Trimming 5% per axis under-reported seven scanned products by
+ * 10-15%, which the fit then faithfully turned into a subject overflowing its tile.
+ *
+ * So: percentiles REJECT, true min/max MEASURES.
+ *   1. Percentile core (lo..hi per axis) — an outlier-proof estimate of where the subject is.
+ *   2. True min/max over centres inside `expand` x that core, centred on it.
+ * A floater sits orders of magnitude outside the core and is still rejected; a shell splat sits
+ * just past the percentile cut and is now kept.
  *
  * This is the CHEAP path. The native viewers additionally run an opacity-weighted voxel
  * flood-fill (`getMainObjectBounds`) that isolates the dominant contiguous object from an
@@ -64,11 +73,14 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
  *
  * @param {ArrayLike<number>} xyz  flat [x,y,z, x,y,z, …] centres in model space.
  * @param {object} [opts]
- * @param {number} [opts.lo=0.05] lower percentile to trim per axis.
- * @param {number} [opts.hi=0.95] upper percentile to trim per axis.
+ * @param {number} [opts.lo=0.05] lower percentile bounding the rejection core.
+ * @param {number} [opts.hi=0.95] upper percentile bounding the rejection core.
+ * @param {number} [opts.expand=2.5]  how many core-extents wide the acceptance window is. A real
+ *        subject reaches well past its own percentile core; a floater does not sit at 2.5x it.
+ *        Set 0 to get the old percentile-only box back.
  * @returns {{center:number[], extent:number[]}|null} null if there is nothing to measure.
  */
-export function boundsFromPositions(xyz, { lo = 0.05, hi = 0.95 } = {}) {
+export function boundsFromPositions(xyz, { lo = 0.05, hi = 0.95, expand = 2.5 } = {}) {
   const n = Math.floor(xyz.length / 3);
   if (n < 1) return null;
   // Below a few hundred points the percentiles are noise — just use the true box.
@@ -87,7 +99,38 @@ export function boundsFromPositions(xyz, { lo = 0.05, hi = 0.95 } = {}) {
     center[axis] = 0.5 * (loV + hiV);
     extent[axis] = Math.max(hiV - loV, 1e-6);
   }
-  return { center, extent };
+  // Untrimmed already IS the true box, and expand 0 asks for the old behaviour.
+  if (!trim || expand <= 0) return { center, extent };
+
+  // Stage 2. Note the window is per-axis but membership is joint: a point must be inside on all
+  // three axes to count, so a distant floater cannot widen one axis while sitting far off another.
+  const wLo = [0, 0, 0];
+  const wHi = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const half = 0.5 * expand * extent[a];
+    wLo[a] = center[a] - half;
+    wHi[a] = center[a] + half;
+  }
+  const tLo = [Infinity, Infinity, Infinity];
+  const tHi = [-Infinity, -Infinity, -Infinity];
+  let kept = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
+    if (x < wLo[0] || x > wHi[0] || y < wLo[1] || y > wHi[1] || z < wLo[2] || z > wHi[2]) continue;
+    kept++;
+    if (x < tLo[0]) tLo[0] = x; if (x > tHi[0]) tHi[0] = x;
+    if (y < tLo[1]) tLo[1] = y; if (y > tHi[1]) tHi[1] = y;
+    if (z < tLo[2]) tLo[2] = z; if (z > tHi[2]) tHi[2] = z;
+  }
+  // A window that somehow caught nothing leaves the core standing rather than returning junk.
+  if (kept === 0) return { center, extent };
+  const c2 = [0, 0, 0];
+  const e2 = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    c2[a] = 0.5 * (tLo[a] + tHi[a]);
+    e2[a] = Math.max(tHi[a] - tLo[a], 1e-6);
+  }
+  return { center: c2, extent: e2 };
 }
 
 /**
