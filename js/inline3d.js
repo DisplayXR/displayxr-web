@@ -546,7 +546,7 @@ class Inline3D {
    * Limit: it judges the rect it can measure now. A plate that is display:none at
    * registration measures empty (and excluding it is harmless while hidden), so a plate that
    * only becomes full-tile once shown slips through — the authoring rule stands on its own
-   * (docs/authoring-inline-3d.md § Page chrome and overlay geometry).
+   * (docs/authoring-inline-3d.md § 2D overlays ON a 3D window).
    */
   _isFullTileOverlay(win, el) {
     if (!el || typeof el.getBoundingClientRect !== 'function') return false;
