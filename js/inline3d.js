@@ -24,6 +24,13 @@
 // { supported:false } and your page shows its normal 2D content — inline-3D is progressive
 // enhancement, never a hard dependency.
 
+// The document's single live manager. The browser's per-frame element-rect report is a
+// WHOLE-WIDGET setter — each live session pushes the complete list of rects to weave — so two
+// managers in one document overwrite each other frame by frame and neither one's tiles hold
+// still. Tracked here only to warn: sequential sessions (a route change that closes one
+// manager and opens the next) are legitimate and the common case, so nothing is refused.
+let liveManager = null;
+
 const hasWebXR = () => typeof navigator !== 'undefined' && !!navigator.xr;
 const hasLayer = () =>
   typeof window !== 'undefined' && typeof window.XRDisplayLayer === 'function';
@@ -116,6 +123,10 @@ export async function startInline3D(
   return { supported: true, wall, session: wall.session, close: () => wall.close() };
 }
 
+// Mutual rect-overlap fraction at which an overlay becomes indistinguishable from the canvas
+// it sits on — the same >=70% the browser's own layer matcher uses. See _isFullTileOverlay.
+const FULL_TILE_OVERLAP = 0.7;
+
 /**
  * Elements inside `root` worth their own overlay plate: anything with a direct
  * non-whitespace text node, plus replaced/painted elements (img, svg, video,
@@ -163,15 +174,37 @@ class Inline3D {
     this._autoChrome = autoChrome;
     this._autoChromeEls = new Set();
     this._lastChromeScan = 0;
+    // Elements already reported as full-tile overlays, so the refusal is logged once per
+    // element instead of on every re-activate / overlay-scan sync.
+    this._fullTileWarned = new WeakSet();
     this._running = true;
     this._lazy = lazy;
     this._observer =
       lazy && typeof IntersectionObserver === 'function'
         ? new IntersectionObserver((entries) => this._onIntersect(entries), { rootMargin })
         : null;
+    // Frame-loop bookkeeping: one loop, identified, so a restart can retire a stalled
+    // predecessor instead of running two (see _requestFrame / _watchForStalledFrames).
+    this._loopId = 0;
+    this._framePending = false;
+    this._frameCount = 0;
+    this._frameWatchdog = null;
+    this._suspended = null;
+    if (liveManager && liveManager._running && liveManager !== this) {
+      console.warn(
+        '[inline3d] A second inline-3D session is live in this document. The browser\'s ' +
+          'element-rect channel is a whole-widget setter, so both managers clobber each ' +
+          "other's rect list every frame — tiles may flicker, ghost, or weave at a stale " +
+          'rect. Use ONE createInline3D() per document and add every window to it; if you ' +
+          'are switching views, close() the previous manager first.'
+      );
+    }
+    liveManager = this;
     session.addEventListener('end', () => this._teardown());
     this._scanChrome(); // page chrome usually exists before the session does
-    session.requestAnimationFrame((t, f) => this._frame(t, f));
+    this._bindLifecycle();
+    this._armDprWatch();
+    this._requestFrame();
   }
 
   /** Number of windows whose weave layer is currently live (on-screen in lazy mode). */
@@ -409,6 +442,9 @@ class Inline3D {
       excluded: new Set(),
       autoExcluded: new Set(),
       overlayObserver: null,
+      // Box/dpr watch, live only while the window is (see _startSizeWatch).
+      sizeObserver: null,
+      resizePending: false,
     };
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
@@ -469,10 +505,12 @@ class Inline3D {
       this._sizeBuffer(win, /*sbs*/ true);
       this._paint(win, null); // first SBS paint (video will refresh each frame)
     }
+    this._startSizeWatch(win);
   }
 
   _deactivate(win) {
     this._stopOverlayScan(win);
+    this._stopSizeWatch(win);
     if (win.layer) {
       try {
         win.layer.close();
@@ -490,8 +528,56 @@ class Inline3D {
 
   // ── overlay exclusion (browser#18) ─────────────────────────────────────────────────
 
+  /**
+   * Refuse a FULL-TILE overlay — an element whose rect is (near-)congruent with its own
+   * window's canvas.
+   *
+   * The browser re-composites an excluded element by geometrically matching its rect to a
+   * composited-layer quad (>=70% area overlap, see _scanChrome). A plate that covers the whole
+   * tile matches the tile's OWN canvas quad, so the CANVAS gets staged as the overlay: it
+   * leaves the weave input entirely and the tile presents its raw side-by-side buffer —
+   * squished halves, no 3D. That is a destroyed tile, not a degraded one, so skip the
+   * exclusion and say why instead of honouring it.
+   *
+   * The test is MUTUAL (>=70% of both rects) so page-global chrome stays legal: a sticky
+   * header may cover a small tile completely, but the tile is a small fraction of the header,
+   * so the header never looks congruent with any one canvas.
+   *
+   * Limit: it judges the rect it can measure now. A plate that is display:none at
+   * registration measures empty (and excluding it is harmless while hidden), so a plate that
+   * only becomes full-tile once shown slips through — the authoring rule stands on its own
+   * (docs/authoring-inline-3d.md § Page chrome and overlay geometry).
+   */
+  _isFullTileOverlay(win, el) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+    const e = el.getBoundingClientRect();
+    const c = win.canvas.getBoundingClientRect();
+    const eArea = e.width * e.height;
+    const cArea = c.width * c.height;
+    if (eArea <= 0 || cArea <= 0) return false; // hidden / detached — nothing to judge
+    const iw = Math.min(e.right, c.right) - Math.max(e.left, c.left);
+    const ih = Math.min(e.bottom, c.bottom) - Math.max(e.top, c.top);
+    if (iw <= 0 || ih <= 0) return false;
+    const inter = iw * ih;
+    if (inter / eArea < FULL_TILE_OVERLAP || inter / cArea < FULL_TILE_OVERLAP) return false;
+    if (!this._fullTileWarned.has(el)) {
+      this._fullTileWarned.add(el);
+      console.warn(
+        '[inline3d] Refusing a full-tile overlay: this element covers its own woven canvas, ' +
+          "and the browser's geometric matcher cannot tell the two apart — it would stage " +
+          'the CANVAS as the overlay and the tile would show its raw side-by-side buffer ' +
+          'instead of 3D. Make the overlay a PARTIAL region of the tile (a caption band, a ' +
+          'badge, a corner plate), or move it outside the tile and register it with ' +
+          'addGlobalOverlay().',
+        el
+      );
+    }
+    return true;
+  }
+
   _applyExclusion(win, el) {
     if (!win.layer || !hasExclusion()) return;
+    if (this._isFullTileOverlay(win, el)) return;
     // Force the overlay onto its OWN composited layer so the browser can grab it
     // as an isolated resource (the element rastered on transparency) and
     // composite it OVER the woven 3D — final = plate + (1−plate.a)·woven, true
@@ -584,15 +670,108 @@ class Inline3D {
     win.autoExcluded.clear();
   }
 
-  _sizeBuffer(win, sbs) {
+  /** The per-eye buffer size this window should have right now (explicit, or box × dpr). */
+  _eyeSize(win) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const boxW = win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr);
-    const boxH = win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr);
+    return {
+      w: win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr),
+      h: win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr),
+    };
+  }
+
+  _sizeBuffer(win, sbs) {
+    const { w: boxW, h: boxH } = this._eyeSize(win);
     win.eyeW = boxW;
     win.eyeH = boxH;
     win.canvas.width = sbs ? boxW * 2 : boxW; // SBS = two eye tiles wide
     win.canvas.height = boxH;
     win.sbs = sbs;
+  }
+
+  // ── box / devicePixelRatio changes ──────────────────────────────────────────────────
+  //
+  // _sizeBuffer runs at activate and deactivate ONLY, so a live window whose CSS box or
+  // devicePixelRatio changes underneath it keeps its old backing store: the same SBS pixels
+  // are stretched onto a differently-shaped box and the two eyes come out mis-squeezed, with
+  // no error, until the tile happens to re-activate. A responsive reflow, a flex sibling
+  // appearing, a browser zoom or a drag to a different-scale monitor all do it. So: watch the
+  // box while the window is live, and re-derive the buffer when it actually moves.
+
+  _startSizeWatch(win) {
+    if (typeof ResizeObserver !== 'function') return;
+    if (win.sizeObserver) return;
+    // Scene canvases are the app's (ownsBuffer false) — never touch their width/height.
+    // An explicit {width, height} is box-independent by definition, so nothing to watch.
+    if (!win.ownsBuffer || (win.reqW && win.reqH)) return;
+    win.sizeObserver = new ResizeObserver(() => this._onBoxChange(win));
+    win.sizeObserver.observe(win.canvas);
+  }
+
+  _stopSizeWatch(win) {
+    if (win.sizeObserver) {
+      win.sizeObserver.disconnect();
+      win.sizeObserver = null;
+    }
+    win.resizePending = false;
+  }
+
+  /**
+   * Re-derive one live window's SBS buffer and repaint it. Debounced to one animation frame:
+   * ResizeObserver and a dpr flip both fire in bursts during a drag-resize or a zoom, and
+   * every resize reallocates the backing store and clears it.
+   */
+  _onBoxChange(win) {
+    if (!win.layer || !win.ownsBuffer || win.resizePending) return;
+    win.resizePending = true;
+    const run = () => {
+      if (!win.resizePending) return;
+      win.resizePending = false;
+      if (!win.layer || !win.ownsBuffer) return;
+      const { w, h } = this._eyeSize(win);
+      if (w === win.eyeW && h === win.eyeH) return; // observer fired, geometry didn't move
+      this._sizeBuffer(win, /*sbs*/ true);
+      this._paint(win, null); // repaint NOW: setting canvas.width cleared the buffer
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else run();
+  }
+
+  /**
+   * devicePixelRatio is invisible to ResizeObserver — a browser zoom or a move to a
+   * different-scale monitor leaves the CSS box the same number of CSS px while the buffer
+   * that box deserves changes. A `(resolution: Ndppx)` query flips exactly when dpr leaves
+   * its current value, so arm one, and re-arm it on the new value each time.
+   */
+  _armDprWatch() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    this._disarmDprWatch();
+    let q;
+    try {
+      q = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    } catch {
+      return; // no resolution-query support: box changes are still covered
+    }
+    const onChange = () => {
+      if (!this._running) return;
+      this._armDprWatch(); // this query is stale the moment it fires
+      for (const win of this._windows.values()) if (win.layer) this._onBoxChange(win);
+    };
+    try {
+      q.addEventListener('change', onChange);
+    } catch {
+      return;
+    }
+    this._dprWatch = { q, onChange };
+  }
+
+  _disarmDprWatch() {
+    if (!this._dprWatch) return;
+    try {
+      this._dprWatch.q.removeEventListener('change', this._dprWatch.onChange);
+    } catch {
+      /* ignore */
+    }
+    this._dprWatch = null;
   }
 
   _paint(win, _views) {
@@ -623,9 +802,32 @@ class Inline3D {
     }
   }
 
+  /**
+   * Arm the next session frame. `force` starts a NEW loop even though one is nominally
+   * pending: each loop carries an id and only the current id re-arms, so a stalled
+   * predecessor (a bfcache restore whose callback never fired) is retired rather than
+   * doubled if it ever does fire.
+   */
+  _requestFrame(force) {
+    if (!this._running) return;
+    if (this._framePending && !force) return;
+    const id = force ? ++this._loopId : this._loopId;
+    this._framePending = true;
+    try {
+      this.session.requestAnimationFrame((t, f) => {
+        if (id !== this._loopId) return; // superseded loop — let it die here
+        this._framePending = false;
+        this._frameCount++;
+        this._frame(t, f);
+      });
+    } catch {
+      this._framePending = false; // session going away; 'end' → _teardown handles it
+    }
+  }
+
   _frame(t, f) {
     if (!this._running) return;
-    this.session.requestAnimationFrame((t2, f2) => this._frame(t2, f2));
+    this._requestFrame();
     const pose = this.refSpace ? f.getViewerPose(this.refSpace) : null;
     const views = pose ? pose.views : null;
     for (const win of this._windows.values()) {
@@ -643,12 +845,116 @@ class Inline3D {
     }
   }
 
+  // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────
+  //
+  // A weaved window's rect reaches the compositor from the session's own rAF: every frame the
+  // live session pushes the full list of rects to weave, and the ONLY way to clear a rect is
+  // to push a list without it. So a page that simply stops running frames leaves its last
+  // list standing — the rects keep weaving over whatever is on screen now. Back/forward
+  // navigation does exactly that: bfcache freezes the page mid-loop, the woven tiles stay
+  // pinned where they were, and the next page inherits ghost 3D windows (browser#87).
+  //
+  // The fix is to make the LAST frames before suspension report an empty list: deactivate
+  // every live window while frames still run, remember which ones were live, and restore them
+  // on the way back. pagehide covers bfcache entry and unload; freeze covers a discarded
+  // background tab where pagehide does not fire.
+
+  _bindLifecycle() {
+    if (typeof window === 'undefined') return;
+    this._onPageHide = () => this._suspend();
+    this._onPageShow = (e) => this._resume(!!(e && e.persisted));
+    window.addEventListener('pagehide', this._onPageHide);
+    window.addEventListener('pageshow', this._onPageShow);
+    // Page Lifecycle API (Blink): a frozen tab never gets pagehide/pageshow.
+    if (typeof document !== 'undefined' && 'onfreeze' in document) {
+      this._onFreeze = () => this._suspend();
+      this._onResume = () => this._resume(true);
+      document.addEventListener('freeze', this._onFreeze);
+      document.addEventListener('resume', this._onResume);
+    }
+  }
+
+  _unbindLifecycle() {
+    if (typeof window === 'undefined') return;
+    if (this._onPageHide) window.removeEventListener('pagehide', this._onPageHide);
+    if (this._onPageShow) window.removeEventListener('pageshow', this._onPageShow);
+    if (this._onFreeze && typeof document !== 'undefined') {
+      document.removeEventListener('freeze', this._onFreeze);
+      document.removeEventListener('resume', this._onResume);
+    }
+    this._onPageHide = this._onPageShow = this._onFreeze = this._onResume = null;
+    if (this._frameWatchdog) {
+      clearTimeout(this._frameWatchdog);
+      this._frameWatchdog = null;
+    }
+  }
+
+  /** Close every live layer so the outgoing frames report an empty rect list. */
+  _suspend() {
+    if (!this._running || this._suspended) return;
+    const was = [];
+    for (const win of this._windows.values()) {
+      if (win.layer) {
+        was.push(win);
+        this._deactivate(win);
+      }
+    }
+    this._suspended = was;
+  }
+
+  /**
+   * Coming back: re-arm the windows that were live. In lazy mode the IntersectionObserver
+   * owns that decision, and re-observing re-delivers the CURRENT intersection state — so a
+   * tile the user scrolled away from before leaving stays dark, and only what is actually on
+   * screen re-weaves. Chrome is rescanned because a restored page may have remounted it.
+   */
+  _resume(persisted) {
+    if (!this._running) return;
+    const was = this._suspended;
+    this._suspended = null;
+    if (was) {
+      for (const win of was) {
+        if (!this._windows.has(win.canvas)) continue; // removed while we were away
+        if (this._lazy && this._observer) {
+          this._observer.unobserve(win.observeEl);
+          this._observer.observe(win.observeEl);
+        } else {
+          this._activate(win);
+        }
+      }
+    }
+    this._lastChromeScan = 0; // the 1 s throttle must not swallow the restore rescan
+    this._scanChrome();
+    this._armDprWatch(); // the restore may be on a different-scale display
+    if (persisted) this._watchForStalledFrames();
+  }
+
+  /**
+   * A bfcache restore can hand back a session whose pending animation frame never arrives —
+   * the loop was suspended between request and callback, and nothing re-issues it. The
+   * manager then looks alive (`_running`) while no window ever paints again. Give it a second
+   * to prove otherwise, then start a fresh loop (which retires the stalled one by id).
+   */
+  _watchForStalledFrames() {
+    if (this._frameWatchdog || typeof setTimeout !== 'function') return;
+    const before = this._frameCount;
+    this._frameWatchdog = setTimeout(() => {
+      this._frameWatchdog = null;
+      if (!this._running || this._frameCount !== before) return; // frames arrived
+      this._requestFrame(/*force*/ true);
+    }, 1000);
+  }
+
   _teardown() {
     if (!this._running) return;
     this._running = false;
+    if (liveManager === this) liveManager = null;
+    this._unbindLifecycle();
+    this._disarmDprWatch();
     if (this._observer) this._observer.disconnect();
     for (const win of this._windows.values()) {
       this._stopOverlayScan(win);
+      this._stopSizeWatch(win);
       if (win.layer) {
         try {
           win.layer.close();
