@@ -44,12 +44,18 @@ export interface OrbitPose {
 }
 
 /**
- * Robust model-space bounds from a flat [x,y,z,…] array. The cheap percentile path; prefer
- * bounds computed at conversion time where you have them.
+ * Robust model-space bounds from a flat [x,y,z,…] array. The cheap path; prefer bounds computed
+ * at conversion time where you have them.
+ *
+ * Percentiles REJECT outliers, they do not measure extent: `lo`/`hi` bound a rejection window
+ * `expand` core-extents wide, and the returned extent is the true min/max inside it. Returning
+ * the trimmed box itself under-reports a dense subject by 10-15% — a uniform cube measures 0.899
+ * of its real size — which a fit then turns into a subject overflowing its tile. `expand: 0`
+ * restores the old percentile-only box.
  */
 export function boundsFromPositions(
   xyz: ArrayLike<number>,
-  opts?: { lo?: number; hi?: number },
+  opts?: { lo?: number; hi?: number; expand?: number },
 ): SubjectBounds | null;
 
 /** A single framed object in an inline-3D window: SBS loop, framing, orbit, mono fallback. */
