@@ -13,7 +13,7 @@ The **exported** surface of the package entry points:
   - the `Inline3D` manager: `addImage`, `addVideo`, `addScene`, `addGlobalOverlay`,
     `removeGlobalOverlay`, `close`, and the `supported` / `session` / `refSpace` / `liveCount` fields
   - the `TileHandle`: `remove`, `exclude`, `unexclude`
-  - `inline3DAvailable()`, `inline3dOverlaySupported()`
+  - `inline3DAvailable()`, `inline3dOverlaySupported()`, `inline3dOcclusionByDrawOrder()`
 - `@displayxr/inline3d/three`
   - `EyeCamera` (`.camera`, `.setFromView`), `EdgeFeather` (`.render`)
 - The declarative `data-inline3d-overlay` attribute contract.
@@ -23,6 +23,24 @@ The **exported** surface of the package entry points:
 
 Within 1.x these keep working; additions (new optional options, new helpers) ship as **minor**
 releases, fixes as **patches**.
+
+### Deprecated in 1.1.0 — the overlay-exclusion surface
+
+`TileHandle.exclude` / `unexclude`, `Inline3D.addGlobalOverlay` / `removeGlobalOverlay`, the
+`autoChrome` option and the `data-inline3d-overlay` attribute are **deprecated but still
+covered**. A browser with draw-order occlusion composites any 2D over woven 3D per-pixel by draw
+order, so there is nothing left for them to declare: the SDK accepts them and does nothing
+(details in [authoring](authoring-inline-3d.md#2d-over-3d--draw-order-occlusion)).
+
+Deprecated here means *documented as unnecessary*, not scheduled for removal:
+
+- They keep their exact 1.0 behaviour on every browser without draw-order occlusion, and those
+  browsers are in the field. A page must be able to support both generations unchanged, which is
+  the whole reason the browser also kept `excludeElement` as a no-op.
+- Removing them would be a **2.0**, and nothing here motivates one. Expect them to outlive 1.x.
+- `inline3dOverlaySupported()` is *not* deprecated: its question ("does 2D on a tile composite as
+  crisp 2D?") has the same answer on both generations. To distinguish the mechanisms — and only
+  ever the mechanisms, never a version or UA string — use `inline3dOcclusionByDrawOrder()`.
 
 ## Explicitly NOT covered (may change without a major bump)
 
@@ -72,6 +90,11 @@ code keeps working):
    constraints) — depends on the isolation model (browser#22 B, browser#23).
 4. A **CSS-native** region/z-order declaration (eventual successor to `data-inline3d-overlay`).
 
+Draw-order occlusion overtakes parts of 3 and 4: with 2D-over-3D decided per-pixel by draw order,
+the successor to `data-inline3d-overlay` is *ordinary CSS stacking* — nothing new to declare — and
+the isolation constraints the SDK works around (`will-change` promotion) do not arise. What stays
+open is `@media (glasses-free-3d)`, and `backdrop-filter`, which no z-order model fixes.
+
 Because N-view is additive over the frozen 2-view core, shipping 1.0 now is semver-safe.
 
 ## Browser compatibility
@@ -79,8 +102,17 @@ Because N-view is additive over the frozen 2-view core, shipping 1.0 now is semv
 The SDK is progressive enhancement: on any non-DisplayXR browser `createInline3D()` resolves to
 `{ supported: false }` and the page shows its normal 2D content. Overlay exclusion
 (`addGlobalOverlay` / `handle.exclude`) additionally requires a DisplayXR Browser new enough to
-expose `XRDisplayLayer.excludeElement`; where absent it silently no-ops. Query support at runtime
-with `inline3DAvailable()` and `inline3dOverlaySupported()` rather than sniffing versions.
+expose `XRDisplayLayer.excludeElement`; where absent it silently no-ops. A browser on the Phase-2
+compositor path occludes tiles with 2D **by draw order**, with nothing declared, and the same
+calls no-op there too.
+
+Query all of this at runtime — `inline3DAvailable()`, `inline3dOverlaySupported()`,
+`inline3dOcclusionByDrawOrder()` — and never by sniffing a version or user-agent string. Each
+reads a capability the browser exposes; version sniffing is not a supported way to detect any
+inline-3D feature, and a page pinned to one SDK release will outlive whatever it inferred. Note
+in particular that `excludeElement`'s *presence* is not a generation test: the Phase-2 change is
+compositor-side and leaves the JS API exactly as it was, so the method is present on both
+generations and only its effect differs.
 
 ## TypeScript
 

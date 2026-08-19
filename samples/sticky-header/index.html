@@ -18,12 +18,29 @@
      to hand the compositor — the bar cannot be excluded and the tiles weave
      straight through it. A near-solid background reads like a frosted bar
      anyway. Nothing here registers the header: auto-chrome (on by default)
-     finds it because it is position:sticky in the top DOM levels. */
+     finds it because it is position:sticky in the top DOM levels — and on a
+     browser with DRAW-ORDER OCCLUSION nothing registers it because nothing
+     needs to: 2D that paints over a tile occludes it per-pixel by draw order.
+     Same CSS, both generations. */
   header{position:sticky;top:0;z-index:10;
          background:rgba(16,17,22,.92);
          border-bottom:1px solid #ffffff1f;
          display:flex;align-items:center;gap:14px;
          padding:11px 20px}
+  /* SEE-THROUGH variant (the "translucency" button toggles it). This is the
+     showcase for draw-order occlusion: at .45 alpha the woven wall is plainly
+     visible THROUGH the bar and must still read as flat 2D there, which a
+     near-solid bar can only hint at. It is deliberately NOT the default,
+     because on a legacy (exclusion) browser the honest failure mode shows
+     here: the bar is re-composited only where the browser's geometric matcher
+     found a quad for it, so a strongly translucent bar can seam or weave in
+     the gaps a near-solid background would have hidden. Default near-solid,
+     see-through on demand. */
+  header.see-through{background:rgba(16,17,22,.45)}
+  header button{font:inherit;font-size:13px;color:inherit;cursor:pointer;
+         padding:5px 11px;border-radius:999px;border:1px solid #ffffff2e;
+         background:#ffffff14}
+  header button[aria-pressed="true"]{background:#5aa8ff2e;color:#a8d0ff;border-color:#5aa8ff55}
   header .brand{font-weight:650;letter-spacing:-.2px}
   header .brand .dot{color:#5aa8ff}
   header nav{display:flex;gap:6px;margin-left:auto;font-size:13.5px}
@@ -66,24 +83,29 @@
 <header>
   <div class="brand">DisplayXR<span class="dot">.</span> sticky-header</div>
   <nav><span class="on">Wall</span><span>About</span></nav>
+  <button id="seethrough" type="button" aria-pressed="false">translucency</button>
 </header>
 
 <div class="wrap">
   <h1>Sticky header over a woven wall</h1>
   <p class="lede">Scroll. The 3D tiles must pass <em>under</em> the translucent bar as flat 2D —
      never woven over it, never seaming into it. The bar is ordinary sticky HTML with no
-     inline-3D wiring at all: auto-chrome finds it and excludes it from every tile's weave.
-     This is the chrome-over-scrolling-tile occlusion path, in a page you can read.</p>
+     inline-3D wiring at all: where the browser occludes by draw order its 2D pixels win over
+     the weave by themselves; otherwise auto-chrome finds it and excludes it from every tile's
+     weave. Same page, both paths — the status line says which one is live. Hit
+     <em>translucency</em> to drop the bar to 45% alpha and watch the wall through it.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
   <div id="grid" class="grid"></div>
 
   <footer>
-    One <code>inline-3d</code> session; auto-chrome registers the sticky bar (and its text) as
-    page-global overlays, so each tile's weave input excludes it and the bar composites as crisp
-    2D over the woven 3D. Uses the LOCAL <code>js/inline3d.js</code> — this sample exercises the
-    unreleased lifecycle + overlay-guard work, so it must not pin a published version.
+    One <code>inline-3d</code> session. On a browser with draw-order occlusion enabled the bar
+    needs nothing at all — its 2D pixels win over the weave where they paint. Otherwise
+    auto-chrome registers the sticky bar (and its text) as page-global overlays, so each tile's
+    weave input excludes it and the bar composites as crisp 2D over the woven 3D. Uses the LOCAL
+    <code>js/inline3d.js</code> — this sample exercises the unreleased lifecycle, overlay-guard
+    and occlusion-capability work, so it must not pin a published version.
     Get the <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>.
   </footer>
 </div>

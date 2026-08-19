@@ -9,6 +9,44 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ### Added
 
+- **`inline3dOcclusionByDrawOrder()` — and the whole overlay-exclusion machinery turns itself off
+  where it's true.** The browser's Phase-2 compositor path composites ANY 2D content over woven
+  tiles per-pixel by draw order: a header, a badge, a dropdown, a translucent scrim, even a
+  full-tile plate occludes a tile with nothing declared. On such a browser this SDK stops working
+  around it — no auto-chrome DOM scan (a `querySelectorAll` + `getComputedStyle` sweep at every
+  layer activation), no `MutationObserver` per live tile for `data-inline3d-overlay`, and no
+  `will-change: transform` promotions written onto the page's own elements. `exclude()`,
+  `addGlobalOverlay()` and their `remove`/`unexclude` pairs still accept and store their argument
+  and simply do nothing, so ONE page runs unchanged on both browser generations; one
+  `console.info` says so the first time a page calls one.
+
+  The probe is a **capability, not a version**: the browser change is compositor-side and leaves
+  the JS API untouched, so `excludeElement` is present on both generations and only its effect
+  differs — its presence cannot tell them apart, and neither can `inline3dOverlaySupported()`,
+  whose question ("does 2D on a tile composite as crisp 2D?") is true on both. The gate is a
+  readonly capability flag the browser exposes on `XRDisplayLayer` —
+  `typeof XRDisplayLayer.occlusionByDrawOrder === 'boolean' ? XRDisplayLayer.occlusionByDrawOrder : …`,
+  falling back to the same-named per-layer attribute read off the first live layer if that is the
+  shape it lands in. No browser exposes it yet, so this release changes nothing for anyone today:
+  the legacy path runs, byte for byte as in 1.0 — verified by replaying one page against both SDK
+  builds and diffing every exclusion call, promotion, warning and registration. It flips the moment
+  a browser exposes the flag. A user-agent or version gate was rejected: a page pins an SDK for
+  years, and a version string cannot describe a compositor behaviour that is switch-gated.
+
+  Note what the *obvious* probe would have done.
+  `!!XRDisplayLayer.prototype.occlusionByDrawOrder` **throws** — a Blink IDL attribute getter
+  raises `TypeError: Illegal invocation` when its receiver is the prototype rather than an
+  instance — so the natural one-liner would have failed on precisely the browser it was looking
+  for. Presence is therefore probed with `in` (which calls no getter) and every value read has a
+  legal receiver: the interface object, or a real layer.
+
+  Effects on an element that overlaps a tile remain the exception on both generations: a
+  `backdrop-filter` (a function of what is behind it, and what is behind it is the woven buffer),
+  and — new small print for the Phase-2 path — a pixel-moving `filter`, a non-normal blend mode or
+  a 3D sorting context, none of which draw as the plain quad the split can lift. Plain chrome is
+  unaffected. *(core tier — additive: one new helper, no behaviour change on current browsers. The
+  exclusion APIs are deprecated-but-covered; see the stability policy.)*
+
 - **`./viewer`, `./splat` and `./model` are now published exports.** 1.0.0 shipped `exports` for
   `.` and `./three` only, so `import { addSplat } from '@displayxr/inline3d/splat'` failed on an
   npm install even though the modules existed in the repo — vendoring the files was the only way to

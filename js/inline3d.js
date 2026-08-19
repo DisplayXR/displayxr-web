@@ -41,6 +41,81 @@ const hasLayer = () =>
 // no-op — the page still works, the overlay just weaves like before.
 const hasExclusion = () =>
   hasLayer() && 'excludeElement' in window.XRDisplayLayer.prototype;
+// ── draw-order occlusion (browser Phase 2, browser patches 0063/0064) ─────────────────────
+//
+// The browser composites ANY 2D content over a woven tile per-pixel BY DRAW ORDER — headers,
+// badges, dropdowns, translucent scrims, even a full-tile plate — with nothing declared by the
+// page. Every exclusion mechanism in this file (auto-chrome, page-global overlays,
+// data-inline3d-overlay, handle.exclude) exists only to fake that on browsers without it, so
+// where it is on, all of it stands down.
+//
+// DETECTION IS A CAPABILITY READ, NEVER A VERSION. `excludeElement` is still fully present on a
+// Phase-2 browser (the browser change is viz-side; it touches no Blink file, and the declarations
+// are collected as before and simply have no effect downstream), so `hasExclusion()` cannot tell
+// the generations apart — and a UA/version gate is worthless for a page that pins an SDK for
+// years. The signal is a capability flag the browser exposes; ABSENT today, so this reads false
+// on everything currently shipping and the legacy path below runs unchanged.
+//
+// TWO THINGS THE FLAG'S SHAPE HAS TO RESPECT, both learned the hard way:
+//  1. NEVER read the value off `XRDisplayLayer.prototype`. A Blink IDL attribute getter throws
+//     `TypeError: Illegal invocation` when its receiver is the prototype instead of an instance,
+//     so the "obvious" probe `!!XRDisplayLayer.prototype.occlusionByDrawOrder` would THROW on
+//     precisely the browser it is meant to detect. `'x' in prototype` is safe (no getter call)
+//     but reports only presence.
+//  2. Presence is not the answer. The browser's split is switch-gated
+//     (`--inline-3d-occlusion`, off by default until it becomes the default), so a build that
+//     HAS the attribute can still legitimately report false, and the truth is process-wide
+//     rather than per-layer.
+// Hence the shape asked of the browser: a STATIC readonly boolean on the interface object,
+// `XRDisplayLayer.occlusionByDrawOrder` — process-wide like the switch it reflects, readable
+// with no session and no layer (a page decides its DOM before it ever creates one), and immune
+// to (1) because there is no prototype receiver involved. Should the flag instead land as a
+// per-instance attribute, sampleDrawOrderOcclusion() below picks it up off the first live layer.
+let drawOrderOcclusion = null; // null = not decided yet for this document
+function hasDrawOrderOcclusion() {
+  if (drawOrderOcclusion !== null) return drawOrderOcclusion;
+  if (!hasLayer()) return false;
+  try {
+    const v = window.XRDisplayLayer.occlusionByDrawOrder;
+    if (typeof v === 'boolean') return (drawOrderOcclusion = v); // static flag: authoritative
+  } catch {
+    /* a capability flag that throws is no capability — fall through to the instance path */
+  }
+  return false; // undecided reads as false: the legacy path is the safe default
+}
+
+/**
+ * Per-instance fallback: read the flag off a real layer, once, if that is the shape it landed
+ * in. Presence is probed on the prototype with `in` (safe) and the VALUE is read from the
+ * instance (the only legal receiver). Returns the decided value, or null if the browser exposes
+ * no flag at all — in which case nothing is cached and the legacy path stays on.
+ */
+function sampleDrawOrderOcclusion(layer) {
+  if (drawOrderOcclusion !== null) return drawOrderOcclusion;
+  if (!layer || !hasLayer()) return null;
+  if (!('occlusionByDrawOrder' in window.XRDisplayLayer.prototype)) return null;
+  try {
+    return (drawOrderOcclusion = !!layer.occlusionByDrawOrder);
+  } catch {
+    return null;
+  }
+}
+
+// The "you don't need this any more" notice, at most once per document: the legacy calls stay
+// live API (they must, so one page runs on both generations), so this is not a warning — it is
+// the one line that stops an author debugging an exclusion that is correctly doing nothing.
+let notedAutomaticOcclusion = false;
+function noteAutomaticOcclusion() {
+  if (notedAutomaticOcclusion) return;
+  notedAutomaticOcclusion = true;
+  console.info(
+    '[inline3d] This browser composites 2D over woven 3D automatically, per-pixel by draw ' +
+      'order — overlay exclusion is obsolete here, so exclude()/addGlobalOverlay()/' +
+      'data-inline3d-overlay/autoChrome are accepted and ignored. Your 2D chrome already ' +
+      'occludes the tiles correctly. The calls are harmless (keep them if you also ship to ' +
+      'older DisplayXR Browsers); gate on inline3dOcclusionByDrawOrder() to drop them.'
+  );
+}
 
 /**
  * Cheap, synchronous "can this browser even attempt inline-3D?" gate — true only in the
@@ -56,14 +131,43 @@ export function inline3DAvailable() {
 }
 
 /**
- * True when this browser supports 2D-overlay exclusion (browser#18) — putting a
- * 2D element ON a woven tile (hover plate, badge) so it composites as crisp 2D
- * over the woven 3D instead of being woven. Use it to choose the on-image
- * overlay path when available and a weave-safe fallback (e.g. a caption band
- * below the tile) otherwise. Implies inline3DAvailable(). Sync + cheap.
+ * True when 2D painted ON a woven tile (hover plate, badge, sticky header) composites as
+ * crisp 2D over the woven 3D instead of being woven — by declaration (browser#18 overlay
+ * exclusion) or, on a newer browser, automatically. Use it to choose the on-image overlay
+ * path when available and a weave-safe fallback (e.g. a caption band below the tile)
+ * otherwise. That question has the same answer on both generations, so this stays true on a
+ * draw-order-occlusion browser; ask inline3dOcclusionByDrawOrder() when you need to know
+ * WHICH mechanism you are on. Implies inline3DAvailable(). Sync + cheap.
  */
 export function inline3dOverlaySupported() {
-  return hasExclusion();
+  return hasExclusion() || hasDrawOrderOcclusion();
+}
+
+/**
+ * True when the browser occludes woven tiles with 2D content AUTOMATICALLY — any 2D that
+ * paints over a tile (header, badge, dropdown, translucent scrim) composites per-pixel by
+ * draw order, with nothing declared. When true, this SDK's exclusion machinery is off:
+ * `autoChrome` does not scan, `data-inline3d-overlay` is not watched, and
+ * `exclude()`/`addGlobalOverlay()` are accepted (so one page runs on both generations) but do
+ * nothing — including the `will-change` promotion they used to force on your elements.
+ *
+ * Pages need not branch on this at all: the legacy calls are harmless where it is true, and
+ * still required where it is false. Branch only to skip work of your own — a `data-` attribute
+ * you would otherwise maintain, a full-tile plate the legacy path has to refuse, or a
+ * near-solid background you only keep because a translucent bar used to be risky.
+ *
+ * Sync + cheap. Reads a readonly capability flag on `XRDisplayLayer`, never a version or UA
+ * string; false on every browser that has not exposed the flag, which is the safe answer (the
+ * SDK then runs the legacy exclusion path, which is what such a browser needs).
+ *
+ * One caveat if the flag lands as a per-layer attribute rather than the static one this SDK asks
+ * for: it can only be read once a layer exists, so a call made before the first window activates
+ * answers false and the same call answers true a frame later. Nothing in the SDK depends on the
+ * early answer, but a page that wants to branch its DOM up front should re-check (or just leave
+ * the legacy calls in — they are harmless).
+ */
+export function inline3dOcclusionByDrawOrder() {
+  return hasDrawOrderOcclusion();
 }
 
 /**
@@ -82,7 +186,9 @@ export function inline3dOverlaySupported() {
  *        automatically — the bar itself plus its text/replaced descendants — so woven
  *        windows scroll UNDER the chrome without any per-app wiring. Opt an element (and
  *        its subtree) out with `data-inline3d-no-overlay`; set false to manage chrome
- *        exclusively via addGlobalOverlay()/data-inline3d-overlay.
+ *        exclusively via addGlobalOverlay()/data-inline3d-overlay. Ignored (nothing is
+ *        scanned, no `will-change` is set on your DOM) on a browser with draw-order
+ *        occlusion, where chrome occludes tiles by itself.
  * @returns {Promise<Inline3D | {supported:false, error?:Error}>}
  */
 export async function createInline3D(opts = {}) {
@@ -177,6 +283,9 @@ class Inline3D {
     // Elements already reported as full-tile overlays, so the refusal is logged once per
     // element instead of on every re-activate / overlay-scan sync.
     this._fullTileWarned = new WeakSet();
+    // Set once the legacy occlusion machinery has been retired (draw-order browser whose
+    // capability flag could only be read from a live layer). See _standDownLegacyOcclusion.
+    this._stoodDown = false;
     this._running = true;
     this._lazy = lazy;
     this._observer =
@@ -225,9 +334,18 @@ class Inline3D {
    * but the per-tile present can still seam page-global chrome that spans tile gaps during
    * scroll — the systematic fix is the DP-composited whole-window present (browser#22).
    * No-op on browsers without excludeElement (progressive enhancement).
+   *
+   * @deprecated on a browser with draw-order occlusion (inline3dOcclusionByDrawOrder()):
+   * page chrome occludes every tile there with nothing registered. The call is accepted and
+   * stored, does nothing, and stays required on older browsers — so keep it unless your page
+   * targets Phase-2 browsers only.
    */
   addGlobalOverlay(el) {
     if (!el || this._globalOverlays.has(el)) return;
+    // Store it even where occlusion is automatic: the registration is API, a page may read
+    // nothing back but must be able to run unchanged on both browser generations. The
+    // exclusion below is a no-op there (see _applyExclusion).
+    if (hasDrawOrderOcclusion()) noteAutomaticOcclusion();
     this._globalOverlays.add(el);
     for (const win of this._windows.values()) if (win.layer) this._applyExclusion(win, el);
   }
@@ -260,6 +378,11 @@ class Inline3D {
    * input back to the compositor as crisp 2D).
    */
   _scanChrome() {
+    // Draw-order occlusion makes this whole scan pointless work: the chrome already occludes
+    // every tile per-pixel. Bail BEFORE the DOM walk, so a Phase-2 page pays neither the
+    // querySelectorAll + getComputedStyle sweep (once a second, at every layer activation)
+    // nor the `will-change` promotions it would hand out across the page's furniture.
+    if (hasDrawOrderOcclusion()) return;
     if (!this._autoChrome || !hasExclusion() || typeof document === 'undefined') return;
     const now = Date.now();
     if (now - this._lastChromeScan < 1000) return; // activations burst during scroll
@@ -386,12 +509,18 @@ class Inline3D {
    * like before — progressive enhancement, like the rest of this SDK). Prefer the
    * declarative `data-inline3d-overlay` attribute (see _startOverlayScan) unless you need
    * to exclude an element outside the window's container.
+   *
+   * On a browser with draw-order occlusion the overlay is already composited over the woven
+   * 3D per-pixel, so exclude()/unexclude() are stored-and-ignored (see _applyExclusion).
    */
   _handle(canvas, win) {
     return {
       remove: () => this._remove(canvas),
       exclude: (el) => {
         if (!el) return;
+        // Stored, not honoured, where occlusion is automatic — same reason as
+        // addGlobalOverlay: one page, both browser generations.
+        if (hasDrawOrderOcclusion()) noteAutomaticOcclusion();
         win.excluded.add(el);
         this._applyExclusion(win, el);
       },
@@ -494,6 +623,10 @@ class Inline3D {
       win.layer = null;
       return;
     }
+    // First real layer: if the occlusion capability is per-instance, this is the earliest point
+    // it can be read (see sampleDrawOrderOcclusion) — and if it says the browser occludes by
+    // draw order, retire whatever legacy machinery already started before we could know.
+    if (sampleDrawOrderOcclusion(win.layer) === true) this._standDownLegacyOcclusion();
     // Re-apply overlay exclusions (browser#18): the browser's layer-side set died with
     // the previous layer (lazy close), so a re-activated window must re-declare its own
     // explicit exclusions, the page-global overlays, and the attribute-scanned overlays,
@@ -576,6 +709,10 @@ class Inline3D {
   }
 
   _applyExclusion(win, el) {
+    // Automatic occlusion: nothing to declare, and nothing to promote. Returning here (before
+    // the full-tile guard) is also why a full-tile plate is legal on such a browser — there is
+    // no geometric matcher to confuse, so there is no refusal and no warning.
+    if (hasDrawOrderOcclusion()) return;
     if (!win.layer || !hasExclusion()) return;
     if (this._isFullTileOverlay(win, el)) return;
     // Force the overlay onto its OWN composited layer so the browser can grab it
@@ -607,20 +744,66 @@ class Inline3D {
   }
 
   _dropExclusion(win, el) {
+    // Nothing was ever excluded or promoted, so there is nothing to undo — and in particular
+    // this must not touch the element's `will-change`, which is the page's own here.
+    if (hasDrawOrderOcclusion()) return;
     const refs = this._isolatedBy.get(el);
     if (refs) refs.delete(win);
     // Only un-promote once NO window needs this element isolated any more.
-    if ((!refs || refs.size === 0) && el.dataset.inline3dIsolated) {
-      el.style.willChange = el.dataset.inline3dPriorWillChange || '';
-      delete el.dataset.inline3dPriorWillChange;
-      delete el.dataset.inline3dIsolated;
-    }
+    if (!refs || refs.size === 0) this._unpromote(el);
     if (!win.layer || !hasExclusion()) return;
     try {
       win.layer.unexcludeElement(el);
     } catch {
       /* ignore */
     }
+  }
+
+  /**
+   * Undo the SDK's own compositing promotion on `el`, restoring the `will-change` the page had
+   * (which may be none). Only ever touches an element the SDK promoted — the marker dataset
+   * flag is what says so. Returns whether there was anything to undo.
+   */
+  _unpromote(el) {
+    if (!el || !el.dataset || !el.dataset.inline3dIsolated) return false;
+    el.style.willChange = el.dataset.inline3dPriorWillChange || '';
+    delete el.dataset.inline3dPriorWillChange;
+    delete el.dataset.inline3dIsolated;
+    return true;
+  }
+
+  /**
+   * Retire the legacy occlusion machinery, once, on learning the browser occludes by draw order.
+   *
+   * Only reachable when the capability could not be read until the first layer existed (the
+   * per-instance flag shape): by then one auto-chrome scan may have run and promoted page
+   * furniture. Where the flag is readable up front — the shape this SDK asks for — nothing has
+   * started and this finds nothing to do.
+   *
+   * Registrations the APP made are kept as API state (its `removeGlobalOverlay(el)` must still
+   * find `el` registered); only the SDK's own side effects on the page's DOM are reversed. The
+   * auto-chrome set is dropped entirely: it was never the app's, and nothing will re-add it.
+   */
+  _standDownLegacyOcclusion() {
+    if (this._stoodDown) return;
+    this._stoodDown = true;
+    let retired = false;
+    for (const win of this._windows.values()) {
+      if (win.overlayObserver) {
+        this._stopOverlayScan(win);
+        retired = true;
+      }
+      for (const el of win.excluded) if (this._unpromote(el)) retired = true;
+    }
+    for (const el of this._autoChromeEls) {
+      this._globalOverlays.delete(el);
+      this._unpromote(el);
+      retired = true;
+    }
+    this._autoChromeEls.clear();
+    for (const el of this._globalOverlays) if (this._unpromote(el)) retired = true;
+    this._isolatedBy = new WeakMap(); // every promotion is gone; the refcounts with them
+    if (retired) noteAutomaticOcclusion(); // only worth saying if work was actually thrown away
   }
 
   // Declarative overlays: any element marked `data-inline3d-overlay` inside the window's
@@ -632,6 +815,10 @@ class Inline3D {
   // with display, not opacity/visibility: those still report a full rect, so the weave
   // hole would stay punched under an invisible plate.)
   _startOverlayScan(win) {
+    // No observer at all where occlusion is automatic: `data-inline3d-overlay` needs no
+    // honouring, so a page keeps its attributes (harmless, portable) and pays no
+    // MutationObserver per live tile.
+    if (hasDrawOrderOcclusion()) return;
     if (!hasExclusion() || typeof MutationObserver !== 'function') return;
     const container = win.canvas.parentElement;
     if (!container) return;
