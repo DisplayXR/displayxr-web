@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## 1.1.0 — unreleased
+## 1.1.0 — 2026-08-19
 
 ### Added
 
@@ -27,11 +27,13 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   readonly capability flag the browser exposes on `XRDisplayLayer` —
   `typeof XRDisplayLayer.occlusionByDrawOrder === 'boolean' ? XRDisplayLayer.occlusionByDrawOrder : …`,
   falling back to the same-named per-layer attribute read off the first live layer if that is the
-  shape it lands in. No browser exposes it yet, so this release changes nothing for anyone today:
-  the legacy path runs, byte for byte as in 1.0 — verified by replaying one page against both SDK
-  builds and diffing every exclusion call, promotion, warning and registration. It flips the moment
-  a browser exposes the flag. A user-agent or version gate was rejected: a page pins an SDK for
-  years, and a version string cannot describe a compositor behaviour that is switch-gated.
+  shape it lands in. **DisplayXR Browser 0.1.11 is the first build to expose it**, so on 0.1.11 and
+  newer this release stands the machinery down; on 0.1.10 and earlier the legacy path runs, byte for
+  byte as in 1.0 — verified by replaying one page against both SDK builds and diffing every
+  exclusion call, promotion, warning and registration. A user-agent or version gate was rejected: a
+  page pins an SDK for years, and a version string cannot describe a compositor behaviour that is
+  switch-gated — which is also why the flag reads `false` on a 0.1.11 launched with
+  `--disable-inline-3d-occlusion`, and the SDK correctly resumes the legacy path there.
 
   Note what the *obvious* probe would have done.
   `!!XRDisplayLayer.prototype.occlusionByDrawOrder` **throws** — a Blink IDL attribute getter
