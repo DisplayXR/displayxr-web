@@ -6,19 +6,31 @@
 // else — no 3D over the bar, no seam along its edge. That path had no repro outside a private
 // gallery, which is why it lives here.
 //
-// The page code for it is EMPTY. Auto-chrome (createInline3D's default) scans the top DOM
-// levels for position:sticky/fixed furniture and registers the bar — plus its text/replaced
-// descendants, since a full-width bar can raster as several compositor quads and match none —
-// as page-global overlays, excluded from every tile's weave and re-applied whenever a lazy
-// tile re-activates. So: no addGlobalOverlay(), no per-tile exclude(), nothing to wire. What
-// the sample DOES have to get right is the header's CSS (see index.html): translucent yes,
-// backdrop-filter never.
+// The page code for it is EMPTY — on BOTH browser generations, for two different reasons:
+//
+//  • Draw-order occlusion (the browser's Phase-2 compositor path): any 2D that paints over a
+//    tile occludes it per-pixel, by draw order. The sticky bar is just 2D that paints later, so
+//    it occludes the tiles with no declaration of any kind. inline3dOcclusionByDrawOrder()
+//    reports whether that path is live — false until the browser exposes the capability flag,
+//    which is why the legacy branch below is still what you see today.
+//  • Overlay exclusion (everything shipping so far): auto-chrome (createInline3D's default)
+//    scans the top DOM levels for position:sticky/fixed furniture and registers the bar — plus its
+//    text/replaced descendants, since a full-width bar can raster as several compositor
+//    quads and match none — as page-global overlays, excluded from every tile's weave and
+//    re-applied whenever a lazy tile re-activates.
+//
+// Either way: no addGlobalOverlay(), no per-tile exclude(), nothing to wire, and the same page
+// runs on both. What the sample DOES have to get right is the header's CSS (see index.html):
+// translucent yes, backdrop-filter never (a backdrop filter is a function of what is behind
+// it, so it has no isolated composited resource — the one 2D-over-3D case that still fails).
+// The `translucency` button drops the bar to 45% alpha: the see-through-chrome showcase for
+// draw-order occlusion, opt-in because a legacy browser's quad matching can seam at that alpha.
 //
 // Tiles reuse the demo-gallery's shipped 2-view logo assets (1024x512 side-by-side L|R),
 // tiled WALL_REPEATS times — the same proven fixed-SBS path as samples/wall-3d, so nothing
 // here depends on eye tracking or the rig.
 
-import { createInline3D } from '@displayxr/inline3d';
+import { createInline3D, inline3dOcclusionByDrawOrder } from '@displayxr/inline3d';
 
 const PICS = ['mediaplayer', 'avatar', 'gaussiansplat', 'modelviewer', 'earthview'];
 const WALL_REPEATS = 8; // 40 tiles — long enough that scrolling crosses the bar repeatedly
@@ -95,8 +107,20 @@ function setStatus(mode, detail) {
   el.textContent = detail;
 }
 
+// The see-through variant is pure CSS — a class on <header>, nothing inline-3D about it. That
+// is the point: changing the bar's alpha changes nothing about how it occludes the tiles.
+function wireTranslucency() {
+  const btn = document.getElementById('seethrough');
+  const header = document.querySelector('header');
+  btn.addEventListener('click', () => {
+    const on = header.classList.toggle('see-through');
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
 (async function main() {
   const tiles = buildWall();
+  wireTranslucency();
 
   // Lazy is the DEFAULT: a tile's weave layer is created as it nears the viewport and closed
   // on leave, so scrolling churns layers — which is exactly the state auto-chrome's
@@ -124,11 +148,18 @@ function setStatus(mode, detail) {
   }
   window.__wall = wall; // handy from the console: __wall.liveCount
 
+  // Which occlusion path is live. Purely informational — the page code above is identical
+  // either way; only the SDK's internal bookkeeping differs (auto-chrome scan + will-change
+  // promotions on the legacy path, nothing at all on the draw-order path).
+  const path = inline3dOcclusionByDrawOrder()
+    ? 'draw-order occlusion (automatic)'
+    : 'overlay exclusion (auto-chrome)';
+
   const refresh = () =>
     setStatus(
       'woven',
-      `DisplayXR Browser — ${tiles.length} tiles, ${wall.liveCount} woven layers live. ` +
-        'Scroll: tiles must pass UNDER the bar as flat 2D.'
+      `DisplayXR Browser — ${tiles.length} tiles, ${wall.liveCount} woven layers live, ` +
+        `${path}. Scroll: tiles must pass UNDER the bar as flat 2D.`
     );
   refresh();
   setInterval(refresh, 500); // liveCount changes as you scroll

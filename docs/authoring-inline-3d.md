@@ -169,7 +169,109 @@ applies to any decoration: a border/background drawn in CSS is woven with the el
 silhouette only rounds the packed rect — keep the stage visually bare and bake decoration
 into the canvas.
 
-## 2D overlays ON a 3D window — overlay exclusion
+## 2D over 3D — draw-order occlusion
+
+**Where the browser occludes by draw order, 2D over a woven window just works.** The compositor
+composites any 2D content over the woven tiles **per-pixel, by draw order** — exactly like
+stacking 2D over 2D. There is nothing to declare: no data-attribute, no `exclude()` call, no
+registration of your header.
+
+This is the browser's **Phase-2 compositor path** (a plane split in viz, replacing the Phase-1
+geometric matcher). It is not the default yet — see [Rollout](#rollout) at the end of this
+section for exactly what is live when, and why the SDK's answer is `false` until it is.
+
+That means all of this is ordinary HTML/CSS again, with no inline-3D wiring at all:
+
+- a sticky **header**, a floating **toolbar**, a bottom bar — tiles scroll under them as flat 2D;
+- a **badge**, a play button, a like animation, a caption plate on a tile;
+- a **dropdown**, a menu, a tooltip, a modal that opens across several tiles;
+- a **translucent scrim** — where it is transparent you see the woven 3D through it, where it is
+  opaque you see crisp 2D, and a gradient blends between the two;
+- an overlay that covers a **whole** tile (the old "partial region only" rule is a legacy-path
+  constraint; see below).
+
+Draw order is the CSS stacking order you already reason about: paint over a tile and you occlude
+it. Nothing about the tile changes — its buffer is still side-by-side stereo
+([the one contract](#the-one-contract-you-must-understand)), it is still lazily woven, it still
+scrolls.
+
+**The case that still does not work is `backdrop-filter`** on anything that overlaps a tile.
+A backdrop filter is by definition a function of *what is behind it*, and behind it is the
+woven, lens-interleaved buffer — not the flat image it would need to blur. Drop the blur and use
+a near-solid background (`rgba(16,17,22,.92)` reads much like a frosted bar), or keep the blur on
+a surface that never overlaps a tile. Same guidance as before, and the piece of it that survives.
+
+More precisely — and this is the whole of the small print — the first version of the split is
+**conservative about content that does not draw as a plain quad**. Anything that reaches the
+compositor through its own render pass, or out of the normal painting order, is left where it is
+rather than lifted over the weave, and so weaves like Phase-1 content did:
+
+- pixel-moving filters — `filter: blur()`, `drop-shadow()` — and `backdrop-filter`;
+- blend modes other than normal (`mix-blend-mode`, `background-blend-mode`);
+- 3D sorting contexts (`transform-style: preserve-3d` and friends).
+
+None of that is a limitation you feel on ordinary chrome: a header, a badge, a menu, a scrim, a
+plate with a solid or translucent background and text are all plain quads. Keep effects off
+whatever overlaps a tile — the same rule as before, with a shorter list.
+
+### Asking which mechanism you are on
+
+```js
+import { inline3dOcclusionByDrawOrder } from '@displayxr/inline3d';
+if (inline3dOcclusionByDrawOrder()) {
+  // automatic: your 2D already occludes the tiles, and the SDK's exclusion machinery is off
+}
+```
+
+`inline3dOcclusionByDrawOrder()` reads a **readonly capability flag** on `XRDisplayLayer` —
+never a version or user-agent string, which would rot the moment a page is pinned to an SDK for
+a year. It is `false` on any browser that does not expose the flag, and false is the *safe*
+answer: the SDK then runs the legacy exclusion machinery below, which is what such a browser
+needs.
+
+Note the flag is the **only** sound probe. `XRDisplayLayer.excludeElement` is untouched on a
+draw-order browser — the Phase-2 change is in the compositor, not the JS API, so the method is
+still there, still accepts your element, and simply has no effect on the new draw — so its
+presence says nothing about which mechanism is live, and
+`inline3dOverlaySupported()` (which asks the older question, "does 2D on a tile composite as
+crisp 2D?") is true on both.
+
+**You do not have to branch on it.** The legacy calls are harmless where occlusion is automatic
+(the SDK accepts and ignores them, and one `console.info` says so), and still required where it
+is not. Branch only to drop work of your own: a `data-inline3d-overlay` attribute you would
+otherwise maintain, a full-tile plate the legacy path has to refuse, or a near-solid background
+you only keep because a translucent bar used to be risky.
+
+### Rollout
+
+Written for the transition, and safe at every step of it:
+
+| Browser state | `inline3dOcclusionByDrawOrder()` | What the SDK does |
+|---|---|---|
+| No Phase-2 path (everything published so far) | `false` | Legacy exclusion machinery, unchanged |
+| Phase-2 present but off (its default today) | `false` | Legacy machinery — correct, because that *is* the live path |
+| Phase-2 on, capability flag not yet exposed | `false` | Legacy machinery: redundant but harmless (see below) |
+| Phase-2 on, flag exposed | `true` | Nothing — no scan, no observers, no promotions |
+
+The third row is the one to understand: the browser's occlusion switch is enabled but the page
+cannot see it, so the SDK keeps declaring exclusions. That is **harmless** — the declarations are
+collected browser-side and have no effect on the Phase-2 draw, and the tiles are occluded
+correctly either way — the page merely pays the SDK's chrome scan and its `will-change`
+promotions for nothing. Exposing the flag (one readonly attribute) is what closes that row, and
+it is deliberately the browser's call to make: this SDK cannot infer the switch, and will not
+guess from a version.
+
+**Do not try to get ahead of it.** In particular, do not test
+`XRDisplayLayer.prototype.occlusionByDrawOrder` yourself — reading an IDL attribute getter with
+the prototype as receiver throws `TypeError: Illegal invocation`, so the obvious hand-rolled
+probe breaks on exactly the browser it is looking for. Call the SDK helper.
+
+## 2D overlays ON a 3D window — overlay exclusion (legacy browsers)
+
+> **Legacy-browser mechanism.** Everything in this section and the next applies to DisplayXR
+> Browsers *without* draw-order occlusion. On a browser that has it, the section above is the
+> whole story and the APIs below are accepted-and-ignored — keep them in a page that also ships
+> to older browsers, delete them if you don't.
 
 An Instagram-style hover plate, a play badge, a like animation — 2D DOM positioned **over**
 a weaved window — would by default be woven along with the content and come out interleaved.
@@ -229,8 +331,16 @@ Rules of the road:
   woven path, keep it on a surface that never overlaps a tile.
 - **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
   before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
+- **Newer DisplayXR Browsers** (draw-order occlusion): also a no-op, for the opposite reason —
+  the overlay already composites over the woven 3D, and none of the rules above apply to it (a
+  full-tile plate is fine, a translucent one is fine, no promotion is needed). `backdrop-filter`
+  remains the exception.
 
-## Page chrome — headers, toolbars, floating bars
+## Page chrome — headers, toolbars, floating bars (legacy browsers)
+
+*(Legacy-browser mechanism — where the browser occludes by draw order, chrome needs no
+registration at all and this whole section is inert. See
+[draw-order occlusion](#2d-over-3d--draw-order-occlusion).)*
 
 The overlays above live *inside* a tile's container. Page **chrome** is the other case: a
 sticky header, a floating toolbar, a bottom bar — furniture that sits outside every tile and
@@ -293,12 +403,18 @@ Two things to know about chrome specifically:
   content at `z=0`.
 - **Compositor layer:** the SDK sets `will-change:transform; transform:translateZ(0)` on
   managed canvases so each is a distinct weave target — keep it if you build windows manually.
-- **Overlays are partial regions of a tile, never the whole tile.** A full-tile plate matches
-  the canvas's own quad and the tile falls out of the weave.
-- **No `backdrop-filter` on anything that overlaps a tile** — it has no isolated composited
-  resource, so it can never be excluded. Near-solid background instead.
-- **Page chrome is page-global, not per-tile.** `autoChrome` covers sticky/fixed furniture in
-  the top three DOM levels; anything else goes through `addGlobalOverlay()`.
+- **2D over a tile just works** on a browser with draw-order occlusion — headers, badges,
+  dropdowns, translucent scrims, nothing declared. The next two items are *legacy-browser*
+  rules; ask `inline3dOcclusionByDrawOrder()` which world you are in, and keep the legacy calls
+  if you ship to both (they're accepted and ignored where they're unnecessary).
+- **Legacy: overlays are partial regions of a tile, never the whole tile.** A full-tile plate
+  matches the canvas's own quad and the tile falls out of the weave.
+- **Legacy: page chrome is page-global, not per-tile.** `autoChrome` covers sticky/fixed
+  furniture in the top three DOM levels; anything else goes through `addGlobalOverlay()`.
+- **No effects on anything that overlaps a tile.** `backdrop-filter` fails on *both* generations
+  (it is a function of what is behind it, and what is behind it is the woven buffer); on the
+  draw-order path a pixel-moving `filter`, a non-normal blend mode or a 3D sorting context also
+  keeps the element out of the lift. Near-solid backgrounds and plain quads instead.
 - **One `createInline3D()` per document.** The element-rect channel is a whole-widget setter,
   so two live managers overwrite each other every frame (the SDK warns). Sequential sessions
   across routes are fine — `close()` the old one first.
@@ -314,6 +430,11 @@ The SDK is thin; if you want the primitives:
   callback `frame.getViewerPose(refSpace).views` yields two `XRView`s, each with a
   `projectionMatrix` (off-axis frustum) and `transform.matrix` (eye world pose) updated to
   your tracked eyes every frame — the look-around.
+- `XRDisplayLayer.prototype.occlusionByDrawOrder` — the readonly capability flag
+  `inline3dOcclusionByDrawOrder()` reads. Absent on browsers that predate it, hence the
+  `'occlusionByDrawOrder' in XRDisplayLayer.prototype && …` shape of the probe. Its deprecated
+  neighbours `excludeElement` / `unexcludeElement` stay present-but-inert on such a browser, so
+  they cannot stand in for it.
 - `new XRDisplayLayer(session, canvas)` binds a canvas — **constructing the layer is the
   activation** (there is no `updateRenderState({layers})` step). The layer reports the
   canvas's live rect to the compositor each frame and exposes `getViewport(view)` (the SBS

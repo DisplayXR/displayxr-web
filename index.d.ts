@@ -39,9 +39,18 @@ export interface TileHandle {
   /**
    * Mark a 2D element painted OVER this window so the weave leaves it crisp 2D instead of
    * garbling it (browser#18). No-op on browsers without overlay exclusion.
+   *
+   * @deprecated Legacy-browser mechanism. A browser with draw-order occlusion
+   * ({@link inline3dOcclusionByDrawOrder}) composites 2D over woven 3D per-pixel with nothing
+   * declared, so the call is accepted and ignored there — harmless everywhere, and still
+   * needed on older DisplayXR Browsers. Keep it unless you ship to Phase-2 browsers only.
    */
   exclude(el: Element): void;
-  /** Stop excluding `el` from this window's weave. */
+  /**
+   * Stop excluding `el` from this window's weave.
+   *
+   * @deprecated See {@link TileHandle.exclude} — no-op on browsers with draw-order occlusion.
+   */
   unexclude(el: Element): void;
 }
 
@@ -84,9 +93,17 @@ export interface Inline3D {
    * Register a PAGE-GLOBAL 2D overlay (a fixed/sticky header, a floating toolbar) excluded from
    * EVERY window's weave and re-applied when a window lazily re-activates. Register once instead
    * of calling {@link TileHandle.exclude} per tile. No-op without overlay exclusion (browser#18).
+   *
+   * @deprecated Legacy-browser mechanism. Where {@link inline3dOcclusionByDrawOrder} is true,
+   * page chrome occludes every tile by itself: the element is stored and nothing is done to it
+   * (no `will-change` promotion). Harmless everywhere; still required on older browsers.
    */
   addGlobalOverlay(el: Element): void;
-  /** Stop treating `el` as a page-global overlay and drop it from every live window. */
+  /**
+   * Stop treating `el` as a page-global overlay and drop it from every live window.
+   *
+   * @deprecated See {@link Inline3D.addGlobalOverlay} — no-op with draw-order occlusion.
+   */
   removeGlobalOverlay(el: Element): void;
 
   /** Close the session and remove every window. */
@@ -118,6 +135,9 @@ export interface CreateInline3DOptions {
    * chrome with no per-app wiring. Opt an element (and its subtree) out with
    * `data-inline3d-no-overlay`; set `false` to manage chrome exclusively via
    * `addGlobalOverlay()` / `data-inline3d-overlay`.
+   *
+   * Ignored where {@link inline3dOcclusionByDrawOrder} is true: nothing is scanned and the
+   * SDK never touches your DOM's `will-change`, because the chrome already occludes the tiles.
    */
   autoChrome?: boolean;
 }
@@ -141,11 +161,26 @@ export interface StartInline3DResult {
 export function inline3DAvailable(): boolean;
 
 /**
- * True when this browser supports 2D-overlay exclusion (browser#18) — putting a 2D element ON a
- * woven tile so it composites as crisp 2D over the woven 3D. Implies {@link inline3DAvailable}.
- * Sync + cheap.
+ * True when a 2D element painted ON a woven tile composites as crisp 2D over the woven 3D
+ * instead of being woven — by declaration (browser#18 overlay exclusion) or automatically
+ * ({@link inline3dOcclusionByDrawOrder}). Same answer on both generations, so it stays true on
+ * a draw-order-occlusion browser. Implies {@link inline3DAvailable}. Sync + cheap.
  */
 export function inline3dOverlaySupported(): boolean;
+
+/**
+ * True when the browser occludes woven tiles with 2D content AUTOMATICALLY — anything that
+ * paints over a tile (header, badge, dropdown, translucent scrim) composites per-pixel by draw
+ * order, with nothing declared. When true this SDK's exclusion machinery is off: `autoChrome`
+ * does not scan, `data-inline3d-overlay` is not watched, and {@link TileHandle.exclude} /
+ * {@link Inline3D.addGlobalOverlay} are accepted but do nothing (no `will-change` promotion).
+ *
+ * You do not have to branch on it — the legacy calls are harmless where it is true and still
+ * required where it is false. Branch only to skip work of your own. Reads a readonly capability
+ * flag on `XRDisplayLayer`, never a version or UA string, and is `false` on any browser that
+ * does not expose the flag (the safe answer: the legacy path runs).
+ */
+export function inline3dOcclusionByDrawOrder(): boolean;
 
 /** Open the page's inline-3D session and return a manager you add windows to. */
 export function createInline3D(
@@ -168,6 +203,19 @@ export function startInline3D(
 // XRDisplayLayer is a DisplayXR-Browser extension to WebXR; declare the minimum the SDK exposes.
 export interface XRDisplayLayer {
   getViewport(view: XRView): { x: number; y: number; width: number; height: number } | null;
+  /**
+   * @deprecated Legacy-browser overlay exclusion (browser#18). Present-but-no-op on a browser
+   * with draw-order occlusion, which is exactly why its presence cannot be used to detect the
+   * generation — use {@link inline3dOcclusionByDrawOrder} (i.e. `occlusionByDrawOrder`).
+   */
   excludeElement?(el: Element): void;
+  /** @deprecated See {@link XRDisplayLayer.excludeElement}. */
+  unexcludeElement?(el: Element): void;
+  /**
+   * Readonly capability flag: `true` when this browser composites 2D over woven 3D per-pixel by
+   * draw order, making overlay exclusion unnecessary. Optional because it is absent on every
+   * browser shipped so far — the SDK treats absent as `false` and runs the legacy path.
+   */
+  readonly occlusionByDrawOrder?: boolean;
   close(): void;
 }
