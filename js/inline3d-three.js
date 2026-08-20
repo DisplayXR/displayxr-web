@@ -60,10 +60,31 @@ export class EyeCamera {
 
   /** Set the camera's projection + world pose from an XRView (call once per eye per frame). */
   setFromView(view) {
+    return this.setFromMatrices(view.projectionMatrix, view.transform.matrix);
+  }
+
+  /**
+   * Set the camera from RAW matrices — the same two an XRView carries, handed over
+   * separately.
+   *
+   * WHY THIS EXISTS AND NOT JUST setFromView. An `XRView` is valid only inside the frame
+   * callback that produced it: hold one and its matrices are live views onto memory the UA
+   * recycles. So a renderer that wants to re-draw a frame it has ALREADY drawn — because
+   * this frame's view list arrived short, or because the backing store was just reallocated
+   * and cleared — cannot keep the view; it has to keep a COPY of the two matrices and feed
+   * them back here. `./viewer`'s last-good replay does exactly that (see SceneViewer.onFrame).
+   *
+   * Deliberately the single implementation of both: setFromView is a one-line forward, so
+   * the replay path can never drift from the live one.
+   *
+   * @param {ArrayLike<number>} projectionMatrix  16 floats, column-major (view.projectionMatrix).
+   * @param {ArrayLike<number>} transformMatrix   16 floats, column-major (view.transform.matrix).
+   */
+  setFromMatrices(projectionMatrix, transformMatrix) {
     const cam = this.camera;
-    cam.projectionMatrix.fromArray(view.projectionMatrix);
+    cam.projectionMatrix.fromArray(projectionMatrix);
     cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
-    cam.matrix.fromArray(view.transform.matrix);
+    cam.matrix.fromArray(transformMatrix);
     cam.matrixWorld.copy(cam.matrix);
     cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
     return cam;

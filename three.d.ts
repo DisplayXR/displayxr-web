@@ -15,6 +15,18 @@ export class EyeCamera {
   readonly camera: unknown;
   /** Set the camera's projection + world pose straight from an XRView (call once per eye). */
   setFromView(view: XRView): void;
+  /**
+   * Set the camera from the two raw matrices an XRView carries, handed over separately.
+   *
+   * For re-drawing a frame you have already drawn: an `XRView` is valid only inside its own
+   * frame callback, so a renderer that wants to repaint (a short view list, a backing store
+   * just reallocated and cleared) must keep COPIES of these two matrices, not the view.
+   * `setFromView` forwards to this, so both paths are the same code.
+   */
+  setFromMatrices(
+    projectionMatrix: ArrayLike<number>,
+    transformMatrix: ArrayLike<number>,
+  ): void;
 }
 
 /**

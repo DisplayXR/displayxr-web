@@ -528,6 +528,9 @@ class Inline3D {
         if (!el || !win.excluded.delete(el)) return;
         this._dropExclusion(win, el);
       },
+      // Read-only counters, for pages that want to see the load-induced mono fallback rather
+      // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
+      stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
     };
   }
 
@@ -574,6 +577,10 @@ class Inline3D {
       // Box/dpr watch, live only while the window is (see _startSizeWatch).
       sizeObserver: null,
       resizePending: false,
+      // Scene diagnostics (web#12), read back through the handle's stats(). frames counts
+      // onFrame deliveries; monoFrames counts the ones that carried fewer than two views.
+      frames: 0,
+      monoFrames: 0,
     };
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
@@ -1020,7 +1027,32 @@ class Inline3D {
     for (const win of this._windows.values()) {
       if (!win.layer) continue;
       if (win.kind === 'scene') {
-        if (views && win.onFrame) win.onFrame(views, win.layer, f);
+        if (views && win.onFrame) {
+          // Count the SHORT view lists and hand them over unchanged. Under GPU load the session
+          // can report a single view (a per-frame mono fallback) where it normally reports two,
+          // and a renderer that clears before it validates turns that into a dark tile
+          // (web#12 — ./viewer now validates first and replays its last good frame instead).
+          //
+          // The core deliberately does NOT filter or synthesise: the contract is "here is what
+          // the frame reported", and a window that can do something sensible with one view
+          // (a mono preview, say) must be allowed to. What the core owes you is VISIBILITY —
+          // this is otherwise invisible from the page, since nothing throws and nothing logs.
+          win.frames++;
+          if (views.length < 2) {
+            win.monoFrames++;
+            // 1-in-300 so a sustained rate is reported without the log itself becoming the load;
+            // `% 300 === 1` also names the FIRST one immediately.
+            if (win.monoFrames % 300 === 1 && typeof console !== 'undefined' && console.debug) {
+              const pct = ((100 * win.monoFrames) / Math.max(1, win.frames)).toFixed(1);
+              console.debug(
+                `[inline3d] scene window: ${win.monoFrames} non-stereo view lists in ` +
+                  `${win.frames} frames (${pct}%). The viewer replays its last good stereo ` +
+                  'frame for these; a rising rate means the session is falling back under load.',
+              );
+            }
+          }
+          win.onFrame(views, win.layer, f);
+        }
       } else {
         // Repaint image AND video every frame. The weave reads each window's
         // composited canvas quad per frame; a canvas that isn't redrawn can have

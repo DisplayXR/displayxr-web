@@ -31,7 +31,11 @@ closes it when it scrolls away — so a long wall only pays for what's on screen
 - **`wall.addVideo(canvas, video, opts?)`** — an SBS 3D video; redraws the `<video>` each frame.
 - **`wall.addScene(canvas, onFrame, opts?)`** — a live-rendered stereo scene. `onFrame(views, layer)`
   runs each XR frame; render your two eye views into the canvas as an SBS pair. `opts.virtualDisplayHeight`
-  (default 0.24 m) sets the scene scale.
+  (default 0.24 m) sets the scene scale. **Validate `views` before you clear** — under load the frame
+  can report fewer than two views, and clearing on such a frame is what a "blinking" tile is
+  ([authoring guide](../docs/authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
+- **`handle.stats()`** — `{ frames, monoFrames }` for a scene window; `monoFrames` counts the
+  frames that arrived with fewer than two views.
 - **`wall.close()`** — end the session and release all windows.
 
 **`await startInline3D(canvas, { onFrame, referenceSpace?, virtualDisplayHeight? })`** — back-compat

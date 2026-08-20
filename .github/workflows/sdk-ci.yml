@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "js/**"
+      - "test/**"
       - "*.d.ts"
       - "package.json"
       - "tsconfig.json"
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - "js/**"
+      - "test/**"
       - "*.d.ts"
       - "package.json"
       - "tsconfig.json"
@@ -32,3 +34,16 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.json
       - name: Verify package publishes only the intended files
         run: npm pack --dry-run
+
+  unit:
+    name: Unit tests (node:test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # `node --test` takes a glob from 22 on
+      # No install step and no framework: the tests stub the DOM and three.js themselves
+      # (test/stubs.mjs), so the SDK's zero-dependency promise holds in its own test run.
+      - name: Run unit tests
+        run: node --test "test/*.test.mjs"

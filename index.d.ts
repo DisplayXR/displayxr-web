@@ -52,6 +52,18 @@ export interface TileHandle {
    * @deprecated See {@link TileHandle.exclude} — no-op on browsers with draw-order occlusion.
    */
   unexclude(el: Element): void;
+  /**
+   * Per-window frame counters, for diagnosing the load-induced mono fallback.
+   *
+   * `frames` counts `onFrame` deliveries; `monoFrames` counts the ones that carried fewer than
+   * two views — a session under GPU pressure reporting a single view where it normally reports
+   * two. `./viewer` replays its last good stereo frame for those rather than clearing (web#12);
+   * a rising ratio is the machine telling you the session is falling back, and is worth
+   * surfacing before it turns into a bug report about "blinking".
+   *
+   * Scene windows only — image/video windows always report `{ frames: 0, monoFrames: 0 }`.
+   */
+  stats(): { frames: number; monoFrames: number };
 }
 
 /** An open inline-3D session you add weaved windows to. Returned by {@link createInline3D}. */
