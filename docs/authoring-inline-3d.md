@@ -422,6 +422,83 @@ Two things to know about chrome specifically:
   per-tile present can still seam a page-global bar where it spans the gap between two tiles.
   The systematic fix is the whole-window composited present (browser#22).
 
+## Compressed glTF
+
+`addModel()` (the experimental [`/model`](../js/inline3d-model.js) subpath) loads Draco-, meshopt-
+and KTX2-compressed assets, which matters because a catalogue GLB that came out of a real pipeline
+is almost never uncompressed. A bare `GLTFLoader` does not *degrade* on these — it **throws**
+(`"No DRACOLoader instance provided."`) — so "your existing 3D assets already work here" is a claim
+about whether the decoders are wired, not about the loader.
+
+`addModel` reads the asset's `extensionsUsed` / `extensionsRequired` **before** parsing and attaches
+exactly the decoders it declares. Nothing is imported or constructed for an asset that declares
+none, and the inspection replaces the loader's own fetch rather than adding a second one.
+
+| glTF extension | decoder | files your page must serve |
+|---|---|---|
+| `KHR_draco_mesh_compression` | `DRACOLoader` | `three/examples/jsm/libs/draco/` → `/draco/` |
+| `KHR_texture_basisu` | `KTX2Loader` | `three/examples/jsm/libs/basis/` → `/basis/` |
+| `EXT_meshopt_compression` | `MeshoptDecoder` | **none** — pure JS |
+
+### You must serve the decoder files yourself
+
+This is the part that gets missed. `three` ships the Draco decoder and the Basis transcoder as
+*runtime* files, not as modules the bundler can inline — three's own `DRACOLoader` fetches them from
+a path at decode time. The SDK's default is **your own origin**, `/draco/` and `/basis/`:
+
+```sh
+cp -r node_modules/three/examples/jsm/libs/draco/ public/draco/
+cp -r node_modules/three/examples/jsm/libs/basis/ public/basis/
+```
+
+It is **not** a CDN, on purpose, and there is no CDN fallback. Pages built on this SDK include
+offline kiosk builds; a default that reached out to `cdn.jsdelivr.net` the first time someone loaded
+a compressed product would make the whole page's offline story depend on the compression setting of
+one asset. If your site is served under a path prefix (GitHub Pages, a sub-app mount), the absolute
+default will 404 — say where the files really are:
+
+```js
+addModel(wall, canvas, 'chair.glb', { decoderPath: '/static/decoders/' });      // holds draco/ + basis/
+addModel(wall, canvas, 'chair.glb', { decoderPath: { draco: '../vendor/draco/' } });
+```
+
+Or bypass the path entirely and hand the decoder in — a class (constructed for you and pointed at
+`decoderPath`) or an instance you already configured (used exactly as-is):
+
+```js
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+addModel(wall, canvas, 'chair.glb', { DRACOLoader });          // …or { KTX2Loader }, { meshoptDecoder }
+```
+
+Decoders are shared across tiles and ref-counted, so a grid of twelve products stands up **one**
+Draco worker pool, and one tile's `remove()` never tears down the pool the other eleven are using.
+
+### When it goes wrong
+
+A missing or mis-served decoder rejects `handle.ready` with an error that names the glTF extension,
+the option that fixes it, and the path it actually looked in — the failure is a page-configuration
+one, and three's own message ("No DRACOLoader instance provided.") names a class the page never
+mentions. The extension is also on the error object as `err.gltfExtension`, so a catalogue can
+count these without parsing prose.
+
+```
+[inline3d/model] chair.glb needs the "KHR_draco_mesh_compression" decoder (Draco mesh compression) and it could not be used.
+Serve three's decoder files from your own origin and point addModel at them:
+    cp -r node_modules/three/examples/jsm/libs/draco/ <web-root>/draco/
+    addModel(wall, canvas, src, { decoderPath: { draco: '/draco/' } })
+Currently looking in "/draco/" — check that it is actually served (a 404 there fails exactly like this).
+Or hand the decoder in: addModel(…, { DRACOLoader: X }) where X is DRACOLoader from 'three/addons/loaders/DRACOLoader.js' (a class or a ready instance).
+Underlying error: fetch for "https://shop.example/draco/draco_wasm_wrapper.js" responded with 404: File not found
+```
+
+**KTX2 is the one that would otherwise fail silently.** `GLTFLoader` swallows a texture-load
+rejection, so a mis-served Basis transcoder resolves a model with **zero textures** and no error at
+all (measured: seven textures became none, `ready` resolved). `addModel` therefore loads the
+transcoder up front, which turns that into the rejection above.
+
+A live example, decoder files and all, is [`samples/model/`](../samples/model/) — its third tile is
+a Draco-compressed glTF served with `three`'s decoder out of this repo's `vendor/draco/`.
+
 ## Gotchas checklist
 
 - **Buffer is 2:1 (or 2× the box's aspect), not 1:1.** `addImage`/`addVideo` handle it; only
@@ -447,6 +524,9 @@ Two things to know about chrome specifically:
 - **One `createInline3D()` per document.** The element-rect channel is a whole-widget setter,
   so two live managers overwrite each other every frame (the SDK warns). Sequential sessions
   across routes are fine — `close()` the old one first.
+- **Compressed glTF needs decoder files SERVED BY YOU.** `addModel()` wires Draco / meshopt /
+  KTX2 from what the asset declares, but three's Draco decoder and Basis transcoder are runtime
+  files: copy them to `/draco/` and `/basis/` (or set `decoderPath`). There is no CDN fallback.
 - **The page still works in 2D.** Always ship a fallback for `{ supported:false }`.
 
 ## Under the hood (raw WebXR)

@@ -8,6 +8,11 @@ import { measureSplatBounds } from '@displayxr/inline3d/splat';
 
 const GLB = './assets/Fox.glb';
 const SPLAT = 'https://sparkjs.dev/assets/splats/butterfly.spz';
+const DRACO_GLTF = './assets/glTF-Draco/Duck.gltf';
+// Where THIS SITE serves three's Draco decoder. The SDK defaults to `/draco/` on your origin and
+// deliberately never falls back to a CDN, so a page hosted under a path prefix (as GitHub Pages
+// hosts this one) has to say where the files actually are.
+const DECODER_PATH = { draco: new URL('../../vendor/draco/', import.meta.url).pathname };
 
 const wall = await createInline3D({ lazy: false });
 const woven = wall.supported;
@@ -88,6 +93,24 @@ report(mixed, 'noteB', (splat) =>
   `mesh + ${splat.numSplats.toLocaleString()} splats in one scene, one render pass` +
   (woven ? ' · woven' : ' · flat fallback'),
 );
+
+// ── C. the compressed file a real catalogue holds ───────────────────────────────────────────
+// Nothing here is different except the ASSET: a bare GLTFLoader throws outright on
+// KHR_draco_mesh_compression, so "your existing catalogue works unchanged" is only true if the
+// decoder is wired. addModel reads the glTF's extensionsUsed and wires exactly what it declares.
+const c = addModel(wall, document.getElementById('tileC'), DRACO_GLTF, {
+  virtualDisplayHeight: 0.16,
+  idleSpin: 12,
+  feather: 24,
+  renderScale: 0.6,
+  decoderPath: DECODER_PATH,
+});
+
+report(c.ready, 'noteC', () => {
+  let verts = 0;
+  c.model.traverse((o) => { if (o.isMesh) verts += o.geometry.attributes.position.count; });
+  return `Draco decoded · ${verts.toLocaleString()} vertices · same call, same handle, same framing`;
+});
 
 // ── page furniture ──────────────────────────────────────────────────────────────────────────
 function report(p, id, ok) {

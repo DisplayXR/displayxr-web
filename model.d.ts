@@ -30,6 +30,41 @@ export interface ModelOptions {
   envMap?: object;
   /** Hand in the GLTFLoader class instead of resolving it from `three/addons/`. */
   GLTFLoader?: unknown;
+
+  /**
+   * Where **your page** serves three's Draco decoder and Basis (KTX2) transcoder.
+   *
+   * `addModel` reads the asset's `extensionsUsed` before parsing and attaches only the decoders it
+   * declares, so an uncompressed model never touches any of this. But a decoder that IS needed has
+   * to come from somewhere, and the default is deliberately **not a CDN** — a page shipping an
+   * offline build must not acquire a network dependency by loading a compressed file. Copy the
+   * files out of `three` and serve them yourself:
+   *
+   * ```sh
+   * cp -r node_modules/three/examples/jsm/libs/draco/ public/draco/
+   * cp -r node_modules/three/examples/jsm/libs/basis/ public/basis/
+   * ```
+   *
+   * A string is a parent directory holding `draco/` and `basis/`; an object overrides either key.
+   * `EXT_meshopt_compression` needs nothing served — its decoder is pure JS.
+   *
+   * @default {draco:'/draco/', basis:'/basis/'}
+   */
+  decoderPath?: string | { draco?: string; basis?: string };
+  /**
+   * DRACOLoader class **or** a ready instance, instead of resolving `three/addons/`. A class is
+   * constructed and pointed at `decoderPath`; an instance is used exactly as you configured it.
+   */
+  DRACOLoader?: unknown;
+  /**
+   * KTX2Loader class or instance. `detectSupport()` is called for you with this tile's renderer,
+   * and the transcoder is loaded eagerly so a mis-served path throws instead of silently
+   * resolving a model with no textures.
+   */
+  KTX2Loader?: unknown;
+  /** The `MeshoptDecoder` namespace, instead of resolving `three/addons/`. Nothing to serve. */
+  meshoptDecoder?: unknown;
+
   /** Element whose visibility gates the lazy create/close lifecycle. */
   observe?: Element;
 }
@@ -55,6 +90,13 @@ export interface ModelHandle {
 /**
  * Load a glTF/GLB into an inline-3D window. Safe to call with an unsupported wall — it renders a
  * flat, orbitable view instead, so pages need no branch.
+ *
+ * Compressed assets (Draco, meshopt, KTX2/Basis) load too: the asset's declared extensions decide
+ * which decoders are imported, and nothing is imported for an asset that declares none. Draco and
+ * KTX2 additionally need their runtime files served by your page — see {@link ModelOptions.decoderPath}.
+ * When a decoder is needed and unavailable, `ready` rejects with an Error naming the glTF
+ * extension, the option that fixes it and the path it looked in; the extension is also on the
+ * error as `gltfExtension`.
  */
 export function addModel(
   wall: object | null | undefined,
