@@ -20,9 +20,11 @@
 //
 //   import * as THREE from 'three';
 //   import { createInline3D } from '@displayxr/inline3d';
+//   import { EyeCamera } from '@displayxr/inline3d/three';
 //   import { SceneViewer } from '@displayxr/inline3d/viewer';
 //
 //   const viewer = new SceneViewer(THREE, canvas, { virtualDisplayHeight: 0.18 });
+//   viewer.useEyeCamera(EyeCamera);            // REQUIRED for stereo; ./splat and ./model do it
 //   viewer.content.add(myMesh);
 //   viewer.fitTo(center, extent);              // model-space bounds of the subject
 //   const wall = await createInline3D();
@@ -226,6 +228,12 @@ export class SceneViewer {
     this._monoRaf = 0;
     this._mode = '3d'; // drives the backing-store shape; see _resize
     this._disposed = false;
+    this._resizePending = false;
+    // Last frame this viewer actually DREW, as raw matrices + viewport rects — never XRViews,
+    // which are only valid inside their own frame callback. See _cacheGood / _replayLastGood.
+    this._lastGood = null;
+    this._vps = []; // scratch, reused per frame so validation allocates nothing
+    this._warnedNoEye = false;
 
     this._reduceMotion =
       typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -238,7 +246,10 @@ export class SceneViewer {
     // plane to be in focus at, so we just look at the framed subject from the front.
     this.monoCamera = new THREE.PerspectiveCamera(35, 1, 0.001, 1000);
 
-    this._onResize = () => this._resize();
+    // Coalesced: ResizeObserver and window resize both fire in BURSTS during a drag-resize or a
+    // zoom, and every genuine resize reallocates (and clears) the backing store. One rAF per
+    // burst, exactly as the core does for its own windows (inline3d.js _onBoxChange).
+    this._onResize = () => this._scheduleResize();
     this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(this._onResize) : null;
     if (this._ro) this._ro.observe(canvas);
     else addEventListener('resize', this._onResize);
@@ -348,6 +359,22 @@ export class SceneViewer {
   /**
    * The per-frame callback for `wall.addScene`. Renders the scene once per eye into the
    * side-by-side halves the layer reports.
+   *
+   * VALIDATE BEFORE YOU CLEAR — the dark-blink rule (web#12). `r.clear()` is the point of no
+   * return: after it the canvas is transparent-black, and if the frame then fails to draw
+   * anything over it, that empty buffer is what the weave consumes. Under GPU load the session
+   * can hand this callback a SHORT view list (one view, or none — a per-frame mono fallback),
+   * and the old loop cleared first and rendered what it could: a single origin-camera view whose
+   * content is entirely near-plane-clipped, i.e. a fully transparent side-by-side buffer, i.e.
+   * one dark woven tile. The blink was ours, not the weave's.
+   *
+   * So: everything that can disqualify a frame is checked while the canvas still holds the last
+   * good image, and only a frame that WILL draw is allowed to clear. A frame that cannot draw
+   * REPLAYS the last good one instead (see _replayLastGood) rather than skipping the commit —
+   * the SDK's every-frame-repaint invariant is real (inline3d.js `_frame`: a canvas that isn't
+   * redrawn can have its layer dropped from the aggregated frame and the weave then reads a
+   * stale sub-rect, which smears). A one-frame-stale eye pose is imperceptible; a smear and a
+   * black frame are not.
    */
   onFrame(views, layer) {
     if (this._disposed) return;
@@ -355,23 +382,62 @@ export class SceneViewer {
     // after a scroll-away/scroll-back). Take the buffer back to the SBS shape when that happens
     // — otherwise the first 3D frames render into a 1:1 store and each eye is half a subject.
     if (this._mode !== '3d') this.stopMono();
+    // Before the validation gate on purpose: a replayed frame still damps and still turns on the
+    // turntable, so only the EYE pose is one frame stale, not the whole scene.
     this._tick();
-    const r = this.renderer;
+
+    // 1. A short view list is the load-induced mono fallback. Stereo needs two.
+    if (!views || views.length < 2) {
+      this._replayLastGood();
+      return;
+    }
+
+    // 2. No ./three glue: the 3D path has no eye camera to build. This used to clear and draw
+    //    NOTHING, silently, forever — and this module's own header example omitted
+    //    useEyeCamera() until now, so the failure was reachable by copy-paste. Both ends are
+    //    fixed: the example passes it, and this says so once and renders the mono camera, which
+    //    at least shows the subject (flat, both halves the same) instead of a dark tile.
     const eye = this._ensureEye();
+    if (!eye && !this._warnedNoEye) {
+      this._warnedNoEye = true;
+      console.warn(
+        '[inline3d] SceneViewer.onFrame without useEyeCamera(): falling back to the mono camera. ' +
+          'Pass the ./three glue — viewer.useEyeCamera(EyeCamera, EdgeFeather) — for real ' +
+          'off-axis stereo. (./splat and ./model do this for you.)',
+      );
+    }
+
+    // 3. Every eye must have a viewport to render into. A missing or degenerate one means this
+    //    frame cannot fill the buffer, so it must not empty it either.
+    const vps = this._vps;
+    vps.length = 0;
+    for (const view of views) {
+      const vp = layer && typeof layer.getViewport === 'function' ? layer.getViewport(view) : null;
+      if (!vp || !(vp.width > 0) || !(vp.height > 0)) {
+        this._replayLastGood();
+        return;
+      }
+      vps.push(vp);
+    }
+
+    // Validated: this frame WILL draw over everything it clears.
+    const r = this.renderer;
     r.clear();
     r.setScissorTest(true);
-    for (const view of views) {
-      const vp = layer.getViewport(view);
-      if (!vp) continue;
+    for (let i = 0; i < views.length; i++) {
+      const vp = vps[i];
       r.setViewport(vp.x, vp.y, vp.width, vp.height);
       r.setScissor(vp.x, vp.y, vp.width, vp.height);
       if (eye) {
-        eye.setFromView(view);
+        eye.setFromView(views[i]);
         r.render(this.scene, eye.camera);
+      } else {
+        r.render(this.scene, this.monoCamera);
       }
       if (this._feather) this._feather.render(r, vp);
     }
     r.setScissorTest(false);
+    this._cacheGood(views, vps, !eye);
   }
 
   /**
@@ -418,6 +484,8 @@ export class SceneViewer {
 
   dispose() {
     this._disposed = true;
+    this._resizePending = false;
+    this._lastGood = null;
     this.stopMono();
     if (this._ro) this._ro.disconnect();
     else removeEventListener('resize', this._onResize);
@@ -430,6 +498,127 @@ export class SceneViewer {
   _ensureEye() {
     if (!this._eye && this._EyeCamera) this._eye = new this._EyeCamera(this._THREE);
     return this._eye;
+  }
+
+  /**
+   * Remember the frame just drawn, so a frame that CANNOT draw has something to put on the
+   * canvas instead of a clear (web#12).
+   *
+   * COPIES, never references. An `XRView` — and the `projectionMatrix` / `transform.matrix`
+   * hanging off it — is valid only inside the frame callback that delivered it; the UA is free
+   * to recycle that memory afterwards. Retaining one would give a replay that reads whatever
+   * the next frame happened to write there, which is a worse bug than the blink. So each eye
+   * gets two `Float32Array(16)` copies, allocated once and overwritten in place: the cache
+   * costs 128 bytes an eye and zero allocations per frame.
+   *
+   * The buffer dimensions go in too, so a replay after a resize can scale the rects (the SBS
+   * split is proportional, so the scaling is exact).
+   */
+  _cacheGood(views, vps, mono) {
+    const el = this.renderer.domElement || this.canvas;
+    let g = this._lastGood;
+    if (!g || g.entries.length !== views.length) {
+      g = this._lastGood = { entries: [], mono, bufW: 0, bufH: 0 };
+      for (let i = 0; i < views.length; i++) {
+        g.entries.push({
+          proj: new Float32Array(16),
+          pose: new Float32Array(16),
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0,
+        });
+      }
+    }
+    g.mono = mono;
+    g.bufW = el.width || 0;
+    g.bufH = el.height || 0;
+    for (let i = 0; i < views.length; i++) {
+      const e = g.entries[i];
+      const vp = vps[i];
+      if (!mono) {
+        const view = views[i];
+        e.proj.set(view.projectionMatrix);
+        e.pose.set(view.transform.matrix);
+      }
+      e.x = vp.x;
+      e.y = vp.y;
+      e.width = vp.width;
+      e.height = vp.height;
+    }
+  }
+
+  /**
+   * Re-render the last good frame from the cached matrices. Returns false when there is no
+   * cache yet — and the caller must then do NOTHING, not clear: before the first good frame
+   * the canvas holds either the page's own initial state or the mono fallback's output, both
+   * of which are better than black.
+   */
+  _replayLastGood() {
+    const g = this._lastGood;
+    if (!g || this._disposed) return false;
+    const r = this.renderer;
+    const eye = g.mono ? null : this._ensureEye();
+    const el = this.renderer.domElement || this.canvas;
+    // A resize between the cache and the replay changes the buffer, not the split.
+    const sx = g.bufW > 0 && el.width ? el.width / g.bufW : 1;
+    const sy = g.bufH > 0 && el.height ? el.height / g.bufH : 1;
+    const scaled = sx !== 1 || sy !== 1;
+    r.clear();
+    r.setScissorTest(true);
+    for (const e of g.entries) {
+      const vp = scaled
+        ? {
+            x: Math.round(e.x * sx),
+            y: Math.round(e.y * sy),
+            width: Math.max(1, Math.round(e.width * sx)),
+            height: Math.max(1, Math.round(e.height * sy)),
+          }
+        : e;
+      r.setViewport(vp.x, vp.y, vp.width, vp.height);
+      r.setScissor(vp.x, vp.y, vp.width, vp.height);
+      if (eye) {
+        eye.setFromMatrices(e.proj, e.pose);
+        r.render(this.scene, eye.camera);
+      } else {
+        r.render(this.scene, this.monoCamera);
+      }
+      if (this._feather) this._feather.render(r, vp);
+    }
+    r.setScissorTest(false);
+    return true;
+  }
+
+  /** One rAF per burst of observer callbacks. See the _onResize comment. */
+  _scheduleResize() {
+    if (this._disposed || this._resizePending) return;
+    this._resizePending = true;
+    const run = () => {
+      if (!this._resizePending) return;
+      this._resizePending = false;
+      this._resize();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else run();
+  }
+
+  /**
+   * Put the last good frame back on a buffer that was just cleared, NOW — not on the next
+   * animation frame. A ResizeObserver callback runs after rAF and before paint, so the frame
+   * that reallocated the buffer is the frame that gets committed: without this the tile weaves
+   * one black frame per box change, with nothing on the way to repaint it. Mirrors the core's
+   * "repaint NOW: setting canvas.width cleared the buffer" (inline3d.js _onBoxChange).
+   */
+  _repaintAfterResize() {
+    if (this._disposed) return;
+    if (this._mode === 'mono') {
+      const r = this.renderer;
+      r.clear();
+      r.setViewport(0, 0, this.canvas.width, this.canvas.height);
+      r.render(this.scene, this.monoCamera);
+      return;
+    }
+    this._replayLastGood();
   }
 
   _applyTransform() {
@@ -454,6 +643,13 @@ export class SceneViewer {
    * getViewport() splits canvas.width in half for the two eyes — the browser squashing that
    * 2:1 buffer into the 1:1 CSS box IS the side-by-side squeeze, and the weave un-squeezes it.
    * In mono it must stay 1:1 or the flat render is stretched.
+   *
+   * NON-DESTRUCTIVE (web#12). `setSize` writes `canvas.width`/`canvas.height` UNCONDITIONALLY,
+   * and writing either one reallocates and CLEARS the drawing buffer even when the value does
+   * not change. Since a ResizeObserver fires on plenty of things that leave the buffer's
+   * dimensions exactly where they were (a sub-pixel reflow, a scrollbar appearing and going, a
+   * sibling settling), the old unconditional call meant a black frame for every no-op. So:
+   * compare first, and when it IS a real change, put the picture back before the frame commits.
    */
   _resize() {
     if (this._disposed) return;
@@ -462,9 +658,14 @@ export class SceneViewer {
     const dpr = Math.min(window.devicePixelRatio || 1, 2) * this.renderScale;
     const w = Math.max(1, Math.round(box.width * dpr));
     const h = Math.max(1, Math.round(box.height * dpr));
-    this.renderer.setSize(this._mode === 'mono' ? w : w * 2, h, false);
+    const bufW = this._mode === 'mono' ? w : w * 2;
+    // Cheap and always correct to refresh, whether or not the backing store moves.
     this.monoCamera.aspect = box.width / box.height;
     this.monoCamera.updateProjectionMatrix();
+    const el = this.renderer.domElement || this.canvas;
+    if (el.width === bufW && el.height === h) return; // observer fired, geometry didn't move
+    this.renderer.setSize(bufW, h, false);
+    this._repaintAfterResize();
   }
 
   /** Damping + idle turntable. Called once per rendered frame, 3D or mono. */

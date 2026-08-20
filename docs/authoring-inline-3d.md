@@ -98,6 +98,35 @@ wall.addScene(canvas, (views, layer) => {   // addScene sets virtualDisplayHeigh
 });
 ```
 
+**Validate before you clear — the frame you get is not guaranteed to be stereo.** The loop above
+is the shape of the thing; a production one has a gate in front of it. `renderer.clear()` is the
+point of no return: after it the canvas is transparent-black, and if the frame then fails to draw
+both eyes over it, *that empty buffer is what the weave consumes* — one dark tile. Under GPU load
+the session can hand your callback a **short view list** (one view, or none: a per-frame mono
+fallback), and `layer.getViewport(view)` can come back `null`. Neither throws; both produce a
+black blink you will read as a weave bug (web#12).
+
+So check everything **before** touching the canvas — `views.length >= 2`, a viewport for every
+eye — and when a frame can't draw, **repaint the last good one rather than skipping the frame**.
+Skipping is not safe: the weave reads each window's composited canvas every frame, and a canvas
+that isn't redrawn can drop out of the aggregated frame, leaving a stale sub-rect that smears. A
+one-frame-stale eye pose is imperceptible; a black frame and a smear are not. Keep a **copy** of
+the last good `projectionMatrix` / `transform.matrix` per eye to replay from — never the `XRView`
+itself, which is only valid inside the callback that delivered it — and feed the copies back with
+`EyeCamera.setFromMatrices(proj, transform)`.
+
+`./viewer` (and so `./splat` and `./model`) does all of this for you; use it unless you have your
+own loop. `handle.stats()` reports `{ frames, monoFrames }` per scene window if you want to see
+how often the fallback is firing on real hardware.
+
+**Resizing clears the buffer, even when nothing changed.** Writing `canvas.width` or
+`canvas.height` reallocates the drawing buffer — including a write of the *same* value, which is
+what `renderer.setSize()` does unconditionally. A `ResizeObserver` fires on plenty of things that
+leave the buffer's dimensions exactly where they were, and its callback runs *after* rAF and
+*before* paint, so a no-op resize commits one black frame with nothing on the way to repaint it.
+Compare the computed size against `renderer.domElement.width/height` first, and when it genuinely
+changed, re-render **immediately** rather than waiting for the next frame.
+
 **Scene scale is the runtime's job — don't do it in your app.** The session's views are in
 **display-local metres**: the canvas plane is world `z = 0` (the zero-disparity / in-focus
 plane) and the eye sits a few tens of cm in front. Author your scene in metres for a **virtual

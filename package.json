@@ -83,7 +83,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run typecheck"
+    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\""
   },
   "devDependencies": {
     "typescript": "^5.4.0",

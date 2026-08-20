@@ -5,6 +5,72 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.1.1 — unreleased
+
+### Fixed
+
+- **`./viewer` validates a frame before it clears the canvas — the dark blink under GPU load
+  (web#12).** `SceneViewer.onFrame` cleared unconditionally and then rendered whatever it could.
+  Under load the session hands the callback a **short view list** — one view, or none, a per-frame
+  mono fallback — and the old loop turned that into a cleared buffer with a single origin-camera
+  view drawn into it whose content is entirely near-plane-clipped: a fully transparent
+  side-by-side buffer, i.e. **one dark woven tile**. The blink was the viewer's, not the weave's;
+  it was reported as a compositor fault (glTF and splat tiles blinking on a busy box) with the
+  whole submit/match path provably healthy.
+
+  Now every disqualifying condition — a short view list, a `null` or degenerate
+  `layer.getViewport(view)`, a disposed viewer — is checked **while the canvas still holds the
+  last good image**, and only a frame that will draw is allowed to clear. A frame that cannot
+  draw **replays the last good one** from per-eye `Float32Array(16)` copies of
+  `projectionMatrix` / `transform.matrix` plus the viewport rects (copies, because an `XRView` is
+  valid only inside its own frame callback), rather than skipping the commit — the SDK's
+  every-frame-repaint invariant is real, and an un-redrawn canvas can drop out of the aggregated
+  frame and leave the weave reading a stale sub-rect. A one-frame-stale eye pose is
+  imperceptible; a black frame and a smear are not. Before the first good frame there is nothing
+  to replay, and the frame simply returns without clearing.
+
+  **This changes pixels only on frames that were previously black.** A frame that passed
+  validation renders byte-for-byte as it did in 1.1.0 — same clear, same viewports, same
+  matrices, same order. *(preview tier)*
+
+- **A no-op resize no longer blanks the tile (web#12).** `renderer.setSize()` writes
+  `canvas.width`/`canvas.height` unconditionally, and writing either — *including the same value*
+  — reallocates and clears the drawing buffer. `ResizeObserver` fires on things that leave the
+  buffer's dimensions exactly where they were (a sub-pixel reflow, a scrollbar coming and going, a
+  sibling settling), and its callback runs after rAF and before paint, so each one committed a
+  black frame with nothing on the way to repaint it. `_resize` now compares against
+  `renderer.domElement.width/height` and returns early when nothing moved; a real change resizes
+  and then **immediately** re-renders from the replay cache (rects scaled to the new buffer), so
+  the cleared store never reaches the compositor. Observer bursts coalesce to one animation frame,
+  matching what the core already does for its own windows. *(preview tier)*
+
+- **`SceneViewer` without `useEyeCamera()` says so instead of rendering nothing.** With no
+  `./three` glue the 3D path had no eye camera, so it cleared and drew nothing every frame,
+  forever, in silence — and this module's own header example omitted the call, making the failure
+  reachable by copy-paste. It now warns once and renders the **mono camera** into both eye
+  viewports (flat, but visible), and the example passes `EyeCamera`. `./splat` and `./model` were
+  never affected — they supply the glue for you. *(preview tier)*
+
+### Added
+
+- **`EyeCamera.setFromMatrices(projectionMatrix, transformMatrix)`** — the same two matrices an
+  `XRView` carries, handed over separately, for re-drawing a frame you have already drawn.
+  `setFromView` is now a one-line forward to it, so a replay path can never drift from the live
+  one. *(core tier — additive)*
+- **`handle.stats()` → `{ frames, monoFrames }`** on the handle every `add*()` returns. For scene
+  windows, `monoFrames` counts the deliveries that carried fewer than two views — the
+  load-induced fallback that used to be invisible from the page, since nothing throws and nothing
+  logs. A rising ratio is the machine telling you the session is degrading before it becomes a bug
+  report about "blinking"; one throttled `console.debug` (the first, then 1-in-300) names the
+  rate. The core's own contract is unchanged: the view list is passed to `onFrame` exactly as
+  reported, filtered by nothing and synthesised from nothing. *(core tier — additive)*
+- **Unit tests.** `test/*.test.mjs` under `node --test`, with the DOM and three.js stubbed by
+  hand (`test/stubs.mjs`) so the test run needs no dependency either. They pin the rules above:
+  zero `clear()` calls for an empty view list, a one-eye list, a null viewport and a missing
+  layer; a replay that renders the cached matrices and survives the UA recycling the views it
+  cached from; no `setSize` on a no-op resize; an immediate repaint after a real one. 13 of the
+  15 fail against 1.1.0. Wired into CI as a second job.
+
 ## 1.1.0 — 2026-08-19
 
 ### Added

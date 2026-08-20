@@ -80,7 +80,14 @@ export declare class SceneViewer {
   setPose(pose?: OrbitPose): void;
   resetPose(): void;
 
-  /** Pass straight to `wall.addScene(canvas, viewer.onFrame, …)`. Pre-bound. */
+  /**
+   * Pass straight to `wall.addScene(canvas, viewer.onFrame, …)`. Pre-bound.
+   *
+   * Validates before it clears: a frame that cannot draw both eyes (a short view list from a
+   * session falling back under load, a missing viewport) re-renders the last good frame from
+   * cached matrices instead of clearing the canvas to black — the canvas is committed every
+   * frame either way, so the tile never goes dark and never smears (web#12).
+   */
   onFrame(views: readonly XRView[], layer: object): void;
 
   /** Supply the ./three glue so the 3D path can build its eye camera. Returns `this`. */
