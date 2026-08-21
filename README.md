@@ -24,6 +24,9 @@ npm install @displayxr/inline3d
 import { createInline3D } from '@displayxr/inline3d';
 import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three'; // optional three.js glue
 import { addSplat } from '@displayxr/inline3d/splat';               // experimental: 3DGS in a tile
+import { addModel } from '@displayxr/inline3d/model';               // experimental: glTF/GLB in a tile
+                                                                    //   (Draco / meshopt / KTX2 too —
+                                                                    //    you serve the decoder files)
 import { SceneViewer } from '@displayxr/inline3d/viewer';           // experimental: framing + orbit
 ```
 
@@ -78,12 +81,16 @@ samples/
   windows/            mixed 3D windows — still photos + a live video + a real-time three.js scene,
                       each woven with one SDK call, all on one session
   splat/              a 3D Gaussian splat in a tile, auto-framed, with a 2D price plate over it
+  model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF in three tiles
+vendor/draco/         three's Draco decoder, served for samples/model (compressed glTF needs it)
 js/
   inline3d.js         the SDK: createInline3D() → { addImage, addVideo, addScene }, feature-detect,
                       SBS buffer management, and a lazy create/close lifecycle for many windows
   inline3d-three.js   optional three.js helper (EyeCamera: off-axis projection from the session's eyes)
   inline3d-viewer.js  experimental: SceneViewer — framing, orbit, idle turntable, mono fallback
   inline3d-splat.js   experimental: addSplat() — a Gaussian splat window via Spark
+  inline3d-model.js   experimental: addModel() — a glTF/GLB window; wires Draco / meshopt / KTX2
+                      from what the asset declares (you serve the decoder files — see the guide)
 docs/
   authoring-inline-3d.md   the authoring guide
 ```

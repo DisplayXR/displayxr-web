@@ -5,6 +5,72 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.2.0 — 2026-08-20
+
+### Added
+
+- **`./model` loads compressed glTF — Draco, meshopt and KTX2/Basis.** `addModel()` resolved
+  `GLTFLoader` and called a bare `new Loader().loadAsync(src)`, so any asset carrying a compression
+  extension threw outright: `"No DRACOLoader instance provided."` for
+  `KHR_draco_mesh_compression`, `"setMeshoptDecoder must be called before loading compressed
+  files"` for `EXT_meshopt_compression`, and a failed texture for `KHR_texture_basisu`. These are
+  hard failures, not degraded loads, and Draco is close to universal in catalogue GLBs — so the
+  module's own premise, that a retailer's existing glTF renders unchanged, was false for most real
+  files.
+
+  `addModel` now reads the asset's `extensionsUsed` / `extensionsRequired` **before** parsing and
+  attaches exactly the decoders it declares. The inspection is a single `fetch` whose bytes go
+  straight to `loader.parse()`, so it replaces the loader's own request rather than adding one, and
+  an asset that declares no compression imports nothing, constructs nothing and costs exactly what
+  it did in 1.1.1 (measured: zero decoder requests, one request for the asset). Decoders are shared
+  across tiles and ref-counted by configuration, so a grid of twelve products stands up one Draco
+  worker pool and one tile's `remove()` cannot tear down the pool the other eleven are decoding on.
+  *(preview tier — additive)*
+
+- **`decoderPath`, and the reason it is not a CDN.** three ships the Draco decoder and the Basis
+  transcoder as *runtime* files that `DRACOLoader` / `KTX2Loader` fetch at decode time, so
+  something has to say where they are. The default is **your own origin** —
+  `{draco:'/draco/', basis:'/basis/'}`, the layout `cp -r node_modules/three/examples/jsm/libs/…`
+  produces — and there is deliberately **no CDN fallback**: pages built on this SDK include offline
+  kiosk builds, and a default that reached for `cdn.jsdelivr.net` the first time someone opened a
+  compressed product would make the page's offline story depend on one asset's compression setting.
+  A string is a parent directory holding both; an object overrides either key.
+  `EXT_meshopt_compression` needs nothing served — its decoder is pure JS. *(preview tier —
+  additive)*
+
+- **`DRACOLoader` / `KTX2Loader` / `meshoptDecoder` injection**, mirroring the existing
+  `GLTFLoader` escape. A **class** is constructed for you and pointed at `decoderPath`; an
+  **instance** is used exactly as you configured it and its decoder path is left alone — rewriting
+  it would defeat the one thing people inject for. `KTX2Loader.detectSupport()` is called for you
+  with the tile's own `WebGLRenderer` (`SceneViewer` owns it, and it exists synchronously by the
+  time the asset lands), and re-called per tile on a shared instance. *(preview tier — additive)*
+
+- **A failure message aimed at the page author.** A missing or mis-served decoder rejects
+  `handle.ready` with an error naming the **glTF extension**, the **option that fixes it** and the
+  **path it actually looked in** — plus `err.gltfExtension` / `err.decoder` for programmatic
+  handling. three's own message names a class the page never mentions and says nothing about the
+  two things that resolve it. The 404 case reads: *needs the "KHR_draco_mesh_compression" decoder
+  (Draco mesh compression) and it could not be used … Currently looking in "/draco/" — check that
+  it is actually served … Underlying error: fetch for ".../draco_wasm_wrapper.js" responded with
+  404*. *(preview tier — additive)*
+
+- **KTX2's silent failure is now loud.** `GLTFLoader` swallows a texture-load rejection, so a
+  mis-served Basis transcoder resolved a model with **zero textures and no error** — seven
+  compressed textures became none and `ready` resolved (measured on three r180). `addModel` now
+  loads the transcoder eagerly via `KTX2Loader.init()` once an asset declares
+  `KHR_texture_basisu`, which converts that into the named rejection above. *(preview tier)*
+
+- **`samples/model/` gains a Draco tile**, with three's Draco decoder served out of this repo at
+  `vendor/draco/` and the sample passing `decoderPath` — because the site is hosted under a path
+  prefix, which is exactly the case where the absolute default 404s. The tile is the same
+  `addModel` call as the others; only the asset differs. Duck (CC0, Khronos glTF-Sample-Assets).
+
+### Fixed
+
+- **`remove()` releases compressed textures.** `disposeTree` disposed geometries and materials but
+  not the materials' texture maps, which is real GPU memory as soon as KTX2 is in play and a
+  catalogue churns through it. *(preview tier)*
+
 ## 1.1.1 — 2026-08-20
 
 ### Fixed

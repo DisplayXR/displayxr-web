@@ -64,6 +64,16 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   2026-08-14 and framing changed three times in the four days that followed (the swept-horizontal
   fit, measuring bounds in-page instead of trusting a sidecar, and percentile-reject-then-measure).
   Each was a fix; each also changed what a shipped page looks like.
+  **1.2.0 does not restart that clock, and does add an obligation.** The compressed-glTF work on
+  `/model` changed no framing behaviour and no existing option's meaning — it is purely additive
+  (`decoderPath`, three decoder-injection escapes) — so by the criterion above it counts as one of
+  the two quiet releases. What it *does* introduce is the preview tier's first **deployment**
+  requirement: a page that loads a Draco- or KTX2-compressed asset must serve three's decoder files
+  itself (`/draco/`, `/basis/`, or wherever `decoderPath` points). The core tier has no such
+  requirement and will not acquire one; note it here because "install the package" is no longer the
+  whole setup story for `/model`, and because the default is deliberately not a CDN, so the
+  requirement cannot quietly satisfy itself.
+
   - They need peers the core does not: `three` (**>=0.180** for `/splat`, which is Spark's own
     floor — above the package-wide `>=0.150` the `./three` glue asks for) and
     `@sparkjsdev/spark` (>=2.0). Both are declared **optional**, so the core install is

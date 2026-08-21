@@ -15,8 +15,11 @@
   code{background:#8882;padding:1px 5px;border-radius:4px}
   .foot{margin-top:34px;font-size:14px;opacity:.7}
 
-  .pair{display:flex;gap:26px;flex-wrap:wrap;margin:24px 0 0}
-  .cell{flex:1;min-width:300px}
+  /* grid, not flex: with three tiles a wrapped flex item stretches to the full row and the
+     third canvas ends up twice the size of the other two, which makes them uncomparable. */
+  .pair{display:grid;gap:26px;margin:24px 0 0;
+        grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .cell{min-width:0}
   .cell h2{margin-bottom:8px}
   .stage{position:relative}
   /* Bare, as every woven canvas must be — the weave halves this rect, so spatially-varying CSS
@@ -40,11 +43,12 @@
   <h1>model</h1>
   <p class="sub">A glTF mesh as a glasses-free 3D element — and a splat and a mesh sharing one scene.</p>
 
-  <p>Left is <code>addModel()</code>: same options, same handle and same framing as
+  <p>First is <code>addModel()</code>: same options, same handle and same framing as
      <code>addSplat()</code>, so a catalogue switches a product between a captured splat and a
-     vendor mesh by changing one word. Right is both at once, in a single three.js scene, sorting
+     vendor mesh by changing one word. Second is both at once, in a single three.js scene, sorting
      against each other — which is what makes a mixed catalogue possible instead of forcing every
-     product into one representation.</p>
+     product into one representation. Third is the file a real catalogue actually holds: a
+     <strong>Draco-compressed</strong> glTF.</p>
 
   <div class="pair">
     <div class="cell">
@@ -66,7 +70,23 @@
       </div>
       <div class="note" id="noteB">loading…</div>
     </div>
+
+    <div class="cell">
+      <h2>Draco-compressed glTF</h2>
+      <div class="stage">
+        <canvas id="tileC" class="tile" width="1024" height="512"></canvas>
+      </div>
+      <div class="note" id="noteC">loading…</div>
+    </div>
   </div>
+
+  <p style="font-size:14px;opacity:.8">This tile is the only one that needs anything extra of the
+     PAGE. <code>KHR_draco_mesh_compression</code> needs a decoder, and the SDK will not fetch one
+     from a CDN behind your back — an offline build must not depend on one — so the decoder files
+     are served from this repo at <code>/vendor/draco/</code> and the tile passes
+     <code>decoderPath</code>. Copy <code>three/examples/jsm/libs/draco/</code> into your own web
+     root and do the same. Details:
+     <a href="../../docs/authoring-inline-3d.md">authoring guide → compressed glTF</a>.</p>
 
   <div class="ctl">
     <button type="button" id="reset">Reset view</button>
@@ -78,7 +98,10 @@
      <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a><br>
      <span style="font-size:13px">Fox model © PixelMannen,
      <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via Khronos
-     glTF-Sample-Assets. Splat is Spark's public demo asset.</span></p>
+     glTF-Sample-Assets. Duck (Draco variant) © Sony,
+     <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via the same.
+     Draco decoder files © The Draco Authors, Apache-2.0, from three.js. Splat is Spark's public
+     demo asset.</span></p>
 </div>
 
 <!-- three/addons/ is REQUIRED: GLTFLoader lives there, and Spark reaches into
