@@ -1,1 +1,59 @@
-# Placeholder — the first three.js inline-3d sample (hello-cube) lands here (P4).
+# Samples
+
+Vanilla HTML/JS pages that import the SDK from `../../js/` (or a pinned CDN build) through an
+import map. Every one of them renders as ordinary 2D outside the
+[DisplayXR Browser](https://github.com/DisplayXR/displayxr-browser), so they are safe to open
+anywhere. The landing page that lists them — and that the browser opens at startup — is the
+repo's root [`index.html`](../index.html), published at
+<https://displayxr.github.io/displayxr-web/>.
+
+| Sample | What it shows |
+|---|---|
+| [`hello-cube/`](hello-cube/) | The minimum complete page: one rotating three.js cube in a woven canvas. |
+| [`windows/`](windows/) | Mixed producers — still photos, a live side-by-side video and a real-time three.js scene, all on one session. |
+| [`wall-3d/`](wall-3d/) | A long lazy-loading scrolling wall: layers created as tiles near the viewport, closed as they leave. |
+| [`demo-gallery/`](demo-gallery/) | A grid of the DisplayXR demo logos woven as tiles — the compact multi-element weave. |
+| [`sticky-header/`](sticky-header/) | The chrome-occlusion path: a sticky translucent bar the wall scrolls under, with no page wiring. |
+| [`composition/`](composition/) | **The 14-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
+| [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, auto-framed, with a 2D price plate over it. |
+| [`model/`](model/) | `addModel()`: a glTF mesh, a mesh + splat sharing one scene, and a Draco-compressed glTF. |
+| [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
+| [`overlay-test/`](overlay-test/) | A minimal diagnostic repro for the 2D-overlay aspect path — a probe, not a showcase. |
+
+## `composition/` — the composition showcase
+
+Fourteen numbered cases covering every hard 2D-over-3D and 3D-vs-3D overlap on one scrollable
+page: translucent bars, frosted glass (fully covering and straddling an edge), opaque plates,
+a page-DOM modal, a ~10 Hz plate thrash, partial visibility at all four viewport edges, a nested
+`overflow:auto` panel, a sticky tile with content passing behind *and* over it, a zoom sweep,
+edge-adjacent tiles, overlapping tiles, the 3D→2D→3D sandwich, and a mixed
+scene + video + photo load.
+
+It has two jobs, and the second constrains the first: **nothing on it is tuned to look good.**
+Cases that glitch today are built anyway and marked red on-page — case 07 until
+[browser#117](https://github.com/DisplayXR/displayxr-browser/issues/117) lands, case 12 because
+tile-over-tile is not yet defined. A case softened until it passes is not a regression test.
+
+Authoring rules it holds to, which are worth copying into any page that composes 2D over 3D:
+
+- **One `createInline3D()` per document**, closed on `pagehide`. The browser's element-rect
+  channel is a whole-widget setter; two live sessions overwrite each other's rect list every
+  frame.
+- **`autoChrome: false`** — that flag is the SDK's legacy-browser exclusion scan, and this page
+  measures pure draw-order occlusion, so no SDK-side exclusion machinery may participate.
+- **Zero exclusion-era API**: no `exclude()`, no `addGlobalOverlay()`, no
+  `data-inline3d-overlay`. Every 2D element is an ordinary DOM sibling painted after the canvas.
+- **No synthesised media** — the stills come from `demo-gallery/assets/`, the video and the
+  crate textures from `windows/assets/`. The video is **VP9/WebM**: stock Chromium builds ship
+  with proprietary codecs off, so an `.mp4` fails with `MEDIA_ERR_SRC_NOT_SUPPORTED`, which
+  reads exactly like a broken path and is not one.
+
+Every section carries a stable `data-case="NN"` and every canvas a `data-tile`, so a hardware
+session can be scripted:
+
+```js
+document.querySelector('[data-case="07"]').scrollIntoView();
+__showcase.snap('v', 'top', 0.1);   // park the sweep tile at 10% visibility, top edge
+__showcase.thrash(true);            // case 06
+__showcase.modal(true);             // case 05
+```
