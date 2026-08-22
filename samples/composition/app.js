@@ -3,8 +3,14 @@
 // WHAT THIS PAGE IS. Two jobs at once: a demo of what draw-order occlusion buys an author, and
 // a standing hardware regression surface for every future composition change. The second job
 // constrains the first — nothing here is tuned to look good. Cases that glitch today (07 until
-// browser#117 lands, 12 because tile-over-tile is undefined) are built anyway and marked red
-// on-page. A case softened until it passes is not a regression test.
+// browser#117 lands, 12 because tile-over-tile is undefined, 02/03 because of browser#120) are
+// built anyway and marked red on-page. A case softened until it passes is not a regression test.
+//
+// ORDER (browser#120). The page runs 01, then 04…14, then a KNOWN BROKEN banner, then 02 and 03.
+// It used to open into 02/03, whose full-tile backdrop-filter hits #120 — so the first thing a
+// hardware walk-through saw was a screenful of frosted black, which reads as "the sample is
+// broken" rather than "this one case is". The broken pair is kept (a regression surface that
+// hides its failures is not one) but it is announced, it is last, and its frost is opt-in.
 //
 // THE RULES THIS FILE OBEYS
 //
@@ -62,14 +68,47 @@ const SWEEP_MARKS = [0.9, 0.7, 0.5, 0.3, 0.1];
 
 // ── page furniture that needs no session ────────────────────────────────────────────────────
 
+// Document order, which since the browser#120 reorder is: 01, 04…14, then the KNOWN BROKEN
+// banner, then 02 and 03. querySelectorAll returns document order, so the TOC follows the page
+// for free — the case NUMBERS are stable, only their position moved.
 function buildToc() {
   const toc = document.getElementById('toc');
-  for (const sec of document.querySelectorAll('.case[data-case]')) {
+  for (const sec of document.querySelectorAll('.case[data-case], #known-broken')) {
     const a = document.createElement('a');
     a.href = '#' + sec.id;
-    a.textContent = sec.dataset.case + ' · ' + sec.querySelector('h2').textContent.trim();
+    if (sec.id === 'known-broken') {
+      a.className = 'broken';
+      a.textContent = '⚠ known broken · browser#120';
+    } else {
+      if (sec.classList.contains('is-broken')) a.className = 'broken';
+      a.textContent = sec.dataset.case + ' · ' + sec.querySelector('h2').textContent.trim();
+    }
     toc.appendChild(a);
   }
+}
+
+// Cases 02 / 03 — OPT-IN FROST. backdrop-filter over a whole tile is browser#120 (the frost rect
+// carries neither the suppressed canvas nor the clipped-out weave, so the blur samples an empty
+// dark region and the tile reads as a black void). These two are the repro, but a page that opens
+// into two screenfuls of frosted black is unusable as a walk-through, so both panels ship as
+// plain translucent 2D and the blur is added live by these buttons.
+function wireFrostArm() {
+  const panels = { '02': document.getElementById('frost02'), '03': document.getElementById('frost03') };
+  const btns = { '02': document.getElementById('arm02'), '03': document.getElementById('arm03') };
+  const set = (which, on) => {
+    const panel = panels[which];
+    const btn = btns[which];
+    if (!panel || !btn) return false;
+    const armed = on === undefined ? !panel.classList.contains('frosted') : !!on;
+    panel.classList.toggle('frosted', armed);
+    btn.setAttribute('aria-pressed', String(armed));
+    btn.textContent = armed ? 'disarm frost' : 'arm frost (#120 repro)';
+    return armed;
+  };
+  for (const which of Object.keys(btns)) {
+    btns[which]?.addEventListener('click', () => set(which));
+  }
+  return set;
 }
 
 // The sticky header is FROSTED by default — see the CSS comment in index.html. A backdrop
@@ -374,6 +413,7 @@ function setStatus(mode, text) {
   wireHeaderMode();
   const modal = wireModal();
   const thrash = wireThrash();
+  const frost = wireFrostArm();
   const snap = wireSweep();
 
   const imageTiles = [...document.querySelectorAll('canvas[data-pic]')].map((c) => ({
@@ -390,7 +430,7 @@ function setStatus(mode, text) {
   const wall = await createInline3D({ autoChrome: false });
 
   Object.assign(window, {
-    __showcase: { wall, snap, modal, thrash, video },
+    __showcase: { wall, snap, modal, thrash, frost, video },
     __wall: wall, // same console hook the other samples expose
   });
 

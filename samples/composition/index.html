@@ -55,6 +55,8 @@
   .toc a{font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
          padding:6px 8px;border-radius:6px;background:#ffffff12;color:var(--dim)}
   .toc a:hover{background:#ffffff20;color:var(--fg)}
+  .toc a.broken{background:var(--red-bg);border:1px solid var(--red-br);color:var(--red)}
+  .toc a.broken:hover{background:#4e131f99;color:#ffc2cd}
 
   /* ── case scaffolding ─────────────────────────────────────────────────── */
   .case{border-top:1px solid var(--line);padding:36px 0 26px;scroll-margin-top:76px}
@@ -73,6 +75,31 @@
   .note{font-size:12.5px;color:var(--dim);margin:6px 0 0;max-width:88ch;opacity:.85}
   .fixture{margin:20px 0 0}
 
+  /* ── the KNOWN-BROKEN tail ─────────────────────────────────────────────────
+     Cases 02 and 03 sit here, last, behind this banner. They used to open the
+     page, and on hardware that meant walking straight into a screenful of
+     frosted black (browser#120). Healthy cases now run first; these two are
+     kept — a regression surface that hides its broken cases is not one — but
+     they are announced, and their frost is opt-in. */
+  .brokentail{border-top:2px solid var(--red-br);margin-top:52px}
+  .banner{margin:30px 0 0;padding:22px 24px;border-radius:14px;scroll-margin-top:76px;
+          background:linear-gradient(180deg,#4e131f88,#4e131f1f);
+          border:1px solid var(--red-br);border-left:5px solid #ff4d6d}
+  .banner .tag{display:inline-block;font:700 11px/1 system-ui;letter-spacing:.1em;
+               text-transform:uppercase;color:#08080b;background:#ff8b9e;
+               padding:6px 9px;border-radius:5px}
+  .banner h2{font-size:22px;margin:12px 0 8px;letter-spacing:-.3px;color:#ffd3db}
+  .banner p{margin:0 0 8px;font-size:14px;color:#f0cfd6;max-width:86ch}
+  .banner p:last-child{margin-bottom:0}
+  .banner a{color:#ffb3c0;text-decoration:underline}
+  .case.is-broken{border-top:1px dashed var(--red-br)}
+  .case.is-broken .num{background:var(--red-bg);color:var(--red)}
+  /* Clear of the frost panels: `.frosthalf` overhangs its stage by 8% at the bottom, so a
+     tight margin here puts the armed blur box on top of this button. */
+  .armbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:46px 0 0;
+          font-size:12.5px;color:var(--dim)}
+  .btn.arm[aria-pressed="true"]{background:#ff4d6d33;color:var(--red);border-color:var(--red-br)}
+
   /* ── tiles ────────────────────────────────────────────────────────────────
      A stage is VISUALLY BARE: no background, border, radius or overflow clip.
      The weave rect covers the whole canvas box, so any stage decoration would
@@ -89,19 +116,28 @@
   .bar01{position:absolute;left:0;right:0;top:37%;padding:11px 14px;text-align:center;
          background:rgba(16,17,22,.72);color:var(--fg);font-size:13px}
 
-  /* 02 / 03 — frosted glass. backdrop-filter is the point of these two. */
+  /* 02 / 03 — frosted glass. backdrop-filter is the point of these two, and it is also
+     browser#120: a frost rect that covers a WHOLE tile leaves the compositor neither the
+     canvas (suppressed) nor the weave (clipped out), so the blur samples an empty dark
+     region and the tile reads as a black void. These two panels therefore ship DISARMED —
+     plain translucent 2D, no `backdrop-filter` at all, tiles weaving normally underneath —
+     and the `.frosted` modifier below is added live by each case's "arm frost" button. That
+     keeps both cases one-click #120 repros without ambushing a walk-through of the page. */
   .strip{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
   .frostfull{position:absolute;inset:-10px;display:flex;align-items:center;justify-content:center;
              font:600 13px/1.4 system-ui;color:#dfe7f5;text-align:center;
-             background:rgba(150,170,210,.13);border:1px solid #ffffff26;border-radius:12px;
-             -webkit-backdrop-filter:blur(14px) saturate(130%);
-                     backdrop-filter:blur(14px) saturate(130%)}
+             background:rgba(150,170,210,.13);border:1px dashed #ffffff40;border-radius:12px}
   .frosthalf{position:absolute;left:47%;top:-8%;right:-30%;bottom:-8%;
              display:flex;align-items:center;padding:0 16px;
              font:600 13px/1.4 system-ui;color:#dfe7f5;
-             background:rgba(150,170,210,.13);border:1px solid #ffffff26;border-radius:12px;
+             background:rgba(150,170,210,.13);border:1px dashed #ffffff40;border-radius:12px}
+  .frostfull.frosted,.frosthalf.frosted{
+             border-style:solid;border-color:#ffffff26;
              -webkit-backdrop-filter:blur(14px) saturate(130%);
                      backdrop-filter:blur(14px) saturate(130%)}
+  .frostfull .armed-only,.frosthalf .armed-only{display:none}
+  .frostfull.frosted .armed-only,.frosthalf.frosted .armed-only{display:inline}
+  .frostfull.frosted .disarmed-only,.frosthalf.frosted .disarmed-only{display:none}
   .frostbadge{position:absolute;right:12px;top:12px;padding:7px 11px;border-radius:999px;
               font:600 12px/1 system-ui;color:#dfe7f5;
               background:rgba(150,170,210,.16);border:1px solid #ffffff2e;
@@ -247,6 +283,13 @@
      <code>data-inline3d-overlay</code>: every 2D element below is an ordinary DOM sibling painted
      after the canvas, and the page opens exactly <strong>one</strong>
      <code>createInline3D()</code> session with <code>autoChrome:false</code>.</p>
+  <p class="lede"><strong>Reading order:</strong> the healthy cases run first —
+     <b>01</b>, then <b>04&ndash;14</b>. Cases <b>02</b> and <b>03</b> are the full-tile frost pair
+     and they are <a href="#known-broken">last, behind a banner</a>: on hardware they hit
+     <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">browser#120</a> and read as
+     black voids, which is worth keeping as a repro but not worth opening the page with. Their frost
+     is <b>opt-in</b> — both load unfrosted, with the tiles weaving, and an <em>arm frost</em> button
+     turns each into a one-click #120 repro. Case numbers never move; only the order does.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
@@ -269,45 +312,9 @@
     </div>
   </section>
 
-  <!-- ═══ 02 ═══════════════════════════════════════════════════════════════ -->
-  <section class="case" id="c02" data-case="02">
-    <div class="case-head">
-      <span class="num">02</span><h2>Frosted glass fully covering a tile strip</h2>
-      <span class="badge contract">contract</span>
-    </div>
-    <p class="expected"><b>expected:</b> the frost itself is crisp, and the region behind it reads
-      <b>flat</b> — that is the D&prime; contract, not a bug: a backdrop filter is a function of what is
-      behind it, and behind it is the lens-interleaved buffer. What must not happen is the weave
-      overwriting frosted pixels. The control tile <em>above</em> the strip stays 3D.</p>
-    <div class="fixture">
-      <div class="stage center w380" style="margin-bottom:22px">
-        <canvas class="tile" data-pic="gaussiansplat" data-tile="02-control"></canvas>
-      </div>
-      <div class="strip">
-        <div class="stage"><canvas class="tile" data-pic="mediaplayer" data-tile="02-a"></canvas></div>
-        <div class="stage"><canvas class="tile" data-pic="modelviewer" data-tile="02-b"></canvas></div>
-        <div class="stage"><canvas class="tile" data-pic="earthview"   data-tile="02-c"></canvas></div>
-        <div class="frostfull"><span><code>backdrop-filter: blur(14px)</code><br>fully covering three tiles</span></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ═══ 03 ═══════════════════════════════════════════════════════════════ -->
-  <section class="case" id="c03" data-case="03">
-    <div class="case-head">
-      <span class="num">03</span><h2>Frost straddling a tile edge</h2>
-      <span class="badge contract">contract</span>
-    </div>
-    <p class="expected"><b>expected:</b> a clean boundary down the panel's left border —
-      frosted-flat inside the panel, woven 3D outside it, on the same tile. No shimmer, creep or
-      seam-crawl along that line while scrolling.</p>
-    <div class="fixture">
-      <div class="stage center w420">
-        <canvas class="tile" data-pic="avatar" data-tile="03"></canvas>
-        <div class="frosthalf"><span>frost boundary &rarr;<br>flat inside, woven outside</span></div>
-      </div>
-    </div>
-  </section>
+  <!-- 02 and 03 are NOT here: they live at the END of the page, behind the
+       KNOWN BROKEN banner (browser#120). Case numbering is stable; only the
+       DOM order moved. -->
 
   <!-- ═══ 04 ═══════════════════════════════════════════════════════════════ -->
   <section class="case" id="c04" data-case="04">
@@ -604,6 +611,87 @@
       </div>
     </div>
   </section>
+
+  <!-- ═══ KNOWN BROKEN TAIL — cases 02 and 03 ═══════════════════════════════ -->
+  <div class="brokentail">
+    <section class="banner" id="known-broken">
+      <span class="tag">known broken &middot; browser#120</span>
+      <h2>Full-tile frost renders as a dark void, not frosted content</h2>
+      <p>When a <code>backdrop-filter</code> rect covers a whole tile, the frame inside that rect
+        holds <b>neither</b> the tile's canvas (the compositor suppresses it once the tile is
+        joined) <b>nor</b> the woven draw-back (the D&prime; contract clips the weave out of every
+        frost rect so the blur samples pre-weave pixels) — so the blur has nothing to sample and
+        the tile reads as a heavy blurred veil over black.</p>
+      <p>The two cases below are that repro, and they are the reason the frost is <b>off by
+        default</b> here: each one ships as a plain translucent panel with the tiles weaving
+        normally underneath, and an <b>arm frost</b> button that adds the
+        <code>backdrop-filter</code> live. Tracking:
+        <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">DisplayXR/displayxr-browser#120</a>
+        (the fix direction is a mono draw where the weave is withheld, which overlaps
+        <a href="https://github.com/DisplayXR/displayxr-browser/issues/119">#119</a>). The page's own
+        sticky header keeps its frost on purpose — a thin band over page chrome is the validated,
+        working case, and case&nbsp;07's top-edge leg needs it.</p>
+    </section>
+
+    <!-- ═══ 02 ═════════════════════════════════════════════════════════════ -->
+    <section class="case is-broken" id="c02" data-case="02">
+      <div class="case-head">
+        <span class="num">02</span><h2>Frosted glass fully covering a tile strip</h2>
+        <span class="badge red">broken armed &middot; browser#120</span>
+      </div>
+      <p class="expected"><b>expected, disarmed (as shipped):</b> the panel is plain translucent 2D
+        and all three tiles under it weave normally, exactly like case&nbsp;01 — this is the state
+        the page loads in.</p>
+      <p class="expected"><b>expected, armed:</b> the frost should read crisp with <b>flat</b>
+        (mono, un-woven) tile content behind it — the D&prime; contract, where a backdrop filter is a
+        function of what is behind it. <b>What actually happens today is browser#120:</b> the strip
+        goes to a blurred veil over black, because the frost rect has neither canvas nor weave to
+        sample. The control tile <em>above</em> the strip must stay 3D in both states.</p>
+      <div class="fixture">
+        <div class="stage center w380" style="margin-bottom:22px">
+          <canvas class="tile" data-pic="gaussiansplat" data-tile="02-control"></canvas>
+        </div>
+        <div class="strip">
+          <div class="stage"><canvas class="tile" data-pic="mediaplayer" data-tile="02-a"></canvas></div>
+          <div class="stage"><canvas class="tile" data-pic="modelviewer" data-tile="02-b"></canvas></div>
+          <div class="stage"><canvas class="tile" data-pic="earthview"   data-tile="02-c"></canvas></div>
+          <div class="frostfull" id="frost02"><span>
+            <span class="disarmed-only">panel disarmed &middot; plain translucent 2D<br>three tiles weaving underneath</span>
+            <span class="armed-only"><code>backdrop-filter: blur(14px)</code><br>fully covering three tiles</span>
+          </span></div>
+        </div>
+      </div>
+      <p class="armbar"><button class="btn arm" id="arm02" type="button" aria-pressed="false">arm frost (#120 repro)</button>
+        adds <code>backdrop-filter</code> to the panel live &middot; scripted:
+        <code>__showcase.frost('02', true)</code></p>
+    </section>
+
+    <!-- ═══ 03 ═════════════════════════════════════════════════════════════ -->
+    <section class="case is-broken" id="c03" data-case="03">
+      <div class="case-head">
+        <span class="num">03</span><h2>Frost straddling a tile edge</h2>
+        <span class="badge red">broken armed &middot; browser#120</span>
+      </div>
+      <p class="expected"><b>expected, disarmed (as shipped):</b> a translucent panel overhanging the
+        tile's right half; the whole tile weaves, and the panel's left border is just a 2D edge.</p>
+      <p class="expected"><b>expected, armed:</b> a clean boundary down the panel's left border —
+        frosted-flat inside, woven 3D outside, on the same tile, with no shimmer or seam-crawl while
+        scrolling. <b>Today the inside half goes dark (browser#120)</b> rather than showing flat
+        content, so this case reads as a half-black tile.</p>
+      <div class="fixture">
+        <div class="stage center w420">
+          <canvas class="tile" data-pic="avatar" data-tile="03"></canvas>
+          <div class="frosthalf" id="frost03"><span>
+            <span class="disarmed-only">panel disarmed &rarr;<br>translucent 2D, tile woven throughout</span>
+            <span class="armed-only">frost boundary &rarr;<br>flat inside, woven outside</span>
+          </span></div>
+        </div>
+      </div>
+      <p class="armbar"><button class="btn arm" id="arm03" type="button" aria-pressed="false">arm frost (#120 repro)</button>
+        adds <code>backdrop-filter</code> to the panel live &middot; scripted:
+        <code>__showcase.frost('03', true)</code></p>
+    </section>
+  </div>
 
   <footer>
     Every section carries a stable <code>data-case="NN"</code> and every canvas a

@@ -34,6 +34,18 @@ Cases that glitch today are built anyway and marked red on-page — case 07 unti
 [browser#117](https://github.com/DisplayXR/displayxr-browser/issues/117) lands, case 12 because
 tile-over-tile is not yet defined. A case softened until it passes is not a regression test.
 
+**Reading order and the frost pair.** The page runs the healthy cases first — **01**, then
+**04–14** — and puts **02** and **03** last, behind a red *KNOWN BROKEN* banner. Those two are
+the full-tile `backdrop-filter` cases, and on hardware they hit
+[browser#120](https://github.com/DisplayXR/displayxr-browser/issues/120): a frost rect covering
+a whole tile carries neither the suppressed canvas nor the clipped-out weave, so the blur samples
+nothing and the tile reads as a black void. Opening the page into them made the whole sample look
+broken. Both therefore ship **unfrosted** — plain translucent panels with the tiles weaving —
+and each carries an *arm frost* button (`__showcase.frost('02', true)`) that adds the
+`backdrop-filter` live, so they stay one-click #120 repros. Case numbers never move; only the
+DOM order did. The page's own sticky header keeps its frost on purpose: a thin (~56 px) band
+over page chrome is the validated, working case, and case 07's top-edge leg needs it.
+
 Authoring rules it holds to, which are worth copying into any page that composes 2D over 3D:
 
 - **One `createInline3D()` per document**, closed on `pagehide`. The browser's element-rect
@@ -56,4 +68,5 @@ document.querySelector('[data-case="07"]').scrollIntoView();
 __showcase.snap('v', 'top', 0.1);   // park the sweep tile at 10% visibility, top edge
 __showcase.thrash(true);            // case 06
 __showcase.modal(true);             // case 05
+__showcase.frost('02', true);       // arm the browser#120 frost repro (cases 02 / 03)
 ```
