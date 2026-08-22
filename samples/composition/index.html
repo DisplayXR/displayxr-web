@@ -130,8 +130,13 @@
             font-size:12.5px;color:var(--dim)}
   .sweepbar .grp{display:flex;gap:5px;align-items:center}
   .sweepbar .btn{font-size:12px;padding:4px 9px}
-  .spacer{height:150vh;display:flex;align-items:center;justify-content:center;
-          color:#ffffff1f;font:700 13px/1 ui-monospace,monospace;letter-spacing:.3em}
+  /* NAMED `vgap`, NOT `spacer`. The header has a `.spacer` flex strut too, and a bare
+     `.spacer{height:150vh}` here won that cascade — which made the STICKY FROSTED HEADER
+     3000 px tall, i.e. a full-viewport backdrop-filter band sitting over every case on the
+     page. That is what a hardware walk-through actually walked into. Keep these names
+     disjoint. */
+  .vgap{height:150vh;display:flex;align-items:center;justify-content:center;
+        color:#ffffff1f;font:700 13px/1 ui-monospace,monospace;letter-spacing:.3em}
   /* The tile plus its two GUTTER rails. Ticks live in the gutters and NEVER on
      the tile: a hairline painted over the tile would add a 2D-over-3D
      composition on top of the very thing being measured. */
@@ -396,7 +401,7 @@
       </span>
     </div>
 
-    <div class="spacer">SCROLL &darr;</div>
+    <div class="vgap">SCROLL &darr;</div>
 
     <div class="sweepwrap" id="sweepwrap">
       <div class="rail left" id="railtop">
@@ -410,7 +415,7 @@
       </div>
     </div>
 
-    <div class="spacer">SCROLL &darr;</div>
+    <div class="vgap">SCROLL &darr;</div>
 
     <p class="note" style="margin-bottom:10px"><b>Horizontal leg.</b> Parking a tile off the
       <em>left</em> or <em>right</em> viewport edge needs horizontal scroll, so this leg is a
