@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — composition showcase (2D/3D overlap matrix)</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --bg:#0f1014; --fg:#e8e8ea; --dim:#9aa0ab; --line:#ffffff1f;
+    --ok:#7ee2a4; --ok-bg:#134e2a55; --ok-br:#24a05a55;
+    --red:#ff8b9e; --red-bg:#4e131f55; --red-br:#a02440aa;
+    --amb:#e6c07a; --amb-bg:#3a2a1155; --amb-br:#a0742455;
+    --blu:#a8d0ff; --blu-bg:#12325a55; --blu-br:#3f7fd055;
+    --col: 1000px;
+  }
+  html,body{margin:0;background:var(--bg);color:var(--fg);
+            font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+  a{color:#5aa8ff;text-decoration:none}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px;font-size:.92em}
+
+  /* ── The page's sticky header — FROSTED ON PURPOSE ────────────────────────
+     Every other sample in this repo keeps backdrop-filter OFF a bar that
+     overlaps a tile, because a backdrop filter has no isolated composited
+     resource to hand the compositor and reaches it through its OWN RENDER
+     PASS. This page wants exactly that: browser#117's log line is
+     "layer_id stamped but no root quad carries it (canvas quad occluded, in a
+     child pass, or resource not ready)", and a frosted sticky header is the
+     cheapest way to reproduce the child-pass condition at the TOP viewport
+     edge — which is where case 07's top-edge sweep runs. Judge case 07 with
+     the frost ON. The `header: solid` button drops the blur so a failure can
+     be attributed (solid bar = plain quad = root pass). */
+  header{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;
+         padding:11px 20px;border-bottom:1px solid var(--line);
+         background:rgba(16,17,22,.55);
+         -webkit-backdrop-filter:blur(14px) saturate(140%);
+                 backdrop-filter:blur(14px) saturate(140%)}
+  header.solid{background:rgba(16,17,22,.94);
+               -webkit-backdrop-filter:none;backdrop-filter:none}
+  header .brand{font-weight:650;letter-spacing:-.2px}
+  header .brand .dot{color:#5aa8ff}
+  header .spacer{margin-left:auto}
+  header button, .btn{font:inherit;font-size:13px;color:inherit;cursor:pointer;
+         padding:5px 11px;border-radius:999px;border:1px solid #ffffff2e;background:#ffffff14}
+  header button[aria-pressed="true"], .btn[aria-pressed="true"]{
+         background:#5aa8ff2e;color:var(--blu);border-color:#5aa8ff55}
+
+  .wrap{max-width:var(--col);margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.5px}
+  .lede{color:var(--dim);margin:0 0 14px;max-width:78ch}
+  .status{font:13px/1.5 system-ui;padding:9px 13px;border-radius:8px;margin:12px 0 6px;display:inline-block}
+  .status.woven{background:var(--ok-bg);border:1px solid var(--ok-br);color:var(--ok)}
+  .status.flat{background:var(--amb-bg);border:1px solid var(--amb-br);color:var(--amb)}
+  .toc{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0 8px}
+  .toc a{font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+         padding:6px 8px;border-radius:6px;background:#ffffff12;color:var(--dim)}
+  .toc a:hover{background:#ffffff20;color:var(--fg)}
+  .toc a.broken{background:var(--red-bg);border:1px solid var(--red-br);color:var(--red)}
+  .toc a.broken:hover{background:#4e131f99;color:#ffc2cd}
+
+  /* ── case scaffolding ─────────────────────────────────────────────────── */
+  .case{border-top:1px solid var(--line);padding:36px 0 26px;scroll-margin-top:76px}
+  .case-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .num{font:700 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+       background:#ffffff14;padding:7px 9px;border-radius:6px;color:var(--dim)}
+  .case h2{font-size:19px;margin:0;letter-spacing:-.2px}
+  .badge{font:600 11px/1 system-ui;text-transform:uppercase;letter-spacing:.06em;
+         padding:5px 8px;border-radius:999px}
+  .badge.pass{background:var(--ok-bg);border:1px solid var(--ok-br);color:var(--ok)}
+  .badge.red{background:var(--red-bg);border:1px solid var(--red-br);color:var(--red)}
+  .badge.contract{background:var(--amb-bg);border:1px solid var(--amb-br);color:var(--amb)}
+  .badge.manual{background:var(--blu-bg);border:1px solid var(--blu-br);color:var(--blu)}
+  .expected{font-size:13.5px;color:var(--dim);margin:9px 0 4px;max-width:88ch}
+  .expected b{color:var(--fg);font-weight:650}
+  .note{font-size:12.5px;color:var(--dim);margin:6px 0 0;max-width:88ch;opacity:.85}
+  .fixture{margin:20px 0 0}
+
+  /* ── the KNOWN-BROKEN tail ─────────────────────────────────────────────────
+     Cases 02 and 03 sit here, last, behind this banner. They used to open the
+     page, and on hardware that meant walking straight into a screenful of
+     frosted black (browser#120). Healthy cases now run first; these two are
+     kept — a regression surface that hides its broken cases is not one — but
+     they are announced, and their frost is opt-in. */
+  .brokentail{border-top:2px solid var(--red-br);margin-top:52px}
+  .banner{margin:30px 0 0;padding:22px 24px;border-radius:14px;scroll-margin-top:76px;
+          background:linear-gradient(180deg,#4e131f88,#4e131f1f);
+          border:1px solid var(--red-br);border-left:5px solid #ff4d6d}
+  .banner .tag{display:inline-block;font:700 11px/1 system-ui;letter-spacing:.1em;
+               text-transform:uppercase;color:#08080b;background:#ff8b9e;
+               padding:6px 9px;border-radius:5px}
+  .banner h2{font-size:22px;margin:12px 0 8px;letter-spacing:-.3px;color:#ffd3db}
+  .banner p{margin:0 0 8px;font-size:14px;color:#f0cfd6;max-width:86ch}
+  .banner p:last-child{margin-bottom:0}
+  .banner a{color:#ffb3c0;text-decoration:underline}
+  .case.is-broken{border-top:1px dashed var(--red-br)}
+  .case.is-broken .num{background:var(--red-bg);color:var(--red)}
+  /* Clear of the frost panels: `.frosthalf` overhangs its stage by 8% at the bottom, so a
+     tight margin here puts the armed blur box on top of this button. */
+  .armbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:46px 0 0;
+          font-size:12.5px;color:var(--dim)}
+  .btn.arm[aria-pressed="true"]{background:#ff4d6d33;color:var(--red);border-color:var(--red-br)}
+
+  /* ── tiles ────────────────────────────────────────────────────────────────
+     A stage is VISUALLY BARE: no background, border, radius or overflow clip.
+     The weave rect covers the whole canvas box, so any stage decoration would
+     be woven with the tile. Corners are baked per eye in the buffer — and on
+     THIS page cornerRadius is 0, because case 11 has to judge a hard seam. */
+  .stage{position:relative;aspect-ratio:1/1;width:100%}
+  .stage.wide{aspect-ratio:16/9}
+  .stage canvas{display:block;width:100%;height:100%}
+  .center{margin:0 auto}
+  .w420{max-width:420px}
+  .w380{max-width:380px}
+
+  /* 01 — translucent bar */
+  .bar01{position:absolute;left:0;right:0;top:37%;padding:11px 14px;text-align:center;
+         background:rgba(16,17,22,.72);color:var(--fg);font-size:13px}
+
+  /* 02 / 03 — frosted glass. backdrop-filter is the point of these two, and it is also
+     browser#120: a frost rect that covers a WHOLE tile leaves the compositor neither the
+     canvas (suppressed) nor the weave (clipped out), so the blur samples an empty dark
+     region and the tile reads as a black void. These two panels therefore ship DISARMED —
+     plain translucent 2D, no `backdrop-filter` at all, tiles weaving normally underneath —
+     and the `.frosted` modifier below is added live by each case's "arm frost" button. That
+     keeps both cases one-click #120 repros without ambushing a walk-through of the page. */
+  .strip{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .frostfull{position:absolute;inset:-10px;display:flex;align-items:center;justify-content:center;
+             font:600 13px/1.4 system-ui;color:#dfe7f5;text-align:center;
+             background:rgba(150,170,210,.13);border:1px dashed #ffffff40;border-radius:12px}
+  .frosthalf{position:absolute;left:47%;top:-8%;right:-30%;bottom:-8%;
+             display:flex;align-items:center;padding:0 16px;
+             font:600 13px/1.4 system-ui;color:#dfe7f5;
+             background:rgba(150,170,210,.13);border:1px dashed #ffffff40;border-radius:12px}
+  .frostfull.frosted,.frosthalf.frosted{
+             border-style:solid;border-color:#ffffff26;
+             -webkit-backdrop-filter:blur(14px) saturate(130%);
+                     backdrop-filter:blur(14px) saturate(130%)}
+  .frostfull .armed-only,.frosthalf .armed-only{display:none}
+  .frostfull.frosted .armed-only,.frosthalf.frosted .armed-only{display:inline}
+  .frostfull.frosted .disarmed-only,.frosthalf.frosted .disarmed-only{display:none}
+  .frostbadge{position:absolute;right:12px;top:12px;padding:7px 11px;border-radius:999px;
+              font:600 12px/1 system-ui;color:#dfe7f5;
+              background:rgba(150,170,210,.16);border:1px solid #ffffff2e;
+              -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+
+  /* 04 / 06 — opaque plates (plain quads, no effects) */
+  .plate{position:absolute;background:#12141a;color:#fff;border-radius:8px;
+         font:13px/1.35 system-ui;padding:9px 12px;pointer-events:none}
+  .plate.persistent{left:14px;bottom:14px}
+  .plate.hover{right:14px;top:14px;display:none}
+  .stage:hover > .plate.hover{display:block}
+  .plate.thrash{left:50%;top:50%;transform:translate(-50%,-50%);display:none;
+                background:#5aa8ff;color:#08111f;font-weight:700}
+
+  /* 05 — page-DOM modal + scrim (ordinary DOM, not a browser popup) */
+  .scrim{position:fixed;inset:0;z-index:60;background:rgba(6,7,10,.68);
+         display:flex;align-items:center;justify-content:center}
+  .scrim[hidden]{display:none}
+  .modalcard{width:min(440px,88vw);background:#151821;border:1px solid #ffffff26;
+             border-radius:14px;padding:20px 22px;box-shadow:0 24px 60px #0009}
+  .modalcard h3{margin:0 0 6px;font-size:17px}
+  .modalcard p{margin:0 0 14px;font-size:13.5px;color:var(--dim)}
+
+  /* 07 — the partial-visibility sweep */
+  .sweepbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 6px;
+            font-size:12.5px;color:var(--dim)}
+  .sweepbar .grp{display:flex;gap:5px;align-items:center}
+  .sweepbar .btn{font-size:12px;padding:4px 9px}
+  /* NAMED `vgap`, NOT `spacer`. The header has a `.spacer` flex strut too, and a bare
+     `.spacer{height:150vh}` here won that cascade — which made the STICKY FROSTED HEADER
+     3000 px tall, i.e. a full-viewport backdrop-filter band sitting over every case on the
+     page. That is what a hardware walk-through actually walked into. Keep these names
+     disjoint. */
+  .vgap{height:150vh;display:flex;align-items:center;justify-content:center;
+        color:#ffffff1f;font:700 13px/1 ui-monospace,monospace;letter-spacing:.3em}
+  /* The tile plus its two GUTTER rails. Ticks live in the gutters and NEVER on
+     the tile: a hairline painted over the tile would add a 2D-over-3D
+     composition on top of the very thing being measured. */
+  .sweepwrap{position:relative;width:min(420px,68vw);margin:0 auto}
+  .rail{position:absolute;top:0;bottom:0;width:52px}
+  .rail.left{left:-64px}
+  .rail.right{right:-64px}
+  .rail .tick{position:absolute;left:0;right:0;height:0;border-top:1px dashed #ffffff3d}
+  .rail .tick span{position:absolute;top:-9px;font:600 10.5px/1 ui-monospace,monospace;
+                   color:var(--dim);white-space:nowrap}
+  .rail.left .tick span{right:2px}
+  .rail.right .tick span{left:2px}
+  .rail .cap{position:absolute;top:-24px;font:600 10.5px/1 ui-monospace,monospace;color:var(--dim)}
+  .rail.left .cap{right:2px}
+  .rail.right .cap{left:2px}
+  /* Live readout — FIXED, but parked in the far screen gutter so it never
+     overlaps a tile, and only shown while case 07 is on screen. */
+  #sweephud{position:fixed;left:10px;top:50%;transform:translateY(-50%);z-index:40;
+            width:118px;padding:10px 11px;border-radius:10px;
+            background:#12141aee;border:1px solid var(--line);
+            font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim)}
+  #sweephud[hidden]{display:none}
+  #sweephud b{display:block;font-size:19px;color:var(--fg);font-weight:700}
+  /* horizontal leg — full-bleed so the SCROLLER's edges ARE the viewport edges */
+  .fullbleed{width:100vw;margin-left:calc(50% - 50vw)}
+  .hscroll{overflow-x:auto;overflow-y:hidden;display:flex;align-items:center;
+           padding:34px 0;scrollbar-width:thin}
+  .hspacer{flex:0 0 120vw}
+  .hstage{flex:0 0 min(420px,68vw);width:min(420px,68vw);position:relative}
+  .hrail{position:relative;height:20px;flex:0 0 auto}
+  .hrail .tick{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed #ffffff3d}
+  .hrail .tick span{position:absolute;left:3px;font:600 10.5px/1 ui-monospace,monospace;
+                    color:var(--dim);white-space:nowrap}
+  .hrail.top .tick span{top:0}
+  .hrail.bot .tick span{bottom:0}
+
+  /* 08 — nested scrollable panel */
+  .panel08{height:430px;overflow:auto;border:1px solid var(--line);border-radius:12px;
+           padding:18px;background:#ffffff06}
+  .panel08 .filler{height:280px;display:flex;align-items:center;justify-content:center;
+                   color:#ffffff26;font:600 13px/1 ui-monospace,monospace}
+
+  /* 09 — sticky tile, content behind and over.
+     Both lanes occupy the SAME grid cell, so the card stream scrolls through
+     the pinned tile's column. Neither lane creates a stacking context, so the
+     cards' z-index compares directly against the sticky tile's. */
+  .case09{display:grid;grid-template-columns:1fr}
+  .case09 > *{grid-area:1/1}
+  .c09tile{position:sticky;top:96px;z-index:5;width:min(360px,62vw);margin:0 auto}
+  .c09cards{display:flex;flex-direction:column;gap:150px;padding:70px 0 90px}
+  .card09{position:relative;width:min(520px,86vw);margin:0 auto;padding:18px 20px;
+          border-radius:12px;border:1px solid var(--line);font-size:13.5px}
+  .card09.behind{z-index:1;background:#1b2130}
+  .card09.over{z-index:20;background:#243449;border-color:#5aa8ff55}
+
+  /* 11 — edge-adjacent pair, NO gap */
+  .pair11{display:grid;grid-template-columns:1fr 1fr;gap:0;width:min(640px,92vw);margin:0 auto}
+
+  /* 12 — partially OVERLAPPING pair (undefined behaviour) */
+  .over12{position:relative;width:min(560px,92vw);margin:0 auto;
+          height:calc(min(560px,92vw) * 0.78)}
+  .over12 .a{position:absolute;left:0;top:0;width:60%}
+  .over12 .b{position:absolute;right:8%;bottom:0;width:48%;z-index:2}
+
+  /* 13 — the 3D → 2D → 3D sandwich */
+  .sand13{position:relative;width:min(620px,92vw);margin:0 auto;
+          height:calc(min(620px,92vw) * 0.78)}
+  .sand13 .a{position:absolute;left:0;top:0;width:56%;z-index:1}
+  .sand13 .mid{position:absolute;left:14%;top:30%;width:66%;z-index:2;
+               background:#151821;border:1px solid #ffffff2e;border-radius:12px;
+               padding:22px 20px;font-size:13.5px;box-shadow:0 16px 40px #0008}
+  .sand13 .b{position:absolute;right:0;bottom:6%;width:42%;z-index:3}
+
+  /* 14 — mixed producers */
+  .mix14{display:grid;gap:18px;grid-template-columns:repeat(2,1fr)}
+  .mix14 .span2{grid-column:span 2}
+  .cap{font-size:12px;color:var(--dim);margin-top:6px}
+
+  footer{border-top:1px solid var(--line);margin-top:40px;padding-top:22px;
+         font-size:13px;color:var(--dim)}
+  @media (max-width:900px){
+    .rail{display:none}
+    .mix14{grid-template-columns:1fr}
+    .mix14 .span2{grid-column:span 1}
+  }
+</style>
+</head>
+<body>
+
+<header id="pagehead">
+  <div class="brand">DisplayXR<span class="dot">.</span> composition showcase</div>
+  <div class="spacer"></div>
+  <button id="headermode" type="button" aria-pressed="true">header: frosted</button>
+  <a class="btn" href="../../">all samples</a>
+</header>
+
+<div class="wrap">
+  <h1>Composition showcase — every hard 2D/3D overlap, on one page</h1>
+  <p class="lede">Fourteen numbered cases covering every way flat 2D and woven 3D can land on top of
+     each other in an ordinary web page: translucent chrome, frosted glass, opaque plates, modals,
+     nested scrollers, sticky tiles, tile-on-tile, and a mixed producer load. Two jobs in one page —
+     a demo of what <strong>draw-order occlusion</strong> buys an author, and a standing
+     <strong>hardware regression surface</strong>.</p>
+  <p class="lede">The second job constrains the first: <strong>nothing here is tuned to look
+     good</strong>. Cases that glitch today are built anyway and marked red on-page. A case softened
+     until it passes is not a regression test. Zero exclusion-era API is used — no
+     <code>exclude()</code>, no <code>addGlobalOverlay()</code>, no
+     <code>data-inline3d-overlay</code>: every 2D element below is an ordinary DOM sibling painted
+     after the canvas, and the page opens exactly <strong>one</strong>
+     <code>createInline3D()</code> session with <code>autoChrome:false</code>.</p>
+  <p class="lede"><strong>Reading order:</strong> the healthy cases run first —
+     <b>01</b>, then <b>04&ndash;14</b>. Cases <b>02</b> and <b>03</b> are the full-tile frost pair
+     and they are <a href="#known-broken">last, behind a banner</a>: on hardware they hit
+     <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">browser#120</a> and read as
+     black voids, which is worth keeping as a repro but not worth opening the page with. Their frost
+     is <b>opt-in</b> — both load unfrosted, with the tiles weaving, and an <em>arm frost</em> button
+     turns each into a one-click #120 repro. Case numbers never move; only the order does.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <nav class="toc" id="toc"></nav>
+
+  <!-- ═══ 01 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c01" data-case="01">
+    <div class="case-head">
+      <span class="num">01</span><h2>Translucent bar over a woven tile</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> the bar reads as crisp translucent 2D and the woven 3D shows
+      through it at its designed opacity. No raw side-by-side anywhere, and no weave bleeding into
+      the bar's text. This is the shipped page-header case, shrunk onto one tile.</p>
+    <div class="fixture">
+      <div class="stage center w420">
+        <canvas class="tile" data-pic="avatar" data-tile="01"></canvas>
+        <div class="bar01">translucent bar &middot; <code>rgba(16,17,22,.72)</code> &middot; 3D shows through</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 and 03 are NOT here: they live at the END of the page, behind the
+       KNOWN BROKEN banner (browser#120). Case numbering is stable; only the
+       DOM order moved. -->
+
+  <!-- ═══ 04 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c04" data-case="04">
+    <div class="case-head">
+      <span class="num">04</span><h2>Opaque plate over a tile — persistent and on hover</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> both plates render as fully opaque 2D over live 3D. The
+      hover plate appears and disappears with no flash of raw side-by-side and
+      <b>leaves no hole</b> behind it when it goes.</p>
+    <div class="fixture">
+      <div class="stage center w420">
+        <canvas class="tile" data-pic="modelviewer" data-tile="04"></canvas>
+        <div class="plate persistent">persistent plate<br>opaque 2D</div>
+        <div class="plate hover">hover plate</div>
+      </div>
+      <p class="note">Hover the tile to raise the second plate.</p>
+    </div>
+  </section>
+
+  <!-- ═══ 05 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c05" data-case="05">
+    <div class="case-head">
+      <span class="num">05</span><h2>Page-DOM modal and scrim over a tile</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> the scrim dims the tile as translucent 2D while the tile
+      keeps weaving under it; the card is crisp. Dismissing restores the tile immediately — no stale
+      dark rectangle. This is a page-DOM occluder, not a browser popup.</p>
+    <div class="fixture">
+      <div class="stage center w420">
+        <canvas class="tile" data-pic="earthview" data-tile="05"></canvas>
+      </div>
+      <p class="note"><button class="btn" id="open05" type="button">open modal</button>
+        &nbsp;scripted: <code>__showcase.modal(true)</code></p>
+    </div>
+  </section>
+
+  <!-- ═══ 06 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c06" data-case="06">
+    <div class="case-head">
+      <span class="num">06</span><h2>Programmatic plate thrash (~10 Hz)</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> start the thrash, then scroll this section through the
+      viewport. Every plate appears and vanishes cleanly — no stuck hole, no tile dropping to raw
+      side-by-side, no plate woven into the tile content.</p>
+    <div class="fixture">
+      <div class="stage center w420">
+        <canvas class="tile" data-pic="gaussiansplat" data-tile="06"></canvas>
+        <div class="plate thrash" id="plate06">THRASH</div>
+      </div>
+      <p class="note"><button class="btn" id="thrash06" type="button" aria-pressed="false">start thrash</button>
+        &nbsp;~10&nbsp;Hz <code>display</code> toggle &middot; scripted:
+        <code>__showcase.thrash(true)</code></p>
+    </div>
+  </section>
+
+  <!-- ═══ 07 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c07" data-case="07">
+    <div class="case-head">
+      <span class="num">07</span><h2>Partial visibility at every viewport edge</h2>
+      <span class="badge red">red until browser#117 lands</span>
+    </div>
+    <p class="expected"><b>expected:</b> walk the tile through <b>10 / 30 / 50 / 70 / 90&thinsp;%</b>
+      visibility at the <b>top</b> and <b>bottom</b> edges (vertical leg), then at the <b>left</b>
+      and <b>right</b> edges (horizontal leg). At every mark the visible part must weave correctly —
+      no raw side-by-side, no stretch, no eye swap. A tile whose id-join works should weave at any
+      nonzero visibility.</p>
+    <p class="note">This is browser#117's acceptance surface; today anything under roughly 70&thinsp;%
+      shows raw side-by-side. The page's sticky header is <b>frosted</b> so the top-edge case
+      reproduces the child-pass condition from that bug's log — judge this case with
+      <code>header: frosted</code> on, and flip it to solid only to attribute a failure. The ruler
+      ticks sit in the <b>gutters, never on the tile</b>: a hairline painted over the tile would add
+      a 2D-over-3D composition on top of the thing being measured.</p>
+
+    <div class="sweepbar">
+      <span class="grp"><b style="color:var(--fg)">snap top&nbsp;edge</b>
+        <button class="btn" data-sweep="v:top:0.9" type="button">90%</button>
+        <button class="btn" data-sweep="v:top:0.7" type="button">70%</button>
+        <button class="btn" data-sweep="v:top:0.5" type="button">50%</button>
+        <button class="btn" data-sweep="v:top:0.3" type="button">30%</button>
+        <button class="btn" data-sweep="v:top:0.1" type="button">10%</button>
+      </span>
+      <span class="grp"><b style="color:var(--fg)">bottom&nbsp;edge</b>
+        <button class="btn" data-sweep="v:bottom:0.9" type="button">90%</button>
+        <button class="btn" data-sweep="v:bottom:0.7" type="button">70%</button>
+        <button class="btn" data-sweep="v:bottom:0.5" type="button">50%</button>
+        <button class="btn" data-sweep="v:bottom:0.3" type="button">30%</button>
+        <button class="btn" data-sweep="v:bottom:0.1" type="button">10%</button>
+      </span>
+    </div>
+
+    <div class="vgap">SCROLL &darr;</div>
+
+    <div class="sweepwrap" id="sweepwrap">
+      <div class="rail left" id="railtop">
+        <div class="cap">&#9650; top edge</div>
+      </div>
+      <div class="stage" id="sweepvstage">
+        <canvas class="tile" data-pic="modelviewer" data-tile="07-vertical" id="sweepv"></canvas>
+      </div>
+      <div class="rail right" id="railbot">
+        <div class="cap">&#9660; bottom edge</div>
+      </div>
+    </div>
+
+    <div class="vgap">SCROLL &darr;</div>
+
+    <p class="note" style="margin-bottom:10px"><b>Horizontal leg.</b> Parking a tile off the
+      <em>left</em> or <em>right</em> viewport edge needs horizontal scroll, so this leg is a
+      full-bleed <code>overflow-x:auto</code> strip whose own edges <em>are</em> the viewport edges.
+      It therefore also carries a little of case 08's nested-scroll flavour — attribute a failure
+      here accordingly.</p>
+    <div class="sweepbar">
+      <span class="grp"><b style="color:var(--fg)">snap left&nbsp;edge</b>
+        <button class="btn" data-sweep="h:left:0.9" type="button">90%</button>
+        <button class="btn" data-sweep="h:left:0.7" type="button">70%</button>
+        <button class="btn" data-sweep="h:left:0.5" type="button">50%</button>
+        <button class="btn" data-sweep="h:left:0.3" type="button">30%</button>
+        <button class="btn" data-sweep="h:left:0.1" type="button">10%</button>
+      </span>
+      <span class="grp"><b style="color:var(--fg)">right&nbsp;edge</b>
+        <button class="btn" data-sweep="h:right:0.9" type="button">90%</button>
+        <button class="btn" data-sweep="h:right:0.7" type="button">70%</button>
+        <button class="btn" data-sweep="h:right:0.5" type="button">50%</button>
+        <button class="btn" data-sweep="h:right:0.3" type="button">30%</button>
+        <button class="btn" data-sweep="h:right:0.1" type="button">10%</button>
+      </span>
+    </div>
+    <div class="fullbleed">
+      <div class="hscroll" id="hscroll">
+        <div class="hspacer"></div>
+        <div class="hstage">
+          <div class="hrail top" id="hrailleft"></div>
+          <div class="stage" id="sweephstage">
+            <canvas class="tile" data-pic="mediaplayer" data-tile="07-horizontal" id="sweeph"></canvas>
+          </div>
+          <div class="hrail bot" id="hrailright"></div>
+        </div>
+        <div class="hspacer"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 08 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c08" data-case="08">
+    <div class="case-head">
+      <span class="num">08</span><h2>Tile inside a nested <code>overflow:auto</code> panel</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> the weave rect tracks the <b>inner</b> scroll, not the
+      page. The tile clips exactly at the panel's edges, never paints outside them, and never ghosts
+      at a stale position after the inner scroll stops.</p>
+    <div class="fixture">
+      <div class="panel08">
+        <div class="filler">&darr; scroll INSIDE this panel &darr;</div>
+        <div class="stage center w380">
+          <canvas class="tile" data-pic="avatar" data-tile="08"></canvas>
+        </div>
+        <div class="filler">&uarr; independent of the page scroll &uarr;</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 09 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c09" data-case="09">
+    <div class="case-head">
+      <span class="num">09</span><h2>Sticky tile, content scrolling behind and over it</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> the pinned tile weaves at its pinned position the whole
+      way. Cards at <code>z-index:1</code> pass <b>behind</b> it (hidden); cards at
+      <code>z-index:20</code> pass <b>over</b> it as crisp 2D. Draw order decides — not who is 3D.</p>
+    <div class="fixture case09">
+      <div>
+        <div class="stage c09tile">
+          <canvas class="tile" data-pic="earthview" data-tile="09"></canvas>
+        </div>
+      </div>
+      <div class="c09cards">
+        <div class="card09 behind"><b>z-index: 1</b> — this card passes BEHIND the pinned tile and must disappear under it.</div>
+        <div class="card09 over"><b>z-index: 20</b> — this card passes OVER the pinned tile and must stay crisp 2D.</div>
+        <div class="card09 behind"><b>z-index: 1</b> — behind again. No half-states, no card fragment surviving on top.</div>
+        <div class="card09 over"><b>z-index: 20</b> — over again. Text must never pick up the lens interleave.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 10 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c10" data-case="10">
+    <div class="case-head">
+      <span class="num">10</span><h2>Browser zoom sweep, 67&thinsp;% &rarr; 150&thinsp;%</h2>
+      <span class="badge manual">manual gesture</span>
+    </div>
+    <p class="expected"><b>expected:</b> press <code>Ctrl</code>&thinsp;+&thinsp;<code>+</code>/<code>&minus;</code>
+      by hand across the range. The weave rect stays registered with the CSS box, stereo stays square
+      (no squeeze), and the bar and badge stay on their pixels at every step.</p>
+    <p class="note">Browser zoom is a user gesture — nothing here can drive it, so this section is an
+      ordinary composed fixture (tile + translucent bar + frosted badge) that you zoom manually.</p>
+    <div class="fixture">
+      <div class="stage center w420">
+        <canvas class="tile" data-pic="gaussiansplat" data-tile="10"></canvas>
+        <div class="bar01">zoom me &middot; the bar must stay on these pixels</div>
+        <div class="frostbadge">frost</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 11 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c11" data-case="11">
+    <div class="case-head">
+      <span class="num">11</span><h2>Edge-adjacent tile pair, no gap</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> both tiles weave, the shared border is a clean line, and
+      neither tile bleeds a column of the other's eye across it. Heights are matched exactly and
+      both boxes are square, so neither is squeezed. Corner radius is <code>0</code> on this whole
+      page precisely so this seam can be judged.</p>
+    <div class="fixture">
+      <div class="pair11">
+        <div class="stage"><canvas class="tile" data-pic="avatar"      data-tile="11-left"></canvas></div>
+        <div class="stage"><canvas class="tile" data-pic="mediaplayer" data-tile="11-right"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 12 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c12" data-case="12">
+    <div class="case-head">
+      <span class="num">12</span><h2>Partially overlapping tile pair</h2>
+      <span class="badge red">undefined behaviour</span>
+    </div>
+    <p class="expected"><b>expected: record what it actually does</b> — top wins, bottom wins, or
+      both garble — and file it with this section as the repro. Today's only bar: the behaviour must
+      be <b>deterministic</b> and <b>locally contained</b>, i.e. the non-overlapping regions of both
+      tiles stay correct 3D.</p>
+    <p class="note">The platform has not defined tile-over-tile. This case is the forcing function
+      for defining it, which is why it ships red rather than being softened until it passes.</p>
+    <div class="fixture">
+      <div class="over12">
+        <div class="stage a"><canvas class="tile" data-pic="modelviewer" data-tile="12-bottom"></canvas></div>
+        <div class="stage b"><canvas class="tile" data-pic="earthview"   data-tile="12-top"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 13 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c13" data-case="13">
+    <div class="case-head">
+      <span class="num">13</span><h2>The sandwich: 3D &rarr; 2D &rarr; 3D</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> strict draw order through three layers — tile A woven at the
+      bottom, the 2D card crisp over it, tile B woven over the card. No layer swallows the one above
+      it.</p>
+    <div class="fixture">
+      <div class="sand13">
+        <div class="stage a"><canvas class="tile" data-pic="mediaplayer" data-tile="13-a"></canvas></div>
+        <div class="mid"><b>z-index: 2</b> — a plain 2D card. It must be crisp over tile A, and
+          tile B must be woven over <em>it</em>.</div>
+        <div class="stage b"><canvas class="tile" data-pic="gaussiansplat" data-tile="13-b"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 14 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c14" data-case="14">
+    <div class="case-head">
+      <span class="num">14</span><h2>Mixed producers under load</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> a live three.js scene, a side-by-side video and two still
+      photos weave <b>simultaneously</b> in one viewport — all 3D, none falling back to mono or raw
+      side-by-side, video playback smooth. This is the producer-weight mix that has historically
+      pushed a session into its degraded path.</p>
+    <div class="fixture mix14">
+      <div>
+        <div class="stage"><canvas class="tile" data-scene data-tile="14-scene"></canvas></div>
+        <p class="cap"><code>addScene()</code> — a live three.js turntable, rendered twice per frame
+          into the two eye viewports.</p>
+      </div>
+      <div>
+        <div class="stage"><canvas class="tile" data-pic="avatar" data-tile="14-img-a"></canvas></div>
+        <p class="cap"><code>addImage()</code> — a still side-by-side photo.</p>
+      </div>
+      <div>
+        <div class="stage"><canvas class="tile" data-pic="modelviewer" data-tile="14-img-b"></canvas></div>
+        <p class="cap"><code>addImage()</code> — a second still, so the mix is not two producers.</p>
+      </div>
+      <div>
+        <div class="stage wide"><canvas class="tile" data-video data-tile="14-video"></canvas></div>
+        <p class="cap"><code>addVideo()</code> — a VP9/WebM side-by-side clip (640&times;360 per eye).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ KNOWN BROKEN TAIL — cases 02 and 03 ═══════════════════════════════ -->
+  <div class="brokentail">
+    <section class="banner" id="known-broken">
+      <span class="tag">known broken &middot; browser#120</span>
+      <h2>Full-tile frost renders as a dark void, not frosted content</h2>
+      <p>When a <code>backdrop-filter</code> rect covers a whole tile, the frame inside that rect
+        holds <b>neither</b> the tile's canvas (the compositor suppresses it once the tile is
+        joined) <b>nor</b> the woven draw-back (the D&prime; contract clips the weave out of every
+        frost rect so the blur samples pre-weave pixels) — so the blur has nothing to sample and
+        the tile reads as a heavy blurred veil over black.</p>
+      <p>The two cases below are that repro, and they are the reason the frost is <b>off by
+        default</b> here: each one ships as a plain translucent panel with the tiles weaving
+        normally underneath, and an <b>arm frost</b> button that adds the
+        <code>backdrop-filter</code> live. Tracking:
+        <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">DisplayXR/displayxr-browser#120</a>
+        (the fix direction is a mono draw where the weave is withheld, which overlaps
+        <a href="https://github.com/DisplayXR/displayxr-browser/issues/119">#119</a>). The page's own
+        sticky header keeps its frost on purpose — a thin band over page chrome is the validated,
+        working case, and case&nbsp;07's top-edge leg needs it.</p>
+    </section>
+
+    <!-- ═══ 02 ═════════════════════════════════════════════════════════════ -->
+    <section class="case is-broken" id="c02" data-case="02">
+      <div class="case-head">
+        <span class="num">02</span><h2>Frosted glass fully covering a tile strip</h2>
+        <span class="badge red">broken armed &middot; browser#120</span>
+      </div>
+      <p class="expected"><b>expected, disarmed (as shipped):</b> the panel is plain translucent 2D
+        and all three tiles under it weave normally, exactly like case&nbsp;01 — this is the state
+        the page loads in.</p>
+      <p class="expected"><b>expected, armed:</b> the frost should read crisp with <b>flat</b>
+        (mono, un-woven) tile content behind it — the D&prime; contract, where a backdrop filter is a
+        function of what is behind it. <b>What actually happens today is browser#120:</b> the strip
+        goes to a blurred veil over black, because the frost rect has neither canvas nor weave to
+        sample. The control tile <em>above</em> the strip must stay 3D in both states.</p>
+      <div class="fixture">
+        <div class="stage center w380" style="margin-bottom:22px">
+          <canvas class="tile" data-pic="gaussiansplat" data-tile="02-control"></canvas>
+        </div>
+        <div class="strip">
+          <div class="stage"><canvas class="tile" data-pic="mediaplayer" data-tile="02-a"></canvas></div>
+          <div class="stage"><canvas class="tile" data-pic="modelviewer" data-tile="02-b"></canvas></div>
+          <div class="stage"><canvas class="tile" data-pic="earthview"   data-tile="02-c"></canvas></div>
+          <div class="frostfull" id="frost02"><span>
+            <span class="disarmed-only">panel disarmed &middot; plain translucent 2D<br>three tiles weaving underneath</span>
+            <span class="armed-only"><code>backdrop-filter: blur(14px)</code><br>fully covering three tiles</span>
+          </span></div>
+        </div>
+      </div>
+      <p class="armbar"><button class="btn arm" id="arm02" type="button" aria-pressed="false">arm frost (#120 repro)</button>
+        adds <code>backdrop-filter</code> to the panel live &middot; scripted:
+        <code>__showcase.frost('02', true)</code></p>
+    </section>
+
+    <!-- ═══ 03 ═════════════════════════════════════════════════════════════ -->
+    <section class="case is-broken" id="c03" data-case="03">
+      <div class="case-head">
+        <span class="num">03</span><h2>Frost straddling a tile edge</h2>
+        <span class="badge red">broken armed &middot; browser#120</span>
+      </div>
+      <p class="expected"><b>expected, disarmed (as shipped):</b> a translucent panel overhanging the
+        tile's right half; the whole tile weaves, and the panel's left border is just a 2D edge.</p>
+      <p class="expected"><b>expected, armed:</b> a clean boundary down the panel's left border —
+        frosted-flat inside, woven 3D outside, on the same tile, with no shimmer or seam-crawl while
+        scrolling. <b>Today the inside half goes dark (browser#120)</b> rather than showing flat
+        content, so this case reads as a half-black tile.</p>
+      <div class="fixture">
+        <div class="stage center w420">
+          <canvas class="tile" data-pic="avatar" data-tile="03"></canvas>
+          <div class="frosthalf" id="frost03"><span>
+            <span class="disarmed-only">panel disarmed &rarr;<br>translucent 2D, tile woven throughout</span>
+            <span class="armed-only">frost boundary &rarr;<br>flat inside, woven outside</span>
+          </span></div>
+        </div>
+      </div>
+      <p class="armbar"><button class="btn arm" id="arm03" type="button" aria-pressed="false">arm frost (#120 repro)</button>
+        adds <code>backdrop-filter</code> to the panel live &middot; scripted:
+        <code>__showcase.frost('03', true)</code></p>
+    </section>
+  </div>
+
+  <footer>
+    Every section carries a stable <code>data-case="NN"</code> and every canvas a
+    <code>data-tile</code>, so a hardware session can be scripted:
+    <code>document.querySelector('[data-case="07"]').scrollIntoView()</code> or
+    <code>__showcase.snap('v','top',0.1)</code>. Scroll each section into isolation before judging
+    it — a neighbouring tile in frame is a confound.
+    <br><br>
+    Built on <a href="../../docs/authoring-inline-3d.md">the inline-3D SDK</a>. Assets are reused
+    from <a href="../windows/">samples/windows</a> and
+    <a href="../demo-gallery/">samples/demo-gallery</a> — nothing here is synthesised media.
+    Get the <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>.
+  </footer>
+</div>
+
+<!-- case 05's modal lives at the end of <body>: an ordinary page-DOM occluder -->
+<div class="scrim" id="scrim05" hidden>
+  <div class="modalcard">
+    <h3>Page-DOM modal (case 05)</h3>
+    <p>The scrim behind this card is ordinary translucent 2D. The tile keeps weaving under it and
+      must show through at the scrim's opacity; this card must stay crisp. Dismiss and the tile
+      returns immediately.</p>
+    <button class="btn" id="close05" type="button">dismiss</button>
+  </div>
+</div>
+
+<div id="sweephud" hidden>case&nbsp;07<b>—</b>visible</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -82,6 +82,8 @@ samples/
                       each woven with one SDK call, all on one session
   splat/              a 3D Gaussian splat in a tile, auto-framed, with a 2D price plate over it
   model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF in three tiles
+  composition/        the 14-case 2D/3D overlap matrix — demo AND standing hardware regression
+                      surface; red cases ship red (see samples/README.md)
 vendor/draco/         three's Draco decoder, served for samples/model (compressed glTF needs it)
 js/
   inline3d.js         the SDK: createInline3D() → { addImage, addVideo, addScene }, feature-detect,
