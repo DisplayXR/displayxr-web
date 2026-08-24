@@ -120,5 +120,9 @@ if (wall.supported) wall.addImage(canvas, 'photo-sbs.png');</code></pre>
        <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
   </div>
 </div>
+<!-- Update check (displayxr-browser#154). This page is the DisplayXR Browser's startup page,
+     which makes it the one place a check reaches users without shipping an updater. It is a
+     no-op in every other browser and on an up-to-date one — see js/version-check.js. -->
+<script type="module" src="js/version-check.js"></script>
 </body>
 </html>
