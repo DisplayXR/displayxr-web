@@ -41,6 +41,9 @@
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather } from './inline3d-three.js';
 import { SceneViewer } from './inline3d-viewer.js';
+// Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
+// is the default lighting path, so deferring it would only add a frame of unlit content.
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /** Cached across calls so a grid of models resolves the loader module once. */
 let _GLTFLoader = null;
@@ -301,10 +304,17 @@ function kindFromMessage(msg) {
  * @param {HTMLCanvasElement} canvas
  * @param {string} src  URL of a .glb / .gltf.
  * @param {object} [opts]  every option ./splat takes, plus:
- * @param {'studio'|'none'} [opts.environment='studio']  built-in three-point lighting. Meshes
- *        arrive unlit otherwise — unlike splats, which carry their own baked appearance.
- * @param {object} [opts.envMap]  a PMREM-processed environment texture, if you have one. Better
- *        than `environment` for metal and glass; overrides it.
+ * @param {'room'|'studio'|'none'} [opts.environment='room']  how the mesh is lit. Meshes arrive
+ *        unlit otherwise — unlike splats, which carry their own baked appearance.
+ *        - `room` (default) bakes an image-based environment from three's procedural
+ *          RoomEnvironment. Metal and glass NEED this: a punctual light contributes a specular
+ *          dot but does not fill a metallic BRDF, so under `studio` a `metalness: 1` surface
+ *          samples an empty environment and resolves to black. Procedural, so it costs no HDRI
+ *          fetch and an offline build stays offline.
+ *        - `studio` is the older three-point punctual rig. Cheaper, and fine for wholly dielectric
+ *          matte content, but it is what makes chrome render as a dark hole.
+ * @param {object} [opts.envMap]  a PMREM-processed environment texture of your own. Overrides
+ *        `environment` entirely — pass this when you want the product lit by a specific room.
  * @param {unknown} [opts.GLTFLoader]  hand in the class instead of resolving `three/addons/`.
  * @param {string|{draco?:string,basis?:string}} [opts.decoderPath]  where YOUR PAGE serves three's
  *        Draco decoder and Basis transcoder (default `{draco:'/draco/', basis:'/basis/'}`). A
@@ -329,7 +339,7 @@ export function addModel(wall, canvas, src, opts = {}) {
     fitSweep = true,
     renderScale = 1,
     feather = 0,
-    environment = 'studio',
+    environment = 'room',
     envMap = null,
     GLTFLoader: injectedLoader = null,
     decoderPath = null,
@@ -355,6 +365,7 @@ export function addModel(wall, canvas, src, opts = {}) {
   }).useEyeCamera(EyeCamera, EdgeFeather);
 
   if (envMap) viewer.scene.environment = envMap;
+  else if (environment === 'room') addRoomEnvironment(viewer);
   else if (environment === 'studio') addStudioLights(viewer.scene);
 
   /** Shared-decoder keys this tile holds a reference to, released in remove(). */
@@ -459,6 +470,43 @@ function boundsOf(object3d) {
   const c = box.getCenter(new THREE.Vector3());
   const e = box.getSize(new THREE.Vector3());
   return { center: [c.x, c.y, c.z], extent: [Math.max(e.x, 1e-6), Math.max(e.y, 1e-6), Math.max(e.z, 1e-6)] };
+}
+
+/**
+ * Bake an image-based environment from three's procedural RoomEnvironment.
+ *
+ * This is the default because the alternative is silently wrong. `addStudioLights` is punctual
+ * only, and a punctual light contributes a specular highlight without filling a metallic BRDF —
+ * so a `metalness: 1` surface has nothing to reflect and resolves to BLACK. Chrome bells render as
+ * a dark disc, glass lenses as opaque holes, and the result reads as a corrupt asset rather than a
+ * lighting choice. It has cost real debugging time more than once.
+ *
+ * RoomEnvironment is generated in memory — a small box of emissive panels — so this buys IBL with
+ * no HDRI to fetch and no CDN in the critical path, which an offline or kiosk build depends on.
+ *
+ * Deliberately deferred behind the viewer: a PMREM is baked against one renderer's GL context and
+ * cannot be shared across renderers, so this cannot be hoisted into a module-level constant even
+ * though every tile bakes an identical one. The generator is disposed immediately; the resulting
+ * texture is owned by the scene and released with it.
+ *
+ * Splats never come through here — they carry baked radiance and no PBR material, and an
+ * environment would only wash them out.
+ */
+function addRoomEnvironment(viewer) {
+  const renderer = viewer?.renderer;
+  // No renderer means no context to bake against (a headless or not-yet-realised viewer). Fall
+  // back rather than throw: unlit-but-visible beats a tile that fails to appear at all.
+  if (!renderer) return addStudioLights(viewer.scene);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  try {
+    // Low blur on purpose. These are product shots, so a tighter environment keeps the highlight a
+    // travelling band rather than a broad wash — and a highlight that travels as the viewer moves
+    // is most of what separates an object from a picture of one on a head-tracked display.
+    viewer.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  } finally {
+    pmrem.dispose();
+  }
 }
 
 /**

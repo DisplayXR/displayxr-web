@@ -25,7 +25,12 @@ export interface ModelOptions {
   renderScale?: number;
   feather?: number;
   /** Built-in three-point lighting. Meshes arrive unlit; splats do not need this. */
-  environment?: 'studio' | 'none';
+  /**
+   * How the mesh is lit. `room` (default) bakes IBL from three's procedural RoomEnvironment —
+   * metal and glass need it, because a punctual rig leaves a `metalness: 1` surface with nothing
+   * to reflect and it renders black. `studio` is the older three-point punctual rig.
+   */
+  environment?: 'room' | 'studio' | 'none';
   /** A PMREM-processed environment texture. Better than `environment` for metal; overrides it. */
   envMap?: object;
   /** Hand in the GLTFLoader class instead of resolving it from `three/addons/`. */

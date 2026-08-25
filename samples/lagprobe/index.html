@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lagprobe — inline-3D scroll-lag instrument</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#0b0c10;color:#e8e8ef;font:14px/1.5 system-ui}
+  .spacer{height:140vh;display:flex;align-items:center;justify-content:center;opacity:.35}
+  .rail{position:relative;margin:0 auto;width:min(92vw,900px)}
+  /* The tile. A fixed pixel size keeps the staging/submit rect arithmetic trivial to read. */
+  #stage{position:relative;width:812px;height:406px;margin:0 auto}
+  #tile{display:block;width:812px;height:406px;background:#000}
+  /* 2D REFERENCE MARKER: a DOM stripe that steps in lockstep with the WebGL stripe.
+     If the woven tile lags, these two visibly separate — a human-readable ruler. */
+  #ref{position:relative;width:812px;height:26px;margin:8px auto 0;background:#171922}
+  #refbar{position:absolute;top:0;bottom:0;width:10px;background:#4cf;left:0}
+  #hud{position:fixed;left:8px;top:8px;z-index:9;background:#000a;padding:6px 9px;
+       border-radius:6px;font:12px/1.35 ui-monospace,monospace;white-space:pre}
+</style>
+<script>
+// Beacon channel: console output does not reach logcat on this build, so every diagnostic
+// (including module-import failures, which is why this is a classic script BEFORE the module)
+// is reported to a tiny collector on the host over the adb reverse tunnel on :8898.
+window.__BQ = [];
+window.__beacon = function (m) { try { new Image().src = 'http://localhost:8898/?m=' + encodeURIComponent(m) + '&_=' + Math.random(); } catch (e) {} };
+window.__bpush = function (m) { window.__BQ.push(m); if (window.__BQ.length >= 60) window.__bflush(); };
+window.__bflush = function () {
+  if (!window.__BQ.length) return;
+  var body = window.__BQ.join('\n'); window.__BQ = [];
+  try { fetch('http://localhost:8898/', { method: 'POST', body: body, keepalive: true }); } catch (e) {}
+};
+addEventListener('error', function (e) {
+  window.__beacon('ERROR ' + (e.message || e.type) + ' @' + (e.filename || '?') + ':' + (e.lineno || '?'));
+}, true);
+addEventListener('unhandledrejection', function (e) {
+  window.__beacon('REJECT ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason));
+});
+addEventListener('pagehide', function () { window.__bflush(); });
+window.__beacon('page-html-parsed');
+</script>
+<div id="hud">lagprobe</div>
+<div class="spacer">scroll down — tile below</div>
+<div class="rail">
+  <div id="stage"><canvas id="tile" width="812" height="406"></canvas></div>
+  <div id="ref"><div id="refbar"></div></div>
+</div>
+<div class="spacer">end</div>
+<script type="importmap">
+{ "imports": { "@displayxr/inline3d": "/js/inline3d.js" } }
+</script>
+<script type="module" src="./app.js"></script>
