@@ -9,6 +9,24 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ### Added
 
+- **`./model` lights meshes with an image-based environment by default (`environment: 'room'`).**
+  The previous default, `studio`, is three punctual lights and nothing else. A punctual light
+  contributes a specular highlight but does not fill a metallic BRDF, so a `metalness: 1` surface
+  sampled an empty environment and resolved to **black** — chrome rendering as a dark disc, glass
+  lenses as opaque holes. The failure reads as a corrupt asset rather than a lighting choice, and
+  it cost real debugging time: two perfectly good models were discarded as broken before the cause
+  was found.
+
+  `environment` now takes `'room' | 'studio' | 'none'` and defaults to `'room'`, which bakes a
+  PMREM from three's procedural `RoomEnvironment` — generated in memory, so this buys IBL with no
+  HDRI to fetch and keeps an offline or kiosk build free of a CDN in its critical path. `'studio'`
+  remains for wholly dielectric matte content, and an explicit `envMap` still overrides both. Only
+  meshes are affected: splats carry their own baked radiance and never enter this path.
+
+  **This moves your pixels.** Metal and glass gain reflections they should always have had, and
+  dielectric surfaces pick up a softer ambient. Pass `environment: 'studio'` to keep 1.1.1's look.
+  *(preview tier — changed default)*
+
 - **`./model` loads compressed glTF — Draco, meshopt and KTX2/Basis.** `addModel()` resolved
   `GLTFLoader` and called a bare `new Loader().loadAsync(src)`, so any asset carrying a compression
   extension threw outright: `"No DRACOLoader instance provided."` for

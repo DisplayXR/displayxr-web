@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>DXR SBS weave test</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px system-ui}#c{display:block;margin:40px auto;width:640px;height:320px}#s{text-align:center}</style>
+</head>
+<body>
+<div id="s">boot…</div>
+<!-- native SBS resolution 2560x640 (1280/eye), shown in a 640x320 box -->
+<canvas id="c" width="2560" height="640"></canvas>
+<script type="module">
+import { startInline3D } from 'http://127.0.0.1:8765/js/inline3d.js';
+const c = document.getElementById('c');
+const s = document.getElementById('s');
+const say = (m) => { s.textContent = m; document.title = 'DXR:' + m; console.log('[DXRTEST] ' + m); };
+
+// WebGL (accelerated → IOSurface-backed overlay, like the three.js samples). A 2D
+// canvas is not compositor-promoted the same way, so the element isn't tracked.
+const gl = c.getContext('webgl', { alpha: true, preserveDrawingBuffer: true });
+function drawSBS() {
+  if (!gl) return;
+  gl.enable(gl.SCISSOR_TEST);
+  // Left eye = red, right eye = green → woven anaglyph output unmistakably non-black.
+  gl.scissor(0, 0, 1280, 640);    gl.clearColor(0.9, 0.06, 0.06, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.scissor(1280, 0, 1280, 640); gl.clearColor(0.06, 0.9, 0.06, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  // white center bar per eye for visible structure in the PPM
+  gl.clearColor(1, 1, 1, 1);
+  gl.scissor(560, 280, 160, 80);  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.scissor(1840, 280, 160, 80); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.flush();
+}
+
+async function waitReady() {
+  for (let i = 0; i < 80; i++) {
+    try { if (await navigator.xr.isSessionSupported('inline-3d')) return true; } catch (e) {}
+    say('waiting for inline-3d support… ' + i);
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return false;
+}
+
+(async () => {
+  drawSBS();
+  if (!navigator.xr) { say('NO navigator.xr'); return; }
+  say('waiting readiness');
+  const ready = await waitReady();
+  say('isSessionSupported=' + ready + ' → startInline3D…');
+  try {
+    const xr = await startInline3D(c, {
+      virtualDisplayHeight: 0.12,
+      onFrame: (views, layer, frame) => { drawSBS(); },
+    });
+    say(xr && xr.supported ? 'inline-3D ACTIVE (weaving)' : '2D fallback (not supported)');
+  } catch (e) {
+    say('startInline3D THREW: ' + (e && e.message ? e.message : e));
+  }
+})();
+</script>
+</body>
+</html>
