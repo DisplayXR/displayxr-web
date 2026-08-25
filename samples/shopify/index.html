@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shopify — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#3b82f6}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.7;margin:0 0 26px}
+  h2{font-size:18px;margin:26px 0 4px}
+  code{background:#8882;padding:1px 5px;border-radius:4px;word-break:break-all}
+  .foot{margin-top:34px;font-size:14px;opacity:.7}
+
+  .stage{margin:22px 0 0}
+  /* Bare, as every woven canvas must be — the weave halves this rect, so spatially-varying CSS
+     lands on one eye. Decoration belongs in the buffer (the viewer's `feather`). */
+  canvas.tile{display:block;width:100%;max-width:520px;margin:0 auto;aspect-ratio:1/1;cursor:grab}
+  canvas.tile:active{cursor:grabbing}
+  .note{font-size:13px;opacity:.75;margin-top:10px;min-height:2.6em;text-align:center}
+
+  .ctl{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0 0}
+  .ctl input{flex:1 1 380px;min-width:0;font:inherit;font-size:14px;padding:7px 10px;
+             border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}
+  .ctl button{font:inherit;font-size:14px;border:1px solid #8886;background:transparent;
+              color:inherit;border-radius:6px;padding:7px 14px;cursor:pointer}
+  .ctl button:focus-visible,.ctl input:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}
+
+  table{border-collapse:collapse;width:100%;margin:12px 0 0;font-size:14px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #8883;vertical-align:top}
+  th{width:33%;font-weight:600;opacity:.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>shopify</h1>
+  <p class="sub">A real Shopify product, unmodified, as a glasses-free 3D element.</p>
+
+  <p>The model below is not ours and was not re-authored. It is the GLB that Shopify already
+     serves for a product on one of Shopify&rsquo;s own demo storefronts, loaded straight from
+     <code>cdn.shopify.com</code> by URL. Merchants who have used Shopify&rsquo;s 3D product media
+     already have one of these per product.</p>
+
+  <div class="stage">
+    <canvas id="tile" class="tile" aria-label="Shopify product model in 3D"></canvas>
+    <p class="note" id="note">loading…</p>
+  </div>
+
+  <div class="ctl">
+    <input id="url" type="url" spellcheck="false"
+           aria-label="Shopify GLB URL"
+           placeholder="https://cdn.shopify.com/3d/models/…/model.glb">
+    <button id="load" type="button">Load</button>
+    <button id="reset" type="button">Reset</button>
+  </div>
+  <p class="note" style="text-align:left" id="hint">
+    Paste any <code>cdn.shopify.com/3d/models/…</code> URL to try another product.
+  </p>
+
+  <h2>Why this works with no asset pipeline</h2>
+  <p>Every claim here was measured against live Shopify assets rather than read off a
+     documentation page:</p>
+  <table>
+    <tr><th>Hosting</th>
+        <td>Plain <code>.glb</code> on <code>cdn.shopify.com</code>, served
+            <code>content-type: model/gltf-binary</code> with
+            <code>access-control-allow-origin: *</code> — so any page may fetch it cross-origin.</td></tr>
+    <tr><th>Compression</th>
+        <td>None. Shopify runs an optimiser (the generator string reads
+            <code>RapidCompact</code>) but the result declares no
+            <code>extensionsUsed</code> — no Draco, no meshopt, no KTX2. Stock
+            <code>GLTFLoader</code> parses it with no decoder registered.<br>
+            Merchants <em>can</em> upload pre-compressed GLBs, and Shopify passes those through
+            untouched — which is why the SDK gained Draco/meshopt/KTX2 support in 1.2.0.</td></tr>
+    <tr><th>Scale</th>
+        <td>Real-world metres (this boot is 0.30&nbsp;m). The SDK frames against
+            <code>virtualDisplayHeight</code>, also in metres, so a Shopify asset lands at a
+            sensible size without a magic number.</td></tr>
+    <tr><th>Materials</th>
+        <td>Real PBR — <code>baseColorTexture</code> plus
+            <code>metallicRoughnessTexture</code>. That is what lets a highlight travel across the
+            surface as you move your head, which is the whole reason this reads as an object
+            rather than a picture of one.</td></tr>
+  </table>
+
+  <h2>Finding the URL on a merchant&rsquo;s storefront</h2>
+  <p>Nothing above needs a Shopify integration — it is a URL and a canvas. On a live storefront
+     the URL is already in the page, so an app embed can read it without an API call and without
+     CORS entering into it:</p>
+  <pre><code>document.querySelector('model-viewer')?.getAttribute('src')</code></pre>
+  <p>Shopify also exposes it as JSON at <code>/products/&lt;handle&gt;.js</code>, under
+     <code>media[].sources[]</code> where <code>format === 'glb'</code>.</p>
+
+  <p class="foot">← <a href="../../">All samples</a> ·
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a><br>
+     <span style="font-size:13px">The model is hosted by Shopify and shown by URL from a
+     Shopify demo storefront; it is neither redistributed nor modified here. Shopify is a
+     trademark of Shopify Inc. This sample is not affiliated with or endorsed by Shopify.</span></p>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js",
+  "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js",
+  "@displayxr/inline3d/model": "../../js/inline3d-model.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
