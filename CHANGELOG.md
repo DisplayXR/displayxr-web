@@ -5,6 +5,25 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed
+
+- **`./viewer` wheel zoom is proportional and eased.** It scaled by the delta's SIGN only — a flat
+  8% step per wheel event — which is about right for one mouse notch and badly wrong for a
+  trackpad, where a single two-finger flick emits dozens of small events. Measured: a 20-event
+  flick reached **5.3x** and a longer swipe hit the 6x clamp, on gestures the user reads as gentle.
+
+  The handler now scales by magnitude, normalises `deltaMode` (Chrome reports pixels; Firefox
+  reports LINES for a mouse wheel, so identical hardware was ~2x more sensitive in one browser),
+  clamps per event against OS pointer-acceleration spikes, and applies the zoom as `exp()` so equal
+  deltas give equal ratios in both directions — `1 + d` and `1 - d` are not inverses, and the
+  asymmetry was felt as zooming out being weaker than zooming in. Zoom then eases toward its target
+  on the same damping curve yaw and pitch already used, so a notch glides instead of stepping.
+
+  Same gestures after: trackpad flick **1.13x**, mouse 3 notches **1.35x**, and Chrome and Firefox
+  now agree per notch. *(preview tier — no API change)*
+
 ## 1.2.0 — 2026-08-20
 
 ### Added

@@ -219,6 +219,7 @@ export class SceneViewer {
 
     this._fitScale = 1;
     this._zoom = 1;
+    this._targetZoom = 1;
     this._yaw = 0;
     this._pitch = 0;
     this._targetYaw = 0;
@@ -346,7 +347,7 @@ export class SceneViewer {
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
-    if (zoom !== undefined) this._zoom = clamp(zoom, 0.2, 6);
+    if (zoom !== undefined) this._targetZoom = this._zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
     this._applyTransform();
   }
 
@@ -682,6 +683,14 @@ export class SceneViewer {
     const k = dt > 0 ? 1 - Math.pow(0.001, dt) : 1;
     this._yaw += (this._targetYaw - this._yaw) * k;
     this._pitch += (this._targetPitch - this._pitch) * k;
+    // Zoom eases on the same curve. Multiplicatively, because zoom is a ratio: approaching 2x
+    // linearly spends most of its time near the start and then lurches, while a ratio approach
+    // covers equal PERCEPTUAL steps per frame.
+    if (Math.abs(this._targetZoom - this._zoom) > 1e-4) {
+      this._zoom *= Math.pow(this._targetZoom / this._zoom, k);
+    } else {
+      this._zoom = this._targetZoom;
+    }
     this._applyTransform();
   }
 
@@ -725,9 +734,29 @@ export class SceneViewer {
     };
     this._onWheel = (ev) => {
       ev.preventDefault();
-      this._zoom = clamp(this._zoom * (ev.deltaY > 0 ? 0.92 : 1.087), 0.2, 6);
+      // Scale by the delta's MAGNITUDE, not just its sign. The previous version applied a fixed
+      // 8% step per event, which is roughly right for one mouse notch and badly wrong for a
+      // trackpad: a two-finger flick emits dozens of small events, so an 8% step compounded per
+      // event sent the subject to the clamp on a gesture the user read as gentle.
+      //
+      // deltaMode has to be normalised first or the same code means different things per browser:
+      // Chrome reports pixels, Firefox reports LINES for a mouse wheel (deltaY 3, not 100), and
+      // a page-mode device would otherwise be ~200x more sensitive than a trackpad.
+      let px = ev.deltaY;
+      if (ev.deltaMode === 1) px *= WHEEL_LINE_PX;
+      else if (ev.deltaMode === 2) px *= WHEEL_PAGE_PX;
+      // OS pointer acceleration can spike a single event past 500px. Clamping per event keeps one
+      // hard flick from teleporting the subject while leaving the gesture's total travel intact,
+      // since the events keep coming.
+      px = clamp(px, -WHEEL_MAX_PX, WHEEL_MAX_PX);
+
+      // exp() rather than a multiply-add: zoom is a ratio, so equal deltas should give equal
+      // ratios in both directions. `1 + d` and `1 - d` are not inverses, and the asymmetry is
+      // felt as zooming out being weaker than zooming in.
+      this._targetZoom = clamp(this._targetZoom * Math.exp(-px * ZOOM_PER_PX), ZOOM_MIN, ZOOM_MAX);
       this._lastInput = now();
-      this._applyTransform();
+      // No _applyTransform() here: _tick() eases toward the target and applies it, which is what
+      // makes a wheel notch glide instead of step.
     };
 
     el.style.touchAction = 'none'; // or the browser eats the drag as a scroll
@@ -748,6 +777,24 @@ export class SceneViewer {
     el.removeEventListener('wheel', this._onWheel);
   }
 }
+
+/**
+ * Wheel-zoom tuning.
+ *
+ * ZOOM_PER_PX is set so one ordinary mouse notch (~100 px in Chrome) is about a 10% step, which
+ * puts a trackpad's 1-10 px events at a fraction of a percent each — small enough that the easing
+ * reads as continuous rather than as a stack of jumps.
+ */
+// A deltaMode-1 "line" is sized to match a wheel DETENT, not a line of text. Firefox reports a
+// notch as deltaY 3 in lines where Chrome reports it as ~100 in pixels, so 33 makes one physical
+// notch feel the same in both; 16 (a text line) would make Firefox roughly half as responsive as
+// Chrome for identical hardware.
+const WHEEL_LINE_PX = 33;
+const WHEEL_PAGE_PX = 400; // a "page" in deltaMode 2; rare, but it must not be unbounded
+const WHEEL_MAX_PX = 120; // per-event ceiling, against OS pointer acceleration spikes
+const ZOOM_PER_PX = 0.001;
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 6;
 
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
