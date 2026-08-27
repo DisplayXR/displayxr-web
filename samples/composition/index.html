@@ -23,13 +23,18 @@
      Every other sample in this repo keeps backdrop-filter OFF a bar that
      overlaps a tile, because a backdrop filter has no isolated composited
      resource to hand the compositor and reaches it through its OWN RENDER
-     PASS. This page wants exactly that: browser#117's log line is
-     "layer_id stamped but no root quad carries it (canvas quad occluded, in a
-     child pass, or resource not ready)", and a frosted sticky header is the
-     cheapest way to reproduce the child-pass condition at the TOP viewport
-     edge — which is where case 07's top-edge sweep runs. Judge case 07 with
-     the frost ON. The `header: solid` button drops the blur so a failure can
-     be attributed (solid bar = plain quad = root pass). */
+     PASS. This page wants exactly that: a frosted sticky bar is the cheapest
+     way to put a tile's quad in a CHILD PASS at the TOP viewport edge, which
+     is where case 07's top-edge sweep runs.
+
+     browser#117 split what used to be one log line into three verdicts, and
+     they need opposite follow-ups — the bar is how you tell the first from
+     the others: `elsewhere > 0` (drawn, but only by a quad in a pass the join
+     does not search — the child-pass case this bar creates), `elsewhere = 0`
+     (no quad anywhere: the layer emitted no SharedQuadState), and no layer id
+     stamped at all (the legacy channel). The `header: solid` button drops the
+     blur so a failure can be attributed — solid bar = plain quad = root pass.
+     Solid also means OPAQUE, which is its own condition entirely: see case 15. */
   header{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;
          padding:11px 20px;border-bottom:1px solid var(--line);
          background:rgba(16,17,22,.55);
@@ -37,6 +42,13 @@
                  backdrop-filter:blur(14px) saturate(140%)}
   header.solid{background:rgba(16,17,22,.94);
                -webkit-backdrop-filter:none;backdrop-filter:none}
+  /* browser#167's third mode, and the ONLY one that occludes. `solid` is .94 alpha — near-solid
+     to the eye, fully transparent to the compositor's occlusion test, which needs alpha exactly
+     1. That one hundredth of alpha is the difference between "painted over" (a paint-order
+     question, always worked) and "occluded" (the canvas layer leaves the drawn layer list and
+     emits no quad at all). Case 15 is the only thing that uses it. */
+  header.opaque{background:rgb(16,17,22);
+                -webkit-backdrop-filter:none;backdrop-filter:none}
   header .brand{font-weight:650;letter-spacing:-.2px}
   header .brand .dot{color:#5aa8ff}
   header .spacer{margin-left:auto}
@@ -75,30 +87,19 @@
   .note{font-size:12.5px;color:var(--dim);margin:6px 0 0;max-width:88ch;opacity:.85}
   .fixture{margin:20px 0 0}
 
-  /* ── the KNOWN-BROKEN tail ─────────────────────────────────────────────────
-     Cases 02 and 03 sit here, last, behind this banner. They used to open the
-     page, and on hardware that meant walking straight into a screenful of
-     frosted black (browser#120). Healthy cases now run first; these two are
-     kept — a regression surface that hides its broken cases is not one — but
-     they are announced, and their frost is opt-in. */
-  .brokentail{border-top:2px solid var(--red-br);margin-top:52px}
-  .banner{margin:30px 0 0;padding:22px 24px;border-radius:14px;scroll-margin-top:76px;
-          background:linear-gradient(180deg,#4e131f88,#4e131f1f);
-          border:1px solid var(--red-br);border-left:5px solid #ff4d6d}
-  .banner .tag{display:inline-block;font:700 11px/1 system-ui;letter-spacing:.1em;
-               text-transform:uppercase;color:#08080b;background:#ff8b9e;
-               padding:6px 9px;border-radius:5px}
-  .banner h2{font-size:22px;margin:12px 0 8px;letter-spacing:-.3px;color:#ffd3db}
-  .banner p{margin:0 0 8px;font-size:14px;color:#f0cfd6;max-width:86ch}
-  .banner p:last-child{margin-bottom:0}
-  .banner a{color:#ffb3c0;text-decoration:underline}
+  /* ── marking a case that is broken TODAY ──────────────────────────────────
+     Kept as a mechanism, currently unused. Cases 02 and 03 wore it while
+     browser#120 was open, in a red-bannered tail at the END of the page — a
+     hardware walk-through used to open into a screenful of frosted black.
+     browser#120 shipped in 0.1.16, so they are back in numeric order with the
+     frost armed on load. Put a case back in `is-broken` the moment one breaks:
+     a regression surface that hides its broken cases is not one. */
   .case.is-broken{border-top:1px dashed var(--red-br)}
   .case.is-broken .num{background:var(--red-bg);color:var(--red)}
   /* Clear of the frost panels: `.frosthalf` overhangs its stage by 8% at the bottom, so a
      tight margin here puts the armed blur box on top of this button. */
   .armbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:46px 0 0;
           font-size:12.5px;color:var(--dim)}
-  .btn.arm[aria-pressed="true"]{background:#ff4d6d33;color:var(--red);border-color:var(--red-br)}
 
   /* ── tiles ────────────────────────────────────────────────────────────────
      A stage is VISUALLY BARE: no background, border, radius or overflow clip.
@@ -116,13 +117,14 @@
   .bar01{position:absolute;left:0;right:0;top:37%;padding:11px 14px;text-align:center;
          background:rgba(16,17,22,.72);color:var(--fg);font-size:13px}
 
-  /* 02 / 03 — frosted glass. backdrop-filter is the point of these two, and it is also
-     browser#120: a frost rect that covers a WHOLE tile leaves the compositor neither the
-     canvas (suppressed) nor the weave (clipped out), so the blur samples an empty dark
-     region and the tile reads as a black void. These two panels therefore ship DISARMED —
-     plain translucent 2D, no `backdrop-filter` at all, tiles weaving normally underneath —
-     and the `.frosted` modifier below is added live by each case's "arm frost" button. That
-     keeps both cases one-click #120 repros without ambushing a walk-through of the page. */
+  /* 02 / 03 — frosted glass. backdrop-filter is the point of these two. A frost rect over a
+     tile leaves the compositor neither the canvas (suppressed once the tile joins) nor the
+     woven draw-back (D' clips the weave out of every frost rect) — which used to mean the blur
+     sampled an empty dark region and the tile read as a black void (browser#120). Since 0.1.16
+     the compositor draws the tile MONO into exactly those rects, at the canvas quad's own place
+     in the page raster, so the glass has the tile's own flat content to blur. Both panels
+     therefore ship ARMED — that is the state under test — and the `arm/disarm` button removes
+     the `.frosted` modifier live so a failure can be attributed to the filter. */
   .strip{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
   .frostfull{position:absolute;inset:-10px;display:flex;align-items:center;justify-content:center;
              font:600 13px/1.4 system-ui;color:#dfe7f5;text-align:center;
@@ -151,6 +153,22 @@
   .stage:hover > .plate.hover{display:block}
   .plate.thrash{left:50%;top:50%;transform:translate(-50%,-50%);display:none;
                 background:#5aa8ff;color:#08111f;font-weight:700}
+
+  /* 15 — the tile parks under the PAGE's own sticky header (browser#167).
+     MEASURED, and the measurement chose this shape twice over:
+       * a static opaque PLATE over a tile does NOT reproduce it — tried with and without
+         border-radius and with will-change:transform, the canvas layer keeps drawing;
+       * nor does a section-local sticky bar below the page header — the strip of tile under the
+         page header itself is then covered only by TRANSLUCENT chrome, so it is still drawn.
+     What reproduces it is the reported shape exactly: the page's own sticky bar, at alpha 1,
+     with the tile scrolled until nothing of it clears the bar. Hence the `header: opaque` mode,
+     which the park button turns on for you.
+     The trailing spacer must be a VIEWPORT tall, not a fixed pad: parking the tile means
+     scrolling it to the TOP of the viewport, which the page can only do with a screenful of
+     content below it — case 15 is the last section, and without this the page runs out of scroll
+     and the tile stops short of the bar (measured: 380px short). */
+  .run15 .spacer{height:230px}
+  .run15 > .spacer:last-child{height:100vh}
 
   /* 05 — page-DOM modal + scrim (ordinary DOM, not a browser popup) */
   .scrim{position:fixed;inset:0;z-index:60;background:rgba(6,7,10,.68);
@@ -283,13 +301,16 @@
      <code>data-inline3d-overlay</code>: every 2D element below is an ordinary DOM sibling painted
      after the canvas, and the page opens exactly <strong>one</strong>
      <code>createInline3D()</code> session with <code>autoChrome:false</code>.</p>
-  <p class="lede"><strong>Reading order:</strong> the healthy cases run first —
-     <b>01</b>, then <b>04&ndash;14</b>. Cases <b>02</b> and <b>03</b> are the full-tile frost pair
-     and they are <a href="#known-broken">last, behind a banner</a>: on hardware they hit
-     <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">browser#120</a> and read as
-     black voids, which is worth keeping as a repro but not worth opening the page with. Their frost
-     is <b>opt-in</b> — both load unfrosted, with the tiles weaving, and an <em>arm frost</em> button
-     turns each into a one-click #120 repro. Case numbers never move; only the order does.</p>
+  <p class="lede"><strong>Reading order:</strong> straight through, <b>01&ndash;15</b>. The
+     full-tile frost pair (<b>02</b>, <b>03</b>) spent a while in a red-bannered tail at the end,
+     because <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">browser#120</a>
+     made them open the page with a screenful of frosted black; that shipped in <b>0.1.16</b>, so
+     they are back in place with their frost <b>armed on load</b>. Cases that <em>were</em> broken
+     keep a short note saying what the failure looked like — that is the shape a regression would
+     take, and it is the reason to keep judging them rather than to skip them.</p>
+  <p class="lede"><strong>Version floor:</strong> judged against <b>0.1.19 or newer</b>. Cases 02,
+     03, 07 and 12 all assert behaviour that landed between 0.1.15 and 0.1.16, and <b>15</b> asserts
+     a fix newer still — on an older browser they fail for a reason that is not a regression.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
@@ -312,9 +333,72 @@
     </div>
   </section>
 
-  <!-- 02 and 03 are NOT here: they live at the END of the page, behind the
-       KNOWN BROKEN banner (browser#120). Case numbering is stable; only the
-       DOM order moved. -->
+  <!-- ═══ 02 ═════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c02" data-case="02">
+    <div class="case-head">
+      <span class="num">02</span><h2>Frosted glass fully covering a tile strip</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected, armed (as shipped):</b> the frost reads <b>crisp</b>, with
+      <b>flat</b> (mono, un-woven) tile content behind it — the D&prime; contract, where a backdrop
+      filter is a function of what is behind it. Flat means <em>the tile’s own content in 2D</em>,
+      not empty: what the glass blurs is a mono draw of the tile, made at the canvas quad’s own
+      place in the page raster. The control tile <em>above</em> the strip stays 3D.</p>
+    <p class="expected"><b>expected, disarmed:</b> the panel is plain translucent 2D and all three
+      tiles under it weave normally, exactly like case&nbsp;01.</p>
+    <p class="note"><b>Was broken, now fixed — which is exactly why it is still here.</b> Until the
+      mono-under-frost draw landed
+      (<a href="https://github.com/DisplayXR/displayxr-browser/issues/120">browser#120</a>, shipped
+      0.1.16) this strip went to a blurred veil over <b>black</b>: inside a frost rect the frame held
+      neither the tile’s canvas (suppressed once the tile joins) nor the woven draw-back
+      (D&prime; clips the weave out of every frost rect), so the blur had nothing to sample. A return
+      of that black veil is the regression this case catches — hence the frost is now <b>armed on
+      load</b> rather than opt-in.</p>
+    <div class="fixture">
+      <div class="stage center w380" style="margin-bottom:22px">
+        <canvas class="tile" data-pic="gaussiansplat" data-tile="02-control"></canvas>
+      </div>
+      <div class="strip">
+        <div class="stage"><canvas class="tile" data-pic="mediaplayer" data-tile="02-a"></canvas></div>
+        <div class="stage"><canvas class="tile" data-pic="modelviewer" data-tile="02-b"></canvas></div>
+        <div class="stage"><canvas class="tile" data-pic="earthview"   data-tile="02-c"></canvas></div>
+        <div class="frostfull frosted" id="frost02"><span>
+          <span class="disarmed-only">panel disarmed &middot; plain translucent 2D<br>three tiles weaving underneath</span>
+          <span class="armed-only"><code>backdrop-filter: blur(14px)</code><br>fully covering three tiles</span>
+        </span></div>
+      </div>
+    </div>
+    <p class="armbar"><button class="btn arm" id="arm02" type="button" aria-pressed="true">disarm frost</button>
+      toggles <code>backdrop-filter</code> on the panel live &middot; scripted:
+      <code>__showcase.frost('02', true)</code></p>
+  </section>
+
+  <!-- ═══ 03 ═════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c03" data-case="03">
+    <div class="case-head">
+      <span class="num">03</span><h2>Frost straddling a tile edge</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected, armed (as shipped):</b> a clean boundary down the panel’s left
+      border — frosted-<b>flat</b> inside, woven 3D outside, on the same tile, with no shimmer or
+      seam-crawl while scrolling. Inside the frost the tile reads as its own content in mono, not as
+      a dark patch: that is the same mono-under-frost draw case&nbsp;02 checks, here judged against
+      a live 3D half of the very same tile, which is the strictest place to see it.</p>
+    <p class="expected"><b>expected, disarmed:</b> a translucent panel overhanging the tile’s right
+      half; the whole tile weaves, and the panel’s left border is just a 2D edge.</p>
+    <div class="fixture">
+      <div class="stage center w420">
+        <canvas class="tile" data-pic="avatar" data-tile="03"></canvas>
+        <div class="frosthalf frosted" id="frost03"><span>
+          <span class="disarmed-only">panel disarmed &rarr;<br>translucent 2D, tile woven throughout</span>
+          <span class="armed-only">frost boundary &rarr;<br>flat inside, woven outside</span>
+        </span></div>
+      </div>
+    </div>
+    <p class="armbar"><button class="btn arm" id="arm03" type="button" aria-pressed="true">disarm frost</button>
+      toggles <code>backdrop-filter</code> on the panel live &middot; scripted:
+      <code>__showcase.frost('03', true)</code></p>
+  </section>
 
   <!-- ═══ 04 ═══════════════════════════════════════════════════════════════ -->
   <section class="case" id="c04" data-case="04">
@@ -377,19 +461,25 @@
   <section class="case" id="c07" data-case="07">
     <div class="case-head">
       <span class="num">07</span><h2>Partial visibility at every viewport edge</h2>
-      <span class="badge red">red until browser#117 lands</span>
+      <span class="badge pass">must pass</span>
     </div>
     <p class="expected"><b>expected:</b> walk the tile through <b>10 / 30 / 50 / 70 / 90&thinsp;%</b>
       visibility at the <b>top</b> and <b>bottom</b> edges (vertical leg), then at the <b>left</b>
       and <b>right</b> edges (horizontal leg). At every mark the visible part must weave correctly —
       no raw side-by-side, no stretch, no eye swap. A tile whose id-join works should weave at any
       nonzero visibility.</p>
-    <p class="note">This is browser#117's acceptance surface; today anything under roughly 70&thinsp;%
-      shows raw side-by-side. The page's sticky header is <b>frosted</b> so the top-edge case
-      reproduces the child-pass condition from that bug's log — judge this case with
-      <code>header: frosted</code> on, and flip it to solid only to attribute a failure. The ruler
-      ticks sit in the <b>gutters, never on the tile</b>: a hairline painted over the tile would add
-      a 2D-over-3D composition on top of the thing being measured.</p>
+    <p class="note">This is
+      <a href="https://github.com/DisplayXR/displayxr-browser/issues/117">browser#117</a>’s
+      acceptance surface, and since that landed (0.1.15) the bar is two-sided: at every mark the
+      visible part either weaves correctly <b>or does not weave at all</b> — a tile whose canvas the
+      compositor could not join is now <b>withheld</b> from the weave and drawn by the page like any
+      2D element. What must never appear is a third outcome: raw side-by-side, or page chrome coming
+      back interlaced. Before 0.1.15 anything under roughly 70&thinsp;% showed raw side-by-side. The
+      page’s sticky header is <b>frosted</b> so the top-edge leg runs under a bar that reaches the
+      compositor through its own render pass — judge this case with <code>header: frosted</code> on,
+      and flip it to solid only to attribute a failure. The ruler ticks sit in the <b>gutters, never
+      on the tile</b>: a hairline painted over the tile would add a 2D-over-3D composition on top of
+      the thing being measured.</p>
 
     <div class="sweepbar">
       <span class="grp"><b style="color:var(--fg)">snap top&nbsp;edge</b>
@@ -546,14 +636,20 @@
   <section class="case" id="c12" data-case="12">
     <div class="case-head">
       <span class="num">12</span><h2>Partially overlapping tile pair</h2>
-      <span class="badge red">undefined behaviour</span>
+      <span class="badge pass">must pass</span>
     </div>
-    <p class="expected"><b>expected: record what it actually does</b> — top wins, bottom wins, or
-      both garble — and file it with this section as the repro. Today's only bar: the behaviour must
-      be <b>deterministic</b> and <b>locally contained</b>, i.e. the non-overlapping regions of both
-      tiles stay correct 3D.</p>
-    <p class="note">The platform has not defined tile-over-tile. This case is the forcing function
-      for defining it, which is why it ships red rather than being softened until it passes.</p>
+    <p class="expected"><b>expected:</b> <b>topmost wins</b>, and both tiles stay 3D. Where the
+      upper tile covers the lower one the upper tile’s content is what weaves; everywhere the lower
+      tile is still visible it keeps weaving its own — including the parts beside and below the
+      overlap, not just a full-width band. No eye swap on either tile, no garble in the overlap, and
+      the non-overlapping regions of both must be correct 3D.</p>
+    <p class="note">Tile-over-tile <b>is</b> defined now: the compositor subtracts the upper tile’s
+      rect from the lower one by paint order
+      (<a href="https://github.com/DisplayXR/displayxr-browser/issues/131">browser#131</a>, shipped
+      0.1.16) and then re-packs what the lower tile still owns piece by piece
+      (<a href="https://github.com/DisplayXR/displayxr-browser/issues/143">#143</a>), which is what
+      keeps a corner occluder from flattening the whole tile. This case was the forcing function for
+      that definition and now guards it.</p>
     <div class="fixture">
       <div class="over12">
         <div class="stage a"><canvas class="tile" data-pic="modelviewer" data-tile="12-bottom"></canvas></div>
@@ -612,86 +708,42 @@
     </div>
   </section>
 
-  <!-- ═══ KNOWN BROKEN TAIL — cases 02 and 03 ═══════════════════════════════ -->
-  <div class="brokentail">
-    <section class="banner" id="known-broken">
-      <span class="tag">known broken &middot; browser#120</span>
-      <h2>Full-tile frost renders as a dark void, not frosted content</h2>
-      <p>When a <code>backdrop-filter</code> rect covers a whole tile, the frame inside that rect
-        holds <b>neither</b> the tile's canvas (the compositor suppresses it once the tile is
-        joined) <b>nor</b> the woven draw-back (the D&prime; contract clips the weave out of every
-        frost rect so the blur samples pre-weave pixels) — so the blur has nothing to sample and
-        the tile reads as a heavy blurred veil over black.</p>
-      <p>The two cases below are that repro, and they are the reason the frost is <b>off by
-        default</b> here: each one ships as a plain translucent panel with the tiles weaving
-        normally underneath, and an <b>arm frost</b> button that adds the
-        <code>backdrop-filter</code> live. Tracking:
-        <a href="https://github.com/DisplayXR/displayxr-browser/issues/120">DisplayXR/displayxr-browser#120</a>
-        (the fix direction is a mono draw where the weave is withheld, which overlaps
-        <a href="https://github.com/DisplayXR/displayxr-browser/issues/119">#119</a>). The page's own
-        sticky header keeps its frost on purpose — a thin band over page chrome is the validated,
-        working case, and case&nbsp;07's top-edge leg needs it.</p>
-    </section>
-
-    <!-- ═══ 02 ═════════════════════════════════════════════════════════════ -->
-    <section class="case is-broken" id="c02" data-case="02">
-      <div class="case-head">
-        <span class="num">02</span><h2>Frosted glass fully covering a tile strip</h2>
-        <span class="badge red">broken armed &middot; browser#120</span>
+  <!-- ═══ 15 ═══════════════════════════════════════════════════════════════ -->
+  <section class="case" id="c15" data-case="15">
+    <div class="case-head">
+      <span class="num">15</span><h2>Opaque sticky bar with a tile scrolled under it</h2>
+      <span class="badge pass">must pass</span>
+    </div>
+    <p class="expected"><b>expected:</b> press <b>park under the bar</b>. The tile scrolls up until
+      <em>nothing</em> of it clears the bar, and at that moment the bar must stay crisp, ordinary
+      2D — <b>especially its small text</b>. Scroll back and the tile resumes weaving immediately.
+      What must never happen is the bar’s own glyphs coming back <b>interlaced</b>.</p>
+    <p class="note">Not a bigger case&nbsp;04, and deliberately not a plate. A static opaque plate
+      over a tile does <em>not</em> reproduce this — measured on hardware, the canvas layer keeps
+      drawing. It takes a bar that is both <b>sticky</b> and <b>truly opaque</b>, with the tile
+      scrolled until nothing of it is left showing: only then does the compositor drop the fully
+      occluded canvas layer from the drawn layer list, so it emits no quad at all, nothing
+      resolves, and — on a page where no other tile resolved either — the weave fell through to
+      snapshotting the page and weaving <em>the bar’s own pixels</em>
+      (<a href="https://github.com/DisplayXR/displayxr-browser/issues/167">browser#167</a>, reported
+      as the words in a shop’s sticky header interlacing as a product stage scrolled up under it).
+      <b>Alpha exactly 1 is the trigger:</b> this page’s own <code>header: solid</code> is
+      <code>rgba(16,17,22,.94)</code> and does not occlude, which is why nothing here reached the
+      state before. And the scroll is the PAGE’s, not a nested panel’s — a tile in an
+      <code>overflow:auto</code> container loses its join to
+      <a href="https://github.com/DisplayXR/displayxr-browser/issues/164">#164</a> (see case&nbsp;08)
+      long before it is covered, which would fail this case for an unrelated reason.</p>
+    <div class="fixture run15">
+      <div class="spacer"></div>
+      <div class="stage center w380">
+        <canvas class="tile" data-pic="earthview" data-tile="15"></canvas>
       </div>
-      <p class="expected"><b>expected, disarmed (as shipped):</b> the panel is plain translucent 2D
-        and all three tiles under it weave normally, exactly like case&nbsp;01 — this is the state
-        the page loads in.</p>
-      <p class="expected"><b>expected, armed:</b> the frost should read crisp with <b>flat</b>
-        (mono, un-woven) tile content behind it — the D&prime; contract, where a backdrop filter is a
-        function of what is behind it. <b>What actually happens today is browser#120:</b> the strip
-        goes to a blurred veil over black, because the frost rect has neither canvas nor weave to
-        sample. The control tile <em>above</em> the strip must stay 3D in both states.</p>
-      <div class="fixture">
-        <div class="stage center w380" style="margin-bottom:22px">
-          <canvas class="tile" data-pic="gaussiansplat" data-tile="02-control"></canvas>
-        </div>
-        <div class="strip">
-          <div class="stage"><canvas class="tile" data-pic="mediaplayer" data-tile="02-a"></canvas></div>
-          <div class="stage"><canvas class="tile" data-pic="modelviewer" data-tile="02-b"></canvas></div>
-          <div class="stage"><canvas class="tile" data-pic="earthview"   data-tile="02-c"></canvas></div>
-          <div class="frostfull" id="frost02"><span>
-            <span class="disarmed-only">panel disarmed &middot; plain translucent 2D<br>three tiles weaving underneath</span>
-            <span class="armed-only"><code>backdrop-filter: blur(14px)</code><br>fully covering three tiles</span>
-          </span></div>
-        </div>
-      </div>
-      <p class="armbar"><button class="btn arm" id="arm02" type="button" aria-pressed="false">arm frost (#120 repro)</button>
-        adds <code>backdrop-filter</code> to the panel live &middot; scripted:
-        <code>__showcase.frost('02', true)</code></p>
-    </section>
-
-    <!-- ═══ 03 ═════════════════════════════════════════════════════════════ -->
-    <section class="case is-broken" id="c03" data-case="03">
-      <div class="case-head">
-        <span class="num">03</span><h2>Frost straddling a tile edge</h2>
-        <span class="badge red">broken armed &middot; browser#120</span>
-      </div>
-      <p class="expected"><b>expected, disarmed (as shipped):</b> a translucent panel overhanging the
-        tile's right half; the whole tile weaves, and the panel's left border is just a 2D edge.</p>
-      <p class="expected"><b>expected, armed:</b> a clean boundary down the panel's left border —
-        frosted-flat inside, woven 3D outside, on the same tile, with no shimmer or seam-crawl while
-        scrolling. <b>Today the inside half goes dark (browser#120)</b> rather than showing flat
-        content, so this case reads as a half-black tile.</p>
-      <div class="fixture">
-        <div class="stage center w420">
-          <canvas class="tile" data-pic="avatar" data-tile="03"></canvas>
-          <div class="frosthalf" id="frost03"><span>
-            <span class="disarmed-only">panel disarmed &rarr;<br>translucent 2D, tile woven throughout</span>
-            <span class="armed-only">frost boundary &rarr;<br>flat inside, woven outside</span>
-          </span></div>
-        </div>
-      </div>
-      <p class="armbar"><button class="btn arm" id="arm03" type="button" aria-pressed="false">arm frost (#120 repro)</button>
-        adds <code>backdrop-filter</code> to the panel live &middot; scripted:
-        <code>__showcase.frost('03', true)</code></p>
-    </section>
-  </div>
+      <div class="spacer"></div>
+    </div>
+    <p class="armbar"><button class="btn" id="park15" type="button">park under the bar</button>
+      switches the page header to <b>opaque</b> (alpha 1 — the trigger) and scrolls until the tile
+      is entirely behind it &middot; scripted: <code>__showcase.park15()</code></p>
+  </section>
 
   <footer>
     Every section carries a stable <code>data-case="NN"</code> and every canvas a

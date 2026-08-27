@@ -1,16 +1,21 @@
-// Composition showcase — the 14-case 2D/3D overlap matrix.
+// Composition showcase — the 15-case 2D/3D overlap matrix.
 //
 // WHAT THIS PAGE IS. Two jobs at once: a demo of what draw-order occlusion buys an author, and
 // a standing hardware regression surface for every future composition change. The second job
-// constrains the first — nothing here is tuned to look good. Cases that glitch today (07 until
-// browser#117 lands, 12 because tile-over-tile is undefined, 02/03 because of browser#120) are
-// built anyway and marked red on-page. A case softened until it passes is not a regression test.
+// constrains the first — nothing here is tuned to look good. A case that glitches today is built
+// anyway and marked red on-page (`.is-broken`). A case softened until it passes is not a
+// regression test.
 //
-// ORDER (browser#120). The page runs 01, then 04…14, then a KNOWN BROKEN banner, then 02 and 03.
-// It used to open into 02/03, whose full-tile backdrop-filter hits #120 — so the first thing a
-// hardware walk-through saw was a screenful of frosted black, which reads as "the sample is
-// broken" rather than "this one case is". The broken pair is kept (a regression surface that
-// hides its failures is not one) but it is announced, it is last, and its frost is opt-in.
+// ORDER. Straight through, 01…15. Cases 02 and 03 spent a while in a KNOWN BROKEN tail at the
+// end of the page, because their full-tile backdrop-filter hit browser#120 and a hardware
+// walk-through opened into a screenful of frosted black. #120 shipped in 0.1.16 (the compositor
+// now draws the tile MONO inside each frost rect), so they are back in numeric order with the
+// frost ARMED on load, which is the state under test. Cases that were broken keep a note saying
+// what the failure looked like — that is the shape a regression would take.
+//
+// VERSION FLOOR: judge against 0.1.19 or newer. 02/03 (browser#120) and 12 (browser#131/#143)
+// assert behaviour from 0.1.16, 07 (browser#117) from 0.1.15, and 15 (browser#167) a fix newer
+// still. On an older browser they fail for a reason that is not a regression.
 //
 // THE RULES THIS FILE OBEYS
 //
@@ -68,30 +73,26 @@ const SWEEP_MARKS = [0.9, 0.7, 0.5, 0.3, 0.1];
 
 // ── page furniture that needs no session ────────────────────────────────────────────────────
 
-// Document order, which since the browser#120 reorder is: 01, 04…14, then the KNOWN BROKEN
-// banner, then 02 and 03. querySelectorAll returns document order, so the TOC follows the page
-// for free — the case NUMBERS are stable, only their position moved.
+// Document order — since browser#120 shipped and cases 02/03 came back out of the KNOWN
+// BROKEN tail, that is simply 01…15. querySelectorAll returns document order, so the TOC
+// follows the page for free, and a case that goes `.is-broken` is flagged in it again.
 function buildToc() {
   const toc = document.getElementById('toc');
-  for (const sec of document.querySelectorAll('.case[data-case], #known-broken')) {
+  for (const sec of document.querySelectorAll('.case[data-case]')) {
     const a = document.createElement('a');
     a.href = '#' + sec.id;
-    if (sec.id === 'known-broken') {
-      a.className = 'broken';
-      a.textContent = '⚠ known broken · browser#120';
-    } else {
-      if (sec.classList.contains('is-broken')) a.className = 'broken';
-      a.textContent = sec.dataset.case + ' · ' + sec.querySelector('h2').textContent.trim();
-    }
+    if (sec.classList.contains('is-broken')) a.className = 'broken';
+    a.textContent = sec.dataset.case + ' · ' + sec.querySelector('h2').textContent.trim();
     toc.appendChild(a);
   }
 }
 
-// Cases 02 / 03 — OPT-IN FROST. backdrop-filter over a whole tile is browser#120 (the frost rect
-// carries neither the suppressed canvas nor the clipped-out weave, so the blur samples an empty
-// dark region and the tile reads as a black void). These two are the repro, but a page that opens
-// into two screenfuls of frosted black is unusable as a walk-through, so both panels ship as
-// plain translucent 2D and the blur is added live by these buttons.
+// Cases 02 / 03 — THE FROST IS ARMED ON LOAD. A backdrop-filter over a whole tile leaves the
+// frost rect neither the suppressed canvas nor the woven draw-back, and until browser#120
+// shipped (0.1.16) the blur therefore sampled an empty dark region and the tile read as a
+// black void — which is why both panels used to ship disarmed. The compositor now draws the
+// tile MONO into exactly those rects, so the armed state is the one worth looking at and the
+// button exists to take the filter back OFF and attribute a failure to it.
 function wireFrostArm() {
   const panels = { '02': document.getElementById('frost02'), '03': document.getElementById('frost03') };
   const btns = { '02': document.getElementById('arm02'), '03': document.getElementById('arm03') };
@@ -102,7 +103,7 @@ function wireFrostArm() {
     const armed = on === undefined ? !panel.classList.contains('frosted') : !!on;
     panel.classList.toggle('frosted', armed);
     btn.setAttribute('aria-pressed', String(armed));
-    btn.textContent = armed ? 'disarm frost' : 'arm frost (#120 repro)';
+    btn.textContent = armed ? 'disarm frost' : 'arm frost';
     return armed;
   };
   for (const which of Object.keys(btns)) {
@@ -112,16 +113,67 @@ function wireFrostArm() {
 }
 
 // The sticky header is FROSTED by default — see the CSS comment in index.html. A backdrop
-// filter reaches the compositor through its own render pass, which is the child-pass condition
-// browser#117's log names, and the top-edge leg of case 07 runs directly under this bar.
+// filter reaches the compositor through its own render pass, which is the CHILD-PASS verdict
+// (elsewhere > 0) in browser#117's split fallback log, and the top-edge leg of case 07 runs
+// directly under this bar. `header: solid` is not merely 'the same bar without a filter': it
+// is also OPAQUE, so where it covers a tile whole it OCCLUDES rather than paints over — the
+// browser#167 condition, which case 15 tests deliberately and in isolation.
 function wireHeaderMode() {
   const btn = document.getElementById('headermode');
   const head = document.getElementById('pagehead');
+  // Three modes, because browser#167 needs the third: frosted (child pass, case 07's condition),
+  // solid (plain quad in the root pass — .94 alpha, PAINTS OVER), opaque (alpha 1 — OCCLUDES).
+  // Only the last one takes a covered tile out of the drawn layer list.
+  const modes = ['frosted', 'solid', 'opaque'];
+  let i = 0;
   btn.addEventListener('click', () => {
-    const solid = head.classList.toggle('solid');
-    btn.setAttribute('aria-pressed', String(!solid));
-    btn.textContent = solid ? 'header: solid' : 'header: frosted';
+    i = (i + 1) % modes.length;
+    head.classList.toggle('solid', modes[i] === 'solid');
+    head.classList.toggle('opaque', modes[i] === 'opaque');
+    btn.setAttribute('aria-pressed', String(modes[i] === 'frosted'));
+    btn.textContent = 'header: ' + modes[i];
   });
+}
+
+// Case 15 — PARK UNDER THE BAR (browser#167). The failing state is
+// fully-occluded-and-still-registered: nothing of the tile clears the page's sticky bar, so the
+// compositor drops its canvas layer and it emits no quad at all. An ordinary scroll crosses that
+// in a frame or two — which is why the bug read as intermittent and why nobody caught it — so
+// this parks it and holds it.
+//
+// It also switches the header to `opaque`, and that is not a convenience: the shipped `solid`
+// mode is rgba(16,17,22,.94), and .94 does not occlude. Alpha must be exactly 1 or the case
+// tests nothing. Measured on hardware — at .94 the tile keeps drawing and nothing is marked.
+//
+// Two shapes were tried first and rejected, both on hardware: a static opaque plate over the
+// tile (the canvas layer keeps drawing), and a section-local sticky bar parked below the page
+// header (the strip of tile under the page header is then covered only by translucent chrome, so
+// it is still drawn). Only the page's own bar at alpha 1 reproduces the reported state.
+function wirePark15() {
+  const btn = document.getElementById('park15');
+  const head = document.getElementById('pagehead');
+  const stage = document.querySelector('#c15 .stage');
+  const park = () => {
+    if (!head || !stage) return false;
+    head.classList.remove('solid');
+    head.classList.add('opaque');
+    const modeBtn = document.getElementById('headermode');
+    if (modeBtn) {
+      modeBtn.textContent = 'header: opaque';
+      modeBtn.setAttribute('aria-pressed', 'false');
+    }
+    // Let the class land before measuring the (sticky) bar.
+    requestAnimationFrame(() => {
+      const b = head.getBoundingClientRect();
+      const r = stage.getBoundingClientRect();
+      // Target: the stage's BOTTOM edge half way up the bar, so the strip still inside the
+      // viewport lies entirely underneath it.
+      scrollTo({ top: scrollY + r.bottom - b.height / 2, behavior: 'smooth' });
+    });
+    return true;
+  };
+  btn?.addEventListener('click', park);
+  return park;
 }
 
 // Case 05 — a page-DOM modal, deliberately NOT a browser popup: the scrim and card are ordinary
@@ -414,6 +466,7 @@ function setStatus(mode, text) {
   const modal = wireModal();
   const thrash = wireThrash();
   const frost = wireFrostArm();
+  const park15 = wirePark15();
   const snap = wireSweep();
 
   const imageTiles = [...document.querySelectorAll('canvas[data-pic]')].map((c) => ({
@@ -430,7 +483,7 @@ function setStatus(mode, text) {
   const wall = await createInline3D({ autoChrome: false });
 
   Object.assign(window, {
-    __showcase: { wall, snap, modal, thrash, frost, video },
+    __showcase: { wall, snap, modal, thrash, frost, video, park15 },
     __wall: wall, // same console hook the other samples expose
   });
 
