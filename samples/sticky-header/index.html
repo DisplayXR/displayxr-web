@@ -114,7 +114,10 @@
      Nothing in the bar's own styling changes that &mdash; the bug this reproduces was the
      header's own glyphs coming back interlaced, and no CSS on the header could fix it. Correct
      behaviour: the bar stays crisp 2D, the parked tile simply stops weaving while it is
-     invisible, and it resumes the moment any of it clears the bar.</p>
+     invisible, and it resumes the moment any of it clears the bar. One press parks a whole
+     row and leaves the row below it <em>straddling</em> the bar &mdash; the partially covered
+     case, which has always worked &mdash; so the fixed case and its control are on screen
+     together.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
