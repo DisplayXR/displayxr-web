@@ -25,8 +25,6 @@
 // it, so it has no isolated composited resource — the one 2D-over-3D case that still fails).
 // The `translucency` button drops the bar to 45% alpha: the see-through-chrome showcase for
 // draw-order occlusion, opt-in because a legacy browser's quad matching can seam at that alpha.
-// The `opaque` button and `park under the bar` cover the other half of the matrix (browser#167):
-// a bar solid enough to OCCLUDE, held over a tile until nothing of that tile is left on screen.
 //
 // Tiles reuse the demo-gallery's shipped 2-view logo assets (1024x512 side-by-side L|R),
 // tiled WALL_REPEATS times — the same proven fixed-SBS path as samples/wall-3d, so nothing
@@ -111,68 +109,18 @@ function setStatus(mode, detail) {
 
 // The see-through variant is pure CSS — a class on <header>, nothing inline-3D about it. That
 // is the point: changing the bar's alpha changes nothing about how it occludes the tiles.
-//
-// The OPAQUE variant (browser#167) is the one place that stops being true. Opacity is not a
-// cosmetic difference to the compositor: an opaque bar OCCLUDES what it covers, so a tile whose
-// last visible strip is entirely behind it has its layer dropped from the drawn list and emits
-// no quad at all. The tile is then invisible by definition, and the only correct thing for the
-// weave to do with its rect is nothing — the bug was weaving it anyway, from a snapshot of the
-// page, which is to say weaving the bar's own glyphs. Still no page code: the variants are one
-// class each, and the sample's job is only to make the state reachable and HOLDABLE.
-function wireHeaderVariants() {
+function wireTranslucency() {
+  const btn = document.getElementById('seethrough');
   const header = document.querySelector('header');
-  const see = document.getElementById('seethrough');
-  const opaque = document.getElementById('opaque');
-  // Mutually exclusive: a bar cannot be both see-through and opaque, and letting both classes
-  // sit on the element would leave which one wins to stylesheet order rather than to the
-  // button the tester pressed.
-  const set = (btn, cls, on) => {
-    header.classList.toggle(cls, on);
-    btn.setAttribute('aria-pressed', String(on));
-  };
-  see.addEventListener('click', () => {
-    const on = !header.classList.contains('see-through');
-    set(see, 'see-through', on);
-    if (on) set(opaque, 'opaque', false);
-  });
-  opaque.addEventListener('click', () => {
-    const on = !header.classList.contains('opaque');
-    set(opaque, 'opaque', on);
-    if (on) set(see, 'see-through', false);
-  });
-}
-
-// PARK UNDER THE BAR (browser#167). The failing state is fully-occluded-and-STILL-REGISTERED:
-// a tile with a few pixels left on screen, all of them behind the bar. An ordinary scroll
-// crosses it in a frame or two, which is why the bug read as intermittent and why it was
-// missed. This holds it: scroll so a mid-wall tile's bottom edge lands halfway UP the bar, so
-// the strip that is still inside the viewport is entirely underneath it.
-//
-// A tile from the middle of the wall, never the first — the first tile can be above the fold
-// with the page already at the top, where there is nothing to scroll and the state is not
-// reachable. Repeated presses walk down the wall, so the check is not one tile's accident.
-function wirePark() {
-  const btn = document.getElementById('park');
-  let next = 0;
   btn.addEventListener('click', () => {
-    const stages = document.querySelectorAll('.stage');
-    const header = document.querySelector('header');
-    if (!stages.length) return;
-    // Start a third of the way in and step by one each press.
-    const i = Math.min(stages.length - 1, Math.floor(stages.length / 3) + next++);
-    const r = stages[i].getBoundingClientRect();
-    const barH = header.getBoundingClientRect().height;
-    // Target: the tile's BOTTOM sits at half the bar's height, i.e. its remaining strip is
-    // 0..barH/2 in viewport space and the bar covers 0..barH. Fully occluded, nothing clipped
-    // off the top of the viewport that could put it back on screen.
-    scrollTo({ top: scrollY + r.bottom - barH / 2, behavior: 'smooth' });
+    const on = header.classList.toggle('see-through');
+    btn.setAttribute('aria-pressed', String(on));
   });
 }
 
 (async function main() {
   const tiles = buildWall();
-  wireHeaderVariants();
-  wirePark();
+  wireTranslucency();
 
   // Lazy is the DEFAULT: a tile's weave layer is created as it nears the viewport and closed
   // on leave, so scrolling churns layers — which is exactly the state auto-chrome's

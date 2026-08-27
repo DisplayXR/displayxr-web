@@ -37,16 +37,6 @@
      the gaps a near-solid background would have hidden. Default near-solid,
      see-through on demand. */
   header.see-through{background:rgba(16,17,22,.45)}
-  /* OPAQUE variant (the "opaque" button) - the browser#167 case, and the one
-     cell of this matrix that had no coverage until it shipped a bug. An opaque
-     bar does not merely paint over a tile, it OCCLUDES it: the compositor drops
-     a fully covered canvas layer from the drawn list, that layer emits no quad
-     at all, and every join keyed on the quad comes up empty. Nothing about the
-     bar's own CSS can change that - filtered or not, only its OPACITY decides
-     whether the covered layer survives. Use it with "park under the bar", which
-     holds a tile in the fully-occluded state instead of crossing it in a single
-     scroll frame. Opaque wins over see-through: a bar cannot be both. */
-  header.opaque{background:#121715}
   header button{font:inherit;font-size:13px;color:inherit;cursor:pointer;
          padding:5px 11px;border-radius:999px;border:1px solid #ffffff2e;
          background:#ffffff14}
@@ -94,8 +84,6 @@
   <div class="brand">DisplayXR<span class="dot">.</span> sticky-header</div>
   <nav><span class="on">Wall</span><span>About</span></nav>
   <button id="seethrough" type="button" aria-pressed="false">translucency</button>
-  <button id="opaque" type="button" aria-pressed="false">opaque</button>
-  <button id="park" type="button">park under the bar</button>
 </header>
 
 <div class="wrap">
@@ -106,18 +94,6 @@
      the weave by themselves; otherwise auto-chrome finds it and excludes it from every tile's
      weave. Same page, both paths — the status line says which one is live. Hit
      <em>translucency</em> to drop the bar to 45% alpha and watch the wall through it.</p>
-
-  <p class="lede"><strong>The opaque case (browser#167).</strong> Hit <em>opaque</em>, then
-     <em>park under the bar</em>: that scrolls a tile until its last strip sits entirely behind
-     the bar. A translucent bar is painted over; an opaque one <em>occludes</em>, so the
-     compositor drops the covered canvas layer altogether and the tile emits no quad at all.
-     Nothing in the bar's own styling changes that &mdash; the bug this reproduces was the
-     header's own glyphs coming back interlaced, and no CSS on the header could fix it. Correct
-     behaviour: the bar stays crisp 2D, the parked tile simply stops weaving while it is
-     invisible, and it resumes the moment any of it clears the bar. One press parks a whole
-     row and leaves the row below it <em>straddling</em> the bar &mdash; the partially covered
-     case, which has always worked &mdash; so the fixed case and its control are on screen
-     together.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
