@@ -121,11 +121,59 @@ function wireFrostArm() {
 function wireHeaderMode() {
   const btn = document.getElementById('headermode');
   const head = document.getElementById('pagehead');
+  // Three modes, because browser#167 needs the third: frosted (child pass, case 07's condition),
+  // solid (plain quad in the root pass — .94 alpha, PAINTS OVER), opaque (alpha 1 — OCCLUDES).
+  // Only the last one takes a covered tile out of the drawn layer list.
+  const modes = ['frosted', 'solid', 'opaque'];
+  let i = 0;
   btn.addEventListener('click', () => {
-    const solid = head.classList.toggle('solid');
-    btn.setAttribute('aria-pressed', String(!solid));
-    btn.textContent = solid ? 'header: solid' : 'header: frosted';
+    i = (i + 1) % modes.length;
+    head.classList.toggle('solid', modes[i] === 'solid');
+    head.classList.toggle('opaque', modes[i] === 'opaque');
+    btn.setAttribute('aria-pressed', String(modes[i] === 'frosted'));
+    btn.textContent = 'header: ' + modes[i];
   });
+}
+
+// Case 15 — PARK UNDER THE BAR (browser#167). The failing state is
+// fully-occluded-and-still-registered: nothing of the tile clears the page's sticky bar, so the
+// compositor drops its canvas layer and it emits no quad at all. An ordinary scroll crosses that
+// in a frame or two — which is why the bug read as intermittent and why nobody caught it — so
+// this parks it and holds it.
+//
+// It also switches the header to `opaque`, and that is not a convenience: the shipped `solid`
+// mode is rgba(16,17,22,.94), and .94 does not occlude. Alpha must be exactly 1 or the case
+// tests nothing. Measured on hardware — at .94 the tile keeps drawing and nothing is marked.
+//
+// Two shapes were tried first and rejected, both on hardware: a static opaque plate over the
+// tile (the canvas layer keeps drawing), and a section-local sticky bar parked below the page
+// header (the strip of tile under the page header is then covered only by translucent chrome, so
+// it is still drawn). Only the page's own bar at alpha 1 reproduces the reported state.
+function wirePark15() {
+  const btn = document.getElementById('park15');
+  const head = document.getElementById('pagehead');
+  const stage = document.querySelector('#c15 .stage');
+  const park = () => {
+    if (!head || !stage) return false;
+    head.classList.remove('solid');
+    head.classList.add('opaque');
+    const modeBtn = document.getElementById('headermode');
+    if (modeBtn) {
+      modeBtn.textContent = 'header: opaque';
+      modeBtn.setAttribute('aria-pressed', 'false');
+    }
+    // Let the class land before measuring the (sticky) bar.
+    requestAnimationFrame(() => {
+      const b = head.getBoundingClientRect();
+      const r = stage.getBoundingClientRect();
+      // Target: the stage's BOTTOM edge half way up the bar, so the strip still inside the
+      // viewport lies entirely underneath it.
+      scrollTo({ top: scrollY + r.bottom - b.height / 2, behavior: 'smooth' });
+    });
+    return true;
+  };
+  btn?.addEventListener('click', park);
+  return park;
 }
 
 // Case 05 — a page-DOM modal, deliberately NOT a browser popup: the scrim and card are ordinary
@@ -418,6 +466,7 @@ function setStatus(mode, text) {
   const modal = wireModal();
   const thrash = wireThrash();
   const frost = wireFrostArm();
+  const park15 = wirePark15();
   const snap = wireSweep();
 
   const imageTiles = [...document.querySelectorAll('canvas[data-pic]')].map((c) => ({
@@ -434,7 +483,7 @@ function setStatus(mode, text) {
   const wall = await createInline3D({ autoChrome: false });
 
   Object.assign(window, {
-    __showcase: { wall, snap, modal, thrash, frost, video },
+    __showcase: { wall, snap, modal, thrash, frost, video, park15 },
     __wall: wall, // same console hook the other samples expose
   });
 

@@ -42,6 +42,13 @@
                  backdrop-filter:blur(14px) saturate(140%)}
   header.solid{background:rgba(16,17,22,.94);
                -webkit-backdrop-filter:none;backdrop-filter:none}
+  /* browser#167's third mode, and the ONLY one that occludes. `solid` is .94 alpha — near-solid
+     to the eye, fully transparent to the compositor's occlusion test, which needs alpha exactly
+     1. That one hundredth of alpha is the difference between "painted over" (a paint-order
+     question, always worked) and "occluded" (the canvas layer leaves the drawn layer list and
+     emits no quad at all). Case 15 is the only thing that uses it. */
+  header.opaque{background:rgb(16,17,22);
+                -webkit-backdrop-filter:none;backdrop-filter:none}
   header .brand{font-weight:650;letter-spacing:-.2px}
   header .brand .dot{color:#5aa8ff}
   header .spacer{margin-left:auto}
@@ -147,23 +154,21 @@
   .plate.thrash{left:50%;top:50%;transform:translate(-50%,-50%);display:none;
                 background:#5aa8ff;color:#08111f;font-weight:700}
 
-  /* 15 — OPAQUE chrome that COVERS a tile whole (browser#167). Not a variant of case 04's
-     plates: those cover PART of a tile, and part-covering is a paint-order question. A tile
-     with NOTHING left uncovered is a different condition entirely — the compositor drops the
-     fully occluded canvas layer from the drawn layer list, so it emits no quad at all and every
-     join that keys on that quad comes up empty. OPACITY is what decides it: a 99%-alpha plate
-     does not occlude and the layer survives, which is why every other bar in this repo (all
-     translucent) never reached the state. Hence #121722 flat, no alpha, no filter.
-     The `.cover.partial` twin leaves a strip of tile showing — the control. */
-  .strip15{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px}
-  .cover{position:absolute;inset:-10px;border-radius:10px;background:#121722;
-         display:flex;align-items:center;justify-content:center;text-align:center;
-         color:#e8ecf5;font:600 13px/1.5 system-ui}
-  .cover.partial{bottom:38%}
-  /* Fine glyphs on purpose: a flat colour interlaces to itself, so an opaque panel hides the
-     failure everywhere EXCEPT its text. If this case ever regresses, it regresses here. */
-  .cover .fine{display:block;margin-top:6px;font:400 11.5px/1.35 ui-monospace,SFMono-Regular,
-               Menlo,Consolas,monospace;color:#9fb0cc;letter-spacing:.02em}
+  /* 15 — the tile parks under the PAGE's own sticky header (browser#167).
+     MEASURED, and the measurement chose this shape twice over:
+       * a static opaque PLATE over a tile does NOT reproduce it — tried with and without
+         border-radius and with will-change:transform, the canvas layer keeps drawing;
+       * nor does a section-local sticky bar below the page header — the strip of tile under the
+         page header itself is then covered only by TRANSLUCENT chrome, so it is still drawn.
+     What reproduces it is the reported shape exactly: the page's own sticky bar, at alpha 1,
+     with the tile scrolled until nothing of it clears the bar. Hence the `header: opaque` mode,
+     which the park button turns on for you.
+     The trailing spacer must be a VIEWPORT tall, not a fixed pad: parking the tile means
+     scrolling it to the TOP of the viewport, which the page can only do with a screenful of
+     content below it — case 15 is the last section, and without this the page runs out of scroll
+     and the tile stops short of the bar (measured: 380px short). */
+  .run15 .spacer{height:230px}
+  .run15 > .spacer:last-child{height:100vh}
 
   /* 05 — page-DOM modal + scrim (ordinary DOM, not a browser popup) */
   .scrim{position:fixed;inset:0;z-index:60;background:rgba(6,7,10,.68);
@@ -706,43 +711,38 @@
   <!-- ═══ 15 ═══════════════════════════════════════════════════════════════ -->
   <section class="case" id="c15" data-case="15">
     <div class="case-head">
-      <span class="num">15</span><h2>Opaque chrome covering a tile whole</h2>
+      <span class="num">15</span><h2>Opaque sticky bar with a tile scrolled under it</h2>
       <span class="badge pass">must pass</span>
     </div>
-    <p class="expected"><b>expected:</b> both panels are crisp, ordinary 2D — <b>especially their
-      small text</b>. The left tile is completely hidden and simply stops weaving while it is; the
-      right one keeps weaving in the strip it still shows, right up to the panel’s edge, with no
-      seam. Neither panel’s glyphs may come back <b>interlaced</b>, and no raw side-by-side may
-      appear in the strip.</p>
-    <p class="note">Not a bigger version of case&nbsp;04. Those plates cover <em>part</em> of a tile,
-      which is a paint-order question and has always worked. A tile with <b>nothing</b> left
-      uncovered is a different condition: the compositor drops the fully occluded canvas layer from
-      the drawn layer list, so it emits no quad at all, nothing resolves, and — on a page where no
-      other tile resolved either — the weave used to fall through to snapshotting the page and
-      weaving <em>the covering panel’s own pixels</em>
-      (<a href="https://github.com/DisplayXR/displayxr-browser/issues/167">browser#167</a>). It was
-      reported on a shop page as the words in a sticky header coming back interlaced as a product
-      stage scrolled up under it; scroll is only how the state is <em>reached</em>, so this fixture
-      holds it still instead. <b>Opacity is the whole trigger</b> — a 99&thinsp;%-alpha panel does
-      not occlude, the layer survives, and the case passes for the wrong reason.</p>
-    <div class="fixture strip15">
-      <div>
-        <div class="stage">
-          <canvas class="tile" data-pic="earthview" data-tile="15-covered"></canvas>
-          <div class="cover"><span>covered whole — nothing may weave here
-            <span class="fine">Account · Sign in · 0.00 · fine glyphs show interlacing first</span></span></div>
-        </div>
-        <p class="cap">Fully covered: the tile’s layer is occlusion-culled.</p>
+    <p class="expected"><b>expected:</b> press <b>park under the bar</b>. The tile scrolls up until
+      <em>nothing</em> of it clears the bar, and at that moment the bar must stay crisp, ordinary
+      2D — <b>especially its small text</b>. Scroll back and the tile resumes weaving immediately.
+      What must never happen is the bar’s own glyphs coming back <b>interlaced</b>.</p>
+    <p class="note">Not a bigger case&nbsp;04, and deliberately not a plate. A static opaque plate
+      over a tile does <em>not</em> reproduce this — measured on hardware, the canvas layer keeps
+      drawing. It takes a bar that is both <b>sticky</b> and <b>truly opaque</b>, with the tile
+      scrolled until nothing of it is left showing: only then does the compositor drop the fully
+      occluded canvas layer from the drawn layer list, so it emits no quad at all, nothing
+      resolves, and — on a page where no other tile resolved either — the weave fell through to
+      snapshotting the page and weaving <em>the bar’s own pixels</em>
+      (<a href="https://github.com/DisplayXR/displayxr-browser/issues/167">browser#167</a>, reported
+      as the words in a shop’s sticky header interlacing as a product stage scrolled up under it).
+      <b>Alpha exactly 1 is the trigger:</b> this page’s own <code>header: solid</code> is
+      <code>rgba(16,17,22,.94)</code> and does not occlude, which is why nothing here reached the
+      state before. And the scroll is the PAGE’s, not a nested panel’s — a tile in an
+      <code>overflow:auto</code> container loses its join to
+      <a href="https://github.com/DisplayXR/displayxr-browser/issues/164">#164</a> (see case&nbsp;08)
+      long before it is covered, which would fail this case for an unrelated reason.</p>
+    <div class="fixture run15">
+      <div class="spacer"></div>
+      <div class="stage center w380">
+        <canvas class="tile" data-pic="earthview" data-tile="15"></canvas>
       </div>
-      <div>
-        <div class="stage">
-          <canvas class="tile" data-pic="mediaplayer" data-tile="15-strip"></canvas>
-          <div class="cover partial"><span>covered but for a strip — the strip must still weave
-            <span class="fine">Account · Sign in · 0.00 · fine glyphs show interlacing first</span></span></div>
-        </div>
-        <p class="cap">Control: identical panel, one strip of tile left showing.</p>
-      </div>
+      <div class="spacer"></div>
     </div>
+    <p class="armbar"><button class="btn" id="park15" type="button">park under the bar</button>
+      switches the page header to <b>opaque</b> (alpha 1 — the trigger) and scrolls until the tile
+      is entirely behind it &middot; scripted: <code>__showcase.park15()</code></p>
   </section>
 
   <footer>
