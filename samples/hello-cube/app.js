@@ -110,8 +110,45 @@ const feather = new EdgeFeather(THREE, { px: 26 });
 
 // ---- inline-3D path (two off-axis eye viewports) ------------------------------------------
 let last = 0;
+// ---- physical-pixel debug overlay (bring-up instrumentation) -------------------------------
+const dbgEl = document.createElement('div');
+dbgEl.style.cssText = 'position:fixed;left:0;top:0;z-index:9999;background:#000c;color:#0f0;' +
+  'font:700 13px/1.5 monospace;padding:6px 8px;pointer-events:none;white-space:pre';
+document.body.appendChild(dbgEl);
+// Debug HUD is OPT-IN: append ?debug to the URL. Default is a clean page —
+// the readout exists for bring-up, not for demos.
+const DEBUG_HUD = new URLSearchParams(location.search).has('debug');
+if (!DEBUG_HUD && typeof dbgEl !== 'undefined' && dbgEl) dbgEl.style.display = 'none';
+let dbgN = 0;
+// bring-up: tap anywhere -> toggle fullscreen (window becomes the full panel; tests the
+// target-extent-vs-panel-height hypothesis for the portrait double image)
+addEventListener('pointerup', () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(()=>{});
+});
+function dbgUpdate(views, layer) {
+  if (!DEBUG_HUD) return;
+  if ((dbgN++ % 30) !== 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  let vps = '';
+  if (views && layer) {
+    for (const v of views) {
+      const vp = layer.getViewport(v);
+      vps += vp ? ` [${vp.x},${vp.y} ${vp.width}x${vp.height}]` : ' [null]';
+    }
+  }
+  dbgEl.textContent =
+    `dpr=${dpr}  ss=${screen.width}x${screen.height}  win.inner=${innerWidth}x${innerHeight}\n` +
+    `canvas css=${canvas.clientWidth}x${canvas.clientHeight}  rect=${r.x.toFixed(1)},${r.y.toFixed(1)} ` +
+    `${r.width.toFixed(1)}x${r.height.toFixed(1)}\n` +
+    `rect*dpr=${(r.x*dpr).toFixed(0)},${(r.y*dpr).toFixed(0)} ${(r.width*dpr).toFixed(0)}x${(r.height*dpr).toFixed(0)}\n` +
+    `backing=${canvas.width}x${canvas.height}  sbs=${sbsMode}  views=${views?views.length:0}${vps}`;
+}
+
 function onXRFrame(views, layer) {
   const now = performance.now(); const dt = last ? (now - last) / 1000 : 0; last = now;
+  dbgUpdate(views, layer);
   spin(dt);
   const size = new THREE.Vector2(); renderer.getSize(size);
   renderer.clear();
