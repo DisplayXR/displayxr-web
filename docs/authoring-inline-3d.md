@@ -9,6 +9,11 @@ inline-3D is progressive enhancement, never a hard dependency.
 This page is the authoring reference. The `js/inline3d.js` SDK implements everything here;
 you rarely need the raw WebXR interfaces, but they're documented at the end.
 
+Building something that **moves** — a carousel, a lightbox, a slideshow, a transition? Read
+[Motion, transitions and per-eye effects](authoring-motion-and-effects.md) as well. A woven
+window cannot be animated the way an `<img>` can, and the rules for compositing motion into
+one are not obvious.
+
 ## The one contract you must understand
 
 **A weaved window is a `<canvas>` whose backing buffer holds side-by-side (SBS) stereo — the
