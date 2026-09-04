@@ -640,3 +640,14 @@ Consolidated, in the order they tend to bite:
     itself is loaded that way, import it **dynamically, inside a try/catch**, so a bad or moved pin
     degrades the page to its mono path instead of failing the whole module graph the way a static
     import would.
+
+25. **A side-by-side backing store wider than ~3072 px stutters on the DisplayXR Browser
+    (≤ preview-0.1.27).** Measured on hardware: a full-window scene canvas at scale 1 on a
+    3840-wide panel is 6144 px wide, and the browser then fails its zero-copy read of the canvas
+    every few frames (the canvas is still write-locked, the CPU fallback is refused) and re-shows
+    the previous frame ~8 times a second. It is a width threshold — 3379 px still fails, 3072 px
+    never does, height and pixel count are irrelevant, and it is flat across GPU load. Until the
+    browser fix lands (displayxr-browser-pvt#24), cap your buffer width: `bufW = min(cssW*dpr*2,
+    3072)`, i.e. per-eye 1536 px. Small tiles never hit it; only full-window scenes do. And read
+    `keeps=` in the chrome log as a CUMULATIVE, throttled counter — the rate is Δcounter/Δt, never
+    a count of log lines.
