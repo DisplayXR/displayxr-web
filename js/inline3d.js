@@ -221,11 +221,12 @@ function noteRigWinsOverHeight() {
   if (notedRigWinsOverHeight) return;
   notedRigWinsOverHeight = true;
   console.warn(
-    '[inline3d] addScene got BOTH viewRig and virtualDisplayHeight; the rig wins. ' +
+    '[inline3d] addScene got BOTH viewRig and virtualDisplayHeight; on a browser with rig ' +
+      'support the rig wins and the height is dropped. They describe the same slot — ' +
       'virtualDisplayHeight is shorthand for exactly one rig (display, identity pose, all ' +
-      'factors 1), so the two describe the same slot and there is no meaningful merge — put ' +
-      'the height inside the rig (`{ type: "display", virtualDisplayHeight: … }`) to say it ' +
-      'once.'
+      'factors 1) — so there is no merge. This is only worth passing as a PAIR deliberately: ' +
+      'the height is what a browser without setViewRig will use, so a camera-rig scene can ' +
+      'name its own fallback framing. Otherwise say it once, inside the rig.'
   );
 }
 
@@ -554,8 +555,9 @@ class Inline3D {
    *        scalar height: a POSED display rig, or a CAMERA rig that hands the runtime your app
    *        camera's pose/FOV/convergence and lets eye tracking perturb its frustum. Supersedes
    *        virtualDisplayHeight (which is one particular display rig), and can be replaced per
-   *        frame with `handle.setViewRig()`. Silently ignored on a browser without rig support
-   *        — such a browser keeps its default display rig, so the window still weaves.
+   *        frame with `handle.setViewRig()`. Ignored on a browser without rig support, which
+   *        falls back to `virtualDisplayHeight` if one was given (that pair is the one reason
+   *        to pass both) — either way the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
    * @returns {{remove():void}}
    */
@@ -735,11 +737,17 @@ class Inline3D {
       // constructing then calling setViewRig) matters for a re-activated window: the layer's
       // very first located frame is already on the page's rig, so a tile scrolling back into
       // view never shows one frame of default framing.
-      const init = win.viewRig
-        ? { viewRig: win.viewRig }
-        : win.virtualDisplayHeight > 0
-          ? { virtualDisplayHeight: win.virtualDisplayHeight }
-          : {};
+      //
+      // The rig is only offered to a browser that HAS rigs. An older one would take the init
+      // object, find no member it knows, and fall back to its own default height — so a page
+      // that passed both (a camera rig plus the height an older browser should use) would get
+      // neither. Gating here is what makes that fallback pair actually work.
+      const init =
+        win.viewRig && hasViewRig()
+          ? { viewRig: win.viewRig }
+          : win.virtualDisplayHeight > 0
+            ? { virtualDisplayHeight: win.virtualDisplayHeight }
+            : {};
       win.layer = new XRDisplayLayer(this.session, win.canvas, init);
     } catch {
       win.layer = null;
