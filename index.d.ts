@@ -63,9 +63,10 @@ export interface SceneOptions extends TileOptions {
   /**
    * A full {@link XRViewRigInit} instead of the scalar height — a posed display rig, or a camera
    * rig. **Supersedes `virtualDisplayHeight`** (which is one particular display rig); passing
-   * both warns once and the rig wins. Ignored on a browser without
-   * {@link inline3dViewRigSupported}, which keeps its default display rig, so the window still
-   * weaves. Replaceable per frame with {@link TileHandle.setViewRig}.
+   * both warns once and the rig wins **where rigs are supported** — which is the one reason to
+   * pass the pair deliberately, since a browser without {@link inline3dViewRigSupported} then
+   * falls back to the height you named rather than to its own default. The window weaves either
+   * way. Replaceable per frame with {@link TileHandle.setViewRig}.
    */
   viewRig?: XRViewRigInit;
   /** Element whose visibility drives the lazy create/close lifecycle (defaults to the canvas). */

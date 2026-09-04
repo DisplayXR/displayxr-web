@@ -227,6 +227,18 @@ test('viewRig beats virtualDisplayHeight, and says so once', async () => {
   wall.close();
 });
 
+test('an older browser gets the fallback height, not a rig it cannot read', async () => {
+  const e = installEnv({ viewRig: false });
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  wall.addScene(makeCanvas(), () => {}, { viewRig: CAM_RIG, virtualDisplayHeight: 0.12 });
+  assert.deepEqual(
+    e.created[0].init,
+    { virtualDisplayHeight: 0.12 },
+    'handing an unknown member to an older browser drops it to ITS default height, not the app’s',
+  );
+  wall.close();
+});
+
 // ── 4. cameraRigFromCamera / displayRig ─────────────────────────────────────────────────
 
 /** A THREE namespace with only what the rig builders touch, and a camera with a known pose. */
