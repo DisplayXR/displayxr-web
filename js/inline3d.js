@@ -41,6 +41,23 @@ const hasLayer = () =>
 // no-op — the page still works, the overlay just weaves like before.
 const hasExclusion = () =>
   hasLayer() && 'excludeElement' in window.XRDisplayLayer.prototype;
+// View rigs (XR_DXR_view_rig, browser-side `XRDisplayLayer.setViewRig`). The browser has always
+// chained a rig descriptor onto its per-frame xrLocateViews — a DISPLAY rig with an identity
+// pose whose only knob was `virtualDisplayHeight`. setViewRig opens the whole descriptor: a
+// posed display rig, or a CAMERA rig that puts the app's own camera in the runtime's hands.
+//
+// The capability signal is the METHOD's presence, and that is deliberate: a Blink IDL attribute
+// getter throws `Illegal invocation` when read off the prototype (the trap documented at length
+// under occlusionByDrawOrder below), so an attribute would be undetectable on exactly the
+// browser that has it. `'setViewRig' in prototype` calls nothing and is safe.
+const hasViewRig = () => {
+  if (!hasLayer()) return false;
+  try {
+    return 'setViewRig' in window.XRDisplayLayer.prototype;
+  } catch {
+    return false; // a prototype that refuses to be probed is not a capability
+  }
+};
 // ── draw-order occlusion (browser Phase 2, browser patches 0063/0064) ─────────────────────
 //
 // The browser composites ANY 2D content over a woven tile per-pixel BY DRAW ORDER — headers,
@@ -168,6 +185,48 @@ export function inline3dOverlaySupported() {
  */
 export function inline3dOcclusionByDrawOrder() {
   return hasDrawOrderOcclusion();
+}
+
+/**
+ * True when this browser accepts a full VIEW RIG descriptor — `handle.setViewRig(rig)` and
+ * `addScene`'s `viewRig` option, i.e. a posed display rig or a camera rig, instead of only the
+ * scalar `virtualDisplayHeight`. Sync + cheap; implies {@link inline3DAvailable}.
+ *
+ * Reads a capability (the presence of `XRDisplayLayer.prototype.setViewRig`), never a version or
+ * UA string. False on every browser that predates the rig API — where `virtualDisplayHeight`
+ * still works, which is why a page needs to branch on this only if a camera rig is load-bearing
+ * for it: `setViewRig` no-ops loudly-once rather than throwing, so a page that just wants the
+ * extra control when it is there can call it unconditionally.
+ */
+export function inline3dViewRigSupported() {
+  return inline3DAvailable() && hasViewRig();
+}
+
+// One-shot notices about view rigs. Both are per-document, and both describe a situation that is
+// identical on every frame — so warning per call would bury the page's own logs in a rAF loop.
+let notedNoViewRig = false;
+function noteNoViewRig() {
+  if (notedNoViewRig) return;
+  notedNoViewRig = true;
+  console.warn(
+    '[inline3d] This browser has no XRDisplayLayer.setViewRig, so the view rig was ignored ' +
+      '(the window still weaves — the runtime keeps the default display rig, scaled by ' +
+      "virtualDisplayHeight). Gate on inline3dViewRigSupported() if your page's framing " +
+      'depends on the rig; further calls are silent.'
+  );
+}
+
+let notedRigWinsOverHeight = false;
+function noteRigWinsOverHeight() {
+  if (notedRigWinsOverHeight) return;
+  notedRigWinsOverHeight = true;
+  console.warn(
+    '[inline3d] addScene got BOTH viewRig and virtualDisplayHeight; the rig wins. ' +
+      'virtualDisplayHeight is shorthand for exactly one rig (display, identity pose, all ' +
+      'factors 1), so the two describe the same slot and there is no meaningful merge — put ' +
+      'the height inside the rig (`{ type: "display", virtualDisplayHeight: … }`) to say it ' +
+      'once.'
+  );
 }
 
 /**
@@ -491,10 +550,20 @@ class Inline3D {
    * @param {object} [opts]
    * @param {number} [opts.virtualDisplayHeight=0.24]  metres of virtual display the scene is
    *        composed for. Larger = the element shows a bigger slice of the world.
+   * @param {object} [opts.viewRig]  a full view-rig descriptor (XRViewRigInit) instead of the
+   *        scalar height: a POSED display rig, or a CAMERA rig that hands the runtime your app
+   *        camera's pose/FOV/convergence and lets eye tracking perturb its frustum. Supersedes
+   *        virtualDisplayHeight (which is one particular display rig), and can be replaced per
+   *        frame with `handle.setViewRig()`. Silently ignored on a browser without rig support
+   *        — such a browser keeps its default display rig, so the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
    * @returns {{remove():void}}
    */
   addScene(canvas, onFrame, opts = {}) {
+    // The rig and the height describe the same one slot in the layer init, so warn where a
+    // caller has said it twice — silently dropping one of two things the page explicitly asked
+    // for is how a scene ends up framed at a scale nobody chose.
+    if (opts.viewRig && opts.virtualDisplayHeight !== undefined) noteRigWinsOverHeight();
     const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
@@ -527,6 +596,40 @@ class Inline3D {
       unexclude: (el) => {
         if (!el || !win.excluded.delete(el)) return;
         this._dropExclusion(win, el);
+      },
+      /**
+       * Replace this window's VIEW RIG — the descriptor the runtime locates views against.
+       * Cheap enough to call every frame (that is the intended use: a rig is per-locate, so
+       * animating one means sending new values, not tweening anything).
+       *
+       * Remembered on the window as well as pushed at the layer, so the lazy lifecycle cannot
+       * quietly lose it (see `viewRig` in _register). Returns whether it reached a LIVE layer:
+       * false also means "stored, and it will build the next layer" for a window that is
+       * currently scrolled away — which is the honest answer for a page driving this per frame,
+       * and the reason it is a boolean rather than void.
+       *
+       * ONE FRAME OF LAG, by construction. The browser locates views BEFORE the page's rAF, so
+       * the rig you set during frame N drives the views delivered in frame N+1. For a slow
+       * knob (a slider, a settled camera) that is invisible; for a camera that moves with the
+       * pointer it is not, and the fix is not to fight it — send an IDENTITY-posed camera rig
+       * and parent your eye cameras under the app camera, so three composes the world pose with
+       * zero lag (see `cameraRigFromCamera(..., {attach:true})` + `EyeCamera.setLocalFromView`).
+       */
+      setViewRig: (rig) => {
+        win.viewRig = rig || null;
+        if (!hasViewRig()) {
+          noteNoViewRig();
+          return false;
+        }
+        if (!win.layer) return false;
+        try {
+          win.layer.setViewRig(rig);
+          return true;
+        } catch {
+          // A closed layer or a descriptor the browser refused. Neither is worth throwing over
+          // in a per-frame call — the window keeps weaving on the rig it already has.
+          return false;
+        }
       },
       // Read-only counters, for pages that want to see the load-induced mono fallback rather
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
@@ -565,6 +668,11 @@ class Inline3D {
       reqW: opts.width || 0,
       reqH: opts.height || 0,
       virtualDisplayHeight: opts.virtualDisplayHeight || 0,
+      // The rig this window's NEXT layer is built with. Latest wins, and it is kept on the
+      // window rather than only pushed at the live layer because the lazy lifecycle destroys
+      // and rebuilds layers behind the page's back: a tile that scrolls away and back would
+      // otherwise silently revert to the default display rig mid-scene.
+      viewRig: opts.viewRig || null,
       observeEl: opts.observe || canvas,
       ctx: kind === 'scene' ? null : canvas.getContext('2d'),
       repaint: () => this._paint(win, null),
@@ -621,10 +729,17 @@ class Inline3D {
     // layers churn with scroll, so activations double as cheap rescan points.
     this._scanChrome();
     try {
-      // virtualDisplayHeight (display-rig m2v) tells the runtime what scale this
-      // window's scene is authored at, so it returns render-ready scaled views.
-      const init =
-        win.virtualDisplayHeight > 0 ? { virtualDisplayHeight: win.virtualDisplayHeight } : {};
+      // What scale/pose the runtime should report views at. virtualDisplayHeight (display-rig
+      // m2v) is the scalar shorthand; a viewRig is the whole descriptor and therefore replaces
+      // it rather than combining with it. Building the layer WITH the rig (instead of
+      // constructing then calling setViewRig) matters for a re-activated window: the layer's
+      // very first located frame is already on the page's rig, so a tile scrolling back into
+      // view never shows one frame of default framing.
+      const init = win.viewRig
+        ? { viewRig: win.viewRig }
+        : win.virtualDisplayHeight > 0
+          ? { virtualDisplayHeight: win.virtualDisplayHeight }
+          : {};
       win.layer = new XRDisplayLayer(this.session, win.canvas, init);
     } catch {
       win.layer = null;

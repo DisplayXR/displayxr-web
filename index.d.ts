@@ -13,6 +13,45 @@ export interface TileOptions {
   feather?: number;
 }
 
+/**
+ * A view-rig descriptor — what the runtime locates the eye views against. Two rigs, one shape:
+ *
+ * - **`"display"`** — the canvas is a PORTAL. Its plane is world `z = 0` and the viewer looks
+ *   through it at a virtual display `virtualDisplayHeight` tall. This is the default rig and
+ *   what `SceneOptions.virtualDisplayHeight` is shorthand for (identity pose, all factors 1).
+ * - **`"camera"`** — an APP CAMERA whose frustum eye tracking perturbs. The runtime keeps your
+ *   `verticalFov`, offsets the eyes, and skews each frustum so `convergenceDiopters` lands on
+ *   the zero-disparity plane.
+ *
+ * Every field is optional; the runtime **clamps** an out-of-range value (once, with a warning)
+ * rather than rejecting the rig. A descriptor applies per-locate, so animating one means sending
+ * new values each frame — see {@link TileHandle.setViewRig} for the one-frame latency that
+ * implies. Build one with `cameraRigFromCamera` / `displayRig` from
+ * `@displayxr/inline3d/three`, or by hand.
+ */
+export interface XRViewRigInit {
+  /** `"display"` (portal) or `"camera"` (app camera). */
+  type?: 'display' | 'camera';
+  /** Rig pose in the app's world units (default 0,0,0). */
+  position?: DOMPointInit;
+  /** Rig orientation as a quaternion (default identity). */
+  orientation?: DOMPointInit;
+  /** **Display rig.** Metres of virtual display; `m2v = this / the element's physical height`. */
+  virtualDisplayHeight?: number;
+  /** Eye separation — display rig: relative `[0,1]`; camera rig: absolute `>= 0`. */
+  ipdFactor?: number;
+  /** Head-tracking response — display rig: `[0,1]`; camera rig: absolute `>= 0`. */
+  parallaxFactor?: number;
+  /** **Display rig only**, `[0.1,10]`: exaggerates or flattens the off-axis skew. */
+  perspectiveFactor?: number;
+  /** **Camera rig.** `1 / (convergence distance in world units)`; `0` = infinity. */
+  convergenceDiopters?: number;
+  /** **Camera rig.** The FULL vertical angle, in RADIANS (three's `camera.fov` is degrees). */
+  verticalFov?: number;
+  /** **Camera rig.** Metres → world units on the eye; `0`/unset means 1. */
+  metersToVirtual?: number;
+}
+
 /** Extra options for {@link Inline3D.addScene}. */
 export interface SceneOptions extends TileOptions {
   /**
@@ -21,6 +60,14 @@ export interface SceneOptions extends TileOptions {
    * and render the reported views as-is. Halving it doubles how much of the window an object fills.
    */
   virtualDisplayHeight?: number;
+  /**
+   * A full {@link XRViewRigInit} instead of the scalar height — a posed display rig, or a camera
+   * rig. **Supersedes `virtualDisplayHeight`** (which is one particular display rig); passing
+   * both warns once and the rig wins. Ignored on a browser without
+   * {@link inline3dViewRigSupported}, which keeps its default display rig, so the window still
+   * weaves. Replaceable per frame with {@link TileHandle.setViewRig}.
+   */
+  viewRig?: XRViewRigInit;
   /** Element whose visibility drives the lazy create/close lifecycle (defaults to the canvas). */
   observe?: Element;
 }
@@ -52,6 +99,23 @@ export interface TileHandle {
    * @deprecated See {@link TileHandle.exclude} — no-op on browsers with draw-order occlusion.
    */
   unexclude(el: Element): void;
+  /**
+   * Replace this window's view rig. Cheap enough to call every frame — a rig applies per-locate,
+   * so animating one means sending new values, not tweening anything.
+   *
+   * Returns whether the rig reached a **live** layer. `false` means it was stored and will build
+   * the next one (a window scrolled away in lazy mode), or that the browser has no rig support
+   * ({@link inline3dViewRigSupported}) — in which case it warns once and the window keeps
+   * weaving on the runtime's default display rig.
+   *
+   * **One frame of lag, by construction.** The browser locates views *before* the page's rAF, so
+   * a rig set during frame N drives the views delivered in frame N+1. Invisible for a slider or
+   * a settled camera; not for a camera that moves with the pointer — for that, send an
+   * identity-posed camera rig and parent your eye cameras under the app camera
+   * (`cameraRigFromCamera(THREE, cam, { attach: true })` + `EyeCamera.setLocalFromView`), so the
+   * scene graph supplies this frame's world pose with no lag at all.
+   */
+  setViewRig(rig: XRViewRigInit): boolean;
   /**
    * Per-window frame counters, for diagnosing the load-induced mono fallback.
    *
@@ -194,6 +258,19 @@ export function inline3dOverlaySupported(): boolean;
  */
 export function inline3dOcclusionByDrawOrder(): boolean;
 
+/**
+ * True when this browser accepts a full {@link XRViewRigInit} — {@link TileHandle.setViewRig} and
+ * {@link SceneOptions.viewRig}, i.e. a posed display rig or a camera rig, instead of only the
+ * scalar `virtualDisplayHeight`. Sync + cheap; implies {@link inline3DAvailable}.
+ *
+ * Reads a capability (the presence of `XRDisplayLayer.setViewRig`), never a version or UA string,
+ * and is `false` on every browser that predates the rig API — where `virtualDisplayHeight` still
+ * works. Branch on it only if a camera rig is load-bearing for your page: `setViewRig` no-ops
+ * (warning once) rather than throwing, so a page that merely wants the extra control where it
+ * exists can call it unconditionally.
+ */
+export function inline3dViewRigSupported(): boolean;
+
 /** Open the page's inline-3D session and return a manager you add windows to. */
 export function createInline3D(
   opts?: CreateInline3DOptions,
@@ -229,5 +306,14 @@ export interface XRDisplayLayer {
    * browser shipped so far — the SDK treats absent as `false` and runs the legacy path.
    */
   readonly occlusionByDrawOrder?: boolean;
+  /**
+   * Replace the rig the runtime locates this layer's views against. Optional because it is
+   * absent on browsers that predate the rig API — its PRESENCE on the prototype is the
+   * capability signal ({@link inline3dViewRigSupported}), which is why the browser exposes it as
+   * a method: a Blink IDL attribute getter throws `Illegal invocation` when read off a prototype
+   * (see {@link XRDisplayLayer.occlusionByDrawOrder}), so an attribute could not be probed at
+   * all on the browser that has it.
+   */
+  setViewRig?(rig: XRViewRigInit): void;
   close(): void;
 }
