@@ -61,6 +61,18 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   parallel on infinitely far content and past it they diverge. The SDK documents it and never
   enforces it — the runtime clamps its own inputs, once, with a warning.
 
+### Docs
+
+- **[`docs/porting-three-js-apps.md`](docs/porting-three-js-apps.md) — porting an existing three.js
+  app (WebXR or plain) to inline 3D.** The rig work above closed the gap that made this guide
+  possible: an app that owns a camera can now hand it over, so "port your WebXR app" stops meaning
+  "re-author it as a portal". The guide is the WebXR→inline-3d mapping table (what each of
+  `isSessionSupported`, `renderer.xr`, `setAnimationLoop`, `XRWebGLLayer`, reference spaces,
+  offset-reference-space locomotion, `ArrayCamera`, controllers and `updateRenderState` becomes, and
+  why), the whole render loop with validate-before-clear and last-good replay, the Spark
+  double-sort, DOM UI over a woven canvas, picking, a hardware checklist, and a 24-item pitfalls
+  register. Linked from the README and from the top of the authoring guide.
+
 ## 1.2.1 — 2026-08-25
 
 ### Fixed

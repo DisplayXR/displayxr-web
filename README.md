@@ -110,6 +110,11 @@ js/
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/
   authoring-inline-3d.md   the authoring guide
+  authoring-motion-and-effects.md
+                           motion, transitions and per-eye effects — the half of authoring
+                           that is not the API
+  porting-three-js-apps.md porting an existing three.js app (WebXR or plain) to inline 3D —
+                           the WebXR→inline-3d mapping table and the whole render loop
 ```
 
 ## The inline-3D model (under the SDK)
