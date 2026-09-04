@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — camera rig (an app camera the runtime perturbs)</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:860px;margin:0 auto;padding:32px 20px 72px}
+  a{color:#5aa8ff;text-decoration:none}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.5px}
+  .lede{opacity:.72;margin:0 0 16px;max-width:74ch}
+  .status{font:13px/1.5 system-ui;padding:9px 13px;border-radius:8px;margin:0 0 20px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+  /* The stage is VISUALLY BARE. The weave takes the element's rect as a side-by-side pair and
+     splits it down the middle, so any spatially-varying CSS here — border, radius, shadow —
+     would be composited into that pair and then halved: each eye would get one edge and two of
+     the four corners, stretched 2x by the un-squeeze. */
+  #stage{display:block;width:100%;max-width:800px;aspect-ratio:16/9;margin:0 auto;cursor:grab;touch-action:none}
+  #stage.dragging{cursor:grabbing}
+  .panel{max-width:800px;margin:14px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+         gap:10px 20px;background:#ffffff08;border:1px solid #ffffff14;border-radius:10px;padding:14px 16px}
+  .panel label{display:grid;grid-template-columns:92px 1fr 54px;gap:8px;align-items:center;font-size:13px}
+  .panel label span:last-child{text-align:right;font-variant-numeric:tabular-nums;opacity:.75}
+  .panel .check{grid-template-columns:auto 1fr;font-size:13px}
+  .readout{max-width:800px;margin:10px auto 0;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.75}
+  .readout b{color:#7ee2a4;font-weight:600}
+  .readout .warn{color:#fbbf24}
+  .cols{display:flex;gap:22px;flex-wrap:wrap;margin-top:28px}
+  .cols div{flex:1;min-width:250px}
+  h2{font-size:16px;margin:0 0 4px}
+  p.small{font-size:14px;opacity:.75;margin:0 0 10px}
+  kbd{background:#ffffff1a;border:1px solid #ffffff26;border-radius:4px;padding:0 5px;font:12px ui-monospace,monospace}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+  footer{margin-top:34px;font-size:13px;opacity:.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Camera rig</h1>
+  <p class="lede">Every other sample hands the runtime a <strong>display rig</strong>: the canvas is
+     a portal onto a virtual display, and the scene is authored to fit it. This one hands over its
+     own <strong>camera</strong> instead — position, orientation and vertical FOV — and the runtime
+     perturbs that frustum with the viewer's eyes. Drag to orbit; the framing stays yours, the
+     stereo stays the runtime's.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <canvas id="stage"></canvas>
+
+  <div class="panel" id="panel"></div>
+  <div class="readout" id="readout"></div>
+
+  <div class="cols">
+    <div>
+      <h2>Convergence is the knob that matters</h2>
+      <p class="small">It is the distance where content sits <em>on</em> the glass — nearer pops
+         out, further recedes. Left at the orbit distance the cube straddles the display. Wind it
+         in and the cube leaps forward; wind it out and the whole scene sinks behind the panel.
+         The runtime's comfort rule is
+         <code>ipd × metersToVirtual × diopters × 0.5 ≤ 1</code>; the readout above turns red past
+         it, which is where far content starts asking your eyes to diverge.</p>
+    </div>
+    <div>
+      <h2><kbd>C</kbd> — camera rig ⇄ display rig</h2>
+      <p class="small">The display rig it switches to is built to frame the cube identically at the
+         home angle, so the cut is invisible standing still. Then orbit: the camera rig follows you
+         around the cube, the display rig does not — it is a fixed window onto a fixed scene. That
+         difference <em>is</em> the choice between the two.</p>
+      <p class="small"><strong>attach</strong> sends an identity-posed rig and parents the eye
+         cameras under the app camera instead, so three composes this frame's world pose. Toggle it
+         while whipping the orbit around: without it the stereo trails the render by one frame.</p>
+    </div>
+  </div>
+
+  <footer>← <a href="../../">All samples</a> ·
+     <a href="../../docs/authoring-inline-3d.md">Authoring guide</a> ·
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a></footer>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
