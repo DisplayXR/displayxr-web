@@ -9,6 +9,11 @@ inline-3D is progressive enhancement, never a hard dependency.
 This page is the authoring reference. The `js/inline3d.js` SDK implements everything here;
 you rarely need the raw WebXR interfaces, but they're documented at the end.
 
+Porting an app you already have — a three.js scene, with or without WebXR? Start at
+[Porting an existing three.js app to inline 3D](porting-three-js-apps.md), which maps the
+WebXR surface onto this one and gives the render loop in full; come back here for the rules
+behind it.
+
 Building something that **moves** — a carousel, a lightbox, a slideshow, a transition? Read
 [Motion, transitions and per-eye effects](authoring-motion-and-effects.md) as well. A woven
 window cannot be animated the way an `<img>` can, and the rules for compositing motion into
