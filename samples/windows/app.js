@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import { createInline3D } from '@displayxr/inline3d';
-import { EyeCamera } from '@displayxr/inline3d/three';
+import { EyeCamera, cameraRigFromCamera } from '@displayxr/inline3d/three';
 
 const PHOTOS = ['avatar', 'gaussiansplat', 'modelviewer', 'earthview', 'mediaplayer'];
 
@@ -74,9 +74,10 @@ function buildScene(canvas) {
   dir.position.set(0.3, 0.8, 0.5);
   scene.add(dir);
 
-  // Authored in metres for a 0.24 m virtual display (addScene's virtualDisplayHeight); the
-  // runtime scales the eye poses so this renders correctly with NO app-side scaling. Matches
-  // the cube_handle reference: a 6 cm crate on the z=0 plane over a 0.5 m grid.
+  // Authored in metres at the cube_handle reference's scale: a 6 cm crate on the z=0 plane over
+  // a 0.5 m grid. The runtime supplies render-ready views for it — under the display rig from
+  // one scale number, under the camera rig below from the app camera — so there is NO app-side
+  // world scaling either way.
   // Same wood-crate PBR set the native cube_handle reference app uses, so the
   // browser scene and the native scene show the identical object.
   const tex = new THREE.TextureLoader();
@@ -120,24 +121,81 @@ function buildScene(canvas) {
   window.addEventListener('resize', size);
   size();
 
-  const eye = new EyeCamera(THREE);
+  // ---- this tile runs on a CAMERA rig, in the attach pattern ------------------------------
+  //
+  // The photo and video tiles above are portals and want the default display rig. This one has a
+  // camera, so it says so: the app sends its own pose + vertical FOV + a convergence distance,
+  // and the runtime perturbs that frustum with the viewer's eyes. Framing stays the app's; the
+  // stereo stays the runtime's; no projection math appears in this file either way.
+  //
+  // Deliberately framed to land where the 0.24 m display rig used to: a 40° camera 28 cm from
+  // the crate gives it ~29% of the window against the display rig's ~25%, so the tile looks like
+  // itself — the point of the change is what it can do NEXT (fly the camera, follow a target),
+  // not a new look.
+  //
+  // metersToVirtual is the field that makes a small-scale scene work. On a camera rig ipd and
+  // parallax are ABSOLUTE, so a 6 cm crate viewed from 28 cm would otherwise get a full 63 mm
+  // human eye separation inside a scene two decades below metre scale — a convergence of 0.28
+  // world units is 3.6 diopters, and the runtime's comfort product (ipd × m2v × diopters × 0.5)
+  // would come out at 1.8, well past the 1 where eyes start diverging on far content. 0.12 world
+  // units per real metre puts it at 0.21.
+  const TARGET = new THREE.Vector3(0, 0.03, 0); // the crate, and so the zero-disparity plane
+  const appCam = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+  appCam.position.set(0, 0.06, 0.28);
+  appCam.lookAt(TARGET);
+  scene.add(appCam); // IN the scene: three only reaches a parented camera through a traversal
+  const convergence = appCam.position.distanceTo(TARGET);
+
+  // One EyeCamera per eye, not one reused twice: the attach pattern PARENTS them under the app
+  // camera, so they are scene-graph nodes with a lifetime rather than scratch objects. Attaching
+  // is what removes the rig's inherent one-frame lag — Blink locates views BEFORE the page's rAF,
+  // so an identity-posed rig plus a scene-graph parent lets three supply THIS frame's world pose.
+  const eyes = [new EyeCamera(THREE), new EyeCamera(THREE)];
+  for (const e of eyes) appCam.add(e.camera);
+  const rigOut = {}; // reused: a rig is per-locate, so this is rebuilt every frame
+
+  let handle = null;
   let last = 0;
-  return function onFrame(views, layer) {
+  function onFrame(views, layer) {
     const now = performance.now();
     const dt = last ? (now - last) / 1000 : 0;
     last = now;
     cube.rotation.y = (cube.rotation.y + dt * 0.5) % (Math.PI * 2);
+    if (handle) {
+      handle.setViewRig(cameraRigFromCamera(THREE, appCam, {
+        attach: true,
+        convergence,
+        metersToVirtual: 0.12,
+        out: rigOut,
+      }));
+    }
     renderer.clear();
     renderer.setScissorTest(true);
-    for (const view of views) {
-      const vp = layer.getViewport(view);
+    for (let i = 0; i < views.length && i < eyes.length; i++) {
+      const vp = layer.getViewport(views[i]);
       if (!vp) continue;
       renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
       renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
-      eye.setFromView(view); // projection + pose already scaled by the runtime rig
-      renderer.render(scene, eye.camera);
+      // setLocal, not setFrom: with an identity-posed rig the reported eye pose is in RIG space,
+      // and the parent supplies the world transform. Using setFromView here would drop the app
+      // camera's pose entirely and render from the origin.
+      eyes[i].setLocalFromView(views[i]);
+      renderer.render(scene, eyes[i].camera);
     }
     renderer.setScissorTest(false);
+  }
+
+  return {
+    onFrame,
+    /** The rig to build the layer with, so its first located frame is already on the camera. */
+    rig: () => cameraRigFromCamera(THREE, appCam, {
+      attach: true,
+      convergence,
+      metersToVirtual: 0.12,
+      out: rigOut,
+    }),
+    /** The window's handle, once addScene has one to give. */
+    bind: (h) => { handle = h; },
   };
 }
 
@@ -167,7 +225,9 @@ function buildScene(canvas) {
   // Weave everything on the one wall.
   for (const t of photoTiles) wall.addImage(t.canvas, t.url, { cornerRadius: 28 });
   wall.addVideo(document.getElementById('movie'), makeSbsVideo());
-  wall.addScene(document.getElementById('scene'), buildScene(document.getElementById('scene')));
+  const sceneCanvas = document.getElementById('scene');
+  const live = buildScene(sceneCanvas);
+  live.bind(wall.addScene(sceneCanvas, live.onFrame, { viewRig: live.rig() }));
 
   window.__wall = wall;
   const tick = () => {

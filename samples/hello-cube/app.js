@@ -7,8 +7,8 @@
 // so the page still shows a spinning cube in any browser.
 
 import * as THREE from 'three';
-import { startInline3D } from '@displayxr/inline3d';
-import { EdgeFeather } from '@displayxr/inline3d/three';
+import { createInline3D, inline3dViewRigSupported } from '@displayxr/inline3d';
+import { EdgeFeather, displayRig } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('cube');
 const statusEl = document.getElementById('status');
@@ -32,7 +32,7 @@ const scene = new THREE.Scene();
 // rectangle. The CSS box keeps a flat backdrop for the mono fallback.
 scene.background = null;
 
-// SCENE SCALE IS THE RUNTIME'S JOB. startInline3D declares virtualDisplayHeight = 0.12, so
+// SCENE SCALE IS THE RUNTIME'S JOB. addScene declares virtualDisplayHeight = 0.12, so
 // author in METRES for a 12 cm-tall display and render the reported views as-is — no app-side
 // scaling. These are the native cube_handle reference's numbers: a 6 cm crate straddling the
 // z=0 (zero-disparity) plane. Same crate as the native cube_handle reference and samples/windows.
@@ -169,6 +169,84 @@ function fallbackHalf(view, views, size) {
   return { x: i === 0 ? 0 : half, y: 0, width: half, height: size.y };
 }
 
+// ---- ?debug: the display rig's knobs, live -------------------------------------------------
+//
+// virtualDisplayHeight is one field of a whole DISPLAY-rig descriptor: the canvas is a portal
+// onto a virtual display that tall, and the rig can also be POSED (tilt the portal) and dialled
+// (eye separation, head-tracking response, off-axis strength). displayRig() builds the
+// descriptor; handle.setViewRig() replaces it. A rig applies per-locate, so "animating" one is
+// just sending new values — there is nothing to tween and nothing to tear down.
+//
+// Debug-gated for the same reason as the HUD above: this page is the hello-world, and a rack of
+// sliders under it is bring-up furniture, not the demo. The DOM is built here rather than in
+// index.html so the clean page carries no markup for a panel it never shows.
+//
+// Expect ONE FRAME OF LAG on every slider: the browser locates views before the page's rAF, so a
+// rig set now drives the next frame's views. On a knob dragged by hand that is invisible — it is
+// only a problem for a rig that tracks a fast-moving camera, which is what the camera-rig
+// sample's `attach` pattern exists to solve.
+function buildRigPanel(handle) {
+  const RIG = { yaw: 0, pitch: 0, vdh: 0.12, ipd: 1, parallax: 1, perspective: 1 };
+  const q = new THREE.Quaternion();
+  const euler = new THREE.Euler();
+  const scratch = {};                             // reused descriptor: no per-change allocation
+  const push = () => {
+    // YXZ: yaw about the page's up axis first, then tilt — the intuitive order for "turn the
+    // portal, then lean it back", and the one that keeps yaw meaningful at a non-zero pitch.
+    euler.set(THREE.MathUtils.degToRad(RIG.pitch), THREE.MathUtils.degToRad(RIG.yaw), 0, 'YXZ');
+    q.setFromEuler(euler);
+    handle.setViewRig(displayRig({
+      virtualDisplayHeight: RIG.vdh,
+      orientation: { x: q.x, y: q.y, z: q.z, w: q.w },
+      ipdFactor: RIG.ipd,
+      parallaxFactor: RIG.parallax,
+      perspectiveFactor: RIG.perspective,
+      out: scratch,
+    }));
+  };
+
+  const panel = document.createElement('div');
+  panel.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;background:#000d;' +
+    'color:#eee;font:12px/1.5 system-ui,sans-serif;padding:10px 12px;border-radius:8px;' +
+    'min-width:240px;backdrop-filter:none';
+  panel.innerHTML = '<div style="font-weight:600;margin-bottom:6px">display rig · ?debug</div>';
+  if (!inline3dViewRigSupported()) {
+    // Say it here as well as in the SDK's one-shot console warning: a page of sliders that
+    // silently do nothing is worse than no sliders.
+    panel.innerHTML +=
+      '<div style="color:#fbbf24;margin-bottom:6px">this browser has no setViewRig — the ' +
+      'sliders are inert (the cube still weaves on the default rig)</div>';
+  }
+  const row = (label, key, min, max, step, fmt) => {
+    const wrap = document.createElement('label');
+    wrap.style.cssText = 'display:grid;grid-template-columns:74px 1fr 46px;gap:6px;align-items:center';
+    const name = document.createElement('span'); name.textContent = label;
+    const input = document.createElement('input');
+    Object.assign(input, { type: 'range', min, max, step, value: RIG[key] });
+    input.style.width = '100%';
+    const out = document.createElement('span');
+    out.style.cssText = 'text-align:right;font-variant-numeric:tabular-nums;opacity:.8';
+    out.textContent = fmt(RIG[key]);
+    input.addEventListener('input', () => {
+      RIG[key] = parseFloat(input.value);
+      out.textContent = fmt(RIG[key]);
+      push();
+    });
+    wrap.append(name, input, out);
+    panel.appendChild(wrap);
+  };
+  const deg = (v) => `${v.toFixed(0)}°`;
+  const num = (v) => v.toFixed(2);
+  row('yaw', 'yaw', -40, 40, 1, deg);
+  row('pitch', 'pitch', -40, 40, 1, deg);
+  row('height m', 'vdh', 0.04, 0.5, 0.005, (v) => v.toFixed(3));
+  row('ipd', 'ipd', 0, 1, 0.02, num);            // [0,1] RELATIVE on a display rig — 0 = mono
+  row('parallax', 'parallax', 0, 1, 0.02, num);  // [0,1] — 0 freezes the look-around
+  row('perspective', 'perspective', 0.1, 3, 0.05, num); // [0.1,10]; an effect, not a correction
+  document.body.appendChild(panel);
+  push(); // start from the same rig the scalar virtualDisplayHeight would have built
+}
+
 // ---- mono fallback loop --------------------------------------------------------------------
 function onMonoFrame(now) {
   requestAnimationFrame(onMonoFrame);
@@ -189,16 +267,19 @@ function onMonoFrame(now) {
   // this doubles how much of the window a given object fills. The 6 cm crate spans half of a
   // 12 cm virtual display; at 0.24 it spanned a quarter. Same scene, same units — only the
   // declared size of the display it is composed for changes.
-  const xr = await startInline3D(canvas, {
-    onFrame: onXRFrame,
-    virtualDisplayHeight: 0.12,
-  });
-  if (xr.supported) {
+  //
+  // createInline3D + addScene rather than the startInline3D one-liner (which is exactly those
+  // two calls) purely to get the window's HANDLE back: the handle is what carries setViewRig,
+  // and the ?debug panel below drives it.
+  const wall = await createInline3D({ lazy: false });
+  if (wall.supported) {
+    const handle = wall.addScene(canvas, onXRFrame, { virtualDisplayHeight: 0.12 });
     // Only now do we know we render side-by-side — re-size the backing store to 2x width.
     sbsMode = true;
     sizeToCanvas();
     statusEl.innerHTML = '<b style="color:#4ade80">inline-3D active</b> — weaving glasses-free 3D · ' +
       'move your head to look around';
+    if (DEBUG_HUD) buildRigPanel(handle);
   } else {
     statusEl.innerHTML = '<b>2D fallback</b> — open in the ' +
       '<a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a> ' +
