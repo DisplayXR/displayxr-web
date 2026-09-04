@@ -641,13 +641,14 @@ Consolidated, in the order they tend to bite:
     degrades the page to its mono path instead of failing the whole module graph the way a static
     import would.
 
-25. **A side-by-side backing store wider than ~3072 px stutters on the DisplayXR Browser
-    (≤ preview-0.1.27).** Measured on hardware: a full-window scene canvas at scale 1 on a
-    3840-wide panel is 6144 px wide, and the browser then fails its zero-copy read of the canvas
-    every few frames (the canvas is still write-locked, the CPU fallback is refused) and re-shows
-    the previous frame ~8 times a second. It is a width threshold — 3379 px still fails, 3072 px
-    never does, height and pixel count are irrelevant, and it is flat across GPU load. Until the
-    browser fix lands (displayxr-browser-pvt#24), cap your buffer width: `bufW = min(cssW*dpr*2,
-    3072)`, i.e. per-eye 1536 px. Small tiles never hit it; only full-window scenes do. And read
-    `keeps=` in the chrome log as a CUMULATIVE, throttled counter — the rate is Δcounter/Δt, never
-    a count of log lines.
+25. **Full-window scene tiles can stutter on the DisplayXR Browser (≤ preview-0.1.27).** On a
+    heavy full-window scene the browser's zero-copy read of the canvas races the page's write of
+    the same WebGL back buffer (`Already being accessed for write` in the chrome log); the CPU
+    fallback is refused and the previous weave is re-shown — measured at ~20–30% of frames on a
+    Gaussian-splat game, regardless of buffer width, GPU load or height (displayxr-browser-pvt#24).
+    Small tiles are unaffected. Until the browser synchronises that read: keep the side-by-side
+    buffer no wider than the panel (half-panel per eye is what a lenticular delivers anyway, and it
+    roughly doubled FPS), and try `preserveDrawingBuffer: true` on the renderer (Chromium then
+    copies each frame to a separate front buffer). And read `keeps=` in the chrome log as a
+    CUMULATIVE, throttled counter: the rate is Δcounter/Δt normalised by frame rate, never a count
+    of log lines.
