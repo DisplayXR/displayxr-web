@@ -144,6 +144,142 @@ scaling**. A bigger `virtualDisplayHeight` shows a larger slice of the world in 
 This mirrors the native reference apps (`cube_handle`): the app supplies one scale number and
 consumes render-ready views — it never re-derives the projection or scales the scene.
 
+## View rigs: display vs camera
+
+`virtualDisplayHeight` is one number out of a whole descriptor. The runtime locates every frame's
+views against a **view rig**, and there are two of them:
+
+- **A display rig** — *the canvas is a portal.* Its plane is world `z = 0`, and the viewer looks
+  through it at a virtual display `virtualDisplayHeight` metres tall. This is the default, and
+  everything above assumes it: you author a scene at a fixed scale for a fixed window and the
+  runtime places the eyes.
+- **A camera rig** — *the app has a camera; perturb its frustum.* You send a pose, a vertical FOV
+  and a convergence distance; the runtime keeps your framing, offsets the eyes, and skews each
+  frustum so the convergence distance lands on the zero-disparity plane. This is what a scene that
+  owns a camera — an orbit, a walkthrough, a game — actually wants, and it cannot be expressed as
+  a display rig at all.
+
+Either way the SDK computes **nothing**. It fills in a descriptor; the off-axis (Kooima)
+projection stays in the runtime, which is the same code the native apps consume. `XRView.transform`
+comes back as the eye pose **in the rig's space** (your world units when you gave a world pose) and
+`XRView.projectionMatrix` as the skewed frustum, with `depthNear`/`depthFar` from the session's
+render state.
+
+```js
+import { createInline3D, inline3dViewRigSupported } from './js/inline3d.js';
+import { EyeCamera, cameraRigFromCamera, displayRig } from './js/inline3d-three.js';
+
+const handle = wall.addScene(canvas, onFrame, {
+  viewRig: cameraRigFromCamera(THREE, appCam, { convergence: 1.2 }),  // the FIRST rig
+});
+// …and every frame after, if the camera moves:
+handle.setViewRig(cameraRigFromCamera(THREE, appCam, { convergence: 1.2, out: rigScratch }));
+```
+
+A rig applies **per-locate**, so "animating" one means sending new values each frame — there is
+nothing to tween, nothing to tear down, and no reason not to call `setViewRig` in your render loop.
+Passing the first rig to `addScene` rather than pushing it afterwards matters for one frame: the
+layer's first located frame is then already on your rig.
+
+### The fields
+
+| Field | Rig | Range | Means |
+|---|---|---|---|
+| `type` | both | `"display"` \| `"camera"` | which of the two |
+| `position` | both | world units | rig pose (default `0,0,0`) |
+| `orientation` | both | quaternion | rig orientation (default identity) |
+| `virtualDisplayHeight` | display | metres | `m2v = this / the element's physical height` |
+| `ipdFactor` | both | display `[0,1]` **relative**; camera `>= 0` **absolute** | eye separation; `0` = mono |
+| `parallaxFactor` | both | display `[0,1]`; camera `>= 0` | how far the rig tracks head motion; `0` freezes the look-around |
+| `perspectiveFactor` | display | `[0.1,10]` | exaggerates or flattens the off-axis skew — an effect, not a correction |
+| `convergenceDiopters` | camera | `1/distance`, `0` = infinity | where content sits *on* the glass |
+| `verticalFov` | camera | **radians**, the FULL angle | three's `camera.fov` is degrees — convert |
+| `metersToVirtual` | camera | `>= 0`, `0`/unset = 1 | metres → world units *on the eye* |
+
+The runtime **clamps** an out-of-range value (once, with a warning) and never rejects a rig, so a
+bad number degrades the look rather than killing the window.
+
+Note the display/camera split on `ipdFactor` and `parallaxFactor`. On a display rig they are
+*relative* — `1` is what the display would naturally do, and lowering them is a comfort dial. On a
+camera rig they are *absolute*, in the app's own units, which is what makes `metersToVirtual` load-
+bearing for any scene not authored at metre scale: a 6 cm object viewed from 28 cm gets the full
+63 mm human eye separation unless you say otherwise.
+
+### Comfort
+
+The runtime's own rule (`dxr_view_math.h`):
+
+```
+comfort = ipdFactor × metersToVirtual × convergenceDiopters × N     (N ≈ 0.5 m, nominal viewing distance)
+```
+
+At `1` the viewer's eyes are parallel on infinitely distant content; **past 1 they diverge**, and
+nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1, `metersToVirtual` 1) it reduces
+to "keep convergence past about 0.5 world units". Nothing in this SDK enforces it — the runtime
+clamps its own inputs — but it is the number to reach for when a scene is uncomfortable and you
+cannot say why. `samples/camera-rig/` prints it live.
+
+### The latency caveat, and the attach pattern
+
+**The browser locates views BEFORE the page's rAF.** A rig you set during frame N therefore drives
+the views delivered in frame N+1. On a slider, or a camera that has settled, that is invisible. On
+a camera whipping around under the pointer it is not: the stereo trails the render by a frame, and
+it reads as a soft, swimming misalignment rather than as lag.
+
+Do **not** try to predict the camera forward. Send an **identity-posed** camera rig and parent the
+eye cameras under your app camera instead, so three's scene graph composes this frame's world pose
+with no lag at all:
+
+```js
+const eyes = [new EyeCamera(THREE), new EyeCamera(THREE)];
+scene.add(appCam);                       // IN the scene: three only reaches a parented
+for (const e of eyes) appCam.add(e.camera);  // camera through a traversal
+
+handle.setViewRig(cameraRigFromCamera(THREE, appCam, { attach: true, convergence }));
+// …then per eye, LOCAL rather than world:
+eyes[i].setLocalFromView(views[i]);
+renderer.render(scene, eyes[i].camera);
+```
+
+That is a **scene-graph parent and nothing else**. No projection math moves into the page: the
+projection matrix is still the runtime's, and the local transform is still the eye pose it
+reported — read in rig space rather than world space, which is exactly what an identity pose means.
+The runtime keeps the part it is uniquely good at (eye offsets, the tracking-perturbed frustum);
+the app supplies the part it knows first (where its camera is *now*).
+
+Two things that bite: `renderer.render(scene, camera)` only auto-updates a camera whose `parent` is
+`null`, so a parented eye camera must be reached by a normal `scene.updateMatrixWorld()` — keep the
+app camera in the scene. And the parenting and the setter are one decision: `setLocalFromView` with
+an unparented eye renders from the origin, `setFromView` with a parented one applies the camera's
+transform twice.
+
+### Detecting support, and what happens without it
+
+```js
+if (inline3dViewRigSupported()) { /* the camera rig is available */ }
+```
+
+It reads a capability — the presence of `XRDisplayLayer.prototype.setViewRig` — never a version or
+a UA string. (That the browser exposes a **method** is deliberate: a Blink IDL *attribute* getter
+throws `Illegal invocation` when read off a prototype, so an attribute could not be probed on
+exactly the browser that has it.)
+
+On a browser without it, `setViewRig()` warns **once** and returns `false`, `addScene`'s `viewRig`
+is ignored, and the window keeps weaving on the runtime's default display rig. So a page that just
+wants the extra control where it exists can call it unconditionally and skip the branch; branch
+only if your framing genuinely depends on the rig — a camera-rig scene falling back to a display
+rig is framed by `virtualDisplayHeight`, not by your camera, so give it a sensible one:
+
+```js
+wall.addScene(canvas, onFrame, {
+  virtualDisplayHeight: 0.24,   // what an older browser will use
+  viewRig: cameraRigFromCamera(THREE, appCam, { convergence }),  // wins where supported
+});
+```
+
+(That combination warns once — the two describe the same slot — so pass both only where the
+fallback framing is the point. `samples/camera-rig/` is the worked example of all of this.)
+
 ## Many windows, and how batching helps
 
 Add as many windows as you like to one `wall` — a gallery, a grid, a scrolling wall. The
@@ -512,6 +648,12 @@ a Draco-compressed glTF served with `three`'s decoder out of this repo's `vendor
 - **Round corners / draw decoration in the canvas buffer, not CSS.**
 - **Scenes: author at ~0.24 m virtual height and `fitToElement` every frame;** put focused
   content at `z=0`.
+- **A rig set this frame drives NEXT frame's views** — the browser locates before your rAF. Fine
+  for a slider; for a moving camera use the [attach pattern](#the-latency-caveat-and-the-attach-pattern)
+  rather than predicting the camera forward.
+- **Camera rig: `ipdFactor` and `metersToVirtual` are ABSOLUTE**, so a scene not authored at metre
+  scale needs `metersToVirtual`, and `ipd × m2v × diopters × 0.5` must stay ≤ 1 or far content asks
+  the eyes to diverge. On a *display* rig the same two factors are relative `[0,1]` comfort dials.
 - **Compositor layer:** the SDK sets `will-change:transform; transform:translateZ(0)` on
   managed canvases so each is a distinct weave target — keep it if you build windows manually.
 - **2D over a tile just works** on a browser with draw-order occlusion — headers, badges,

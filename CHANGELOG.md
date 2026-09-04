@@ -5,6 +5,62 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.3.0 — unreleased
+
+### Added
+
+- **View rigs — the page can hand the runtime its own CAMERA, not just a virtual-display height.**
+  Every inline-3D frame is located against a *view rig*, and until now there was exactly one: a
+  display rig with an identity pose whose only knob was `virtualDisplayHeight`. That is the right
+  model for a portal — the canvas is a window onto a scene authored to fit it — and the wrong one
+  for a scene that owns a camera. An orbit, a walkthrough, a game has a pose and a field of view
+  already; it does not want to be told where the eyes are, it wants its own frustum perturbed by
+  them. That could not be expressed at all, so those pages either fought the display rig or
+  re-derived stereo themselves.
+
+  `handle.setViewRig(rig)` and `addScene`'s `viewRig` option send the whole descriptor:
+  `{type:'display'|'camera', position, orientation, virtualDisplayHeight, ipdFactor,
+  parallaxFactor, perspectiveFactor, convergenceDiopters, verticalFov, metersToVirtual}`. A rig
+  applies per-locate, so animating one is just sending new values each frame — nothing to tween,
+  nothing to tear down. **No projection math lands in the SDK**: it fills in a descriptor and the
+  off-axis (Kooima) frustum stays in the runtime, which is the same code the native apps consume.
+  *(core tier — additive)*
+
+- **`inline3dViewRigSupported()`**, and a fallback that actually falls back. The gate reads a
+  capability (`XRDisplayLayer.prototype.setViewRig` being present), never a version or UA string.
+  Without it `setViewRig()` warns once and returns `false` while the window keeps weaving — so a
+  page that merely wants the extra control where it exists can call it unconditionally. And a
+  `viewRig` is only put in the layer init on a browser that *has* rigs: an older one would take
+  the init, find no member it recognised, and drop to its **own** default height, so passing a
+  camera rig alongside a `virtualDisplayHeight` now genuinely names the older browser's framing.
+  *(core tier — additive)*
+
+- **`cameraRigFromCamera(THREE, camera, opts)` and `displayRig(opts)`** in
+  `@displayxr/inline3d/three` — descriptor builders, both accepting an `out` object so a per-frame
+  call allocates nothing. `cameraRigFromCamera` decomposes the pose from `matrixWorld` rather than
+  reading `.position`/`.quaternion` (those are local, and an app camera parented under a dolly —
+  the usual way to build an orbit — would otherwise report a pose in the wrong space), converts
+  three's degrees to the descriptor's radians, and turns a convergence *distance* into diopters so
+  "infinity" is a finite `0`. *(core tier — additive)*
+
+- **`EyeCamera.setLocalFromView(view)` / `setLocalFromMatrices(proj, transform)`, for the attach
+  pattern.** The browser locates views **before** the page's rAF, so a rig set during frame N
+  drives the views delivered in frame N+1. On a slider that is invisible; on a camera moving under
+  the pointer it reads as a soft, swimming misalignment. The fix is not prediction: send an
+  identity-posed camera rig and parent the eye cameras under the app camera, and three's scene
+  graph composes *this* frame's world pose with no lag. These setters write `camera.matrix` and
+  leave `matrixWorld` to three's traversal, which is the whole of it — a scene-graph parent, not
+  projection math. `setFromView` (world) is unchanged. *(core tier — additive)*
+
+- **`samples/camera-rig/`** — an orbiting scene on a camera rig, with sliders for FOV, convergence
+  and distance, an `attach` toggle, a live comfort readout, and `C` to cut between the camera rig
+  and a display rig framed to match it at the home angle. `samples/hello-cube/?debug` gains the
+  display rig's knobs; `samples/windows/`'s live scene tile moves to a camera rig in the attach
+  pattern. The comfort rule the readout prints is the runtime's own
+  (`ipdFactor × metersToVirtual × convergenceDiopters × N`, N ≈ 0.5 m): at 1 the viewer's eyes are
+  parallel on infinitely far content and past it they diverge. The SDK documents it and never
+  enforces it — the runtime clamps its own inputs, once, with a warning.
+
 ## 1.2.1 — 2026-08-25
 
 ### Fixed

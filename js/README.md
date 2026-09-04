@@ -34,6 +34,14 @@ closes it when it scrolls away — so a long wall only pays for what's on screen
   (default 0.24 m) sets the scene scale. **Validate `views` before you clear** — under load the frame
   can report fewer than two views, and clearing on such a frame is what a "blinking" tile is
   ([authoring guide](../docs/authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
+- **`handle.setViewRig(rig)`** — replace the **view rig** the runtime locates this window's views
+  against: a posed **display** rig (the canvas as a portal onto a virtual display) or a **camera**
+  rig (the app's own camera, whose frustum eye tracking perturbs). Cheap enough to call every
+  frame — a rig applies per-locate, so animating one is just sending new values. `addScene`'s
+  `opts.viewRig` sets the first one. Returns `false` on a browser without `setViewRig` (warns once;
+  the window still weaves). Gate with **`inline3dViewRigSupported()`**.
+  [Full section](../docs/authoring-inline-3d.md#view-rigs-display-vs-camera) — including the
+  one-frame latency caveat and the **attach** pattern that removes it.
 - **`handle.stats()`** — `{ frames, monoFrames }` for a scene window; `monoFrames` counts the
   frames that arrived with fewer than two views.
 - **`wall.close()`** — end the session and release all windows.
@@ -45,7 +53,12 @@ single-scene helper: `createInline3D({lazy:false})` + `addScene`. Returns `{ sup
 
 Optional three.js glue. **`EyeCamera`** builds an off-axis (asymmetric-frustum) camera from an
 `addScene` view each frame — the two load-bearing renderer settings are documented at the top of the
-file. Example: see [`../samples/windows/`](../samples/windows/).
+file. `setFromView` sets the camera's WORLD pose; `setLocalFromView` sets its LOCAL one so it can be
+parented under your app camera (the attach pattern). **`cameraRigFromCamera(THREE, camera, opts)`**
+and **`displayRig(opts)`** build the descriptors `setViewRig` takes, both accepting an `out` object
+so a per-frame call allocates nothing. **`EdgeFeather`** fades a rendered eye's edges to
+transparent. Examples: [`../samples/camera-rig/`](../samples/camera-rig/) (rigs),
+[`../samples/windows/`](../samples/windows/).
 
 ## SBS buffer convention
 

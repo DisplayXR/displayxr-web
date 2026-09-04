@@ -65,6 +65,19 @@ if (!wall.supported) {
 The browser weaves each element's stereo pair at its on-screen rect; the surrounding DOM stays flat.
 The runtime batches every visible window into one weave per frame, so it scales to a wall of elements.
 
+A scene with its own camera can hand that camera to the runtime instead of being told where the eyes
+are — a **camera rig** — and let eye tracking perturb its frustum:
+
+```js
+import { cameraRigFromCamera } from '@displayxr/inline3d/three';
+const handle = wall.addScene(canvas, onFrame, { viewRig: cameraRigFromCamera(THREE, cam, { convergence: 1.2 }) });
+handle.setViewRig(cameraRigFromCamera(THREE, cam, { convergence: 1.2, out: rig }));  // per frame
+```
+
+No projection math lands in your page or in the SDK — the off-axis frustum stays in the runtime. See
+[view rigs](docs/authoring-inline-3d.md#view-rigs-display-vs-camera) and
+[`samples/camera-rig/`](samples/camera-rig/).
+
 > **Detection:** call `createInline3D()` and check `wall.supported` — do **not** gate on
 > `navigator.xr.isSessionSupported('inline-3d')`. That async probe resolves `false` if it runs before the
 > OS weave service has bound (typically at page load), a false-negative that silently drops you to 2D.
@@ -78,6 +91,8 @@ Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-
 ```
 index.html            landing (Pages entry point)
 samples/
+  camera-rig/         the camera rig — an orbiting scene that sends its OWN camera each frame;
+                      convergence + comfort, the attach pattern, C to A/B a display rig
   windows/            mixed 3D windows — still photos + a live video + a real-time three.js scene,
                       each woven with one SDK call, all on one session
   splat/              a 3D Gaussian splat in a tile, auto-framed, with a 2D price plate over it

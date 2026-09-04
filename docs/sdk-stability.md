@@ -12,10 +12,16 @@ The **exported** surface of the package entry points:
   - `createInline3D(opts?)`, `startInline3D(canvas, opts?)`
   - the `Inline3D` manager: `addImage`, `addVideo`, `addScene`, `addGlobalOverlay`,
     `removeGlobalOverlay`, `close`, and the `supported` / `session` / `refSpace` / `liveCount` fields
-  - the `TileHandle`: `remove`, `exclude`, `unexclude`
-  - `inline3DAvailable()`, `inline3dOverlaySupported()`, `inline3dOcclusionByDrawOrder()`
+  - the `TileHandle`: `remove`, `exclude`, `unexclude`, `setViewRig`
+  - `inline3DAvailable()`, `inline3dOverlaySupported()`, `inline3dOcclusionByDrawOrder()`,
+    `inline3dViewRigSupported()`
+  - the **`XRViewRigInit` descriptor**: the two `type`s and the meaning, units and ranges of every
+    field. Additions to it arrive as new optional fields, never as a changed meaning for an
+    existing one, and an out-of-range value is clamped by the runtime rather than rejected.
 - `@displayxr/inline3d/three`
-  - `EyeCamera` (`.camera`, `.setFromView`), `EdgeFeather` (`.render`)
+  - `EyeCamera` (`.camera`, `.setFromView`, `.setFromMatrices`, `.setLocalFromView`,
+    `.setLocalFromMatrices`), `EdgeFeather` (`.render`)
+  - `cameraRigFromCamera(THREE, camera, opts?)`, `displayRig(opts?)`
 - The declarative `data-inline3d-overlay` attribute contract.
 - The **one buffer contract**: a weaved window is a `<canvas>` whose backing buffer holds
   side-by-side stereo (left eye left half, right eye right half); its CSS box is the shape the
@@ -116,8 +122,14 @@ expose `XRDisplayLayer.excludeElement`; where absent it silently no-ops. A brows
 compositor path occludes tiles with 2D **by draw order**, with nothing declared, and the same
 calls no-op there too.
 
+**View rigs** need a browser exposing `XRDisplayLayer.setViewRig`. Where it is absent the rig is
+ignored, `setViewRig()` warns once and returns `false`, and the window weaves on a display rig —
+`virtualDisplayHeight` if the page named one alongside the rig, the browser's default otherwise.
+So a camera-rig page still runs there; it is framed by a number rather than by its camera.
+
 Query all of this at runtime — `inline3DAvailable()`, `inline3dOverlaySupported()`,
-`inline3dOcclusionByDrawOrder()` — and never by sniffing a version or user-agent string. Each
+`inline3dOcclusionByDrawOrder()`, `inline3dViewRigSupported()` — and never by sniffing a version or
+user-agent string. Each
 reads a capability the browser exposes; version sniffing is not a supported way to detect any
 inline-3D feature, and a page pinned to one SDK release will outlive whatever it inferred. Note
 in particular that `excludeElement`'s *presence* is not a generation test: the Phase-2 change is
