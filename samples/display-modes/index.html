@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — display modes (what the panel is, and what you may ask of it)</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:920px;margin:0 auto;padding:32px 20px 72px}
+  a{color:#5aa8ff;text-decoration:none}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.5px}
+  .lede{opacity:.72;margin:0 0 16px;max-width:74ch}
+  .status{font:13px/1.5 system-ui;padding:9px 13px;border-radius:8px;margin:0 0 20px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+
+  /* The stage wraps the canvas so the on-tile badge below is a SIBLING inside the canvas's
+     container — that is where the SDK's data-inline3d-overlay scan looks. */
+  #stage{position:relative;width:100%;max-width:800px;margin:0 auto}
+  /* The canvas itself is VISUALLY BARE. The weave takes the element's rect as a side-by-side
+     pair and splits it down the middle, so any spatially-varying CSS here — border, radius,
+     shadow — would be composited into that pair and then halved: each eye would get one edge
+     and two of the four corners, stretched 2x by the un-squeeze. */
+  #tile{display:block;width:100%;aspect-ratio:16/9}
+  /* On-tile 2D badge. data-inline3d-overlay is the whole contract — the SDK auto-excludes
+     marked descendants of the canvas's container while the window is woven, so this reads as
+     crisp 2D over the weave instead of being interlaced with it. Near-solid on purpose. */
+  #badge{position:absolute;left:12px;top:12px;padding:6px 10px;border-radius:8px;
+         background:#0b0c12ee;border:1px solid #ffffff26;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+         white-space:pre;pointer-events:none}
+  #badge b{color:#7ee2a4;font-weight:600}
+
+  .row{max-width:800px;margin:14px auto 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button{font:13px system-ui;padding:7px 13px;border-radius:8px;border:1px solid #ffffff26;
+         background:#ffffff10;color:#e8e8ea;cursor:pointer}
+  button:hover:not(:disabled){background:#ffffff1c}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{border-color:#24a05a88;background:#134e2a44;color:#9fe9bd}
+
+  .card{max-width:800px;margin:18px auto 0;background:#ffffff08;border:1px solid #ffffff14;
+        border-radius:10px;padding:14px 16px}
+  .card h2{font-size:14px;margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase;opacity:.6}
+  dl.info{margin:0;display:grid;grid-template-columns:auto 1fr;gap:4px 18px;
+          font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  dl.info dt{opacity:.6}
+  dl.info dd{margin:0;font-variant-numeric:tabular-nums}
+  /* A wide table must scroll inside its own box, never the page. */
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  th,td{text-align:right;padding:5px 8px;border-bottom:1px solid #ffffff12;white-space:nowrap}
+  th{opacity:.55;font-weight:500;text-align:right}
+  th:nth-child(2),td:nth-child(2){text-align:left}
+  tr.active{background:#134e2a33}
+  tr.active td:nth-child(2)::after{content:' — active';color:#7ee2a4}
+  /* viewCount != 2: shown, because it is what the panel can do, and greyed, because this
+     browser renders exactly two views and can never fill it. */
+  tr.blocked{opacity:.42}
+  tr.blocked td{font-style:italic}
+  .why{font-size:11px;opacity:.8;font-style:normal}
+  #log{margin:0;max-height:220px;overflow:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+  #log div{border-bottom:1px solid #ffffff0d;padding:2px 0}
+  #log .ev{color:#7ee2a4}
+  #log .err{color:#fca5a5}
+  #log .req{color:#93c5fd}
+  .cols{display:flex;gap:22px;flex-wrap:wrap;margin-top:28px}
+  .cols div{flex:1;min-width:260px}
+  .cols h2{font-size:16px;margin:0 0 4px;text-transform:none;letter-spacing:0;opacity:1}
+  p.small{font-size:14px;opacity:.75;margin:0 0 10px}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+  footer{margin-top:34px;font-size:13px;opacity:.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Display modes</h1>
+  <p class="lede">Every other sample takes the display as it finds it. This one asks it questions —
+     how big is the panel, in metres and in pixels, and what rendering modes can the runtime put it
+     in — and then asks it to change: a different rendering mode, or just the
+     <strong>lens</strong>, flipped between glasses-free 3D and flat 2D while the page carries on
+     submitting exactly the same stereo frames.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <div id="stage">
+    <canvas id="tile"></canvas>
+    <div id="badge" data-inline3d-overlay>lens <b>3d</b> · rig stereo</div>
+  </div>
+
+  <div class="row">
+    <button id="lens" class="primary" disabled>Go 2D (lens + rig)</button>
+    <button id="lensOnly" disabled>Lens only → 2d</button>
+    <button id="refresh" disabled>Re-read modes</button>
+  </div>
+
+  <div class="card">
+    <h2>getDisplayInfo()</h2>
+    <dl class="info" id="info"><dt>—</dt><dd>not read yet</dd></dl>
+  </div>
+
+  <div class="card">
+    <h2>getRenderingModes()</h2>
+    <div class="scroll"><table id="modes"><tbody><tr><td>not read yet</td></tr></tbody></table></div>
+  </div>
+
+  <div class="card">
+    <h2>session events</h2>
+    <div id="log"><div>waiting…</div></div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>Why “go 2D” is two calls, not one</h2>
+      <p class="small"><code>requestDisplayMode('2d')</code> moves the <em>lens</em> and nothing
+         else. The page keeps rendering stereo and the runtime keeps weaving it, so what the flat
+         panel then shows is the woven atlas — two slightly different images averaged into one,
+         i.e. blurry. The sharp 2D is lens-flat <em>and</em> rig-flat, so
+         <code>setStereoEnabled(false)</code> does both: it asks for the 2D lens and zeroes the
+         view rig's <code>ipdFactor</code>/<code>parallaxFactor</code> so both eyes render from one
+         place. <strong>Lens only</strong> above is the wrong half on purpose — press it to see
+         what the composite is protecting you from.</p>
+    </div>
+    <div>
+      <h2>Two views, and the advisory scales</h2>
+      <p class="small">The mode list is the <em>display's</em>, not the browser's. There is no view
+         synthesis anywhere in this stack, so the browser renders exactly two views and a mode with
+         <code>viewCount ≠ 2</code> is listed (it is real, the panel can do it) but greyed —
+         <code>requestRenderingMode</code> refuses it with a <code>TypeError</code>.</p>
+      <p class="small"><code>viewScaleX/Y</code> and <code>recommendedViewScaleX/Y</code> are
+         <strong>advisory</strong>: the browser cannot resize your canvas. A page honours them by
+         sizing its own backing store — which is what this sample does on every
+         <code>renderingmodechange</code>.</p>
+    </div>
+  </div>
+
+  <footer>← <a href="../../">All samples</a> ·
+     <a href="../camera-rig/">Camera rig</a> ·
+     <a href="../../docs/authoring-inline-3d.md">Authoring guide</a> ·
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a></footer>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

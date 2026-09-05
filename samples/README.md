@@ -11,6 +11,7 @@ repo's root [`index.html`](../index.html), published at
 |---|---|
 | [`hello-cube/`](hello-cube/) | The minimum complete page: one rotating three.js cube in a woven canvas. |
 | [`camera-rig/`](camera-rig/) | The **camera rig**: the page sends its own orbiting camera each frame instead of a virtual-display height. Convergence, comfort, the `attach` pattern, and <kbd>C</kbd> to A/B it against a display rig. |
+| [`display-modes/`](display-modes/) | Reading the **display** and changing it: `getDisplayInfo()`, the `getRenderingModes()` table (non-2-view modes listed but greyed &mdash; the browser is fixed at two), `requestRenderingMode()`, and a 2D/3D lens toggle via `setStereoEnabled()` (lens **and** rig, because the lens alone shows the woven atlas flat). Every action logs a greppable `[display-modes]` line. |
 | [`windows/`](windows/) | Mixed producers — still photos, a live side-by-side video and a real-time three.js scene, all on one session. |
 | [`wall-3d/`](wall-3d/) | A long lazy-loading scrolling wall: layers created as tiles near the viewport, closed as they leave. |
 | [`demo-gallery/`](demo-gallery/) | A grid of the DisplayXR demo logos woven as tiles — the compact multi-element weave. |

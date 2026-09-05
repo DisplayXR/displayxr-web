@@ -42,6 +42,27 @@ closes it when it scrolls away — so a long wall only pays for what's on screen
   the window still weaves). Gate with **`inline3dViewRigSupported()`**.
   [Full section](../docs/authoring-inline-3d.md#view-rigs-display-vs-camera) — including the
   one-frame latency caveat and the **attach** pattern that removes it.
+- **`handle.getDisplayInfo()` / `handle.getRenderingModes()`** — what the panel *is* (physical
+  size, pixel size, the per-view scale it recommends; `null` where there is no glasses-free
+  display) and every rendering mode the runtime can put it in. Both promise-returning. The mode
+  list is the **display's**, not the browser's: the browser renders exactly two views, so a mode
+  with `viewCount !== 2` is reported `isRequestable:false`. All the scale fields are **advisory** —
+  the browser cannot resize your canvas, so a page honours them by sizing its own backing store.
+- **`handle.requestRenderingMode(i)`** — switch the display to mode `i`. Rejects `TypeError` for a
+  non-2-view mode (the browser raises that one synchronously; the SDK hands it back as a rejection
+  so one `.catch()` covers everything) and `NotSupportedError` when the runtime refused.
+- **`handle.requestDisplayMode('2d'|'3d')`** — flip the **lens** and nothing else. The page keeps
+  submitting stereo and the runtime keeps weaving it, so a flat lens shows the woven atlas flat,
+  which is a blurry double image. Almost always you want:
+- **`handle.setStereoEnabled(bool)`** — the composite. `false` asks the lens for `'2d'` **and**
+  zeroes this window's rig (`ipdFactor`/`parallaxFactor` -> 0); `true` restores both. The
+  flattening is a *copy* pushed at the layer, never a write into your descriptor, so the restore is
+  exactly the rig you last set — and it holds through a per-frame `setViewRig` loop and a lazy tile
+  rebuilding its layer.
+- **`handle.onDisplayModeChange(cb)`** — both session events (`renderingmodechange`,
+  `hardwaredisplaystatechange`) through one callback `{type, detail}`; returns an unsubscribe.
+  Gate the whole group with **`inline3dDisplayModesSupported()`** (true only when all four layer
+  methods are present). Example: [`../samples/display-modes/`](../samples/display-modes/).
 - **`handle.stats()`** — `{ frames, monoFrames }` for a scene window; `monoFrames` counts the
   frames that arrived with fewer than two views.
 - **`wall.close()`** — end the session and release all windows.

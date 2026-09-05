@@ -5,6 +5,61 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Added
+
+- **Display modes — the page can read what the panel IS, and ask it to change.** Until now a page
+  could describe its own framing (a view rig) but knew nothing about the display it was framing
+  *for*: not its size in metres, not its pixel count, not which of the runtime's rendering modes it
+  was in, and it had no way to ask for a different one. Four passthroughs on the tile handle close
+  that: **`getDisplayInfo()`** (physical size, pixel size, recommended view scale; `null` where
+  there is no glasses-free display), **`getRenderingModes()`** (every mode the runtime can put the
+  display in — view count, tile grid, per-view pixels, `hardwareDisplay3D`, `isActive`,
+  `isRequestable`), **`requestRenderingMode(i)`** and **`requestDisplayMode('2d'|'3d')`**. Gate the
+  group with **`inline3dDisplayModesSupported()`**, which requires all four methods on
+  `XRDisplayLayer.prototype` — a browser shipping half the set is one mid-implementation, and
+  calling it supported would surface as a `not a function` inside a click handler.
+  *(core tier — additive)*
+
+- **`handle.setStereoEnabled(bool)` — the two halves of "go 2D", moved together.**
+  `requestDisplayMode('2d')` flips the **lens** and nothing else: the page keeps submitting stereo,
+  the runtime keeps weaving it, and the flat panel then shows the woven *atlas* — two slightly
+  different images averaged into one, i.e. blurry. Sharp 2D needs the page to fade its own stereo
+  out as well, so `setStereoEnabled(false)` asks for the 2D lens **and** zeroes this window's rig
+  (`ipdFactor`/`parallaxFactor` -> 0); `true` puts both back, lens first.
+
+  **The restore is exact, and that is a design property, not luck.** The flattening is a *copy*
+  pushed at the layer — a page driving a rig every frame reuses one descriptor object, so zeroing
+  it in place would write the flattening into the page's own state and the restore would restore
+  0. So the window keeps what the page asked for, untouched, and the flat rig is derived on the way
+  out. That latch also means a per-frame `setViewRig` loop cannot walk the page out of 2D, a lazy
+  tile that scrolls away and rebuilds its layer comes back flat rather than in 3D, and a window
+  that never set a rig at all is flattened (and restored) via the exact rig equivalent of its
+  `virtualDisplayHeight`. *(core tier — additive)*
+
+- **`handle.onDisplayModeChange(cb)`** — the two events, which fire on the **XRSession** and not on
+  the layer, through one callback `{type, detail}`: `renderingmodechange` after a mode switch takes
+  effect, `hardwaredisplaystatechange` after the lens flips. Returns an unsubscribe function; inert
+  on a browser without the API. *(core tier — additive)*
+
+- **[`samples/display-modes/`](samples/display-modes/)** — the whole surface on one page: the
+  `getDisplayInfo()` fields, the `getRenderingModes()` table with the active row marked and the
+  non-2-view rows greyed as *not requestable in the browser (fixed 2-view)*, a per-mode request
+  button, the `setStereoEnabled` toggle beside a deliberately-wrong **lens only** button (so the
+  blurry half is visible rather than only described), and a live event log. Every action prints a
+  greppable `[display-modes] …` line so a harness can drive it from the console.
+
+### Notes
+
+- **Advisory scales.** `viewScaleX/Y` and `recommendedViewScaleX/Y` are what the runtime would like
+  the per-view resolution to be. The browser cannot resize a page's canvas, so nothing applies them
+  for you — a page honours them by sizing its own backing store. Ignoring them costs sharpness or
+  fill rate, never correctness.
+- **The browser is fixed at two views.** No view synthesis exists anywhere in this stack, so a mode
+  with `viewCount !== 2` is listed (the panel really can do it) and refused. Show those rows;
+  mark them.
+
 ## 1.3.0 — 2026-09-04
 
 ### Added

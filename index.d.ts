@@ -52,6 +52,60 @@ export interface XRViewRigInit {
   metersToVirtual?: number;
 }
 
+/** The hardware LENS state — what {@link TileHandle.requestDisplayMode} switches. */
+export type XRHardwareDisplayMode = '2d' | '3d';
+
+/**
+ * What the glasses-free display physically is. Resolved by {@link TileHandle.getDisplayInfo};
+ * `null` there means the machine has no such display.
+ *
+ * `recommendedViewScaleX/Y` are **advisory**. The browser cannot resize a page's canvas, so
+ * nothing applies them for you — a page honours them by sizing its own backing store. Ignoring
+ * them costs sharpness or fill rate, never correctness.
+ */
+export interface XRDisplayInfo {
+  displayWidthMeters: number;
+  displayHeightMeters: number;
+  displayPixelWidth: number;
+  displayPixelHeight: number;
+  recommendedViewScaleX: number;
+  recommendedViewScaleY: number;
+}
+
+/**
+ * One rendering mode the DISPLAY can be put in, as reported by the runtime.
+ *
+ * The list is the display's, not the browser's. The DisplayXR Browser renders exactly **two**
+ * views — no view synthesis exists anywhere in the stack — so a mode with `viewCount !== 2` is
+ * reported with `isRequestable: false` and {@link TileHandle.requestRenderingMode} refuses it.
+ * Show such rows (they are what the panel can do) but mark them unavailable.
+ */
+export interface XRDisplayRenderingMode {
+  modeIndex: number;
+  modeName: string;
+  viewCount: number;
+  /** Per-view render scale the runtime recommends for this mode — advisory, like the display's. */
+  viewScaleX: number;
+  viewScaleY: number;
+  tileColumns: number;
+  tileRows: number;
+  viewWidthPixels: number;
+  viewHeightPixels: number;
+  /** True for a glasses-free 3D mode; false for a flat one. */
+  hardwareDisplay3D: boolean;
+  isActive: boolean;
+  /** False when the browser cannot drive it — in practice, `viewCount !== 2`. */
+  isRequestable: boolean;
+}
+
+/** What {@link TileHandle.onDisplayModeChange} hands its callback. */
+export interface DisplayModeChange {
+  /** `'renderingmodechange'` or `'hardwaredisplaystatechange'`. */
+  type: string;
+  /** The event's own `detail` if it carries one, otherwise the event object itself. */
+  detail: unknown;
+}
+
 /** Extra options for {@link Inline3D.addScene}. */
 export interface SceneOptions extends TileOptions {
   /**
@@ -115,8 +169,59 @@ export interface TileHandle {
    * identity-posed camera rig and parent your eye cameras under the app camera
    * (`cameraRigFromCamera(THREE, cam, { attach: true })` + `EyeCamera.setLocalFromView`), so the
    * scene graph supplies this frame's world pose with no lag at all.
+   *
+   * While {@link TileHandle.setStereoEnabled}`(false)` is in force the rig is stored **as given**
+   * and pushed **flat** (a copy with `ipdFactor`/`parallaxFactor` at 0), so a page driving a rig
+   * every frame cannot walk out of 2D and `setStereoEnabled(true)` restores exactly this rig.
    */
   setViewRig(rig: XRViewRigInit): boolean;
+  /**
+   * The panel this window weaves on, or `null` where there is no glasses-free display.
+   *
+   * Rejects with an `Error` on a browser without the display-mode API
+   * ({@link inline3dDisplayModesSupported}) or while this window has no live layer (lazy mode,
+   * tile off screen).
+   */
+  getDisplayInfo(): Promise<XRDisplayInfo | null>;
+  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
+  /**
+   * Ask the runtime to switch the display to `modeIndex`.
+   *
+   * Rejects with a `TypeError` for a mode whose `viewCount !== 2` (the browser is fixed at two
+   * views) — the browser raises that one synchronously, and this passthrough turns it into a
+   * rejection so one `.catch()` covers every failure — and with a `NotSupportedError`
+   * `DOMException` when the runtime refused. Success is signalled by the session's
+   * `renderingmodechange` event, not by this promise.
+   */
+  requestRenderingMode(modeIndex: number): Promise<void>;
+  /**
+   * Flip the display's LENS only. The page keeps submitting the same stereo frames and the
+   * runtime keeps weaving them; nothing about rendering changes.
+   *
+   * Which is the trap: with the lens at `'2d'` the panel shows the woven atlas FLAT — a blurry
+   * double image — unless the page also fades its stereo to zero. Prefer
+   * {@link TileHandle.setStereoEnabled}, which does both halves. Rejects with a
+   * `NotSupportedError` `DOMException` when refused. Success fires `hardwaredisplaystatechange`.
+   */
+  requestDisplayMode(mode: XRHardwareDisplayMode): Promise<void>;
+  /**
+   * Go flat, or come back — the lens and the rig moved together, which is the only combination
+   * that looks right.
+   *
+   * `false` zeroes this window's `ipdFactor`/`parallaxFactor` **and** asks the lens for `'2d'`;
+   * `true` restores both. The flattening is a copy pushed at the layer, never a write into your
+   * descriptor, so the restore is literally the rig you last set — and it survives a per-frame
+   * `setViewRig` loop, a lazy tile rebuilding its layer, and a window that never set a rig at all.
+   * Resolves to the state now in force.
+   */
+  setStereoEnabled(enabled: boolean): Promise<boolean>;
+  /**
+   * Subscribe to both display events the **session** fires — `renderingmodechange` and
+   * `hardwaredisplaystatechange` — with one callback. Returns an unsubscribe function; inert
+   * (a no-op unsubscribe) on a browser without the API.
+   */
+  onDisplayModeChange(cb: (e: DisplayModeChange) => void): () => void;
   /**
    * Per-window frame counters, for diagnosing the load-induced mono fallback.
    *
@@ -272,6 +377,19 @@ export function inline3dOcclusionByDrawOrder(): boolean;
  */
 export function inline3dViewRigSupported(): boolean;
 
+/**
+ * True when this browser exposes the DISPLAY-MODE API — {@link TileHandle.getDisplayInfo},
+ * {@link TileHandle.getRenderingModes}, {@link TileHandle.requestRenderingMode} and
+ * {@link TileHandle.requestDisplayMode}. Sync + cheap; implies {@link inline3DAvailable}.
+ *
+ * Reads a capability (all four methods present on `XRDisplayLayer.prototype`), never a version or
+ * UA string, and demands all four: a browser shipping half the set is one mid-implementation.
+ * Everything the API drives is optional enhancement, so branch on this only to decide whether to
+ * show display controls — the handle methods reject with a clear `Error` rather than throwing at
+ * import or create time.
+ */
+export function inline3dDisplayModesSupported(): boolean;
+
 /** Open the page's inline-3D session and return a manager you add windows to. */
 export function createInline3D(
   opts?: CreateInline3DOptions,
@@ -316,5 +434,15 @@ export interface XRDisplayLayer {
    * all on the browser that has it.
    */
   setViewRig?(rig: XRViewRigInit): void;
+  /**
+   * The display-mode API. All four optional for the same reason as `setViewRig`: their presence
+   * on the prototype IS the capability signal ({@link inline3dDisplayModesSupported}), and the
+   * SDK demands all four before treating the browser as supporting any of them.
+   */
+  getDisplayInfo?(): Promise<XRDisplayInfo | null>;
+  getRenderingModes?(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
+  /** Throws `TypeError` **synchronously** when that mode's `viewCount !== 2`. */
+  requestRenderingMode?(modeIndex: number): Promise<void>;
+  requestDisplayMode?(mode: XRHardwareDisplayMode): Promise<void>;
   close(): void;
 }
