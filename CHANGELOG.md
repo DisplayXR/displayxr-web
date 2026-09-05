@@ -36,7 +36,14 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   out. That latch also means a per-frame `setViewRig` loop cannot walk the page out of 2D, a lazy
   tile that scrolls away and rebuilds its layer comes back flat rather than in 3D, and a window
   that never set a rig at all is flattened (and restored) via the exact rig equivalent of its
-  `virtualDisplayHeight`. *(core tier — additive)*
+  `virtualDisplayHeight`.
+
+  **A refused request is a no-op, in both directions.** Only the lens half can be declined
+  (`NotSupportedError` — no live session, a workspace controller holding the entry point, a runtime
+  error), and by then the rig half has already moved. So each direction puts the rig back before
+  rethrowing: the caller gets its rejection and the window is left exactly as it was, never
+  half-switched — mono under a 3D lens, or stereo under a flat one, which is the one state a page
+  cannot unwind without knowing the method's internals. *(core tier — additive)*
 
 - **`handle.onDisplayModeChange(cb)`** — the two events, which fire on the **XRSession** and not on
   the layer, through one callback `{type, detail}`: `renderingmodechange` after a mode switch takes

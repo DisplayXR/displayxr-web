@@ -58,7 +58,8 @@ closes it when it scrolls away — so a long wall only pays for what's on screen
   zeroes this window's rig (`ipdFactor`/`parallaxFactor` -> 0); `true` restores both. The
   flattening is a *copy* pushed at the layer, never a write into your descriptor, so the restore is
   exactly the rig you last set — and it holds through a per-frame `setViewRig` loop and a lazy tile
-  rebuilding its layer.
+  rebuilding its layer. A **refused** request is a no-op in both directions: the rig goes back
+  before the rejection is rethrown, so the window is never left half-switched.
 - **`handle.onDisplayModeChange(cb)`** — both session events (`renderingmodechange`,
   `hardwaredisplaystatechange`) through one callback `{type, detail}`; returns an unsubscribe.
   Gate the whole group with **`inline3dDisplayModesSupported()`** (true only when all four layer

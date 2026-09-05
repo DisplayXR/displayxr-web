@@ -214,6 +214,11 @@ export interface TileHandle {
    * descriptor, so the restore is literally the rig you last set — and it survives a per-frame
    * `setViewRig` loop, a lazy tile rebuilding its layer, and a window that never set a rig at all.
    * Resolves to the state now in force.
+   *
+   * **A refused request is a no-op, in both directions.** Only the lens half can be declined
+   * (`NotSupportedError`), and by then the rig half has moved — so either direction puts the rig
+   * back before rethrowing. You get the rejection; the window is never left half-switched (mono
+   * under a 3D lens, or stereo under a flat one).
    */
   setStereoEnabled(enabled: boolean): Promise<boolean>;
   /**

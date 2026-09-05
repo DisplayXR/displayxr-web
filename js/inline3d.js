@@ -811,6 +811,13 @@ class Inline3D {
        * values in force at the moment of the switch are also kept on the window
        * (`win.stereoSaved`) for diagnostics.
        *
+       * A REFUSED REQUEST IS A NO-OP, IN BOTH DIRECTIONS. The lens half is the one that can be
+       * declined (no live session, a workspace controller holding the entry point, a runtime
+       * error — all `NotSupportedError`), and by then the rig half has already moved. So either
+       * direction puts the rig back before rethrowing: you get your rejection, and the window is
+       * left exactly as it was rather than half-switched — mono under a 3D lens, or stereo under
+       * a flat one. Nothing is left for the caller to unwind.
+       *
        * Needs a rig-capable browser to do the rig half; on one without it the lens still flips
        * and `setViewRig`'s once-only warning explains the rest. Resolves to the state now in
        * force. Rejects only if the lens request itself was refused.
@@ -950,6 +957,13 @@ class Inline3D {
     //                 then restore the rig.
     // The reverse of either shows a stereo atlas under a flat lens, which is the blurry double
     // image this method exists to avoid.
+    //
+    // A REFUSED REQUEST IS A NO-OP, IN BOTH DIRECTIONS. The lens is the half that can be
+    // declined (no live session, a workspace controller holding the entry point, a runtime
+    // error — all of which come back as NotSupportedError), and the rig is the half that
+    // already moved by then. So each direction puts the rig back and rethrows: the caller gets
+    // its rejection, and the page is left exactly as it was rather than half-switched, which is
+    // a state nobody can recover from without knowing this method's internals.
     win.stereoEnabled = on;
     if (!on) {
       if (!win.viewRig) win.stereoSynthRig = true; // see _effectiveViewRig
@@ -961,18 +975,34 @@ class Inline3D {
         parallaxFactor: effective.parallaxFactor,
       };
       this._pushViewRig(win);
-      await this._layerCall(win, 'requestDisplayMode', 'requestDisplayMode()', ['2d']);
+      try {
+        await this._layerCall(win, 'requestDisplayMode', 'requestDisplayMode()', ['2d']);
+      } catch (e) {
+        win.stereoEnabled = true;
+        win.stereoSaved = null;
+        // `stereoSynthRig` deliberately does NOT roll back. It is not part of the state the
+        // caller asked to change — it records that this window's LAYER has been handed an
+        // explicit rig at least once, and that already happened in the _pushViewRig above.
+        // Clearing it would make _effectiveViewRig answer null for a window with no page rig,
+        // _pushViewRig would send null at a layer currently holding the FLAT descriptor, and
+        // the rollback would leave the panel mono — precisely the half-switched state this
+        // catch exists to prevent. Leaving it true costs nothing observable: the rig it then
+        // sends is the exact equivalent of the virtualDisplayHeight the layer was built with.
+        this._pushViewRig(win); // stereoEnabled is true again ⇒ the un-flattened rig
+        throw e;
+      }
       return false;
     }
     try {
       await this._layerCall(win, 'requestDisplayMode', 'requestDisplayMode()', ['3d']);
-    } finally {
-      // The rig goes back even if the lens request was refused: leaving a page latched flat
-      // because a promise rejected is the one outcome nobody can recover from without knowing
-      // this method's internals.
-      this._pushViewRig(win);
-      win.stereoSaved = null;
+    } catch (e) {
+      win.stereoEnabled = false;
+      this._pushViewRig(win); // stereoEnabled is false again ⇒ the flattened rig
+      throw e;
     }
+    // Only a SUCCESSFUL return to 3D clears the saved factors and restores the rig.
+    this._pushViewRig(win);
+    win.stereoSaved = null;
     return true;
   }
 

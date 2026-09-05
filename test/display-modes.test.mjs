@@ -73,7 +73,9 @@ const MODES = [
  *   `displayModes:false` builds a browser that predates the API entirely.
  *   `partial:true`       builds one mid-implementation (three of the four methods) — the case
  *                        the all-four probe exists to refuse.
- *   `refuseLens:true`    makes requestDisplayMode reject, to check the rig still comes back.
+ *   `refuseLens`         which lens requests to reject: true (all), or '2d' / '3d' to refuse
+ *                        one direction — the shape the no-op rollback tests need, since a
+ *                        refusal in one direction must leave the OTHER one reachable.
  */
 function makeLayerClass({ viewRig = true, displayModes = true, partial = false, refuseLens = false } = {}) {
   const created = [];
@@ -118,7 +120,8 @@ function makeLayerClass({ viewRig = true, displayModes = true, partial = false, 
     if (!partial) {
       P.requestDisplayMode = function requestDisplayMode(m) {
         this.lensRequests.push(m);
-        return refuseLens ? Promise.reject(new Error('NotSupportedError')) : Promise.resolve();
+        const refuse = refuseLens === true || refuseLens === m;
+        return refuse ? Promise.reject(new Error('NotSupportedError')) : Promise.resolve();
       };
     }
   }
@@ -386,14 +389,83 @@ test('a lazy tile that rebuilds its layer while flat comes back FLAT, not in 3D'
   wall.close();
 });
 
-test('a refused lens request still puts the rig back — nobody can be left latched flat', async () => {
-  const e = installEnv({ refuseLens: true });
+// A REFUSED REQUEST IS A NO-OP, IN BOTH DIRECTIONS. The lens is the half that can be declined
+// (no live session, a workspace controller holding the entry point, a runtime error — all
+// NotSupportedError) and the rig is the half that has already moved by then. Half-switched is the
+// one state a caller cannot unwind without knowing this method's internals, so neither direction
+// is allowed to leave one behind. These read `wall._windows` on purpose: the guarantee is about
+// window state, and asserting only the visible rig would pass on a window whose latch had silently
+// stuck.
+const winOf = (wall, canvas) => wall._windows.get(canvas);
+
+test('a refused GOING-FLAT request rolls back completely — rig, latch and saved factors', async () => {
+  const e = installEnv({ refuseLens: '2d' });
   const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+  const canvas = makeCanvas();
+  const handle = wall.addScene(canvas, () => {});
   handle.setViewRig(CAM_RIG);
-  await quietInfo(() => handle.setStereoEnabled(false).catch(() => {}));
+  const win = winOf(wall, canvas);
+  const synthBefore = win.stereoSynthRig;
+
+  await quietInfo(() => assert.rejects(() => handle.setStereoEnabled(false)));
+
+  const layer = e.created[0];
+  assert.equal(win.stereoEnabled, true, 'the latch must not survive a refused request');
+  assert.equal(win.stereoSaved, null);
+  assert.equal(win.stereoSynthRig, synthBefore, 'this window has its own rig — nothing synthesised');
+  assert.deepEqual(layer.rigs.at(-1), CAM_RIG, 'the LAST rig at the layer is the un-flattened one');
+  assert.deepEqual(layer.lensRequests, ['2d'], 'the request was made, and it was refused');
+
+  // And the window is genuinely usable afterwards, not merely reading as usable.
+  handle.setViewRig({ ...CAM_RIG, convergenceDiopters: 7 });
+  assert.equal(layer.rigs.at(-1).ipdFactor, 2, 'a subsequent per-frame rig is not flattened');
+  wall.close();
+});
+
+test('a refused GOING-FLAT request rolls back for a window with NO rig of its own', async () => {
+  const e = installEnv({ refuseLens: '2d' });
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  const canvas = makeCanvas();
+  const handle = wall.addScene(canvas, () => {}, { virtualDisplayHeight: 0.4 });
+  const win = winOf(wall, canvas);
+
+  await quietInfo(() => assert.rejects(() => handle.setStereoEnabled(false)));
+
+  const layer = e.created[0];
+  assert.equal(win.stereoEnabled, true);
+  assert.equal(win.stereoSaved, null);
+  // The rollback is judged by what the LAYER is holding, and here that is the load-bearing part:
+  // a flat rig was already pushed, so the rollback has to send the un-flat descriptor explicitly.
+  const back = layer.rigs.at(-1);
+  assert.equal(back.type, 'display');
+  assert.equal(back.virtualDisplayHeight, 0.4);
+  assert.equal(back.ipdFactor, 1, 'the un-flattened equivalent of the virtualDisplayHeight');
+  assert.equal(back.parallaxFactor, 1);
+  // stereoSynthRig stays TRUE and is deliberately not rolled back: it records that the LAYER has
+  // been handed an explicit rig, which it has. Clearing it would make _effectiveViewRig answer
+  // null, _pushViewRig would send null at a layer holding the flat descriptor, and the rollback
+  // would leave the panel mono — the exact half-switched state it exists to prevent.
+  assert.equal(win.stereoSynthRig, true);
+  wall.close();
+});
+
+test('a refused COMING-BACK request leaves the window flat, not half-switched', async () => {
+  const e = installEnv({ refuseLens: '3d' });
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  const canvas = makeCanvas();
+  const handle = wall.addScene(canvas, () => {});
+  handle.setViewRig(CAM_RIG);
+  const win = winOf(wall, canvas);
+
+  await quietInfo(() => handle.setStereoEnabled(false)); // '2d' is allowed here
+  assert.equal(win.stereoEnabled, false);
+
   await assert.rejects(() => handle.setStereoEnabled(true));
-  assert.deepEqual(e.created[0].rigs.at(-1), CAM_RIG);
+  const layer = e.created[0];
+  assert.equal(win.stereoEnabled, false, 'refused ⇒ still flat, not stereo under a flat lens');
+  assert.equal(layer.rigs.at(-1).ipdFactor, 0, 'the rig goes back to FLAT, matching the lens');
+  assert.notEqual(win.stereoSaved, null, 'still flat ⇒ the saved factors are still relevant');
+  assert.deepEqual(layer.lensRequests, ['2d', '3d']);
   wall.close();
 });
 
