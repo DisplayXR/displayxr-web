@@ -5,6 +5,19 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.5.1 — 2026-09-06
+
+### Fixed
+
+- **Undock: `ended` now means the viewer exited.** The browser contract (browser-pvt#25) resolves
+  `layer.undock()` on a successful LAUNCH and reports the viewer's exit separately as the XRSession's
+  `undockend` event; 1.4.0/1.5.0 derived `ended` from the launch promise, so it resolved a frame after
+  the window opened. The helper now arms an `undockend` listener before launching and resolves
+  `ended` on it; the browser's DOMException names (NotAllowedError, NotSupportedError,
+  SecurityError, InvalidStateError, OperationError) map onto the four contract names. The
+  fallback path is unchanged (`detached === true`, `ended` immediate).
+- README: vendoring note — `inline3d-mode-switch.js` is a static dependency of `inline3d.js`.
+
 ## 1.5.0 — 2026-09-06
 
 ### Added

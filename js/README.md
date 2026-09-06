@@ -135,8 +135,11 @@ Lift a window's asset out of the page into a floating, transparent native viewer
 - **`await undock(element, opts)`** (from `inline3d.js` or `inline3d-undock.js`) —
   `opts = {src, type:'model'|'splat', env?, pose?, margin?, title?}`. `src` must be absolute
   https, or http on loopback. **Call it synchronously inside the click** — both paths need the
-  transient activation. Resolves to `{ended: Promise<void>, viewer, detached}`; rejects with an
-  Error named `not-installed` | `src-not-allowed` | `no-activation` | `busy`.
+  transient activation. Resolves once the viewer has LAUNCHED (the API path resolves as soon as
+  the viewer process is spawned and never waits for it) to `{ended: Promise<void>, viewer,
+  detached}`; `ended` resolves when the viewer exits, which the API path hears as the
+  XRSession's `undockend` event. Rejects with an Error named `not-installed` |
+  `src-not-allowed` | `no-activation` | `busy` (the browser's DOMException names are mapped).
 - Where the layer API is absent it falls back to the `displayxr-view:` OS protocol (a hidden-iframe
   navigation, Chrome's one-time "Open DisplayXR…?" prompt). That path is fire-and-forget:
   `ended` resolves immediately and `detached === true`. `undockUrl(el, opts)` and
@@ -145,6 +148,12 @@ Lift a window's asset out of the page into a floating, transparent native viewer
 
 **`await startInline3D(canvas, { onFrame, referenceSpace?, virtualDisplayHeight? })`** — back-compat
 single-scene helper: `createInline3D({lazy:false})` + `addScene`. Returns `{ supported, close(), wall }`.
+
+## Vendoring
+
+`inline3d.js` statically imports `inline3d-undock.js` and (since 1.5.0) `inline3d-mode-switch.js`;
+copy all three together (plus `inline3d-three.js` if you use the three.js helpers). The npm package
+and the jsDelivr commit URLs already carry the set.
 
 ## `inline3d-three.js`
 

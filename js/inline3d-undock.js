@@ -135,9 +135,19 @@ function launchProtocol(url) {
 
 const UNDOCK_ERRORS = ['not-installed', 'src-not-allowed', 'no-activation', 'busy'];
 
+// The browser refuses with DOMException names (patch 0130); each maps onto one contract name.
+const DOM_ERROR_NAMES = {
+  NotAllowedError: 'no-activation', // no transient user activation
+  NotSupportedError: 'not-installed', // no registered viewer for this type
+  SecurityError: 'src-not-allowed', // src outside the allowlist
+  InvalidStateError: 'busy', // an undock is already live in this frame
+  OperationError: 'not-installed', // the viewer failed to launch
+};
+
 /** Give a rejection one of the four contract names, keeping the browser's own where it has one. */
 function undockError(e, fallbackName, message) {
-  const name = e && UNDOCK_ERRORS.includes(e.name) ? e.name : fallbackName;
+  const name =
+    e && UNDOCK_ERRORS.includes(e.name) ? e.name : (e && DOM_ERROR_NAMES[e.name]) || fallbackName;
   const err = new Error(message || (e && e.message) || `[inline3d] undock failed (${name}).`);
   err.name = name;
   if (e) err.cause = e;
@@ -166,8 +176,10 @@ let inFlight = false;
  * @param {number} [opts.margin]  the page's fit margin, when it overrides the default.
  * @param {string} [opts.title]
  * @returns {Promise<{ended:Promise<void>, viewer:UndockType, detached?:boolean}>}
- *   `ended` resolves when the viewer exits (fallback path: immediately, with
- *   `detached === true` — a protocol launch is fire-and-forget and the page never hears back).
+ *   Resolves once the viewer has LAUNCHED (API path: `layer.undock()` resolved, i.e. the viewer
+ *   process was spawned; it never waits for the viewer). `ended` resolves when the viewer exits -
+ *   the API path hears that as the XRSession's `undockend` event; the fallback path never hears
+ *   back, so there `ended` resolves immediately and `detached === true`.
  *   Rejects with an Error named `not-installed` | `src-not-allowed` | `no-activation` | `busy`.
  */
 export function undock(target, opts) {
@@ -184,7 +196,11 @@ export function undock(target, opts) {
   }
   if (inFlight) return Promise.reject(undockError(null, 'busy', '[inline3d] an undock is already in flight.'));
 
-  const layer = layerResolver ? layerResolver(target) : null;
+  // The resolver hands back `{layer, session}` (the session carries the `undockend` event); a bare
+  // layer is accepted too, in which case the viewer's exit is simply not observable.
+  const found = layerResolver ? layerResolver(target) : null;
+  const layer = found && typeof found === 'object' && 'layer' in found ? found.layer : found;
+  const session = found && typeof found === 'object' && 'session' in found ? found.session : null;
   const viewer = opts.type;
 
   // ── fallback: the OS protocol ──────────────────────────────────────────────────────────
@@ -211,41 +227,53 @@ export function undock(target, opts) {
   if (opts.margin !== undefined) init.margin = opts.margin;
   if (opts.title) init.title = opts.title;
 
+  // THE BROWSER CONTRACT (browser-pvt#25 / patch 0130): `layer.undock(init)` RESOLVES ON A
+  // SUCCESSFUL LAUNCH - as soon as the viewer process is spawned - and never waits for it; every
+  // refusal is a prompt rejection (NotAllowedError / NotSupportedError / SecurityError /
+  // InvalidStateError / OperationError). The viewer's exit arrives separately, as the `undockend`
+  // event on the XRSession. One live undock per frame, so the NEXT `undockend` after a
+  // successful launch is this one's - no correlation id needed. The listener is armed BEFORE the
+  // launch so a viewer that exits immediately cannot slip between the two.
+  let endedResolve = null;
+  const ended = new Promise((resolve) => {
+    if (!session || typeof session.addEventListener !== 'function') {
+      // No session to listen on: the launch still works, the exit is simply not observable -
+      // so `ended` resolves at launch (as the fallback path does) rather than holding the
+      // one-live-undock guard for ever.
+      endedResolve = resolve;
+      resolve();
+      return;
+    }
+    const onEnd = () => {
+      session.removeEventListener('undockend', onEnd);
+      resolve();
+    };
+    session.addEventListener('undockend', onEnd);
+    endedResolve = () => {
+      session.removeEventListener('undockend', onEnd);
+      resolve();
+    };
+  });
+
   let call;
   try {
     call = Promise.resolve(layer.undock(init));
   } catch (e) {
     // A synchronous throw is the same failure as a rejection; one .catch() should cover both.
+    if (endedResolve) endedResolve();
     return Promise.reject(undockError(e, 'src-not-allowed'));
   }
   inFlight = true;
-  const settled = call.finally(() => {
+  ended.then(() => {
     inFlight = false;
   });
-
-  // TWO PROMISE SHAPES, ONE ANSWER. `undock()` either rejects PROMPTLY — every refusal
-  // (not-installed / src-not-allowed / no-activation / busy) is decided before any window
-  // exists — or it stays pending until the viewer exits. A short race tells them apart without
-  // inventing an event: whatever has not rejected by then launched. The launch has already
-  // happened synchronously above, so this wait costs the user nothing.
-  const LAUNCH_MS = 150;
-  const launchProbe = settled.then(
-    () => 'launched',
+  return call.then(
+    () => ({ ended, viewer, detached: false }),
     (e) => {
+      // Refused before any window existed: nothing is in flight and nothing will end.
+      inFlight = false;
+      if (endedResolve) endedResolve();
       throw undockError(e, 'not-installed');
     }
   );
-  // The probe LOSES the race whenever the viewer stays open, and a rejection arriving after that
-  // would otherwise be an unhandled one. Marked handled here; the same rejection still reaches
-  // the caller through `ended`, which is where a late failure belongs.
-  launchProbe.catch(() => {});
-  return Promise.race([
-    launchProbe,
-    new Promise((resolve) => window.setTimeout(() => resolve('launched'), LAUNCH_MS)),
-  ]).then(() => ({
-    // A rejection AFTER the launch window is the viewer failing later, and it belongs on `ended`.
-    ended: settled.then(() => undefined),
-    viewer,
-    detached: false,
-  }));
 }

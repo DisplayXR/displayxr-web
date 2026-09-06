@@ -59,13 +59,15 @@ setUndockLayerResolver((el) => {
   // The canvas itself, then a woven canvas INSIDE the element (a card wrapping its tile), then
   // the element sitting inside a window's own container (a button in the tile's box). Anything
   // further away is not this window's rect and takes the fallback.
-  for (const win of m._windows.values()) if (win.canvas === el && win.layer) return win.layer;
+  // The session rides along: the viewer's exit is the XRSession's `undockend` event.
+  const hit = (win) => ({ layer: win.layer, session: m.session });
+  for (const win of m._windows.values()) if (win.canvas === el && win.layer) return hit(win);
   for (const win of m._windows.values()) {
-    if (win.layer && typeof el.contains === 'function' && el.contains(win.canvas)) return win.layer;
+    if (win.layer && typeof el.contains === 'function' && el.contains(win.canvas)) return hit(win);
   }
   for (const win of m._windows.values()) {
     const box = win.canvas.parentElement;
-    if (win.layer && box && typeof box.contains === 'function' && box.contains(el)) return win.layer;
+    if (win.layer && box && typeof box.contains === 'function' && box.contains(el)) return hit(win);
   }
   return null;
 });
