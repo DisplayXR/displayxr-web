@@ -217,7 +217,9 @@ const COLS = [
   ['mode', (m) => m.name ?? m.modeName],
   ['views', (m) => m.viewCount],
   ['tiles', (m) => `${m.tileColumns}×${m.tileRows}`],
-  ['view px', (m) => `${m.viewWidthPixels}×${m.viewHeightPixels}`],
+  // The runtime's per-view size for a FULL-SCREEN native app (display px × view scale). A page
+  // renders its own canvas × view scale instead — see sizeToCanvas() and the buffer log line.
+  ['view px (full screen)', (m) => `${m.viewWidthPixels}×${m.viewHeightPixels}`],
   ['view scale', (m) => `${m.viewScaleX}×${m.viewScaleY}`],
   ['hw 3D', (m) => (m.hardwareDisplay3D ? 'yes' : 'no')],
 ];
