@@ -250,6 +250,11 @@ export interface TileHandle {
    * by the session's `renderingmodechange` event, not by this promise.
    *
    * A `viewCount === 1` mode is requestable and is how a page goes flat.
+   *
+   * With the eased transition on (the default — see {@link ModeSwitchOptions}) a going-flat
+   * request is HELD while the disparity ramps out, so the promise resolves when the request has
+   * been forwarded rather than on the call; a request dropped by a reversal in that window
+   * rejects with an `Error` named `superseded`.
    */
   requestRenderingMode(modeIndex: number): Promise<void>;
   /**
@@ -325,6 +330,13 @@ export interface Inline3D {
   readonly activeMode: { modeIndex: number; viewCount: number };
   /** True while the SDK is holding every window's rig flat because a 1-view mode is active. */
   readonly stereoCollapsed: boolean;
+  /**
+   * The eased 2D<->3D transition, live. `factor` is what every window's
+   * `ipdFactor`/`parallaxFactor` is being multiplied by on the way to the layer (`1` in 3D, `0`
+   * flat, in between mid-ramp); `active` is true while a page-initiated switch is in any of its
+   * phases. Read-only and purely informational — the SDK adds no UI of its own for this.
+   */
+  readonly modeSwitch: { active: boolean; factor: number };
 
   /**
    * What this build can lift into the floating native viewer, or `null` on a browser with no
@@ -411,6 +423,41 @@ export interface CreateInline3DOptions {
    * SDK never touches your DOM's `will-change`, because the chrome already occludes the tiles.
    */
   autoChrome?: boolean;
+  /** The eased 2D<->3D transition. On by default; see {@link ModeSwitchOptions}. */
+  modeSwitch?: ModeSwitchOptions;
+}
+
+/**
+ * The eased 2D<->3D transition — on by default, and the same sequencer (and the same defaults)
+ * the native DisplayXR apps use.
+ *
+ * Instead of snapping the stereo rig the moment the panel's mode changes, a **page-initiated**
+ * switch ramps every window's `ipdFactor`/`parallaxFactor` between 0 and what the page asked for,
+ * in the order that looks right:
+ *
+ * - **going flat** (a `viewCount === 1` target): the disparity ramps OUT first, and the mode
+ *   request is forwarded only when it lands — so the panel flips on already-flat content. That is
+ *   why `requestRenderingMode()` / `setStereoEnabled(false)` resolve a ramp later than they used
+ *   to: they resolve when the request has actually been forwarded.
+ * - **coming back** (a 2-view target): the request goes out at once, and the disparity eases in
+ *   only once the panel REPORTS 3D — disparity on a still-flat panel is the double image the
+ *   whole mode API exists to prevent.
+ *
+ * Interruptible: pressing the toggle again mid-ramp retargets from the disparity in force, and
+ * reversing a going-flat switch that has not fired yet simply ramps back up without ever asking
+ * the panel for anything (the dropped request rejects with an `Error` named `superseded`).
+ *
+ * A mode change the page did **not** request (another tab, the shell, a panel that opens flat)
+ * always snaps — there is nothing to ramp from. This is aesthetic policy only; correctness is the
+ * runtime's either way.
+ */
+export interface ModeSwitchOptions {
+  /** Ramp duration in ms (default `180`, matching the native default of 0.18 s). `0` = instant. */
+  durationMs?: number;
+  /** Easing curve (default `'smoothstep'`, Hermite `3t^2 - 2t^3`). */
+  easing?: 'smoothstep' | 'linear' | 'easeoutcubic';
+  /** `false` restores the plain snap of 1.4.0 (default `true`). */
+  enabled?: boolean;
 }
 
 /** The return of {@link startInline3D}. */

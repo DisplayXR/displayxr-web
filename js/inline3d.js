@@ -32,6 +32,17 @@
 import { undock, undockAvailable, undockUrl, tileScreenRect, setUndockLayerResolver } from './inline3d-undock.js';
 export { undock, undockAvailable, undockUrl, tileScreenRect };
 
+// The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
+// `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
+// the same ORDER — as the native apps and the demos. See _requestRenderingModeEased.
+import {
+  ModeSwitch,
+  MODE_SWITCH_DEFAULT_DURATION_MS,
+  MODE_SWITCH_DEFAULT_EASING,
+  MODE_SWITCH_EASINGS,
+  normaliseModeSwitchEasing,
+} from './inline3d-mode-switch.js';
+
 // The document's single live manager. The browser's per-frame element-rect report is a
 // WHOLE-WIDGET setter — each live session pushes the complete list of rects to weave — so two
 // managers in one document overwrite each other frame by frame and neither one's tiles hold
@@ -329,14 +340,56 @@ function defaultDisplayRig(win) {
   };
 }
 
-// The page's rig with the stereo dialled out: eye separation and head-tracking response to 0, so
-// both eyes are rendered from the SAME place and the woven atlas carries one image twice.
+// The page's rig with the stereo dialled DOWN by `factor`: eye separation and head-tracking
+// response scaled together, so `factor` 0 renders both eyes from the SAME place (the woven atlas
+// carries one image twice) and `factor` 1 is exactly what the page asked for. Everything between
+// is the eased 2D<->3D transition (see ModeSwitch) — which is why this is a scale and not a
+// boolean: a flat panel and a full-disparity one are the two ENDS of one continuum.
 //
 // A COPY, never a mutation. A page driving a rig per frame reuses one descriptor object
-// (cameraRigFromCamera's `out`), so zeroing the factors in place would write the flattening into
+// (cameraRigFromCamera's `out`), so scaling the factors in place would write the flattening into
 // the page's own state and it would never come back — the restore would restore 0.
-function flattenedRig(rig) {
-  return { ...rig, ipdFactor: 0, parallaxFactor: 0 };
+//
+// An unset factor is the runtime's default of 1, so it scales like an explicit 1 rather than
+// staying absent: a rig that says nothing about disparity still goes flat.
+function scaledRig(rig, factor) {
+  const ipd = Number.isFinite(rig.ipdFactor) ? rig.ipdFactor : 1;
+  const parallax = Number.isFinite(rig.parallaxFactor) ? rig.parallaxFactor : 1;
+  return { ...rig, ipdFactor: ipd * factor, parallaxFactor: parallax * factor };
+}
+
+// How often the fallback tick advances a transition when session frames are NOT arriving (a
+// background tab, every tile scrolled away). Roughly one 60 Hz frame — the ramp is time-based, so
+// this is a floor on smoothness, never on duration.
+const MODE_SWITCH_TICK_MS = 16;
+
+// Wall clock for the transition ramp, in ms. Read through the global on every call (never
+// captured) so a test can install its own clock, and so a page that runs before `performance`
+// exists still gets a monotonic-enough source. Frame COUNTS are deliberately not used: the ramp
+// has to take the same time at 30 fps and at 144 fps.
+function nowMs() {
+  return typeof performance !== 'undefined' && performance && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+// The easing option, validated here rather than in the state machine: the sequencer falls back
+// silently (it has no opinion about a caller's config), but a typo in `createInline3D` is worth
+// exactly one warning — a page that asked for 'ease-in-out' and got smoothstep should know.
+let notedModeSwitchEasing = false;
+function resolveModeSwitchEasing(easing) {
+  if (easing === undefined || easing === null) return MODE_SWITCH_DEFAULT_EASING;
+  const known = normaliseModeSwitchEasing(easing);
+  if (known) return known;
+  if (!notedModeSwitchEasing) {
+    notedModeSwitchEasing = true;
+    console.warn(
+      `[inline3d] createInline3D({ modeSwitch: { easing: ${JSON.stringify(easing)} } }) is not a ` +
+        `curve this SDK knows (${MODE_SWITCH_EASINGS.join(' / ')}); using ` +
+        `'${MODE_SWITCH_DEFAULT_EASING}'.`
+    );
+  }
+  return MODE_SWITCH_DEFAULT_EASING;
 }
 
 // Why the SDK collapses the rig behind the page's back, said once, where the code is.
@@ -439,13 +492,30 @@ function noteRigWinsOverHeight() {
  *        exclusively via addGlobalOverlay()/data-inline3d-overlay. Ignored (nothing is
  *        scanned, no `will-change` is set on your DOM) on a browser with draw-order
  *        occlusion, where chrome occludes tiles by itself.
+ * @param {object} [opts.modeSwitch]  The EASED 2D<->3D transition, on by default.
+ *        `{ durationMs=180, easing='smoothstep'|'linear'|'easeoutcubic', enabled=true }` — the
+ *        same defaults the native DisplayXR apps configure. Instead of snapping the stereo rig
+ *        the moment the panel's mode changes, a page-initiated switch ramps every window's
+ *        `ipdFactor`/`parallaxFactor` between 0 and what the page asked for, in the order that
+ *        looks right: going FLAT ramps the disparity out first and only then asks the panel to
+ *        switch, and coming BACK asks first and eases the disparity in once the panel reports
+ *        3D. `enabled:false` restores the plain snap. It is aesthetic policy only — the runtime
+ *        keeps the eye set coherent either way — and a mode change the page did NOT request
+ *        (another tab, the shell, a panel opening flat) always snaps, because there is nothing
+ *        to ramp from. Read the live state on `wall.modeSwitch`.
  * @returns {Promise<Inline3D | {supported:false, error?:Error}>} the manager, which also carries
  *        the display API (`getDisplayInfo` / `getRenderingModes` / `requestRenderingMode` /
  *        `setStereoEnabled`, `on`/`off`) and `undock` — `{model, splat}` on a browser with
  *        `XRDisplayLayer.undock`, `null` on one without.
  */
 export async function createInline3D(opts = {}) {
-  const { referenceSpace = 'viewer', lazy = true, rootMargin = '50% 0px', autoChrome = true } = opts;
+  const {
+    referenceSpace = 'viewer',
+    lazy = true,
+    rootMargin = '50% 0px',
+    autoChrome = true,
+    modeSwitch = null,
+  } = opts;
   if (!inline3DAvailable()) return { supported: false };
   let session;
   try {
@@ -461,7 +531,7 @@ export async function createInline3D(opts = {}) {
   } catch {
     /* rAF still fires without a ref space; views are just null (fine for image/video). */
   }
-  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome });
+  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome, modeSwitch });
 }
 
 /**
@@ -513,7 +583,7 @@ function chromeTextPlates(root) {
 }
 
 class Inline3D {
-  constructor(session, refSpace, { lazy, rootMargin, autoChrome = true }) {
+  constructor(session, refSpace, { lazy, rootMargin, autoChrome = true, modeSwitch = null }) {
     this.supported = true;
     this.session = session;
     this.refSpace = refSpace;
@@ -553,6 +623,23 @@ class Inline3D {
     this._stereoCollapsed = false;
     this._displayListeners = new Map(); // event type -> Set(callback), for on()/off()
     this._primedDisplayState = false;
+    // ── the eased 2D<->3D transition (opts.modeSwitch) ───────────────────────────────
+    // The collapse above is a LATCH; what actually reaches each layer is that latch turned into a
+    // SCALE — `_stereoFactor`, 0 (flat) to 1 (exactly the rig the page set). With the sequencer
+    // off, or for a mode change the page did not request, the scale is only ever 0 or 1 and
+    // nothing looks different. With it on, a page-initiated switch walks the scale across that
+    // range over `durationMs` and holds the mode request until the right end of the ramp.
+    const msOpts = modeSwitch && typeof modeSwitch === 'object' ? modeSwitch : {};
+    this._msEnabled = msOpts.enabled !== false;
+    this._modeSwitch = new ModeSwitch(
+      (Number.isFinite(msOpts.durationMs) ? Math.max(0, msOpts.durationMs) : MODE_SWITCH_DEFAULT_DURATION_MS) / 1000,
+      resolveModeSwitchEasing(msOpts.easing)
+    );
+    this._stereoFactor = 1; // what every window's ipd/parallax is multiplied by on the way out
+    this._msFire = null; // a ->2D request HELD until the ramp-down lands
+    this._msArmedUp = false; // a ->3D request went out; the up-ramp waits for the panel to say 3D
+    this._msLastMs = null; // wall clock of the previous advance (null = the ramp has not ticked)
+    this._msTick = null; // the frames-stopped fallback timer; see _armModeSwitchTick
     // Undock capabilities, refreshed off the first live layer (see _refreshUndock). Null is the
     // load-bearing value: it means this browser has no XRDisplayLayer.undock at all.
     this.undock = hasUndock() ? { model: false, splat: false } : null;
@@ -833,7 +920,8 @@ class Inline3D {
        * pushed FLAT (ipd/parallax 0) — the flattening is a latch on the way out, not a value
        * written into your descriptor, so a page driving a rig every frame cannot undo the 2D
        * state by simply carrying on, and `setStereoEnabled(true)` restores exactly what you last
-       * asked for.
+       * asked for. During the eased 2D<->3D transition the same applies with a FRACTION in place
+       * of the 0: what leaves for the layer is your rig scaled by `wall.modeSwitch.factor`.
        */
       setViewRig: (rig) => {
         win.viewRig = rig || null;
@@ -884,10 +972,18 @@ class Inline3D {
        * On success the session fires `renderingmodechange` — see {@link on}. That event, not
        * this promise, is when the new mode is in effect.
        *
+       * EASED BY DEFAULT (`createInline3D({modeSwitch})`). A GOING-FLAT request (`viewCount === 1`)
+       * is HELD while the disparity ramps out, and forwarded only when it lands — so this promise
+       * resolves when the browser actually got the request, roughly `durationMs` later, and the
+       * panel flips on already-flat content. A request that a reversal drops in that window
+       * rejects with an `Error` named `superseded`; nothing was ever asked of the display. Coming
+       * BACK is unchanged in timing: the request goes out at once and the disparity eases in when
+       * the panel reports 3D.
+       *
        * @param {number} modeIndex
        * @returns {Promise<void>}
        */
-      requestRenderingMode: (modeIndex) => this._requestRenderingMode(modeIndex, win),
+      requestRenderingMode: (modeIndex) => this._requestRenderingModeEased(modeIndex, win),
       /**
        * SUGAR over {@link requestRenderingMode}, and nothing more. `false` requests the first
        * mode with `viewCount === 1 && isRequestable`; `true` requests the first with
@@ -909,6 +1005,11 @@ class Inline3D {
        * Rejects when no such mode is listed (a plain Error naming what was looked for), and
        * otherwise exactly as `requestRenderingMode` does. Resolves to the boolean asked for —
        * the request was accepted; the mode is in force when the event says so.
+       *
+       * Eased by default, exactly as {@link requestRenderingMode} is: `false` ramps the disparity
+       * out before the request goes anywhere, `true` requests first and eases the disparity back
+       * in once the panel reports 3D, and pressing the pair in quick succession reverses cleanly
+       * rather than firing a stale switch.
        *
        * @param {boolean} enabled
        * @returns {Promise<boolean>}
@@ -968,7 +1069,7 @@ class Inline3D {
 
   /** Ask the runtime to switch the display to `modeIndex`. Pass-through; see the handle's doc. */
   requestRenderingMode(modeIndex) {
-    return this._requestRenderingMode(modeIndex, null);
+    return this._requestRenderingModeEased(modeIndex, null);
   }
 
   /** Sugar over {@link requestRenderingMode}: false -> a 1-view mode, true -> the 2-view mode. */
@@ -994,6 +1095,22 @@ class Inline3D {
     return this._stereoCollapsed;
   }
 
+  /**
+   * The eased 2D<->3D transition, live: `{active, factor}`.
+   *
+   * `factor` is what every window's `ipdFactor`/`parallaxFactor` is being multiplied by on the way
+   * to the layer — `1` in 3D, `0` flat, in between mid-ramp. `active` is true while a
+   * page-initiated switch is in any of its phases: ramping the disparity out, holding the ->2D
+   * request until it lands, waiting for the panel to report 3D, or easing back in.
+   *
+   * Read-only and purely informational — a page that wants to grey a button or cross-fade some 2D
+   * chrome alongside the panel can, and one that does not care never has to look. The SDK adds no
+   * UI of its own for this, and never will: which key or button toggles the display is the page's.
+   */
+  get modeSwitch() {
+    return { active: this._msTransitionActive(), factor: this._stereoFactor };
+  }
+
   close() {
     try {
       this.session.end();
@@ -1009,14 +1126,15 @@ class Inline3D {
 
   /**
    * The rig this window's layer should actually be holding right now: what the page asked for,
-   * flattened when `setStereoEnabled(false)` is latched. Null means "say nothing" — leave the
-   * browser on the `virtualDisplayHeight` shorthand it was built with.
+   * scaled by the manager's current stereo factor (0 while a 1-view mode is active, 1 in 3D, and
+   * everything between during an eased transition). Null means "say nothing" — leave the browser
+   * on the `virtualDisplayHeight` shorthand it was built with.
    *
    * Used in BOTH directions (push at a live layer, build a new one), which is the point: a tile
    * that scrolls away and rebuilds while stereo is off must not come back in 3D.
    */
   _effectiveViewRig(win) {
-    if (!this._stereoCollapsed) {
+    if (this._stereoFactor >= 1) {
       // `stereoSynthRig`: this window never had a rig of its own, so going flat had to SEND one
       // (there is no way to say "the default, but flat" as a scalar). Coming back therefore has
       // to send the un-flat version explicitly too — returning null here would leave the layer
@@ -1030,7 +1148,7 @@ class Inline3D {
     // hold the flattened rig forever. Recorded here rather than in the collapse itself because a
     // window CREATED while the panel is already flat goes down this path on its first activate.
     if (!win.viewRig) win.stereoSynthRig = true;
-    return flattenedRig(win.viewRig || defaultDisplayRig(win));
+    return scaledRig(win.viewRig || defaultDisplayRig(win), this._stereoFactor);
   }
 
   /**
@@ -1039,12 +1157,25 @@ class Inline3D {
    * Driven ONLY by what the display reports — the first `getRenderingModes()` read and every
    * `renderingmodechange` — never by a request. That is what makes a refused request a no-op in
    * both directions: nothing here runs unless the mode actually changed.
+   *
+   * THE REPORT OWNS THE FACTOR ONLY WHEN THE SEQUENCER DOES NOT. A mode change the page did not
+   * ask for (another tab, the shell, a panel that opened flat) snaps, because there is nothing to
+   * ramp FROM — the transition is a page-initiated aesthetic, not a correctness step. The two
+   * exceptions are the two halves of a page-initiated switch: while a ramp is in flight it owns
+   * the factor outright, and a report of 3D that a `->3D` request armed starts the up-ramp here
+   * rather than snapping (the whole reason that request fires first and eases second).
    */
   _setStereoCollapsed(collapsed) {
     const next = !!collapsed;
     if (this._stereoCollapsed === next) return;
     this._stereoCollapsed = next;
     if (next) noteAutoCollapse();
+    if (!next && this._msArmedUp) {
+      this._msArmedUp = false;
+      this._startUpRamp(); // the panel is in 3D at last — ease the disparity back in
+    } else if (!this._modeSwitch.active()) {
+      this._stereoFactor = next ? 0 : 1;
+    }
     for (const win of this._windows.values()) {
       // Diagnostics only: the factors that were in force when the panel went flat. The restore
       // itself just re-pushes `win.viewRig`, which was never mutated.
@@ -1161,9 +1292,236 @@ class Inline3D {
     );
   }
 
+  // ── the eased 2D<->3D transition ──────────────────────────────────────────────────────
+  //
+  // Every PAGE-INITIATED mode request goes through here; a mode change reported from elsewhere
+  // does not (see _setStereoCollapsed). The asymmetry below is the whole helper, and it is the
+  // native `dxr::ModeSwitch` contract, unchanged:
+  //
+  //   -> 2D : ramp the disparity out FIRST, and fire the request only when it lands, so the panel
+  //           flips on already-flat content instead of snapping a stereo image flat.
+  //   -> 3D : fire the request FIRST and ease the disparity in afterwards — and in the browser,
+  //           only once the panel REPORTS 3D, because until then the disparity would be going up
+  //           on a flat panel, which is the double-image the whole mode API exists to prevent.
+  //
+  // Everything else is fall-through: the sequencer disabled, a browser with no `setViewRig` (there
+  // is nothing to ramp), an unknown target or current view count, a `viewCount > 2` mode the
+  // browser will refuse anyway, and a same-dimensionality change (2D->2D, 3D->3D) which needs no
+  // flatten at all.
+
+  /** True while a page-initiated transition is in flight in any of its phases. */
+  _msTransitionActive() {
+    return this._modeSwitch.active() || this._msArmedUp || this._msFire !== null;
+  }
+
+  /**
+   * `requestRenderingMode()` with the transition applied. Resolves when the request has actually
+   * been FORWARDED to the browser (so, for a ->2D switch, after the ramp) and rejects exactly as
+   * the pass-through does — plus one new failure: an `Error` named `superseded` when a second
+   * request replaced this one before it ever fired.
+   */
+  async _requestRenderingModeEased(modeIndex, win) {
+    if (!this._msEnabled || !hasViewRig()) return this._requestRenderingMode(modeIndex, win);
+    // The mode table is what says whether this index is 2D or 3D. It is normally already cached
+    // (the first activation primes it), and a read that fails just means the sequencer has no
+    // opinion — the request still goes out.
+    let modes = this._modes;
+    if (!Array.isArray(modes) || modes.length === 0) {
+      try {
+        modes = await this._getRenderingModes(win);
+      } catch {
+        modes = null;
+      }
+    }
+    const target = (Array.isArray(modes) ? modes : []).find((m) => m && m.modeIndex === modeIndex);
+    const targetViews = target && Number.isFinite(target.viewCount) ? target.viewCount : 0;
+    const currentViews = this._activeViewCount;
+    if (targetViews < 1 || targetViews > 2 || currentViews < 1) {
+      return this._requestRenderingMode(modeIndex, win);
+    }
+    if (targetViews === 1) {
+      if (currentViews === 1) return this._requestRenderingMode(modeIndex, win); // 2D -> 2D
+      return this._rampDownThenRequest(modeIndex, win);
+    }
+    return this._requestThenRampUp(modeIndex, win);
+  }
+
+  /**
+   * 3D -> 2D. Ramp the disparity to 0, THEN forward the request (see _advanceModeSwitch, which is
+   * what actually fires it). The returned promise is the page's, and it settles on the forwarded
+   * request — so `await wall.setStereoEnabled(false)` still means "the browser has it".
+   *
+   * A second ->2D request for the SAME mode mid-ramp is idempotent: the page gets the promise
+   * already in flight rather than a superseded rejection, because mashing one button twice is not
+   * an error. A different target retargets from the CURRENT disparity, seamlessly.
+   */
+  _rampDownThenRequest(modeIndex, win) {
+    if (this._msFire && this._msFire.modeIndex === modeIndex) return this._msFire.promise;
+    this._settlePendingDown('superseded', `a request for mode ${modeIndex} replaced it`);
+    const pending = { modeIndex, win, resolve: null, reject: null, promise: null };
+    pending.promise = new Promise((resolve, reject) => {
+      pending.resolve = resolve;
+      pending.reject = reject;
+    });
+    this._msFire = pending;
+    this._modeSwitch.request({
+      targetMode: modeIndex,
+      targetViewCount: 1,
+      currentMode: this._activeModeIndex,
+      currentViewCount: this._activeViewCount,
+      // The value ON SCREEN right now: the ramp's own output mid-flight, and the page's steady
+      // rig (factor 1) when idle. Passing the sequencer's internal 0 while idle is the classic
+      // first-press snap — there would be nothing to ramp down from.
+      current: this._stereoFactor,
+      steady: 1,
+    });
+    this._msLastMs = nowMs();
+    this._armModeSwitchTick();
+    return pending.promise;
+  }
+
+  /**
+   * -> 3D. Forward the request NOW (the browser needs the panel moving before the disparity can
+   * mean anything), then ease the disparity in — starting only when the panel REPORTS 3D, which
+   * is `_setStereoCollapsed(false)` releasing the latch.
+   *
+   * The one case that does not wait: a REVERSAL of a ramp-down that never fired. The panel never
+   * left 3D, so there is no report coming; the disparity just walks back up from wherever the
+   * ramp got to, and the stale 2D request is dropped rather than fired.
+   */
+  _requestThenRampUp(modeIndex, win) {
+    const reversal = this._msFire !== null;
+    const noopReversal = reversal && modeIndex === this._activeModeIndex;
+    this._settlePendingDown('superseded', `a request for mode ${modeIndex} reversed it`);
+    // A reversal back to the mode that is STILL active asks the browser for nothing: the runtime
+    // never changed mode, so the only thing owed is the disparity.
+    const forwarded = noopReversal
+      ? Promise.resolve(undefined)
+      : this._requestRenderingMode(modeIndex, win);
+    if (this._stereoFactor < 1) {
+      if (this._stereoCollapsed) {
+        // The panel is really flat: hold at 0 and wait for it to say otherwise.
+        this._msArmedUp = true;
+        this._modeSwitch.cancel();
+        this._stereoFactor = 0;
+      } else {
+        this._startUpRamp();
+      }
+    }
+    return forwarded.catch((err) => {
+      // Refused. Nothing about the panel moved, so neither may the disparity: drop the armed
+      // up-ramp and settle back on whatever the display last REPORTED.
+      if (this._msArmedUp) {
+        this._msArmedUp = false;
+        if (!this._modeSwitch.active()) this._stereoFactor = this._stereoCollapsed ? 0 : 1;
+      }
+      throw err;
+    });
+  }
+
+  /**
+   * Start (or restart) the up-ramp from the current disparity to the page's steady rig. Used both
+   * when the panel reports 3D after a `->3D` request and when a ->2D request was REFUSED — a
+   * refusal must leave the page in 3D, not flat.
+   *
+   * No request is ever fired from here: whatever there was to send went out before the ramp
+   * started, which is why `_msFire` is empty by construction.
+   */
+  _startUpRamp() {
+    this._settlePendingDown('superseded', 'the display returned to 3D');
+    this._modeSwitch.request({
+      targetMode: this._activeModeIndex,
+      targetViewCount: 2,
+      currentMode: this._activeModeIndex, // equal ⇒ the sequencer fires nothing
+      currentViewCount: 2,
+      current: this._stereoFactor,
+      steady: 1,
+    });
+    this._msLastMs = nowMs();
+    this._armModeSwitchTick();
+  }
+
+  /** Settle a held ->2D request that will now never fire. Never throws into the caller. */
+  _settlePendingDown(name, why) {
+    const pending = this._msFire;
+    if (!pending) return;
+    this._msFire = null;
+    const err = new Error(
+      `[inline3d] the request for rendering mode ${pending.modeIndex} was never forwarded: ${why}. ` +
+        'A ->2D switch is held until the disparity has ramped out, so a request that is reversed ' +
+        'or replaced in that window is dropped rather than fired late.'
+    );
+    err.name = name;
+    pending.reject(err);
+  }
+
+  /**
+   * Advance the transition by WALL-CLOCK dt and act on what it says. Called from the session's
+   * frame loop and from the fallback tick; both are safe because the ramp is time-based, so a
+   * double advance in one frame moves it by dt = 0.
+   *
+   * Rigs are pushed only when the factor actually MOVED — an idle manager must not re-push every
+   * frame, and a landed ramp pushes its last value once.
+   */
+  _advanceModeSwitch() {
+    if (!this._modeSwitch.active()) {
+      this._msLastMs = null;
+      this._disarmModeSwitchTick();
+      return;
+    }
+    const now = nowMs();
+    const dt = typeof this._msLastMs === 'number' ? Math.max(0, (now - this._msLastMs) / 1000) : 0;
+    this._msLastMs = now;
+    const out = this._modeSwitch.update(dt);
+    if (out.factor !== this._stereoFactor) {
+      this._stereoFactor = out.factor;
+      for (const win of this._windows.values()) this._pushViewRig(win);
+    }
+    if (out.fire && this._msFire) {
+      const pending = this._msFire;
+      this._msFire = null;
+      this._requestRenderingMode(pending.modeIndex, pending.win).then(
+        (v) => pending.resolve(v),
+        (err) => {
+          // The panel refused to go flat, so the page must not be left flat either — ease the
+          // disparity back to steady before handing the rejection on.
+          this._startUpRamp();
+          pending.reject(err);
+        }
+      );
+    }
+    if (!this._modeSwitch.active()) {
+      this._msLastMs = null;
+      this._disarmModeSwitchTick();
+    }
+  }
+
+  /**
+   * A timer that advances the ramp when SESSION FRAMES are not arriving. The frame loop is the
+   * normal driver, but a held ->2D request must not sit forever because every tile scrolled away,
+   * the tab went background, or the page simply has no live layer — the page awaited a promise
+   * and the browser is owed a request.
+   */
+  _armModeSwitchTick() {
+    if (this._msTick !== null || typeof setTimeout !== 'function') return;
+    this._msTick = setTimeout(() => {
+      this._msTick = null;
+      if (!this._running) return;
+      this._advanceModeSwitch();
+      if (this._modeSwitch.active()) this._armModeSwitchTick();
+    }, MODE_SWITCH_TICK_MS);
+  }
+
+  _disarmModeSwitchTick() {
+    if (this._msTick === null) return;
+    if (typeof clearTimeout === 'function') clearTimeout(this._msTick);
+    this._msTick = null;
+  }
+
   /**
    * The sugar behind `setStereoEnabled` — pick a mode by view count and request it. Nothing
-   * else: the rig follows the resulting `renderingmodechange`, not this call.
+   * else: the rig follows the resulting `renderingmodechange` (eased, when a transition is
+   * configured), not this call.
    */
   async _setStereoEnabled(enabled, win) {
     const want = enabled ? 2 : 1;
@@ -1177,8 +1535,11 @@ class Inline3D {
           'and cannot invent one — read getRenderingModes() and drive the list yourself.'
       );
     }
-    if (mode.isActive) return !!enabled; // already there; the request would be a no-op anyway
-    await this._requestRenderingMode(mode.modeIndex, win);
+    // Already there ⇒ the request would be a no-op... UNLESS a transition is in flight, in which
+    // case this is the user reversing the toggle and the disparity still has to walk back. Taking
+    // the early-out there would leave a page that pressed 2D then 3D stuck part-way flat.
+    if (mode.isActive && !this._msTransitionActive()) return !!enabled;
+    await this._requestRenderingModeEased(mode.modeIndex, win);
     return !!enabled;
   }
 
@@ -1897,6 +2258,10 @@ class Inline3D {
   _frame(t, f) {
     if (!this._running) return;
     this._requestFrame();
+    // The 2D<->3D ramp, on WALL-CLOCK dt (never a frame count, so it lasts the same wall time at
+    // 30 fps and 144 fps). Before the windows, so the rig this frame's views are located against
+    // is the ramped one. No-op — and pushes nothing — when no transition is in flight.
+    this._advanceModeSwitch();
     const pose = this.refSpace ? f.getViewerPose(this.refSpace) : null;
     const views = pose ? pose.views : null;
     for (const win of this._windows.values()) {
@@ -2045,6 +2410,12 @@ class Inline3D {
     if (liveManager === this) liveManager = null;
     this._unbindLifecycle();
     this._disarmDprWatch();
+    // A transition in flight dies with the session: nothing will drive the ramp, and the held
+    // request has nowhere to go — so the page's promise is settled rather than left pending.
+    this._disarmModeSwitchTick();
+    this._modeSwitch.cancel();
+    this._msArmedUp = false;
+    this._settlePendingDown('closed', 'the inline-3D session closed first');
     if (this._observer) this._observer.disconnect();
     for (const win of this._windows.values()) {
       this._stopOverlayScan(win);

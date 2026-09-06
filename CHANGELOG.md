@@ -5,6 +5,58 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.5.0 — 2026-09-06
+
+### Added
+
+- **The 2D↔3D switch is EASED, and every page gets it for free.** 1.4.0 made the panel's mode a
+  page-facing control and collapsed the stereo rig the moment a 1-view mode went active — correct,
+  and a snap. The transition now ramps: a **page-initiated** switch walks every window's
+  `ipdFactor`/`parallaxFactor` between 0 and what the page asked for over **180 ms**, **smoothstep**
+  (Hermite `3t^2 - 2t^3`) — the defaults the native DisplayXR apps configure, because this is a port
+  of the sequencer they already use (`dxr::ModeSwitch`, displayxr-common) rather than a second
+  design. New dependency-free module `js/inline3d-mode-switch.js` holds the state machine;
+  `test/mode-switch.test.mjs` mirrors the C++ smoke test case for case. *(core tier — additive)*
+
+- **The ORDER is the feature, and it is asymmetric.** Going flat (a `viewCount === 1` target) ramps
+  the disparity **out first** and forwards the mode request only when it lands, so the panel flips
+  on already-flat content instead of snapping a stereo image flat. Coming back (a 2-view target)
+  forwards the request **first** and eases the disparity in **only once the panel REPORTS 3D** —
+  ramping up any earlier would put stereo on a still-flat panel, which is the blurry double image
+  the whole mode API exists to make unreachable. A hand-rolled tween gets exactly this wrong.
+
+- **`createInline3D({ modeSwitch: { durationMs, easing, enabled } })`** — `durationMs` default
+  `180` (`0` keeps the ordering and lands in one frame), `easing` default `'smoothstep'` (also
+  `'linear'`, `'easeoutcubic'`; an unknown name warns once and falls back), `enabled: false`
+  restores 1.4.0's snap exactly. **`wall.modeSwitch`** is the read-only live state
+  `{active, factor}` for a page that wants to move its own 2D chrome alongside the panel. The SDK
+  adds **no UI** — which key or button toggles the display stays the page's call.
+  *(core tier — additive)*
+
+- **What a page can feel, spelled out.** The restore is to the **configured** steady factors (each
+  window's own rig, never a hardcoded 1) and the ramp is a **copy** on the way to the layer, so the
+  1.4.0 guarantees hold unchanged: a per-frame `setViewRig` loop cannot walk the page out of 2D,
+  and a lazy tile that rebuilds mid-transition comes back at the current factor. The ramp is driven
+  by **wall-clock dt** from the session's frame loop (never frame counts, so it lasts the same at
+  30 fps and 144 fps), with a timer fallback so a held request still lands when frames stop.
+  Reversing mid-flight retargets from the disparity **in force** — the first press never snaps —
+  and a reversed going-flat switch **never fires**: nothing is asked of the display at all.
+
+### Changed
+
+- **`requestRenderingMode(i)` / `setStereoEnabled(false)` for a 1-view target now resolve when the
+  request has been FORWARDED**, i.e. after the ramp (~`durationMs`), not on the call. They reject
+  as before if the browser refuses — and a refusal ramps the disparity back **up**, because a
+  refused switch must leave the page in 3D rather than flat. One new failure: a request dropped by
+  a reversal before it ever fired rejects with an `Error` named **`superseded`**. Nothing changes
+  for a page that only awaits the promise it already awaited; `{ enabled: false }` restores the old
+  timing. *(core tier — behaviour change, opt-out)*
+
+- A mode change the page did **not** request (another tab, the shell, a page that opens with the
+  panel already flat) still **snaps** — there is nothing to ramp from, and the reported state stays
+  the sole authority for the rig. `wall.stereoCollapsed` continues to mean what the display last
+  **reported**, never what is mid-ramp.
+
 ## 1.4.0 — 2026-09-06
 
 ### Added

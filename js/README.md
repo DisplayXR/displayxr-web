@@ -17,7 +17,8 @@ gate (DisplayXR Browser with the feature on). Use it to decide page UI up front.
 session and returns a manager (the "wall"). Check `.supported`:
 
 ```js
-const wall = await createInline3D();     // opts: { referenceSpace='viewer', lazy=true, rootMargin }
+const wall = await createInline3D();     // opts: { referenceSpace='viewer', lazy=true, rootMargin,
+                                         //         autoChrome=true, modeSwitch }
 if (!wall.supported) { /* normal 2D page */ return; }
 ```
 
@@ -73,7 +74,42 @@ whichever window currently holds a live layer. Gate the group with
   **`onDisplayModeChange(cb)`** is the older both-events-one-callback shape and still works.
 - **`wall.hardwareDisplayState`** (`'2d'|'3d'|null`), **`wall.activeMode`**
   (`{modeIndex, viewCount}`) and **`wall.stereoCollapsed`** — read-only, and always what was last
-  **reported**, never what was last requested.
+  **reported**, never what was last requested. **`wall.modeSwitch`** (`{active, factor}`) is the
+  live state of the eased transition below.
+
+#### The eased 2D↔3D transition (`opts.modeSwitch`)
+
+On by default, and the same sequencer — with the same defaults, **180 ms** / **smoothstep**
+(Hermite `3t^2 - 2t^3`) — that the native DisplayXR apps use. A **page-initiated** switch no longer
+snaps the stereo rig: every window's `ipdFactor`/`parallaxFactor` ramps between 0 and what the page
+asked for, in the order that looks right.
+
+```js
+const wall = await createInline3D({ modeSwitch: { durationMs: 180, easing: 'smoothstep' } });
+await wall.setStereoEnabled(false);   // resolves once the request has been FORWARDED (post-ramp)
+wall.modeSwitch;                      // { active: boolean, factor: 0..1 }  read-only
+```
+
+- **Going flat** (a `viewCount === 1` target) ramps the disparity **out first** and forwards the
+  mode request only when it lands, so the panel flips on already-flat content. That is the one
+  timing change: `requestRenderingMode(i)` / `setStereoEnabled(false)` resolve when the request
+  reaches the browser, about `durationMs` later, and still reject exactly as before if it fails —
+  a refused switch ramps back **up**, because a refusal must leave you in 3D, not flat.
+- **Coming back** (a 2-view target) forwards the request **immediately** and eases the disparity in
+  only once the panel **reports** 3D. Ramping up before that would put stereo on a still-flat
+  panel, which is the double image the whole mode API exists to prevent.
+- **Interruptible.** Pressing the toggle again mid-ramp retargets from the disparity in force (no
+  snap, ever — including the first press). Reversing a going-flat switch that has not fired yet
+  just ramps back up and **never** asks the panel for anything; the dropped request rejects with an
+  `Error` named `superseded`.
+- A mode change the page did **not** request — another tab, the shell, a page that opens with the
+  panel already flat — still **snaps**, because there is nothing to ramp from.
+- `{ enabled: false }` restores the plain 1.4.0 snap. `{ durationMs: 0 }` keeps the ordering but
+  lands in one frame.
+
+It is **aesthetic policy only**: correctness (the eye-set coherence around a switch) is the
+runtime's job either way, and the SDK adds **no UI** — which key or button toggles the display is
+the page's call.
 
 **The 2D/3D hardware state is a consequence of the mode, not a control.** Requesting a one-view
 mode puts the panel in its 2D state and the runtime carries on weaving the same two-view atlas;

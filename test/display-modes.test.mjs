@@ -262,9 +262,16 @@ const { createInline3D, inline3dDisplayModesSupported, inline3dUndockSupported, 
 
 const CAM_RIG = { type: 'camera', position: { x: 0, y: 0, z: 0 }, verticalFov: 0.8, ipdFactor: 2, parallaxFactor: 2 };
 
-/** A live, non-lazy wall with one scene window whose first mode read has already landed. */
-async function makeWall(env, opts = {}) {
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
+/**
+ * A live, non-lazy wall with one scene window whose first mode read has already landed.
+ *
+ * `wallOpts` reaches `createInline3D`. Two tests below pass `{modeSwitch:{enabled:false}}`: they
+ * assert that a REQUEST touches no rig, which is the structural invariant of this file, and the
+ * eased 2D<->3D transition (on by default, `test/mode-switch.test.mjs`) deliberately pushes rigs
+ * between the request and the switch. Turning it off is how the invariant stays testable.
+ */
+async function makeWall(env, opts = {}, wallOpts = {}) {
+  const wall = await createInline3D({ lazy: false, autoChrome: false, ...wallOpts });
   const canvas = makeCanvas();
   const handle = wall.addScene(canvas, () => {}, opts);
   await flush();
@@ -512,7 +519,10 @@ test('a page that OPENS with a 1-view mode already active is collapsed by the fi
 
 test('a refused GOING-FLAT request leaves the rig, the latch and the mode untouched', async () => {
   const env = installEnv({ refuse: [0] });
-  const { wall, handle, layer } = await makeWall(env);
+  // Sequencer off: the claim here is that the REQUEST moves no rig. With the eased transition on,
+  // the ramp moves rigs on purpose and puts them back on the refusal — that is the same invariant
+  // one layer up, and it is asserted in test/mode-switch.test.mjs.
+  const { wall, handle, layer } = await makeWall(env, {}, { modeSwitch: { enabled: false } });
   handle.setViewRig(CAM_RIG);
   const rigsBefore = layer.rigs.length;
 
@@ -545,7 +555,9 @@ test('a refused COMING-BACK request leaves the window flat, not half-switched', 
 
 test('setStereoEnabled(false) requests the first requestable 1-view mode and nothing else', async () => {
   const env = installEnv();
-  const { wall, handle, layer } = await makeWall(env);
+  // Sequencer off — see makeWall: "nothing else" is precisely what the eased transition adds
+  // (a ramp between the call and the switch), so the sugar's own claim is tested without it.
+  const { wall, handle, layer } = await makeWall(env, {}, { modeSwitch: { enabled: false } });
   handle.setViewRig(CAM_RIG);
   const rigsBefore = layer.rigs.length;
 
