@@ -1208,25 +1208,52 @@ class Inline3D {
    * exactly as long as the hardware is in the state it declares; a 2-view mode's default state
    * is what the runtime restored). A payload, if a future browser adds one, wins over the read.
    */
-  async _onHardwareDisplayStateChange(e) {
-    let state = eventHardwareState(e);
-    if (!state) {
-      try {
-        const list = await this._getRenderingModes(null);
-        const active = (Array.isArray(list) ? list : []).find((m) => m.isActive);
-        if (active && typeof active.hardwareDisplay3D === 'boolean') {
-          state = active.hardwareDisplay3D ? '3d' : '2d';
+  _onHardwareDisplayStateChange(e) {
+    const stated = eventHardwareState(e);
+    const detail = eventDetail(e);
+    const deliver = (state) => {
+      if (state) this._hardwareDisplayState = state;
+      this._emitDisplay({
+        type: 'hardwaredisplaystatechange',
+        state: state || this._hardwareDisplayState,
+        detail,
+      });
+    };
+    // A stated payload is delivered synchronously (a page can act in the same task); the
+    // browser's payload-free event is delivered once the table has been read below.
+    if (stated) deliver(stated);
+    // Re-read the table either way and adopt what it says the active mode is. This is what
+    // carries the 1-view -> 2-view RETURN: the browser presents a 1-view mode on top of the
+    // runtime's unchanged 2-view mode, so when the page asks for the 2-view mode back the
+    // runtime has no mode change to report and fires no renderingmodechange - only the
+    // hardware moves. Read here, that return still restores the rig, and in the right order
+    // (hardware back in 3D first, then the parallax comes back).
+    // _getRenderingModes adopts the active mode (and moves the rig) itself; remember what was
+    // active BEFORE the read so a change can still be told to the page afterwards.
+    const prevIndex = this._activeModeIndex;
+    const prevViews = this._activeViewCount;
+    return this._getRenderingModes(null)
+      .then((list) => {
+        const active = (Array.isArray(list) ? list : []).find((m) => m.isActive) || null;
+        if (active && (active.modeIndex !== prevIndex || active.viewCount !== prevViews)) {
+          this._emitDisplay({
+            type: 'renderingmodechange',
+            modeIndex: this._activeModeIndex,
+            viewCount: this._activeViewCount || null,
+            mode: active,
+            detail: null,
+          });
         }
-      } catch {
-        /* no live layer / no API — deliver the event with whatever was last known */
-      }
-    }
-    if (state) this._hardwareDisplayState = state;
-    this._emitDisplay({
-      type: 'hardwaredisplaystatechange',
-      state: state || this._hardwareDisplayState,
-      detail: eventDetail(e),
-    });
+        if (!stated) {
+          const read = active && typeof active.hardwareDisplay3D === 'boolean' ? (active.hardwareDisplay3D ? '3d' : '2d') : null;
+          deliver(read);
+        }
+      })
+      .catch(() => {
+        // no live layer / no API: the stated payload already went out; a payload-free event is
+        // still delivered with whatever was last known.
+        if (!stated) deliver(null);
+      });
   }
 
   /**
