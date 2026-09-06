@@ -24,12 +24,40 @@
 // { supported:false } and your page shows its normal 2D content — inline-3D is progressive
 // enhancement, never a hard dependency.
 
+// Undock lives in its own module (it is a page-level action, not a per-frame concern, and it
+// works standalone on a browser with no inline-3D at all). Imported here for ONE reason: to hand
+// it a resolver so its API-first path can find the live XRDisplayLayer behind an element. The
+// dependency runs one way — inline3d-undock.js imports nothing — so there is no cycle, and the
+// three entry points are re-exported below so a page has a single import site.
+import { undock, undockAvailable, undockUrl, tileScreenRect, setUndockLayerResolver } from './inline3d-undock.js';
+export { undock, undockAvailable, undockUrl, tileScreenRect };
+
 // The document's single live manager. The browser's per-frame element-rect report is a
 // WHOLE-WIDGET setter — each live session pushes the complete list of rects to weave — so two
 // managers in one document overwrite each other frame by frame and neither one's tiles hold
 // still. Tracked here only to warn: sequential sessions (a route change that closes one
 // manager and opens the next) are legitimate and the common case, so nothing is refused.
 let liveManager = null;
+
+// How the undock helper's API-first path finds the layer behind an element. Registered here
+// because only this module knows the canvas -> window -> layer map; the helper stays importable
+// on its own (with no resolver, every call takes the protocol fallback).
+setUndockLayerResolver((el) => {
+  const m = liveManager;
+  if (!m || !m._running || !el) return null;
+  // The canvas itself, then a woven canvas INSIDE the element (a card wrapping its tile), then
+  // the element sitting inside a window's own container (a button in the tile's box). Anything
+  // further away is not this window's rect and takes the fallback.
+  for (const win of m._windows.values()) if (win.canvas === el && win.layer) return win.layer;
+  for (const win of m._windows.values()) {
+    if (win.layer && typeof el.contains === 'function' && el.contains(win.canvas)) return win.layer;
+  }
+  for (const win of m._windows.values()) {
+    const box = win.canvas.parentElement;
+    if (win.layer && box && typeof box.contains === 'function' && box.contains(el)) return win.layer;
+  }
+  return null;
+});
 
 const hasWebXR = () => typeof navigator !== 'undefined' && !!navigator.xr;
 const hasLayer = () =>
@@ -58,8 +86,8 @@ const hasViewRig = () => {
     return false; // a prototype that refuses to be probed is not a capability
   }
 };
-// Display modes — the display's own capabilities, and the two things a page can ask it to
-// change. Four methods, all on XRDisplayLayer, all promise-returning:
+// Display modes — the display's own capabilities, and the one thing a page can ask it to
+// change. Three methods, all on XRDisplayLayer, all promise-returning:
 //
 //   getDisplayInfo()          the panel: physical size, pixel size, the view scale it
 //                             RECOMMENDS. Null on a machine with no glasses-free display.
@@ -67,24 +95,27 @@ const hasViewRig = () => {
 //                             grid, per-view pixels, whether it is a hardware-3D mode, which
 //                             one is active, and whether the browser may request it.
 //   requestRenderingMode(i)   switch the panel to mode i. The browser renders exactly TWO
-//                             views, so a mode with viewCount != 2 is listed and refused.
-//   requestDisplayMode(m)     flip the LENS only, '2d' or '3d'. Nothing about the page's
-//                             rendering changes — see setStereoEnabled for why that matters.
+//                             views, so a mode with viewCount > 2 is listed and refused; a
+//                             ONE-view mode IS requestable and is how a page goes flat.
+//
+// THE HARDWARE DISPLAY STATE (2D/3D) IS NOT A SEPARATE CONTROL, and that is the whole shape of
+// this API. It is a CONSEQUENCE of the active rendering mode: request a one-view mode and the
+// browser puts the panel in its 2D state and reports that mode active (the runtime carries on
+// weaving the same fixed two-view atlas); request the two-view mode and the panel goes back to
+// 3D. The transition arrives as `hardwaredisplaystatechange`. There is deliberately NO
+// page-facing request for the hardware state on its own: a page that could move the panel flat
+// while still submitting stereo would be showing the woven atlas flat, which is a blurry double
+// image rather than 2D. Tying the two together makes that state unreachable.
 //
 // Probed the same way as setViewRig, and for the same reason: these are METHODS, so reading
 // them off the prototype is a plain data-property read that calls nothing (an IDL *attribute*
-// getter would throw `Illegal invocation` on the very browser that has it). All four are
+// getter would throw `Illegal invocation` on the very browser that has it). All three are
 // required — a browser with a partial set is a browser mid-implementation, and treating it as
-// supported would hand a page a `requestDisplayMode is not a function` at the worst moment.
-const DISPLAY_MODE_METHODS = [
-  'getDisplayInfo',
-  'getRenderingModes',
-  'requestRenderingMode',
-  'requestDisplayMode',
-];
+// supported would hand a page a `requestRenderingMode is not a function` at the worst moment.
+const DISPLAY_MODE_METHODS = ['getDisplayInfo', 'getRenderingModes', 'requestRenderingMode'];
 // The two display events, fired on the XRSession rather than the layer — so a page hears about a
-// mode or lens change even while its tile's layer is closed (lazy mode), and one subscription
-// covers every window in the document.
+// mode or hardware-state change even while its tile's layer is closed (lazy mode), and one
+// subscription covers every window in the document.
 const DISPLAY_EVENTS = ['renderingmodechange', 'hardwaredisplaystatechange'];
 const hasDisplayModes = () => {
   if (!hasLayer()) return false;
@@ -93,6 +124,19 @@ const hasDisplayModes = () => {
     return DISPLAY_MODE_METHODS.every((m) => typeof proto[m] === 'function');
   } catch {
     return false; // a prototype that refuses to be probed is not a capability
+  }
+};
+// Undock (XRDisplayLayer.undock / getUndockCapabilities) — lifting this window's asset out of
+// the page into a floating native viewer over the desktop. Same METHOD probe, same reason. The
+// helper in ./inline3d-undock.js falls back to the `displayxr-view:` OS protocol where this is
+// absent, so a page never has to branch on it; what it IS good for is deciding whether to show
+// an "undock" affordance at all (see `wall.undock`).
+const hasUndock = () => {
+  if (!hasLayer()) return false;
+  try {
+    return typeof window.XRDisplayLayer.prototype.undock === 'function';
+  } catch {
+    return false;
   }
 };
 // ── draw-order occlusion (browser Phase 2, browser patches 0063/0064) ─────────────────────
@@ -241,12 +285,11 @@ export function inline3dViewRigSupported() {
 
 /**
  * True when this browser exposes the DISPLAY-MODE API — `getDisplayInfo()`,
- * `getRenderingModes()`, `requestRenderingMode()` and `requestDisplayMode()` on the tile handle,
- * i.e. the page can read what the panel is and ask it to change. Sync + cheap; implies
- * {@link inline3DAvailable}.
+ * `getRenderingModes()` and `requestRenderingMode()` on the tile handle, i.e. the page can read
+ * what the panel is and ask it to change. Sync + cheap; implies {@link inline3DAvailable}.
  *
- * Reads a capability (the presence of all four methods on `XRDisplayLayer.prototype`), never a
- * version or UA string, and demands ALL FOUR: a browser shipping half the set is one mid-
+ * Reads a capability (the presence of all three methods on `XRDisplayLayer.prototype`), never a
+ * version or UA string, and demands ALL THREE: a browser shipping half the set is one mid-
  * implementation, and calling it supported would surface as a `not a function` inside a click
  * handler rather than as a feature that is simply absent.
  *
@@ -258,9 +301,22 @@ export function inline3dDisplayModesSupported() {
   return inline3DAvailable() && hasDisplayModes();
 }
 
+/**
+ * True when this browser can UNDOCK a window's asset into a floating native viewer through
+ * `XRDisplayLayer.undock()` — i.e. without the `displayxr-view:` protocol prompt the fallback
+ * path needs. Sync + cheap; implies {@link inline3DAvailable}.
+ *
+ * A page does not have to branch on this to undock (the helper falls back on its own); it is the
+ * probe for whether `wall.undock` carries capabilities, and for a UI that wants to say WHICH
+ * asset kinds this build can float.
+ */
+export function inline3dUndockSupported() {
+  return inline3DAvailable() && hasUndock();
+}
+
 // The rig `virtualDisplayHeight` is shorthand for: a display rig, identity pose, all factors 1.
-// Written out here because setStereoEnabled has to be able to say "the default rig, but flat",
-// and there is no way to express that as a scalar — the whole descriptor has to be sent.
+// Written out here because the automatic 1-view collapse has to be able to say "the default rig,
+// but flat", and there is no way to express that as a scalar — the whole descriptor has to be sent.
 function defaultDisplayRig(win) {
   return {
     type: 'display',
@@ -283,18 +339,57 @@ function flattenedRig(rig) {
   return { ...rig, ipdFactor: 0, parallaxFactor: 0 };
 }
 
-// The reason setStereoEnabled is a composite and not a passthrough, said once, where the code is.
-let notedFlatLensNeedsFlatRig = false;
-function noteFlatLensNeedsFlatRig() {
-  if (notedFlatLensNeedsFlatRig) return;
-  notedFlatLensNeedsFlatRig = true;
+// Why the SDK collapses the rig behind the page's back, said once, where the code is.
+let notedAutoCollapse = false;
+function noteAutoCollapse() {
+  if (notedAutoCollapse) return;
+  notedAutoCollapse = true;
   console.info(
-    '[inline3d] setStereoEnabled(false) is flipping the LENS to 2D and zeroing the view rig ' +
-      "(ipdFactor/parallaxFactor -> 0) together. requestDisplayMode('2d') alone changes nothing " +
-      'about what the page submits: the panel keeps showing the woven stereo atlas, now flat, ' +
-      'which reads as a blurry double image. Flat lens + flat rig is the sharp 2D combination; ' +
-      'setStereoEnabled(true) puts both back.'
+    '[inline3d] The active rendering mode is 1-view, so this SDK has zeroed every window rig ' +
+      '(ipdFactor/parallaxFactor -> 0) — both eyes now render from one place. The runtime keeps ' +
+      'weaving the same two-view atlas whatever the page submits, so leaving stereo in it would ' +
+      'put two slightly different images on a flat panel, i.e. a blurry double image instead of ' +
+      '2D. Your rendering is unchanged; the flattening is a copy applied on the way to the layer ' +
+      'and it is undone the moment a 2-view mode goes active again.'
   );
+}
+
+// ── reading the two display events ──────────────────────────────────────────────────────
+//
+// The payload is read DEFENSIVELY, in the shape the 0128-era handling already established: an
+// event's own `detail` when it carries one, and otherwise the event object itself. A browser
+// mid-implementation carried nothing at all and the state had to be read back — which still
+// works, because an unreadable payload leaves the value unknown and the mode list answers it.
+// `!== undefined` rather than `in`: a CustomEvent always HAS a `detail` property, and a null one
+// is not a payload.
+function eventDetail(e) {
+  return e && e.detail !== undefined && e.detail !== null ? e.detail : undefined;
+}
+function eventPayloads(e) {
+  const d = eventDetail(e);
+  return d !== undefined ? [d, e] : [e];
+}
+/** The new active mode index an event carries — a bare number, `.modeIndex`, or `.mode`. -1 = not stated. */
+function eventModeIndex(e) {
+  for (const src of eventPayloads(e)) {
+    if (typeof src === 'number' && Number.isFinite(src)) return src;
+    if (src && typeof src === 'object') {
+      const v = src.modeIndex !== undefined ? src.modeIndex : src.mode;
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+    }
+  }
+  return -1;
+}
+/** The hardware display state an event carries — a bare '2d'/'3d' or `.state`. null = not stated. */
+function eventHardwareState(e) {
+  for (const src of eventPayloads(e)) {
+    if (src === '2d' || src === '3d') return src;
+    if (src && typeof src === 'object') {
+      const v = src.state !== undefined ? src.state : src.hardwareDisplayState;
+      if (v === '2d' || v === '3d') return v;
+    }
+  }
+  return null;
 }
 
 // One-shot notices about view rigs. Both are per-document, and both describe a situation that is
@@ -344,7 +439,10 @@ function noteRigWinsOverHeight() {
  *        exclusively via addGlobalOverlay()/data-inline3d-overlay. Ignored (nothing is
  *        scanned, no `will-change` is set on your DOM) on a browser with draw-order
  *        occlusion, where chrome occludes tiles by itself.
- * @returns {Promise<Inline3D | {supported:false, error?:Error}>}
+ * @returns {Promise<Inline3D | {supported:false, error?:Error}>} the manager, which also carries
+ *        the display API (`getDisplayInfo` / `getRenderingModes` / `requestRenderingMode` /
+ *        `setStereoEnabled`, `on`/`off`) and `undock` — `{model, splat}` on a browser with
+ *        `XRDisplayLayer.undock`, `null` on one without.
  */
 export async function createInline3D(opts = {}) {
   const { referenceSpace = 'viewer', lazy = true, rootMargin = '50% 0px', autoChrome = true } = opts;
@@ -441,6 +539,24 @@ class Inline3D {
     // Set once the legacy occlusion machinery has been retired (draw-order browser whose
     // capability flag could only be read from a live layer). See _standDownLegacyOcclusion.
     this._stoodDown = false;
+    // ── display state ────────────────────────────────────────────────────────────────
+    // What the panel is doing, as last REPORTED (the first getRenderingModes read, then every
+    // renderingmodechange / hardwaredisplaystatechange). Never what was last requested: a
+    // refused request must leave every one of these untouched.
+    this._activeModeIndex = -1;
+    this._activeViewCount = 0; // 0 = not read yet
+    this._hardwareDisplayState = null; // '2d' | '3d' | null (never reported)
+    this._modes = null; // last getRenderingModes() result, for the viewCount lookup
+    // The rig-collapse latch, MANAGER-wide because the mode is the display's, not a window's.
+    // While true every rig that leaves for a layer is pushed flat (a copy — each window's own
+    // `viewRig` always holds what the page asked for, untouched).
+    this._stereoCollapsed = false;
+    this._displayListeners = new Map(); // event type -> Set(callback), for on()/off()
+    this._primedDisplayState = false;
+    // Undock capabilities, refreshed off the first live layer (see _refreshUndock). Null is the
+    // load-bearing value: it means this browser has no XRDisplayLayer.undock at all.
+    this.undock = hasUndock() ? { model: false, splat: false } : null;
+    this._undockRead = false;
     this._running = true;
     this._lazy = lazy;
     this._observer =
@@ -465,6 +581,7 @@ class Inline3D {
     }
     liveManager = this;
     session.addEventListener('end', () => this._teardown());
+    this._bindDisplayEvents();
     this._scanChrome(); // page chrome usually exists before the session does
     this._bindLifecycle();
     this._armDprWatch();
@@ -746,100 +863,81 @@ class Inline3D {
        *
        * @returns {Promise<ReadonlyArray<object>>}
        */
-      getRenderingModes: () => this._layerCall(win, 'getRenderingModes', 'getRenderingModes()'),
+      getRenderingModes: () => this._getRenderingModes(win),
       /**
-       * Ask the runtime to switch the display to the mode with this `modeIndex`.
+       * Ask the runtime to switch the display to the mode with this `modeIndex`. A thin
+       * pass-through — it resolves and rejects exactly as the browser does.
        *
-       * Rejects with a `TypeError` when the mode is not 2-view (the browser renders exactly two
-       * views and cannot fill a 4-view atlas — no view synthesis exists anywhere in this stack),
-       * and with a `NotSupportedError` `DOMException` when the runtime refused the switch. The
-       * browser raises the TypeError SYNCHRONOUSLY; this passthrough is async, so it reaches you
-       * as a rejection either way and one `.catch()` covers both.
+       * Rejects with a `TypeError` for a mode with `viewCount > 2` (the browser renders exactly
+       * two views and cannot fill a 4-view atlas — no view synthesis exists anywhere in this
+       * stack) or an unknown index, and with a `NotSupportedError` `DOMException` when the
+       * request was not forwardable. The browser raises the TypeError SYNCHRONOUSLY; this
+       * pass-through is async, so it reaches you as a rejection either way and one `.catch()`
+       * covers both. On a browser without the API at all it rejects with a plain Error saying so.
        *
-       * On success the session fires `renderingmodechange` — see {@link onDisplayModeChange}.
-       * That event, not this promise, is when the new mode is in effect.
+       * A ONE-VIEW MODE IS REQUESTABLE, and requesting it is how a page goes flat: the browser
+       * puts the panel in its 2D hardware state and reports that mode active. The SDK then
+       * collapses every window's rig automatically (see {@link setStereoEnabled}) off the
+       * resulting `renderingmodechange` — so the request itself changes nothing about your
+       * rendering, and a REFUSED request changes nothing at all.
+       *
+       * On success the session fires `renderingmodechange` — see {@link on}. That event, not
+       * this promise, is when the new mode is in effect.
        *
        * @param {number} modeIndex
        * @returns {Promise<void>}
        */
-      requestRenderingMode: (modeIndex) =>
-        this._layerCall(win, 'requestRenderingMode', 'requestRenderingMode()', [modeIndex]),
+      requestRenderingMode: (modeIndex) => this._requestRenderingMode(modeIndex, win),
       /**
-       * Flip the display's LENS between `'2d'` and `'3d'`. Nothing else changes: the page keeps
-       * submitting the same stereo frames, the runtime keeps weaving them, and only the panel's
-       * optical layer moves.
+       * SUGAR over {@link requestRenderingMode}, and nothing more. `false` requests the first
+       * mode with `viewCount === 1 && isRequestable`; `true` requests the first with
+       * `viewCount === 2 && isRequestable`. It never touches the hardware display state
+       * directly — there is no such call in this API — and it never touches your rig.
        *
-       * Which is exactly the trap. With the lens at 2D the panel shows the WOVEN ATLAS FLAT — two
-       * slightly different images averaged into one, i.e. blurry — unless the page also fades its
-       * own stereo to zero. Use {@link setStereoEnabled} unless you specifically want the lens on
-       * its own; it does both halves.
+       * THE RIG COLLAPSE IS NOT PART OF THIS CALL. When a 1-view mode actually goes ACTIVE the
+       * SDK zeroes every window's `ipdFactor`/`parallaxFactor` on the way to the layer, and
+       * restores them when a 2-view mode goes active; that is driven by the
+       * `renderingmodechange` event (and by the first `getRenderingModes()` read), so it happens
+       * however the mode changed — this call, another tab, the shell — and a request that is
+       * REFUSED leaves everything exactly as it was, in both directions.
        *
-       * Rejects with a `NotSupportedError` `DOMException` when the runtime refused, and with a
-       * `TypeError` for anything that is not `'2d'` or `'3d'`. On success the session fires
-       * `hardwaredisplaystatechange`.
+       * The flattening is a COPY pushed at the layer, never a write into your descriptor: a page
+       * driving `setViewRig` every frame keeps having its rig stored intact and pushed flat, and
+       * the restore is exactly the rig it last asked for. A page that never set a rig gets the
+       * exact descriptor equivalent of its `virtualDisplayHeight`.
        *
-       * @param {'2d'|'3d'} mode
-       * @returns {Promise<void>}
-       */
-      requestDisplayMode: (mode) => {
-        if (mode !== '2d' && mode !== '3d') {
-          return Promise.reject(
-            new TypeError(
-              `[inline3d] requestDisplayMode() takes '2d' or '3d', got ${JSON.stringify(mode)}.`
-            )
-          );
-        }
-        return this._layerCall(win, 'requestDisplayMode', 'requestDisplayMode()', [mode]);
-      },
-      /**
-       * Go flat, or come back — the composite of the two halves that have to move TOGETHER.
-       *
-       * `setStereoEnabled(false)` zeroes this window's rig (`ipdFactor`/`parallaxFactor` -> 0, so
-       * both eyes render from one place) AND asks the lens for `'2d'`. Doing only the lens leaves
-       * the panel showing a stereo atlas flat, which is a blurry double image; doing only the rig
-       * leaves a mono image being lenticularly split, which halves the resolution for nothing.
-       * `setStereoEnabled(true)` restores both, lens first.
-       *
-       * HOW THE FACTORS COME BACK. The window already remembers the rig the page last set
-       * (`win.viewRig` — the lazy lifecycle needs it), and the flattening never touches that
-       * object: the flat rig is a COPY pushed at the layer. So "restore" is literally re-pushing
-       * the remembered rig, and it survives a page that keeps calling `setViewRig` every frame
-       * (each of those is stored intact and pushed flat while the latch is on), a tile that
-       * scrolls away and rebuilds its layer, and a page that never set a rig at all — for that
-       * last case the flat rig is derived from `virtualDisplayHeight`, whose exact rig equivalent
-       * (display, identity pose, factors 1) is what gets pushed back on restore. The factor
-       * values in force at the moment of the switch are also kept on the window
-       * (`win.stereoSaved`) for diagnostics.
-       *
-       * A REFUSED REQUEST IS A NO-OP, IN BOTH DIRECTIONS. The lens half is the one that can be
-       * declined (no live session, a workspace controller holding the entry point, a runtime
-       * error — all `NotSupportedError`), and by then the rig half has already moved. So either
-       * direction puts the rig back before rethrowing: you get your rejection, and the window is
-       * left exactly as it was rather than half-switched — mono under a 3D lens, or stereo under
-       * a flat one. Nothing is left for the caller to unwind.
-       *
-       * Needs a rig-capable browser to do the rig half; on one without it the lens still flips
-       * and `setViewRig`'s once-only warning explains the rest. Resolves to the state now in
-       * force. Rejects only if the lens request itself was refused.
+       * Rejects when no such mode is listed (a plain Error naming what was looked for), and
+       * otherwise exactly as `requestRenderingMode` does. Resolves to the boolean asked for —
+       * the request was accepted; the mode is in force when the event says so.
        *
        * @param {boolean} enabled
        * @returns {Promise<boolean>}
        */
-      setStereoEnabled: (enabled) => this._setStereoEnabled(win, enabled),
+      setStereoEnabled: (enabled) => this._setStereoEnabled(enabled, win),
       /**
-       * Subscribe to BOTH display events the session fires, with one callback:
+       * Subscribe to one display event, re-emitted on this handle:
        *
-       *   `renderingmodechange`        a rendering-mode switch took effect
-       *   `hardwaredisplaystatechange` the lens flipped between 2D and 3D
+       *   `renderingmodechange`        `{type, modeIndex, viewCount, mode, detail}`
+       *   `hardwaredisplaystatechange` `{type, state:'2d'|'3d', detail}`
        *
-       * They fire on the XRSession, not on the layer — so they arrive even for a window whose
-       * layer is currently closed, and a page that only wants to KNOW does not have to hold a
-       * live tile. The callback gets `{type, detail}`: `type` is the event name, `detail` is the
-       * event's own `detail` if it carries one and otherwise the event object itself (the API
-       * defines no payload dictionary, so the state is read back with `getRenderingModes()` /
-       * `getDisplayInfo()`).
+       * They originate on the XRSession, not on the layer — so they arrive even for a window
+       * whose layer is currently closed, and a page that only wants to KNOW does not have to
+       * hold a live tile. `detail` is the browser's own payload, kept as-is.
        *
-       * Returns an unsubscribe function. Inert (returns a no-op) on a browser without the API.
+       * Returns an unsubscribe function; `off(type, cb)` does the same. Inert (returns a no-op)
+       * on a browser without the API.
+       *
+       * @param {'renderingmodechange'|'hardwaredisplaystatechange'} type
+       * @param {(e:object) => void} cb
+       * @returns {() => void}
+       */
+      on: (type, cb) => this.on(type, cb),
+      /** Drop a listener registered with {@link on}. */
+      off: (type, cb) => this.off(type, cb),
+      /**
+       * BOTH display events through one callback — the older shape, kept because pages use it.
+       * The callback gets the same normalised object `on()` delivers (`{type, ...}` plus
+       * `detail`). Returns an unsubscribe function.
        *
        * @param {(e:{type:string, detail:any}) => void} cb
        * @returns {() => void}
@@ -849,6 +947,51 @@ class Inline3D {
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
       stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
     };
+  }
+
+  // ── the display (wall level) ──────────────────────────────────────────────────────────
+  //
+  // The panel is the DOCUMENT's, not a tile's: one display, one active rendering mode, one
+  // hardware state. These four are the same calls the tile handles carry (kept there because
+  // pages use them), routed through whichever window currently holds a live layer — so they
+  // keep working while a lazy tile is scrolled away, as long as ANY tile is live.
+
+  /** The panel: physical size, pixel size, the view scale it recommends. Null where there is none. */
+  getDisplayInfo() {
+    return this._layerCall(this._liveWindow(null), 'getDisplayInfo', 'getDisplayInfo()');
+  }
+
+  /** Every rendering mode the runtime can put this display in. See the handle's doc comment. */
+  getRenderingModes() {
+    return this._getRenderingModes(null);
+  }
+
+  /** Ask the runtime to switch the display to `modeIndex`. Pass-through; see the handle's doc. */
+  requestRenderingMode(modeIndex) {
+    return this._requestRenderingMode(modeIndex, null);
+  }
+
+  /** Sugar over {@link requestRenderingMode}: false -> a 1-view mode, true -> the 2-view mode. */
+  setStereoEnabled(enabled) {
+    return this._setStereoEnabled(enabled, null);
+  }
+
+  /**
+   * The hardware display state as last REPORTED by `hardwaredisplaystatechange` — `'2d'`,
+   * `'3d'`, or `null` when the browser has not said yet. Never what was last requested.
+   */
+  get hardwareDisplayState() {
+    return this._hardwareDisplayState;
+  }
+
+  /** The active mode's index and view count as last read/reported. `viewCount` 0 = not read yet. */
+  get activeMode() {
+    return { modeIndex: this._activeModeIndex, viewCount: this._activeViewCount };
+  }
+
+  /** True while the SDK is holding every window's rig flat because a 1-view mode is active. */
+  get stereoCollapsed() {
+    return this._stereoCollapsed;
   }
 
   close() {
@@ -873,7 +1016,7 @@ class Inline3D {
    * that scrolls away and rebuilds while stereo is off must not come back in 3D.
    */
   _effectiveViewRig(win) {
-    if (win.stereoEnabled) {
+    if (!this._stereoCollapsed) {
       // `stereoSynthRig`: this window never had a rig of its own, so going flat had to SEND one
       // (there is no way to say "the default, but flat" as a scalar). Coming back therefore has
       // to send the un-flat version explicitly too — returning null here would leave the layer
@@ -881,7 +1024,38 @@ class Inline3D {
       // `virtualDisplayHeight` the layer was built with, so nothing about the framing moves.
       return win.viewRig || (win.stereoSynthRig ? defaultDisplayRig(win) : null);
     }
+    // Going flat has to SEND a descriptor even for a window that never had a rig of its own
+    // (there is no way to say "the default, but flat" as a scalar), and that fact has to be
+    // remembered: coming back must then send the un-flat version explicitly, or the layer would
+    // hold the flattened rig forever. Recorded here rather than in the collapse itself because a
+    // window CREATED while the panel is already flat goes down this path on its first activate.
+    if (!win.viewRig) win.stereoSynthRig = true;
     return flattenedRig(win.viewRig || defaultDisplayRig(win));
+  }
+
+  /**
+   * Latch (or release) the manager-wide rig collapse and push every window's rig again.
+   *
+   * Driven ONLY by what the display reports — the first `getRenderingModes()` read and every
+   * `renderingmodechange` — never by a request. That is what makes a refused request a no-op in
+   * both directions: nothing here runs unless the mode actually changed.
+   */
+  _setStereoCollapsed(collapsed) {
+    const next = !!collapsed;
+    if (this._stereoCollapsed === next) return;
+    this._stereoCollapsed = next;
+    if (next) noteAutoCollapse();
+    for (const win of this._windows.values()) {
+      // Diagnostics only: the factors that were in force when the panel went flat. The restore
+      // itself just re-pushes `win.viewRig`, which was never mutated.
+      if (next) {
+        const rig = win.viewRig || defaultDisplayRig(win);
+        win.stereoSaved = { ipdFactor: rig.ipdFactor, parallaxFactor: rig.parallaxFactor };
+      } else {
+        win.stereoSaved = null;
+      }
+      this._pushViewRig(win);
+    }
   }
 
   /**
@@ -920,12 +1094,14 @@ class Inline3D {
       return Promise.reject(
         new Error(
           `[inline3d] ${label} needs a DisplayXR Browser with the display-mode API ` +
-            '(XRDisplayLayer.getDisplayInfo/getRenderingModes/requestRenderingMode/' +
-            'requestDisplayMode). Gate on inline3dDisplayModesSupported().'
+            '(XRDisplayLayer.getDisplayInfo/getRenderingModes/requestRenderingMode). ' +
+            'Gate on inline3dDisplayModesSupported().'
         )
       );
     }
-    if (!win.layer) {
+    // `win` is null when the WALL-level call ran with no window live at all — the same failure
+    // as a window whose layer is closed, and the same message covers both.
+    if (!win || !win.layer) {
       return Promise.reject(
         new Error(
           `[inline3d] ${label} needs a live weave layer, and this window has none right now ` +
@@ -943,92 +1119,228 @@ class Inline3D {
     }
   }
 
-  /** The composite behind `handle.setStereoEnabled` — see that doc comment for the contract. */
-  async _setStereoEnabled(win, enabled) {
-    const on = !!enabled;
-    if (win.stereoEnabled === on) return on;
-    if (!on) noteFlatLensNeedsFlatRig();
-
-    // ORDER IS THE WHOLE DESIGN. Both halves land a frame or so apart whatever we do, so the
-    // sequencing is chosen to make the SHORTEST-LIVED intermediate the least offensive one:
-    //   going flat  → zero the rig first (mono under a 3D lens: sharp, just depthless), then
-    //                 flip the lens.
-    //   coming back → flip the lens first (stereo under a 3D lens is what we are heading for),
-    //                 then restore the rig.
-    // The reverse of either shows a stereo atlas under a flat lens, which is the blurry double
-    // image this method exists to avoid.
-    //
-    // A REFUSED REQUEST IS A NO-OP, IN BOTH DIRECTIONS. The lens is the half that can be
-    // declined (no live session, a workspace controller holding the entry point, a runtime
-    // error — all of which come back as NotSupportedError), and the rig is the half that
-    // already moved by then. So each direction puts the rig back and rethrows: the caller gets
-    // its rejection, and the page is left exactly as it was rather than half-switched, which is
-    // a state nobody can recover from without knowing this method's internals.
-    win.stereoEnabled = on;
-    if (!on) {
-      if (!win.viewRig) win.stereoSynthRig = true; // see _effectiveViewRig
-      const effective = win.viewRig || defaultDisplayRig(win);
-      // Kept for diagnostics and for anyone reading the window state — the actual restore
-      // re-pushes win.viewRig, which was never mutated.
-      win.stereoSaved = {
-        ipdFactor: effective.ipdFactor,
-        parallaxFactor: effective.parallaxFactor,
-      };
-      this._pushViewRig(win);
-      try {
-        await this._layerCall(win, 'requestDisplayMode', 'requestDisplayMode()', ['2d']);
-      } catch (e) {
-        win.stereoEnabled = true;
-        win.stereoSaved = null;
-        // `stereoSynthRig` deliberately does NOT roll back. It is not part of the state the
-        // caller asked to change — it records that this window's LAYER has been handed an
-        // explicit rig at least once, and that already happened in the _pushViewRig above.
-        // Clearing it would make _effectiveViewRig answer null for a window with no page rig,
-        // _pushViewRig would send null at a layer currently holding the FLAT descriptor, and
-        // the rollback would leave the panel mono — precisely the half-switched state this
-        // catch exists to prevent. Leaving it true costs nothing observable: the rig it then
-        // sends is the exact equivalent of the virtualDisplayHeight the layer was built with.
-        this._pushViewRig(win); // stereoEnabled is true again ⇒ the un-flattened rig
-        throw e;
-      }
-      return false;
-    }
-    try {
-      await this._layerCall(win, 'requestDisplayMode', 'requestDisplayMode()', ['3d']);
-    } catch (e) {
-      win.stereoEnabled = false;
-      this._pushViewRig(win); // stereoEnabled is false again ⇒ the flattened rig
-      throw e;
-    }
-    // Only a SUCCESSFUL return to 3D clears the saved factors and restores the rig.
-    this._pushViewRig(win);
-    win.stereoSaved = null;
-    return true;
+  /** The first window currently holding a live layer, or null. Every display call needs one. */
+  _liveWindow(preferred) {
+    if (preferred && preferred.layer) return preferred;
+    for (const win of this._windows.values()) if (win.layer) return win;
+    return preferred || null;
   }
 
-  /** The session-event fan-in behind `handle.onDisplayModeChange`. */
+  /**
+   * `getRenderingModes()` with the manager's cache kept honest — every read updates the list the
+   * event path looks `viewCount` up in, and the first one PRIMES the display state (a page can
+   * open with the panel already flat, and the rig has to be collapsed for that too).
+   */
+  async _getRenderingModes(win) {
+    const list = await this._layerCall(
+      this._liveWindow(win),
+      'getRenderingModes',
+      'getRenderingModes()'
+    );
+    const modes = Array.isArray(list) ? list : [];
+    this._modes = modes;
+    const active = modes.find((m) => m.isActive);
+    if (active) {
+      this._activeModeIndex = active.modeIndex;
+      this._activeViewCount = active.viewCount;
+      if (active.viewCount === 1 || active.viewCount === 2) {
+        this._setStereoCollapsed(active.viewCount === 1);
+      }
+    }
+    this._primedDisplayState = true;
+    return list;
+  }
+
+  /** `requestRenderingMode()` — a pass-through; see the handle's doc comment for the contract. */
+  _requestRenderingMode(modeIndex, win) {
+    return this._layerCall(
+      this._liveWindow(win),
+      'requestRenderingMode',
+      'requestRenderingMode()',
+      [modeIndex]
+    );
+  }
+
+  /**
+   * The sugar behind `setStereoEnabled` — pick a mode by view count and request it. Nothing
+   * else: the rig follows the resulting `renderingmodechange`, not this call.
+   */
+  async _setStereoEnabled(enabled, win) {
+    const want = enabled ? 2 : 1;
+    const modes = await this._getRenderingModes(win);
+    const list = Array.isArray(modes) ? modes : [];
+    const mode = list.find((m) => m.viewCount === want && m.isRequestable);
+    if (!mode) {
+      throw new Error(
+        `[inline3d] setStereoEnabled(${!!enabled}) found no requestable ${want}-view mode on ` +
+          `this display (${list.length} mode(s) listed). It is sugar over requestRenderingMode() ` +
+          'and cannot invent one — read getRenderingModes() and drive the list yourself.'
+      );
+    }
+    if (mode.isActive) return !!enabled; // already there; the request would be a no-op anyway
+    await this._requestRenderingMode(mode.modeIndex, win);
+    return !!enabled;
+  }
+
+  // ── display events ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Subscribe the manager ONCE to each session event and fan out from there. One subscription
+   * per document rather than one per caller, because the SDK has to act on these itself (the
+   * automatic rig collapse) whether or not the page is listening.
+   */
+  _bindDisplayEvents() {
+    const session = this.session;
+    if (!session || typeof session.addEventListener !== 'function') return;
+    if (!hasDisplayModes()) return;
+    session.addEventListener('renderingmodechange', (e) => {
+      this._onRenderingModeChange(e).catch(() => {});
+    });
+    session.addEventListener('hardwaredisplaystatechange', (e) => {
+      this._onHardwareDisplayStateChange(e).catch(() => {});
+    });
+  }
+
+  /**
+   * The hardware display state moved. The browser's event is payload-free (an XRSessionEvent),
+   * so the state is READ, not parsed: under the mode-only contract the page-facing active mode's
+   * `hardwareDisplay3D` IS the hardware state by construction (a 1-view mode is presented for
+   * exactly as long as the hardware is in the state it declares; a 2-view mode's default state
+   * is what the runtime restored). A payload, if a future browser adds one, wins over the read.
+   */
+  async _onHardwareDisplayStateChange(e) {
+    let state = eventHardwareState(e);
+    if (!state) {
+      try {
+        const list = await this._getRenderingModes(null);
+        const active = (Array.isArray(list) ? list : []).find((m) => m.isActive);
+        if (active && typeof active.hardwareDisplay3D === 'boolean') {
+          state = active.hardwareDisplay3D ? '3d' : '2d';
+        }
+      } catch {
+        /* no live layer / no API — deliver the event with whatever was last known */
+      }
+    }
+    if (state) this._hardwareDisplayState = state;
+    this._emitDisplay({
+      type: 'hardwaredisplaystatechange',
+      state: state || this._hardwareDisplayState,
+      detail: eventDetail(e),
+    });
+  }
+
+  /**
+   * A rendering mode went active. Two jobs, in this order: learn its VIEW COUNT (which is what
+   * the rig collapse turns on, and which only the mode list carries), then tell the page.
+   *
+   * The list is re-read rather than trusted from cache — it is the runtime's, and a mode can
+   * change under us — but the read is best-effort: with no live layer the index the event
+   * carried is all there is, and the event is still worth delivering.
+   */
+  async _onRenderingModeChange(e) {
+    const detail = eventDetail(e);
+    const evIndex = eventModeIndex(e);
+    let mode = null;
+    try {
+      const list = await this._getRenderingModes(null);
+      const arr = Array.isArray(list) ? list : [];
+      mode = (evIndex >= 0 ? arr.find((m) => m.modeIndex === evIndex) : null) || arr.find((m) => m.isActive) || null;
+    } catch {
+      /* no live layer / no API — fall through to what the event itself said */
+    }
+    if (mode) {
+      this._activeModeIndex = mode.modeIndex;
+      this._activeViewCount = mode.viewCount;
+    } else if (evIndex >= 0) {
+      this._activeModeIndex = evIndex;
+    }
+    // Only ever driven by a REPORTED view count. An unknown one (the read failed) leaves the rig
+    // exactly as it is — half-collapsing on a guess is worse than being one event late.
+    if (this._activeViewCount === 1 || this._activeViewCount === 2) {
+      this._setStereoCollapsed(this._activeViewCount === 1);
+    }
+    this._emitDisplay({
+      type: 'renderingmodechange',
+      modeIndex: this._activeModeIndex,
+      viewCount: this._activeViewCount || null,
+      mode,
+      detail,
+    });
+  }
+
+  /** Deliver one normalised display event to every listener. A throwing page handler is contained. */
+  _emitDisplay(ev) {
+    const set = this._displayListeners.get(ev.type);
+    if (!set) return;
+    for (const cb of [...set]) {
+      try {
+        cb(ev);
+      } catch (err) {
+        console.error(`[inline3d] ${ev.type} listener threw`, err);
+      }
+    }
+  }
+
+  /**
+   * Listen for `renderingmodechange` / `hardwaredisplaystatechange` on this manager. See the
+   * handle's `on()` doc for the payload shapes. Returns an unsubscribe function.
+   */
+  on(type, cb) {
+    if (typeof cb !== 'function') throw new TypeError('[inline3d] on() takes (type, function).');
+    if (!DISPLAY_EVENTS.includes(type)) {
+      throw new TypeError(
+        `[inline3d] on() knows ${DISPLAY_EVENTS.join(' / ')}, got ${JSON.stringify(type)}.`
+      );
+    }
+    let set = this._displayListeners.get(type);
+    if (!set) this._displayListeners.set(type, (set = new Set()));
+    set.add(cb);
+    return () => this.off(type, cb);
+  }
+
+  /** Drop a listener registered with {@link on}. */
+  off(type, cb) {
+    const set = this._displayListeners.get(type);
+    if (set) set.delete(cb);
+  }
+
+  /** Both display events through one callback — the older shape. Returns an unsubscribe. */
   _onDisplayModeChange(cb) {
     if (typeof cb !== 'function') {
       throw new TypeError('[inline3d] onDisplayModeChange() takes a function.');
     }
-    const session = this.session;
-    if (!session || typeof session.addEventListener !== 'function') return () => {};
-    const forward = (e) => {
-      try {
-        // The API defines no payload dictionary, so an event that carries nothing hands the
-        // page the event itself (from which the state is read back with getRenderingModes() /
-        // getDisplayInfo()). `!== undefined` rather than `in`: a CustomEvent always HAS a
-        // `detail` property, and a null one is not a payload.
-        cb({ type: e.type, detail: e && e.detail !== undefined && e.detail !== null ? e.detail : e });
-      } catch (err) {
-        // A page's own handler throwing must not take the session's event dispatch with it.
-        console.error('[inline3d] onDisplayModeChange callback threw', err);
-      }
-    };
-    for (const type of DISPLAY_EVENTS) session.addEventListener(type, forward);
+    const offs = DISPLAY_EVENTS.map((type) => this.on(type, cb));
     return () => {
-      for (const type of DISPLAY_EVENTS) session.removeEventListener(type, forward);
+      for (const off of offs) off();
     };
+  }
+
+  // ── undock ────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Re-read `layer.getUndockCapabilities()` into `wall.undock`.
+   *
+   * `undock` starts as `{model:false, splat:false}` on a browser that HAS the API, because the
+   * capabilities can only be read off a live layer and there is none at create time — false is
+   * the honest pre-read value ("not known to work"), and `null` is reserved for the thing a page
+   * actually branches on: no `XRDisplayLayer.undock` at all. Called automatically on the first
+   * layer activation; call it again whenever a page wants a fresh answer.
+   *
+   * @returns {Promise<{model:boolean, splat:boolean}|null>}
+   */
+  async refreshUndock() {
+    if (!hasUndock()) return (this.undock = null);
+    const win = this._liveWindow(null);
+    if (!win || !win.layer || typeof win.layer.getUndockCapabilities !== 'function') {
+      return this.undock;
+    }
+    try {
+      const caps = await win.layer.getUndockCapabilities();
+      this.undock = { model: !!(caps && caps.model), splat: !!(caps && caps.splat) };
+    } catch {
+      /* a refusal is not a capability change — keep the last answer */
+    }
+    return this.undock;
   }
 
   _register(canvas, kind, opts) {
@@ -1056,12 +1368,11 @@ class Inline3D {
       // and rebuilds layers behind the page's back: a tile that scrolls away and back would
       // otherwise silently revert to the default display rig mid-scene.
       viewRig: opts.viewRig || null,
-      // setStereoEnabled's latch. While false, every rig that leaves for the layer is pushed
-      // FLAT (a copy — `viewRig` above always holds what the page asked for, untouched), so a
-      // page driving a rig per frame cannot walk out of 2D and a re-activated tile cannot come
-      // back in 3D. `stereoSaved` records the factors in force when it was switched off; the
-      // restore itself just re-pushes `viewRig`.
-      stereoEnabled: true,
+      // The automatic 1-view collapse (the latch itself is manager-wide — the mode is the
+      // display's, not this window's). `stereoSaved` records the factors in force when the panel
+      // went flat, for diagnostics; the restore just re-pushes `viewRig`, which the flattening
+      // never touched. `stereoSynthRig` records that this window's LAYER has been handed an
+      // explicit rig at least once, so coming back has to send the un-flat one explicitly.
       stereoSaved: null,
       stereoSynthRig: false,
       observeEl: opts.observe || canvas,
@@ -1147,16 +1458,25 @@ class Inline3D {
       win.layer = null;
       return;
     }
-    // The LENS half of setStereoEnabled, re-asserted on the new layer. The rig travelled in the
-    // init above; the lens is a request against a layer, and the one that carried it is gone.
-    // Best-effort and unawaited on purpose: this runs inside the scroll-driven activation path,
-    // and a runtime that refuses (or a build without the API) must not break the activation.
-    if (!win.stereoEnabled && hasDisplayModes()) {
-      try {
-        Promise.resolve(win.layer.requestDisplayMode('2d')).catch(() => {});
-      } catch {
-        /* a synchronous refusal is the same non-event as an async one */
-      }
+    // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
+    // mode is the DISPLAY's, it survives a tile scrolling away, and this SDK never requests it
+    // behind the page's back. The rig went into the init above already flattened if a 1-view
+    // mode is active (_effectiveViewRig), which is the only half a new layer has to be told.
+    //
+    // FIRST LAYER, FIRST READ. The display's capabilities can only be read off a live layer, so
+    // this is the earliest point the SDK can learn (a) which mode is active — a page can open
+    // with the panel already flat, and the rig has to be collapsed for that too — and (b) what
+    // this build can undock. Both best-effort and unawaited: they run inside the scroll-driven
+    // activation path and must never break it.
+    if (!this._primedDisplayState && hasDisplayModes()) {
+      this._primedDisplayState = true; // one attempt per manager, not one per activation
+      this._getRenderingModes(win).catch(() => {
+        this._primedDisplayState = false; // the read failed; let the next activation try again
+      });
+    }
+    if (hasUndock() && this.undock && !this._undockRead) {
+      this._undockRead = true;
+      this.refreshUndock().catch(() => {});
     }
     // First real layer: if the occlusion capability is per-instance, this is the earliest point
     // it can be read (see sampleDrawOrderOcclusion) — and if it says the browser occludes by
@@ -1712,6 +2032,9 @@ class Inline3D {
       }
     }
     this._windows.clear();
+    // Page listeners go with the session that fed them: a manager whose session has ended will
+    // never emit again, and holding the callbacks would keep the page's closures alive.
+    this._displayListeners.clear();
   }
 }
 
@@ -1748,8 +2071,8 @@ function drawEye(ctx, src, sx, sy, sw, sh, dx, dy, dw, dh, radius, feather) {
 
 // Fade this EYE's outer edges to transparent, so the 3D window dissolves into the page
 // instead of ending at a hard rectangle. Same spirit as the runtime feathering a 3D zone's
-// edge — but note that is the hardware WISH MASK (lens control, never content); this is the
-// content-side equivalent, and the two are independent.
+// edge — but note that is the hardware WISH MASK (it drives the hardware display state, never
+// content); this is the content-side equivalent, and the two are independent.
 //
 // Per-eye, like cornerRadius, and for the same reason: the weave splits the element's rect
 // down the middle, so anything applied across the whole (side-by-side) buffer gets halved —

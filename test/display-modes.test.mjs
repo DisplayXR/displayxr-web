@@ -1,13 +1,15 @@
-// Tests for the display-mode surface — `inline3dDisplayModesSupported()`, the four
-// passthroughs on the tile handle, `setStereoEnabled()` and `onDisplayModeChange()`.
+// Tests for the display-mode surface — `inline3dDisplayModesSupported()`, the three
+// pass-throughs, the `setStereoEnabled()` sugar, the AUTOMATIC 1-view rig collapse, the two
+// re-emitted events, and the undock capability/fallback.
 //
-// Like the view-rig tests, the SDK's job here is PLUMBING, so what is worth pinning is not
-// values but sequencing and ownership: that the capability probe demands all four methods, that
-// a call with no live layer rejects instead of throwing, that `setStereoEnabled(false)` flips the
-// LENS and flattens the RIG together, that the flattening is a COPY (a page's own descriptor is
-// never written into, which is what makes the restore exact), that the latch survives a page
-// driving `setViewRig` every frame and a lazy tile rebuilding its layer, and that the session
-// events fan in and unsubscribe. Hence recording stubs and no real browser.
+// Like the view-rig tests, the SDK's job here is PLUMBING, so what is worth pinning is not values
+// but sequencing and ownership: that the capability probe demands all three methods, that a call
+// with no live layer rejects instead of throwing, that the rig collapse is driven by the EVENT and
+// never by the request (which is what makes a refused request a no-op), that the flattening is a
+// COPY (a page's own descriptor is never written into, which is what makes the restore exact),
+// that the latch survives a page driving `setViewRig` every frame and a lazy tile rebuilding its
+// layer, and that `setStereoEnabled` is sugar over one mode request and nothing else. Hence
+// recording stubs and no real browser.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,70 +25,88 @@ const DISPLAY_INFO = {
   recommendedViewScaleY: 1,
 };
 
-const MODES = [
-  {
-    modeIndex: 0,
-    modeName: '2D',
-    viewCount: 1,
-    viewScaleX: 1,
-    viewScaleY: 1,
-    tileColumns: 1,
-    tileRows: 1,
-    viewWidthPixels: 3840,
-    viewHeightPixels: 2160,
-    hardwareDisplay3D: false,
-    isActive: true,
-    isRequestable: false,
-  },
-  {
-    modeIndex: 1,
-    modeName: 'Side-by-side',
-    viewCount: 2,
-    viewScaleX: 0.5,
-    viewScaleY: 1,
-    tileColumns: 2,
-    tileRows: 1,
-    viewWidthPixels: 1920,
-    viewHeightPixels: 2160,
-    hardwareDisplay3D: true,
-    isActive: false,
-    isRequestable: true,
-  },
-  {
-    modeIndex: 2,
-    modeName: 'Quad',
-    viewCount: 4,
-    viewScaleX: 0.5,
-    viewScaleY: 0.5,
-    tileColumns: 2,
-    tileRows: 2,
-    viewWidthPixels: 1920,
-    viewHeightPixels: 1080,
-    hardwareDisplay3D: true,
-    isActive: false,
-    isRequestable: false, // the browser is fixed at 2 views
-  },
-];
+/**
+ * A fresh mode list per environment, because `isActive` MOVES — the browser reports a switch by
+ * changing which row is active and firing `renderingmodechange`, and the SDK reads the view count
+ * back out of the list. A shared frozen constant would make the second test in a file see the
+ * first one's panel.
+ *
+ * Mode 0 is the 1-view mode and it is REQUESTABLE: that is the shape this whole rework is about —
+ * asking for it is how a page goes flat. Mode 2 needs four views and no browser can fill it.
+ */
+function makeModes() {
+  return [
+    {
+      modeIndex: 0,
+      name: '2D',
+      viewCount: 1,
+      viewScaleX: 1,
+      viewScaleY: 1,
+      tileColumns: 1,
+      tileRows: 1,
+      viewWidthPixels: 3840,
+      viewHeightPixels: 2160,
+      hardwareDisplay3D: false,
+      isActive: false,
+      isRequestable: true,
+    },
+    {
+      modeIndex: 1,
+      name: 'Side-by-side',
+      viewCount: 2,
+      viewScaleX: 0.5,
+      viewScaleY: 1,
+      tileColumns: 2,
+      tileRows: 1,
+      viewWidthPixels: 1920,
+      viewHeightPixels: 2160,
+      hardwareDisplay3D: true,
+      isActive: true,
+      isRequestable: true,
+    },
+    {
+      modeIndex: 2,
+      name: 'Quad',
+      viewCount: 4,
+      viewScaleX: 0.5,
+      viewScaleY: 0.5,
+      tileColumns: 2,
+      tileRows: 2,
+      viewWidthPixels: 1920,
+      viewHeightPixels: 1080,
+      hardwareDisplay3D: true,
+      isActive: false,
+      isRequestable: false, // the browser is fixed at 2 views
+    },
+  ];
+}
 
 /**
  * A recording XRDisplayLayer class.
  *   `displayModes:false` builds a browser that predates the API entirely.
- *   `partial:true`       builds one mid-implementation (three of the four methods) — the case
- *                        the all-four probe exists to refuse.
- *   `refuseLens`         which lens requests to reject: true (all), or '2d' / '3d' to refuse
- *                        one direction — the shape the no-op rollback tests need, since a
- *                        refusal in one direction must leave the OTHER one reachable.
+ *   `partial:true`       builds one mid-implementation (two of the three methods) — the case the
+ *                        all-three probe exists to refuse.
+ *   `refuse`             mode indices `requestRenderingMode` rejects with NotSupportedError.
+ *   `undock`             adds `undock()` + `getUndockCapabilities()` to the prototype.
  */
-function makeLayerClass({ viewRig = true, displayModes = true, partial = false, refuseLens = false } = {}) {
+function makeLayerClass({
+  viewRig = true,
+  displayModes = true,
+  partial = false,
+  refuse = [],
+  undock = false,
+  undockCaps = { model: true, splat: false },
+} = {}) {
   const created = [];
+  const modes = makeModes();
   class FakeDisplayLayer {
     constructor(session, canvas, init) {
       this.session = session;
       this.canvas = canvas;
       this.init = init;
       this.rigs = [];
-      this.lensRequests = [];
       this.modeRequests = [];
+      this.undockRequests = [];
       this.closed = false;
       created.push(this);
     }
@@ -108,29 +128,39 @@ function makeLayerClass({ viewRig = true, displayModes = true, partial = false, 
       return DISPLAY_INFO;
     };
     P.getRenderingModes = async function getRenderingModes() {
-      return MODES;
-    };
-    P.requestRenderingMode = function requestRenderingMode(i) {
-      // The browser raises this one SYNCHRONOUSLY — the SDK has to turn it into a rejection.
-      const mode = MODES.find((m) => m.modeIndex === i);
-      if (!mode || mode.viewCount !== 2) throw new TypeError('viewCount != 2');
-      this.modeRequests.push(i);
-      return Promise.resolve();
+      return modes;
     };
     if (!partial) {
-      P.requestDisplayMode = function requestDisplayMode(m) {
-        this.lensRequests.push(m);
-        const refuse = refuseLens === true || refuseLens === m;
-        return refuse ? Promise.reject(new Error('NotSupportedError')) : Promise.resolve();
+      P.requestRenderingMode = function requestRenderingMode(i) {
+        // The browser raises these SYNCHRONOUSLY — the SDK has to turn them into rejections.
+        const mode = modes.find((m) => m.modeIndex === i);
+        if (!mode) throw new TypeError('unknown modeIndex');
+        if (mode.viewCount > 2) throw new TypeError('viewCount > 2');
+        this.modeRequests.push(i);
+        if (refuse.includes(i)) {
+          const e = new Error('not forwardable');
+          e.name = 'NotSupportedError';
+          return Promise.reject(e);
+        }
+        return Promise.resolve();
       };
     }
   }
-  return { FakeDisplayLayer, created };
+  if (undock) {
+    P.getUndockCapabilities = async function getUndockCapabilities() {
+      return undockCaps;
+    };
+    P.undock = function undockCall(init) {
+      this.undockRequests.push(init);
+      return new Promise(() => {}); // pending until the viewer exits
+    };
+  }
+  return { FakeDisplayLayer, created, modes };
 }
 
 /** Install the globals createInline3D touches, and hand back the levers to drive them. */
 function installEnv(opts = {}) {
-  const { FakeDisplayLayer, created } = makeLayerClass(opts);
+  const { FakeDisplayLayer, created, modes } = makeLayerClass(opts);
   const observers = [];
   const listeners = new Map();
   const session = {
@@ -155,6 +185,7 @@ function installEnv(opts = {}) {
     devicePixelRatio: 1,
     addEventListener() {},
     removeEventListener() {},
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
   };
   globalThis.XRDisplayLayer = FakeDisplayLayer;
   globalThis.document = undefined;
@@ -177,10 +208,18 @@ function installEnv(opts = {}) {
   return {
     session,
     created,
+    modes,
     listenerCount: (type) => listeners.get(type)?.size ?? 0,
-    /** Fire a session event the way the browser would after a mode/lens change. */
     fire(type, detail) {
       for (const fn of listeners.get(type) ?? []) fn({ type, detail });
+    },
+    /**
+     * What the browser does when a mode actually goes active: the list moves, THEN the event
+     * fires. Nothing in the SDK may act on a request before this.
+     */
+    goActive(i) {
+      for (const m of modes) m.isActive = m.modeIndex === i;
+      this.fire('renderingmodechange', { modeIndex: i });
     },
     intersect(el, isIntersecting) {
       for (const o of observers) o.cb([{ target: el, isIntersecting }]);
@@ -196,9 +235,17 @@ function makeCanvas() {
     clientWidth: 300,
     clientHeight: 150,
     parentElement: null,
+    contains: () => false,
     getBoundingClientRect: () => ({ x: 0, y: 0, width: 300, height: 150, right: 300, bottom: 150, left: 0, top: 0 }),
   };
 }
+
+/**
+ * Let the SDK's own async work settle. Both the first mode read and the event handler are
+ * `async` and deliberately unawaited by the caller (they run inside activation / dispatch), so a
+ * test that asserts immediately after would be asserting on a half-applied state.
+ */
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 /** Silence the once-only console.info notices so the test output stays readable. */
 function quietInfo(fn) {
@@ -209,14 +256,24 @@ function quietInfo(fn) {
   });
 }
 
-const env = installEnv();
-const { createInline3D, inline3dDisplayModesSupported } = await import('../js/inline3d.js');
+installEnv();
+const { createInline3D, inline3dDisplayModesSupported, inline3dUndockSupported, undockUrl } =
+  await import('../js/inline3d.js');
 
 const CAM_RIG = { type: 'camera', position: { x: 0, y: 0, z: 0 }, verticalFov: 0.8, ipdFactor: 2, parallaxFactor: 2 };
 
+/** A live, non-lazy wall with one scene window whose first mode read has already landed. */
+async function makeWall(env, opts = {}) {
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  const canvas = makeCanvas();
+  const handle = wall.addScene(canvas, () => {}, opts);
+  await flush();
+  return { wall, handle, canvas, layer: env.created[0] };
+}
+
 // ── 1. capability gating ────────────────────────────────────────────────────────────────
 
-test('inline3dDisplayModesSupported is true when all four methods are on the prototype', () => {
+test('inline3dDisplayModesSupported is true when all three methods are on the prototype', () => {
   installEnv();
   assert.equal(inline3dDisplayModesSupported(), true);
 });
@@ -226,12 +283,12 @@ test('inline3dDisplayModesSupported is false on a browser that predates the API'
   assert.equal(inline3dDisplayModesSupported(), false);
 });
 
-test('inline3dDisplayModesSupported demands ALL FOUR — a partial browser is not supported', () => {
+test('inline3dDisplayModesSupported demands ALL THREE — a partial browser is not supported', () => {
   installEnv({ partial: true });
   assert.equal(
     inline3dDisplayModesSupported(),
     false,
-    'three of four would surface as "requestDisplayMode is not a function" inside a click handler'
+    'two of three would surface as "requestRenderingMode is not a function" inside a click handler'
   );
 });
 
@@ -242,42 +299,49 @@ test('inline3dDisplayModesSupported is false with no XRDisplayLayer at all', () 
   installEnv();
 });
 
-// ── 2. the passthroughs ─────────────────────────────────────────────────────────────────
+// ── 2. the pass-throughs ────────────────────────────────────────────────────────────────
 
 test('getDisplayInfo and getRenderingModes hand the runtime report through unreshaped', async () => {
-  installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+  const env = installEnv();
+  const { wall, handle } = await makeWall(env);
   assert.deepEqual(await handle.getDisplayInfo(), DISPLAY_INFO);
-  assert.deepEqual(await handle.getRenderingModes(), MODES);
+  assert.deepEqual(await handle.getRenderingModes(), env.modes);
+  // The same names on the wall, because the panel is the document's, not a tile's.
+  assert.deepEqual(await wall.getDisplayInfo(), DISPLAY_INFO);
+  assert.deepEqual(await wall.getRenderingModes(), env.modes);
   wall.close();
 });
 
 test('requestRenderingMode forwards a 2-view mode', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
   await handle.requestRenderingMode(1);
-  assert.deepEqual(e.created[0].modeRequests, [1]);
+  assert.deepEqual(layer.modeRequests, [1]);
   wall.close();
 });
 
-test("the browser's SYNCHRONOUS TypeError for a non-2-view mode arrives as a rejection", async () => {
-  installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+test('requestRenderingMode forwards a ONE-view mode — that is how a page goes flat', async () => {
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
+  await handle.requestRenderingMode(0);
+  assert.deepEqual(layer.modeRequests, [0], 'viewCount 1 is requestable, not refused');
+  wall.close();
+});
+
+test("the browser's SYNCHRONOUS TypeError for a >2-view mode arrives as a rejection", async () => {
+  const env = installEnv();
+  const { wall, handle } = await makeWall(env);
   // The point: one .catch() covers both failure shapes, so a page never needs a try/catch AND a
   // .catch() around the same call.
   await assert.rejects(() => handle.requestRenderingMode(2), TypeError);
+  await assert.rejects(() => handle.requestRenderingMode(99), TypeError);
   wall.close();
 });
 
-test('requestDisplayMode refuses anything that is not 2d or 3d, without reaching the layer', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
-  await assert.rejects(() => handle.requestDisplayMode('flat'), TypeError);
-  assert.deepEqual(e.created[0].lensRequests, []);
+test('a NotSupportedError from the browser propagates unchanged', async () => {
+  const env = installEnv({ refuse: [0] });
+  const { wall, handle } = await makeWall(env);
+  await assert.rejects(() => handle.requestRenderingMode(0), { name: 'NotSupportedError' });
   wall.close();
 });
 
@@ -294,229 +358,379 @@ test('a display-mode call on a browser without the API rejects with a clear Erro
 });
 
 test('a display-mode call with no live layer rejects and says WHY (lazy tile off screen)', async () => {
-  const e = installEnv();
+  const env = installEnv();
   const wall = await createInline3D({ lazy: true, autoChrome: false });
   const canvas = makeCanvas();
   const handle = wall.addScene(canvas, () => {});
-  assert.equal(e.created.length, 0, 'a lazy tile has no layer until it intersects');
+  assert.equal(env.created.length, 0, 'a lazy tile has no layer until it intersects');
   await assert.rejects(() => handle.getRenderingModes(), /live weave layer/);
+  await assert.rejects(() => wall.getDisplayInfo(), /live weave layer/);
   wall.close();
 });
 
-// ── 3. setStereoEnabled — the composite ─────────────────────────────────────────────────
+// ── 3. the AUTOMATIC rig collapse ───────────────────────────────────────────────────────
+//
+// The whole invariant of this rework: the rig follows the ACTIVE MODE, reported by the event —
+// never a request. So every test here drives `goActive()`, and the refusal tests drive a request
+// and assert that nothing moved.
 
-test('setStereoEnabled(false) flattens the rig AND flips the lens; (true) restores both', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+test('a 1-view mode going active flattens the rig; a 2-view mode restores it', async () => {
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
   handle.setViewRig(CAM_RIG);
-  const layer = e.created[0];
   assert.deepEqual(layer.rigs.at(-1), CAM_RIG);
 
-  await quietInfo(() => handle.setStereoEnabled(false));
-  assert.deepEqual(layer.lensRequests, ['2d']);
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
   assert.equal(layer.rigs.at(-1).ipdFactor, 0);
   assert.equal(layer.rigs.at(-1).parallaxFactor, 0);
   assert.equal(layer.rigs.at(-1).verticalFov, CAM_RIG.verticalFov, 'only the two factors move');
+  assert.equal(wall.stereoCollapsed, true);
 
-  await handle.setStereoEnabled(true);
-  assert.deepEqual(layer.lensRequests, ['2d', '3d']);
+  env.goActive(1);
+  await flush();
   assert.deepEqual(layer.rigs.at(-1), CAM_RIG, 'restore is the rig the page last set, exactly');
+  assert.equal(wall.stereoCollapsed, false);
   wall.close();
 });
 
 test("the flattening is a COPY — the page's own descriptor is never written into", async () => {
-  installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+  const env = installEnv();
+  const { wall, handle } = await makeWall(env);
   // A page driving a rig per frame reuses ONE object (cameraRigFromCamera's `out`). Zeroing it in
   // place would write the flattening into the page's state and the restore would restore 0.
   const reused = { ...CAM_RIG };
   handle.setViewRig(reused);
-  await quietInfo(() => handle.setStereoEnabled(false));
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
   assert.equal(reused.ipdFactor, 2, 'the caller keeps its factors');
   assert.equal(reused.parallaxFactor, 2);
   wall.close();
 });
 
 test('the latch survives a page that keeps calling setViewRig every frame', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
-  await quietInfo(() => handle.setStereoEnabled(false));
-  const layer = e.created[0];
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
   for (let i = 0; i < 3; i++) handle.setViewRig({ ...CAM_RIG, convergenceDiopters: i });
   for (const rig of layer.rigs.slice(-3)) {
     assert.equal(rig.ipdFactor, 0, 'a per-frame rig must not walk the page out of 2D');
     assert.equal(rig.parallaxFactor, 0);
   }
   // ...and the page's intent is still what comes back.
-  await handle.setStereoEnabled(true);
+  env.goActive(1);
+  await flush();
   assert.equal(layer.rigs.at(-1).convergenceDiopters, 2);
   assert.equal(layer.rigs.at(-1).ipdFactor, 2);
   wall.close();
 });
 
 test('a window with no rig of its own is flattened via the virtualDisplayHeight equivalent', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {}, { virtualDisplayHeight: 0.4 });
-  await quietInfo(() => handle.setStereoEnabled(false));
-  const flat = e.created[0].rigs.at(-1);
+  const env = installEnv();
+  const { wall, layer } = await makeWall(env, { virtualDisplayHeight: 0.4 });
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  const flat = layer.rigs.at(-1);
   assert.equal(flat.type, 'display');
   assert.equal(flat.virtualDisplayHeight, 0.4, 'the scalar becomes its exact rig equivalent');
   assert.equal(flat.ipdFactor, 0);
   // Restore sends the same descriptor with the factors back at 1 — which IS the default rig.
-  await handle.setStereoEnabled(true);
-  assert.equal(e.created[0].rigs.at(-1).ipdFactor, 1);
-  assert.equal(e.created[0].rigs.at(-1).virtualDisplayHeight, 0.4);
+  env.goActive(1);
+  await flush();
+  assert.equal(layer.rigs.at(-1).ipdFactor, 1);
+  assert.equal(layer.rigs.at(-1).virtualDisplayHeight, 0.4);
+  wall.close();
+});
+
+test('EVERY window collapses, not just the one that was asked — the mode is the display\'s', async () => {
+  const env = installEnv();
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  const a = wall.addScene(makeCanvas(), () => {});
+  const b = wall.addScene(makeCanvas(), () => {});
+  await flush();
+  a.setViewRig({ ...CAM_RIG });
+  b.setViewRig({ ...CAM_RIG });
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  assert.equal(env.created[0].rigs.at(-1).ipdFactor, 0);
+  assert.equal(env.created[1].rigs.at(-1).ipdFactor, 0);
   wall.close();
 });
 
 test('a lazy tile that rebuilds its layer while flat comes back FLAT, not in 3D', async () => {
-  const e = installEnv();
+  const env = installEnv();
   const wall = await createInline3D({ lazy: true, autoChrome: false });
   const canvas = makeCanvas();
   const handle = wall.addScene(canvas, () => {});
-  e.intersect(canvas, true);
+  env.intersect(canvas, true);
+  await flush();
   handle.setViewRig(CAM_RIG);
-  await quietInfo(() => handle.setStereoEnabled(false));
-  e.intersect(canvas, false); // scrolled away — the layer closes
-  e.intersect(canvas, true); // ...and back: a NEW layer
-  const rebuilt = e.created.at(-1);
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  env.intersect(canvas, false); // scrolled away — the layer closes
+  env.intersect(canvas, true); // ...and back: a NEW layer
+  const rebuilt = env.created.at(-1);
   assert.equal(rebuilt.init.viewRig.ipdFactor, 0, 'the new layer is built with the flat rig');
-  assert.deepEqual(rebuilt.lensRequests, ['2d'], 'and the lens request is re-asserted on it');
+  // And NOTHING is re-requested at the panel: the hardware state is the display's and survives a
+  // tile scrolling away. Re-asserting it here would be this SDK moving the panel behind the
+  // page's back.
+  assert.deepEqual(rebuilt.modeRequests, []);
   wall.close();
 });
 
-// A REFUSED REQUEST IS A NO-OP, IN BOTH DIRECTIONS. The lens is the half that can be declined
-// (no live session, a workspace controller holding the entry point, a runtime error — all
-// NotSupportedError) and the rig is the half that has already moved by then. Half-switched is the
-// one state a caller cannot unwind without knowing this method's internals, so neither direction
-// is allowed to leave one behind. These read `wall._windows` on purpose: the guarantee is about
-// window state, and asserting only the visible rig would pass on a window whose latch had silently
-// stuck.
-const winOf = (wall, canvas) => wall._windows.get(canvas);
-
-test('a refused GOING-FLAT request rolls back completely — rig, latch and saved factors', async () => {
-  const e = installEnv({ refuseLens: '2d' });
+test('a page that OPENS with a 1-view mode already active is collapsed by the first read', async () => {
+  const env = installEnv();
+  for (const m of env.modes) m.isActive = m.modeIndex === 0; // the panel was already flat
   const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const canvas = makeCanvas();
-  const handle = wall.addScene(canvas, () => {});
+  let layer;
+  await quietInfo(async () => {
+    wall.addScene(makeCanvas(), () => {}, { virtualDisplayHeight: 0.4 });
+    await flush();
+    layer = env.created[0];
+  });
+  assert.equal(wall.stereoCollapsed, true, 'no event ever fired — the first mode read is the source');
+  assert.equal(layer.rigs.at(-1).ipdFactor, 0);
+  wall.close();
+});
+
+// A REFUSED REQUEST CHANGES NOTHING, IN EITHER DIRECTION. It is structural now rather than a
+// rollback: the request touches no rig at all, so there is nothing to unwind — but the invariant
+// is the one pages depend on, so it is still asserted from both directions.
+
+test('a refused GOING-FLAT request leaves the rig, the latch and the mode untouched', async () => {
+  const env = installEnv({ refuse: [0] });
+  const { wall, handle, layer } = await makeWall(env);
   handle.setViewRig(CAM_RIG);
-  const win = winOf(wall, canvas);
-  const synthBefore = win.stereoSynthRig;
+  const rigsBefore = layer.rigs.length;
 
-  await quietInfo(() => assert.rejects(() => handle.setStereoEnabled(false)));
+  await assert.rejects(() => handle.requestRenderingMode(0), { name: 'NotSupportedError' });
 
-  const layer = e.created[0];
-  assert.equal(win.stereoEnabled, true, 'the latch must not survive a refused request');
-  assert.equal(win.stereoSaved, null);
-  assert.equal(win.stereoSynthRig, synthBefore, 'this window has its own rig — nothing synthesised');
-  assert.deepEqual(layer.rigs.at(-1), CAM_RIG, 'the LAST rig at the layer is the un-flattened one');
-  assert.deepEqual(layer.lensRequests, ['2d'], 'the request was made, and it was refused');
-
-  // And the window is genuinely usable afterwards, not merely reading as usable.
-  handle.setViewRig({ ...CAM_RIG, convergenceDiopters: 7 });
-  assert.equal(layer.rigs.at(-1).ipdFactor, 2, 'a subsequent per-frame rig is not flattened');
-  wall.close();
-});
-
-test('a refused GOING-FLAT request rolls back for a window with NO rig of its own', async () => {
-  const e = installEnv({ refuseLens: '2d' });
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const canvas = makeCanvas();
-  const handle = wall.addScene(canvas, () => {}, { virtualDisplayHeight: 0.4 });
-  const win = winOf(wall, canvas);
-
-  await quietInfo(() => assert.rejects(() => handle.setStereoEnabled(false)));
-
-  const layer = e.created[0];
-  assert.equal(win.stereoEnabled, true);
-  assert.equal(win.stereoSaved, null);
-  // The rollback is judged by what the LAYER is holding, and here that is the load-bearing part:
-  // a flat rig was already pushed, so the rollback has to send the un-flat descriptor explicitly.
-  const back = layer.rigs.at(-1);
-  assert.equal(back.type, 'display');
-  assert.equal(back.virtualDisplayHeight, 0.4);
-  assert.equal(back.ipdFactor, 1, 'the un-flattened equivalent of the virtualDisplayHeight');
-  assert.equal(back.parallaxFactor, 1);
-  // stereoSynthRig stays TRUE and is deliberately not rolled back: it records that the LAYER has
-  // been handed an explicit rig, which it has. Clearing it would make _effectiveViewRig answer
-  // null, _pushViewRig would send null at a layer holding the flat descriptor, and the rollback
-  // would leave the panel mono — the exact half-switched state it exists to prevent.
-  assert.equal(win.stereoSynthRig, true);
+  assert.equal(wall.stereoCollapsed, false, 'the latch must not move on a request');
+  assert.equal(layer.rigs.length, rigsBefore, 'not one rig was pushed');
+  assert.deepEqual(layer.rigs.at(-1), CAM_RIG);
+  assert.deepEqual(layer.modeRequests, [0], 'the request was made, and it was refused');
   wall.close();
 });
 
 test('a refused COMING-BACK request leaves the window flat, not half-switched', async () => {
-  const e = installEnv({ refuseLens: '3d' });
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const canvas = makeCanvas();
-  const handle = wall.addScene(canvas, () => {});
+  const env = installEnv({ refuse: [1] });
+  const { wall, handle, layer } = await makeWall(env);
   handle.setViewRig(CAM_RIG);
-  const win = winOf(wall, canvas);
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  assert.equal(wall.stereoCollapsed, true);
 
-  await quietInfo(() => handle.setStereoEnabled(false)); // '2d' is allowed here
-  assert.equal(win.stereoEnabled, false);
-
-  await assert.rejects(() => handle.setStereoEnabled(true));
-  const layer = e.created[0];
-  assert.equal(win.stereoEnabled, false, 'refused ⇒ still flat, not stereo under a flat lens');
-  assert.equal(layer.rigs.at(-1).ipdFactor, 0, 'the rig goes back to FLAT, matching the lens');
-  assert.notEqual(win.stereoSaved, null, 'still flat ⇒ the saved factors are still relevant');
-  assert.deepEqual(layer.lensRequests, ['2d', '3d']);
+  await assert.rejects(() => handle.requestRenderingMode(1), { name: 'NotSupportedError' });
+  assert.equal(wall.stereoCollapsed, true, 'refused ⇒ still flat, not stereo on a flat panel');
+  assert.equal(layer.rigs.at(-1).ipdFactor, 0);
   wall.close();
 });
 
-test('setStereoEnabled is idempotent — asking for the state you are in does nothing', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+// ── 4. setStereoEnabled — sugar, and only sugar ─────────────────────────────────────────
+
+test('setStereoEnabled(false) requests the first requestable 1-view mode and nothing else', async () => {
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
+  handle.setViewRig(CAM_RIG);
+  const rigsBefore = layer.rigs.length;
+
+  assert.equal(await handle.setStereoEnabled(false), false);
+  assert.deepEqual(layer.modeRequests, [0]);
+  assert.equal(layer.rigs.length, rigsBefore, 'the rig follows the EVENT, never the request');
+  assert.equal(wall.stereoCollapsed, false, 'nothing is active yet — the browser has not said so');
+
+  // ...and when the browser does say so, the rig moves.
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  assert.equal(layer.rigs.at(-1).ipdFactor, 0);
+  wall.close();
+});
+
+test('setStereoEnabled(true) requests the first requestable 2-view mode', async () => {
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  assert.equal(await wall.setStereoEnabled(true), true);
+  assert.deepEqual(layer.modeRequests, [1]);
+  wall.close();
+});
+
+test('setStereoEnabled with no matching mode rejects instead of inventing one', async () => {
+  const env = installEnv();
+  env.modes[0].isRequestable = false; // this panel offers no requestable 1-view mode
+  const { wall, handle, layer } = await makeWall(env);
+  await assert.rejects(() => handle.setStereoEnabled(false), /no requestable 1-view mode/);
+  assert.deepEqual(layer.modeRequests, [], 'nothing was asked of the browser');
+  wall.close();
+});
+
+test('setStereoEnabled is idempotent — asking for the state you are in makes no request', async () => {
+  const env = installEnv();
+  const { wall, handle, layer } = await makeWall(env);
   assert.equal(await handle.setStereoEnabled(true), true);
-  assert.deepEqual(e.created[0].lensRequests, [], 'already 3D: no lens request at all');
+  assert.deepEqual(layer.modeRequests, [], 'the 2-view mode is already active');
   wall.close();
 });
 
-// ── 4. the session events ───────────────────────────────────────────────────────────────
+// ── 5. the re-emitted events ────────────────────────────────────────────────────────────
 
-test('onDisplayModeChange subscribes to BOTH session events and unsubscribes cleanly', async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+test('on() delivers the new mode index and view count, and its unsubscribe works', async () => {
+  const env = installEnv();
+  const { wall } = await makeWall(env);
   const seen = [];
-  const off = handle.onDisplayModeChange((ev) => seen.push(ev));
-  assert.equal(e.listenerCount('renderingmodechange'), 1);
-  assert.equal(e.listenerCount('hardwaredisplaystatechange'), 1);
-
-  e.fire('renderingmodechange', { modeIndex: 1 });
-  e.fire('hardwaredisplaystatechange', undefined);
-  assert.deepEqual(
-    seen.map((s) => s.type),
-    ['renderingmodechange', 'hardwaredisplaystatechange']
-  );
-  assert.deepEqual(seen[0].detail, { modeIndex: 1 });
-  assert.equal(seen[1].detail.type, 'hardwaredisplaystatechange', 'no detail ⇒ the event itself');
+  const off = wall.on('renderingmodechange', (ev) => seen.push(ev));
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].type, 'renderingmodechange');
+  assert.equal(seen[0].modeIndex, 0);
+  assert.equal(seen[0].viewCount, 1);
+  assert.deepEqual(seen[0].detail, { modeIndex: 0 }, "the browser's own payload travels as-is");
 
   off();
-  assert.equal(e.listenerCount('renderingmodechange'), 0);
-  assert.equal(e.listenerCount('hardwaredisplaystatechange'), 0);
+  env.goActive(1);
+  await flush();
+  assert.equal(seen.length, 1, 'unsubscribed');
+  wall.close();
+});
+
+test('hardwaredisplaystatechange re-emits the state and updates wall.hardwareDisplayState', async () => {
+  const env = installEnv();
+  const { wall } = await makeWall(env);
+  const seen = [];
+  wall.on('hardwaredisplaystatechange', (ev) => seen.push(ev));
+  assert.equal(wall.hardwareDisplayState, null, 'null until the browser says — never a guess');
+
+  env.fire('hardwaredisplaystatechange', { state: '2d' });
+  assert.deepEqual(seen.map((s) => s.state), ['2d']);
+  assert.equal(wall.hardwareDisplayState, '2d');
+
+  // A bare string payload is read too — the shape has moved once already.
+  env.fire('hardwaredisplaystatechange', '3d');
+  assert.equal(wall.hardwareDisplayState, '3d');
+  wall.close();
+});
+
+test('on() refuses an unknown event name rather than silently never firing', async () => {
+  const env = installEnv();
+  const { wall } = await makeWall(env);
+  assert.throws(() => wall.on('modechange', () => {}), TypeError);
+  wall.close();
+});
+
+test('onDisplayModeChange still delivers BOTH events through one callback', async () => {
+  const env = installEnv();
+  const { wall, handle } = await makeWall(env);
+  const seen = [];
+  const off = handle.onDisplayModeChange((ev) => seen.push(ev));
+  await quietInfo(async () => {
+    env.goActive(0);
+    await flush();
+  });
+  env.fire('hardwaredisplaystatechange', { state: '2d' });
+  assert.deepEqual(seen.map((s) => s.type), ['renderingmodechange', 'hardwaredisplaystatechange']);
+  off();
+  env.fire('hardwaredisplaystatechange', { state: '3d' });
+  assert.equal(seen.length, 2);
   wall.close();
 });
 
 test("a page callback that throws does not take the session's dispatch with it", async () => {
-  const e = installEnv();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
-  const handle = wall.addScene(makeCanvas(), () => {});
+  const env = installEnv();
+  const { wall, handle } = await makeWall(env);
   const real = console.error;
   console.error = () => {};
   try {
-    handle.onDisplayModeChange(() => {
+    handle.on('hardwaredisplaystatechange', () => {
       throw new Error('page bug');
     });
-    assert.doesNotThrow(() => e.fire('renderingmodechange', {}));
+    let alsoRan = false;
+    handle.on('hardwaredisplaystatechange', () => {
+      alsoRan = true;
+    });
+    assert.doesNotThrow(() => env.fire('hardwaredisplaystatechange', { state: '2d' }));
+    assert.equal(alsoRan, true, 'the other listener still ran');
   } finally {
     console.error = real;
   }
   wall.close();
+});
+
+// ── 6. undock ───────────────────────────────────────────────────────────────────────────
+
+test('wall.undock is NULL on a browser with no XRDisplayLayer.undock — the thing pages branch on', async () => {
+  const env = installEnv();
+  const { wall } = await makeWall(env);
+  assert.equal(inline3dUndockSupported(), false);
+  assert.equal(wall.undock, null);
+  wall.close();
+});
+
+test('wall.undock carries the capabilities read off the first live layer', async () => {
+  const env = installEnv({ undock: true, undockCaps: { model: true, splat: false } });
+  const { wall } = await makeWall(env);
+  assert.equal(inline3dUndockSupported(), true);
+  await flush();
+  assert.deepEqual(wall.undock, { model: true, splat: false });
+  // ...and re-reading is cheap and idempotent.
+  assert.deepEqual(await wall.refreshUndock(), { model: true, splat: false });
+  wall.close();
+});
+
+test('undockUrl builds the v=1 protocol URL, percent-encoded and with no vh', () => {
+  installEnv();
+  // The fallback path is pure DOM arithmetic, so it gets the DOM it needs and nothing else.
+  globalThis.window = {
+    ...globalThis.window,
+    devicePixelRatio: 2,
+    screenX: 100,
+    screenY: 50,
+    outerWidth: 1000,
+    innerWidth: 1000,
+    outerHeight: 900,
+    innerHeight: 800,
+    location: { href: 'https://shop.example/p/1' },
+  };
+  const el = { getBoundingClientRect: () => ({ left: 10, top: 20, width: 300, height: 150 }) };
+  const url = undockUrl(el, {
+    src: '/assets/bag.glb',
+    type: 'model',
+    env: 'room',
+    pose: { yaw: -40, pitch: 5 },
+    title: 'A bag',
+  });
+  assert.ok(url.startsWith('displayxr-view://open?'));
+  assert.match(url, /src=https%3A%2F%2Fshop\.example%2Fassets%2Fbag\.glb/, 'site-relative src resolved to absolute');
+  assert.match(url, /title=A%20bag/);
+  assert.ok(!url.includes('+'), "URLSearchParams' '+' for a space is NOT what the viewer decodes");
+  assert.match(url, /rect=220%2C340%2C600%2C300/, '(screen+chrome+bcr)*dpr; chromeY = outerHeight-innerHeight');
+  assert.match(url, /type=model/);
+  assert.match(url, /env=room/);
+  assert.match(url, /pose=-40%2C5/);
+  assert.match(url, /transparent=1/);
+  assert.match(url, /v=1/);
+  assert.ok(!/[?&]vh=/.test(url), 'vh is deliberately never sent — it disables the viewer auto-fit');
+  installEnv();
 });

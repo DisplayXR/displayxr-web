@@ -12,50 +12,74 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 - **Display modes — the page can read what the panel IS, and ask it to change.** Until now a page
   could describe its own framing (a view rig) but knew nothing about the display it was framing
   *for*: not its size in metres, not its pixel count, not which of the runtime's rendering modes it
-  was in, and it had no way to ask for a different one. Four passthroughs on the tile handle close
-  that: **`getDisplayInfo()`** (physical size, pixel size, recommended view scale; `null` where
-  there is no glasses-free display), **`getRenderingModes()`** (every mode the runtime can put the
-  display in — view count, tile grid, per-view pixels, `hardwareDisplay3D`, `isActive`,
-  `isRequestable`), **`requestRenderingMode(i)`** and **`requestDisplayMode('2d'|'3d')`**. Gate the
-  group with **`inline3dDisplayModesSupported()`**, which requires all four methods on
+  was in, and it had no way to ask for a different one. Three pass-throughs close that:
+  **`getDisplayInfo()`** (physical size, pixel size, recommended view scale; `null` where there is
+  no glasses-free display), **`getRenderingModes()`** (every mode the runtime can put the display
+  in — view count, tile grid, per-view pixels, `hardwareDisplay3D`, `isActive`, `isRequestable`)
+  and **`requestRenderingMode(i)`**. They sit on the **`createInline3D()` result** — the panel is
+  the document's, not a tile's — and under the same names on every tile handle, routed to whichever
+  window currently holds a live layer. Gate the group with
+  **`inline3dDisplayModesSupported()`**, which requires all three methods on
   `XRDisplayLayer.prototype` — a browser shipping half the set is one mid-implementation, and
   calling it supported would surface as a `not a function` inside a click handler.
   *(core tier — additive)*
 
-- **`handle.setStereoEnabled(bool)` — the two halves of "go 2D", moved together.**
-  `requestDisplayMode('2d')` flips the **lens** and nothing else: the page keeps submitting stereo,
-  the runtime keeps weaving it, and the flat panel then shows the woven *atlas* — two slightly
-  different images averaged into one, i.e. blurry. Sharp 2D needs the page to fade its own stereo
-  out as well, so `setStereoEnabled(false)` asks for the 2D lens **and** zeroes this window's rig
-  (`ipdFactor`/`parallaxFactor` -> 0); `true` puts both back, lens first.
+- **The 2D/3D hardware state is a consequence of the mode, not a control.** There is deliberately
+  **no page-facing request** for it. Asking for a mode with `viewCount === 1` puts the panel in its
+  2D state and the browser reports that mode active — the runtime carries on weaving the same fixed
+  two-view atlas — and asking for the 2-view mode puts it back. Tying the two together makes the
+  one bad state (a flat panel showing a stereo atlas, i.e. a blurry double image rather than 2D)
+  unreachable. **`requestDisplayMode('2d'|'3d')` is gone**, and so is every mention of a "lens".
+
+- **The SDK collapses the stereo rig automatically.** When a 1-view mode goes **active** every
+  window's `ipdFactor`/`parallaxFactor` is pushed to 0 (both eyes render from one place), and a
+  2-view mode going active restores them. This is driven by the `renderingmodechange` event — plus
+  the first `getRenderingModes()` read, so a page that OPENS with the panel already flat is
+  collapsed too — and **not** by the request. So it happens however the mode changed (this page,
+  another one, the shell), the page's own render loop is untouched, and **a refused request changes
+  nothing in either direction**, which is now structural rather than a rollback.
 
   **The restore is exact, and that is a design property, not luck.** The flattening is a *copy*
   pushed at the layer — a page driving a rig every frame reuses one descriptor object, so zeroing
   it in place would write the flattening into the page's own state and the restore would restore
-  0. So the window keeps what the page asked for, untouched, and the flat rig is derived on the way
-  out. That latch also means a per-frame `setViewRig` loop cannot walk the page out of 2D, a lazy
-  tile that scrolls away and rebuilds its layer comes back flat rather than in 3D, and a window
-  that never set a rig at all is flattened (and restored) via the exact rig equivalent of its
-  `virtualDisplayHeight`.
+  0. So each window keeps what the page asked for, untouched, and the flat rig is derived on the
+  way out. That latch also means a per-frame `setViewRig` loop cannot walk the page out of 2D, a
+  lazy tile that scrolls away and rebuilds its layer comes back flat rather than in 3D, and a
+  window that never set a rig at all is flattened (and restored) via the exact rig equivalent of
+  its `virtualDisplayHeight`. *(core tier — additive)*
 
-  **A refused request is a no-op, in both directions.** Only the lens half can be declined
-  (`NotSupportedError` — no live session, a workspace controller holding the entry point, a runtime
-  error), and by then the rig half has already moved. So each direction puts the rig back before
-  rethrowing: the caller gets its rejection and the window is left exactly as it was, never
-  half-switched — mono under a 3D lens, or stereo under a flat one, which is the one state a page
-  cannot unwind without knowing the method's internals. *(core tier — additive)*
+- **`setStereoEnabled(bool)` is now SUGAR, and only sugar** — `false` requests the first mode with
+  `viewCount === 1 && isRequestable`, `true` the first with `viewCount === 2 && isRequestable`. It
+  touches neither the hardware state (nothing can) nor the rig (the event does that). It rejects
+  rather than inventing a mode when the panel lists none. *(core tier — behaviour change on an
+  unreleased API)*
 
-- **`handle.onDisplayModeChange(cb)`** — the two events, which fire on the **XRSession** and not on
-  the layer, through one callback `{type, detail}`: `renderingmodechange` after a mode switch takes
-  effect, `hardwaredisplaystatechange` after the lens flips. Returns an unsubscribe function; inert
-  on a browser without the API. *(core tier — additive)*
+- **`on(type, cb)` / `off(type, cb)`** — the two events, which fire on the **XRSession** and not on
+  the layer, re-emitted on the wall and on every handle: `renderingmodechange`
+  `{type, modeIndex, viewCount, mode, detail}` and `hardwaredisplaystatechange`
+  `{type, state:'2d'|'3d', detail}`. `on` returns an unsubscribe function;
+  **`onDisplayModeChange(cb)`** remains as the both-events-one-callback shape.
+  `wall.hardwareDisplayState`, `wall.activeMode` and `wall.stereoCollapsed` expose the last
+  **reported** state — never the last requested one. *(core tier — additive)*
+
+- **Undock — lift a window's asset into a floating native viewer over the desktop.**
+  **`wall.undock`** is `{model, splat}` on a browser with `XRDisplayLayer.undock` and **`null`** on
+  one without (plain Chrome, or an older DisplayXR browser) — that null is what a page branches on;
+  **`wall.refreshUndock()`** re-reads it, **`inline3dUndockSupported()`** is the sync probe. The
+  action is **`await undock(element, {src, type, env?, pose?, margin?, title?})`** (new module
+  `js/inline3d-undock.js`, re-exported from the main entry): API-first through `layer.undock()`,
+  falling back to the `displayxr-view:` OS protocol (hidden-iframe navigation, Chrome's one-time
+  "Open DisplayXR…?" prompt) where the layer method is absent. **Call it synchronously inside the
+  click** — both paths need the transient activation. Resolves to `{ended, viewer, detached}`;
+  rejects with an Error named `not-installed` | `src-not-allowed` | `no-activation` | `busy`.
+  *(core tier — additive)*
 
 - **[`samples/display-modes/`](samples/display-modes/)** — the whole surface on one page: the
-  `getDisplayInfo()` fields, the `getRenderingModes()` table with the active row marked and the
-  non-2-view rows greyed as *not requestable in the browser (fixed 2-view)*, a per-mode request
-  button, the `setStereoEnabled` toggle beside a deliberately-wrong **lens only** button (so the
-  blurry half is visible rather than only described), and a live event log. Every action prints a
-  greppable `[display-modes] …` line so a harness can drive it from the console.
+  `getDisplayInfo()` fields, the `getRenderingModes()` table with the active row marked, a request
+  button on every requestable row (`viewCount` 1 **or** 2) and the rows needing more than two views
+  greyed with the reason, one `setStereoEnabled` convenience button, a **read-only** hardware
+  display state badge fed by the event, and a live event log. Every action prints a greppable
+  `[display-modes] …` line so a harness can drive it from the console.
 
 ### Notes
 
@@ -64,8 +88,9 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   for you — a page honours them by sizing its own backing store. Ignoring them costs sharpness or
   fill rate, never correctness.
 - **The browser is fixed at two views.** No view synthesis exists anywhere in this stack, so a mode
-  with `viewCount !== 2` is listed (the panel really can do it) and refused. Show those rows;
-  mark them.
+  needing MORE than two is listed (the panel really can do it) and refused. Show those rows; mark
+  them. A **one**-view mode is requestable — the browser still submits two views and the runtime
+  still weaves them; it is the panel that goes flat.
 
 ## 1.3.0 — 2026-09-04
 

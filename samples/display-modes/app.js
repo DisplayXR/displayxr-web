@@ -1,21 +1,24 @@
 // display-modes — read what the panel IS, and ask it to change.
 //
-// Four questions and two requests, all on the tile handle:
+// Three questions and one request, on the wall (and on every tile handle — same names):
 //
-//   handle.getDisplayInfo()          the panel: metres, pixels, the view scale it recommends
-//   handle.getRenderingModes()       every mode the runtime can put it in
-//   handle.requestRenderingMode(i)   switch to mode i (2-view modes only — see below)
-//   handle.requestDisplayMode(m)     flip the LENS, '2d' or '3d', and NOTHING else
-//   handle.setStereoEnabled(bool)    the lens AND the rig, which is what you almost always want
-//   handle.onDisplayModeChange(cb)   both session events, one callback
+//   wall.getDisplayInfo()          the panel: metres, pixels, the view scale it recommends
+//   wall.getRenderingModes()       every mode the runtime can put it in
+//   wall.requestRenderingMode(i)   switch to mode i — THE ONLY REQUEST THERE IS
+//   wall.setStereoEnabled(bool)    sugar: pick the first requestable 1-view / 2-view mode
+//   wall.on(type, cb)              'renderingmodechange' / 'hardwaredisplaystatechange'
 //
-// THE ONE THING WORTH UNDERSTANDING. `requestDisplayMode('2d')` changes nothing about the page:
-// it keeps submitting stereo and the runtime keeps weaving it. What the flat panel then shows is
-// the woven ATLAS — two slightly different images averaged into one, which reads as a blurry
-// double image. Sharp 2D needs the page to fade its own stereo out too, which is exactly what
-// `setStereoEnabled(false)` does (lens -> 2d AND rig ipd/parallax -> 0). The "Lens only" button
-// here is the wrong half, kept deliberately so the difference is visible on the panel rather than
-// only described in a comment.
+// THE ONE THING WORTH UNDERSTANDING. There is no page-facing control over the panel's HARDWARE
+// DISPLAY STATE (2D or 3D) and there should not be: that state is a CONSEQUENCE of the active
+// rendering mode. Request a mode with viewCount 1 and the browser puts the panel flat and reports
+// that mode active — while the runtime carries on weaving the same fixed two-view atlas. Request
+// the 2-view mode and it comes back. Tying the two together is what makes "flat panel showing a
+// stereo atlas" — a blurry double image — unreachable.
+//
+// The SDK does the other half automatically: when a 1-view mode goes ACTIVE it zeroes every
+// window's rig (ipdFactor/parallaxFactor -> 0, both eyes from one place) and restores it when a
+// 2-view mode does — driven by the event, not by the request, so a refused request changes
+// nothing and this page's own rendering code is untouched either way.
 //
 // SCALES ARE ADVISORY. `viewScaleX/Y` and `recommendedViewScaleX/Y` are what the runtime would
 // LIKE the per-view resolution to be; the browser cannot resize a page's canvas, so honouring
@@ -29,17 +32,14 @@
 //   [display-modes] display <PXxPY>px <WxH>m recommended-scale <sx>,<sy>
 //   [display-modes] display none            (no glasses-free display on this machine)
 //   [display-modes] modes <n> active <index> requestable <n>
-//   [display-modes] lens -> 2d              (setStereoEnabled — lens AND rig)
-//   [display-modes] lens ok 2d
-//   [display-modes] lens failed 2d <message>
-//   [display-modes] lens-only -> 2d         (requestDisplayMode alone — the blurry half)
-//   [display-modes] lens-only ok 2d
-//   [display-modes] lens-only failed 2d <message>
 //   [display-modes] mode -> <index>
 //   [display-modes] mode ok <index>
-//   [display-modes] mode refused <index> <message>
+//   [display-modes] mode failed <index> <message>     (no API / no live layer / SDK error)
+//   [display-modes] mode refused <index> <message>    (the browser or runtime declined)
 //   [display-modes] event renderingmodechange <index>
 //   [display-modes] event hardwaredisplaystatechange <2d|3d>
+//   [display-modes] stereo -> <on|off>       (the setStereoEnabled convenience button)
+//   [display-modes] stereo ok <on|off> / stereo failed <on|off> <message>
 //   [display-modes] view-scale <sx>,<sy> buffer <w>x<h>
 
 import * as THREE from 'three';
@@ -55,8 +55,7 @@ const badgeEl = document.getElementById('badge');
 const infoEl = document.getElementById('info');
 const modesEl = document.getElementById('modes');
 const logEl = document.getElementById('log');
-const lensBtn = document.getElementById('lens');
-const lensOnlyBtn = document.getElementById('lensOnly');
+const stereoBtn = document.getElementById('stereo');
 const refreshBtn = document.getElementById('refresh');
 
 // Capability up front and in the log, because a page whose display controls silently do nothing
@@ -66,9 +65,12 @@ log('supported', MODES_OK);
 
 // ---- state ---------------------------------------------------------------------------------
 const S = {
-  stereo: true,        // what setStereoEnabled last put in force
-  lens: '3d',          // the page's BELIEF about the lens — the API exposes no getter for it, so
-                       // this is what we last asked for, not what the panel reports
+  // Everything here is REPORTED, never requested: `hw` comes from hardwaredisplaystatechange and
+  // `viewCount`/`activeMode` from the mode list. A request that is refused must leave the badge
+  // exactly as it was, and the only way to guarantee that is to never write these from a request.
+  hw: null,            // '2d' | '3d' | null (the browser has not said yet)
+  activeMode: -1,
+  viewCount: 0,
   viewScale: { x: 1, y: 1 },
 };
 
@@ -87,8 +89,9 @@ const key = new THREE.DirectionalLight(0xffffff, 1.1);
 key.position.set(1.2, 2.0, 1.4);
 scene.add(key);
 
-// Three bars at three depths. Depth is the point of this page: with the rig flat they collapse
-// onto one plane, which is what "the stereo faded to zero" looks like from the couch.
+// Three bars at three depths. Depth is the point of this page: when a 1-view mode goes active the
+// SDK flattens the rig and they collapse onto one plane, which is what "the stereo faded to zero"
+// looks like from the couch — and it happens with no change to the render code below.
 const bars = [];
 for (let i = 0; i < 3; i++) {
   const bar = new THREE.Mesh(
@@ -170,17 +173,22 @@ function line(text, cls) {
   while (logEl.childElementCount > 120) logEl.lastChild.remove();
 }
 
+// The badge is READ-ONLY and reports only what the display told us. `—` before the first
+// hardwaredisplaystatechange is the honest answer; inventing '3d' there would make a page that
+// never gets the event look identical to one that does.
 function updateBadge() {
-  badgeEl.innerHTML = `lens <b>${S.lens}</b> · rig ${S.stereo ? 'stereo' : 'flat (ipd 0)'}`;
-  lensBtn.textContent = S.stereo ? 'Go 2D (lens + rig)' : 'Back to 3D (lens + rig)';
-  lensOnlyBtn.textContent = `Lens only → ${S.lens === '3d' ? '2d' : '3d'}`;
+  const hw = S.hw || '—';
+  const rig = wall && wall.stereoCollapsed ? 'flat (ipd 0)' : 'stereo';
+  badgeEl.innerHTML = `hardware display state <b>${hw}</b> · mode ${S.activeMode} · rig ${rig}`;
+  if (stereoBtn) stereoBtn.textContent = S.viewCount === 1 ? 'Go 3D (2-view mode)' : 'Go 2D (1-view mode)';
 }
 
 // ---- reading the display ----------------------------------------------------------------------
+let wall = null;
 let handle = null;
 
 async function readDisplayInfo() {
-  const info = await handle.getDisplayInfo();
+  const info = await wall.getDisplayInfo();
   if (!info) {
     infoEl.innerHTML = '<dt>display</dt><dd>none — no glasses-free display on this machine</dd>';
     log('display none');
@@ -206,7 +214,7 @@ async function readDisplayInfo() {
 
 const COLS = [
   ['#', (m) => m.modeIndex],
-  ['mode', (m) => m.modeName],
+  ['mode', (m) => m.name ?? m.modeName],
   ['views', (m) => m.viewCount],
   ['tiles', (m) => `${m.tileColumns}×${m.tileRows}`],
   ['view px', (m) => `${m.viewWidthPixels}×${m.viewHeightPixels}`],
@@ -215,17 +223,18 @@ const COLS = [
 ];
 
 async function readModes() {
-  const modes = await handle.getRenderingModes();
+  const modes = await wall.getRenderingModes();
   const head = `<tr>${COLS.map(([h]) => `<th>${h}</th>`).join('')}<th></th></tr>`;
   const body = modes
     .map((m) => {
-      // Two different reasons a row is not offered, and they must not be conflated: the runtime
-      // said isRequestable:false, or the mode is not 2-view and this browser could never fill it.
-      const fixedTwo = m.viewCount !== 2;
-      const blocked = fixedTwo || !m.isRequestable;
+      // A 1-view mode is offered like any other — requesting it is HOW a page goes flat. Only
+      // two things block a row, and they must not be conflated: the runtime said
+      // isRequestable:false, or the mode needs more views than this browser can ever render.
+      const tooManyViews = m.viewCount > 2;
+      const blocked = tooManyViews || !m.isRequestable;
       const cls = [m.isActive ? 'active' : '', blocked ? 'blocked' : ''].filter(Boolean).join(' ');
-      const why = fixedTwo
-        ? '<span class="why">not requestable in the browser (fixed 2-view)</span>'
+      const why = tooManyViews
+        ? '<span class="why">needs more than 2 views — the browser renders exactly 2</span>'
         : !m.isRequestable
           ? '<span class="why">not requestable</span>'
           : m.isActive
@@ -239,15 +248,18 @@ async function readModes() {
     btn.addEventListener('click', () => requestMode(Number(btn.dataset.mode)));
   }
   const active = modes.find((m) => m.isActive);
+  S.activeMode = active ? active.modeIndex : -1;
+  S.viewCount = active ? active.viewCount : 0;
   log(
     'modes',
     modes.length,
     'active',
-    active ? active.modeIndex : -1,
+    S.activeMode,
     'requestable',
-    modes.filter((m) => m.isRequestable && m.viewCount === 2).length,
+    modes.filter((m) => m.isRequestable && m.viewCount <= 2).length,
   );
   if (active) applyViewScale(active);
+  updateBadge();
   return modes;
 }
 
@@ -259,64 +271,52 @@ function applyViewScale(mode) {
   log('view-scale', `${S.viewScale.x},${S.viewScale.y}`, 'buffer', `${w}x${h}`);
 }
 
-// ---- the two requests --------------------------------------------------------------------------
+// ---- the one request ---------------------------------------------------------------------------
+// REFUSED vs FAILED. A TypeError (view count / unknown index) or a NotSupportedError is the
+// browser or the runtime DECLINING a well-formed request — that is `refused`. Anything else (no
+// API on this browser, no live weave layer yet, an SDK error) never reached them — that is
+// `failed`. Conflating the two is how "the panel would not switch" gets debugged in the wrong
+// process for an afternoon.
+function classify(e) {
+  const name = e && e.name;
+  return name === 'TypeError' || name === 'NotSupportedError' ? 'refused' : 'failed';
+}
+
 async function requestMode(index) {
   log('mode ->', index);
   line(`requestRenderingMode(${index})`, 'req');
   try {
-    await handle.requestRenderingMode(index);
+    await wall.requestRenderingMode(index);
     log('mode ok', index);
   } catch (e) {
-    // A TypeError here is the fixed-2-view refusal (raised synchronously by the browser, handed
-    // back as a rejection by the SDK); a NotSupportedError is the runtime declining.
-    log('mode refused', index, e && e.message);
-    line(`refused: ${e && e.message}`, 'err');
+    log(`mode ${classify(e)}`, index, e && e.message);
+    line(`${classify(e)}: ${e && e.message}`, 'err');
   }
 }
 
-// setStereoEnabled — BOTH halves. This is the button a real page ships.
+// The convenience button: sugar over the same one request. It picks the first requestable 1-view
+// (or 2-view) mode and asks for it — it does NOT touch the hardware state, because nothing can.
 async function toggleStereo() {
-  const next = !S.stereo;
-  const lens = next ? '3d' : '2d';
-  log('lens ->', lens);
-  line(`setStereoEnabled(${next}) → lens ${lens} + rig ${next ? 'restore' : 'ipd/parallax 0'}`, 'req');
-  lensBtn.disabled = true;
+  const next = S.viewCount === 1; // currently flat -> go back to stereo
+  const label = next ? 'on' : 'off';
+  log('stereo ->', label);
+  line(`setStereoEnabled(${next})`, 'req');
+  stereoBtn.disabled = true;
   try {
-    S.stereo = await handle.setStereoEnabled(next);
-    S.lens = lens;
-    log('lens ok', lens);
+    await wall.setStereoEnabled(next);
+    log('stereo ok', label);
   } catch (e) {
-    log('lens failed', lens, e && e.message);
-    line(`refused: ${e && e.message}`, 'err');
+    log('stereo failed', label, e && e.message);
+    line(`${classify(e)}: ${e && e.message}`, 'err');
   } finally {
-    lensBtn.disabled = false;
-    updateBadge();
-  }
-}
-
-// requestDisplayMode alone — the WRONG half, on purpose. With the lens flat and the page still
-// submitting stereo, the panel shows the woven atlas flat: a blurry double image. Keeping the
-// button is the only way this page can demonstrate what the composite above is for.
-async function toggleLensOnly() {
-  const lens = S.lens === '3d' ? '2d' : '3d';
-  log('lens-only ->', lens);
-  line(`requestDisplayMode('${lens}') — lens ONLY, the rig is untouched`, 'req');
-  try {
-    await handle.requestDisplayMode(lens);
-    S.lens = lens;
-    log('lens-only ok', lens);
-  } catch (e) {
-    log('lens-only failed', lens, e && e.message);
-    line(`refused: ${e && e.message}`, 'err');
-  } finally {
-    updateBadge();
+    stereoBtn.disabled = false;
   }
 }
 
 // ---- boot ---------------------------------------------------------------------------------------
 (async () => {
   updateBadge();
-  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  wall = await createInline3D({ lazy: false, autoChrome: false });
   if (!wall.supported) {
     statusEl.className = 'status flat';
     statusEl.innerHTML =
@@ -334,8 +334,8 @@ async function toggleLensOnly() {
   if (!MODES_OK) {
     statusEl.innerHTML =
       '<b style="color:#fbbf24">inline-3D active, no display-mode API</b> — this browser weaves, ' +
-      'but exposes none of getDisplayInfo / getRenderingModes / requestRenderingMode / ' +
-      'requestDisplayMode, so the controls stay disabled.';
+      'but exposes none of getDisplayInfo / getRenderingModes / requestRenderingMode, so the ' +
+      'controls stay disabled.';
     line('inline3dDisplayModesSupported() === false — nothing to drive', 'err');
     return;
   }
@@ -343,34 +343,25 @@ async function toggleLensOnly() {
     '<b style="color:#4ade80">inline-3D active</b> — display-mode API present; the controls below ' +
     'are live';
 
-  // Both session events, one callback. They fire on the XRSession, not the layer, and they carry
-  // no payload dictionary — so what they mean is "go read it again", which is what this does.
-  handle.onDisplayModeChange(async ({ type }) => {
-    if (type === 'renderingmodechange') {
-      let index = -1;
-      try {
-        const modes = await handle.getRenderingModes();
-        index = modes.find((m) => m.isActive)?.modeIndex ?? -1;
-      } catch {
-        /* the read is best-effort; the event is still worth logging */
-      }
-      log('event renderingmodechange', index);
-      line(`event renderingmodechange → active mode ${index}`, 'ev');
-      readModes().catch(() => {});
-    } else {
-      // No lens GETTER exists in the API, so the value logged is the page's own last request —
-      // honest about which it is rather than inventing a read-back.
-      log('event hardwaredisplaystatechange', S.lens);
-      line(`event hardwaredisplaystatechange → lens ${S.lens} (page's last request)`, 'ev');
-      updateBadge();
-    }
+  // The two events, re-emitted on the wall. They carry the new state, so nothing here has to
+  // guess — and the badge only ever moves because one of these fired.
+  wall.on('renderingmodechange', (ev) => {
+    log('event renderingmodechange', ev.modeIndex);
+    line(`event renderingmodechange → active mode ${ev.modeIndex}`, 'ev');
+    // Re-read: the whole table's isActive column moved, and the new mode's advisory view scale
+    // is what the backing store should now be sized to.
+    readModes().catch(() => {});
+  });
+  wall.on('hardwaredisplaystatechange', (ev) => {
+    S.hw = ev.state || S.hw;
+    log('event hardwaredisplaystatechange', ev.state);
+    line(`event hardwaredisplaystatechange → ${ev.state}`, 'ev');
+    updateBadge();
   });
 
-  lensBtn.disabled = false;
-  lensOnlyBtn.disabled = false;
+  stereoBtn.disabled = false;
   refreshBtn.disabled = false;
-  lensBtn.addEventListener('click', toggleStereo);
-  lensOnlyBtn.addEventListener('click', toggleLensOnly);
+  stereoBtn.addEventListener('click', toggleStereo);
   refreshBtn.addEventListener('click', () => {
     readDisplayInfo().catch((e) => line(`getDisplayInfo failed: ${e.message}`, 'err'));
     readModes().catch((e) => line(`getRenderingModes failed: ${e.message}`, 'err'));

@@ -52,7 +52,12 @@ export interface XRViewRigInit {
   metersToVirtual?: number;
 }
 
-/** The hardware LENS state — what {@link TileHandle.requestDisplayMode} switches. */
+/**
+ * The panel's hardware display state, as reported by `hardwaredisplaystatechange`.
+ *
+ * There is no page-facing request for it: it is a CONSEQUENCE of the active rendering mode —
+ * a `viewCount === 1` mode puts the panel flat, the 2-view mode puts it back.
+ */
 export type XRHardwareDisplayMode = '2d' | '3d';
 
 /**
@@ -76,13 +81,17 @@ export interface XRDisplayInfo {
  * One rendering mode the DISPLAY can be put in, as reported by the runtime.
  *
  * The list is the display's, not the browser's. The DisplayXR Browser renders exactly **two**
- * views — no view synthesis exists anywhere in the stack — so a mode with `viewCount !== 2` is
+ * views — no view synthesis exists anywhere in the stack — so a mode needing MORE than two is
  * reported with `isRequestable: false` and {@link TileHandle.requestRenderingMode} refuses it.
- * Show such rows (they are what the panel can do) but mark them unavailable.
+ * Show such rows (they are what the panel can do) but mark them unavailable. A `viewCount === 1`
+ * mode IS requestable: the browser still submits two views and the runtime still weaves them —
+ * it is the PANEL that goes flat, which is how a page reaches the 2D hardware state.
  */
 export interface XRDisplayRenderingMode {
   modeIndex: number;
-  modeName: string;
+  name: string;
+  /** @deprecated the browser reports `name`; kept for pages written against the earlier build. */
+  modeName?: string;
   viewCount: number;
   /** Per-view render scale the runtime recommends for this mode — advisory, like the display's. */
   viewScaleX: number;
@@ -94,16 +103,61 @@ export interface XRDisplayRenderingMode {
   /** True for a glasses-free 3D mode; false for a flat one. */
   hardwareDisplay3D: boolean;
   isActive: boolean;
-  /** False when the browser cannot drive it — in practice, `viewCount !== 2`. */
+  /** False when the browser cannot drive it — in practice, `viewCount > 2`. */
   isRequestable: boolean;
 }
 
-/** What {@link TileHandle.onDisplayModeChange} hands its callback. */
-export interface DisplayModeChange {
-  /** `'renderingmodechange'` or `'hardwaredisplaystatechange'`. */
-  type: string;
-  /** The event's own `detail` if it carries one, otherwise the event object itself. */
+/** A rendering mode went active. Re-emitted on the wall and on every tile handle. */
+export interface RenderingModeChange {
+  type: 'renderingmodechange';
+  /** The mode now active, or -1 if the browser named none and the list could not be read. */
+  modeIndex: number;
+  /** Its view count — the thing the automatic rig collapse turns on. Null if unknown. */
+  viewCount: number | null;
+  /** The full mode row, when it could be read back. */
+  mode: XRDisplayRenderingMode | null;
+  /** The browser's own event payload, unreshaped. */
   detail: unknown;
+}
+
+/** The panel's hardware display state changed. */
+export interface HardwareDisplayStateChange {
+  type: 'hardwaredisplaystatechange';
+  state: XRHardwareDisplayMode | null;
+  detail: unknown;
+}
+
+export type DisplayModeChange = RenderingModeChange | HardwareDisplayStateChange;
+
+/** What a page may lift into the floating native viewer. `null` = no `XRDisplayLayer.undock`. */
+export interface UndockCapabilities {
+  model: boolean;
+  splat: boolean;
+}
+
+export interface UndockOptions {
+  /** Absolute https URL (or http on loopback) of the asset the NATIVE viewer loads. */
+  src: string;
+  type: 'model' | 'splat';
+  /** Lighting the page rendered with, so the viewer can match it. */
+  env?: 'room' | 'studio' | 'sky' | 'none';
+  /** The angle the page opened the asset at, so the undocked view opens at the same one. */
+  pose?: { yaw: number; pitch?: number; zoom?: number };
+  /** The page's fit margin, when it overrides the default. */
+  margin?: number;
+  title?: string;
+}
+
+export interface UndockHandle {
+  /**
+   * Resolves when the viewer exits. On the protocol FALLBACK it resolves immediately and
+   * `detached` is true — a protocol launch is fire-and-forget and the page never hears back.
+   */
+  ended: Promise<void>;
+  viewer: 'model' | 'splat';
+  detached: boolean;
+  /** The `displayxr-view:` URL, on the fallback path only. */
+  url?: string;
 }
 
 /** Extra options for {@link Inline3D.addScene}. */
@@ -170,9 +224,9 @@ export interface TileHandle {
    * (`cameraRigFromCamera(THREE, cam, { attach: true })` + `EyeCamera.setLocalFromView`), so the
    * scene graph supplies this frame's world pose with no lag at all.
    *
-   * While {@link TileHandle.setStereoEnabled}`(false)` is in force the rig is stored **as given**
-   * and pushed **flat** (a copy with `ipdFactor`/`parallaxFactor` at 0), so a page driving a rig
-   * every frame cannot walk out of 2D and `setStereoEnabled(true)` restores exactly this rig.
+   * While a `viewCount === 1` mode is active the rig is stored **as given** and pushed **flat**
+   * (a copy with `ipdFactor`/`parallaxFactor` at 0), so a page driving a rig every frame cannot
+   * walk out of 2D, and the 2-view mode going active restores exactly this rig.
    */
   setViewRig(rig: XRViewRigInit): boolean;
   /**
@@ -186,45 +240,44 @@ export interface TileHandle {
   /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /**
-   * Ask the runtime to switch the display to `modeIndex`.
+   * Ask the runtime to switch the display to `modeIndex`. A thin pass-through — it resolves and
+   * rejects exactly as the browser does.
    *
-   * Rejects with a `TypeError` for a mode whose `viewCount !== 2` (the browser is fixed at two
-   * views) — the browser raises that one synchronously, and this passthrough turns it into a
-   * rejection so one `.catch()` covers every failure — and with a `NotSupportedError`
-   * `DOMException` when the runtime refused. Success is signalled by the session's
-   * `renderingmodechange` event, not by this promise.
+   * Rejects with a `TypeError` for a mode whose `viewCount > 2` (the browser is fixed at two
+   * views) or an unknown index — the browser raises those synchronously, and this pass-through
+   * turns them into rejections so one `.catch()` covers every failure — and with a
+   * `NotSupportedError` `DOMException` when the request was not forwardable. Success is signalled
+   * by the session's `renderingmodechange` event, not by this promise.
+   *
+   * A `viewCount === 1` mode is requestable and is how a page goes flat.
    */
   requestRenderingMode(modeIndex: number): Promise<void>;
   /**
-   * Flip the display's LENS only. The page keeps submitting the same stereo frames and the
-   * runtime keeps weaving them; nothing about rendering changes.
+   * SUGAR over {@link TileHandle.requestRenderingMode}: `false` requests the first mode with
+   * `viewCount === 1 && isRequestable`, `true` the first with `viewCount === 2 && isRequestable`.
+   * It never touches the hardware display state directly (there is no such call) and never
+   * touches your rig.
    *
-   * Which is the trap: with the lens at `'2d'` the panel shows the woven atlas FLAT — a blurry
-   * double image — unless the page also fades its stereo to zero. Prefer
-   * {@link TileHandle.setStereoEnabled}, which does both halves. Rejects with a
-   * `NotSupportedError` `DOMException` when refused. Success fires `hardwaredisplaystatechange`.
-   */
-  requestDisplayMode(mode: XRHardwareDisplayMode): Promise<void>;
-  /**
-   * Go flat, or come back — the lens and the rig moved together, which is the only combination
-   * that looks right.
+   * **The rig collapse is not part of this call.** When a 1-view mode actually goes ACTIVE the
+   * SDK zeroes every window's `ipdFactor`/`parallaxFactor` on the way to the layer and restores
+   * them when a 2-view mode does — driven by `renderingmodechange`, so it happens however the
+   * mode changed, and a **refused request changes nothing in either direction**. The flattening
+   * is a copy pushed at the layer, never a write into your descriptor, so the restore is literally
+   * the rig you last set — and it survives a per-frame `setViewRig` loop, a lazy tile rebuilding
+   * its layer, and a window that never set a rig at all.
    *
-   * `false` zeroes this window's `ipdFactor`/`parallaxFactor` **and** asks the lens for `'2d'`;
-   * `true` restores both. The flattening is a copy pushed at the layer, never a write into your
-   * descriptor, so the restore is literally the rig you last set — and it survives a per-frame
-   * `setViewRig` loop, a lazy tile rebuilding its layer, and a window that never set a rig at all.
-   * Resolves to the state now in force.
-   *
-   * **A refused request is a no-op, in both directions.** Only the lens half can be declined
-   * (`NotSupportedError`), and by then the rig half has moved — so either direction puts the rig
-   * back before rethrowing. You get the rejection; the window is never left half-switched (mono
-   * under a 3D lens, or stereo under a flat one).
+   * Rejects with an `Error` when no such mode is listed, otherwise as `requestRenderingMode` does.
    */
   setStereoEnabled(enabled: boolean): Promise<boolean>;
+  /** Listen for one display event, re-emitted on this handle. Returns an unsubscribe function. */
+  on(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): () => void;
+  on(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): () => void;
+  /** Drop a listener registered with {@link TileHandle.on}. */
+  off(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): void;
+  off(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): void;
   /**
-   * Subscribe to both display events the **session** fires — `renderingmodechange` and
-   * `hardwaredisplaystatechange` — with one callback. Returns an unsubscribe function; inert
-   * (a no-op unsubscribe) on a browser without the API.
+   * Both display events through one callback — the older shape, still supported. Returns an
+   * unsubscribe function; inert (a no-op unsubscribe) on a browser without the API.
    */
   onDisplayModeChange(cb: (e: DisplayModeChange) => void): () => void;
   /**
@@ -250,6 +303,37 @@ export interface Inline3D {
   readonly refSpace: XRReferenceSpace | null;
   /** Number of currently-active (weaving) windows. */
   readonly liveCount: number;
+
+  // The panel is the DOCUMENT's, not a tile's, so the display API lives here; the same names are
+  // on every tile handle, routed to whichever window currently holds a live layer.
+
+  /** The panel, or `null` where there is no glasses-free display. See {@link TileHandle.getDisplayInfo}. */
+  getDisplayInfo(): Promise<XRDisplayInfo | null>;
+  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
+  /** Switch the display to `modeIndex`. See {@link TileHandle.requestRenderingMode}. */
+  requestRenderingMode(modeIndex: number): Promise<void>;
+  /** Sugar: `false` -> a 1-view mode, `true` -> the 2-view mode. See {@link TileHandle.setStereoEnabled}. */
+  setStereoEnabled(enabled: boolean): Promise<boolean>;
+  on(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): () => void;
+  on(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): () => void;
+  off(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): void;
+  off(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): void;
+  /** As last REPORTED by `hardwaredisplaystatechange` — never what was last requested. */
+  readonly hardwareDisplayState: XRHardwareDisplayMode | null;
+  /** The active mode as last read/reported. `viewCount: 0` means "not read yet". */
+  readonly activeMode: { modeIndex: number; viewCount: number };
+  /** True while the SDK is holding every window's rig flat because a 1-view mode is active. */
+  readonly stereoCollapsed: boolean;
+
+  /**
+   * What this build can lift into the floating native viewer, or `null` on a browser with no
+   * `XRDisplayLayer.undock` — that null is what a page branches on. Read off the first live
+   * layer (`layer.getUndockCapabilities()`); `{model:false, splat:false}` is the pre-read value.
+   */
+  readonly undock: UndockCapabilities | null;
+  /** Re-read {@link Inline3D.undock} off a live layer. */
+  refreshUndock(): Promise<UndockCapabilities | null>;
 
   /** Weave a still side-by-side 3D photo from a URL or decoded image source. */
   addImage(
@@ -384,16 +468,45 @@ export function inline3dViewRigSupported(): boolean;
 
 /**
  * True when this browser exposes the DISPLAY-MODE API — {@link TileHandle.getDisplayInfo},
- * {@link TileHandle.getRenderingModes}, {@link TileHandle.requestRenderingMode} and
- * {@link TileHandle.requestDisplayMode}. Sync + cheap; implies {@link inline3DAvailable}.
+ * {@link TileHandle.getRenderingModes} and {@link TileHandle.requestRenderingMode}. Sync + cheap;
+ * implies {@link inline3DAvailable}.
  *
- * Reads a capability (all four methods present on `XRDisplayLayer.prototype`), never a version or
- * UA string, and demands all four: a browser shipping half the set is one mid-implementation.
+ * Reads a capability (all three methods present on `XRDisplayLayer.prototype`), never a version or
+ * UA string, and demands all three: a browser shipping half the set is one mid-implementation.
  * Everything the API drives is optional enhancement, so branch on this only to decide whether to
  * show display controls — the handle methods reject with a clear `Error` rather than throwing at
  * import or create time.
  */
 export function inline3dDisplayModesSupported(): boolean;
+
+/**
+ * True when this browser can undock through `XRDisplayLayer.undock()` — i.e. without the
+ * `displayxr-view:` protocol prompt the fallback needs. A page does not have to branch on it to
+ * undock (the helper falls back on its own); it is the probe for whether {@link Inline3D.undock}
+ * carries capabilities.
+ */
+export function inline3dUndockSupported(): boolean;
+
+/**
+ * Undock `target`'s asset into the floating native viewer over the desktop.
+ *
+ * **Call it synchronously inside the click.** Both paths need the transient user activation — the
+ * API path to be allowed at all, the fallback to get Chrome's protocol dialog — and an `await`
+ * before this call spends it.
+ *
+ * Rejects with an `Error` whose `name` is `'not-installed'`, `'src-not-allowed'`,
+ * `'no-activation'` or `'busy'`.
+ */
+export function undock(target: Element, opts: UndockOptions): Promise<UndockHandle>;
+
+/** True where a native DisplayXR viewer can exist at all (the viewers are Windows-only today). */
+export function undockAvailable(): boolean;
+
+/** The `displayxr-view:` URL the fallback path navigates to — exported for logging and tests. */
+export function undockUrl(el: Element, opts: UndockOptions): string;
+
+/** An element's rect in physical screen pixels — where the native viewer places its window. */
+export function tileScreenRect(el: Element): { x: number; y: number; w: number; h: number; dpr: number };
 
 /** Open the page's inline-3D session and return a manager you add windows to. */
 export function createInline3D(
@@ -440,14 +553,16 @@ export interface XRDisplayLayer {
    */
   setViewRig?(rig: XRViewRigInit): void;
   /**
-   * The display-mode API. All four optional for the same reason as `setViewRig`: their presence
+   * The display-mode API. All three optional for the same reason as `setViewRig`: their presence
    * on the prototype IS the capability signal ({@link inline3dDisplayModesSupported}), and the
-   * SDK demands all four before treating the browser as supporting any of them.
+   * SDK demands all three before treating the browser as supporting any of them.
    */
   getDisplayInfo?(): Promise<XRDisplayInfo | null>;
   getRenderingModes?(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
-  /** Throws `TypeError` **synchronously** when that mode's `viewCount !== 2`. */
+  /** Throws `TypeError` **synchronously** for `viewCount > 2` or an unknown index. */
   requestRenderingMode?(modeIndex: number): Promise<void>;
-  requestDisplayMode?(mode: XRHardwareDisplayMode): Promise<void>;
+  /** Undock this layer's asset into the floating native viewer. Optional; same probe rule. */
+  undock?(init: UndockOptions): Promise<unknown>;
+  getUndockCapabilities?(): Promise<UndockCapabilities>;
   close(): void;
 }

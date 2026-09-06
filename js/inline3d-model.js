@@ -478,7 +478,7 @@ function boundsOf(object3d) {
  * This is the default because the alternative is silently wrong. `addStudioLights` is punctual
  * only, and a punctual light contributes a specular highlight without filling a metallic BRDF —
  * so a `metalness: 1` surface has nothing to reflect and resolves to BLACK. Chrome bells render as
- * a dark disc, glass lenses as opaque holes, and the result reads as a corrupt asset rather than a
+ * a dark disc, clear-glass optics as opaque holes, and the result reads as a corrupt asset rather than a
  * lighting choice. It has cost real debugging time more than once.
  *
  * RoomEnvironment is generated in memory — a small box of emissive panels — so this buys IBL with

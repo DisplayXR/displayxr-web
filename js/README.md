@@ -42,31 +42,70 @@ closes it when it scrolls away — so a long wall only pays for what's on screen
   the window still weaves). Gate with **`inline3dViewRigSupported()`**.
   [Full section](../docs/authoring-inline-3d.md#view-rigs-display-vs-camera) — including the
   one-frame latency caveat and the **attach** pattern that removes it.
-- **`handle.getDisplayInfo()` / `handle.getRenderingModes()`** — what the panel *is* (physical
-  size, pixel size, the per-view scale it recommends; `null` where there is no glasses-free
-  display) and every rendering mode the runtime can put it in. Both promise-returning. The mode
-  list is the **display's**, not the browser's: the browser renders exactly two views, so a mode
-  with `viewCount !== 2` is reported `isRequestable:false`. All the scale fields are **advisory** —
-  the browser cannot resize your canvas, so a page honours them by sizing its own backing store.
-- **`handle.requestRenderingMode(i)`** — switch the display to mode `i`. Rejects `TypeError` for a
-  non-2-view mode (the browser raises that one synchronously; the SDK hands it back as a rejection
-  so one `.catch()` covers everything) and `NotSupportedError` when the runtime refused.
-- **`handle.requestDisplayMode('2d'|'3d')`** — flip the **lens** and nothing else. The page keeps
-  submitting stereo and the runtime keeps weaving it, so a flat lens shows the woven atlas flat,
-  which is a blurry double image. Almost always you want:
-- **`handle.setStereoEnabled(bool)`** — the composite. `false` asks the lens for `'2d'` **and**
-  zeroes this window's rig (`ipdFactor`/`parallaxFactor` -> 0); `true` restores both. The
-  flattening is a *copy* pushed at the layer, never a write into your descriptor, so the restore is
-  exactly the rig you last set — and it holds through a per-frame `setViewRig` loop and a lazy tile
-  rebuilding its layer. A **refused** request is a no-op in both directions: the rig goes back
-  before the rejection is rethrown, so the window is never left half-switched.
-- **`handle.onDisplayModeChange(cb)`** — both session events (`renderingmodechange`,
-  `hardwaredisplaystatechange`) through one callback `{type, detail}`; returns an unsubscribe.
-  Gate the whole group with **`inline3dDisplayModesSupported()`** (true only when all four layer
-  methods are present). Example: [`../samples/display-modes/`](../samples/display-modes/).
 - **`handle.stats()`** — `{ frames, monoFrames }` for a scene window; `monoFrames` counts the
   frames that arrived with fewer than two views.
 - **`wall.close()`** — end the session and release all windows.
+
+### Display modes (on the wall *and* on every handle)
+
+The panel is the document's, not a tile's — one display, one active rendering mode — so these
+live on the `createInline3D()` result. The same names are on each tile handle too, routed to
+whichever window currently holds a live layer. Gate the group with
+**`inline3dDisplayModesSupported()`**; example: [`../samples/display-modes/`](../samples/display-modes/).
+
+- **`getDisplayInfo()` / `getRenderingModes()`** — what the panel *is* (physical size, pixel size,
+  the per-view scale it recommends; `null` where there is no glasses-free display) and every
+  rendering mode the runtime can put it in. Both promise-returning. The mode list is the
+  **display's**, not the browser's: the browser renders exactly two views, so a mode with
+  `viewCount > 2` is reported `isRequestable:false`. All the scale fields are **advisory** — the
+  browser cannot resize your canvas, so a page honours them by sizing its own backing store.
+- **`requestRenderingMode(i)`** — switch the display to mode `i`. A thin pass-through: rejects
+  `TypeError` for a `viewCount > 2` mode or an unknown index (the browser raises that one
+  synchronously; the SDK hands it back as a rejection so one `.catch()` covers everything) and
+  `NotSupportedError` when the request was not forwardable.
+- **`setStereoEnabled(bool)`** — **sugar only.** `false` requests the first mode with
+  `viewCount === 1 && isRequestable`, `true` the first with `viewCount === 2 && isRequestable`.
+  It never touches the hardware display state directly (there is no such call) and never touches
+  your rig.
+- **`on(type, cb)` / `off(type, cb)`** — the two session events re-emitted on the handle:
+  `renderingmodechange` `{type, modeIndex, viewCount, mode, detail}` and
+  `hardwaredisplaystatechange` `{type, state:'2d'|'3d', detail}`. `on` returns an unsubscribe.
+  **`onDisplayModeChange(cb)`** is the older both-events-one-callback shape and still works.
+- **`wall.hardwareDisplayState`** (`'2d'|'3d'|null`), **`wall.activeMode`**
+  (`{modeIndex, viewCount}`) and **`wall.stereoCollapsed`** — read-only, and always what was last
+  **reported**, never what was last requested.
+
+**The 2D/3D hardware state is a consequence of the mode, not a control.** Requesting a one-view
+mode puts the panel in its 2D state and the runtime carries on weaving the same two-view atlas;
+requesting the two-view mode puts it back. So the SDK **collapses the stereo rig automatically**
+when a 1-view mode goes active — every window's `ipdFactor`/`parallaxFactor` to 0, so both eyes
+render from one place — and restores it when a 2-view mode does. That is driven by the
+`renderingmodechange` event (and by the first `getRenderingModes()` read, for a page that opens
+with the panel already flat), **not** by the request: your rendering is unchanged, it happens
+however the mode changed, and a **refused** request changes nothing in either direction. The
+flattening is a *copy* pushed at the layer, never a write into your descriptor, so the restore is
+exactly the rig you last set — and it holds through a per-frame `setViewRig` loop and a lazy tile
+rebuilding its layer.
+
+### Undock
+
+Lift a window's asset out of the page into a floating, transparent native viewer over the desktop.
+
+- **`wall.undock`** — `{model:boolean, splat:boolean}` on a browser with `XRDisplayLayer.undock`,
+  and **`null`** on one without (plain Chrome, or an older DisplayXR browser) — that null is what
+  a page branches on. The values are read off the first live layer via
+  `layer.getUndockCapabilities()`; **`wall.refreshUndock()`** re-reads them.
+  **`inline3dUndockSupported()`** is the sync probe.
+- **`await undock(element, opts)`** (from `inline3d.js` or `inline3d-undock.js`) —
+  `opts = {src, type:'model'|'splat', env?, pose?, margin?, title?}`. `src` must be absolute
+  https, or http on loopback. **Call it synchronously inside the click** — both paths need the
+  transient activation. Resolves to `{ended: Promise<void>, viewer, detached}`; rejects with an
+  Error named `not-installed` | `src-not-allowed` | `no-activation` | `busy`.
+- Where the layer API is absent it falls back to the `displayxr-view:` OS protocol (a hidden-iframe
+  navigation, Chrome's one-time "Open DisplayXR…?" prompt). That path is fire-and-forget:
+  `ended` resolves immediately and `detached === true`. `undockUrl(el, opts)` and
+  `tileScreenRect(el)` are exported for logging/tests; `undockAvailable()` reports the platform
+  (the viewers are Windows-only).
 
 **`await startInline3D(canvas, { onFrame, referenceSpace?, virtualDisplayHeight? })`** — back-compat
 single-scene helper: `createInline3D({lazy:false})` + `addScene`. Returns `{ supported, close(), wall }`.

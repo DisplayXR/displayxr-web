@@ -53,7 +53,7 @@
   th:nth-child(2),td:nth-child(2){text-align:left}
   tr.active{background:#134e2a33}
   tr.active td:nth-child(2)::after{content:' — active';color:#7ee2a4}
-  /* viewCount != 2: shown, because it is what the panel can do, and greyed, because this
+  /* viewCount > 2: shown, because it is what the panel can do, and greyed, because this
      browser renders exactly two views and can never fill it. */
   tr.blocked{opacity:.42}
   tr.blocked td{font-style:italic}
@@ -77,19 +77,19 @@
   <p class="lede">Every other sample takes the display as it finds it. This one asks it questions —
      how big is the panel, in metres and in pixels, and what rendering modes can the runtime put it
      in — and then asks it to change: a different rendering mode, or just the
-     <strong>lens</strong>, flipped between glasses-free 3D and flat 2D while the page carries on
-     submitting exactly the same stereo frames.</p>
+     <strong>rendering mode</strong>. There is no separate 2D/3D control: asking for a one-view
+     mode is what puts the panel's hardware display state flat, and asking for the two-view mode
+     is what brings it back.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
   <div id="stage">
     <canvas id="tile"></canvas>
-    <div id="badge" data-inline3d-overlay>lens <b>3d</b> · rig stereo</div>
+    <div id="badge" data-inline3d-overlay>hardware display state <b>—</b> · mode -1 · rig stereo</div>
   </div>
 
   <div class="row">
-    <button id="lens" class="primary" disabled>Go 2D (lens + rig)</button>
-    <button id="lensOnly" disabled>Lens only → 2d</button>
+    <button id="stereo" class="primary" disabled>Go 2D (1-view mode)</button>
     <button id="refresh" disabled>Re-read modes</button>
   </div>
 
@@ -110,22 +110,26 @@
 
   <div class="cols">
     <div>
-      <h2>Why “go 2D” is two calls, not one</h2>
-      <p class="small"><code>requestDisplayMode('2d')</code> moves the <em>lens</em> and nothing
-         else. The page keeps rendering stereo and the runtime keeps weaving it, so what the flat
-         panel then shows is the woven atlas — two slightly different images averaged into one,
-         i.e. blurry. The sharp 2D is lens-flat <em>and</em> rig-flat, so
-         <code>setStereoEnabled(false)</code> does both: it asks for the 2D lens and zeroes the
-         view rig's <code>ipdFactor</code>/<code>parallaxFactor</code> so both eyes render from one
-         place. <strong>Lens only</strong> above is the wrong half on purpose — press it to see
-         what the composite is protecting you from.</p>
+      <h2>“Go 2D” is a mode request, and only a mode request</h2>
+      <p class="small">The panel's <strong>hardware display state</strong> is a consequence of the
+         active rendering mode, not a knob: request a mode with <code>viewCount 1</code> and the
+         browser puts the panel flat and reports that mode active — while the runtime carries on
+         weaving the same fixed two-view atlas. So the SDK zeroes every window's
+         <code>ipdFactor</code>/<code>parallaxFactor</code> when that mode goes <em>active</em>,
+         off the <code>renderingmodechange</code> event rather than off the request: this page's
+         render loop never changes, and a refused request changes nothing at all. The badge above
+         is read-only — it shows what the display reported.</p>
+      <p class="small"><code>setStereoEnabled(false)</code> is sugar for exactly one thing: the
+         first requestable <code>viewCount 1</code> mode in the table.</p>
     </div>
     <div>
       <h2>Two views, and the advisory scales</h2>
       <p class="small">The mode list is the <em>display's</em>, not the browser's. There is no view
-         synthesis anywhere in this stack, so the browser renders exactly two views and a mode with
-         <code>viewCount ≠ 2</code> is listed (it is real, the panel can do it) but greyed —
-         <code>requestRenderingMode</code> refuses it with a <code>TypeError</code>.</p>
+         synthesis anywhere in this stack, so the browser renders exactly two views and a mode
+         needing <em>more</em> than two is listed (it is real, the panel can do it) but greyed —
+         <code>requestRenderingMode</code> refuses it with a <code>TypeError</code>. A
+         <em>one</em>-view mode is requestable: the browser still submits two views and the runtime
+         still weaves them, it is the panel that goes flat.</p>
       <p class="small"><code>viewScaleX/Y</code> and <code>recommendedViewScaleX/Y</code> are
          <strong>advisory</strong>: the browser cannot resize your canvas. A page honours them by
          sizing its own backing store — which is what this sample does on every
