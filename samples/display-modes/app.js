@@ -319,6 +319,9 @@ async function toggleStereo() {
 (async () => {
   updateBadge();
   wall = await createInline3D({ lazy: false, autoChrome: false });
+  // Harness hook: the CDP driver (verify_display_modes.py) calls the wall directly for the
+  // cases the UI deliberately has no button for, e.g. re-requesting the ACTIVE mode.
+  window.__dxrWall = wall;
   if (!wall.supported) {
     statusEl.className = 'status flat';
     statusEl.innerHTML =
