@@ -5,12 +5,19 @@
 // tall. That is the right model for a window onto a fixed object, and it is why those samples
 // never touch a camera.
 //
-// A scene with its own camera — an orbit, a walkthrough, a game — wants the opposite deal, and
-// it could not be expressed before `setViewRig`: "here is MY camera; keep my framing, and make
-// it stereo." That is a CAMERA rig. The app sends pose + vertical FOV + a convergence distance;
-// the runtime offsets the eyes and skews each frustum so convergence lands on the zero-disparity
-// plane. Not one line of projection math happens in this file, which is the whole point — the
-// off-axis maths is the runtime's, the same code the native apps run.
+// A scene that owns a VIEWPOINT the user moves through a world — first person, a walkthrough, a
+// game, a ported VR experience — wants the opposite deal, and it could not be expressed before
+// `setViewRig`: "here is MY camera; keep my framing, and make it stereo." That is a CAMERA rig.
+// The app sends pose + vertical FOV + a convergence distance; the runtime offsets the eyes and
+// skews each frustum so convergence lands on the zero-disparity plane. Not one line of projection
+// math happens in this file, which is the whole point — the off-axis maths is the runtime's, the
+// same code the native apps run.
+//
+// THIS SAMPLE ORBITS, and that is a teaching choice, not a recommendation: an orbit around a
+// subject is a DISPLAY-rig case (rotate the subject under a fixed portal — see samples/windows/
+// and the "Which rig" section of docs/authoring-inline-3d.md). It is used here because the A/B
+// against a display rig on the C key needs one subject both rigs can show. Do not copy the rig
+// choice out of this file into a model/splat/avatar viewer.
 //
 // Authored at METRE scale (a 40 cm cube, orbited from ~1.2 m), which is not a style choice: on a
 // camera rig `ipdFactor` and `metersToVirtual` are ABSOLUTE, so the comfort rule

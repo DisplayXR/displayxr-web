@@ -614,39 +614,42 @@ Consolidated, in the order they tend to bite:
 12. **A rig set this frame drives NEXT frame's views.** Use the attach pattern; never predict the
     camera forward.
 13. **Absolute rig units on a camera rig.** `ipdFactor` and `metersToVirtual` are in *your* world
-    units. A non-metre-scale scene needs `metersToVirtual`, and
-    `ipd × m2v × diopters × 0.5` must stay ≤ 1 — *and well above 0*. The upper bound is
-    divergence; the lower bound is **no stereo at all**, and it is the one you hit by framing a
-    large subject from far away with a 63 mm baseline. A scene that weaves but looks flat is
-    almost always this. Fix it with `metersToVirtual ≈ framingDistance / 0.6`, or by moving the
-    scene to a display rig, which is scale-invariant by construction.
-14. **Convergence left at 0.** That is infinity — the entire scene in front of the glass. And in
+    units — `metersToVirtual` is the unit conversion for a scene not authored in metres, not a
+    depth dial. Keep `ipd × m2v × diopters × 0.5` ≤ 1 or the background diverges.
+14. **Reading comfort as a depth meter.** It is not one. Comfort bounds where the depth budget
+    *sits* (the background against divergence); the budget itself is
+    `(baseline / tan(vFov/2)) × (1/z_near − 1/z_far)`, which convergence cancels out of exactly.
+    A scene that weaves but looks **flat** is a budget problem — a 63 mm baseline framing a large
+    subject from far away — and comfort will happily report a healthy number while it happens.
+    Do not paper over it by scaling the baseline: a camera rig that needs a scale correction is a
+    scene that wanted a **display rig**, which is scale-invariant by construction.
+15. **Convergence left at 0.** That is infinity — the entire scene in front of the glass. And in
     first person, convergence to the orbit target is ~0, which is the same mistake from the other
     end.
-15. **No `near`/`far` on the eye cameras** — `EyeCamera` writes the projection matrix directly, so
+16. **No `near`/`far` on the eye cameras** — `EyeCamera` writes the projection matrix directly, so
     the scalars keep three's defaults and anything reading them as uniforms (Spark) misbehaves. But
     **never `updateProjectionMatrix()`** on one to "fix" that: it discards the runtime's off-axis
     frustum for a symmetric one, and the result looks nearly right.
-16. **A library that double-fires because you now render twice.** Spark's sort is the known one
+17. **A library that double-fires because you now render twice.** Spark's sort is the known one
     (`minSortIntervalMs: 16` on Spark ≥2, `autoUpdate:false` plus one `spark.update()` from the app
     camera on 0.1.x), but anything keyed on `renderer.info.render.frame` or hung on
     `onBeforeRender` has the same shape.
-17. **A no-op `setSize`.** It clears the buffer for an identical value; compare against
+18. **A no-op `setSize`.** It clears the buffer for an identical value; compare against
     `renderer.domElement.width/height` first, and repaint immediately on a real change.
-18. **A render scale below ~0.5.** The interlace itself becomes visible. A quality ladder tuned on
+19. **A render scale below ~0.5.** The interlace itself becomes visible. A quality ladder tuned on
     a flat page has no reason to stop there.
-19. **A full-bleed overlay sharing the canvas rect.** Hide it with `display:none`, never
+20. **A full-bleed overlay sharing the canvas rect.** Hide it with `display:none`, never
     `opacity:0`, and hide it *before* registering the tile — which means activating after the
     splash's fade has actually completed, not when you started it.
-20. **`backdrop-filter` anywhere over a tile.** No z-order model fixes it. Near-solid backgrounds
+21. **`backdrop-filter` anywhere over a tile.** No z-order model fixes it. Near-solid backgrounds
     instead.
-21. **Animating the canvas element itself.** Its rect and its weave disagree for the length of the
+22. **Animating the canvas element itself.** Its rect and its weave disagree for the length of the
     animation. Animate a wrapper or the buffer's contents.
-22. **Picking against an eye camera.** One cursor, one screen, one camera: `appCam`.
-23. **Stopping your own loop before activation succeeded.** `setAnimationLoop(null)` belongs after
+23. **Picking against an eye camera.** One cursor, one screen, one camera: `appCam`.
+24. **Stopping your own loop before activation succeeded.** `setAnimationLoop(null)` belongs after
     the `addScene` path returns, never before it. A refused activation that already stopped the
     loop is a black page.
-24. **Unpinned CDN imports.** If you load three, Spark or the SDK from a CDN or an import map,
+25. **Unpinned CDN imports.** If you load three, Spark or the SDK from a CDN or an import map,
     **pin the exact version** (`three@0.180.0`, not `three@latest`, not a range). A page that
     resolves `latest` at load time silently changes renderer version under a stereo loop that
     depends on `setViewport`/`setScissor` semantics and on Spark's peer floor — and it will change
@@ -655,7 +658,7 @@ Consolidated, in the order they tend to bite:
     degrades the page to its mono path instead of failing the whole module graph the way a static
     import would.
 
-25. **Full-window scene tiles can stutter on the DisplayXR Browser (≤ preview-0.1.27).** On a
+26. **Full-window scene tiles can stutter on the DisplayXR Browser (≤ preview-0.1.27).** On a
     heavy full-window scene the browser's zero-copy read of the canvas races the page's write of
     the same WebGL back buffer (`Already being accessed for write` in the chrome log); the CPU
     fallback is refused and the previous weave is re-shown — measured at ~20–30% of frames on a

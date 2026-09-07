@@ -186,11 +186,17 @@ function scratch(THREE) {
  * content, and past it they diverge, which no one can fuse. With the defaults (factors 1,
  * metersToVirtual 1) that is `convergence >= ~0.5` world units. Nothing here enforces it — the
  * runtime clamps out-of-range values itself, once, with a warning — but a scene authored in
- * centimetres with a 0.1-unit convergence is the shape of the mistake. The FAR end is unguarded
- * and just as fatal: as the product approaches 0 the eyes converge on the same pixels and the
- * window goes flat. If your camera distance tracks the size of what it frames, scale the baseline
- * with it — `metersToVirtual: framingDistance / 0.6` holds the product constant at any subject
- * scale (and is a hint that the scene may want a display rig instead).
+ * centimetres with a 0.1-unit convergence is the shape of the mistake.
+ *
+ * COMFORT IS NOT A DEPTH METER. It bounds where the depth budget SITS (it guards the background
+ * against divergence), not how big the budget is. The budget is
+ * `(baseline / tan(vFov/2)) * (1/z_near - 1/z_far)`, which convergence cancels out of exactly —
+ * convergence slides the scene relative to the glass and never resizes its depth, which is why
+ * ipdFactor/parallaxFactor here are ABSOLUTE rather than scaled by the convergence distance. A
+ * window that weaves but looks FLAT is a budget problem (a 63 mm baseline framing a large subject
+ * from far away) and comfort will report a healthy number while it happens. Do not rescale the
+ * baseline to paper over it: a camera rig needing a scale correction is a scene that wanted a
+ * display rig.
  *
  * @param {object} THREE  your imported three.js module namespace.
  * @param {object} camera  a THREE.PerspectiveCamera (`.fov` in degrees, `.matrixWorld` current).

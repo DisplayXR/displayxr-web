@@ -177,27 +177,39 @@ correctly and still looks flat.
   editor, a ported VR app. **Camera rig.** The viewpoint is state the app owns, and a portal has
   no camera to follow you.
 
-**Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses
-by `virtualDisplayHeight / the element's physical height`, so the stereo you get does not depend on
-how big the subject is in world units — a 15 cm figurine and a 50 m airliner land on the same
-virtual display with the same disparity. A camera rig is deliberately literal: it plants two eyes
-`metersToVirtual` × 63 mm apart at wherever your camera is, so its stereo strength is
-`baseline / framing distance`. Frame a subject the usual way — push the camera back until the
-bounding sphere fits — and that ratio collapses as the subject grows:
+**Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses by
+`virtualDisplayHeight / the element's physical height`, so the depth you get does not depend on how
+big the subject is in world units — a 15 cm figurine and a 50 m airliner land on the same virtual
+display looking equally deep. A camera rig is deliberately literal: it plants two eyes 63 mm apart
+(× `metersToVirtual`) at wherever your camera is. Its **depth budget** — the disparity range the
+scene occupies, i.e. how deep it looks — is
 
-| subject | camera distance that frames it | baseline / distance | reads as |
+    budget = (baseline / tan(verticalFov/2)) × (1/z_near − 1/z_far)
+
+and for a subject of radius `R` framed from `k·R` that works out proportional to **`baseline / R`**.
+Frame a subject the usual way — push the camera back until the bounding sphere fits — and the depth
+collapses as the subject grows:
+
+| subject | framed from | depth budget | reads as |
 |---|---|---|---|
-| 24 cm torus knot | 0.63 m | 0.10 | strong 3D |
-| 4 m car | 8 m | 0.008 | nearly flat |
-| 156 m airframe | 365 m | 0.00017 | **2D** |
+| 24 cm torus knot | 0.63 m | 1× | strong 3D |
+| 4 m car | 8 m | 1/13 | shallow |
+| 156 m airframe | 365 m | 1/580 | **2D** |
 
-Nothing warns you about this. The comfort rule below guards the *near* end only, and a far
-convergence sails through it. A camera rig can be rescued with `metersToVirtual` (see
-[Comfort](#comfort)), but reaching for a display rig is usually *less* code, because "frame the
-subject" becomes a recentre-and-scale of the content rather than a camera solve.
-`SceneViewer` (`@displayxr/inline3d/viewer`) is that pattern packaged, and it mirrors what the
-native `displayxr-demo-modelviewer` and `displayxr-demo-gaussiansplat` do: **bring the content to
-the display rather than moving the display to the content.**
+Nothing warns you about this, and **convergence is neither the cause nor the cure** — it cancels
+out of the budget entirely (see [Comfort and depth budget](#comfort-and-depth-budget)). The fix is
+to stop moving a camera to fit a subject: on a display rig you scale the subject into the virtual
+display instead, and the budget is constant by construction. It is also *less* code — "frame the
+subject" becomes a recentre-and-scale rather than a camera solve. `SceneViewer`
+(`@displayxr/inline3d/viewer`) is that pattern packaged, and it mirrors what the native
+`displayxr-demo-modelviewer` and `displayxr-demo-gaussiansplat` do: **bring the content to the
+display rather than moving the display to the content.**
+
+Which gives the sharpest form of the test: **if a camera rig would need a scale correction to look
+right, that is the signal it wanted a display rig.** The camera rig's remit is scenes already
+authored at viewpoint scale — a first-person world in metres, or a WebXR/VR experience being
+ported, where the existing interaxial carries over exactly. Neither of those needs a correction,
+which is why none is offered.
 
 Either way the SDK computes **nothing**. It fills in a descriptor; the off-axis (Kooima)
 projection stays in the runtime, which is the same code the native apps consume. `XRView.transform`
@@ -241,49 +253,53 @@ bad number degrades the look rather than killing the window.
 
 Note the display/camera split on `ipdFactor` and `parallaxFactor`. On a display rig they are
 *relative* — `1` is what the display would naturally do, and lowering them is a comfort dial. On a
-camera rig they are *absolute*, in the app's own units, which is what makes `metersToVirtual` load-
-bearing for any scene not authored at metre scale: a 6 cm object viewed from 28 cm gets the full
-63 mm human eye separation unless you say otherwise.
+camera rig they are *absolute*, in the app's own units. `metersToVirtual` is the unit conversion
+that goes with that, for a scene not authored in metres: a scene built in centimetres would
+otherwise get a 63 mm eye separation measured in *its* units. It is a unit fix, not a depth dial —
+if you are reaching for it to make a scene look deeper, read the section below and then the
+[rig choice](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera) again.
 
-### Comfort
+### Comfort and depth budget
 
-The runtime's own rule (`dxr_view_math.h`):
+Two different numbers get confused constantly, so take them apart first.
+
+**Depth budget** — how much disparity range the scene occupies, i.e. how deep it looks:
+
+```
+budget = (baseline / tan(verticalFov/2)) × (1/z_near − 1/z_far)
+         baseline = 63 mm × ipdFactor × metersToVirtual
+```
+
+**Convergence does not appear.** That is exact, not an approximation: the convergence term is
+common to both ends and cancels out of the difference. Convergence *translates* the whole disparity
+field — it slides the scene in front of or behind the glass — and never resizes it. That is what
+you want from the knob, and it is precisely why a camera rig's `ipdFactor` and `parallaxFactor` are
+**absolute** rather than scaled by the convergence distance: coupling them would make the scene's
+depth breathe every time the user reconverged.
+
+**Comfort** — the runtime's own rule (`dxr_view_math.h`):
 
 ```
 comfort = ipdFactor × metersToVirtual × convergenceDiopters × N     (N ≈ 0.5 m, nominal viewing distance)
 ```
 
-At `1` the viewer's eyes are parallel on infinitely distant content; **past 1 they diverge**, and
-nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1, `metersToVirtual` 1) it reduces
-to "keep convergence past about 0.5 world units". Nothing in this SDK enforces it — the runtime
-clamps its own inputs — but it is the number to reach for when a scene is uncomfortable and you
-cannot say why. `samples/camera-rig/` prints it live.
+It is your eye scale divided by the eye scale a display rig would use for a screen at your
+convergence distance. At `1` the viewer's eyes are parallel on infinitely distant content; **past 1
+they diverge**, and nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1,
+`metersToVirtual` 1) it reduces to "keep convergence past about 0.5 world units".
 
-**Read the product, not just the ceiling.** The rule is stated as an upper bound, but the lower
-end is what bites in practice: `comfort` near `1` is uncomfortable, and `comfort` near `0` is *no
-stereo at all* — both eyes land on the same pixels and the window renders as a flat picture that
-weaves perfectly. Below roughly `0.05` there is nothing left to fuse. A camera rig at its defaults
-falls off that end whenever convergence is large in world units, which is exactly what framing a
-big subject does.
+So comfort bounds where the budget *sits*, not how big it is — it guards the background against
+divergence. A **low** comfort number therefore means "my convergence is far", **not** "my scene is
+flat": a flat window is a budget problem and comfort will not report it. (The two co-vary in a
+naive orbit viewer, where convergence is set to the framing distance, which is how the two get
+confused.) Nothing in this SDK enforces either; the runtime clamps the *convergence* knob — never
+`ipdFactor` — when comfort exceeds 1. `samples/camera-rig/` prints comfort live.
 
-`metersToVirtual` is the knob for both ends, and the one to reach for on any scene whose world
-units are not "metres, viewed from arm's length". It multiplies the eye separation, so tying it to
-the framing distance holds disparity constant at any subject scale:
-
-```js
-// a camera rig on a subject-framing scene: keep the baseline proportional to the framing
-const NOMINAL = 0.6;                                   // m — a comfortable desk viewing distance
-cameraRigFromCamera(THREE, appCam, {
-  convergence: orbitDistance,
-  metersToVirtual: orbitDistance / NOMINAL,            // 63 mm becomes 0.105 x orbitDistance
-  attach: true, out: rig,
-});
-```
-
-With convergence tracking that same distance the comfort product pins at a constant `0.83` for a
-figurine and an airframe alike. That is a camera rig emulating, by hand, what a display rig gives
-you for free — worth knowing, and worth reading as a hint that the scene may want a display rig
-instead.
+**Convergence at infinity** (`convergence: 0`) is legal and keeps a perfectly finite budget; it
+just puts the entire scene in front of the glass, which is comfortable for almost nothing. It is
+also the one camera rig with no display-rig equivalent at all — a display rig's zero-disparity
+plane *is* its screen, at a finite distance, so it cannot express "zero disparity at infinity". A
+camera rig simply has one degree of freedom more than a display rig, and this is where you see it.
 
 ### The latency caveat, and the attach pattern
 
