@@ -160,9 +160,44 @@ views against a **view rig**, and there are two of them:
   runtime places the eyes.
 - **A camera rig** — *the app has a camera; perturb its frustum.* You send a pose, a vertical FOV
   and a convergence distance; the runtime keeps your framing, offsets the eyes, and skews each
-  frustum so the convergence distance lands on the zero-disparity plane. This is what a scene that
-  owns a camera — an orbit, a walkthrough, a game — actually wants, and it cannot be expressed as
-  a display rig at all.
+  frustum so the convergence distance lands on the zero-disparity plane. It expresses the one
+  thing a display rig cannot: a viewpoint the app moves through a world.
+
+### Which rig — decide by what the user moves, not by whether you hold a camera
+
+Almost every page that owns a `THREE.PerspectiveCamera` reaches for the camera rig on that basis
+alone. That is the wrong test, and it is the most common way to end up with a window that weaves
+correctly and still looks flat.
+
+- **The user turns the SUBJECT** — a test cube, a model or splat viewer, an avatar, a product
+  hero, a diorama. **Display rig.** *Including when the interaction is an orbit*: rotate the
+  subject group under a fixed portal instead of flying a camera around it. There is no viewpoint
+  to hand over, and inventing one buys nothing.
+- **The user IS somewhere and moves** — first person, a walkthrough, a game, a map, a level
+  editor, a ported VR app. **Camera rig.** The viewpoint is state the app owns, and a portal has
+  no camera to follow you.
+
+**Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses
+by `virtualDisplayHeight / the element's physical height`, so the stereo you get does not depend on
+how big the subject is in world units — a 15 cm figurine and a 50 m airliner land on the same
+virtual display with the same disparity. A camera rig is deliberately literal: it plants two eyes
+`metersToVirtual` × 63 mm apart at wherever your camera is, so its stereo strength is
+`baseline / framing distance`. Frame a subject the usual way — push the camera back until the
+bounding sphere fits — and that ratio collapses as the subject grows:
+
+| subject | camera distance that frames it | baseline / distance | reads as |
+|---|---|---|---|
+| 24 cm torus knot | 0.63 m | 0.10 | strong 3D |
+| 4 m car | 8 m | 0.008 | nearly flat |
+| 156 m airframe | 365 m | 0.00017 | **2D** |
+
+Nothing warns you about this. The comfort rule below guards the *near* end only, and a far
+convergence sails through it. A camera rig can be rescued with `metersToVirtual` (see
+[Comfort](#comfort)), but reaching for a display rig is usually *less* code, because "frame the
+subject" becomes a recentre-and-scale of the content rather than a camera solve.
+`SceneViewer` (`@displayxr/inline3d/viewer`) is that pattern packaged, and it mirrors what the
+native `displayxr-demo-modelviewer` and `displayxr-demo-gaussiansplat` do: **bring the content to
+the display rather than moving the display to the content.**
 
 Either way the SDK computes **nothing**. It fills in a descriptor; the off-axis (Kooima)
 projection stays in the runtime, which is the same code the native apps consume. `XRView.transform`
@@ -223,6 +258,32 @@ nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1, `metersToVirt
 to "keep convergence past about 0.5 world units". Nothing in this SDK enforces it — the runtime
 clamps its own inputs — but it is the number to reach for when a scene is uncomfortable and you
 cannot say why. `samples/camera-rig/` prints it live.
+
+**Read the product, not just the ceiling.** The rule is stated as an upper bound, but the lower
+end is what bites in practice: `comfort` near `1` is uncomfortable, and `comfort` near `0` is *no
+stereo at all* — both eyes land on the same pixels and the window renders as a flat picture that
+weaves perfectly. Below roughly `0.05` there is nothing left to fuse. A camera rig at its defaults
+falls off that end whenever convergence is large in world units, which is exactly what framing a
+big subject does.
+
+`metersToVirtual` is the knob for both ends, and the one to reach for on any scene whose world
+units are not "metres, viewed from arm's length". It multiplies the eye separation, so tying it to
+the framing distance holds disparity constant at any subject scale:
+
+```js
+// a camera rig on a subject-framing scene: keep the baseline proportional to the framing
+const NOMINAL = 0.6;                                   // m — a comfortable desk viewing distance
+cameraRigFromCamera(THREE, appCam, {
+  convergence: orbitDistance,
+  metersToVirtual: orbitDistance / NOMINAL,            // 63 mm becomes 0.105 x orbitDistance
+  attach: true, out: rig,
+});
+```
+
+With convergence tracking that same distance the comfort product pins at a constant `0.83` for a
+figurine and an airframe alike. That is a camera rig emulating, by hand, what a display rig gives
+you for free — worth knowing, and worth reading as a hint that the scene may want a display rig
+instead.
 
 ### The latency caveat, and the attach pattern
 

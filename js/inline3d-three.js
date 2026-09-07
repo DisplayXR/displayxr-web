@@ -167,10 +167,18 @@ function scratch(THREE) {
  * anything here: this function only fills in a descriptor, and every off-axis projection stays
  * in the runtime, where it is the same code the native apps use.
  *
+ * WHICH RIG. Decide by what the USER moves, not by whether you hold a camera. If the user turns
+ * a SUBJECT — a model, a splat, an avatar, a product hero, and yes, an orbit around one — use a
+ * display rig and rotate the subject under a fixed portal: a display rig is scale-invariant, so a
+ * figurine and an airframe get the same stereo. A camera rig is literal (two eyes 63 mm apart at
+ * your camera), so its disparity falls off as baseline / framing distance and a big subject framed
+ * from far away renders FLAT. Use a camera rig for a viewpoint the user moves through a world:
+ * first person, a walkthrough, a game, a map, an editor, a ported VR app.
+ *
  * CONVERGENCE IS THE ONE KNOB TO GET RIGHT. It is the distance at which content sits ON the
  * glass; everything nearer pops out, everything further recedes. Point it at whatever the viewer
- * is meant to be looking at (an orbit target, a hit-tested surface) — for an orbiting camera
- * that is usually just the orbit radius. Left at 0 it means infinity, which puts the entire
+ * is meant to be looking at (the subject's centre, a hit-tested surface) — with a moving camera
+ * that is usually just the distance to it. Left at 0 it means infinity, which puts the entire
  * scene in front of the display and is comfortable for almost nothing.
  *
  * COMFORT. The runtime's rule is `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1`
@@ -178,7 +186,11 @@ function scratch(THREE) {
  * content, and past it they diverge, which no one can fuse. With the defaults (factors 1,
  * metersToVirtual 1) that is `convergence >= ~0.5` world units. Nothing here enforces it — the
  * runtime clamps out-of-range values itself, once, with a warning — but a scene authored in
- * centimetres with a 0.1-unit convergence is the shape of the mistake.
+ * centimetres with a 0.1-unit convergence is the shape of the mistake. The FAR end is unguarded
+ * and just as fatal: as the product approaches 0 the eyes converge on the same pixels and the
+ * window goes flat. If your camera distance tracks the size of what it frames, scale the baseline
+ * with it — `metersToVirtual: framingDistance / 0.6` holds the product constant at any subject
+ * scale (and is a hint that the scene may want a display rig instead).
  *
  * @param {object} THREE  your imported three.js module namespace.
  * @param {object} camera  a THREE.PerspectiveCamera (`.fov` in degrees, `.matrixWorld` current).

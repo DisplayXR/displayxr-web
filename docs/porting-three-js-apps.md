@@ -88,19 +88,29 @@ compute nothing.
 
 ### Which rig
 
+Decide by **what the user moves**, not by whether your code happens to hold a
+`THREE.PerspectiveCamera` — it does, or you would not be reading a porting guide.
+
 - **Display rig** — *the canvas is a portal.* Its plane is `z = 0`, the viewer looks through it at
   a virtual display `virtualDisplayHeight` metres tall. Pick this when the element frames a
-  **subject**, not a viewpoint: a product viewer, a photo, a hero object, a portal into a diorama.
-  You author at a fixed scale for a fixed window; you have no camera to hand over, and inventing
-  one buys nothing.
+  **subject**, not a viewpoint: a product or model viewer, a splat, an avatar, a photo, a hero
+  object, a portal into a diorama. You author at a fixed scale for a fixed window; you have no
+  viewpoint to hand over, and inventing one buys nothing. **An orbit around a subject is this
+  case** — rotate the subject group under a fixed portal rather than flying a camera around it.
 - **Camera rig** — *the app has a camera; perturb its frustum.* You send pose, vertical FOV and a
   convergence distance; the runtime keeps your framing, offsets the eyes and skews each frustum so
   the convergence distance lands on the zero-disparity plane. Pick this whenever the app **owns a
-  viewpoint the user moves**: an orbit, a walkthrough, a game, a map, an editor. A display rig
-  cannot express it at all — a portal has no camera to follow you.
+  viewpoint the user moves through a world**: first person, a walkthrough, a game, a map, an
+  editor. A display rig cannot express it at all — a portal has no camera to follow you.
 
-A ported WebXR app is nearly always the second case, because a WebXR app has a camera by
-construction.
+A ported WebXR app is usually the second case, because an immersive-VR app puts the user *inside*
+the scene by construction. It is not automatic: a WebXR app whose whole content is one object on a
+turntable ports to a display rig, and porting it to a camera rig is how a correct-looking scene
+ends up flat. The reason is scale invariance — a display rig's stereo does not depend on the
+subject's size in world units, a camera rig's does (it falls off as `baseline / framing distance`,
+so a 150 m model framed from 365 m gets ~600x less disparity than a 24 cm one framed from 0.6 m).
+Full argument and the `metersToVirtual` rescue:
+[authoring — which rig](authoring-inline-3d.md#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera).
 
 ### The fields you will actually set
 
@@ -605,7 +615,11 @@ Consolidated, in the order they tend to bite:
     camera forward.
 13. **Absolute rig units on a camera rig.** `ipdFactor` and `metersToVirtual` are in *your* world
     units. A non-metre-scale scene needs `metersToVirtual`, and
-    `ipd × m2v × diopters × 0.5` must stay ≤ 1.
+    `ipd × m2v × diopters × 0.5` must stay ≤ 1 — *and well above 0*. The upper bound is
+    divergence; the lower bound is **no stereo at all**, and it is the one you hit by framing a
+    large subject from far away with a 63 mm baseline. A scene that weaves but looks flat is
+    almost always this. Fix it with `metersToVirtual ≈ framingDistance / 0.6`, or by moving the
+    scene to a display rig, which is scale-invariant by construction.
 14. **Convergence left at 0.** That is infinity — the entire scene in front of the glass. And in
     first person, convergence to the orbit target is ~0, which is the same mistake from the other
     end.

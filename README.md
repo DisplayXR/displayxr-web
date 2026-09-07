@@ -65,8 +65,14 @@ if (!wall.supported) {
 The browser weaves each element's stereo pair at its on-screen rect; the surrounding DOM stays flat.
 The runtime batches every visible window into one weave per frame, so it scales to a wall of elements.
 
-A scene with its own camera can hand that camera to the runtime instead of being told where the eyes
-are — a **camera rig** — and let eye tracking perturb its frustum:
+Most pages want the default — a **display rig**, where the canvas is a portal onto a virtual
+display and the runtime places the eyes. That includes every scene that frames a *subject* (a model
+or splat viewer, an avatar, a product hero) **even when the user orbits it**: rotate the subject,
+not the camera, and the stereo comes out the same for a figurine and an airliner.
+
+A scene whose viewpoint the user *moves through a world* — first person, a walkthrough, a game, a
+map, an editor, a ported VR app — can instead hand its own camera to the runtime and let eye
+tracking perturb that frustum. That is a **camera rig**:
 
 ```js
 import { cameraRigFromCamera } from '@displayxr/inline3d/three';
