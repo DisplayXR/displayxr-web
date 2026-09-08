@@ -84,3 +84,7 @@ A converted session is a standing 3D demand: on start the shim requests the acti
 - The stock takeover path is blocked only on pages where the extension runs.
 - WebGL1 contexts get `framebuffer = null` (the app draws the canvas directly).
 - `layers`, WebGPU, hand tracking, hit-test: unsupported (same as product v1).
+
+## Shipping as a component extension (interim, browser-pvt patch 0132)
+
+`component-manifest.json` is the manifest the DisplayXR Browser vendors when it bakes this script in as a **component extension** (loaded on every profile, no install step, no page changes). Its `key` pins the extension id `hggejmonjlmibiekbcdaglhoijmiiopl`; the private half is not needed (component extensions are not CRX-signed) and is not kept. The browser copies `content.js` + this manifest verbatim; fixes land here first, then re-vendor.
