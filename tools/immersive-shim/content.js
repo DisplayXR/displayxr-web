@@ -400,6 +400,8 @@
       if (typeof layer.getDisplayInfo === 'function') layer.getDisplayInfo().then(d => { displayInfo = d; L._resize(); QW.seedPreset(cfg.preset, S._info()); S.refreshRig(); }).catch(() => {});
       L._resize();
       S._syncMode();
+      S._pinThreeD = async () => { try { const modes = await S._modes(); const m = modes.find(x => x.isRequestable && x.viewCount === 2); if (m) { await layer.requestRenderingMode(m.modeIndex !== undefined ? m.modeIndex : modes.indexOf(m)); console.info(TAG, 'pinned the 3D rendering mode (page override) for the session'); } } catch (e) { console.warn(TAG, 'pin 3D failed', e.message); } };
+      S._pinThreeD();
       input.attach(canvas);
       const onResize = () => { L._resize(); QW.dirty = true; };
       resizeObs = new ResizeObserver(onResize); resizeObs.observe(canvas);
@@ -866,7 +868,7 @@
 
   window.__dxrImmersiveShim = {
     get cfg() { return cfg; }, set(k, v) { cfg[k] = v; saveCfg(); QW.dirty = true; if (active) active.refreshRig(); hud(); },
-    preset: applyPreset, log: dumpLog, qwerty: QW, get session() { return active ? active._proxy : null; }, version: '0.3.17',
+    preset: applyPreset, log: dumpLog, qwerty: QW, get session() { return active ? active._proxy : null; }, version: '0.3.18',
     get real() { return active ? { session: active._real, viewer: active._realViewer(), layer: active._layer() } : null; },
   };
   if (cfg.log && typeof AudioBufferSourceNode !== 'undefined') {   // diagnostic: ambient-audio stops (xrdinosaurs report)

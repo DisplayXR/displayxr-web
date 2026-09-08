@@ -73,6 +73,10 @@ Control: `displayxr-web/samples/hello-cube`, `samples/model` (these must be unaf
   `VIEW-RIG IPC client: locate ok, rig_applied=… eyes=…` is the machine-checkable half
 - chrome log: `weave rects from tracked elements: n=…`, `batch weave: n=… eyes_valid=1`
 
+## Lifecycle (browser-pvt#62, page-expressible part)
+
+A converted session is a standing 3D demand: on start the shim requests the active 2-view rendering mode explicitly, which sets the browser's page-override latch, so the panel holds 3D across focus blips (alt-tab, fullscreen transitions, harness launches) instead of the tab-demand policy parking it in 2D and drawing the raw SBS pair. Verified by moving OS focus away with the session live: no 2D flip.
+
 ## Known limits of the spike (by design; the Blink product removes them)
 
 - Reference spaces are rebased in JS with a constant floor offset (`cfg.floorY = -1.6`); the
