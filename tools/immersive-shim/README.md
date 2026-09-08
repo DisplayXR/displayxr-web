@@ -15,8 +15,8 @@ built. It is not a product and must not ship as one.
    already-running DisplayXR Browser, and writes `%TEMP%\dxr_shim_chrome.log`.
 3. Open a stock WebXR page and click its Enter VR button.
 
-The console prints `[dxr-immersive-shim] armed` on every page; a HUD (top-right) shows the live
-preset. `window.__dxrImmersiveShim` exposes `cfg`, `set(k,v)`, `preset(name)`, `log()`, `session`.
+The console prints `[dxr-immersive-shim] armed` on every page; during a converted session a HUD
+(top-right) shows the live rig plus F11 / Exit VR buttons (Tab toggles it). `window.__dxrImmersiveShim` exposes `cfg`, `set(k,v)`, `preset(name)`, `log()`, `session`.
 
 ## In-session controls (the runtime's qwerty device, mirrored 1:1)
 
@@ -80,14 +80,3 @@ Control: `displayxr-web/samples/hello-cube`, `samples/model` (these must be unaf
 - The stock takeover path is blocked only on pages where the extension runs.
 - WebGL1 contexts get `framebuffer = null` (the app draws the canvas directly).
 - `layers`, WebGPU, hand tracking, hit-test: unsupported (same as product v1).
-
-## Status / provenance
-
-Validation spike for [`displayxr-browser-pvt/docs/design/immersive-vr-emulation.md`](https://github.com/DisplayXR/displayxr-browser-pvt/blob/main/docs/design/immersive-vr-emulation.md)
-(epic browser-pvt#55, spike issue #56). Everything it learned on hardware is recorded on that
-epic's children. It is **not** shipped, not part of the SDK, and never will be: an
-extension-shaped product repeats the WebXR Bridge v2 mistake. The Blink-native product
-replaces it; the feel (qwerty mirror, eased 2D/3D, presets) is the contract it hands over.
-
-Verified pages (2026-09-08, DisplayXR Browser 0.1.28, runtime v2.16.17-3): immersive-web
-`immersive-vr-session`, `input-tracking`, `controller-state`; three.js sample; xrdinosaurs.com.

@@ -826,7 +826,7 @@
   }
   let hudEl = null, hudText = null;
   function hud() {
-    if (!cfg.hud) { if (hudEl) hudEl.remove(); hudEl = null; hudText = null; return; }
+    if (!cfg.hud || !active) { if (hudEl) hudEl.remove(); hudEl = null; hudText = null; return; }
     if (!document.body) { document.addEventListener('DOMContentLoaded', hud, { once: true }); return; }
     if (!hudEl) {
       hudEl = document.createElement('div'); hudEl.id = 'dxr-immersive-shim-hud';
@@ -867,7 +867,7 @@
 
   window.__dxrImmersiveShim = {
     get cfg() { return cfg; }, set(k, v) { cfg[k] = v; saveCfg(); QW.dirty = true; if (active) active.refreshRig(); hud(); },
-    preset: applyPreset, log: dumpLog, qwerty: QW, get session() { return active ? active._proxy : null; }, version: '0.3.15',
+    preset: applyPreset, log: dumpLog, qwerty: QW, get session() { return active ? active._proxy : null; }, version: '0.3.16',
     get real() { return active ? { session: active._real, viewer: active._realViewer(), layer: active._layer() } : null; },
   };
   if (cfg.log && typeof AudioBufferSourceNode !== 'undefined') {   // diagnostic: ambient-audio stops (xrdinosaurs report)
