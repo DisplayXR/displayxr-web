@@ -22,7 +22,7 @@
 //     (design §4.3 amendment, browser-pvt#63); the feel must not change.
 //   - a feature-detect log: every session property a page touches is recorded
 //
-// Shim-only hotkeys (Ctrl+Alt+...): 0 legacy default, 1-5 presets, [ ] m2v, , . ipd, ; ' parallax,
+// Shim-only hotkeys (Ctrl+Alt+...): [ ] m2v, , . ipd, ; ' parallax,
 //   L dump log, F flatten, H HUD, P fullscreen/in-place (next session), Q qwerty on/off.
 // Config persists in localStorage['dxrImmersiveShim']; window.__dxrImmersiveShim exposes it.
 (() => {
@@ -38,7 +38,7 @@
   // ---------------------------------------------------------------- config
   const DEFAULTS = {
     v: 3,                       // bump to invalidate a persisted cfg when defaults change
-    preset: 'legacy',
+    preset: 'legacy',           // the only rig policy: headset-authored apps share one model (owner decision 2026-09-08)
     present: 'fullscreen',      // 'fullscreen' | 'inplace'
     floorY: -1.6,               // where local-floor's origin sits below the plane (app units)
     nullFramebuffer: false,     // force the (1a) design: framebuffer=null, app draws the canvas
@@ -549,7 +549,7 @@
         c.ori = qnorm(qmul(qaxis({ x: 0, y: 1, z: 0 }, yaw), qmul(c.ori, qaxis({ x: 1, y: 0, z: 0 }, pitch))));
       };
       const KEYS = { KeyW: 'f', KeyS: 'b', KeyA: 'l', KeyD: 'r', KeyE: 'u', KeyQ: 'd', ArrowLeft: 'll', ArrowRight: 'lr', ArrowUp: 'lu', ArrowDown: 'ld' };
-      const SHIM_HOTKEYS = new Set(['0', '1', '2', '3', '4', '5', '[', ']', ',', '.', ';', "'", 'l', 'L', 'f', 'F', 'h', 'H', 'p', 'P', 'q', 'Q', 'x', 'X']);
+      const SHIM_HOTKEYS = new Set(['[', ']', ',', '.', ';', "'", 'l', 'L', 'f', 'F', 'h', 'H', 'p', 'P', 'q', 'Q', 'x', 'X']);
       function onKey(e) {
         if (!active) return;
         if (e.ctrlKey && e.altKey && SHIM_HOTKEYS.has(e.key)) return;   // shim hotkeys live on Ctrl+Alt
@@ -843,12 +843,11 @@
       ? `CAMERA conv=${f(q.cam.conv)}dp vfov=${(2 * Math.atan(q.cam.halfTanVfov) * 180 / Math.PI).toFixed(0)}° ipd=${f(q.cam.spread)} par=${f(q.cam.parallax)}`
       : `DISPLAY vH=${f(q.disp.vH)}m ipd=${f(q.disp.spread)} par=${f(q.disp.parallax)} persp=${f(q.disp.persp)}`;
     const ramp = QW.ipdOverride !== null ? ` ramp ipd=${(+QW.ipdOverride).toFixed(2)}` : '';
-    hudText.textContent = `DXR ${active ? '3D' : 'idle'}${active && active._oneView() ? ' [2D]' : ''}${ramp} | ${cfg.preset} | ${rigLine}`;
+    hudText.textContent = `DXR ${active ? '3D' : 'idle'}${active && active._oneView() ? ' [2D]' : ''}${ramp} | ${rigLine}`;
   }
   window.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey && e.altKey)) return; let hit = true;
     switch (e.key) {
-      case '0': applyPreset('legacy'); break; case '1': applyPreset('portal'); break; case '2': applyPreset('room'); break; case '3': applyPreset('tabletop'); break; case '4': applyPreset('wide'); break; case '5': applyPreset('scene'); break;
       case '[': if (QW.cameraMode) QW.cam.m2v = clamp(QW.cam.m2v / 1.25, 0.05, 20); else QW.disp.vH = clamp(QW.disp.vH / 1.25, 0.1, 10); break;
       case ']': if (QW.cameraMode) QW.cam.m2v = clamp(QW.cam.m2v * 1.25, 0.05, 20); else QW.disp.vH = clamp(QW.disp.vH * 1.25, 0.1, 10); break;
       case ',': if (active) QW.adjustViewFactor(1 / 1.1, active._info()); break; case '.': if (active) QW.adjustViewFactor(1.1, active._info()); break;
@@ -867,7 +866,7 @@
 
   window.__dxrImmersiveShim = {
     get cfg() { return cfg; }, set(k, v) { cfg[k] = v; saveCfg(); QW.dirty = true; if (active) active.refreshRig(); hud(); },
-    preset: applyPreset, log: dumpLog, qwerty: QW, get session() { return active ? active._proxy : null; }, version: '0.3.16',
+    preset: applyPreset, log: dumpLog, qwerty: QW, get session() { return active ? active._proxy : null; }, version: '0.3.17',
     get real() { return active ? { session: active._real, viewer: active._realViewer(), layer: active._layer() } : null; },
   };
   if (cfg.log && typeof AudioBufferSourceNode !== 'undefined') {   // diagnostic: ambient-audio stops (xrdinosaurs report)

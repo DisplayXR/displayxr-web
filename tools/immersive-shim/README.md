@@ -42,10 +42,10 @@ The console prints `[dxr-immersive-shim] armed` on every page; during a converte
 
 ## Hotkeys (Ctrl+Alt+…)
 
+The rig is always the legacy qwerty camera rig (2 m convergence, 36° vFOV) — headset-authored apps share one authoring model, so there are no presets (owner decision 2026-09-08); tune live with the qwerty keys above.
+
 | Key | Action |
 |---|---|
-| 0 | **legacy (default)** — the rig the runtime synthesises for a legacy WebXR client in stock Chrome (qwerty device defaults): camera rig, convergence 2 m (0.5 dp), 36° vFOV, ipd 1, parallax 1, m2v 1 |
-| 1 / 2 / 3 / 4 / 5 | preset Portal (m2v 1) / Room (2) / Tabletop (3.3) / Wide (camera rig, 45° vFOV) / Scene (camera rig, panel FOV, ZDP 2.5 m into the scene — for headset content that has nothing near the glass) |
 | [ / ] | m2v ÷/× 1.25 |
 | , / . | ipdFactor −/+ 0.1 |
 | ; / ' | parallaxFactor −/+ 0.1 |
