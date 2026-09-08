@@ -41,8 +41,8 @@
 // are already scaled to your scene by the layer's `virtualDisplayHeight` (see addScene) — the
 // runtime places each eye at eye_physical × (virtualDisplayHeight / element_physical_height),
 // so the z=0 plane spans that virtual display. Author your scene in metres for a display that
-// tall (0.24 m by default), put focused content at z=0 (positive z behind the glass, negative
-// in front), and render `eye.camera` directly. No per-frame world scaling — that is the whole
+// tall (0.24 m by default), put focused content at z=0 (POSITIVE z is toward the viewer, out
+// of the glass; negative z is behind it), and render `eye.camera` directly. No per-frame world scaling — that is the whole
 // point of using the rig instead of re-deriving it in the app, and it mirrors the native
 // reference apps (cube_handle), which supply one scale number and consume render-ready views.
 //
