@@ -142,7 +142,8 @@ changed, re-render **immediately** rather than waiting for the next frame.
 plane) and the eye sits a few tens of cm in front. Author your scene in metres for a **virtual
 display height** — `0.24 m` by default (`addScene`'s `virtualDisplayHeight` option; the same
 `m2v` knob the native `XR_DXR_view_rig` extension exposes) — put focused content at `z = 0`
-(`+z` behind the glass, `−z` in front), and **render the views directly**. The runtime scales
+(**`+z` is toward the viewer, out of the glass; `−z` is behind it** — see [Which way is
+out](#which-way-is-out)), and **render the views directly**. The runtime scales
 each eye pose by `virtualDisplayHeight / element_physical_height`, so the `z = 0` plane spans
 that virtual display and the scene renders at its authored scale with **no per-frame world
 scaling**. A bigger `virtualDisplayHeight` shows a larger slice of the world in the element.
@@ -259,6 +260,26 @@ otherwise get a 63 mm eye separation measured in *its* units. It is a unit fix, 
 if you are reaching for it to make a scene look deeper, read the section below and then the
 [rig choice](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera) again.
 
+### Which way is out
+
+**`+z` is toward the viewer, out of the glass. `−z` is behind the glass.** The glass — the
+zero-disparity plane — is `z = 0`.
+
+Derive it rather than remembering it, because it is easy to talk yourself into the opposite. The
+runtime places the nominal viewer at `z = +0.6 m` and the display plane at `z = 0`
+(`dxr_view_math`'s `nomv = {0, 0, 0.6}`), and the eye looks from there toward the glass. So
+content at `z = +0.3` is *nearer to the eye than the glass is* and must appear in front of it;
+content at `z = −0.3` is further away and sits behind it. Every mono fallback camera in this repo
+is at `+z` looking back at the origin for the same reason.
+
+> **This was documented backwards before 1.6.0**, in this file and in `inline3d-three.js` — both
+> said "+z behind the glass". Treat any note, comment or app that slides content the other way as
+> suspect: the symptom is a depth control whose labels are inverted, which reads as correct on a
+> symmetric subject and only shows up on something with a clear front and back.
+
+The practical test needs no maths: put an object at `z = +0.05`, open the page on a display, and
+it should sit **in front** of the screen.
+
 ### Comfort and depth budget
 
 Two different numbers get confused constantly, so take them apart first.
@@ -300,6 +321,69 @@ just puts the entire scene in front of the glass, which is comfortable for almos
 also the one camera rig with no display-rig equivalent at all — a display rig's zero-disparity
 plane *is* its screen, at a finite distance, so it cannot express "zero disparity at infinity". A
 camera rig simply has one degree of freedom more than a display rig, and this is where you see it.
+
+### Reading back where the subject is — `getSubjectBounds()`
+
+*(`@displayxr/inline3d/viewer`; added 1.6.0.)*
+
+Comfort and budget above are things you reason about; this is how you *measure* one. `SceneViewer`
+frames, scales and orbits your subject, so after `fitTo()` the page no longer knows where its own
+model is. `getSubjectBounds()` answers that, in display metres, for the pose being drawn:
+
+```js
+const b = viewer.getSubjectBounds();
+// b.center  {x, y, z}   box centre; x and y are always 0 (the fit centres the subject)
+// b.extent  {x, y, z}   full box size
+// b.front   number      z of the nearest surface. > 0 means it pops OUT of the glass
+// b.back    number      z of the furthest surface. < 0 means depth behind the glass
+// b.scale   number      model units -> display metres, right now (fit x zoom)
+```
+
+**Call it every frame. Do not cache it.** This is the part that catches people out: the orbit
+rotates the *subject*, so yaw swings its depth into the display's `z` and its width out of it. A
+page that measures its model once at load and multiplies by zoom is correct at yaw 0 and wrong
+everywhere else — and with `idleSpin` on, yaw 0 is a passing instant. A 1 m × 0.02 m page-shaped
+subject is 0.01 m deep face-on and 0.5 m deep turned side-on. The call allocates one object and
+does no matrix work; it is meant for the render loop.
+
+The box is axis-aligned in display space and encloses the oriented subject, so it is conservative:
+it never under-reports pop-out.
+
+```js
+// A live pop-out readout, the whole thing:
+function onFrame(views, layer) {
+  const { front } = viewer.getSubjectBounds();
+  chip.textContent = front > 0 ? `${Math.round(front * 100)} cm out` : 'on the glass';
+  chip.classList.toggle('warn', front > 0.2);
+}
+```
+
+**Placing the subject: `depthOffset`.** The companion setter slides the whole subject along the
+depth axis, in display metres, `+` toward the viewer:
+
+```js
+viewer.depthOffset = -0.05;   // push it 5 cm behind the glass
+```
+
+It survives `fitTo()` — reframing a subject should not silently discard where you put it — and
+`resetPose()` clears it along with yaw, pitch and zoom. It **translates** and never rescales, so
+it moves the depth budget without resizing it (the same distinction the section above draws about
+convergence).
+
+**Pose readback: `getPose()`.** The counterpart to `setPose()`, returning
+`{yaw, pitch, zoom, depthOffset}`. Orbit and wheel-zoom are eased, so mid-gesture the value on
+screen and the value being settled toward differ: `getPose()` gives you what is **drawn** — right
+for a readout — and `getPose({ target: true })` gives what it is heading for, which is what a
+"remember this view" button should store.
+
+**What this deliberately does not do.** It reports geometry, not a verdict. There is no
+`isComfortable()`, because the comfort threshold is policy and policy belongs to the runtime and
+to your page, not to a rendering helper — the same reason this SDK computes no Kooima. Pick your
+own limit against `front`.
+
+**Do not read `_pivot`, `_fitScale` or `_zoom`.** They are internals; these three calls exist
+precisely so nothing has to. If you find yourself needing something they do not expose, that is a
+bug report ([web#26](https://github.com/DisplayXR/displayxr-web/issues/26) is what added them).
 
 ### The latency caveat, and the attach pattern
 
