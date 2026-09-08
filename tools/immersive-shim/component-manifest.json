@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "DisplayXR Immersive VR",
+  "version": "0.3.18",
+  "description": "Serves WebXR immersive-vr sessions in the browser tab through the DisplayXR inline-3d path. Built into the DisplayXR Browser as a component extension; the page needs no changes.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsxLpR+NyLG3iF6K+/rKB6K09Da/a+ksqrIMGd/tw1G0RLf8y8k+FVpripvNsM/rqCQ+S2t9oMOTsJYuu9bZaW2/joZ23L7v4v8UeCFywd6wlTHJEeMog+R0TBQ2vVmKpKbX6Fn8v0q/E/bCmAzj8cZ2vC49y7YDaV9BwtZG0VCpYkLC/Wvdfn3AKYgJ33CDXNqEceAIc4ZzSb1/GxInmrBwK5/LdlQBgpzttRfF9pXOzVh0r6bHH0QsjesfIHm47QUHsKM6rKpBF6F4dHQf1ImSFmwh3cxbGyfLPGXBjocrxaLJXZBlM8oFVq/DifFQTr/etf1x8Q9rJhCbWw9L1pwIDAQAB",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ]
+}
