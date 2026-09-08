@@ -110,7 +110,8 @@ js/
   inline3d.js         the SDK: createInline3D() → { addImage, addVideo, addScene }, feature-detect,
                       SBS buffer management, and a lazy create/close lifecycle for many windows
   inline3d-three.js   optional three.js helper (EyeCamera: off-axis projection from the session's eyes)
-  inline3d-viewer.js  experimental: SceneViewer — framing, orbit, idle turntable, mono fallback
+  inline3d-viewer.js  experimental: SceneViewer — framing, orbit, idle turntable, mono fallback,
+                      and the placement readback (getSubjectBounds / getPose / depthOffset)
   inline3d-splat.js   experimental: addSplat() — a Gaussian splat window via Spark
   inline3d-model.js   experimental: addModel() — a glTF/GLB window; wires Draco / meshopt / KTX2
                       from what the asset declares (you serve the decoder files — see the guide)

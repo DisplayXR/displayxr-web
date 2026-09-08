@@ -79,6 +79,15 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   requirement and will not acquire one; note it here because "install the package" is no longer the
   whole setup story for `/model`, and because the default is deliberately not a CDN, so the
   requirement cannot quietly satisfy itself.
+  **1.6.0 is additive to `/viewer` and changes no framing.** `getSubjectBounds`, `getPose` and
+  `depthOffset` are a READBACK surface plus one placement knob; no existing option changed
+  meaning and no shipped page moves (`depthOffset` defaults to 0, which is exactly what `fitTo`
+  used to hardcode). By the criterion above it therefore counts toward the quiet record rather
+  than restarting it. It is also the shape of thing worth promoting FIRST when the time comes:
+  a third-party viewer that consumes `getSubjectBounds()` per frame is coupled to the meaning of
+  a box in metres, not to how the fit chose it — so the narrow I/O surface (`fitTo`, `setPose`,
+  `getPose`, `getSubjectBounds`, `depthOffset`) could be frozen while the framing internals
+  behind it stay free to move.
 
   - They need peers the core does not: `three` (**>=0.180** for `/splat`, which is Spark's own
     floor — above the package-wide `>=0.150` the `./three` glue asks for) and

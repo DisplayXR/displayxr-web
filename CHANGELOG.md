@@ -5,6 +5,55 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.6.0 — 2026-09-08
+
+Touches the **preview tier** (`./viewer`) and fixes a **documentation error in the core tier**.
+Purely additive to the viewer's API: no framing behaviour changes and no existing option changes
+meaning, so a page that ignores everything below renders identically to 1.5.1.
+
+### Added
+
+- **`SceneViewer` has an output surface** ([#26](https://github.com/DisplayXR/displayxr-web/issues/26)).
+  It could frame, scale and orbit a subject but never say where the subject ended up, so pages
+  that needed that — a pop-out readout, a depth-budget check, a HUD that must clear the model —
+  had to read `_pivot`, `_fitScale` and `_zoom`. Three additions replace all of it:
+  - **`getSubjectBounds()`** → `{center, extent, front, back, scale}` in **display metres**, for
+    the pose being drawn. `front` is the surface nearest the viewer (`> 0` = out of the glass),
+    `back` the far side, `scale` the model-unit → metre factor in force (fit × zoom).
+    **Call it per frame.** The orbit rotates the *subject*, so yaw swings its depth into the
+    display's `z`: a page-shaped subject 1 m × 0.02 m is 0.01 m deep face-on and 0.5 m deep
+    turned side-on. Anything measured once at load is correct at yaw 0 and wrong everywhere
+    else — and with `idleSpin` on, yaw 0 is a passing instant. The call allocates one object and
+    does no matrix work.
+  - **`depthOffset`** (get/set) — slides the subject along the depth axis in display metres,
+    `+` toward the viewer. It **translates and never rescales**, so it moves the depth budget
+    without resizing it.
+  - **`getPose({target})`** — the counterpart to `setPose`. Yaw/pitch/zoom are eased, so
+    mid-gesture "what is drawn" and "what it is settling toward" genuinely differ; the default
+    reports the drawn value, `target: true` the destination.
+  - `setPose()` now also accepts `depthOffset`.
+
+### Changed
+
+- **`fitTo()` no longer discards `depthOffset`.** It used to hardcode the pivot's z to 0, so
+  reframing a subject silently threw away where the author had placed it. `resetPose()` clears
+  it, which is where "back to default" belongs. **No effect on any 1.5.x page**: the offset is 0
+  unless something sets it, and 0 is what `fitTo` used to write.
+- `samples/model` reads `getSubjectBounds()` instead of `_fitScale`, and prints its footprint and
+  pop-out **live** — the visible disagreement between that and the static fit numbers is the
+  point, and is why the call is per-frame.
+
+### Fixed
+
+- **The depth axis was documented BACKWARDS.** `docs/authoring-inline-3d.md` and the header of
+  `inline3d-three.js` both said "`+z` behind the glass, `−z` in front". It is the other way
+  round: the runtime places the nominal viewer at `z = +0.6 m` with the glass at `z = 0`
+  (`dxr_view_math`'s `nomv`), so **`+z` is toward the viewer, out of the glass**. Every mono
+  fallback camera in this repo already sat at `+z` for that reason, so only the prose was wrong —
+  but the prose is what authors code against, and the symptom is a depth control whose labels are
+  inverted. Symmetric subjects hide it completely. New section:
+  [Which way is out](docs/authoring-inline-3d.md#which-way-is-out).
+
 ## 1.5.1 — 2026-09-06
 
 ### Fixed

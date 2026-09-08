@@ -38,9 +38,35 @@ export interface SceneViewerOptions {
 }
 
 export interface OrbitPose {
+  /** Degrees about Y. */
   yaw?: number;
+  /** Degrees about X, clamped to `pitchLimit`. */
   pitch?: number;
+  /** Multiplier on the fit scale. */
   zoom?: number;
+  /** Display metres along the depth axis, `+` toward the viewer (out of the glass). */
+  depthOffset?: number;
+}
+
+/**
+ * Where the subject sits in DISPLAY METRES under the pose currently being drawn — an
+ * axis-aligned box enclosing the oriented subject.
+ *
+ * Display space puts the viewer at `+z` and the glass at `z = 0`, so `front` is the larger z:
+ * a positive `front` means the subject pops OUT of the glass, a negative `back` means depth
+ * behind it.
+ */
+export interface SubjectPlacement {
+  /** Box centre. x and y are always 0 — the fit centres the subject on the tile. */
+  center: { x: number; y: number; z: number };
+  /** Full box size (not half-extents). */
+  extent: { x: number; y: number; z: number };
+  /** z of the surface nearest the viewer. `> 0` = in front of the glass. */
+  front: number;
+  /** z of the surface furthest from the viewer. `< 0` = behind the glass. */
+  back: number;
+  /** Model units → display metres currently in force (fit scale × zoom). */
+  scale: number;
 }
 
 /**
@@ -77,7 +103,31 @@ export declare class SceneViewer {
     extent: number[] | { x: number; y: number; z: number },
   ): void;
 
+  /** Snap the pose. Writes the eased value and its target together. */
   setPose(pose?: OrbitPose): void;
+
+  /**
+   * The pose as it is right now. `target: true` reports what it is easing TOWARD, which differs
+   * mid-orbit — a readout wants the default (eased), "save this view" wants the target.
+   */
+  getPose(opts?: { target?: boolean }): Required<OrbitPose>;
+
+  /**
+   * Where the subject is, in display metres, under the live pose. Safe and cheap to call every
+   * frame; allocates one object and does no matrix work.
+   *
+   * Recompute per frame rather than caching: orbit swings the subject's depth into the
+   * display's z, so a value measured at load is only correct at yaw 0.
+   */
+  getSubjectBounds(): SubjectPlacement;
+
+  /**
+   * Slide the subject along the depth axis, display metres, `+` toward the viewer. Survives
+   * `fitTo`; cleared by `resetPose`.
+   */
+  depthOffset: number;
+
+  /** Return to the framed default pose, depth slide included. */
   resetPose(): void;
 
   /**

@@ -147,15 +147,49 @@ const applyFit = () => {
   }
   sweepBtn.textContent = swept ? 'Fit: swept (turn-safe)' : 'Fit: width only';
   if (a.frame) {
-    const v = a.viewer, e = a.frame.extent, s = v._fitScale;
-    const box = v.canvas.getBoundingClientRect();
-    const vW = v.vH * (box.width / box.height);
+    const v = a.viewer, e = a.frame.extent;
+    // `scale` is model units -> display metres under the live pose (fit x zoom). It used to take
+    // reading v._fitScale, which is why web#26 exists; getSubjectBounds() is the supported way.
+    const s = v.getSubjectBounds().scale;
     zNote.textContent =
       `Fox is ${e[0].toFixed(0)} wide and ${e[2].toFixed(0)} deep. ` +
-      `Face-on it spans ${((e[0] * s) / vW * 100).toFixed(0)}% of the tile width; ` +
-      `turned side-on, ${((e[2] * s) / vW * 100).toFixed(0)}%.`;
+      `Face-on it spans ${((e[0] * s) / tileWidthMetres(v) * 100).toFixed(0)}% of the tile width; ` +
+      `turned side-on, ${((e[2] * s) / tileWidthMetres(v) * 100).toFixed(0)}%.`;
+    zNote.appendChild(live);
   }
 };
+
+// Harness hook, same precedent as samples/display-modes' window.__dxrWall: the placement numbers
+// above are only checkable from outside if something exposes the viewer.
+window.__dxrModel = { a, b, wall };
+
+/** Metres of world the tile's WIDTH spans — vH is the height, the canvas box gives the aspect. */
+function tileWidthMetres(v) {
+  const box = v.canvas.getBoundingClientRect();
+  return v.vH * (box.width / box.height);
+}
+
+// ── the same numbers, live ──────────────────────────────────────────────────────────────────
+// The sentence above is the FIT: what the framing decided, face-on and side-on. This line is
+// what is on the glass right now, and the two disagree constantly because tile A spins
+// (`idleSpin: 12`). That disagreement is the whole reason getSubjectBounds() is a per-frame call
+// and not something to measure once at load: yaw swings the subject's DEPTH into the display's
+// z, so its footprint and its pop-out are functions of the pose, not constants of the model.
+const live = document.createElement('span');
+live.className = 'live';
+(function tickReadout() {
+  requestAnimationFrame(tickReadout);
+  if (!a.frame) return;
+  const b = a.viewer.getSubjectBounds();
+  const pct = ((b.extent.x / tileWidthMetres(a.viewer)) * 100).toFixed(0);
+  // +z is toward the viewer: front > 0 pops out of the glass, back < 0 is depth behind it.
+  const out = Math.round(b.front * 100);
+  const behind = Math.round(-b.back * 100);
+  live.textContent =
+    ` Right now: ${pct}% of the tile width, ` +
+    `${out > 0 ? `${out} cm out of the glass` : 'on the glass'}` +
+    `${behind > 0 ? `, ${behind} cm behind it` : ''}.`;
+})();
 
 sweepBtn.addEventListener('click', () => {
   swept = !swept;
