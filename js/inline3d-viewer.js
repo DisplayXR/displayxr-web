@@ -49,6 +49,9 @@ const DEFAULT_DEPTH_LIMIT = 4.0;
 const IDLE_DELAY_MS = 2500;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+// NaN/Infinity into a transform silently blanks the tile — three propagates it into the
+// matrix and every vertex lands undefined. Reject at the setter instead.
+const finite = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 
 /**
  * Robust model-space bounds from a flat array of splat/vertex centres.
@@ -220,6 +223,14 @@ export class SceneViewer {
     this._fitScale = 1;
     this._zoom = 1;
     this._targetZoom = 1;
+    // Author-driven slide along the depth axis, display metres, +z toward the viewer. Applied
+    // by _applyTransform, PRESERVED by fitTo, cleared by resetPose. Default 0 means every page
+    // that never touches it is bit-identical to 1.5.x.
+    this._depthOffset = 0;
+    // Subject half-extents in MODEL units, from the last fitTo. getSubjectBounds turns these
+    // into a display-space box under the live pose; without them it would have to re-measure
+    // the content every call.
+    this._subjectHalf = [0, 0, 0];
     this._yaw = 0;
     this._pitch = 0;
     this._targetYaw = 0;
@@ -278,10 +289,12 @@ export class SceneViewer {
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
 
     this._centering.position.set(-c[0], -c[1], -c[2]);
+    // Recorded for getSubjectBounds(). Model units; the fit scale is applied at read time so a
+    // later zoom or orbit needs no re-measure.
+    this._subjectHalf = [Math.abs(e[0]) / 2, Math.abs(e[1]) / 2, Math.abs(e[2]) / 2];
 
     if (this.fit === 'none') {
       this._fitScale = 1;
-      this._pivot.position.z = 0;
     } else {
       const box = this.canvas.getBoundingClientRect();
       const aspect = box.height > 0 ? box.width / box.height : 1;
@@ -325,8 +338,9 @@ export class SceneViewer {
       //
       // A biased variant that slid the subject behind the glass was tried and dropped: on
       // hardware it read WORSE, and it moved content the wrong way besides. Do not re-add it
-      // without a hardware comparison.
-      this._pivot.position.z = 0;
+      // without a hardware comparison. `depthOffset` is NOT that variant: it is an author
+      // asking for a specific placement, and it stays 0 unless someone sets it — so the
+      // default framing this comment defends is unchanged.
 
       // Backstop only: something pathologically deep still gets scaled down.
       const sz = (this.depthLimit * vH) / ez;
@@ -341,19 +355,115 @@ export class SceneViewer {
     this.monoCamera.lookAt(0, 0, 0);
   }
 
-  /** Set the orbit pose directly. Angles in degrees; zoom is a multiplier on the fit scale. */
-  setPose({ yaw, pitch, zoom } = {}) {
+  /**
+   * Set the pose directly. Angles in degrees; zoom is a multiplier on the fit scale;
+   * depthOffset is display metres along the depth axis (+ toward the viewer).
+   *
+   * This SNAPS — it writes the eased value and its target together. The easing in _tick exists
+   * for input, not for programmatic placement.
+   */
+  setPose({ yaw, pitch, zoom, depthOffset } = {}) {
     if (yaw !== undefined) this._targetYaw = this._yaw = yaw;
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
     if (zoom !== undefined) this._targetZoom = this._zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
+    if (depthOffset !== undefined) this._depthOffset = finite(depthOffset, this._depthOffset);
     this._applyTransform();
   }
 
-  /** Return to the framed default pose. */
+  /**
+   * What the pose IS right now — the counterpart to setPose, and the reason an app no longer
+   * has to read `_zoom` to know where its subject sits.
+   *
+   * `_tick` eases yaw/pitch/zoom toward their targets, so during an orbit or a wheel-zoom the
+   * two answers genuinely differ and consumers want different ones: a readout that describes
+   * what is ON SCREEN wants the eased value (the default), while "remember this view" wants
+   * the target it is settling on. depthOffset never eases, so both agree.
+   *
+   * @param {object} [opts]
+   * @param {boolean} [opts.target=false]  report the values being eased TOWARD.
+   * @returns {{yaw:number, pitch:number, zoom:number, depthOffset:number}} degrees / multiplier
+   *          / metres.
+   */
+  getPose({ target = false } = {}) {
+    return {
+      yaw: target ? this._targetYaw : this._yaw,
+      pitch: target ? this._targetPitch : this._pitch,
+      zoom: target ? this._targetZoom : this._zoom,
+      depthOffset: this._depthOffset,
+    };
+  }
+
+  /**
+   * Where the subject actually IS, in display metres, under the pose being drawn.
+   *
+   * This is the viewer's output surface. Everything a page needs in order to reason about
+   * depth — a pop-out readout, a depth-budget check, a HUD that must clear the subject — is a
+   * function of this box, and none of it is derivable from the outside: the fit scale, the
+   * live zoom and the orbit are all viewer state.
+   *
+   * THE ORBIT IS WHY THIS CANNOT BE CACHED. The pivot rotates about Y (and X), so yaw swings
+   * the subject's DEPTH into the display's z and its width out of it. A page that measures its
+   * model once at load and scales by zoom is correct at yaw 0 and wrong everywhere else — and
+   * with `idleSpin` on, yaw 0 is a passing instant. Call this per frame; it allocates one
+   * object and does no matrix work.
+   *
+   * SIGNS. Display space puts the viewer at +z and the glass at z = 0, so `front` (the surface
+   * nearest the viewer) is the LARGER z and a positive `front` means the subject pops out of
+   * the glass. `back` is the far side; a negative `back` is depth behind the glass. See
+   * docs/authoring-inline-3d.md § "Which way is out".
+   *
+   * The box is axis-aligned in display space and encloses the oriented subject — the standard
+   * conservative bound, so it never under-reports pop-out.
+   *
+   * @returns {{center:{x:number,y:number,z:number}, extent:{x:number,y:number,z:number},
+   *           front:number, back:number, scale:number}} metres, except `scale` which is the
+   *          model-unit → metre factor currently in force (fit x zoom).
+   */
+  getSubjectBounds() {
+    const s = this._fitScale * this._zoom;
+    const [hx, hy, hz] = this._subjectHalf;
+    const p = (this._pitch * Math.PI) / 180;
+    const y = (this._yaw * Math.PI) / 180;
+    // Rows of R = Rx(pitch) . Ry(yaw) — the same product _applyTransform builds, and the same
+    // order, which is the part that matters (see its comment on why 'XYZ' and not 'YXZ').
+    // |row| . half gives the AABB half-extent along that world axis.
+    const cp = Math.cos(p);
+    const sp = Math.sin(p);
+    const cy = Math.cos(y);
+    const sy = Math.sin(y);
+    const ex = s * (Math.abs(cy) * hx + Math.abs(sy) * hz);
+    const ey = s * (Math.abs(sp * sy) * hx + Math.abs(cp) * hy + Math.abs(sp * cy) * hz);
+    const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
+    const cz = this._depthOffset;
+    return {
+      center: { x: 0, y: 0, z: cz },
+      extent: { x: 2 * ex, y: 2 * ey, z: 2 * ez },
+      front: cz + ez,
+      back: cz - ez,
+      scale: s,
+    };
+  }
+
+  /**
+   * Slide the whole subject along the depth axis, display metres, + toward the viewer.
+   *
+   * Survives `fitTo` — a refit reframes the subject without discarding where the author put
+   * it — and is cleared by `resetPose`, which is where "back to default" belongs.
+   */
+  get depthOffset() {
+    return this._depthOffset;
+  }
+
+  set depthOffset(m) {
+    this._depthOffset = finite(m, this._depthOffset);
+    this._applyTransform();
+  }
+
+  /** Return to the framed default pose, depth slide included. */
   resetPose() {
-    this.setPose({ yaw: 0, pitch: 0, zoom: 1 });
+    this.setPose({ yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
     this._lastInput = now();
   }
 
@@ -625,6 +735,10 @@ export class SceneViewer {
   _applyTransform() {
     const s = this._fitScale * this._zoom;
     this._pivot.scale.setScalar(s);
+    // The depth slide lives here, not in fitTo, so it survives a refit and cannot be left
+    // stale by a code path that forgets it. x/y are never written: the fit centres the subject
+    // on the tile and sliding it sideways is a scene concern, not a viewer one.
+    this._pivot.position.z = this._depthOffset;
     // Order 'XYZ' == R = Rx(pitch) · Ry(yaw), and the order is the whole point.
     //
     // Yaw must act in the subject's OWN frame (spin it on its axis); pitch must act in the
