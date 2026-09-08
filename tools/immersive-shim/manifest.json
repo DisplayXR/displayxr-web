@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "DisplayXR immersive-vr shim (spike)",
+  "version": "0.1.0",
+  "description": "Serves navigator.xr.requestSession('immersive-vr') through the DisplayXR Browser's shipped inline-3d path, in-tab. Validation spike for the Blink-native design (docs/design/immersive-vr-emulation.md); not a product.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ]
+}
