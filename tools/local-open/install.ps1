@@ -29,6 +29,8 @@ foreach ($name in 'server.py', 'launch.py', 'open.cmd') {
 if (-not (Test-Path $progId)) {
     throw "DisplayXRHTML is not registered. Set DisplayXR as the default browser first."
 }
-Set-ItemProperty $progId -Name '(default)' -Value "`"$cmd`" --single-argument %1"
+# Quote %1 so Explorer keeps "SR Laptop" as one token. launch.py still
+# reassembles an unquoted split if some caller omits the quotes.
+Set-ItemProperty $progId -Name '(default)' -Value "`"$cmd`" --single-argument `"%1`""
 Write-Output "Installed. Local HTML now opens as http://127.0.0.1:17880/... in DisplayXR."
 Write-Output "ProgId command: $((Get-ItemProperty $progId).'(default)')"

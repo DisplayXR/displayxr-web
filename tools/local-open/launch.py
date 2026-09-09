@@ -54,6 +54,25 @@ def strip_arg(arg: str) -> str:
     return arg
 
 
+def coalesce_target(args: list[str]) -> str:
+    """Rebuild a path cmd.exe split on spaces (e.g. C:\\Users\\SR Laptop\\file.html).
+
+    Chromium's --single-argument flag treats the rest of the command line as one
+    value. open.cmd is not Chromium, so an unquoted %1 becomes several argv
+    tokens. Prefer the joined string when that path exists — a truncated first
+    token can also exist (this machine has C:\\Users\\SR next to 'SR Laptop').
+    """
+    parts = [strip_arg(a) for a in args if strip_arg(a)]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    joined = " ".join(parts)
+    if Path(joined).exists() or joined.lower().startswith("file:"):
+        return joined
+    return parts[0]
+
+
 def is_passthrough(arg: str) -> bool:
     lower = arg.strip().lower()
     return lower.startswith(PASSTHROUGH)
@@ -157,9 +176,7 @@ def main(argv: list[str]) -> int:
     if "--no-open" in args:
         args.remove("--no-open")
         no_open = True
-    if args and args[0] == "--single-argument":
-        args = args[1:]
-    if args and args[0] == "--":
+    while args and args[0] in ("--", "--single-argument"):
         args = args[1:]
 
     if not args:
@@ -167,7 +184,7 @@ def main(argv: list[str]) -> int:
             subprocess.Popen([str(BROWSER)])
         return 0
 
-    target = strip_arg(args[0])
+    target = coalesce_target(args)
     if is_passthrough(target):
         log(f"pass {target}")
         if not no_open:
@@ -193,7 +210,7 @@ def main(argv: list[str]) -> int:
     ensure_server()
 
     rel = path.resolve().relative_to(root).as_posix()
-    url = f"http://127.0.0.1:{PORT}/{token}/{rel}"
+    url = f"http://127.0.0.1:{PORT}/{token}/{urllib.parse.quote(rel, safe='/')}"
     log(f"open {path} -> {url}")
     if no_open:
         sys.stdout.write(url + "\n")

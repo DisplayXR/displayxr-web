@@ -10,10 +10,9 @@ if "%~1"=="" (
   exit /b 0
 )
 
-if /I "%~1"=="--single-argument" (
-  pythonw "%LAUNCH%" --single-argument -- "%~2"
-  exit /b %ERRORLEVEL%
-)
-
+REM Chromium implements --single-argument as "the rest of the command line is
+REM one value". cmd.exe does not: an unquoted path with spaces (C:\Users\SR
+REM Laptop\...) becomes several tokens. Pass every token through; launch.py
+REM joins them when the combined path exists.
 pythonw "%LAUNCH%" -- %*
 exit /b %ERRORLEVEL%
