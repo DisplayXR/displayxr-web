@@ -28,7 +28,11 @@
 //   viewer.content.add(myMesh);
 //   viewer.fitTo(center, extent);              // model-space bounds of the subject
 //   const wall = await createInline3D();
-//   if (wall.supported) wall.addScene(canvas, viewer.onFrame, { virtualDisplayHeight: 0.18 });
+//   if (wall.supported)
+//     wall.addScene(canvas, viewer.onFrame, {
+//       virtualDisplayHeight: 0.18,
+//       onLayerLost: viewer.onLayerLost,   // the session ended: go flat rather than show raw SBS
+//     });
 //   else viewer.startMono();
 //
 // WHY FRAMING IS SCENE-GRAPH WORK AND NOT A RIG FIELD. The native display rig
@@ -269,8 +273,23 @@ export class SceneViewer {
     if (orbit) this._bindOrbit();
     this._resize();
 
-    // Bound so it can be passed straight to addScene without a wrapper closure.
+    // Bound so they can be passed straight to addScene without a wrapper closure.
     this.onFrame = this.onFrame.bind(this);
+    this.onLayerLost = this.onLayerLost.bind(this);
+  }
+
+  /**
+   * The weave layer went away for good — pass this to `wall.addScene(canvas, viewer.onFrame,
+   * { onLayerLost: viewer.onLayerLost })` (`./splat` and `./model` do it for you).
+   *
+   * Without it the canvas keeps its last woven side-by-side frame on screen as ordinary squeezed
+   * 2D, because `_mode` stays `'3d'` and every mono fallback in this SDK is a one-shot decision
+   * made at boot (web#28). Going mono here is safe even if a tile is later re-woven: `onFrame`
+   * calls `stopMono()` on the first 3D frame it gets.
+   */
+  onLayerLost() {
+    if (this._disposed) return;
+    this.startMono();
   }
 
   /**
