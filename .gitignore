@@ -10,3 +10,7 @@ Thumbs.db
 
 # local test artifacts, never committed
 _scratch/
+
+# Python bytecode from tools/local-open (and any future scripts)
+__pycache__/
+*.py[cod]
