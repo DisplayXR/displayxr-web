@@ -139,6 +139,12 @@ export declare class SceneViewer {
    * frame either way, so the tile never goes dark and never smears (web#12).
    */
   onFrame(views: readonly XRView[], layer: object): void;
+  /**
+   * The weave layer went away for good — pass to `addScene(canvas, viewer.onFrame,
+   * { onLayerLost: viewer.onLayerLost })` so the tile goes flat instead of showing its last
+   * side-by-side frame as squeezed 2D. Pre-bound; `./splat` and `./model` wire it for you.
+   */
+  onLayerLost(): void;
 
   /** Supply the ./three glue so the 3D path can build its eye camera. Returns `this`. */
   useEyeCamera(EyeCameraClass: unknown, EdgeFeatherClass?: unknown): this;

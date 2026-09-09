@@ -228,6 +228,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {
       virtualDisplayHeight,
+      // The layer can go away for good (the session ends, the constructor refuses): take the
+      // canvas flat rather than leave its last side-by-side frame on the page (web#28).
+      onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
     });
   } else {

@@ -860,6 +860,12 @@ class Inline3D {
    *        falls back to `virtualDisplayHeight` if one was given (that pair is the one reason
    *        to pass both) — either way the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
+   * @param {() => void} [opts.onLayerLost]  called once when this window's weave layer goes away
+   *        for good — the session ended, or the layer could not be created. YOU own a scene
+   *        canvas's pixels, so this is the SDK's only way to tell you that the side-by-side pair
+   *        in it is no longer being woven and is now just squeezed 2D on the page; take the
+   *        canvas flat here (`SceneViewer.startMono`, or your own mono path). NOT called when a
+   *        lazy tile merely scrolls off screen — that layer is coming back. Errors are caught.
    * @returns {{remove():void}}
    */
   addScene(canvas, onFrame, opts = {}) {
@@ -1746,6 +1752,12 @@ class Inline3D {
       img: null,
       video: null,
       onFrame: null,
+      // Scene windows only (addScene's `onLayerLost`): the layer went away for good. See
+      // _notifyLayerLost — `layerLostSent` keeps it one-shot per loss. Read from the options
+      // HERE rather than after `_register` returns, because a non-lazy window activates (and can
+      // therefore already fail to build its layer) inside this call.
+      onLayerLost: typeof opts.onLayerLost === 'function' ? opts.onLayerLost : null,
+      layerLostSent: false,
       ready: null,
       ownsBuffer: kind !== 'scene',
       cornerRadius: opts.cornerRadius || 0,
@@ -1844,10 +1856,27 @@ class Inline3D {
           ? { virtualDisplayHeight: win.virtualDisplayHeight }
           : {};
       win.layer = new XRDisplayLayer(this.session, win.canvas, init);
-    } catch {
+    } catch (err) {
       win.layer = null;
+      // Say so, once per window, and take the canvas flat. Swallowed silently this was
+      // undiagnosable in the field AND left a re-activated tile holding the SBS pair it wove
+      // with last time — nothing repaints it, and the IntersectionObserver does not re-fire
+      // while the tile stays intersecting. No retry: a constructor that refused this canvas will
+      // refuse it again, and a retry loop would run per frame with nothing to report (web#28).
+      if (!win.layerFailWarned) {
+        win.layerFailWarned = true;
+        console.warn(
+          '[inline3d] new XRDisplayLayer() failed for this window — it will show FLAT 2D ' +
+            'instead of woven 3D, and the SDK will not retry. The canvas has been repainted ' +
+            'mono so it cannot be left holding a raw side-by-side pair.',
+          err
+        );
+      }
+      this._paintMono(win);
+      this._notifyLayerLost(win);
       return;
     }
+    win.layerLostSent = false; // a live layer again: a future loss is worth reporting again
     // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
     // mode is the DISPLAY's, it survives a tile scrolling away, and this SDK never requests it
     // behind the page's back. The rig went into the init above already flattened if a 1-view
@@ -1898,9 +1927,47 @@ class Inline3D {
       win.layer = null;
     }
     // Leave a flat (left-eye-only) frame so an off-screen image/video still shows 2D.
-    if (win.ownsBuffer && win.kind !== 'scene') {
-      this._sizeBuffer(win, /*sbs*/ false);
-      this._paint(win, null);
+    //
+    // A SCENE is deliberately NOT notified here (see _notifyLayerLost): its layer is coming
+    // back the moment the tile scrolls into view again, and `SceneViewer.onFrame` takes the
+    // backing store back to SBS by itself — collapsing on every scroll would make the lazy
+    // lifecycle visible as a mode change.
+    this._paintMono(win);
+  }
+
+  /**
+   * Take a window whose layer is gone back to the ONE state a canvas nothing weaves may be left
+   * in: a flat, left-eye-only frame in a 1:1 buffer (web#28).
+   *
+   * Shared by _deactivate, _teardown and the _activate failure path precisely so the three
+   * cannot drift — _teardown used to skip it entirely, which left every image and video tile on
+   * the page holding its last side-by-side frame, forever, the moment the session ended.
+   * Scene canvases are the page's pixels and are handled by _notifyLayerLost instead.
+   */
+  _paintMono(win) {
+    if (!win.ownsBuffer || win.kind === 'scene') return;
+    this._sizeBuffer(win, /*sbs*/ false);
+    this._paint(win, null);
+  }
+
+  /**
+   * The scene half of the same problem. The SDK does not own a scene canvas's backing store, so
+   * the most it can do is SAY the layer went away and let the owner take itself flat —
+   * `SceneViewer` wires its `startMono()` here (`addScene({ onLayerLost })`), and `./splat` and
+   * `./model` do that for you. Without it a scene tile keeps its last woven side-by-side frame
+   * on screen after the session ends, because every mono fallback in this SDK and its samples is
+   * a one-shot `!supported` branch decided at boot.
+   *
+   * One-shot per loss and never allowed to throw: this runs inside teardown, where a page
+   * callback that raises must not strand the windows behind it.
+   */
+  _notifyLayerLost(win) {
+    if (win.kind !== 'scene' || typeof win.onLayerLost !== 'function' || win.layerLostSent) return;
+    win.layerLostSent = true;
+    try {
+      win.onLayerLost();
+    } catch (err) {
+      console.warn('[inline3d] a scene window\'s onLayerLost callback threw', err);
     }
   }
 
@@ -2208,9 +2275,28 @@ class Inline3D {
 
   _paint(win, _views) {
     if (win.kind === 'scene' || !win.ctx) return;
+    // NOTHING IS WEAVING THIS CANVAS (web#28, browser-pvt#99). A dead manager or a window with
+    // no layer means the browser is not consuming this canvas as a stereo pair any more — so an
+    // SBS paint here puts the raw squeezed left|right pair on screen as ordinary 2D page
+    // content, permanently, because nothing ever repaints it. The path that makes this a FIELD
+    // bug rather than a theoretical one is a slow download: `addImage`'s load resolves after the
+    // session ended and calls `win.repaint()` straight into a canvas whose layer is gone.
+    // Forced here rather than at each call site because the call sites are the async ones.
+    // The buffer comes with it — the mono branch below stretches ONE eye across the whole
+    // backing store, so leaving a 2:1 store would show a double-width half-image.
+    const live = this._running && !!win.layer;
+    if (!live && win.sbs) this._sizeBuffer(win, /*sbs*/ false);
     const src = win.kind === 'video' ? win.video : win.img;
     if (!src) return;
-    if (win.kind === 'video' && (src.readyState || 0) < 2) return; // no frame yet
+    if (win.kind === 'video' && (src.readyState || 0) < 2) {
+      // Buffering: no new frame to draw, and drawing an unready <video> is a no-op per spec (it
+      // would leave the clearRect below as the only thing that happened, i.e. blank the tile).
+      // Skipping the paint entirely is what the old code did, and that is its own bug — see
+      // _frame: a canvas that is not redrawn can have its layer dropped from the aggregated
+      // frame. So re-commit what the canvas already holds instead.
+      if (live) this._recommitLastFrame(win);
+      return;
+    }
     const c = win.canvas;
     const ctx = win.ctx;
     const srcW = src.videoWidth || src.naturalWidth || src.width;
@@ -2231,6 +2317,30 @@ class Inline3D {
       drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, win.cornerRadius, win.feather); // R
     } else {
       ctx.drawImage(src, 0, 0, srcW, srcH, 0, 0, c.width, c.height);
+    }
+  }
+
+  /**
+   * Re-commit the pixels the canvas already holds, unchanged — the cheapest "last decoded frame"
+   * there is, because the last decoded frame is already in the backing store.
+   *
+   * Drawing the canvas onto itself is one same-size blit that dirties the canvas (which is the
+   * whole point: see the every-frame-repaint note in _frame), and `globalCompositeOperation =
+   * 'copy'` is what makes it a true identity — source-over would composite a feathered buffer's
+   * transparent edges onto themselves and darken the ramp a little more every stalled frame.
+   * Only ever reached while a source has nothing new, so a healthy video never pays for it.
+   */
+  _recommitLastFrame(win) {
+    const c = win.canvas;
+    if (!c.width || !c.height) return;
+    const ctx = win.ctx;
+    try {
+      ctx.save();
+      ctx.globalCompositeOperation = 'copy';
+      ctx.drawImage(c, 0, 0);
+      ctx.restore();
+    } catch {
+      /* a context that refuses a self-blit: leave the stale pixels rather than blank the tile */
     }
   }
 
@@ -2293,7 +2403,22 @@ class Inline3D {
               );
             }
           }
-          win.onFrame(views, win.layer, f);
+          // Contained, and warned about once. A scene that throws (a texture that 404s, a
+          // decoder that gives up) used to abort this loop body for every window AFTER it in the
+          // map — and an un-redrawn canvas can have its layer dropped from the aggregated frame
+          // (see the note below), so one broken tile took its neighbours' weave with it (web#28).
+          try {
+            win.onFrame(views, win.layer, f);
+          } catch (err) {
+            if (!win.frameThrewWarned) {
+              win.frameThrewWarned = true;
+              console.warn(
+                "[inline3d] a scene window's onFrame threw; this window will keep whatever it " +
+                  'last drew, and the other windows carry on. Further throws from it are silent.',
+                err
+              );
+            }
+          }
         }
       } else {
         // Repaint image AND video every frame. The weave reads each window's
@@ -2430,6 +2555,13 @@ class Inline3D {
         }
         win.layer = null;
       }
+      // The repaint _deactivate has always done, which this path used to skip (web#28). Closing
+      // the layer also clears the browser's tracked rect, so from here nothing suppresses these
+      // canvases and nothing will ever repaint them either — whatever is in the backing store
+      // when the session ends is what the page shows from now on. A side-by-side pair is the one
+      // thing that must not be. AFTER the close, so the flat frame is the last thing committed.
+      this._paintMono(win);
+      this._notifyLayerLost(win);
     }
     this._windows.clear();
     // Page listeners go with the session that fed them: a manager whose session has ended will

@@ -179,6 +179,15 @@ export interface SceneOptions extends TileOptions {
   viewRig?: XRViewRigInit;
   /** Element whose visibility drives the lazy create/close lifecycle (defaults to the canvas). */
   observe?: Element;
+  /**
+   * Called once when this window's weave layer goes away for good — the session ended, or the
+   * layer could not be created. You own a scene canvas's pixels, so this is the SDK's only way
+   * to tell you that the side-by-side pair in it is no longer being woven and is now just
+   * squeezed 2D on the page: take the canvas flat here (`SceneViewer.startMono`, or your own
+   * mono path). NOT called when a lazy tile merely scrolls off screen — that layer is coming
+   * back. A throw is caught and warned about.
+   */
+  onLayerLost?: () => void;
 }
 
 /** The per-frame render callback passed to {@link Inline3D.addScene}. */

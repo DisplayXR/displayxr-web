@@ -5,6 +5,44 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **core tier** (`.`) with a behaviour fix only — no API changes — and the **preview tier**
+(`./viewer`, `./splat`, `./model`) with one additive option. A page that ignores everything below
+renders identically while it is weaving; the changes only decide what a canvas shows once nothing
+weaves it any more.
+
+### Fixed
+
+- **A canvas nothing is weaving can no longer be left holding a raw side-by-side pair**
+  ([#28](https://github.com/DisplayXR/displayxr-web/issues/28), field report
+  [browser-pvt#99](https://github.com/DisplayXR/displayxr-browser-pvt/issues/99)). Every fallback in
+  this SDK was decided once at boot, so four paths ended with a tile showing a flat squeezed
+  left|right pair, permanently — the symptom users report as "3D element shows SBS", usually on a
+  slow connection:
+  - session `end` tore down without the mono repaint `_deactivate` does — every image and video
+    canvas kept its last SBS frame; teardown, deactivate and a failed activate now share one
+    `_paintMono`;
+  - an image whose download landed **after** teardown painted a fresh SBS pair into a canvas with no
+    layer — `_paint` now forces the mono branch (and a 1:1 buffer) whenever the manager is stopped or
+    the window has no live layer, whatever `win.sbs` says;
+  - a throwing `new XRDisplayLayer()` was swallowed silently and left the canvas as it was — it now
+    warns once per window (with the error) and repaints mono; still no retry;
+  - a buffering video (`readyState < 2`) skipped its paint entirely, so its canvas layer went idle and
+    could drop out of the browser's aggregated frame — it now re-commits its last decoded frame with
+    an identity blit.
+- **One throwing scene no longer stops the windows after it from repainting.** `onFrame` is contained
+  per window and warned about once; an un-redrawn canvas is exactly what the browser's weave join
+  loses.
+
+### Added
+
+- **`addScene({ onLayerLost })`** (preview tier): called once when a scene window's layer goes away
+  for good (session end, or the layer could not be created) — not when a lazy tile scrolls off. The
+  SDK does not own a scene canvas's pixels, so this is how it tells the owner to go flat.
+  `SceneViewer.onLayerLost` is the ready-made handler (`startMono()`), and `./splat` / `./model` wire
+  it for you.
+
 ## 1.6.0 — 2026-09-08
 
 Touches the **preview tier** (`./viewer`) and fixes a **documentation error in the core tier**.
