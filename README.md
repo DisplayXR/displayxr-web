@@ -122,6 +122,9 @@ docs/
                            that is not the API
   porting-three-js-apps.md porting an existing three.js app (WebXR or plain) to inline 3D —
                            the WebXR→inline-3d mapping table and the whole render loop
+tools/
+  local-open/         Windows helper: double-clicked HTML is served on 127.0.0.1 so
+                      DisplayXR can acquire an inline-3d session (file:// cannot)
 ```
 
 ## The inline-3D model (under the SDK)
@@ -140,5 +143,17 @@ See the [WebXR inline-3D explainer](https://github.com/DisplayXR/displayxr-runti
 ## Local preview
 
 Any static server, e.g. `python -m http.server 8080`, then open `http://localhost:8080/`.
-(Loading over `file://` is fine for pure-2D, but WebXR requires a **secure context** — use
-`http://localhost` or `https://`.)
+Loading over `file://` is fine for pure-2D, but WebXR requires a **secure context** —
+`http://localhost` or `https://`. A double-clicked `.html` file is `file://`, so the
+weave never starts.
+
+On Windows, with DisplayXR set as the default browser,
+[`tools/local-open/`](tools/local-open/) intercepts those opens and serves the file on
+`http://127.0.0.1:17880/` instead, so a sample you double-click can weave. Install:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/local-open/install.ps1
+```
+
+That is a machine helper, not an SDK API. `http(s)` links still go straight to the
+browser. See [`tools/local-open/README.md`](tools/local-open/README.md).
