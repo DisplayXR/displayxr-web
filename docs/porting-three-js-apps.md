@@ -669,3 +669,24 @@ Consolidated, in the order they tend to bite:
     copies each frame to a separate front buffer). And read `keeps=` in the chrome log as a
     CUMULATIVE, throttled counter: the rate is Δcounter/Δt normalised by frame rate, never a count
     of log lines.
+
+27. **Press-and-hold controls release ~120×/s the moment a second finger lands — on one shipping
+    tablet, in every browser.** Not the page, not the SDK, not the DisplayXR browser: the tablet's
+    touch controller, at its default 240 Hz report rate, omits the *first-down* finger from every
+    other report frame while a second finger is held, so Android delivers a well-formed
+    `touchend` + `touchstart` (new identifier) every ~8 ms. A lone motionless finger is fine; the
+    failure is strictly two-finger, which is exactly "hold the jetpack, steer with the other hand".
+    Stock Chrome on the same device does the same. The fix is on the device (report rate 120 Hz;
+    the OEM requirements spec's R9), not in any DisplayXR component — so a game shipping today
+    needs a **tolerance**, and this is the one that works (dfattal/F1000 `164f14a`):
+    - A `touchend`/`touchcancel` on a held control is **provisional**: keep the control engaged
+      and start a ~250 ms timer; a `touchstart` on the same element before it fires is the same
+      finger back — adopt the new `identifier`, cancel the timer, do not re-trigger the press
+      action. A real lift still ends the hold 250 ms later, which is imperceptible.
+    - For a **long-press** gesture, a candidate that vanishes is remembered for the same window,
+      and a finger landing within ~44 px in that window **continues the original press** —
+      original start time, original position — so a dropout costs the countdown nothing.
+    - Keep the window **shorter than your long-press threshold** (250 < 400 ms in F1000), so an
+      ordinary tap can never leave a long press pending long enough to fire.
+    Do not size the window from a version or UA string: the symptom is device-wide, and the
+    tolerance is harmless where the digitizer is healthy.
