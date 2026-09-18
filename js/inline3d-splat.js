@@ -20,8 +20,13 @@
 
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
-import { EyeCamera, EdgeFeather } from './inline3d-three.js';
+import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js';
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
+import { readSogCamera } from './inline3d-sog.js';
+import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
+
+export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
+export { readSogCamera, readSogMeta } from './inline3d-sog.js';
 
 /**
  * Sort at most this often, in ms. THE stereo optimisation in this module.
@@ -96,6 +101,22 @@ function sniffFileType(bytes) {
  * @param {number} [opts.renderScale=1]  per-eye buffer scale; 0.5–0.7 is usually free.
  * @param {number} [opts.feather=0]  edge fade in buffer px.
  * @param {number} [opts.sortIntervalMs=16]  see DEFAULT_SORT_INTERVAL_MS.
+ * @param {true|'balanced'|'aggressive'|object} [opts.perf]  cut overdraw. Unset (the default)
+ *        changes nothing: every Spark default stays where Spark put it. `'balanced'` is the
+ *        native renderer's pair — each quad shrunk to its own 1/255 alpha radius, plus the 1/255
+ *        opacity cull — and is bit-exact; `'aggressive'` adds a sub-pixel cull and a tighter
+ *        global σ, which do move pixels. Table + the bit-exactness conditions:
+ *        ./inline3d-splat-perf.js.
+ * @param {'auto'|'display'|'camera'} [opts.rig='auto']  which view rig. `auto` reads it off the
+ *        asset: a `.sog` whose `meta.json` carries a `camera` block was lifted from a photograph
+ *        and gets a CAMERA rig that conserves the recording camera (its FOV, its position, its
+ *        principal point, in a metric scene); anything else is an object and gets the display
+ *        rig with the auto-frame, which is what every existing page already has. Only read from
+ *        BYTES. On the camera path the subject is NOT reframed and the idle turntable is off
+ *        unless you asked for one.
+ * @param {number} [opts.convergence]  camera rig only: the distance, in world metres, that sits
+ *        ON the glass. Defaults to the distance from the capture camera to the measured subject
+ *        centre.
  * @param {Element} [opts.observe=canvas]  element whose visibility gates the lazy lifecycle.
  * @returns {object} a TileHandle (remove/exclude/unexclude) plus `viewer`, `mesh`, `setPose`,
  *          `resetPose`, `frame` (the bounds used, null until loaded) and `ready` (a promise).
@@ -136,6 +157,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
     renderScale = 1,
     feather = 0,
     sortIntervalMs = DEFAULT_SORT_INTERVAL_MS,
+    perf = null,
+    rig = 'auto',
+    convergence,
     fileName,
     fileType,
     observe,
@@ -158,6 +182,10 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // GLB accessory in one scene.
   const spark = new SparkRenderer({ renderer: viewer.renderer, minSortIntervalMs: sortIntervalMs });
   viewer.scene.add(spark);
+  // Nothing happens unless the page asked: with no `perf` every Spark default stays where Spark
+  // put it, so an existing page's pixels do not move. See ./inline3d-splat-perf.js for the table
+  // of what each knob costs and whether it is bit-exact.
+  const perfApplied = perf ? applySplatPerf(spark, perf) : null;
 
   // THE HANDLE IS DECLARED BEFORE THE LOADER, and that is load-bearing — not style.
   //
@@ -178,6 +206,16 @@ export function addSplat(wall, canvas, src, opts = {}) {
     mesh: null,
     spark,
     frame: null,
+    /**
+     * The `.sog`'s `camera` block, once the bytes have been read — null for a URL source, a
+     * non-`.sog`, or an asset that carries no block (which is most of them, and means "this is
+     * an object, use the display rig"). See ./inline3d-sog.js.
+     */
+    camera: null,
+    /** Which rig this window ended up on: `'display'` or `'camera'`. Null until `ready`. */
+    rig: null,
+    /** What `perf` actually applied, or null. Useful for a diagnostics readout. */
+    perf: perfApplied,
     setPose: (p) => viewer.setPose(p),
     resetPose: () => viewer.resetPose(),
     remove() {
@@ -211,8 +249,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
         ...(sniffed ? { fileType: sniffed } : {}),
         ...(fileName ? { fileName } : {}),
       };
+      // Read the camera block off the SAME bytes, before Spark takes them. Only possible on the
+      // bytes path — a URL source would need a second fetch of ten megabytes to learn 200 of
+      // them, so that is deliberately not done. (It is also not a limitation in practice: the
+      // asset that HAS a camera block is a generated/streamed one, which is the bytes path.)
+      if (rig !== 'display') out.camera = await readSogCamera(fileBytes);
     }
-    mesh = new SplatMesh(init);
+    mesh = new SplatMesh({ ...init, ...splatPerfMeshOptions(perf) });
     // Most exporters write splats Y-down (the original 3DGS convention); three.js is Y-up.
     // Without this every capture arrives upside down, which reads as a broken asset rather than
     // a convention mismatch. w=0,x=1 is a half turn about X.
@@ -253,10 +296,43 @@ export function addSplat(wall, canvas, src, opts = {}) {
       // positions the renderer draws. It costs one pass over (a sample of) the centres at load,
       // which is what the working reference sample has always done.
       const bounds = measureBounds(out.mesh, THREE) || (frame ? liftBounds(frame, out.mesh, THREE) : null);
-      if (bounds) {
+
+      // WHICH RIG. `rig:'auto'` (the default) reads it off the ASSET: a `camera` block means the
+      // splat was lifted from a photograph, and a photograph has a viewpoint to conserve — the
+      // capture's own FOV, at the capture's own position, in a metric scene. No block means an
+      // object, which is the display rig, the auto-frame, and everything this module did before.
+      //
+      // That is the subject-vs-viewpoint test from docs/authoring-inline-3d.md §"Which rig",
+      // answered by the file instead of by the page. It is the one case where a splat viewer
+      // cannot decide for itself: the same call site loads a product turntable and a lifted
+      // photograph, and they want opposite rigs.
+      const wantCamera = rig === 'camera' || (rig === 'auto' && !!out.camera);
+      if (wantCamera && !out.camera) {
+        console.warn(
+          "[inline3d/splat] rig:'camera' but this source carries no camera block (a URL source " +
+            'is never read for one — pass BYTES), so the display rig is used.',
+          src,
+        );
+      }
+      if (wantCamera && out.camera) {
+        out.rig = 'camera';
+        out.frame = bounds;
+        // A turntable on a photograph is nonsense, so the default spin stops here — but only the
+        // DEFAULT: a page that asked for one still gets it.
+        if (!('idleSpin' in opts)) viewer.idleSpin = 0;
+        applyCaptureCamera(viewer, out.camera, flipY);
+        const conv = Number.isFinite(convergence) ? convergence : convergenceFor(viewer, bounds);
+        // DECLARE the rig; the off-axis projection stays in the runtime, exactly as it does for
+        // every other window in this SDK. The mono camera is already posed and FOV'd as the
+        // capture, so it is the camera to describe.
+        out.viewRig = cameraRigFromCamera(THREE, viewer.monoCamera, { convergence: conv });
+        handle?.setViewRig(out.viewRig);
+      } else if (bounds) {
+        out.rig = 'display';
         out.frame = bounds;
         viewer.fitTo(bounds.center, bounds.extent);
       } else {
+        out.rig = 'display';
         // Unframed means drawn at raw MODEL scale, which for a typical capture is several times
         // the tile. Say so: silence here is what made the same condition read as a fit bug.
         console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
@@ -293,6 +369,89 @@ export function addSplat(wall, canvas, src, opts = {}) {
  * columns rather than being re-projected onto world axes: same convention the native
  * ComputeAutoFrame uses, and exact for the axis-aligned flips that actually occur.
  */
+/**
+ * Pose and lens the viewer's mono camera AS THE RECORDING CAMERA.
+ *
+ * This is the 2D half of the camera rig, and the only place in this SDK that builds a projection
+ * matrix itself. That is not a contradiction of "declare the rig, never compute": the 3D path
+ * below sends a descriptor and consumes the runtime's views as always — but the mono fallback has
+ * no runtime and no stereo, so SOMETHING has to render the capture, and the honest thing to
+ * render is the capture's own frustum. Get it wrong and the flat view is a crop or a zoom of the
+ * photograph, which reads as a framing bug.
+ *
+ * THE FLIP MOVES THE CAMERA TOO. `flipY` puts a 180° X rotation on the MESH (most exports are
+ * Y-down; three is Y-up), so a rest pose recorded in the file's own frame has to ride the same
+ * rotation or the camera ends up mirrored through the origin — the identity pose the gallery's
+ * assets carry hides this completely, which is exactly why it is done properly here.
+ *
+ * ASPECT. The intrinsics fix the capture's aspect and the canvas has its own. The vertical is
+ * kept and the horizontal is widened or narrowed to the canvas — `fit:'height'`'s convention, and
+ * the one that keeps a face the same size whatever shape the tile is. The principal point rides
+ * along, so a deconverged capture (`cx` off centre) keeps its lens shift.
+ *
+ * `updateProjectionMatrix` is REPLACED, not just called: the viewer recomputes it on every
+ * resize, and three's symmetric version would silently throw the off-axis window away on the
+ * first layout nudge.
+ */
+function applyCaptureCamera(viewer, cam, flipY) {
+  const camera = viewer.monoCamera;
+  const { fx, fy, cx, cy, width, height } = cam.intrinsics;
+
+  const q = new THREE.Quaternion(
+    cam.rest.rotation[0],
+    cam.rest.rotation[1],
+    cam.rest.rotation[2],
+    cam.rest.rotation[3],
+  );
+  const p = new THREE.Vector3(cam.rest.position[0], cam.rest.position[1], cam.rest.position[2]);
+  if (flipY) {
+    const flip = new THREE.Quaternion(1, 0, 0, 0);
+    p.applyQuaternion(flip);
+    q.premultiply(flip);
+  }
+  camera.position.copy(p);
+  camera.quaternion.copy(q);
+  camera.fov = THREE.MathUtils.radToDeg(cam.verticalFov);
+  // FAR, and why it is not the viewer's default. A deconverged capture parks its sky at the
+  // lifter's depth cap and the refinement scatters some gaussians beyond it (239 m measured on a
+  // street scene); anything past the far plane is CLIPPED in Spark's vertex shader and pops out
+  // as a black hole the moment an orbit pushes it over. Spark composites by SORTING, not by
+  // depth-testing, so there is no z precision to protect and a huge near:far ratio costs nothing.
+  camera.far = Math.max(camera.far, 5000);
+  camera.updateMatrixWorld(true);
+
+  camera.updateProjectionMatrix = () => {
+    const near = camera.near;
+    // OpenCV's y grows DOWN the image, so the TOP edge is the `cy` side.
+    const top = (near * cy) / fy;
+    const bottom = -(near * (height - cy)) / fy;
+    const box = viewer.canvas.getBoundingClientRect();
+    const aspect = box.height > 0 ? box.width / box.height : width / height;
+    const mid = (near * (width / 2 - cx)) / fx; // horizontal centre of the capture's frustum
+    const half = ((top - bottom) * aspect) / 2;
+    camera.projectionMatrix.makePerspective(mid - half, mid + half, top, bottom, near, camera.far);
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  };
+  camera.updateProjectionMatrix();
+}
+
+/**
+ * Default convergence for a camera rig: the distance from the capture camera to the middle of
+ * what was captured.
+ *
+ * Convergence is the distance that lands ON the glass, and it is the one number a camera rig
+ * cannot be left to guess — 0 means infinity, which puts the entire scene in front of the display
+ * and is comfortable for almost nothing. The `camera` block does not carry one (it describes a
+ * lens, not a presentation), so the measured subject centre is the honest stand-in: it is the
+ * same "converge on the median scene point" the gallery derives from its own columns.
+ */
+function convergenceFor(viewer, bounds) {
+  if (!bounds) return 0;
+  const c = viewer.monoCamera.position;
+  const d = Math.hypot(bounds.center[0] - c.x, bounds.center[1] - c.y, bounds.center[2] - c.z);
+  return Number.isFinite(d) && d > 0 ? d : 0;
+}
+
 /** Map model-space bounds through a mesh's own transform, matching the native ComputeAutoFrame. */
 function liftBounds(b, mesh, THREE) {
   if (!b || !mesh) return b;
