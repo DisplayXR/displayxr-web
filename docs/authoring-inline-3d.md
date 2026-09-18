@@ -446,6 +446,133 @@ wall.addScene(canvas, onFrame, {
 (That combination warns once — the two describe the same slot — so pass both only where the
 fallback framing is the point. `samples/camera-rig/` is the worked example of all of this.)
 
+## Gaussian splats: performance, and the `camera` block
+
+`addSplat(wall, canvas, src, opts)` (`@displayxr/inline3d/splat`, preview tier) puts a 3D Gaussian
+splat in a tile. Two things about splats have no equivalent anywhere else in this SDK, and both
+are decided by the asset rather than by the page.
+
+### Splat performance — it is OVERDRAW, not resolution and not splat count
+
+A splat scene's cost is dominated by the **per-fragment composite**: 75–85 % of the frame on a
+1.18M-gaussian photo-lifted scene (measured natively on an M1 Pro, one eye at 1920×1080). And it is
+*overdraw* — a handful of enormous, nearly transparent sky splats cover the frame many times over,
+so the bill is set by how much each splat covers, not by how many pixels the tile has.
+
+Splat COUNT is the axis everyone reaches for first, and it is the weakest one. Decimating the same
+asset to 25 % of its gaussians breaks it visibly (bright stipple across near lit surfaces) while
+removing less cost than the two settings below, which remove none of the picture at all. A 50 %
+decimation is indistinguishable and is a legitimate mobile tier; below that is not.
+
+```js
+const shoe = addSplat(wall, canvas, bytes, { perf: 'balanced' });
+```
+
+`perf` is **unset by default and changes nothing when unset** — every Spark default stays where
+Spark put it, so an existing page's pixels do not move. Two presets, or an object of your own:
+
+| preset | what it sets | safe? |
+|---|---|---|
+| `'balanced'` (or `true`) | `alphaRadius`, `minAlpha: 1/255` | yes — see below |
+| `'aggressive'` | the above + `minPixelRadius: 1`, `maxStdDev: √6` | no: drops fine grain, truncates tails |
+
+| option | Spark 2.1.0 default | what it does | bit-exact? |
+|---|---|---|---|
+| `alphaRadius` | *no such option* | shrinks each splat's quad to the radius where its own alpha reaches `minAlpha` | **yes** |
+| `minAlpha` | `0.5/255` | drops splats and fragments below this alpha | lossy, ≤ 1 LSB each |
+| `maxStdDev` | `√8` (≈2.83σ) | quad extent in σ, for every splat at once | lossy: truncates opaque tails |
+| `minPixelRadius` | `0` | drops splats smaller than this on screen | lossy: drops a capture's grain |
+| `maxPixelRadius` | `512` | caps quad size in px — and **squashes** rather than crops | lossy, and visibly so |
+| `falloff` | `1` | 1 = Gaussian, 0 = flat | **not a perf knob**: 0 stops the fragment discard firing, which costs *more* |
+| `lod`, `lodSplatScale`, `lodRenderScale`, `lodSplatCount` | off for a plain load | build Spark's decimated pyramid at load and render against a budget | lossy: substitutes merged splats |
+
+**Why `alphaRadius` is free.** Spark draws every splat as a quad of `maxStdDev` σ and its fragment
+shader then discards any fragment whose alpha has fallen under `minAlpha` — so for a splat of peak
+alpha `a`, every fragment beyond `r = sqrt(2·ln(a/minAlpha))` is *already* being discarded. It is
+rasterised, interpolated, shaded and thrown away. `alphaRadius` shrinks the quad to exactly that
+radius, which removes work and not pixels; the win is biggest on exactly the splats that dominate
+the cost, because a haze splat of `a = 0.02` needs 1.81σ where the global default spends 2.83σ.
+
+Two conditions come with the word *bit-exact*: `falloff` must be 1 (the patch guards this itself —
+at a flatter falloff nothing is being discarded and cutting the quad would cut the picture), and
+`minPixelRadius` must be 0, since a shrunken quad can fall under it and lose the splat outright.
+Measured on the 1.18M-gaussian asset at 1280×720: **457 of 3,686,400 channel bytes differ, every
+one of them by exactly 1** — the float rounding at the discard boundary, where the fragment's own
+contribution is below 1/255 by construction.
+
+Spark has no option for this, so the SDK patches Spark's splat vertex shader — through its
+supported `vertexShader` surface, and by rewriting Spark's *own* source off the live material
+rather than shipping a copy of it, so a Spark upgrade brings its shader fixes along. If the lines
+it rewrites ever stop matching it declines with one console warning and everything still renders.
+
+`handle.perf` reports what was actually applied. `applySplatPerf(spark, perf)` is exported for
+pages that build their own `SparkRenderer`; the knobs are live, so a quality menu can call it at
+any time.
+
+### The `camera` block — a `.sog` that says which camera it was lifted through
+
+A splat viewer needs **both** rigs, and the same call site loads both kinds of asset:
+
+- a **product hero, a scan, a turntable subject** → the **display rig**, and the auto-frame. The
+  user turns the subject; see [Which rig](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera).
+- a **photograph lifted into 3D** → a **camera rig that conserves the recording camera**. There is
+  a real viewpoint here and it is the one the picture was taken from; reframing it to fill the tile
+  is how a photograph turns into an arbitrary cloud.
+
+Nothing in the page can tell those apart, but the file can. `.sog` is a PKZip of webp planes plus a
+`meta.json`, and a lifted capture carries one extra top-level key beside `count` (`version` stays
+2; SOG readers ignore keys they do not know):
+
+```json
+"camera": {
+  "convention": "opencv",
+  "rest":       { "position": [0,0,0], "rotation": [0,0,0,1] },
+  "intrinsics": { "fx": 1194.665984, "fy": 1194.665984,
+                  "cx": 1024, "cy": 576, "width": 2048, "height": 1152 },
+  "stereo":     { "baseline_m": 0.063 }
+}
+```
+
+- `convention` is **required** to be `opencv` (+x right, +y **down**, +z forward, pixel (0,0) top
+  left) — it is the frame the intrinsics live in, and a reader that assumed it would mis-sign the
+  principal point with no error to show for it. Any other value and the block is ignored.
+- `rest` is the capture camera's pose **in the splat's own space**, metres, rotation camera→world
+  as xyzw. It is the identity for a splat whose origin *is* the left capture camera.
+- `intrinsics` are for **one eye**, in pixels. `cx` off centre is a lens shift: a deconverged
+  stereo pair records its deconvergence as exactly that.
+- `stereo.baseline_m` is **omitted when unknown**, never defaulted — a guessed baseline is worse
+  than no baseline.
+
+`addSplat` reads it with `rig: 'auto'` (the default) and switches rigs accordingly. `'display'` and
+`'camera'` force the choice. It is only read when `src` is **BYTES**: a URL source would need a
+second fetch of ten megabytes to learn two hundred of them.
+
+```js
+const handle = addSplat(wall, canvas, await (await fetch(url)).arrayBuffer(), { perf: 'balanced' });
+await handle.ready;
+handle.camera;  // the block, or null
+handle.rig;     // 'camera' | 'display'
+```
+
+On the camera path the SDK: leaves the subject **unframed** (a capture is already at metric scale,
+in its own place), turns the idle turntable off unless you asked for one, poses the mono camera as
+the recording camera — its FOV, its principal point, its rest pose, carried through the same
+`flipY` rotation the mesh gets — and **declares** a camera rig to the runtime with
+`cameraRigFromCamera`. The off-axis projection stays in the runtime, as everywhere else in this
+SDK; the mono fallback is the single place the SDK builds a projection itself, because there is no
+runtime there and the honest thing to render is the capture's own frustum.
+
+Two things the block deliberately does not carry, because they are properties of a *presentation*
+rather than of a lens:
+
+- **Convergence.** What sits on the glass is a choice, so `addSplat` defaults it to the distance
+  from the capture camera to the measured subject centre and takes `opts.convergence` (world
+  metres) when you know better.
+- **A principal-point shift on the woven path.** A view rig describes a pose, a vertical FOV and a
+  convergence — it has no lens-shift field — so a non-central `cx` reaches the 2D fallback and not
+  the runtime's frusta. For a capture lifted from the raw pair (`cx = width/2`) the two agree
+  exactly.
+
 ## Many windows, and how batching helps
 
 Add as many windows as you like to one `wall` — a gallery, a grid, a scrolling wall. The
