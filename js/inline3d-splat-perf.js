@@ -58,6 +58,12 @@ export const SPLAT_PERF_PRESETS = {
   aggressive: {
     alphaRadius: true,
     minAlpha: ALPHA_FLOOR,
+    // The per-splat version of shrinking every quad: cut each tail where IT reaches 4/255
+    // instead of 1/255. Strictly better than turning `maxStdDev` down by the same amount,
+    // because it takes the radius from the splats whose tails are invisible and leaves the
+    // opaque ones alone — and on a capture of mostly-opaque gaussians (which is what a lifted
+    // photograph is) it is the only one of the two that is not a flat truncation.
+    alphaFloor: 4 / 255,
     // Sub-pixel splats: both eigenaxes under a pixel. They are the grain of a capture, so this
     // is visible on a still — it is here for a phone, not for a hero.
     minPixelRadius: 1,
@@ -115,7 +121,10 @@ function patchAlphaRadius(material) {
     return false;
   }
   material.vertexShader = src
-    .replace(ANCHOR_UNIFORM, `${ANCHOR_UNIFORM}uniform float falloff;\nuniform bool dxrAlphaRadius;\n`)
+    .replace(
+      ANCHOR_UNIFORM,
+      `${ANCHOR_UNIFORM}uniform float falloff;\nuniform bool dxrAlphaRadius;\nuniform float dxrAlphaFloor;\n`,
+    )
     .replace(
       ANCHOR_ALPHA,
       `${ANCHOR_ALPHA}
@@ -123,13 +132,15 @@ function patchAlphaRadius(material) {
     // Every fragment outside that radius is discarded by the fragment shader anyway, so this
     // removes work and not pixels. Guarded on falloff == 1, which is what makes that true.
     if (dxrAlphaRadius && (falloff == 1.0) && (rgba.a <= 1.0)) {
-        adjustedStdDev = min(adjustedStdDev,
-            sqrt(max(0.0, 2.0 * log(rgba.a / max(minAlpha, 1e-6)))));
+        float floorA = max(dxrAlphaFloor > 0.0 ? dxrAlphaFloor : minAlpha, 1e-6);
+        adjustedStdDev = min(adjustedStdDev, sqrt(max(0.0, 2.0 * log(rgba.a / floorA))));
         vSplatUv = position.xy * adjustedStdDev;
     }
 `,
     );
   material.uniforms.dxrAlphaRadius = { value: true };
+  // 0 means "use minAlpha", which is the bit-exact cut. See `alphaFloor`.
+  material.uniforms.dxrAlphaFloor = { value: 0 };
   material.needsUpdate = true;
   return true;
 }
@@ -143,7 +154,8 @@ function patchAlphaRadius(material) {
  *
  * | option | default (Spark 2.1.0) | effect | safety |
  * |---|---|---|---|
- * | `alphaRadius` | — (no such thing) | quad shrunk to the splat's own 1/255 radius | **bit-exact**, see below |
+ * | `alphaRadius` | — (no such thing) | quad shrunk to the splat's own `alphaFloor` radius | **bit-exact** at the default floor, see below |
+ * | `alphaFloor` | — (= `minAlpha`) | the alpha the tail may be cut at, PER SPLAT | lossy above `minAlpha`, and gently: it spends radius where the splat is opaque and takes it where it is not |
  * | `minAlpha` | `0.5/255` | splats and fragments under this alpha are dropped | lossy under 1 LSB |
  * | `maxStdDev` | `√8` | quad extent in σ, globally | lossy: truncates opaque tails |
  * | `minPixelRadius` | `0` | drop splats under this size in px | lossy: drops fine grain |
@@ -184,10 +196,16 @@ export function applySplatPerf(spark, perf) {
       applied[key] = profile[key];
     }
   }
+  if (profile.alphaRadius) patchAlphaRadius(spark.material);
+  const floorU = spark.material?.uniforms?.dxrAlphaFloor;
+  if (floorU && profile.alphaFloor !== undefined) {
+    floorU.value = Number.isFinite(profile.alphaFloor) ? profile.alphaFloor : 0;
+    applied.alphaFloor = floorU.value;
+  }
   if (profile.alphaRadius !== undefined) {
     // The uniform exists only once the patch has gone in, so a `false` before any patch is
     // simply "do nothing" rather than a state to record.
-    if (profile.alphaRadius) applied.alphaRadius = patchAlphaRadius(spark.material);
+    if (profile.alphaRadius) applied.alphaRadius = !!spark.material?.uniforms?.dxrAlphaRadius;
     else if (spark.material?.uniforms?.dxrAlphaRadius) {
       spark.material.uniforms.dxrAlphaRadius.value = false;
       applied.alphaRadius = false;
