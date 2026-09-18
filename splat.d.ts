@@ -3,6 +3,46 @@
 
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
 
+/**
+ * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
+ * which is a patch to Spark's own vertex shader (there is no option for it). Bit-exact vs lossy,
+ * and the defaults each one overrides, are tabled in `js/inline3d-splat-perf.js`.
+ */
+export interface SplatPerfOptions {
+  /** Shrink each quad to the radius where its alpha reaches `minAlpha`. Bit-exact. */
+  alphaRadius?: boolean;
+  /** Drop splats and fragments under this alpha. Spark's default is `0.5/255`. */
+  minAlpha?: number;
+  /** Quad extent in σ, globally. Spark's default is `Math.sqrt(8)`. */
+  maxStdDev?: number;
+  /** Drop splats smaller than this, in pixels. Spark's default is 0. */
+  minPixelRadius?: number;
+  /** Clamp on quad size in pixels — note it SQUASHES rather than crops. Default 512. */
+  maxPixelRadius?: number;
+  /** 1 = Gaussian falloff, 0 = flat. Not a perf knob; 0 costs MORE. */
+  falloff?: number;
+  /** Build LOD data at load, so Spark can substitute merged splats against a budget. */
+  lod?: boolean | 'quality';
+  /** LOD budget multiplier (needs `lod`). */
+  lodSplatScale?: number;
+  /** Absolute LOD budget in splats (needs `lod`). */
+  lodSplatCount?: number;
+  /** Minimum on-screen splat size multiplier (needs `lod`); up to ~5 is often invisible. */
+  lodRenderScale?: number;
+}
+
+/** The `camera` block of a `.sog`'s `meta.json`, plus the fields this SDK derives from it. */
+export interface SogCamera {
+  convention: 'opencv';
+  rest: { position: number[]; rotation: number[] };
+  intrinsics: { fx: number; fy: number; cx: number; cy: number; width: number; height: number };
+  stereo: { baseline_m: number } | null;
+  /** Full vertical angle of the capture, in RADIANS. */
+  verticalFov: number;
+  /** Principal point off the frame centre, as a fraction of the frame, y UP (not OpenCV's). */
+  principalOffset: { x: number; y: number };
+}
+
 export interface SplatOptions {
   /** Metres of world the tile's height spans (default 0.24). */
   virtualDisplayHeight?: number;
@@ -33,6 +73,25 @@ export interface SplatOptions {
   /** Minimum ms between splat sorts. Defaults to 16 so both eyes share one sort per frame. */
   sortIntervalMs?: number;
   /**
+   * Cut overdraw. UNSET changes nothing — every Spark default stays where Spark put it, so an
+   * existing page's pixels do not move.
+   *
+   * `'balanced'` (or `true`) is the native renderer's pair and is bit-exact: each splat's quad is
+   * shrunk to the radius where its own alpha reaches 1/255 (those fragments were already being
+   * discarded), plus the 1/255 peak-opacity cull. `'aggressive'` additionally drops sub-pixel
+   * splats and tightens the global σ, which does move pixels.
+   */
+  perf?: true | 'balanced' | 'aggressive' | SplatPerfOptions;
+  /**
+   * Which view rig. `'auto'` (the default) reads it off the ASSET — a `.sog` carrying a `camera`
+   * block was lifted from a photograph and gets a camera rig that conserves the recording
+   * camera; anything else is an object and gets the display rig with the auto-frame. Only
+   * detectable when `src` is BYTES.
+   */
+  rig?: 'auto' | 'display' | 'camera';
+  /** Camera rig only: the distance in world metres that sits ON the glass. */
+  convergence?: number;
+  /**
    * Disambiguates .splat from .ksplat when passing BYTES — content-sniffing cannot separate
    * those two. Unnecessary for .sog/.ply/.spz, which are identifiable by magic number.
    */
@@ -55,6 +114,17 @@ export interface SplatHandle {
   readonly spark: object;
   /** Bounds actually used for framing; null until `ready` resolves. */
   frame: SubjectBounds | null;
+  /**
+   * The `.sog`'s `camera` block — the recording camera, when the asset carries one. Null for a
+   * URL source, a non-`.sog`, or an object splat (which is most of them).
+   */
+  camera: SogCamera | null;
+  /** Which rig this window is on. Null until `ready` resolves. */
+  rig: 'display' | 'camera' | null;
+  /** The view-rig descriptor sent to the runtime, on the camera path. */
+  viewRig?: object;
+  /** What `perf` actually applied, or null. */
+  perf: object | null;
   /** Resolves once the asset has loaded and been framed; rejects if the load failed. */
   readonly ready: Promise<SplatHandle>;
 
