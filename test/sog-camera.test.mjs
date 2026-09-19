@@ -207,18 +207,75 @@ test('no camera block means null — the asset stays on the display rig', () => 
   assert.equal(sogCameraFromMeta({ camera: 'yes' }), null);
 });
 
-test('an unusable camera block is REFUSED rather than partly believed', () => {
-  // Another convention: the intrinsics would be mis-signed, silently.
+test('a block in an unknown CONVENTION is refused outright', () => {
+  // The intrinsics would be mis-signed, silently — there is nothing safe to keep.
   assert.equal(sogCameraFromMeta({ camera: { ...CAMERA, convention: 'opengl' } }), null);
-  assert.equal(sogCameraFromMeta({ camera: { convention: 'opencv' } }), null);
+  assert.equal(sogCameraFromMeta({ camera: {} }), null);
+});
+
+test('unusable INTRINSICS are dropped, but the block survives — v2 makes them optional', () => {
+  // This is the case with teeth. A v2 block may legitimately carry no lens ("camera rig, open
+  // it here"), so refusing the whole block over its intrinsics would silently demote a
+  // camera-rig asset to the display rig — the exact failure this mechanism exists to prevent.
   for (const bad of [
     { ...CAMERA.intrinsics, fy: 0 },
     { ...CAMERA.intrinsics, fx: 'wide' },
     { ...CAMERA.intrinsics, width: -2048 },
     { ...CAMERA.intrinsics, cx: null },
   ]) {
-    assert.equal(sogCameraFromMeta({ camera: { ...CAMERA, intrinsics: bad } }), null, JSON.stringify(bad));
+    const cam = sogCameraFromMeta({ camera: { ...CAMERA, intrinsics: bad } });
+    assert.ok(cam, JSON.stringify(bad));
+    assert.equal(cam.intrinsics, null);
+    assert.equal(cam.verticalFov, null);
+    assert.equal(cam.principalOffset, null);
+    assert.deepEqual(cam.stereo, { baseline_m: 0.063 }, 'the rest of the block is intact');
   }
+  // Absent entirely is the same thing, without the warning.
+  const none = sogCameraFromMeta({ camera: { convention: 'opencv' } });
+  assert.ok(none);
+  assert.equal(none.intrinsics, null);
+});
+
+// ── v2: rig, focus, dxr ─────────────────────────────────────────────────────────────────
+
+test('v2 carries the rig, the focus point and the two camera-rig scalars', () => {
+  const cam = sogCameraFromMeta({
+    camera: {
+      ...CAMERA,
+      rig: 'camera',
+      focus: { point: [0, 0, 1.683], subject_m: 2.14, near_m: 0.73, far_m: 66.2, source: 'convergence' },
+      dxr: { ipd_factor: 1, parallax_factor: 0.5 },
+    },
+  });
+  assert.equal(cam.rig, 'camera');
+  assert.deepEqual(cam.focus.point, [0, 0, 1.683]);
+  assert.equal(cam.focus.subject_m, 2.14);
+  assert.equal(cam.focus.source, 'convergence');
+  assert.deepEqual(cam.dxr, { ipdFactor: 1, parallaxFactor: 0.5 });
+});
+
+test('a v1 block still reads, with the v2 fields null — the superset is a superset', () => {
+  const cam = sogCameraFromMeta({ camera: CAMERA });
+  assert.equal(cam.rig, null);
+  assert.equal(cam.focus, null);
+  assert.deepEqual(cam.dxr, { ipdFactor: null, parallaxFactor: null });
+  assert.deepEqual(cam.intrinsics, CAMERA.intrinsics);
+});
+
+test('a garbled rig or focus is dropped, never guessed at', () => {
+  const cam = sogCameraFromMeta({
+    camera: { ...CAMERA, rig: 'Camera', focus: { point: [0, 0, 'far'] }, dxr: { ipd_factor: -1 } },
+  });
+  // 'Camera' is not 'camera': the waterfall's next step is a better answer than a typo taken
+  // literally, and a negative ipd factor is not a mirror, it is a mistake.
+  assert.equal(cam.rig, null);
+  assert.equal(cam.focus, null);
+  assert.equal(cam.dxr.ipdFactor, null);
+});
+
+test('focus distances are advisory and survive a point-only block', () => {
+  const cam = sogCameraFromMeta({ camera: { ...CAMERA, focus: { point: [1, 2, 3] } } });
+  assert.deepEqual(cam.focus, { point: [1, 2, 3], subject_m: null, near_m: null, far_m: null, source: null });
 });
 
 test('rest pose and baseline default sanely when absent', () => {

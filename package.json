@@ -42,6 +42,7 @@
     "js/inline3d-splat.js",
     "js/inline3d-sog.js",
     "js/inline3d-splat-perf.js",
+    "js/inline3d-splat-rig.js",
     "js/inline3d-model.js",
     "index.d.ts",
     "three.d.ts",
