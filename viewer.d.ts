@@ -105,6 +105,22 @@ export declare class SceneViewer {
 
   /** Snap the pose. Writes the eased value and its target together. */
   setPose(pose?: OrbitPose): void;
+  /**
+   * Point the viewer at something: the orbit centre, the pivot plane and (on a camera rig) the
+   * convergence distance are ONE point, and this is it. `recentre: true` (a display rig) brings
+   * that point to the middle of the tile; `recentre: false` (a camera rig) leaves the capture
+   * where it was placed and moves only the rotation centre. Eased 0.18/frame unless `snap`.
+   */
+  setFocus(
+    point: { x: number; y: number; z: number } | number[] | null,
+    opts?: { snap?: boolean; recentre?: boolean },
+  ): SceneViewer;
+  /** Where the viewer is pointed, in content space. */
+  getFocus(opts?: { target?: boolean }): { x: number; y: number; z: number };
+  /** Called after every focus ease step, with the live focus. */
+  onFocusChange: ((focus: { x: number; y: number; z: number }) => void) | null;
+  /** Called at the end of every tick, after the transform is applied. */
+  onTick: (() => void) | null;
 
   /**
    * The pose as it is right now. `target: true` reports what it is easing TOWARD, which differs
