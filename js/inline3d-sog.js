@@ -147,14 +147,28 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
  * strict: a half-parsed block that silently keeps some defaults would put a photo scene on a
  * plausible-looking rig that is not the capture, which is indistinguishable from a framing bug.
  *
- * Shape (`meta.json`, top level, right after `count`; `version` stays 2):
+ * Shape (`meta.json`, top level, right after `count`; `version` stays 2). v2 is a SUPERSET of
+ * v1 — every key below except `convention` is optional, and a v1 block still reads:
  *
  *     "camera": {
  *       "convention": "opencv",
+ *       "rig":        "camera",                        // v2: which rig this asset wants
  *       "rest":       { "position": [0,0,0], "rotation": [0,0,0,1] },
  *       "intrinsics": { "fx":…, "fy":…, "cx":…, "cy":…, "width":…, "height":… },
- *       "stereo":     { "baseline_m": 0.063 }
+ *       "stereo":     { "baseline_m": 0.063 },
+ *       "focus":      { "point": [0,0,1.68], "subject_m":…, "near_m":…, "far_m":…,
+ *                       "source": "convergence|manual|auto" },   // v2
+ *       "dxr":        { "ipd_factor": 1.0, "parallax_factor": 1.0 }   // v2
  *     }
+ *
+ * `intrinsics` BECAME OPTIONAL IN v2, which is the change with teeth: a block can now say "this
+ * is a camera rig, open it at this viewpoint" without claiming a lens, and the consumer is
+ * expected to estimate one. So this returns a descriptor with null intrinsics rather than
+ * refusing the block — refusing it would silently demote a camera-rig asset to the display rig,
+ * which is the failure this whole mechanism exists to prevent.
+ *
+ * `focus.point` is THE point: the orbit centre, the pivot plane and the convergence distance,
+ * which are one thing and are stored once.
  *
  * `convention` is REQUIRED to be `opencv` (+x right, +y DOWN, +z forward, pixel (0,0) at the top
  * left) rather than defaulted: it is the frame the intrinsics are expressed in, and a reader that
@@ -175,30 +189,79 @@ export function sogCameraFromMeta(meta) {
     return null;
   }
   const i = c.intrinsics;
-  if (!i || typeof i !== 'object') return null;
-  const fx = num(i.fx);
-  const fy = num(i.fy);
-  const cx = num(i.cx);
-  const cy = num(i.cy);
-  const width = num(i.width);
-  const height = num(i.height);
-  if (!(fx > 0) || !(fy > 0) || !(width > 0) || !(height > 0) || cx === null || cy === null) {
-    console.warn('[inline3d/splat] .sog camera block has unusable intrinsics — ignored', i);
-    return null;
+  let intrinsics = null;
+  if (i && typeof i === 'object') {
+    const fx = num(i.fx);
+    const fy = num(i.fy);
+    const cx = num(i.cx);
+    const cy = num(i.cy);
+    const width = num(i.width);
+    const height = num(i.height);
+    if (!(fx > 0) || !(fy > 0) || !(width > 0) || !(height > 0) || cx === null || cy === null) {
+      // Half-believing a lens is worse than having none: with intrinsics optional in v2 there is
+      // a well-defined thing to do instead, which is estimate one from the cloud.
+      console.warn(
+        '[inline3d/splat] .sog camera block has unusable intrinsics — they are DROPPED and the ' +
+          'lens is estimated from the cloud instead; the rest of the block still applies.',
+        i,
+      );
+    } else {
+      intrinsics = { fx, fy, cx, cy, width, height };
+    }
   }
   const pos = Array.isArray(c.rest?.position) ? c.rest.position.map((v) => num(v) ?? 0) : [0, 0, 0];
   const rot = Array.isArray(c.rest?.rotation) ? c.rest.rotation.map((v) => num(v) ?? 0) : [0, 0, 0, 1];
   const baseline = num(c.stereo?.baseline_m);
+
+  // v2 `rig`. Anything unrecognised is dropped rather than guessed at — the waterfall's next
+  // step (a block means a camera) is a better answer than a typo taken literally.
+  let rig = null;
+  if (c.rig === 'camera' || c.rig === 'display') rig = c.rig;
+  else if (c.rig !== undefined) {
+    console.warn(`[inline3d/splat] .sog camera block has rig "${c.rig}" — ignored`, c.rig);
+  }
+
+  // v2 `focus`. The point is the only required part; the three distances are advisory and are
+  // carried through untouched for a host page that wants them (a depth budget, a HUD).
+  let focus = null;
+  const fp = c.focus?.point;
+  if (Array.isArray(fp) && fp.length >= 3 && fp.every((v) => num(v) !== null)) {
+    focus = {
+      point: [fp[0], fp[1], fp[2]],
+      subject_m: num(c.focus.subject_m),
+      near_m: num(c.focus.near_m),
+      far_m: num(c.focus.far_m),
+      source: typeof c.focus.source === 'string' ? c.focus.source : null,
+    };
+  } else if (c.focus !== undefined) {
+    console.warn('[inline3d/splat] .sog camera block has an unusable focus — ignored', c.focus);
+  }
+
+  // v2 `dxr`. These are the camera rig's ABSOLUTE scalars, and they stay absolute: normalising
+  // them against the convergence distance would make the scene's depth breathe every time the
+  // viewer re-focused.
+  const ipdFactor = num(c.dxr?.ipd_factor);
+  const parallaxFactor = num(c.dxr?.parallax_factor);
+
   return {
     convention: 'opencv',
+    rig,
+    focus,
+    dxr: {
+      ipdFactor: ipdFactor !== null && ipdFactor >= 0 ? ipdFactor : null,
+      parallaxFactor: parallaxFactor !== null && parallaxFactor >= 0 ? parallaxFactor : null,
+    },
     rest: {
       position: [pos[0] ?? 0, pos[1] ?? 0, pos[2] ?? 0],
       rotation: [rot[0] ?? 0, rot[1] ?? 0, rot[2] ?? 0, rot[3] ?? 1],
     },
-    intrinsics: { fx, fy, cx, cy, width, height },
+    intrinsics,
     stereo: baseline > 0 ? { baseline_m: baseline } : null,
     /**
      * Derived, because every consumer needs them and each is one line to get subtly wrong.
+     *
+     * Null when the block carried no usable intrinsics (legal in v2) — the caller estimates a
+     * lens from the cloud instead.
      *
      * `verticalFov` is the FULL vertical angle the capture subtends, in RADIANS — the unit an
      * XRViewRigInit wants (three's `camera.fov` is the same angle in degrees).
@@ -210,8 +273,13 @@ export function sogCameraFromMeta(meta) {
      * "deconverging" DOES to a pair, so a non-zero x is the capture's zero-disparity plane
      * expressed as a lens shift rather than as a distance.
      */
-    verticalFov: 2 * Math.atan(height / (2 * fy)),
-    principalOffset: { x: (cx - width / 2) / width, y: -(cy - height / 2) / height },
+    verticalFov: intrinsics ? 2 * Math.atan(intrinsics.height / (2 * intrinsics.fy)) : null,
+    principalOffset: intrinsics
+      ? {
+          x: (intrinsics.cx - intrinsics.width / 2) / intrinsics.width,
+          y: -(intrinsics.cy - intrinsics.height / 2) / intrinsics.height,
+        }
+      : null,
   };
 }
 
