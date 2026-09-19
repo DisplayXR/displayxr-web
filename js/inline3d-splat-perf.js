@@ -44,32 +44,49 @@
 const ALPHA_FLOOR = 1 / 255;
 
 /**
- * Presets. `balanced` is native parity — the quad shrink plus the 1/255 opacity cull, and
- * nothing else. `aggressive` adds the two knobs that DO drop picture, for a mobile tier.
+ * Presets — chosen from measurements on this exact asset class, not from first principles.
  *
- * Nothing here is applied unless a caller asks for it: `addSplat` with no `perf` leaves every
- * Spark default exactly where Spark put it.
+ * What the measurement said (1.18M-gaussian SHARP capture, M1 Pro, Chrome/ANGLE-Metal, GPU timer
+ * queries, configs interleaved PER FRAME so clock drift cannot bias one against another; full
+ * table in docs/authoring-inline-3d.md):
+ *
+ *   - **Splat COUNT is not the cost.** 50 % and 25 % decimations of the same scene measured
+ *     within noise of the full one (+5 %, +1 % at 1920×1080). Decimation drops the small
+ *     gaussians; the few enormous ones that cover the frame survive it, and they are the bill.
+ *     A decimated asset is a download and memory win, not a render-cost win.
+ *   - **Quad extent is the cost.** `maxStdDev` √8→√6 is −5…−20 % and √8→√4 is −22 %.
+ *   - **The bit-exact `alphaRadius` buys ~nothing HERE**, because it has nothing to shrink: 86 %
+ *     of this asset's gaussians are near-opaque (mean peak alpha 0.86; Spark doubles the stored
+ *     alpha on top), and an opaque splat's own 1/255 radius is 3.53σ, wider than the √8 ≈ 2.83σ
+ *     it is already drawn at. It stays available and stays exact — a scene of large, low-alpha
+ *     haze is exactly where it pays, and that is the scene the native renderer was tuned on.
+ *
+ * So the presets are honest about which axis works, and nothing is applied unless a caller asks:
+ * `addSplat` with no `perf` leaves every Spark default exactly where Spark put it.
  */
 export const SPLAT_PERF_PRESETS = {
-  balanced: {
+  /**
+   * The bit-exact one. No measurable win on a mostly-opaque capture; real on a scene whose cost is
+   * large low-alpha splats. Costs a little vertex ALU, so on a scene with nothing to shrink it can
+   * read as a wash or a shade slower.
+   */
+  exact: {
     alphaRadius: true,
     minAlpha: ALPHA_FLOOR,
   },
-  aggressive: {
-    alphaRadius: true,
+  /** −5…−20 % measured. Truncates every splat's tail at 2.45σ instead of 2.83σ. */
+  balanced: {
     minAlpha: ALPHA_FLOOR,
-    // The per-splat version of shrinking every quad: cut each tail where IT reaches 4/255
-    // instead of 1/255. Strictly better than turning `maxStdDev` down by the same amount,
-    // because it takes the radius from the splats whose tails are invisible and leaves the
-    // opaque ones alone — and on a capture of mostly-opaque gaussians (which is what a lifted
-    // photograph is) it is the only one of the two that is not a flat truncation.
-    alphaFloor: 4 / 255,
-    // Sub-pixel splats: both eigenaxes under a pixel. They are the grain of a capture, so this
-    // is visible on a still — it is here for a phone, not for a hero.
-    minPixelRadius: 1,
-    // 2.45σ instead of 2.83σ: −25 % fragments on every splat, including the opaque ones whose
-    // tails this genuinely truncates. Spark's own docs sanction √4…√9.
     maxStdDev: Math.sqrt(6),
+  },
+  /** −22 % measured. 2σ, plus the sub-pixel cull. For a phone, not for a hero. */
+  aggressive: {
+    minAlpha: ALPHA_FLOOR,
+    maxStdDev: 2,
+    // Both eigenaxes under a pixel. On the reference capture at 1280×720 and 1920×1080 this
+    // changed ZERO channel bytes — a quad that small usually covers no sample point at all — but
+    // it is framing-dependent by nature, so it is here and not in `balanced`.
+    minPixelRadius: 1,
   },
 };
 

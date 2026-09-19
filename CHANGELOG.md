@@ -5,6 +5,64 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`) only, and additively: `addSplat` with no new options
+renders exactly as it did in 1.6.1 — every Spark default stays where Spark put it and the display
+rig with its auto-frame is still what an asset without a `camera` block gets.
+
+### Added
+
+- **`addSplat({ perf })` — cut a splat's overdraw** (preview tier). A splat scene's cost is the
+  per-fragment composite, and splat COUNT is the weakest axis on it: decimating the reference
+  1.18M-gaussian capture to 25 % breaks it visibly while removing less cost than these settings,
+  which remove none of the picture. Two presets (`'balanced'`, `'aggressive'`) or an object of your
+  own over Spark's `minAlpha` / `maxStdDev` / `minPixelRadius` / `maxPixelRadius` / `falloff` and
+  its LOD budget, plus two of this SDK's own:
+  - **`alphaRadius`** shrinks each splat's quad to the radius where its own alpha reaches
+    `minAlpha`. Spark's fragment shader already discards everything past that radius, so this
+    removes work and not pixels — **bit-exact**, measured: 457 of 3,686,400 channel bytes differ
+    at 1280×720, every one of them by exactly 1. Spark 2.1.0 has no option for it (`maxStdDev` is
+    one global uniform), so the SDK patches Spark's splat vertex shader through its supported
+    `vertexShader` surface, rewriting Spark's OWN source off the live material rather than shipping
+    a copy — a Spark upgrade brings its shader fixes along, and if the lines stop matching the
+    patch declines with one warning and everything still renders.
+  - **`alphaFloor`** moves that cut up: each tail is dropped where IT reaches the floor rather than
+    where an 8-bit framebuffer stops representing it — the per-splat version of turning
+    `maxStdDev` down.
+
+  Two results from measuring it that are worth more than the options themselves, because both are
+  the opposite of the obvious move (M1 Pro, Chrome/ANGLE-Metal, GPU timer queries, configs
+  interleaved frame by frame):
+  - **Decimating the asset buys nothing.** 50 % and 25 % decimations measured within noise of the
+    full 1.18M-gaussian scene. Decimation drops the small gaussians and the few huge ones that
+    cover the frame survive it. A decimated `.sog` is a download win, not a render-cost win.
+  - **The bit-exact shrink buys little on a lifted photograph**, because 86 % of its gaussians are
+    near-opaque and an opaque splat's own 1/255 radius is already wider than the σ Spark draws it
+    at. It is exact and it stays — the scene it was built for is large low-alpha haze — but the
+    preset that pays on the web (`'balanced'`, −5…−20 %) tightens the quad extent instead.
+
+  `handle.perf` reports what was applied, and `applySplatPerf(spark, perf)` is exported for pages
+  that build their own `SparkRenderer` — the knobs are live, so a quality menu can call it at any
+  time. Measured numbers, and which knob is worth which pixels, are in
+  [docs/authoring-inline-3d.md](docs/authoring-inline-3d.md#gaussian-splats-performance-and-the-camera-block).
+
+- **A `.sog`'s `camera` block now picks the view rig** (preview tier). A splat viewer needs BOTH
+  rigs and the same call site loads both kinds of asset — a product hero wants the display rig and
+  its auto-frame, while a photograph lifted into 3D wants the camera it was taken with. Nothing in
+  the page can tell them apart; the file can. `addSplat` reads the `camera` block out of the `.sog`
+  (a PKZip — ~40 bytes of central directory, never the webp planes, and only on the BYTES path)
+  and with the default `rig: 'auto'` switches to a camera rig that conserves the recording camera:
+  the subject is not reframed, the turntable is off, the mono camera is posed and lensed as the
+  capture (principal point included, carried through the same `flipY` rotation the mesh gets), and
+  the 3D rig is **declared** with `cameraRigFromCamera` so the off-axis projection stays in the
+  runtime. `rig: 'display' | 'camera'` forces it; `opts.convergence` overrides the default
+  (the distance to the measured subject centre).
+
+  New on the handle: **`handle.camera`** (the block, or null), **`handle.rig`**, `handle.viewRig`.
+  New exports from `./splat`: `readSogCamera(bytes)`, `readSogMeta(bytes)`, `applySplatPerf`,
+  `SPLAT_PERF_PRESETS`.
+
 ## 1.6.1 — 2026-09-09
 
 Touches the **core tier** (`.`) with a behaviour fix only — no API changes — and the **preview tier**
