@@ -24,7 +24,7 @@ import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
-import { resolveRig, toRestSpace } from './inline3d-splat-rig.js';
+import { resolveRig, toRestSpace, planeDistance } from './inline3d-splat-rig.js';
 
 export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
 export { readSogCamera, readSogMeta } from './inline3d-sog.js';
@@ -248,6 +248,11 @@ export function addSplat(wall, canvas, src, opts = {}) {
       const model = point == null ? out.rig.focusDefault : toArray3(point);
       out.rig.focus = model;
       out.rig.focusSource = point == null ? out.rig.focusDefaultSource : 'set';
+      // Keep the two in step on BOTH rigs. A camera rig re-derives this from the eased focus
+      // every frame (pushViewRig), but a display rig has no rig to push — and a `convergence`
+      // left describing a focus that has since moved is exactly the kind of quietly stale
+      // readback this handle exists to avoid.
+      out.rig.convergence = planeDistance(out.rig.rest, model);
       viewer.setFocus(toContentSpace(out.mesh, model, THREE), o);
       return out;
     },
@@ -424,6 +429,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
       out.mesh.updateWorldMatrix(true, false);
       out.rig.focus = toArray3(out.mesh.worldToLocal(world.clone()));
       out.rig.focusSource = 'picked';
+      out.rig.convergence = planeDistance(out.rig.rest, out.rig.focus);
       viewer.content.updateWorldMatrix(true, false);
       viewer.setFocus(toArray3(viewer.content.worldToLocal(world.clone())));
     };
