@@ -36,16 +36,79 @@ export interface SplatPerfOptions {
   lodRenderScale?: number;
 }
 
-/** The `camera` block of a `.sog`'s `meta.json`, plus the fields this SDK derives from it. */
+/** Camera intrinsics for ONE eye, in pixels, OpenCV convention. */
+export interface SogIntrinsics {
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The `camera` block of a `.sog`'s `meta.json` (v2), plus the fields this SDK derives from it.
+ * v2 is a superset of v1: everything but `convention` is optional, `intrinsics` included.
+ */
 export interface SogCamera {
   convention: 'opencv';
+  /** Which rig the asset asks for. Null when the block does not say. */
+  rig: 'camera' | 'display' | null;
   rest: { position: number[]; rotation: number[] };
-  intrinsics: { fx: number; fy: number; cx: number; cy: number; width: number; height: number };
+  /** Null when the block carried none, or none that were usable — estimate one instead. */
+  intrinsics: SogIntrinsics | null;
   stereo: { baseline_m: number } | null;
-  /** Full vertical angle of the capture, in RADIANS. */
-  verticalFov: number;
-  /** Principal point off the frame centre, as a fraction of the frame, y UP (not OpenCV's). */
-  principalOffset: { x: number; y: number };
+  /**
+   * The point that is simultaneously the orbit centre, the pivot plane and the convergence
+   * distance. In the splat's own space. The three distances are advisory.
+   */
+  focus: {
+    point: number[];
+    subject_m: number | null;
+    near_m: number | null;
+    far_m: number | null;
+    source: string | null;
+  } | null;
+  /** The camera rig's ABSOLUTE scalars. Null when unstated. */
+  dxr: { ipdFactor: number | null; parallaxFactor: number | null };
+  /** Full vertical angle of the capture in RADIANS; null without intrinsics. */
+  verticalFov: number | null;
+  /** Principal point off the frame centre, fraction of the frame, y UP; null without intrinsics. */
+  principalOffset: { x: number; y: number } | null;
+}
+
+/**
+ * What the waterfall resolved, with the step that produced each value beside it — which is the
+ * point of it. `intrinsicsSource: 'fallback-28mm'` on an asset that looks zoomed out says more
+ * than any amount of staring at the picture.
+ */
+export interface ResolvedRig {
+  type: 'camera' | 'display';
+  typeSource: 'caller' | 'block' | 'block-present' | 'default';
+  rest: { position: number[]; rotation: number[] };
+  intrinsics: SogIntrinsics;
+  intrinsicsSource: 'block' | 'caller' | 'estimated' | 'fallback-28mm';
+  /** 35 mm-equivalent focal of whatever lens was resolved. */
+  focalEqMm: number;
+  /** The live focus, in the splat's own space. */
+  focus: number[];
+  focusSource:
+    | 'caller'
+    | 'caller-convergence'
+    | 'block'
+    | 'median-disparity'
+    | 'default'
+    | 'picked'
+    | 'set';
+  /** What Space returns to. */
+  focusDefault: number[];
+  focusDefaultSource: string;
+  /** The block's advisory distances, when it carried any. */
+  focusDistances: { subject_m: number | null; near_m: number | null; far_m: number | null } | null;
+  /** Focus distance along the rest camera's view axis — the zero-disparity PLANE. */
+  convergence: number;
+  ipdFactor: number;
+  parallaxFactor: number;
 }
 
 export interface SplatOptions {
@@ -98,6 +161,21 @@ export interface SplatOptions {
   /** Camera rig only: the distance in world metres that sits ON the glass. */
   convergence?: number;
   /**
+   * The point to converge on and orbit about, in the splat's own space — the highest step of the
+   * focus waterfall. Wins over `convergence`, which is the straight-ahead shorthand for it.
+   */
+  focus?: number[];
+  /** Override the lens, when the asset carries none and the estimate is wrong. */
+  intrinsics?: SogIntrinsics;
+  /** Camera rig scalars. ABSOLUTE, never normalised against the convergence. */
+  ipdFactor?: number;
+  parallaxFactor?: number;
+  /**
+   * Bind double-click (focus what was clicked) and Space (back to the resolved focus). Default
+   * true; pass false when the page owns those gestures itself.
+   */
+  focusInput?: boolean;
+  /**
    * Disambiguates .splat from .ksplat when passing BYTES — content-sniffing cannot separate
    * those two. Unnecessary for .sog/.ply/.spz, which are identifiable by magic number.
    */
@@ -125,8 +203,8 @@ export interface SplatHandle {
    * URL source, a non-`.sog`, or an object splat (which is most of them).
    */
   camera: SogCamera | null;
-  /** Which rig this window is on. Null until `ready` resolves. */
-  rig: 'display' | 'camera' | null;
+  /** What the waterfall resolved, sources included. Null until `ready` resolves. */
+  rig: ResolvedRig | null;
   /** The view-rig descriptor sent to the runtime, on the camera path. */
   viewRig?: object;
   /** What `perf` actually applied, or null. */
@@ -136,6 +214,16 @@ export interface SplatHandle {
 
   setPose(pose?: OrbitPose): void;
   resetPose(): void;
+  /**
+   * Point the window at something, in the SPLAT's own space (the space the `camera` block's
+   * `focus.point` is in). Null returns to whatever the waterfall resolved. Eased unless `snap`.
+   */
+  setFocus(
+    point: number[] | { x: number; y: number; z: number } | null,
+    opts?: { snap?: boolean },
+  ): SplatHandle;
+  /** What is under a point on the canvas, in the splat's own space — the double-click's raycast. */
+  pick(clientX: number, clientY: number): number[] | null;
 
   /** Close this window and release its GPU resources. */
   remove(): void;

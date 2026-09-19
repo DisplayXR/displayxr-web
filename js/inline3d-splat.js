@@ -24,9 +24,11 @@ import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
+import { resolveRig, toRestSpace } from './inline3d-splat-rig.js';
 
 export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
 export { readSogCamera, readSogMeta } from './inline3d-sog.js';
+export { resolveRig } from './inline3d-splat-rig.js';
 
 /**
  * Sort at most this often, in ms. THE stereo optimisation in this module.
@@ -107,15 +109,23 @@ function sniffFileType(bytes) {
  *        cull) and buys little on a mostly-opaque capture; `'balanced'` (also `true`) and
  *        `'aggressive'` tighten the quad extent, which is the axis that measured. Every knob,
  *        what it costs in pixels, and the measurements: ./inline3d-splat-perf.js.
- * @param {'auto'|'display'|'camera'} [opts.rig='auto']  which view rig. `auto` reads it off the
- *        asset: a `.sog` whose `meta.json` carries a `camera` block was lifted from a photograph
- *        and gets a CAMERA rig that conserves the recording camera (its FOV, its position, its
- *        principal point, in a metric scene); anything else is an object and gets the display
- *        rig with the auto-frame, which is what every existing page already has. Only read from
- *        BYTES. On the camera path the subject is NOT reframed and the idle turntable is off
- *        unless you asked for one.
- * @param {number} [opts.convergence]  camera rig only: the distance, in world metres, that sits
- *        ON the glass. Defaults to the MEDIAN distance from the capture camera to the scene.
+ * @param {'auto'|'display'|'camera'} [opts.rig='auto']  which view rig. `auto` asks the ASSET:
+ *        the `camera` block's own `rig`, or — for a block that does not say — a camera rig,
+ *        since a block at all means a camera was recorded. No block is a display rig with the
+ *        auto-frame, which is what every existing page already has. Only read from BYTES. On the
+ *        camera path the subject is NOT reframed and the idle turntable is off unless you asked
+ *        for one. Full waterfall: ./inline3d-splat-rig.js.
+ * @param {number[]} [opts.focus]  the point to converge on and orbit about, in the splat's own
+ *        space. Top of the focus waterfall; below it the block's `focus.point`, then the median
+ *        disparity of the cloud, then 2 m.
+ * @param {number} [opts.convergence]  the straight-ahead shorthand for `focus`: a distance in
+ *        world metres along the capture's view axis.
+ * @param {object} [opts.intrinsics]  override the lens ({fx,fy,cx,cy,width,height}, one eye,
+ *        OpenCV). Only consulted when the asset carries none.
+ * @param {number} [opts.ipdFactor=1]  camera rig eye separation, ABSOLUTE.
+ * @param {number} [opts.parallaxFactor=1]  camera rig head-tracking response, ABSOLUTE.
+ * @param {boolean} [opts.focusInput=true]  bind double-click (focus what was clicked) and Space
+ *        (back to the resolved focus).
  * @param {Element} [opts.observe=canvas]  element whose visibility gates the lazy lifecycle.
  * @returns {object} a TileHandle (remove/exclude/unexclude) plus `viewer`, `mesh`, `setPose`,
  *          `resetPose`, `frame` (the bounds used, null until loaded) and `ready` (a promise).
@@ -158,6 +168,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     sortIntervalMs = DEFAULT_SORT_INTERVAL_MS,
     perf = null,
     rig = 'auto',
+    focusInput = true,
     convergence,
     fileName,
     fileType,
@@ -218,6 +229,8 @@ export function addSplat(wall, canvas, src, opts = {}) {
     setPose: (p) => viewer.setPose(p),
     resetPose: () => viewer.resetPose(),
     remove() {
+      unbindFocusInput?.();
+      viewer.onFocusChange = null;
       handle?.remove();
       viewer.dispose();
       out.mesh?.dispose?.();
@@ -279,6 +292,129 @@ export function addSplat(wall, canvas, src, opts = {}) {
     viewer.startMono();
   }
 
+
+  // ── focus: declaring it, and the two gestures that change it ──────────────────────────
+  //
+  // The rig descriptor is re-DECLARED whenever the focus moves, which is every frame while it
+  // eases. That is the cheap half of the contract — `setViewRig` is a per-locate value, there is
+  // nothing to tween and nothing to tear down — and it is the only thing the runtime needs to
+  // re-converge. Nothing here computes an off-axis projection.
+  let lastConvergence = Number.NaN;
+  const rigScratch = { fwd: null, tmp: null };
+  function pushViewRig(force) {
+    if (!out.rig || out.rig.type !== 'camera') return;
+    const cam = viewer.monoCamera;
+    if (!rigScratch.fwd) {
+      rigScratch.fwd = new THREE.Vector3();
+      rigScratch.tmp = new THREE.Vector3();
+    }
+    const f = viewer.getFocus();
+    // three looks down -z; the convergence is the focus's distance along that axis — the PLANE,
+    // not the radius, because that is what a zero-disparity plane is.
+    rigScratch.fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
+    const d = rigScratch.tmp.set(f.x, f.y, f.z).sub(cam.position).dot(rigScratch.fwd);
+    if (!force && Math.abs(d - lastConvergence) < 1e-3) return;
+    lastConvergence = d;
+    out.rig.convergence = d;
+    out.viewRig = cameraRigFromCamera(THREE, cam, {
+      convergence: d > 0 ? d : 0,
+      ipdFactor: out.rig.ipdFactor,
+      parallaxFactor: out.rig.parallaxFactor,
+      out: out.viewRig || {},
+    });
+    handle?.setViewRig(out.viewRig);
+  }
+  viewer.onFocusChange = () => pushViewRig(false);
+
+  /**
+   * What is under a point on the canvas.
+   *
+   * Spark's `SplatMesh.raycast` is the real answer and is used when it produces one — it is the
+   * ordinary three.js hook, so it is `raycastable` (default true) and `minRaycastOpacity`
+   * (default 0.2) that decide what counts as solid. When it returns nothing (a thin or very
+   * transparent region, an older Spark, a mesh with raycasting turned off) this falls back to
+   * the NEAREST GAUSSIAN TO THE RAY by angular distance, preferring the closest one inside a
+   * small cone. That is an approximation and is documented as one: it picks a splat CENTRE
+   * rather than a surface, so on a thick soft surface it lands a little behind where the cursor
+   * appears to be. For a focus point — a plane to converge on and turn about — that is well
+   * within the tolerance; do not build a measuring tool on it.
+   */
+  const PICK_CONE_RAD = 0.02;
+  let raycaster = null;
+  function pickPoint(clientX, clientY) {
+    const mesh = out.mesh;
+    if (!mesh) return null;
+    const box = canvas.getBoundingClientRect();
+    if (!(box.width > 0) || !(box.height > 0)) return null;
+    // NDC from the CSS box. On a woven canvas the backing store is double-width and each eye
+    // owns half of it, but what the VIEWER sees is one image filling the box, so the box is the
+    // right frame to pick in; the eye camera supplies the parallax-correct ray.
+    const ndc = {
+      x: ((clientX - box.left) / box.width) * 2 - 1,
+      y: -(((clientY - box.top) / box.height) * 2 - 1),
+    };
+    const cam = (viewer.is3D && viewer._eye?.camera) || viewer.monoCamera;
+    if (!raycaster) raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(ndc, cam);
+    if (mesh.raycastable !== false && typeof mesh.raycast === 'function') {
+      const hits = [];
+      try {
+        mesh.raycast(raycaster, hits);
+      } catch (err) {
+        console.warn('[inline3d/splat] Spark raycast threw; falling back to nearest gaussian', err);
+      }
+      if (hits.length) {
+        hits.sort((a, b) => a.distance - b.distance);
+        if (hits[0].point) return hits[0].point.clone();
+      }
+    }
+    return nearestGaussianToRay(mesh, raycaster.ray, THREE);
+  }
+
+  // ── input ─────────────────────────────────────────────────────────────────────────────
+  let unbindFocusInput = null;
+  function bindFocusInput() {
+    if (focusInput === false || unbindFocusInput || typeof canvas.addEventListener !== 'function') {
+      return;
+    }
+    let hovering = false;
+    const onEnter = () => {
+      hovering = true;
+    };
+    const onLeave = () => {
+      hovering = false;
+    };
+    const onDblClick = (e) => {
+      const world = pickPoint(e.clientX, e.clientY);
+      if (!world) return;
+      e.preventDefault();
+      out.mesh.updateWorldMatrix(true, false);
+      out.rig.focus = toArray3(out.mesh.worldToLocal(world.clone()));
+      out.rig.focusSource = 'picked';
+      viewer.content.updateWorldMatrix(true, false);
+      viewer.setFocus(toArray3(viewer.content.worldToLocal(world.clone())));
+    };
+    const onKeyDown = (e) => {
+      // Scoped to this window on purpose: a page with four splat tiles must not have one key
+      // reset all four. Hover OR focus, so it works with a pointer and with a keyboard.
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      if (!hovering && document.activeElement !== canvas) return;
+      e.preventDefault();
+      out.setFocus(null);
+    };
+    canvas.addEventListener('pointerenter', onEnter);
+    canvas.addEventListener('pointerleave', onLeave);
+    canvas.addEventListener('dblclick', onDblClick);
+    addEventListener('keydown', onKeyDown);
+    unbindFocusInput = () => {
+      canvas.removeEventListener('pointerenter', onEnter);
+      canvas.removeEventListener('pointerleave', onLeave);
+      canvas.removeEventListener('dblclick', onDblClick);
+      removeEventListener('keydown', onKeyDown);
+      unbindFocusInput = null;
+    };
+  }
+
   // Await the MESH first, then its load. Reading `mesh.initialized` here directly would
   // dereference null: constructing from bytes is async (the Blob has to be read), so `mesh` does
   // not exist yet on this line — only inside meshReady.
@@ -305,37 +441,64 @@ export function addSplat(wall, canvas, src, opts = {}) {
       // answered by the file instead of by the page. It is the one case where a splat viewer
       // cannot decide for itself: the same call site loads a product turntable and a lifted
       // photograph, and they want opposite rigs.
-      const wantCamera = rig === 'camera' || (rig === 'auto' && !!out.camera);
-      if (wantCamera && !out.camera) {
-        console.warn(
-          "[inline3d/splat] rig:'camera' but this source carries no camera block (a URL source " +
-            'is never read for one — pass BYTES), so the display rig is used.',
-          src,
-        );
-      }
-      if (wantCamera && out.camera) {
-        out.rig = 'camera';
-        out.frame = bounds;
+      // THE WATERFALL. Three questions — which rig, what lens, what is it looking at — each
+      // answered by the best source that has an answer, with the step that answered it recorded
+      // next to the value (`handle.rig.focusSource` and friends). js/inline3d-splat-rig.js holds
+      // the arithmetic and the reasoning; this is the plumbing.
+      //
+      // One pass over the cloud feeds two of the three: the angular extent about the rest camera
+      // is the lens, and the median of 1/z is the focus. Skipped entirely when the block already
+      // answers both, so an asset that carries a full camera pays nothing for it.
+      const cloud =
+        out.camera?.intrinsics && out.camera?.focus
+          ? null
+          : sampleRestSpace(out.mesh, out.camera?.rest);
+      const box = canvas.getBoundingClientRect();
+      const resolved = resolveRig({
+        camera: out.camera,
+        opts,
+        cloud,
+        canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
+      });
+      // What Space goes back to. Kept beside the live value so a pick can be undone without
+      // re-running the waterfall (which would walk the cloud again).
+      resolved.focusDefault = resolved.focus.slice();
+      resolved.focusDefaultSource = resolved.focusSource;
+      out.rig = resolved;
+      out.frame = bounds;
+
+      if (resolved.type === 'camera') {
         // A turntable on a photograph is nonsense, so the default spin stops here — but only the
         // DEFAULT: a page that asked for one still gets it.
         if (!('idleSpin' in opts)) viewer.idleSpin = 0;
-        applyCaptureCamera(viewer, out.camera, flipY);
-        const conv = Number.isFinite(convergence) ? convergence : convergenceFor(viewer, out.mesh, THREE);
-        // DECLARE the rig; the off-axis projection stays in the runtime, exactly as it does for
-        // every other window in this SDK. The mono camera is already posed and FOV'd as the
-        // capture, so it is the camera to describe.
-        out.viewRig = cameraRigFromCamera(THREE, viewer.monoCamera, { convergence: conv });
-        handle?.setViewRig(out.viewRig);
-      } else if (bounds) {
-        out.rig = 'display';
-        out.frame = bounds;
-        viewer.fitTo(bounds.center, bounds.extent);
+        applyCaptureCamera(viewer, resolved, flipY);
+        // The capture does not move; only what the rotation turns about does. Snapped, because
+        // this is the asset arriving, not a gesture.
+        viewer.setFocus(toContentSpace(out.mesh, resolved.focus, THREE), {
+          snap: true,
+          recentre: false,
+        });
+        pushViewRig(true);
       } else {
-        out.rig = 'display';
-        // Unframed means drawn at raw MODEL scale, which for a typical capture is several times
-        // the tile. Say so: silence here is what made the same condition read as a fit bug.
-        console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
+        if (bounds) viewer.fitTo(bounds.center, bounds.extent);
+        else {
+          // Unframed means drawn at raw MODEL scale, which for a typical capture is several
+          // times the tile. Say so: silence here is what made the same condition read as a fit
+          // bug.
+          console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
+        }
+        // A display rig takes the focus as its ORBIT CENTRE, which is the one thing the two rigs
+        // share. Only when something actually said where to look: a bare `median-disparity`
+        // guess has no business overriding an auto-frame that measured the subject.
+        if (resolved.focusSource === 'caller' || resolved.focusSource === 'block') {
+          viewer.setFocus(toContentSpace(out.mesh, resolved.focus, THREE), {
+            snap: true,
+            recentre: true,
+          });
+        }
       }
+      bindFocusInput();
+      return out;
       return out;
     })
     .catch((err) => {
@@ -392,25 +555,26 @@ export function addSplat(wall, canvas, src, opts = {}) {
  * resize, and three's symmetric version would silently throw the off-axis window away on the
  * first layout nudge.
  */
-function applyCaptureCamera(viewer, cam, flipY) {
+function applyCaptureCamera(viewer, rig, flipY, THREE_) {
+  const three = THREE_ || THREE;
   const camera = viewer.monoCamera;
-  const { fx, fy, cx, cy, width, height } = cam.intrinsics;
+  const { fx, fy, cx, cy, width, height } = rig.intrinsics;
 
-  const q = new THREE.Quaternion(
-    cam.rest.rotation[0],
-    cam.rest.rotation[1],
-    cam.rest.rotation[2],
-    cam.rest.rotation[3],
+  const q = new three.Quaternion(
+    rig.rest.rotation[0],
+    rig.rest.rotation[1],
+    rig.rest.rotation[2],
+    rig.rest.rotation[3],
   );
-  const p = new THREE.Vector3(cam.rest.position[0], cam.rest.position[1], cam.rest.position[2]);
+  const p = new three.Vector3(rig.rest.position[0], rig.rest.position[1], rig.rest.position[2]);
   if (flipY) {
-    const flip = new THREE.Quaternion(1, 0, 0, 0);
+    const flip = new three.Quaternion(1, 0, 0, 0);
     p.applyQuaternion(flip);
     q.premultiply(flip);
   }
   camera.position.copy(p);
   camera.quaternion.copy(q);
-  camera.fov = THREE.MathUtils.radToDeg(cam.verticalFov);
+  camera.fov = (2 * Math.atan(height / (2 * fy)) * 180) / Math.PI;
   // FAR, and why it is not the viewer's default. A deconverged capture parks its sky at the
   // lifter's depth cap and the refinement scatters some gaussians beyond it (239 m measured on a
   // street scene); anything past the far plane is CLIPPED in Spark's vertex shader and pops out
@@ -434,49 +598,120 @@ function applyCaptureCamera(viewer, cam, flipY) {
   camera.updateProjectionMatrix();
 }
 
-/** Cap on how many splats the convergence pass inspects. */
-const CONVERGENCE_SAMPLE_CAP = 40000;
 
-/** Sane bounds on a derived convergence, in metres. Mirrors the gallery's pivot clamp. */
-const CONVERGENCE_MIN_M = 0.2;
-const CONVERGENCE_MAX_M = 20;
+/** Cap on how many splats the rig pass inspects. Percentiles of a uniform subsample converge. */
+const RIG_SAMPLE_CAP = 40000;
+
+/** Below this, a splat is haze — it is not where the camera was pointed and not what it saw. */
+const RIG_MIN_OPACITY = 0.05;
+
+/** Nearer than this, a splat is behind or on the lens and its x/z, y/z, 1/z are meaningless. */
+const RIG_MIN_Z = 0.05;
 
 /**
- * Default convergence for a camera rig: the MEDIAN distance from the capture camera to the
- * scene, clamped.
+ * ONE walk over the cloud, in the REST CAMERA's frame, producing everything the waterfall needs
+ * that is not in the file: the angular extent that is the lens (x/z, y/z) and the disparities
+ * whose median is the focus (1/z).
  *
- * Convergence is the distance that lands ON the glass, and it is the one number a camera rig
- * cannot be left to guess — 0 means infinity, which puts the whole scene in front of the display
- * and is comfortable for almost nothing. The `camera` block does not carry one, deliberately: it
- * describes a lens, not a presentation.
+ * Model space, deliberately — `forEachSplat` reports centres before the mesh's own transform, so
+ * this is the file's own OpenCV frame, which is the frame `rest` and `intrinsics` are expressed
+ * in. Doing it after the Y-flip would mean undoing the flip to compare with the block.
  *
- * NOT the centre of the measured bounds, and that is worth stating because it was the first
- * attempt. An open scene's percentile bounds are 120 m wide — sky, ground and distance are all in
- * them — so their centre lands ~40 m out and every bit of actual subject ends up in front of the
- * glass. The median splat distance is the robust statistic here: half the scene in front, half
- * behind, which is what a window looks like. It is the same quantity the gallery derives from its
- * stored median disparity.
+ * @returns {{tx:Float64Array,ty:Float64Array,invz:Float64Array,n:number}|null}
  */
-function convergenceFor(viewer, mesh, THREE) {
+function sampleRestSpace(mesh, rest) {
   const total = mesh?.numSplats || 0;
-  if (!total) return 0;
-  const c = viewer.monoCamera.position;
-  const stride = Math.max(1, Math.ceil(total / CONVERGENCE_SAMPLE_CAP));
-  mesh.updateMatrix();
-  const m = mesh.matrix;
-  const p = new THREE.Vector3();
-  const d = [];
+  if (!total || typeof mesh.forEachSplat !== 'function') return null;
+  const r = rest || { position: [0, 0, 0], rotation: [0, 0, 0, 1] };
+  const stride = Math.max(1, Math.ceil(total / RIG_SAMPLE_CAP));
+  const cap = Math.ceil(total / stride) + 1;
+  const tx = new Float64Array(cap);
+  const ty = new Float64Array(cap);
+  const invz = new Float64Array(cap);
+  let n = 0;
+  const p = [0, 0, 0];
+  mesh.forEachSplat((index, center, scales, quaternion, opacity) => {
+    if (index % stride !== 0 || n >= cap) return;
+    if (opacity !== undefined && opacity < RIG_MIN_OPACITY) return;
+    p[0] = center.x;
+    p[1] = center.y;
+    p[2] = center.z;
+    const c = toRestSpace(r, p);
+    if (!(c[2] > RIG_MIN_Z)) return;
+    tx[n] = c[0] / c[2];
+    ty[n] = c[1] / c[2];
+    invz[n] = 1 / c[2];
+    n++;
+  });
+  return n ? { tx, ty, invz, n } : null;
+}
+
+/** [x,y,z] out of anything vector-shaped. */
+function toArray3(v) {
+  return Array.isArray(v) ? [v[0], v[1], v[2]] : [v.x, v.y, v.z];
+}
+
+/** A point in the splat's own (model) space, in the viewer's CONTENT space. */
+function toContentSpace(mesh, model, three) {
+  const v = new three.Vector3(model[0], model[1], model[2]);
+  mesh.updateWorldMatrix(true, false);
+  mesh.localToWorld(v);
+  const content = mesh.parent;
+  if (content) {
+    content.updateWorldMatrix(true, false);
+    content.worldToLocal(v);
+  }
+  return [v.x, v.y, v.z];
+}
+
+/** The inverse: a WORLD point in the splat's own space. */
+function toModelSpace(mesh, world, three) {
+  const v = world.isVector3 ? world.clone() : new three.Vector3(world[0], world[1], world[2]);
+  mesh.updateWorldMatrix(true, false);
+  return toArray3(mesh.worldToLocal(v));
+}
+
+/**
+ * The pick fallback: the gaussian whose CENTRE is closest to the ray.
+ *
+ * Nearest by ANGLE, then nearest along the ray among everything inside a small cone — so a near
+ * surface wins over the sky behind it even when the sky happens to be a hair closer to the exact
+ * ray. An approximation of a hit test, not a hit test: it returns a splat centre, so on a thick
+ * soft surface it lands slightly behind the apparent one. Good enough to converge and orbit
+ * about, which is all a focus is.
+ */
+function nearestGaussianToRay(mesh, ray, three, coneRad = 0.02) {
+  const total = mesh?.numSplats || 0;
+  if (!total || typeof mesh.forEachSplat !== 'function') return null;
+  const stride = Math.max(1, Math.ceil(total / RIG_SAMPLE_CAP));
+  mesh.updateWorldMatrix(true, false);
+  const m = mesh.matrixWorld;
+  const p = new three.Vector3();
+  const rel = new three.Vector3();
+  let bestInCone = null;
+  let bestInConeT = Infinity;
+  let bestAngle = Infinity;
+  let bestAnyPoint = null;
   mesh.forEachSplat((index, center, scales, quaternion, opacity) => {
     if (index % stride !== 0) return;
-    if (opacity !== undefined && opacity < 0.05) return;
+    if (opacity !== undefined && opacity < RIG_MIN_OPACITY) return;
     p.copy(center).applyMatrix4(m);
-    d.push(p.distanceTo(c));
+    rel.copy(p).sub(ray.origin);
+    const t = rel.dot(ray.direction);
+    if (!(t > 0)) return;
+    const perp = Math.sqrt(Math.max(0, rel.lengthSq() - t * t));
+    const angle = perp / t;
+    if (angle <= coneRad) {
+      if (t < bestInConeT) {
+        bestInConeT = t;
+        bestInCone = p.clone();
+      }
+    } else if (!bestInCone && angle < bestAngle) {
+      bestAngle = angle;
+      bestAnyPoint = p.clone();
+    }
   });
-  if (!d.length) return 0;
-  d.sort((a, b) => a - b);
-  const med = d[d.length >> 1];
-  if (!Number.isFinite(med) || med <= 0) return 0;
-  return Math.min(Math.max(med, CONVERGENCE_MIN_M), CONVERGENCE_MAX_M);
+  return bestInCone || bestAnyPoint;
 }
 
 /** Map model-space bounds through a mesh's own transform, matching the native ComputeAutoFrame. */
