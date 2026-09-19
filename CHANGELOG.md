@@ -47,21 +47,61 @@ rig with its auto-frame is still what an asset without a `camera` block gets.
   time. Measured numbers, and which knob is worth which pixels, are in
   [docs/authoring-inline-3d.md](docs/authoring-inline-3d.md#gaussian-splats-performance-and-the-camera-block).
 
-- **A `.sog`'s `camera` block now picks the view rig** (preview tier). A splat viewer needs BOTH
-  rigs and the same call site loads both kinds of asset — a product hero wants the display rig and
-  its auto-frame, while a photograph lifted into 3D wants the camera it was taken with. Nothing in
-  the page can tell them apart; the file can. `addSplat` reads the `camera` block out of the `.sog`
-  (a PKZip — ~40 bytes of central directory, never the webp planes, and only on the BYTES path)
-  and with the default `rig: 'auto'` switches to a camera rig that conserves the recording camera:
-  the subject is not reframed, the turntable is off, the mono camera is posed and lensed as the
-  capture (principal point included, carried through the same `flipY` rotation the mesh gets), and
-  the 3D rig is **declared** with `cameraRigFromCamera` so the off-axis projection stays in the
-  runtime. `rig: 'display' | 'camera'` forces it; `opts.convergence` overrides the default
-  (the distance to the measured subject centre).
+- **A `.sog`'s `camera` block now picks the view rig, and a WATERFALL fills in the rest**
+  (preview tier). A splat viewer needs BOTH rigs and the same call site loads both kinds of asset
+  — a product hero wants the display rig and its auto-frame, while a photograph lifted into 3D
+  wants the camera it was taken with. Nothing in the page can tell them apart; the file can.
+  `addSplat` reads the `camera` block out of the `.sog` (a PKZip — ~40 bytes of central directory,
+  never the webp planes, and only on the BYTES path) and resolves three questions from it:
 
-  New on the handle: **`handle.camera`** (the block, or null), **`handle.rig`**, `handle.viewRig`.
-  New exports from `./splat`: `readSogCamera(bytes)`, `readSogMeta(bytes)`, `applySplatPerf`,
-  `SPLAT_PERF_PRESETS`.
+  | | 1st | 2nd | 3rd | last |
+  |---|---|---|---|---|
+  | **rig** | caller | the block's `rig` | a block at all ⇒ camera | display |
+  | **intrinsics** | the block | caller | **estimated from the cloud** | 28 mm-eq |
+  | **focus** | caller | the block's `focus.point` | **median disparity** | 2 m ahead |
+
+  Each resolved value carries the step that produced it (`handle.rig.focusSource`,
+  `intrinsicsSource`, `typeSource`), because a number from a lower step is not a wrong number, it
+  is a wrong SOURCE, and that is invisible in the picture.
+
+  The block is now a **v2 superset**: `rig`, `focus` (one point that is the orbit centre, the pivot
+  plane AND the convergence) and `dxr` (the camera rig's absolute scalars) join it, `intrinsics`
+  becomes optional, and a v1 block still reads. `rig: "display"` beside a `rest` is meaningful —
+  *a display rig, opened at this viewpoint*.
+
+  **Estimating the lens** works because a capture's gaussians only exist where its camera could see
+  them: P1/P99 of `x/z` and `y/z` about the rest camera ARE the frustum that made it, principal
+  point included. Measured against a capture whose true half-tangents are ±0.857 and ±0.482:
+  0.8635 and 0.4827, +0.75 % and +0.12 %. The implied 35 mm-equivalent focal is gated to
+  [14, 85] mm, outside which the cloud is describing something that is not a camera. It matters
+  because a splat rendered through the wrong focal is drawn at the wrong SIZE and nothing else —
+  no artefact, just a picture that feels zoomed out.
+
+  **Estimating the focus** is the median of 1/z, inverted — not of z. On the reference capture that
+  is 2.17 m against the gallery's own 2.14 m; the centre of the measured bounds, which this
+  replaced, was 39.8 m, because an open scene's percentile bounds are 128 m wide.
+
+  On the camera path the subject is not reframed, the turntable is off, the mono camera is posed
+  and lensed as the capture, and the rig is **declared** with `cameraRigFromCamera` — the off-axis
+  projection stays in the runtime.
+
+- **Pointing the window: double-click, Space and `handle.setFocus(point|null)`** (preview tier).
+  The focus is one point — the orbit centre, the pivot plane and the convergence — and it is now
+  something a viewer can move. Double-click focuses what was clicked (Spark's own
+  `SplatMesh.raycast`, ~57 ms over 1.18M gaussians, with a nearest-gaussian-to-the-ray fallback
+  documented as the approximation it is); Space returns to the resolved value; both ease at 0.18
+  per frame, and while the ease runs a camera rig re-declares its convergence every frame. What
+  moves depends on the rig and only on that: a camera rig moves the rotation centre and leaves the
+  capture where it was placed, a display rig brings the focused point to the middle of the tile.
+  `focusInput: false` turns the gestures off for a page that owns them itself, and
+  `handle.pick(x, y)` exposes the raycast.
+
+  New on the handle: **`handle.camera`** (the raw block), **`handle.rig`** (the resolved waterfall),
+  `handle.viewRig`, `handle.perf`, `handle.setFocus`, `handle.pick`. New exports from `./splat`:
+  `readSogCamera(bytes)`, `readSogMeta(bytes)`, `resolveRig`, `applySplatPerf`,
+  `SPLAT_PERF_PRESETS`. **`SceneViewer` gains `setFocus` / `getFocus` / `onFocusChange` / `onTick`**
+  (`./viewer`), and `fitTo` now goes through the focus, so a refit cannot leave the orbit turning
+  about somewhere the framing has moved away from.
 
 ## 1.6.1 — 2026-09-09
 

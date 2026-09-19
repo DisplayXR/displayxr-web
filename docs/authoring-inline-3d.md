@@ -536,53 +536,115 @@ A splat viewer needs **both** rigs, and the same call site loads both kinds of a
 
 Nothing in the page can tell those apart, but the file can. `.sog` is a PKZip of webp planes plus a
 `meta.json`, and a lifted capture carries one extra top-level key beside `count` (`version` stays
-2; SOG readers ignore keys they do not know):
+2; SOG readers ignore keys they do not know). Everything but `convention` is **optional**:
 
 ```json
 "camera": {
   "convention": "opencv",
+  "rig": "camera",
   "rest":       { "position": [0,0,0], "rotation": [0,0,0,1] },
   "intrinsics": { "fx": 1194.665984, "fy": 1194.665984,
                   "cx": 1024, "cy": 576, "width": 2048, "height": 1152 },
-  "stereo":     { "baseline_m": 0.063 }
+  "stereo":     { "baseline_m": 0.063 },
+  "focus":      { "point": [0,0,1.683], "subject_m": 2.14, "near_m": 0.73, "far_m": 66.2,
+                  "source": "convergence" },
+  "dxr":        { "ipd_factor": 1.0, "parallax_factor": 1.0 }
 }
 ```
 
 - `convention` is **required** to be `opencv` (+x right, +y **down**, +z forward, pixel (0,0) top
-  left) — it is the frame the intrinsics live in, and a reader that assumed it would mis-sign the
+  left) — it is the frame everything else lives in, and a reader that assumed it would mis-sign the
   principal point with no error to show for it. Any other value and the block is ignored.
+- `rig` is `"camera"` or `"display"`. **`"display"` beside a `rest` is meaningful**: it says *a
+  display rig, opened at this viewpoint* — the asset knows where it was shot from and still wants
+  the portal treatment.
 - `rest` is the capture camera's pose **in the splat's own space**, metres, rotation camera→world
   as xyzw. It is the identity for a splat whose origin *is* the left capture camera.
 - `intrinsics` are for **one eye**, in pixels. `cx` off centre is a lens shift: a deconverged
-  stereo pair records its deconvergence as exactly that.
+  stereo pair records its deconvergence as exactly that. **Optional** — see the waterfall.
+- **`focus.point` is THE point**: the orbit centre, the pivot plane and the convergence distance
+  are one thing and are stored once. The three distances beside it are advisory (`handle.rig
+  .focusDistances`), for a depth budget or a HUD.
 - `stereo.baseline_m` is **omitted when unknown**, never defaulted — a guessed baseline is worse
   than no baseline.
+- `dxr` carries the camera rig's two scalars. They are **absolute** and stay absolute: normalising
+  them against the convergence distance would make the scene's depth breathe every time the viewer
+  re-focused.
 
-`addSplat` reads it with `rig: 'auto'` (the default) and switches rigs accordingly. `'display'` and
-`'camera'` force the choice. It is only read when `src` is **BYTES**: a URL source would need a
-second fetch of ten megabytes to learn two hundred of them.
+#### The waterfall
+
+Three questions, each answered by the best source that has an answer — and the step that answered
+it is reported next to the value, because a number from a lower step is not a *wrong* number, it is
+a wrong **source**, and that is invisible in the picture.
+
+| | 1st | 2nd | 3rd | last |
+|---|---|---|---|---|
+| **rig** `rig.typeSource` | `opts.rig` (`caller`) | the block's `rig` (`block`) | a block at all ⇒ camera (`block-present`) | display (`default`) |
+| **intrinsics** `rig.intrinsicsSource` | the block (`block`) | `opts.intrinsics` (`caller`) | **estimated from the cloud** (`estimated`) | 28 mm-eq (`fallback-28mm`) |
+| **focus** `rig.focusSource` | `opts.focus` / `opts.convergence` (`caller`) | the block's `focus.point` (`block`) | **median disparity** (`median-disparity`) | 2 m ahead (`default`) |
+
+The two estimated steps exist because what is under them is wrong in a *silent* way.
+
+**Estimating the lens.** A capture's gaussians only exist where its camera could see them, so the
+cloud's own angular extent about the rest camera **is** the frustum that made it: take `x/z` and
+`y/z` for every splat in front of the camera and read P1/P99 of each. Percentiles rather than
+min/max, because a lifted capture always has a few gaussians past the frame edge and one of them
+would otherwise set the field of view for the whole asset. The limits are kept separately, so the
+principal point falls out for free. Measured on the reference capture (true half-tangents ±0.857
+and ±0.482): **0.8635 and 0.4827**, +0.75 % and +0.12 %. The implied 35 mm-equivalent focal is then
+gated to **[14, 85] mm** — outside that the number is not a lens but a statement about the cloud (a
+scan the viewer is inside; one distant object) and it falls through to the default, which keeps the
+extent's *orientation* even when it refuses its focal.
+
+Why bother: a splat built at focal `f_s` and rendered at `f_v` is drawn scaled by `f_v/f_s` about
+the frame centre and **nothing else changes**. There is no artefact to notice, only a picture that
+feels zoomed out.
+
+**Estimating the focus.** The median of **1/z**, inverted — not the median of `z`. Disparity is what
+a stereo pair measures and where the errors are symmetric; in metres the same distribution is a
+long tail to infinity that drags any average outwards. On the reference capture this gives 2.17 m,
+against 2.14 m from the gallery's own stored median disparity. The first version of this used the
+centre of the measured bounds and put the zero-disparity plane at **39.8 m**, because an open
+scene's percentile bounds are 128 m wide — sky, ground and distance are all inside them.
+
+#### Pointing the window: double-click, Space, `setFocus`
 
 ```js
 const handle = addSplat(wall, canvas, await (await fetch(url)).arrayBuffer(), { perf: 'balanced' });
 await handle.ready;
-handle.camera;  // the block, or null
-handle.rig;     // 'camera' | 'display'
+handle.rig.type;          // 'camera' | 'display'
+handle.rig.focusSource;   // where the focus came from
+handle.camera;            // the raw block, or null
+
+handle.setFocus([0, 0, 2.4]);   // in the SPLAT's own space, eased
+handle.setFocus(null);          // back to whatever the waterfall resolved
+handle.pick(clientX, clientY);  // what is under a point on the canvas
 ```
 
-On the camera path the SDK: leaves the subject **unframed** (a capture is already at metric scale,
-in its own place), turns the idle turntable off unless you asked for one, poses the mono camera as
-the recording camera — its FOV, its principal point, its rest pose, carried through the same
-`flipY` rotation the mesh gets — and **declares** a camera rig to the runtime with
-`cameraRigFromCamera`. The off-axis projection stays in the runtime, as everywhere else in this
-SDK; the mono fallback is the single place the SDK builds a projection itself, because there is no
-runtime there and the honest thing to render is the capture's own frustum.
+**Double-click** focuses what was clicked; **Space** returns to the resolved value. Both ease at
+0.18 per frame. The key is scoped to a hovered or focused canvas — a page with four splat tiles
+must not have one keypress reset all four — and both can be turned off with `focusInput: false`
+when the page owns those gestures itself.
+
+What moves depends on the rig, and only that:
+
+- **camera rig** — the capture stays exactly where it was placed and only the rotation centre
+  moves, while the declared convergence follows the focus every frame it eases. Translating the
+  scene would move the viewpoint, and the neutral view *is* the photograph.
+- **display rig** — the focused point is brought to the middle of the tile and onto the
+  zero-disparity plane. You chose a subject, so the window shows it.
+
+Picking uses Spark's own `SplatMesh.raycast` (57 ms over 1.18M gaussians, gated by its
+`raycastable` / `minRaycastOpacity`) and falls back to the nearest gaussian **centre** to the ray —
+nearest by angle, then nearest along the ray inside a small cone, so a near surface beats the sky
+behind it. That fallback is an approximation: it lands slightly behind a thick soft surface. Fine
+for a plane to converge on and turn about, which is all a focus is; do not build a measuring tool
+on it.
 
 Two things the block deliberately does not carry, because they are properties of a *presentation*
 rather than of a lens:
 
-- **Convergence.** What sits on the glass is a choice, so `addSplat` defaults it to the distance
-  from the capture camera to the measured subject centre and takes `opts.convergence` (world
-  metres) when you know better.
+- **A convergence separate from the focus.** There is one point, not two numbers that can disagree.
 - **A principal-point shift on the woven path.** A view rig describes a pose, a vertical FOV and a
   convergence — it has no lens-shift field — so a non-central `cx` reaches the 2D fallback and not
   the runtime's frusta. For a capture lifted from the raw pair (`cx = width/2`) the two agree
