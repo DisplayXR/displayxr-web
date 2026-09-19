@@ -113,6 +113,7 @@ js/
   inline3d-viewer.js  experimental: SceneViewer — framing, orbit, idle turntable, mono fallback,
                       and the placement readback (getSubjectBounds / getPose / depthOffset)
   inline3d-splat.js   experimental: addSplat() — a Gaussian splat window via Spark
+                      (`perf` cuts overdraw; a `.sog`'s `camera` block picks the view rig)
   inline3d-model.js   experimental: addModel() — a glTF/GLB window; wires Draco / meshopt / KTX2
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/

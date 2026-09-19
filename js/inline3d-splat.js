@@ -101,12 +101,12 @@ function sniffFileType(bytes) {
  * @param {number} [opts.renderScale=1]  per-eye buffer scale; 0.5–0.7 is usually free.
  * @param {number} [opts.feather=0]  edge fade in buffer px.
  * @param {number} [opts.sortIntervalMs=16]  see DEFAULT_SORT_INTERVAL_MS.
- * @param {true|'balanced'|'aggressive'|object} [opts.perf]  cut overdraw. Unset (the default)
- *        changes nothing: every Spark default stays where Spark put it. `'balanced'` is the
- *        native renderer's pair — each quad shrunk to its own 1/255 alpha radius, plus the 1/255
- *        opacity cull — and is bit-exact; `'aggressive'` adds a sub-pixel cull and a tighter
- *        global σ, which do move pixels. Table + the bit-exactness conditions:
- *        ./inline3d-splat-perf.js.
+ * @param {true|'exact'|'balanced'|'aggressive'|object} [opts.perf]  cut overdraw. Unset (the
+ *        default) changes nothing: every Spark default stays where Spark put it. `'exact'` is the
+ *        bit-exact pair (each quad shrunk to its own 1/255 alpha radius, plus the 1/255 opacity
+ *        cull) and buys little on a mostly-opaque capture; `'balanced'` (also `true`) and
+ *        `'aggressive'` tighten the quad extent, which is the axis that measured. Every knob,
+ *        what it costs in pixels, and the measurements: ./inline3d-splat-perf.js.
  * @param {'auto'|'display'|'camera'} [opts.rig='auto']  which view rig. `auto` reads it off the
  *        asset: a `.sog` whose `meta.json` carries a `camera` block was lifted from a photograph
  *        and gets a CAMERA rig that conserves the recording camera (its FOV, its position, its
@@ -115,8 +115,7 @@ function sniffFileType(bytes) {
  *        BYTES. On the camera path the subject is NOT reframed and the idle turntable is off
  *        unless you asked for one.
  * @param {number} [opts.convergence]  camera rig only: the distance, in world metres, that sits
- *        ON the glass. Defaults to the distance from the capture camera to the measured subject
- *        centre.
+ *        ON the glass. Defaults to the MEDIAN distance from the capture camera to the scene.
  * @param {Element} [opts.observe=canvas]  element whose visibility gates the lazy lifecycle.
  * @returns {object} a TileHandle (remove/exclude/unexclude) plus `viewer`, `mesh`, `setPose`,
  *          `resetPose`, `frame` (the bounds used, null until loaded) and `ready` (a promise).
@@ -321,7 +320,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
         // DEFAULT: a page that asked for one still gets it.
         if (!('idleSpin' in opts)) viewer.idleSpin = 0;
         applyCaptureCamera(viewer, out.camera, flipY);
-        const conv = Number.isFinite(convergence) ? convergence : convergenceFor(viewer, bounds);
+        const conv = Number.isFinite(convergence) ? convergence : convergenceFor(viewer, out.mesh, THREE);
         // DECLARE the rig; the off-axis projection stays in the runtime, exactly as it does for
         // every other window in this SDK. The mono camera is already posed and FOV'd as the
         // capture, so it is the camera to describe.
@@ -435,21 +434,49 @@ function applyCaptureCamera(viewer, cam, flipY) {
   camera.updateProjectionMatrix();
 }
 
+/** Cap on how many splats the convergence pass inspects. */
+const CONVERGENCE_SAMPLE_CAP = 40000;
+
+/** Sane bounds on a derived convergence, in metres. Mirrors the gallery's pivot clamp. */
+const CONVERGENCE_MIN_M = 0.2;
+const CONVERGENCE_MAX_M = 20;
+
 /**
- * Default convergence for a camera rig: the distance from the capture camera to the middle of
- * what was captured.
+ * Default convergence for a camera rig: the MEDIAN distance from the capture camera to the
+ * scene, clamped.
  *
  * Convergence is the distance that lands ON the glass, and it is the one number a camera rig
- * cannot be left to guess — 0 means infinity, which puts the entire scene in front of the display
- * and is comfortable for almost nothing. The `camera` block does not carry one (it describes a
- * lens, not a presentation), so the measured subject centre is the honest stand-in: it is the
- * same "converge on the median scene point" the gallery derives from its own columns.
+ * cannot be left to guess — 0 means infinity, which puts the whole scene in front of the display
+ * and is comfortable for almost nothing. The `camera` block does not carry one, deliberately: it
+ * describes a lens, not a presentation.
+ *
+ * NOT the centre of the measured bounds, and that is worth stating because it was the first
+ * attempt. An open scene's percentile bounds are 120 m wide — sky, ground and distance are all in
+ * them — so their centre lands ~40 m out and every bit of actual subject ends up in front of the
+ * glass. The median splat distance is the robust statistic here: half the scene in front, half
+ * behind, which is what a window looks like. It is the same quantity the gallery derives from its
+ * stored median disparity.
  */
-function convergenceFor(viewer, bounds) {
-  if (!bounds) return 0;
+function convergenceFor(viewer, mesh, THREE) {
+  const total = mesh?.numSplats || 0;
+  if (!total) return 0;
   const c = viewer.monoCamera.position;
-  const d = Math.hypot(bounds.center[0] - c.x, bounds.center[1] - c.y, bounds.center[2] - c.z);
-  return Number.isFinite(d) && d > 0 ? d : 0;
+  const stride = Math.max(1, Math.ceil(total / CONVERGENCE_SAMPLE_CAP));
+  mesh.updateMatrix();
+  const m = mesh.matrix;
+  const p = new THREE.Vector3();
+  const d = [];
+  mesh.forEachSplat((index, center, scales, quaternion, opacity) => {
+    if (index % stride !== 0) return;
+    if (opacity !== undefined && opacity < 0.05) return;
+    p.copy(center).applyMatrix4(m);
+    d.push(p.distanceTo(c));
+  });
+  if (!d.length) return 0;
+  d.sort((a, b) => a - b);
+  const med = d[d.length >> 1];
+  if (!Number.isFinite(med) || med <= 0) return 0;
+  return Math.min(Math.max(med, CONVERGENCE_MIN_M), CONVERGENCE_MAX_M);
 }
 
 /** Map model-space bounds through a mesh's own transform, matching the native ComputeAutoFrame. */
