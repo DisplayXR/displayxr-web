@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.7.0 — 2026-09-19
 
 Touches the **preview tier** (`./splat`) only, and additively: `addSplat` with no new options
 renders exactly as it did in 1.6.1 — every Spark default stays where Spark put it and the display
