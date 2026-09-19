@@ -452,55 +452,64 @@ fallback framing is the point. `samples/camera-rig/` is the worked example of al
 splat in a tile. Two things about splats have no equivalent anywhere else in this SDK, and both
 are decided by the asset rather than by the page.
 
-### Splat performance — it is OVERDRAW, not resolution and not splat count
+### Splat performance — it is overdraw, and neither resolution nor splat count is the lever
 
-A splat scene's cost is dominated by the **per-fragment composite**: 75–85 % of the frame on a
-1.18M-gaussian photo-lifted scene (measured natively on an M1 Pro, one eye at 1920×1080). And it is
-*overdraw* — a handful of enormous, nearly transparent sky splats cover the frame many times over,
-so the bill is set by how much each splat covers, not by how many pixels the tile has.
+A splat scene's cost is the **per-fragment composite**, and it is *overdraw*: a handful of
+enormous, nearly transparent splats cover the frame many times over, so the bill is set by how
+much each splat covers. Two corollaries, both measured rather than assumed, and both the opposite
+of the obvious move:
 
-Splat COUNT is the axis everyone reaches for first, and it is the weakest one. Decimating the same
-asset to 25 % of its gaussians breaks it visibly (bright stipple across near lit surfaces) while
-removing less cost than the two settings below, which remove none of the picture at all. A 50 %
-decimation is indistinguishable and is a legitimate mobile tier; below that is not.
+- **Decimating the asset buys nothing.** 50 % and 25 % decimations of the same capture measured
+  *within noise of the full one* (+5 %, +1 % at 1920×1080, alternating meshes frame by frame in
+  one process). Decimation drops the small gaussians; the few huge ones that cover the frame
+  survive it. A decimated `.sog` is a download and memory win — it is not a render-cost win.
+- **Shrinking the quads is the whole game.** `maxStdDev` from Spark's √8 (≈2.83σ) to √6 is
+  −5…−20 %, to √4 (2σ) is −22 %.
 
 ```js
 const shoe = addSplat(wall, canvas, bytes, { perf: 'balanced' });
 ```
 
 `perf` is **unset by default and changes nothing when unset** — every Spark default stays where
-Spark put it, so an existing page's pixels do not move. Two presets, or an object of your own:
+Spark put it, so an existing page's pixels do not move.
 
-| preset | what it sets | safe? |
-|---|---|---|
-| `'balanced'` (or `true`) | `alphaRadius`, `minAlpha: 1/255` | yes — see below |
-| `'aggressive'` | the above + `minPixelRadius: 1`, `maxStdDev: √6` | no: drops fine grain, truncates tails |
-
-| option | Spark 2.1.0 default | what it does | bit-exact? |
+| preset | sets | measured | pixels touched |
 |---|---|---|---|
-| `alphaRadius` | *no such option* | shrinks each splat's quad to the radius where its own alpha reaches `minAlpha` | **yes** |
+| `'exact'` | `alphaRadius`, `minAlpha: 1/255` | ~0 % here (see below) | 0.2 %, max Δ 9 — see the bit-exactness note |
+| `'balanced'` (or `true`) | `minAlpha: 1/255`, `maxStdDev: √6` | **−5…−20 %** | 9.7 %, max Δ 40/255, mean Δ 0.17/255 |
+| `'aggressive'` | `minAlpha: 1/255`, `maxStdDev: 2`, `minPixelRadius: 1` | **−22 %** | 22 %, max Δ 107/255 |
+
+| option | Spark 2.1.0 default | what it does | exact? |
+|---|---|---|---|
+| `alphaRadius` | *no such option* | shrinks each quad to the radius where its own alpha reaches `alphaFloor` | **bit-exact** at the default floor |
+| `alphaFloor` | *(= `minAlpha`)* | the alpha a tail may be cut at, **per splat** | lossy above `minAlpha`; 16/255 measured −11…−27 %, 17.7 % of channels |
 | `minAlpha` | `0.5/255` | drops splats and fragments below this alpha | lossy, ≤ 1 LSB each |
-| `maxStdDev` | `√8` (≈2.83σ) | quad extent in σ, for every splat at once | lossy: truncates opaque tails |
-| `minPixelRadius` | `0` | drops splats smaller than this on screen | lossy: drops a capture's grain |
+| `maxStdDev` | `√8` (≈2.83σ) | quad extent in σ, for every splat at once | lossy: flat truncation of every tail |
+| `minPixelRadius` | `0` | drops splats smaller than this on screen | lossy in principle; **changed zero channels** on the reference capture at both resolutions |
 | `maxPixelRadius` | `512` | caps quad size in px — and **squashes** rather than crops | lossy, and visibly so |
 | `falloff` | `1` | 1 = Gaussian, 0 = flat | **not a perf knob**: 0 stops the fragment discard firing, which costs *more* |
-| `lod`, `lodSplatScale`, `lodRenderScale`, `lodSplatCount` | off for a plain load | build Spark's decimated pyramid at load and render against a budget | lossy: substitutes merged splats |
+| `lod`, `lodSplatScale`, `lodRenderScale`, `lodSplatCount` | off for a plain load | builds Spark's decimated pyramid at load and renders against a budget | lossy — and note the decimation result above before reaching for it |
 
-**Why `alphaRadius` is free.** Spark draws every splat as a quad of `maxStdDev` σ and its fragment
-shader then discards any fragment whose alpha has fallen under `minAlpha` — so for a splat of peak
-alpha `a`, every fragment beyond `r = sqrt(2·ln(a/minAlpha))` is *already* being discarded. It is
-rasterised, interpolated, shaded and thrown away. `alphaRadius` shrinks the quad to exactly that
-radius, which removes work and not pixels; the win is biggest on exactly the splats that dominate
-the cost, because a haze splat of `a = 0.02` needs 1.81σ where the global default spends 2.83σ.
+**`alphaRadius`: bit-exact, and why it nonetheless buys little here.** Spark draws every splat as a
+quad of `maxStdDev` σ and its fragment shader then discards any fragment whose alpha has fallen
+under `minAlpha` — so for a splat of peak alpha `a`, every fragment beyond
+`r = sqrt(2·ln(a/minAlpha))` is *already* being discarded: rasterised, interpolated, shaded and
+thrown away. `alphaRadius` shrinks the quad to exactly that radius, which removes work and not
+pixels. Measured on the 1.18M-gaussian capture at 1280×720: **457 of 3,686,400 channel bytes
+differ, every one by exactly 1** — the float rounding at the discard boundary, where the
+fragment's own contribution is below 1/255 by construction. (Two conditions come with the word:
+`falloff` must be 1 — the patch guards that itself, because at a flatter falloff nothing is being
+discarded — and `minPixelRadius` must be 0, since a shrunken quad can fall under it and lose the
+splat outright.)
 
-Two conditions come with the word *bit-exact*: `falloff` must be 1 (the patch guards this itself —
-at a flatter falloff nothing is being discarded and cutting the quad would cut the picture), and
-`minPixelRadius` must be 0, since a shrunken quad can fall under it and lose the splat outright.
-Measured on the 1.18M-gaussian asset at 1280×720: **457 of 3,686,400 channel bytes differ, every
-one of them by exactly 1** — the float rounding at the discard boundary, where the fragment's own
-contribution is below 1/255 by construction.
+It is still close to free on this asset, because it has nothing to shrink: **86 % of a lifted
+photograph's gaussians are near-opaque** (mean peak alpha 0.86, and Spark doubles the stored alpha
+on top), and an opaque splat's own 1/255 radius is 3.53σ — *wider* than the 2.83σ it is already
+drawn at. The scene where it pays is the one full of large, low-alpha haze. Keep it in mind rather
+than in your default preset, and reach for `alphaFloor` when you want the same per-splat shape with
+a cut that actually bites.
 
-Spark has no option for this, so the SDK patches Spark's splat vertex shader — through its
+Spark has no option for any of this, so the SDK patches Spark's splat vertex shader — through its
 supported `vertexShader` surface, and by rewriting Spark's *own* source off the live material
 rather than shipping a copy of it, so a Spark upgrade brings its shader fixes along. If the lines
 it rewrites ever stop matching it declines with one console warning and everything still renders.
@@ -508,6 +517,12 @@ it rewrites ever stop matching it declines with one console warning and everythi
 `handle.perf` reports what was actually applied. `applySplatPerf(spark, perf)` is exported for
 pages that build their own `SparkRenderer`; the knobs are live, so a quality menu can call it at
 any time.
+
+> Measured on an M1 Pro in Chrome (ANGLE/Metal) with `EXT_disjoint_timer_query_webgl2`, one eye,
+> 360 frames per config, **configs interleaved frame by frame** — a first pass that gave each
+> config its own process produced impossible orderings, because the GPU's clock state drifts by
+> more than the effect being measured. Nothing here has been checked on the weave path, which is
+> Windows-only.
 
 ### The `camera` block — a `.sog` that says which camera it was lifted through
 

@@ -9,8 +9,13 @@ import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
  * and the defaults each one overrides, are tabled in `js/inline3d-splat-perf.js`.
  */
 export interface SplatPerfOptions {
-  /** Shrink each quad to the radius where its alpha reaches `minAlpha`. Bit-exact. */
+  /** Shrink each quad to the radius where its alpha reaches `alphaFloor`. Bit-exact by default. */
   alphaRadius?: boolean;
+  /**
+   * The alpha each splat's tail may be cut at, PER SPLAT. Defaults to `minAlpha`, which is the
+   * bit-exact cut; above it this is a lossy crop that scales with each splat's own opacity.
+   */
+  alphaFloor?: number;
   /** Drop splats and fragments under this alpha. Spark's default is `0.5/255`. */
   minAlpha?: number;
   /** Quad extent in σ, globally. Spark's default is `Math.sqrt(8)`. */
@@ -76,12 +81,13 @@ export interface SplatOptions {
    * Cut overdraw. UNSET changes nothing — every Spark default stays where Spark put it, so an
    * existing page's pixels do not move.
    *
-   * `'balanced'` (or `true`) is the native renderer's pair and is bit-exact: each splat's quad is
-   * shrunk to the radius where its own alpha reaches 1/255 (those fragments were already being
-   * discarded), plus the 1/255 peak-opacity cull. `'aggressive'` additionally drops sub-pixel
-   * splats and tightens the global σ, which does move pixels.
+   * `'exact'` is the bit-exact pair — each quad shrunk to where its own alpha reaches 1/255
+   * (those fragments were already being discarded), plus the 1/255 peak-opacity cull. It buys
+   * little on a mostly-opaque capture, which is what a lifted photograph is. `'balanced'` (or
+   * `true`, −5…−20 % measured) and `'aggressive'` (−22 %) tighten the quad extent instead, which
+   * is the axis that actually pays on the web; both move pixels.
    */
-  perf?: true | 'balanced' | 'aggressive' | SplatPerfOptions;
+  perf?: true | 'exact' | 'balanced' | 'aggressive' | SplatPerfOptions;
   /**
    * Which view rig. `'auto'` (the default) reads it off the ASSET — a `.sog` carrying a `camera`
    * block was lifted from a photograph and gets a camera rig that conserves the recording
