@@ -222,12 +222,45 @@ export function addSplat(wall, canvas, src, opts = {}) {
      * an object, use the display rig"). See ./inline3d-sog.js.
      */
     camera: null,
-    /** Which rig this window ended up on: `'display'` or `'camera'`. Null until `ready`. */
+    /**
+     * What the WATERFALL resolved — the rig, the lens and the focus, each beside the step that
+     * produced it (`rig.focusSource`, `rig.intrinsicsSource`, `rig.typeSource`). Null until
+     * `ready`. See ./inline3d-splat-rig.js.
+     */
     rig: null,
     /** What `perf` actually applied, or null. Useful for a diagnostics readout. */
     perf: perfApplied,
     setPose: (p) => viewer.setPose(p),
     resetPose: () => viewer.resetPose(),
+    /**
+     * Point the window at something — the orbit centre, the pivot plane and (on a camera rig)
+     * the convergence, which are one thing.
+     *
+     * @param {number[]|{x:number,y:number,z:number}|null} point  in the SPLAT's own space: the
+     *        same space the `camera` block's `focus.point` is in, so a host page can hand over a
+     *        point it read from the asset's metadata without knowing anything about this SDK's
+     *        scene graph. Null returns to whatever the waterfall resolved.
+     * @param {object} [o]
+     * @param {boolean} [o.snap=false]  arrive immediately instead of easing.
+     */
+    setFocus(point, o = {}) {
+      if (!out.mesh || !out.rig) return out;
+      const model = point == null ? out.rig.focusDefault : toArray3(point);
+      out.rig.focus = model;
+      out.rig.focusSource = point == null ? out.rig.focusDefaultSource : 'set';
+      viewer.setFocus(toContentSpace(out.mesh, model, THREE), o);
+      return out;
+    },
+    /**
+     * What is under a point on the canvas, in the splat's own space — the raycast behind the
+     * double-click, exposed so a page can build its own gesture.
+     *
+     * @returns {number[]|null}
+     */
+    pick(clientX, clientY) {
+      const p = pickPoint(clientX, clientY);
+      return p ? toModelSpace(out.mesh, p, THREE) : null;
+    },
     remove() {
       unbindFocusInput?.();
       viewer.onFocusChange = null;
@@ -567,11 +600,24 @@ function applyCaptureCamera(viewer, rig, flipY, THREE_) {
     rig.rest.rotation[3],
   );
   const p = new three.Vector3(rig.rest.position[0], rig.rest.position[1], rig.rest.position[2]);
+  // TWO half-turns about X, and they are different things — conflating them points the camera
+  // backwards at an empty scene, which is what the first version did.
+  //
+  //   · RIGHT-multiplied, ALWAYS: the convention change. The block's rotation is a camera pose
+  //     in OpenCV axes (+y down, looking down +z); three's camera looks down -z with +y up. That
+  //     is a rotation in the camera's OWN frame, so it composes on the right, and it applies
+  //     whether or not the content was flipped.
+  //   · LEFT-multiplied, only under `flipY`: the same rotation applied to the CONTENT, which is
+  //     a world-space transform the camera has to ride along with.
+  //
+  // With the identity rest pose almost every capture carries, the two cancel exactly and the
+  // camera sits at the origin looking down -z at a scene the flip has just put there.
+  const flip = new three.Quaternion(1, 0, 0, 0);
   if (flipY) {
-    const flip = new three.Quaternion(1, 0, 0, 0);
     p.applyQuaternion(flip);
     q.premultiply(flip);
   }
+  q.multiply(flip);
   camera.position.copy(p);
   camera.quaternion.copy(q);
   camera.fov = (2 * Math.atan(height / (2 * fy)) * 180) / Math.PI;
