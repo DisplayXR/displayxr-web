@@ -52,6 +52,15 @@ const DEFAULT_DEPTH_LIMIT = 4.0;
 /** Milliseconds of no interaction before the idle turntable starts. */
 const IDLE_DELAY_MS = 2500;
 
+/**
+ * Per-frame easing factor for a focus change, matching the gallery's `EASE`.
+ *
+ * Deliberately per FRAME and not per second, because that is what the reference implementation
+ * does and a focus change is a one-off gesture response rather than a continuous motion — the
+ * difference between 60 and 120 Hz here is a settle that takes half as long, not a bug.
+ */
+const FOCUS_EASE = 0.18;
+
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 // NaN/Infinity into a transform silently blanks the tile — three propagates it into the
 // matrix and every vertex lands undefined. Reject at the setter instead.
@@ -226,6 +235,23 @@ export class SceneViewer {
 
     this._fitScale = 1;
     this._zoom = 1;
+    // FOCUS — the point everything turns about, eased. `_focus` is where it is now, `_target`
+    // where it is going; `_orbitCentre` is where the pivot sits afterwards, and it is what
+    // separates the two rigs: a DISPLAY rig brings the focused point to the middle of the tile
+    // (centre 0), a CAMERA rig leaves the capture exactly where it was placed and only moves
+    // what the rotation turns about (centre = the focus point). See setFocus().
+    // Plain triples, not THREE.Vector3: this module takes its THREE by injection and is tested
+    // against a stub, so every three.js type it reaches for is one more thing a consumer has to
+    // supply. Three numbers need no library.
+    this._focus = { x: 0, y: 0, z: 0 };
+    this._targetFocus = { x: 0, y: 0, z: 0 };
+    this._orbitCentre = { x: 0, y: 0, z: 0 };
+    this._focusRecentres = true;
+    this._focusSettled = true;
+    /** Called after every focus ease step, with the live focus. Set by ./splat. */
+    this.onFocusChange = null;
+    /** Called at the end of every _tick, after the transform is applied. */
+    this.onTick = null;
     this._targetZoom = 1;
     // Author-driven slide along the depth axis, display metres, +z toward the viewer. Applied
     // by _applyTransform, PRESERVED by fitTo, cleared by resetPose. Default 0 means every page
@@ -307,7 +333,10 @@ export class SceneViewer {
     const c = Array.isArray(center) ? center : [center.x, center.y, center.z];
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
 
-    this._centering.position.set(-c[0], -c[1], -c[2]);
+    // Through the focus, not around it: framing a subject IS pointing the viewer at its centre,
+    // and keeping the two in one place is what stops an orbit turning about somewhere the fit
+    // has since moved away from. Snapped — a refit is not a gesture.
+    this.setFocus(c, { snap: true });
     // Recorded for getSubjectBounds(). Model units; the fit scale is applied at read time so a
     // later zoom or orbit needs no re-measure.
     this._subjectHalf = [Math.abs(e[0]) / 2, Math.abs(e[1]) / 2, Math.abs(e[2]) / 2];
@@ -478,6 +507,57 @@ export class SceneViewer {
   set depthOffset(m) {
     this._depthOffset = finite(m, this._depthOffset);
     this._applyTransform();
+  }
+
+  /**
+   * Point the viewer at something — the one point that is simultaneously the orbit centre, the
+   * pivot plane and (on a camera rig) the convergence distance.
+   *
+   * Those three are the same thing and saying so is the point of this method. A viewer that lets
+   * them drift apart orbits about one place, converges at another and rotates the picture around
+   * a third, which is how "the scene swings away when I turn it" happens.
+   *
+   * The two rigs differ in what MOVES, and only in that:
+   *
+   * - **`recentre: true`** (a display rig, the default) — the focused point is brought to the
+   *   middle of the tile and onto the zero-disparity plane. That is what a portal does: you
+   *   chose a subject, so the subject is what the window shows.
+   * - **`recentre: false`** (a camera rig) — the capture stays exactly where it was placed and
+   *   only the rotation centre moves. Translating a camera-rig scene would move the viewpoint,
+   *   and the neutral view IS the photograph; nothing may move it.
+   *
+   * Eased at {@link FOCUS_EASE} per frame unless `snap`.
+   *
+   * @param {{x:number,y:number,z:number}|number[]|null} point  in CONTENT space (the space your
+   *        object sits in, i.e. `viewer.content`'s local space). Null resets to the origin.
+   * @param {object} [opts]
+   * @param {boolean} [opts.snap=false]  arrive immediately.
+   * @param {boolean} [opts.recentre]  see above. Sticky: set once when the rig is chosen.
+   */
+  setFocus(point, { snap = false, recentre } = {}) {
+    if (recentre !== undefined) this._focusRecentres = !!recentre;
+    const p = point == null ? [0, 0, 0] : Array.isArray(point) ? point : [point.x, point.y, point.z];
+    this._targetFocus = { x: finite(p[0], 0), y: finite(p[1], 0), z: finite(p[2], 0) };
+    this._focusSettled = false;
+    if (snap) {
+      this._focus = { ...this._targetFocus };
+      this._focusSettled = true;
+      this._applyFocus();
+      this._applyTransform();
+      this.onFocusChange?.(this._focus);
+    }
+    return this;
+  }
+
+  /**
+   * Where the viewer is pointed, in content space.
+   *
+   * @param {object} [opts]
+   * @param {boolean} [opts.target=false]  the value being eased TOWARD, as with getPose().
+   */
+  getFocus({ target = false } = {}) {
+    const v = target ? this._targetFocus : this._focus;
+    return { x: v.x, y: v.y, z: v.z };
   }
 
   /** Return to the framed default pose, depth slide included. */
@@ -757,7 +837,13 @@ export class SceneViewer {
     // The depth slide lives here, not in fitTo, so it survives a refit and cannot be left
     // stale by a code path that forgets it. x/y are never written: the fit centres the subject
     // on the tile and sliding it sideways is a scene concern, not a viewer one.
-    this._pivot.position.z = this._depthOffset;
+    // The orbit centre is where the pivot SITS; the depth slide rides on top of it. Both are
+    // zero for the ordinary framed subject, so this is identity for every existing page.
+    this._pivot.position.set(
+      this._orbitCentre.x,
+      this._orbitCentre.y,
+      this._orbitCentre.z + this._depthOffset,
+    );
     // Order 'XYZ' == R = Rx(pitch) · Ry(yaw), and the order is the whole point.
     //
     // Yaw must act in the subject's OWN frame (spin it on its axis); pitch must act in the
@@ -824,7 +910,44 @@ export class SceneViewer {
     } else {
       this._zoom = this._targetZoom;
     }
+    this._easeFocus();
     this._applyTransform();
+    this.onTick?.();
+  }
+
+  /**
+   * Walk the live focus toward its target. A no-op — not even a vector compare — for every
+   * viewer that never sets one.
+   */
+  _easeFocus() {
+    if (this._focusSettled) return;
+    const f = this._focus;
+    const t = this._targetFocus;
+    const dx = t.x - f.x;
+    const dy = t.y - f.y;
+    const dz = t.z - f.z;
+    if (dx * dx + dy * dy + dz * dz < 1e-10) {
+      f.x = t.x;
+      f.y = t.y;
+      f.z = t.z;
+      this._focusSettled = true;
+    } else {
+      f.x += dx * FOCUS_EASE;
+      f.y += dy * FOCUS_EASE;
+      f.z += dz * FOCUS_EASE;
+    }
+    this._applyFocus();
+    this.onFocusChange?.(f);
+  }
+
+  /** Write the current focus into the scene graph. */
+  _applyFocus() {
+    const f = this._focus;
+    this._centering.position.set(-f.x, -f.y, -f.z);
+    const c = this._orbitCentre;
+    c.x = this._focusRecentres ? 0 : f.x;
+    c.y = this._focusRecentres ? 0 : f.y;
+    c.z = this._focusRecentres ? 0 : f.z;
   }
 
   _bindOrbit() {
