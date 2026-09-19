@@ -213,20 +213,20 @@ export function applySplatPerf(spark, perf) {
       applied[key] = profile[key];
     }
   }
-  if (profile.alphaRadius) patchAlphaRadius(spark.material);
-  const floorU = spark.material?.uniforms?.dxrAlphaFloor;
-  if (floorU && profile.alphaFloor !== undefined) {
-    floorU.value = Number.isFinite(profile.alphaFloor) ? profile.alphaFloor : 0;
-    applied.alphaFloor = floorU.value;
+  // `alphaFloor` is meaningless on its own — it is the floor the shrink cuts at — so asking for
+  // one asks for the shrink, unless the caller said otherwise in the same breath.
+  const wantRadius = profile.alphaRadius ?? (profile.alphaFloor !== undefined ? true : undefined);
+  if (wantRadius) patchAlphaRadius(spark.material);
+  const u = spark.material?.uniforms;
+  if (u?.dxrAlphaRadius && wantRadius !== undefined) {
+    // Set the value every time rather than relying on the patch: the patch is idempotent, so a
+    // second call asking to turn it back ON would otherwise return early and leave it off.
+    u.dxrAlphaRadius.value = !!wantRadius;
+    applied.alphaRadius = !!wantRadius;
   }
-  if (profile.alphaRadius !== undefined) {
-    // The uniform exists only once the patch has gone in, so a `false` before any patch is
-    // simply "do nothing" rather than a state to record.
-    if (profile.alphaRadius) applied.alphaRadius = !!spark.material?.uniforms?.dxrAlphaRadius;
-    else if (spark.material?.uniforms?.dxrAlphaRadius) {
-      spark.material.uniforms.dxrAlphaRadius.value = false;
-      applied.alphaRadius = false;
-    }
+  if (u?.dxrAlphaFloor && profile.alphaFloor !== undefined) {
+    u.dxrAlphaFloor.value = Number.isFinite(profile.alphaFloor) ? profile.alphaFloor : 0;
+    applied.alphaFloor = u.dxrAlphaFloor.value;
   }
   return applied;
 }
