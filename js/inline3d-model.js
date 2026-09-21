@@ -63,12 +63,23 @@ async function resolveLoader(injected) {
  * One entry per decoder: the glTF extension that demands it, where its class lives, where its
  * runtime files live, and which option overrides each. The error messages are generated from
  * this table, so a message can never name an option that does not exist.
+ *
+ * `load` is a thunk around a **literal** `import()` and `module` is the same specifier as a
+ * string, and the duplication is deliberate. A bundler can only follow an import whose specifier
+ * is written out at the call site: `import(spec.module)` — reading the string out of this table —
+ * is an *expression*, which webpack/Turbopack/rollup cannot resolve, so they emit
+ * "Critical dependency: the request of a dependency is an expression" at build time and a stub
+ * that throws `Cannot find module …` at runtime. That made EVERY compressed asset unloadable for
+ * every bundler consumer, while the bare-importmap path (which resolves at runtime and does not
+ * care) kept working — so it survived the samples. The string stays because the error messages
+ * quote it; the thunk is what actually loads.
  */
 const DECODERS = {
   draco: {
     ext: 'KHR_draco_mesh_compression',
     label: 'Draco mesh compression',
     module: 'three/addons/loaders/DRACOLoader.js',
+    load: () => import('three/addons/loaders/DRACOLoader.js'),
     exportName: 'DRACOLoader',
     option: 'DRACOLoader',
     pathKey: 'draco',
@@ -79,6 +90,7 @@ const DECODERS = {
     ext: 'KHR_texture_basisu',
     label: 'KTX2 / Basis Universal textures',
     module: 'three/addons/loaders/KTX2Loader.js',
+    load: () => import('three/addons/loaders/KTX2Loader.js'),
     exportName: 'KTX2Loader',
     option: 'KTX2Loader',
     pathKey: 'basis',
@@ -89,6 +101,7 @@ const DECODERS = {
     ext: 'EXT_meshopt_compression',
     label: 'meshopt compression',
     module: 'three/addons/libs/meshopt_decoder.module.js',
+    load: () => import('three/addons/libs/meshopt_decoder.module.js'),
     exportName: 'MeshoptDecoder',
     option: 'meshoptDecoder',
     pathKey: null, // pure JS + inlined wasm; nothing for the page to serve
@@ -159,7 +172,10 @@ async function buildDecoder(kind, paths, injected) {
   const spec = DECODERS[kind];
   let thing = injected;
   if (!thing) {
-    const mod = await import(spec.module);
+    // spec.load(), never `import(spec.module)` — see the note on DECODERS. One literal specifier
+    // per kind is what makes this analysable, and a bundler then code-splits each decoder into
+    // its own chunk, still fetched only for an asset that declares the extension.
+    const mod = await spec.load();
     thing = mod[spec.exportName];
     if (!thing) throw new Error(`${spec.module} has no export "${spec.exportName}"`);
   }
