@@ -5,6 +5,50 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.7.1 — 2026-09-20
+
+Touches the **preview tier** (`./model`) only, and fixes exactly one thing: under a bundler, a
+compressed glTF never loaded at all. Uncompressed assets are unaffected, and so is every page that
+loads compressed ones through a bare importmap — same pixels, same timing. If your page builds with
+webpack / Turbopack / Vite / rollup and loads a Draco-, KTX2- or meshopt-compressed model, the tile
+that used to stay empty with a rejected `handle.ready` now renders the product.
+
+### Fixed
+
+- **`addModel` could not load ANY compressed asset under a bundler — all three decoders**
+  (preview tier). The decoders were resolved with `await import(spec.module)`, the specifier read
+  out of the `DECODERS` table — an *expression*, which no bundler can follow. The build printed
+
+  ```
+  Critical dependency: the request of a dependency is an expression
+  ```
+
+  and shipped a stub that throws `Cannot find module 'three/addons/…'` at runtime, which `addModel`
+  then reported honestly as a module-resolution failure in its own decoder error. Draco, KTX2/Basis
+  **and** meshopt all went through that one call, so the blast radius was the whole compressed path
+  — and a catalogue GLB out of a real pipeline is nearly always compressed, which is precisely the
+  case `/model` exists for. Each decoder now has a literal `import()` of its own
+  (`load: () => import('three/addons/loaders/DRACOLoader.js')`, and so on): that is what a build
+  tool can analyse, and it resolves unchanged under the `"three/addons/"` importmap prefix the
+  samples use.
+
+  It survived four releases because neither path that was exercised has the fault — `samples/` runs
+  on a bare importmap, which resolves specifiers at runtime and does not care, and the test suite is
+  deliberately dependency-free, so it never imported a decoder at all. The guard added with this fix
+  is therefore a source-level one: it reads `js/` the way a bundler does and fails if any `import()`
+  is handed a computed specifier again.
+
+  Nothing else moved. Injection (`{ DRACOLoader }`, `{ KTX2Loader }`, `{ meshoptDecoder }`, a class
+  or a ready instance you configured yourself), the shared ref-counted decoder cache, `decoderPath`
+  and the serve-the-decoder-files-yourself requirement are all as they were, and a decoder is still
+  imported only for an asset that declares its extension — bundlers now code-split each one into its
+  own chunk, so an uncompressed GLB downloads none of them.
+
+  Verified in Chrome against a Next.js 15 / webpack app loading an `EXT_meshopt_compression` GLB:
+  before, the build warning above plus `Cannot find module
+  'three/addons/libs/meshopt_decoder.module.js'` and an empty stage; after, no warning, the meshopt
+  decoder arriving as its own chunk, and the model on screen.
+
 ## 1.7.0 — 2026-09-19
 
 Touches the **preview tier** (`./splat`) only, and additively: `addSplat` with no new options
