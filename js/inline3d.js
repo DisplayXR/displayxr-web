@@ -130,6 +130,38 @@ const DISPLAY_MODE_METHODS = ['getDisplayInfo', 'getRenderingModes', 'requestRen
 // mode or hardware-state change even while its tile's layer is closed (lazy mode), and one
 // subscription covers every window in the document.
 const DISPLAY_EVENTS = ['renderingmodechange', 'hardwaredisplaystatechange'];
+// TRACKING STATE — is anyone in the display's 3D zone right now?
+//
+// `session.trackingState` is a DOMString and `trackingstatechange` is a PLAIN Event with no
+// payload, so the state is always READ off the session and never parsed out of the event (the
+// same shape as the payload-free hardware-state event above, and for the same reason: there is
+// nothing in the event to trust). Inline sessions only — an immersive session never fires it.
+//
+// 'searching' means the runtime's derived isTracking went false. Read it as NOBODY IS BEING
+// TRACKED: the viewer stepped out of the display's supported 3D zone, OR the display is in an
+// untracked / 2D mode. It does NOT necessarily mean the tracker lost lock on a face that is
+// still there, and a page must not word its UI as if it did.
+//
+// An older browser has NEITHER the attribute NOR the event. That is not a warning-worthy
+// condition — it is the whole install base until browser-pvt "0194 trackingstatechange" ships —
+// so the SDK reports 'unknown' forever, silently, and every consumer of this surface is written
+// to treat 'unknown' as "no opinion" rather than as bad news.
+const TRACKING_EVENT = 'trackingstatechange';
+const TRACKING_STATES = ['unknown', 'tracking', 'searching'];
+// Everything on()/off() accept. `onDisplayModeChange` deliberately still fans out over
+// DISPLAY_EVENTS alone: it is documented as "both DISPLAY events", pages pass it one callback
+// shaped for a mode event, and silently adding a third stream to it would change what a shipped
+// page's handler receives.
+const MANAGER_EVENTS = [...DISPLAY_EVENTS, TRACKING_EVENT];
+/** This session's tracking state, or null when the browser does not expose one at all. */
+function readTrackingState(session) {
+  try {
+    const v = session ? session.trackingState : undefined;
+    return TRACKING_STATES.includes(v) ? v : null;
+  } catch {
+    return null; // an attribute that refuses to be read is not a capability
+  }
+}
 const hasDisplayModes = () => {
   if (!hasLayer()) return false;
   try {
@@ -505,7 +537,17 @@ function noteRigWinsOverHeight() {
  *        keeps the eye set coherent either way — and a mode change the page did NOT request
  *        (another tab, the shell, a panel opening flat) always snaps, because there is nothing
  *        to ramp from. Read the live state on `wall.modeSwitch`.
- * @returns {Promise<Inline3D | {supported:false, error?:Error}>} the manager, which also carries
+ * @param {'none'|'mono'} [opts.untrackedFallback='none']  What the SDK does to the windows it
+ *        owns the pixels of while NOBODY IS TRACKED (`wall.trackingState === 'searching'`).
+ *        `'none'` (the default) is exactly today's behaviour: every window keeps submitting its
+ *        stereo pair and the runtime keeps weaving it, which is what an untracked viewer sees as
+ *        a soft double image. `'mono'` paints each image and video window's LEFT eye 1:1 for the
+ *        duration and returns it to side-by-side when tracking resumes — flat content instead of
+ *        a double image. Scene windows (`addScene`/`addSplat`/`addModel`) are NEVER touched: the
+ *        page owns those pixels. Listen for `trackingstatechange` and call
+ *        `SceneViewer.startMono()`/`stopMono()` to do the same for a scene.
+ * @returns {Promise<Inline3D | {supported:false, trackingState:'unknown', error?:Error}>} the
+ *        manager, which also carries
  *        the display API (`getDisplayInfo` / `getRenderingModes` / `requestRenderingMode` /
  *        `setStereoEnabled`, `on`/`off`) and `undock` — `{model, splat}` on a browser with
  *        `XRDisplayLayer.undock`, `null` on one without.
@@ -517,15 +559,20 @@ export async function createInline3D(opts = {}) {
     rootMargin = '50% 0px',
     autoChrome = true,
     modeSwitch = null,
+    untrackedFallback = 'none',
   } = opts;
-  if (!inline3DAvailable()) return { supported: false };
+  // The unsupported shapes carry `trackingState` too, so a page can read it without first
+  // branching on `supported`: no session means nobody is being tracked THROUGH THIS SDK, which
+  // is 'unknown' by the same rule an old browser gets it. There is no `on()` here to pair with
+  // it — nothing will ever fire — so a page that wants the event still gates on `supported`.
+  if (!inline3DAvailable()) return { supported: false, trackingState: 'unknown' };
   let session;
   try {
     // requestSession is Blink-local and resolves immediately when the feature is present —
     // the correct detection path (see inline3DAvailable's note on isSessionSupported).
     session = await navigator.xr.requestSession('inline-3d');
   } catch (e) {
-    return { supported: false, error: e };
+    return { supported: false, trackingState: 'unknown', error: e };
   }
   let refSpace = null;
   try {
@@ -533,7 +580,7 @@ export async function createInline3D(opts = {}) {
   } catch {
     /* rAF still fires without a ref space; views are just null (fine for image/video). */
   }
-  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome, modeSwitch });
+  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome, modeSwitch, untrackedFallback });
 }
 
 /**
@@ -585,7 +632,11 @@ function chromeTextPlates(root) {
 }
 
 class Inline3D {
-  constructor(session, refSpace, { lazy, rootMargin, autoChrome = true, modeSwitch = null }) {
+  constructor(
+    session,
+    refSpace,
+    { lazy, rootMargin, autoChrome = true, modeSwitch = null, untrackedFallback = 'none' }
+  ) {
     this.supported = true;
     this.session = session;
     this.refSpace = refSpace;
@@ -625,6 +676,15 @@ class Inline3D {
     this._stereoCollapsed = false;
     this._displayListeners = new Map(); // event type -> Set(callback), for on()/off()
     this._primedDisplayState = false;
+    // ── tracking state ───────────────────────────────────────────────────────────────
+    // Read once here so `wall.trackingState` is honest before any event arrives — a page can
+    // open with nobody in front of the display, and that is not a CHANGE, so nothing is emitted
+    // for it. A browser without the attribute reads null and stays 'unknown' forever, silently.
+    this._trackingSupported = readTrackingState(session) !== null;
+    this._trackingState = this._trackingSupported ? readTrackingState(session) : 'unknown';
+    // What to do to the windows the SDK owns the pixels of while nobody is tracked. 'none' is
+    // the default precisely so every page that predates this option renders bit-identically.
+    this._untrackedFallback = untrackedFallback === 'mono' ? 'mono' : 'none';
     // ── the eased 2D<->3D transition (opts.modeSwitch) ───────────────────────────────
     // The collapse above is a LATCH; what actually reaches each layer is that latch turned into a
     // SCALE — `_stereoFactor`, 0 (flat) to 1 (exactly the rig the page set). With the sequencer
@@ -671,6 +731,7 @@ class Inline3D {
     liveManager = this;
     session.addEventListener('end', () => this._teardown());
     this._bindDisplayEvents();
+    this._bindTrackingEvents();
     this._scanChrome(); // page chrome usually exists before the session does
     this._bindLifecycle();
     this._armDprWatch();
@@ -1028,6 +1089,7 @@ class Inline3D {
        *
        *   `renderingmodechange`        `{type, modeIndex, viewCount, mode, detail}`
        *   `hardwaredisplaystatechange` `{type, state:'2d'|'3d', detail}`
+       *   `trackingstatechange`        the STATE STRING first — `cb('tracking'|'searching'|'unknown', {type, state})`
        *
        * They originate on the XRSession, not on the layer — so they arrive even for a window
        * whose layer is currently closed, and a page that only wants to KNOW does not have to
@@ -1036,8 +1098,8 @@ class Inline3D {
        * Returns an unsubscribe function; `off(type, cb)` does the same. Inert (returns a no-op)
        * on a browser without the API.
        *
-       * @param {'renderingmodechange'|'hardwaredisplaystatechange'} type
-       * @param {(e:object) => void} cb
+       * @param {'renderingmodechange'|'hardwaredisplaystatechange'|'trackingstatechange'} type
+       * @param {(e:any) => void} cb
        * @returns {() => void}
        */
       on: (type, cb) => this.on(type, cb),
@@ -1091,6 +1153,22 @@ class Inline3D {
    */
   get hardwareDisplayState() {
     return this._hardwareDisplayState;
+  }
+
+  /**
+   * Is anyone being tracked in front of this display right now?
+   *
+   *   `'tracking'`   a viewer is in the display's 3D zone; the weave is doing its job.
+   *   `'searching'`  the runtime's derived isTracking is FALSE — nobody is in the zone, or the
+   *                  display is in an untracked / 2D mode. NOT "the tracker glitched".
+   *   `'unknown'`    this browser has no tracking-state surface, or the session has ended.
+   *
+   * Mirrors `session.trackingState` as last read; `'unknown'` is also what an older browser
+   * reports forever, with no warning, so a page can treat it as "no opinion" and render its
+   * normal 3D content. Changes arrive as `on('trackingstatechange', state => …)`.
+   */
+  get trackingState() {
+    return this._trackingState;
   }
 
   /** The active mode's index and view count as last read/reported. `viewCount` 0 = not read yet. */
@@ -1571,6 +1649,82 @@ class Inline3D {
   }
 
   /**
+   * Subscribe to `trackingstatechange`, once per manager, exactly as the display events are —
+   * and only where the ATTRIBUTE exists. The event is payload-free, so a browser that fired it
+   * without exposing `session.trackingState` would leave nothing to read; subscribing there
+   * would buy a stream of events carrying no information. Gated separately from
+   * `_bindDisplayEvents`'s `hasDisplayModes()` on purpose: these are independent surfaces and a
+   * browser is free to ship them in either order.
+   */
+  _bindTrackingEvents() {
+    const session = this.session;
+    if (!session || typeof session.addEventListener !== 'function') return;
+    if (!this._trackingSupported) return;
+    session.addEventListener(TRACKING_EVENT, () => {
+      // READ, never parse: the event is a plain Event and carries nothing.
+      this._setTrackingState(readTrackingState(session) || 'unknown');
+    });
+  }
+
+  /**
+   * Adopt a new tracking state: act on it first (the mono fallback, so a listener that reads
+   * back a canvas sees the state the event announces), then tell the page. Same ordering rule
+   * as the rig collapse in `_onRenderingModeChange`.
+   *
+   * On CHANGE only — a repeated 'searching' is not an event, and the state read at construction
+   * is a starting value rather than a change, so a page never gets a spurious first callback.
+   */
+  _setTrackingState(state) {
+    const next = TRACKING_STATES.includes(state) ? state : 'unknown';
+    if (next === this._trackingState) return;
+    this._trackingState = next;
+    this._applyUntrackedFallback();
+    const ev = { type: TRACKING_EVENT, state: next };
+    this._emitDisplay(ev, [next, ev]);
+  }
+
+  /** True while every window the SDK owns the pixels of should be painting its LEFT eye 1:1. */
+  _untrackedMono() {
+    return this._untrackedFallback === 'mono' && this._trackingState === 'searching';
+  }
+
+  /**
+   * The buffer this window should be in right now. SBS unless nothing is weaving it (no live
+   * layer, or a dead manager — web#28) or the untracked fallback is taking it flat.
+   *
+   * With the default `untrackedFallback:'none'` this is exactly the old `this._running &&
+   * !!win.layer` test, which is why every existing page keeps its byte-for-byte behaviour.
+   */
+  _wantSbs(win) {
+    return this._running && !!win.layer && !this._untrackedMono();
+  }
+
+  /**
+   * Tracking moved and `untrackedFallback:'mono'` is on: take every window whose pixels the SDK
+   * owns to the buffer the new state calls for, NOW rather than on the next session frame.
+   *
+   * THE LAYER IS NOT TOUCHED. Nothing is closed, recreated or re-declared — the window keeps
+   * weaving, and all that changes is what it submits: `_paint`'s flat branch (one eye stretched
+   * across a 1:1 buffer) instead of the side-by-side pair. That keeps the web#28 rule intact in
+   * both directions (a canvas is never left holding a raw SBS pair that nothing weaves) without
+   * making the lazy layer lifecycle visible as a mode change.
+   *
+   * THE COST is the buffer: a mono paint stretches ONE eye over the whole backing store, so the
+   * store has to be 1:1 or the tile shows a double-width half-image. So each transition calls
+   * `_sizeBuffer` — the same call `_deactivate` makes — which reallocates and CLEARS the backing
+   * store, and the repaint here is what puts pixels back in it in the same task. One realloc per
+   * transition, per owned window; nothing moves while the state is steady. Scene windows are
+   * skipped entirely (the page owns that store, and this SDK must never resize it).
+   */
+  _applyUntrackedFallback() {
+    if (this._untrackedFallback !== 'mono') return;
+    for (const win of this._windows.values()) {
+      if (!win.ownsBuffer || win.kind === 'scene' || !win.layer) continue;
+      this._paint(win, null); // re-derives the buffer from _wantSbs, then draws into it
+    }
+  }
+
+  /**
    * The hardware display state moved. The browser's event is payload-free (an XRSessionEvent),
    * so the state is READ, not parsed: under the mode-only contract the page-facing active mode's
    * `hardwareDisplay3D` IS the hardware state by construction (a 1-view mode is presented for
@@ -1664,13 +1818,20 @@ class Inline3D {
     });
   }
 
-  /** Deliver one normalised display event to every listener. A throwing page handler is contained. */
-  _emitDisplay(ev) {
+  /**
+   * Deliver one normalised event to every listener. A throwing page handler is contained.
+   *
+   * `args` overrides what the callback is CALLED with (the event object is still what selects
+   * the listener set): `trackingstatechange` leads with the state string, because a page
+   * listening to it wants the one value and not a wrapper.
+   */
+  _emitDisplay(ev, args) {
     const set = this._displayListeners.get(ev.type);
     if (!set) return;
+    const argv = args || [ev];
     for (const cb of [...set]) {
       try {
-        cb(ev);
+        cb(...argv);
       } catch (err) {
         console.error(`[inline3d] ${ev.type} listener threw`, err);
       }
@@ -1678,14 +1839,18 @@ class Inline3D {
   }
 
   /**
-   * Listen for `renderingmodechange` / `hardwaredisplaystatechange` on this manager. See the
-   * handle's `on()` doc for the payload shapes. Returns an unsubscribe function.
+   * Listen for `renderingmodechange` / `hardwaredisplaystatechange` / `trackingstatechange` on
+   * this manager. See the handle's `on()` doc for the payload shapes — note that the tracking
+   * callback is handed the STATE STRING first. Returns an unsubscribe function.
+   *
+   * Subscribing to `trackingstatechange` on a browser that has no tracking state is legal and
+   * silent: the listener is kept, nothing ever fires it, and `trackingState` stays 'unknown'.
    */
   on(type, cb) {
     if (typeof cb !== 'function') throw new TypeError('[inline3d] on() takes (type, function).');
-    if (!DISPLAY_EVENTS.includes(type)) {
+    if (!MANAGER_EVENTS.includes(type)) {
       throw new TypeError(
-        `[inline3d] on() knows ${DISPLAY_EVENTS.join(' / ')}, got ${JSON.stringify(type)}.`
+        `[inline3d] on() knows ${MANAGER_EVENTS.join(' / ')}, got ${JSON.stringify(type)}.`
       );
     }
     let set = this._displayListeners.get(type);
@@ -1909,8 +2074,11 @@ class Inline3D {
     for (const el of this._globalOverlays) this._applyExclusion(win, el);
     this._startOverlayScan(win);
     if (win.ownsBuffer) {
-      this._sizeBuffer(win, /*sbs*/ true);
-      this._paint(win, null); // first SBS paint (video will refresh each frame)
+      // `_wantSbs`, not a literal true: a tile that activates while nobody is tracked (with
+      // untrackedFallback:'mono') must be BORN flat rather than allocate an SBS store and
+      // immediately reallocate it on the first paint. Plain `true` with the default option.
+      this._sizeBuffer(win, this._wantSbs(win));
+      this._paint(win, null); // first paint (video will refresh each frame)
     }
     this._startSizeWatch(win);
   }
@@ -2228,7 +2396,7 @@ class Inline3D {
       if (!win.layer || !win.ownsBuffer) return;
       const { w, h } = this._eyeSize(win);
       if (w === win.eyeW && h === win.eyeH) return; // observer fired, geometry didn't move
-      this._sizeBuffer(win, /*sbs*/ true);
+      this._sizeBuffer(win, this._wantSbs(win)); // a resize must not undo the untracked fallback
       this._paint(win, null); // repaint NOW: setting canvas.width cleared the buffer
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
@@ -2284,8 +2452,17 @@ class Inline3D {
     // Forced here rather than at each call site because the call sites are the async ones.
     // The buffer comes with it — the mono branch below stretches ONE eye across the whole
     // backing store, so leaving a 2:1 store would show a double-width half-image.
+    //
+    // The SAME re-derivation also carries the untracked fallback, which is the other way a
+    // window's buffer changes shape under it: with `untrackedFallback:'mono'`, a window whose
+    // layer is very much alive still goes 1:1 while `trackingState === 'searching'`, and comes
+    // back when it resumes. One rule, `_wantSbs`, so the two cannot drift apart.
     const live = this._running && !!win.layer;
-    if (!live && win.sbs) this._sizeBuffer(win, /*sbs*/ false);
+    const wantSbs = this._wantSbs(win);
+    // `typeof === 'boolean'`: an undefined `sbs` is a window that has never been sized at all
+    // (a lazy tile whose image download landed before it first activated). Leave that one to
+    // _activate / _paintMono exactly as before rather than allocating a store for it here.
+    if (typeof win.sbs === 'boolean' && win.sbs !== wantSbs) this._sizeBuffer(win, wantSbs);
     const src = win.kind === 'video' ? win.video : win.img;
     if (!src) return;
     if (win.kind === 'video' && (src.readyState || 0) < 2) {
@@ -2564,6 +2741,12 @@ class Inline3D {
       this._notifyLayerLost(win);
     }
     this._windows.clear();
+    // Nobody is tracked through a session that has ended, so say so ONCE — after the windows are
+    // gone (the fallback has nothing left to repaint, and every canvas was already taken mono
+    // above) and before the listeners are dropped, so a page that gated its stereo UI on
+    // 'tracking' gets the release rather than being left latched on a stale state. A browser
+    // that never reported one is already 'unknown' and this is silent, as it must be.
+    this._setTrackingState('unknown');
     // Page listeners go with the session that fed them: a manager whose session has ended will
     // never emit again, and holding the callbacks would keep the page's closures alive.
     this._displayListeners.clear();

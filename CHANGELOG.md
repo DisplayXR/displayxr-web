@@ -5,6 +5,60 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **core tier** (`.`) and is **purely additive**: nothing here fires, and nothing here
+changes a pixel, unless a page asks for it. The default (`untrackedFallback: 'none'`) is the
+behaviour every shipped page has today, byte for byte.
+
+### Added
+
+- **`wall.trackingState` and `on('trackingstatechange')` — knowing when NOBODY IS TRACKED**
+  (core tier). A glasses-free display only shows 3D to a viewer it can see; step out of the
+  display's zone and the weave keeps running against a stale viewpoint, which reads as a soft
+  double image rather than as a picture. The page could not previously know that had happened.
+  Now it can:
+
+  ```js
+  const wall = await createInline3D();
+  wall.on('trackingstatechange', (state) => { /* 'tracking' | 'searching' | 'unknown' */ });
+  ```
+
+  `'searching'` means the runtime's derived `isTracking` is **false** — the viewer is outside the
+  display's supported 3D zone, OR the display is in an untracked / 2D mode. It does **not**
+  necessarily mean the tracker lost lock on a face that is still there, and the docs say so twice
+  because a page that words its UI as "tracking lost" will be wrong most of the time it shows it.
+  The callback is handed the **state string first** (the normalised `{type, state}` object is its
+  second argument), because a page listening to this wants the one value.
+
+  `'unknown'` is "no opinion", and it is load-bearing: the attribute and the event are a **pending
+  browser patch** (browser-pvt, "0194 trackingstatechange"), so every build in the field today
+  has neither. There the SDK reports `'unknown'` **forever, with no warning** — it does not even
+  subscribe, since a payload-free event with no attribute to read carries nothing — and a page
+  can therefore subscribe unconditionally with no capability probe. The same `'unknown'` is
+  emitted once when the session ends, so a page that latched on `'tracking'` is released rather
+  than left holding a stale state.
+
+- **`createInline3D({ untrackedFallback: 'mono' })` — let the SDK take its OWN windows flat**
+  (core tier, default `'none'`). While `trackingState === 'searching'`, every `addImage` /
+  `addVideo` window paints its **left eye alone, 1:1** instead of the side-by-side pair, and
+  returns to the pair when tracking resumes. Flat content beats a double image, and it is the
+  same rule web#28 already enforces at teardown: never leave a raw SBS pair on a canvas nothing
+  is weaving usefully.
+
+  The **layer is never closed or recreated** — the window keeps its place in the frame and its
+  lazy lifecycle, and only what it submits changes. The cost is the buffer: a mono frame stretches
+  one eye over the whole backing store, so each transition re-sizes that store through the same
+  `_sizeBuffer` call a scroll-away makes. One reallocation per owned window per transition;
+  nothing moves while the state is steady. A window added while already searching is born flat
+  rather than allocating an SBS store and immediately reallocating it.
+
+  **Scene windows are deliberately untouched.** `addScene` / `addSplat` / `addModel` canvases are
+  the page's pixels, and this SDK does not resize or paint into them. A scene does the same thing
+  with the pair `SceneViewer` already has — `startMono()` / `stopMono()`, the same calls
+  `onLayerLost` wires — which is written out in
+  [docs/authoring-inline-3d.md](docs/authoring-inline-3d.md#knowing-when-nobody-is-tracked).
+
 ## 1.7.1 — 2026-09-20
 
 Touches the **preview tier** (`./model`) only, and fixes exactly one thing: under a bundler, a

@@ -89,6 +89,15 @@ No projection math lands in your page or in the SDK — the off-axis frustum sta
 > OS weave service has bound (typically at page load), a false-negative that silently drops you to 2D.
 > `createInline3D()` detects by actually acquiring a session, which is authoritative.
 
+> **Nobody in front of the display?** `wall.trackingState` is `'tracking'`, `'searching'` or
+> `'unknown'`, and `wall.on('trackingstatechange', state => …)` tells you when it moves.
+> `'searching'` means nobody is being tracked — the viewer left the display's 3D zone, or the
+> panel is in a 2D mode — which is the cue to show flat content instead of stereo.
+> `createInline3D({ untrackedFallback: 'mono' })` does that for you for `addImage` / `addVideo`
+> windows; a scene calls `SceneViewer.startMono()` / `stopMono()`. `'unknown'` is "no opinion"
+> (an older browser, or a closed session) and means render normally. See
+> [knowing when nobody is tracked](docs/authoring-inline-3d.md#knowing-when-nobody-is-tracked).
+
 Full API + authoring guidance: [`docs/authoring-inline-3d.md`](docs/authoring-inline-3d.md).
 Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-three.js).
 

@@ -699,6 +699,93 @@ import { inline3DAvailable } from './js/inline3d.js';
 if (!inline3DAvailable()) showFlat2D();        // cheap, synchronous, no false-negative
 ```
 
+## Knowing when nobody is tracked
+
+A glasses-free display only shows 3D to a viewer it can **see**. Step out of the display's zone —
+or put the panel in a 2D mode — and the weave keeps running against a stale or default viewpoint,
+which reads as a soft double image rather than as a picture. The page can know:
+
+```js
+const wall = await createInline3D();
+if (wall.supported) {
+  console.log(wall.trackingState);                 // 'tracking' | 'searching' | 'unknown'
+  wall.on('trackingstatechange', (state) => {      // the STATE is the first argument
+    document.body.classList.toggle('flat', state === 'searching');
+  });
+}
+```
+
+**`'searching'` means nobody is being tracked** — the runtime's derived `isTracking` is false. Two
+different situations produce it and a page cannot tell them apart, so do not word your UI as if
+you could:
+
+- the viewer is **outside the display's supported 3D zone** (walked away, leaned too far, turned
+  around), or
+- the display is in an **untracked or 2D mode**.
+
+It does **not** necessarily mean the tracker lost lock on a face that is still in front of the
+panel. "Nobody is being tracked right now" is the whole of what it says. Treat it as a cue to
+stop submitting stereo and show flat content until tracking resumes — never as an error, and
+never as something to nag the user about.
+
+**`'unknown'` means no opinion**, and is what every browser older than the tracking-state surface
+reports, forever and silently. A page must render normally on `'unknown'`: it is not "tracking
+failed", it is "this build cannot say". That is also what you get once the session ends. Because
+of it you can subscribe unconditionally — there is no capability to probe and nothing to gate on.
+
+### Letting the SDK handle the windows it owns
+
+For `addImage` and `addVideo` the SDK owns the backing store, so it can do the flat-content
+switch for you:
+
+```js
+const wall = await createInline3D({ untrackedFallback: 'mono' });
+```
+
+While `trackingState === 'searching'`, every image and video window paints its **left eye alone,
+1:1** instead of the side-by-side pair, and goes back to the pair when tracking resumes. The
+default is `'none'` — today's behaviour, unchanged, for every page that does not ask.
+
+What it does and does not do:
+
+- **The weave layer is never closed or recreated.** The window keeps its place in the frame and
+  its lazy lifecycle; only what it submits changes. This also keeps
+  [the one contract](#the-one-contract-you-must-understand) honest in both directions — a canvas
+  is never left holding a raw SBS pair that nothing is weaving.
+- **It costs one buffer reallocation per window, per transition.** A mono frame stretches one eye
+  over the whole store, so the store has to be 1:1 — the same `canvas.width` write the SDK makes
+  when a tile scrolls away. Nothing moves while the state is steady, so the cost is per
+  *transition*, not per frame.
+- **Scene windows are never touched.** `addScene`, `addSplat` and `addModel` canvases are yours;
+  the SDK will not resize or paint into them.
+
+### The same thing for a scene
+
+A scene renders its own pixels, so the switch is a call you make. `SceneViewer` already has the
+pair for it — the same two methods its `onLayerLost` wiring uses:
+
+```js
+import { SceneViewer } from '@displayxr/inline3d/viewer';
+
+const viewer = new SceneViewer(THREE, canvas, { virtualDisplayHeight: 0.18 });
+viewer.useEyeCamera(EyeCamera);
+wall.addScene(canvas, viewer.onFrame, { onLayerLost: viewer.onLayerLost });
+
+wall.on('trackingstatechange', (state) => {
+  if (state === 'searching') viewer.startMono();  // one centred camera, 1:1 buffer
+  else viewer.stopMono();                         // back to the stereo pair
+});
+```
+
+`startMono()` drives its own flat render loop with one centred camera across the whole buffer —
+the same call you already make on a browser without inline 3D, and the one `onLayerLost` wires
+for you. `stopMono()` hands the loop back; `onFrame` also calls it on the first 3D frame it gets,
+so the `else` branch above is belt-and-braces rather than load-bearing. A renderer of your own
+does the equivalent: draw once, to the full canvas, instead of once per eye viewport.
+
+Note that `'unknown'` falls into that `else` on purpose — an old browser must keep rendering
+stereo.
+
 ## Rounded corners
 
 CSS `border-radius` on a weaved canvas rounds the **packed SBS rectangle's** outer corners —
