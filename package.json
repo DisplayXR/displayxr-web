@@ -43,6 +43,7 @@
     "js/inline3d-sog.js",
     "js/inline3d-splat-perf.js",
     "js/inline3d-splat-rig.js",
+    "js/inline3d-splat-playcanvas.js",
     "js/inline3d-model.js",
     "index.d.ts",
     "three.d.ts",
@@ -74,13 +75,17 @@
   "license": "Apache-2.0",
   "peerDependencies": {
     "three": ">=0.150.0",
-    "@sparkjsdev/spark": ">=2.0.0"
+    "@sparkjsdev/spark": ">=2.0.0",
+    "playcanvas": ">=2.22.3 <3"
   },
   "peerDependenciesMeta": {
     "three": {
       "optional": true
     },
     "@sparkjsdev/spark": {
+      "optional": true
+    },
+    "playcanvas": {
       "optional": true
     }
   },

@@ -145,6 +145,11 @@ function sniffFileType(bytes) {
  * good enough for a clean, isolated capture, weaker on a scene with a background wall.
  */
 export function addSplat(wall, canvas, src, opts = {}) {
+  // WHICH ENGINE. Unset (or 'spark') is everything below, untouched. 'playcanvas' goes to
+  // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
+  // resolves `playcanvas` — see addSplatDeferred.
+  if (resolveSplatEngine(opts) === 'playcanvas') return addSplatDeferred(wall, canvas, src, opts);
+
   // Fail here, synchronously, and not through `ready`: a peer too old is an install-time mistake
   // in the page's dependencies, not a condition of this asset, and it will be true of every call.
   // Surfacing it as a load rejection would let a caller render an "asset unavailable" placeholder
@@ -557,6 +562,49 @@ export function addSplat(wall, canvas, src, opts = {}) {
       throw err;
     });
 
+  return out;
+}
+
+/**
+ * The `engine: 'playcanvas'` handle, returned SYNCHRONOUSLY like the Spark one.
+ *
+ * The adapter module is loaded on demand, so for a moment the handle exists before its
+ * implementation does. Rather than make every caller await something new, the handle starts as
+ * stubs that QUEUE: `exclude()` (which a product page calls on the very next line), `setPose`,
+ * `setFocus`, `remove` — and the adapter replays the queue into the real implementation, on the
+ * SAME object, the moment it arrives. `ready` resolves to this object, as it does on Spark.
+ * Fields (`viewer`, `mesh`, `rig`, …) are null until then; `viewer` in particular appears one
+ * module-load later than on Spark.
+ */
+function addSplatDeferred(wall, canvas, src, opts) {
+  const pending = [];
+  const queue = (name) => (...args) => {
+    pending.push([name, args]);
+    return name === 'setFocus' ? out : undefined;
+  };
+  const out = {
+    engine: 'playcanvas',
+    viewer: null,
+    mesh: null,
+    frame: null,
+    camera: null,
+    rig: null,
+    perf: null,
+    setPose: queue('setPose'),
+    resetPose: queue('resetPose'),
+    setFocus: queue('setFocus'),
+    getFocus: () => null,
+    pick: () => null,
+    remove: queue('remove'),
+    exclude: queue('exclude'),
+    unexclude: queue('unexclude'),
+  };
+  out.ready = import('./inline3d-splat-playcanvas.js')
+    .then((m) => m.attachPlayCanvasSplat(out, wall, canvas, src, opts, pending).ready)
+    .catch((err) => {
+      if (!out.viewer) console.warn('[inline3d/splat] engine:playcanvas failed to start', err);
+      throw err;
+    });
   return out;
 }
 

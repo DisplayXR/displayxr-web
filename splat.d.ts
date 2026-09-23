@@ -34,6 +34,36 @@ export interface SplatPerfOptions {
   lodSplatCount?: number;
   /** Minimum on-screen splat size multiplier (needs `lod`); up to ~5 is often invisible. */
   lodRenderScale?: number;
+  /**
+   * `engine: 'playcanvas'` only — engine-native knobs, passed straight to `app.scene.gsplat`
+   * (and winning over the Spark-knob mapping). `splatBudget` is a global splat count per tile.
+   */
+  splatBudget?: number;
+  /** `engine: 'playcanvas'` only: cull splats whose quad DIAMETER is under this many px. */
+  minPixelSize?: number;
+  /** `engine: 'playcanvas'` only: the forward-pass alpha floor (engine default 1/255). */
+  alphaClipForward?: number;
+  /** `engine: 'playcanvas'` only: the engine's AA compensation, for AA-trained assets. */
+  antiAlias?: boolean;
+}
+
+/**
+ * The PlayCanvas backend's viewer (`engine: 'playcanvas'`): the SceneViewer pose surface without
+ * three. Not field-compatible with SceneViewer — see docs/playcanvas-adapter.md.
+ */
+export interface PlayCanvasSplatViewer {
+  idleSpin: number;
+  readonly is3D: boolean;
+  depthOffset: number;
+  /** The engine's `AppBase`, once booted. */
+  readonly app: unknown;
+  fitTo(center: number[], extent: number[]): void;
+  setPose(pose?: OrbitPose): void;
+  getPose(opts?: { target?: boolean }): Required<OrbitPose>;
+  resetPose(): void;
+  getSubjectBounds(): SubjectBounds & { front: number; back: number; scale: number };
+  setFocus(point: number[] | { x: number; y: number; z: number } | null, opts?: { snap?: boolean; recentre?: boolean }): PlayCanvasSplatViewer;
+  getFocus(opts?: { target?: boolean }): { x: number; y: number; z: number };
 }
 
 /** Camera intrinsics for ONE eye, in pixels, OpenCV convention. */
@@ -112,6 +142,22 @@ export interface ResolvedRig {
 }
 
 export interface SplatOptions {
+  /**
+   * Which renderer. `'spark'` (the default) is three.js + Spark. `'playcanvas'` is the PlayCanvas
+   * engine (optional peer `playcanvas >=2.22.3 <3`, loaded by dynamic import only when asked):
+   * same handle, reads `.sog` / `.ply` / a Streamed-SOG `lod-meta.json`. Anything else throws.
+   */
+  engine?: 'spark' | 'playcanvas';
+  /**
+   * `engine: 'playcanvas'` only: the WebGL context's `preserveDrawingBuffer` (default false) —
+   * the knob for the weave's zero-copy read race on large canvases.
+   */
+  preserveDrawingBuffer?: boolean;
+  /**
+   * `engine: 'playcanvas'` only: the `playcanvas` module namespace to use instead of
+   * `import('playcanvas')` — for a page that already bundles its own copy.
+   */
+  playcanvas?: unknown;
   /** Metres of world the tile's height spans (default 0.24). */
   virtualDisplayHeight?: number;
   /**
@@ -150,7 +196,7 @@ export interface SplatOptions {
    * `true`, −5…−20 % measured) and `'aggressive'` (−22 %) tighten the quad extent instead, which
    * is the axis that actually pays on the web; both move pixels.
    */
-  perf?: true | 'exact' | 'balanced' | 'aggressive' | SplatPerfOptions;
+  perf?: boolean | 'exact' | 'balanced' | 'aggressive' | SplatPerfOptions;
   /**
    * Which view rig. `'auto'` (the default) reads it off the ASSET — a `.sog` carrying a `camera`
    * block was lifted from a photograph and gets a camera rig that conserves the recording
@@ -191,11 +237,22 @@ export interface SplatOptions {
 
 /** What {@link addSplat} returns: a TileHandle plus the objects behind it. */
 export interface SplatHandle {
-  readonly viewer: SceneViewer;
-  /** Spark's SplatMesh. */
+  /**
+   * SceneViewer on Spark; the PlayCanvas backend's own viewer on `engine: 'playcanvas'` (null
+   * there until the backend module has loaded — one module fetch after addSplat returns).
+   */
+  readonly viewer: SceneViewer | PlayCanvasSplatViewer;
+  /**
+   * Spark's SplatMesh; on `engine: 'playcanvas'` a `{ numSplats, entity, asset, resource }`
+   * record of the engine objects. Null until the asset is loaded.
+   */
   readonly mesh: object;
-  /** Spark's SparkRenderer. */
-  readonly spark: object;
+  /** Spark's SparkRenderer (absent on `engine: 'playcanvas'`). */
+  readonly spark?: object;
+  /** Set on `engine: 'playcanvas'`. */
+  readonly engine?: 'playcanvas';
+  /** `engine: 'playcanvas'` only: the live focus, in the splat's own space. */
+  getFocus?(opts?: { target?: boolean }): number[] | null;
   /** Bounds actually used for framing; null until `ready` resolves. */
   frame: SubjectBounds | null;
   /**
