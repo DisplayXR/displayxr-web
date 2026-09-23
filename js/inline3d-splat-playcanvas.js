@@ -35,6 +35,7 @@ import {
   resolveRig,
   planeDistance,
   sampleCloudRestSpace,
+  rigNeedsCloud,
   sampleCloudCentres,
   centresVisitor,
   RIG_SAMPLE_CAP,
@@ -1554,7 +1555,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   viewer.onFocusChange = (f) => {
     pushViewRig(false);
     const cb = out.onFocusChange;
-    if (typeof cb === 'function') cb(contentToModel([f.x, f.y, f.z]));
+    // Second argument: which waterfall step the focus came from ('block', 'nearest-clump', …).
+    if (typeof cb === 'function') cb(contentToModel([f.x, f.y, f.z]), { focusSource: out.rig?.focusSource ?? null });
   };
 
   // ── pick ──
@@ -1665,7 +1667,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const bounds = local ? lift(local) : desc.bounds ? lift(desc.bounds) : frame ? lift(frame) : null;
 
     const sample =
-      loaded.camera?.intrinsics && loaded.camera?.focus
+      !rigNeedsCloud(loaded.camera)
         ? null
         : walk
           ? sampleCloudRestSpace(cloud.total, walk, loaded.camera?.rest)
