@@ -206,7 +206,11 @@ export interface SplatOptions {
   /** Per-eye buffer scale; 0.5–0.7 is usually free (default 1). */
   renderScale?: number;
   feather?: number;
-  /** Minimum ms between splat sorts. Defaults to 16 so both eyes share one sort per frame. */
+  /**
+   * Spark: minimum ms between splat sorts (default 16, so both eyes share one sort per frame).
+   * PlayCanvas: accepted and has no effect — the engine re-sorts when the camera ROTATES, with one
+   * directional sort serving every view.
+   */
   sortIntervalMs?: number;
   /**
    * Cut overdraw. UNSET changes nothing — every Spark default stays where Spark put it, so an
@@ -343,7 +347,12 @@ export interface SplatHandle {
    * which waterfall step it came from. PlayCanvas backend; assign any time, even before `ready`.
    */
   onFocusChange: ((point: number[], info: { focusSource: ResolvedRig['focusSource'] | null }) => void) | null;
-  /** What is under a point on the canvas, in the splat's own space — the double-click's raycast. */
+  /**
+   * What is under a point on the canvas, in the splat's own space — the double-click's pick.
+   * PlayCanvas: the nearest gaussian CENTRE to the ray over the FULL centre set (haze under 5 %
+   * opacity skipped); on a Streamed SOG, over the chunks currently resident. Spark: its surface
+   * raycast, falling back to the nearest centre.
+   */
   pick(clientX: number, clientY: number): number[] | null;
 
   /** Close this window and release its GPU resources. */
