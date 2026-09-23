@@ -60,6 +60,15 @@ one dense sheet that is fully on screen, so it gains nothing from streaming. How
 and budget one, with measurements:
 [`docs/playcanvas-adapter.md` §Streamed SOG](docs/playcanvas-adapter.md#streamed-sog-p2).
 
+**A game owns its camera (preview).** `addSplat(wall, canvas, src, { engine: 'playcanvas',
+controls: 'page', onBeforeFrame })` hands the camera to the page. Call
+`handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far, convergence? })` inside
+`onBeforeFrame` and that frame renders it. The SDK runs no orbit, idle spin, fit or focus
+gestures. It keeps the eye math: the attach-pattern camera rig (the auto-3D shim's, with
+`comfortDepth` 0.3 by default), the runtime's projections, and the mono fallback. Spark refuses
+this mode. Contract and numbers:
+[`docs/playcanvas-adapter.md` §controls:'page'](docs/playcanvas-adapter.md#controlspage--the-page-owns-the-camera).
+
 Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
 that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
 

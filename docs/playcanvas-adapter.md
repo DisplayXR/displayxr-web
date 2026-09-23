@@ -113,6 +113,116 @@ so **`nearClip` / `farClip`** (both optional, `perf`-independent) are a **floor 
 on far**. They never widen the range, and they rewrite only the depth mapping, not the frustum.
 Anything nearer than `nearClip` is clipped, splats included.
 
+## `controls:'page'` — the page owns the camera
+
+For a game, or any page that already has a camera. The adapter stops being a viewer: no orbit,
+no idle spin, no auto-fit and no focus gestures. It keeps what it is uniquely good at: the eye
+math, the `RenderView` list, the footprint fix, near/far and the mono fallback.
+
+```js
+const h = addSplat(wall, canvas, src, {
+  engine: 'playcanvas',
+  controls: 'page',
+  comfortDepth: 0.3, // default
+  onBeforeFrame: ({ time, views, dt }) => {
+    game.step(dt); // the page's own simulation
+    splatFromWorld.copy(splatEntity.matrixWorld).invert();
+    m.multiplyMatrices(splatFromWorld, camera.matrixWorld); // camera in the SPLAT's space
+    h.setCameraPose(m.elements, { verticalFovDeg: camera.fov, near: camera.near, far: camera.far });
+  },
+});
+```
+
+**`setCameraPose(matrixWorld, { verticalFovDeg, near?, far?, convergence? })`**
+- `matrixWorld`: 16 numbers, column-major. It is the page camera's world matrix **in the splat's
+  own space**, the space of the camera block's `rest`, in the three.js convention (looks down −Z,
+  +Y up). The adapter applies its own OpenCV → engine flip (the half-turn about X the splat entity
+  carries), so the page never sees it. A block's OpenCV `rest` pose converts as `rest · Rx(180°)`.
+- **A uniform scale is allowed**, and it is how page units reach the adapter. F1000's castle
+  splat sits under `T·Rx(180°)·S(2.5)`, so `inv(splatWorld) · camera.matrixWorld` carries a 0.4
+  scale. The rig node takes it, which puts the runtime's eye offsets (metres), the page's
+  `near`/`far` and `convergence` in page units. A non-uniform scale warns once and uses the
+  geometric mean. A mirrored or singular matrix throws.
+- `near` / `far` (defaults 0.001 / 5000) are a floor and a cap on every projection's depth mapping,
+  combined with `nearClip` / `farClip` as in 1.9.1. The frustum shape never moves.
+- **Last call wins.** A page that stops calling keeps its last pose, with no snapping to anything.
+  `getCameraPose()` returns a copy of the last pose, or null before the first call. Until then
+  the camera sits at the asset's rest pose with the resolved lens, so the first frame is not
+  empty.
+
+**`onBeforeFrame(frame)`, the ordering guarantee.** It is called once per adapter frame: the
+wall's session frame in 3D, the SDK's mono rAF in 2D. It runs **before** the tick and before any
+render, with `{ time, views, dt }`: `views` is the runtime's `XRView` list in 3D (valid only
+inside the call) and null in mono; `dt` is in seconds, capped at 0.1.
+- **Call `setCameraPose` inside `onBeforeFrame` for zero lag.** The pose set there is the one
+  this very frame renders: the attach pattern, which F1000's `dxrMode` uses today.
+- **Outside it you may be one frame late.** The session rAF (3D) and the window rAF have no
+  guaranteed order.
+- A throw in the callback is caught and warned once, and the frame still renders.
+
+**What renders.**
+- **Mono:** exactly the page's camera. The eye is the rig node, and the projection is plain:
+  `verticalFovDeg` × the canvas aspect, principal point centred. No capture window applies.
+- **3D, the attach pattern** (the same contract as the auto-3D shim, `tools/auto3d-shim/core.js`):
+  - The rig node carries `flip · matrixWorld`.
+  - Each eye's `RenderView` gets `view.transform` as its pose. The engine composes the parent, so
+    eye world = `matrixWorld × view.transform`.
+  - The projection is the runtime's, untouched (depth mapping aside).
+- **The rig is declared every frame**, before the draw:
+  `{ type: 'camera', position 0, orientation identity, verticalFov, convergenceDiopters: 1/d,
+  metersToVirtual: comfortDepth · d / 0.5, ipdFactor, parallaxFactor }`. By construction,
+  comfort = `ipd × m2v × (1/d) × 0.5` = `comfortDepth`. So the depth budget is the same for a
+  10 cm subject and a 150 m castle, and a game behaves the way it does under the shim.
+  `ipdFactor` / `parallaxFactor` come from the options (default 1).
+
+**Convergence `d`.**
+- It is the call's `convergence` (page units, along the view axis) when given.
+- Otherwise it is the **focus waterfall's** value (block › nearest clump › median disparity),
+  measured once on load in model units, divided by the matrix's scale.
+- It **stays fixed while the camera moves.** There is no per-frame estimation (a game camera
+  whips around; a re-estimated convergence would pull the scene through the glass). It is
+  re-estimated only on `setSource`.
+- `setFocus(point)` sets `d` to the point's distance along the current view axis, eased unless
+  `{ snap: true }`. `setFocus(null)` goes back to the waterfall's `d`.
+- `getFocus()` is the convergence point on the view axis, in model space. `onFocusChange` fires
+  when `d` changes (not when the camera moves).
+- `pick()` casts through the page's camera, so `h.setFocus(h.pick(x, y))` is the page-owned
+  double-click.
+
+**What is refused.**
+- `setPose` / `resetPose` throw with a message naming `setCameraPose`.
+- `rig: 'display'` throws: the page's camera *is* the rig. `rig: 'auto'` resolves to `camera`.
+- `setSource`'s `resetPose` is ignored.
+- `fit`, `virtualDisplayHeight`, `orbit`, `idleSpin`, `focusInput`, `margin`, `fitSweep`,
+  `depthLimit`, `orbitMaxDeg`, `orbitEase` and `captureFit` are ignored, named once in a
+  `console.info`.
+- **Spark:** `controls: 'page'` throws at call time, naming `engine: 'playcanvas'`. Supporting it
+  there means teaching SceneViewer to take an external camera in both its mono and eye paths.
+  SceneViewer is shared with `./viewer` and `./model`, which is more than this change should
+  touch. Estimated at about a day with parity, not done.
+
+`handle.engine` is unchanged: the page may still add entities under `root`, which is how a game's
+meshes, character and lights share the splat's depth.
+
+**Gates (1.11.0).** Headless Chrome 153 on the real GPU (ANGLE Metal, Apple M1 Pro), 1280×720,
+engine 2.22.3, no other Chrome running. Grey MAE /255. The harness is the epic's parity scratch
+page (`cam.html`), not shipped.
+
+| check | result |
+|---|---|
+| **Equivalence, display rig** (`ports_25.sog`, yaw 20°): the page hands `setCameraPose` the exact camera the default controls use (`flip · rig · monoPose`, a 426× uniform scale, fov 35°, near/far 0.001/1000), mono | **MAE 0.000** vs the default render |
+| **Equivalence, camera rig** (`ports_100_cam.sog`, block, yaw 10°, fov 51.5°), mono | **MAE 0.000** |
+| **Equivalence, 3D** (fake wall, two views at ±32 mm, ±0.1 NDC skew; default eyes in display space vs page eyes in rig space) | **MAE 0.000** |
+| Frames follow the pose: the page's own orbit, 0° vs 25° about the focus | MAE 19.4 (non-empty: 16–17 % of pixels lit) |
+| Off-axis skew reaches the eyes untouched: ±0.1 NDC on a 1280-px eye, eyes at 0 | left eye **−64 px**, right eye **+64 px** (buffer), residual 0.000 |
+| Rig pushed, per frame (456 pushes in 8 s) | `type 'camera'`, identity pose, `verticalFov` 0.61087 = 35°, `convergenceDiopters` 200.542 = 1/d, `metersToVirtual` 0.0029919 = 0.3·d/0.5, with d = 2.1246 (median disparity, model m) / 426.07 (the matrix's scale) |
+| Eye separation matters in 3D (±32 mm vs 0, same skew) | MAE 12.0 |
+
+**Not tested:** the DisplayXR Browser (a real runtime's views and rig echo, the weave), Windows
+and Android; `onBeforeFrame` ordering against a real session rAF (the fake wall calls the frame
+from the window rAF); F1000 itself on this mode; a non-uniform `matrixWorld` on the GPU
+(fake-engine tested only); `setSource` under a page camera on the GPU.
+
 ## `setSource` — what a swap costs the main thread
 
 Measured in headless Chrome 153 on an M1 Pro. The swap is `ports_25.sog` → `ports_100_cam.sog`
