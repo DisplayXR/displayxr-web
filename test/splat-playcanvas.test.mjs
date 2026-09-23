@@ -36,6 +36,8 @@ import {
   nearestCentreToRay,
   pickViewPath,
   attachPlayCanvasSplat,
+  describeResource,
+  readCloud,
 } from '../js/inline3d-splat-playcanvas.js';
 import {
   resolveSplatEngine,
@@ -420,9 +422,9 @@ test('a remove() queued before load disposes instead of booting the engine', asy
     },
   };
   const out = {};
-  attachPlayCanvasSplat(out, null, canvas, 'x.sog', { playcanvas: pc }, [['remove', []]]);
-  const r = await out.ready;
-  assert.equal(r, out, 'ready still resolves to the handle');
+  const r = await attachPlayCanvasSplat(out, null, canvas, 'x.sog', { playcanvas: pc }, [['remove', []]]);
+  assert.equal(r, out, 'the load promise still resolves to the handle');
+  assert.equal('ready' in out, false, 'attach never writes out.ready — ./splat owns it');
   assert.equal(booted, 0);
   assert.equal(out.viewer._disposed, true);
 });
@@ -460,6 +462,13 @@ function makeFakePc() {
       this.root = new Entity('root', this);
       this.scene = { gsplat: { minPixelSize: 2, alphaClipForward: 1 / 255 } };
       this.resolutionMode = 'fixed';
+      this.assets = {
+        add() {},
+        load: (a) => {
+          a.resource = rec.resource;
+          queueMicrotask(() => a._ready?.(a));
+        },
+      };
       current = this;
     }
     init(o) {
@@ -494,6 +503,16 @@ function makeFakePc() {
     Entity,
     Camera,
     RenderView: class {},
+    Asset: class {
+      constructor(name, type, file) {
+        Object.assign(this, { name, type, file });
+        rec.assetFile = file;
+      }
+      ready(cb) {
+        this._ready = cb;
+      }
+      once() {}
+    },
     Color: class { constructor(...a) { this.v = a; } },
     CameraComponentSystem: 'cam',
     GSplatComponentSystem: 'gsplat',
@@ -570,4 +589,121 @@ test('frustumFromProjection: an infinite-far projection gives a large FINITE far
   assert.ok(Number.isFinite(f.farClip) && f.farClip >= 1000, `far ${f.farClip}`);
   near(f.nearClip, 0.05, 1e-12, 'near still recovered');
   near(f.fov, 40, 1e-9, 'fov still recovered');
+});
+
+
+// ── 11. review fixes ────────────────────────────────────────────────────────────────────────
+
+test('onFocusChange assigned on the stub BEFORE the adapter loads is the one that fires', () => {
+  installDom();
+  const seen = [];
+  const out = { onFocusChange: (p) => seen.push(p) }; // what ./splat's stub holds
+  const pc = { createGraphicsDevice: () => new Promise(() => {}) };
+  attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc }, []);
+  out.viewer.setFocus([0.5, 0.25, -1], { snap: true });
+  assert.equal(seen.length, 1, 'the pre-load callback survived attach');
+  assert.deepEqual(seen[0], [0.5, -0.25, 1], 'reported in the splat’s own (unflipped) space');
+  const later = [];
+  out.onFocusChange = (p) => later.push(p);
+  out.viewer.setFocus([0, 0, 0], { snap: true });
+  assert.equal(later.length, 1, 'reassigning after load still works');
+  assert.equal(seen.length, 1);
+  out.remove();
+});
+
+test('./splat stub carries an onFocusChange slot; the adapter never writes out.ready (source check)', async () => {
+  const fs = await import('node:fs');
+  const splat = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const stub = splat.slice(splat.indexOf('function addSplatDeferred'));
+  assert.match(stub, /onFocusChange: null,/);
+  assert.equal((stub.match(/out\.ready =/g) || []).length, 1, 'one owner of ready');
+  const pcSrc = fs.readFileSync(new URL('../js/inline3d-splat-playcanvas.js', import.meta.url), 'utf8');
+  assert.equal(/out\.ready\s*=/.test(pcSrc), false);
+});
+
+/** A GSplatOctreeResource as the engine hands it back: data.tree already nulled, aabb set. */
+function fakeOctree({ camera } = {}) {
+  return {
+    octree: { nodes: [] },
+    numSplats: 294912,
+    aabb: { center: { x: 1, y: 2, z: 3 }, halfExtents: { x: 10, y: 5, z: 20 } },
+    data: { version: 1, count: 516096, lodLevels: 3, tree: null, ...(camera ? { camera } : {}) },
+  };
+}
+
+test('describeResource: a Streamed SOG frames from the octree bound and counts its finest level', () => {
+  const d = describeResource(fakeOctree());
+  assert.equal(d.kind, 'streamed');
+  assert.equal(d.numSplats, 294912);
+  assert.deepEqual(d.bounds, { center: [1, 2, 3], extent: [20, 10, 40] });
+  assert.equal(describeResource({ gsplatData: { numSplats: 7, meta: { a: 1 } } }).kind, 'flat');
+  assert.equal(describeResource(null).kind, null);
+});
+
+test('a Streamed SOG through the adapter: framed (not model scale), camera block read, pick warns once', async (t) => {
+  installDom();
+  const warn = t.mock.method(console, 'warn', () => {});
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeOctree();
+  const out = {};
+  const canvas = makeCanvas(320, 180);
+  await attachPlayCanvasSplat(out, null, canvas, 'https://x/scene/lod-meta.json', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.mesh.numSplats, 294912);
+  assert.equal(out.rig.type, 'display');
+  assert.deepEqual(out.frame, { center: [1, -2, -3], extent: [20, 10, 40] }, 'the flip applies to the bound');
+  assert.notEqual(out.viewer._fitScale, 1, 'fitTo ran — not UNFRAMED at model scale');
+  assert.ok(!warn.mock.calls.some((c) => /UNFRAMED/.test(String(c.arguments[0]))));
+  assert.equal(out.pick(10, 10), null);
+  assert.equal(out.pick(20, 20), null);
+  const pickWarns = warn.mock.calls.filter((c) => /pick is unsupported on a Streamed SOG/.test(String(c.arguments[0])));
+  assert.equal(pickWarns.length, 1, 'one warning, not one per call');
+  out.remove();
+});
+
+test('a Streamed SOG with a top-level lod-meta camera block goes on the camera rig', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeOctree({
+    camera: {
+      convention: 'opencv',
+      rest: { position: [0, 0, 0], rotation: [0, 0, 0, 1] },
+      intrinsics: { fx: 1000, fy: 1000, cx: 640, cy: 360, width: 1280, height: 720 },
+      focus: { point: [0, 0, 2] },
+    },
+  });
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'https://x/lod-meta.json', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.rig.type, 'camera');
+  assert.equal(out.rig.intrinsicsSource, 'block', 'not the 28 mm fallback');
+  assert.equal(out.camera.intrinsics.fx, 1000);
+  out.remove();
+});
+
+test('readCloud strides at copy time: ≤ FRAME_SAMPLE_CAP splats kept, 16 B each, opacity aligned', async () => {
+  const N = 1179648;
+  const centers = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) centers[i * 3] = i;
+  const w = 1024, h = Math.ceil(N / w);
+  const px = new Uint8Array(w * h * 4);
+  for (let i = 0; i < N; i++) px[i * 4 + 3] = i % 256;
+  const res = {
+    centers,
+    gsplatData: { numSplats: N, isSog: true, meta: { version: 2 }, sh0: { width: w, height: h, read: async () => px } },
+  };
+  const c = await readCloud(res);
+  assert.equal(c.sourceTotal, N);
+  assert.equal(c.stride, 6);
+  assert.equal(c.total, 196608);
+  assert.equal(c.xyz.length, 196608 * 3);
+  assert.equal(c.xyz.byteLength + c.opacity.byteLength, 196608 * 16, '≈3.1 MB, was 18.9 MB for the full copy');
+  assert.equal(c.xyz[3], 6, 'second kept splat is source index 6');
+  near(c.opacity[1], (6 % 256) / 255, 1e-7, 'opacity follows the same stride');
+  assert.equal(await readCloud(fakeOctree()), null, 'a Streamed SOG has no flat cloud');
+});
+
+test('sampleCloudCentres honours a cap (the pick set uses RIG_SAMPLE_CAP)', () => {
+  const n = 100000;
+  const xyz = new Float32Array(n * 3);
+  const s = sampleCloudCentres(n, centresVisitor(xyz), { cap: RIG_SAMPLE_CAP });
+  assert.equal(s.length / 3, Math.ceil(n / Math.ceil(n / RIG_SAMPLE_CAP)));
 });

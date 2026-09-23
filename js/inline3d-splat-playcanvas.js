@@ -38,12 +38,13 @@ import {
   sampleCloudCentres,
   centresVisitor,
   RIG_SAMPLE_CAP,
-  RIG_MIN_OPACITY,
+  FRAME_SAMPLE_CAP,
 } from './inline3d-splat-rig.js';
 import { readSogMeta, sogCameraFromMeta } from './inline3d-sog.js';
 import { playcanvasPerfSettings, patchPlayCanvasQuadExtent } from './inline3d-splat-perf.js';
 import { boundsFromPositions } from './inline3d-viewer.js';
 import { cameraRigFromPose } from './inline3d-three.js';
+import { clamp, finite, now, toArray3, canvasNdc, bindFocusGestures } from './inline3d-splat-shared.js';
 
 /** The engine release this adapter was built and measured against (npm peer floor). */
 export const PLAYCANVAS_TESTED = '2.22.3';
@@ -68,9 +69,6 @@ const MONO_FAR = 1000;
 const CAPTURE_FAR = 5000;
 const PICK_CONE_RAD = 0.02;
 
-const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
-const finite = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
-const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const DEG = Math.PI / 180;
 
 // ── pure matrix arithmetic (column-major, the layout XRView, three and the engine all use) ──
@@ -1139,53 +1137,102 @@ function placeNode(node, m) {
 // ── the cloud, from the engine's own resource ───────────────────────────────────────────────
 
 /**
- * Centres (+ peak opacities where the format has them) from a loaded gsplat resource, for the
- * rig waterfall, the auto-frame and the pick. Model space — the file's own frame, before the
+ * Centres (+ peak opacities where the format has them) from a loaded FLAT gsplat resource, for
+ * the rig waterfall, the auto-frame and the pick. Model space — the file's own frame, before the
  * flip — which is what Spark's forEachSplat reports too.
  *
- * Centres come from `resource.centers` (the engine computes them for its own sort). Opacities
- * are read back from the SOG `sh0` plane (alpha is the sigmoid'd opacity in a v2 SOG) or taken
- * from a PLY's `opacity` property. Everything is COPIED into a strided subsample: the engine may
- * hand its arrays to a sort worker, which detaches them.
+ * STRIDED AT COPY TIME to at most FRAME_SAMPLE_CAP splats, the largest sample any consumer takes
+ * (the frame pass; the rig pass and the pick stride further, to RIG_SAMPLE_CAP). A copy, because
+ * the engine may hand its own arrays to a sort worker, which detaches them — but only the copy it
+ * needs: on the 1.18M-gaussian bench asset that is 196,608 splats × 16 B ≈ 3.1 MB instead of
+ * 1,179,648 × 16 B ≈ 18.9 MB, and the caller drops it once `ready` has resolved.
  *
- * @returns {Promise<{xyz:Float32Array, opacity:Float32Array|null, total:number}|null>}
+ * Centres come from `resource.centers` (the engine computes them for its own sort). Opacities
+ * come from the SOG `sh0` plane — alpha is the sigmoid'd opacity in a v2 SOG — through the
+ * engine's texture read (a PBO + fence readback, asynchronous; the full plane is transient), or
+ * from a PLY's `opacity` property.
+ *
+ * @returns {Promise<{xyz:Float32Array, opacity:Float32Array|null, total:number, stride:number,
+ *          sourceTotal:number}|null>} `total` is the number of splats IN the sample.
  */
 export async function readCloud(resource) {
   if (!resource) return null;
   const centers = resource.centers;
   const data = resource.gsplatData;
-  const total = data?.numSplats || (centers ? Math.floor(centers.length / 3) : 0);
-  if (!centers || !total) return null;
+  const sourceTotal = data?.numSplats || (centers ? Math.floor(centers.length / 3) : 0);
+  if (!centers || !sourceTotal) return null;
+  const stride = Math.max(1, Math.ceil(sourceTotal / FRAME_SAMPLE_CAP));
+  const total = Math.ceil(sourceTotal / stride);
+  const xyz = new Float32Array(total * 3);
+  for (let j = 0, i = 0; j < total; j++, i += stride) {
+    xyz[j * 3] = centers[i * 3];
+    xyz[j * 3 + 1] = centers[i * 3 + 1];
+    xyz[j * 3 + 2] = centers[i * 3 + 2];
+  }
   let opacity = null;
   try {
     if (data?.isSog && data.sh0?.read) {
       const px = await data.sh0.read(0, 0, data.sh0.width, data.sh0.height, { mipLevel: 0, face: 0, immediate: true });
-      if (px && px.length >= total * 4) {
+      if (px && px.length >= sourceTotal * 4) {
         opacity = new Float32Array(total);
         const v2 = data.meta?.version === 2;
         const mn = data.meta?.sh0?.mins?.[3];
         const mx = data.meta?.sh0?.maxs?.[3];
-        for (let i = 0; i < total; i++) {
+        for (let j = 0, i = 0; j < total; j++, i += stride) {
           const a = px[i * 4 + 3] / 255;
-          opacity[i] = v2 || mn === undefined ? a : 1 / (1 + Math.exp(-(mn + (mx - mn) * a)));
+          opacity[j] = v2 || mn === undefined ? a : 1 / (1 + Math.exp(-(mn + (mx - mn) * a)));
         }
       }
     } else if (typeof data?.getProp === 'function') {
       const o = data.getProp('opacity');
-      if (o && o.length >= total) {
+      if (o && o.length >= sourceTotal) {
         opacity = new Float32Array(total);
-        for (let i = 0; i < total; i++) opacity[i] = 1 / (1 + Math.exp(-o[i]));
+        for (let j = 0, i = 0; j < total; j++, i += stride) opacity[j] = 1 / (1 + Math.exp(-o[i]));
       }
     }
   } catch (err) {
     console.warn('[inline3d/splat] could not read splat opacities — the cloud pass runs unfiltered', err);
     opacity = null;
   }
-  // Keep a COPY of at most FRAME_SAMPLE_CAP-ish centres: enough for every consumer here (the
-  // rig pass and the pick stride to RIG_SAMPLE_CAP; the frame pass to 200k), and immune to the
-  // engine transferring its own buffer.
-  return { xyz: Float32Array.from(centers.subarray(0, total * 3)), opacity, total };
+  return { xyz, opacity, total, stride, sourceTotal };
 }
+
+/**
+ * What kind of resource the engine handed back, and what can be known about it without a cloud.
+ *
+ * A Streamed SOG (`lod-meta.json`) loads as a `GSplatOctreeResource`: no `centers`, no
+ * `gsplatData`, splats arriving by LOD as the camera asks. Its framing falls back to the octree's
+ * root bound (`resource.aabb`, the lod-meta `tree.bound` — the engine nulls `data.tree` after
+ * reading it), its camera block to the top level of lod-meta.json, and its count to the octree's
+ * finest level (`numSplats`; lod-meta's `count` sums every level). Full streaming behaviour
+ * (budget per tile, pick on resident LODs) is P2.
+ *
+ * @returns {{kind:'flat'|'streamed'|null, numSplats:number, meta:object|null,
+ *            bounds:{center:number[],extent:number[]}|null}}  bounds in MODEL space.
+ */
+export function describeResource(res) {
+  if (!res) return { kind: null, numSplats: 0, meta: null, bounds: null };
+  if (!res.gsplatData && res.octree !== undefined) {
+    const a = res.aabb;
+    const bounds =
+      a && a.center && a.halfExtents
+        ? {
+            center: [a.center.x, a.center.y, a.center.z],
+            extent: [2 * a.halfExtents.x, 2 * a.halfExtents.y, 2 * a.halfExtents.z],
+          }
+        : null;
+    let n = 0;
+    try {
+      n = res.numSplats || 0;
+    } catch {
+      n = 0;
+    }
+    return { kind: 'streamed', numSplats: n || res.data?.count || 0, meta: res.data || null, bounds };
+  }
+  return { kind: 'flat', numSplats: res.gsplatData?.numSplats ?? 0, meta: res.gsplatData?.meta || null, bounds: null };
+}
+
+let warnedStreamedPick = false;
 
 // ── the handle ──────────────────────────────────────────────────────────────────────────────
 
@@ -1195,6 +1242,8 @@ export async function readCloud(resource) {
  *
  * @param {object} out  the handle, holding queueing stubs.
  * @param {Array} pending  [[method, args], …] called on the stubs before this ran.
+ * @returns {Promise<object>} resolves to `out` once loaded and framed (or removed). The caller
+ *          owns `out.ready`; this never writes it.
  */
 export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []) {
   const {
@@ -1239,6 +1288,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let unbindFocusInput = null;
   let cloud = null; // { xyz, opacity, total } in model space
   let pickCentres = null; // strided content-space centres for pick
+  let resourceKind = null; // 'flat' | 'streamed'
+  let streamedBounds = null; // model-space octree root bound, Streamed SOG only
   let removed = false;
 
   Object.assign(out, {
@@ -1271,6 +1322,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     },
     remove() {
       removed = true;
+      cloud = null;
+      pickCentres = null;
       unbindFocusInput?.();
       viewer.onFocusChange = null;
       handle?.remove();
@@ -1279,15 +1332,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
   });
-  Object.defineProperty(out, 'onFocusChange', {
-    configurable: true,
-    enumerable: true,
-    get: () => userFocusCb,
-    set: (fn) => {
-      userFocusCb = typeof fn === 'function' ? fn : null;
-    },
-  });
-  let userFocusCb = null;
+  // `onFocusChange` is a plain data property of the handle, read at CALL time — so a callback
+  // assigned before this module loaded (on the stub ./splat returned) is the one that fires.
+  if (!('onFocusChange' in out)) out.onFocusChange = null;
 
   /** Model (the file's own frame) → content (the engine world, after the flip). */
   function modelToContent(m) {
@@ -1347,16 +1394,24 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
   viewer.onFocusChange = (f) => {
     pushViewRig(false);
-    userFocusCb?.(contentToModel([f.x, f.y, f.z]));
+    const cb = out.onFocusChange;
+    if (typeof cb === 'function') cb(contentToModel([f.x, f.y, f.z]));
   };
 
   // ── pick ──
   function pickPoint(clientX, clientY) {
+    if (resourceKind === 'streamed') {
+      if (!warnedStreamedPick) {
+        warnedStreamedPick = true;
+        console.warn('[inline3d/splat] pick is unsupported on a Streamed SOG in this version (engine:playcanvas) — returns null.');
+      }
+      return null;
+    }
     if (!pickCentres || !pickCentres.length) return null;
-    const box = canvas.getBoundingClientRect();
-    if (!(box.width > 0) || !(box.height > 0)) return null;
-    const nx = ((clientX - box.left) / box.width) * 2 - 1;
-    const ny = -(((clientY - box.top) / box.height) * 2 - 1);
+    const ndc = canvasNdc(canvas, clientX, clientY);
+    if (!ndc) return null;
+    const nx = ndc.x;
+    const ny = ndc.y;
     const v = viewer.currentView();
     const invP = mat4Invert(v.proj);
     if (!invP) return null;
@@ -1373,36 +1428,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
 
   function bindFocusInput() {
-    if (focusInput === false || unbindFocusInput || typeof canvas.addEventListener !== 'function') return;
-    let hovering = false;
-    const onEnter = () => (hovering = true);
-    const onLeave = () => (hovering = false);
-    const onDblClick = (e) => {
-      const p = pickPoint(e.clientX, e.clientY);
-      if (!p) return;
-      e.preventDefault();
-      out.rig.focus = contentToModel(p);
-      out.rig.focusSource = 'picked';
-      out.rig.convergence = planeDistance(out.rig.rest, out.rig.focus);
-      viewer.setFocus(p);
-    };
-    const onKeyDown = (e) => {
-      if (e.code !== 'Space' && e.key !== ' ') return;
-      if (!hovering && document.activeElement !== canvas) return;
-      e.preventDefault();
-      out.setFocus(null);
-    };
-    canvas.addEventListener('pointerenter', onEnter);
-    canvas.addEventListener('pointerleave', onLeave);
-    canvas.addEventListener('dblclick', onDblClick);
-    addEventListener('keydown', onKeyDown);
-    unbindFocusInput = () => {
-      canvas.removeEventListener('pointerenter', onEnter);
-      canvas.removeEventListener('pointerleave', onLeave);
-      canvas.removeEventListener('dblclick', onDblClick);
-      removeEventListener('keydown', onKeyDown);
-      unbindFocusInput = null;
-    };
+    if (focusInput === false || unbindFocusInput) return;
+    unbindFocusInput = bindFocusGestures(canvas, {
+      onDoubleClick: (e) => {
+        const p = pickPoint(e.clientX, e.clientY);
+        if (!p) return false;
+        out.rig.focus = contentToModel(p);
+        out.rig.focusSource = 'picked';
+        out.rig.convergence = planeDistance(out.rig.rest, out.rig.focus);
+        viewer.setFocus(p);
+        return true;
+      },
+      onReset: () => out.setFocus(null),
+    });
   }
 
   // ── load ──
@@ -1446,16 +1484,16 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const res = asset.resource;
     // A URL `.sog` carries its meta in the resource (the engine keeps unknown keys); a Streamed
     // SOG carries it at the top level of lod-meta.json. Both validated by the same reader.
-    if (!bytes && rig !== 'display') {
-      const meta = res?.gsplatData?.meta || res?.data || null;
-      out.camera = sogCameraFromMeta(meta);
-    }
+    const desc = describeResource(res);
+    resourceKind = desc.kind;
+    streamedBounds = desc.bounds;
+    if (!bytes && rig !== 'display') out.camera = sogCameraFromMeta(desc.meta);
 
-    cloud = await readCloud(res);
+    cloud = desc.kind === 'flat' ? await readCloud(res) : null;
     if (removed) return null;
     viewer.addSplatAsset(asset);
     out.mesh = {
-      numSplats: res?.gsplatData?.numSplats ?? cloud?.total ?? res?.data?.count ?? 0,
+      numSplats: desc.numSplats || cloud?.sourceTotal || 0,
       entity: viewer.splat,
       asset,
       resource: res,
@@ -1463,13 +1501,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     return out.mesh;
   })();
 
-  out.ready = loaded
-    .then((mesh) => {
+  // The load promise is RETURNED, never written to `out.ready`: ./splat's addSplatDeferred owns
+  // that field (one promise, one owner, one warning on failure).
+  return loaded.then((mesh) => {
       if (!mesh) return out; // removed while loading
       const walk = cloud ? centresVisitor(cloud.xyz, cloud.opacity, cloud.total) : null;
       const local = walk ? boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []) : null;
       const lift = (b) => ({ center: modelToContent(b.center), extent: b.extent.slice(0, 3) });
-      const bounds = local ? lift(local) : frame ? lift(frame) : null;
+      // Streamed SOG: no cloud, so the octree's root bound (raw min/max, not percentile-trimmed).
+      const bounds = local ? lift(local) : streamedBounds ? lift(streamedBounds) : frame ? lift(frame) : null;
 
       const sample =
         out.camera?.intrinsics && out.camera?.focus
@@ -1489,20 +1529,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       out.rig = resolved;
       out.frame = bounds;
 
-      // Pick set: strided like the Spark path's nearest-gaussian walk, opacity-filtered, flipped.
-      if (cloud) {
-        const stride = Math.max(1, Math.ceil(cloud.total / RIG_SAMPLE_CAP));
-        const tmp = new Float32Array(Math.ceil(cloud.total / stride) * 3);
-        let k = 0;
-        for (let i = 0; i < cloud.total; i += stride) {
-          if (cloud.opacity && cloud.opacity[i] < RIG_MIN_OPACITY) continue;
-          const c = modelToContent([cloud.xyz[i * 3], cloud.xyz[i * 3 + 1], cloud.xyz[i * 3 + 2]]);
-          tmp[k++] = c[0];
-          tmp[k++] = c[1];
-          tmp[k++] = c[2];
+      // Pick set: the shared walker at RIG_SAMPLE_CAP (the Spark fallback's stride), opacity-
+      // filtered, then flipped into content space. The only part of the cloud kept after ready.
+      if (walk) {
+        const sample = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
+        pickCentres = sample ? sample.slice() : null;
+        if (pickCentres && flipY) {
+          for (let i = 0; i < pickCentres.length; i += 3) {
+            pickCentres[i + 1] = -pickCentres[i + 1];
+            pickCentres[i + 2] = -pickCentres[i + 2];
+          }
         }
-        pickCentres = tmp.subarray(0, k);
       }
+      cloud = null; // everything else in it has been consumed
 
       if (resolved.type === 'camera') {
         if (!('idleSpin' in opts)) viewer.idleSpin = 0;
@@ -1518,17 +1557,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       }
       bindFocusInput();
       return out;
-    })
-    .catch((err) => {
-      console.warn('[inline3d/splat] failed to load (engine:playcanvas)', src, err);
-      throw err;
     });
-
-  return out;
 }
 
 let byteSeq = 0;
-
-function toArray3(v) {
-  return Array.isArray(v) ? [v[0], v[1], v[2]] : [v.x, v.y, v.z];
-}
