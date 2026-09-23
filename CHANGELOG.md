@@ -45,6 +45,23 @@ no block, and a caller's `focus` / `convergence` are unaffected. Both engines.
     and relaxes back on release (`orbitEase` `{ drag: 0.2, rest: 0.6 }` s). Spark keeps its
     turntable drag.
   - **Exact `pick`**: the nearest gaussian centre over the full centre set, with haze skipped.
+- **Streamed SOG on the PlayCanvas backend** (epic #36 P2).
+  - Pass the URL of the `lod-meta.json`, or of the directory holding it. Bytes of a
+    `lod-meta.json`, or a streamed URL with `engine: 'spark'`, throw at call time with a message
+    saying what to pass instead.
+  - `splatBudget` is **per tile, all views included**: one engine camera renders every view, so
+    both eyes share one budget. It defaults to **600k** on a Streamed SOG when unset, and
+    `perf: false` keeps the engine's 1M.
+  - New `perf` keys pass through: `lodMode`, `lodUpdateDistance`, `lodUpdateAngle`,
+    `lodUnderfillLimit` (unset = engine default).
+  - New **`handle.stats()`**: `resident`, `peakResident`, `budget`, `numSplats`, `views`,
+    `lodLevels`, `files`, `filesLoaded`, `firstFrameMs`.
+  - Framed from its octree leaf boxes, not the root bound. The `camera` block is read from the
+    top level of `lod-meta.json`.
+  - Measured on a 5.88M-gaussian captured scene (M1 Pro): first frame 2.9 s against 20.8 s flat
+    at 100 Mbit/s, and 9.6 ms against 117 ms for two 1080p views. It is not a byte saving at a
+    close framing. Recipe and tables: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md)
+    §Streamed SOG.
 - **`captureFit: 'height' | 'cover'`** on the camera rig, both backends. `'height'` (default) is
   the 1.7 window. `'cover'` fills the tile with photograph (a 4:3 capture in a 16:9 tile crops
   top/bottom).

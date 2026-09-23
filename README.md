@@ -51,6 +51,15 @@ optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply` and a Stream
 Bundlers: the engine is a literal `import('playcanvas')`; its sort workers are Blob URLs (CSP
 `worker-src blob:`), and esbuild needs `node:worker_threads` marked external.
 
+**Large scenes stream (preview).** On `engine: 'playcanvas'`, a Streamed SOG streams: pass the URL
+of its `lod-meta.json` (or of its directory), not its bytes. The engine fetches only the chunks
+the view needs and draws at most `perf.splatBudget` of them. That budget is per tile and shared
+by every view of the tile; it defaults to 600k on a Streamed SOG. `handle.stats()` reports what
+is resident. This is for big captured scenes, several million gaussians and up. A photo lift is
+one dense sheet that is fully on screen, so it gains nothing from streaming. How to produce, serve
+and budget one, with measurements:
+[`docs/playcanvas-adapter.md` §Streamed SOG](docs/playcanvas-adapter.md#streamed-sog-p2).
+
 Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
 that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
 

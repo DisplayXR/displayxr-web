@@ -175,10 +175,55 @@ export function engineFormatFor(src, bytes, fileName, fileType) {
     const e = extOf(fileName);
     return e === 'sog' || e === 'ply' ? { ext: e, streamed: false } : null;
   }
+  if (isStreamedUrl(src)) return { ext: 'json', streamed: true };
   const e = extOf(src);
   if (e === 'sog' || e === 'ply') return { ext: e, streamed: false };
-  if (e === 'json') return { ext: 'json', streamed: /lod-meta\.json$/i.test(pathOf(src)) };
+  if (e === 'json') return { ext: 'json', streamed: false };
   return null;
+}
+
+/**
+ * Is this URL a Streamed SOG? Either its `lod-meta.json` or the DIRECTORY that holds one (a path
+ * ending in `/`), with or without a query or hash. Here, not in the adapter, because both engines
+ * need the answer synchronously: the PlayCanvas backend streams it, and the Spark path must refuse
+ * it by name (Spark has no reader for it).
+ */
+export function isStreamedUrl(src) {
+  if (typeof src !== 'string') return false;
+  const p = pathOf(src);
+  return /(^|\/)lod-meta\.json$/i.test(p) || (p.length > 0 && p.endsWith('/'));
+}
+
+/** The error a Spark page gets for a Streamed SOG URL. */
+export const STREAMED_NEEDS_PLAYCANVAS =
+  "a Streamed SOG (lod-meta.json) is read only by engine:'playcanvas' (the default); Spark has no " +
+  'reader for it. Drop engine:\'spark\', or load a flat .sog.';
+
+/**
+ * A Streamed SOG handed over as BYTES — refuse it, with the reason. A Streamed SOG is a
+ * directory: `lod-meta.json` names hundreds of chunk files by RELATIVE path, and bytes carry no
+ * base URL to resolve them against. Detected by the file name the caller gave (`fileName`), or by
+ * sniffing a JSON object that has the lod-meta keys (`lodLevels` + `filenames`) in its first 4 KB.
+ *
+ * @returns {string|null} the error message, or null when the bytes are not a lod-meta.
+ */
+export function streamedBytesError(bytes, fileName) {
+  let hit = typeof fileName === 'string' && /(^|\/)lod-meta\.json$/i.test(pathOf(fileName));
+  if (!hit && bytes && bytes.length) {
+    let i = 0;
+    while (i < bytes.length && i < 64 && (bytes[i] === 0x20 || bytes[i] === 0x0a || bytes[i] === 0x0d || bytes[i] === 0x09 || bytes[i] === 0xef || bytes[i] === 0xbb || bytes[i] === 0xbf)) i++;
+    if (bytes[i] === 0x7b) {
+      const head = new TextDecoder().decode(bytes.subarray(0, Math.min(bytes.length, 4096)));
+      hit = /"lodLevels"\s*:/.test(head) && /"filenames"\s*:/.test(head);
+    }
+  }
+  if (!hit) return null;
+  return (
+    'a Streamed SOG (lod-meta.json) cannot be passed as bytes: it is a directory of chunk files ' +
+    'that lod-meta.json names by relative path, and bytes have no base URL to resolve them ' +
+    "against. Pass its URL instead — addSplat(wall, canvas, 'https://…/scene/lod-meta.json') " +
+    "(a URL ending in '/' works too)."
+  );
 }
 
 // ── ORBIT: the PlayCanvas backend's built-in drag (tilt-and-relax) ──────────────────────────
@@ -257,7 +302,11 @@ export function captureVerticalFovDeg(K, aspect, near, captureFit = 'height') {
 export function playcanvasCannotRead(src, { fileType, fileName } = {}) {
   let bytes = null;
   if (src instanceof Uint8Array) bytes = src;
-  else if (src instanceof ArrayBuffer) bytes = new Uint8Array(src, 0, Math.min(8, src.byteLength));
+  else if (src instanceof ArrayBuffer) bytes = new Uint8Array(src, 0, Math.min(4096, src.byteLength));
+  if (bytes) {
+    const streamed = streamedBytesError(bytes, fileName);
+    if (streamed) return streamed;
+  }
   if (typeof src !== 'string' && !bytes && fileType === undefined) return null; // a Blob: known at load
   if (typeof src === 'string' && fileType === undefined && !extOf(src)) return null;
   if (engineFormatFor(typeof src === 'string' ? src : null, bytes, fileName, fileType)) return null;
