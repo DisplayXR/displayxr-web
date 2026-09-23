@@ -27,6 +27,8 @@ import { addSplat } from '@displayxr/inline3d/splat';               // experimen
 import { addModel } from '@displayxr/inline3d/model';               // experimental: glTF/GLB in a tile
                                                                     //   (Draco / meshopt / KTX2 too —
                                                                     //    you serve the decoder files)
+import { addPlayer } from '@displayxr/inline3d/player';             // preview: a media player, built
+                                                                    //   on addVideo, with transport
 import { SceneViewer } from '@displayxr/inline3d/viewer';           // experimental: framing + orbit
 ```
 
@@ -164,6 +166,8 @@ samples/
                       each woven with one SDK call, all on one session
   splat/              a 3D Gaussian splat in a tile (PlayCanvas; ?engine=spark), with a 2D plate over it
   model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF (PlayCanvas; ?engine=three)
+  player/             a media player — SDK transport (play/pause/seek/mute), one call, built on
+                      addVideo; default (SBS) and format:'mono' side by side
   composition/        the 14-case 2D/3D overlap matrix — demo AND standing hardware regression
                       surface; red cases ship red (see samples/README.md)
 vendor/draco/         three's Draco decoder, served for samples/model (compressed glTF needs it)
@@ -185,6 +189,8 @@ js/
   inline3d-splat-effects.js     splat shader effects: the runner, the effect registry (PlayCanvas)
   inline3d-splat-live.js        setSource's live outgoing photo: its own camera, layer and target (PlayCanvas)
                       from what the asset declares (you serve the decoder files — see the guide)
+  inline3d-player.js  preview: addPlayer() — a media player window built on addVideo (stereo
+                      paint, display modes and the fallback are inherited) + an SDK transport bar
 docs/
   authoring-inline-3d.md   the authoring guide
   authoring-motion-and-effects.md
