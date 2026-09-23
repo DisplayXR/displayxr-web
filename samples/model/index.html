@@ -54,6 +54,14 @@
      SDK's default model engine; add <code>?engine=three</code> to the URL for the three.js
      renderer.</p>
 
+  <p style="font-size:14px;opacity:.8">The mesh tiles render with three.js: <code>addModel()</code>
+     has no PlayCanvas backend yet (<a href="../../docs/playcanvas-model-backend.md">plan</a>).
+     The mixed tile can already render with the PlayCanvas engine: the splat through
+     <code>addSplat()</code>, and the fox added to the same engine scene through
+     <code>handle.engine</code>. That path needs a <code>.sog</code>, so it runs when you pass
+     <code>?splat=&lt;your .sog&gt;</code>. Without one, and with <code>?engine=spark</code>, the
+     tile uses three.js and a Spark splat.</p>
+
   <div class="pair">
     <div class="cell">
       <h2>glTF mesh</h2>
@@ -104,8 +112,8 @@
      <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via Khronos
      glTF-Sample-Assets. Duck (Draco variant) © Sony,
      <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via the same.
-     Draco decoder files © The Draco Authors, Apache-2.0, from three.js. Splat is Spark's public
-     demo asset.</span></p>
+     Draco decoder files © The Draco Authors, Apache-2.0, from three.js. Splat (Spark path) is
+     Spark's public demo asset.</span></p>
 </div>
 
 <!-- "playcanvas" renders tiles A and C (addModel's default engine from 1.12); add ?engine=three to
@@ -115,7 +123,8 @@
      three/addons/postprocessing/Pass.js internally. Without the prefix mapping the page dies at
      import time with "Failed to resolve module specifier". Bundler users get it free.
      SDK is mapped to this repo's sources — ./viewer, ./splat and ./model are not in the
-     published 1.0.0 yet. The app code still imports the bare specifiers a consumer writes. -->
+     published 1.0.0 yet. The app code still imports the bare specifiers a consumer writes.
+     "playcanvas" is fetched only when the mixed tile renders with it (?splat=<.sog>). -->
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
