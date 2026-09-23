@@ -27,6 +27,10 @@
       "types": "./model.d.ts",
       "import": "./js/inline3d-model.js"
     },
+    "./player": {
+      "types": "./player.d.ts",
+      "import": "./js/inline3d-player.js"
+    },
     "./undock": {
       "types": "./index.d.ts",
       "import": "./js/inline3d-undock.js"
@@ -44,11 +48,13 @@
     "js/inline3d-splat-perf.js",
     "js/inline3d-splat-rig.js",
     "js/inline3d-model.js",
+    "js/inline3d-player.js",
     "index.d.ts",
     "three.d.ts",
     "viewer.d.ts",
     "splat.d.ts",
     "model.d.ts",
+    "player.d.ts",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"
