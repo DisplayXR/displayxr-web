@@ -450,7 +450,7 @@ function makeFakePc() {
       this.children.push(c);
     }
     addComponent(type, data) {
-      if (type === 'camera') this.camera = { ...data, camera: { setXrProperties() {} } };
+      if (type === 'camera') this.camera = { layers: [0, 1, 2, 4, 3], ...data, camera: { setXrProperties() {} } };
       if (type === 'gsplat') {
         const params = new Map();
         this.gsplat = {
@@ -562,6 +562,7 @@ function makeFakePc() {
     BLENDMODE_SRC_ALPHA: 'SRC_ALPHA',
     CULLFACE_NONE: 'NONE',
     LAYERID_UI: 4,
+    LAYERID_SKYBOX: 2,
     Color: class { constructor(...a) { this.v = a; } },
     CameraComponentSystem: 'cam',
     GSplatComponentSystem: 'gsplat',
@@ -1330,4 +1331,63 @@ test('package.json is readable through the exports map ("./package.json")', asyn
   const fs = await import('node:fs');
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.exports['./package.json'], './package.json');
+});
+
+
+// ── 1.10.1: no sky by default; the swap's cloud work off the long-task path ────────────────
+
+test('sky: the eye camera renders no SKYBOX layer by default; sky:true keeps the engine’s sky', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  for (const [opts, hasSky] of [[{}, false], [{ sky: false }, false], [{ sky: true }, true]]) {
+    const { pc } = makeFakePc();
+    const v = new PlayCanvasSplatViewer(makeCanvas(320, 180), { orbit: false, ...opts });
+    await v.attachEngine(pc, { perf: playcanvasPerfSettings(undefined) });
+    assert.equal(v.eye.camera.layers.includes(2), hasSky, JSON.stringify(opts));
+    assert.ok(v.eye.camera.layers.includes(0), 'the World layer (the splat) stays');
+    assert.ok(v.eye.camera.layers.includes(4), 'the UI layer (feather) stays');
+    v.dispose();
+  }
+});
+
+test('selectKth is the sorted k-th element (NaN last, duplicates, extremes) — boundsFromPositions unchanged', async () => {
+  const { selectKth, boundsFromPositions } = await import('../js/inline3d-viewer.js');
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let t = 0; t < 200; t++) {
+    const n = 1 + Math.floor(rnd() * 2000);
+    const a = new Float64Array(n);
+    for (let i = 0; i < n; i++) a[i] = rnd() < 0.1 ? Math.round(rnd() * 4) : rnd() < 0.02 ? NaN : rnd() * 100 - 50;
+    const sorted = Float64Array.from(a).sort();
+    for (const k of [0, n >> 1, n - 1, Math.floor(0.05 * (n - 1)), Math.floor(0.95 * (n - 1))]) {
+      const got = selectKth(Float64Array.from(a), n, k);
+      assert.ok(Object.is(got, sorted[k]) || (got === 0 && sorted[k] === 0), `n ${n} k ${k}: ${got} vs ${sorted[k]}`);
+    }
+  }
+  // The percentile box on a known cloud (the pre-1.10.1 sort-based answer, precomputed).
+  const xyz = new Float32Array(3000 * 3);
+  for (let i = 0; i < 3000; i++) {
+    xyz[i * 3] = (i % 30) * 0.1;
+    xyz[i * 3 + 1] = Math.floor(i / 30) % 10;
+    xyz[i * 3 + 2] = i === 5 ? 1e4 : Math.floor(i / 300);
+  }
+  const b = boundsFromPositions(xyz);
+  near(b.center[0], 1.45, 1e-6);
+  near(b.extent[0], 2.9, 1e-6);
+  near(b.center[2], 4.5, 1e-6, 'the floater at 1e4 is rejected');
+  near(b.extent[2], 9, 1e-6);
+});
+
+test('the cloud passes yield between steps (source check: each in its own task)', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../js/inline3d-splat-playcanvas.js', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('async function loadOne('), src.indexOf('function applyLoaded('));
+  const order = ['cloud:bounds', 'cloud:rest-sample', 'cloud:pick-set'];
+  let at = 0;
+  for (const name of order) {
+    const i = body.indexOf(`perfSpan('${name}'`, at);
+    assert.ok(i > at, name);
+    assert.ok(body.slice(at, i).includes('await yieldToMain()'), `a yield before ${name}`);
+    at = i;
+  }
 });
