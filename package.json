@@ -27,6 +27,7 @@
       "types": "./model.d.ts",
       "import": "./js/inline3d-model.js"
     },
+    "./package.json": "./package.json",
     "./undock": {
       "types": "./index.d.ts",
       "import": "./js/inline3d-undock.js"

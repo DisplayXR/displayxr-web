@@ -84,6 +84,54 @@ import {
   streamedBytesError,
 } from './inline3d-splat-shared.js';
 
+/**
+ * The component systems the tile's `AppBase` registers. Camera + GSplat draw the splat; Render,
+ * Light and Anim are what a page needs to put a glTF — skinned and animated included — and its
+ * lights under `handle.engine.root` (1.9.1; before that the page had to register them itself).
+ * Nothing else from the engine's full `Application` list (physics, UI, audio, particles, scripts
+ * and so on are the page's own business if it wants them).
+ */
+export const PLAYCANVAS_SYSTEMS = Object.freeze([
+  'CameraComponentSystem',
+  'GSplatComponentSystem',
+  'RenderComponentSystem',
+  'LightComponentSystem',
+  'AnimComponentSystem',
+]);
+
+/**
+ * The resource handlers the tile's loader registers. Texture + GSplat load a splat (a bundled
+ * .sog is a zip of webp planes the loader registers as textures); Container loads a .glb/.gltf.
+ * The container's sub-assets (render, material, animation) arrive already loaded, so they need no
+ * handler of their own.
+ */
+export const PLAYCANVAS_HANDLERS = Object.freeze(['TextureHandler', 'GSplatHandler', 'ContainerHandler']);
+
+/**
+ * Registering a component system the app already has THROWS in the engine ("already
+ * registered"). Pages written before 1.9.1 add Render/Light/Anim themselves, so a second `add` of
+ * an id that exists is made a no-op that returns the registered system (the duplicate the page
+ * constructed is destroyed, so it leaves no listeners behind).
+ */
+function guardDuplicateSystems(app) {
+  const reg = app.systems;
+  if (!reg || typeof reg.add !== 'function' || reg._dxrGuarded) return;
+  const add = reg.add.bind(reg);
+  reg.add = (system) => {
+    const existing = system?.id ? reg[system.id] : null;
+    if (existing && existing !== system) {
+      try {
+        system.destroy?.();
+      } catch {
+        /* a half-built duplicate: nothing to release */
+      }
+      return existing;
+    }
+    return add(system);
+  };
+  reg._dxrGuarded = true;
+}
+
 /** The engine release this adapter was built and measured against (npm peer floor). */
 export const PLAYCANVAS_TESTED = '2.22.3';
 
@@ -136,6 +184,24 @@ export function frustumFromProjection(P) {
     // same large finite far the capture camera uses.
     farClip: Math.abs(P[10] + 1) < 1e-9 ? CAPTURE_FAR : P[14] / (P[10] + 1),
   };
+}
+
+/**
+ * Raise a perspective projection's near plane to at least `nearFloor` and lower its far plane to
+ * at most `farCap`, IN PLACE, leaving the frustum's shape (fov, skew, principal point) untouched —
+ * only the depth mapping (P[10], P[14]) is rewritten. Idempotent. A null bound is left alone.
+ */
+export function clampProjectionDepth(P, nearFloor, farCap) {
+  const f0 = frustumFromProjection(P);
+  let n = f0.nearClip;
+  let f = f0.farClip;
+  if (nearFloor !== null && nearFloor !== undefined && nearFloor > n) n = nearFloor;
+  if (farCap !== null && farCap !== undefined && farCap < f) f = farCap;
+  if (!(f > n)) f = n * 1.0001 + 1e-6;
+  if (n === f0.nearClip && f === f0.farClip) return P;
+  P[10] = -(f + n) / (f - n);
+  P[14] = (-2 * f * n) / (f - n);
+  return P;
 }
 
 /** Rigid pose (position + unit quaternion xyzw) as a column-major 4×4. */
@@ -467,8 +533,15 @@ export class PlayCanvasSplatViewer {
       orbitEase = {},
       feather = 0,
       captureFit = 'height',
+      nearClip,
+      farClip,
     } = opts;
     this.canvas = canvas;
+    // Depth range for a MIXED scene (meshes under handle.engine.root depth-test against each
+    // other; splats only test against them). The projections' own near/far stay the adapter's —
+    // these only raise the near (floor) and lower the far (cap). Unset: untouched.
+    this.nearClip = Number.isFinite(nearClip) && nearClip > 0 ? nearClip : null;
+    this.farClip = Number.isFinite(farClip) && farClip > 0 ? farClip : null;
     // The tilt-and-relax orbit (./inline3d-splat-shared.js §ORBIT): drag tilts up to ±orbitMaxDeg
     // from where the press started, easing with τ = orbitEase.drag; release relaxes back with
     // τ = orbitEase.rest. `_orbitMode` is 'drag' | 'rest' | null (null = ordinary damping).
@@ -784,12 +857,14 @@ export class PlayCanvasSplatViewer {
     const opts = new pc.AppOptions();
     opts.graphicsDevice = device;
     // No xr (AppBase constructs XrManager only when asked, and XrManager is what probes and
-    // can request immersive sessions), no mouse/keyboard/touch: the SDK owns input.
-    opts.componentSystems = [pc.CameraComponentSystem, pc.GSplatComponentSystem];
-    // TextureHandler: a bundled .sog is a zip of webp planes the loader registers as textures.
-    opts.resourceHandlers = [pc.TextureHandler, pc.GSplatHandler];
+    // can request immersive sessions), no mouse/keyboard/touch: the SDK owns input. Beyond the
+    // splat itself, exactly what a glTF-with-animation under `handle.engine.root` needs — see
+    // PLAYCANVAS_SYSTEMS / PLAYCANVAS_HANDLERS.
+    opts.componentSystems = PLAYCANVAS_SYSTEMS.map((n) => pc[n]).filter(Boolean);
+    opts.resourceHandlers = PLAYCANVAS_HANDLERS.map((n) => pc[n]).filter(Boolean);
     const app = new pc.AppBase(this.canvas);
     app.init(opts);
+    guardDuplicateSystems(app);
     // The SDK sizes the buffer (double-width in 3D, 1:1 in mono), so the engine must never
     // resize it. RESOLUTION_FIXED is AppBase's DEFAULT, and with it `updateCanvasSize()` is a
     // no-op. Deliberately NOT calling setCanvasResolution/setCanvasFillMode: without explicit
@@ -1047,6 +1122,9 @@ export class PlayCanvasSplatViewer {
     const el = this.canvas;
     const sx = cache && cache.bufW > 0 && el.width ? el.width / cache.bufW : 1;
     const sy = cache && cache.bufH > 0 && el.height ? el.height / cache.bufH : 1;
+    if (this.nearClip !== null || this.farClip !== null) {
+      for (const e of entries) clampProjectionDepth(e.proj, this.nearClip, this.farClip);
+    }
     const rect = (e) =>
       sx !== 1 || sy !== 1
         ? [Math.round(e.x * sx), Math.round(e.y * sy), Math.max(1, Math.round(e.width * sx)), Math.max(1, Math.round(e.height * sy))]
@@ -1627,6 +1705,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     orbitEase: opts.orbitEase,
     feather,
     captureFit,
+    nearClip: opts.nearClip,
+    farClip: opts.farClip,
   });
 
   let handle = null;

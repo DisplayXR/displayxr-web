@@ -259,6 +259,14 @@ export interface SplatOptions {
    * `'height'`. Both backends; the 3D rig's vertical FOV follows the crop. Anything else throws.
    */
   captureFit?: 'height' | 'cover';
+  /**
+   * PlayCanvas: a FLOOR on the projection's near plane, in world units (the adapter owns the
+   * projections; this only raises near, for depth precision when meshes share the scene under
+   * `handle.engine.root`). Anything nearer is clipped, splats included. Unset: untouched.
+   */
+  nearClip?: number;
+  /** PlayCanvas: a CAP on the projection's far plane (only ever lowers it). Unset: untouched. */
+  farClip?: number;
   /** Camera rig only: the distance in world metres that sits ON the glass. */
   convergence?: number;
   /**
