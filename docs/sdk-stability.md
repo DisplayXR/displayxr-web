@@ -50,13 +50,21 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
 
 ## Explicitly NOT covered (may change without a major bump)
 
-- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat` and `/model`.**
-  `SceneViewer`, `boundsFromPositions`, `addSplat`, `addModel`, and every option they take are
-  **experimental** and may change in any release. They are shipped inside the 1.x package
-  rather than as a separate one so there is a single version to install and a single CI to keep
-  green — but they are new, they wrap a fast-moving renderer, and freezing their surface now
-  would be guessing. The core entry points above stay frozen regardless; a page that never
+- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/model` and `/player`.**
+  `SceneViewer`, `boundsFromPositions`, `addSplat`, `addModel`, `addPlayer`, and every option
+  they take are **experimental** and may change in any release. They are shipped inside the 1.x
+  package rather than as a separate one so there is a single version to install and a single CI
+  to keep green — but they are new, they wrap a fast-moving renderer, and freezing their surface
+  now would be guessing. The core entry points above stay frozen regardless; a page that never
   imports these subpaths is unaffected by anything that happens to them.
+
+  `/player` is in this tier from its first release (not "promoted down" from somewhere less
+  stable): it is `addVideo` plus a paint loop and a transport, so any change to `addVideo`'s
+  buffer contract or to the transport's markup/CSS classes moves it too, and the v1 slice is
+  narrower than its own RFC (`docs/rfcs/0001-media-player.md`) — no `'tb'`/`'auto'` format
+  detection, no `opts.group` playback policy, no `opts.fit`/letterboxing. Widening any of those
+  is additive and does not by itself restart the promotion clock below; changing `format`'s or
+  `controls`'s existing meaning would.
 
   `/model` is in this tier for the same reason as the other two, not a lesser one: it is a thin
   wrapper over the SAME `SceneViewer`, so anything that moves the viewer's framing moves meshes

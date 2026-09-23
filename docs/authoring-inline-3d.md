@@ -78,6 +78,51 @@ wall.addVideo(document.getElementById('screen'), v);
 A 2D movie is not 3D — the source must be stereo (a full-width SBS encode). Top-bottom
 encodes aren't supported; re-pack to SBS first.
 
+### 2b. Player — `addPlayer(canvas, src, opts)`
+
+**Preview tier** (`@displayxr/inline3d/player` — see [`docs/sdk-stability.md`](sdk-stability.md)).
+`addVideo` above is a paint primitive: you still own the `<video>`, its transport and its
+playback state. `addPlayer(wall, canvas, src, opts)` turns a URL into a title with real
+`play/pause/seek` and an SDK-drawn transport, the way `addSplat`/`addModel` turn a URL into a
+framed object — built ON `addVideo`, so the stereo paint and the display-mode handling are
+inherited, not re-implemented.
+
+```js
+import { addPlayer } from '@displayxr/inline3d/player';
+
+const p = addPlayer(wall, canvas, 'title-sbs.webm', { poster: 'title-poster.jpg', loop: true });
+p.on('ready', () => p.play());
+p.on('ended', () => p.seek(0));
+```
+
+`opts.format` is `'sbs'` (default — a real stereo pair, woven exactly like `addVideo`) or
+`'mono'` (genuinely flat content, painted full-frame, never split into eyes — for a catalogue
+that mixes 2D and 3D titles under one component). `format:'sbs'` on an unsupported/absent `wall`
+also paints flat (the left half only, matching the SDK's own internal fallback) — the module
+never calls a method that doesn't exist on an unsupported `wall`. `opts.controls` is `'sdk'`
+(default) or `'none'` to build your own chrome against the handle. `opts.keyboard` (default
+true) binds Space/K play-pause, ←/→ ±5 s, J/L ±10 s, M mute, scoped to the canvas/transport so
+several players on one page don't fight over the keyboard.
+
+The SDK transport is a **partial** bottom bar, auto-tagged `data-inline3d-overlay` — never
+full-tile, per the overlay rule below — hidden after 3 s idle while playing, shown on
+hover/keypress/pause. It needs `canvas.parentElement` to attach into (a `<div>` wrapping the
+`<canvas>`, same as every sample's `.stage`).
+
+| Handle | |
+|---|---|
+| `play()` / `pause()` / `seek(t)` | `<video>`'s own vocabulary — a page that knows `HTMLMediaElement` already knows this |
+| `currentTime`, `duration`, `paused`, `ended` | getters (`currentTime` also settable) |
+| `volume`, `muted` | get/set |
+| `setSource(src, {poster})` | swap titles in place; `opts.fadeMs` is accepted, not implemented in v1 (documented in `player.d.ts`) |
+| `exclude(el)` / `unexclude(el)` | `'sbs'` + a supported wall only; a no-op elsewhere (nothing is woven to protect an overlay from) |
+| `remove()` | stop the paint loop or weave window, tear down the transport, release the `<video>` |
+| `on(event, fn)` / `off(event, fn)` | `'play'\|'pause'\|'ended'\|'timeupdate'\|'ready'\|'error'`; `on` returns an unsubscribe function |
+
+v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename format auto-detect, HLS, undock, or
+a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
+plan and why each is out of this slice.
+
 ### 3. Live scene (three.js / WebGL) — `addScene(canvas, onFrame, opts?)`
 
 You own the canvas and its context; the SDK creates the weave layer and calls `onFrame(views,
