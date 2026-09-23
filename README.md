@@ -40,6 +40,13 @@ and only the `/three`, `/viewer` and `/splat` subpaths need them. The two viewer
 call (auto-framing on the zero-disparity plane, orbit, idle turntable, mono fallback), but their
 API is not yet covered by the semver promise below.
 
+**A second splat engine (preview).** `addSplat(wall, canvas, src, { engine: 'playcanvas' })`
+renders the same splat window with the [PlayCanvas](https://playcanvas.com/) engine instead of
+Spark — same handle, same rig/focus/camera-block behaviour, same `perf` presets (mapped onto the
+engine's knobs). It needs the optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply`
+and a Streamed-SOG `lod-meta.json`. Spark stays the default; a page that never passes `engine`
+never loads `playcanvas`. What differs, and why: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
+
 Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
 that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
 
@@ -114,6 +121,8 @@ js/
                       and the placement readback (getSubjectBounds / getPose / depthOffset)
   inline3d-splat.js   experimental: addSplat() — a Gaussian splat window via Spark
                       (`perf` cuts overdraw; a `.sog`'s `camera` block picks the view rig)
+  inline3d-splat-playcanvas.js
+                      preview: the `engine: 'playcanvas'` backend of addSplat(), loaded on demand
   inline3d-model.js   experimental: addModel() — a glTF/GLB window; wires Draco / meshopt / KTX2
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/

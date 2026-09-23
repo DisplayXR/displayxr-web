@@ -16,7 +16,13 @@ const buyEl = document.getElementById('buy');
 // note that anything you ship to a customer needs to be an asset you actually hold rights to,
 // which a demo file on someone else's CDN is not.
 const DEFAULT_URL = 'https://sparkjs.dev/assets/splats/butterfly.spz';
-const url = new URLSearchParams(location.search).get('url') || DEFAULT_URL;
+const params = new URLSearchParams(location.search);
+const url = params.get('url') || DEFAULT_URL;
+
+// ?engine=playcanvas renders the same tile with the PlayCanvas engine instead of Spark — same
+// handle, same framing. That engine reads .sog / .ply / a Streamed-SOG lod-meta.json (not the
+// .spz default above), so pair it with ?url=….sog.
+const engine = params.get('engine') || undefined;
 
 // A butterfly is not a shoe: it wants a smaller virtual display than a boxed product would, or
 // it fills the tile and clips. Real catalogues carry this per SKU.
@@ -31,6 +37,7 @@ const handle = addSplat(wall, canvas, url, {
   // Half-scale per eye. After the interlace each eye receives roughly half the panel's samples
   // anyway, so the detail beyond this is rendered and then discarded.
   renderScale: 0.6,
+  ...(engine ? { engine } : {}),
 });
 
 // The price plate sits ON the tile, so it has to be declared as 2D or the weave interlaces it
@@ -47,10 +54,10 @@ statusEl.textContent = wall.supported
 
 try {
   await handle.ready;
-  const n = handle.mesh.numSplats ?? 0;
+  const n = handle.mesh?.numSplats ?? 0;
   const src = handle.frame ? 'measured in-page' : 'none';
   statusEl.textContent =
-    `${n.toLocaleString()} splats · framing ${src} · ` +
+    `${n.toLocaleString()} splats · ${engine === 'playcanvas' ? 'PlayCanvas' : 'Spark'} · framing ${src} · ` +
     (wall.supported ? 'woven glasses-free 3D' : 'flat fallback (open in the DisplayXR Browser)');
 } catch {
   statusEl.textContent = `Could not load ${url} — check the URL and its CORS headers.`;
@@ -63,6 +70,6 @@ const spinBtn = document.getElementById('spin');
 let spinning = true;
 spinBtn.addEventListener('click', () => {
   spinning = !spinning;
-  handle.viewer.idleSpin = spinning ? 10 : 0;
+  if (handle.viewer) handle.viewer.idleSpin = spinning ? 10 : 0;
   spinBtn.textContent = spinning ? 'Pause turntable' : 'Resume turntable';
 });
