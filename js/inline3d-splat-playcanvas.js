@@ -369,7 +369,6 @@ export function patchGsplatFootprint(src) {
 
 let warnedFootprint = false;
 let warnedQuadExtent = false;
-let warnedFeather = false;
 
 /**
  * Which way the engine gets N views into one canvas. `renderview` — one camera, N `RenderView`s
@@ -392,8 +391,8 @@ export { engineFormatFor } from './inline3d-splat-shared.js';
  * then nearest along the ray inside a small cone. Same rule as the Spark path's
  * nearestGaussianToRay, on content-space centres.
  *
- * @param {Float32Array} xyz  content-space centres (already through the flip).
- * @returns {number[]|null} a content-space point.
+ * @param {Float32Array} xyz  centres, in whatever space `origin`/`dir` are in.
+ * @returns {number[]|null} a point in the same space.
  */
 export function nearestCentreToRay(xyz, origin, dir, coneRad = PICK_CONE_RAD) {
   const n = Math.floor(xyz.length / 3);
@@ -443,6 +442,8 @@ export class PlayCanvasSplatViewer {
       pitchLimit = PITCH_LIMIT,
     } = opts;
     this.canvas = canvas;
+    /** Per-frame hooks, `(tMs) => boolean` — return false to be removed. setSource's crossfade. */
+    this._hooks = [];
     this.vH = virtualDisplayHeight;
     this.fit = fit;
     this.margin = margin;
@@ -621,6 +622,22 @@ export class PlayCanvasSplatViewer {
     this.mono.capture = rig.intrinsics;
     this.mono.fov = (2 * Math.atan(rig.intrinsics.height / (2 * rig.intrinsics.fy))) / DEG;
     this.mono.far = Math.max(this.mono.far, CAPTURE_FAR);
+    this._updateMonoProjection();
+  }
+
+  /** Forget the auto-fit (scale 1, no subject box) — the camera rig's framing. */
+  resetFit() {
+    this._fitScale = 1;
+    this._subjectHalf = [0, 0, 0];
+    this._applyTransform();
+  }
+
+  /** Back to the display rig's mono camera (setSource from a photo lift to an object). */
+  useDisplayCamera() {
+    this.mono.capture = null;
+    this.mono.fov = MONO_FOV;
+    this.mono.far = MONO_FAR;
+    this._placeMonoForFit();
     this._updateMonoProjection();
   }
 
@@ -994,6 +1011,13 @@ export class PlayCanvasSplatViewer {
     }
     this._easeFocus();
     this._applyTransform();
+    if (this._hooks.length) {
+      // A hook may push another (the crossfade schedules the release): run a snapshot, keep both.
+      const run = this._hooks;
+      this._hooks = [];
+      const keep = run.filter((h) => h(t) !== false);
+      this._hooks = keep.concat(this._hooks);
+    }
     this.onTick?.();
   }
 
@@ -1218,8 +1242,45 @@ export function describeResource(res) {
 }
 
 let warnedStreamedPick = false;
+let warnedFeather = false;
 
 // ── the handle ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The per-splat crossfade for `setSource`: a work-buffer modifier multiplying each splat's alpha
+ * by this ENTITY's `dxrFade` parameter.
+ *
+ * Per entity, not per material: the engine's unified renderer composites every splat of a tile
+ * through ONE material and ONE work buffer, so a material uniform cannot tell the outgoing asset
+ * from the incoming one. `setWorkBufferModifier` + `setParameter` is the engine's supported
+ * per-component hook for exactly this; during a fade the work buffer is re-rendered each frame
+ * (WORKBUFFER_UPDATE_ALWAYS), and the modifier is removed when the fade ends.
+ */
+const FADE_MODIFIER_GLSL = `
+uniform float dxrFade;
+void modifySplatCenter(inout vec3 center) {}
+void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {}
+void modifySplatColor(vec3 center, inout vec4 color) { color.a *= dxrFade; }
+`;
+
+/** Set (or clear, with null) the crossfade alpha on one splat entity. */
+function setFade(pc, entity, value) {
+  const g = entity?.gsplat;
+  if (!g) return;
+  if (value === null) {
+    g._dxrFading = false;
+    g.setWorkBufferModifier?.(null);
+    g.deleteParameter?.('dxrFade');
+    if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE ?? 1;
+    return;
+  }
+  if (!g._dxrFading) {
+    g._dxrFading = true;
+    g.setWorkBufferModifier?.({ glsl: FADE_MODIFIER_GLSL });
+    if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ALWAYS ?? 2;
+  }
+  g.setParameter?.('dxrFade', value);
+}
 
 /**
  * Fill `out` — the handle ./splat already returned synchronously — with the PlayCanvas
@@ -1246,15 +1307,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     perf,
     rig = 'auto',
     focusInput = true,
-    fileName,
     observe,
     preserveDrawingBuffer = false,
   } = opts;
-
   if (feather > 0 && !warnedFeather) {
     warnedFeather = true;
     console.warn('[inline3d/splat] `feather` is not implemented on engine:playcanvas yet — ignored.');
   }
+  // `sortIntervalMs` is accepted and has no effect here: the engine re-sorts when the camera
+  // ROTATES (one directional sort serves every view), not on a timer — docs/playcanvas-adapter.md.
 
   const perfResolved = playcanvasPerfSettings(perf);
   const viewer = new PlayCanvasSplatViewer(canvas, {
@@ -1271,11 +1332,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   let handle = null;
   let unbindFocusInput = null;
-  let cloud = null; // { xyz, opacity, total } in model space
-  let pickCentres = null; // strided content-space centres for pick
-  let resourceKind = null; // 'flat' | 'streamed'
-  let streamedBounds = null; // model-space octree root bound, Streamed SOG only
   let removed = false;
+  /** The asset on screen: its resource, kind, the pick data it keeps. */
+  let current = null; // { asset, entity, res, kind, pickCentres }
 
   Object.assign(out, {
     engine: 'playcanvas',
@@ -1302,13 +1361,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return out;
     },
     pick(clientX, clientY) {
-      const p = pickPoint(clientX, clientY);
-      return p ? contentToModel(p) : null;
+      return pickModel(clientX, clientY);
     },
+    setSource,
     remove() {
       removed = true;
-      cloud = null;
-      pickCentres = null;
+      current = null;
       unbindFocusInput?.();
       viewer.onFocusChange = null;
       handle?.remove();
@@ -1384,44 +1442,53 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   };
 
   // ── pick ──
-  function pickPoint(clientX, clientY) {
-    if (resourceKind === 'streamed') {
+  /** The ray under a client point, in MODEL space (through the inverse pivot and the flip). */
+  function modelRay(clientX, clientY) {
+    const ndc = canvasNdc(canvas, clientX, clientY);
+    if (!ndc) return null;
+    const v = viewer.currentView();
+    const invP = mat4Invert(v.proj);
+    if (!invP) return null;
+    const Minv = mat4Invert(pivotMatrix(viewer.pivotState()));
+    const toContent = mat4Mul(Minv, v.pose);
+    const a = transformPoint(invP, ndc.x, ndc.y, -1);
+    const b = transformPoint(invP, ndc.x, ndc.y, 1);
+    const o = contentToModel(transformPoint(toContent, a[0], a[1], a[2]));
+    const e = contentToModel(transformPoint(toContent, b[0], b[1], b[2]));
+    const d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]];
+    const len = Math.hypot(d[0], d[1], d[2]) || 1;
+    return { o, d: [d[0] / len, d[1] / len, d[2] / len] };
+  }
+
+  /**
+   * Nearest-centre pick over the strided centre set kept at load (RIG_SAMPLE_CAP, opacity-
+   * filtered). A Streamed SOG has no flat cloud: null, with one warning. Returns a MODEL point.
+   */
+  function pickModel(clientX, clientY) {
+    const c = current;
+    if (!c) return null;
+    if (c.kind === 'streamed') {
       if (!warnedStreamedPick) {
         warnedStreamedPick = true;
         console.warn('[inline3d/splat] pick is unsupported on a Streamed SOG in this version (engine:playcanvas) — returns null.');
       }
       return null;
     }
-    if (!pickCentres || !pickCentres.length) return null;
-    const ndc = canvasNdc(canvas, clientX, clientY);
-    if (!ndc) return null;
-    const nx = ndc.x;
-    const ny = ndc.y;
-    const v = viewer.currentView();
-    const invP = mat4Invert(v.proj);
-    if (!invP) return null;
-    // Display-space ray, then into content space through the inverse pivot.
-    const Minv = mat4Invert(pivotMatrix(viewer.pivotState()));
-    const toContent = mat4Mul(Minv, v.pose);
-    const a = transformPoint(invP, nx, ny, -1);
-    const b = transformPoint(invP, nx, ny, 1);
-    const o = transformPoint(toContent, a[0], a[1], a[2]);
-    const e = transformPoint(toContent, b[0], b[1], b[2]);
-    const d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]];
-    const len = Math.hypot(d[0], d[1], d[2]) || 1;
-    return nearestCentreToRay(pickCentres, o, [d[0] / len, d[1] / len, d[2] / len]);
+    if (!c.pickCentres || !c.pickCentres.length) return null;
+    const ray = modelRay(clientX, clientY);
+    return ray ? nearestCentreToRay(c.pickCentres, ray.o, ray.d) : null;
   }
 
   function bindFocusInput() {
     if (focusInput === false || unbindFocusInput) return;
     unbindFocusInput = bindFocusGestures(canvas, {
       onDoubleClick: (e) => {
-        const p = pickPoint(e.clientX, e.clientY);
-        if (!p) return false;
-        out.rig.focus = contentToModel(p);
+        const m = pickModel(e.clientX, e.clientY);
+        if (!m) return false;
+        out.rig.focus = m;
         out.rig.focusSource = 'picked';
         out.rig.convergence = planeDistance(out.rig.rest, out.rig.focus);
-        viewer.setFocus(p);
+        viewer.setFocus(modelToContent(m));
         return true;
       },
       onReset: () => out.setFocus(null),
@@ -1429,7 +1496,106 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
 
   // ── load ──
-  const loaded = (async () => {
+  let byteSeqLocal = 0;
+  /** Fetch/parse one source into an engine asset, and read what the waterfall needs from it. */
+  async function loadOne(pc, app, source) {
+    let bytes = null;
+    if (typeof source !== 'string') {
+      const buf = source instanceof Blob ? await source.arrayBuffer() : source;
+      bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    }
+    const fmt = engineFormatFor(source, bytes, opts.fileName);
+    if (!fmt) {
+      throw new Error(
+        "[inline3d/splat] engine:'playcanvas' reads .sog, .ply and a Streamed-SOG lod-meta.json; " +
+          "this source is none of those. Pass engine:'spark' for .spz/.splat/.ksplat.",
+      );
+    }
+    // The camera block off the SAME bytes, before the engine takes them (as the Spark path).
+    let camera = null;
+    if (bytes && rig !== 'display') camera = sogCameraFromMeta(await readSogMeta(bytes));
+
+    const url = bytes ? `inline3d-bytes-${++byteSeq}-${++byteSeqLocal}.${fmt.ext}` : source;
+    const file = bytes
+      ? { url, filename: url, contents: new Response(bytes) }
+      : { url, filename: pathOf(source).split('/').pop() || url };
+    const asset = new pc.Asset(url, 'gsplat', file);
+    app.assets.add(asset);
+    await new Promise((resolve, reject) => {
+      asset.ready(resolve);
+      asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
+      app.assets.load(asset);
+    });
+    const res = asset.resource;
+    const desc = describeResource(res);
+    // A URL `.sog` carries its meta in the resource (the engine keeps unknown keys); a Streamed
+    // SOG carries it at the top level of lod-meta.json. Both validated by the same reader.
+    if (!bytes && rig !== 'display') camera = sogCameraFromMeta(desc.meta);
+    const cloud = desc.kind === 'flat' ? await readCloud(res) : null;
+    return { asset, res, desc, camera, cloud };
+  }
+
+  /**
+   * THE WATERFALL for one loaded asset: bounds, rig, lens, focus — then frame it. Shared by the
+   * first load and every setSource, so a swapped-in file is judged exactly like a first one.
+   */
+  function applyLoaded(loaded) {
+    const { cloud, desc } = loaded;
+    const walk = cloud ? centresVisitor(cloud.xyz, cloud.opacity, cloud.total) : null;
+    const local = walk ? boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []) : null;
+    const lift = (b) => ({ center: modelToContent(b.center), extent: b.extent.slice(0, 3) });
+    // Measured first; a Streamed SOG's octree bound next (raw min/max); the caller's `frame`
+    // last — the Spark path's order (a supplied frame is only a fallback there too).
+    const bounds = local ? lift(local) : desc.bounds ? lift(desc.bounds) : frame ? lift(frame) : null;
+
+    const sample =
+      loaded.camera?.intrinsics && loaded.camera?.focus
+        ? null
+        : walk
+          ? sampleCloudRestSpace(cloud.total, walk, loaded.camera?.rest)
+          : null;
+    const box = canvas.getBoundingClientRect();
+    const resolved = resolveRig({
+      camera: loaded.camera,
+      opts,
+      cloud: sample,
+      canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
+    });
+    resolved.focusDefault = resolved.focus.slice();
+    resolved.focusDefaultSource = resolved.focusSource;
+    out.camera = loaded.camera;
+    out.rig = resolved;
+    out.frame = bounds;
+
+    // The pick set: the shared walker at RIG_SAMPLE_CAP, opacity-filtered, MODEL space.
+    let pickCentres = null;
+    if (walk) {
+      const s = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
+      pickCentres = s ? s.slice() : null;
+    }
+
+    if (resolved.type === 'camera') {
+      if (!('idleSpin' in opts)) viewer.idleSpin = 0;
+      // The camera rig never auto-fits (the capture IS the framing): a scale left by a previous
+      // display-rig asset (setSource) must not shrink this one.
+      viewer.resetFit();
+      viewer.useCaptureCamera(resolved);
+      viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: false });
+      lastConvergence = Number.NaN;
+      pushViewRig(true);
+    } else {
+      if (viewer.mono.capture) viewer.useDisplayCamera();
+      if (bounds) viewer.fitTo(bounds.center, bounds.extent);
+      else console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
+      if (resolved.focusSource === 'caller' || resolved.focusSource === 'block') {
+        viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: true });
+      }
+    }
+    return { pickCentres };
+  }
+
+  let pcModule = null;
+  const booted = (async () => {
     const pc = opts.playcanvas || (await import('playcanvas'));
     if (removed) return null;
     const app = await viewer.attachEngine(pc, {
@@ -1438,110 +1604,115 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       viewPath: opts.playcanvasViewPath,
     });
     if (!app || removed) return null;
-
-    let bytes = null;
-    if (typeof src !== 'string') {
-      const buf = src instanceof Blob ? await src.arrayBuffer() : src;
-      bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-    }
-    const fmt = engineFormatFor(src, bytes, fileName);
-    if (!fmt) {
-      throw new Error(
-        "[inline3d/splat] engine:'playcanvas' reads .sog, .ply and a Streamed-SOG lod-meta.json; " +
-          'this source is none of those. Use the default engine (Spark) for .spz/.splat/.ksplat.',
-      );
-    }
-    // The camera block off the SAME bytes, before the engine takes them (as the Spark path).
-    if (bytes && rig !== 'display') out.camera = sogCameraFromMeta(await readSogMeta(bytes));
-
-    const url = bytes ? `inline3d-bytes-${++byteSeq}.${fmt.ext}` : src;
-    const file = bytes
-      ? { url, filename: url, contents: new Response(bytes) }
-      : { url, filename: pathOf(src).split('/').pop() || url };
-    const asset = new pc.Asset(url, 'gsplat', file);
-    app.assets.add(asset);
-    await new Promise((resolve, reject) => {
-      asset.ready(resolve);
-      asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
-      app.assets.load(asset);
-    });
-    if (removed) return null;
-    const res = asset.resource;
-    // A URL `.sog` carries its meta in the resource (the engine keeps unknown keys); a Streamed
-    // SOG carries it at the top level of lod-meta.json. Both validated by the same reader.
-    const desc = describeResource(res);
-    resourceKind = desc.kind;
-    streamedBounds = desc.bounds;
-    if (!bytes && rig !== 'display') out.camera = sogCameraFromMeta(desc.meta);
-
-    cloud = desc.kind === 'flat' ? await readCloud(res) : null;
-    if (removed) return null;
-    viewer.addSplatAsset(asset);
-    out.mesh = {
-      numSplats: desc.numSplats || cloud?.sourceTotal || 0,
-      entity: viewer.splat,
-      asset,
-      resource: res,
-    };
-    return out.mesh;
+    pcModule = pc;
+    return app;
   })();
 
-  // The load promise is RETURNED, never written to `out.ready`: ./splat's addSplatDeferred owns
-  // that field (one promise, one owner, one warning on failure).
-  return loaded.then((mesh) => {
-      if (!mesh) return out; // removed while loading
-      const walk = cloud ? centresVisitor(cloud.xyz, cloud.opacity, cloud.total) : null;
-      const local = walk ? boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []) : null;
-      const lift = (b) => ({ center: modelToContent(b.center), extent: b.extent.slice(0, 3) });
-      // Streamed SOG: no cloud, so the octree's root bound (raw min/max, not percentile-trimmed).
-      const bounds = local ? lift(local) : streamedBounds ? lift(streamedBounds) : frame ? lift(frame) : null;
+  const first = booted.then(async (app) => {
+    if (!app || removed) return null;
+    const loaded = await loadOne(pcModule, app, src);
+    if (removed) return null;
+    const entity = viewer.addSplatAsset(loaded.asset);
+    out.mesh = {
+      numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
+      entity,
+      asset: loaded.asset,
+      resource: loaded.res,
+    };
+    const kept = applyLoaded(loaded);
+    current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
+    bindFocusInput();
+    return out;
+  });
 
-      const sample =
-        out.camera?.intrinsics && out.camera?.focus
-          ? null
-          : walk
-            ? sampleCloudRestSpace(cloud.total, walk, out.camera?.rest)
-            : null;
-      const box = canvas.getBoundingClientRect();
-      const resolved = resolveRig({
-        camera: out.camera,
-        opts,
-        cloud: sample,
-        canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
-      });
-      resolved.focusDefault = resolved.focus.slice();
-      resolved.focusDefaultSource = resolved.focusSource;
-      out.rig = resolved;
-      out.frame = bounds;
-
-      // Pick set: the shared walker at RIG_SAMPLE_CAP (the Spark fallback's stride), opacity-
-      // filtered, then flipped into content space. The only part of the cloud kept after ready.
-      if (walk) {
-        const sample = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
-        pickCentres = sample ? sample.slice() : null;
-        if (pickCentres && flipY) {
-          for (let i = 0; i < pickCentres.length; i += 3) {
-            pickCentres[i + 1] = -pickCentres[i + 1];
-            pickCentres[i + 2] = -pickCentres[i + 2];
-          }
-        }
-      }
-      cloud = null; // everything else in it has been consumed
-
-      if (resolved.type === 'camera') {
-        if (!('idleSpin' in opts)) viewer.idleSpin = 0;
-        viewer.useCaptureCamera(resolved);
-        viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: false });
-        pushViewRig(true);
-      } else {
-        if (bounds) viewer.fitTo(bounds.center, bounds.extent);
-        else console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
-        if (resolved.focusSource === 'caller' || resolved.focusSource === 'block') {
-          viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: true });
-        }
-      }
-      bindFocusInput();
+  // ── setSource: swap the asset, optionally crossfading ──
+  let sourceGen = 0;
+  let pendingSwap = null;
+  /**
+   * Load `next` behind the current asset, then crossfade to it over `fadeMs` and release the old
+   * one. The rig waterfall re-runs for the new file (rig, lens, focus, frame; `onFocusChange`
+   * fires). The pose (yaw/pitch/zoom/depth) is kept unless `resetPose: true`. A newer call
+   * supersedes an older one still loading. Resolves to the handle once the fade has finished.
+   */
+  async function setSource(next, { fadeMs = 0, resetPose = false } = {}) {
+    const gen = ++sourceGen;
+    const app = await booted;
+    await first.catch(() => null); // a failed first asset may be replaced
+    if (!app || removed) return out;
+    const pc = pcModule;
+    const loaded = await loadOne(pc, app, next);
+    if (removed || gen !== sourceGen) {
+      app.assets.remove(loaded.asset);
+      loaded.asset.unload?.();
       return out;
+    }
+    const prev = current;
+    const entity = viewer.addSplatAsset(loaded.asset);
+    const fade = Number.isFinite(fadeMs) && fadeMs > 0 ? fadeMs : 0;
+    if (fade && prev) setFade(pc, entity, 0);
+    out.mesh = {
+      numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
+      entity,
+      asset: loaded.asset,
+      resource: loaded.res,
+    };
+    const kept = applyLoaded(loaded);
+    current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
+    if (resetPose) viewer.resetPose();
+
+    const release = () => {
+      if (!prev) return;
+      // Disable first, destroy + unload a few frames LATER: the engine's gsplat world keeps the
+      // old placement in its list until its next rebuild, and tearing the resource down in the
+      // same frame throws inside the engine's update (found by running the swap).
+      prev.entity.enabled = false;
+      let frames = 0;
+      viewer._hooks.push(() => {
+        if (++frames < 4) return true;
+        prev.entity.destroy?.();
+        app.assets.remove(prev.asset);
+        prev.asset.unload?.();
+        return false;
+      });
+    };
+    if (!fade || !prev) {
+      release();
+      return out;
+    }
+    pendingSwap?.finish();
+    await new Promise((resolve) => {
+      const t0 = now();
+      const finish = () => {
+        setFade(pc, entity, null);
+        release();
+        pendingSwap = null;
+        resolve();
+      };
+      pendingSwap = { finish };
+      setFade(pc, prev.entity, 1);
+      viewer._hooks.push((t) => {
+        if (removed) return (resolve(), false);
+        if (pendingSwap?.finish !== finish) return false; // superseded: already finished
+        const k = Math.min(1, Math.max(0, (t - t0) / fade));
+        setFade(pc, entity, k);
+        setFade(pc, prev.entity, 1 - k);
+        if (k >= 1) {
+          finish();
+          return false;
+        }
+        return true;
+      });
+    });
+    return out;
+  }
+
+  // The load promise is RETURNED, never written to `out.ready`: ./splat's addSplat owns that
+  // field (one promise, one owner).
+  return first
+    .then((r) => r || out)
+    .catch((err) => {
+      console.warn('[inline3d/splat] failed to load (engine:playcanvas)', src, err);
+      throw err;
     });
 }
 

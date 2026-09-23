@@ -433,21 +433,38 @@ test('a remove() queued before load disposes instead of booting the engine', asy
 
 /** Just enough of `playcanvas` for attachEngine, recording what the adapter does to it. */
 function makeFakePc() {
-  const rec = { entities: [], resolution: 0, fillMode: 0, chunks: new Map(), deviceOpts: null, started: 0 };
+  const rec = { entities: [], resolution: 0, fillMode: 0, chunks: new Map(), deviceOpts: null, started: 0, removed: [], queue: [], meshInstances: [] };
   let current = null; // the engine's global "current app" — the trap the adapter must avoid
   class Entity {
     constructor(name, app = current) {
       this.name = name;
       this.app = app;
       this.children = [];
+      this.enabled = true;
       rec.entities.push(this);
+    }
+    destroy() {
+      this.destroyed = true;
     }
     addChild(c) {
       this.children.push(c);
     }
     addComponent(type, data) {
       if (type === 'camera') this.camera = { ...data, camera: { setXrProperties() {} } };
-      if (type === 'gsplat') this.gsplat = data;
+      if (type === 'gsplat') {
+        const params = new Map();
+        this.gsplat = {
+          ...data,
+          workBufferUpdate: 0,
+          modifier: null,
+          setParameter: (n, v) => params.set(n, v),
+          getParameter: (n) => params.get(n),
+          deleteParameter: (n) => params.delete(n),
+          setWorkBufferModifier(m) {
+            this.modifier = m;
+          },
+        };
+      }
     }
     setLocalPosition() {}
     setLocalRotation() {}
@@ -462,10 +479,13 @@ function makeFakePc() {
       this.root = new Entity('root', this);
       this.scene = { gsplat: { minPixelSize: 2, alphaClipForward: 1 / 255 } };
       this.resolutionMode = 'fixed';
+      this.scene.layers = { getLayerById: (id) => ({ id, addMeshInstances: (mis) => rec.meshInstances.push(...mis) }) };
+      this.graphicsDevice = {};
       this.assets = {
         add() {},
+        remove: (a) => rec.removed.push(a),
         load: (a) => {
-          a.resource = rec.resource;
+          a.resource = rec.queue.length ? rec.queue.shift() : rec.resource;
           queueMicrotask(() => a._ready?.(a));
         },
       };
@@ -512,7 +532,36 @@ function makeFakePc() {
         this._ready = cb;
       }
       once() {}
+      unload() {
+        this.unloaded = true;
+      }
     },
+    WORKBUFFER_UPDATE_ONCE: 1,
+    WORKBUFFER_UPDATE_ALWAYS: 2,
+    GraphNode: class { constructor(name) { this.name = name; } },
+    Mesh: class {
+      setPositions(p) { this.positions = p; }
+      setUvs(i, u) { this.uvs = u; }
+      setIndices(i) { this.indices = i; }
+      update() {}
+    },
+    ShaderMaterial: class {
+      constructor(desc) {
+        this.desc = desc;
+        this.params = new Map();
+      }
+      setParameter(n, v) { this.params.set(n, v); }
+      update() {}
+    },
+    BlendState: class { constructor(...a) { this.args = a; } },
+    MeshInstance: class { constructor(mesh, material, node) { Object.assign(this, { mesh, material, node, visible: true }); } },
+    SEMANTIC_POSITION: 'POSITION',
+    SEMANTIC_TEXCOORD0: 'TEXCOORD0',
+    BLENDEQUATION_ADD: 'ADD',
+    BLENDMODE_ZERO: 'ZERO',
+    BLENDMODE_SRC_ALPHA: 'SRC_ALPHA',
+    CULLFACE_NONE: 'NONE',
+    LAYERID_UI: 4,
     Color: class { constructor(...a) { this.v = a; } },
     CameraComponentSystem: 'cam',
     GSplatComponentSystem: 'gsplat',
@@ -762,4 +811,82 @@ test('behavioural trace: SceneViewer and PlayCanvasSplatViewer move identically 
   step(16, 'resetPose');
   sv.dispose();
   pv.dispose();
+});
+
+// ── 13. setSource: swap the asset, crossfading ──────────────────────────────────────────────
+
+/** A flat (non-streamed) resource with a small grid of centres, offset so two differ. */
+function fakeFlat(n, off) {
+  const c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    c[i * 3] = off + (i % 10) * 0.1;
+    c[i * 3 + 1] = off + (Math.floor(i / 10) % 10) * 0.1;
+    c[i * 3 + 2] = off + 2 + Math.floor(i / 100) * 0.1;
+  }
+  return { centers: c, gsplatData: { numSplats: n, meta: {} } };
+}
+const settle = async (cond) => {
+  for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 0));
+  assert.ok(cond(), 'condition never became true');
+};
+
+test('setSource crossfades: new fades 0→1, old 1→0, old released after; rig re-runs; pose kept', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(600, 0), fakeFlat(600, 5)];
+  const out = {};
+  const seen = [];
+  out.onFocusChange = (p) => seen.push(p);
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  const e1 = out.mesh.entity;
+  const a1 = out.mesh.asset;
+  const frame1 = JSON.stringify(out.frame);
+  out.setPose({ yaw: 20 });
+  seen.length = 0;
+  const done = out.setSource('b.sog', { fadeMs: 100 });
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  await settle(() => e1.gsplat.getParameter('dxrFade') === 1);
+  assert.equal(e2.gsplat.getParameter('dxrFade'), 0, 'the new asset starts invisible');
+  assert.match(e2.gsplat.modifier.glsl, /color\.a \*= dxrFade/);
+  assert.equal(e2.gsplat.workBufferUpdate, 2, 'work buffer re-rendered every frame while fading');
+  T += 50;
+  out.viewer._tick();
+  near(e2.gsplat.getParameter('dxrFade'), 0.5, 1e-9, 'half way in');
+  near(e1.gsplat.getParameter('dxrFade'), 0.5, 1e-9, 'half way out');
+  T += 60;
+  out.viewer._tick();
+  await done;
+  assert.equal(e2.gsplat.getParameter('dxrFade'), undefined, 'fade cleared on the survivor');
+  assert.equal(e2.gsplat.modifier, null);
+  assert.equal(e1.enabled, false, 'old one hidden at once');
+  for (let i = 0; i < 4; i++) {
+    T += 16;
+    out.viewer._tick();
+  }
+  assert.equal(e1.destroyed, true, 'old entity destroyed a few frames later');
+  assert.ok(rec.removed.includes(a1) && a1.unloaded, 'old asset released');
+  assert.notEqual(JSON.stringify(out.frame), frame1, 'the waterfall re-ran for the new file');
+  assert.ok(seen.length > 0, 'onFocusChange fired for the new focus');
+  assert.equal(out.viewer.getPose().yaw, 20, 'pose kept');
+  out.remove();
+});
+
+test('setSource: fadeMs 0 swaps at once; resetPose:true resets; a Spark-only format rejects', async (t) => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(300, 0), fakeFlat(300, 3)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const e1 = out.mesh.entity;
+  out.setPose({ yaw: 33 });
+  await out.setSource('b.sog', { resetPose: true });
+  assert.notEqual(out.mesh.entity, e1);
+  assert.equal(e1.enabled, false);
+  assert.equal(out.mesh.entity.gsplat.getParameter('dxrFade'), undefined, 'no fade machinery for a cut');
+  assert.equal(out.viewer.getPose().yaw, 0);
+  await assert.rejects(out.setSource('c.spz'), /reads \.sog, \.ply/);
+  out.remove();
 });
