@@ -187,8 +187,10 @@ const h2 = addSplat(wall, canvas, 'https://cdn.example/scene/v1/', { engine: 'pl
 h.stats(); // { kind:'streamed', resident, peakResident, budget, numSplats, views, lodLevels, files, filesLoaded, firstFrameMs }
 ```
 
-- **URL only.** Bytes of a `lod-meta.json` reject `ready` with a message giving the URL form. The
-  file names hundreds of chunks by relative path, and bytes have no base URL to resolve them.
+- **URL only.** Bytes of a `lod-meta.json` (`Uint8Array` / `ArrayBuffer`) make `addSplat` throw at
+  call time with a message giving the URL form; a `Blob` (and `setSource`) rejects with the same
+  message. The file names hundreds of chunks by relative path, and bytes have no base URL to
+  resolve them.
 - **The camera block** is read from the top level of `lod-meta.json` (sibling of `asset`). It is
   the same block as in a `.sog`, and it drives the same waterfall: intrinsics present ⇒ camera rig
   at the recorded rest pose. Verified on a streamed scene: `rig.type 'camera'`,
@@ -200,11 +202,11 @@ h.stats(); // { kind:'streamed', resident, peakResident, budget, numSplats, view
   count-weighted, deterministic sample through the leaf boxes (`octreeSample`) and frames it the
   way a flat cloud is framed. That lands within a node size of the flat measurement: 101×33×114 m
   on the castle. A caller `frame` wins over both.
-- **`pick`** returns null (one warning). There are no CPU-side centres, and the engine's GPU picker
-  is not used.
-- **`engine: 'spark'`** cannot read a Streamed SOG. A streamed URL on the Spark path rejects `ready`
-  with a message that names `engine: 'playcanvas'`, before Spark is handed the URL (checked in the
-  browser: no request is made).
+- **`pick`** searches the centres of the chunks currently resident (P1's exact-pick change), so it
+  can only hit what the budget let in. Not measured here.
+- **`engine: 'spark'`** cannot read a Streamed SOG. A streamed URL with `engine: 'spark'` makes
+  `addSplat` throw at call time with a message naming `engine: 'playcanvas'`, before Spark is
+  handed the URL.
 
 ### The budget model
 
