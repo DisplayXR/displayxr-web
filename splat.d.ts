@@ -226,6 +226,14 @@ export interface SplatOptions {
    * detectable when `src` is BYTES.
    */
   rig?: 'auto' | 'display' | 'camera';
+  /**
+   * Camera rig only: what gives when the canvas is not the capture's shape. `'height'` (default,
+   * the 1.7 behaviour) keeps the capture's vertical extent and widens or narrows the horizontal to
+   * the canvas. `'cover'` always fills the tile with photograph: a canvas WIDER than the capture
+   * keeps the width and crops top/bottom (a 4:3 capture in a 16:9 tile); a narrower one is
+   * `'height'`. Both backends; the 3D rig's vertical FOV follows the crop. Anything else throws.
+   */
+  captureFit?: 'height' | 'cover';
   /** Camera rig only: the distance in world metres that sits ON the glass. */
   convergence?: number;
   /**

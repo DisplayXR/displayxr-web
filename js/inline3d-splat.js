@@ -24,7 +24,14 @@ import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
-import { toArray3, canvasNdc, bindFocusGestures } from './inline3d-splat-shared.js';
+import {
+  toArray3,
+  canvasNdc,
+  bindFocusGestures,
+  captureWindow,
+  captureVerticalFovDeg,
+  CAPTURE_FITS,
+} from './inline3d-splat-shared.js';
 import {
   resolveRig,
   planeDistance,
@@ -147,6 +154,12 @@ function sniffFileType(bytes) {
  * good enough for a clean, isolated capture, weaker on a scene with a background wall.
  */
 export function addSplat(wall, canvas, src, opts = {}) {
+  if (opts.captureFit !== undefined && !CAPTURE_FITS.includes(opts.captureFit)) {
+    throw new Error(
+      `@displayxr/inline3d/splat: captureFit "${opts.captureFit}" — expected ` +
+        `${CAPTURE_FITS.map((f) => `'${f}'`).join(' or ')}.`,
+    );
+  }
   // WHICH ENGINE. Unset (or 'spark') is everything below, untouched. 'playcanvas' goes to
   // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
   // resolves `playcanvas` — see addSplatDeferred.
@@ -180,6 +193,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     sortIntervalMs = DEFAULT_SORT_INTERVAL_MS,
     perf = null,
     rig = 'auto',
+    captureFit = 'height',
     focusInput = true,
     convergence,
     fileName,
@@ -504,7 +518,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
         // A turntable on a photograph is nonsense, so the default spin stops here — but only the
         // DEFAULT: a page that asked for one still gets it.
         if (!('idleSpin' in opts)) viewer.idleSpin = 0;
-        applyCaptureCamera(viewer, resolved, flipY);
+        applyCaptureCamera(viewer, resolved, flipY, THREE, captureFit, () => pushViewRig(true));
         // The capture does not move; only what the rotation turns about does. Snapped, because
         // this is the asset arriving, not a gesture.
         viewer.setFocus(toContentSpace(out.mesh, resolved.focus, THREE), {
@@ -639,10 +653,10 @@ function addSplatDeferred(wall, canvas, src, opts) {
  * resize, and three's symmetric version would silently throw the off-axis window away on the
  * first layout nudge.
  */
-function applyCaptureCamera(viewer, rig, flipY, THREE_) {
+function applyCaptureCamera(viewer, rig, flipY, THREE_, captureFit = 'height', onFov = null) {
   const three = THREE_ || THREE;
   const camera = viewer.monoCamera;
-  const { fx, fy, cx, cy, width, height } = rig.intrinsics;
+  const { width, height } = rig.intrinsics;
 
   const q = new three.Quaternion(
     rig.rest.rotation[0],
@@ -671,7 +685,7 @@ function applyCaptureCamera(viewer, rig, flipY, THREE_) {
   q.multiply(flip);
   camera.position.copy(p);
   camera.quaternion.copy(q);
-  camera.fov = (2 * Math.atan(height / (2 * fy)) * 180) / Math.PI;
+  camera.fov = captureVerticalFovDeg(rig.intrinsics, NaN, camera.near, 'height');
   // FAR, and why it is not the viewer's default. A deconverged capture parks its sky at the
   // lifter's depth cap and the refinement scatters some gaussians beyond it (239 m measured on a
   // street scene); anything past the far plane is CLIPPED in Spark's vertex shader and pops out
@@ -682,15 +696,20 @@ function applyCaptureCamera(viewer, rig, flipY, THREE_) {
 
   camera.updateProjectionMatrix = () => {
     const near = camera.near;
-    // OpenCV's y grows DOWN the image, so the TOP edge is the `cy` side.
-    const top = (near * cy) / fy;
-    const bottom = -(near * (height - cy)) / fy;
     const box = viewer.canvas.getBoundingClientRect();
     const aspect = box.height > 0 ? box.width / box.height : width / height;
-    const mid = (near * (width / 2 - cx)) / fx; // horizontal centre of the capture's frustum
-    const half = ((top - bottom) * aspect) / 2;
-    camera.projectionMatrix.makePerspective(mid - half, mid + half, top, bottom, near, camera.far);
+    // The window is shared with the PlayCanvas backend (./inline3d-splat-shared.js), `captureFit`
+    // included; on 'height' it is the same arithmetic this function always did.
+    const w = captureWindow(rig.intrinsics, aspect, near, captureFit);
+    camera.projectionMatrix.makePerspective(w.left, w.right, w.top, w.bottom, near, camera.far);
     camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+    if (captureFit !== 'height') {
+      const fov = captureVerticalFovDeg(rig.intrinsics, aspect, near, captureFit);
+      if (fov !== camera.fov) {
+        camera.fov = fov;
+        onFov?.();
+      }
+    }
   };
   camera.updateProjectionMatrix();
 }

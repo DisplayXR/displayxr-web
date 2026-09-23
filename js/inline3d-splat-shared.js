@@ -192,3 +192,59 @@ export const ORBIT_MAX_DEG = 15;
 export const ORBIT_TAU_DRAG_S = 0.2;
 /** Time constant of the relax back to rest after release, seconds. */
 export const ORBIT_TAU_REST_S = 0.6;
+
+/**
+ * The capture camera's off-axis WINDOW at the near plane — the one projection both backends'
+ * camera rigs draw the mono (flat) view through. Principal point honoured, so a deconverged
+ * capture (`cx` off centre) keeps its lens shift. OpenCV's y grows DOWN the image, so the TOP
+ * edge is the `cy` side.
+ *
+ * `captureFit` decides what gives when the canvas is not the capture's shape:
+ *   'height' (default) — the capture's VERTICAL extent is kept and the horizontal is widened or
+ *            narrowed to the canvas. Keeps a face the same size whatever shape the tile is; a
+ *            tile wider than the capture shows past the photograph's left/right edges.
+ *   'cover'  — the tile is always filled by photograph: when the canvas is WIDER than the capture
+ *            the horizontal extent is kept and the vertical is cropped (a 4:3 capture in a 16:9
+ *            tile loses top and bottom); when it is narrower this is 'height' (which already
+ *            crops the sides).
+ *
+ * @param {{fx:number,fy:number,cx:number,cy:number,width:number,height:number}} K  intrinsics.
+ * @param {number} aspect  canvas width / height (non-positive → the capture's own aspect).
+ * @param {number} near
+ * @param {'height'|'cover'} [captureFit='height']
+ * @returns {{left:number,right:number,top:number,bottom:number}}
+ */
+export function captureWindow(K, aspect, near, captureFit = 'height') {
+  const { fx, fy, cx, cy, width, height } = K;
+  const top = (near * cy) / fy;
+  const bottom = -(near * (height - cy)) / fy;
+  const a = aspect > 0 ? aspect : width / height;
+  if (captureFit === 'cover') {
+    const left0 = -(near * cx) / fx;
+    const right0 = (near * (width - cx)) / fx;
+    const capAspect = (right0 - left0) / (top - bottom);
+    if (a > capAspect) {
+      const vmid = (top + bottom) / 2;
+      const halfV = (right0 - left0) / a / 2;
+      return { left: left0, right: right0, top: vmid + halfV, bottom: vmid - halfV };
+    }
+  }
+  const mid = (near * (width / 2 - cx)) / fx; // horizontal centre of the capture's frustum
+  const half = ((top - bottom) * a) / 2;
+  return { left: mid - half, right: mid + half, top, bottom };
+}
+
+/** The camera-rig fits `captureFit` accepts. Anything else throws at addSplat time. */
+export const CAPTURE_FITS = Object.freeze(['height', 'cover']);
+
+/**
+ * Full vertical FOV, DEGREES, of what the capture camera shows under `captureFit` — what the
+ * camera-rig descriptor sends the runtime, so 3D crops like the flat view does. On 'height' it is
+ * the lens's own `2·atan(h / 2fy)`, bit for bit.
+ */
+export function captureVerticalFovDeg(K, aspect, near, captureFit = 'height') {
+  if (captureFit !== 'cover') return (2 * Math.atan(K.height / (2 * K.fy)) * 180) / Math.PI;
+  const w = captureWindow(K, aspect, near, captureFit);
+  // Symmetric-equivalent angle of an off-axis window: what `verticalFov` means on the wire.
+  return (2 * Math.atan((w.top - w.bottom) / (2 * near)) * 180) / Math.PI;
+}
