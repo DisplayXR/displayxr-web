@@ -132,31 +132,31 @@ camera and display rigs). A page that never passes `engine` makes **0** `playcan
 
 ### GPU time per frame
 
-`EXT_disjoint_timer_query_webgl2`, `TIME_ELAPSED` around exactly one config's frame per rAF. All
-configs are interleaved in one page and one Chrome process. The rest pose is pinned, the asset is
-`ports_100_cam.sog`, DPR is 1, there are 60 warm-up frames, then 300 measured frames per config.
-Values are median / p90 in ms. There are two repeats (r1, r2).
+`EXT_disjoint_timer_query_webgl2`, `TIME_ELAPSED` around exactly one config's frame per rAF. The rest
+pose is pinned, the asset is `ports_100_cam.sog` (1,179,648 gaussians), DPR is 1, 60 warm-up frames,
+then 300 measured frames. Values are median / p90 in ms, headless Chrome 153 on the real GPU (ANGLE
+Metal, Apple M1 Pro), idle machine.
 
-**Read this first: the absolute numbers are noisy.** The M1 Pro was shared with other sessions'
-headless-Chrome GPU benchmarks throughout. More importantly, on ANGLE-Metal a context's timer
-**absorbs other contexts' in-flight GPU work**. Paired with a Spark tile, PlayCanvas read
-27–50 ms; paired with another PlayCanvas tile, the same config read 6.5–15 ms. So the table
-compares within one engine, from same-engine pairs. The cross-engine ordering is consistent in
-every pairing, but its ratio is not a clean number.
+**Each config is loaded ALONE, one page load per config, in one Chrome process** (`parity/perf_solo.mjs`).
+An earlier interleaved run (several canvases in one page, alternating frames) was NOT usable: on
+ANGLE-Metal a context's timer query absorbs other contexts' in-flight GPU work — PlayCanvas read
+27–50 ms paired with a Spark tile and 6.5–15 ms paired with another PlayCanvas tile. Interleaving
+still guards against clock drift between processes; a solo load in one process guards against both.
 
-| config | 720p r1 | 720p r2 | 1080p r1 | 1080p r2 |
-|---|---|---|---|---|
-| Spark `exact` (paired with Spark `balanced`) | 44.6 / 52.9 | 58.1 / 138.1 | 73.5 / 168.9 | 63.9 / 78.3 |
-| Spark `balanced` | 45.7 / 55.7 | 57.3 / 134.4 | 73.2 / 182.3 | 63.4 / 76.8 |
-| PlayCanvas default (`minPixelSize` 0), paired with PlayCanvas `balanced` | 9.8 / 12.7 | 8.9 / 11.9 | 14.9 / 23.9 | 11.0 / 12.1 |
-| PlayCanvas `balanced` (quad √6σ) | 8.8 / 11.5 | 8.0 / 11.1 | 14.5 / 22.6 | 9.5 / 10.8 |
-| PlayCanvas `splatBudget` 600k (paired with the default) | 9.35 vs 9.23 | 12.13 vs 12.23 | 10.24 vs 10.25 | 16.36 vs 16.94 |
-| **stereo**, 2 views, SBS: Spark `exact` vs its mono | 85.9 vs 78.8 | 85.0 vs 78.8 | 150.1 vs 127.8 | 119.2 vs 115.0 |
-| **stereo**, 2 views, SBS: PlayCanvas default vs its mono | 13.3 vs 6.7 | 13.1 vs 6.5 | 20.9 vs 10.9 | 19.8 vs 10.0 |
+| config | 720p | 1080p |
+|---|---|---|
+| Spark `exact` | 60.5 / 66.2 | 75.4 / 80.7 |
+| Spark `balanced` | 51.8 / 56.0 | 64.5 / 72.7 |
+| PlayCanvas default (`minPixelSize` 0) | 7.4 / 9.5 | 10.0 / 10.5 |
+| PlayCanvas `balanced` (quad √6σ) | 7.1 / 9.5 | 9.1 / 9.9 |
+| PlayCanvas `splatBudget` 600k | 7.4 / 9.7 | — |
+| **stereo**, 2 views, SBS (2560×720 / 3840×1080): Spark `exact` | 120.0 / 136.0 | 162.7 / 179.0 |
+| **stereo**, 2 views, SBS: PlayCanvas default | 12.7 / 13.2 | 35.5 / 38.4 |
 
 - `gsplatCount` is 1,179,648 in every PlayCanvas row, **600k budget included**: the budget does
-  nothing on a flat `.sog` (no LOD levels to trade), and its times match the default within noise.
+  nothing on a flat `.sog` (no LOD levels to trade), and its time matches the default within noise.
   The budget is a P2 (Streamed SOG) lever.
-- PlayCanvas stereo costs about 2× its mono (every view composites every splat). Spark stereo
-  costs +4…+17 % over its mono.
+- On this photo-lift asset the PlayCanvas quad path is ~8× cheaper than Spark in mono and ~5–9×
+  in stereo. Both engines pay ~2× for two views here. Treat the table as ranking + order of
+  magnitude on one GPU; re-check on the Windows box.
 - Every drawn frame was checked non-empty (mean canvas luminance ~123) in every row.
