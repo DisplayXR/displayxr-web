@@ -43,9 +43,13 @@ API is not yet covered by the semver promise below.
 **A second splat engine (preview).** `addSplat(wall, canvas, src, { engine: 'playcanvas' })`
 renders the same splat window with the [PlayCanvas](https://playcanvas.com/) engine instead of
 Spark — same handle, same rig/focus/camera-block behaviour, same `perf` presets (mapped onto the
-engine's knobs). It needs the optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply`
-and a Streamed-SOG `lod-meta.json`. Spark stays the default; a page that never passes `engine`
-never loads `playcanvas`. What differs, and why: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
+engine's knobs) — and adds `setSource(src, { fadeMs })` (crossfading asset swaps), `feather`, a
+tilt-and-relax orbit and `handle.engine` (the engine objects, for advanced pages). It needs the
+optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply` and a Streamed-SOG
+`lod-meta.json`. **Spark stays the default**; a page that never passes `engine` never loads
+`playcanvas`. What differs, and why: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
+Bundlers: the engine is a literal `import('playcanvas')`; its sort workers are Blob URLs (CSP
+`worker-src blob:`), and esbuild needs `node:worker_threads` marked external.
 
 Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
 that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
