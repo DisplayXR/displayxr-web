@@ -19,6 +19,7 @@ repo's root [`index.html`](../index.html), published at
 | [`composition/`](composition/) | **The 15-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
 | [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, auto-framed, with a 2D price plate over it. |
 | [`model/`](model/) | `addModel()`: a glTF mesh, a mesh + splat sharing one scene, and a Draco-compressed glTF. |
+| [`player/`](player/) | `addPlayer()`: a media player with SDK transport (play/pause/seek/mute), built on `addVideo`. Default (SBS) and `format:'mono'` side by side. |
 | [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
 | [`overlay-test/`](overlay-test/) | A minimal diagnostic repro for the 2D-overlay aspect path — a probe, not a showcase. |
 
