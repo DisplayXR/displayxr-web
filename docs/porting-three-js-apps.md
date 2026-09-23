@@ -575,7 +575,13 @@ Browser, verify:
    halves for a moment means the element is `opacity:0` rather than `display:none`.
 7. **Resize repaints.** Drag the window, zoom the browser, rotate the display, drag to a
    different-DPI monitor. Any black flash is the no-op-resize clear from §4.
-8. **Frame rate at your `renderScale`.** Two renders per frame is roughly twice the fragment cost of
+8. **No raw pair when the canvas first appears.** Navigate into the screen, several times, with
+   the asset already cached (the fast case is the bad one). Two squeezed halves for up to a second
+   means the canvas was revealed before the browser joined it. Keep a cover over it until
+   `handle.firstWoven` resolves, following the
+   [Woven canvas rules](woven-canvas-rules.md). The same page also shows how to read the
+   browser's `withheld` log line.
+9. **Frame rate at your `renderScale`.** Two renders per frame is roughly twice the fragment cost of
    the flat page. Measure it woven, on the target machine, and tune the backing store — not the
    pixel ratio.
 
@@ -690,3 +696,9 @@ Consolidated, in the order they tend to bite:
       ordinary tap can never leave a long press pending long enough to fire.
     Do not size the window from a version or UA string: the symptom is device-wide, and the
     tolerance is harmless where the digitizer is healthy.
+
+28. **A fresh woven canvas shows its raw side-by-side pair until the browser joins it.** Measured
+    at 0.4–1.2 s after a same-document navigation. Nothing on the session or the layer says when
+    the join has happened. Never remount the canvas, cover it until `handle.firstWoven` resolves
+    (a hard cut, never a fade), and keep CSS effects off it and its ancestors. The full rules and
+    the reasons for them: [Woven canvas rules](woven-canvas-rules.md).

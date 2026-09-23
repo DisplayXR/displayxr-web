@@ -19,6 +19,11 @@ Building something that **moves** — a carousel, a lightbox, a slideshow, a tra
 window cannot be animated the way an `<img>` can, and the rules for compositing motion into
 one are not obvious.
 
+Shipping a page with more than one screen, or one that navigates? Read
+[Woven canvas rules](woven-canvas-rules.md) before you do. It covers the moment right after a
+3D canvas appears, when the browser may still be showing its raw side-by-side pair, and how
+`handle.firstWoven` tells you when it is safe to reveal the canvas.
+
 ## The one contract you must understand
 
 **A weaved window is a `<canvas>` whose backing buffer holds side-by-side (SBS) stereo — the
@@ -1010,6 +1015,43 @@ transcoder up front, which turns that into the rejection above.
 A live example, decoder files and all, is [`samples/model/`](../samples/model/) — its third tile is
 a Draco-compressed glTF served with `three`'s decoder out of this repo's `vendor/draco/`.
 
+## Woven canvas rules
+
+A new woven canvas is not woven immediately. The browser's compositor must first **join** the
+canvas, and until it does, the page's own raster of the side-by-side buffer (two squeezed halves)
+is what reaches the screen. For a canvas created by a same-document navigation this has been
+measured at up to 1.2 s, and nothing the page can observe says when the join lands. The rules, in
+short:
+
+1. **One `createInline3D()` per document.**
+2. **Never remount a woven canvas inside a screen.** Change what is in it: redraw an `addImage`
+   source canvas, swap scene content in `onFrame`, or `setSource` on a PlayCanvas splat.
+3. **Prefer one persistent canvas for the whole app** over a new canvas per route.
+4. **Commit a canvas before registering it:** `will-change: transform` from its first paint, a 2:1
+   backing store for a scene, then wait two frames before calling `add*()`.
+5. **Keep the canvas covered until `handle.firstWoven` resolves.** Put the cover on top, and cut
+   it, never fade it.
+6. **Hard-cut between screens.** Never crossfade two woven canvases.
+7. **No CSS effects on the canvas or its ancestors** (`filter`, `opacity < 1`, `mask`, radius,
+   shadow). Use `cornerRadius` / `feather`.
+8. **Chrome over a tile is a partial region.**
+
+```js
+const handle = wall.addScene(canvas, onFrame);
+await Promise.all([contentReady, handle.firstWoven]);   // { woven, confirmed, reason, ms }
+poster.remove();                                         // cut, never fade
+```
+
+`firstWoven` resolves once and never rejects. `woven: false` means the window will not weave
+(the layer failed, the session ended, the window was removed), and the canvas is already flat.
+Until a browser reports joins, `firstWoven` holds for the measured worst case
+(`firstWovenHoldMs`, default 1200) and `confirmed` is `false`. When a browser does report joins,
+it will settle on the report with no change to your page.
+
+The reasoning for each rule, the SDK call that satisfies it, and a hardware checklist that reads
+the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
+**[Woven canvas rules](woven-canvas-rules.md)**.
+
 ## Gotchas checklist
 
 - **Buffer is 2:1 (or 2× the box's aspect), not 1:1.** `addImage`/`addVideo` handle it; only
@@ -1044,6 +1086,9 @@ a Draco-compressed glTF served with `three`'s decoder out of this repo's `vendor
 - **Compressed glTF needs decoder files SERVED BY YOU.** `addModel()` wires Draco / meshopt /
   KTX2 from what the asset declares, but three's Draco decoder and Basis transcoder are runtime
   files: copy them to `/draco/` and `/basis/` (or set `decoderPath`). There is no CDN fallback.
+- **Cover a new canvas until `handle.firstWoven` resolves** and never remount one: the browser
+  shows the raw side-by-side pair until its compositor joins the canvas. See
+  [Woven canvas rules](woven-canvas-rules.md).
 - **The page still works in 2D.** Always ship a fallback for `{ supported:false }`.
 
 ## Under the hood (raw WebXR)
@@ -1064,6 +1109,8 @@ The SDK is thin; if you want the primitives:
 - `new XRDisplayLayer(session, canvas)` binds a canvas — **constructing the layer is the
   activation** (there is no `updateRenderState({layers})` step). The layer reports the
   canvas's live rect to the compositor each frame and exposes `getViewport(view)` (the SBS
-  left/right split) and `close()`.
+  left/right split) and `close()`. It does **not** say whether the compositor has joined the
+  canvas yet: nothing on the layer, the session or the frame does. `handle.firstWoven` covers
+  that gap ([proposal](proposals/layer-joined-signal.md)).
 
 That's the whole surface. Everything else on this page is convention the SDK encodes for you.
