@@ -19,6 +19,7 @@ repo's root [`index.html`](../index.html), published at
 | [`composition/`](composition/) | **The 15-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
 | [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, rendered with the PlayCanvas engine (`?engine=spark` for Spark), with a 2D plate over it. Default: Spark's butterfly (`assets/butterfly.sog`, © World Labs, used with permission; SH bands kept) on a turntable; a `.sog` that records its capture camera opens at it. `?url=` takes your own `.sog` / `.ply` or a Streamed SOG's `lod-meta.json`. |
 | [`model/`](model/) | `addModel()`: a glTF mesh (Khronos DamagedHelmet), a mesh + splat sharing one PlayCanvas scene, and a Draco-compressed glTF. PlayCanvas by default; `?engine=three` is the three.js + Spark twin. |
+| [`player/`](player/) | `addPlayer()`: a media player with SDK transport (play/pause/seek/mute), built on `addVideo`. Default (SBS) and `format:'mono'` side by side. |
 | [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
 | [`overlay-test/`](overlay-test/) | A minimal diagnostic repro for the 2D-overlay aspect path — a probe, not a showcase. |
 
