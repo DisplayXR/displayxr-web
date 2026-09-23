@@ -24,7 +24,15 @@ import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
-import { resolveRig, toRestSpace, planeDistance } from './inline3d-splat-rig.js';
+import {
+  resolveRig,
+  planeDistance,
+  sampleCloudRestSpace,
+  sampleCloudCentres,
+  RIG_SAMPLE_CAP,
+  RIG_MIN_OPACITY,
+  resolveSplatEngine,
+} from './inline3d-splat-rig.js';
 
 export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
 export { readSogCamera, readSogMeta } from './inline3d-sog.js';
@@ -39,9 +47,6 @@ export { resolveRig } from './inline3d-splat-rig.js';
  * both. 16 ms lands it at one per frame at 60 Hz.
  */
 const DEFAULT_SORT_INTERVAL_MS = 16;
-
-/** Cap on how many splat centres the fallback framing pass inspects. */
-const FRAME_SAMPLE_CAP = 200000;
 
 /**
  * three.js floor for THIS subpath — Spark's own floor, above the package-wide >=0.150 that the
@@ -651,51 +656,26 @@ function applyCaptureCamera(viewer, rig, flipY, THREE_) {
 }
 
 
-/** Cap on how many splats the rig pass inspects. Percentiles of a uniform subsample converge. */
-const RIG_SAMPLE_CAP = 40000;
-
-/** Below this, a splat is haze — it is not where the camera was pointed and not what it saw. */
-const RIG_MIN_OPACITY = 0.05;
-
-/** Nearer than this, a splat is behind or on the lens and its x/z, y/z, 1/z are meaningless. */
-const RIG_MIN_Z = 0.05;
-
 /**
- * ONE walk over the cloud, in the REST CAMERA's frame, producing everything the waterfall needs
- * that is not in the file: the angular extent that is the lens (x/z, y/z) and the disparities
- * whose median is the focus (1/z).
- *
- * Model space, deliberately — `forEachSplat` reports centres before the mesh's own transform, so
- * this is the file's own OpenCV frame, which is the frame `rest` and `intrinsics` are expressed
- * in. Doing it after the Y-flip would mean undoing the flip to compare with the block.
+ * ONE walk over the cloud, in the REST CAMERA's frame — see `sampleCloudRestSpace` in
+ * ./inline3d-splat-rig.js, which holds the sampling rules for every backend. This is only the
+ * Spark adapter onto it: `forEachSplat` reports centres before the mesh's own transform, so
+ * this is the file's own OpenCV frame, which is the frame `rest` and `intrinsics` are in.
  *
  * @returns {{tx:Float64Array,ty:Float64Array,invz:Float64Array,n:number}|null}
  */
 function sampleRestSpace(mesh, rest) {
   const total = mesh?.numSplats || 0;
   if (!total || typeof mesh.forEachSplat !== 'function') return null;
-  const r = rest || { position: [0, 0, 0], rotation: [0, 0, 0, 1] };
-  const stride = Math.max(1, Math.ceil(total / RIG_SAMPLE_CAP));
-  const cap = Math.ceil(total / stride) + 1;
-  const tx = new Float64Array(cap);
-  const ty = new Float64Array(cap);
-  const invz = new Float64Array(cap);
-  let n = 0;
-  const p = [0, 0, 0];
-  mesh.forEachSplat((index, center, scales, quaternion, opacity) => {
-    if (index % stride !== 0 || n >= cap) return;
-    if (opacity !== undefined && opacity < RIG_MIN_OPACITY) return;
-    p[0] = center.x;
-    p[1] = center.y;
-    p[2] = center.z;
-    const c = toRestSpace(r, p);
-    if (!(c[2] > RIG_MIN_Z)) return;
-    tx[n] = c[0] / c[2];
-    ty[n] = c[1] / c[2];
-    invz[n] = 1 / c[2];
-    n++;
-  });
-  return n ? { tx, ty, invz, n } : null;
+  return sampleCloudRestSpace(total, sparkCentres(mesh), rest);
+}
+
+/** Spark's `forEachSplat` as the backend-neutral centre visitor ./inline3d-splat-rig.js walks. */
+function sparkCentres(mesh) {
+  return (visit) =>
+    mesh.forEachSplat((index, center, scales, quaternion, opacity) =>
+      visit(index, center.x, center.y, center.z, opacity),
+    );
 }
 
 /** [x,y,z] out of anything vector-shaped. */
@@ -784,18 +764,7 @@ export function measureSplatBounds(mesh, three = THREE) {
 function measureBounds(mesh, THREE) {
   const total = mesh.numSplats || 0;
   if (!total) return null;
-  const stride = Math.max(1, Math.ceil(total / FRAME_SAMPLE_CAP));
-  const xyz = new Float32Array(Math.ceil(total / stride) * 3);
-  let k = 0;
-  mesh.forEachSplat((index, center, scales, quaternion, opacity) => {
-    if (index % stride !== 0) return;
-    if (opacity !== undefined && opacity < 0.05) return;
-    if (k + 3 > xyz.length) return;
-    xyz[k++] = center.x;
-    xyz[k++] = center.y;
-    xyz[k++] = center.z;
-  });
-  const local = boundsFromPositions(xyz.subarray(0, k));
+  const local = boundsFromPositions(sampleCloudCentres(total, sparkCentres(mesh)));
   if (!local) return null;
 
   mesh.updateMatrix();

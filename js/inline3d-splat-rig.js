@@ -328,3 +328,131 @@ export function resolveRig({ camera = null, opts = {}, cloud = null, canvasAspec
       : (camera?.dxr?.parallaxFactor ?? 1),
   };
 }
+
+// ── walking the cloud, for any backend ──────────────────────────────────────────────────
+//
+// The waterfall needs ONE pass over the splat centres (in the file's own space), and the
+// auto-frame needs another. Both used to be written against Spark's `mesh.forEachSplat`, which
+// is the only thing in them that is Spark. A second backend (./inline3d-splat-playcanvas.js)
+// has the same centres as a flat Float32Array instead, so the walk is expressed here against a
+// VISITOR — `forEachCentre(visit)` calls `visit(index, x, y, z, opacity)` once per splat, in
+// index order, with `opacity` undefined when the backend has none — and each backend supplies
+// the two-line adapter from what it holds. The sampling rules (stride, cap, opacity floor) live
+// here once, so the two backends cannot drift apart on what "the cloud" means.
+
+/** Cap on how many splats the rig pass inspects. Percentiles of a uniform subsample converge. */
+export const RIG_SAMPLE_CAP = 40000;
+
+/** Below this, a splat is haze — it is not where the camera was pointed and not what it saw. */
+export const RIG_MIN_OPACITY = 0.05;
+
+/** Nearer than this, a splat is behind or on the lens and its x/z, y/z, 1/z are meaningless. */
+export const RIG_MIN_Z = 0.05;
+
+/** Cap on how many splat centres the fallback framing pass inspects. */
+export const FRAME_SAMPLE_CAP = 200000;
+
+/**
+ * A visitor over flat arrays: `xyz` is [x,y,z, x,y,z, …] and `opacity` (optional) is one peak
+ * opacity per splat in [0,1].
+ *
+ * @param {ArrayLike<number>} xyz
+ * @param {ArrayLike<number>|null} [opacity]
+ * @param {number} [count]  splats to visit; defaults to what `xyz` holds.
+ * @returns {(visit: Function) => void}
+ */
+export function centresVisitor(xyz, opacity = null, count = Math.floor(xyz.length / 3)) {
+  return (visit) => {
+    for (let i = 0; i < count; i++) {
+      visit(i, xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2], opacity ? opacity[i] : undefined);
+    }
+  };
+}
+
+/**
+ * ONE walk over the cloud, in the REST CAMERA's frame, producing everything the waterfall needs
+ * that is not in the file: the angular extent that is the lens (x/z, y/z) and the disparities
+ * whose median is the focus (1/z).
+ *
+ * Model space, deliberately — the centres are the file's own OpenCV frame, before any display
+ * flip, which is the frame `rest` and `intrinsics` are expressed in. Doing it after the Y-flip
+ * would mean undoing the flip to compare with the block.
+ *
+ * @param {number} total  how many splats `forEachCentre` will visit.
+ * @param {(visit: Function) => void} forEachCentre
+ * @param {{position:number[],rotation:number[]}|null} rest
+ * @returns {{tx:Float64Array,ty:Float64Array,invz:Float64Array,n:number}|null}
+ */
+export function sampleCloudRestSpace(total, forEachCentre, rest) {
+  if (!total || typeof forEachCentre !== 'function') return null;
+  const r = rest || { position: [0, 0, 0], rotation: [0, 0, 0, 1] };
+  const stride = Math.max(1, Math.ceil(total / RIG_SAMPLE_CAP));
+  const cap = Math.ceil(total / stride) + 1;
+  const tx = new Float64Array(cap);
+  const ty = new Float64Array(cap);
+  const invz = new Float64Array(cap);
+  let n = 0;
+  const p = [0, 0, 0];
+  forEachCentre((index, x, y, z, opacity) => {
+    if (index % stride !== 0 || n >= cap) return;
+    if (opacity !== undefined && opacity < RIG_MIN_OPACITY) return;
+    p[0] = x;
+    p[1] = y;
+    p[2] = z;
+    const c = toRestSpace(r, p);
+    if (!(c[2] > RIG_MIN_Z)) return;
+    tx[n] = c[0] / c[2];
+    ty[n] = c[1] / c[2];
+    invz[n] = 1 / c[2];
+    n++;
+  });
+  return n ? { tx, ty, invz, n } : null;
+}
+
+/**
+ * A strided, opacity-filtered subsample of the centres, flat [x,y,z, …] — the input to
+ * `boundsFromPositions` for the fallback auto-frame. Skips near-transparent splats (haze and
+ * floaters drag a box outwards) and strides above FRAME_SAMPLE_CAP (percentiles of a uniform
+ * subsample are indistinguishable from the full set's, at a fraction of the cost).
+ *
+ * @param {number} total
+ * @param {(visit: Function) => void} forEachCentre
+ * @returns {Float32Array|null}
+ */
+export function sampleCloudCentres(total, forEachCentre) {
+  if (!total || typeof forEachCentre !== 'function') return null;
+  const stride = Math.max(1, Math.ceil(total / FRAME_SAMPLE_CAP));
+  const xyz = new Float32Array(Math.ceil(total / stride) * 3);
+  let k = 0;
+  forEachCentre((index, x, y, z, opacity) => {
+    if (index % stride !== 0) return;
+    if (opacity !== undefined && opacity < 0.05) return;
+    if (k + 3 > xyz.length) return;
+    xyz[k++] = x;
+    xyz[k++] = y;
+    xyz[k++] = z;
+  });
+  return xyz.subarray(0, k);
+}
+
+/** The splat backends `addSplat` knows. The first is the default. */
+export const SPLAT_ENGINES = ['spark', 'playcanvas'];
+
+/**
+ * Which backend an `addSplat` call asked for. Unset is Spark — the path every page had before
+ * there was a choice. Anything unknown THROWS, synchronously: a typo'd engine name is a page bug
+ * that is true of every call, not a condition of one asset.
+ *
+ * @param {{engine?: string}} [opts]
+ * @returns {'spark'|'playcanvas'}
+ */
+export function resolveSplatEngine(opts) {
+  const engine = opts?.engine ?? 'spark';
+  if (!SPLAT_ENGINES.includes(engine)) {
+    throw new Error(
+      `@displayxr/inline3d/splat: unknown engine "${engine}" — expected ` +
+        `${SPLAT_ENGINES.map((e) => `'${e}'`).join(' or ')} (default 'spark').`,
+    );
+  }
+  return engine;
+}
