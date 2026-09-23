@@ -375,6 +375,15 @@ function nowMs() {
     : Date.now();
 }
 
+// First-woven hold (web#36 follow-up): how long after a window's layer is constructed the SDK
+// assumes the browser MAY still be failing to join the canvas, and therefore still showing the
+// page's own raster of it — the raw side-by-side pair. The browser measures that window at
+// 0.4–1.2 s for a canvas that is fresh to its compositor (a same-document navigation creates
+// one); this is its upper bound. Nothing the page can observe today says when the join actually
+// landed (docs/proposals/layer-joined-signal.md), so `handle.firstWoven` is this timer, not a
+// report. Per-window override: `firstWovenHoldMs` on any add*() call.
+const FIRST_WOVEN_HOLD_MS = 1200;
+
 // The easing option, validated here rather than in the state machine: the sequencer falls back
 // silently (it has no opinion about a caller's config), but a typo in `createInline3D` is worth
 // exactly one warning — a page that asked for 'ease-in-out' and got smoothstep should know.
@@ -1055,6 +1064,44 @@ class Inline3D {
       // Read-only counters, for pages that want to see the load-induced mono fallback rather
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
       stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
+      /**
+       * Resolves ONCE, never rejects: `{ woven, confirmed, reason, ms }`.
+       *
+       * `woven: true` — the window has drawn a stereo frame on a layer that has existed for
+       * `firstWovenHoldMs` (default 1200). That is the moment to drop a poster covering the
+       * canvas. `confirmed` is `false` today, always: no browser reports when its compositor
+       * actually joined a canvas, so this is the browser's worst case, measured by the SDK so
+       * pages stop measuring it themselves. It becomes a reported fact (`confirmed: true`, no
+       * hold) when a browser can say so, with no change to the page.
+       *
+       * `woven: false` — this window will not weave: `reason` is `'layer-failed'`,
+       * `'session-ended'` or `'removed'`. The SDK has already taken an image/video canvas flat,
+       * and a scene's `onLayerLost` has already run. Release the poster onto the 2D fallback.
+       *
+       * `ms` is the time from the add*() call to settling.
+       */
+      get firstWoven() {
+        return win.fwPromise;
+      },
+      /**
+       * Callback form of {@link firstWoven}: `cb(result)` once, asynchronously, even when it has
+       * already settled. Returns an unsubscribe function.
+       */
+      onFirstWoven: (cb) => {
+        if (typeof cb !== 'function') throw new TypeError('[inline3d] onFirstWoven() takes a function.');
+        let live = true;
+        win.fwPromise.then((r) => {
+          if (!live) return;
+          try {
+            cb(r);
+          } catch (err) {
+            console.error('[inline3d] onFirstWoven callback threw', err);
+          }
+        });
+        return () => {
+          live = false;
+        };
+      },
     };
   }
 
@@ -1793,7 +1840,23 @@ class Inline3D {
       // onFrame deliveries; monoFrames counts the ones that carried fewer than two views.
       frames: 0,
       monoFrames: 0,
+      // handle.firstWoven (web#36 follow-up). One-shot per window: `fwResult` is the settled
+      // value, null while pending. `fwLayerAt` is when the CURRENT layer was built (null = none);
+      // `fwStereo` whether that layer has since carried a real stereo frame. _activate resets both
+      // for every new layer of a pending window, so a lazy tile that scrolls away before settling
+      // earns it again on its next layer rather than inheriting time from the closed one (a
+      // window with no layer is skipped by _frame, so nothing ticks in between).
+      fwResult: null,
+      fwResolve: null,
+      fwPromise: null,
+      fwHoldMs: firstWovenHold(opts.firstWovenHoldMs),
+      fwRegAt: nowMs(),
+      fwLayerAt: null,
+      fwStereo: false,
     };
+    win.fwPromise = new Promise((resolve) => {
+      win.fwResolve = resolve;
+    });
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
       this._observer.observe(win.observeEl);
@@ -1809,6 +1872,7 @@ class Inline3D {
     if (this._observer) this._observer.unobserve(win.observeEl);
     this._deactivate(win);
     this._windows.delete(canvas);
+    this._settleFirstWoven(win, false, 'removed');
   }
 
   _onIntersect(entries) {
@@ -1874,7 +1938,14 @@ class Inline3D {
       }
       this._paintMono(win);
       this._notifyLayerLost(win);
+      // After the mono paint and the scene's own notification, so a page that releases its
+      // poster on this finds the canvas already flat underneath it.
+      this._settleFirstWoven(win, false, 'layer-failed');
       return;
+    }
+    if (!win.fwResult) {
+      win.fwLayerAt = nowMs();
+      win.fwStereo = false;
     }
     win.layerLostSent = false; // a live layer again: a future loss is worth reporting again
     // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
@@ -2409,6 +2480,9 @@ class Inline3D {
           // (see the note below), so one broken tile took its neighbours' weave with it (web#28).
           try {
             win.onFrame(views, win.layer, f);
+            // A stereo frame the page drew without throwing. A short view list is the load
+            // fallback (a mono frame), which is not what a poster is waiting for.
+            if (views.length >= 2) win.fwStereo = true;
           } catch (err) {
             if (!win.frameThrewWarned) {
               win.frameThrewWarned = true;
@@ -2427,8 +2501,38 @@ class Inline3D {
         // sub-rect and the window flickers to a horizontal smear. A still image's
         // redraw is one cheap GPU drawImage — keep it live.
         this._paint(win, views);
+        // An SBS paint with a real source behind it. Before the image has loaded (or while a
+        // video has never had a frame) the tile holds nothing worth revealing yet.
+        if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : !!win.img)) {
+          win.fwStereo = true;
+        }
       }
+      this._tickFirstWoven(win);
     }
+  }
+
+  /**
+   * Settle `firstWoven` as woven once BOTH halves hold: the current layer has carried a stereo
+   * frame, and it has existed for the hold. Per session frame, per live window — two compares
+   * while pending, one while settled.
+   *
+   * This is where a browser-reported join would plug in (a confirmed result, no hold). No
+   * browser exposes one today; see docs/proposals/layer-joined-signal.md. It is deliberately
+   * NOT inferred from anything the session does report: views arrive from the runtime's locate,
+   * which knows nothing about whether the compositor has matched this canvas yet.
+   */
+  _tickFirstWoven(win) {
+    if (win.fwResult || !win.fwStereo || win.fwLayerAt === null) return;
+    if (nowMs() - win.fwLayerAt < win.fwHoldMs) return;
+    this._settleFirstWoven(win, true, 'hold-elapsed');
+  }
+
+  /** One-shot: the first call wins, later ones are ignored. */
+  _settleFirstWoven(win, woven, reason) {
+    if (win.fwResult) return;
+    win.fwResult = Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - win.fwRegAt) });
+    win.fwResolve(win.fwResult);
+    win.fwResolve = null;
   }
 
   // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────
@@ -2562,6 +2666,7 @@ class Inline3D {
       // thing that must not be. AFTER the close, so the flat frame is the last thing committed.
       this._paintMono(win);
       this._notifyLayerLost(win);
+      this._settleFirstWoven(win, false, 'session-ended');
     }
     this._windows.clear();
     // Page listeners go with the session that fed them: a manager whose session has ended will
@@ -2571,6 +2676,11 @@ class Inline3D {
 }
 
 // ── small helpers ─────────────────────────────────────────────────────────────────────
+
+/** `firstWovenHoldMs`, validated: a finite number >= 0, else the default. */
+function firstWovenHold(v) {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : FIRST_WOVEN_HOLD_MS;
+}
 
 function loadImage(source) {
   if (typeof source !== 'string') return Promise.resolve(source); // element/bitmap/canvas

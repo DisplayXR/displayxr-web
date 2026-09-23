@@ -363,6 +363,7 @@ export function addModel(wall, canvas, src, opts = {}) {
     KTX2Loader: injectedKtx2 = null,
     meshoptDecoder: injectedMeshopt = null,
     observe,
+    firstWovenHoldMs,
   } = opts;
 
   const paths = normalizeDecoderPath(decoderPath);
@@ -413,10 +414,13 @@ export function addModel(wall, canvas, src, opts = {}) {
       // canvas flat rather than leave its last side-by-side frame on the page (web#28).
       onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
+      ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
     });
   } else {
     viewer.startMono();
   }
+  // The core handle's `firstWoven`, forwarded; a page with no session is told so at once.
+  out.firstWoven = handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 }));
 
   out.ready = (async () => {
     const Loader = await resolveLoader(injectedLoader);

@@ -11,6 +11,34 @@ export interface TileOptions {
   cornerRadius?: number;
   /** Fade each eye's outer edges to transparent over this many buffer px. */
   feather?: number;
+  /**
+   * How long, in ms, this window's layer must have existed (and carried a stereo frame) before
+   * {@link TileHandle.firstWoven} resolves `woven: true`. Default 1200 — the browser's measured
+   * worst case for joining a canvas that is fresh to its compositor. Lower it only for a canvas
+   * you know is not fresh; 0 means "the first stereo frame".
+   */
+  firstWovenHoldMs?: number;
+}
+
+/**
+ * What {@link TileHandle.firstWoven} resolves to. Settles once and never rejects.
+ *
+ * - `woven: true, reason: 'hold-elapsed'` — a stereo frame is on a layer that has existed for
+ *   `firstWovenHoldMs`. Drop the poster covering the canvas.
+ * - `woven: false` — the window will not weave (`'layer-failed'`, `'session-ended'`,
+ *   `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat (image/video) or
+ *   its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
+ */
+export interface FirstWovenResult {
+  readonly woven: boolean;
+  /**
+   * `true` only when the BROWSER reported the join. Always `false` today: no browser exposes
+   * that, so the result is the SDK's worst-case hold rather than a report.
+   */
+  readonly confirmed: boolean;
+  readonly reason: 'hold-elapsed' | 'layer-failed' | 'session-ended' | 'removed' | 'unsupported';
+  /** Milliseconds from the add*() call to settling. */
+  readonly ms: number;
 }
 
 /**
@@ -306,6 +334,14 @@ export interface TileHandle {
    * Scene windows only — image/video windows always report `{ frames: 0, monoFrames: 0 }`.
    */
   stats(): { frames: number; monoFrames: number };
+  /**
+   * Resolves once, when it is safe to reveal this canvas: see {@link FirstWovenResult}. THE way to
+   * release a poster held over a woven canvas — `await Promise.all([ready, handle.firstWoven])`
+   * and cut, never fade. Approximate until a browser reports joins (`confirmed` stays `false`).
+   */
+  readonly firstWoven: Promise<FirstWovenResult>;
+  /** Callback form of {@link TileHandle.firstWoven}: called once, asynchronously. Returns an unsubscribe. */
+  onFirstWoven(cb: (result: FirstWovenResult) => void): () => void;
 }
 
 /** An open inline-3D session you add weaved windows to. Returned by {@link createInline3D}. */

@@ -5,6 +5,43 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — minor (1.10.0)
+
+Touches the **core tier** (`.`), additively. The frozen 1.x surface gains one handle member and
+one option, and nothing that exists changes behaviour. The preview subpaths (`./splat`,
+`./model`) forward the new member. No pixels move for any page that does not read it.
+
+### Added
+
+- **`handle.firstWoven`**: a promise that tells the page when it is safe to reveal a woven canvas
+  (core tier; web#36 follow-up).
+  - It resolves once and never rejects, with `{ woven, confirmed, reason, ms }`.
+  - `woven: true` means a real stereo frame is on a layer that has existed for
+    `firstWovenHoldMs`.
+  - `woven: false` (`'layer-failed'` / `'session-ended'` / `'removed'`) means the window will not
+    weave. The canvas is already flat, or the scene's `onLayerLost` has already run.
+  - `onFirstWoven(cb)` is the callback form.
+  - It replaces the worst-case `setTimeout` that pages kept to hide the raw side-by-side pair a
+    fresh canvas shows until the browser's compositor joins it.
+- **`firstWovenHoldMs`** on every `add*()` (default **1200**, the browser's measured worst case
+  for a canvas that is fresh to its compositor).
+- **It is approximate, by design, and says so.** No browser reports the join yet (checked
+  against the browser's JavaScript surface: the verdict exists only as a compositor log line). So
+  `confirmed` is always `false` and the result is the hold. When a browser reports joins it
+  becomes `confirmed: true` and earlier, with no change to the page. The browser ask is
+  [`docs/proposals/layer-joined-signal.md`](docs/proposals/layer-joined-signal.md).
+- `addSplat` (both engines) and `addModel` handles carry `firstWoven` and accept
+  `firstWovenHoldMs` (preview tier). With no inline-3D session they resolve
+  `{ woven: false, reason: 'unsupported' }` at once.
+- Docs: **[`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md)**: eight rules for never
+  showing a raw side-by-side frame. Each rule comes with its reason and the SDK call that
+  satisfies it, plus a hardware checklist keyed on the browser's
+  `withheld … ids=[<token>=<why>@<rect>]` log line. There is a summary section in the authoring
+  guide, and links from the porting guide and the README.
+  - It corrects two claims in circulation. **No shipping browser draws a flat frame instead of
+    the raw pair** for a fresh canvas: that fallback was measured and not shipped. And the
+    `withheld` line is logged at error level with throttling, so a missing line proves nothing.
+
 ## 1.9.1 — 2026-09-23
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), plus the package manifest.
