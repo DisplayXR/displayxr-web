@@ -1685,6 +1685,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     captureFit = 'height',
     focusInput = true,
     observe,
+    firstWovenHoldMs,
     preserveDrawingBuffer = false,
   } = opts;
   // `sortIntervalMs` is accepted and has no effect here: the engine re-sorts when the camera
@@ -1773,9 +1774,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       virtualDisplayHeight,
       onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
+      ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
     });
   } else {
     viewer.startMono();
+  }
+  // Settle the stub's `firstWoven` (addSplatDeferred) with the core handle's own.
+  if (typeof out._resolveFirstWoven === 'function') {
+    out._resolveFirstWoven(handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
+    delete out._resolveFirstWoven;
   }
 
   // Replay what the page did before this module arrived — exclude() above all, which a product

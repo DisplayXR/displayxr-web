@@ -2,6 +2,7 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
+import type { FirstWovenResult } from './index.js';
 
 /**
  * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
@@ -296,6 +297,8 @@ export interface SplatOptions {
   fileType?: 'ply' | 'spz' | 'splat' | 'ksplat' | 'pcsogs' | 'pcsogszip' | 'rad';
   /** Element whose visibility gates the lazy create/close lifecycle. */
   observe?: Element;
+  /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
+  firstWovenHoldMs?: number;
 }
 
 /** `handle.stats()` on `engine: 'playcanvas'`. */
@@ -422,6 +425,11 @@ export interface SplatHandle {
   /** Mark a 2D element painted over this window so the weave leaves it crisp. */
   exclude(el: Element): void;
   unexclude(el: Element): void;
+  /**
+   * The core window's `TileHandle.firstWoven`: when it is safe to reveal the canvas. Resolves
+   * `{ woven: false, reason: 'unsupported' }` at once where there is no inline-3D session.
+   */
+  readonly firstWoven: Promise<FirstWovenResult>;
 }
 
 /**

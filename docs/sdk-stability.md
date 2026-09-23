@@ -12,7 +12,13 @@ The **exported** surface of the package entry points:
   - `createInline3D(opts?)`, `startInline3D(canvas, opts?)`
   - the `Inline3D` manager: `addImage`, `addVideo`, `addScene`, `addGlobalOverlay`,
     `removeGlobalOverlay`, `close`, and the `supported` / `session` / `refSpace` / `liveCount` fields
-  - the `TileHandle`: `remove`, `exclude`, `unexclude`, `setViewRig`
+  - the `TileHandle`: `remove`, `exclude`, `unexclude`, `setViewRig`, and (1.10) `firstWoven` /
+    `onFirstWoven` with the `firstWovenHoldMs` option. What is frozen is the **contract**: it
+    settles once, never rejects, and has the `{ woven, confirmed, reason, ms }` shape. `woven: true`
+    means "safe to reveal the canvas". *When* it settles is deliberately not frozen: today it is a
+    worst-case hold (`confirmed: false`), and it moves to the browser's own join report
+    (`confirmed: true`, earlier) when a browser provides one. That is a timing change, not a
+    contract change ([proposal](proposals/layer-joined-signal.md)).
   - `inline3DAvailable()`, `inline3dOverlaySupported()`, `inline3dOcclusionByDrawOrder()`,
     `inline3dViewRigSupported()`
   - the **`XRViewRigInit` descriptor**: the two `type`s and the meaning, units and ranges of every

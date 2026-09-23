@@ -212,6 +212,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     fileName,
     fileType,
     observe,
+    firstWovenHoldMs,
   } = opts;
 
   const viewer = new SceneViewer(THREE, canvas, {
@@ -392,10 +393,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
       // canvas flat rather than leave its last side-by-side frame on the page (web#28).
       onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
+      ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
     });
   } else {
     viewer.startMono();
   }
+  // The core handle's `firstWoven`, forwarded; a page with no session is told so at once.
+  out.firstWoven = handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 }));
 
 
   // ── focus: declaring it, and the two gestures that change it ──────────────────────────
@@ -644,12 +648,21 @@ function addSplatDeferred(wall, canvas, src, opts) {
     exclude: queue('exclude'),
     unexclude: queue('unexclude'),
   };
+  // `firstWoven` exists from the first line, like every other field a page reads right away; the
+  // adapter settles it with the core handle's own once the module has loaded.
+  out.firstWoven = new Promise((resolve) => {
+    out._resolveFirstWoven = resolve;
+  });
   // The ONE owner of `ready`: the adapter returns its load promise and never touches this field.
   out.ready = import('./inline3d-splat-playcanvas.js')
     .then((m) => m.attachPlayCanvasSplat(out, wall, canvas, src, opts, pending))
     .catch((err) => {
       // The adapter warns about its own load failures; this is for the module not arriving.
       if (!out.viewer) console.warn('[inline3d/splat] engine:playcanvas failed to start', err);
+      if (out._resolveFirstWoven) {
+        out._resolveFirstWoven(Object.freeze({ woven: false, confirmed: false, reason: 'layer-failed', ms: 0 }));
+        delete out._resolveFirstWoven;
+      }
       throw err;
     });
   return out;

@@ -2,6 +2,7 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
+import type { FirstWovenResult } from './index.js';
 
 export interface ModelOptions {
   /** Metres of world the tile's height spans (default 0.24). */
@@ -72,6 +73,8 @@ export interface ModelOptions {
 
   /** Element whose visibility gates the lazy create/close lifecycle. */
   observe?: Element;
+  /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
+  firstWovenHoldMs?: number;
 }
 
 /** What {@link addModel} returns — the same shape as addSplat's handle. */
@@ -90,6 +93,11 @@ export interface ModelHandle {
   remove(): void;
   exclude(el: Element): void;
   unexclude(el: Element): void;
+  /**
+   * The core window's `TileHandle.firstWoven`: when it is safe to reveal the canvas. Resolves
+   * `{ woven: false, reason: 'unsupported' }` at once where there is no inline-3D session.
+   */
+  readonly firstWoven: Promise<FirstWovenResult>;
 }
 
 /**
