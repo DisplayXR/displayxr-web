@@ -7,8 +7,65 @@
 // (./inline3d-splat.js) and the PlayCanvas adapter (./inline3d-splat-playcanvas.js) both import
 // it, so a gesture or a coordinate convention cannot drift between the two.
 //
-// (SceneViewer in ./inline3d-viewer.js keeps its own module-private clamp/finite/now: P1 of
-// epic #36 deliberately leaves that module untouched.)
+// The VIEWER CONSTANTS below are read by BOTH SceneViewer (./inline3d-viewer.js, the Spark path)
+// and PlayCanvasSplatViewer (./inline3d-splat-playcanvas.js), so the two backends cannot drift
+// apart on how a drag, a wheel notch, an idle turntable or a focus change feels. Pinned by
+// test/splat-playcanvas.test.mjs (values, and a behavioural trace of both viewers side by side).
+
+/**
+ * Backstop on total subject depth, as a multiple of the display height. Generous on purpose:
+ * depth placement is a z decision (see fitTo), not a scale one, so this only catches the
+ * pathological case where a subject is so deep that no placement helps.
+ */
+export const DEFAULT_DEPTH_LIMIT = 4.0;
+/** Milliseconds of no interaction before the idle turntable starts. */
+export const IDLE_DELAY_MS = 2500;
+/**
+ * Per-frame easing factor for a focus change, matching the gallery's `EASE`.
+ *
+ * Deliberately per FRAME and not per second, because that is what the reference implementation
+ * does and a focus change is a one-off gesture response rather than a continuous motion — the
+ * difference between 60 and 120 Hz here is a settle that takes half as long, not a bug.
+ */
+export const FOCUS_EASE = 0.18;
+/** Yaw/pitch/zoom damping: each frame closes `1 − DAMP_BASE^dt` of the gap (dt in seconds). */
+export const DAMP_BASE = 0.001;
+/** Largest frame step the damping will take, seconds — a stall must not become a lurch. */
+export const MAX_DT_S = 0.1;
+/** Default pitch clamp, degrees: stops the viewer rolling under the subject. */
+export const PITCH_LIMIT = Object.freeze([-60, 60]);
+/** A full drag across the tile is this many degrees — a half turn, whatever the tile size. */
+export const DRAG_DEG_PER_TILE = 180;
+/**
+ * Wheel-zoom tuning.
+ *
+ * ZOOM_PER_PX is set so one ordinary mouse notch (~100 px in Chrome) is about a 10% step, which
+ * puts a trackpad's 1-10 px events at a fraction of a percent each — small enough that the easing
+ * reads as continuous rather than as a stack of jumps.
+ *
+ * A deltaMode-1 "line" is sized to match a wheel DETENT, not a line of text. Firefox reports a
+ * notch as deltaY 3 in lines where Chrome reports it as ~100 in pixels, so 33 makes one physical
+ * notch feel the same in both; 16 (a text line) would make Firefox roughly half as responsive as
+ * Chrome for identical hardware.
+ */
+export const WHEEL_LINE_PX = 33;
+/** A "page" in deltaMode 2; rare, but it must not be unbounded. */
+export const WHEEL_PAGE_PX = 400;
+/** Per-event ceiling, against OS pointer acceleration spikes. */
+export const WHEEL_MAX_PX = 120;
+export const ZOOM_PER_PX = 0.001;
+export const ZOOM_MIN = 0.2;
+export const ZOOM_MAX = 6;
+/** The mono fallback camera: a plain perspective camera, vertical FOV in degrees, near, far. */
+export const MONO_FOV = 35;
+export const MONO_NEAR = 0.001;
+export const MONO_FAR = 1000;
+/**
+ * The camera rig's far plane. A deconverged capture parks its sky at the lifter's depth cap and
+ * the refinement scatters some gaussians beyond it (239 m measured on a street scene); anything
+ * past the far plane is clipped and pops out as a black hole the moment an orbit pushes it over.
+ */
+export const CAPTURE_FAR = 5000;
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -80,4 +137,46 @@ export function bindFocusGestures(canvas, { onDoubleClick, onReset }) {
     canvas.removeEventListener('dblclick', onDblClick);
     removeEventListener('keydown', onKeyDown);
   };
+}
+
+/** URL path without query/hash; '' for non-strings. */
+export function pathOf(u) {
+  return typeof u === 'string' ? u.split(/[?#]/)[0] : '';
+}
+
+function extOf(u) {
+  const m = /\.([a-z0-9]+)$/i.exec(pathOf(u));
+  return m ? m[1].toLowerCase() : '';
+}
+
+/** Spark's `fileType` names, as the PlayCanvas engine's parser extensions (null = unreadable). */
+const PC_FILETYPE = { pcsogszip: 'sog', ply: 'ply' };
+
+/**
+ * Which PlayCanvas loader a source needs. The engine picks its parser from the URL's extension;
+ * a byte source gets a synthetic name so it does too.
+ *
+ * @param {string|null} src  the URL (ignored when `bytes` is given).
+ * @param {Uint8Array|null} [bytes]
+ * @param {string} [fileName]  the `.splat`/`.ksplat` disambiguator; its extension is a hint here.
+ * @param {string} [fileType]  Spark's type name, if the page passed one.
+ * @returns {{ext:'sog'|'ply'|'json', streamed:boolean}|null} null = not something the engine reads.
+ */
+export function engineFormatFor(src, bytes, fileName, fileType) {
+  if (fileType !== undefined) {
+    const ext = PC_FILETYPE[fileType];
+    return ext ? { ext, streamed: false } : null;
+  }
+  if (bytes) {
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+      return { ext: 'sog', streamed: false };
+    }
+    if (bytes.length >= 3 && bytes[0] === 0x70 && bytes[1] === 0x6c && bytes[2] === 0x79) return { ext: 'ply', streamed: false };
+    const e = extOf(fileName);
+    return e === 'sog' || e === 'ply' ? { ext: e, streamed: false } : null;
+  }
+  const e = extOf(src);
+  if (e === 'sog' || e === 'ply') return { ext: e, streamed: false };
+  if (e === 'json') return { ext: 'json', streamed: /lod-meta\.json$/i.test(pathOf(src)) };
+  return null;
 }
