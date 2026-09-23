@@ -5,6 +5,27 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** only — a new subpath, `./player`, nothing else moves.
+
+### Added
+
+- **`addPlayer(wall, canvas, src, opts)` — a media player module (preview tier).** Built on
+  `addVideo`: creates and owns a hidden `<video>`, and for `format:'sbs'` (default) hands it
+  straight to `wall.addVideo()`, so the stereo paint, the SBS buffer contract and the
+  display-mode fallback are inherited rather than re-implemented. Adds real transport
+  (`play/pause/seek/currentTime/duration/volume/muted/setSource/remove`), an `on/off` event pair
+  (`play|pause|ended|timeupdate|ready|error`), an SDK-drawn partial-region transport bar
+  (`data-inline3d-overlay`, auto-hiding, keyboard-accessible), and a keyboard map
+  (Space/K/←/→/J/L/M) scoped to the canvas/transport. `format:'mono'` paints genuinely flat
+  content full-frame on a small paint loop of its own — see `js/inline3d-player.js`'s module doc
+  comment for why this is a different code path from the unsupported-`wall` fallback, and why
+  neither one is the RFC's `untrackedFallback`/`trackingState` mechanism, which does not exist in
+  this codebase. v1 is narrower than `docs/rfcs/0001-media-player.md`: no `'tb'`/`'auto'` format
+  detection, no `opts.group` one-active-player policy, no `opts.fit`/letterboxing, and
+  `opts.fadeMs` is accepted but not implemented. Sample: `samples/player/`.
+
 ## 1.24.0 — 2026-09-25
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change. Pixels change
