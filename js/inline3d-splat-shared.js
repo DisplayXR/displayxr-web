@@ -248,3 +248,22 @@ export function captureVerticalFovDeg(K, aspect, near, captureFit = 'height') {
   // Symmetric-equivalent angle of an off-axis window: what `verticalFov` means on the wire.
   return (2 * Math.atan((w.top - w.bottom) / (2 * near)) * 180) / Math.PI;
 }
+
+/**
+ * Can the PlayCanvas engine read this source — decidable WITHOUT loading anything? Returns a
+ * reason string when it provably cannot (so ./splat can throw at call time), null when it can or
+ * when that is only knowable later (a Blob, a URL with no extension).
+ */
+export function playcanvasCannotRead(src, { fileType, fileName } = {}) {
+  let bytes = null;
+  if (src instanceof Uint8Array) bytes = src;
+  else if (src instanceof ArrayBuffer) bytes = new Uint8Array(src, 0, Math.min(8, src.byteLength));
+  if (typeof src !== 'string' && !bytes && fileType === undefined) return null; // a Blob: known at load
+  if (typeof src === 'string' && fileType === undefined && !extOf(src)) return null;
+  if (engineFormatFor(typeof src === 'string' ? src : null, bytes, fileName, fileType)) return null;
+  const what = fileType ?? (typeof src === 'string' ? `.${extOf(src)}` : 'these bytes');
+  return (
+    `the PlayCanvas engine (the default) reads .sog, .ply and a Streamed-SOG lod-meta.json, not ` +
+    `${what}. Pass engine:'spark' for .spz / .splat / .ksplat / .rad.`
+  );
+}

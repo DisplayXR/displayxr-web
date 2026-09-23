@@ -39,6 +39,7 @@ import {
   sampleCloudCentres,
   centresVisitor,
   RIG_SAMPLE_CAP,
+  RIG_MIN_OPACITY,
   FRAME_SAMPLE_CAP,
 } from './inline3d-splat-rig.js';
 import { readSogMeta, sogCameraFromMeta } from './inline3d-sog.js';
@@ -392,15 +393,18 @@ export { engineFormatFor } from './inline3d-splat-shared.js';
  * nearestGaussianToRay, on content-space centres.
  *
  * @param {Float32Array} xyz  centres, in whatever space `origin`/`dir` are in.
+ * @param {Uint8Array} [alpha8]  optional peak opacity per splat, 0–255; below RIG_MIN_OPACITY skipped.
  * @returns {number[]|null} a point in the same space.
  */
-export function nearestCentreToRay(xyz, origin, dir, coneRad = PICK_CONE_RAD) {
-  const n = Math.floor(xyz.length / 3);
+export function nearestCentreToRay(xyz, origin, dir, coneRad = PICK_CONE_RAD, alpha8 = null, count = Math.floor(xyz.length / 3)) {
+  const n = count;
   let bestInCone = null;
   let bestInConeT = Infinity;
   let bestAngle = Infinity;
   let bestAny = null;
+  const minA = Math.ceil(RIG_MIN_OPACITY * 255);
   for (let i = 0; i < n; i++) {
+    if (alpha8 && alpha8[i] < minA) continue; // haze is not what was clicked
     const rx = xyz[i * 3] - origin[0];
     const ry = xyz[i * 3 + 1] - origin[1];
     const rz = xyz[i * 3 + 2] - origin[2];
@@ -1320,31 +1324,41 @@ export async function readCloud(resource) {
     xyz[j * 3 + 2] = centers[i * 3 + 2];
   }
   let opacity = null;
+  // Full-resolution peak opacity, ONE BYTE per splat, kept for the exact pick (which walks the
+  // engine's own full centre set at pick time): 1.18 MB on the 1.18M bench asset.
+  let alpha8 = null;
   try {
     if (data?.isSog && data.sh0?.read) {
       const px = await data.sh0.read(0, 0, data.sh0.width, data.sh0.height, { mipLevel: 0, face: 0, immediate: true });
       if (px && px.length >= sourceTotal * 4) {
-        opacity = new Float32Array(total);
         const v2 = data.meta?.version === 2;
         const mn = data.meta?.sh0?.mins?.[3];
         const mx = data.meta?.sh0?.maxs?.[3];
-        for (let j = 0, i = 0; j < total; j++, i += stride) {
+        const op = (i) => {
           const a = px[i * 4 + 3] / 255;
-          opacity[j] = v2 || mn === undefined ? a : 1 / (1 + Math.exp(-(mn + (mx - mn) * a)));
-        }
+          return v2 || mn === undefined ? a : 1 / (1 + Math.exp(-(mn + (mx - mn) * a)));
+        };
+        opacity = new Float32Array(total);
+        for (let j = 0, i = 0; j < total; j++, i += stride) opacity[j] = op(i);
+        alpha8 = new Uint8Array(sourceTotal);
+        if (v2 || mn === undefined) for (let i = 0; i < sourceTotal; i++) alpha8[i] = px[i * 4 + 3];
+        else for (let i = 0; i < sourceTotal; i++) alpha8[i] = Math.round(op(i) * 255);
       }
     } else if (typeof data?.getProp === 'function') {
       const o = data.getProp('opacity');
       if (o && o.length >= sourceTotal) {
         opacity = new Float32Array(total);
         for (let j = 0, i = 0; j < total; j++, i += stride) opacity[j] = 1 / (1 + Math.exp(-o[i]));
+        alpha8 = new Uint8Array(sourceTotal);
+        for (let i = 0; i < sourceTotal; i++) alpha8[i] = Math.round(255 / (1 + Math.exp(-o[i])));
       }
     }
   } catch (err) {
     console.warn('[inline3d/splat] could not read splat opacities — the cloud pass runs unfiltered', err);
     opacity = null;
+    alpha8 = null;
   }
-  return { xyz, opacity, total, stride, sourceTotal };
+  return { xyz, opacity, alpha8, total, stride, sourceTotal };
 }
 
 /**
@@ -1381,8 +1395,6 @@ export function describeResource(res) {
   }
   return { kind: 'flat', numSplats: res.gsplatData?.numSplats ?? 0, meta: res.gsplatData?.meta || null, bounds: null };
 }
-
-let warnedStreamedPick = false;
 
 // ── the handle ──────────────────────────────────────────────────────────────────────────────
 
@@ -1475,7 +1487,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let unbindFocusInput = null;
   let removed = false;
   /** The asset on screen: its resource, kind, the pick data it keeps. */
-  let current = null; // { asset, entity, res, kind, pickCentres }
+  let current = null; // { asset, entity, res, kind, streamedBounds, alpha8, pickCentres }
 
   Object.assign(out, {
     backend: 'playcanvas',
@@ -1606,22 +1618,39 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
 
   /**
-   * Nearest-centre pick over the strided centre set kept at load (RIG_SAMPLE_CAP, opacity-
-   * filtered). A Streamed SOG has no flat cloud: null, with one warning. Returns a MODEL point.
+   * EXACT nearest-centre pick over the FULL centre set, at pick time: the engine keeps every
+   * centre for its own sort (`resource.centers`), and the adapter keeps one opacity byte per
+   * splat to skip haze. A Streamed SOG picks over the chunks currently RESIDENT (no opacity
+   * filter there yet). Returns a MODEL-space point.
    */
   function pickModel(clientX, clientY) {
     const c = current;
     if (!c) return null;
-    if (c.kind === 'streamed') {
-      if (!warnedStreamedPick) {
-        warnedStreamedPick = true;
-        console.warn('[inline3d/splat] pick is unsupported on a Streamed SOG in this version (engine:playcanvas) — returns null.');
-      }
-      return null;
-    }
-    if (!c.pickCentres || !c.pickCentres.length) return null;
     const ray = modelRay(clientX, clientY);
-    return ray ? nearestCentreToRay(c.pickCentres, ray.o, ray.d) : null;
+    if (!ray) return null;
+    if (c.kind === 'streamed') {
+      let best = null;
+      let bestT = Infinity;
+      const res = c.res?.octree?.fileResources;
+      if (res && typeof res.values === 'function') {
+        for (const chunk of res.values()) {
+          const xyz = chunk?.centers;
+          if (!xyz || !xyz.length) continue;
+          const p = nearestCentreToRay(xyz, ray.o, ray.d);
+          if (!p) continue;
+          const t = (p[0] - ray.o[0]) * ray.d[0] + (p[1] - ray.o[1]) * ray.d[1] + (p[2] - ray.o[2]) * ray.d[2];
+          if (t < bestT) {
+            bestT = t;
+            best = p;
+          }
+        }
+      }
+      return best;
+    }
+    const full = c.res?.centers;
+    if (full && full.length) return nearestCentreToRay(full, ray.o, ray.d, undefined, c.alpha8);
+    // The engine released its centres: fall back to the strided set kept at load.
+    return c.pickCentres ? nearestCentreToRay(c.pickCentres, ray.o, ray.d) : null;
   }
 
   function bindFocusInput() {
@@ -1649,7 +1678,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       const buf = source instanceof Blob ? await source.arrayBuffer() : source;
       bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
     }
-    const fmt = engineFormatFor(source, bytes, opts.fileName);
+    const fmt = engineFormatFor(source, bytes, opts.fileName, opts.fileType);
     if (!fmt) {
       throw new Error(
         "[inline3d/splat] engine:'playcanvas' reads .sog, .ply and a Streamed-SOG lod-meta.json; " +
@@ -1712,7 +1741,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     out.rig = resolved;
     out.frame = bounds;
 
-    // The pick set: the shared walker at RIG_SAMPLE_CAP, opacity-filtered, MODEL space.
+    // The strided pick fallback (used only if the engine releases its full centre set).
     let pickCentres = null;
     if (walk) {
       const s = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
@@ -1736,7 +1765,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: true });
       }
     }
-    return { pickCentres };
+    return { pickCentres, alpha8: cloud?.alpha8 || null };
   }
 
   let pcModule = null;

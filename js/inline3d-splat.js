@@ -31,6 +31,7 @@ import {
   captureWindow,
   captureVerticalFovDeg,
   CAPTURE_FITS,
+  playcanvasCannotRead,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -163,7 +164,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // WHICH ENGINE. Unset (or 'spark') is everything below, untouched. 'playcanvas' goes to
   // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
   // resolves `playcanvas` — see addSplatDeferred.
-  if (resolveSplatEngine(opts) === 'playcanvas') return addSplatDeferred(wall, canvas, src, opts);
+  if (resolveSplatEngine(opts) === 'playcanvas') {
+    // A format that engine provably cannot read (a .spz URL, gzip bytes, a Spark-only fileType)
+    // is a page bug: say so NOW rather than fail inside a loader later.
+    const why = playcanvasCannotRead(src, opts);
+    if (why) throw new Error(`@displayxr/inline3d/splat: ${why}`);
+    return addSplatDeferred(wall, canvas, src, opts);
+  }
 
   // Fail here, synchronously, and not through `ready`: a peer too old is an install-time mistake
   // in the page's dependencies, not a condition of this asset, and it will be true of every call.
@@ -314,6 +321,14 @@ export function addSplat(wall, canvas, src, opts = {}) {
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
+    /** Where the window is pointed, in the SPLAT's own space; null before load. */
+    getFocus(o) {
+      if (!out.mesh) return null;
+      const f = viewer.getFocus(o);
+      return toModelSpace(out.mesh, viewer.content.localToWorld(new THREE.Vector3(f.x, f.y, f.z)), THREE);
+    },
+    /** Called with the live focus, in the splat's own space, whenever it moves. */
+    onFocusChange: null,
     /** Not on this backend: the crossfading asset swap is a PlayCanvas-backend feature. */
     setSource() {
       throw new Error(
@@ -408,7 +423,11 @@ export function addSplat(wall, canvas, src, opts = {}) {
     });
     handle?.setViewRig(out.viewRig);
   }
-  viewer.onFocusChange = () => pushViewRig(false);
+  viewer.onFocusChange = () => {
+    pushViewRig(false);
+    const cb = out.onFocusChange;
+    if (typeof cb === 'function' && out.mesh) cb(out.getFocus(), { focusSource: out.rig?.focusSource ?? null });
+  };
 
   /**
    * What is under a point on the canvas.

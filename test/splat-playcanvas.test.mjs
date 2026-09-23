@@ -689,7 +689,7 @@ test('describeResource: a Streamed SOG frames from the octree bound and counts i
   assert.equal(describeResource(null).kind, null);
 });
 
-test('a Streamed SOG through the adapter: framed (not model scale), camera block read, pick warns once', async (t) => {
+test('a Streamed SOG through the adapter: framed (not model scale); pick is nearest RESIDENT chunk centre', async (t) => {
   installDom();
   const warn = t.mock.method(console, 'warn', () => {});
   const { pc, rec } = makeFakePc();
@@ -702,10 +702,13 @@ test('a Streamed SOG through the adapter: framed (not model scale), camera block
   assert.deepEqual(out.frame, { center: [1, -2, -3], extent: [20, 10, 40] }, 'the flip applies to the bound');
   assert.notEqual(out.viewer._fitScale, 1, 'fitTo ran — not UNFRAMED at model scale');
   assert.ok(!warn.mock.calls.some((c) => /UNFRAMED/.test(String(c.arguments[0]))));
-  assert.equal(out.pick(10, 10), null);
-  assert.equal(out.pick(20, 20), null);
-  const pickWarns = warn.mock.calls.filter((c) => /pick is unsupported on a Streamed SOG/.test(String(c.arguments[0])));
-  assert.equal(pickWarns.length, 1, 'one warning, not one per call');
+  assert.equal(out.pick(160, 90), null, 'nothing resident yet');
+  // Two chunks become resident; the pick walks them.
+  rec.resource.octree.fileResources = new Map([
+    [0, { centers: new Float32Array([5, 5, 5]) }],
+    [1, { centers: new Float32Array([1, 2, 3 + 0.001]) }],
+  ]);
+  assert.ok(out.pick(160, 90), 'picked a resident centre');
   out.remove();
 });
 
@@ -1173,4 +1176,63 @@ test('handle.engine is a frozen { app, root, camera }; the splat hangs under roo
   app.destroy = () => destroyed++;
   out.remove();
   assert.equal(destroyed, 1, 'page-added entities under root die with the app');
+});
+
+// ── 19. parity: exact pick, formats refused at call time, renderScale ───────────────────────
+
+test('pick is EXACT over the engine’s full centre set, skipping haze by the kept opacity byte', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  // 50k centres far off-axis, plus two on the view axis: a HAZE one nearer, a solid one behind it.
+  const n = 50002;
+  const centers = new Float32Array(n * 3);
+  for (let i = 0; i < n - 2; i++) {
+    centers[i * 3] = 50 + (i % 100);
+    centers[i * 3 + 1] = 50;
+    centers[i * 3 + 2] = 10;
+  }
+  centers.set([0, 0, 1.5], (n - 2) * 3); // haze
+  centers.set([0.001, 0, 2.5], (n - 1) * 3); // solid — the answer
+  const alpha = new Uint8Array(n * 4).fill(255);
+  alpha[(n - 2) * 4 + 3] = 3; // ~1 % opacity
+  const w = 256;
+  const h = Math.ceil(n / w);
+  const px = new Uint8Array(w * h * 4);
+  px.set(alpha.subarray(0, n * 4));
+  rec.queue = [{ centers, gsplatData: { numSplats: n, isSog: true, meta: { version: 2 }, sh0: { width: w, height: h, read: async () => px } } }];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, rig: 'display', fit: 'none' }, []);
+  // Aim through the centre of the canvas along the model +z axis: use a camera at the origin.
+  out.viewer.mono.pose = poseMatrix([0, 0, 0], [0, 0, 0, 1]); // content −z = model +z (the flip)
+  out.viewer.setFocus([0, 0, 0], { snap: true, recentre: false });
+  const p = out.pick(160, 90);
+  assert.ok(p, 'hit something');
+  near(p[2], 2.5, 1e-6, 'the solid splat, not the nearer haze — and not a strided sample (it is index n-1)');
+  out.remove();
+});
+
+test('fileType: Spark names route to the engine parsers; Spark-only types are refused', async () => {
+  const { engineFormatFor, playcanvasCannotRead } = await import('../js/inline3d-splat-shared.js');
+  assert.deepEqual(engineFormatFor(null, new Uint8Array([1, 2, 3, 4]), undefined, 'pcsogszip'), { ext: 'sog', streamed: false });
+  assert.equal(engineFormatFor(null, new Uint8Array(4), undefined, 'spz'), null);
+  assert.equal(playcanvasCannotRead('https://x/a.sog'), null);
+  assert.equal(playcanvasCannotRead('https://x/lod-meta.json'), null);
+  assert.equal(playcanvasCannotRead('https://x/no-extension'), null, 'unknowable now → decided at load');
+  assert.equal(playcanvasCannotRead(new Blob([])), null, 'a Blob is read at load');
+  assert.match(playcanvasCannotRead('https://x/a.spz'), /engine:'spark'/);
+  assert.match(playcanvasCannotRead(new Uint8Array([0x1f, 0x8b, 0, 0])), /engine:'spark'/);
+  assert.match(playcanvasCannotRead('x.sog', { fileType: 'ksplat' }), /ksplat/);
+});
+
+test('renderScale sizes the buffer: min(dpr,2)·renderScale per eye, double-width in 3D, 1:1 flat', async () => {
+  installDom();
+  globalThis.window.devicePixelRatio = 3; // clamped to 2
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const canvas = makeCanvas(500, 300);
+  const v = new PlayCanvasSplatViewer(canvas, { orbit: false, renderScale: 0.6 });
+  assert.deepEqual([canvas.width, canvas.height], [2 * Math.round(500 * 2 * 0.6), Math.round(300 * 2 * 0.6)]);
+  v.startMono();
+  assert.deepEqual([canvas.width, canvas.height], [600, 360]);
+  v.dispose();
+  globalThis.window.devicePixelRatio = 1;
 });
