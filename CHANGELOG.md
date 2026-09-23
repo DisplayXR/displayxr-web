@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased — minor (1.10.0)
+## 1.10.0 — 2026-09-23
 
 Touches the **core tier** (`.`), additively. The frozen 1.x surface gains one handle member and
 one option, and nothing that exists changes behaviour. The preview subpaths (`./splat`,
