@@ -112,8 +112,8 @@ Display rig, PlayCanvas vs Spark directly: `ports_25.sog` 0.79, `ports_100_cam.s
 
 Synthetic stereo, with the SDK's real 3D path driven by a stand-in wall: two views of the capture
 camera at ±32 mm and ±0.02 NDC skew, on a 2560×720 SBS buffer. PlayCanvas vs Spark directly:
-**1.14**. That is the footprint fix at work. Without it, the P0 spike measured 11.5 against a
-square-pixel reference.
+**1.14**, with the footprint fix on. The unfixed engine was not re-run here; the P0 spike measured
+11.5 without the fix, against a square-pixel reference.
 
 Several PlayCanvas tiles on one page each render their own splat (checked with 4 tiles, mixed
 camera and display rigs). A page that never passes `engine` makes **0** `playcanvas` requests.
