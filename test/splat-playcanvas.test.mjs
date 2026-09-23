@@ -1094,3 +1094,63 @@ test('the adapter reports nearest-clump on handle.rig and through onFocusChange'
   assert.ok(got.some((i) => i && i.focusSource === 'nearest-clump'));
   out.remove();
 });
+
+// ── 17. captureFit ──────────────────────────────────────────────────────────────────────────
+
+test("captureWindow 'height' is the 1.7 capture window, arithmetic for arithmetic", async () => {
+  const { captureWindow } = await import('../js/inline3d-splat-shared.js');
+  const K = { fx: 1194.67, fy: 1194.67, cx: 1000, cy: 600, width: 2048, height: 1152 };
+  for (const aspect of [16 / 9, 1, 0.6, 2.4]) {
+    const near = 0.001;
+    // The formula applyCaptureCamera always had, inlined.
+    const top = (near * K.cy) / K.fy;
+    const bottom = -(near * (K.height - K.cy)) / K.fy;
+    const mid = (near * (K.width / 2 - K.cx)) / K.fx;
+    const half = ((top - bottom) * aspect) / 2;
+    assert.deepEqual(captureWindow(K, aspect, near), { left: mid - half, right: mid + half, top, bottom }, `aspect ${aspect}`);
+  }
+});
+
+test("captureWindow 'cover': a 4:3 capture in a 16:9 tile keeps the width and crops top/bottom; narrower tiles = 'height'", async () => {
+  const { captureWindow, captureVerticalFovDeg } = await import('../js/inline3d-splat-shared.js');
+  const K = { fx: 1000, fy: 1000, cx: 800, cy: 600, width: 1600, height: 1200 }; // 4:3, centred
+  const near = 1;
+  const c = captureWindow(K, 16 / 9, near, 'cover');
+  near_(c.left, -0.8);
+  near_(c.right, 0.8);
+  near_((c.right - c.left) / (c.top - c.bottom), 16 / 9, 'fills the tile');
+  assert.ok(c.top - c.bottom < 1.2 - 1e-9, 'vertical cropped below the capture’s 1.2');
+  near_((c.top + c.bottom) / 2, 0, 'crop centred on the frame');
+  assert.deepEqual(captureWindow(K, 1, near, 'cover'), captureWindow(K, 1, near, 'height'), 'a narrower tile: identical');
+  // The rig FOV follows the crop (so 3D crops like the flat view); 'height' is the lens's own.
+  near_(captureVerticalFovDeg(K, 16 / 9, near, 'height'), (2 * Math.atan(600 / 1000) * 180) / Math.PI);
+  assert.ok(captureVerticalFovDeg(K, 16 / 9, near, 'cover') < captureVerticalFovDeg(K, 16 / 9, near, 'height'));
+  function near_(a, b, what = '') {
+    assert.ok(Math.abs(a - b) < 1e-9, `${what} ${a} !~= ${b}`);
+  }
+});
+
+test("the PlayCanvas viewer's mono camera honours captureFit, and re-declares the rig FOV on a resize", async () => {
+  installDom();
+  const { PlayCanvasSplatViewer, frustumFromProjection } = await import('../js/inline3d-splat-playcanvas.js');
+  const K = { fx: 1000, fy: 1000, cx: 800, cy: 600, width: 1600, height: 1200 };
+  const rig = { rest: { position: [0, 0, 0], rotation: [0, 0, 0, 1] }, intrinsics: K };
+  const canvas = makeCanvas(640, 360);
+  const h = new PlayCanvasSplatViewer(canvas, { orbit: false });
+  const c = new PlayCanvasSplatViewer(makeCanvas(640, 360), { orbit: false, captureFit: 'cover' });
+  let pushed = 0;
+  c.onCaptureFov = () => pushed++;
+  h.useCaptureCamera(rig);
+  c.useCaptureCamera(rig);
+  assert.ok(frustumFromProjection(c.mono.proj).fov < frustumFromProjection(h.mono.proj).fov, 'cover crops the vertical');
+  near(frustumFromProjection(c.mono.proj).fov, c.mono.fov, 1e-9, 'the fov the rig sends matches the crop');
+  assert.equal(pushed, 1);
+  h.dispose();
+  c.dispose();
+});
+
+test('addSplat validates captureFit at call time (source check — ./splat imports three)', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  assert.match(src, /CAPTURE_FITS\.includes\(opts\.captureFit\)/);
+});

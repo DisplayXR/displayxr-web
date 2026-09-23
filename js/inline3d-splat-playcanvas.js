@@ -71,6 +71,8 @@ import {
   MONO_NEAR,
   MONO_FAR,
   CAPTURE_FAR,
+  captureWindow,
+  captureVerticalFovDeg,
   engineFormatFor,
   pathOf,
 } from './inline3d-splat-shared.js';
@@ -314,14 +316,9 @@ export function fitScale({ extent, fit = 'contain', margin = 0.8, vH = 0.24, asp
  * The capture camera's mono projection — applyCaptureCamera's off-axis window, principal point
  * honoured, vertical kept and horizontal fitted to the canvas aspect.
  */
-export function captureProjection(intrinsics, aspect, near = MONO_NEAR, far = CAPTURE_FAR, out) {
-  const { fx, fy, cx, cy, width, height } = intrinsics;
-  const top = (near * cy) / fy;
-  const bottom = -(near * (height - cy)) / fy;
-  const a = aspect > 0 ? aspect : width / height;
-  const mid = (near * (width / 2 - cx)) / fx;
-  const half = ((top - bottom) * a) / 2;
-  return perspectiveOffAxis(mid - half, mid + half, top, bottom, near, far, out);
+export function captureProjection(intrinsics, aspect, near = MONO_NEAR, far = CAPTURE_FAR, out, captureFit = 'height') {
+  const w = captureWindow(intrinsics, aspect, near, captureFit);
+  return perspectiveOffAxis(w.left, w.right, w.top, w.bottom, near, far, out);
 }
 
 /**
@@ -446,6 +443,7 @@ export class PlayCanvasSplatViewer {
       orbitMaxDeg = ORBIT_MAX_DEG,
       orbitEase = {},
       feather = 0,
+      captureFit = 'height',
     } = opts;
     this.canvas = canvas;
     // The tilt-and-relax orbit (./inline3d-splat-shared.js §ORBIT): drag tilts up to ±orbitMaxDeg
@@ -455,6 +453,9 @@ export class PlayCanvasSplatViewer {
     this.orbitEase = { drag: orbitEase.drag ?? ORBIT_TAU_DRAG_S, rest: orbitEase.rest ?? ORBIT_TAU_REST_S };
     this._orbitMode = null;
     this.featherPx = feather > 0 ? feather : 0;
+    this.captureFit = captureFit;
+    /** Called when the capture camera's vertical FOV changes (captureFit 'cover' on a resize). */
+    this.onCaptureFov = null;
     /** Per-frame hooks, `(tMs) => boolean` — return false to be removed. setSource's crossfade. */
     this._hooks = [];
     this.vH = virtualDisplayHeight;
@@ -635,7 +636,7 @@ export class PlayCanvasSplatViewer {
     const pose = capturePose(rig.rest, this.flipY);
     this.mono.pose = pose.matrix;
     this.mono.capture = rig.intrinsics;
-    this.mono.fov = (2 * Math.atan(rig.intrinsics.height / (2 * rig.intrinsics.fy))) / DEG;
+    this.mono.fov = captureVerticalFovDeg(rig.intrinsics, NaN, this.mono.near, 'height');
     this.mono.far = Math.max(this.mono.far, CAPTURE_FAR);
     this._updateMonoProjection();
   }
@@ -932,8 +933,16 @@ export class PlayCanvasSplatViewer {
   _updateMonoProjection() {
     const box = this.canvas.getBoundingClientRect();
     const aspect = box.height > 0 ? box.width / box.height : 1;
-    if (this.mono.capture) captureProjection(this.mono.capture, aspect, this.mono.near, this.mono.far, this.mono.proj);
-    else perspectiveFov(this.mono.fov, aspect, this.mono.near, this.mono.far, this.mono.proj);
+    if (this.mono.capture) {
+      captureProjection(this.mono.capture, aspect, this.mono.near, this.mono.far, this.mono.proj, this.captureFit);
+      if (this.captureFit !== 'height') {
+        const fov = captureVerticalFovDeg(this.mono.capture, aspect, this.mono.near, this.captureFit);
+        if (fov !== this.mono.fov) {
+          this.mono.fov = fov;
+          this.onCaptureFov?.();
+        }
+      }
+    } else perspectiveFov(this.mono.fov, aspect, this.mono.near, this.mono.far, this.mono.proj);
   }
 
   _drawMono() {
@@ -1424,6 +1433,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     feather = 0,
     perf,
     rig = 'auto',
+    captureFit = 'height',
     focusInput = true,
     observe,
     preserveDrawingBuffer = false,
@@ -1445,6 +1455,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     orbitMaxDeg: opts.orbitMaxDeg,
     orbitEase: opts.orbitEase,
     feather,
+    captureFit,
   });
 
   let handle = null;
@@ -1558,6 +1569,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // Second argument: which waterfall step the focus came from ('block', 'nearest-clump', …).
     if (typeof cb === 'function') cb(contentToModel([f.x, f.y, f.z]), { focusSource: out.rig?.focusSource ?? null });
   };
+  // captureFit 'cover' re-crops on resize, which changes the rig's vertical FOV: re-declare it.
+  viewer.onCaptureFov = () => pushViewRig(true);
 
   // ── pick ──
   /** The ray under a client point, in MODEL space (through the inverse pivot and the flip). */
