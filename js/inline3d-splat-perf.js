@@ -253,3 +253,129 @@ export function splatPerfMeshOptions(perf) {
   if (!profile || !profile.lod) return {};
   return { lod: profile.lod === 'quality' ? 'quality' : true };
 }
+
+// ── the same presets on the PlayCanvas engine (`addSplat(…, { engine: 'playcanvas' })`) ──────
+//
+// Same contract as the Spark half above: nothing moves unless asked, and every knob can be
+// switched off. The presets are Spark-shaped (they were measured on Spark), so this maps each
+// knob onto the engine's nearest equivalent rather than inventing engine presets:
+//
+// | Spark knob | engine (2.22.3) | note |
+// |---|---|---|
+// | `alphaRadius` | always on | the engine ALREADY shrinks every quad to its own alpha radius (`clipCorner` in `gsplatCommonVS`: `min(1, sqrt(ln(a / alphaClip)) / 2)` of the √8σ quad — the same cut `patchAlphaRadius` puts into Spark). It cannot be turned off, so `alphaRadius: false` is reported as `'native'`. |
+// | `minAlpha` | `scene.gsplat.alphaClipForward` | engine default is already 1/255 |
+// | `maxStdDev` | chunk override of `gsplatCommonVS` | the engine's quad is a fixed √8σ; the override caps `clipCorner`'s scale at `maxStdDev/√8`, which truncates both the quad AND the gaussian's uv, i.e. Spark's semantics. Only ever SHRINKS (≤ √8σ). |
+// | `minPixelRadius` | `scene.gsplat.minPixelSize` = 2 × radius | the engine compares a quad DIAMETER in px (`max(l1,l2)`) |
+// | `lod`, `lodSplat*`, `maxPixelRadius`, `falloff`, `alphaFloor` | none | Spark-only; ignored with one warning. The engine's splat-count lever is `splatBudget` (below) |
+//
+// Engine-native keys may be passed in an options object as well and win over the mapping:
+// `alphaClipForward`, `minPixelSize`, `splatBudget` (a global splat count, per app = per tile),
+// `antiAlias` (only for AA-trained assets).
+//
+// `minPixelSize` IS THE ONE DEFAULT CHANGED. The engine drops every splat whose quad is under
+// 2 px by default; Spark keeps them (its `minPixelRadius` default is 0). On a lifted photograph
+// the sub-2px grain is real texture, so every `perf` value except `false` starts from 0 — the
+// Spark-parity baseline — and only a preset or option that states a size moves it. `perf: false`
+// is the kill switch: the engine's own defaults, untouched, 2 px included.
+
+/** The engine's quad half-extent, in σ: `l = 2·sqrt(2λ)` over cornerUV ∈ [-1,1] (gsplatCorner). */
+export const PLAYCANVAS_QUAD_SIGMA = Math.sqrt(8);
+
+/** Knobs that are engine-native and pass straight through to `app.scene.gsplat`. */
+const PC_NATIVE = ['alphaClipForward', 'minPixelSize', 'splatBudget'];
+
+/** Spark knobs with no engine equivalent — named once in a warning, then ignored. */
+const PC_UNMAPPED = ['lod', 'lodSplatCount', 'lodSplatScale', 'lodRenderScale', 'maxPixelRadius', 'falloff', 'alphaFloor'];
+
+/**
+ * Resolve `perf` into engine settings. Pure: no engine, no GPU — the adapter applies the result.
+ *
+ * @param {undefined|null|false|true|string|object} perf  the `addSplat` option, as given.
+ * @returns {{settings:object, quadExtent:number|null, applied:object|null, ignored:string[]}}
+ *          `settings` go onto `app.scene.gsplat`; `quadExtent` (a fraction of the √8σ quad, or
+ *          null for untouched) goes into the `gsplatCommonVS` override; `applied` is what the
+ *          handle reports (null for `perf: false`).
+ */
+export function playcanvasPerfSettings(perf) {
+  const out = { settings: {}, quadExtent: null, applied: null, ignored: [] };
+  if (perf === false) return out; // kill switch: engine defaults, untouched
+
+  let profile = null;
+  let name = null;
+  if (perf === undefined || perf === null) name = 'default';
+  else if (perf === true) {
+    profile = SPLAT_PERF_PRESETS.balanced;
+    name = 'balanced';
+  } else if (typeof perf === 'string') {
+    profile = SPLAT_PERF_PRESETS[perf] || null;
+    name = profile ? perf : 'default';
+    if (!profile) {
+      console.warn(
+        `[inline3d/splat] unknown perf preset "${perf}" — ignored. ` +
+          `Known: ${Object.keys(SPLAT_PERF_PRESETS).join(', ')}, or an options object.`,
+      );
+    }
+  } else if (typeof perf === 'object') {
+    profile = perf;
+    name = 'custom';
+  }
+
+  const s = out.settings;
+  const applied = { preset: name };
+  // The Spark-parity baseline. See the block comment above.
+  s.minPixelSize = 0;
+  if (profile) {
+    if (isNum(profile.minAlpha)) s.alphaClipForward = profile.minAlpha;
+    if (isNum(profile.minPixelRadius)) s.minPixelSize = 2 * Math.max(0, profile.minPixelRadius);
+    if (isNum(profile.maxStdDev) && profile.maxStdDev > 0) {
+      const k = Math.min(1, profile.maxStdDev / PLAYCANVAS_QUAD_SIGMA);
+      if (k < 1) out.quadExtent = k;
+    }
+    if (profile.alphaRadius !== undefined) applied.alphaRadius = 'native';
+    for (const key of PC_NATIVE) if (isNum(profile[key])) s[key] = profile[key];
+    if (typeof profile.antiAlias === 'boolean') s.antiAlias = profile.antiAlias;
+    for (const key of PC_UNMAPPED) if (profile[key] !== undefined) out.ignored.push(key);
+    if (out.ignored.length) {
+      console.warn(
+        `[inline3d/splat] perf: ${out.ignored.join(', ')} ${out.ignored.length > 1 ? 'have' : 'has'} ` +
+          'no PlayCanvas equivalent and ' +
+          `${out.ignored.length > 1 ? 'are' : 'is'} ignored on engine:'playcanvas' — the engine's ` +
+          'splat-count lever is `splatBudget` (see js/inline3d-splat-perf.js).',
+      );
+    }
+  }
+  Object.assign(applied, s);
+  if (out.quadExtent !== null) applied.maxStdDev = out.quadExtent * PLAYCANVAS_QUAD_SIGMA;
+  out.applied = applied;
+  return out;
+}
+
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+
+// The anchor the quad-extent override rewrites, from the engine's `gsplatCommonVS` (2.22.3). The
+// npm build re-indents chunks with tabs and a later release may re-space them, so it is a
+// whitespace-agnostic regex, not a string.
+const PC_CLIP_ANCHOR = /float\s+clip\s*=\s*min\(\s*1\.0\s*,/;
+
+/**
+ * Cap the engine's per-splat quad at `k` of its √8σ extent — Spark's `maxStdDev`, on PlayCanvas.
+ *
+ * Rewrites `clipCorner`'s `min(1.0, …)` to `min(k, …)`, which scales the corner offset AND the uv
+ * the fragment shader evaluates the gaussian at, so the tail is truncated rather than the
+ * profile squashed. Returns the source unchanged (and `ok:false`) when the anchor is missing;
+ * the caller warns once and renders at the engine's own extent.
+ *
+ * @param {string} src  the current `gsplatCommonVS` chunk.
+ * @param {number} k  in (0, 1).
+ * @returns {{src:string, ok:boolean}}
+ */
+export function patchPlayCanvasQuadExtent(src, k) {
+  if (typeof src !== 'string' || !(k > 0 && k < 1)) return { src, ok: false };
+  if (src.includes('dxrQuadExtent')) return { src, ok: true }; // idempotent
+  if (!PC_CLIP_ANCHOR.test(src)) return { src, ok: false };
+  const lit = k.toFixed(7);
+  return {
+    src: src.replace(PC_CLIP_ANCHOR, `float clip = min(${lit} /* dxrQuadExtent */,`),
+    ok: true,
+  };
+}
