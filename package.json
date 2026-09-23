@@ -32,6 +32,10 @@
       "import": "./js/inline3d-model.js"
     },
     "./package.json": "./package.json",
+    "./player": {
+      "types": "./player.d.ts",
+      "import": "./js/inline3d-player.js"
+    },
     "./undock": {
       "types": "./index.d.ts",
       "import": "./js/inline3d-undock.js"
@@ -61,11 +65,13 @@
     "js/inline3d-model-playcanvas.js",
     "js/inline3d-pc-look.js",
     "js/inline3d-playcanvas-engine.js",
+    "js/inline3d-player.js",
     "index.d.ts",
     "three.d.ts",
     "viewer.d.ts",
     "splat.d.ts",
     "model.d.ts",
+    "player.d.ts",
     "CHANGELOG.md",
     "README.md",
     "LICENSE",
