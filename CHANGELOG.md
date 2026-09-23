@@ -5,6 +5,38 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — 1.9.1 (patch)
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), plus the package manifest.
+Nothing changes for Spark callers or for splat-only pages. The fixes affect only what a page can
+do with `handle.engine`.
+
+### Fixed
+
+- **`handle.engine.root` is usable as documented.** The tile's `AppBase` now registers `Render`,
+  `Light` and `Anim` component systems and a `Container` resource handler, next to `Camera`,
+  `GSplat` and `Texture`/`GSplat`. That is exactly what a glTF needs, skinned and animated
+  included. Before, a page had to register them itself or `instantiateRenderEntity()` produced
+  nothing.
+  - A page that still registers them now gets the existing system back instead of an engine
+    "already registered" throw.
+  - Cost: +0.1 ms boot (`AppBase.init` 0.4 → 0.5 ms). +41.8 KB gzip only for a hand-tree-shaken
+    engine build; nothing for the SDK as shipped.
+  - Verified with a skinned, animated `.glb` over a splat: composited, depth-tested against nearer
+    splats, animation advancing.
+- **`"./package.json"` is exported**, so `import pkg from '@displayxr/inline3d/package.json'` and
+  `require.resolve('@displayxr/inline3d/package.json')` work instead of
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
+### Added
+
+- **`nearClip` / `farClip`** (PlayCanvas): a floor on the projection's near plane and a cap on its
+  far plane, for depth precision in a mixed mesh + splat scene. The adapter still owns the
+  projections, and unset leaves them untouched.
+- Docs: `handle.engine` in [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md). Covers what
+  is registered, the cost, and two engine gotchas (lights shine along local −Y; use `AnimTrack.name`
+  with `assignAnimation`).
+
 ## 1.9.0 — 2026-09-23
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive: nothing changes for

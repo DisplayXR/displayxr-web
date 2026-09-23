@@ -48,6 +48,71 @@ anchor that warns once and renders unpatched if the engine moves the line:
 2. **`gsplatCommonVS` quad extent** (only when a `perf` preset shrinks the quad). This is Spark's
    `maxStdDev`.
 
+## `handle.engine` — adding your own content
+
+`handle.engine` is `{ app, root, camera }`: the tile's `pc.AppBase`, the content root entity
+(the splat's content space; add your entities under it), and the eye-rig camera entity.
+`remove()` destroys the app and everything under `root` with it. This is advanced and not
+covered by the semver promise.
+
+**What the app registers (1.9.1).**
+- Component systems: `Camera` and `GSplat` for the splat, plus `Render`, `Light` and `Anim`.
+- Resource handlers: `Texture` and `GSplat`, plus `Container` (`.glb` / `.gltf`).
+
+That is exactly what a glTF needs, skinned and animated included, and nothing more from the
+engine's full `Application` list. Physics, UI, audio, particles and scripts remain the page's to
+add. The container's sub-assets (render, material, animation) arrive already loaded, so they need
+no handlers of their own (verified by running a skinned, animated `.glb`).
+
+Pages written before 1.9.1 registered those systems themselves. The engine throws on a duplicate
+system id, so the adapter makes a second `app.systems.add()` of a registered id a no-op that
+returns the existing system. Re-adding a handler is harmless in the engine anyway.
+
+**Cost**, measured:
+- Bundle, esbuild 0.28.2 minified, for a tree-shaken minimal viewer: **+152 KB min / +41.8 KB
+  gzip** (1,346,588 → 1,498,900 bytes; gzip 354,215 → 396,009).
+- For the SDK as shipped, the bundle cost is none. The adapter reaches the engine through the
+  namespace of a dynamic `import('playcanvas')`, which bundlers do not tree-shake, and an
+  importmap loads the whole engine anyway.
+- Boot: `AppBase.init` median **0.4 → 0.5 ms** (+0.1 ms), in headless Chrome 153 on M1 Pro, 20
+  interleaved runs each.
+
+That is well under the 5 ms threshold, so registration is **eager**: `handle.engine.root` is
+usable as soon as `ready` resolves.
+
+```js
+const { app, root } = handle.engine;
+const a = new pc.Asset('fox', 'container', { url: 'fox.glb' });
+app.assets.add(a); app.assets.load(a);
+a.ready(() => {
+  const e = a.resource.instantiateRenderEntity();
+  root.addChild(e);                       // content space, same as handle.frame
+  e.addComponent('anim', { activate: true });
+  const track = a.resource.animations[0].resource;
+  e.anim.assignAnimation(track.name, track);   // the TRACK's name — see below
+});
+```
+
+**Two engine gotchas** hit in the field:
+- **A light shines along its local −Y**, while `lookAt` aims an entity's −Z. A light pointed with
+  `lookAt` lights the wrong way. Rotate it (for example `setLocalEulerAngles(45, 30, 0)`), or
+  `lookAt` and then pitch it by −90°.
+- **Container sub-assets are named `<asset name>/animation/N`.** When the asset name has a dot
+  (`fox.glb`), passing that string to `assignAnimation` makes the anim component read the dot as
+  a path separator. Measured here, the animation silently never plays (no base layer is
+  created). The field page instead threw `t.getChild is not a function`. Either way, use the
+  track's own name: `track.name`.
+
+**Depth.** Meshes depth-test against each other, and splats test against the meshes; splats don't
+write depth. Verified: a skinned fox placed behind the photo's foreground loses 741 of 7,014
+pixels to nearer splats, and 0 when placed in front.
+
+The adapter owns the projections: runtime views in 3D, and in 2D the mono camera at near 0.001
+with far 1000 (display rig) or 5000 (camera rig). A mixed scene may want tighter depth precision,
+so **`nearClip` / `farClip`** (both optional, `perf`-independent) are a **floor on near and a cap
+on far**. They never widen the range, and they rewrite only the depth mapping, not the frustum.
+Anything nearer than `nearClip` is clipped, splats included.
+
 ## `perf` on this engine
 
 | Spark knob | engine | note |

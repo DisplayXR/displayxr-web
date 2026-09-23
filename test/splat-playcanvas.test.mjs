@@ -567,6 +567,10 @@ function makeFakePc() {
     GSplatComponentSystem: 'gsplat',
     TextureHandler: 'tex',
     GSplatHandler: 'gsh',
+    RenderComponentSystem: 'render',
+    LightComponentSystem: 'light',
+    AnimComponentSystem: 'anim',
+    ContainerHandler: 'container',
     ShaderChunks: {
       get: () => ({
         get: (k) => (k === 'gsplatCornerVS' ? CORNER_2_22_3 : k === 'gsplatCommonVS' ? COMMON_2_22_3 : ''),
@@ -587,7 +591,8 @@ test('attachEngine: our own device, AppBase with no xr/input, engine rAF off, ca
   assert.equal(rec.deviceOpts.alpha, true);
   assert.equal(rec.deviceOpts.premultipliedAlpha, true);
   assert.equal(rec.deviceOpts.preserveDrawingBuffer, false);
-  assert.deepEqual(app.opts.componentSystems, ['cam', 'gsplat'], 'no xr, no input systems');
+  assert.deepEqual(app.opts.componentSystems, ['cam', 'gsplat', 'render', 'light', 'anim'], 'splat + glTF-with-animation; no xr, no input');
+  assert.deepEqual(app.opts.resourceHandlers, ['tex', 'gsh', 'container']);
   assert.equal(app.opts.xr, undefined);
   assert.equal(app.opts.mouse, undefined);
   assert.equal(rec.resolution, 0, 'setCanvasResolution would write a NaN buffer width without sizes');
@@ -1242,4 +1247,87 @@ test('renderScale sizes the buffer: min(dpr,2)·renderScale per eye, double-widt
   assert.deepEqual([canvas.width, canvas.height], [600, 360]);
   v.dispose();
   globalThis.window.devicePixelRatio = 1;
+});
+
+
+// ── 1.9.1: handle.engine.root usable for glTF — systems, handlers, idempotency, depth range ────
+
+test('the registration list is pinned: splat + exactly what a glTF with animation needs', async () => {
+  const { PLAYCANVAS_SYSTEMS, PLAYCANVAS_HANDLERS } = await import('../js/inline3d-splat-playcanvas.js');
+  assert.deepEqual(PLAYCANVAS_SYSTEMS, [
+    'CameraComponentSystem',
+    'GSplatComponentSystem',
+    'RenderComponentSystem',
+    'LightComponentSystem',
+    'AnimComponentSystem',
+  ]);
+  assert.deepEqual(PLAYCANVAS_HANDLERS, ['TextureHandler', 'GSplatHandler', 'ContainerHandler']);
+  assert.ok(Object.isFrozen(PLAYCANVAS_SYSTEMS) && Object.isFrozen(PLAYCANVAS_HANDLERS));
+});
+
+test('a page that registers Render/Light/Anim again (the pre-1.9.1 pattern) does not throw', async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  // The engine's registry: add() THROWS on a duplicate id.
+  const origInit = pc.AppBase.prototype.init;
+  pc.AppBase.prototype.init = function (o) {
+    origInit.call(this, o);
+    const reg = { list: [] };
+    reg.add = (sys) => {
+      if (reg[sys.id]) throw new Error(`ComponentSystem name '${sys.id}' already registered or not allowed`);
+      reg[sys.id] = sys;
+      reg.list.push(sys);
+    };
+    for (const id of ['camera', 'gsplat', 'render', 'light', 'anim']) reg.add({ id });
+    this.systems = reg;
+  };
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const v = new PlayCanvasSplatViewer(makeCanvas(320, 180), { orbit: false });
+  const app = await v.attachEngine(pc, { perf: playcanvasPerfSettings(undefined) });
+  const existing = app.systems.render;
+  let destroyed = 0;
+  const dup = { id: 'render', destroy: () => destroyed++ };
+  assert.equal(app.systems.add(dup), existing, 'returns the registered system');
+  assert.equal(destroyed, 1, 'the duplicate is released');
+  assert.equal(app.systems.list.length, 5, 'nothing added twice');
+  app.systems.add({ id: 'sound' });
+  assert.ok(app.systems.sound, 'new ids still register');
+  v.dispose();
+});
+
+test('clampProjectionDepth raises near / lowers far, keeps the frustum shape, is idempotent', async () => {
+  const { clampProjectionDepth } = await import('../js/inline3d-splat-playcanvas.js');
+  const P = perspectiveOffAxis(-0.06, 0.04, 0.03, -0.03, 0.001, 5000);
+  const before = Float64Array.from(P);
+  clampProjectionDepth(P, 0.05, 50);
+  const f = frustumFromProjection(P);
+  near(f.nearClip, 0.05, 1e-9);
+  near(f.farClip, 50, 1e-6);
+  for (const i of [0, 5, 8, 9, 11]) assert.equal(P[i], before[i], `element ${i} (fov, skew) untouched`);
+  const again = Float64Array.from(P);
+  clampProjectionDepth(P, 0.05, 50);
+  assert.deepEqual(Array.from(P), Array.from(again), 'idempotent');
+  const Q = perspectiveOffAxis(-0.06, 0.04, 0.03, -0.03, 0.2, 10);
+  const q0 = Float64Array.from(Q);
+  clampProjectionDepth(Q, 0.05, 50); // near already above the floor, far already below the cap
+  assert.deepEqual(Array.from(Q), Array.from(q0), 'a floor/cap never widens the range');
+  clampProjectionDepth(Q, null, null);
+  assert.deepEqual(Array.from(Q), Array.from(q0));
+});
+
+test('nearClip / farClip reach the viewer as a floor and a cap (unset = untouched)', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const a = new PlayCanvasSplatViewer(makeCanvas(320, 180), { orbit: false, nearClip: 0.05, farClip: 50 });
+  assert.deepEqual([a.nearClip, a.farClip], [0.05, 50]);
+  const b = new PlayCanvasSplatViewer(makeCanvas(320, 180), { orbit: false, nearClip: -1 });
+  assert.deepEqual([b.nearClip, b.farClip], [null, null]);
+  a.dispose();
+  b.dispose();
+});
+
+test('package.json is readable through the exports map ("./package.json")', async () => {
+  const fs = await import('node:fs');
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.exports['./package.json'], './package.json');
 });
