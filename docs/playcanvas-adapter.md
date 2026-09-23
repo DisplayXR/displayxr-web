@@ -285,8 +285,8 @@ and Trogir comes over the network from CloudFront. GPU = `EXT_disjoint_timer_que
 exactly one frame per rAF, 300 frames after 60 warm-up, rest pose, median / p90 ms. "Stereo" is
 the SDK's real 3D path driven by a stand-in wall with two synthetic views (±32 mm): a 2560×720 or
 3840×1080 SBS buffer. First frame = `stats().firstFrameMs` (ms since navigation start, first tick
-that drew a non-empty set). It includes loading the SDK, three and Spark from a CDN (still static
-imports of `./splat` on this branch) and the engine from localhost. Bytes =
+that drew a non-empty set). It includes loading the SDK, three and Spark from a CDN (static imports of `./splat` when this
+was measured, on p1 @ `ebeb1b2`) and the engine from localhost. Bytes =
 CDP `Network.loadingFinished.encodedDataLength` for the asset's URLs.
 
 Scenes:
