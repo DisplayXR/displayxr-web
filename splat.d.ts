@@ -36,9 +36,25 @@ export interface SplatPerfOptions {
   lodRenderScale?: number;
   /**
    * `engine: 'playcanvas'` only — engine-native knobs, passed straight to `app.scene.gsplat`
-   * (and winning over the Spark-knob mapping). `splatBudget` is a global splat count per tile.
+   * (and winning over the Spark-knob mapping).
+   *
+   * `splatBudget` is a splat count **per tile, all views included**: every view of a tile is
+   * drawn through one engine camera, so one budget covers both eyes of a 3D tile. It only acts
+   * on a Streamed SOG (a flat `.sog` draws every splat). Unset on a Streamed SOG = 600k
+   * (`STREAMED_SPLAT_BUDGET`); unset on anything else, or `perf: false` = the engine's 1M.
    */
   splatBudget?: number;
+  /**
+   * `engine: 'playcanvas'`, Streamed SOG only: how a chunk's LOD is chosen. Unset = the engine's
+   * `'distance'`.
+   */
+  lodMode?: 'distance' | 'error';
+  /** Streamed SOG only: camera travel (in the file's own units) before LOD re-evaluates. Engine default 1. */
+  lodUpdateDistance?: number;
+  /** Streamed SOG only: camera rotation in degrees before LOD re-evaluates. Engine default 0 (off). */
+  lodUpdateAngle?: number;
+  /** Streamed SOG only: how many coarser levels may stand in while a finer one streams. Engine default 0. */
+  lodUnderfillLimit?: number;
   /** `engine: 'playcanvas'` only: cull splats whose quad DIAMETER is under this many px. */
   minPixelSize?: number;
   /** `engine: 'playcanvas'` only: the forward-pass alpha floor (engine default 1/255). */
@@ -158,6 +174,11 @@ export interface SplatOptions {
    * Which renderer. `'spark'` (the default) is three.js + Spark. `'playcanvas'` is the PlayCanvas
    * engine (optional peer `playcanvas >=2.22.3 <3`, loaded by dynamic import only when asked):
    * same handle, reads `.sog` / `.ply` / a Streamed-SOG `lod-meta.json`. Anything else throws.
+   *
+   * A Streamed SOG is loaded BY URL only — its `lod-meta.json`, or the directory holding it (a
+   * URL ending in `/`). It is a directory of chunk files named by relative path, so bytes of a
+   * `lod-meta.json` throw at call time with a message giving the URL form, and so does a streamed
+   * URL with `engine: 'spark'`.
    */
   engine?: 'spark' | 'playcanvas';
   /**
@@ -269,6 +290,34 @@ export interface SplatOptions {
   observe?: Element;
 }
 
+/** `handle.stats()` on `engine: 'playcanvas'`. */
+export interface SplatStats {
+  /** `'streamed'` for a `lod-meta.json`, `'flat'` for `.sog`/`.ply`, null before load. */
+  kind: 'flat' | 'streamed' | null;
+  /**
+   * Splats the engine placed in this tile's work buffer on the LAST frame: after LOD selection
+   * and the budget, before per-view frustum culling. Every view of the tile draws from this set.
+   */
+  resident: number;
+  /** The largest `resident` seen so far. */
+  peakResident: number;
+  /** The tile's splat budget (all views included), or null. */
+  budget: number | null;
+  /** The asset's own count: every splat of a flat source, the finest level of a Streamed SOG. */
+  numSplats: number;
+  /** Views drawn last frame (1 in mono, the runtime's view count in 3D). */
+  views: number;
+  /** Streamed SOG only (null otherwise): LOD levels, chunk files, chunk files currently loaded. */
+  lodLevels: number | null;
+  files: number | null;
+  filesLoaded: number | null;
+  /**
+   * `performance.now()` (ms since navigation start) of the first frame that drew a non-empty
+   * set — the page's time to first splat. Null until then.
+   */
+  firstFrameMs: number | null;
+}
+
 /** What {@link addSplat} returns: a TileHandle plus the objects behind it. */
 export interface SplatHandle {
   /**
@@ -354,6 +403,11 @@ export interface SplatHandle {
    * raycast, falling back to the nearest centre.
    */
   pick(clientX: number, clientY: number): number[] | null;
+  /**
+   * `engine: 'playcanvas'` only: splat accounting for this tile. Null until the backend module
+   * has loaded.
+   */
+  stats?(): SplatStats | null;
 
   /** Close this window and release its GPU resources. */
   remove(): void;

@@ -43,7 +43,12 @@ import {
   FRAME_SAMPLE_CAP,
 } from './inline3d-splat-rig.js';
 import { readSogMeta, sogCameraFromMeta } from './inline3d-sog.js';
-import { playcanvasPerfSettings, patchPlayCanvasQuadExtent } from './inline3d-splat-perf.js';
+import {
+  playcanvasPerfSettings,
+  patchPlayCanvasQuadExtent,
+  tileSplatBudget,
+  budgetPerManager,
+} from './inline3d-splat-perf.js';
 import { boundsFromPositions } from './inline3d-viewer.js';
 import { cameraRigFromPose } from './inline3d-three.js';
 import {
@@ -76,6 +81,7 @@ import {
   captureVerticalFovDeg,
   engineFormatFor,
   pathOf,
+  streamedBytesError,
 } from './inline3d-splat-shared.js';
 
 /** The engine release this adapter was built and measured against (npm peer floor). */
@@ -385,7 +391,20 @@ export function pickViewPath(pc, forced) {
 
 // Source routing lives in ./inline3d-splat-shared.js (./splat also needs it, synchronously, to
 // refuse a format this engine cannot read at call time); re-exported for the tests.
-export { engineFormatFor } from './inline3d-splat-shared.js';
+export { engineFormatFor, isStreamedUrl, streamedBytesError } from './inline3d-splat-shared.js';
+
+/**
+ * The URL the engine loads for a streamed source: a directory URL gets `lod-meta.json` appended
+ * (before any query/hash, which are kept); a `lod-meta.json` URL is returned as is. The engine
+ * resolves every chunk relative to this URL's directory, so it must name the file itself.
+ */
+export function streamedEntryUrl(src) {
+  if (typeof src !== 'string') return src;
+  const m = /^([^?#]*)(.*)$/.exec(src);
+  const path = m[1];
+  const tail = m[2];
+  return path.endsWith('/') ? `${path}lod-meta.json${tail}` : src;
+}
 
 /**
  * The pick fallback on flat arrays: the gaussian whose CENTRE is nearest the ray — by angle,
@@ -520,6 +539,16 @@ export class PlayCanvasSplatViewer {
     this._views = []; // RenderViews (renderview path) or camera entities (cameras path)
     this._viewPath = null;
     this._frustumKey = '';
+
+    // Per-frame splat accounting (handle.stats()). `resident` is what the engine put in the
+    // tile's work buffer on the LAST tick — the budget-enforced, LOD-selected set every view of
+    // the tile draws from (before per-view frustum culling). `firstFrameAt` is performance.now()
+    // (ms since navigation start) of the first tick that drew a non-empty set.
+    this.resident = 0;
+    this.peakResident = 0;
+    this.firstFrameAt = null;
+    this._tileBudget = undefined; // undefined = the engine's own default
+    this._budgetViews = 1;
 
     this._onResize = () => this._scheduleResize();
     this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(this._onResize) : null;
@@ -810,7 +839,12 @@ export class PlayCanvasSplatViewer {
         );
       }
     }
-    for (const [k, v] of Object.entries(perf?.settings || {})) app.scene.gsplat[k] = v;
+    for (const [k, v] of Object.entries(perf?.settings || {})) {
+      if (k !== 'splatBudget') app.scene.gsplat[k] = v;
+    }
+    // The budget goes through setTileBudget: it is a PER-TILE contract, and the N-camera
+    // fallback has to split it (SPLAT_BUDGET_MODEL).
+    this.setTileBudget(perf?.settings?.splatBudget);
 
     // EVERY Entity gets its app EXPLICITLY. The constructor's default is the engine's global
     // "current app" (`getApplication()`), which is whichever AppBase last init'ed or ticked — so
@@ -893,6 +927,35 @@ export class PlayCanvasSplatViewer {
     this._feather.mi.visible = this._mode === '3d';
     this._feather.mat.setParameter('dxrFeatherFx', Math.min(0.5, this.featherPx / Math.max(1, w)));
     this._feather.mat.setParameter('dxrFeatherFy', Math.min(0.5, this.featherPx / Math.max(1, h)));
+  }
+
+  /**
+   * The tile's splat budget, all views included (SPLAT_BUDGET_MODEL). `undefined` leaves the
+   * engine's own default alone. On the RenderView path it is the scene budget as is (one manager
+   * for all views); on the N-camera fallback it is split across the N per-camera managers.
+   */
+  setTileBudget(budget) {
+    this._tileBudget = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : undefined;
+    this._applyBudget();
+  }
+
+  get tileBudget() {
+    if (this._tileBudget !== undefined) return this._tileBudget;
+    return this.app ? this.app.scene.gsplat.splatBudget : undefined;
+  }
+
+  _applyBudget() {
+    if (!this.app || this._tileBudget === undefined) return;
+    const per = budgetPerManager(this._tileBudget, this._viewPath, this._budgetViews);
+    if (this.app.scene.gsplat.splatBudget !== per) this.app.scene.gsplat.splatBudget = per;
+  }
+
+  /** Read back what the tick just did. Cheap: two numbers off the renderer. */
+  _afterTick() {
+    const n = this.app?.renderer?._gsplatCount ?? 0;
+    this.resident = n;
+    if (n > this.peakResident) this.peakResident = n;
+    if (n > 0 && this.firstFrameAt === null) this.firstFrameAt = now();
   }
 
   /** A camera entity under the rig node. Tonemapping OFF: splat colours are already display-referred. */
@@ -1025,6 +1088,11 @@ export class PlayCanvasSplatViewer {
         cams.push(cam);
       }
       for (let i = 0; i < cams.length; i++) cams[i].enabled = i < entries.length;
+      if (this._budgetViews !== entries.length) {
+        // One manager per enabled camera here, each reading the scene budget: split it.
+        this._budgetViews = entries.length;
+        this._applyBudget();
+      }
       const W = el.width || 1;
       const H = el.height || 1;
       for (let i = 0; i < entries.length; i++) {
@@ -1042,6 +1110,7 @@ export class PlayCanvasSplatViewer {
     }
     this._updateFeather(entries[0].width * sx, entries[0].height * sy);
     app.tick(now());
+    this._afterTick();
     return true;
   }
 
@@ -1362,17 +1431,85 @@ export async function readCloud(resource) {
 }
 
 /**
+ * A point sample standing in for a Streamed SOG's cloud, from its octree alone: every leaf node
+ * contributes points in proportion to its finest-level splat count, spread deterministically
+ * through its box. That is enough for the SAME percentile framing a flat source gets
+ * (boundsFromPositions), which the octree's root bound cannot give — the root is the raw
+ * container of every chunk, sky shells and floaters included (a captured castle: 391×821×390 m
+ * root against 65×25×76 m measured on the flat file; a museum room: ±240 m around a 2 m statue).
+ *
+ * Coarse by construction (a node is a box, not its splats), so framing lands within a node size
+ * of the flat measurement, not on it. Nothing is downloaded: lod-meta.json already lists every
+ * node's box and count.
+ *
+ * @param {Array<{min:number[], max:number[], count:number}>} nodes
+ * @param {number} [cap]  points to emit in total (default 20k).
+ * @returns {Float32Array|null} xyz, model space.
+ */
+export function octreeSample(nodes, cap = 20000) {
+  if (!Array.isArray(nodes) || !nodes.length) return null;
+  let total = 0;
+  for (const n of nodes) total += n.count > 0 ? n.count : 0;
+  if (!(total > 0)) return null;
+  const pts = [];
+  let seed = 0x9e3779b9;
+  const rnd = () => {
+    // xorshift32: deterministic, so a test (and a reload) frames the same way every time.
+    seed ^= seed << 13; seed >>>= 0;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5; seed >>>= 0;
+    return seed / 4294967296;
+  };
+  let carry = 0;
+  for (const n of nodes) {
+    if (!(n.count > 0)) continue;
+    carry += (n.count / total) * cap;
+    const k = Math.floor(carry);
+    carry -= k;
+    for (let i = 0; i < k; i++) {
+      pts.push(
+        n.min[0] + (n.max[0] - n.min[0]) * rnd(),
+        n.min[1] + (n.max[1] - n.min[1]) * rnd(),
+        n.min[2] + (n.max[2] - n.min[2]) * rnd(),
+      );
+    }
+  }
+  return pts.length ? Float32Array.from(pts) : null;
+}
+
+/** The engine octree's leaf nodes as octreeSample() input. */
+function octreeNodes(res) {
+  const nodes = res?.octree?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  const out = [];
+  for (const n of nodes) {
+    const b = n?.bounds;
+    const c = n?.lods?.[0]?.count ?? 0;
+    if (!b || !b.center || !b.halfExtents || !(c > 0)) continue;
+    out.push({
+      min: [b.center.x - b.halfExtents.x, b.center.y - b.halfExtents.y, b.center.z - b.halfExtents.z],
+      max: [b.center.x + b.halfExtents.x, b.center.y + b.halfExtents.y, b.center.z + b.halfExtents.z],
+      count: c,
+    });
+  }
+  return out;
+}
+
+/**
  * What kind of resource the engine handed back, and what can be known about it without a cloud.
  *
  * A Streamed SOG (`lod-meta.json`) loads as a `GSplatOctreeResource`: no `centers`, no
- * `gsplatData`, splats arriving by LOD as the camera asks. Its framing falls back to the octree's
- * root bound (`resource.aabb`, the lod-meta `tree.bound` — the engine nulls `data.tree` after
- * reading it), its camera block to the top level of lod-meta.json, and its count to the octree's
- * finest level (`numSplats`; lod-meta's `count` sums every level). Full streaming behaviour
- * (budget per tile, pick on resident LODs) is P2.
+ * `gsplatData`, splats arriving by LOD as the camera asks. Its framing comes from the octree's
+ * leaf boxes (octreeSample → the same percentile bounds a flat cloud gets), else from the root
+ * bound (`resource.aabb`, the lod-meta `tree.bound` — the engine nulls `data.tree` after
+ * reading it); its camera block from the top level of lod-meta.json; its count from the octree's
+ * finest level (`numSplats`; lod-meta's `count` sums every level). What is on screen in a given
+ * frame is `handle.stats().resident`, capped by the tile budget (SPLAT_BUDGET_MODEL); `pick`
+ * searches the chunks currently resident.
  *
  * @returns {{kind:'flat'|'streamed'|null, numSplats:number, meta:object|null,
- *            bounds:{center:number[],extent:number[]}|null}}  bounds in MODEL space.
+ *            bounds:{center:number[],extent:number[]}|null, boundsSource?:string,
+ *            rootBounds?:object|null}}  bounds in MODEL space.
  */
 export function describeResource(res) {
   if (!res) return { kind: null, numSplats: 0, meta: null, bounds: null };
@@ -1391,7 +1528,16 @@ export function describeResource(res) {
     } catch {
       n = 0;
     }
-    return { kind: 'streamed', numSplats: n || res.data?.count || 0, meta: res.data || null, bounds };
+    const sample = octreeSample(octreeNodes(res));
+    const sampled = sample ? boundsFromPositions(sample) : null;
+    return {
+      kind: 'streamed',
+      numSplats: n || res.data?.count || 0,
+      meta: res.data || null,
+      bounds: sampled || bounds,
+      boundsSource: sampled ? 'octree-sample' : bounds ? 'octree-root' : null,
+      rootBounds: bounds,
+    };
   }
   return { kind: 'flat', numSplats: res.gsplatData?.numSplats ?? 0, meta: res.gsplatData?.meta || null, bounds: null };
 }
@@ -1528,6 +1674,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
+    stats: () => splatStats(),
   });
   // `onFocusChange` is a plain data property of the handle, read at CALL time — so a callback
   // assigned before this module loaded (on the stub ./splat returned) is the one that fires.
@@ -1597,6 +1744,25 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   };
   // captureFit 'cover' re-crops on resize, which changes the rig's vertical FOV: re-declare it.
   viewer.onCaptureFov = () => pushViewRig(true);
+
+  // ── stats ──
+  function splatStats() {
+    const c = current;
+    const oct = c?.kind === 'streamed' ? c.res?.octree : null;
+    const budget = viewer.tileBudget;
+    return {
+      kind: c?.kind ?? null,
+      resident: viewer.resident,
+      peakResident: viewer.peakResident,
+      budget: Number.isFinite(budget) ? budget : null,
+      numSplats: out.mesh?.numSplats ?? 0,
+      views: viewer._lastGood && viewer.is3D ? viewer._lastGood.entries.length : 1,
+      lodLevels: oct ? oct.lodLevels : null,
+      files: oct ? oct.files.length : null,
+      filesLoaded: oct ? oct.fileResources.size : null,
+      firstFrameMs: viewer.firstFrameAt,
+    };
+  }
 
   // ── pick ──
   /** The ray under a client point, in MODEL space (through the inverse pivot and the flip). */
@@ -1678,6 +1844,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       const buf = source instanceof Blob ? await source.arrayBuffer() : source;
       bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
     }
+    if (bytes) {
+      // Also caught synchronously by ./splat for Uint8Array/ArrayBuffer; a Blob, and setSource,
+      // only arrive here.
+      const streamedErr = streamedBytesError(bytes, opts.fileName);
+      if (streamedErr) throw new Error(`[inline3d/splat] ${streamedErr}`);
+    }
     const fmt = engineFormatFor(source, bytes, opts.fileName, opts.fileType);
     if (!fmt) {
       throw new Error(
@@ -1689,10 +1861,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     let camera = null;
     if (bytes && rig !== 'display') camera = sogCameraFromMeta(await readSogMeta(bytes));
 
-    const url = bytes ? `inline3d-bytes-${++byteSeq}-${++byteSeqLocal}.${fmt.ext}` : source;
+    const url = bytes
+      ? `inline3d-bytes-${++byteSeq}-${++byteSeqLocal}.${fmt.ext}`
+      : fmt.streamed
+        ? streamedEntryUrl(source)
+        : source;
     const file = bytes
       ? { url, filename: url, contents: new Response(bytes) }
-      : { url, filename: pathOf(source).split('/').pop() || url };
+      : { url, filename: pathOf(url).split('/').pop() || url };
     const asset = new pc.Asset(url, 'gsplat', file);
     app.assets.add(asset);
     await new Promise((resolve, reject) => {
@@ -1718,9 +1894,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const walk = cloud ? centresVisitor(cloud.xyz, cloud.opacity, cloud.total) : null;
     const local = walk ? boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []) : null;
     const lift = (b) => ({ center: modelToContent(b.center), extent: b.extent.slice(0, 3) });
-    // Measured first; a Streamed SOG's octree bound next (raw min/max); the caller's `frame`
-    // last — the Spark path's order (a supplied frame is only a fallback there too).
-    const bounds = local ? lift(local) : desc.bounds ? lift(desc.bounds) : frame ? lift(frame) : null;
+    // Measured first — the Spark path's order (a supplied frame is only a fallback there too).
+    // A Streamed SOG has no cloud: there a caller's `frame` beats the octree-derived bounds
+    // (describeResource: a count-weighted sample of the leaf boxes, else the raw root bound),
+    // because both are coarser than a real measurement.
+    const bounds = local
+      ? lift(local)
+      : desc.kind === 'streamed' && frame
+        ? lift(frame)
+        : desc.bounds
+          ? lift(desc.bounds)
+          : frame
+            ? lift(frame)
+            : null;
 
     const sample =
       !rigNeedsCloud(loaded.camera)
@@ -1740,6 +1926,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     out.camera = loaded.camera;
     out.rig = resolved;
     out.frame = bounds;
+    // The tile budget, now that the kind is known: the caller's, else the streamed default on a
+    // Streamed SOG, else the engine's (STREAMED_SPLAT_BUDGET, SPLAT_BUDGET_MODEL).
+    const budget = tileSplatBudget(perfResolved, desc.kind);
+    viewer.setTileBudget(budget);
+    if (perfResolved.applied) {
+      out.perf = budget !== undefined ? { ...perfResolved.applied, splatBudget: budget } : perfResolved.applied;
+    }
 
     // The strided pick fallback (used only if the engine releases its full centre set).
     let pickCentres = null;

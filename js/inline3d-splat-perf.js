@@ -269,8 +269,9 @@ export function splatPerfMeshOptions(perf) {
 // | `lod`, `lodSplat*`, `maxPixelRadius`, `falloff`, `alphaFloor` | none | Spark-only; ignored with one warning. The engine's splat-count lever is `splatBudget` (below) |
 //
 // Engine-native keys may be passed in an options object as well and win over the mapping:
-// `alphaClipForward`, `minPixelSize`, `splatBudget` (a global splat count, per app = per tile),
-// `antiAlias` (only for AA-trained assets).
+// `alphaClipForward`, `minPixelSize`, `splatBudget` (a splat count per tile, all views included —
+// SPLAT_BUDGET_MODEL), `antiAlias` (only for AA-trained assets), and the Streamed-SOG knobs
+// `lodMode`, `lodUpdateDistance`, `lodUpdateAngle`, `lodUnderfillLimit` (PC_LOD_NUMERIC below).
 //
 // `minPixelSize` IS THE ONE DEFAULT CHANGED. The engine drops every splat whose quad is under
 // 2 px by default; Spark keeps them (its `minPixelRadius` default is 0). On a lifted photograph
@@ -283,6 +284,100 @@ export const PLAYCANVAS_QUAD_SIGMA = Math.sqrt(8);
 
 /** Knobs that are engine-native and pass straight through to `app.scene.gsplat`. */
 const PC_NATIVE = ['alphaClipForward', 'minPixelSize', 'splatBudget'];
+
+/**
+ * The Streamed-SOG (`lod-meta.json`) knobs, engine-native, passed straight through. Each one is
+ * its own kill switch: UNSET means the engine's default, never a value of ours. Numbers only,
+ * except `lodMode`, which the engine accepts as `'distance'` or `'error'` and silently ignores
+ * otherwise (so it is validated here, loudly).
+ *
+ * | key | engine default (2.22.3) | what it does |
+ * |---|---|---|
+ * | `lodMode` | `'distance'` | how a node's LOD is chosen: camera distance, or the per-chunk error table |
+ * | `lodUpdateDistance` | `1` (world units = the file's own units) | camera travel before LOD is re-evaluated |
+ * | `lodUpdateAngle` | `0` (off) | camera rotation, in degrees, before LOD is re-evaluated |
+ * | `lodUnderfillLimit` | `0` (off) | how many coarser levels may stand in while a finer one streams |
+ *
+ * None of them does anything on a flat `.sog`/`.ply` — there is no octree to choose in.
+ */
+const PC_LOD_NUMERIC = ['lodUpdateDistance', 'lodUpdateAngle', 'lodUnderfillLimit'];
+const PC_LOD_MODES = ['distance', 'error'];
+
+/**
+ * The splat budget a Streamed SOG gets when the caller did not name one: 600k splats **per tile,
+ * all views included** (see SPLAT_BUDGET_MODEL). The engine's own default is 1M.
+ *
+ * Why 600k and not the engine's 1M: the budget is ONE count for every view of a tile, and a 3D
+ * tile draws that set TWICE (two eyes, two passes over the same work buffer). Measured on an M1
+ * Pro with no other GPU client, two views at 3840×1080 (docs/playcanvas-adapter.md §Streamed
+ * SOG): a 5.88M-gaussian captured castle ran 9.6 ms median / 12.9 ms p90 at 600k and
+ * 10.9 / 13.3 at 1M; Trogir (45.7M) 8.3 / 11.1 and 10.3 / 11.9. So on that GPU 1M fits a 60 Hz
+ * stereo frame too. 600k is chosen for HEADROOM, not because 1M failed: it keeps the M1 at ~60 %
+ * of a 16.7 ms frame for the weaker GPUs a 3D display ships with (Windows iGPUs, Android
+ * tablets — not measured yet). Only 600k and 1M were measured, so it is a safe default, not a
+ * tuned optimum. A caller-set `splatBudget` always wins, and `perf: false` leaves the engine's
+ * 1M untouched.
+ *
+ * The budget has a FLOOR the engine cannot go under: a chunk is never drawn coarser than its
+ * coarsest level, so the resident count bottoms out at the sum of every visible chunk's coarsest
+ * level (367k on the castle's 5-level pyramid, above a 300k budget).
+ */
+export const STREAMED_SPLAT_BUDGET = 600000;
+
+/**
+ * THE BUDGET MODEL, pinned (a test holds these values):
+ *
+ * - `scope: 'tile'` — every tile is its own `AppBase`, so its own scene, its own
+ *   `scene.gsplat.splatBudget`, its own gsplat manager. Two tiles on a page = two budgets.
+ * - `views: 'shared'` — the engine keys its gsplat managers by CAMERA (`GSplatDirector.camerasMap`
+ *   → one `GSplatManager` per camera × layer), and this adapter renders every view of a tile
+ *   through ONE camera with N `RenderView`s. So one manager, one LOD pass, one budget, one work
+ *   buffer for all N views — a 600k budget is 600k splats per tile whether the tile is mono or
+ *   two-view. (Measured on the castle at 600k: 1 camera, 1 manager, 588,879 resident in mono
+ *   and 590,331 with two views; docs/playcanvas-adapter.md §Streamed SOG.)
+ * - `fallbackDivides: true` — the N-camera fallback path (`playcanvasViewPath: 'cameras'`) makes
+ *   N managers, each reading the SAME scene budget, which would be N× the budget per tile. The
+ *   adapter divides the budget by N on that path to keep the per-tile contract — subject to the
+ *   per-manager coarsest-level floor above (measured: 2 managers × 300k on the castle resident
+ *   734,764 = 2 × its 367,382 coarsest level).
+ * - LOD distance is measured from the camera NODE, which sits on the first view's eye; every
+ *   view uses the LOD it picked (one pass). The eyes are ~63 mm apart, so the difference is
+ *   below `lodUpdateDistance` by construction.
+ */
+export const SPLAT_BUDGET_MODEL = Object.freeze({
+  scope: 'tile',
+  views: 'shared',
+  fallbackDivides: true,
+  lodCamera: 'first-view',
+});
+
+/**
+ * The scene-level budget one engine manager must be given so that a TILE spends `tileBudget`.
+ * RenderView path: one manager for all views, so the tile budget as is. N-camera fallback: one
+ * manager per view, so the tile budget split N ways (floored, never below 1).
+ */
+export function budgetPerManager(tileBudget, viewPath, views) {
+  if (!(tileBudget > 0)) return tileBudget;
+  if (viewPath !== 'cameras') return tileBudget;
+  const n = Math.max(1, Math.floor(views) || 1);
+  return Math.max(1, Math.floor(tileBudget / n));
+}
+
+/**
+ * The tile's budget for a resolved perf profile on a source of this kind: the caller's
+ * `splatBudget` if set, else STREAMED_SPLAT_BUDGET on a Streamed SOG, else unset (engine default).
+ * `perf: false` resolves to `settings: {}`, which is why it never gets the streamed default.
+ *
+ * @param {{settings:object, applied:object|null}} resolved  playcanvasPerfSettings()'s result.
+ * @param {'flat'|'streamed'|null} kind
+ * @returns {number|undefined}
+ */
+export function tileSplatBudget(resolved, kind) {
+  const s = resolved?.settings || {};
+  if (isNum(s.splatBudget)) return s.splatBudget;
+  if (kind === 'streamed' && resolved?.applied) return STREAMED_SPLAT_BUDGET;
+  return undefined;
+}
 
 /** Spark knobs with no engine equivalent — named once in a warning, then ignored. */
 const PC_UNMAPPED = ['lod', 'lodSplatCount', 'lodSplatScale', 'lodRenderScale', 'maxPixelRadius', 'falloff', 'alphaFloor'];
@@ -333,6 +428,16 @@ export function playcanvasPerfSettings(perf) {
     }
     if (profile.alphaRadius !== undefined) applied.alphaRadius = 'native';
     for (const key of PC_NATIVE) if (isNum(profile[key])) s[key] = profile[key];
+    for (const key of PC_LOD_NUMERIC) if (isNum(profile[key]) && profile[key] >= 0) s[key] = profile[key];
+    if (profile.lodMode !== undefined) {
+      if (PC_LOD_MODES.includes(profile.lodMode)) s.lodMode = profile.lodMode;
+      else {
+        console.warn(
+          `[inline3d/splat] perf.lodMode "${profile.lodMode}" is not one of ${PC_LOD_MODES.join(', ')} — ` +
+            "ignored (the engine's default, 'distance', stays).",
+        );
+      }
+    }
     if (typeof profile.antiAlias === 'boolean') s.antiAlias = profile.antiAlias;
     for (const key of PC_UNMAPPED) if (profile[key] !== undefined) out.ignored.push(key);
     if (out.ignored.length) {

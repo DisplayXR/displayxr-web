@@ -13,7 +13,9 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   that never asks never resolves `playcanvas`: `./splat` imports the adapter with a literal dynamic
   `import('./inline3d-splat-playcanvas.js')`, and the adapter imports the engine the same way.
 - **Peer:** `playcanvas >=2.22.3 <3`, optional. Or hand the module in: `{ playcanvas: pc }`.
-- **Formats:** `.sog` (bytes or URL), `.ply`, and a Streamed-SOG `lod-meta.json` URL. `.spz`,
+- **Formats:** `.sog` (bytes or URL), `.ply`, and a Streamed SOG by URL: its `lod-meta.json`, or
+  the directory holding it (a URL ending in `/`). Bytes of a `lod-meta.json` throw at call time
+  (a Streamed SOG is a directory of relatively named chunks; §Streamed SOG). `.spz`,
   `.splat` and `.ksplat` are Spark-only: with `engine: 'playcanvas'`, `addSplat` **throws at call
   time** when it can tell (a URL extension, gzip bytes, a Spark-only `fileType`).
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
@@ -56,11 +58,13 @@ anchor that warns once and renders unpatched if the engine moves the line:
 | `minPixelRadius` | `scene.gsplat.minPixelSize` = 2 × r | the engine compares a quad *diameter* |
 | `lod*`, `maxPixelRadius`, `falloff`, `alphaFloor` | none | named once in a warning, then ignored |
 | (engine-native) `splatBudget`, `minPixelSize`, `alphaClipForward`, `antiAlias` | passed through | win over the mapping |
+| (engine-native, Streamed SOG) `lodMode`, `lodUpdateDistance`, `lodUpdateAngle`, `lodUnderfillLimit` | passed through | unset = engine default; each is its own kill switch |
 
 **The one default changed is `minPixelSize`.** The engine default is 2 px; Spark keeps sub-2px
 splats. So every `perf` value except `false` starts from 0. **`perf: false` is the kill switch:**
 engine defaults, untouched. `splatBudget` is a no-op on a flat `.sog`: 1,179,648 of 1,179,648
-drawn at a 600k budget. It only acts on Streamed SOG (P2).
+drawn at a 600k budget. It only acts on a Streamed SOG, where it defaults to **600k per tile**
+(both eyes included) instead of the engine's 1M; `perf: false` keeps the 1M (§Streamed SOG).
 
 ## Divergences from the Spark path
 
@@ -88,9 +92,10 @@ and `resetPose`.
   sort for every view.
 - **URL `.sog` gets its `camera` block** (the engine keeps unknown `meta.json` keys). On Spark,
   only the bytes path can read it.
-- **Streamed SOG** is framed from the octree's root bound (raw min/max) and has no cloud pass, so a
-  block without intrinsics falls to the 28 mm lens and the nearest-clump rung cannot run. The rest
-  of streaming is P2.
+- **Streamed SOG** has no cloud pass. It is framed from a count-weighted sample of its octree leaf
+  boxes (not the root bound), so a block without intrinsics falls to the 28 mm lens and the
+  nearest-clump rung cannot run. `mesh.numSplats` is the finest level's count; `stats().resident`
+  is what is drawn. Budget, knobs and measurements: §Streamed SOG.
 - **Memory:** the cloud pass copies a strided ≤200k-splat sample (about 3.1 MB on the 1.18M bench
   asset) and drops it after `ready`. The exact pick keeps one opacity byte per splat (1.18 MB)
   and reads the engine's own centre array at pick time.
@@ -168,3 +173,212 @@ So on this asset the stereo ratio is **at least 3.5×** (Spark 58 ms vs PlayCanv
 timer query puts PlayCanvas near 13 ms, i.e. ~4.5×), and mono at least 1.7×. Quote these, not the
 timer-query ratios. Why the query overstates Spark is not established (its bracket likely spans
 Spark's sort readback pipeline); the PlayCanvas query values are consistent with the cadence.
+
+## Streamed SOG (P2)
+
+A **Streamed SOG** is a directory: `lod-meta.json` (an octree of chunk boxes, per-level counts,
+relative file names) plus one unbundled SOG per chunk per LOD level. The engine fetches only the
+chunks the camera needs and draws at most a **splat budget** of them. On this backend:
+
+```js
+// the lod-meta.json, or the directory that holds it
+const h = addSplat(wall, canvas, 'https://cdn.example/scene/v1/lod-meta.json', { engine: 'playcanvas' });
+const h2 = addSplat(wall, canvas, 'https://cdn.example/scene/v1/', { engine: 'playcanvas', perf: { splatBudget: 400000 } });
+h.stats(); // { kind:'streamed', resident, peakResident, budget, numSplats, views, lodLevels, files, filesLoaded, firstFrameMs }
+```
+
+- **URL only.** Bytes of a `lod-meta.json` reject `ready` with a message giving the URL form. The
+  file names hundreds of chunks by relative path, and bytes have no base URL to resolve them.
+- **The camera block** is read from the top level of `lod-meta.json` (sibling of `asset`). It is
+  the same block as in a `.sog`, and it drives the same waterfall: intrinsics present ⇒ camera rig
+  at the recorded rest pose. Verified on a streamed scene: `rig.type 'camera'`,
+  `intrinsicsSource 'block'`, and the mono pose equal to `capturePose(rest)` to 4 decimals, the
+  same as the flat `.sog` of the same scene.
+- **Framing without a block** uses the octree's leaf boxes, not its root. The root bound is the
+  raw container of every chunk, sky shells and floaters included: 391×821×390 m on a captured
+  castle whose flat file measures 65×25×76 m, and ±240 m around a 2 m statue. The adapter spreads a
+  count-weighted, deterministic sample through the leaf boxes (`octreeSample`) and frames it the
+  way a flat cloud is framed. That lands within a node size of the flat measurement: 101×33×114 m
+  on the castle. A caller `frame` wins over both.
+- **`pick`** returns null (one warning). There are no CPU-side centres, and the engine's GPU picker
+  is not used.
+- **`engine: 'spark'`** cannot read a Streamed SOG. A streamed URL on the Spark path rejects `ready`
+  with a message that names `engine: 'playcanvas'`, before Spark is handed the URL (checked in the
+  browser: no request is made).
+
+### The budget model
+
+`splatBudget` is **per tile, and covers every view of the tile**. Pinned in
+`SPLAT_BUDGET_MODEL` (`js/inline3d-splat-perf.js`) and held by a test:
+
+- Every tile is its own `AppBase`, so it has its own scene, its own `scene.gsplat.splatBudget` and
+  its own gsplat manager. Two tiles on a page have two budgets.
+- The engine keys gsplat managers by **camera** (`GSplatDirector.camerasMap` holds one
+  `GSplatManager` per camera × layer), and this adapter draws all N views through **one** camera
+  with N `RenderView`s. So there is one manager, one LOD pass, one budget and one work buffer for
+  both eyes. Measured on the castle at 600k, reading `renderer.gsplatDirector` in the page:
+
+  | path | cameras | managers | scene budget | resident |
+  |---|---|---|---|---|
+  | mono | 1 | 1 | 600,000 | 588,879 |
+  | 2 views, RenderView (default) | 1 | 1 | 600,000 | 590,331 |
+  | 2 views, N-camera fallback | 2 | 2 | 300,000 each | 734,764 |
+
+- The N-camera fallback (`playcanvasViewPath: 'cameras'`) makes one manager per view, each reading
+  the same scene budget. The adapter divides the budget by N there (`budgetPerManager`).
+- **The budget has a floor.** The engine never draws a chunk coarser than its coarsest level, so
+  `resident` bottoms out at the sum of the visible chunks' coarsest levels: 367,382 on the
+  castle's 5-level pyramid at a 300k budget, and 2 × 367,382 on the fallback above. Add levels
+  when you need a lower floor.
+- LOD distance is measured from the camera node, which sits on the first view's eye. Both eyes
+  use the LOD it picked.
+- **Default 600k** (`STREAMED_SPLAT_BUDGET`) when the caller names none; `perf: false` keeps the
+  engine's 1M. On the M1, 1M also fits: the castle's two-view 1080p frame is 10.9 ms at 1M and
+  9.6 ms at 600k. 600k is chosen for **headroom** on the weaker GPUs a 3D display ships with
+  (Windows iGPUs and Android tablets, not measured yet). Only 600k and 1M were measured, so 600k
+  is a safe default, not a tuned optimum. Revisit it with the Windows-box numbers.
+- The LOD knobs `lodMode` (`'distance'` | `'error'`), `lodUpdateDistance` (file units, engine
+  default 1), `lodUpdateAngle` (degrees, default 0 = off) and `lodUnderfillLimit` (default 0) pass
+  through `perf`. Unset means the engine's default.
+
+### Producing one (with the camera block)
+
+splat-transform's `lod-meta.json` writer takes **PLY inputs only**, one per `--tag-lod` level.
+`-d` must be the last action and must write a `.ply`. The recipe (5 levels, uniform decimation,
+splat-transform's default chunking of 512K gaussians / 16 m):
+
+```bash
+splat-transform -w scene.sog  levels/lod0.ply
+splat-transform -w levels/lod0.ply -d 50%    levels/lod1.ply
+splat-transform -w levels/lod0.ply -d 25%    levels/lod2.ply
+splat-transform -w levels/lod0.ply -d 12.5%  levels/lod3.ply
+splat-transform -w levels/lod0.ply -d 6.25%  levels/lod4.ply
+splat-transform -w levels/lod0.ply -l 0 levels/lod1.ply -l 1 levels/lod2.ply -l 2 \
+                   levels/lod3.ply -l 3 levels/lod4.ply -l 4 out/lod-meta.json
+```
+
+A PLY has nowhere to hold the camera block. So neither the released splat-transform (3.6.1) nor
+the camera-block build (upstream PR for #319, which does carry the block from
+`.sog`/`meta.json`/`lod-meta.json` to `lod-meta.json`) can carry it through this recipe: the block
+has to be **injected at the top level of `lod-meta.json` afterwards**. The gallery repo's
+`scripts/make_streamed_sog.ts` does all of this, reading the block from the input `.sog` or from
+`--camera block.json`. It checks the result and refuses inputs under 2M gaussians unless `--force`
+is given. Its README section ("Streamed SOG") explains why photo lifts never qualify.
+
+### Serving it
+
+Upload the whole directory to the **same bucket** as the flat assets, under an **immutable,
+versioned prefix** (`…/{id}/streamed-v1/`, `Cache-Control: public, max-age=31536000,
+immutable`). The chunk paths are relative, so any prefix works. A rebuild goes to a new prefix,
+never over the old one: a viewer mid-stream would otherwise mix levels from two builds. Cross-origin
+hosting needs CORS on every chunk (`Access-Control-Allow-Origin`). The public Trogir scene below
+serves `*`.
+
+### Measured
+
+Headless Chrome 153 on the real GPU (`ANGLE Metal, Apple M1 Pro`), engine 2.22.3, one config per
+page load, HTTP cache **off**, no other Chrome running. Harness: `m.html` + `measure.mjs` (the
+epic's parity scratch, `p2/`). Local assets are served from `python3 -m http.server` on localhost,
+and Trogir comes over the network from CloudFront. GPU = `EXT_disjoint_timer_query_webgl2` around
+exactly one frame per rAF, 300 frames after 60 warm-up, rest pose, median / p90 ms. "Stereo" is
+the SDK's real 3D path driven by a stand-in wall with two synthetic views (±32 mm): a 2560×720 or
+3840×1080 SBS buffer. First frame = `stats().firstFrameMs` (ms since navigation start, first tick
+that drew a non-empty set). It includes loading the SDK, three and Spark from a CDN (still static
+imports of `./splat` on this branch) and the engine from localhost. Bytes =
+CDP `Network.loadingFinished.encodedDataLength` for the asset's URLs.
+
+Scenes:
+
+- **(A) museum statue** — a captured room, 364,374 gaussians, with a camera-rig block (rest pose
+  in front of the statue, fx = fy = 1100 at 1280×720, `focus.point` = the opacity-weighted
+  centroid of opacity > 0.5 splats inside the statue's box: (−0.368, −0.084, −0.468)). Flat
+  `.sog` 5.83 MB. Streamed: 5 levels (100/50/25/12.5/6.25 %), default chunking, 16.4 MB on disk.
+  `streamed32` is the same scene with `--lod-chunk-count 32` (23 files, 22.2 MB).
+- **(A′) captured castle on a hill** — 5,878,108 gaussians, no block (display rig). Flat `.sog`
+  79.75 MB. Streamed: 5 levels, default chunking, 23 files, 196.3 MB on disk. The streamed runs
+  pass the flat run's measured `frame`, so both render the same camera.
+- **(B) Trogir** — `https://d28zzqy0iyovbz.cloudfront.net/14bac5b2/v1/lod-meta.json`, public,
+  45,756,761 gaussians over 7 levels (23.1M finest), 86 files, per-chunk LOD errors, an
+  environment splat. It has no camera block, so it runs on the display rig, auto-framed from the
+  leaf boxes. There is no flat baseline.
+
+**First frame and bytes at rest** (mono 720p; first frame is the median of 3 loads; 100 Mbit/s =
+CDP-throttled, 20 ms latency, median of 2):
+
+| scene | first frame, localhost | first frame, 100 Mbit/s | bytes at rest | resident at rest (budget) |
+|---|---|---|---|---|
+| A flat | 562 ms | 2,588 ms | 5.83 MB | 364,374 (all) |
+| A streamed | 608 ms | 2,443 ms | 5.98 MB | 364,374 (600k) |
+| A′ flat | 1,578 ms | **20,758 ms** | 79.75 MB | 5,878,108 (all) |
+| A′ streamed | 627 ms | **2,902 ms** | 138.1 MB | 593,001 (600k) |
+| B streamed (CloudFront) | 837 ms | — | 13.0 MB | 604,809 (600k) |
+
+**Bytes after a 10 s scripted orbit** (yaw ±60°, pitch ±10°, zoom 1→2.5→1; cache off, so an
+evicted chunk is fetched again: total / unique):
+
+| scene | at rest | after orbit, total | after orbit, unique URLs |
+|---|---|---|---|
+| A flat | 5.8 MB | 5.8 MB | 5.8 MB |
+| A streamed (600k) | 6.0 MB | 6.0 MB | 6.0 MB |
+| A streamed32 (600k) | 9.0 MB | 9.0 MB | 9.0 MB |
+| A′ flat | 79.8 MB | 79.8 MB | 79.8 MB |
+| A′ streamed 600k | 138.1 MB | 301.5 MB | 165.9 MB |
+| A′ streamed 1M | 139.9 MB | 264.7 MB | 165.9 MB |
+| B 600k | 13.0 MB | 31.8 MB | 31.8 MB |
+| B 1M | 21.2 MB | 51.2 MB | 51.2 MB |
+
+**Streaming is not a byte saving at a close framing.** The castle fetched more than its whole flat
+file before settling. The engine loads whole chunk files per level, and coarse levels come in
+before fine ones. It is a first-frame and frame-time lever. Trogir, framed whole from far away,
+is the case where it also saves bytes: 13 MB of a 23M-splat finest level.
+
+**GPU ms/frame** (median / p90; resident was constant through every timed run; **every row ran
+with no other Chrome on the machine**: the driver checks for foreign headless Chromes before and
+after each config and retakes a config that overlapped one):
+
+| scene · budget | 720p mono | 1080p mono | 2 views 2560×720 | 2 views 3840×1080 |
+|---|---|---|---|---|
+| A flat (364k drawn) | 4.2 / 6.2 | 7.1 / 9.2 | 7.5 / 8.8 | 8.5 / 9.1 |
+| A streamed 600k (364k drawn) | 3.8 / 6.0 | 7.2 / 9.7 | 7.6 / 10.1 | 8.6 / 10.8 |
+| A streamed 300k (299k drawn) | 3.8 / 4.6 | — | 7.1 / 9.8 | — |
+| A′ flat (5.88M drawn) | 67.7 / 72.1 | 66.3 / 70.4 | 133.7 / 155.9 | 116.9 / 122.4 |
+| A′ streamed 600k (593k) | 6.4 / 8.6 | 5.9 / 8.2 | 9.8 / 13.9 | **9.6 / 12.9** |
+| A′ streamed 1M (989k) | 7.3 / 10.4 | 7.8 / 10.6 | 11.3 / 12.6 | **10.9 / 13.3** |
+| A′ streamed 300k (367k: the floor) | 4.1 / 6.7 | — | — | — |
+| B 600k (605k) | 7.0 / 9.8 | 6.1 / 8.7 | 7.7 / 9.1 | 8.3 / 11.1 |
+| B 1M (1.006M) | 9.4 / 11.8 | 9.3 / 12.6 | 10.4 / 12.4 | 10.3 / 11.9 |
+| B 600k, `lodMode:'error'` (591k) | 6.0 / 8.6 | — | — | — |
+
+**Why "no other Chrome" is load-bearing.** On ANGLE Metal a timer query absorbs other processes'
+GPU work. An earlier pass that only checked for other Chromes at start-up read the castle's
+two-view 1080p at 1M as 36.8 / 64.2 ms. The clean retake reads 10.9 / 13.3. Other rows moved by
+2–4× the same way (castle 600k, two views at 720p: 17.8 contaminated, 7.8–9.8 in clean runs). Those passes are
+discarded; only the clean retake is in the table. Even clean, treat the numbers as ranking and
+order of magnitude: headless, vsync-free, one run per row. `lodMode:'error'` on Trogir loaded 42
+of 86 files (252.6 MB) against 3 (13.0 MB) in distance mode.
+
+**Rest-view fidelity, streamed vs flat** (A, same camera from the block; grey MAE /255 at
+1280×720 against the flat render; flat vs flat reloaded = 0.000):
+
+| budget | resident | MAE (default chunking) | MAE (`streamed32`) |
+|---|---|---|---|
+| 1M | 364,374 | 0.241 | — |
+| 600k | 364,374 | 0.241 | 0.155 |
+| 300k | 298,623 / 293,007 | 1.264 | 1.182 |
+
+A′ (castle, `frame` pinned to the flat's): 1M 4.51, 600k 5.63, 300k (the 367k floor) 10.47. At a
+full budget, A's residual is re-encoding. The chunk SOGs are encoded from PLY, independently of
+the flat `.sog`, with their own codebooks. On the castle, the budget is doing its job: 5.88M
+become 0.6–1M, and fine grain becomes coarse levels, most visibly on the near ground.
+
+**Pending:** the same table on the Windows box (Leia SR, the DisplayXR Browser's real inline-3d
+views, the weave) is not measured here.
+
+### Not tested (P2)
+
+The DisplayXR Browser (real inline-3d views, the weave join, zero-copy read), Windows and Android;
+a real 3D wall driving the streamed path (only the stand-in wall); multiple streamed tiles on one
+page (separate budgets are asserted from code, not measured); `lodUnderfillLimit` /
+`lodUpdateAngle` effects (they are wired and unit-tested, not measured); HTTP-cache behaviour on
+re-fetch (every run had the cache off); `remove()` during an in-flight chunk load; context loss
+mid-stream; engine versions other than 2.22.3.

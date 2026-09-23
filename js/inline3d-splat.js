@@ -32,6 +32,8 @@ import {
   captureVerticalFovDeg,
   CAPTURE_FITS,
   playcanvasCannotRead,
+  isStreamedUrl,
+  STREAMED_NEEDS_PLAYCANVAS,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -171,6 +173,10 @@ export function addSplat(wall, canvas, src, opts = {}) {
     if (why) throw new Error(`@displayxr/inline3d/splat: ${why}`);
     return addSplatDeferred(wall, canvas, src, opts);
   }
+
+  // A Streamed SOG on Spark is a page bug (Spark has no lod-meta.json reader): say so now, by
+  // name, rather than let Spark fail on an "unknown file type" that reads like a corrupt asset.
+  if (isStreamedUrl(src)) throw new Error(`@displayxr/inline3d/splat: ${STREAMED_NEEDS_PLAYCANVAS}`);
 
   // Fail here, synchronously, and not through `ready`: a peer too old is an install-time mistake
   // in the page's dependencies, not a condition of this asset, and it will be true of every call.
@@ -632,6 +638,8 @@ function addSplatDeferred(wall, canvas, src, opts) {
     // line after addSplat — before the module has loaded — is the one that fires.
     onFocusChange: null,
     pick: () => null,
+    // Splat accounting (resident / budget / first frame); null until the adapter has loaded.
+    stats: () => null,
     remove: queue('remove'),
     exclude: queue('exclude'),
     unexclude: queue('unexclude'),
