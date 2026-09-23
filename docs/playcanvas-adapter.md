@@ -14,9 +14,12 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   `import('./inline3d-splat-playcanvas.js')`, and the adapter imports the engine the same way.
 - **Peer:** `playcanvas >=2.22.3 <3`, optional. Or hand the module in: `{ playcanvas: pc }`.
 - **Formats:** `.sog` (bytes or URL), `.ply`, and a Streamed-SOG `lod-meta.json` URL. `.spz`,
-  `.splat` and `.ksplat` stay Spark-only and reject `ready` with a message saying so.
-- **Extra option:** `preserveDrawingBuffer` (default false), the knob for the weave's zero-copy
-  read race on large canvases (browser-pvt#24).
+  `.splat` and `.ksplat` are Spark-only: with `engine: 'playcanvas'`, `addSplat` **throws at call
+  time** when it can tell (a URL extension, gzip bytes, a Spark-only `fileType`).
+- **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
+  large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, and `captureFit` (both backends).
+- **Extra handle members:** `setSource(src, { fadeMs, resetPose })` (it throws on Spark) and
+  `engine` → `{ app, root, camera }`.
 
 ## How it is built
 
@@ -61,51 +64,41 @@ drawn at a 600k budget. It only acts on Streamed SOG (P2).
 
 ## Divergences from the Spark path
 
-- **No SceneViewer.** `handle.viewer` is a `PlayCanvasSplatViewer` with the same pose surface
-  (`idleSpin`, `setPose`/`getPose`/`resetPose`, `setFocus`/`getFocus`, `fitTo`,
-  `getSubjectBounds`, `depthOffset`, `is3D`) and the same constants. It is **not**
-  field-compatible, though. Pages that write SceneViewer's private fields (`_targetYaw`,
-  `_fitScale`, `_eye`, `monoCamera`, …) need their own path for this engine. P1 deliberately does
-  not refactor SceneViewer into a shared controller.
-- **`viewer` arrives one module-load late.** The handle is returned synchronously. Calls made
-  before the adapter loads (`exclude`, `setPose`, `setFocus`, `remove`) are queued and replayed
-  on the same object. Fields are null until then.
+What is left after the parity pass. Everything else is the same option, the same method and the
+same numbers: the viewer constants are shared, and a side-by-side trace test pins SceneViewer and
+the PlayCanvas viewer bit-identical through fit, focus easing, wheel, clamps, idle spin, `setPose`
+and `resetPose`.
+
+- **The orbit drag is tilt-and-relax, by design.** The drag is a fraction of the tile, measured
+  from the press, and capped at ±`orbitMaxDeg` (15°). It eases with τ = 0.2 s and relaxes back to
+  rest with τ = 0.6 s on release. SceneViewer (Spark) still turns cumulatively (a full-width drag
+  = 180°). The constants are shared, so switching Spark over later is a one-line change.
+- **`handle.viewer` is a `PlayCanvasSplatViewer`.** It has the same pose surface and constants,
+  but it is **not** field-compatible with SceneViewer: pages that write SceneViewer's private
+  fields (`_targetYaw`, `_fitScale`, `_eye`, `monoCamera`, …) need a path for this backend.
+  `handle.engine` is the supported way in. `viewer` is also null until the adapter module has
+  loaded (calls made before that are queued).
 - **`mesh`** is `{ numSplats, entity, asset, resource }`, not a Spark `SplatMesh`. There is no
   `spark` field.
-- **`getFocus()` and `onFocusChange`** exist on the handle, in the splat's own space. On Spark
-  they live only on the viewer, in content space.
-- **`pick`** is always the nearest-centre-to-ray fallback (a strided, opacity-filtered centre
-  set, like Spark's fallback). There is no surface raycast; the engine's GPU picker is not used
-  yet.
-- **URL `.sog` gets its `camera` block.** The engine keeps unknown `meta.json` keys, so the URL
-  path now reads `resource.gsplatData.meta.camera` (and a Streamed SOG's top-level `camera` in
-  `lod-meta.json`). On Spark, only the bytes path can read it.
-- **Opacities for the cloud pass** are read back from the SOG `sh0` plane (one asynchronous
-  PBO readback at load, transient). On a `.ply` they come from the `opacity` property. The cloud is
-  copied **strided** to at most 200k splats (the largest sample any consumer takes: ≈3.1 MB on
-  the 1.18M bench asset, where a full copy was ≈18.9 MB). It is dropped once `ready` resolves;
-  only the ≤40k-splat pick set (≤0.47 MB) stays for the handle's lifetime.
-- **Streamed SOG (`lod-meta.json`) is framed from the octree's root bound** (`resource.aabb`, raw
-  min/max rather than percentile-trimmed). Its camera block comes from the top level of
-  lod-meta.json. `numSplats` is the finest level's count. There is no cloud yet, so a block
-  without intrinsics falls to the 28 mm lens, and `pick` returns null with one warning. Full
-  streaming behaviour is P2.
-- **Shared pieces live in `js/inline3d-splat-shared.js`**: the focus gestures, the CSS-box → NDC
-  step, and `toArray3`/`clamp`/`finite`/`now`. Both backends import them. SceneViewer keeps its
-  own private copies, because P1 leaves `inline3d-viewer.js` untouched; the pose constants are
-  copied here for the same reason.
-- **`feather` is not implemented** (it warns once). **`sortIntervalMs` is ignored**: the engine
-  re-sorts on camera rotation, one directional sort for all views.
-- **`./splat` still imports three and Spark statically**, so a PlayCanvas-only page still needs
-  them resolvable. The adapter module itself imports neither. A three-free entry point is a
-  small follow-up.
-- **The canvas CSS is never touched.** The adapter does not call `setCanvasFillMode` or
-  `setCanvasResolution`. Without explicit sizes, both write the canvas: a NaN buffer width, which
-  becomes 0, and an inline `style.width`. `RESOLUTION_FIXED` is `AppBase`'s default, and that is
-  relied on instead.
-- **Every engine `Entity` is constructed with its tile's `app`.** The engine defaults to a global
-  "current app". With two tiles on a page, that silently put the first tile's splat in the second
-  tile's scene, and the first tile rendered nothing. This was found by running two tiles.
+- **`pick`** is the exact nearest gaussian CENTRE to the ray over the full centre set, not a
+  surface raycast (Spark tries its raycast first). On a Streamed SOG it runs over the resident
+  chunks only.
+- **`setSource`** is PlayCanvas-only; on Spark it throws.
+- **`sortIntervalMs` is a no-op**: the engine re-sorts on camera rotation, with one directional
+  sort for every view.
+- **URL `.sog` gets its `camera` block** (the engine keeps unknown `meta.json` keys). On Spark,
+  only the bytes path can read it.
+- **Streamed SOG** is framed from the octree's root bound (raw min/max) and has no cloud pass, so a
+  block without intrinsics falls to the 28 mm lens and the nearest-clump rung cannot run. The rest
+  of streaming is P2.
+- **Memory:** the cloud pass copies a strided ≤200k-splat sample (about 3.1 MB on the 1.18M bench
+  asset) and drops it after `ready`. The exact pick keeps one opacity byte per splat (1.18 MB)
+  and reads the engine's own centre array at pick time.
+- **Engine hygiene** (not user-visible, recorded because each one bit when it was absent):
+  - The canvas CSS is never touched: no `setCanvasFillMode` / `setCanvasResolution`.
+  - Every `Entity` is built with its tile's `app`, not the engine's global one.
+  - `setSource` disables the old splat and destroys and unloads it a few frames later; tearing it
+    down in the same frame throws inside the engine.
 
 ## Gates (P1)
 
