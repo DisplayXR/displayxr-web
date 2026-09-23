@@ -457,6 +457,13 @@ fallback framing is the point. `samples/camera-rig/` is the worked example of al
 splat in a tile. Two things about splats have no equivalent anywhere else in this SDK, and both
 are decided by the asset rather than by the page.
 
+It has two engines. Spark (three.js) is the SDK default, and the `perf` knobs below are written
+in its terms. **PlayCanvas** (`engine: 'playcanvas'`) is opt-in. It is the one the repo's samples
+render with (`samples/splat/`, with `?engine=spark` as the A/B switch) because it is several
+times cheaper in stereo and it streams large scenes. The same `perf` presets map onto its knobs,
+and the `camera` block below drives both engines the same way. The mapping and every difference
+from Spark are in [`playcanvas-adapter.md`](playcanvas-adapter.md).
+
 ### Splat performance — it is overdraw, and neither resolution nor splat count is the lever
 
 A splat scene's cost is the **per-fragment composite**, and it is *overdraw*: a handful of

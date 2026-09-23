@@ -17,8 +17,8 @@ repo's root [`index.html`](../index.html), published at
 | [`demo-gallery/`](demo-gallery/) | A grid of the DisplayXR demo logos woven as tiles — the compact multi-element weave. |
 | [`sticky-header/`](sticky-header/) | The chrome-occlusion path: a sticky translucent bar the wall scrolls under, with no page wiring. |
 | [`composition/`](composition/) | **The 15-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
-| [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, auto-framed, with a 2D price plate over it. |
-| [`model/`](model/) | `addModel()`: a glTF mesh, a mesh + splat sharing one scene, and a Draco-compressed glTF. |
+| [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, rendered with the PlayCanvas engine (`?engine=spark` for Spark), opened at the capture camera its `.sog` records, with a 2D plate over it. `?url=` also takes a Streamed SOG's `lod-meta.json`. |
+| [`model/`](model/) | `addModel()`: a glTF mesh, a mesh + splat sharing one scene, and a Draco-compressed glTF. Stays on three.js + Spark: `addModel` has no PlayCanvas backend yet ([plan](../docs/playcanvas-model-backend.md)). |
 | [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
 | [`overlay-test/`](overlay-test/) | A minimal diagnostic repro for the 2D-overlay aspect path — a probe, not a showcase. |
 

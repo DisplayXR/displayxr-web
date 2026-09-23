@@ -428,6 +428,15 @@ Two rules, both learned the same way:
 
 Splats are the one content type where "render twice" is not free, because a splat renderer sorts.
 
+This section is for a three.js app that keeps Spark in its own scene, next to its meshes. If
+the splat is the whole tile (a viewer, not a game world), use `addSplat()` instead: with
+`engine: 'playcanvas'` it renders every view from one camera with one sort, measured at least
+3.5× cheaper than Spark in two-view stereo on a 1.18M-gaussian photo lift, and it streams large
+scenes ([`playcanvas-adapter.md`](playcanvas-adapter.md)). The repo's `samples/splat/` renders
+that way. A split page, with PlayCanvas drawing the splat on one canvas and three drawing the
+meshes on another stacked over it, is **not** a shortcut: two WebGL contexts share no depth
+buffer, so the splat can never occlude a mesh.
+
 **Spark decides its sort per `render()` call**, keyed on `renderer.info.render.frame` — which
 increments per render, not per animation frame. So a stereo frame is two renders and buys **two
 full sorts**, doubling the most expensive thing in the pipeline. The eyes are ~63 mm apart; that
