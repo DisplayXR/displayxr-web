@@ -1,0 +1,89 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary three.js page in the style of webgl_animation_keyframes (continuous loop,
+     a keyframe-animated model on a turntable, lights, a shadowed floor, plus a flat HUD pass). It
+     knows nothing about DisplayXR. Deterministic: fixed 1/60 s steps, and after FREEZE frames it
+     stops drawing altogether (a render-on-demand page from then on — the shim's replay path).
+     Subject: every mesh is placed symmetrically about (0, 1, 0) and the camera sits 8 units in
+     front of it, so the expected convergence distance is 8. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three keyframes (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+const FREEZE = 60;
+window.__expectedConvergence = 8;
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.autoClear = false;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 1, 8);
+camera.lookAt(0, 1, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(3, 6, 4); sun.castShadow = true;
+scene.add(sun);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x556070 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+scene.add(floor);
+
+const turntable = new THREE.Group();
+turntable.position.set(0, 1, 0);
+scene.add(turntable);
+const mk = (geo, color, x, y, z) => {
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.4 }));
+  m.position.set(x, y, z); m.castShadow = true; turntable.add(m); return m;
+};
+const knot = mk(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), 0xff7a2f, 0, 0, 0);
+const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+mk(box, 0x2fb4ff, 1.8, 0, 0); mk(box, 0x2fb4ff, -1.8, 0, 0);
+const ball = new THREE.SphereGeometry(0.35, 32, 16);
+mk(ball, 0x9dff4a, 0, 0, 1.8); mk(ball, 0x9dff4a, 0, 0, -1.8);
+
+// the keyframe animation: the turntable spins, the knot pulses
+const q = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a).toArray();
+const clip = new THREE.AnimationClip('spin', 4, [
+  new THREE.QuaternionKeyframeTrack('.quaternion', [0, 2, 4], [...q(0), ...q(Math.PI), ...q(2 * Math.PI)]),
+]);
+const pulse = new THREE.AnimationClip('pulse', 2, [
+  new THREE.VectorKeyframeTrack('.scale', [0, 1, 2], [1, 1, 1, 1.25, 1.25, 1.25, 1, 1, 1]),
+]);
+const mixer = new THREE.AnimationMixer(turntable);
+mixer.clipAction(clip).play();
+const knotMixer = new THREE.AnimationMixer(knot);
+knotMixer.clipAction(pulse).play();
+
+// a flat HUD pass drawn after the scene (ortho camera, its own scene)
+const hudScene = new THREE.Scene();
+const hudCam = new THREE.OrthographicCamera(0, innerWidth, innerHeight, 0, -1, 1);
+const badge = new THREE.Mesh(new THREE.PlaneGeometry(120, 40), new THREE.MeshBasicMaterial({ color: 0xffd400 }));
+badge.position.set(80, innerHeight - 40, 0);
+hudScene.add(badge);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+let n = 0;
+function frame() {
+  if (n >= FREEZE) { window.__frozen = true; return; } // stops drawing: render-on-demand from here
+  requestAnimationFrame(frame);
+  n++;
+  mixer.update(1 / 60); knotMixer.update(1 / 60);
+  // the page's own per-frame resize check, the common idiom the shim must keep quiet
+  const c = renderer.domElement;
+  if (c.width !== Math.floor(innerWidth * devicePixelRatio)) renderer.setSize(innerWidth, innerHeight, false);
+  renderer.clear();
+  renderer.render(scene, camera);
+  renderer.render(hudScene, hudCam);
+  window.__pageFrames = n;
+}
+requestAnimationFrame(frame);
+</script>
+</body></html>

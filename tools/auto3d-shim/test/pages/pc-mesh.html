@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary PlayCanvas (2.x, ESM, NO globals: no window.pc, no window.app) page:
+     FILL_WINDOW + RESOLUTION_AUTO, one camera, lights, a floor and a spinning group of primitives.
+     It knows nothing about DisplayXR; the adapter has to find the app through the AppBase
+     constructor. Every mesh is symmetric about (0, 1, 0) and the camera sits 8 units in front of
+     it: expected convergence 8. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas meshes (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="application-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const canvas = document.getElementById('application-canvas');
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+window.__expectedConvergence = 8;
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov: 40, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+camera.lookAt(0, 1, 0);
+app.root.addChild(camera);
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.5 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+app.scene.ambientLight = new pc.Color(0.35, 0.35, 0.4);
+
+const mat = (r, g, b) => { const m = new pc.StandardMaterial(); m.diffuse = new pc.Color(r, g, b); m.update(); return m; };
+const floor = new pc.Entity('floor');
+floor.addComponent('render', { type: 'plane', material: mat(0.33, 0.38, 0.44) });
+floor.setLocalScale(40, 1, 40);
+app.root.addChild(floor);
+const group = new pc.Entity('turntable');
+group.setPosition(0, 1, 0);
+app.root.addChild(group);
+const prim = (type, m, x, y, z, s) => {
+  const e = new pc.Entity(type);
+  e.addComponent('render', { type, material: m });
+  e.setLocalPosition(x, y, z); e.setLocalScale(s, s, s);
+  group.addChild(e); return e;
+};
+prim('torus', mat(1, 0.48, 0.18), 0, 0, 0, 1.1);
+prim('box', mat(0.18, 0.7, 1), 1.8, 0, 0, 0.6); prim('box', mat(0.18, 0.7, 1), -1.8, 0, 0, 0.6);
+prim('sphere', mat(0.62, 1, 0.29), 0, 0, 1.8, 0.7); prim('sphere', mat(0.62, 1, 0.29), 0, 0, -1.8, 0.7);
+
+let n = 0;
+app.on('update', () => {
+  if (n >= 60) { app.autoRender = false; window.__frozen = true; return; } // render-on-demand from here
+  n++; group.setLocalEulerAngles(0, n * 3, 0); window.__pageFrames = n;
+});
+app.start();
+</script>
+</body></html>
