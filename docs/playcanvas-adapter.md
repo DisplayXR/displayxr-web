@@ -160,3 +160,18 @@ still guards against clock drift between processes; a solo load in one process g
   in stereo. Both engines pay ~2× for two views here. Treat the table as ranking + order of
   magnitude on one GPU; re-check on the Windows box.
 - Every drawn frame was checked non-empty (mean canvas luminance ~123) in every row.
+
+**Wall-clock check (the honest number).** The timer query above OVERSTATES Spark: measured by rAF
+cadence on the same page, alone on an idle GPU (two repeats each, vsync on, 6 s windows):
+
+| config | rAF Hz | ms/frame |
+|---|---|---|
+| Spark `exact`, mono 1280×720 | 35.5 | 28.2 |
+| PlayCanvas default, mono | 60.2 (vsync cap) | ≤ 16.6 |
+| Spark `exact`, 2-view SBS 2560×720 | 17.0–17.2 | 58.3–58.8 |
+| PlayCanvas default, 2-view SBS | 59.0–60.2 (vsync cap) | ≤ 16.6–17.0 |
+
+So on this asset the stereo ratio is **at least 3.5×** (Spark 58 ms vs PlayCanvas at the cap; the
+timer query puts PlayCanvas near 13 ms, i.e. ~4.5×), and mono at least 1.7×. Quote these, not the
+timer-query ratios. Why the query overstates Spark is not established (its bracket likely spans
+Spark's sort readback pipeline); the PlayCanvas query values are consistent with the cadence.
