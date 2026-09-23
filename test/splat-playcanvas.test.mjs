@@ -1004,3 +1004,93 @@ test('orbit: the cap, pitch, pitchLimit, re-press mid-relax, setPose snaps, idle
   assert.equal(v._orbitMode, null);
   v.dispose();
 });
+
+// ── 16. focus: the nearest disparity clump ──────────────────────────────────────────────────
+
+const LENS = { fx: 1000, fy: 1000, cx: 640, cy: 360, width: 1280, height: 720 };
+
+/** A central-crop cloud: a thin NEAR plane (2 % mass), a trunk at 2.3 m (10 %), a far wall (88 %). */
+function clumpCloud() {
+  const tx = [], ty = [], invz = [], w = [];
+  const add = (count, z) => {
+    for (let i = 0; i < count; i++) {
+      tx.push(((i % 20) / 20 - 0.5) * 0.4); // stays inside the central half of a 1280-wide frame
+      ty.push(((Math.floor(i / 20) % 20) / 20 - 0.5) * 0.3);
+      invz.push(1 / (z * (1 + ((i % 7) - 3) * 0.004)));
+      w.push(0.9);
+    }
+  };
+  add(200, 0.8); // 2 %: a sliver of foreground — must be skipped
+  add(1000, 2.3); // 10 %: the trunk — the answer
+  add(8800, 30); // the far wall
+  return { tx, ty, invz, w, n: tx.length };
+}
+
+test('nearestClumpDistance: skips a 2 % near sliver, lands on the 10 % trunk at 2.3 m', async () => {
+  const { nearestClumpDistance } = await import('../js/inline3d-splat-rig.js');
+  const r = nearestClumpDistance(clumpCloud(), LENS);
+  near(r.distance, 2.3, 0.1, 'trunk');
+  near(r.massFrac, 0.1, 0.02, 'its share of the crop');
+  assert.equal(nearestClumpDistance(clumpCloud(), null), null, 'no lens → no rung');
+});
+
+test('the focus waterfall order: block(considered) › nearest-clump › block(cloud-median) › median-disparity', async () => {
+  const { resolveRig } = await import('../js/inline3d-splat-rig.js');
+  const cloud = clumpCloud();
+  const cam = (focus, intrinsics = LENS) => ({
+    rest: { position: [0, 0, 0], rotation: [0, 0, 0, 1] },
+    intrinsics,
+    focus,
+  });
+  // A considered block focus wins over the clump.
+  let r = resolveRig({ camera: cam({ point: [0, 0, 5], source: 'convergence' }), cloud });
+  assert.equal(r.focusSource, 'block');
+  assert.equal(r.blockFocusSource, 'convergence');
+  // An absent source counts as considered too.
+  assert.equal(resolveRig({ camera: cam({ point: [0, 0, 5] }), cloud }).focusSource, 'block');
+  // A converter's whole-cloud median ranks BELOW the clump.
+  r = resolveRig({ camera: cam({ point: [0, 0, 46.9], source: 'cloud-median' }), cloud });
+  assert.equal(r.focusSource, 'nearest-clump');
+  near(r.convergence, 2.3, 0.1, 'the trunk, not 46.9 m');
+  assert.equal(r.blockFocusSource, 'cloud-median');
+  // Intrinsics-only block (no focus): the clump.
+  assert.equal(resolveRig({ camera: cam(null), cloud }).focusSource, 'nearest-clump');
+  // No lens: the clump rung is skipped; a median block still beats the recomputed median.
+  r = resolveRig({ camera: cam({ point: [0, 0, 46.9], source: 'cloud-median' }, null), cloud });
+  assert.equal(r.focusSource, 'block-cloud-median');
+  assert.equal(resolveRig({ camera: null, cloud }).focusSource, 'median-disparity');
+  // The caller still outranks everything.
+  assert.equal(resolveRig({ camera: cam(null), cloud, opts: { convergence: 1.5 } }).focusSource, 'caller-convergence');
+});
+
+test('rigNeedsCloud: a lens + a considered focus answers everything; a median focus does not', async () => {
+  const { rigNeedsCloud } = await import('../js/inline3d-splat-rig.js');
+  assert.equal(rigNeedsCloud({ intrinsics: LENS, focus: { point: [0, 0, 2], source: 'manual' } }), false);
+  assert.equal(rigNeedsCloud({ intrinsics: LENS, focus: { point: [0, 0, 2], source: 'cloud-median' } }), true);
+  assert.equal(rigNeedsCloud({ intrinsics: LENS, focus: null }), true);
+  assert.equal(rigNeedsCloud(null), true);
+});
+
+test('the adapter reports nearest-clump on handle.rig and through onFocusChange', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  // A flat resource whose centres ARE the clump cloud (identity rest: model = rest space).
+  const cl = clumpCloud();
+  const centers = new Float32Array(cl.n * 3);
+  for (let i = 0; i < cl.n; i++) {
+    const z = 1 / cl.invz[i];
+    centers[i * 3] = cl.tx[i] * z;
+    centers[i * 3 + 1] = cl.ty[i] * z;
+    centers[i * 3 + 2] = z;
+  }
+  rec.queue = [{ centers, gsplatData: { numSplats: cl.n, meta: { camera: { convention: 'opencv', intrinsics: LENS } } } }];
+  const out = {};
+  const got = [];
+  out.onFocusChange = (p, info) => got.push(info);
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'https://x/scene.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.rig.type, 'camera');
+  assert.equal(out.rig.focusSource, 'nearest-clump');
+  near(out.rig.convergence, 2.3, 0.1);
+  assert.ok(got.some((i) => i && i.focusSource === 'nearest-clump'));
+  out.remove();
+});

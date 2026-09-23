@@ -29,6 +29,7 @@ import {
   resolveRig,
   planeDistance,
   sampleCloudRestSpace,
+  rigNeedsCloud,
   sampleCloudCentres,
   RIG_SAMPLE_CAP,
   RIG_MIN_OPACITY,
@@ -482,7 +483,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
       // is the lens, and the median of 1/z is the focus. Skipped entirely when the block already
       // answers both, so an asset that carries a full camera pays nothing for it.
       const cloud =
-        out.camera?.intrinsics && out.camera?.focus
+        !rigNeedsCloud(out.camera)
           ? null
           : sampleRestSpace(out.mesh, out.camera?.rest);
       const box = canvas.getBoundingClientRect();

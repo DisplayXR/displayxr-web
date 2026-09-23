@@ -9,7 +9,7 @@
 //
 //   RIG        caller › the block's `rig` › (a block at all ? camera : display)
 //   INTRINSICS the block › caller › ESTIMATED from the cloud › 28 mm-eq
-//   FOCUS      caller › the block's `focus.point` › MEDIAN DISPARITY › 2 m
+//   FOCUS      caller › the block's `focus.point` › NEAREST CLUMP › a block median › MEDIAN DISPARITY › 2 m
 //
 // The two capitalised steps are the interesting ones, and they exist because the fallbacks
 // underneath them are bad in a specific, silent way. A splat with no intrinsics rendered through
@@ -194,6 +194,123 @@ export function medianDisparityDistance(invz, n) {
   return m > 0 ? 1 / m : null;
 }
 
+/**
+ * NEAREST DISPARITY CLUMP — the nearest SUBSTANTIAL thing in the middle of the picture, put on the
+ * glass so the rest of the photograph recedes behind it (the pine trunk in front of the lake, the
+ * bowsprit in front of the harbour).
+ *
+ * Why it exists: a single-image lift is non-metric and its camera block carries a lens but no
+ * `focus`. The median-disparity rung below then answers "the typical depth of the WHOLE scene",
+ * which on an open landscape (tree, lake, mountains) lands tens of metres out (46.9 m measured) and
+ * puts every bit of actual subject in front of the display.
+ *
+ * Why not the nearest gaussian: the single nearest point is a floater or a grazing sliver. Why not
+ * the nearest point anywhere in frame: landscapes put their nearest content along the BOTTOM edge
+ * (grass, the dock at the photographer's feet). So — ported from the calibrated estimator the
+ * demo pages use (`nearestClumpPivot`, checked by eye on six photos) — the statistic is:
+ *
+ *   1. keep gaussians projecting into the CENTRAL HALF of the frame, each axis (needs the lens);
+ *   2. an OPACITY-weighted histogram of 1/z (disparity: well-behaved where depth has a long tail;
+ *      footprint weighting was tried and picked the sky — reconstructions give far gaussians huge
+ *      world scale);
+ *   3. a 3-bin moving average, so sampling noise between real plateaus is not a gap;
+ *   4. scan from the NEAR end for the first run of occupied bins (above a noise floor of 0.1 % of
+ *      the crop's mass) carrying at least 3 % of the crop's mass;
+ *   5. the weighted centroid of 1/z over that run, inverted to metres.
+ *
+ * @param {{tx:ArrayLike<number>,ty:ArrayLike<number>,invz:ArrayLike<number>,w?:ArrayLike<number>,n:number}} cloud
+ *        from sampleCloudRestSpace (rest-camera space, x/z, y/z, 1/z, opacity).
+ * @param {{fx:number,fy:number,cx:number,cy:number,width:number,height:number}} K  the lens.
+ * @returns {{distance:number, massFrac:number}|null} null without a lens, or when nothing in the
+ *          crop clears the mass floor.
+ */
+export function nearestClumpDistance(cloud, K) {
+  if (!cloud || !cloud.n) return null;
+  if (!K || !(K.fx > 0) || !(K.fy > 0) || !(K.width > 0) || !(K.height > 0)) return null;
+  const half = CLUMP_CENTRAL_FRAC / 2;
+  const iv = [];
+  const wt = [];
+  for (let i = 0; i < cloud.n; i++) {
+    const u = (K.fx * cloud.tx[i] + K.cx) / K.width - 0.5;
+    const v = (K.fy * cloud.ty[i] + K.cy) / K.height - 0.5;
+    if (Math.abs(u) > half || Math.abs(v) > half) continue;
+    iv.push(cloud.invz[i]);
+    wt.push(cloud.w ? cloud.w[i] : 1);
+  }
+  const n = iv.length;
+  if (!n) return null;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (iv[i] < lo) lo = iv[i];
+    if (iv[i] > hi) hi = iv[i];
+  }
+  if (!(hi > lo)) return null;
+  const B = CLUMP_N_BINS;
+  const binOf = (x) => Math.min(B - 1, Math.floor(((x - lo) / (hi - lo)) * B));
+  const bins = new Float64Array(B);
+  for (let i = 0; i < n; i++) bins[binOf(iv[i])] += wt[i];
+  let total = 0;
+  for (let i = 0; i < B; i++) total += bins[i];
+  if (!(total > 0)) return null;
+  const smooth = new Float64Array(B);
+  for (let i = 0; i < B; i++) smooth[i] = (bins[Math.max(0, i - 1)] + bins[i] + bins[Math.min(B - 1, i + 1)]) / 3;
+  const floor = total * CLUMP_NOISE_FLOOR_FRAC;
+  let i = B - 1; // the highest 1/z — the NEAREST
+  while (i >= 0) {
+    if (smooth[i] <= floor) {
+      i--;
+      continue;
+    }
+    let j = i;
+    let runMass = 0;
+    while (j >= 0 && smooth[j] > floor) {
+      runMass += bins[j];
+      j--;
+    }
+    if (runMass >= total * CLUMP_MIN_MASS_FRAC) {
+      let wSum = 0;
+      let vSum = 0;
+      for (let k = 0; k < n; k++) {
+        const b = binOf(iv[k]);
+        if (b <= i && b >= j + 1) {
+          wSum += wt[k];
+          vSum += wt[k] * iv[k];
+        }
+      }
+      const c = wSum > 0 ? vSum / wSum : (lo + hi) / 2;
+      if (!(c > 0)) return null;
+      return { distance: clamp(1 / c, FOCUS_MIN_M, FOCUS_MAX_M), massFrac: runMass / total };
+    }
+    i = j;
+  }
+  return null;
+}
+
+/** The central crop, each axis, as a fraction of the frame. */
+export const CLUMP_CENTRAL_FRAC = 0.5;
+/** 1/z histogram resolution. */
+export const CLUMP_N_BINS = 120;
+/** A clump must carry at least this fraction of the crop's opacity-weighted mass. */
+export const CLUMP_MIN_MASS_FRAC = 0.03;
+/** Below this fraction of the crop's mass a (smoothed) bin counts as empty. */
+export const CLUMP_NOISE_FLOOR_FRAC = 0.001;
+
+/**
+ * Block `focus.source` values that are themselves a WHOLE-CLOUD median — the same estimate as the
+ * median-disparity rung, written into the file by a converter. They rank BELOW the nearest clump:
+ * believing them first would reproduce the far-focus the clump exists to fix.
+ */
+export const CLOUD_MEDIAN_FOCUS_SOURCES = Object.freeze(['cloud-median', 'median-disparity']);
+
+/**
+ * Does the waterfall need a pass over the cloud for this block? Only a block with a lens AND a
+ * trusted focus answers every question itself.
+ */
+export function rigNeedsCloud(camera) {
+  return !(camera?.intrinsics && camera?.focus && !CLOUD_MEDIAN_FOCUS_SOURCES.includes(camera.focus.source));
+}
+
 /** Where a focus ends up when there is nothing at all to go on. */
 export const DEFAULT_FOCUS_M = 2.0;
 
@@ -280,8 +397,14 @@ export function resolveRig({ camera = null, opts = {}, cloud = null, canvasAspec
   //
   // ONE point, and it is the orbit centre, the pivot plane and the convergence distance at
   // once. Resolved as a point in model space; the distance falls out of it, never the reverse.
+  //   caller › caller-convergence › block (a considered focus) › NEAREST CLUMP (needs a lens)
+  //   › block (a whole-cloud median a converter wrote) › median disparity › 2 m
   let point = null;
   let focusSource = null;
+  const blockPoint = isVec3(camera?.focus?.point) ? camera.focus.point.slice(0, 3) : null;
+  const blockIsMedian = !!blockPoint && CLOUD_MEDIAN_FOCUS_SOURCES.includes(camera.focus.source);
+  const lens = intrinsicsSource === 'block' || intrinsicsSource === 'caller' ? intrinsics : null;
+  let clump = null;
   if (isVec3(opts.focus)) {
     point = opts.focus.slice(0, 3);
     focusSource = 'caller';
@@ -289,9 +412,15 @@ export function resolveRig({ camera = null, opts = {}, cloud = null, canvasAspec
     // The scalar shorthand: a focus straight ahead at this distance.
     point = aheadOfRest(rest, opts.convergence);
     focusSource = 'caller-convergence';
-  } else if (isVec3(camera?.focus?.point)) {
-    point = camera.focus.point.slice(0, 3);
+  } else if (blockPoint && !blockIsMedian) {
+    point = blockPoint;
     focusSource = 'block';
+  } else if (cloud && lens && (clump = nearestClumpDistance(cloud, lens))) {
+    point = aheadOfRest(rest, clump.distance);
+    focusSource = 'nearest-clump';
+  } else if (blockPoint) {
+    point = blockPoint;
+    focusSource = 'block-cloud-median';
   } else if (cloud) {
     const d = medianDisparityDistance(cloud.invz, cloud.n);
     if (d) {
@@ -315,6 +444,10 @@ export function resolveRig({ camera = null, opts = {}, cloud = null, canvasAspec
     focalEqMm,
     focus: point,
     focusSource,
+    /** The block's own `focus.source` (e.g. 'convergence', 'cloud-median'), for diagnostics. */
+    blockFocusSource: typeof camera?.focus?.source === 'string' ? camera.focus.source : null,
+    /** Fraction of the central crop's mass the winning clump carried (nearest-clump only). */
+    clumpMassFrac: clump ? clump.massFrac : null,
     // Advisory, straight from the block — a host page's depth budget or HUD may want them.
     focusDistances: camera?.focus
       ? { subject_m: camera.focus.subject_m, near_m: camera.focus.near_m, far_m: camera.focus.far_m }
@@ -381,7 +514,7 @@ export function centresVisitor(xyz, opacity = null, count = Math.floor(xyz.lengt
  * @param {number} total  how many splats `forEachCentre` will visit.
  * @param {(visit: Function) => void} forEachCentre
  * @param {{position:number[],rotation:number[]}|null} rest
- * @returns {{tx:Float64Array,ty:Float64Array,invz:Float64Array,n:number}|null}
+ * @returns {{tx:Float64Array,ty:Float64Array,invz:Float64Array,w:Float64Array,n:number}|null}
  */
 export function sampleCloudRestSpace(total, forEachCentre, rest) {
   if (!total || typeof forEachCentre !== 'function') return null;
@@ -391,6 +524,7 @@ export function sampleCloudRestSpace(total, forEachCentre, rest) {
   const tx = new Float64Array(cap);
   const ty = new Float64Array(cap);
   const invz = new Float64Array(cap);
+  const w = new Float64Array(cap); // opacity (1 where the backend has none): the clump's weights
   let n = 0;
   const p = [0, 0, 0];
   forEachCentre((index, x, y, z, opacity) => {
@@ -404,9 +538,10 @@ export function sampleCloudRestSpace(total, forEachCentre, rest) {
     tx[n] = c[0] / c[2];
     ty[n] = c[1] / c[2];
     invz[n] = 1 / c[2];
+    w[n] = opacity !== undefined ? opacity : 1;
     n++;
   });
-  return n ? { tx, ty, invz, n } : null;
+  return n ? { tx, ty, invz, w, n } : null;
 }
 
 /**

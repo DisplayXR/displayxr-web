@@ -122,14 +122,26 @@ export interface ResolvedRig {
   focalEqMm: number;
   /** The live focus, in the splat's own space. */
   focus: number[];
+  /**
+   * Which step answered the focus. The order: `caller` › `caller-convergence` › `block` (a
+   * considered block focus) › `nearest-clump` (the nearest substantial disparity clump in the
+   * central half of the frame — needs the block's or the caller's lens) › `block-cloud-median` (a
+   * block focus a converter computed as a whole-cloud median) › `median-disparity` › `default`.
+   */
   focusSource:
     | 'caller'
     | 'caller-convergence'
     | 'block'
+    | 'nearest-clump'
+    | 'block-cloud-median'
     | 'median-disparity'
     | 'default'
     | 'picked'
     | 'set';
+  /** The block's own `focus.source` string (e.g. `'convergence'`, `'cloud-median'`), for diagnostics. */
+  blockFocusSource: string | null;
+  /** Fraction of the central crop's opacity-weighted mass the winning clump carried (`nearest-clump` only). */
+  clumpMassFrac: number | null;
   /** What Space returns to. */
   focusDefault: number[];
   focusDefaultSource: string;
@@ -302,6 +314,11 @@ export interface SplatHandle {
     src: string | Blob | ArrayBuffer | Uint8Array,
     opts?: { fadeMs?: number; resetPose?: boolean },
   ): Promise<SplatHandle>;
+  /**
+   * Called with the live focus (the splat's own space) whenever it moves — easing included — and
+   * which waterfall step it came from. PlayCanvas backend; assign any time, even before `ready`.
+   */
+  onFocusChange: ((point: number[], info: { focusSource: ResolvedRig['focusSource'] | null }) => void) | null;
   /** What is under a point on the canvas, in the splat's own space — the double-click's raycast. */
   pick(clientX: number, clientY: number): number[] | null;
 
