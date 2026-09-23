@@ -212,14 +212,7 @@ function scratch(THREE) {
  * @returns {object} an XRViewRigInit-shaped plain object.
  */
 export function cameraRigFromCamera(THREE, camera, opts = {}) {
-  const {
-    convergence = 0,
-    attach = false,
-    ipdFactor = 1,
-    parallaxFactor = 1,
-    metersToVirtual = 1,
-    out = {},
-  } = opts;
+  const { attach = false, out = {} } = opts;
   out.type = 'camera';
   if (attach) {
     // Identity pose: the rig IS the camera, so the runtime reports eyes in camera space and the
@@ -236,12 +229,53 @@ export function cameraRigFromCamera(THREE, camera, opts = {}) {
     out.position = { x: p.x, y: p.y, z: p.z };
     out.orientation = { x: q.x, y: q.y, z: q.z, w: q.w };
   }
+  // three's fov is the FULL angle, in degrees
+  return fillCameraRig(out, THREE.MathUtils.degToRad(camera.fov), opts);
+}
+
+/**
+ * The same CAMERA-rig descriptor as {@link cameraRigFromCamera}, from a plain pose instead of a
+ * three.js camera — for a renderer that is not three (./splat's PlayCanvas backend), or a page
+ * that keeps its camera as numbers.
+ *
+ * Field for field the descriptor cameraRigFromCamera builds, in the same key order, and the
+ * degrees → radians step is the same multiplication three's `MathUtils.degToRad` does, so the
+ * two agree to the bit for the same pose (pinned in test/view-rig.test.mjs).
+ *
+ * @param {object} pose
+ * @param {{x:number,y:number,z:number}} pose.position  WORLD position.
+ * @param {{x:number,y:number,z:number,w:number}} pose.orientation  WORLD orientation.
+ * @param {number} pose.fov  FULL vertical angle, in DEGREES (three's `camera.fov` convention).
+ * @param {object} [opts]  as cameraRigFromCamera.
+ * @returns {object} an XRViewRigInit-shaped plain object.
+ */
+export function cameraRigFromPose(pose, opts = {}) {
+  const { attach = false, out = {} } = opts;
+  out.type = 'camera';
+  if (attach) {
+    out.position = { x: 0, y: 0, z: 0 };
+    out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+  } else {
+    const p = pose.position;
+    const q = pose.orientation;
+    out.position = { x: p.x, y: p.y, z: p.z };
+    out.orientation = { x: q.x, y: q.y, z: q.z, w: q.w };
+  }
+  return fillCameraRig(out, pose.fov * DEG2RAD, opts);
+}
+
+/** three's `MathUtils.DEG2RAD`, so a pose-built rig matches a camera-built one to the bit. */
+const DEG2RAD = Math.PI / 180;
+
+/** The fields every camera rig carries after its pose. One writer, so the two builders agree. */
+function fillCameraRig(out, verticalFovRad, opts) {
+  const { convergence = 0, ipdFactor = 1, parallaxFactor = 1, metersToVirtual = 1 } = opts;
   out.ipdFactor = ipdFactor;
   out.parallaxFactor = parallaxFactor;
   // Diopters, not distance: the wire unit is 1/distance so that "infinity" is representable as
   // a finite 0 instead of a sentinel.
   out.convergenceDiopters = convergence > 0 ? 1 / convergence : 0;
-  out.verticalFov = THREE.MathUtils.degToRad(camera.fov); // three's fov is the FULL angle, in degrees
+  out.verticalFov = verticalFovRad;
   out.metersToVirtual = metersToVirtual;
   return out;
 }

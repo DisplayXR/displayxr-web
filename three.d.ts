@@ -101,6 +101,23 @@ export function cameraRigFromCamera(
 ): XRViewRigInit;
 
 /**
+ * The same CAMERA-rig descriptor as {@link cameraRigFromCamera}, from a plain pose instead of a
+ * three.js camera — for a renderer that is not three. Agrees with cameraRigFromCamera to the bit
+ * for the same pose.
+ */
+export function cameraRigFromPose(
+  pose: {
+    /** WORLD position. */
+    position: { x: number; y: number; z: number };
+    /** WORLD orientation quaternion. */
+    orientation: { x: number; y: number; z: number; w: number };
+    /** FULL vertical angle in DEGREES (three's `camera.fov` convention). */
+    fov: number;
+  },
+  opts?: CameraRigOptions,
+): XRViewRigInit;
+
+/**
  * Build a DISPLAY-rig descriptor — the default rig, made explicit and posable: the canvas is a
  * portal onto a virtual display `virtualDisplayHeight` metres tall. Adds what the scalar
  * `SceneOptions.virtualDisplayHeight` cannot say: a pose, and the three factors.

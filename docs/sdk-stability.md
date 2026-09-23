@@ -21,7 +21,7 @@ The **exported** surface of the package entry points:
 - `@displayxr/inline3d/three`
   - `EyeCamera` (`.camera`, `.setFromView`, `.setFromMatrices`, `.setLocalFromView`,
     `.setLocalFromMatrices`), `EdgeFeather` (`.render`)
-  - `cameraRigFromCamera(THREE, camera, opts?)`, `displayRig(opts?)`
+  - `cameraRigFromCamera(THREE, camera, opts?)`, `cameraRigFromPose(pose, opts?)` (1.8), `displayRig(opts?)`
 - The declarative `data-inline3d-overlay` attribute contract.
 - The **one buffer contract**: a weaved window is a `<canvas>` whose backing buffer holds
   side-by-side stereo (left eye left half, right eye right half); its CSS box is the shape the
