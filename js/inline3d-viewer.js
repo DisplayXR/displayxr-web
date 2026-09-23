@@ -43,23 +43,27 @@
 // origin and scale it, instead of moving the display to the content. Identical framing, no
 // browser or runtime change.
 
-/**
- * Backstop on total subject depth, as a multiple of the display height. Generous on purpose:
- * depth placement is a z decision (see fitTo), not a scale one, so this only catches the
- * pathological case where a subject is so deep that no placement helps.
- */
-const DEFAULT_DEPTH_LIMIT = 4.0;
-/** Milliseconds of no interaction before the idle turntable starts. */
-const IDLE_DELAY_MS = 2500;
-
-/**
- * Per-frame easing factor for a focus change, matching the gallery's `EASE`.
- *
- * Deliberately per FRAME and not per second, because that is what the reference implementation
- * does and a focus change is a one-off gesture response rather than a continuous motion — the
- * difference between 60 and 120 Hz here is a settle that takes half as long, not a bug.
- */
-const FOCUS_EASE = 0.18;
+// Every tuning constant — damping, idle delay, focus ease, wheel, zoom and pitch clamps, the
+// mono camera — lives in ./inline3d-splat-shared.js, where the PlayCanvas splat backend reads the
+// same numbers. The reasoning behind each value is documented there.
+import {
+  DEFAULT_DEPTH_LIMIT,
+  IDLE_DELAY_MS,
+  FOCUS_EASE,
+  DAMP_BASE,
+  MAX_DT_S,
+  PITCH_LIMIT,
+  DRAG_DEG_PER_TILE,
+  WHEEL_LINE_PX,
+  WHEEL_PAGE_PX,
+  WHEEL_MAX_PX,
+  ZOOM_PER_PX,
+  ZOOM_MIN,
+  ZOOM_MAX,
+  MONO_FOV,
+  MONO_NEAR,
+  MONO_FAR,
+} from './inline3d-splat-shared.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 // NaN/Infinity into a transform silently blanks the tile — three propagates it into the
@@ -193,7 +197,7 @@ export class SceneViewer {
       idleSpin = 0,
       renderScale = 1,
       feather = 0,
-      pitchLimit = [-60, 60],
+      pitchLimit = PITCH_LIMIT,
     } = opts;
 
     this._THREE = THREE;
@@ -286,7 +290,7 @@ export class SceneViewer {
 
     // Mono fallback camera. Deliberately a plain perspective camera: in 2D there is no display
     // plane to be in focus at, so we just look at the framed subject from the front.
-    this.monoCamera = new THREE.PerspectiveCamera(35, 1, 0.001, 1000);
+    this.monoCamera = new THREE.PerspectiveCamera(MONO_FOV, 1, MONO_NEAR, MONO_FAR);
 
     // Coalesced: ResizeObserver and window resize both fire in BURSTS during a drag-resize or a
     // zoom, and every genuine resize reallocates (and clears) the backing store. One rAF per
@@ -891,7 +895,7 @@ export class SceneViewer {
   /** Damping + idle turntable. Called once per rendered frame, 3D or mono. */
   _tick() {
     const t = now();
-    const dt = this._lastTick ? Math.min((t - this._lastTick) / 1000, 0.1) : 0;
+    const dt = this._lastTick ? Math.min((t - this._lastTick) / 1000, MAX_DT_S) : 0;
     this._lastTick = t;
 
     if (this.idleSpin && !this._reduceMotion && t - this._lastInput > IDLE_DELAY_MS) {
@@ -899,7 +903,7 @@ export class SceneViewer {
     }
     // Critically-damped-ish approach. Instant snapping reads as jitter on a head-tracked
     // display, where the viewer is already moving relative to the content.
-    const k = dt > 0 ? 1 - Math.pow(0.001, dt) : 1;
+    const k = dt > 0 ? 1 - Math.pow(DAMP_BASE, dt) : 1;
     this._yaw += (this._targetYaw - this._yaw) * k;
     this._pitch += (this._targetPitch - this._pitch) * k;
     // Zoom eases on the same curve. Multiplicatively, because zoom is a ratio: approaching 2x
@@ -973,9 +977,9 @@ export class SceneViewer {
       // toward −y (down), so pitch must also ADD dy — subtracting it sends the face the wrong
       // way and reads as an inverted axis next to a correct one, which is worse than both being
       // inverted.
-      this._targetYaw += ((ev.clientX - lastX) / Math.max(box.width, 1)) * 180;
+      this._targetYaw += ((ev.clientX - lastX) / Math.max(box.width, 1)) * DRAG_DEG_PER_TILE;
       this._targetPitch = clamp(
-        this._targetPitch + ((ev.clientY - lastY) / Math.max(box.height, 1)) * 180,
+        this._targetPitch + ((ev.clientY - lastY) / Math.max(box.height, 1)) * DRAG_DEG_PER_TILE,
         this.pitchLimit[0],
         this.pitchLimit[1],
       );
@@ -1033,24 +1037,6 @@ export class SceneViewer {
     el.removeEventListener('wheel', this._onWheel);
   }
 }
-
-/**
- * Wheel-zoom tuning.
- *
- * ZOOM_PER_PX is set so one ordinary mouse notch (~100 px in Chrome) is about a 10% step, which
- * puts a trackpad's 1-10 px events at a fraction of a percent each — small enough that the easing
- * reads as continuous rather than as a stack of jumps.
- */
-// A deltaMode-1 "line" is sized to match a wheel DETENT, not a line of text. Firefox reports a
-// notch as deltaY 3 in lines where Chrome reports it as ~100 in pixels, so 33 makes one physical
-// notch feel the same in both; 16 (a text line) would make Firefox roughly half as responsive as
-// Chrome for identical hardware.
-const WHEEL_LINE_PX = 33;
-const WHEEL_PAGE_PX = 400; // a "page" in deltaMode 2; rare, but it must not be unbounded
-const WHEEL_MAX_PX = 120; // per-event ceiling, against OS pointer acceleration spikes
-const ZOOM_PER_PX = 0.001;
-const ZOOM_MIN = 0.2;
-const ZOOM_MAX = 6;
 
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();

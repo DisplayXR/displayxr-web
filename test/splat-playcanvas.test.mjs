@@ -707,3 +707,59 @@ test('sampleCloudCentres honours a cap (the pick set uses RIG_SAMPLE_CAP)', () =
   const s = sampleCloudCentres(n, centresVisitor(xyz), { cap: RIG_SAMPLE_CAP });
   assert.equal(s.length / 3, Math.ceil(n / Math.ceil(n / RIG_SAMPLE_CAP)));
 });
+
+// ── 12. shared viewer constants, and the two viewers side by side ───────────────────────────
+
+test('the viewer constants both backends read are pinned (values from SceneViewer 1.7)', async () => {
+  const S = await import('../js/inline3d-splat-shared.js');
+  assert.equal(S.IDLE_DELAY_MS, 2500);
+  assert.equal(S.FOCUS_EASE, 0.18);
+  assert.equal(S.DEFAULT_DEPTH_LIMIT, 4.0);
+  assert.equal(S.DAMP_BASE, 0.001);
+  assert.equal(S.MAX_DT_S, 0.1);
+  assert.deepEqual(S.PITCH_LIMIT, [-60, 60]);
+  assert.equal(S.DRAG_DEG_PER_TILE, 180);
+  assert.deepEqual([S.WHEEL_LINE_PX, S.WHEEL_PAGE_PX, S.WHEEL_MAX_PX, S.ZOOM_PER_PX], [33, 400, 120, 0.001]);
+  assert.deepEqual([S.ZOOM_MIN, S.ZOOM_MAX], [0.2, 6]);
+  assert.deepEqual([S.MONO_FOV, S.MONO_NEAR, S.MONO_FAR, S.CAPTURE_FAR], [35, 0.001, 1000, 5000]);
+});
+
+test('SceneViewer and the PlayCanvas adapter keep NO private copy of a tuning constant (source check)', async () => {
+  const fs = await import('node:fs');
+  for (const f of ['inline3d-viewer.js', 'inline3d-splat-playcanvas.js']) {
+    const src = fs.readFileSync(new URL(`../js/${f}`, import.meta.url), 'utf8');
+    for (const name of ['IDLE_DELAY_MS', 'FOCUS_EASE', 'WHEEL_LINE_PX', 'ZOOM_PER_PX', 'ZOOM_MIN', 'ZOOM_MAX']) {
+      assert.equal(new RegExp(`^const ${name}\\b`, 'm').test(src), false, `${f} redefines ${name}`);
+    }
+    assert.match(src, /from '\.\/inline3d-splat-shared\.js'/);
+  }
+});
+
+test('behavioural trace: SceneViewer and PlayCanvasSplatViewer move identically (fit, focus ease, wheel, idle spin, setPose/resetPose)', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { THREE } = makeTHREE();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const opts = { virtualDisplayHeight: 0.18, fit: 'contain', margin: 0.75, fitSweep: true, depthLimit: 3, idleSpin: 8 };
+  const sv = new SceneViewer(THREE, makeCanvas(640, 360), { ...opts, orbit: true });
+  const pv = new PlayCanvasSplatViewer(makeCanvas(640, 360), { ...opts, orbit: true });
+  const snap = (v) => JSON.stringify({ pose: v.getPose(), target: v.getPose({ target: true }), focus: v.getFocus(), fit: v._fitScale, bounds: v.getSubjectBounds() });
+  const both = (fn) => { fn(sv); fn(pv); };
+  const step = (ms, what) => { T += ms; sv._tick(); pv._tick(); assert.equal(snap(pv), snap(sv), what); };
+  both((v) => v.fitTo([0.2, 0.1, -0.3], [1.2, 0.6, 2.0]));
+  step(16, 'after fitTo');
+  both((v) => v.setFocus([0.5, 0.25, -1]));
+  for (let i = 0; i < 30; i++) step(16, `focus ease frame ${i}`);
+  both((v) => v._onWheel({ deltaY: 100, deltaMode: 0, preventDefault() {} }));
+  both((v) => v._onWheel({ deltaY: -3, deltaMode: 1, preventDefault() {} }));
+  for (let i = 0; i < 20; i++) step(16, `wheel ease frame ${i}`);
+  both((v) => v.setPose({ yaw: 30, pitch: 80, zoom: 9, depthOffset: 0.02 })); // pitch + zoom clamp
+  step(16, 'setPose snap + clamps');
+  step(3000, 'idle delay passes');
+  for (let i = 0; i < 20; i++) step(16, `idle spin frame ${i}`);
+  both((v) => v.resetPose());
+  step(16, 'resetPose');
+  sv.dispose();
+  pv.dispose();
+});

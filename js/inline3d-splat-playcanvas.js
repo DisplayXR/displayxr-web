@@ -44,29 +44,37 @@ import { readSogMeta, sogCameraFromMeta } from './inline3d-sog.js';
 import { playcanvasPerfSettings, patchPlayCanvasQuadExtent } from './inline3d-splat-perf.js';
 import { boundsFromPositions } from './inline3d-viewer.js';
 import { cameraRigFromPose } from './inline3d-three.js';
-import { clamp, finite, now, toArray3, canvasNdc, bindFocusGestures } from './inline3d-splat-shared.js';
+import {
+  clamp,
+  finite,
+  now,
+  toArray3,
+  canvasNdc,
+  bindFocusGestures,
+  DEFAULT_DEPTH_LIMIT,
+  IDLE_DELAY_MS,
+  FOCUS_EASE,
+  DAMP_BASE,
+  MAX_DT_S,
+  PITCH_LIMIT,
+  DRAG_DEG_PER_TILE,
+  WHEEL_LINE_PX,
+  WHEEL_PAGE_PX,
+  WHEEL_MAX_PX,
+  ZOOM_PER_PX,
+  ZOOM_MIN,
+  ZOOM_MAX,
+  MONO_FOV,
+  MONO_NEAR,
+  MONO_FAR,
+  CAPTURE_FAR,
+  engineFormatFor,
+  pathOf,
+} from './inline3d-splat-shared.js';
 
 /** The engine release this adapter was built and measured against (npm peer floor). */
 export const PLAYCANVAS_TESTED = '2.22.3';
 
-// ── constants shared with SceneViewer (inline3d-viewer.js). Same values, on purpose: the two
-// backends must feel identical under the hand. Copied rather than imported because SceneViewer
-// keeps them module-private, and P1 deliberately does not refactor it (docs/playcanvas-adapter.md).
-const IDLE_DELAY_MS = 2500;
-const FOCUS_EASE = 0.18;
-const DEFAULT_DEPTH_LIMIT = 4.0;
-const WHEEL_LINE_PX = 33;
-const WHEEL_PAGE_PX = 400;
-const WHEEL_MAX_PX = 120;
-const ZOOM_PER_PX = 0.001;
-const ZOOM_MIN = 0.2;
-const ZOOM_MAX = 6;
-/** SceneViewer's mono camera: `new PerspectiveCamera(35, aspect, 0.001, 1000)`. */
-const MONO_FOV = 35;
-const MONO_NEAR = 0.001;
-const MONO_FAR = 1000;
-/** applyCaptureCamera's far: a lifted sky can sit past 239 m and must not clip. */
-const CAPTURE_FAR = 5000;
 const PICK_CONE_RAD = 0.02;
 
 const DEG = Math.PI / 180;
@@ -375,34 +383,9 @@ export function pickViewPath(pc, forced) {
   return ok ? 'renderview' : 'cameras';
 }
 
-/**
- * Which engine loader a source needs. The engine picks its parser from the URL's extension; a
- * byte source gets a synthetic name so it does too.
- *
- * @returns {{ext:'sog'|'ply'|'json', streamed:boolean}|null} null = not something the engine reads.
- */
-export function engineFormatFor(src, bytes, fileName) {
-  if (bytes) {
-    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
-      return { ext: 'sog', streamed: false };
-    }
-    if (bytes.length >= 3 && bytes[0] === 0x70 && bytes[1] === 0x6c && bytes[2] === 0x79) return { ext: 'ply', streamed: false };
-    const e = extOf(fileName);
-    return e === 'sog' || e === 'ply' ? { ext: e, streamed: false } : null;
-  }
-  const e = extOf(src);
-  if (e === 'sog' || e === 'ply') return { ext: e, streamed: false };
-  if (e === 'json') return { ext: 'json', streamed: /lod-meta\.json$/i.test(pathOf(src)) };
-  return null;
-}
-
-function pathOf(u) {
-  return typeof u === 'string' ? u.split(/[?#]/)[0] : '';
-}
-function extOf(u) {
-  const m = /\.([a-z0-9]+)$/i.exec(pathOf(u));
-  return m ? m[1].toLowerCase() : '';
-}
+// Source routing lives in ./inline3d-splat-shared.js (./splat also needs it, synchronously, to
+// refuse a format this engine cannot read at call time); re-exported for the tests.
+export { engineFormatFor } from './inline3d-splat-shared.js';
 
 /**
  * The pick fallback on flat arrays: the gaussian whose CENTRE is nearest the ray — by angle,
@@ -457,7 +440,7 @@ export class PlayCanvasSplatViewer {
       orbit = true,
       idleSpin = 0,
       renderScale = 1,
-      pitchLimit = [-60, 60],
+      pitchLimit = PITCH_LIMIT,
     } = opts;
     this.canvas = canvas;
     this.vH = virtualDisplayHeight;
@@ -593,8 +576,10 @@ export class PlayCanvasSplatViewer {
   getSubjectBounds() {
     const s = this._fitScale * this._zoom;
     const [hx, hy, hz] = this._subjectHalf;
-    const p = this._pitch * DEG;
-    const y = this._yaw * DEG;
+    // SceneViewer's exact arithmetic (degrees → radians as `(d * Math.PI) / 180`), so the two
+    // viewers report bit-identical boxes (pinned by the behavioural-trace test).
+    const p = (this._pitch * Math.PI) / 180;
+    const y = (this._yaw * Math.PI) / 180;
     const cp = Math.cos(p), sp = Math.sin(p), cy = Math.cos(y), sy = Math.sin(y);
     const ex = s * (Math.abs(cy) * hx + Math.abs(sy) * hz);
     const ey = s * (Math.abs(sp * sy) * hx + Math.abs(cp) * hy + Math.abs(sp * cy) * hz);
@@ -994,12 +979,12 @@ export class PlayCanvasSplatViewer {
 
   _tick() {
     const t = now();
-    const dt = this._lastTick ? Math.min((t - this._lastTick) / 1000, 0.1) : 0;
+    const dt = this._lastTick ? Math.min((t - this._lastTick) / 1000, MAX_DT_S) : 0;
     this._lastTick = t;
     if (this.idleSpin && !this._reduceMotion && t - this._lastInput > IDLE_DELAY_MS) {
       this._targetYaw += this.idleSpin * dt;
     }
-    const k = dt > 0 ? 1 - Math.pow(0.001, dt) : 1;
+    const k = dt > 0 ? 1 - Math.pow(DAMP_BASE, dt) : 1;
     this._yaw += (this._targetYaw - this._yaw) * k;
     this._pitch += (this._targetPitch - this._pitch) * k;
     if (Math.abs(this._targetZoom - this._zoom) > 1e-4) {
@@ -1077,9 +1062,9 @@ export class PlayCanvasSplatViewer {
     this._onMove = (ev) => {
       if (!dragging) return;
       const box = el.getBoundingClientRect();
-      this._targetYaw += ((ev.clientX - lastX) / Math.max(box.width, 1)) * 180;
+      this._targetYaw += ((ev.clientX - lastX) / Math.max(box.width, 1)) * DRAG_DEG_PER_TILE;
       this._targetPitch = clamp(
-        this._targetPitch + ((ev.clientY - lastY) / Math.max(box.height, 1)) * 180,
+        this._targetPitch + ((ev.clientY - lastY) / Math.max(box.height, 1)) * DRAG_DEG_PER_TILE,
         this.pitchLimit[0],
         this.pitchLimit[1],
       );
@@ -1254,7 +1239,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     orbit = true,
     fit = 'contain',
     margin = 0.8,
-    depthLimit = 4.0,
+    depthLimit = DEFAULT_DEPTH_LIMIT,
     fitSweep = true,
     renderScale = 1,
     feather = 0,
