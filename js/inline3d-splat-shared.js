@@ -180,3 +180,15 @@ export function engineFormatFor(src, bytes, fileName, fileType) {
   if (e === 'json') return { ext: 'json', streamed: /lod-meta\.json$/i.test(pathOf(src)) };
   return null;
 }
+
+// ── ORBIT: the PlayCanvas backend's built-in drag (tilt-and-relax) ──────────────────────────
+//
+// SceneViewer (the Spark path) still turns the subject cumulatively (DRAG_DEG_PER_TILE); switching
+// it to this mapping later is reading these three constants.
+
+/** Largest tilt a drag reaches, degrees, either axis; a half-width swipe gets there. */
+export const ORBIT_MAX_DEG = 15;
+/** Time constant while dragging, seconds: k = 1 − exp(−dt/τ) per frame toward the drag target. */
+export const ORBIT_TAU_DRAG_S = 0.2;
+/** Time constant of the relax back to rest after release, seconds. */
+export const ORBIT_TAU_REST_S = 0.6;

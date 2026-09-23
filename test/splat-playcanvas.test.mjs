@@ -928,3 +928,79 @@ test('feather 0 (the default) adds nothing to the scene', async () => {
   assert.equal(rec.meshInstances.length, 0);
   v.dispose();
 });
+
+// ── 15. orbit: tilt-and-relax ───────────────────────────────────────────────────────────────
+
+test('orbit constants are pinned: ±15°, τ 0.2 s dragging, τ 0.6 s relaxing', async () => {
+  const S = await import('../js/inline3d-splat-shared.js');
+  assert.deepEqual([S.ORBIT_MAX_DEG, S.ORBIT_TAU_DRAG_S, S.ORBIT_TAU_REST_S], [15, 0.2, 0.6]);
+});
+
+test('orbit: press centre → +25 % width → 0.4 s ≈ 6.5° → release → 1.5 s ≈ 0.5°', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const v = new PlayCanvasSplatViewer(makeCanvas(400, 300), { orbit: true, idleSpin: 0 });
+  const frames = (s) => {
+    for (let i = 0; i < Math.round(s / 0.016); i++) {
+      T += 16;
+      v._tick();
+    }
+  };
+  v._tick();
+  v._onDown({ clientX: 200, clientY: 150, pointerId: 1 });
+  v._onMove({ clientX: 300, clientY: 150 }); // +25 % of the width
+  assert.equal(v.getPose({ target: true }).yaw, 7.5, 'target = 0.25 · 2 · 15');
+  frames(0.4);
+  const expDrag = 7.5 * (1 - Math.exp(-0.4 / 0.2)); // 6.49
+  near(v.getPose().yaw, expDrag, 0.05, 'eased toward the target with τ 0.2 s');
+  v._onUp({ pointerId: 1 });
+  assert.equal(v.getPose({ target: true }).yaw, 0, 'release targets rest');
+  frames(1.5);
+  near(v.getPose().yaw, v.getPose().yaw > 0 ? expDrag * Math.exp(-1.5 / 0.6) : 0, 0.05, 'relaxed with τ 0.6 s (≈0.53°)');
+  assert.ok(v.getPose().yaw > 0.4 && v.getPose().yaw < 0.7, `yaw ${v.getPose().yaw}`);
+  v.dispose();
+});
+
+test('orbit: the cap, pitch, pitchLimit, re-press mid-relax, setPose snaps, idle spin waits for rest', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const v = new PlayCanvasSplatViewer(makeCanvas(400, 300), { orbit: true, idleSpin: 10, pitchLimit: [-5, 5], orbitMaxDeg: 20 });
+  v._tick();
+  v._onDown({ clientX: 200, clientY: 150, pointerId: 1 });
+  v._onMove({ clientX: 400, clientY: 300 }); // a full half-width right, half-height down
+  assert.equal(v.getPose({ target: true }).yaw, 20, 'capped at orbitMaxDeg');
+  assert.equal(v.getPose({ target: true }).pitch, 5, 'pitchLimit still clamps');
+  v._onMove({ clientX: 100, clientY: 150 });
+  assert.equal(v.getPose({ target: true }).yaw, -10, 'absolute from the press, not cumulative (−¼ width)');
+  v._onUp({ pointerId: 1 });
+  T += 100;
+  v._tick();
+  // Re-press mid-relax: rest stays the ORIGINAL rest, not the mid-tilt pose.
+  v._onDown({ clientX: 200, clientY: 150, pointerId: 1 });
+  v._onUp({ pointerId: 1 });
+  assert.equal(v.getPose({ target: true }).yaw, 0);
+  // Idle turntable held off until the relax completes.
+  T += 3000;
+  v._tick();
+  assert.equal(v.getPose({ target: true }).yaw, 0, 'no idle spin while relaxing');
+  for (let i = 0; i < 400 && v._orbitMode; i++) {
+    T += 16;
+    v._tick();
+  }
+  assert.equal(v._orbitMode, null, 'rest reached');
+  T += 16;
+  v._tick();
+  assert.ok(v.getPose({ target: true }).yaw > 0, 'idle spin resumes after rest');
+  // setPose stays a snap, and ends any relax.
+  v._onDown({ clientX: 200, clientY: 150, pointerId: 1 });
+  v._onMove({ clientX: 260, clientY: 150 });
+  v._onUp({ pointerId: 1 });
+  v.setPose({ yaw: 42 });
+  assert.equal(v.getPose().yaw, 42);
+  assert.equal(v._orbitMode, null);
+  v.dispose();
+});

@@ -170,7 +170,17 @@ export interface SplatOptions {
   flipY?: boolean;
   /** Degrees/second of turntable once idle (default 8). */
   idleSpin?: number;
+  /**
+   * Drag + wheel. On the PlayCanvas backend the drag is TILT-AND-RELAX: measured as a fraction of
+   * the canvas box from the press, it tilts up to ±`orbitMaxDeg` (a half-width swipe reaches it)
+   * and relaxes back to rest on release; `idleSpin` resumes once at rest. On Spark (SceneViewer)
+   * it is still the cumulative turntable (a full-width drag = 180°).
+   */
   orbit?: boolean;
+  /** PlayCanvas: the largest drag tilt, degrees, either axis (default 15). */
+  orbitMaxDeg?: number;
+  /** PlayCanvas: easing time constants, seconds — `drag` while held (0.2), `rest` after release (0.6). */
+  orbitEase?: { drag?: number; rest?: number };
   fit?: 'contain' | 'height' | 'cover' | 'none';
   /** Fraction of the tile the subject may occupy (default 0.8) — width AND height. */
   margin?: number;

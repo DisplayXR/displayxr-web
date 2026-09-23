@@ -57,7 +57,9 @@ import {
   DAMP_BASE,
   MAX_DT_S,
   PITCH_LIMIT,
-  DRAG_DEG_PER_TILE,
+  ORBIT_MAX_DEG,
+  ORBIT_TAU_DRAG_S,
+  ORBIT_TAU_REST_S,
   WHEEL_LINE_PX,
   WHEEL_PAGE_PX,
   WHEEL_MAX_PX,
@@ -440,9 +442,17 @@ export class PlayCanvasSplatViewer {
       idleSpin = 0,
       renderScale = 1,
       pitchLimit = PITCH_LIMIT,
+      orbitMaxDeg = ORBIT_MAX_DEG,
+      orbitEase = {},
       feather = 0,
     } = opts;
     this.canvas = canvas;
+    // The tilt-and-relax orbit (./inline3d-splat-shared.js §ORBIT): drag tilts up to ±orbitMaxDeg
+    // from where the press started, easing with τ = orbitEase.drag; release relaxes back with
+    // τ = orbitEase.rest. `_orbitMode` is 'drag' | 'rest' | null (null = ordinary damping).
+    this.orbitMaxDeg = orbitMaxDeg;
+    this.orbitEase = { drag: orbitEase.drag ?? ORBIT_TAU_DRAG_S, rest: orbitEase.rest ?? ORBIT_TAU_REST_S };
+    this._orbitMode = null;
     this.featherPx = feather > 0 ? feather : 0;
     /** Per-frame hooks, `(tMs) => boolean` — return false to be removed. setSource's crossfade. */
     this._hooks = [];
@@ -552,6 +562,8 @@ export class PlayCanvasSplatViewer {
   }
 
   setPose({ yaw, pitch, zoom, depthOffset } = {}) {
+    // A snap, as on SceneViewer; it also ends an orbit relax (the page is driving now).
+    if (yaw !== undefined || pitch !== undefined) this._orbitMode = null;
     if (yaw !== undefined) this._targetYaw = this._yaw = yaw;
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
@@ -1069,12 +1081,23 @@ export class PlayCanvasSplatViewer {
     const t = now();
     const dt = this._lastTick ? Math.min((t - this._lastTick) / 1000, MAX_DT_S) : 0;
     this._lastTick = t;
-    if (this.idleSpin && !this._reduceMotion && t - this._lastInput > IDLE_DELAY_MS) {
+    // The idle turntable waits out a drag AND its relax, then the usual idle delay.
+    if (this.idleSpin && !this._reduceMotion && !this._orbitMode && t - this._lastInput > IDLE_DELAY_MS) {
       this._targetYaw += this.idleSpin * dt;
     }
     const k = dt > 0 ? 1 - Math.pow(DAMP_BASE, dt) : 1;
-    this._yaw += (this._targetYaw - this._yaw) * k;
-    this._pitch += (this._targetPitch - this._pitch) * k;
+    // Orbit easing: k = 1 − exp(−dt/τ), τ per phase; no time elapsed, no motion.
+    const tau = this._orbitMode === 'drag' ? this.orbitEase.drag : this._orbitMode === 'rest' ? this.orbitEase.rest : 0;
+    const ko = tau > 0 ? (dt > 0 ? 1 - Math.exp(-dt / tau) : 0) : k;
+    this._yaw += (this._targetYaw - this._yaw) * ko;
+    this._pitch += (this._targetPitch - this._pitch) * ko;
+    if (
+      this._orbitMode === 'rest' &&
+      Math.abs(this._targetYaw - this._yaw) < 0.01 &&
+      Math.abs(this._targetPitch - this._pitch) < 0.01
+    ) {
+      this._orbitMode = null; // at rest: the ordinary damping (and the idle turntable) take over
+    }
     if (Math.abs(this._targetZoom - this._zoom) > 1e-4) {
       this._zoom *= Math.pow(this._targetZoom / this._zoom, k);
     } else {
@@ -1141,34 +1164,56 @@ export class PlayCanvasSplatViewer {
     this.rigNode.setLocalScale(trs.scale, trs.scale, trs.scale);
   }
 
+  /**
+   * The built-in orbit: TILT-AND-RELAX, not SceneViewer's cumulative turntable drag.
+   *
+   * The drag is a FRACTION of the canvas box (dx = Δx / width, dy = Δy / height, measured from
+   * the press), so a tablet thumb-swipe and a mouse agree whatever the tile's pixel size. The
+   * target is ABSOLUTE from the press — rest + clamp(dx · 2·max, ±max) — so a half-width swipe
+   * reaches the cap (orbitMaxDeg, 15° by default). +dx ⇒ +yaw and +dy ⇒ +pitch, SceneViewer's
+   * signs (the near face follows the pointer). Release relaxes back to the rest pose — the pose
+   * the press started from, which is yaw = pitch = 0 for a page that never setPose'd — rather
+   * than snapping. `pitchLimit` still clamps. `setPose` stays a snap, so page-driven easing works.
+   */
   _bindOrbit() {
     const el = this.canvas;
     if (typeof el.addEventListener !== 'function') return;
     let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
+    let startX = 0;
+    let startY = 0;
+    let restYaw = 0;
+    let restPitch = 0;
     this._onDown = (ev) => {
       dragging = true;
-      lastX = ev.clientX;
-      lastY = ev.clientY;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      // Rest = where the pose was heading when pressed (an idle turntable's yaw included).
+      restYaw = this._orbitMode ? restYaw : this._targetYaw;
+      restPitch = this._orbitMode ? restPitch : this._targetPitch;
+      this._orbitMode = 'drag';
       this._lastInput = now();
       el.setPointerCapture?.(ev.pointerId);
     };
     this._onMove = (ev) => {
       if (!dragging) return;
       const box = el.getBoundingClientRect();
-      this._targetYaw += ((ev.clientX - lastX) / Math.max(box.width, 1)) * DRAG_DEG_PER_TILE;
+      const dx = (ev.clientX - startX) / Math.max(box.width, 1);
+      const dy = (ev.clientY - startY) / Math.max(box.height, 1);
+      const max = this.orbitMaxDeg;
+      this._targetYaw = restYaw + clamp(dx * 2 * max, -max, max);
       this._targetPitch = clamp(
-        this._targetPitch + ((ev.clientY - lastY) / Math.max(box.height, 1)) * DRAG_DEG_PER_TILE,
+        restPitch + clamp(dy * 2 * max, -max, max),
         this.pitchLimit[0],
         this.pitchLimit[1],
       );
-      lastX = ev.clientX;
-      lastY = ev.clientY;
       this._lastInput = now();
     };
     this._onUp = (ev) => {
+      if (!dragging) return;
       dragging = false;
+      this._targetYaw = restYaw;
+      this._targetPitch = clamp(restPitch, this.pitchLimit[0], this.pitchLimit[1]);
+      this._orbitMode = 'rest';
       this._lastInput = now();
       el.releasePointerCapture?.(ev.pointerId);
     };
@@ -1186,6 +1231,7 @@ export class PlayCanvasSplatViewer {
     el.addEventListener('pointermove', this._onMove);
     el.addEventListener('pointerup', this._onUp);
     el.addEventListener('pointercancel', this._onUp);
+    el.addEventListener('pointerleave', this._onUp);
     el.addEventListener('wheel', this._onWheel, { passive: false });
   }
 
@@ -1196,6 +1242,7 @@ export class PlayCanvasSplatViewer {
     el.removeEventListener('pointermove', this._onMove);
     el.removeEventListener('pointerup', this._onUp);
     el.removeEventListener('pointercancel', this._onUp);
+    el.removeEventListener('pointerleave', this._onUp);
     el.removeEventListener('wheel', this._onWheel);
     this._onDown = null;
   }
@@ -1394,6 +1441,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     idleSpin,
     renderScale,
     flipY,
+    orbitMaxDeg: opts.orbitMaxDeg,
+    orbitEase: opts.orbitEase,
     feather,
   });
 
