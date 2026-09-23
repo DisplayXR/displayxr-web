@@ -426,7 +426,7 @@ export function sampleCloudCentres(total, forEachCentre) {
   let k = 0;
   forEachCentre((index, x, y, z, opacity) => {
     if (index % stride !== 0) return;
-    if (opacity !== undefined && opacity < 0.05) return;
+    if (opacity !== undefined && opacity < RIG_MIN_OPACITY) return;
     if (k + 3 > xyz.length) return;
     xyz[k++] = x;
     xyz[k++] = y;
