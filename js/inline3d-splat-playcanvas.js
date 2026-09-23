@@ -440,8 +440,10 @@ export class PlayCanvasSplatViewer {
       idleSpin = 0,
       renderScale = 1,
       pitchLimit = PITCH_LIMIT,
+      feather = 0,
     } = opts;
     this.canvas = canvas;
+    this.featherPx = feather > 0 ? feather : 0;
     /** Per-frame hooks, `(tMs) => boolean` — return false to be removed. setSource's crossfade. */
     this._hooks = [];
     this.vH = virtualDisplayHeight;
@@ -802,9 +804,77 @@ export class PlayCanvasSplatViewer {
     if (this._viewPath === 'renderview') {
       this.eye = this._makeCamera('inline3d-eye', null);
     }
+    if (this.featherPx > 0) this._makeFeather();
     this._applyTransform();
     app.start();
     return app;
+  }
+
+  /**
+   * `feather`: fade each eye's edges to transparent — EdgeFeather's pass, engine-native.
+   *
+   * A clip-space quad in the UI layer (drawn after the World layer's splats), rendered by the
+   * same camera, so the engine draws it once per view into THAT view's viewport: each eye fades
+   * all four of ITS OWN edges, which a CSS mask on the canvas cannot do. Blend ZERO/SRC_ALPHA on
+   * colour and alpha multiplies whatever is there by the ramp (dst *= ramp), exactly
+   * EdgeFeather's blend; the ramp is the same `smoothstep` in both uv axes, sized in BUFFER px
+   * per eye viewport so the fade is px-uniform on screen despite the side-by-side squeeze.
+   */
+  _makeFeather() {
+    const pc = this.pc;
+    const device = this.app.graphicsDevice;
+    const mesh = new pc.Mesh(device);
+    mesh.setPositions(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]));
+    mesh.setUvs(0, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]));
+    mesh.setIndices([0, 1, 2, 0, 2, 3]);
+    mesh.update();
+    const mat = new pc.ShaderMaterial({
+      uniqueName: 'inline3dEdgeFeather',
+      attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 },
+      vertexGLSL: `
+        attribute vec3 vertex_position;
+        attribute vec2 vertex_texCoord0;
+        varying vec2 vUv;
+        void main() { vUv = vertex_texCoord0; gl_Position = vec4(vertex_position.xy, 0.0, 1.0); }`,
+      fragmentGLSL: `
+        varying vec2 vUv;
+        uniform float dxrFeatherFx;
+        uniform float dxrFeatherFy;
+        void main() {
+          float ax = smoothstep(0.0, dxrFeatherFx, vUv.x) * smoothstep(0.0, dxrFeatherFx, 1.0 - vUv.x);
+          float ay = smoothstep(0.0, dxrFeatherFy, vUv.y) * smoothstep(0.0, dxrFeatherFy, 1.0 - vUv.y);
+          gl_FragColor = vec4(1.0, 1.0, 1.0, ax * ay);
+        }`,
+    });
+    mat.blendState = new pc.BlendState(
+      true,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_ZERO,
+      pc.BLENDMODE_SRC_ALPHA,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_ZERO,
+      pc.BLENDMODE_SRC_ALPHA,
+    );
+    mat.depthTest = false;
+    mat.depthWrite = false;
+    mat.cull = pc.CULLFACE_NONE;
+    mat.setParameter('dxrFeatherFx', 0.1);
+    mat.setParameter('dxrFeatherFy', 0.1);
+    mat.update();
+    const mi = new pc.MeshInstance(mesh, mat, new pc.GraphNode('inline3d-feather'));
+    mi.cull = false;
+    this.app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances([mi]);
+    this._feather = { mat, mi };
+  }
+
+  /** Size the feather ramp to this frame's eye viewport (buffer px → uv fraction, per axis). */
+  _updateFeather(w, h) {
+    if (!this._feather) return;
+    // 3D ONLY, as on the Spark path: SceneViewer runs EdgeFeather in onFrame (the woven eyes)
+    // and not in its flat mono loop, where a page styles the canvas box itself.
+    this._feather.mi.visible = this._mode === '3d';
+    this._feather.mat.setParameter('dxrFeatherFx', Math.min(0.5, this.featherPx / Math.max(1, w)));
+    this._feather.mat.setParameter('dxrFeatherFy', Math.min(0.5, this.featherPx / Math.max(1, h)));
   }
 
   /** A camera entity under the rig node. Tonemapping OFF: splat colours are already display-referred. */
@@ -931,6 +1001,7 @@ export class PlayCanvasSplatViewer {
         placeNode(cam, e.pose);
       }
     }
+    this._updateFeather(entries[0].width * sx, entries[0].height * sy);
     app.tick(now());
     return true;
   }
@@ -1242,7 +1313,6 @@ export function describeResource(res) {
 }
 
 let warnedStreamedPick = false;
-let warnedFeather = false;
 
 // ── the handle ──────────────────────────────────────────────────────────────────────────────
 
@@ -1310,10 +1380,6 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     observe,
     preserveDrawingBuffer = false,
   } = opts;
-  if (feather > 0 && !warnedFeather) {
-    warnedFeather = true;
-    console.warn('[inline3d/splat] `feather` is not implemented on engine:playcanvas yet — ignored.');
-  }
   // `sortIntervalMs` is accepted and has no effect here: the engine re-sorts when the camera
   // ROTATES (one directional sort serves every view), not on a timer — docs/playcanvas-adapter.md.
 
@@ -1328,6 +1394,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     idleSpin,
     renderScale,
     flipY,
+    feather,
   });
 
   let handle = null;

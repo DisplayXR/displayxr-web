@@ -890,3 +890,41 @@ test('setSource: fadeMs 0 swaps at once; resetPose:true resets; a Spark-only for
   await assert.rejects(out.setSource('c.spz'), /reads \.sog, \.ply/);
   out.remove();
 });
+
+// ── 14. feather ─────────────────────────────────────────────────────────────────────────────
+
+test('feather: an edge-ramp quad in the UI layer, blend ZERO/SRC_ALPHA, ramp sized per eye viewport, 3D only', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const v = new PlayCanvasSplatViewer(makeCanvas(320, 180), { orbit: false, feather: 24 });
+  await v.attachEngine(pc, { perf: playcanvasPerfSettings(undefined) });
+  assert.equal(rec.meshInstances.length, 1, 'one quad');
+  const mi = rec.meshInstances[0];
+  assert.deepEqual(mi.material.blendState.args, [true, 'ADD', 'ZERO', 'SRC_ALPHA', 'ADD', 'ZERO', 'SRC_ALPHA'], 'dst *= ramp, colour and alpha');
+  assert.equal(mi.material.depthTest, false);
+  assert.ok(mi.node, 'a mesh instance needs a node (the engine reads its world scale)');
+  // A side-by-side eye: 320 px wide in a 640×180 buffer.
+  v._mode = '3d';
+  v._updateFeather(320, 180);
+  near(mi.material.params.get('dxrFeatherFx'), 24 / 320, 1e-12);
+  near(mi.material.params.get('dxrFeatherFy'), 24 / 180, 1e-12);
+  assert.equal(mi.visible, true);
+  v._updateFeather(30, 20);
+  assert.equal(mi.material.params.get('dxrFeatherFx'), 0.5, 'clamped at half the eye');
+  // Flat fallback: no feather, exactly as SceneViewer (EdgeFeather runs in onFrame only).
+  v._mode = 'mono';
+  v._updateFeather(320, 180);
+  assert.equal(mi.visible, false);
+  v.dispose();
+});
+
+test('feather 0 (the default) adds nothing to the scene', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const v = new PlayCanvasSplatViewer(makeCanvas(320, 180), { orbit: false });
+  await v.attachEngine(pc, { perf: playcanvasPerfSettings(undefined) });
+  assert.equal(rec.meshInstances.length, 0);
+  v.dispose();
+});
