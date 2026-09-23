@@ -80,8 +80,20 @@ drawn at a 600k budget. It only acts on Streamed SOG (P2).
 - **URL `.sog` gets its `camera` block.** The engine keeps unknown `meta.json` keys, so the URL
   path now reads `resource.gsplatData.meta.camera` (and a Streamed SOG's top-level `camera` in
   `lod-meta.json`). On Spark, only the bytes path can read it.
-- **Opacities for the cloud pass** are read back from the SOG `sh0` plane (one GPU readback at
-  load). On a `.ply` they come from the `opacity` property.
+- **Opacities for the cloud pass** are read back from the SOG `sh0` plane (one asynchronous
+  PBO readback at load, transient). On a `.ply` they come from the `opacity` property. The cloud is
+  copied **strided** to at most 200k splats (the largest sample any consumer takes: ≈3.1 MB on
+  the 1.18M bench asset, where a full copy was ≈18.9 MB). It is dropped once `ready` resolves;
+  only the ≤40k-splat pick set (≤0.47 MB) stays for the handle's lifetime.
+- **Streamed SOG (`lod-meta.json`) is framed from the octree's root bound** (`resource.aabb`, raw
+  min/max rather than percentile-trimmed). Its camera block comes from the top level of
+  lod-meta.json. `numSplats` is the finest level's count. There is no cloud yet, so a block
+  without intrinsics falls to the 28 mm lens, and `pick` returns null with one warning. Full
+  streaming behaviour is P2.
+- **Shared pieces live in `js/inline3d-splat-shared.js`**: the focus gestures, the CSS-box → NDC
+  step, and `toArray3`/`clamp`/`finite`/`now`. Both backends import them. SceneViewer keeps its
+  own private copies, because P1 leaves `inline3d-viewer.js` untouched; the pose constants are
+  copied here for the same reason.
 - **`feather` is not implemented** (it warns once). **`sortIntervalMs` is ignored**: the engine
   re-sorts on camera rotation, one directional sort for all views.
 - **`./splat` still imports three and Spark statically**, so a PlayCanvas-only page still needs
