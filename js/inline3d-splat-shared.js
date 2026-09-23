@@ -316,3 +316,124 @@ export function playcanvasCannotRead(src, { fileType, fileName } = {}) {
     `${what}. Pass engine:'spark' for .spz / .splat / .ksplat / .rad.`
   );
 }
+
+// ── controls:'page' — the page drives the camera (docs/playcanvas-adapter.md §controls:'page') ──
+
+/** Who owns the camera: the SDK's viewer (orbit, idle, fit, focus gestures) or the page. */
+export const SPLAT_CONTROLS = Object.freeze(['viewer', 'page']);
+
+/**
+ * `comfortDepth` default — the auto-3D shim's `depth`, so a game on `controls:'page'` gets the
+ * same stereo as the same game under the shim. It is the runtime's comfort number
+ * `ipd × metersToVirtual × convergenceDiopters × 0.5`, which the rig below makes equal to it by
+ * construction (`metersToVirtual = comfortDepth · d / 0.5`, `convergenceDiopters = 1 / d`).
+ */
+export const PAGE_COMFORT_DEPTH = 0.3;
+
+/**
+ * Options that mean nothing when the page owns the camera. Passing one is not an error (a page
+ * switching an existing call site over should not have to prune it first); it is named ONCE in a
+ * console.info line and ignored.
+ */
+export const PAGE_IGNORED_OPTIONS = Object.freeze([
+  'fit',
+  'virtualDisplayHeight',
+  'orbit',
+  'idleSpin',
+  'focusInput',
+  'margin',
+  'fitSweep',
+  'depthLimit',
+  'orbitMaxDeg',
+  'orbitEase',
+  'captureFit',
+]);
+
+/**
+ * Validate the `controls` family at CALL time (both engines call this before anything loads).
+ *
+ * @returns {{page:boolean, comfortDepth:number, ignored:string[]}}
+ * @throws on an unknown `controls`, a `comfortDepth` outside (0, 1], or `rig:'display'` with
+ *         `controls:'page'` (the page's camera IS the rig; a display rig has no camera).
+ */
+export function resolveControls(opts = {}) {
+  const controls = opts.controls ?? 'viewer';
+  if (!SPLAT_CONTROLS.includes(controls)) {
+    throw new Error(
+      `@displayxr/inline3d/splat: controls "${controls}" — expected ` +
+        `${SPLAT_CONTROLS.map((c) => `'${c}'`).join(' or ')} (default 'viewer').`,
+    );
+  }
+  const page = controls === 'page';
+  let comfortDepth = PAGE_COMFORT_DEPTH;
+  if (opts.comfortDepth !== undefined) {
+    const c = opts.comfortDepth;
+    if (typeof c !== 'number' || !Number.isFinite(c) || c <= 0 || c > 1) {
+      throw new Error(
+        `@displayxr/inline3d/splat: comfortDepth ${c} — expected a number in (0, 1] ` +
+          `(the runtime's comfort rule caps it at 1; the default is ${PAGE_COMFORT_DEPTH}).`,
+      );
+    }
+    comfortDepth = c;
+  }
+  if (page && opts.rig === 'display') {
+    throw new Error(
+      "@displayxr/inline3d/splat: controls:'page' with rig:'display' — the page's camera IS the " +
+        "rig, so it is always a camera rig. Drop `rig`, or use the default controls for a display rig.",
+    );
+  }
+  if (opts.onBeforeFrame !== undefined) {
+    if (typeof opts.onBeforeFrame !== 'function') {
+      throw new Error('@displayxr/inline3d/splat: onBeforeFrame must be a function (frame) => void.');
+    }
+    if (!page) {
+      throw new Error(
+        "@displayxr/inline3d/splat: onBeforeFrame needs controls:'page' — with the default controls " +
+          'the SDK owns the camera and there is no page pose to set before the draw.',
+      );
+    }
+  }
+  const ignored = page ? PAGE_IGNORED_OPTIONS.filter((k) => opts[k] !== undefined) : [];
+  return { page, comfortDepth, ignored };
+}
+
+/**
+ * Validate one `setCameraPose(matrixWorld, o)` call and return a private copy (the page may
+ * reuse its arrays). Throws synchronously on a malformed call: a NaN in a camera matrix is a page
+ * bug that would otherwise render nothing, silently.
+ *
+ * @returns {{matrixWorld:Float64Array, verticalFovDeg:number, near:number, far:number,
+ *            convergence:number|null}}
+ */
+export function normalizeCameraPose(matrixWorld, o = {}) {
+  const bad = (why) => new Error(`@displayxr/inline3d/splat: setCameraPose — ${why}`);
+  if (!matrixWorld || typeof matrixWorld.length !== 'number' || matrixWorld.length !== 16) {
+    throw bad('matrixWorld must be 16 numbers, column-major (a Float32Array(16) or an array).');
+  }
+  const m = new Float64Array(16);
+  for (let i = 0; i < 16; i++) {
+    const v = matrixWorld[i];
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw bad(`matrixWorld[${i}] is ${v}, not a finite number.`);
+    m[i] = v;
+  }
+  const det =
+    m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
+  if (!(det > 1e-12)) {
+    throw bad(`matrixWorld is singular or mirrored (det ${det.toPrecision(3)}); a camera pose is a rotation, a translation and at most a uniform scale.`);
+  }
+  const fov = o.verticalFovDeg;
+  if (typeof fov !== 'number' || !(fov > 0 && fov < 180)) {
+    throw bad(`verticalFovDeg ${fov} — the FULL vertical angle in degrees, in (0, 180).`);
+  }
+  const near = o.near === undefined ? MONO_NEAR : o.near;
+  const far = o.far === undefined ? CAPTURE_FAR : o.far;
+  if (typeof near !== 'number' || !(near > 0) || !Number.isFinite(near)) throw bad(`near ${near} — expected a finite number > 0.`);
+  if (typeof far !== 'number' || !(far > near) || !Number.isFinite(far)) throw bad(`far ${far} — expected a finite number > near.`);
+  let convergence = null;
+  if (o.convergence !== undefined && o.convergence !== null) {
+    const c = o.convergence;
+    if (typeof c !== 'number' || !(c > 0) || !Number.isFinite(c)) throw bad(`convergence ${c} — metres along the view axis, > 0 (omit it for the adapter's own).`);
+    convergence = c;
+  }
+  return { matrixWorld: m, verticalFovDeg: fov, near, far, convergence };
+}

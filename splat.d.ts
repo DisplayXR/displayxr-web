@@ -304,6 +304,61 @@ export interface SplatOptions {
   observe?: Element;
   /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
   firstWovenHoldMs?: number;
+  /**
+   * Who owns the camera. `'viewer'` (the default): the SDK's orbit, idle spin, auto-fit and focus
+   * gestures. `'page'` (`engine: 'playcanvas'` only; throws on Spark): the page drives the camera
+   * every frame through {@link SplatHandle.setCameraPose} and the adapter keeps only the eye math —
+   * the attach-pattern camera rig, the runtime's projections, the mono fallback. `fit`,
+   * `virtualDisplayHeight`, `orbit`, `idleSpin`, `focusInput` (and the other framing/orbit knobs)
+   * are ignored, named once in a `console.info`; `rig: 'display'` throws.
+   */
+  controls?: 'viewer' | 'page';
+  /**
+   * `controls: 'page'`: the comfort number `ipd × metersToVirtual × convergenceDiopters × 0.5` the
+   * rig is built to, in (0, 1]. Default 0.3, the auto-3D shim's. `metersToVirtual = comfortDepth ·
+   * d / 0.5`, so the depth budget is the same for a 10 cm subject and a 150 m castle.
+   */
+  comfortDepth?: number;
+  /**
+   * `controls: 'page'` only: called once per adapter frame — the wall's session frame in 3D, the
+   * mono rAF in 2D — BEFORE anything renders. Call `handle.setCameraPose(…)` synchronously in
+   * here and THIS frame renders that pose (zero lag, the attach pattern); a pose set from the
+   * page's own rAF may be one frame late, since the two rAFs have no guaranteed order. A throw is
+   * caught and warned once; frames keep rendering.
+   */
+  onBeforeFrame?: (frame: SplatFrameInfo) => void;
+}
+
+/** What `onBeforeFrame` receives. */
+export interface SplatFrameInfo {
+  /** `performance.now()` at the call. */
+  time: number;
+  /** The runtime's view list in 3D (valid only inside the call — copy what you keep); null in mono. */
+  views: readonly XRView[] | null;
+  /** Seconds since the previous call (0 on the first; capped at 0.1). */
+  dt: number;
+}
+
+/** A page camera, as `setCameraPose` takes it and `getCameraPose` returns it. */
+export interface SplatCameraPose {
+  /**
+   * Column-major world matrix of the page camera in the SPLAT's own space (the space of the camera
+   * block's `rest`), three.js convention: looks down −Z, +Y up. Rotation + translation + at most a
+   * UNIFORM scale (a page whose world scales the splat passes `inv(splatWorld) · camera.matrixWorld`;
+   * the scale is how page units reach the adapter). The adapter applies its own OpenCV → engine flip.
+   */
+  matrixWorld: Float32Array;
+  /** Full vertical field of view, degrees. */
+  verticalFovDeg: number;
+  /** Page units. Default 0.001. A floor on every projection's near (depth mapping only). */
+  near: number;
+  /** Page units. Default 5000. A cap on every projection's far. */
+  far: number;
+  /**
+   * Zero-disparity distance along the view axis, page units; null = the adapter's own (the focus
+   * waterfall's, fixed until `setFocus` / `setSource`).
+   */
+  convergence: number | null;
 }
 
 /** `handle.stats()` on `engine: 'playcanvas'`. */
@@ -384,8 +439,21 @@ export interface SplatHandle {
   /** Resolves once the asset has loaded and been framed; rejects if the load failed. */
   readonly ready: Promise<SplatHandle>;
 
+  /** Throws on `controls: 'page'` (the page owns the camera). */
   setPose(pose?: OrbitPose): void;
+  /** Throws on `controls: 'page'`. */
   resetPose(): void;
+  /**
+   * `controls: 'page'` only (throws otherwise): the camera for the next frame drawn — call it every
+   * frame you render, ideally inside `onBeforeFrame`. Last call wins; a page that stops calling
+   * keeps its last pose. Throws synchronously on a malformed matrix or lens.
+   */
+  setCameraPose(
+    matrixWorld: ArrayLike<number>,
+    opts: { verticalFovDeg: number; near?: number; far?: number; convergence?: number },
+  ): SplatHandle;
+  /** The last pose the page set (a copy), or null before the first `setCameraPose`. */
+  getCameraPose(): SplatCameraPose | null;
   /**
    * Point the window at something, in the SPLAT's own space (the space the `camera` block's
    * `focus.point` is in). Null returns to whatever the waterfall resolved. Eased unless `snap`.

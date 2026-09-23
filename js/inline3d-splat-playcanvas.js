@@ -82,6 +82,8 @@ import {
   engineFormatFor,
   pathOf,
   streamedBytesError,
+  resolveControls,
+  normalizeCameraPose,
 } from './inline3d-splat-shared.js';
 
 /**
@@ -136,6 +138,10 @@ function guardDuplicateSystems(app) {
 export const PLAYCANVAS_TESTED = '2.22.3';
 
 const PICK_CONE_RAD = 0.02;
+
+const PAGE_POSE_ERROR =
+  "@displayxr/inline3d/splat: setPose()/resetPose() are not available with controls:'page' — the " +
+  'page owns the camera. Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).';
 
 const DEG = Math.PI / 180;
 
@@ -363,6 +369,69 @@ export function pivotInverseTRS({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 
 }
 
 /**
+ * controls:'page' — the rig node's TRS from the page's camera matrix.
+ *
+ * `matrixWorld` is the page camera's world matrix in the SPLAT's model space (the space of the
+ * `.sog` camera block's `rest`), a three.js-convention camera (looks down −Z, +Y up). The splat
+ * entity carries the OpenCV → GL half-turn about X under `flipY`, so the camera rides the same
+ * turn: rig = F · M, F = Rx(180°) (or the identity without the flip). A uniform scale in M is
+ * kept — it is how a page whose world scales the splat (F1000: S(2.5)) expresses "page units",
+ * and it puts the runtime's eye offsets (metres) and the page's near/far into page units for free.
+ *
+ * @returns {{position:number[], rotation:number[], scale:number, uniform:boolean}}
+ */
+export function pageRigTRS(M, flipY = true) {
+  const m = Float64Array.from(M);
+  if (flipY) {
+    for (const c of [0, 4, 8, 12]) {
+      m[c + 1] = -m[c + 1];
+      m[c + 2] = -m[c + 2];
+    }
+  }
+  const len = (c) => Math.hypot(m[c], m[c + 1], m[c + 2]);
+  const lx = len(0), ly = len(4), lz = len(8);
+  const s = Math.cbrt(lx * ly * lz);
+  const uniform = Math.abs(lx - s) < 1e-4 * s && Math.abs(ly - s) < 1e-4 * s && Math.abs(lz - s) < 1e-4 * s;
+  const R = new Float64Array(16);
+  R[0] = m[0] / lx; R[1] = m[1] / lx; R[2] = m[2] / lx;
+  R[4] = m[4] / ly; R[5] = m[5] / ly; R[6] = m[6] / ly;
+  R[8] = m[8] / lz; R[9] = m[9] / lz; R[10] = m[10] / lz;
+  R[15] = 1;
+  return { position: [m[12], m[13], m[14]], rotation: quatFromMatrix(R), scale: s, uniform };
+}
+
+/** pageRigTRS as a column-major matrix (the pick ray and the tests read it this way). */
+export function pageRigMatrix(M, flipY = true) {
+  const t = pageRigTRS(M, flipY);
+  const out = poseMatrix(t.position, t.rotation);
+  for (let i = 0; i < 12; i++) if (i % 4 !== 3) out[i] *= t.scale;
+  return out;
+}
+
+/**
+ * The page camera's view axis in MODEL space: its position and unit forward (−Z of the matrix),
+ * plus the matrix's uniform scale (model units per page unit).
+ */
+export function pageViewAxis(M) {
+  const s = Math.cbrt(Math.hypot(M[0], M[1], M[2]) * Math.hypot(M[4], M[5], M[6]) * Math.hypot(M[8], M[9], M[10]));
+  const fl = Math.hypot(M[8], M[9], M[10]) || 1;
+  return { origin: [M[12], M[13], M[14]], forward: [-M[8] / fl, -M[9] / fl, -M[10] / fl], scale: s };
+}
+
+/**
+ * The attach-pattern camera rig for controls:'page' — the auto-3D shim's buildRig, field for
+ * field: identity pose, the page's vertical FOV, convergence d, metersToVirtual = depth · d / 0.5
+ * (so comfort = ipd × m2v × (1/d) × 0.5 = depth by construction).
+ */
+export function pageViewRig({ verticalFovDeg, convergence, comfortDepth, ipdFactor = 1, parallaxFactor = 1 }, out = {}) {
+  const d = Math.max(1e-6, convergence);
+  return cameraRigFromPose(
+    { fov: verticalFovDeg },
+    { attach: true, convergence: d, ipdFactor, parallaxFactor, metersToVirtual: (comfortDepth * d) / 0.5, out },
+  );
+}
+
+/**
  * SceneViewer.fitTo's scale, as a function. Same arithmetic, same order, same clamps — see the
  * reasoning there (swept width, 'height' guard, depth backstop).
  */
@@ -536,8 +605,15 @@ export class PlayCanvasSplatViewer {
       nearClip,
       farClip,
       sky = false,
+      pageCamera = false,
     } = opts;
     this.canvas = canvas;
+    // controls:'page': the PAGE owns the camera (setPageCamera). No orbit, no idle, no fit; the
+    // rig node carries the page's matrix instead of the inverse pivot.
+    this.pageCamera = pageCamera === true;
+    this.page = this.pageCamera
+      ? { matrix: poseMatrix([0, 0, 0], [0, 0, 0, 1]), fov: MONO_FOV, near: MONO_NEAR, far: CAPTURE_FAR, set: false }
+      : null;
     // The engine draws a sky box whenever the scene has something to draw it from — and
     // `scene.envAtlas` counts: a page that sets one to light its own meshes under
     // handle.engine.root got a grey gradient box behind the splat the instant the splat was
@@ -568,7 +644,7 @@ export class PlayCanvasSplatViewer {
     this.fitSweep = fitSweep;
     this.renderScale = renderScale;
     this.pitchLimit = pitchLimit;
-    this.idleSpin = idleSpin;
+    this.idleSpin = this.pageCamera ? 0 : idleSpin;
     this.flipY = opts.flipY !== false;
 
     this._fitScale = 1;
@@ -587,6 +663,8 @@ export class PlayCanvasSplatViewer {
     this._focusSettled = true;
     this.onFocusChange = null;
     this.onTick = null;
+    /** controls:'page' — `(views|null) => void`, run once per frame before anything else. */
+    this._beforeFrame = null;
     this._lastInput = now();
     this._lastTick = 0;
     this._monoRaf = 0;
@@ -608,6 +686,13 @@ export class PlayCanvasSplatViewer {
       proj: new Float64Array(16),
       capture: null, // intrinsics when on a camera rig
     };
+    if (this.pageCamera) {
+      // The mono camera IS the page camera: identity under the rig node, the page's lens.
+      this.mono.fov = this.page.fov;
+      this.mono.near = this.page.near;
+      this.mono.far = this.page.far;
+      this.mono.pose = poseMatrix([0, 0, 0], [0, 0, 0, 1]);
+    }
     this._placeMonoForFit();
 
     // Engine objects — null until attachEngine().
@@ -635,7 +720,7 @@ export class PlayCanvasSplatViewer {
     if (this._ro) this._ro.observe(canvas);
     else if (typeof addEventListener === 'function') addEventListener('resize', this._onResize);
 
-    if (orbit) this._bindOrbit();
+    if (orbit && !this.pageCamera) this._bindOrbit();
     this._resize();
 
     this.onFrame = this.onFrame.bind(this);
@@ -658,6 +743,7 @@ export class PlayCanvasSplatViewer {
   }
 
   fitTo(center, extent) {
+    if (this.pageCamera) return; // the page frames its own camera
     const c = Array.isArray(center) ? center : [center.x, center.y, center.z];
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
     this.setFocus(c, { snap: true });
@@ -677,6 +763,7 @@ export class PlayCanvasSplatViewer {
   }
 
   setPose({ yaw, pitch, zoom, depthOffset } = {}) {
+    if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
     // A snap, as on SceneViewer; it also ends an orbit relax (the page is driving now).
     if (yaw !== undefined || pitch !== undefined) this._orbitMode = null;
     if (yaw !== undefined) this._targetYaw = this._yaw = yaw;
@@ -698,6 +785,7 @@ export class PlayCanvasSplatViewer {
   }
 
   resetPose() {
+    if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
     this.setPose({ yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
     this._lastInput = now();
   }
@@ -744,8 +832,40 @@ export class PlayCanvasSplatViewer {
     return { x: v.x, y: v.y, z: v.z };
   }
 
+  /**
+   * controls:'page' — take the page's camera for the next frame drawn (last call wins; no call
+   * keeps the last pose). `pose` is normalizeCameraPose()'s output. The rig node is written here
+   * and by the tick, through _applyTransform (still its only writer).
+   */
+  setPageCamera(pose) {
+    if (!this.pageCamera) throw new Error("setPageCamera needs controls:'page'");
+    const p = this.page;
+    p.matrix.set(pose.matrixWorld);
+    p.set = true;
+    if (pose.verticalFovDeg !== p.fov || pose.near !== p.near || pose.far !== p.far) {
+      p.fov = pose.verticalFovDeg;
+      p.near = pose.near;
+      p.far = pose.far;
+      this.mono.fov = p.fov;
+      this.mono.near = p.near;
+      this.mono.far = p.far;
+      this._updateMonoProjection();
+    }
+    this._applyTransform();
+  }
+
+  /**
+   * The rig node's matrix (eye space → content space): the inverse pivot on the viewer's own
+   * controls, F · matrixWorld on controls:'page'.
+   */
+  rigMatrix() {
+    if (this.pageCamera) return pageRigMatrix(this.page.matrix, this.flipY);
+    return mat4Invert(pivotMatrix(this.pivotState()));
+  }
+
   /** Pose + lens the mono camera as the recording camera (applyCaptureCamera's counterpart). */
   useCaptureCamera(rig) {
+    if (this.pageCamera) return; // the page's lens, not the recording's
     const pose = capturePose(rig.rest, this.flipY);
     this.mono.pose = pose.matrix;
     this.mono.capture = rig.intrinsics;
@@ -763,6 +883,7 @@ export class PlayCanvasSplatViewer {
 
   /** Back to the display rig's mono camera (setSource from a photo lift to an object). */
   useDisplayCamera() {
+    if (this.pageCamera) return;
     this.mono.capture = null;
     this.mono.fov = MONO_FOV;
     this.mono.far = MONO_FAR;
@@ -779,6 +900,8 @@ export class PlayCanvasSplatViewer {
   onFrame(views, layer) {
     if (this._disposed) return;
     if (this._mode !== '3d') this.stopMono();
+    // BEFORE the tick: a pose the page sets in here is the one this very frame renders.
+    this._beforeFrame?.(views || null);
     this._tick();
     if (!views || views.length < 2) {
       this._replayLastGood();
@@ -805,6 +928,8 @@ export class PlayCanvasSplatViewer {
     const loop = () => {
       if (this._disposed) return;
       this._monoRaf = requestAnimationFrame(loop);
+      this._beforeFrame?.(null);
+      if (this._disposed || this._mode !== 'mono') return; // the callback removed or re-wove us
       this._tick();
       this._drawMono();
     };
@@ -1092,7 +1217,7 @@ export class PlayCanvasSplatViewer {
 
   _placeMonoForFit() {
     // SceneViewer.fitTo: distance to make the frustum exactly vH tall at z = 0, looking down −z.
-    if (this.mono.capture) return;
+    if (this.mono.capture || this.pageCamera) return;
     const d = (0.5 * this.vH) / Math.tan((this.mono.fov * DEG) / 2);
     this.mono.pose = poseMatrix([0, 0, d], [0, 0, 0, 1]);
   }
@@ -1134,7 +1259,14 @@ export class PlayCanvasSplatViewer {
     const el = this.canvas;
     const sx = cache && cache.bufW > 0 && el.width ? el.width / cache.bufW : 1;
     const sy = cache && cache.bufH > 0 && el.height ? el.height / cache.bufH : 1;
-    if (this.nearClip !== null || this.farClip !== null) {
+    if (this.pageCamera) {
+      // The page's near/far join the caller's nearClip/farClip as a floor and a cap: only the
+      // depth mapping moves, the runtime's frustum (fov, skew, principal point) stays untouched.
+      const p = this.page;
+      const nf = this.nearClip !== null ? Math.max(this.nearClip, p.near) : p.near;
+      const fc = this.farClip !== null ? Math.min(this.farClip, p.far) : p.far;
+      for (const e of entries) clampProjectionDepth(e.proj, nf, fc);
+    } else if (this.nearClip !== null || this.farClip !== null) {
       for (const e of entries) clampProjectionDepth(e.proj, this.nearClip, this.farClip);
     }
     const rect = (e) =>
@@ -1344,7 +1476,7 @@ export class PlayCanvasSplatViewer {
    */
   _applyTransform() {
     if (!this.rigNode) return;
-    const trs = pivotInverseTRS(this.pivotState());
+    const trs = this.pageCamera ? pageRigTRS(this.page.matrix, this.flipY) : pivotInverseTRS(this.pivotState());
     this.rigNode.setLocalPosition(trs.position[0], trs.position[1], trs.position[2]);
     this.rigNode.setLocalRotation(trs.rotation[0], trs.rotation[1], trs.rotation[2], trs.rotation[3]);
     this.rigNode.setLocalScale(trs.scale, trs.scale, trs.scale);
@@ -1736,8 +1868,22 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // `sortIntervalMs` is accepted and has no effect here: the engine re-sorts when the camera
   // ROTATES (one directional sort serves every view), not on a timer — docs/playcanvas-adapter.md.
 
+  // controls:'page' — validated again here (./splat already did, at call time) because a test or
+  // an advanced caller may reach this function directly.
+  const ctl = resolveControls(opts);
+  const pageMode = ctl.page;
+  if (pageMode && ctl.ignored.length) {
+    console.info(
+      `[inline3d/splat] controls:'page' — the page owns the camera, so ${ctl.ignored.join(', ')} ` +
+        `${ctl.ignored.length === 1 ? 'is' : 'are'} ignored.`,
+    );
+  }
+  // The rig question is answered by the page: its camera IS the rig.
+  const rigOpts = pageMode ? { ...opts, rig: 'camera' } : opts;
+
   const perfResolved = playcanvasPerfSettings(perf);
   const viewer = new PlayCanvasSplatViewer(canvas, {
+    pageCamera: pageMode,
     virtualDisplayHeight,
     fit,
     margin,
@@ -1773,13 +1919,49 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     perf: perfResolved.applied,
     setPose: (p) => viewer.setPose(p),
     resetPose: () => viewer.resetPose(),
+    /**
+     * controls:'page' — the page's camera for the next frame drawn. See normalizeCameraPose for
+     * the arguments; last call wins; a page that stops calling keeps its last pose.
+     */
+    setCameraPose(matrixWorld, o) {
+      if (!pageMode) {
+        throw new Error(
+          "@displayxr/inline3d/splat: setCameraPose() needs addSplat(…, { controls:'page' }) — " +
+            'with the default controls the SDK owns the camera (use setPose).',
+        );
+      }
+      const pose = normalizeCameraPose(matrixWorld, o);
+      if (!warnedNonUniform && !pageRigTRS(pose.matrixWorld, flipY).uniform) {
+        warnedNonUniform = true;
+        console.warn(
+          "[inline3d/splat] controls:'page' — matrixWorld has a NON-uniform scale; the adapter uses " +
+            'its geometric mean. A camera pose is rotation + translation + at most a uniform scale.',
+        );
+      }
+      lastPagePose = pose;
+      viewer.setPageCamera(pose);
+      return out;
+    },
+    /** The last pose the page set (a copy), or null before the first setCameraPose. */
+    getCameraPose() {
+      if (!lastPagePose) return null;
+      return {
+        matrixWorld: Float32Array.from(lastPagePose.matrixWorld),
+        verticalFovDeg: lastPagePose.verticalFovDeg,
+        near: lastPagePose.near,
+        far: lastPagePose.far,
+        convergence: lastPagePose.convergence,
+      };
+    },
     getFocus: (o) => {
+      if (pageMode) return pageFocusPoint();
       // In MODEL space, like setFocus takes it.
       const f = viewer.getFocus(o);
       return contentToModel([f.x, f.y, f.z]);
     },
     setFocus(point, o = {}) {
       if (!out.mesh || !out.rig) return out;
+      if (pageMode) return pageSetFocus(point, o);
       const model = point == null ? out.rig.focusDefault : toArray3(point);
       out.rig.focus = model;
       out.rig.focusSource = point == null ? out.rig.focusDefaultSource : 'set';
@@ -1815,9 +1997,21 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     return flipY ? [c[0], -c[1], -c[2]] : [c[0], c[1], c[2]];
   }
 
+  // ── controls:'page' state (null/unused on the viewer's own controls) ──
+  let lastPagePose = null; // what the page last handed setCameraPose, validated
+  let warnedNonUniform = false;
+  // The convergence the adapter owns when the page gives none, in MODEL units (so it is stable
+  // while the camera moves): the waterfall's on load / setSource, a setFocus after that. Eased
+  // toward `target` at the viewer's FOCUS_EASE unless snapped.
+  const pageFocus = { d: Number.NaN, target: Number.NaN, fired: Number.NaN, source: null };
+
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {
-      virtualDisplayHeight,
+      // controls:'page' starts on a camera rig (attach, provisional FOV/convergence until the page
+      // and the waterfall say otherwise); the display rig's height means nothing there.
+      ...(pageMode
+        ? { viewRig: pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth }) }
+        : { virtualDisplayHeight }),
       onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
@@ -1841,9 +2035,100 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     out[name]?.(...args);
   }
 
+  // ── controls:'page': focus = the convergence point on the page camera's view axis ──
+  /** The convergence distance for THIS frame, in page units, and where it came from. */
+  function pageConvergence() {
+    const ax = pageViewAxis(viewer.page.matrix);
+    if (lastPagePose && lastPagePose.convergence !== null) {
+      return { d: lastPagePose.convergence, ax, source: 'page' };
+    }
+    const dm = Number.isFinite(pageFocus.d) ? pageFocus.d : 2;
+    return { d: dm / (ax.scale || 1), ax, source: out.rig?.focusSource ?? 'default' };
+  }
+  function pageFocusPoint() {
+    if (!out.rig) return null;
+    const { d, ax } = pageConvergence();
+    const dm = d * ax.scale;
+    return [ax.origin[0] + ax.forward[0] * dm, ax.origin[1] + ax.forward[1] * dm, ax.origin[2] + ax.forward[2] * dm];
+  }
+  function pageSetFocus(point, { snap = false } = {}) {
+    let dm;
+    if (point == null) {
+      dm = out.rig.convergenceDefault;
+      out.rig.focus = out.rig.focusDefault;
+      out.rig.focusSource = out.rig.focusDefaultSource;
+    } else {
+      const m = toArray3(point);
+      const ax = pageViewAxis(viewer.page.matrix);
+      dm = (m[0] - ax.origin[0]) * ax.forward[0] + (m[1] - ax.origin[1]) * ax.forward[1] + (m[2] - ax.origin[2]) * ax.forward[2];
+      if (!(dm > 0)) {
+        console.warn('[inline3d/splat] setFocus: that point is behind the page camera — focus unchanged');
+        return out;
+      }
+      out.rig.focus = m;
+      out.rig.focusSource = 'set';
+    }
+    pageFocus.target = dm;
+    if (snap || !Number.isFinite(pageFocus.d)) pageFocus.d = dm;
+    return out;
+  }
+  /** Per tick (before the draw, so the rig drives the next locate): ease, declare, notify. */
+  function pageTick() {
+    if (Number.isFinite(pageFocus.target) && pageFocus.d !== pageFocus.target) {
+      const dd = pageFocus.target - pageFocus.d;
+      pageFocus.d = Math.abs(dd) < 1e-6 ? pageFocus.target : pageFocus.d + dd * FOCUS_EASE;
+    }
+    const { d, source } = pageConvergence();
+    out.viewRig = pageViewRig(
+      {
+        verticalFovDeg: viewer.page.fov,
+        convergence: d,
+        comfortDepth: ctl.comfortDepth,
+        ipdFactor: out.rig ? out.rig.ipdFactor : Number.isFinite(opts.ipdFactor) ? opts.ipdFactor : 1,
+        parallaxFactor: out.rig ? out.rig.parallaxFactor : Number.isFinite(opts.parallaxFactor) ? opts.parallaxFactor : 1,
+      },
+      out.viewRig || {},
+    );
+    handle?.setViewRig?.(out.viewRig);
+    if (!out.rig) return;
+    out.rig.convergence = d;
+    if (Math.abs(d - pageFocus.fired) > 1e-3 || source !== pageFocus.source) {
+      pageFocus.fired = d;
+      pageFocus.source = source;
+      const cb = out.onFocusChange;
+      if (typeof cb === 'function') cb(pageFocusPoint(), { focusSource: source });
+    }
+  }
+  if (pageMode) viewer.onTick = pageTick;
+
+  // onBeforeFrame: the page's game step INSIDE this adapter's frame, before the tick and the
+  // draw — so a setCameraPose made in it is what this frame renders (zero lag, the attach
+  // pattern). The session rAF (3D) and the window rAF have no guaranteed order, so a pose set
+  // from the page's own rAF may be one frame late. A throw is the page's bug: warned once, and
+  // the frame still renders (with whatever pose it had).
+  if (pageMode && typeof opts.onBeforeFrame === 'function') {
+    const cb = opts.onBeforeFrame;
+    let lastT = 0;
+    let warned = false;
+    viewer._beforeFrame = (views) => {
+      const t = now();
+      const dt = lastT ? Math.min((t - lastT) / 1000, MAX_DT_S) : 0;
+      lastT = t;
+      try {
+        cb({ time: t, views, dt });
+      } catch (err) {
+        if (!warned) {
+          warned = true;
+          console.warn('[inline3d/splat] onBeforeFrame threw (warned once; frames keep rendering)', err);
+        }
+      }
+    };
+  }
+
   // ── focus → view rig ──
   let lastConvergence = Number.NaN;
   function pushViewRig(force) {
+    if (pageMode) return; // pageTick declares the rig every frame
     if (!out.rig || out.rig.type !== 'camera') return;
     const pose = viewer.mono.pose;
     const f = viewer.getFocus();
@@ -1905,8 +2190,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const v = viewer.currentView();
     const invP = mat4Invert(v.proj);
     if (!invP) return null;
-    const Minv = mat4Invert(pivotMatrix(viewer.pivotState()));
-    const toContent = mat4Mul(Minv, v.pose);
+    const toContent = mat4Mul(viewer.rigMatrix(), v.pose);
     const a = transformPoint(invP, ndc.x, ndc.y, -1);
     const b = transformPoint(invP, ndc.x, ndc.y, 1);
     const o = contentToModel(transformPoint(toContent, a[0], a[1], a[2]));
@@ -1953,7 +2237,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
 
   function bindFocusInput() {
-    if (focusInput === false || unbindFocusInput) return;
+    // controls:'page' binds no input at all: gestures are the page's (pick + setFocus remain).
+    if (pageMode || focusInput === false || unbindFocusInput) return;
     unbindFocusInput = bindFocusGestures(canvas, {
       onDoubleClick: (e) => {
         const m = pickModel(e.clientX, e.clientY);
@@ -1993,7 +2278,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // The camera block off the SAME bytes, before the engine takes them (as the Spark path).
     let camera = null;
     let t0 = performance.now();
-    if (bytes && rig !== 'display') camera = sogCameraFromMeta(await readSogMeta(bytes));
+    if (bytes && rigOpts.rig !== 'display') camera = sogCameraFromMeta(await readSogMeta(bytes));
     perfSpan('readSogMeta(async)', t0);
 
     const url = bytes
@@ -2017,7 +2302,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const desc = describeResource(res);
     // A URL `.sog` carries its meta in the resource (the engine keeps unknown keys); a Streamed
     // SOG carries it at the top level of lod-meta.json. Both validated by the same reader.
-    if (!bytes && rig !== 'display') camera = sogCameraFromMeta(desc.meta);
+    if (!bytes && rigOpts.rig !== 'display') camera = sogCameraFromMeta(desc.meta);
     const cloud = desc.kind === 'flat' ? await readCloud(res) : null;
     // The cloud passes, each in its OWN task: framing, the rest-space sample and the pick set
     // were one ~60 ms main-thread block on a 1.18M-gaussian swap — pointer input waited on it.
@@ -2071,7 +2356,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const box = canvas.getBoundingClientRect();
     const resolved = resolveRig({
       camera: loaded.camera,
-      opts,
+      opts: rigOpts,
       cloud: sample,
       canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
     });
@@ -2092,7 +2377,23 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // The strided pick fallback (used only if the engine releases its full centre set).
     const pickCentres = loaded.pre?.pickCentres || null;
 
-    if (resolved.type === 'camera') {
+    if (pageMode) {
+      // The page owns the pose; the waterfall only supplies the convergence (re-estimated here,
+      // on load and on setSource, never per frame). Until the page's first setCameraPose the
+      // camera sits at the asset's rest pose (the block's, else the origin looking down +z) with
+      // the resolved lens, so the first frame is not an empty tile.
+      resolved.convergenceDefault = resolved.convergence;
+      pageFocus.target = pageFocus.d = resolved.convergence;
+      pageFocus.fired = Number.NaN;
+      if (!lastPagePose) {
+        const r = resolved.rest;
+        viewer.setPageCamera(
+          normalizeCameraPose(poseMatrix(r.position, qmul(r.rotation, FLIP_Q)), {
+            verticalFovDeg: captureVerticalFovDeg(resolved.intrinsics, NaN, MONO_NEAR, 'height'),
+          }),
+        );
+      }
+    } else if (resolved.type === 'camera') {
       if (!('idleSpin' in opts)) viewer.idleSpin = 0;
       // The camera rig never auto-fits (the capture IS the framing): a scale left by a previous
       // display-rig asset (setSource) must not shrink this one.
@@ -2184,7 +2485,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     };
     const kept = applyLoaded(loaded);
     current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
-    if (resetPose) viewer.resetPose();
+    if (resetPose && !pageMode) viewer.resetPose(); // the page owns the pose on controls:'page'
 
     const release = () => {
       if (!prev) return;

@@ -34,6 +34,8 @@ import {
   playcanvasCannotRead,
   isStreamedUrl,
   STREAMED_NEEDS_PLAYCANVAS,
+  resolveControls,
+  normalizeCameraPose,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -163,6 +165,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
         `${CAPTURE_FITS.map((f) => `'${f}'`).join(' or ')}.`,
     );
   }
+  // WHO OWNS THE CAMERA. Validated here, synchronously, for both engines (an unknown `controls`
+  // or a comfortDepth out of range is a page bug true of every call).
+  const { page: pageControls } = resolveControls(opts);
   // WHICH ENGINE. Unset (or 'spark') is everything below, untouched. 'playcanvas' goes to
   // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
   // resolves `playcanvas` — see addSplatDeferred.
@@ -172,6 +177,16 @@ export function addSplat(wall, canvas, src, opts = {}) {
     const why = playcanvasCannotRead(src, opts);
     if (why) throw new Error(`@displayxr/inline3d/splat: ${why}`);
     return addSplatDeferred(wall, canvas, src, opts);
+  }
+
+  // controls:'page' is a PlayCanvas-backend feature (docs/playcanvas-adapter.md §controls:'page'):
+  // on Spark it would need SceneViewer — which ./viewer and ./model share — to take an external
+  // camera in both its mono and eye paths. Refused by name rather than half-supported.
+  if (pageControls) {
+    throw new Error(
+      "@displayxr/inline3d/splat: controls:'page' is not supported on Spark (the default engine) — " +
+        "pass engine:'playcanvas'. Spark's viewer owns its camera; see docs/playcanvas-adapter.md.",
+    );
   }
 
   // A Streamed SOG on Spark is a page bug (Spark has no lod-meta.json reader): say so now, by
@@ -336,6 +351,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
     },
     /** Called with the live focus, in the splat's own space, whenever it moves. */
     onFocusChange: null,
+    /** Not on this backend: controls:'page' is a PlayCanvas-backend feature. */
+    setCameraPose() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setCameraPose() needs addSplat(…, { engine:'playcanvas', controls:'page' }).",
+      );
+    },
+    getCameraPose: () => null,
     /** Not on this backend: the crossfading asset swap is a PlayCanvas-backend feature. */
     setSource() {
       throw new Error(
@@ -622,6 +644,16 @@ function addSplatDeferred(wall, canvas, src, opts) {
     pending.push([name, args]);
     return name === 'setFocus' ? out : undefined;
   };
+  const page = opts.controls === 'page';
+  const pageOnly = (name) => () => {
+    throw new Error(
+      `@displayxr/inline3d/splat: ${name}() is not available with controls:'page' — the page owns the ` +
+        'camera. Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).',
+    );
+  };
+  // Before the adapter lands, a page calling setCameraPose every frame keeps ONE pending pose
+  // (validated now, so a bad call throws at its own line): last call wins, as it will after.
+  let pendingPose = null;
   const out = {
     backend: 'playcanvas',
     engine: null,
@@ -631,8 +663,30 @@ function addSplatDeferred(wall, canvas, src, opts) {
     camera: null,
     rig: null,
     perf: null,
-    setPose: queue('setPose'),
-    resetPose: queue('resetPose'),
+    setPose: page ? pageOnly('setPose') : queue('setPose'),
+    resetPose: page ? pageOnly('resetPose') : queue('resetPose'),
+    setCameraPose(matrixWorld, o) {
+      if (!page) {
+        throw new Error(
+          "@displayxr/inline3d/splat: setCameraPose() needs addSplat(…, { controls:'page' }) — " +
+            'with the default controls the SDK owns the camera (use setPose).',
+        );
+      }
+      const pose = normalizeCameraPose(matrixWorld, o);
+      if (pendingPose) pendingPose[1] = [pose.matrixWorld, pose];
+      else pending.push((pendingPose = ['setCameraPose', [pose.matrixWorld, pose]]));
+      return out;
+    },
+    getCameraPose: () =>
+      pendingPose
+        ? {
+            matrixWorld: Float32Array.from(pendingPose[1][1].matrixWorld),
+            verticalFovDeg: pendingPose[1][1].verticalFovDeg,
+            near: pendingPose[1][1].near,
+            far: pendingPose[1][1].far,
+            convergence: pendingPose[1][1].convergence,
+          }
+        : null,
     setFocus: queue('setFocus'),
     // A swap requested before the first asset has landed runs once it has (the adapter's own
     // setSource replaces this stub on the same object by then).
