@@ -1,12 +1,17 @@
 {
   "manifest_version": 3,
   "name": "DisplayXR auto-3D for three.js (prototype)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Turns existing three.js pages into woven glasses-free 3D in the DisplayXR Browser, with no change to the page. Prototype, not a product.",
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "core.js",
+        "three-adapter.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
