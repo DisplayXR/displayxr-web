@@ -24,6 +24,7 @@ import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
+import { toArray3, canvasNdc, bindFocusGestures } from './inline3d-splat-shared.js';
 import {
   resolveRig,
   planeDistance,
@@ -392,15 +393,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
   function pickPoint(clientX, clientY) {
     const mesh = out.mesh;
     if (!mesh) return null;
-    const box = canvas.getBoundingClientRect();
-    if (!(box.width > 0) || !(box.height > 0)) return null;
-    // NDC from the CSS box. On a woven canvas the backing store is double-width and each eye
-    // owns half of it, but what the VIEWER sees is one image filling the box, so the box is the
-    // right frame to pick in; the eye camera supplies the parallax-correct ray.
-    const ndc = {
-      x: ((clientX - box.left) / box.width) * 2 - 1,
-      y: -(((clientY - box.top) / box.height) * 2 - 1),
-    };
+    // NDC from the CSS box (./inline3d-splat-shared.js says why the box and not the store).
+    const ndc = canvasNdc(canvas, clientX, clientY);
+    if (!ndc) return null;
     const cam = (viewer.is3D && viewer._eye?.camera) || viewer.monoCamera;
     if (!raycaster) raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(ndc, cam);
@@ -422,46 +417,27 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // ── input ─────────────────────────────────────────────────────────────────────────────
   let unbindFocusInput = null;
   function bindFocusInput() {
-    if (focusInput === false || unbindFocusInput || typeof canvas.addEventListener !== 'function') {
-      return;
-    }
-    let hovering = false;
-    const onEnter = () => {
-      hovering = true;
-    };
-    const onLeave = () => {
-      hovering = false;
-    };
-    const onDblClick = (e) => {
-      const world = pickPoint(e.clientX, e.clientY);
-      if (!world) return;
-      e.preventDefault();
-      out.mesh.updateWorldMatrix(true, false);
-      out.rig.focus = toArray3(out.mesh.worldToLocal(world.clone()));
-      out.rig.focusSource = 'picked';
-      out.rig.convergence = planeDistance(out.rig.rest, out.rig.focus);
-      viewer.content.updateWorldMatrix(true, false);
-      viewer.setFocus(toArray3(viewer.content.worldToLocal(world.clone())));
-    };
-    const onKeyDown = (e) => {
-      // Scoped to this window on purpose: a page with four splat tiles must not have one key
-      // reset all four. Hover OR focus, so it works with a pointer and with a keyboard.
-      if (e.code !== 'Space' && e.key !== ' ') return;
-      if (!hovering && document.activeElement !== canvas) return;
-      e.preventDefault();
-      out.setFocus(null);
-    };
-    canvas.addEventListener('pointerenter', onEnter);
-    canvas.addEventListener('pointerleave', onLeave);
-    canvas.addEventListener('dblclick', onDblClick);
-    addEventListener('keydown', onKeyDown);
-    unbindFocusInput = () => {
-      canvas.removeEventListener('pointerenter', onEnter);
-      canvas.removeEventListener('pointerleave', onLeave);
-      canvas.removeEventListener('dblclick', onDblClick);
-      removeEventListener('keydown', onKeyDown);
-      unbindFocusInput = null;
-    };
+    if (focusInput === false || unbindFocusInput) return;
+    const off = bindFocusGestures(canvas, {
+      onDoubleClick: (e) => {
+        const world = pickPoint(e.clientX, e.clientY);
+        if (!world) return false;
+        out.mesh.updateWorldMatrix(true, false);
+        out.rig.focus = toArray3(out.mesh.worldToLocal(world.clone()));
+        out.rig.focusSource = 'picked';
+        out.rig.convergence = planeDistance(out.rig.rest, out.rig.focus);
+        viewer.content.updateWorldMatrix(true, false);
+        viewer.setFocus(toArray3(viewer.content.worldToLocal(world.clone())));
+        return true;
+      },
+      onReset: () => out.setFocus(null),
+    });
+    unbindFocusInput =
+      off &&
+      (() => {
+        off();
+        unbindFocusInput = null;
+      });
   }
 
   // Await the MESH first, then its load. Reading `mesh.initialized` here directly would
@@ -594,15 +570,19 @@ function addSplatDeferred(wall, canvas, src, opts) {
     resetPose: queue('resetPose'),
     setFocus: queue('setFocus'),
     getFocus: () => null,
+    // A plain data slot the adapter reads at call time, so a callback assigned on the very next
+    // line after addSplat — before the module has loaded — is the one that fires.
+    onFocusChange: null,
     pick: () => null,
     remove: queue('remove'),
     exclude: queue('exclude'),
     unexclude: queue('unexclude'),
   };
+  // The ONE owner of `ready`: the adapter returns its load promise and never touches this field.
   out.ready = import('./inline3d-splat-playcanvas.js')
-    .then((m) => m.attachPlayCanvasSplat(out, wall, canvas, src, opts, pending).ready)
+    .then((m) => m.attachPlayCanvasSplat(out, wall, canvas, src, opts, pending))
     .catch((err) => {
-      if (!out.viewer) console.warn('[inline3d/splat] engine:playcanvas failed to start', err);
+      console.warn('[inline3d/splat] failed to load (engine:playcanvas)', src, err);
       throw err;
     });
   return out;
@@ -724,11 +704,6 @@ function sparkCentres(mesh) {
     mesh.forEachSplat((index, center, scales, quaternion, opacity) =>
       visit(index, center.x, center.y, center.z, opacity),
     );
-}
-
-/** [x,y,z] out of anything vector-shaped. */
-function toArray3(v) {
-  return Array.isArray(v) ? [v[0], v[1], v[2]] : [v.x, v.y, v.z];
 }
 
 /** A point in the splat's own (model) space, in the viewer's CONTENT space. */

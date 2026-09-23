@@ -44,6 +44,7 @@
     "js/inline3d-splat-perf.js",
     "js/inline3d-splat-rig.js",
     "js/inline3d-splat-playcanvas.js",
+    "js/inline3d-splat-shared.js",
     "js/inline3d-model.js",
     "index.d.ts",
     "three.d.ts",

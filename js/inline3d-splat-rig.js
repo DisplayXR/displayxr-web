@@ -417,11 +417,13 @@ export function sampleCloudRestSpace(total, forEachCentre, rest) {
  *
  * @param {number} total
  * @param {(visit: Function) => void} forEachCentre
+ * @param {{cap?: number}} [o]  sample-size cap (default FRAME_SAMPLE_CAP; the pick set uses
+ *        RIG_SAMPLE_CAP).
  * @returns {Float32Array|null}
  */
-export function sampleCloudCentres(total, forEachCentre) {
+export function sampleCloudCentres(total, forEachCentre, { cap = FRAME_SAMPLE_CAP } = {}) {
   if (!total || typeof forEachCentre !== 'function') return null;
-  const stride = Math.max(1, Math.ceil(total / FRAME_SAMPLE_CAP));
+  const stride = Math.max(1, Math.ceil(total / cap));
   const xyz = new Float32Array(Math.ceil(total / stride) * 3);
   let k = 0;
   forEachCentre((index, x, y, z, opacity) => {
