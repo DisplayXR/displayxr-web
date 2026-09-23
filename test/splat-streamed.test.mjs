@@ -334,14 +334,24 @@ test('describeResource frames a Streamed SOG from its leaf boxes, not the floate
   assert.deepEqual(d.rootBounds.extent, [480, 480, 480]);
 });
 
-test("engine:'spark' refuses a Streamed SOG URL by name, before Spark sees it (source check + message)", async () => {
+test("engine:'spark' refuses a Streamed SOG URL by name, synchronously, before Spark sees it", async () => {
   const { STREAMED_NEEDS_PLAYCANVAS, isStreamedUrl: sharedIsStreamed } = await import('../js/inline3d-splat-shared.js');
   assert.equal(sharedIsStreamed, isStreamedUrl, 'one definition, shared by both engines');
-  assert.match(STREAMED_NEEDS_PLAYCANVAS, /only engine:'playcanvas' can read/);
+  assert.match(STREAMED_NEEDS_PLAYCANVAS, /read only by engine:'playcanvas'/);
   const fs = await import('node:fs');
   const splat = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
-  const body = splat.slice(splat.indexOf('const meshReady = (async () => {'));
-  const refuse = body.indexOf('if (isStreamedUrl(src)) throw new Error(STREAMED_NEEDS_PLAYCANVAS);');
-  assert.ok(refuse > 0, 'the Spark load refuses a streamed URL');
+  const body = splat.slice(splat.indexOf('export function addSplat('));
+  const refuse = body.indexOf('if (isStreamedUrl(src)) throw new Error(');
+  assert.ok(refuse > 0, 'the Spark branch refuses a streamed URL');
+  assert.ok(refuse > body.indexOf("resolveSplatEngine(opts) === 'playcanvas'"), 'after the PlayCanvas branch returned');
   assert.ok(refuse < body.indexOf('new SplatMesh('), 'before Spark is handed the URL');
+});
+
+test('./splat refuses lod-meta BYTES at call time on the PlayCanvas engine (playcanvasCannotRead)', async () => {
+  const { playcanvasCannotRead } = await import('../js/inline3d-splat-shared.js');
+  const lod = enc('{"version":1,"lodLevels":3,"filenames":["0_0/meta.json"],"tree":{}}');
+  assert.match(playcanvasCannotRead(lod), /cannot be passed as bytes/);
+  assert.match(playcanvasCannotRead(lod.buffer), /cannot be passed as bytes/, 'an ArrayBuffer too');
+  assert.equal(playcanvasCannotRead('https://cdn/x/v1/'), null, 'a directory URL is accepted');
+  assert.equal(playcanvasCannotRead('https://cdn/x/v1/lod-meta.json'), null);
 });
