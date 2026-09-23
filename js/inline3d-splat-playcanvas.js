@@ -535,8 +535,15 @@ export class PlayCanvasSplatViewer {
       captureFit = 'height',
       nearClip,
       farClip,
+      sky = false,
     } = opts;
     this.canvas = canvas;
+    // The engine draws a sky box whenever the scene has something to draw it from — and
+    // `scene.envAtlas` counts: a page that sets one to light its own meshes under
+    // handle.engine.root got a grey gradient box behind the splat the instant the splat was
+    // hidden (mid-setSource, or a page showing only its meshes). The SDK's contract is a
+    // transparent canvas the page shows through, so the sky layer is off unless asked for.
+    this.sky = sky === true;
     // Depth range for a MIXED scene (meshes under handle.engine.root depth-test against each
     // other; splats only test against them). The projections' own near/far stay the adapter's —
     // these only raise the near (floor) and lower the far (cap). Unset: untouched.
@@ -1044,6 +1051,11 @@ export class PlayCanvasSplatViewer {
       fov: MONO_FOV,
       ...(rect ? { rect } : {}),
     });
+    // No sky unless the page asked (see the constructor): the image-based lighting a page sets
+    // still lights its meshes — only the BACKGROUND the sky layer would draw is dropped.
+    if (!this.sky && Array.isArray(e.camera.layers)) {
+      e.camera.layers = e.camera.layers.filter((id) => id !== pc.LAYERID_SKYBOX);
+    }
     // The engine's default camera tonemap is LINEAR, which routes every splat colour through
     // decodeGamma → toneMap → gammaCorrectOutput. Spark writes the stored colour straight out;
     // NONE is the same thing here (GAMMA_SRGB alone leaves a gamma-space colour untouched).
@@ -1456,6 +1468,28 @@ function placeNode(node, m) {
  * @returns {Promise<{xyz:Float32Array, opacity:Float32Array|null, total:number, stride:number,
  *          sourceTotal:number}|null>} `total` is the number of splats IN the sample.
  */
+/**
+ * A `performance.measure` named `inline3d:<name>` from `t0` to now — so a load's stages show up in
+ * DevTools' Performance panel and in `performance.getEntriesByType('measure')`. Never throws.
+ */
+/**
+ * Give the main thread back for one turn — input, rAF, the engine's own tick — before the next
+ * chunk of cloud work. `scheduler.yield()` where the browser has it (keeps our task's priority),
+ * else a macrotask.
+ */
+function yieldToMain() {
+  if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') return scheduler.yield();
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+function perfSpan(name, t0) {
+  try {
+    performance.measure?.(`inline3d:${name}`, { start: t0, end: performance.now() });
+  } catch {
+    /* no User Timing L3 here */
+  }
+}
+
 export async function readCloud(resource) {
   if (!resource) return null;
   const centers = resource.centers;
@@ -1464,19 +1498,29 @@ export async function readCloud(resource) {
   if (!centers || !sourceTotal) return null;
   const stride = Math.max(1, Math.ceil(sourceTotal / FRAME_SAMPLE_CAP));
   const total = Math.ceil(sourceTotal / stride);
+  // Not in the task that delivered the asset: the engine's own end-of-load work (its centre
+  // readback unpack) runs there, and stacking ours on it made one long task.
+  await yieldToMain();
+  let t0 = performance.now();
   const xyz = new Float32Array(total * 3);
   for (let j = 0, i = 0; j < total; j++, i += stride) {
     xyz[j * 3] = centers[i * 3];
     xyz[j * 3 + 1] = centers[i * 3 + 1];
     xyz[j * 3 + 2] = centers[i * 3 + 2];
   }
+  perfSpan('readCloud:copy', t0);
+  await yieldToMain();
   let opacity = null;
   // Full-resolution peak opacity, ONE BYTE per splat, kept for the exact pick (which walks the
   // engine's own full centre set at pick time): 1.18 MB on the 1.18M bench asset.
   let alpha8 = null;
   try {
     if (data?.isSog && data.sh0?.read) {
+      t0 = performance.now();
       const px = await data.sh0.read(0, 0, data.sh0.width, data.sh0.height, { mipLevel: 0, face: 0, immediate: true });
+      perfSpan('readCloud:sh0-readback(async)', t0);
+      await yieldToMain();
+      t0 = performance.now();
       if (px && px.length >= sourceTotal * 4) {
         const v2 = data.meta?.version === 2;
         const mn = data.meta?.sh0?.mins?.[3];
@@ -1491,6 +1535,7 @@ export async function readCloud(resource) {
         if (v2 || mn === undefined) for (let i = 0; i < sourceTotal; i++) alpha8[i] = px[i * 4 + 3];
         else for (let i = 0; i < sourceTotal; i++) alpha8[i] = Math.round(op(i) * 255);
       }
+      perfSpan('readCloud:opacity', t0);
     } else if (typeof data?.getProp === 'function') {
       const o = data.getProp('opacity');
       if (o && o.length >= sourceTotal) {
@@ -1708,6 +1753,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     captureFit,
     nearClip: opts.nearClip,
     farClip: opts.farClip,
+    sky: opts.sky,
   });
 
   let handle = null;
@@ -1946,7 +1992,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     // The camera block off the SAME bytes, before the engine takes them (as the Spark path).
     let camera = null;
+    let t0 = performance.now();
     if (bytes && rig !== 'display') camera = sogCameraFromMeta(await readSogMeta(bytes));
+    perfSpan('readSogMeta(async)', t0);
 
     const url = bytes
       ? `inline3d-bytes-${++byteSeq}-${++byteSeqLocal}.${fmt.ext}`
@@ -1958,18 +2006,42 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       : { url, filename: pathOf(url).split('/').pop() || url };
     const asset = new pc.Asset(url, 'gsplat', file);
     app.assets.add(asset);
+    t0 = performance.now();
     await new Promise((resolve, reject) => {
       asset.ready(resolve);
       asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
       app.assets.load(asset);
     });
+    perfSpan('engine-load(async)', t0);
     const res = asset.resource;
     const desc = describeResource(res);
     // A URL `.sog` carries its meta in the resource (the engine keeps unknown keys); a Streamed
     // SOG carries it at the top level of lod-meta.json. Both validated by the same reader.
     if (!bytes && rig !== 'display') camera = sogCameraFromMeta(desc.meta);
     const cloud = desc.kind === 'flat' ? await readCloud(res) : null;
-    return { asset, res, desc, camera, cloud };
+    // The cloud passes, each in its OWN task: framing, the rest-space sample and the pick set
+    // were one ~60 ms main-thread block on a 1.18M-gaussian swap — pointer input waited on it.
+    // Split with a yield between them (and a linear-time percentile in boundsFromPositions),
+    // no single step is a long task any more. Same numbers, same order.
+    const pre = { local: null, rest: null, pickCentres: null };
+    if (cloud) {
+      const walk = centresVisitor(cloud.xyz, cloud.opacity, cloud.total);
+      await yieldToMain();
+      let t = performance.now();
+      pre.local = boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []);
+      perfSpan('cloud:bounds', t);
+      await yieldToMain();
+      t = performance.now();
+      if (rigNeedsCloud(camera)) pre.rest = sampleCloudRestSpace(cloud.total, walk, camera?.rest);
+      perfSpan('cloud:rest-sample', t);
+      await yieldToMain();
+      t = performance.now();
+      const s = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
+      pre.pickCentres = s ? s.slice() : null;
+      perfSpan('cloud:pick-set', t);
+      await yieldToMain();
+    }
+    return { asset, res, desc, camera, cloud, pre };
   }
 
   /**
@@ -1978,8 +2050,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    */
   function applyLoaded(loaded) {
     const { cloud, desc } = loaded;
-    const walk = cloud ? centresVisitor(cloud.xyz, cloud.opacity, cloud.total) : null;
-    const local = walk ? boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []) : null;
+    const tB = performance.now();
+    const local = loaded.pre?.local || null;
     const lift = (b) => ({ center: modelToContent(b.center), extent: b.extent.slice(0, 3) });
     // Measured first — the Spark path's order (a supplied frame is only a fallback there too).
     // A Streamed SOG has no cloud: there a caller's `frame` beats the octree-derived bounds
@@ -1995,12 +2067,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             ? lift(frame)
             : null;
 
-    const sample =
-      !rigNeedsCloud(loaded.camera)
-        ? null
-        : walk
-          ? sampleCloudRestSpace(cloud.total, walk, loaded.camera?.rest)
-          : null;
+    const sample = loaded.pre?.rest || null;
     const box = canvas.getBoundingClientRect();
     const resolved = resolveRig({
       camera: loaded.camera,
@@ -2010,6 +2077,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
     resolved.focusDefault = resolved.focus.slice();
     resolved.focusDefaultSource = resolved.focusSource;
+    perfSpan('applyLoaded:rig', tB);
     out.camera = loaded.camera;
     out.rig = resolved;
     out.frame = bounds;
@@ -2022,11 +2090,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
 
     // The strided pick fallback (used only if the engine releases its full centre set).
-    let pickCentres = null;
-    if (walk) {
-      const s = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
-      pickCentres = s ? s.slice() : null;
-    }
+    const pickCentres = loaded.pre?.pickCentres || null;
 
     if (resolved.type === 'camera') {
       if (!('idleSpin' in opts)) viewer.idleSpin = 0;

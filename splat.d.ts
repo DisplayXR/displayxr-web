@@ -266,6 +266,11 @@ export interface SplatOptions {
    * `handle.engine.root`). Anything nearer is clipped, splats included. Unset: untouched.
    */
   nearClip?: number;
+  /**
+   * PlayCanvas: draw the engine's sky box (default false). Off, nothing is drawn behind the splat
+   * even when a page sets `scene.envAtlas` to light its own meshes; the canvas stays transparent.
+   */
+  sky?: boolean;
   /** PlayCanvas: a CAP on the projection's far plane (only ever lowers it). Unset: untouched. */
   farClip?: number;
   /** Camera rig only: the distance in world metres that sits ON the glass. */
