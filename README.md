@@ -110,6 +110,9 @@ No projection math lands in your page or in the SDK — the off-axis frustum sta
 > `createInline3D()` detects by actually acquiring a session, which is authoritative.
 
 Full API + authoring guidance: [`docs/authoring-inline-3d.md`](docs/authoring-inline-3d.md).
+Before you ship a page that navigates or remounts, read
+[`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md): how to avoid a raw side-by-side
+flash, and releasing a poster on `handle.firstWoven`.
 Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-three.js).
 
 ## What's here
@@ -145,6 +148,9 @@ docs/
                            that is not the API
   porting-three-js-apps.md porting an existing three.js app (WebXR or plain) to inline 3D —
                            the WebXR→inline-3d mapping table and the whole render loop
+  woven-canvas-rules.md    never show a raw side-by-side frame: the join, the eight rules,
+                           handle.firstWoven, reading the browser's `withheld` log line
+  proposals/               browser-side asks the SDK is waiting on
 ```
 
 ## The inline-3D model (under the SDK)
