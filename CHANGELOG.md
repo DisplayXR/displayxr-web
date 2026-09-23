@@ -5,6 +5,31 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`) only, and only for pages that opt in: with no `engine`
+option — or `engine: 'spark'` — `addSplat` is the same code path as 1.7.1, same pixels.
+
+### Added
+
+- **`addSplat(…, { engine: 'playcanvas' })` — the PlayCanvas engine as a second splat backend**
+  (preview tier, epic #36). Same handle surface (`ready`, `remove`, `exclude`/`unexclude`,
+  `setPose`/`resetPose`, `setFocus`/`getFocus`, `pick`, `rig`, `camera`, `frame`, `perf`,
+  `viewer`, `mesh`), same rig/lens/focus waterfall, same `.sog` `camera` block, same mono
+  fallback and validate-before-clear rule. One camera renders every view through the engine's own
+  `RenderView` list (one sort, one work buffer for all eyes), with a shader-chunk fix for the
+  engine's square-pixel assumption in the splat footprint that a side-by-side buffer breaks.
+  `perf` presets map onto `alphaClipForward` / `minPixelSize` / a quad-extent override, and
+  `splatBudget` passes through; `perf: false` leaves every engine default alone. New: on this
+  engine a **URL** `.sog` also yields its `camera` block (the engine keeps `meta.json`'s unknown
+  keys). Needs the new **optional** peer `playcanvas >=2.22.3 <3`, loaded by dynamic `import()`
+  only when asked for. Reads `.sog`, `.ply` and a Streamed-SOG `lod-meta.json`; `.spz` /
+  `.splat` / `.ksplat` stay Spark-only. Differences from the Spark path:
+  [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
+- **`cameraRigFromPose(pose, opts)`** in `./three`: the camera-rig descriptor from a plain
+  `{position, orientation, fov}` instead of a three.js camera — bit-identical to
+  `cameraRigFromCamera` for the same pose. `cameraRigFromCamera` is unchanged in behaviour.
+
 ## 1.7.1 — 2026-09-20
 
 Touches the **preview tier** (`./model`) only, and fixes exactly one thing: under a bundler, a

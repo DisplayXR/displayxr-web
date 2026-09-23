@@ -81,7 +81,9 @@
       <p>Append <code>?url=…</code> to load any <code>.sog</code>, <code>.spz</code>,
          <code>.ply</code>, <code>.splat</code> or <code>.ksplat</code>. Same-origin or
          CORS-enabled. <code>.sog</code> is the one to prefer — it is Morton-ordered and roughly
-         15–20&times; smaller than the equivalent PLY.</p>
+         15–20&times; smaller than the equivalent PLY. Add <code>&amp;engine=playcanvas</code>
+         to render it with the PlayCanvas engine instead of Spark (<code>.sog</code> /
+         <code>.ply</code>).</p>
     </div>
   </div>
 
@@ -100,12 +102,16 @@
      The "three/addons/" trailing-slash entry is REQUIRED, not tidiness: Spark reaches into
      three/addons/postprocessing/Pass.js internally, and without the prefix mapping the page
      dies at import time with "Failed to resolve module specifier". Bundler users get this for
-     free; anyone on a bare importmap has to declare it. -->
+     free; anyone on a bare importmap has to declare it.
+
+     "playcanvas" is only fetched with ?engine=playcanvas: ./splat imports it dynamically, so a
+     page on the default engine never resolves this entry. -->
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
   "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs",
   "@displayxr/inline3d": "../../js/inline3d.js",
   "@displayxr/inline3d/three": "../../js/inline3d-three.js",
   "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js",
