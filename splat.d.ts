@@ -279,8 +279,24 @@ export interface SplatHandle {
   readonly mesh: object;
   /** Spark's SparkRenderer (absent on `engine: 'playcanvas'`). */
   readonly spark?: object;
-  /** Set on `engine: 'playcanvas'`. */
-  readonly engine?: 'playcanvas';
+  /** Which backend is rendering: `'playcanvas'` or `'spark'`; null until it has loaded. */
+  readonly backend: 'playcanvas' | 'spark' | null;
+  /**
+   * ADVANCED — not covered by the semver promise. The renderer objects behind this window, for a
+   * page that wants to add its own content. Null until the backend has booted.
+   *
+   * PlayCanvas: `{ app, root, camera }` — the tile's `pc.AppBase`; the content root entity (the
+   * splat's content space — add your own entities under it, e.g. a glTF through the engine's
+   * container loader, skinned and animated included); the eye-rig camera entity. `remove()`
+   * destroys the app, and everything under `root` with it.
+   *
+   * Spark: `{ renderer, scene, camera }` — the WebGLRenderer, the scene, and whichever camera draws
+   * the current frame.
+   */
+  readonly engine:
+    | { readonly app: unknown; readonly root: unknown; readonly camera: unknown }
+    | { readonly renderer: unknown; readonly scene: unknown; readonly camera: unknown }
+    | null;
   /** `engine: 'playcanvas'` only: the live focus, in the splat's own space. */
   getFocus?(opts?: { target?: boolean }): number[] | null;
   /** Bounds actually used for framing; null until `ready` resolves. */

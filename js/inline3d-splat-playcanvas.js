@@ -916,9 +916,22 @@ export class PlayCanvasSplatViewer {
     const e = new pc.Entity('inline3d-splat', this.app);
     e.addComponent('gsplat', { asset });
     if (this.flipY) e.setLocalEulerAngles(180, 0, 0);
-    this.app.root.addChild(e);
+    this.content.addChild(e);
     this.splat = e;
     return e;
+  }
+
+  /**
+   * The content root: the entity the splat hangs under, in the splat's CONTENT space (engine
+   * world — the flip lives on each splat entity, not here). A page may add its own entities under
+   * it through `handle.engine.root`; they are destroyed with the app.
+   */
+  get content() {
+    if (!this._content && this.app) {
+      this._content = new this.pc.Entity('inline3d-content', this.app);
+      this.app.root.addChild(this._content);
+    }
+    return this._content;
   }
 
   // ── internals ──
@@ -1465,7 +1478,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let current = null; // { asset, entity, res, kind, pickCentres }
 
   Object.assign(out, {
-    engine: 'playcanvas',
+    backend: 'playcanvas',
+    engine: null, // { app, root, camera } once the engine has booted — see below
     viewer,
     mesh: null,
     frame: null,
@@ -1498,7 +1512,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       unbindFocusInput?.();
       viewer.onFocusChange = null;
       handle?.remove();
-      viewer.dispose();
+      viewer.dispose(); // app.destroy(): every entity — ours and any a page added — goes with it
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
@@ -1736,6 +1750,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
     if (!app || removed) return null;
     pcModule = pc;
+    /**
+     * ADVANCED, not covered by the semver promise: the engine objects behind this window.
+     * `app` is the tile's `pc.AppBase`; `root` the content root, in the splat's content space
+     * (engine world) — add your own entities under it (a glTF through the engine's container
+     * loader, skinned and animated included); `camera` the eye-rig camera entity. Everything is
+     * destroyed with the app by `remove()`.
+     */
+    out.engine = Object.freeze({ app, root: viewer.content, camera: viewer.eye || null });
     return app;
   })();
 

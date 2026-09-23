@@ -405,7 +405,7 @@ test('attachPlayCanvasSplat replays calls made before it loaded — exclude() re
   attachPlayCanvasSplat(out, wall, canvas, 'x.sog', { playcanvas: pc }, [['exclude', [el]], ['setPose', [{ yaw: 20 }]]]);
   assert.deepEqual(excluded, [el]);
   assert.equal(out.viewer.getPose().yaw, 20);
-  assert.equal(out.engine, 'playcanvas');
+  assert.equal(out.backend, 'playcanvas');
   assert.equal(canvas.width, 640, 'SBS buffer: double width in 3D');
   assert.equal(out.pick(10, 10), null, 'nothing to pick before load');
   out.remove();
@@ -1153,4 +1153,24 @@ test('addSplat validates captureFit at call time (source check — ./splat impor
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
   assert.match(src, /CAPTURE_FITS\.includes\(opts\.captureFit\)/);
+});
+
+// ── 18. handle.engine — the escape hatch ────────────────────────────────────────────────────
+
+test('handle.engine is a frozen { app, root, camera }; the splat hangs under root; remove() destroys the app', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(300, 0)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.backend, 'playcanvas');
+  const { app, root, camera } = out.engine;
+  assert.ok(Object.isFrozen(out.engine));
+  assert.ok(root.children.includes(out.mesh.entity), 'the content root holds the splat');
+  assert.equal(root.app, app);
+  assert.equal(camera, out.viewer.eye, 'the eye-rig camera entity');
+  let destroyed = 0;
+  app.destroy = () => destroyed++;
+  out.remove();
+  assert.equal(destroyed, 1, 'page-added entities under root die with the app');
 });

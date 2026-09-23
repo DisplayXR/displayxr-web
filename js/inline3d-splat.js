@@ -237,6 +237,19 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // the console and a fit pipeline that provably never executed.
   let handle = null;
   const out = {
+    backend: 'spark',
+    /**
+     * ADVANCED, not covered by the semver promise: the three.js objects behind this window, for
+     * a page that wants to add its own content. `camera` is whichever camera draws the current
+     * frame (an eye in 3D, the mono camera flat).
+     */
+    engine: Object.freeze({
+      renderer: viewer.renderer,
+      scene: viewer.scene,
+      get camera() {
+        return (viewer.is3D && viewer._eye?.camera) || viewer.monoCamera;
+      },
+    }),
     viewer,
     // null until the bytes are read and the mesh is constructed; use `ready` to await it.
     mesh: null,
@@ -581,7 +594,8 @@ function addSplatDeferred(wall, canvas, src, opts) {
     return name === 'setFocus' ? out : undefined;
   };
   const out = {
-    engine: 'playcanvas',
+    backend: 'playcanvas',
+    engine: null,
     viewer: null,
     mesh: null,
     frame: null,
