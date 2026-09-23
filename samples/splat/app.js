@@ -19,10 +19,12 @@ const DEFAULT_URL = 'https://sparkjs.dev/assets/splats/butterfly.spz';
 const params = new URLSearchParams(location.search);
 const url = params.get('url') || DEFAULT_URL;
 
-// ?engine=playcanvas renders the same tile with the PlayCanvas engine instead of Spark — same
-// handle, same framing. That engine reads .sog / .ply / a Streamed-SOG lod-meta.json (not the
-// .spz default above), so pair it with ?url=….sog.
-const engine = params.get('engine') || undefined;
+// The default engine is PlayCanvas, which reads .sog / .ply / a Streamed-SOG lod-meta.json. The
+// .spz default above is a Spark-only format, so this page asks for engine:'spark' for it (and
+// for .splat/.ksplat) — addSplat would otherwise refuse it at call time, by design. ?engine=spark
+// or ?engine=playcanvas forces either.
+const SPARK_ONLY = /\.(spz|splat|ksplat)(?:[?#]|$)/i;
+const engine = params.get('engine') || (SPARK_ONLY.test(url) ? 'spark' : undefined);
 
 // A butterfly is not a shoe: it wants a smaller virtual display than a boxed product would, or
 // it fills the tile and clips. Real catalogues carry this per SKU.
@@ -57,7 +59,7 @@ try {
   const n = handle.mesh?.numSplats ?? 0;
   const src = handle.frame ? 'measured in-page' : 'none';
   statusEl.textContent =
-    `${n.toLocaleString()} splats · ${engine === 'playcanvas' ? 'PlayCanvas' : 'Spark'} · framing ${src} · ` +
+    `${n.toLocaleString()} splats · ${handle.backend === 'spark' ? 'Spark' : 'PlayCanvas'} · framing ${src} · ` +
     (wall.supported ? 'woven glasses-free 3D' : 'flat fallback (open in the DisplayXR Browser)');
 } catch {
   statusEl.textContent = `Could not load ${url} — check the URL and its CORS headers.`;

@@ -155,11 +155,13 @@ export interface ResolvedRig {
 
 export interface SplatOptions {
   /**
-   * Which renderer. `'spark'` (the default) is three.js + Spark. `'playcanvas'` is the PlayCanvas
-   * engine (optional peer `playcanvas >=2.22.3 <3`, loaded by dynamic import only when asked):
-   * same handle, reads `.sog` / `.ply` / a Streamed-SOG `lod-meta.json`. Anything else throws.
+   * Which renderer. `'playcanvas'` (the DEFAULT since 1.8; optional peer
+   * `playcanvas >=2.22.3 <3`) reads `.sog` / `.ply` / a Streamed-SOG `lod-meta.json`. `'spark'` is
+   * three.js + Spark (the 1.7 path, and the only one for `.spz` / `.splat` / `.ksplat`). Each is a
+   * dynamic import, so a page fetches only the one it uses. Unset + `playcanvas` missing → Spark,
+   * with one warning, when Spark's peers resolve. Anything else throws.
    */
-  engine?: 'spark' | 'playcanvas';
+  engine?: 'playcanvas' | 'spark';
   /**
    * `engine: 'playcanvas'` only: the WebGL context's `preserveDrawingBuffer` (default false) —
    * the knob for the weave's zero-copy read race on large canvases.

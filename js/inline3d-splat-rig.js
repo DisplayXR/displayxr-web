@@ -573,18 +573,18 @@ export function sampleCloudCentres(total, forEachCentre, { cap = FRAME_SAMPLE_CA
 }
 
 /** The splat backends `addSplat` knows. The first is the default. */
-export const SPLAT_ENGINES = ['spark', 'playcanvas'];
+export const SPLAT_ENGINES = ['playcanvas', 'spark'];
 
 /**
- * Which backend an `addSplat` call asked for. Unset is Spark — the path every page had before
- * there was a choice. Anything unknown THROWS, synchronously: a typo'd engine name is a page bug
- * that is true of every call, not a condition of one asset.
+ * Which backend an `addSplat` call asked for. Unset is PlayCanvas (the default since 1.8);
+ * `'spark'` is the kill switch back to three + Spark. Anything unknown THROWS, synchronously: a
+ * typo'd engine name is a page bug that is true of every call, not a condition of one asset.
  *
  * @param {{engine?: string}} [opts]
  * @returns {'spark'|'playcanvas'}
  */
 export function resolveSplatEngine(opts) {
-  const engine = opts?.engine ?? 'spark';
+  const engine = opts?.engine ?? SPLAT_ENGINES[0];
   if (!SPLAT_ENGINES.includes(engine)) {
     throw new Error(
       `@displayxr/inline3d/splat: unknown engine "${engine}" — expected ` +

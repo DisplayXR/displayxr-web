@@ -5,30 +5,61 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## Unreleased — 1.8.0 (minor, with a BEHAVIOUR CHANGE)
 
-Touches the **preview tier** (`./splat`) only, and only for pages that opt in: with no `engine`
-option — or `engine: 'spark'` — `addSplat` is the same code path as 1.7.1, same pixels.
+> **`addSplat` now renders with the PlayCanvas engine by default.** Pass **`engine: 'spark'`** to
+> keep three.js + Spark exactly as in 1.7 (same code, same pixels). Install the new optional peer
+> **`playcanvas >=2.22.3 <3`** (or map it in your importmap). Without it, a default page falls back
+> to Spark with one console warning when Spark's peers resolve, else `ready` rejects naming what to
+> install. `.spz` / `.splat` / `.ksplat` are Spark-only: the default engine now **throws at call
+> time** for them. Say `engine: 'spark'`. Preview tier (`./splat`) only; the frozen core is
+> untouched.
+
+### Changed
+
+- **`./splat` loads its backend on demand** (preview tier). `inline3d-splat.js` imports no
+  renderer; the PlayCanvas backend (`inline3d-splat-playcanvas.js`) and the Spark backend
+  (`inline3d-splat-spark.js`) are literal dynamic `import()`s. A default page makes zero requests
+  for three/Spark, and an `engine: 'spark'` page makes zero for playcanvas (both measured).
+  Consequences:
+  - The handle is still returned synchronously, but its fields (`viewer`, `mesh`, `rig`, `engine`,
+    `backend`) are null until the backend module has loaded. Calls made before that (`exclude`,
+    `setPose`, `setFocus`, `remove`) are queued and replayed.
+  - The Spark backend's "three too old" check rejects `ready` instead of throwing from `addSplat`.
+  - `measureSplatBounds(mesh)` no longer needs three (its second argument is ignored).
+- **Viewer tuning constants are shared** (`inline3d-splat-shared.js`). SceneViewer and the
+  PlayCanvas viewer read the same damping, idle, focus-ease, wheel and zoom numbers. A
+  side-by-side trace test pins them bit-identical.
+- **Focus waterfall: `nearest-clump`.** A new rung sits between a block's considered focus and the
+  whole-cloud median. It picks the nearest substantial disparity clump in the central half of the
+  frame (the tree trunk in front of a lake: 2.4 m, not 46.9 m), so a single-image lift with a lens
+  and no metric focus no longer converges at infinity. A converter-written `cloud-median` block
+  focus now ranks below it (`block-cloud-median`). New on `handle.rig`: `blockFocusSource` and
+  `clumpMassFrac`. Both backends.
 
 ### Added
 
-- **`addSplat(…, { engine: 'playcanvas' })` — the PlayCanvas engine as a second splat backend**
-  (preview tier, epic #36). Same handle surface (`ready`, `remove`, `exclude`/`unexclude`,
-  `setPose`/`resetPose`, `setFocus`/`getFocus`, `pick`, `rig`, `camera`, `frame`, `perf`,
-  `viewer`, `mesh`), same rig/lens/focus waterfall, same `.sog` `camera` block, same mono
-  fallback and validate-before-clear rule. One camera renders every view through the engine's own
-  `RenderView` list (one sort, one work buffer for all eyes), with a shader-chunk fix for the
-  engine's square-pixel assumption in the splat footprint that a side-by-side buffer breaks.
-  `perf` presets map onto `alphaClipForward` / `minPixelSize` / a quad-extent override, and
-  `splatBudget` passes through; `perf: false` leaves every engine default alone. New: on this
-  engine a **URL** `.sog` also yields its `camera` block (the engine keeps `meta.json`'s unknown
-  keys). Needs the new **optional** peer `playcanvas >=2.22.3 <3`, loaded by dynamic `import()`
-  only when asked for. Reads `.sog`, `.ply` and a Streamed-SOG `lod-meta.json`; `.spz` /
-  `.splat` / `.ksplat` stay Spark-only. Differences from the Spark path:
-  [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
-- **`cameraRigFromPose(pose, opts)`** in `./three`: the camera-rig descriptor from a plain
-  `{position, orientation, fov}` instead of a three.js camera — bit-identical to
-  `cameraRigFromCamera` for the same pose. `cameraRigFromCamera` is unchanged in behaviour.
+- **The PlayCanvas backend** (epic #36):
+  - The same handle surface and the same rig/lens/focus waterfall as Spark.
+  - One camera renders every view through the engine's own `RenderView` list, so one sort and one
+    work buffer serve all eyes.
+  - A shader-chunk fix for the engine's square-pixel footprint assumption, which a side-by-side
+    buffer breaks.
+  - `perf` presets map onto engine knobs, and `perf: false` leaves the engine alone.
+  - A **URL** `.sog` yields its `camera` block too.
+- **`handle.setSource(src, { fadeMs, resetPose })`** (PlayCanvas). Swaps the asset in place with a
+  crossfade and re-runs the rig waterfall for the new file. The pose is kept unless `resetPose`.
+- **`feather`** on PlayCanvas: the per-eye edge fade, matching `EdgeFeather`.
+- **Tilt-and-relax `orbit`** on PlayCanvas. The drag is a fraction of the tile, capped at
+  `orbitMaxDeg` (15°), and relaxes back on release (`orbitEase` `{drag: 0.2, rest: 0.6}` s).
+- **`captureFit: 'height' | 'cover'`** (camera rig, both backends). `'cover'` fills the tile with
+  photograph, cropping instead of letterboxing.
+- **`handle.engine`** (advanced, not semver-covered). PlayCanvas: `{ app, root, camera }`. Spark:
+  `{ renderer, scene, camera }`. **`handle.backend`**: `'playcanvas'` or `'spark'`.
+- **`handle.getFocus()`** and **`handle.onFocusChange(point, { focusSource })`**, in the splat's own
+  space, on both backends.
+- **`cameraRigFromPose(pose, opts)`** in `./three`. It builds the camera-rig descriptor from a plain
+  `{position, orientation, fov}`, bit-identical to `cameraRigFromCamera`.
 
 ## 1.7.1 — 2026-09-20
 

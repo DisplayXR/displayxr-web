@@ -34,18 +34,30 @@ No build step or bundler required — it's plain ES modules. You can also import
 URL from a CDN (jsDelivr / unpkg) without npm. The samples in this repo import the SDK by relative
 path (`./js/inline3d.js`) so they run straight off GitHub Pages; in your own app prefer the package.
 
-`three` and `@sparkjsdev/spark` are **optional peer dependencies** — the core is dependency-free
-and only the `/three`, `/viewer` and `/splat` subpaths need them. The two viewer subpaths are
+`three`, `@sparkjsdev/spark` and `playcanvas` are **optional peer dependencies** — the core is
+dependency-free and only the scene subpaths need them (`/three` and `/viewer`: three; `/splat`:
+playcanvas by default, three + Spark with `engine: 'spark'`). The viewer subpaths are
 **experimental**: they turn "one object in a tile, look around it, drag to spin" into a single
 call (auto-framing on the zero-disparity plane, orbit, idle turntable, mono fallback), but their
 API is not yet covered by the semver promise below.
 
-**A second splat engine (preview).** `addSplat(wall, canvas, src, { engine: 'playcanvas' })`
-renders the same splat window with the [PlayCanvas](https://playcanvas.com/) engine instead of
-Spark — same handle, same rig/focus/camera-block behaviour, same `perf` presets (mapped onto the
-engine's knobs). It needs the optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply`
-and a Streamed-SOG `lod-meta.json`. Spark stays the default; a page that never passes `engine`
-never loads `playcanvas`. What differs, and why: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
+**Splats render with PlayCanvas by default (1.8).** `addSplat(wall, canvas, src)` uses the
+[PlayCanvas](https://playcanvas.com/) engine: `npm i playcanvas` (`>=2.22.3 <3`), or an importmap
+entry for `playcanvas`. It reads `.sog`, `.ply` and a Streamed-SOG `lod-meta.json`, and adds
+`setSource(src, { fadeMs })` (crossfading asset swaps), a tilt-and-relax orbit, and
+`handle.engine` (the engine objects, for advanced pages). **`engine: 'spark'` is the kill switch**
+back to three.js + Spark — same handle, same rig/focus/camera-block behaviour, and the only engine
+for `.spz` / `.splat` / `.ksplat`. Each backend is a dynamic `import()`: a default page never
+fetches three or Spark, and an `engine: 'spark'` page never fetches playcanvas. If `playcanvas` is
+missing, a default page falls back to Spark with one console warning when Spark's peers resolve,
+else `ready` rejects saying what to install. What differs, and why:
+[`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
+
+*Bundlers:* the backend imports are literal `import('playcanvas')` /
+`import('./inline3d-splat-spark.js')`, so they code-split cleanly — but a bundler resolves a
+literal specifier at build time, so install the peer for the engine you use (a missing
+`playcanvas` is a build error there, not the runtime fallback). The engine's sort workers are Blob
+URLs: a CSP needs `worker-src blob:`. esbuild: mark `node:worker_threads` external.
 
 Stability & what's covered by semver (and the deferred N-view / web-components / CSS-native roadmap
 that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stability.md).
@@ -119,10 +131,12 @@ js/
   inline3d-three.js   optional three.js helper (EyeCamera: off-axis projection from the session's eyes)
   inline3d-viewer.js  experimental: SceneViewer — framing, orbit, idle turntable, mono fallback,
                       and the placement readback (getSubjectBounds / getPose / depthOffset)
-  inline3d-splat.js   experimental: addSplat() — a Gaussian splat window via Spark
+  inline3d-splat.js   experimental: addSplat() — a Gaussian splat window; picks the backend
                       (`perf` cuts overdraw; a `.sog`'s `camera` block picks the view rig)
   inline3d-splat-playcanvas.js
-                      preview: the `engine: 'playcanvas'` backend of addSplat(), loaded on demand
+                      the default PlayCanvas backend of addSplat(), loaded on demand
+  inline3d-splat-spark.js
+                      the three.js + Spark backend (`engine: 'spark'`), loaded on demand
   inline3d-model.js   experimental: addModel() — a glTF/GLB window; wires Draco / meshopt / KTX2
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/

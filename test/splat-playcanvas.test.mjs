@@ -82,13 +82,13 @@ const COMMON_2_22_3 = [
 
 // ── 1. engine switch ────────────────────────────────────────────────────────────────────────
 
-test('engine: unset and "spark" are Spark; "playcanvas" is the new backend; anything else throws', () => {
-  assert.equal(resolveSplatEngine(undefined), 'spark');
-  assert.equal(resolveSplatEngine({}), 'spark');
+test('engine: unset is PlayCanvas (the 1.8 default); "spark" is the kill switch; anything else throws', () => {
+  assert.equal(resolveSplatEngine(undefined), 'playcanvas');
+  assert.equal(resolveSplatEngine({}), 'playcanvas');
   assert.equal(resolveSplatEngine({ engine: 'spark' }), 'spark');
   assert.equal(resolveSplatEngine({ engine: 'playcanvas' }), 'playcanvas');
   assert.throws(() => resolveSplatEngine({ engine: 'PlayCanvas' }), /unknown engine "PlayCanvas"/);
-  assert.throws(() => resolveSplatEngine({ engine: 'babylon' }), /expected 'spark' or 'playcanvas'/);
+  assert.throws(() => resolveSplatEngine({ engine: 'babylon' }), /expected 'playcanvas' or 'spark'/);
 });
 
 // ── 2. perf mapping ─────────────────────────────────────────────────────────────────────────
@@ -663,7 +663,7 @@ test('onFocusChange assigned on the stub BEFORE the adapter loads is the one tha
 test('./splat stub carries an onFocusChange slot; the adapter never writes out.ready (source check)', async () => {
   const fs = await import('node:fs');
   const splat = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
-  const stub = splat.slice(splat.indexOf('function addSplatDeferred'));
+  const stub = splat.slice(splat.indexOf('export function addSplat('));
   assert.match(stub, /onFocusChange: null,/);
   assert.equal((stub.match(/out\.ready =/g) || []).length, 1, 'one owner of ready');
   const pcSrc = fs.readFileSync(new URL('../js/inline3d-splat-playcanvas.js', import.meta.url), 'utf8');
@@ -1235,4 +1235,75 @@ test('renderScale sizes the buffer: min(dpr,2)·renderScale per eye, double-widt
   assert.deepEqual([canvas.width, canvas.height], [600, 360]);
   v.dispose();
   globalThis.window.devicePixelRatio = 1;
+});
+
+
+// ── 20. the default flip and the entry split ────────────────────────────────────────────────
+
+test('./splat itself imports no renderer: it loads in plain node (no three, no Spark, no playcanvas)', async () => {
+  const m = await import('../js/inline3d-splat.js');
+  assert.equal(typeof m.addSplat, 'function');
+  assert.equal(typeof m.measureSplatBounds, 'function');
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  assert.equal(/^import .* from '(three|@sparkjsdev\/spark|playcanvas)'/m.test(src), false, 'no static renderer import');
+  for (const spec of ["import('playcanvas')", "import('./inline3d-splat-playcanvas.js')", "import('./inline3d-splat-spark.js')"]) {
+    assert.ok(src.includes(spec), `literal dynamic ${spec}`);
+  }
+});
+
+test('loadSplatBackend: default → PlayCanvas; missing engine → Spark with ONE warning; neither → install hint', async (t) => {
+  const { loadSplatBackend } = await import('../js/inline3d-splat.js');
+  const warn = t.mock.method(console, 'warn', () => {});
+  const ok = (v) => async () => v;
+  const fail = (msg) => async () => {
+    throw new Error(msg);
+  };
+  const L = (pc, spark) => ({ playcanvas: pc, adapter: ok({ adapter: true }), spark });
+  let r = await loadSplatBackend({}, L(ok({ pc: 1 }), fail('no three')));
+  assert.equal(r.backend, 'playcanvas');
+  assert.deepEqual(r.pc, { pc: 1 });
+  r = await loadSplatBackend({ engine: 'spark' }, L(fail('never asked'), ok({ spark: 1 })));
+  assert.equal(r.backend, 'spark', 'the kill switch never touches playcanvas');
+  r = await loadSplatBackend({}, L(fail('no playcanvas'), ok({ spark: 1 })));
+  assert.equal(r.backend, 'spark', 'fallback');
+  await loadSplatBackend({}, L(fail('no playcanvas'), ok({ spark: 1 })));
+  assert.equal(warn.mock.calls.filter((c) => /is not available/.test(String(c.arguments[0]))).length, 1, 'warned once');
+  await assert.rejects(loadSplatBackend({}, L(fail('no playcanvas'), fail('no three'))), /npm i playcanvas.*engine:'spark'/s);
+  await assert.rejects(
+    loadSplatBackend({ engine: 'playcanvas' }, L(fail('no playcanvas'), ok({ spark: 1 }))),
+    /npm i playcanvas/,
+    'asked for playcanvas explicitly: no silent fallback',
+  );
+});
+
+test('addSplat throws at CALL time for what is decidable now; otherwise returns the handle synchronously', async () => {
+  const { addSplat } = await import('../js/inline3d-splat.js');
+  const canvas = makeCanvas(10, 10);
+  assert.throws(() => addSplat(null, canvas, 'a.sog', { engine: 'babylon' }), /unknown engine/);
+  assert.throws(() => addSplat(null, canvas, 'a.sog', { captureFit: 'stretch' }), /captureFit "stretch"/);
+  assert.throws(() => addSplat(null, canvas, 'https://x/butterfly.spz'), /engine:'spark'/, 'the default engine cannot read .spz');
+  const h = addSplat(null, canvas, 'https://x/butterfly.spz', { engine: 'spark' });
+  assert.equal(h.backend, null, 'backend known once loaded');
+  assert.equal(h.viewer, null);
+  assert.equal(h.onFocusChange, null);
+  assert.equal(typeof h.exclude, 'function');
+  await assert.rejects(h.ready); // no three in node: the Spark module cannot load
+});
+
+test('measureSplatBounds is three-free and lifts through the mesh matrix (a half turn about X)', async () => {
+  const { measureSplatBounds } = await import('../js/inline3d-splat.js');
+  const pts = [];
+  for (let i = 0; i < 1000; i++) pts.push([(i % 10) * 0.1, Math.floor(i / 10) % 10 * 0.2, Math.floor(i / 100) * 0.3 + 1]);
+  const mesh = {
+    numSplats: pts.length,
+    forEachSplat: (cb) => pts.forEach((p, i) => cb(i, { x: p[0], y: p[1], z: p[2] }, null, null, 1)),
+    updateMatrix() {},
+    matrix: { elements: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1] },
+  };
+  const b = measureSplatBounds(mesh);
+  near(b.center[0], 0.45, 1e-6);
+  near(b.center[1], -0.9, 1e-6, 'y flipped');
+  near(b.center[2], -(1 + 1.35), 1e-6, 'z flipped');
+  near(b.extent[1], 1.8, 1e-6, 'extents stay positive');
 });

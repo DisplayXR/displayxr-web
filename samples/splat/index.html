@@ -50,7 +50,9 @@
 
   <p>The page is ordinary flat HTML. The tile below is a <code>&lt;canvas&gt;</code> handed to
      <code>addSplat()</code>, which loads the splat with
-     <a href="https://sparkjs.dev/">Spark</a>, frames the subject on the zero-disparity plane,
+     the <a href="https://playcanvas.com/">PlayCanvas</a> engine (or
+     <a href="https://sparkjs.dev/">Spark</a>, for the formats only it reads), frames the subject
+     on the zero-disparity plane,
      and renders it once per eye. On the DisplayXR Browser it weaves to glasses-free 3D and
      looks-around as you move; in any other browser you get the same asset, flat and orbitable.
      Drag to spin, scroll to zoom — leave it alone and it turns by itself.</p>
@@ -81,9 +83,9 @@
       <p>Append <code>?url=…</code> to load any <code>.sog</code>, <code>.spz</code>,
          <code>.ply</code>, <code>.splat</code> or <code>.ksplat</code>. Same-origin or
          CORS-enabled. <code>.sog</code> is the one to prefer — it is Morton-ordered and roughly
-         15–20&times; smaller than the equivalent PLY. Add <code>&amp;engine=playcanvas</code>
-         to render it with the PlayCanvas engine instead of Spark (<code>.sog</code> /
-         <code>.ply</code>).</p>
+         15–20&times; smaller than the equivalent PLY. PlayCanvas renders <code>.sog</code> /
+         <code>.ply</code> by default; add <code>&amp;engine=spark</code> to use three.js +
+         Spark instead (the page picks Spark itself for <code>.spz</code>/<code>.splat</code>).</p>
     </div>
   </div>
 
@@ -104,8 +106,9 @@
      dies at import time with "Failed to resolve module specifier". Bundler users get this for
      free; anyone on a bare importmap has to declare it.
 
-     "playcanvas" is only fetched with ?engine=playcanvas: ./splat imports it dynamically, so a
-     page on the default engine never resolves this entry. -->
+     Each backend is imported DYNAMICALLY by ./splat, so a page only fetches what it renders
+     with: a .sog on the default engine never fetches three or Spark, and engine:'spark' never
+     fetches playcanvas. -->
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",

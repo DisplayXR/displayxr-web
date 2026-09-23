@@ -89,13 +89,15 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   `getPose`, `getSubjectBounds`, `depthOffset`) could be frozen while the framing internals
   behind it stay free to move.
 
-  - They need peers the core does not: `three` (**>=0.180** for `/splat`, which is Spark's own
-    floor — above the package-wide `>=0.150` the `./three` glue asks for) and
-    `@sparkjsdev/spark` (>=2.0). Both are declared **optional**, so the core install is
-    unchanged and only pages importing a viewer subpath pay for them.
-    npm has no per-export peer range, so the manifest necessarily states the lower bound and an
-    install on 0.16x succeeds. `addSplat` therefore checks `THREE.REVISION` itself and throws a
-    named error rather than letting the mismatch surface from inside a Spark worker.
+  - They need peers the core does not. `/splat` renders with **`playcanvas`** (`>=2.22.3 <3`) by
+    default since 1.8; `engine: 'spark'` switches it to `three` (**>=0.180**, Spark's own floor —
+    above the package-wide `>=0.150` the `./three` glue asks for) + `@sparkjsdev/spark` (>=2.0),
+    which `/viewer` and `/model` also use. All are declared **optional**, so the core install is
+    unchanged, and `/splat` loads each backend with a dynamic `import()`, so a page pays only for
+    the one it renders with. npm has no per-export peer range, so the manifest necessarily states
+    the lower bound and an install on three 0.16x succeeds; the Spark backend therefore checks
+    `THREE.REVISION` itself and rejects `ready` with a named error rather than letting the
+    mismatch surface from inside a Spark worker.
 - Anything prefixed `_` (internal), and any field/behavior not listed above.
 - The **browser ↔ display-processor plumbing** the weave rides on (overlay compositing, wish mask,
   the batch weave transport). Web authors never touch it; it is free to evolve. See
