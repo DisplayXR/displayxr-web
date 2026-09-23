@@ -71,6 +71,56 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const finite = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 
 /**
+ * The k-th smallest of the first `n` entries of `a` — exactly what `a.subarray(0, n).sort()[k]`
+ * returns, NaN placement included (a TypedArray sort puts NaN last) — by quickselect, reordering
+ * `a` in place. O(n) on average.
+ */
+export function selectKth(a, n, k) {
+  // NaN to the end first, as the numeric TypedArray sort does; select among the rest.
+  let m = n;
+  for (let i = 0; i < m; ) {
+    if (a[i] !== a[i]) {
+      m--;
+      const t = a[i];
+      a[i] = a[m];
+      a[m] = t;
+    } else i++;
+  }
+  if (k >= m) return NaN;
+  let left = 0;
+  let right = m - 1;
+  while (right > left) {
+    // Median-of-three pivot keeps sorted / reverse-sorted input O(n).
+    const mid = (left + right) >> 1;
+    if (a[mid] < a[left]) swap(a, mid, left);
+    if (a[right] < a[left]) swap(a, right, left);
+    if (a[right] < a[mid]) swap(a, right, mid);
+    const pivot = a[mid];
+    let i = left;
+    let j = right;
+    while (i <= j) {
+      while (a[i] < pivot) i++;
+      while (a[j] > pivot) j--;
+      if (i <= j) {
+        swap(a, i, j);
+        i++;
+        j--;
+      }
+    }
+    if (k <= j) right = j;
+    else if (k >= i) left = i;
+    else return a[k];
+  }
+  return a[k];
+}
+
+function swap(a, i, j) {
+  const t = a[i];
+  a[i] = a[j];
+  a[j] = t;
+}
+
+/**
  * Robust model-space bounds from a flat array of splat/vertex centres.
  *
  * TWO STAGES, because one percentile box cannot do both jobs. A raw min/max is useless on
@@ -110,14 +160,15 @@ export function boundsFromPositions(xyz, { lo = 0.05, hi = 0.95, expand = 2.5 } 
   const center = [0, 0, 0];
   const extent = [0, 0, 0];
   const axisVals = new Float64Array(n);
+  const kLo = trim ? Math.floor(lo * (n - 1)) : 0;
+  const kHi = trim ? Math.floor(hi * (n - 1)) : n - 1;
   for (let axis = 0; axis < 3; axis++) {
     for (let i = 0; i < n; i++) axisVals[i] = xyz[i * 3 + axis];
-    // TypedArray sort is numeric and in-place — no comparator, no copy. That matters here:
-    // this runs over every splat centre, and a boxed Array round-trip on a 500k-splat model
-    // is the difference between a hitch and an imperceptible pause.
-    const sorted = axisVals.sort();
-    const loV = trim ? sorted[Math.floor(lo * (n - 1))] : sorted[0];
-    const hiV = trim ? sorted[Math.floor(hi * (n - 1))] : sorted[n - 1];
+    // Only two ORDER STATISTICS are needed, not a sorted array: selecting them is O(n) where the
+    // sort was O(n log n) — the same two values, bit for bit (a sort's k-th element IS the k-th
+    // order statistic), at a fraction of the main-thread time on a 200k-point sample (1.10.1).
+    const loV = selectKth(axisVals, n, kLo);
+    const hiV = selectKth(axisVals, n, kHi);
     center[axis] = 0.5 * (loV + hiV);
     extent[axis] = Math.max(hiV - loV, 1e-6);
   }

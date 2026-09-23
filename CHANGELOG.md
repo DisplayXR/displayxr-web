@@ -5,6 +5,33 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — 1.10.1 (patch)
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), and `boundsFromPositions` in
+`./viewer` (same results, less time). Nothing changes for Spark callers' pixels.
+
+### Fixed
+
+- **No grey sky box behind the splat.** The engine draws a sky whenever the scene has something to
+  draw it from, and `scene.envAtlas` counts. A page that set one to light its meshes under
+  `handle.engine.root` got a grey gradient box the instant the splat was hidden (mid-`setSource`,
+  or a page showing only its own meshes). The eye camera now renders without the Skybox layer, so
+  the canvas stays transparent. Image-based lighting still lights the meshes. The new **`sky: true`**
+  brings the engine's sky back.
+  - Verified headless with `envAtlas` set and the splat hidden: the corner pixel reads
+    `[140,140,140,255]` in 1.10.0 and `[0,0,0,0]` now (and `[140,140,140,255]` again with
+    `sky: true`).
+- **`setSource` no longer blocks input for its cloud passes.** The SDK's framing, rest-space sample
+  and pick-set passes ran in one main-thread task stacked on the engine's end-of-load work. Now
+  each runs in its own task (with `scheduler.yield()` where available).
+  - `boundsFromPositions` takes its percentiles with a linear-time select instead of full sorts.
+    The values are bit-identical, pinned by a test.
+  - On a 1.18M-gaussian swap (headless, M1 Pro), the longest main-thread task went from
+    **60–64 ms to under 50 ms** (none reported), and the longest frame gap from 65–77 to
+    35–44 ms. At 4× CPU throttling it went from 218–238 ms to 60–65 ms, which is the engine's own
+    remainder, documented per 1M gaussians with the recommended pre-load pattern.
+  - The load stages are visible as `performance.measure` entries named `inline3d:*`.
+
 ## 1.10.0 — 2026-09-23
 
 Touches the **core tier** (`.`), additively. The frozen 1.x surface gains one handle member and
