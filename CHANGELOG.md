@@ -5,6 +5,41 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — 1.11.0 (minor)
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), additively. Nothing changes
+for a page that does not pass `controls: 'page'`.
+
+### Added
+
+- **`controls: 'page'`: the page owns the camera.** This is for a game, or any page with its own
+  camera (F1000's phase 1). With `addSplat(…, { engine: 'playcanvas', controls: 'page' })` the
+  adapter runs no orbit, idle spin, auto-fit or focus gestures. It keeps the eye math: the
+  `RenderView` list, the footprint fix, near/far and the mono fallback.
+  - **`handle.setCameraPose(matrixWorld, { verticalFovDeg, near?, far?, convergence? })`**, called
+    every frame. `matrixWorld` is the page camera in the splat's own space (three.js convention).
+    A uniform scale is allowed: F1000 passes `inv(splatWorld) · camera.matrixWorld`, which carries
+    0.4. The adapter applies the OpenCV → engine flip itself. The last call wins, and a page that
+    stops calling keeps its last pose. **`handle.getCameraPose()`** returns a copy of it.
+  - **`onBeforeFrame(frame)`** (`{ time, views, dt }`) runs once per adapter frame, before
+    anything renders. A pose set inside it is what that frame draws, with zero lag. A throw is
+    warned once and frames keep rendering.
+  - **Mono** renders exactly that camera: fov × canvas aspect, principal point centred.
+  - **3D** is the attach pattern. Each eye = `matrixWorld × view.transform`, with the runtime's
+    projection untouched: the page's near/far rewrite only the depth mapping. The rig is declared
+    every frame and is the auto-3D shim's, field for field: `type: 'camera'`, identity pose,
+    `verticalFov`, `convergenceDiopters = 1/d`, `metersToVirtual = comfortDepth · d / 0.5`.
+    **`comfortDepth`** is a new option, default 0.3, in (0, 1].
+  - `d` is the page's `convergence`, else the focus waterfall's. It stays fixed while the camera
+    moves and is re-estimated only on `setSource`. `setFocus(point)` sets `d` to the point's
+    distance along the view axis. `getFocus` / `onFocusChange` report the convergence point.
+  - `setPose` / `resetPose` throw, and `rig: 'display'` throws. `fit`, `virtualDisplayHeight`,
+    `orbit`, `idleSpin`, `focusInput` and the other framing/orbit knobs are ignored, named once in
+    a `console.info`.
+  - **Spark:** `controls: 'page'` throws, naming `engine: 'playcanvas'`. Spark would need
+    SceneViewer (shared with `./viewer` and `./model`) to take an external camera on both its
+    paths.
+
 ## 1.10.1 — 2026-09-23
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), and `boundsFromPositions` in
