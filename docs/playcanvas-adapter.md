@@ -113,6 +113,45 @@ so **`nearClip` / `farClip`** (both optional, `perf`-independent) are a **floor 
 on far**. They never widen the range, and they rewrite only the depth mapping, not the frustum.
 Anything nearer than `nearClip` is clipped, splats included.
 
+## `setSource` — what a swap costs the main thread
+
+Measured in headless Chrome 153 on an M1 Pro. The swap is `ports_25.sog` → `ports_100_cam.sog`
+(1,179,648 gaussians, bytes), `fadeMs: 0`, 3 fresh browsers each. The "4× CPU" rows use DevTools
+CPU throttling as a stand-in for a tablet. Long tasks come from a `longtask` PerformanceObserver.
+The gap is the longest time between two rAFs during the swap and the second after it.
+
+| | longest main-thread task | longest rAF gap | swap wall time |
+|---|---|---|---|
+| 1.10.0, 1× CPU | 60–64 ms | 65–77 ms | 195–202 ms |
+| **1.10.1**, 1× CPU | **none over 50 ms** | **35–44 ms** | 152–161 ms |
+| 1.10.0, 4× CPU | 218–238 ms (plus more: 318–354 ms blocked in total) | 233–249 ms | 460–497 ms |
+| **1.10.1**, 4× CPU | **60–65 ms** (one task, the engine's) | **102–122 ms** | 301–352 ms |
+| 1.10.0 / 1.10.1, 1× CPU, `fadeMs: 500` | 56–58 ms / none | 68–79 ms / 42–52 ms | 704–726 / 662–704 ms |
+
+Where the time goes. The SDK's stages show as `performance.measure` entries named
+`inline3d:*`, visible in DevTools; these are the 1× figures.
+- **The engine's SOG load: about 90–110 ms of wall time, almost all of it asynchronous.** At
+  2.22.3 the WebP planes decode through `createImageBitmap`, which is asynchronous and off the
+  main thread in Chromium (its synchronous part measured 0.0–0.2 ms per plane). The zip entries
+  inflate through `DecompressionStream`. The GPU centre pass plus its readback (`generateCenters`)
+  is asynchronous, 35–56 ms of wall time. Texture uploads cost 1–3 ms each.
+- **The one long task left is the engine's**: its end-of-load work (unpacking the centre readback
+  into a Float32Array and building the resource). That is about 15 ms at 1× and **60–65 ms per
+  1.18M gaussians at 4× CPU**. The engine at 2.22.3 has no worker or asynchronous parse path for a
+  bundled SOG. Safari has no `createImageBitmap` path in the engine (`supportsImageBitmap` is false
+  there), so the WebP decode lands on the main thread at texture upload. That was NOT measured.
+- **The SDK's own passes were the rest:** the strided cloud copy (9 ms), the opacity pass (4 ms),
+  the framing percentiles (46 ms, now 15 ms with a linear-time select), the rest-space sample and
+  the pick set (4 ms). They used to run in one task, stacked on the engine's. Each now runs in its
+  own task, with a yield (`scheduler.yield()` where available) in between. The numbers are the
+  same: the framing's percentile values are bit-identical, by test.
+
+**Recommended pattern for a document that swaps photos.** Call `setSource` for the next photo well
+before the user navigates to it. The load and decode run while the current one is still on screen,
+and the crossfade itself costs no long task. Keep a poster for the first paint and gate on the
+`firstWoven` promise as before. On a slow device, expect one ~60 ms main-thread hitch per 1M
+gaussians from the engine, per swap.
+
 ## `perf` on this engine
 
 | Spark knob | engine | note |
@@ -153,6 +192,9 @@ and `resetPose`.
   surface raycast (Spark tries its raycast first). On a Streamed SOG it runs over the resident
   chunks only.
 - **`setSource`** is PlayCanvas-only; on Spark it throws.
+- **No sky box.** The eye camera renders without the engine's Skybox layer, so nothing is drawn
+  behind the splat even when a page sets `scene.envAtlas` to light its own meshes. A hidden splat
+  shows the page, not a grey gradient box. Pass `sky: true` for the engine's sky (1.10.1).
 - **`sortIntervalMs` is a no-op**: the engine re-sorts on camera rotation, with one directional
   sort for every view.
 - **URL `.sog` gets its `camera` block** (the engine keeps unknown `meta.json` keys). On Spark,
