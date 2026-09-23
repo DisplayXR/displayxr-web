@@ -16,7 +16,7 @@ repo's root [`index.html`](../index.html), published at
 | [`wall-3d/`](wall-3d/) | A long lazy-loading scrolling wall: layers created as tiles near the viewport, closed as they leave. |
 | [`demo-gallery/`](demo-gallery/) | A grid of the DisplayXR demo logos woven as tiles — the compact multi-element weave. |
 | [`sticky-header/`](sticky-header/) | The chrome-occlusion path: a sticky translucent bar the wall scrolls under, with no page wiring. |
-| [`composition/`](composition/) | **The 14-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
+| [`composition/`](composition/) | **The 15-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
 | [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, auto-framed, with a 2D price plate over it. |
 | [`model/`](model/) | `addModel()`: a glTF mesh, a mesh + splat sharing one scene, and a Draco-compressed glTF. |
 | [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
