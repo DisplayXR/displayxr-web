@@ -279,6 +279,19 @@ export interface SplatHandle {
     point: number[] | { x: number; y: number; z: number } | null,
     opts?: { snap?: boolean },
   ): SplatHandle;
+  /**
+   * Swap the asset (URL or bytes) in place. PlayCanvas backend only — throws on Spark.
+   *
+   * The new file loads BEHIND the current one; then the two crossfade over `fadeMs` (0 = a cut)
+   * and the old one is released. The rig waterfall re-runs for the new file (rig, lens, focus and
+   * frame update; `onFocusChange` fires). The pose (yaw/pitch/zoom/depth) is kept unless
+   * `resetPose`. A newer call supersedes an older one still loading. Resolves once the fade has
+   * finished; rejects if the new asset cannot be loaded (the current one stays on screen).
+   */
+  setSource(
+    src: string | Blob | ArrayBuffer | Uint8Array,
+    opts?: { fadeMs?: number; resetPose?: boolean },
+  ): Promise<SplatHandle>;
   /** What is under a point on the canvas, in the splat's own space — the double-click's raycast. */
   pick(clientX: number, clientY: number): number[] | null;
 

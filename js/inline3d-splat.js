@@ -286,6 +286,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
+    /** Not on this backend: the crossfading asset swap is a PlayCanvas-backend feature. */
+    setSource() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setSource() is implemented on the PlayCanvas backend " +
+          "only; with the Spark backend, remove() this handle and addSplat() the new asset.",
+      );
+    },
   };
 
   // `src` may be a URL or the bytes themselves.
@@ -569,6 +576,9 @@ function addSplatDeferred(wall, canvas, src, opts) {
     setPose: queue('setPose'),
     resetPose: queue('resetPose'),
     setFocus: queue('setFocus'),
+    // A swap requested before the first asset has landed runs once it has (the adapter's own
+    // setSource replaces this stub on the same object by then).
+    setSource: (...args) => out.ready.then(() => out.setSource(...args)),
     getFocus: () => null,
     // A plain data slot the adapter reads at call time, so a callback assigned on the very next
     // line after addSplat — before the module has loaded — is the one that fires.
@@ -582,7 +592,8 @@ function addSplatDeferred(wall, canvas, src, opts) {
   out.ready = import('./inline3d-splat-playcanvas.js')
     .then((m) => m.attachPlayCanvasSplat(out, wall, canvas, src, opts, pending))
     .catch((err) => {
-      console.warn('[inline3d/splat] failed to load (engine:playcanvas)', src, err);
+      // The adapter warns about its own load failures; this is for the module not arriving.
+      if (!out.viewer) console.warn('[inline3d/splat] engine:playcanvas failed to start', err);
       throw err;
     });
   return out;
