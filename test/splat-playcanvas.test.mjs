@@ -855,6 +855,13 @@ test('setSource crossfades: new fades 0→1, old 1→0, old released after; rig 
   assert.equal(e2.gsplat.getParameter('dxrFade'), 0, 'the new asset starts invisible');
   assert.match(e2.gsplat.modifier.glsl, /color\.a \*= dxrFade/);
   assert.equal(e2.gsplat.workBufferUpdate, 2, 'work buffer re-rendered every frame while fading');
+  // The clock starts on the second tick (the first frame builds the new work buffer): a slow
+  // first frame must not eat the fade.
+  T += 800; // a slow build frame
+  out.viewer._tick();
+  assert.equal(e2.gsplat.getParameter('dxrFade'), 0, 'still 0 after the build frame');
+  out.viewer._tick(); // clock starts here
+  assert.equal(e2.gsplat.getParameter('dxrFade'), 0);
   T += 50;
   out.viewer._tick();
   near(e2.gsplat.getParameter('dxrFade'), 0.5, 1e-9, 'half way in');

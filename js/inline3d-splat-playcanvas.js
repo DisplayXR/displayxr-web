@@ -1863,7 +1863,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     pendingSwap?.finish();
     await new Promise((resolve) => {
-      const t0 = now();
+      // The fade clock starts on the SECOND tick after the swap, not now: the first frame that
+      // draws the new asset also builds its work buffer (hundreds of ms for a 1M-splat file), and
+      // a clock started before it would spend the whole fade inside that one frame — a cut, not a
+      // crossfade (found by screenshotting mid-fade).
+      let t0 = null;
+      let ticks = 0;
       const finish = () => {
         setFade(pc, entity, null);
         release();
@@ -1875,6 +1880,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       viewer._hooks.push((t) => {
         if (removed) return (resolve(), false);
         if (pendingSwap?.finish !== finish) return false; // superseded: already finished
+        if (++ticks < 2) return true;
+        if (t0 === null) t0 = t;
         const k = Math.min(1, Math.max(0, (t - t0) / fade));
         setFade(pc, entity, k);
         setFade(pc, prev.entity, 1 - k);
