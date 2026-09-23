@@ -113,7 +113,10 @@ export function frustumFromProjection(P) {
     fov: (2 * Math.atan(1 / P[5])) / DEG,
     aspectRatio: P[5] / P[0],
     nearClip: P[14] / (P[10] - 1),
-    farClip: P[14] / (P[10] + 1),
+    // An infinite-far projection has P[10] = -1 exactly (three's and WebXR's reversed/infinite
+    // forms both land here), which would put -Infinity/NaN into setXrProperties. Clamp to the
+    // same large finite far the capture camera uses.
+    farClip: Math.abs(P[10] + 1) < 1e-9 ? CAPTURE_FAR : P[14] / (P[10] + 1),
   };
 }
 
@@ -743,7 +746,19 @@ export class PlayCanvasSplatViewer {
     // no-op. Deliberately NOT calling setCanvasResolution/setCanvasFillMode: without explicit
     // sizes both write the canvas (a NaN buffer width → 0, and inline `style.width`), which
     // would break the page's own responsive CSS.
-    if (app.resolutionMode !== pc.RESOLUTION_FIXED) app.setCanvasResolution(pc.RESOLUTION_FIXED, this.canvas.width, this.canvas.height);
+    //
+    // INVARIANT: the canvas buffer is written ONLY by this module's _resize (canvas.width/height,
+    // already in device pixels). Never route a size through the engine: setCanvasResolution →
+    // device.resizeCanvas multiplies by DPR a second time (a 2560×720 SBS buffer would become
+    // 5120×1440 on a DPR-2 display while the SDK still believes 2560×720). If a future engine
+    // changes the default away from FIXED, say so rather than "fixing" it through the engine.
+    if (app.resolutionMode !== pc.RESOLUTION_FIXED) {
+      console.warn(
+        '[inline3d/splat] engine:playcanvas — AppBase.resolutionMode is not RESOLUTION_FIXED on ' +
+          'this engine build; the engine may resize the canvas behind the SDK. Tested: ' +
+          PLAYCANVAS_TESTED + '.',
+      );
+    }
     // The SDK's frame drives the engine: no second rAF. `tick` is the engine's own loop body.
     app.requestAnimationFrame = () => {};
     this.app = app;

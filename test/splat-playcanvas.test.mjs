@@ -560,3 +560,14 @@ test('perf:false leaves the engine’s gsplat params and shader chunks untouched
   assert.equal(rec.chunks.has('gsplatCornerVS'), true, 'the footprint FIX is not a perf knob');
   v.dispose();
 });
+
+test('frustumFromProjection: an infinite-far projection gives a large FINITE far, never -Infinity/NaN', () => {
+  // three/WebXR infinite form: P[10] = -1, P[14] = -2·near.
+  const P = perspectiveFov(40, 1.5, 0.05, 100);
+  P[10] = -1;
+  P[14] = -2 * 0.05;
+  const f = frustumFromProjection(P);
+  assert.ok(Number.isFinite(f.farClip) && f.farClip >= 1000, `far ${f.farClip}`);
+  near(f.nearClip, 0.05, 1e-12, 'near still recovered');
+  near(f.fov, 40, 1e-9, 'fov still recovered');
+});
