@@ -1,0 +1,13 @@
+{
+  "name": "dxr-auto3d-shim-harness",
+  "private": true,
+  "type": "module",
+  "description": "Headless harness for tools/auto3d-shim: a fake inline-3d session + real-GPU Chrome via puppeteer-core. Not part of the SDK's npm test.",
+  "scripts": {
+    "deps": "node deps.mjs",
+    "test": "node deps.mjs && node run.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.0.0"
+  }
+}

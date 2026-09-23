@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- TEST PAGE — a PlayCanvas gaussian-splat page (2.x, ESM; exposes window.app like
+     supersplat-viewer's exposeGlobals, but no window.pc). Loads /bench/ports_25.sog, flips it
+     OpenCV → GL (180° about X, as the SDK does), and puts the camera 2.5 bounding radii in front of
+     the splat's bounds centre: expected convergence = that distance (window.__expectedConvergence). -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas gsplat (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#101010}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="splat-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const canvas = document.getElementById('splat-canvas');
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
+window.app = app;
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.06, 0.06, 0.06), fov: 50, nearClip: 0.05, farClip: 1000 });
+app.root.addChild(camera);
+app.start();
+const asset = new pc.Asset('ports', 'gsplat', { url: '/bench/ports_25.sog' });
+app.assets.add(asset);
+asset.ready(() => {
+  const e = new pc.Entity('splat');
+  e.addComponent('gsplat', { asset });
+  e.setLocalEulerAngles(180, 0, 0);
+  app.root.addChild(e);
+  const bb = e.gsplat.customAabb;
+  const m = e.getWorldTransform();
+  const c = new pc.Vec3(); m.transformPoint(bb.center, c);
+  const r = bb.halfExtents.length();
+  const d = 2.5 * r;
+  camera.setPosition(c.x, c.y, c.z + d);
+  camera.lookAt(c);
+  camera.camera.nearClip = d * 0.01; camera.camera.farClip = d * 10;
+  window.__expectedConvergence = d;
+  window.__splatReady = true;
+});
+app.assets.load(asset);
+</script>
+</body></html>
