@@ -19,7 +19,7 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   `.splat` and `.ksplat` are Spark-only: with `engine: 'playcanvas'`, `addSplat` **throws at call
   time** when it can tell (a URL extension, gzip bytes, a Spark-only `fileType`).
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
-  large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, and `captureFit` (both backends).
+  large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, `zoom` (§Zoom bounds and relax), and `captureFit` (both backends).
 - **Extra handle members:** `setSource(src, { fadeMs, resetPose, transition, reveal })` (it throws
   on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
   `setEffect`, `stopEffect`, `effects()` ([`splat-effects.md`](splat-effects.md)).
@@ -427,7 +427,7 @@ inside the call) and null in mono; `dt` is in seconds, capped at 0.1.
 - `rig: 'display'` throws: the page's camera *is* the rig. `rig: 'auto'` resolves to `camera`.
 - `setSource`'s `resetPose` is ignored.
 - `fit`, `virtualDisplayHeight`, `orbit`, `idleSpin`, `focusInput`, `margin`, `fitSweep`,
-  `depthLimit`, `orbitMaxDeg`, `orbitEase` and `captureFit` are ignored, named once in a
+  `depthLimit`, `orbitMaxDeg`, `orbitEase`, `zoom` and `captureFit` are ignored, named once in a
   `console.info`.
 - **Spark:** `controls: 'page'` throws at call time, naming `engine: 'playcanvas'`. Supporting it
   there means teaching SceneViewer to take an external camera in both its mono and eye paths.
@@ -571,6 +571,33 @@ engine defaults, untouched. `splatBudget` is a no-op on a flat `.sog`: 1,179,648
 drawn at a 600k budget. It only acts on a Streamed SOG, where it defaults to **600k per tile**
 (both eyes included) instead of the engine's 1M; `perf: false` keeps the 1M (§Streamed SOG).
 
+## Zoom bounds and relax
+
+`zoom: { min, max, relax, ease }` (1.19). The defaults are the old behaviour: a 0.2–6 range and no
+relax.
+
+- **Input.** The wheel (a trackpad pinch arrives as a ctrl-wheel and takes the same path) and a
+  **two-finger pinch** (Pointer Events; zoom = the zoom at the second touch × the ratio of the
+  fingers' spread) both clamp to `[min, max]`, and so does `setPose({ zoom })`. The second finger
+  ends a drag, whose tilt relaxes, and the finger left after a pinch does not orbit.
+- **Relax.** With `relax: true` the zoom eases back to its rest (1×, or the last `setPose` zoom)
+  once the wheel has been idle for 150 ms (`ZOOM_WHEEL_IDLE_MS`) or the pinch ends. It never
+  starts during a live gesture. It is the orbit's exponential (τ = `ease`, default
+  `ORBIT_TAU_REST_S` = 0.6 s) in log-zoom, with one addition: it never moves slower than
+  `ZOOM_RELAX_MIN_RATE` (0.025 log-zoom/s). A pure exponential leaves 2× at 1.003× after 3 s, which
+  is still visible against the rest render. With the floor, 2× lands exactly on 1× in about 2.9 s,
+  with no snap. A wheel tick mid-relax continues from where the zoom is.
+- **About the focus.** The pivot is `T(orbitCentre + depth) · R · S(fit × zoom) · T(−focus)`, so
+  the zoom scales the subject about the focus. The focus keeps its display position, so it keeps
+  its screen position in each eye and its disparity (zero when it sits on the glass).
+- **Gate** (Apple M1 Pro, ANGLE Metal, headless, 1280×720 canvas, `{ min: 1, max: 2, relax: true }`):
+  - Ten wheel-out notches from rest leave the zoom at 1 (MAE 0 against the rest render).
+  - A wheel-in or pinch reaches the 2× cap. After release the render is at MAE 0 against rest by
+    3 s.
+  - Fake stereo: the focus's predicted disparity is identical at 1×, 1.5× and 2×, both on the zero
+    plane and off it. The measured disparity agrees within patch-match noise (4–8 px vs 0; 103–105
+    vs 99.6).
+
 ## Divergences from the Spark path
 
 What is left after the parity pass. Everything else is the same option, the same method and the
@@ -582,6 +609,8 @@ and `resetPose`.
   from the press, and capped at ±`orbitMaxDeg` (15°). It eases with τ = 0.2 s and relaxes back to
   rest with τ = 0.6 s on release. SceneViewer (Spark) still turns cumulatively (a full-width drag
   = 180°). The constants are shared, so switching Spark over later is a one-line change.
+- **Zoom bounds, relax and pinch are PlayCanvas-only** (§Zoom bounds and relax). SceneViewer keeps
+  the fixed 0.2–6 wheel range and has no pinch.
 - **`handle.viewer` is a `PlayCanvasSplatViewer`.** It has the same pose surface and constants,
   but it is **not** field-compatible with SceneViewer: pages that write SceneViewer's private
   fields (`_targetYaw`, `_fitScale`, `_eye`, `monoCamera`, …) need a path for this backend.

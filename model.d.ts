@@ -117,6 +117,8 @@ export interface ModelOptions {
   orbitMaxDeg?: number;
   /** PlayCanvas only: the orbit's easing time constants, seconds. */
   orbitEase?: { drag?: number; rest?: number };
+  /** PlayCanvas only: zoom bounds + relax (wheel, pinch, setPose) — see the splat option. */
+  zoom?: { min?: number; max?: number; relax?: boolean; ease?: number };
   /**
    * PlayCanvas only: who owns the camera — the SDK's viewer (default) or the page, through
    * {@link ModelHandle.setCameraPose} every frame (the attach rig; converges on the model's bounds

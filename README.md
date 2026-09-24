@@ -45,7 +45,8 @@ API is not yet covered by the semver promise below.
 renders the same splat window with the [PlayCanvas](https://playcanvas.com/) engine instead of
 Spark — same handle, same rig/focus/camera-block behaviour, same `perf` presets (mapped onto the
 engine's knobs) — and adds `setSource(src, { fadeMs })` (crossfading asset swaps), `feather`, a
-tilt-and-relax orbit, `handle.engine` (the engine objects, for advanced pages) and
+tilt-and-relax orbit, two-finger pinch plus bounded zoom that relaxes back to rest
+(`zoom: { min, max, relax }`, [§Zoom bounds and relax](docs/playcanvas-adapter.md#zoom-bounds-and-relax)), `handle.engine` (the engine objects, for advanced pages) and
 `handle.setRig('display' | 'camera' | 'auto')`: a live, reversible rig switch, so one persistent tile
 can show a glTF under `handle.engine.root` exactly as `addModel` would and then go back to the photo's
 capture rig ([§setRig](docs/playcanvas-adapter.md#setrig--switching-between-the-display-rig-and-the-camera-rig-36)), and
