@@ -56,6 +56,8 @@ export {
   // setSource's frame snapshot
   RenderTarget,
   FILTER_NEAREST,
+  // setSource's live outgoing asset (./inline3d-splat-live.js)
+  Layer,
   // splats
   WORKBUFFER_UPDATE_AUTO,
   WORKBUFFER_UPDATE_ALWAYS,

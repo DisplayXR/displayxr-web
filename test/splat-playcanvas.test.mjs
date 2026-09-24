@@ -1604,7 +1604,7 @@ test('selectKth is the sorted k-th element (NaN last, duplicates, extremes) — 
   near(b.extent[2], 9, 1e-6);
 });
 
-test('the cloud passes yield between steps (source check: each in its own task)', async () => {
+test('the cloud passes yield between steps (source check: each in its own task; `y` = yieldToMain, or yieldIdle for prepareSource)', async () => {
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../js/inline3d-splat-playcanvas.js', import.meta.url), 'utf8');
   const body = src.slice(src.indexOf('async function loadOne('), src.indexOf('function applyLoaded('));
@@ -1613,7 +1613,236 @@ test('the cloud passes yield between steps (source check: each in its own task)'
   for (const name of order) {
     const i = body.indexOf(`perfSpan('${name}'`, at);
     assert.ok(i > at, name);
-    assert.ok(body.slice(at, i).includes('await yieldToMain()'), `a yield before ${name}`);
+    assert.ok(/await (yieldToMain|y)\(\)/.test(body.slice(at, i)), `a yield before ${name}`);
     at = i;
   }
 });
+
+// ── 13b. setSource: LIVE outgoing + prepareSource (./inline3d-splat-live.js) ─────────────────
+
+/** The fake engine plus what the live path touches: layers, targets, RenderViews, the director. */
+async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100 } = {}) {
+  installDom();
+  const clock = { T: 1000 };
+  t.mock.method(performance, 'now', () => clock.T);
+  const { pc, rec } = makeFakePc();
+  pc.Texture = class { constructor(d, o) { this.o = o; } destroy() { this.destroyed = true; } };
+  pc.RenderTarget = class { constructor(o) { this.o = o; } destroy() { this.destroyed = true; } };
+  pc.Layer = class { constructor(o) { this.name = o.name; this.id = 1000; } };
+  pc.RenderView = class {
+    setView(p, v) { this.proj = Float64Array.from(p); this.pose = Float64Array.from(v); }
+    setViewport(...a) { this.vp = a; }
+  };
+  Object.assign(pc, { PIXELFORMAT_RGBA8: 7, FILTER_NEAREST: 0, ADDRESS_CLAMP_TO_EDGE: 1, BLENDMODE_ONE: 'ONE', BLENDMODE_ONE_MINUS_SRC_ALPHA: 'OMSA' });
+  pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); };
+  pc.Entity.prototype.getLocalPosition = () => ({ x: 0, y: 0, z: 0 });
+  pc.Entity.prototype.getLocalRotation = () => ({ x: 0, y: 0, z: 0, w: 1 });
+  rec.queue = [fakeFlat(600, 0), fakeFlat(600, 5), fakeFlat(600, 9)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  const v = out.viewer;
+  v.app.graphicsDevice.copyRenderTarget = () => true;
+  const pushed = [];
+  v.app.scene.layers.push = (l) => pushed.push(l);
+  const camerasMap = new Map();
+  v.app.renderer = { gsplatDirector: { camerasMap } };
+  const frame = (dt = 0) => {
+    clock.T += dt;
+    v._tick();
+    v._drawMono();
+  };
+  const opts = { transition, durationMs, ...(outgoing ? { outgoing } : {}) };
+  return { pc, rec, out, v, clock, frame, pushed, camerasMap, opts };
+}
+
+/** Make the director report a sorted manager for the live camera (what `ready` reads). */
+function sortLive(v, camerasMap) {
+  const live = v._live;
+  const world = { lastWorldStateVersion: 3, getState: (n) => (n === 3 ? { sortedBefore: true } : null) };
+  camerasMap.set(live.cam.camera.camera, { layersMap: new Map([[live.layer, { gsplatManager: { world } }]]) });
+}
+
+test('LIVE outgoing: the old asset moves to its own layer + camera + target, keeps rendering, the overlay switches to it once sorted', async (t) => {
+  const { rec, out, v, frame, pushed, camerasMap, opts, clock } = await liveRig(t);
+  const e1 = out.mesh.entity;
+  const a1 = out.mesh.asset;
+  const done = out.setSource('b.sog', opts);
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick(); // the frozen bridge is captured
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  const live = v._live;
+  assert.ok(live?.active, 'live window open');
+  assert.equal(pushed.length, 1, 'one layer, added to the composition');
+  assert.equal(pushed[0].name, 'inline3d-outgoing');
+  assert.equal(e1.enabled, true, 'the outgoing asset stays resident and drawn');
+  assert.deepEqual(e1.gsplat.layers, [pushed[0].id], 'ONLY on the live layer (one manager per camera × layer)');
+  assert.equal(e2.gsplat.layers, undefined, 'the incoming asset keeps the default World layer (the eye camera)');
+  assert.equal(live.cam.enabled, true);
+  assert.deepEqual(live.cam.camera.layers, [pushed[0].id], 'the live camera sees only its layer');
+  assert.equal(live.cam.camera.priority, -1, 'renders before the eye (whose overlay samples it)');
+  assert.equal(live.cam.camera.renderTarget, live.rt);
+  assert.equal(live.tex.o.width, v.canvas.width, 'target = the whole buffer, every eye where it sits');
+  assert.equal(live.tex.o.height, v.canvas.height);
+  const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
+  const src = () => parts[1].material.params.get('dxrSnap');
+  assert.equal(src(), v._snap.tex, 'the frozen capture bridges until the live camera has sorted');
+  frame();
+  assert.equal(src(), v._snap.tex, 'still frozen: no sorted manager yet');
+  // The live camera's views are the eye's: same projection and pose, same viewport.
+  assert.equal(live.views.length, 1);
+  assert.deepEqual([...live.views[0].proj], [...v.mono.proj]);
+  assert.deepEqual([...live.views[0].pose], [...v.mono.pose]);
+  sortLive(v, camerasMap);
+  frame(); // the hook sees `ready`
+  assert.equal(src(), live.tex, 'overlay now samples the LIVE target');
+  frame(); // clock starts (second tick)
+  clock.T += 50;
+  frame();
+  near(parts[1].material.params.get('dxrSnapAlpha'), 0.5, 1e-9, 'the same lerp, now of two live images');
+  assert.equal(e1.enabled, true);
+  clock.T += 60;
+  frame();
+  await done;
+  assert.equal(live.active, false, 'window closed');
+  assert.equal(live.cam.enabled, false, 'camera off: the director drops its manager');
+  assert.equal(live.rt, null, 'target freed');
+  assert.equal(src(), v._snap.tex, 'overlay back on the frozen source for the next swap');
+  assert.ok(parts.every((mi) => !mi.visible), 'overlay hidden: exactly the untouched incoming asset');
+  assert.equal(e1.enabled, false, 'the outgoing asset released at the end');
+  for (let i = 0; i < 4; i++) frame(16);
+  assert.ok(e1.destroyed && rec.removed.includes(a1) && a1.unloaded, 'and destroyed + unloaded a few frames later');
+  out.remove();
+});
+
+test("outgoing:'frozen' keeps the 1.12.1 path (old asset released at once, no live camera); a bad value throws before loading", async (t) => {
+  const { out, v, opts } = await liveRig(t, { outgoing: 'frozen' });
+  const e1 = out.mesh.entity;
+  await assert.rejects(out.setSource('x.sog', { transition: 'crossfade', outgoing: 'moving' }), /outgoing 'moving' — expected 'live' or 'frozen'/);
+  const done = out.setSource('b.sog', opts);
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  assert.equal(e1.enabled, false, 'frozen: the snapshot shows it — released at once');
+  assert.ok(!v._live?.active, 'no live window');
+  out.setSource('c.sog', { transition: 'cut' }); // supersedes; the crossfade finishes
+  await done;
+  out.remove();
+});
+
+test('LIVE outgoing with the wavefront: live during the wipe, stopped + released when it ends; a resize mid-window ends it', async (t) => {
+  const { out, v, frame, camerasMap, opts } = await liveRig(t, { transition: 'wavefront', durationMs: 100 });
+  const e1 = out.mesh.entity;
+  let done = out.setSource('b.sog', opts);
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  assert.ok(v._live.active && e1.enabled);
+  sortLive(v, camerasMap);
+  for (let i = 0; i < 40; i++) {
+    frame(10);
+    await new Promise((r) => setTimeout(r, 0)); // the effect's gate resolves between frames
+  }
+  await done;
+  assert.equal(v._live.active, false);
+  assert.equal(e1.enabled, false);
+  // A resize mid-window: the target no longer fits the buffer — the transition ends at once.
+  const e2 = out.mesh.entity;
+  done = out.setSource('c.sog', { ...opts, durationMs: 10000 });
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e2);
+  frame(10);
+  v.canvas.width = 999;
+  frame(10);
+  frame(10);
+  await done;
+  assert.equal(v._live.active, false, 'stopped');
+  assert.equal(e2.enabled, false, 'released');
+  out.remove();
+});
+
+test('a newer setSource supersedes a live window: it closes (camera off, old asset released) before the next swap starts', async (t) => {
+  const { out, v, frame, opts } = await liveRig(t, { durationMs: 10000 });
+  const e1 = out.mesh.entity;
+  const first = out.setSource('b.sog', opts);
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  frame(10);
+  assert.ok(v._live.active);
+  const second = out.setSource('c.sog', { transition: 'cut' });
+  await first;
+  assert.equal(v._live.active, false);
+  assert.equal(e1.enabled, false);
+  await second;
+  out.remove();
+});
+
+test('outgoingChain: N = R_o·K_o·D_o·(K_n·D_n)⁻¹ — the old lens frame seen through the new one; two identical frames cancel to R_o', async () => {
+  const { outgoingChain } = await import('../js/inline3d-splat-live.js');
+  const q = (deg) => [0, Math.sin((deg * Math.PI) / 360), 0, Math.cos((deg * Math.PI) / 360)];
+  const compose = (ch) => {
+    const trs = (x) => { const m = poseMatrix(x.position, x.rotation); for (let i = 0; i < 12; i++) if (i % 4 !== 3) m[i] *= x.scale; return m; };
+    const S = poseMatrix([0, 0, 0], [0, 0, 0, 1]);
+    S[0] = ch.scale[0]; S[5] = ch.scale[1]; S[10] = ch.scale[2];
+    return mat4Mul(mat4Mul(trs(ch.n1), S), trs(ch.n3));
+  };
+  const D = (c, tt) => { const m = poseMatrix([0, 0, 0], [0, 0, 0, 1]); m[0] = c * tt; m[5] = c * tt; m[10] = c; return m; };
+  const R = poseMatrix([0.1, -0.2, 0.3], q(12));
+  for (let i = 0; i < 12; i++) if (i % 4 !== 3) R[i] *= 1.7; // the rig scale (fit)
+  const oldF = { rig: R, pose: poseMatrix([0, 0, 0.4], q(-5)), c: 0.9, t: 0.35 };
+  const newF = { rig: poseMatrix([0, 0, 0], [0, 0, 0, 1]), pose: poseMatrix([0.05, 0, 0.2], q(8)), c: 2.4, t: 0.52 };
+  const N = compose(outgoingChain(oldF, newF));
+  // N · K_n · D_n must equal R_o · K_o · D_o: the new window maps onto the old one.
+  const lhs = mat4Mul(N, mat4Mul(newF.pose, D(newF.c, newF.t)));
+  const rhs = mat4Mul(oldF.rig, mat4Mul(oldF.pose, D(oldF.c, oldF.t)));
+  for (let i = 0; i < 16; i++) assert.ok(Math.abs(lhs[i] - rhs[i]) < 1e-9, `N·K_n·D_n [${i}] ${lhs[i]} vs ${rhs[i]}`);
+  const same = compose(outgoingChain(oldF, { ...oldF, rig: newF.rig }));
+  for (let i = 0; i < 16; i++) assert.ok(Math.abs(same[i] - R[i]) < 1e-9, 'same lens → the old rig node alone');
+});
+
+test('prepareSource: loads in the background, setSource(prepared) swaps with no load; single use; dispose() unloads; remove() drops what is left', async (t) => {
+  const { rec, out, v, opts } = await liveRig(t, { outgoing: 'frozen' });
+  const loads = [];
+  const load0 = v.app.assets.load;
+  v.app.assets.load = (a) => (loads.push(a.name), load0(a));
+  const prepared = await out.prepareSource('b.sog');
+  assert.deepEqual(loads, ['b.sog'], 'fetched + decoded + uploaded now');
+  assert.equal(prepared.state, 'ready');
+  assert.equal(prepared.numSplats, 600);
+  const e1 = out.mesh.entity;
+  const done = out.setSource(prepared, opts);
+  await settle(() => v._captureWaiters.length === 1);
+  assert.deepEqual(loads, ['b.sog'], 'no second load on the transition path');
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  assert.equal(out.mesh.asset.name, 'b.sog');
+  assert.equal(prepared.state, 'used');
+  await assert.rejects(out.setSource(prepared), /prepared source that was already used/);
+  const p2 = await out.prepareSource('c.sog');
+  p2.dispose();
+  assert.equal(p2.state, 'disposed');
+  const a2 = rec.removed.at(-1);
+  assert.ok(a2.name === 'c.sog' && a2.unloaded, 'dispose() removes + unloads the asset');
+  await assert.rejects(out.setSource(p2), /already disposed/);
+  const p3 = await out.prepareSource('c.sog');
+  await assert.rejects(out.setSource({ ...p3 }), /from another handle/); // a copy: not ours
+  out.setSource('d.sog').catch(() => {});
+  await done;
+  out.remove();
+  assert.equal(p3.state, 'disposed', 'remove() disposes a prepared asset nobody used');
+});
+
+test('boundsFromPositionsAsync: bit-identical to boundsFromPositions, yielding between the per-axis selections and the window pass', async () => {
+  const { boundsFromPositions: sync, boundsFromPositionsAsync } = await import('../js/inline3d-viewer.js');
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const xyz = new Float32Array(30000 * 3).map((_, i) => (i % 3 === 2 ? 2 + rnd() : rnd() - 0.5) * (i === 99 ? 1e4 : 1));
+  let yields = 0;
+  const a = await boundsFromPositionsAsync(xyz, undefined, async () => { yields++; });
+  assert.deepEqual(a, sync(xyz));
+  assert.equal(yields, 3, 'one per axis (the last before the window pass)');
+  assert.deepEqual(await boundsFromPositionsAsync(xyz.subarray(0, 30), undefined, async () => {}), sync(xyz.subarray(0, 30)), 'untrimmed small set');
+});
+
