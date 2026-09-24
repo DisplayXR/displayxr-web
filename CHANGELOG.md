@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased — 1.12.0 (minor, BEHAVIOUR CHANGE: addModel renders with PlayCanvas by default; `engine:'three'` keeps 1.11)
+## 1.12.0 — 2026-09-24
 
 Touches the **preview tier** (`./model`, and `./splat`'s `engine: 'playcanvas'` import path). A
 page that calls `addModel` without `engine` now renders with PlayCanvas and **looks different**:
