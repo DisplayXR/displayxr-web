@@ -22,6 +22,43 @@ Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No pixel 
   frame time at 4× CPU throttling went from 1.9–2.1 ms to 0.2–0.7 ms. GPU-synced frame time at 1×
   went from 16.0 ms to 14.4–14.6 ms, the same as after a `crossfade` (14.3–14.7 ms), which never
   had the bug.
+## Unreleased — minor
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). One default changes pixels
+DURING a transition in a woven 3D session (the old photo is now live); end states and 2D are
+unchanged.
+
+### Changed
+
+- **`crossfade` / `wavefront`: the outgoing photo is LIVE in a woven 3D session** (#36). Before, it
+  was a frozen frame for the whole window, and on a tracked panel a still image under a moving head
+  reads as "eye tracking hung, then resumed". The old asset now stays resident. A second camera
+  with its own layer, RenderViews and render target keeps rendering it through the same eye views,
+  and the overlay lerps or wipes the two live images per eye with the same maths as before. Measured
+  on the GPU with a fake 2-view wall, the old photo at four head poses matches its own plain render
+  with MAE 0.000 in both eyes, across the rig switch; 1.13.0 showed one image at every pose. End
+  state == `cut`, MAE 0.000, colour and alpha, both eyes. Cost: about 2× splat draw for the
+  window, and both assets resident (+73 MB of GPU textures at 1.18M gaussians).
+  `outgoing: 'frozen'` restores 1.13.0; it stays the default in 2D. See
+  [`docs/splat-effects.md` § Live or frozen outgoing](docs/splat-effects.md#live-or-frozen-outgoing).
+- The frozen-frame texture is freed when a transition ends; it used to stay allocated (7 MB at
+  2560×720).
+- The framing pass (the percentile core per axis, then the window pass) runs in steps with yields
+  between them, with bit-identical results. It was a single 60–80 ms main-thread task per 1.18M
+  gaussians at 4× CPU. It now runs under 50 ms per step, so the longest task left in a load is the
+  engine's own centre readback (≈60 ms at 4×).
+
+### Added
+
+- **`handle.prepareSource(src) → Promise<SplatPreparedSource>`**: fetch, decode and upload the next
+  asset in the background, without rendering it. The SDK's own passes run in idle periods. Then
+  `setSource(prepared, opts)` starts on the next frame, with no load on the transition path.
+  `prepared.dispose()`, single use; `remove()` disposes what is left.
+  Measured with 4× / 6× CPU throttling on an M1 (1,179,648 gaussians): from the `setSource` call to
+  the first transition frame, the longest main-thread task goes from 104 / 159 ms to none over 50 ms, and the
+  longest rAF gap from 138 / 196 ms to 18 / 17 ms. Memory: +22.5 MB of GPU textures plus the
+  engine's centre array (≈14 MB) per prepared 1.18M SOG, until used.
+- `setSource`'s `outgoing: 'live' | 'frozen'` option; `SplatPreparedSource` in `splat.d.ts`.
 
 ## 1.13.0 — 2026-09-24
 

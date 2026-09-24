@@ -260,11 +260,69 @@ Where the time goes. The SDK's stages show as `performance.measure` entries name
   own task, with a yield (`scheduler.yield()` where available) in between. The numbers are the
   same: the framing's percentile values are bit-identical, by test.
 
-**Recommended pattern for a document that swaps photos.** Call `setSource` for the next photo well
-before the user navigates to it. The load and decode run while the current one is still on screen,
-and the crossfade itself costs no long task. Keep a poster for the first paint and gate on the
-`firstWoven` promise as before. On a slow device, expect one ~60 ms main-thread hitch per 1M
-gaussians from the engine, per swap.
+**Recommended pattern for a document that swaps photos.** During the dwell, call
+`const next = await handle.prepareSource(url)`; when the slide changes, call
+`setSource(next, { transition })`. The load and decode then run while the current photo is on
+screen, and the transition frame has no load on it. Keep a poster for the first paint and gate on
+the `firstWoven` promise as before. On a slow device, expect one engine hitch of about 60 ms per 1M
+gaussians at 4× CPU per swap, and with `prepareSource` it lands in the dwell. Without
+`prepareSource`, calling `setSource` well ahead of the navigation still helps, but the transition
+starts only when that load has finished.
+
+### Transitions: the load stall, the frozen outgoing photo, and `prepareSource` (#36)
+
+A field report from a tracked 3D panel (a slideshow, one persistent handle, `setSource` per slide,
+1.18M-gaussian photos) said that "on every transition the eye tracking hangs, then resumes". There
+were two candidate causes. **(A)** In 1.12.1–1.13.0 the outgoing photo is a FROZEN frame for the
+whole window (800 ms crossfade, 2000 ms wavefront), so it has no head parallax. **(B)** The swap's
+load (fetch, SOG unpack, our cloud passes, the engine's readbacks) stalls rendering, and with it
+the eye pose the page renders with, right as the transition starts. Both are now fixed:
+`outgoing: 'live'` (the 3D default) and `prepareSource()`. Details:
+[`splat-effects.md` § Live or frozen outgoing](splat-effects.md#live-or-frozen-outgoing).
+
+Measured in headless Chrome on an M1 with the real GPU and a fake 2-view wall driven from the
+window rAF, with the head moving. The swap is `mg_tahoe_k100.sog` → `mg_family_k100.sog` (1.18M
+gaussians each, by URL), after a warm-up swap with the same options. The CPU throttling is set on
+the page's own renderer after load, and a calibration loop checks it on every run. Setting it before
+the first navigation was silently lost on the cross-process navigation. Each cell is the median
+[range] over 5 runs for crossfade and 3 for wavefront. Phase 1 runs from the `setSource` call to
+the first frame of the transition, and phase 2 is the transition itself. Long tasks come from a
+`longtask` observer; a gap is the longest time between two rAFs.
+
+| CPU | arm | call → 1st transition frame | phase 1: longest task / longest gap | phase 2: longest task / longest gap | outgoing photo in phase 2 |
+|---|---|---|---|---|---|
+| 4× | 1.13.0, crossfade | 461 [452–496] ms | **104** / **138** ms | 0 / 19 ms | frozen 800 ms |
+| 4× | preload (frozen) | 31 [25–33] ms | 0 / 18 ms | 0 / 19 ms | frozen |
+| 4× | live | 426 [409–444] ms | 63 / 112 ms | 0 / 26 ms | live |
+| 4× | **preload + live** | **28 [27–30] ms** | **0 / 18 ms** | **0 / 26 ms** | **live** |
+| 6× | 1.13.0, crossfade | 645 [492–692] ms | **159** / **196** ms | 0 / 19 ms | frozen 800 ms |
+| 6× | preload (frozen) | 27 [23–30] ms | 0 / 17 ms | 0 / 19 ms | frozen |
+| 6× | live | 514 [472–552] ms | 89 / 111 ms | 0 / 26 ms | live |
+| 6× | **preload + live** | **28 [25–30] ms** | **0 / 18 ms** | **0 / 26 ms** | **live** |
+| 4× | 1.13.0, wavefront | 470 [453–494] ms | 104 / 145 ms | 0 / 19 ms | frozen 2000 ms |
+| 4× | preload + live, wavefront | 30 [29–30] ms | 0 / 17 ms | 0 / 28 ms | live |
+| 6× | 1.13.0, wavefront | 637 [555–640] ms | 155 / 195 ms | 0 / 20 ms | frozen 2000 ms |
+| 6× | preload + live, wavefront | 28 [25–30] ms | 0 / 18 ms | 0 / 27 ms | live |
+
+Where the preload's cost goes: into the dwell, where `prepareSource` has a longest task of
+59 [56–63] ms at 4× and 91 [86–101] ms at 6×, and a longest rAF gap of 64 / 107 ms. That task is the
+engine's own end-of-load (the centre readback, `generateCenters` + `getBufferSubData`). A CPU
+profile showed that the 104 / 159 ms task of 1.13.0 was OURS: the framing pass
+(`sampleCloudCentres` + the percentile selections) in one task. It now runs in steps (per axis,
+then the window pass, bit-identical), which is why the no-preload "live" arm's phase 1 already
+drops to 63 / 89 ms.
+
+**Which one was it?** Both are real; (A) is the long one. In 1.13.0 the transition window itself
+has no long task and its frames come at the normal cadence (longest gap 19–20 ms). What stands
+still for 800–2000 ms is the image: the frozen outgoing photo, which on the GPU shows MAE 0.000
+between four head poses. (B) is one hitch of 138–196 ms of rendering (and eye pose) in the half
+second BEFORE the fade starts. Live removes (A): the outgoing photo matches its own render at every
+head pose. `prepareSource` removes (B) from the transition, moving the engine's ~60–90 ms into the
+dwell.
+
+The live window's price, per frame: GPU-synced frame time (1× CPU, 2560×720, a 1-px readback per
+frame) is 14.5 ms steady and 25.2–25.6 ms live (13.1–13.7 ms frozen), i.e. both photos drawn. The
+second manager adds about 73 MB of GPU textures for the window only.
 
 ## `perf` on this engine
 

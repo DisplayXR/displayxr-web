@@ -173,6 +173,7 @@ js/
   inline3d-model.js             the three.js model backend (engine:'three'; ./model/three)
   inline3d-playcanvas-engine.js named playcanvas imports for both PlayCanvas adapters (tree-shaking)
   inline3d-splat-effects.js     splat shader effects: the runner, the effect registry (PlayCanvas)
+  inline3d-splat-live.js        setSource's live outgoing photo: its own camera, layer and target (PlayCanvas)
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/
   authoring-inline-3d.md   the authoring guide
