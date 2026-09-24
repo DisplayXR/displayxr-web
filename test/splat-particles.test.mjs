@@ -213,3 +213,40 @@ test('a particle reveal composes with a grade in one chunk, grade first', () => 
   w.fx.stop('shimmer');
   assert.ok(!w.chunks.get('gsplatModifyVS').includes('shimmer'));
 });
+
+// ── setSource's particle transitions: the effect-side pieces ────────────────────────────────
+
+test('drive(): an adapter-clocked entity effect — hidden from effects() and stopEffect(), amount + time set directly, remove() restores the default', async () => {
+  const { fx, entity, eparams, tick } = fakeWorld({ separation: 0.064 });
+  const d = fx.drive(entity, 'assemble', { vanish: 0.4, density: 0.2 });
+  assert.match(entity.gsplat.modifier.glsl, /dxrFx_assemble_center\(center\)/);
+  assert.equal(entity.gsplat.workBufferUpdate, 2);
+  assert.deepEqual(fx.list(), [], 'not a page effect');
+  fx.stop(); // a page's stopEffect() leaves it alone
+  assert.ok(d.alive);
+  d.set(0.3, 1.25);
+  tick(100);
+  assert.equal(eparams.get('dxrFx_assemble_amount'), 0.3, 'amount as set, not from the runner clock');
+  assert.equal(eparams.get('dxrFx_assemble_time'), 1.25, 'time from the adapter');
+  assert.equal(eparams.get('dxrFx_assemble_van'), 0.4);
+  assert.equal(eparams.get('dxrFx_assemble_dens'), 0.2);
+  d.remove();
+  assert.equal(entity.gsplat.modifier, null, 'modifier deleted: the engine default');
+  assert.equal(entity.gsplat.workBufferUpdate, 1);
+  assert.equal(d.alive, false);
+  d.set(0.5); // a no-op once removed
+});
+
+test('vanish + density default off: the reveals are unchanged (density 1 skips the hash, vanish 0 skips the fade)', () => {
+  for (const n of PARTICLES) {
+    const r = resolveRevealOption(n);
+    assert.equal(r.opts.vanish, 0, n);
+    assert.equal(r.opts.density, 1, n);
+    const { code } = composeModifier([{ name: n, def: EFFECTS[n], opts: r.opts }]);
+    const P = prefixOf(n);
+    assert.ok(code.includes(`if (${P}van > 0.0) col.a *= smoothstep(0.0, ${P}van, lp);`), n);
+    assert.ok(code.includes(`if (${P}dens < 1.0 && ${P}h(c, 9.0) > ${P}dens) col.a *= g;`), n);
+  }
+  assert.throws(() => resolveEffectOptions('assemble', { vanish: 2 }), /vanish/);
+  assert.throws(() => resolveEffectOptions('assemble', { density: -1 }), /density/);
+});

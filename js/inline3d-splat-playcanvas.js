@@ -56,7 +56,11 @@ import {
   EFFECTS,
   EASINGS,
   resolveRevealOption,
+  resolveEffectOptions,
   validateEffectCall,
+  PARTICLE_TRANSITIONS,
+  PARTICLE_TRANSITION_OPTIONS,
+  particleSpan,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import {
@@ -1269,8 +1273,9 @@ export class PlayCanvasSplatViewer {
    * so a region only one of the two photos covers fades against the page, not against black.
    */
   _ensureSnapshotOverlay() {
-    const s = this._snap;
+    const s = (this._snap ||= { w: 0, h: 0, tex: null, rt: null, parts: null }); // prewarm: no capture yet
     if (s.parts) {
+      if (!s.tex) return;
       for (const p of s.parts) {
         p.mat.setParameter('dxrSnap', s.tex);
         p.mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
@@ -1295,6 +1300,7 @@ export class PlayCanvasSplatViewer {
         uniform vec2 dxrSnapInvSize;
         uniform float dxrSnapAlpha;
         uniform vec3 dxrSnapWipe; // t, band, views across (t < -1: no wipe)
+        uniform float dxrSnapOver; // 0 = lerp, 1 = A OVER the scene (the particle transitions)
         float dxrSnapWeight() {
           if (dxrSnapWipe.x < -1.0) return dxrSnapAlpha;
           float vw = 1.0 / (dxrSnapInvSize.x * dxrSnapWipe.z);
@@ -1309,10 +1315,13 @@ export class PlayCanvasSplatViewer {
       mat.depthTest = false;
       mat.depthWrite = false;
       mat.cull = pc.CULLFACE_NONE;
-      mat.setParameter('dxrSnap', s.tex);
-      mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
+      if (s.tex) {
+        mat.setParameter('dxrSnap', s.tex);
+        mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
+      }
       mat.setParameter('dxrSnapAlpha', 0);
       mat.setParameter('dxrSnapWipe', [-2, 0.1, 1]);
+      mat.setParameter('dxrSnapOver', 0);
       mat.update();
       const mi = new pc.MeshInstance(mesh, mat, new pc.GraphNode(name));
       mi.cull = false;
@@ -1321,7 +1330,14 @@ export class PlayCanvasSplatViewer {
       return { mat, mi };
     };
     s.parts = [
-      part('inline3dSnapshotScale', 'gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - dxrSnapWeight());', pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA, -2),
+      // lerp: dst·(1 − w); over: dst·(1 − w·A.a) — premultiplied A over the scene
+      part(
+        'inline3dSnapshotScale',
+        'float w = dxrSnapWeight(); float a = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize).a; gl_FragColor = vec4(0.0, 0.0, 0.0, mix(1.0 - w, 1.0 - w * a, dxrSnapOver));',
+        pc.BLENDMODE_ZERO,
+        pc.BLENDMODE_SRC_ALPHA,
+        -2,
+      ),
       part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapWeight();', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1),
     ];
     this.app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances(s.parts.map((p) => p.mi));
@@ -1331,7 +1347,7 @@ export class PlayCanvasSplatViewer {
    * Lerp the snapshot over the scene at `alpha` (0 hides it). Returns false when the canvas buffer
    * no longer matches the capture (resize, 2D/3D switch): the caller ends its fade.
    */
-  setSnapshotAlpha(alpha, wipe = null) {
+  setSnapshotAlpha(alpha, wipe = null, mix = null) {
     const s = this._snap;
     if (!s?.parts) return false;
     const fits = !!s.tex && s.w === this.canvas.width && s.h === this.canvas.height;
@@ -1344,6 +1360,8 @@ export class PlayCanvasSplatViewer {
         // SAME viewport-relative x in every eye — a front at the zero-disparity plane, so both
         // eyes agree. `views` = eye viewports side by side across the buffer.
         p.mat.setParameter('dxrSnapWipe', wipe ? [wipe.t, wipe.band, wipe.views] : [-2, 0.1, 1]);
+        // setSource's particle transitions: the live outgoing image OVER the incoming one
+        p.mat.setParameter('dxrSnapOver', mix?.over ? 1 : 0);
         p.mat.update();
       }
     }
@@ -2139,7 +2157,39 @@ export const SOURCE_TRANSITIONS = Object.freeze({
   crossfade: {},
   flip: { durationMs: 2200, easing: 'easeInOutSine' },
   wavefront: { durationMs: 2000, easing: 'easeInOutSine', band: 0.18, ridge: 0.03, ridgeMaxDisparity: 0.004 },
+  // the particle transitions (./inline3d-splat-effects.js PARTICLE_TRANSITIONS)
+  ...Object.fromEntries(Object.entries(PARTICLE_TRANSITIONS).map(([k, v]) => [k, { durationMs: v.durationMs, easing: v.easing, particle: true }])),
 });
+
+/**
+ * A particle transition's two sides, resolved: { out: { effect, opts }, in: { effect, opts },
+ * overlap } — the table's defaults, then the page's shared particle options, then its
+ * per-side `outgoingFx` / `incomingFx` overrides. Every side is validated as its effect (throws).
+ */
+export function resolveParticleTransition(name, o = {}) {
+  const spec = PARTICLE_TRANSITIONS[name];
+  const shared = {};
+  for (const k of PARTICLE_TRANSITION_OPTIONS) if (o[k] !== undefined) shared[k] = o[k];
+  for (const k of ['outgoingFx', 'incomingFx']) {
+    if (o[k] !== undefined && (o[k] === null || typeof o[k] !== 'object')) throw new TypeError(`@displayxr/inline3d/splat: setSource ${k} must be an object of effect options.`);
+  }
+  const overlap = o.overlap ?? spec.overlap ?? 0;
+  if (!(typeof overlap === 'number' && overlap >= 0 && overlap <= 1)) throw new RangeError(`@displayxr/inline3d/splat: setSource overlap must be a number in [0, 1], got ${o.overlap}.`);
+  const side = (which, dflt, extra) => {
+    const effect = dflt.effect;
+    const opts = { ...dflt.opts, ...shared, ...(extra || {}) };
+    resolveEffectOptions(effect, { ...opts, scope: 'entity' }, 'set', { internal: true }); // throws on a bad one
+    return { effect, opts };
+  };
+  const out = side('out', spec.out, o.outgoingFx);
+  const inc = side('in', spec.in, o.incomingFx);
+  // Both photos run ONE render-time body, compiled for one `order`; `layers` reads splat.index,
+  // which is a file index only in a work-buffer modifier (not at render time).
+  const order = (x) => x.opts.order ?? EFFECTS[x.effect].defaults.order;
+  if (order(out) !== order(inc)) throw new Error(`@displayxr/inline3d/splat: setSource ${name}: both photos take the same order (got '${order(out)}' and '${order(inc)}').`);
+  if (order(inc) === 'layers') throw new Error(`@displayxr/inline3d/splat: setSource ${name}: order 'layers' is a reveal-only order (it needs the file index, which a transition's render-time body does not have).`);
+  return { out, in: inc, overlap };
+}
 
 /** Validate setSource's options into a plan (throws on a page bug, before anything loads). */
 export function resolveSwap(o = {}) {
@@ -2155,9 +2205,10 @@ export function resolveSwap(o = {}) {
   const easing = o.easing ?? d.easing ?? 'linear';
   if (typeof easing !== 'function' && !EASINGS[easing]) throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
   const reveal = resolveRevealOption(o.reveal);
-  if (reveal && (transition === 'flip' || transition === 'wavefront')) {
+  if (reveal && (transition === 'flip' || transition === 'wavefront' || d.particle)) {
     throw new Error(`@displayxr/inline3d/splat: setSource reveal plays with transition 'cut' or 'crossfade'; '${transition}' is its own reveal.`);
   }
+  const particles = d.particle ? resolveParticleTransition(transition, o) : null;
   const band = o.band ?? d.band ?? 0.18;
   const ridge = o.ridge ?? d.ridge ?? 0.03;
   const ridgeMaxDisparity = o.ridgeMaxDisparity ?? d.ridgeMaxDisparity ?? 0.004;
@@ -2165,7 +2216,7 @@ export function resolveSwap(o = {}) {
     EFFECTS.wavefront.validate({ band, ridge, ridgeMaxDisparity });
   }
   const outgoing = resolveOutgoingOption(o.outgoing);
-  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity, outgoing };
+  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity, outgoing, particles };
 }
 
 /**
@@ -2892,13 +2943,17 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * Memory: the prepared asset is fully resident (a 1.18M-gaussian SOG: its GPU textures plus the
    * engine's centre array) alongside the current one until it is used or disposed.
    */
-  async function prepareSource(src) {
+  async function prepareSource(src, po = {}) {
+    if (po === null || typeof po !== 'object') throw new TypeError('@displayxr/inline3d/splat: prepareSource options must be an object.');
+    const warm = po.transition !== undefined ? resolveSwap(po) : null; // the setSource options it will get; throws on a bad one
     const app = await booted;
     await first.catch(() => null);
     if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
     const t0 = performance.now();
     const loaded = await loadOne(pcModule, app, src, { background: true });
     perfSpan('prepareSource', t0);
+    // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
+    if (warm?.particles) await prewarmTransition(warm);
     const entry = { loaded, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
@@ -2924,6 +2979,98 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     livePrepared.add(entry);
     return prepared;
+  }
+
+  // ── shader pre-warm for the particle transitions ──
+  const prewarmed = new Set();
+  /**
+   * Compile + link the render-time variant a particle transition will install, ahead of it. The
+   * first frame of a transition otherwise blocks on the link (GetProgramiv: 35–45 ms on an M1,
+   * measured with a trace) — on the very transition a user sees first. A throwaway material with
+   * the eye renderer's own description, defines and chunks, plus the transition's chunk, asks the
+   * engine's program library for the same variant the renderer will ask for (the library keys on
+   * the generated source + processing options, not on the material), so the compile is issued
+   * now and, with KHR_parallel_shader_compile, finishes off the main thread. Best effort: an
+   * engine whose internals differ just compiles on the transition's first frame, as before.
+   */
+  async function prewarmTransition(plan) {
+    const key = `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`;
+    if (!fx || prewarmed.has(key)) return;
+    await yieldIdle();
+    if (removed || !fx) return;
+    try {
+      const pc = pcModule;
+      const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
+      const code = fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order });
+      const made = [];
+      let issued = 0;
+      for (const cam of cams) {
+        const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam.camera?.camera);
+        let mi = null;
+        if (cd?.layersMap) for (const ld of cd.layersMap.values()) mi ||= ld?.gsplatManager?.renderer?.meshInstance ?? null;
+        const src = mi?.material;
+        const camera = cam.camera?.camera;
+        if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
+        const m = new pc.ShaderMaterial(src.shaderDesc);
+        src.defines.forEach((v, k) => m.setDefine(k, v));
+        m.shaderChunks.copy(src.shaderChunks);
+        m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
+        m.blendState = src.blendState;
+        made.push(m.getShaderVariant({
+          device: viewer.app.graphicsDevice,
+          scene: viewer.app.scene,
+          objDefs: mi._shaderDefs,
+          cameraShaderParams: camera.shaderParams,
+          pass: 0, // SHADER_FORWARD
+          sortedLights: [],
+          viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+          vertexFormat: mi.mesh?.vertexBuffer?.format,
+        }));
+        issued++;
+      }
+      // the overlay's two quads (created on the first capture otherwise, and compiled on its draw)
+      const cam = viewer.eye?.camera?.camera;
+      if (cam?.shaderParams) {
+        viewer._ensureSnapshotOverlay();
+        for (const p of viewer._snap?.parts || []) {
+          made.push(p.mat.getShaderVariant?.({
+            device: viewer.app.graphicsDevice,
+            scene: viewer.app.scene,
+            objDefs: p.mi._shaderDefs,
+            cameraShaderParams: cam.shaderParams,
+            pass: 0,
+            sortedLights: [],
+            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+            vertexFormat: p.mi.mesh?.vertexBuffer?.format,
+          }));
+        }
+      }
+      if (issued) prewarmed.add(key);
+      await finalizeWhenLinked(made.filter(Boolean));
+    } catch (err) {
+      console.info('[inline3d/splat] transition shader pre-warm skipped', err);
+    }
+  }
+
+  /**
+   * Creating a program only ISSUES its compile + link; the browser resolves the link when the
+   * program is first queried — the engine's first draw, blocking (the 35–50 ms GetProgramiv the
+   * trace shows, even for a program created seconds earlier). So finish the engine's own
+   * finalize here, in the dwell: wait (in idle periods, not blocking) for the link to complete
+   * where the browser reports it (KHR_parallel_shader_compile), then finalize.
+   */
+  async function finalizeWhenLinked(shaders) {
+    const dev = viewer.app?.graphicsDevice;
+    if (!dev) return;
+    const pending = () => shaders.filter((x) => x && !x.ready && !x.failed && x.impl?.finalize);
+    for (let i = 0; i < 40 && pending().length; i++) {
+      for (const x of pending()) if (x.impl.isLinked?.(dev)) x.impl.finalize(dev, x) || (x.failed = true);
+      if (pending().length) await yieldIdle(50);
+      if (removed) return;
+    }
+    // still linking (or no completion query): finalize now — a block in the dwell, not on the
+    // transition's first frame
+    for (const x of pending()) x.impl.finalize(dev, x) || (x.failed = true);
   }
 
   // ── setSource: swap the asset — a cut, a crossfade, or a transition ──
@@ -2972,9 +3119,10 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const prev = current;
     pendingSwap?.finish();
     const transition = prev ? plan.transition : 'cut';
+    const particle = plan.particles && transition in PARTICLE_TRANSITIONS ? plan.particles : null;
     // FRAME_SNAPSHOT: freeze the outgoing frame BEFORE anything of the new asset (or its rig) is
     // drawn. The overlay goes up in the same task, so no frame shows neither photo.
-    const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront';
+    const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront' || !!particle;
     const snapped = wantsSnapshot ? await viewer.captureFrame() : false;
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
@@ -2985,7 +3133,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // LIVE outgoing (default in 3D): the old asset stays resident and keeps rendering, through the
     // same eye views, into its own target; the frozen capture above bridges the first frames until
     // its camera has drawn a sorted frame. Its lens frame is read BEFORE adopt() switches the rig.
-    const outgoingMode = plan.outgoing || defaultOutgoing(viewer.is3D);
+    // A particle transition's outgoing photo MOVES, so it is live in 2D too (where the engine has
+    // the RenderView path); 'frozen' there = its snapshot fades out while the new one plays in.
+    const outgoingMode = plan.outgoing || (particle ? 'live' : defaultOutgoing(viewer.is3D));
     const live =
       snapped && outgoingMode === 'live' && viewer.canLiveOutgoing ? viewer.startLiveOutgoing(prev.entity, viewer.lensFrame()) : null;
     /** Each frame of the window: once the live camera is ready, the overlay samples it. */
@@ -3067,6 +3217,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         release(prev);
         adopt(entity);
       }
+      return out;
+    }
+
+    if (particle && snapped) {
+      playParticleTransition({ particle, plan, prev, entity, live, adopt, release, finishers, finish, isFinished: () => finished, pumpLive, isLiveShown: () => liveShown });
+      await done;
       return out;
     }
 
@@ -3171,6 +3327,108 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
     await done;
     return out;
+  }
+
+  /**
+   * setSource's particle transitions (swarm, burst, shimmer-cross, dust), once the frame snapshot
+   * is up. The OUTGOING asset plays its effect in reverse, on the live camera, keyed on its own
+   * frame (taken here, before the rig switches); the INCOMING one plays forwards on the eye camera,
+   * its frame re-taken when the clock starts. One clock drives both, on overlapping spans
+   * (particleSpan). The overlay puts the live outgoing image OVER the incoming one, per eye. With
+   * no live camera (outgoing:'frozen', or an engine without the RenderView path) the frozen frame
+   * fades out over the outgoing span while the incoming asset plays its side. The end: effects
+   * removed (modifiers deleted), overlay hidden, live camera off, old asset released — the frame
+   * is a plain cut's.
+   */
+  function playParticleTransition({ particle, plan, prev, entity, live, adopt, release, finishers, finish, isFinished, pumpLive, isLiveShown }) {
+    const ease = typeof plan.easing === 'function' ? plan.easing : EASINGS[plan.easing] || EASINGS.linear;
+    const overlap = particle.overlap;
+    // RENDER-TIME (the default): one tile-scope body, each photo's values on the mesh instance of
+    // the gsplat manager that draws it — the eye camera's (incoming) and the live camera's
+    // (outgoing). No work-buffer rewrite and no re-sort per frame. An engine that does not expose
+    // the managers' mesh instances gets the entity-scope modifiers instead (a full work-buffer
+    // rewrite + a re-sort per asset per frame: correct, but it hitches on a 1.18M photo).
+    const managerMi = (cam, layer) => {
+      const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam?.camera?.camera);
+      if (!cd?.layersMap) return null;
+      if (layer) return cd.layersMap.get(layer)?.gsplatManager?.renderer?.meshInstance ?? null;
+      for (const ld of cd.layersMap.values()) if (ld?.gsplatManager?.renderer?.meshInstance) return ld.gsplatManager.renderer.meshInstance;
+      return null;
+    };
+    const eyeMi = () => managerMi(viewer.eye, null);
+    const liveMi = () => (live?.active ? managerMi(live.cam, live.layer) : null);
+    const shared = particle.out.effect === particle.in.effect && eyeMi() ? fx.driveShared('transition', particle.in.effect, { order: particle.in.opts.order }) : null;
+    // the outgoing side, BEFORE adopt(): its frame (eyes, focus, framing) is the old asset's
+    let outFx = null;
+    if (live) {
+      outFx = shared ? shared.side(liveMi, particle.out.opts) : fx.drive(prev.entity, particle.out.effect, particle.out.opts);
+      outFx.set(1, 0);
+    } else {
+      release(prev); // the frozen frame shows it from here on
+    }
+    adopt(entity);
+    // the incoming side, hidden (amount 0) until the clock starts
+    const inFx = shared ? shared.side(eyeMi, particle.in.opts) : fx.drive(entity, particle.in.effect, particle.in.opts);
+    inFx.set(0, 0);
+    viewer._transitionPath = shared ? 'render' : 'entity'; // diagnostics (docs §Gates)
+    finishers.push(() => {
+      viewer._transitionState = null;
+      if (shared) shared.remove();
+      else {
+        outFx?.remove();
+        inFx.remove();
+      }
+      viewer.setSnapshotAlpha(0);
+      viewer.releaseSnapshot();
+      if (live) {
+        viewer.stopLiveOutgoing();
+        release(prev);
+      }
+    });
+    const dur = plan.durationMs;
+    let t0 = null;
+    let ticks = 0;
+    viewer._hooks.push((t) => {
+      if (removed) return (finish(), false);
+      if (isFinished()) return false;
+      if (live && !live.fits) {
+        finish(); // a resize or a 2D/3D switch mid-window: end now
+        return false;
+      }
+      pumpLive();
+      // The clock starts on the SECOND tick (the incoming asset's first frame builds its work
+      // buffer) and, live, once the live camera has drawn a sorted frame (until then the frozen
+      // capture stands in for the outgoing photo, untouched).
+      if (++ticks < 2 || (live && !isLiveShown())) {
+        if (shared) {
+          // the managers (and their mesh instances) may be new: keep both photos' values on them
+          outFx?.set(1, 0);
+          inFx.set(0, 0);
+        }
+        if (!viewer.setSnapshotAlpha(1)) {
+          finish();
+          return false;
+        }
+        return true;
+      }
+      if (t0 === null) {
+        t0 = t;
+        inFx.restart(); // the incoming asset's frame, now its rig and first frames are in
+      }
+      const raw = dur > 0 ? Math.min(1, Math.max(0, (t - t0) / dur)) : 1;
+      const te = ease(raw);
+      const timeS = (t - t0) / 1000;
+      viewer._transitionState = { raw, live: !!live }; // diagnostics (docs §Gates)
+      const outSpan = particleSpan(te, overlap, 'out');
+      outFx?.set(1 - outSpan, timeS);
+      inFx.set(particleSpan(te, overlap, 'in'), timeS);
+      const ok = live ? viewer.setSnapshotAlpha(1, null, { over: true }) : viewer.setSnapshotAlpha(1 - outSpan);
+      if (!ok || raw >= 1) {
+        finish();
+        return false;
+      }
+      return true;
+    });
   }
 
   // The load promise is RETURNED, never written to `out.ready`: ./splat's addSplat owns that

@@ -1868,3 +1868,220 @@ test('an entity effect that ends puts the work buffer back on AUTO (ONCE alone l
   assert.deepEqual(seen.slice(-2), [0, 1], 'AUTO, then ONE clean re-render');
   out.remove();
 });
+
+
+// ── 13c. setSource: particle transitions (swarm, burst, shimmer-cross, dust) ─────────────────
+
+test('particle transitions: validated before anything loads; linear shared clock, 2–3 s; no reveal; spans overlap', async () => {
+  const { PARTICLE_TRANSITIONS, particleSpan } = await import('../js/inline3d-splat-effects.js');
+  const { resolveSwap } = await import('../js/inline3d-splat-playcanvas.js');
+  for (const name of ['swarm', 'burst', 'shimmer-cross', 'dust']) {
+    const p = resolveSwap({ transition: name });
+    assert.ok(PARTICLE_TRANSITIONS[name], name);
+    assert.ok(p.durationMs >= 2000 && p.durationMs <= 3000, `${name}: ~2–3 s`);
+    assert.equal(p.easing, 'linear', `${name}: each particle eases; the shared clock is linear`);
+    assert.ok(p.particles, name);
+    assert.throws(() => resolveSwap({ transition: name, reveal: 'sweep' }), /its own reveal/);
+  }
+  assert.equal(resolveSwap({ transition: 'swarm' }).particles.out.effect, 'assemble');
+  assert.equal(resolveSwap({ transition: 'burst' }).particles.in.effect, 'converge');
+  assert.equal(resolveSwap({ transition: 'shimmer-cross' }).particles.out.effect, 'shimmer');
+  assert.equal(resolveSwap({ transition: 'dust' }).particles.in.effect, 'dissolve-in');
+  assert.throws(() => resolveSwap({ transition: 'morph' }), /setSource transition 'morph'/, 'morph was prototyped and dropped');
+  // shared particle options reach both sides; per-side overrides; bad values throw at the call
+  const p = resolveSwap({ transition: 'swarm', order: 'noise', maxDisparity: 0, incomingFx: { spread: 0.2 } });
+  assert.equal(p.particles.out.opts.order, 'noise');
+  assert.equal(p.particles.in.opts.maxDisparity, 0);
+  assert.equal(p.particles.in.opts.spread, 0.2);
+  assert.throws(() => resolveSwap({ transition: 'swarm', stagger: 2 }), /stagger/);
+  assert.throws(() => resolveSwap({ transition: 'dust', overlap: 1.5 }), /overlap/);
+  assert.throws(() => resolveSwap({ transition: 'swarm', outgoingFx: 3 }), /outgoingFx/);
+  // the spans: out over [0, (1+v)/2], in over [(1−v)/2, 1]
+  near(particleSpan(0, 0.4, 'out'), 0, 1e-12);
+  near(particleSpan(0.7, 0.4, 'out'), 1, 1e-12);
+  near(particleSpan(0.3, 0.4, 'in'), 0, 1e-12);
+  near(particleSpan(0.65, 0.4, 'in'), 0.5, 1e-12);
+  near(particleSpan(1, 0.4, 'in'), 1, 1e-12);
+});
+
+test('swarm (LIVE): the outgoing asset plays assemble in reverse on the live camera, the incoming forwards; one clock; A OVER B; the end is a cut', async (t) => {
+  const { rec, out, v, frame, camerasMap, clock } = await liveRig(t);
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'swarm', durationMs: 1000 });
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  const live = v._live;
+  assert.ok(live?.active, 'the outgoing photo is live (it moves)');
+  assert.match(e1.gsplat.modifier.glsl, /dxrFx_assemble_center\(center\)/, 'outgoing: its own entity modifier');
+  assert.match(e2.gsplat.modifier.glsl, /dxrFx_assemble_center\(center\)/, 'incoming: its own');
+  assert.equal(e1.gsplat.workBufferUpdate, 2, 'both re-render their work buffers while they move');
+  assert.equal(e2.gsplat.workBufferUpdate, 2);
+  assert.equal(e1.gsplat.getParameter('dxrFx_assemble_amount'), 1, 'the outgoing one starts untouched');
+  assert.equal(e2.gsplat.getParameter('dxrFx_assemble_amount'), 0, 'the incoming one starts hidden');
+  assert.deepEqual(out.effects(), [], 'driven by setSource: not a page effect');
+  const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
+  const over = () => parts[0].material.params.get('dxrSnapOver');
+  frame();
+  assert.equal(over(), 0, 'bridge (frozen capture, not yet sorted): the old frame alone');
+  sortLive(v, camerasMap);
+  frame(); // ready → live source
+  frame(); // clock starts
+  assert.equal(parts[1].material.params.get('dxrSnap'), live.tex);
+  assert.equal(over(), 1, 'the live outgoing image OVER the incoming one');
+  assert.equal(v._transitionState.raw, 0);
+  clock.T += 500;
+  frame();
+  near(v._transitionState.raw, 0.5, 1e-9);
+  const ov = particleSpanOf('out', 0.5), iv = particleSpanOf('in', 0.5);
+  near(e1.gsplat.getParameter('dxrFx_assemble_amount'), 1 - ov, 1e-9, 'outgoing amount = 1 − its span');
+  near(e2.gsplat.getParameter('dxrFx_assemble_amount'), iv, 1e-9, 'incoming amount = its span');
+  near(e2.gsplat.getParameter('dxrFx_assemble_time'), 0.5, 1e-9, 'time from the shared clock');
+  clock.T += 600;
+  frame();
+  await done;
+  assert.equal(e2.gsplat.modifier, null, 'incoming modifier deleted: the engine default, exactly');
+  assert.equal(e2.gsplat.workBufferUpdate, 1, 'back off ALWAYS');
+  assert.equal(live.active, false, 'live camera off');
+  assert.ok(parts.every((mi) => !mi.visible), 'overlay hidden');
+  assert.equal(e1.enabled, false, 'outgoing released');
+  assert.equal(v._transitionState, null);
+  out.remove();
+});
+
+function particleSpanOf(side, t) {
+  const v = 0.45; // swarm's overlap
+  const a = side === 'out' ? 0 : (1 - v) / 2;
+  const b = side === 'out' ? (1 + v) / 2 : 1;
+  return Math.min(1, Math.max(0, (t - a) / (b - a)));
+}
+
+test("particle transitions with outgoing:'frozen': the snapshot fades out over the outgoing span while the new photo plays in", async (t) => {
+  const { rec, out, v, frame, clock } = await liveRig(t, { outgoing: 'frozen' });
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'dust', durationMs: 1000, outgoing: 'frozen' });
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.ok(!v._live?.active, 'no live camera');
+  assert.equal(e1.enabled, false, 'the frozen frame shows the old photo: released at once');
+  assert.match(e2.gsplat.modifier.glsl, /dxrFx_dissolve_in_center/);
+  const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
+  frame();
+  frame();
+  clock.T += 350; // dust: out span [0, 0.7]
+  frame();
+  near(parts[1].material.params.get('dxrSnapAlpha'), 0.5, 1e-9, 'frozen A fades over its span');
+  clock.T += 700;
+  frame();
+  await done;
+  assert.equal(e2.gsplat.modifier, null);
+  out.remove();
+});
+
+test('particle transition with no frame to capture (hidden tab / no copy): the one-pass crossfade, no particles', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc(); // no RenderTarget: captureFrame() → false
+  rec.queue = [fakeFlat(300, 0), fakeFlat(300, 5)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'swarm', durationMs: 100 });
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.match(e2.gsplat.modifier.glsl, /dxrFx_xfade_color/, 'the one-pass crossfade');
+  assert.doesNotMatch(e2.gsplat.modifier.glsl, /assemble/);
+  for (let i = 0; i < 4; i++) ((T += 60), out.viewer._tick());
+  await done;
+  assert.equal(e2.gsplat.modifier, null, 'end state: the untouched asset');
+  assert.equal(e1.enabled, false);
+  out.remove();
+});
+
+/** A fake engine mesh instance (what a gsplat manager's renderer draws with). */
+function fakeMi(name) {
+  return {
+    name,
+    visible: true,
+    parameters: {},
+    setParameter(n, v) {
+      this.parameters[n] = { data: v };
+    },
+    deleteParameter(n) {
+      delete this.parameters[n];
+    },
+  };
+}
+
+test('particle transitions render at RENDER TIME when the managers are reachable: one tile chunk, each photo on its own mesh instance, no work-buffer modifiers; a hidden photo is not drawn; the end is the default', async (t) => {
+  const { rec, out, v, frame, camerasMap, clock } = await liveRig(t);
+  const eyeMi = fakeMi('eye');
+  camerasMap.set(v.eye.camera.camera, { layersMap: new Map([['world', { gsplatManager: { renderer: { meshInstance: eyeMi } } }]]) });
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'swarm', durationMs: 1000 });
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.equal(v._transitionPath, 'render');
+  assert.equal(e1.gsplat.modifier, null, 'no work-buffer modifier: no rewrite + re-sort per frame');
+  assert.equal(e2.gsplat.modifier, null);
+  assert.equal(e1.gsplat.workBufferUpdate, 0);
+  const chunk = rec.tileChunks.get('gsplatModifyVS');
+  assert.match(chunk, /dxrFx_transition_center\(center\)/, 'ONE body for both photos');
+  assert.equal(chunk.split('void dxrFx_transition_center(').length - 1, 1);
+  assert.equal(rec.tileParams.get('dxrFx_transition_amount'), 1, 'material value = the untouched photo');
+  assert.deepEqual(out.effects(), []);
+  const amt = (mi) => mi.parameters.dxrFx_transition_amount?.data;
+  assert.equal(amt(eyeMi), 0, 'incoming: amount 0 on the eye manager');
+  assert.equal(eyeMi.visible, false, 'nothing of it to draw: its draw is skipped');
+  // the live manager appears (sorted) with its own mesh instance
+  const liveMi = fakeMi('live');
+  sortLive(v, camerasMap);
+  camerasMap.get(v._live.cam.camera.camera).layersMap.get(v._live.layer).gsplatManager.renderer = { meshInstance: liveMi };
+  frame();
+  frame();
+  frame();
+  assert.equal(amt(liveMi), 1, 'outgoing: untouched at the clock start');
+  clock.T += 500;
+  frame();
+  near(amt(liveMi), 1 - particleSpanOf('out', 0.5), 1e-9);
+  near(amt(eyeMi), particleSpanOf('in', 0.5), 1e-9);
+  assert.equal(eyeMi.visible, true, 'drawn again once its span has begun');
+  assert.equal(liveMi.parameters.dxrFx_transition_time.data, 0.5);
+  assert.equal(liveMi.parameters.dxrFx_transition_van.data, 0.45, "each photo's own options");
+  assert.equal(eyeMi.parameters.dxrFx_transition_van.data, 0.35);
+  clock.T += 600;
+  frame();
+  await done;
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'chunk deleted: the engine default, exactly');
+  assert.ok(!Object.keys(eyeMi.parameters).some((k) => k.startsWith('dxrFx_transition_')), 'its values removed from the eye mesh instance');
+  assert.equal(eyeMi.visible, true);
+  assert.equal(v._live.active, false);
+  assert.equal(e1.enabled, false);
+  out.remove();
+});
+
+test("particle transitions: one order for both photos; 'layers' refused (a render-time body has no file index)", async () => {
+  const { resolveSwap } = await import('../js/inline3d-splat-playcanvas.js');
+  assert.throws(() => resolveSwap({ transition: 'swarm', order: 'layers' }), /reveal-only order/);
+  assert.throws(() => resolveSwap({ transition: 'dust', outgoingFx: { order: 'radial' } }), /same order/);
+  assert.equal(resolveSwap({ transition: 'dust', order: 'random' }).particles.out.opts.order, 'random');
+});
+
+test('prepareSource(src, { transition }): validates the transition at the call, pre-warms best-effort, and still resolves a usable prepared source', async (t) => {
+  const { out, v } = await liveRig(t);
+  await assert.rejects(out.prepareSource('b.sog', { transition: 'nope' }), /setSource transition 'nope'/);
+  await assert.rejects(out.prepareSource('b.sog', { transition: 'swarm', order: 'layers' }), /reveal-only order/);
+  await assert.rejects(out.prepareSource('b.sog', 3), /prepareSource options must be an object/);
+  v.eye.camera.camera.shaderParams = {}; // the fake has no renderers: only the overlay path runs
+  const prep = await out.prepareSource('b.sog', { transition: 'swarm' });
+  assert.equal(prep.state, 'ready');
+  assert.ok(v._snap?.parts, 'the overlay quads exist already (their shaders compile in the dwell)');
+  prep.dispose();
+  out.remove();
+});

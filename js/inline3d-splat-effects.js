@@ -626,6 +626,8 @@ uniform float ${P}grow;
 uniform float ${P}tx;
 uniform vec3 ${P}glow;
 uniform float ${P}falpha;
+uniform float ${P}van;
+uniform float ${P}dens;
 float ${P}lp = -1.0;
 float ${P}h(vec3 c, float s) { return dxrFxHash(c + vec3(s * 17.13, s * 31.71, s * 7.31)); }
 // where a point sits in the PICTURE (image x, y in half-view-widths) and its log depth: noise is
@@ -683,6 +685,12 @@ void ${P}color(vec3 c, inout vec4 col) {
   float g = smoothstep(${P}grow, 1.0, lp);
   col.rgb += ${P}glow * (1.0 - g);
   col.a *= mix(${P}falpha, 1.0, g);
+  // setSource's particle transitions: a particle fades over the first "vanish" of its flight, so a
+  // swarm gathers out of nothing and a leaving photo's swarm thins out to nothing (0 = off)
+  if (${P}van > 0.0) col.a *= smoothstep(0.0, ${P}van, lp);
+  // "density" < 1: only that share of the gaussians is drawn in flight (the rest appear as they
+  // grow home), so a million-point swarm reads as a swarm, not as snow
+  if (${P}dens < 1.0 && ${P}h(c, 9.0) > ${P}dens) col.a *= g;
   ${extra}
 }
 `;
@@ -705,6 +713,8 @@ const PARTICLE_VALIDATE = (what, o) => {
   if (o.color !== undefined) vec3Of(o.color, `${what} color`);
   if (o.noiseScale !== undefined) num(o.noiseScale, `${what} noiseScale`, 1e-3, 1e3);
   if (o.maxDisparity !== undefined) num(o.maxDisparity, `${what} maxDisparity`, 0, 0.05);
+  if (o.vanish !== undefined) num(o.vanish, `${what} vanish`, 0, 1);
+  if (o.density !== undefined) num(o.density, `${what} density`, 0, 1);
   if (o.layerSize !== undefined && !(Number.isInteger(o.layerSize) && o.layerSize > 0)) {
     throw new RangeError(`@displayxr/inline3d/splat: ${what} layerSize must be a positive integer.`);
   }
@@ -773,6 +783,8 @@ const particleUniforms = (ctx, inst, amount, tMs) => {
     tx: s.tanX,
     glow: o.color.map((x) => x * o.glow),
     falpha: o.flightAlpha,
+    van: o.vanish,
+    dens: o.density,
   };
 };
 
@@ -785,11 +797,18 @@ const PARTICLE_DEFAULTS = {
   noiseScale: 2,
   dotSize: 0.0007,
   grow: 0.6,
+  vanish: 0,
+  density: 1,
 };
 
-/** A particle reveal's registry entry: `body(P)` adds the centre/rs stages (and extra uniforms). */
-function particleEffect(name, defaults, { body, color = particleColor, uniforms: extra = () => ({}), validate }) {
+/**
+ * A particle reveal's registry entry: `body(P)` adds the centre/rs stages (and extra uniforms).
+ * `hiddenAtZero(opts)`: nothing is drawn at amount 0 (converge / shimmer: not yet launched; the
+ * others with `vanish` > 0) — a setSource transition then skips that photo's draw.
+ */
+function particleEffect(name, defaults, { body, color = particleColor, uniforms: extra = () => ({}), validate, hiddenAtZero = (o) => o.vanish > 0 }) {
   return {
+    hiddenAtZero,
     stage: 'reveal',
     kind: 'transition',
     particle: true,
@@ -967,6 +986,7 @@ void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
 }
 `,
       color: (P) => particleColor(P, 'col.a *= smoothstep(0.0, 0.15, lp);'),
+      hiddenAtZero: () => true,
     },
   ),
 
@@ -1009,9 +1029,67 @@ void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
   col.rgb = mix(col.rgb, ${P}sc, min(1.0, tw * ${P}sp) * (1.0 - g));
   col.a *= smoothstep(0.0, 0.12, lp) * mix(0.55 + 0.45 * tw, 1.0, g);`,
         ),
+      hiddenAtZero: () => true,
     },
   ),
 });
+
+// ── setSource's particle transitions ─────────────────────────────────────────────────────────
+//
+// swarm / burst / shimmer-cross / dust: the OUTGOING photo plays a particle reveal backwards (its
+// gaussians leave home as dots and thin out to nothing, `vanish`) while the INCOMING one plays it
+// forwards, on overlapping spans of one clock. Both run as entity-scope effects driven by the
+// adapter (SplatEffects.drive); the outgoing one is drawn by the LIVE outgoing camera, and the
+// adapter composites the two live images per eye, the old one OVER the new one.
+
+/**
+ * The transitions and their defaults. `out` / `in` = the particle effect each side plays (out: in
+ * reverse) with its option overrides; `overlap` = how much of the clock the two spans share (0 =
+ * one after the other, 1 = both over the whole clock): out over [0, (1 + overlap)/2], in over
+ * [(1 − overlap)/2, 1] of the eased clock.
+ */
+export const PARTICLE_TRANSITIONS = Object.freeze({
+  swarm: {
+    durationMs: 2800,
+    easing: 'linear',
+    overlap: 0.45,
+    out: { effect: 'assemble', opts: { stagger: 0.65, jitter: 0.35, spread: 0.3, swirl: 1.8, density: 0.2, dotSize: 0.0009, vanish: 0.45, glow: 0.1 } },
+    in: { effect: 'assemble', opts: { stagger: 0.65, spread: 0.3, swirl: 1.8, density: 0.2, dotSize: 0.0009, vanish: 0.35, glow: 0.1 } },
+  },
+  burst: {
+    durationMs: 2600,
+    easing: 'linear',
+    overlap: 0.3,
+    out: { effect: 'converge', opts: { stagger: 0.5, density: 0.5, glow: 0.25 } },
+    in: { effect: 'converge', opts: { stagger: 0.55, density: 0.5 } },
+  },
+  'shimmer-cross': {
+    durationMs: 2600,
+    easing: 'linear',
+    overlap: 0.45,
+    out: { effect: 'shimmer', opts: { stagger: 0.75 } },
+    in: { effect: 'shimmer', opts: { stagger: 0.75 } },
+  },
+  dust: {
+    durationMs: 2800,
+    easing: 'linear',
+    overlap: 0.4,
+    out: { effect: 'dissolve-in', opts: { density: 0.4, vanish: 0.4, drift: 0.45 } },
+    in: { effect: 'dissolve-in', opts: { density: 0.4, vanish: 0.3 } },
+  },
+});
+
+/** Where a side stands at eased clock t: 0..1 over its span. */
+export function particleSpan(t, overlap, side) {
+  const v = Math.min(1, Math.max(0, overlap));
+  const a = side === 'out' ? 0 : (1 - v) / 2;
+  const b = side === 'out' ? (1 + v) / 2 : 1;
+  return Math.min(1, Math.max(0, (t - a) / Math.max(b - a, 1e-6)));
+}
+
+/** Options a page may pass through setSource to both sides of a particle transition. */
+export const PARTICLE_TRANSITION_OPTIONS = Object.freeze(['order', 'stagger', 'jitter', 'maxDisparity', 'dotSize', 'noiseScale', 'layerSize', 'origin']);
+
 
 /**
  * The wavefront's per-column commit, lt ∈ [0, 1], for eased progress `t` at normalised u — the
@@ -1243,7 +1321,8 @@ export class SplatEffects {
       resolve: null,
       promise: null,
       originPoint: (ctx, eyes) => this._origin(inst, ctx, eyes),
-      elapsedS: (tMs) => (inst.startedAt === null ? 0 : Math.max(0, (tMs - inst.startedAt) / 1000)),
+      // a driven instance (drive()) is handed its time by the adapter's clock
+      elapsedS: (tMs) => (inst.timeS !== undefined ? inst.timeS : inst.startedAt === null ? 0 : Math.max(0, (tMs - inst.startedAt) / 1000)),
     };
     inst.promise = new Promise((r) => (inst.resolve = r));
     return inst;
@@ -1326,6 +1405,134 @@ export class SplatEffects {
     this._install(entity);
   }
 
+  /**
+   * An effect on one entity driven by the ADAPTER's clock, not the runner's (setSource's particle
+   * transitions: two effects on two assets, on overlapping spans of one transition clock). Hidden
+   * from effects() and from a page's stopEffect(). Returns { set(amount, timeS), restart(),
+   * remove() }: `amount` as the GLSL reads it (1 = the untouched asset), `restart()` re-takes the
+   * effect's frame (start()) — the incoming asset's, once its rig and first frames are in.
+   */
+  drive(entity, name, opts) {
+    const o = resolveEffectOptions(name, { ...opts, scope: 'entity', direction: 'in', progress: 0 }, 'set', { internal: true });
+    o.entity = entity;
+    const inst = this._makeInstance(name, o, 'set');
+    inst.hidden = true;
+    inst.timeS = 0;
+    this._replace(entity, name, inst);
+    this._setupInstance(inst);
+    this._apply(entity, inst, this.ctx.now());
+    this._install(entity);
+    const alive = () => !this._disposed && this.scopes.get(entity)?.get(name) === inst;
+    return {
+      set: (amount, timeS = inst.timeS) => {
+        if (!alive()) return;
+        inst.opts.progress = Math.min(1, Math.max(0, amount));
+        inst.timeS = timeS;
+        this._apply(entity, inst, this.ctx.now());
+      },
+      restart: () => {
+        if (!alive()) return;
+        inst.state = {};
+        this._setupInstance(inst);
+        this._apply(entity, inst, this.ctx.now());
+      },
+      remove: () => {
+        if (!alive()) return;
+        this.scopes.get(entity).delete(name);
+        inst.resolve({ finished: true });
+        this._install(entity);
+      },
+      get alive() {
+        return alive();
+      },
+    };
+  }
+
+  /**
+   * ONE tile-scope body for the two photos of a setSource particle transition, with each photo's
+   * values on its OWN mesh instance (the engine draws each photo through its own gsplat manager and
+   * renderer: the eye camera's for the incoming photo, the live camera's for the outgoing one).
+   * Render-time only: no work-buffer rewrite, no per-frame re-sort (an entity-scope modifier forces
+   * both, every frame, for each 1.18M asset — measured as the transitions' hitches). The chunk's
+   * material values are the untouched asset's (amount 1). Returns { side(getMeshInstance, opts),
+   * remove() }; a side is { set(amount, timeS), restart() }. `opts` of the two sides share what
+   * the GLSL is compiled from (the `order`).
+   */
+  driveShared(name, effect, opts) {
+    const def = EFFECTS[effect];
+    const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
+    const inst = this._makeInstance(name, o, 'set');
+    inst.def = def;
+    inst.hidden = true;
+    inst.fixed = true; // its material values never change: no per-frame upload
+    this._replace('tile', name, inst);
+    this._setupInstance(inst);
+    this._apply('tile', inst, this.ctx.now());
+    this._install('tile');
+    const P = prefixOf(name);
+    const alive = () => !this._disposed && this.scopes.get('tile')?.get(name) === inst;
+    const touched = new Set();
+    const hidden = new Set(); // mesh instances this transition turned off (a photo with nothing to draw)
+    return {
+      side: (getMeshInstance, sideOpts) => {
+        const s = { opts: resolveEffectOptions(effect, { ...sideOpts, order: o.order, scope: 'tile', direction: 'in' }, 'set', { internal: true }), state: {}, timeS: 0 };
+        s.originPoint = (ctx, eyes) => this._origin(s, ctx, eyes);
+        s.elapsedS = () => s.timeS;
+        def.start?.(this.ctx, s);
+        return {
+          /** Upload this photo's values; false when its mesh instance is not there (yet). */
+          set: (amount, timeS = s.timeS) => {
+            if (!alive()) return false;
+            const mi = getMeshInstance();
+            if (!mi?.setParameter) return false;
+            s.timeS = timeS;
+            touched.add(mi);
+            // the values first, always: should the engine show the mesh again on its own (a
+            // rebuild sets its visibility), it draws this state, never the untouched photo
+            const values = def.uniforms(this.ctx, s, Math.min(1, Math.max(0, amount)), this.ctx.now());
+            for (const [k, v] of Object.entries(values)) mi.setParameter(P + k, v);
+            // Nothing of this photo is drawn at amount 0 (every particle hidden before its flight):
+            // skip its draw call rather than run the vertex stage for 1.18M invisible gaussians —
+            // the two photos then share the GPU only while their spans overlap.
+            if (amount <= 0 && def.hiddenAtZero?.(s.opts)) {
+              if (mi.visible !== false) {
+                mi.visible = false;
+                hidden.add(mi);
+              }
+            } else if (hidden.delete(mi)) mi.visible = true;
+            return true;
+          },
+          restart: () => {
+            s.state = {};
+            def.start?.(this.ctx, s);
+          },
+        };
+      },
+      remove: () => {
+        for (const mi of hidden) mi.visible = true;
+        hidden.clear();
+        for (const mi of touched) {
+          for (const k of Object.keys(mi.parameters || {})) if (k.startsWith(P)) mi.deleteParameter?.(k);
+        }
+        touched.clear();
+        if (!alive()) return;
+        this.scopes.get('tile').delete(name);
+        inst.resolve({ finished: true });
+        this._install('tile');
+      },
+    };
+  }
+
+  /**
+   * The tile chunk driveShared(name, effect, opts) WOULD install, without installing it — what
+   * setSource's shader pre-warm compiles ahead of the transition.
+   */
+  sharedChunkCode(name, effect, opts) {
+    const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
+    const insts = [...(this.scopes.get('tile')?.values() ?? [])].filter((i) => i.name !== name);
+    return composeModifier([...insts, { name, def: EFFECTS[effect], opts: o }]).code;
+  }
+
   _setupInstance(inst) {
     // Also for a gated one (its held START state needs the geometry); re-run when the gate opens,
     // since the rig/framing may have changed meanwhile (setSource's flip adopts a new asset).
@@ -1346,7 +1553,7 @@ export class SplatEffects {
    */
   stop(name, { finish = false, entity = null } = {}) {
     for (const [key, n, inst] of [...this._all()]) {
-      if (name ? n !== name : inst.def.internal) continue;
+      if (inst.hidden || (name ? n !== name : inst.def.internal)) continue;
       if (entity && key !== entity) continue;
       const m = this.scopes.get(key);
       if (finish && inst.mode === 'play' && inst.opts.direction === 'out') {
@@ -1366,7 +1573,7 @@ export class SplatEffects {
   list() {
     const out = [];
     for (const [key, name, inst] of this._all()) {
-      if (inst.def.internal) continue;
+      if (inst.def.internal || inst.hidden) continue;
       out.push({
         name,
         scope: key === 'tile' ? 'tile' : 'entity',
@@ -1398,6 +1605,7 @@ export class SplatEffects {
   tick(tMs) {
     if (this._disposed) return;
     for (const [key, name, inst] of [...this._all()]) {
+      if (inst.fixed) continue;
       if (inst.mode === 'play') {
         if (inst.startGate) {
           this._apply(key, inst, tMs); // hold the start state

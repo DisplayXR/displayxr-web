@@ -39,7 +39,8 @@ right eye are identical, MAE 0.000, for every effect at every progress, in both 
 | `handle.setEffect(name, params \| null)` | A persistent effect (`grade`, `clip`, `custom`), or any timed effect held at `{ progress }` (0..1). Useful for scroll-driven looks and for tests. `null` removes it. |
 | `handle.stopEffect(name?, { finish })` | Removes the named effect, or all effects when no name is given. This restores the baseline exactly. With `finish: true` the effect jumps to its end state instead: an `in` effect is removed, an `out` effect holds its end state. |
 | `handle.effects()` | `[{ name, scope, stage, playing, waiting, progress }]`. |
-| `handle.setSource(src, { transition, durationMs, easing, reveal, fadeMs, resetPose })` | Swap the asset. See [Transitions between assets](#transitions-between-assets). |
+| `handle.setSource(src, { transition, durationMs, easing, reveal, fadeMs, resetPose, … })` | Swap the asset. See [Transitions between assets](#transitions-between-assets) and [Particle transitions](#particle-transitions). |
+| `handle.prepareSource(src, { transition, … })` | Load the next asset in the background; with a particle `transition`, also compile its shaders in the dwell. See [prepareSource](#preloading-the-next-photo-preparesource). |
 
 Options that every timed effect takes:
 
@@ -185,6 +186,8 @@ await h.setSource(next, { transition: 'wavefront', durationMs: 1800, ridge: 0.02
 | `'flip'` (kept, not extended) | Phase 1: the old photo `deflate`s onto ITS convergence plane under ITS rig. The new photo is resident but hidden, so its work buffer builds meanwhile. At the flat moment the rig switches and the photos swap, with zero disparity on both sides. Phase 2: the new photo `inflate`s out of its own plane. | 2200 ms, `easeInOutSine` |
 | `'wavefront'` | The photo-frame prototype's Wavefront Sweep. A soft front crosses the picture from left to right over normalised u. Each column commits from the old photo to the new one over `lt = clamp((t − u·(1 − band)) / band, 0, 1)` with a smoothstep, so u = 0 starts at t = 0 and u = 1 finishes at t = 1. **Image half:** the old photo's image (live in 3D, the frozen frame in 2D) gives way at the same viewport-relative u in every eye, a front on the zero-disparity plane. **Depth half:** a RIDGE rides the front on the new photo, `sin(π·lt) × ridge` world units toward the eyes. Each splat moves along its own ray, with its scale scaled by the same λ, so it keeps its place and size in the picture and only comes forward. The ridge is capped so its extra disparity never exceeds `ridgeMaxDisparity` of the eye view's width: `Δ ≤ cap · 2·tan(fovX/2) · d² / eyeSeparation`. u is the splat's angle in the transition's fixed camera frame (x/z; for a photo, its grid column), so it depends on world position only. With no frame to wipe from (a hidden tab), it falls back to the one-pass crossfade over the same duration. | 2000 ms, `easeInOutSine`, `band` 0.18, `ridge` 0.03 (m on a metric photo), `ridgeMaxDisparity` 0.004 |
 
+| `'swarm'`, `'burst'`, `'shimmer-cross'`, `'dust'` | Particle transitions: the old photo plays a particle reveal backwards while the new one plays it forwards, both live. See [Particle transitions](#particle-transitions). | 2600–2800 ms, linear shared clock (each particle eases) |
+
 `reveal` (with `cut` or `crossfade`) plays an entity-scope reveal on the INCOMING asset while the
 old one fades. For example, `{ reveal: 'sweep', fadeMs: 500 }` fades the old frame out over
 500 ms while the new photo sweeps in from its focus. `flip` and `wavefront` are their own reveals
@@ -273,6 +276,127 @@ are drawn (see above). Prepare one slide ahead, not a playlist.
 and first sort (the transition's first frame); the fade clock starts on the second tick for that
 reason.
 
+## Particle transitions
+
+```js
+let next = await h.prepareSource(url, { transition: 'swarm' }); // during the dwell: load + compile its shaders
+// … 6 s later …
+await h.setSource(next, { transition: 'swarm' });                // 2800 ms
+await h.setSource(other, { transition: 'dust', order: 'random', overlap: 0.6 });
+```
+
+These are the particle reveals, played across a slide change. The OUTGOING photo plays one
+backwards: its gaussians leave home as dots and thin out to nothing. The INCOMING photo plays one
+forwards. The two run on overlapping spans of one clock. Both photos are live in every eye in 3D,
+and in 2D.
+
+| `transition` | Outgoing photo | Incoming photo | Default |
+|---|---|---|---|
+| `swarm` | disperses into a curl-noise swarm (`assemble` reversed): outermost first, spiralling out about the view axis | assembles out of a swarm (`assemble`) | 2800 ms, overlap 0.45. Both photos: `stagger` 0.65, `spread` 0.3, `swirl` 1.8, `density` 0.2. `vanish` 0.45 out, 0.35 in |
+| `burst` | collapses into its focus point (`converge` reversed): outermost first; the picture shrinks to a ragged disc, then to a point | bursts out of its own focus point (`converge`), nearest first | 2600 ms, overlap 0.3, `density` 0.5 |
+| `shimmer-cross` | breaks into twinkling points and fades (`shimmer` reversed). Nothing moves | materialises from twinkles (`shimmer`) | 2600 ms, overlap 0.45 |
+| `dust` | dissolves into drifting dust, patch by patch (`dissolve-in` reversed) | gathers from dust (`dissolve-in`) | 2800 ms, overlap 0.4, `density` 0.4. `vanish` 0.4 out, 0.3 in |
+
+**Timing.** The shared clock is `linear` by default, and each particle eases along its own path: a
+leaving particle eases in and an arriving one eases out. That is where the ease-in-out comes from.
+We tried an eased shared clock on top. The first and last fifth of the window then barely moved:
+the frames at t = 0.2 and t = 0.8 could not be told apart from the two stills. Passing `easing`
+still shapes the shared clock.
+
+`overlap` (0..1) is how much of the clock the two spans share. The outgoing photo runs over
+[0, (1 + overlap)/2] and the incoming one over [(1 − overlap)/2, 1]; 0 means one after the other.
+The clock starts the way the crossfade's does: on the second frame after the swap, and only once
+the live camera has drawn a sorted frame. Until then the frozen capture shows the old photo,
+untouched.
+
+**Options.**
+
+- Shared by BOTH photos: `order`, `stagger`, `jitter`, `maxDisparity`, `dotSize`, `noiseScale`,
+  `origin`.
+- `order` must be the same for both, and `'layers'` is refused (see How).
+- Per photo: `outgoingFx: { … }` and `incomingFx: { … }` take any option of that photo's particle
+  effect, for example `incomingFx: { spread: 0.2 }`.
+- Everything is validated at the call.
+- `reveal` throws, because these transitions are their own reveals.
+
+Two options are new to the particle effects. The reveals keep both off:
+
+- `vanish` (0..1): a particle fades over the first `vanish` of its flight. A swarm gathers out of
+  nothing, and a leaving photo's swarm thins out to nothing.
+- `density` (0..1): the share of gaussians drawn while in flight; the rest appear as they grow
+  home. At 1.18M gaussians, a full swarm of 1 px dots covers every pixel and reads as TV snow.
+  At 0.2 it reads as a swarm.
+
+**How: render time, one chunk, two mesh instances.** Both photos run ONE generated body in the
+tile's render-time vertex stage (`gsplatModifyVS`). Each photo's values sit on the mesh instance
+of the gsplat manager that draws it:
+
+- the eye camera's manager draws the incoming photo;
+- the [live outgoing](#live-or-frozen-outgoing) camera's manager, on its own layer, draws the
+  outgoing photo.
+
+The engine gives every manager's renderer its own material and copies the tile material's chunk
+into it, so one chunk serves both. Per-mesh-instance uniforms override the material's, so the two
+photos play different sides.
+
+Nothing is rewritten per frame. An entity-scope work-buffer modifier, which was the first cut,
+forces the engine's `WORKBUFFER_UPDATE_ALWAYS`. On two 1.18M assets that meant, every frame:
+
+- two full work-buffer rewrites;
+- two CPU sort requests, and about 1.2 order-texture uploads (3 ms of main thread);
+- about 350 KB of garbage.
+
+That is the unsmoothness measured under §Gates. The sort still keys on each gaussian's ORIGINAL
+centre, as for the reveals, so in-flight gaussians stay ~1 px dots.
+
+A photo with nothing to draw is not drawn: its mesh instance is turned off. That covers the
+incoming photo before its span starts and the outgoing one after its span ends, when every
+particle is hidden (`converge`, `shimmer`, or `vanish` > 0). The two photos therefore share the
+GPU only while their spans overlap.
+
+The overlay composites the two live images per eye, the old one OVER the new one:
+`out = A + (1 − A.a)·B`, premultiplied, with the crossfade's two quads (`dxrSnapOver`). Paths
+are keyed on world position and time, so both eyes agree. The `maxDisparity`
+comfort floor applies to each photo against its own home depth.
+
+Each photo's frame (eyes, focus, framing) is its own. The outgoing photo's frame is taken before
+the rig switches; the incoming photo's is taken again when the clock starts. `order: 'layers'`
+reads the FILE index `splat.index`, which a render-time body does not have (there it is a
+work-buffer slot), so transitions refuse it.
+
+An engine whose managers are not reachable falls back to the entity-scope modifiers: the result
+is correct, but it hitches on large files. `handle.viewer._transitionPath` says which path ran
+(`'render'` or `'entity'`), for diagnostics.
+
+**Shader pre-warm: `prepareSource(src, { transition, …})`.** The first transition of each kind in a
+page compiles a new program variant, and its first frame blocks on the link. Measured on the M1:
+
+- 35–50 ms when the machine has seen the variant before;
+- 190 + 260 ms the first time ever;
+- plus the two overlay quads, on the very first transition.
+
+Pass the transition (and the options that shape the shader, `order`) to `prepareSource`. It then
+builds the same variants in the dwell and finishes their link there. It asks the engine's program
+library with a throwaway material that copies the eye renderer's description, defines and chunks
+and adds the transition's chunk. The library keys on the generated source, so the renderer gets
+this program back on the transition's first frame. It then polls `KHR_parallel_shader_compile`
+in idle periods, and finalizes when the link is done. Creating a program is not enough: the
+browser resolves the link on the first query, which is the draw. The warm-up is best effort: an
+engine whose internals differ compiles on the first frame, as before.
+
+**End state.** The chunk is deleted and each photo's values are removed from its mesh instance.
+The overlay is hidden. The live camera is disabled, which drops its manager, and its target is
+freed. The old asset is released. The frame is a plain `cut`: MAE 0.000, colour and alpha, both
+eyes (§Gates).
+
+**Fallbacks.**
+
+- Hidden tab, or no frame copy: nothing is captured, so the transition becomes the one-pass
+  crossfade over the same duration, as `wavefront` does.
+- `outgoing: 'frozen'`, or an engine without the RenderView path: the old photo cannot move, so
+  its frozen frame fades out over the outgoing span while the new photo plays its side.
+- Particle transitions default to `outgoing: 'live'` in 2D too, because the old photo moves.
+
 ## Custom GLSL
 
 ```js
@@ -323,7 +447,9 @@ transitions need both photos' per-gaussian data at once, paired by index. One ex
 - Probe (headless, real GPU): B's `sh0` + codebook, decoded in A's modifier, painted B's colours onto A's geometry. The image changed by MAE 71 while alpha was untouched.
 
 Building it needs a texture-uniform path in this API and B's other streams, for the geometry
-half. That is a follow-up.
+half. An index-paired `morph` transition was prototyped on this (the old photo's gaussian i
+flying to the new photo's gaussian i). It worked, and pairs any two SHARP files, but it was
+dropped on review, along with the texture-uniform path.
 
 ## Adding an effect
 
@@ -430,6 +556,61 @@ Replayed from t = 0 every batch (the first quarter of each effect), mono tile ra
 assemble 10.0, converge 3.9, shimmer 3.4. Converge and shimmer do not draw particles that have
 not launched yet, so they start cheaper than the plain photo.
 
+**Particle transitions** (unreleased, preview). `5e5c097e.mono.sog` (Tahoe) → `a36d278b.mono.sog` (a
+bakery), both SHARP, 1,179,648 gaussians each. Headless, same harness; the clock is stepped, so
+frames sit at exact t.
+
+| Transition | Path | End vs `cut`: stereo L, R (colour, alpha, max px diff); mono | VRAM, MB: before / during / after (stereo; managers after) | Coincident eyes L vs R at 0.2 / 0.5 / 0.8: grey MAE (max diff, % px) | Cost, ms/frame, held at t = 0.5: stereo none → window; mono |
+|---|---|---|---|---|---|
+| swarm | render | 0.000, 0.000 (0, 0, 0); 0.000 | 58.8 / 131.6 / 58.8 (1) | 0.001 / 0.001 / 0.001 (1 / 2 / 1; 0.39 / 0.58 / 0.19 %) | 17.7 → 15.5; 7.8 → 7.7 |
+| burst | render | 0.000, 0.000 (0, 0, 0); 0.000 | 58.8 / 131.6 / 58.8 (1) | 0.002 / 0.000 / 0.001 (2 / 1 / 1; 0.56 / 0.02 / 0.31 %) | 17.7 → 12.1; 7.9 → 6.2 |
+| shimmer-cross | render | 0.000, 0.000 (0, 0, 0); 0.000 | 58.8 / 131.6 / 58.8 (1) | 0.002 / 0.005 / 0.001 (1 / 2 / 1; 0.47 / 1.35 / 0.31 %) | 17.7 → 13.8; 7.9 → 6.9 |
+| dust | render | 0.000, 0.000 (0, 0, 0); 0.000 | 58.8 / 131.6 / 58.8 (1) | 0.001 / 0.001 / 0.001 (1 / 2 / 1; 0.37 / 0.44 / 0.18 %) | 17.7 → 12.8; 7.9 → 6.4 |
+
+- Every run resolves its promise and leaves `effects()` empty.
+- After the pre-warm and overlay changes, `crossfade` and `wavefront` (live), and `swarm` and
+  `dust` through `prepareSource(src, { transition })`, still end at 0.000 in both eyes. VRAM is back
+  to 58.8 MB.
+- In mono, VRAM during the window is 124.6 MB.
+- The coincident-eye residue is the particle reveals' raster rounding of sub-pixel dots (see above).
+- The cost column is held at t = 0.5, a GPU-synced 30-frame batch. A window is cheaper than the
+  still photo because in-flight gaussians are dots, or hidden.
+
+**Pacing, as seen: a VISIBLE Chrome 153 window.** 120 Hz display, M1 Pro, real clock and real rAF,
+`prepareSource` then `setSource` as in a slideshow, one configuration per browser launch. Each cell
+is the rAF interval in ms, median / p95 / p99 / max, over the frames where the transition clock ran,
+followed by the number of frames over 25 ms. For reference, a still photo is 8.3 / 9.5–10.2 /
+10.3 / 10.4 in 2D and 15.5 / 18–20 / 21–26 / 23–32 in stereo.
+
+| | 2D: entity path (first cut) | 2D: render time | Stereo: entity path | Stereo: render time | Stereo: render time + `prepareSource({ transition })` |
+|---|---|---|---|---|---|
+| swarm | 8.3 / 16.7 / 17.5 / 47.5, 1 | 8.3 / 10.1 / 15.3 / 16.6, 0 | 15.5 / 24.1 / 34.4 / 35.4, 5 | 16.6 / 24.6 / 30.9 / 32.6, 7 | 16.7 / 25.2 / 25.8 / 25.9, 9 (all ≤ 26) |
+| burst | 8.3 / 16.7 / 18.2 / 18.7, 0 | 8.3 / 9.8 / 10.3 / 10.4, 0 | 16.4 / 23.9 / 33.7 / 35.9, 4 | 15.6 / 18.0 / 33.7 / 40.1, 2 | 14.9 / 22.5 / 25.0 / 25.0, 0 |
+| shimmer-cross | 8.4 / 16.7 / 17.7 / 18.8, 0 | 8.3 / 10.0 / 10.4 / 32.9, 1 | 16.6 / 24.2 / 31.3 / 34.4, 4 | 16.0 / 18.1 / 25.2 / 25.5, 2 | (2D with pre-warm: 8.3 / 9.1 / 15.9 / 49.8, 1) |
+| dust | 8.3 / 16.8 / 18.0 / 34.4, 2 | 8.3 / 9.6 / 10.3 / 55.1, 1 | 16.4 / 24.6 / 38.1 / 41.2, 8 | 16.1 / 18.4 / 33.3 / 49.8, 3 | (2D with pre-warm: 8.3 / 9.0 / 9.3 / 9.4, 0) |
+
+Per frame during the window:
+
+| | Entity path | Render time |
+|---|---|---|
+| Work-buffer rewrites | 2.0 | 0 |
+| Sort requests | 2.0 | 0 |
+| Sort results | 1.2, 3–8 ms of main thread | 0 |
+| Heap churn | 250–375 KB/frame in 2D (12–16 GCs, 69–98 MB per window); 75 KB/frame in stereo | 30–60 KB/frame |
+
+Without the pre-warm, the first transition of a kind blocked 35–50 ms on its program link. On a
+variant the machine had never compiled, it blocked 190 + 260 ms. With `prepareSource({ transition })`
+the link finishes in the dwell: no program is finalized inside the window (instrumented
+`WebglShader.finalize`), and 0 new shaders are created by the transition.
+
+For reference, the approved live `crossfade` / `wavefront` runs at about 40 Hz in stereo on this
+Mac: median 25.6 ms over the whole window, 20 and 49 frames over 25 ms. That is slower than the
+particle transitions now.
+
+These numbers come from a Mac that was also in use; the load average was 13–19 during the later
+runs. Rows whose still-photo baseline had itself degraded were discarded and re-run. The rest
+still vary by a frame or two between runs.
+
 **Not tested:**
 
 - The DisplayXR Browser: a real weave, `firstWoven` timing on hardware, real eye motion during a frozen crossfade frame.
@@ -442,3 +623,14 @@ not launched yet, so they start cheaper than the plain photo.
 - Particle reveals on the real 3D display: how the swarm and its comfort cap feel woven, and whether the default cap should be larger.
 - Particle reveals: the engine's colour-only work-buffer pass. If the engine ever re-colours without re-running the centre stage, an entity-scope particle's in-flight colour would key on its moved centre. The end state is unaffected.
 - Particle reveals on Windows/Android GPUs, on streamed SOG, and with `order: 'layers'` on a non-SHARP asset.
+- Particle transitions:
+  - on the DisplayXR Browser's real weave, and on Windows or Android GPUs;
+  - with a page's own tile effects active at the same time (they share the chunk);
+  - with `controls: 'page'`;
+  - on streamed SOG;
+  - on the entity-path fallback on a real engine without reachable managers (only the fake engine
+    runs it).
+- An intermittent 60–100 ms GPU-process stall about 100–150 ms into some stereo windows (0–1 per
+  run). A trace shows one long `CommandBuffer::Flush` on the GPU main thread, with no JS task and
+  no program link. It is not diagnosed; it may be a Metal pipeline-state build for the live
+  camera's render-target format.
