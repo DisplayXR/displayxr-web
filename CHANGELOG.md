@@ -40,7 +40,7 @@ does not move except on glTFs that use `KHR_materials_transmission`.
   - The grab UV is taken per view. The engine mapped each view's NDC over the whole target, so in
     stereo each eye sampled across both. Mono renders are identical.
   - Lantern object MAE vs the Sample Viewer (default look): 14.4 → 12.4.
-  - See [§ Transmission](docs/playcanvas-model-backend.md#transmission-khr_materials_transmission--volume).
+  - See [§ Transmission](docs/playcanvas-model-backend.md#transmission-khr_materials_transmission--_volume).
 
 ## 1.16.0 — 2026-09-24
 

@@ -154,7 +154,7 @@ the gap. Object MAE (/255, 512², rest pose, mono) of each PlayCanvas render aga
 | PlayCanvas default (neutral studio + PBR Neutral) | 20.5 | 54.4 | 29.5 | 23.3 |
 | + tone mapping none | 15.1 | 40.4 | 14.1 | 12.8 |
 | + three's own RoomEnvironment (its PMREM read back, `yaw 90`) | 11.9 | 12.8 | 7.4 | 6.4 |
-| + transmission fixes ([below](#transmission-khr_materials_transmission--volume)) | 10.2 | 12.8 | 7.4 | 6.4 |
+| + transmission fixes ([below](#transmission-khr_materials_transmission--_volume)) | 10.2 | 12.8 | 7.4 | 6.4 |
 | + three's 0.04-rad blur | 10.2 | 11.2 | 6.9 | 6.2 |
 | **`environment: 'room'` as shipped** (the generated room) | **10.2** | **11.0** | **7.1** | **6.3** |
 
