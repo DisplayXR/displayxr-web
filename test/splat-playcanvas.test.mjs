@@ -1846,3 +1846,25 @@ test('boundsFromPositionsAsync: bit-identical to boundsFromPositions, yielding b
   assert.deepEqual(await boundsFromPositionsAsync(xyz.subarray(0, 30), undefined, async () => {}), sync(xyz.subarray(0, 30)), 'untrimmed small set');
 });
 
+
+test('an entity effect that ends puts the work buffer back on AUTO (ONCE alone left the engine placement on ALWAYS: re-render + re-sort every frame)', async (t) => {
+  const { out, v, frame, opts } = await liveRig(t, { transition: 'wavefront', durationMs: 60, outgoing: 'frozen' });
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', opts);
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  const g = out.mesh.entity.gsplat;
+  const seen = [];
+  let val = g.workBufferUpdate;
+  const first = val;
+  Object.defineProperty(g, 'workBufferUpdate', { get: () => val, set: (x) => { seen.push(x); val = x; }, configurable: true });
+  for (let i = 0; i < 30; i++) {
+    frame(10);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  await done;
+  assert.ok(first === 2 || seen.includes(2), 'ALWAYS while the ridge plays');
+  assert.deepEqual(seen.slice(-2), [0, 1], 'AUTO, then ONE clean re-render');
+  out.remove();
+});

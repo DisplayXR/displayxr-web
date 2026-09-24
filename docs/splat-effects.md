@@ -112,9 +112,9 @@ await h.setSource(next, { transition: 'wavefront', durationMs: 1800, ridge: 0.02
 | `transition` | How | Default |
 |---|---|---|
 | `'cut'` | At once. | the default with no `fadeMs` |
-| `'crossfade'` | Blends IMAGES. The last frame of the old asset is frozen into a texture (both eyes), and two overlay quads lerp it with the live new asset, `out = (1 − t)·A + t·B` per premultiplied pixel, alpha included. The result is linear in t whatever the depth order: blend fraction = t to ±0.001 at every tenth, identical in both eyes (1.12.1). The old photo holds still during the fade. | `fadeMs > 0` |
+| `'crossfade'` | Blends IMAGES. Two overlay quads lerp the old photo's image A with the new one's B, `out = (1 − t)·A + t·B` per premultiplied pixel, alpha included. The result is linear in t whatever the depth order: blend fraction = t to ±0.001 at every tenth, identical in both eyes (1.12.1). A is LIVE in a woven 3D session: the old photo keeps rendering with head motion (see [Live or frozen outgoing](#live-or-frozen-outgoing)). | `fadeMs > 0` |
 | `'flip'` (kept, not extended) | Phase 1: the old photo `deflate`s onto ITS convergence plane under ITS rig. The new photo is resident but hidden, so its work buffer builds meanwhile. At the flat moment the rig switches and the photos swap, with zero disparity on both sides. Phase 2: the new photo `inflate`s out of its own plane. | 2200 ms, `easeInOutSine` |
-| `'wavefront'` | The photo-frame prototype's Wavefront Sweep. A soft front crosses the picture from left to right over normalised u. Each column commits from the old photo to the new one over `lt = clamp((t − u·(1 − band)) / band, 0, 1)` with a smoothstep, so u = 0 starts at t = 0 and u = 1 finishes at t = 1. **Image half:** the old photo is the frozen frame, and it gives way at the same viewport-relative u in every eye, a front on the zero-disparity plane. **Depth half:** a RIDGE rides the front on the new photo, `sin(π·lt) × ridge` world units toward the eyes. Each splat moves along its own ray, with its scale scaled by the same λ, so it keeps its place and size in the picture and only comes forward. The ridge is capped so its extra disparity never exceeds `ridgeMaxDisparity` of the eye view's width: `Δ ≤ cap · 2·tan(fovX/2) · d² / eyeSeparation`. u is the splat's angle in the transition's fixed camera frame (x/z; for a photo, its grid column), so it depends on world position only. With no frame to wipe from (a hidden tab), it falls back to the one-pass crossfade over the same duration. | 2000 ms, `easeInOutSine`, `band` 0.18, `ridge` 0.03 (m on a metric photo), `ridgeMaxDisparity` 0.004 |
+| `'wavefront'` | The photo-frame prototype's Wavefront Sweep. A soft front crosses the picture from left to right over normalised u. Each column commits from the old photo to the new one over `lt = clamp((t − u·(1 − band)) / band, 0, 1)` with a smoothstep, so u = 0 starts at t = 0 and u = 1 finishes at t = 1. **Image half:** the old photo's image (live in 3D, the frozen frame in 2D) gives way at the same viewport-relative u in every eye, a front on the zero-disparity plane. **Depth half:** a RIDGE rides the front on the new photo, `sin(π·lt) × ridge` world units toward the eyes. Each splat moves along its own ray, with its scale scaled by the same λ, so it keeps its place and size in the picture and only comes forward. The ridge is capped so its extra disparity never exceeds `ridgeMaxDisparity` of the eye view's width: `Δ ≤ cap · 2·tan(fovX/2) · d² / eyeSeparation`. u is the splat's angle in the transition's fixed camera frame (x/z; for a photo, its grid column), so it depends on world position only. With no frame to wipe from (a hidden tab), it falls back to the one-pass crossfade over the same duration. | 2000 ms, `easeInOutSine`, `band` 0.18, `ridge` 0.03 (m on a metric photo), `ridgeMaxDisparity` 0.004 |
 
 `reveal` (with `cut` or `crossfade`) plays an entity-scope reveal on the INCOMING asset while the
 old one fades. For example, `{ reveal: 'sweep', fadeMs: 500 }` fades the old frame out over
@@ -125,8 +125,84 @@ Timing guidance from the photo-frame use case: gate only the FIRST photo on `fir
 start slide-to-slide transitions at once. Use 1.5–2.5 s with ease-in-out, and a 6 s dwell.
 
 The rig waterfall re-runs for the new file in every transition: rig, lens, focus and frame.
-`crossfade` and `wavefront` switch the rig at once; the frozen old frame keeps its own look.
-`flip` switches it at the flat moment.
+`crossfade` and `wavefront` switch the rig at once; the old photo keeps its own look (live: see
+below; frozen: it is a still). `flip` switches it at the flat moment.
+
+### Live or frozen outgoing
+
+`setSource(next, { transition, outgoing: 'live' | 'frozen' })`, for `crossfade` and `wavefront`.
+
+**Why.** In 1.12.1–1.13.0 the old photo was always a frozen frame for the whole window (800 ms
+crossfade, 2000 ms wavefront). On a tracked 3D panel a still image under a moving head reads
+exactly as "eye tracking hung, then resumed", and it dominates most of a fade, because the
+incoming photo starts invisible.
+
+| `outgoing` | What the old photo is during the window | Cost | Default |
+|---|---|---|---|
+| `'live'` | Still resident, re-rendered every frame through the same eye views (head motion included), into its own render target; the overlay lerps / wipes the two live images per eye. | about 2× splat draw for the window; both assets resident | woven (3D) session |
+| `'frozen'` | Its last frame, copied to a texture (1.12.1). | one draw; the old asset is released at the start | 2D |
+
+How live works on the engine's single-camera N-RenderView path: a second camera with its OWN
+RenderViews (set from the same entries as the eye's every frame) renders into an RGBA8 target the
+size of the canvas buffer, so every eye viewport sits in it exactly where it sits on the canvas.
+The old asset moves to its own layer that only this camera renders: the engine keeps one gsplat
+manager (work buffer, sort, budget) per camera × layer, so the eye's manager holds only the new
+asset and the live camera's only the old one, never both in both. The frozen capture bridges the
+first frames, until the live camera's manager has drawn a sorted frame (2 frames on the M1). When
+the window ends the camera is disabled, which drops its manager, and the old asset is released as
+before. On an engine build without the RenderView path the transition falls back to `'frozen'`.
+
+The incoming photo's rig is adopted at once, so the views the runtime returns from then on are the
+NEW photo's. The live camera sits under a node chain `N = R_o·K_o·D_o·(K_n·D_n)⁻¹` that maps them
+back to the old photo's framing: R is the rig node, K the capture/mono pose, and
+`D = diag(c·t, c·t, c)` with c the convergence distance and t = tan(fov/2). The old photo keeps its
+own window and zero-disparity plane. Two display-rig assets reduce to the old rig node.
+
+**Measured** (headless Chrome, M1, real GPU, a fake 2-view wall, `ports_100_cam.sog` →
+`mg_tahoe_k100.sog`, 1,179,648 gaussians each):
+- **Head tracking of the old photo.** Mid-crossfade, with the old photo at weight 1, at four head
+  poses (lateral, lateral + vertical, depth), both eyes match that photo's own plain render at the
+  same pose with MAE 0.000. That holds across the rig switch, since the two files have different
+  lenses and convergence. `'frozen'` and 1.13.0 show the same image at every head pose (MAE 0.000
+  frame to frame): that is the "hung" look.
+- **Exactness.** The end state equals a plain `cut` with MAE 0.000, colour and alpha, in both eyes,
+  for live `crossfade` and live `wavefront`. Mid-crossfade at t = 0.5, the frame equals the lerp of
+  the two photos' own renders to 0.39 grey levels (8-bit rounding), in both eyes.
+- **Resources during the window.** Two gsplat managers (`World`, `inline3d-outgoing`), resident
+  2 × 1,179,648. GPU textures go from 58.8 MB to 131.6 MB, +73 MB (the second work buffer and the
+  target); `'frozen'` adds 7 MB, the capture. After the window: one manager, and the live target
+  freed.
+- **Cost.** With a GPU-synced frame time (a 1-px readback each frame; no throttling;
+  2560×720 buffer), a steady frame is 14.5 ms. It is 25.2–25.6 ms during a live window and
+  13.1–13.7 ms during a frozen one. Under 4× and 6× CPU throttling the longest rAF gap inside the
+  window is 26–28 ms live and 19–20 ms frozen, with no long task in either. Starting the live
+  camera costs no long task either: the first frames show the frozen bridge while its manager
+  builds its work buffer and first sort. Full tables:
+  [`playcanvas-adapter.md` § setSource](playcanvas-adapter.md#setsource--what-a-swap-costs-the-main-thread).
+
+### Preloading the next photo: `prepareSource`
+
+```js
+let next = await h.prepareSource(urls[i + 1]);  // during the dwell: fetch, decode, upload
+// … 6 s later …
+await h.setSource(next, { transition: 'wavefront' }); // no load on the transition frame
+next = null;
+```
+
+`prepareSource(src)` runs the same load as `setSource`: the engine's SOG load, whose own
+end-of-load unpack runs when it must, and the SDK's cloud passes (framing, rig sample, pick set),
+which here yield to IDLE periods rather than `scheduler.yield()`. It does not render the asset. The
+result is an opaque, single-use handle; `setSource(prepared, …)` starts the transition on the next
+frame. Use `prepared.dispose()` if the page changes its mind, and `remove()` disposes any still
+unused. A prepared result from another handle is refused.
+
+**Memory:** a prepared asset is fully resident alongside the current one until it is used. That is
++22.5 MB of GPU textures per 1.18M-gaussian SOG (58.8 → 81.3 MB, back to 58.8 on `dispose()`), plus the engine's centre array (1.18M × 3 float32 ≈ 14 MB of JS heap). During a live transition that follows, both photos
+are drawn (see above). Prepare one slide ahead, not a playlist.
+
+**What preloading does not move:** the new asset's first drawn frame still builds its work buffer
+and first sort (the transition's first frame); the fade clock starts on the second tick for that
+reason.
 
 ## Custom GLSL
 
