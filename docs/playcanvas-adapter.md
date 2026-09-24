@@ -71,9 +71,10 @@ returns the existing system. Re-adding a handler is harmless in the engine anywa
 **Cost**, measured:
 - Bundle, esbuild 0.28.2 minified, for a tree-shaken minimal viewer: **+152 KB min / +41.8 KB
   gzip** (1,346,588 → 1,498,900 bytes; gzip 354,215 → 396,009).
-- For the SDK as shipped, the bundle cost is none. The adapter reaches the engine through the
-  namespace of a dynamic `import('playcanvas')`, which bundlers do not tree-shake, and an
-  importmap loads the whole engine anyway.
+- For the SDK as shipped, the bundle cost is none. Since 1.12 the adapter reaches the engine
+  through `js/inline3d-playcanvas-engine.js` (named re-exports), which bundlers tree-shake: the
+  engine chunk went from 2,434,536 bytes / 626 KB gzip (the namespace of `import('playcanvas')`)
+  to 1,499,851 / 397 KB. An importmap still loads the whole engine file.
 - Boot: `AppBase.init` median **0.4 → 0.5 ms** (+0.1 ms), in headless Chrome 153 on M1 Pro, 20
   interleaved runs each.
 

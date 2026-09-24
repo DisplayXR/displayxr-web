@@ -266,15 +266,20 @@ export const NEUTRAL_STUDIO = Object.freeze({
     [0.1584, 6.954, 1.514, 6.179],
     [0.2272, 6.945, 1.422, 5.891],
     [0.03496, 6.974, 1.414, 6.205],
-    [0.06177, 6.979, 1.393, 6.08],
-    [0.06225, 6.979, 1.393, 6.08],
-    [0.05403, 6.978, 1.392, 6.081],
-    [0.03948, 6.977, 1.387, 6.072],
-    [0.04461, 6.977, 1.39, 6.08],
-    [0.06151, 6.979, 1.393, 6.081],
-    [0.05678, 6.979, 1.392, 6.081],
+    [0.3804, 6.979, 1.393, 6.08],
   ],
 });
+
+/** Lobes as [amplitude, sharpness, mx, my, mz] — the trig done once per env, not per texel. */
+const _lobeCache = new WeakMap();
+function lobesOf(env) {
+  let l = _lobeCache.get(env);
+  if (!l) {
+    l = env.lobes.map(([a, s, th, ph]) => [a, Math.exp(s), Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]);
+    _lobeCache.set(env, l);
+  }
+  return l;
+}
 
 /** Radiance of NEUTRAL_STUDIO (or `env`) toward unit direction (x, y, z). */
 export function neutralStudioRadiance(x, y, z, env = NEUTRAL_STUDIO) {
@@ -285,12 +290,7 @@ export function neutralStudioRadiance(x, y, z, env = NEUTRAL_STUDIO) {
   const i = Math.min(n - 1, Math.floor(t));
   const f = t - i;
   let v = prof[i] * (1 - f) + prof[i + 1] * f;
-  for (const [a, s, th, ph] of env.lobes) {
-    const mx = Math.sin(th) * Math.cos(ph);
-    const my = Math.cos(th);
-    const mz = Math.sin(th) * Math.sin(ph);
-    v += a * Math.exp(Math.exp(s) * (x * mx + y * my + z * mz - 1));
-  }
+  for (const [a, k, mx, my, mz] of lobesOf(env)) v += a * Math.exp(k * (x * mx + y * my + z * mz - 1));
   return v > 0 ? v : 0;
 }
 
@@ -316,7 +316,12 @@ function rgbe(v, out, o) {
  * the convention the fit used; the engine's own equirect orientation is applied through
  * `scene.skyboxRotation` (§ ENV_YAW_DEG), not baked in here.
  */
+const _rgbeCache = new Map();
 export function neutralStudioRGBE(width = 256, height = 128, env = NEUTRAL_STUDIO) {
+  // Every tile on a page gets the same image: build it once (a copy per call, since the engine
+  // may keep the array it is handed).
+  const key = env === NEUTRAL_STUDIO ? `${width}x${height}` : null;
+  if (key && _rgbeCache.has(key)) return _rgbeCache.get(key).slice();
   const out = new Uint8Array(width * height * 4);
   for (let r = 0; r < height; r++) {
     const theta = ((r + 0.5) / height) * Math.PI;
@@ -327,6 +332,7 @@ export function neutralStudioRGBE(width = 256, height = 128, env = NEUTRAL_STUDI
       rgbe(neutralStudioRadiance(st * Math.cos(phi), y, st * Math.sin(phi), env), out, (r * width + c) * 4);
     }
   }
+  if (key) _rgbeCache.set(key, out.slice());
   return out;
 }
 

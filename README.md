@@ -34,8 +34,9 @@ No build step or bundler required — it's plain ES modules. You can also import
 URL from a CDN (jsDelivr / unpkg) without npm. The samples in this repo import the SDK by relative
 path (`./js/inline3d.js`) so they run straight off GitHub Pages; in your own app prefer the package.
 
-`three` and `@sparkjsdev/spark` are **optional peer dependencies** — the core is dependency-free
-and only the `/three`, `/viewer` and `/splat` subpaths need them. The two viewer subpaths are
+`three`, `@sparkjsdev/spark`, `playcanvas` and `meshoptimizer` are **optional peer dependencies**
+— the core is dependency-free and only the scene subpaths need them (`/model` needs `playcanvas`,
+or `three` with `engine: 'three'`). The two viewer subpaths are
 **experimental**: they turn "one object in a tile, look around it, drag to spin" into a single
 call (auto-framing on the zero-disparity plane, orbit, idle turntable, mono fallback), but their
 API is not yet covered by the semver promise below.
@@ -48,8 +49,17 @@ tilt-and-relax orbit and `handle.engine` (the engine objects, for advanced pages
 optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply` and a Streamed-SOG
 `lod-meta.json`. **Spark stays the default**; a page that never passes `engine` never loads
 `playcanvas`. What differs, and why: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
-Bundlers: the engine is a literal `import('playcanvas')`; its sort workers are Blob URLs (CSP
+Bundlers: the engine is reached through a named-import module (`js/inline3d-playcanvas-engine.js`,
+so the unused ~40% of the engine tree-shakes away); its sort workers are Blob URLs (CSP
 `worker-src blob:`), and esbuild needs `node:worker_threads` marked external.
+
+**Models render with PlayCanvas by default (1.12).** `addModel(wall, canvas, 'chair.glb')` loads
+the glTF with the PlayCanvas engine (optional peer `playcanvas`), lit to match the Khronos glTF
+Sample Viewer: an in-memory neutral studio environment, Khronos PBR Neutral tone mapping,
+exposure 1. `engine: 'three'` is the 1.11 three.js renderer, unchanged (also importable as
+`@displayxr/inline3d/model/three`). Each engine is imported only when a tile asks for it. Draco
+and KTX2 use the same served decoder folders on both engines. Design, the Sample-Viewer MAE table
+and what throws: [`docs/playcanvas-model-backend.md`](docs/playcanvas-model-backend.md).
 
 **Large scenes stream (preview).** On `engine: 'playcanvas'`, a Streamed SOG streams: pass the URL
 of its `lod-meta.json` (or of its directory), not its bytes. The engine fetches only the chunks
@@ -134,7 +144,7 @@ samples/
   windows/            mixed 3D windows — still photos + a live video + a real-time three.js scene,
                       each woven with one SDK call, all on one session
   splat/              a 3D Gaussian splat in a tile, auto-framed, with a 2D price plate over it
-  model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF in three tiles
+  model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF (PlayCanvas; ?engine=three)
   composition/        the 14-case 2D/3D overlap matrix — demo AND standing hardware regression
                       surface; red cases ship red (see samples/README.md)
 vendor/draco/         three's Draco decoder, served for samples/model (compressed glTF needs it)
@@ -148,7 +158,10 @@ js/
                       (`perf` cuts overdraw; a `.sog`'s `camera` block picks the view rig)
   inline3d-splat-playcanvas.js
                       preview: the `engine: 'playcanvas'` backend of addSplat(), loaded on demand
-  inline3d-model.js   experimental: addModel() — a glTF/GLB window; wires Draco / meshopt / KTX2
+  inline3d-model-entry.js       experimental: addModel() — picks the engine (PlayCanvas default)
+  inline3d-model-playcanvas.js  the PlayCanvas model backend (Sample-Viewer lighting, engine decoders)
+  inline3d-model.js             the three.js model backend (engine:'three'; ./model/three)
+  inline3d-playcanvas-engine.js named playcanvas imports for both PlayCanvas adapters (tree-shaking)
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/
   authoring-inline-3d.md   the authoring guide
