@@ -2001,3 +2001,74 @@ test('particle transition with no frame to capture (hidden tab / no copy): the o
   assert.equal(e1.enabled, false);
   out.remove();
 });
+
+/** A fake engine mesh instance (what a gsplat manager's renderer draws with). */
+function fakeMi(name) {
+  return {
+    name,
+    visible: true,
+    parameters: {},
+    setParameter(n, v) {
+      this.parameters[n] = { data: v };
+    },
+    deleteParameter(n) {
+      delete this.parameters[n];
+    },
+  };
+}
+
+test('particle transitions render at RENDER TIME when the managers are reachable: one tile chunk, each photo on its own mesh instance, no work-buffer modifiers; a hidden photo is not drawn; the end is the default', async (t) => {
+  const { rec, out, v, frame, camerasMap, clock } = await liveRig(t);
+  const eyeMi = fakeMi('eye');
+  camerasMap.set(v.eye.camera.camera, { layersMap: new Map([['world', { gsplatManager: { renderer: { meshInstance: eyeMi } } }]]) });
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'swarm', durationMs: 1000 });
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.equal(v._transitionPath, 'render');
+  assert.equal(e1.gsplat.modifier, null, 'no work-buffer modifier: no rewrite + re-sort per frame');
+  assert.equal(e2.gsplat.modifier, null);
+  assert.equal(e1.gsplat.workBufferUpdate, 0);
+  const chunk = rec.tileChunks.get('gsplatModifyVS');
+  assert.match(chunk, /dxrFx_transition_center\(center\)/, 'ONE body for both photos');
+  assert.equal(chunk.split('void dxrFx_transition_center(').length - 1, 1);
+  assert.equal(rec.tileParams.get('dxrFx_transition_amount'), 1, 'material value = the untouched photo');
+  assert.deepEqual(out.effects(), []);
+  const amt = (mi) => mi.parameters.dxrFx_transition_amount?.data;
+  assert.equal(amt(eyeMi), 0, 'incoming: amount 0 on the eye manager');
+  assert.equal(eyeMi.visible, false, 'nothing of it to draw: its draw is skipped');
+  // the live manager appears (sorted) with its own mesh instance
+  const liveMi = fakeMi('live');
+  sortLive(v, camerasMap);
+  camerasMap.get(v._live.cam.camera.camera).layersMap.get(v._live.layer).gsplatManager.renderer = { meshInstance: liveMi };
+  frame();
+  frame();
+  frame();
+  assert.equal(amt(liveMi), 1, 'outgoing: untouched at the clock start');
+  clock.T += 500;
+  frame();
+  near(amt(liveMi), 1 - particleSpanOf('out', 0.5), 1e-9);
+  near(amt(eyeMi), particleSpanOf('in', 0.5), 1e-9);
+  assert.equal(eyeMi.visible, true, 'drawn again once its span has begun');
+  assert.equal(liveMi.parameters.dxrFx_transition_time.data, 0.5);
+  assert.equal(liveMi.parameters.dxrFx_transition_van.data, 0.45, "each photo's own options");
+  assert.equal(eyeMi.parameters.dxrFx_transition_van.data, 0.35);
+  clock.T += 600;
+  frame();
+  await done;
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'chunk deleted: the engine default, exactly');
+  assert.ok(!Object.keys(eyeMi.parameters).some((k) => k.startsWith('dxrFx_transition_')), 'its values removed from the eye mesh instance');
+  assert.equal(eyeMi.visible, true);
+  assert.equal(v._live.active, false);
+  assert.equal(e1.enabled, false);
+  out.remove();
+});
+
+test("particle transitions: one order for both photos; 'layers' refused (a render-time body has no file index)", async () => {
+  const { resolveSwap } = await import('../js/inline3d-splat-playcanvas.js');
+  assert.throws(() => resolveSwap({ transition: 'swarm', order: 'layers' }), /reveal-only order/);
+  assert.throws(() => resolveSwap({ transition: 'dust', outgoingFx: { order: 'radial' } }), /same order/);
+  assert.equal(resolveSwap({ transition: 'dust', order: 'random' }).particles.out.opts.order, 'random');
+});

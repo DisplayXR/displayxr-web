@@ -2178,7 +2178,14 @@ export function resolveParticleTransition(name, o = {}) {
     resolveEffectOptions(effect, { ...opts, scope: 'entity' }, 'set', { internal: true }); // throws on a bad one
     return { effect, opts };
   };
-  return { out: side('out', spec.out, o.outgoingFx), in: side('in', spec.in, o.incomingFx), overlap };
+  const out = side('out', spec.out, o.outgoingFx);
+  const inc = side('in', spec.in, o.incomingFx);
+  // Both photos run ONE render-time body, compiled for one `order`; `layers` reads splat.index,
+  // which is a file index only in a work-buffer modifier (not at render time).
+  const order = (x) => x.opts.order ?? EFFECTS[x.effect].defaults.order;
+  if (order(out) !== order(inc)) throw new Error(`@displayxr/inline3d/splat: setSource ${name}: both photos take the same order (got '${order(out)}' and '${order(inc)}').`);
+  if (order(inc) === 'layers') throw new Error(`@displayxr/inline3d/splat: setSource ${name}: order 'layers' is a reveal-only order (it needs the file index, which a transition's render-time body does not have).`);
+  return { out, in: inc, overlap };
 }
 
 /** Validate setSource's options into a plan (throws on a page bug, before anything loads). */
@@ -3237,22 +3244,41 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   function playParticleTransition({ particle, plan, prev, entity, live, adopt, release, finishers, finish, isFinished, pumpLive, isLiveShown }) {
     const ease = typeof plan.easing === 'function' ? plan.easing : EASINGS[plan.easing] || EASINGS.linear;
     const overlap = particle.overlap;
+    // RENDER-TIME (the default): one tile-scope body, each photo's values on the mesh instance of
+    // the gsplat manager that draws it — the eye camera's (incoming) and the live camera's
+    // (outgoing). No work-buffer rewrite and no re-sort per frame. An engine that does not expose
+    // the managers' mesh instances gets the entity-scope modifiers instead (a full work-buffer
+    // rewrite + a re-sort per asset per frame: correct, but it hitches on a 1.18M photo).
+    const managerMi = (cam, layer) => {
+      const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam?.camera?.camera);
+      if (!cd?.layersMap) return null;
+      if (layer) return cd.layersMap.get(layer)?.gsplatManager?.renderer?.meshInstance ?? null;
+      for (const ld of cd.layersMap.values()) if (ld?.gsplatManager?.renderer?.meshInstance) return ld.gsplatManager.renderer.meshInstance;
+      return null;
+    };
+    const eyeMi = () => managerMi(viewer.eye, null);
+    const liveMi = () => (live?.active ? managerMi(live.cam, live.layer) : null);
+    const shared = particle.out.effect === particle.in.effect && eyeMi() ? fx.driveShared('transition', particle.in.effect, { order: particle.in.opts.order }) : null;
     // the outgoing side, BEFORE adopt(): its frame (eyes, focus, framing) is the old asset's
     let outFx = null;
     if (live) {
-      outFx = fx.drive(prev.entity, particle.out.effect, particle.out.opts);
+      outFx = shared ? shared.side(liveMi, particle.out.opts) : fx.drive(prev.entity, particle.out.effect, particle.out.opts);
       outFx.set(1, 0);
     } else {
       release(prev); // the frozen frame shows it from here on
     }
     adopt(entity);
     // the incoming side, hidden (amount 0) until the clock starts
-    const inFx = fx.drive(entity, particle.in.effect, particle.in.opts);
+    const inFx = shared ? shared.side(eyeMi, particle.in.opts) : fx.drive(entity, particle.in.effect, particle.in.opts);
     inFx.set(0, 0);
+    viewer._transitionPath = shared ? 'render' : 'entity'; // diagnostics (docs §Gates)
     finishers.push(() => {
       viewer._transitionState = null;
-      outFx?.remove();
-      inFx.remove();
+      if (shared) shared.remove();
+      else {
+        outFx?.remove();
+        inFx.remove();
+      }
       viewer.setSnapshotAlpha(0);
       viewer.releaseSnapshot();
       if (live) {
@@ -3275,6 +3301,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       // buffer) and, live, once the live camera has drawn a sorted frame (until then the frozen
       // capture stands in for the outgoing photo, untouched).
       if (++ticks < 2 || (live && !isLiveShown())) {
+        if (shared) {
+          // the managers (and their mesh instances) may be new: keep both photos' values on them
+          outFx?.set(1, 0);
+          inFx.set(0, 0);
+        }
         if (!viewer.setSnapshotAlpha(1)) {
           finish();
           return false;

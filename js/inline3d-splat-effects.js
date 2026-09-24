@@ -801,9 +801,14 @@ const PARTICLE_DEFAULTS = {
   density: 1,
 };
 
-/** A particle reveal's registry entry: `body(P)` adds the centre/rs stages (and extra uniforms). */
-function particleEffect(name, defaults, { body, color = particleColor, uniforms: extra = () => ({}), validate }) {
+/**
+ * A particle reveal's registry entry: `body(P)` adds the centre/rs stages (and extra uniforms).
+ * `hiddenAtZero(opts)`: nothing is drawn at amount 0 (converge / shimmer: not yet launched; the
+ * others with `vanish` > 0) — a setSource transition then skips that photo's draw.
+ */
+function particleEffect(name, defaults, { body, color = particleColor, uniforms: extra = () => ({}), validate, hiddenAtZero = (o) => o.vanish > 0 }) {
   return {
+    hiddenAtZero,
     stage: 'reveal',
     kind: 'transition',
     particle: true,
@@ -981,6 +986,7 @@ void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
 }
 `,
       color: (P) => particleColor(P, 'col.a *= smoothstep(0.0, 0.15, lp);'),
+      hiddenAtZero: () => true,
     },
   ),
 
@@ -1023,6 +1029,7 @@ void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
   col.rgb = mix(col.rgb, ${P}sc, min(1.0, tw * ${P}sp) * (1.0 - g));
   col.a *= smoothstep(0.0, 0.12, lp) * mix(0.55 + 0.45 * tw, 1.0, g);`,
         ),
+      hiddenAtZero: () => true,
     },
   ),
 });
@@ -1441,6 +1448,81 @@ export class SplatEffects {
     };
   }
 
+  /**
+   * ONE tile-scope body for the two photos of a setSource particle transition, with each photo's
+   * values on its OWN mesh instance (the engine draws each photo through its own gsplat manager and
+   * renderer: the eye camera's for the incoming photo, the live camera's for the outgoing one).
+   * Render-time only: no work-buffer rewrite, no per-frame re-sort (an entity-scope modifier forces
+   * both, every frame, for each 1.18M asset — measured as the transitions' hitches). The chunk's
+   * material values are the untouched asset's (amount 1). Returns { side(getMeshInstance, opts),
+   * remove() }; a side is { set(amount, timeS), restart() }. `opts` of the two sides share what
+   * the GLSL is compiled from (the `order`).
+   */
+  driveShared(name, effect, opts) {
+    const def = EFFECTS[effect];
+    const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
+    const inst = this._makeInstance(name, o, 'set');
+    inst.def = def;
+    inst.hidden = true;
+    inst.fixed = true; // its material values never change: no per-frame upload
+    this._replace('tile', name, inst);
+    this._setupInstance(inst);
+    this._apply('tile', inst, this.ctx.now());
+    this._install('tile');
+    const P = prefixOf(name);
+    const alive = () => !this._disposed && this.scopes.get('tile')?.get(name) === inst;
+    const touched = new Set();
+    const hidden = new Set(); // mesh instances this transition turned off (a photo with nothing to draw)
+    return {
+      side: (getMeshInstance, sideOpts) => {
+        const s = { opts: resolveEffectOptions(effect, { ...sideOpts, order: o.order, scope: 'tile', direction: 'in' }, 'set', { internal: true }), state: {}, timeS: 0 };
+        s.originPoint = (ctx, eyes) => this._origin(s, ctx, eyes);
+        s.elapsedS = () => s.timeS;
+        def.start?.(this.ctx, s);
+        return {
+          /** Upload this photo's values; false when its mesh instance is not there (yet). */
+          set: (amount, timeS = s.timeS) => {
+            if (!alive()) return false;
+            const mi = getMeshInstance();
+            if (!mi?.setParameter) return false;
+            s.timeS = timeS;
+            touched.add(mi);
+            // the values first, always: should the engine show the mesh again on its own (a
+            // rebuild sets its visibility), it draws this state, never the untouched photo
+            const values = def.uniforms(this.ctx, s, Math.min(1, Math.max(0, amount)), this.ctx.now());
+            for (const [k, v] of Object.entries(values)) mi.setParameter(P + k, v);
+            // Nothing of this photo is drawn at amount 0 (every particle hidden before its flight):
+            // skip its draw call rather than run the vertex stage for 1.18M invisible gaussians —
+            // the two photos then share the GPU only while their spans overlap.
+            if (amount <= 0 && def.hiddenAtZero?.(s.opts)) {
+              if (mi.visible !== false) {
+                mi.visible = false;
+                hidden.add(mi);
+              }
+            } else if (hidden.delete(mi)) mi.visible = true;
+            return true;
+          },
+          restart: () => {
+            s.state = {};
+            def.start?.(this.ctx, s);
+          },
+        };
+      },
+      remove: () => {
+        for (const mi of hidden) mi.visible = true;
+        hidden.clear();
+        for (const mi of touched) {
+          for (const k of Object.keys(mi.parameters || {})) if (k.startsWith(P)) mi.deleteParameter?.(k);
+        }
+        touched.clear();
+        if (!alive()) return;
+        this.scopes.get('tile').delete(name);
+        inst.resolve({ finished: true });
+        this._install('tile');
+      },
+    };
+  }
+
   _setupInstance(inst) {
     // Also for a gated one (its held START state needs the geometry); re-run when the gate opens,
     // since the rig/framing may have changed meanwhile (setSource's flip adopts a new asset).
@@ -1513,6 +1595,7 @@ export class SplatEffects {
   tick(tMs) {
     if (this._disposed) return;
     for (const [key, name, inst] of [...this._all()]) {
+      if (inst.fixed) continue;
       if (inst.mode === 'play') {
         if (inst.startGate) {
           this._apply(key, inst, tMs); // hold the start state
