@@ -342,3 +342,100 @@ test('wavefront ridge: metres toward the eyes, capped in disparity by the eye se
   w.fx.play('wavefront', { scope: 'entity' }, { entity: e, internal: true });
   assert.ok(w.eparams.get('dxrFx_wavefront_capK') > 1e8, 'no disparity in 2D: nothing to cap');
 });
+
+// ── setSource's wavefront cull (EFFECTS.wipecull) ─────────────────────────────────────────────
+
+test('wipecull: the LAST stage; off by default; per-view values from opts.cull(); more views than it holds: off', () => {
+  assert.equal(STAGE_ORDER[STAGE_ORDER.length - 1], 'cull');
+  const P = prefixOf('c');
+  const code = composeModifier([
+    { name: 'c', def: EFFECTS.wipecull, opts: {} },
+    { name: 'w', def: EFFECTS.wavefront, opts: {} },
+  ]).code;
+  assert.ok(code.indexOf(`${P}rs(originalCenter`) > code.indexOf(`${prefixOf('w')}rs(originalCenter`), 'called after the ridge');
+  // the bound, as the engine sizes its quad (gsplatCorner): l1 = 2·√(2λ1), offset ≤ 2·l1, + 4 px
+  assert.match(code, /float l1 = 2\.0 \* sqrt\(2\.0 \* \(j2 \* K\.z \* s \* s \+ 0\.3\)\);/);
+  assert.match(code, /\(2\.0 \* l1 \+ 8\.0\) \* K\.y > 0\.0/);
+  assert.match(code, /if \(dxrFx_c_cut\) col\.a = 0\.0;/, 'culled = alpha 0: the engine’s own alpha clip drops it in the vertex stage');
+  const off = EFFECTS.wipecull.uniforms({}, { opts: {} }, 1);
+  assert.equal(off.on, 0);
+  const view = { V: new Float32Array(16), X: new Float32Array(4), W: new Float32Array(4), K: new Float32Array(4) };
+  const on = EFFECTS.wipecull.uniforms({}, { opts: { cull: () => ({ side: -1, edge: 0.25, views: [view, view] }) } }, 1);
+  assert.deepEqual([on.on, on.side, on.edge, on.n], [1, -1, 0.25, 2]);
+  assert.equal(on.V1, view.V);
+  const five = EFFECTS.wipecull.uniforms({}, { opts: { cull: () => ({ side: 1, edge: 0, views: [view, view, view, view, view] }) } }, 1);
+  assert.equal(five.on, 0, 'five views: every gaussian drawn');
+});
+
+// The engine's quad for one gaussian (PlayCanvas 2.22.3 gsplatCorner initCornerCov), in NDC x:
+// the centre and the four corner offsets. Column-major mat3 as GLSL's.
+function engineQuadX(c, rot, scale, V, P, Wvp, Hvp) {
+  const m3 = (a) => [a[0], a[1], a[2], a[4], a[5], a[6], a[8], a[9], a[10]]; // mat3(mat4)
+  const mul = (a, b) => { const r = new Array(9).fill(0); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) r[j * 3 + i] += a[k * 3 + i] * b[j * 3 + k]; return r; };
+  const tr = (a) => [a[0], a[3], a[6], a[1], a[4], a[7], a[2], a[5], a[8]];
+  const [x, y, z, w] = rot;
+  const R = [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y), 2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x), 2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+  const M = tr([scale[0] * R[0], scale[0] * R[1], scale[0] * R[2], scale[1] * R[3], scale[1] * R[4], scale[1] * R[5], scale[2] * R[6], scale[2] * R[7], scale[2] * R[8]]);
+  const Vrk = mul(tr(M), M);
+  const v = [0, 1, 2, 3].map((r) => V[r] * c[0] + V[4 + r] * c[1] + V[8 + r] * c[2] + V[12 + r]);
+  const clip = [0, 1, 2, 3].map((r) => P[r] * v[0] + P[4 + r] * v[1] + P[8 + r] * v[2] + P[12 + r] * v[3]);
+  const focal = Wvp * P[0];
+  const J1 = focal / v[2];
+  const J2 = [(-J1 / v[2]) * v[0], (-J1 / v[2]) * v[1]];
+  const J = [J1, 0, J2[0], 0, J1, J2[1], 0, 0, 0];
+  const T = mul(tr(m3(V)), J);
+  const cov = mul(mul(tr(T), Vrk), T);
+  const d1 = cov[0] + 0.3, off = cov[3], d2 = cov[4] + 0.3;
+  const mid = 0.5 * (d1 + d2), rad = Math.hypot((d1 - d2) / 2, off);
+  const l1v = mid + rad, l2v = Math.max(mid - rad, 0.1);
+  const vmin = Math.min(1024, Math.min(Wvp, Hvp));
+  const l1 = 2 * Math.min(Math.sqrt(2 * l1v), vmin), l2 = 2 * Math.min(Math.sqrt(2 * l2v), vmin);
+  let dv = [off, l1v - d1];
+  const n = Math.hypot(dv[0], dv[1]) || 1;
+  dv = [dv[0] / n, dv[1] / n];
+  const v1 = [l1 * dv[0], l1 * dv[1]], v2 = [l2 * dv[1], -l2 * dv[0]];
+  const xs = [];
+  for (const [u, t] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) xs.push((u * v1[0] + t * v2[0]) / Wvp); // clip·c / w
+  return { xn: clip[0] / clip[3], corners: xs.map((d) => clip[0] / clip[3] + d), w: clip[3] };
+}
+
+// The GLSL `reach` test's margin, in JS (EFFECTS.wipecull): what the cull assumes the quad can span.
+function cullMargin(c, scale, V, K) {
+  const v = [0, 1, 2].map((r) => V[r] * c[0] + V[4 + r] * c[1] + V[8 + r] * c[2] + V[12 + r]);
+  const z = -v[2];
+  const jz = K[0] / z;
+  const j2 = jz * jz * (1 + (v[0] * v[0] + v[1] * v[1]) / (z * z));
+  const s = Math.max(...scale);
+  const l1 = 2 * Math.sqrt(2 * (j2 * K[2] * s * s + 0.3));
+  return (2 * l1 + 8) * K[1];
+}
+
+test('wipecull bound: every corner of the engine’s quad lies within the margin the cull assumes (random gaussians, views, skew, view scale)', () => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  let worst = 0;
+  for (let k = 0; k < 4000; k++) {
+    const sv = 0.3 + 3 * rnd(); // a view matrix with uniform scale (the rig node's)
+    const a = (rnd() - 0.5) * 0.6;
+    const V = [Math.cos(a) * sv, 0, -Math.sin(a) * sv, 0, 0, sv, 0, 0, Math.sin(a) * sv, 0, Math.cos(a) * sv, 0, (rnd() - 0.5) * sv, (rnd() - 0.5) * sv, 0, 1];
+    const f = 0.8 + 2 * rnd();
+    const P = [f, 0, 0, 0, 0, f * 1.6, 0, 0, (rnd() - 0.5) * 0.4, 0, -1.0002, -1, 0, 0, -0.02, 0]; // skewed, as the runtime's eye projections are
+    const Wvp = 200 + Math.floor(1800 * rnd()), Hvp = 300 + Math.floor(900 * rnd());
+    const c = [(rnd() - 0.5) * 6, (rnd() - 0.5) * 4, -(0.2 + 8 * rnd()) / sv];
+    const q = [rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5];
+    const qn = Math.hypot(...q);
+    const rot = q.map((x) => x / qn);
+    const big = rnd() < 0.2;
+    const scale = [0, 1, 2].map(() => (big ? 0.3 : 0.02) * rnd() + 1e-5);
+    const quad = engineQuadX(c, rot, scale, V, P, Wvp, Hvp);
+    if (!(quad.w > 1e-6)) continue;
+    const K = [Wvp * P[0], 1 / Wvp, V[0] * V[0] + V[1] * V[1] + V[2] * V[2]];
+    const m = cullMargin(c, scale, V, K);
+    for (const x of quad.corners) {
+      const reach = Math.abs(x - quad.xn);
+      assert.ok(reach <= m, `corner ${reach} beyond the margin ${m}`);
+      worst = Math.max(worst, reach / m);
+    }
+  }
+  assert.ok(worst > 0.2, `the test exercised real extents (worst ${worst})`);
+});
