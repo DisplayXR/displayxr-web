@@ -336,7 +336,62 @@ export interface SplatOptions {
 }
 
 /** The transition effects `reveal` accepts. */
-export type SplatRevealName = 'inflate' | 'sweep' | 'dissolve' | 'fade';
+export type SplatRevealName = 'inflate' | 'sweep' | 'dissolve' | 'fade' | SplatParticleRevealName;
+
+/** The particle reveals: every gaussian is a particle with its own start time (docs/splat-effects.md §Particle reveals). */
+export type SplatParticleRevealName = 'assemble' | 'dissolve-in' | 'converge' | 'shimmer';
+
+/**
+ * Options every particle reveal takes (plus its timing). All sizes are in PICTURE units, so the
+ * look is the same on a 2 cm object and a 40 m street.
+ */
+export interface SplatParticleOptions {
+  /**
+   * What staggers the particles: `'radial'` (distance in the picture from the origin), `'depth'`
+   * (near first), `'noise'` (fbm patches), `'random'`, or `'layers'` (a SHARP photo's grid order:
+   * layer 0, the visible surface, then layer 1, the disocclusion fill, each outward from the
+   * origin — reads `splat.index`, so it forces `scope: 'entity'`).
+   */
+  order?: 'radial' | 'depth' | 'noise' | 'random' | 'layers';
+  /** Fraction of the duration spent launching particles, 0..0.95. */
+  stagger?: number;
+  /** How much of each particle's key is random, 0..1. */
+  jitter?: number;
+  /** A particle in flight is a dot this size (a fraction of the view width). */
+  dotSize?: number;
+  /** A particle grows back to its own splat over the last (1 − grow) of its flight. */
+  grow?: number;
+  /** In-flight alpha multiplier, 0..1. */
+  flightAlpha?: number;
+  /** In-flight tint, added as `color · glow`. */
+  color?: [number, number, number];
+  glow?: number;
+  /** Size of the noise patches, per half-view-width. */
+  noiseScale?: number;
+  /**
+   * Comfort cap: no particle is ever nearer the eyes than its home depth by more than this much
+   * extra disparity, a fraction of the eye view's width (default 0.004; 0 = never nearer than
+   * home; max 0.05). In 2D a nominal 64 mm-at-1.7 m separation is assumed.
+   */
+  maxDisparity?: number;
+  /** `order: 'layers'`: gaussians per layer (default 768² = 589 824, SHARP). */
+  layerSize?: number;
+  /** `assemble`: how far out the swarm starts (half-view-widths), its spiral (rad), its curl turbulence, how coherent its start field is (0..1), and how much of it reaches back in depth (0..1). */
+  spread?: number;
+  swirl?: number;
+  turbulence?: number;
+  coherence?: number;
+  depth?: number;
+  /** `dissolve-in`: the wind's lift and the random drift (half-view-widths). */
+  lift?: number;
+  drift?: number;
+  /** `converge`: the spiral (rad) and the launch ball's radius (half-view-widths). */
+  spin?: number;
+  burst?: number;
+  /** `shimmer`: twinkle rate (rad/s) and sparkle strength. */
+  twinkle?: number;
+  sparkle?: number;
+}
 
 /** Named easings; a function `(x) => y` on [0, 1] also works. */
 export type SplatEasing =
@@ -397,7 +452,7 @@ export interface SplatCustomEffect extends SplatEffectTiming {
   hold?: boolean;
 }
 
-export type SplatEffectName = 'inflate' | 'deflate' | 'sweep' | 'dissolve' | 'fade' | 'pulse' | 'grade' | 'clip' | 'custom' | `custom:${string}`;
+export type SplatEffectName = 'inflate' | 'deflate' | 'sweep' | 'dissolve' | 'fade' | SplatParticleRevealName | 'pulse' | 'grade' | 'clip' | 'custom' | `custom:${string}`;
 
 /** `setEffect('grade', …)`. */
 export interface SplatGradeParams {
@@ -640,6 +695,7 @@ export interface SplatHandle {
    * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —
    * false when stopped or replaced. docs/splat-effects.md.
    */
+  playEffect(name: SplatParticleRevealName, opts?: Omit<SplatEffectTiming, 'direction'> & SplatParticleOptions): Promise<{ finished: boolean }>;
   playEffect(
     name: Exclude<SplatEffectName, 'grade' | 'clip'>,
     opts?: SplatEffectTiming & Record<string, unknown>,

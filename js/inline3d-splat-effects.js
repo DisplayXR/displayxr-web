@@ -552,6 +552,466 @@ void ${P}color(vec3 c, inout vec4 col) {
 // stays flat until stopEffect.
 EFFECTS.deflate = { ...EFFECTS.inflate, defaults: { ...EFFECTS.inflate.defaults, direction: 'out', easing: 'easeInOutSine' } };
 
+// ── particle reveals ──────────────────────────────────────────────────────────────────────────
+//
+// assemble / dissolve-in / converge / shimmer: every gaussian is a PARTICLE with its own start
+// time. A per-gaussian key k ∈ [0, 1] (the `order`: image distance from the origin, depth, fbm
+// noise patches, random, or — entity scope only — SHARP's grid layers via `splat.index`) staggers
+// it: local progress lp = clamp((amount − k·stagger) / (1 − stagger), 0, 1). While lp < 1 the
+// gaussian is shrunk to a DOT (`dotSize`, a fraction of the view width, so ~1–2 px whatever its
+// depth) and only grows back to its own scale over the last `1 − grow` of its flight. That is the
+// answer to the sort caveat: the engine sorts by ORIGINAL centres, so a gaussian far from home
+// blends out of order — but a 1-px dot barely overlaps anything, and by the time it is big it is
+// home. Keys and paths read the ORIGINAL world centre, the time and the effect's fixed frame
+// (taken once at start: the eyes' midpoint and axes, the origin) — never a screen input — so both
+// eyes of a woven tile see the same particle in the same place.
+//
+// COMFORT: no particle is ever nearer to the eyes than its home depth minus the disparity budget
+// `maxDisparity` (a fraction of the eye view's width, 0.004 = the wavefront ridge's cap):
+// sep·(1/d − 1/dh) ≤ maxDisparity · 2·tan(fovX/2), i.e. d ≥ dh / (1 + capK·dh) with
+// capK = maxDisparity · 2·tan(fovX/2) / eyeSeparation — enforced by pushing the particle back
+// along its own ray from the eyes (its place in the picture is kept). In 2D, a nominal separation
+// (64 mm at 1.7 m, scaled to the focus distance) keeps the same look as the woven tile.
+//
+// Every body returns at amount >= 1 (the baseline exactly) and at lp >= 1 (that gaussian is
+// untouched), and the runner removes the effect at the end.
+
+/** 2D stand-in for the eye separation, as a fraction of the focus distance (64 mm at 1.7 m). */
+export const PARTICLE_NOMINAL_SEPARATION = 0.064 / 1.7;
+
+/** SHARP's per-layer gaussian count (768²), for `order: 'layers'`. */
+export const SHARP_LAYER_SIZE = 768 * 768;
+
+const PARTICLE_ORDERS = ['radial', 'depth', 'noise', 'random', 'layers'];
+
+// the per-gaussian key's GLSL (v = c − O, d = depth along the axis, k out)
+const orderGlsl = (P, order, layerSize) => {
+  const radial = `clamp(length(vec2(dot(v, ${P}X), dot(v, ${P}Y)) / d - ${P}fimg) / ${P}rmax, 0.0, 1.0)`;
+  switch (order) {
+    case 'depth':
+      return `k = clamp((d - ${P}dmin) / max(${P}dmax - ${P}dmin, 1e-4), 0.0, 1.0);`;
+    case 'noise':
+      return `k = clamp((dxrFxFbm(${P}iq(c) * ${P}freq) - 0.3) / 0.4, 0.0, 1.0);`;
+    case 'random':
+      return `k = ${P}h(c, 1.0);`;
+    case 'layers':
+      // layer 0 (the visible surface) first, then layer 1 (the disocclusion fill), each outward
+      // from the origin in the picture.
+      return `k = 0.5 * min(float(splat.index / ${layerSize >>> 0}u), 1.0) + 0.5 * ${radial};`;
+    default:
+      return `k = ${radial};`;
+  }
+};
+
+// The part every particle effect shares: uniforms, the key, local progress, the comfort clamp,
+// the dot, the in-flight colour. `lp` is cached by the centre stage for the later stages.
+const particleCommon = (P, o) => `
+uniform float ${P}amount;
+uniform float ${P}time;
+uniform float ${P}stagger;
+uniform float ${P}jit;
+uniform vec3 ${P}O;
+uniform vec3 ${P}A;
+uniform vec3 ${P}X;
+uniform vec3 ${P}Y;
+uniform vec3 ${P}F;
+uniform vec2 ${P}fimg;
+uniform float ${P}rmax;
+uniform float ${P}dmin;
+uniform float ${P}dmax;
+uniform float ${P}freq;
+uniform float ${P}capK;
+uniform float ${P}dotK;
+uniform float ${P}grow;
+uniform float ${P}tx;
+uniform vec3 ${P}glow;
+uniform float ${P}falpha;
+float ${P}lp = -1.0;
+float ${P}h(vec3 c, float s) { return dxrFxHash(c + vec3(s * 17.13, s * 31.71, s * 7.31)); }
+// where a point sits in the PICTURE (image x, y in half-view-widths) and its log depth: noise is
+// sampled here so its patches are the same size on a 2 cm object and a 40 m street
+vec3 ${P}iq(vec3 c) {
+  vec3 v = c - ${P}O;
+  float d = max(dot(v, ${P}A), 1e-4);
+  return vec3(dot(v, ${P}X) / (d * ${P}tx), dot(v, ${P}Y) / (d * ${P}tx), log(d));
+}
+// one half-view-width at the point's depth: every displacement is sized in picture units
+float ${P}unit(vec3 c) { return max(dot(c - ${P}O, ${P}A), 1e-4) * ${P}tx; }
+float ${P}local(vec3 c) {
+  vec3 v = c - ${P}O;
+  float d = max(dot(v, ${P}A), 1e-4);
+  float k;
+  ${orderGlsl(P, o.order, o.layerSize)}
+  k = mix(k, ${P}h(c, 1.0), ${P}jit);
+  return clamp((${P}amount - k * ${P}stagger) / max(1.0 - ${P}stagger, 1e-3), 0.0, 1.0);
+}
+// never nearer than home − the disparity budget: pushed back along its own ray from the eyes
+vec3 ${P}near(vec3 home, vec3 p) {
+  float dh = dot(home - ${P}O, ${P}A);
+  if (dh <= 1e-4) return p;
+  // the depth whose disparity is exactly the budget more than home's: 1/dn = 1/dh + capK
+  float dn = dh / (1.0 + ${P}capK * dh);
+  vec3 v = p - ${P}O;
+  float d = dot(v, ${P}A);
+  if (d >= dn) return p;
+  if (d <= 1e-3 * dh) return p + ${P}A * (dn - d);
+  return ${P}O + v * (dn / d);
+}
+// rotate v about the unit axis a by angle t
+vec3 ${P}rot(vec3 v, vec3 a, float t) {
+  float cs = cos(t);
+  float sn = sin(t);
+  return v * cs + cross(a, v) * sn + a * dot(a, v) * (1.0 - cs);
+}
+float ${P}lpOf(vec3 c) { return ${P}lp >= 0.0 ? ${P}lp : ${P}local(c); }
+// the gaussian as a dot of ~dotSize of the view width at its CURRENT depth, growing back to its
+// own scale over the last (1 − grow) of its flight
+void ${P}dot(float lp, vec3 mc, inout vec3 sc, float mul) {
+  float g = smoothstep(${P}grow, 1.0, lp);
+  float d = max(dot(mc - ${P}O, ${P}A), 1e-4);
+  vec3 dsc = min(sc, vec3(${P}dotK * d * mul));
+  sc = mix(dsc, sc, g);
+}
+`;
+
+// in-flight colour: its own colour, lifted by `glow` and faded by `flightAlpha` until it grows
+const particleColor = (P, extra = '') => `
+void ${P}color(vec3 c, inout vec4 col) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(c);
+  if (lp >= 1.0) return;
+  float g = smoothstep(${P}grow, 1.0, lp);
+  col.rgb += ${P}glow * (1.0 - g);
+  col.a *= mix(${P}falpha, 1.0, g);
+  ${extra}
+}
+`;
+
+const PARTICLE_VALIDATE = (what, o) => {
+  if (o.order !== undefined && !PARTICLE_ORDERS.includes(o.order)) {
+    throw new Error(`@displayxr/inline3d/splat: ${what} order must be one of ${PARTICLE_ORDERS.join(', ')}.`);
+  }
+  if (o.order === 'layers') {
+    // splat.index is the asset's own FILE index only in a work-buffer modifier
+    if (o.scope === 'tile') throw new Error(`@displayxr/inline3d/splat: ${what} order 'layers' reads splat.index — entity scope only.`);
+    o.scope = 'entity';
+  }
+  if (o.stagger !== undefined) num(o.stagger, `${what} stagger`, 0, 0.95);
+  if (o.jitter !== undefined) num(o.jitter, `${what} jitter`, 0, 1);
+  if (o.dotSize !== undefined) num(o.dotSize, `${what} dotSize`, 0, 0.05);
+  if (o.grow !== undefined) num(o.grow, `${what} grow`, 0, 0.99);
+  if (o.flightAlpha !== undefined) num(o.flightAlpha, `${what} flightAlpha`, 0, 1);
+  if (o.glow !== undefined) num(o.glow, `${what} glow`, 0, 4);
+  if (o.color !== undefined) vec3Of(o.color, `${what} color`);
+  if (o.noiseScale !== undefined) num(o.noiseScale, `${what} noiseScale`, 1e-3, 1e3);
+  if (o.maxDisparity !== undefined) num(o.maxDisparity, `${what} maxDisparity`, 0, 0.05);
+  if (o.layerSize !== undefined && !(Number.isInteger(o.layerSize) && o.layerSize > 0)) {
+    throw new RangeError(`@displayxr/inline3d/splat: ${what} layerSize must be a positive integer.`);
+  }
+};
+
+/**
+ * The effect's fixed frame, taken once at start (and again when a gated reveal opens): the eyes'
+ * midpoint + axes, the origin, the framing box seen from there (image radius, depth range,
+ * extent), and the comfort cap. World units throughout.
+ */
+function particleStart(ctx, inst) {
+  const eyes = ctx.eyes();
+  const O = eyes.origin, A = eyes.axis, X = eyes.right, Y = eyes.up;
+  const tanX = eyes.tanHalfFovX > 0 ? eyes.tanHalfFovX : 0.5;
+  const F = inst.originPoint(ctx, eyes);
+  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  let D = dot3(sub(ctx.focus(), O), A);
+  if (!(D > 1e-4)) D = 1;
+  const fv = sub(F, O);
+  const fd = Math.max(dot3(fv, A), 1e-4);
+  const fimg = [dot3(fv, X) / fd, dot3(fv, Y) / fd];
+  const box = ctx.framing();
+  // image radius: from the origin's image point to the farthest corner of the VIEW (the lens's
+  // tangent extents, fixed at start — the same numbers for both eyes), so an 'radial' key spans
+  // the picture actually seen; without the lens height, the framing box's corners
+  let rmax = 0, dmin = Infinity, dmax = -Infinity;
+  const tanY = eyes.tanHalfFovY > 0 ? eyes.tanHalfFovY : 0;
+  if (tanY > 0) for (const sx of [-1, 1]) for (const sy of [-1, 1]) rmax = Math.max(rmax, Math.hypot(sx * tanX - fimg[0], sy * tanY - fimg[1]));
+  const lensR = rmax;
+  if (box) {
+    for (const sx of [-0.5, 0.5]) for (const sy of [-0.5, 0.5]) for (const sz of [-0.5, 0.5]) {
+      const v = sub([box.center[0] + sx * box.extent[0], box.center[1] + sy * box.extent[1], box.center[2] + sz * box.extent[2]], O);
+      const d = dot3(v, A);
+      dmin = Math.min(dmin, d);
+      dmax = Math.max(dmax, d);
+      if (d > 1e-4 && !lensR) rmax = Math.max(rmax, Math.hypot(dot3(v, X) / d - fimg[0], dot3(v, Y) / d - fimg[1]));
+    }
+  }
+  if (!(rmax > 0)) rmax = Math.hypot(1, 1) * tanX;
+  rmax = Math.min(rmax, 2.5 * tanX); // a box reaching behind the eyes would blow up the image radius
+  dmin = Number.isFinite(dmin) ? Math.max(dmin, 1e-3) : 0.5 * D;
+  if (!(dmax > dmin)) dmax = dmin + D;
+  const sep = eyes.separation > 0 ? eyes.separation : PARTICLE_NOMINAL_SEPARATION * D;
+  Object.assign(inst.state, {
+    O, A, X, Y, F, fimg, rmax, dmin, dmax,
+    tanX,
+    capK: (inst.opts.maxDisparity * 2 * tanX) / sep,
+    dotK: inst.opts.dotSize * 2 * tanX,
+  });
+}
+
+const particleUniforms = (ctx, inst, amount, tMs) => {
+  const o = inst.opts, s = inst.state;
+  return {
+    amount,
+    time: inst.elapsedS(tMs),
+    stagger: o.stagger,
+    jit: o.jitter,
+    O: s.O, A: s.A, X: s.X, Y: s.Y, F: s.F, fimg: s.fimg,
+    rmax: s.rmax, dmin: s.dmin, dmax: s.dmax,
+    freq: o.noiseScale,
+    capK: s.capK,
+    dotK: s.dotK,
+    grow: o.grow,
+    tx: s.tanX,
+    glow: o.color.map((x) => x * o.glow),
+    falpha: o.flightAlpha,
+  };
+};
+
+const PARTICLE_DEFAULTS = {
+  holdMs: 0,
+  origin: 'focus',
+  direction: 'in',
+  maxDisparity: 0.004,
+  layerSize: SHARP_LAYER_SIZE,
+  noiseScale: 2,
+  dotSize: 0.0007,
+  grow: 0.6,
+};
+
+/** A particle reveal's registry entry: `body(P)` adds the centre/rs stages (and extra uniforms). */
+function particleEffect(name, defaults, { body, color = particleColor, uniforms: extra = () => ({}), validate }) {
+  return {
+    stage: 'reveal',
+    kind: 'transition',
+    particle: true,
+    defaults: { ...PARTICLE_DEFAULTS, ...defaults },
+    validate: (o) => {
+      PARTICLE_VALIDATE(name, o);
+      validate?.(o);
+    },
+    glsl: (P, o = {}) => particleCommon(P, { order: 'radial', layerSize: SHARP_LAYER_SIZE, ...o }) + body(P, o) + color(P),
+    start: particleStart,
+    uniforms: (ctx, inst, amount, tMs) => ({ ...particleUniforms(ctx, inst, amount, tMs), ...extra(ctx, inst, amount, tMs) }),
+  };
+}
+
+// A divergence-free (curl) field built from sines — cheap, smooth, and it evolves with time.
+const CURL_GLSL = (P) => `
+vec3 ${P}curl(vec3 q, float t) {
+  return vec3(
+    -cos(q.z * 1.13 + t) + cos(q.y * 0.87 - 0.6 * t),
+    -cos(q.x * 1.31 - t) + cos(q.z * 0.79 + 0.4 * t),
+    -cos(q.y * 0.97 + 0.7 * t) + cos(q.x * 1.07 - 0.5 * t));
+}
+`;
+
+Object.assign(EFFECTS, {
+  // A swarm: every gaussian starts somewhere in a cloud around the subject (mostly in the
+  // picture's plane, behind rather than in front), then flies home along a curl-noise path that
+  // spirals about the view axis through the origin — staggered outward from the origin.
+  assemble: particleEffect(
+    'assemble',
+    { durationMs: 2600, easing: 'linear', order: 'radial', stagger: 0.6, jitter: 0.3, grow: 0.8, spread: 0.6, swirl: 1.2, turbulence: 0.1, coherence: 0.6, depth: 0.3, color: [0.55, 0.8, 1.0], glow: 0.25, flightAlpha: 0.85 },
+    {
+      validate: (o) => {
+        if (o.spread !== undefined) num(o.spread, 'assemble spread', 0, 10);
+        if (o.swirl !== undefined) num(o.swirl, 'assemble swirl', -20, 20);
+        if (o.turbulence !== undefined) num(o.turbulence, 'assemble turbulence', 0, 2);
+        if (o.coherence !== undefined) num(o.coherence, 'assemble coherence', 0, 1);
+        if (o.depth !== undefined) num(o.depth, 'assemble depth', 0, 1);
+      },
+      uniforms: (ctx, inst) => ({ spread: inst.opts.spread, swirl: inst.opts.swirl, turb: inst.opts.turbulence, coh: inst.opts.coherence, dep: inst.opts.depth }),
+      body: (P) => `
+uniform float ${P}spread;
+uniform float ${P}swirl;
+uniform float ${P}turb;
+uniform float ${P}coh;
+uniform float ${P}dep;
+${CURL_GLSL(P)}
+void ${P}center(inout vec3 c) {
+  ${P}lp = -1.0;
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}local(c);
+  ${P}lp = lp;
+  if (lp >= 1.0) return;
+  float tau = 1.0 - lp;
+  float w = tau * tau;
+  vec3 home = c;
+  float u = ${P}unit(c);
+  vec3 r = vec3(${P}h(c, 2.0), ${P}h(c, 3.0), ${P}h(c, 4.0)) * 2.0 - 1.0;
+  vec3 q = ${P}iq(c) * ${P}freq;
+  vec3 n = vec3(dxrFxNoise(q), dxrFxNoise(q + 19.1), dxrFxNoise(q + 47.3)) * 2.0 - 1.0;
+  vec3 dir = mix(r, n * 2.5, ${P}coh);
+  float dz = dot(dir, ${P}A);
+  dir = dir - ${P}A * dz + ${P}A * abs(dz) * ${P}dep;
+  dir /= max(length(dir), 1e-3);
+  vec3 p = home + dir * (${P}spread * u * (0.35 + 0.65 * ${P}h(c, 5.0)) * w);
+  p = ${P}F + ${P}rot(p - ${P}F, ${P}A, ${P}swirl * w * tau * (0.5 + ${P}h(c, 6.0)));
+  p += ${P}curl(q * 1.5 + dir * w * ${P}spread * 3.0, ${P}time * 0.8) * (${P}turb * u * w);
+  c = ${P}near(home, p);
+}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(oc);
+  if (lp >= 1.0) return;
+  ${P}dot(lp, mc, sc, 1.0);
+}
+`,
+    },
+  ),
+
+  // A dissolve played backwards: loose, faint dust drifts in on a slow wind and noise swirl and
+  // gathers into the picture patch by patch (fbm patches, like the dissolve's burn front).
+  'dissolve-in': particleEffect(
+    'dissolve-in',
+    { durationMs: 2600, easing: 'linear', order: 'noise', noiseScale: 3, stagger: 0.75, jitter: 0.2, grow: 0.75, lift: 0.12, drift: 0.35, color: [1.0, 0.7, 0.4], glow: 0.1, flightAlpha: 0.5 },
+    {
+      validate: (o) => {
+        if (o.lift !== undefined) num(o.lift, 'dissolve-in lift', 0, 10);
+        if (o.drift !== undefined) num(o.drift, 'dissolve-in drift', 0, 2);
+      },
+      uniforms: (ctx, inst) => ({ lift: inst.opts.lift, drift: inst.opts.drift }),
+      body: (P) => `
+uniform float ${P}lift;
+uniform float ${P}drift;
+void ${P}center(inout vec3 c) {
+  ${P}lp = -1.0;
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}local(c);
+  ${P}lp = lp;
+  if (lp >= 1.0) return;
+  float tau = 1.0 - lp;
+  float w = tau * tau;
+  vec3 home = c;
+  float u = ${P}unit(c);
+  vec3 q = ${P}iq(c) * ${P}freq * 0.7;
+  float t = ${P}time * 0.25;
+  vec3 n = vec3(dxrFxNoise(q + vec3(t, 0.0, 0.0)), dxrFxNoise(q + vec3(19.1, t, 0.0)), dxrFxNoise(q + vec3(0.0, 47.3, t))) * 2.0 - 1.0;
+  // mostly each particle's own random drift, bent by a slow shared swirl (a purely coherent field
+  // would warp the picture in chunks instead of scattering it)
+  vec3 r = vec3(${P}h(c, 3.0), ${P}h(c, 4.0), ${P}h(c, 5.0)) * 2.0 - 1.0;
+  n = mix(n * 1.6, r, 0.65);
+  n -= ${P}A * dot(n, ${P}A) * 0.8;
+  vec3 wind = normalize(${P}Y + 0.35 * ${P}X);
+  vec3 p = home + (wind * (${P}lift * (0.5 + ${P}h(c, 2.0))) + n * ${P}drift * 2.0) * (u * w);
+  c = ${P}near(home, p);
+}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(oc);
+  if (lp >= 1.0) return;
+  ${P}dot(lp, mc, sc, 1.0);
+}
+`,
+    },
+  ),
+
+  // A burst: every gaussian leaves the origin (the focus) — launched outward in the picture,
+  // nearest first — and flies out along a spiral about the view axis to settle on its place. Not
+  // yet launched = not drawn, so it starts from a single bright point.
+  converge: particleEffect(
+    'converge',
+    { durationMs: 2400, easing: 'linear', order: 'radial', stagger: 0.55, jitter: 0.25, grow: 0.7, spin: 0.9, burst: 0.04, color: [1.0, 0.85, 0.6], glow: 0.15, flightAlpha: 0.9 },
+    {
+      validate: (o) => {
+        if (o.spin !== undefined) num(o.spin, 'converge spin', -20, 20);
+        if (o.burst !== undefined) num(o.burst, 'converge burst', 0, 1);
+      },
+      uniforms: (ctx, inst) => ({ spin: inst.opts.spin, burst: inst.opts.burst }),
+      body: (P) => `
+uniform float ${P}spin;
+uniform float ${P}burst;
+void ${P}center(inout vec3 c) {
+  ${P}lp = -1.0;
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}local(c);
+  ${P}lp = lp;
+  if (lp >= 1.0) return;
+  float tau = 1.0 - lp;
+  float e = 1.0 - tau * tau;
+  vec3 home = c;
+  // Flown in the PICTURE: the image point goes straight out from the origin's image point while
+  // the depth goes from the origin's to home's, so the burst reads as radial in the picture
+  // whatever the depth (a far point would otherwise jump to its place at once). The launch point
+  // is a small ball about the origin: a point would pile a million dots on one pixel.
+  vec2 b = (vec2(${P}h(c, 3.0), ${P}h(c, 4.0)) * 2.0 - 1.0) * (${P}burst * ${P}tx * (1.0 - e));
+  vec3 fv = ${P}F - ${P}O;
+  vec3 hv = home - ${P}O;
+  float fd = max(dot(fv, ${P}A), 1e-4);
+  float hd = max(dot(hv, ${P}A), 1e-4);
+  vec2 fi = vec2(dot(fv, ${P}X), dot(fv, ${P}Y)) / fd;
+  vec2 hi = vec2(dot(hv, ${P}X), dot(hv, ${P}Y)) / hd;
+  vec2 im = mix(fi + b, hi, e);
+  float ang = ${P}spin * (1.0 - e) * (0.6 + 0.8 * ${P}h(c, 2.0));
+  im = ${P}fimg + mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * (im - ${P}fimg);
+  float d = mix(fd, hd, e);
+  vec3 p = ${P}O + (${P}A + ${P}X * im.x + ${P}Y * im.y) * d;
+  c = ${P}near(home, p);
+}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(oc);
+  if (lp >= 1.0) return;
+  if (lp <= 0.0) { sc = vec3(0.0); return; }
+  ${P}dot(lp, mc, sc, 1.0);
+}
+`,
+      color: (P) => particleColor(P, 'col.a *= smoothstep(0.0, 0.15, lp);'),
+    },
+  ),
+
+  // Nothing moves: each gaussian appears at home as a twinkling point, then grows into its full
+  // splat — random order with a loose outward drift from the origin.
+  shimmer: particleEffect(
+    'shimmer',
+    { durationMs: 2600, easing: 'linear', order: 'radial', stagger: 0.8, jitter: 0.85, dotSize: 0.0006, grow: 0.6, twinkle: 14, sparkle: 1.2, color: [1.0, 1.0, 1.0], glow: 0, flightAlpha: 0.7 },
+    {
+      validate: (o) => {
+        if (o.twinkle !== undefined) num(o.twinkle, 'shimmer twinkle', 0, 200);
+        if (o.sparkle !== undefined) num(o.sparkle, 'shimmer sparkle', 0, 4);
+      },
+      uniforms: (ctx, inst) => ({ tw: inst.opts.twinkle, sp: inst.opts.sparkle, sc: inst.opts.color }),
+      body: (P) => `
+uniform float ${P}tw;
+uniform float ${P}sp;
+uniform vec3 ${P}sc;
+float ${P}twk(vec3 c) {
+  float h = ${P}h(c, 3.0);
+  return pow(0.5 + 0.5 * sin(${P}time * ${P}tw * (0.6 + 0.8 * h) + 6.2832 * ${P}h(c, 4.0)), 6.0);
+}
+void ${P}center(inout vec3 c) {
+  ${P}lp = -1.0;
+  if (${P}amount >= 1.0) return;
+  ${P}lp = ${P}local(c);
+}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(oc);
+  if (lp >= 1.0) return;
+  if (lp <= 0.0) { sc = vec3(0.0); return; }
+  ${P}dot(lp, mc, sc, 0.7 + 0.9 * ${P}twk(oc));
+}
+`,
+      color: (P) =>
+        particleColor(
+          P,
+          `float tw = ${P}twk(c);
+  col.rgb = mix(col.rgb, ${P}sc, min(1.0, tw * ${P}sp) * (1.0 - g));
+  col.a *= smoothstep(0.0, 0.12, lp) * mix(0.55 + 0.45 * tw, 1.0, g);`,
+        ),
+    },
+  ),
+});
+
 /**
  * The wavefront's per-column commit, lt ∈ [0, 1], for eased progress `t` at normalised u — the
  * prototype's formula: column u starts at t = u·(1 − band) and has committed band later, so
@@ -570,7 +1030,7 @@ export const PUBLIC_EFFECTS = Object.freeze(
     .sort(),
 );
 /** addSplat's `reveal` accepts these (the transition effects). */
-export const REVEAL_EFFECTS = Object.freeze(['inflate', 'sweep', 'dissolve', 'fade']);
+export const REVEAL_EFFECTS = Object.freeze(['inflate', 'sweep', 'dissolve', 'fade', 'assemble', 'dissolve-in', 'converge', 'shimmer']);
 
 // ── custom GLSL ───────────────────────────────────────────────────────────────────────────────
 
@@ -711,7 +1171,7 @@ export function composeModifier(instances) {
   for (const inst of list) {
     const P = prefixOf(inst.name);
     code += `// ── ${inst.name} (${inst.def.stage})\n`;
-    code += isCustom(inst.name) ? customGlsl(P, inst.opts.glsl) : inst.def.glsl(P);
+    code += isCustom(inst.name) ? customGlsl(P, inst.opts.glsl) : inst.def.glsl(P, inst.opts);
     calls.center.push(`  ${P}center(center);`);
     calls.rs.push(`  ${P}rs(originalCenter, modifiedCenter, rotation, scale);`);
     calls.color.push(`  ${P}color(center, color);`);

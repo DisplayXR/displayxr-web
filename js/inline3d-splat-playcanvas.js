@@ -1712,7 +1712,7 @@ export class PlayCanvasSplatViewer {
   /**
    * The eyes' frame in WORLD (content) space, for effects keyed on "where the viewer is":
    * `origin` = the midpoint of the eyes drawn last (the mono camera in 2D), `axis`/`right`/`up` =
-   * the first eye's forward/right/up, `tanHalfFovX` its lens half-width.
+   * the first eye's forward/right/up, `tanHalfFovX` / `tanHalfFovY` its lens half-extents.
    */
   eyeFrame() {
     const R = this.rigMatrix();
@@ -1739,6 +1739,7 @@ export class PlayCanvasSplatViewer {
       right: unit(M[0], M[1], M[2]),
       up: unit(M[4], M[5], M[6]),
       tanHalfFovX: p0 > 0 ? 1 / p0 : 0.5,
+      tanHalfFovY: es[0].proj?.[5] > 0 ? 1 / es[0].proj[5] : 0,
     };
   }
 
