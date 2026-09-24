@@ -55,9 +55,9 @@ so the unused ~40% of the engine tree-shakes away); its sort workers are Blob UR
 
 **Splat effects (preview, `engine: 'playcanvas'`).** Shader effects on the splats themselves,
 keyed on world position and time so both eyes agree: `addSplat(…, { reveal: 'inflate' | 'sweep' |
-'dissolve' | 'fade' })` (plays once the tile is woven), `handle.playEffect` / `setEffect` /
-`stopEffect` / `effects()` (inflate, deflate, sweep, dissolve, fade, pulse, grade, clip, custom
-GLSL), and `setSource(src, { transition: 'crossfade' | 'flip' | 'wavefront', reveal })`. Spark
+'dissolve' | 'fade' | 'assemble' | 'dissolve-in' | 'converge' | 'shimmer' })` (plays once the tile
+is woven; the last four are particle reveals), `handle.playEffect` / `setEffect` / `stopEffect` /
+`effects()` (the reveals, deflate, pulse, grade, clip, custom GLSL), and `setSource(src, { transition: 'crossfade' | 'flip' | 'wavefront', reveal })`. Spark
 throws on all of them for now. [`docs/splat-effects.md`](docs/splat-effects.md).
 
 Splat and model rendering on the PlayCanvas backend uses the PlayCanvas engine (MIT); see

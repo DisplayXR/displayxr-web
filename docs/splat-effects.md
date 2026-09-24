@@ -34,8 +34,8 @@ right eye are identical, MAE 0.000, for every effect at every progress, in both 
 
 | Call | What |
 |---|---|
-| `addSplat(…, { reveal })` | `'inflate' \| 'sweep' \| 'dissolve' \| 'fade' \| false \| { type, durationMs, holdMs, easing, origin, …params }`. The effect is installed at its start state before the asset's first frame. It plays once `handle.firstWoven` settles (at once in 2D) and the first two frames have built. |
-| `handle.playEffect(name, opts) → Promise<{ finished }>` | A timed effect: `inflate`, `deflate`, `sweep`, `dissolve`, `fade`, `pulse`, `custom[:name]`. It is validated at the call and runs once the first asset is on screen. `finished` is false when the effect was stopped or replaced. |
+| `addSplat(…, { reveal })` | `'inflate' \| 'sweep' \| 'dissolve' \| 'fade' \| 'assemble' \| 'dissolve-in' \| 'converge' \| 'shimmer' \| false \| { type, durationMs, holdMs, easing, origin, …params }`. The effect is installed at its start state before the asset's first frame. It plays once `handle.firstWoven` settles (at once in 2D) and the first two frames have built. |
+| `handle.playEffect(name, opts) → Promise<{ finished }>` | A timed effect: `inflate`, `deflate`, `sweep`, `dissolve`, `fade`, the [particle reveals](#particle-reveals) (`assemble`, `dissolve-in`, `converge`, `shimmer`), `pulse`, `custom[:name]`. It is validated at the call and runs once the first asset is on screen. `finished` is false when the effect was stopped or replaced. |
 | `handle.setEffect(name, params \| null)` | A persistent effect (`grade`, `clip`, `custom`), or any timed effect held at `{ progress }` (0..1). Useful for scroll-driven looks and for tests. `null` removes it. |
 | `handle.stopEffect(name?, { finish })` | Removes the named effect, or all effects when no name is given. This restores the baseline exactly. With `finish: true` the effect jumps to its end state instead: an `in` effect is removed, an `out` effect holds its end state. |
 | `handle.effects()` | `[{ name, scope, stage, playing, waiting, progress }]`. |
@@ -82,19 +82,88 @@ default again, so the result is the baseline exactly, not a no-op look-alike.
 | `pulse` | pulse | A ring of light expands from a point and fades. Colour only. | 1200 ms, `easeOutQuad`, origin `'focus'`, `color` [1, 1, 1], `strength` 0.35, `band` 0.06, `radius` (farthest framed corner) |
 | `grade` | persistent | Exposure (stops), contrast, saturation, and a tint multiplier. | 0, 1, 1, [1, 1, 1] |
 | `clip` | persistent | Keeps the inside of `{ box: { min, max } }` or `{ sphere: { center, radius } }`, given in the splat's own space. `invert` keeps the outside instead. | — |
+| `assemble`, `dissolve-in`, `converge`, `shimmer` | reveal | Particle reveals: see [Particle reveals](#particle-reveals). | 2.4–2.6 s, `linear` (each particle eases out) |
 | `custom` / `custom:<name>` | custom | Your GLSL; see below. | — |
 
 **Sorting.** The engine sorts splats by their ORIGINAL centres. Effects that keep each splat on
 its own ray (inflate, the wavefront ridge) keep a valid order. So do effects that only hide or show
 splats (sweep, fade, dissolve's reveal). A custom effect that moves splats far blends slightly out
-of order while it is in flight.
+of order while it is in flight. The particle reveals move splats far, and hide it by keeping
+each one a 1–2 px dot until it is nearly home (see below).
 
 **Comfort, for all-day kiosks.** No built-in effect moves a splat toward the viewer, except the
 wavefront ridge. It moves at most `ridge` (3 cm), only for a moment, and never beyond
 `ridgeMaxDisparity` (0.4 % of the view width) of extra disparity. At 1.7 m the 3 cm is well under
 that cap; at 0.5 m the cap binds, at about 1.5 cm with a 64 mm eye separation.
 `dissolve` lifts splats UP, never toward the viewer. Its sway has a small depth component, which
-is why it is not offered as a setSource transition.
+is why it is not offered as a setSource transition. The particle reveals can come toward the
+viewer only within their `maxDisparity` cap (default the same 0.4 %; see below).
+
+## Particle reveals
+
+```js
+addSplat(wall, canvas, 'photo.sog', { engine: 'playcanvas', reveal: 'assemble' });
+h.playEffect('converge', { durationMs: 2000 });                  // replay on the current photo
+h.playEffect('shimmer', { order: 'layers' });                    // SHARP grid order (entity scope)
+await h.setSource(next, { reveal: 'dissolve-in', fadeMs: 400 }); // on the incoming photo only
+```
+
+Every gaussian is a particle with its own start time. A key k ∈ [0, 1] per gaussian, set by
+`order`, staggers it. Its local progress is `lp = clamp((t − k·stagger) / (1 − stagger), 0, 1)`,
+where t is the eased clock. Each particle eases out along its own path and lands exactly home at
+`lp = 1`.
+
+| Effect | Look | Default |
+|---|---|---|
+| `assemble` | A swarm. Each gaussian starts in a cloud around the subject, mostly in the picture's plane and behind it rather than in front. The start field is part random, part a coherent noise field (`coherence`), so the swarm has streams. The particles fly home along a curl-noise path that spirals about the view axis through the origin, outward from the origin. | 2600 ms, `order: 'radial'`, `stagger` 0.6, `spread` 0.6, `swirl` 1.2 rad, `turbulence` 0.1, `coherence` 0.6, `depth` 0.3, a cool tint |
+| `dissolve-in` | A dissolve played backwards. Faint dust drifts in on a slow wind and a noise swirl. It gathers into the picture patch by patch, on the same kind of fbm patches the dissolve burns along. | 2600 ms, `order: 'noise'`, `stagger` 0.75, `lift` 0.12, `drift` 0.35, a warm tint, `flightAlpha` 0.5 |
+| `converge` | A burst from the origin (the focus by default). Particles launch nearest first and fly out, straight in the PICTURE and spiralling about the origin, to settle on their place. A particle not yet launched is not drawn, so the picture starts as one bright point and opens as a ragged disc. | 2400 ms, `order: 'radial'`, `stagger` 0.55, `spin` 0.9 rad, `burst` 0.04 |
+| `shimmer` | Nothing moves. Each gaussian appears at home as a twinkling point and grows into its full splat. The order is random with a loose outward drift. | 2600 ms, `order: 'radial'`, `jitter` 0.85, `stagger` 0.8, `twinkle` 14 rad/s, `sparkle` 1.2 |
+
+Options every particle reveal takes (plus `durationMs`, `holdMs`, `easing`, `origin`, `scope`):
+
+- `order` sets the per-gaussian key:
+  - `'radial'`: the distance in the picture from the origin, normalised to the view's farthest corner.
+  - `'depth'`: near first, over the framed depth range.
+  - `'noise'`: fbm patches.
+  - `'random'`.
+  - `'layers'`: a SHARP photo's grid order (`i = layer·768² + y·768 + x`). Layer 0, the visible surface, comes first, then layer 1, the disocclusion fill. Each layer goes outward from the origin. It reads `splat.index`, which is the file index only in a work-buffer modifier, so it forces `scope: 'entity'` and throws with `scope: 'tile'`. `layerSize` (default 768²) sets the layer length.
+- `stagger` (0..0.95): the fraction of the duration spent launching.
+- `jitter` (0..1): the random share of the key.
+- `dotSize`: an in-flight particle is a dot of this fraction of the view width, whatever its depth. The default 0.0007 is a gaussian σ of about 1 px on a 1280 px view.
+- `grow`: the particle grows back to its own splat over the last `1 − grow` of its flight.
+- `flightAlpha`, `color`, `glow`: in-flight opacity and tint (`color · glow` is added).
+- `noiseScale`: the size of the noise patches.
+- `maxDisparity`: the comfort cap, below.
+
+All sizes are in PICTURE units: half-view-widths at the gaussian's own depth. The same numbers
+therefore look the same on a 2 cm object and a 40 m street. (Sizing by the framing box does
+not: SHARP's framing box on a harbour photo is 127 m across.)
+
+**Stereo.** Keys and paths read only the gaussian's ORIGINAL world centre, the time, and the
+effect's frame. The frame is taken once when the effect starts: the eyes' midpoint and axes,
+the lens extents and the origin. It is the same set of numbers for both eyes, so each particle is
+in the same world place in both. The only screen-like input is the lens's tangent extents,
+fixed at start, which size the `'radial'` key.
+
+**Comfort.** No particle is ever nearer to the eyes than its home depth `dh` plus `maxDisparity`
+of the eye view's width in extra disparity. The floor is `d ≥ dh / (1 + capK·dh)`, with
+`capK = maxDisparity · 2·tan(fovX/2) / eyeSeparation`. It is exact: at every depth, the extra
+disparity at the floor is the cap. A particle past the floor is pushed back along its own ray from
+the eyes, so it keeps its place in the picture. The default cap is 0.004, the wavefront ridge's.
+`maxDisparity: 0` means a particle never comes nearer than home. In 2D, with no eye separation, a
+nominal 64 mm at 1.7 m, scaled to the focus distance, keeps the look of the woven tile. The swarm
+is also built mostly in the picture's plane and behind it (`assemble`'s `depth`), so the cap rarely
+binds.
+
+**The sort caveat.** The engine sorts by ORIGINAL centres, so a particle far from home blends in
+the wrong order. The particle reveals keep every in-flight gaussian a DOT (σ ≈ 1 px) until the
+last `1 − grow` of its flight. By then it is within a few percent of home and its order is right.
+A 1-px dot barely overlaps anything, so a wrong order does not show.
+
+**The end state is the baseline.** Every stage returns at once at `amount >= 1`, and each
+particle at `lp >= 1`. The runner removes the effect at the end, deleting the chunk or modifier.
+The last frame is the plain render: MAE 0.000, colour and alpha (§Gates).
 
 ## Transitions between assets
 
@@ -261,7 +330,7 @@ half. That is a follow-up.
 One registry entry in `js/inline3d-splat-effects.js` (`EFFECTS`):
 
 - `stage`, `kind`, and `defaults`.
-- `glsl(P)`, defining `P##center`, `P##rs` and `P##color`. Every body returns early at `amount >= 1`, so amount 1 is the baseline exactly.
+- `glsl(P, opts)`, defining `P##center`, `P##rs` and `P##color`. Every body returns early at `amount >= 1`, so amount 1 is the baseline exactly. `opts` are the resolved options, for code that depends on them (the particle reveals' `order`).
 - `uniforms(ctx, inst, amount, tMs)`, returning the values.
 - Optionally `start(ctx, inst)`, for geometry fixed at start, and `validate(opts)`.
 
@@ -324,6 +393,43 @@ Effects that hide splats are cheaper, because fewer splats get drawn. Entity sco
 This branch equals `main`, MAE **0.000**; both read 2.131 in this harness. A finished `reveal`,
 either `inflate` or `sweep`, is 0.000 vs no reveal, and `effects()` is empty afterwards.
 
+**Particle reveals** (same harness). Grey MAE /255 against no effect:
+
+| Effect (tile) | mono p = 0.2 / 0.5 / 0.8 / **1** | end of a PLAYED run: mono; stereo L, R (colour, alpha) | removal: mono, stereo | coincident eyes L vs R at 0.2 / 0.5 / 0.8 |
+|---|---|---|---|---|
+| assemble | 91.0 / 73.9 / 5.6 / **0.000** | 0.000; 0.000, 0.000 (0.000, 0.000) | 0.000 | 0.003 / 0.003 / 0.001 |
+| dissolve-in | 71.0 / 47.6 / 9.0 / **0.000** | 0.000; 0.000, 0.000 (0.000, 0.000) | 0.000 | 0.004 / 0.002 / 0.001 |
+| converge | 120.2 / 100.5 / 7.5 / **0.000** | 0.000; 0.000, 0.000 (0.000, 0.000) | 0.000 | 0.000 / 0.001 / 0.001 |
+| shimmer | 92.0 / 11.0 / 3.2 / **0.000** | 0.000; 0.000, 0.000 (0.000, 0.000) | 0.000 | 0.002 / 0.002 / 0.001 |
+
+- Entity scope matches tile scope to ±0.02 at every progress, and its end state, removal and played run are also 0.000.
+- `order: 'layers'` (assemble), `'depth'` (shimmer) and `'random'` (dissolve-in) also end at 0.000.
+- Every played run resolves `{ finished: true }` and leaves `effects()` empty.
+- **Coincident eyes are not bit-identical here**, unlike the effects above. Measured at full resolution:
+  - the particles leave at most 2/255 on at most 1.1 % of pixels (assemble); the others leave 1/255.
+  - the plain render already differs by 1/255 on 0.11 % of pixels.
+  - the difference is the same from one frame to the next.
+
+  Every input is the same in both views, so this reads as raster rounding of sub-pixel dots, not
+  a keying difference.
+- The comfort floor is exact by construction (`test/splat-particles.test.mjs`); no pixel measurement.
+
+**Particle reveal cost** (ms per frame, method as above). This GPU was shared with a desktop
+browser during these runs, so the baselines themselves moved (stereo `none`: 19.2 in one run, 25.5
+in the next). Read the numbers as a range. Held at progress 0.5, the busiest steady state
+(median, min):
+
+| | none | assemble | dissolve-in | converge | shimmer |
+|---|---|---|---|---|---|
+| mono, tile | 10.8 (8.8) | 17.5 (10.8) | 16.3 (10.5) | 9.9 (9.2) | 6.9 (6.2) |
+| stereo, tile | 25.5 (20.2) | 28.2 (21.2) | 23.5 (23.3) | 27.7 (22.3) | 19.2 (13.9) |
+| mono, entity | — | 13.5 (11.8) | 15.4 (14.1) | 14.8 (13.6) | 15.1 (12.6) |
+| stereo, entity | — | 26.9 (16.1) | 27.6 (17.5) | 26.0 (15.0) | 16.3 (10.5) |
+
+Replayed from t = 0 every batch (the first quarter of each effect), mono tile ran none 8.9,
+assemble 10.0, converge 3.9, shimmer 3.4. Converge and shimmer do not draw particles that have
+not launched yet, so they start cheaper than the plain photo.
+
 **Not tested:**
 
 - The DisplayXR Browser: a real weave, `firstWoven` timing on hardware, real eye motion during a frozen crossfade frame.
@@ -333,3 +439,6 @@ either `inflate` or `sweep`, is 0.000 vs no reveal, and `effects()` is empty aft
 - Two tiles with effects on one page.
 - Effects on a display-rig object asset (only the camera-rig photo was gated).
 - A `resize` or 2D↔3D switch during `wavefront` (the code path ends the transition; exercised on the fake engine only).
+- Particle reveals on the real 3D display: how the swarm and its comfort cap feel woven, and whether the default cap should be larger.
+- Particle reveals: the engine's colour-only work-buffer pass. If the engine ever re-colours without re-running the centre stage, an entity-scope particle's in-flight colour would key on its moved centre. The end state is unaffected.
+- Particle reveals on Windows/Android GPUs, on streamed SOG, and with `order: 'layers'` on a non-SHARP asset.
