@@ -86,7 +86,7 @@ test('ONE generated chunk, composed grade → clip → reveal → pulse → cust
   const at = (n) => body.indexOf(`${prefixOf(n)}color(center, color)`);
   const order = ['grade', 'clip', 'inflate', 'pulse', 'custom'];
   for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} before ${order[i]}`);
-  assert.deepEqual(STAGE_ORDER, ['grade', 'clip', 'reveal', 'pulse', 'custom']);
+  assert.deepEqual(STAGE_ORDER, ['grade', 'clip', 'reveal', 'pulse', 'custom', 'cull']);
   assert.deepEqual(composeModifier([
     { name: 'custom', def: { stage: 'custom' }, opts: { glsl: '' } },
     { name: 'fade', def: EFFECTS.fade, opts: {} },
