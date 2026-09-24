@@ -56,9 +56,14 @@ import {
   EFFECTS,
   EASINGS,
   resolveRevealOption,
+  resolveEffectOptions,
   validateEffectCall,
+  PARTICLE_TRANSITIONS,
+  PARTICLE_TRANSITION_OPTIONS,
+  particleSpan,
+  morphPairing,
 } from './inline3d-splat-effects.js';
-import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
+import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle, similarityTRS } from './inline3d-splat-live.js';
 import {
   clamp,
   finite,
@@ -1295,6 +1300,7 @@ export class PlayCanvasSplatViewer {
         uniform vec2 dxrSnapInvSize;
         uniform float dxrSnapAlpha;
         uniform vec3 dxrSnapWipe; // t, band, views across (t < -1: no wipe)
+        uniform vec2 dxrSnapMix;  // over (0 = lerp, 1 = A OVER the scene), the scene's own weight
         float dxrSnapWeight() {
           if (dxrSnapWipe.x < -1.0) return dxrSnapAlpha;
           float vw = 1.0 / (dxrSnapInvSize.x * dxrSnapWipe.z);
@@ -1313,6 +1319,7 @@ export class PlayCanvasSplatViewer {
       mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
       mat.setParameter('dxrSnapAlpha', 0);
       mat.setParameter('dxrSnapWipe', [-2, 0.1, 1]);
+      mat.setParameter('dxrSnapMix', [0, 1]);
       mat.update();
       const mi = new pc.MeshInstance(mesh, mat, new pc.GraphNode(name));
       mi.cull = false;
@@ -1321,7 +1328,15 @@ export class PlayCanvasSplatViewer {
       return { mat, mi };
     };
     s.parts = [
-      part('inline3dSnapshotScale', 'gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - dxrSnapWeight());', pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA, -2),
+      // lerp: dst·(1 − w); over: dst·(1 − w·A.a) — premultiplied A over the scene; either × the
+      // scene's own weight (0 = the scene hidden: morph draws only the outgoing asset)
+      part(
+        'inline3dSnapshotScale',
+        'float w = dxrSnapWeight(); float a = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize).a; gl_FragColor = vec4(0.0, 0.0, 0.0, mix(1.0 - w, 1.0 - w * a, dxrSnapMix.x) * dxrSnapMix.y);',
+        pc.BLENDMODE_ZERO,
+        pc.BLENDMODE_SRC_ALPHA,
+        -2,
+      ),
       part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapWeight();', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1),
     ];
     this.app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances(s.parts.map((p) => p.mi));
@@ -1331,7 +1346,7 @@ export class PlayCanvasSplatViewer {
    * Lerp the snapshot over the scene at `alpha` (0 hides it). Returns false when the canvas buffer
    * no longer matches the capture (resize, 2D/3D switch): the caller ends its fade.
    */
-  setSnapshotAlpha(alpha, wipe = null) {
+  setSnapshotAlpha(alpha, wipe = null, mix = null) {
     const s = this._snap;
     if (!s?.parts) return false;
     const fits = !!s.tex && s.w === this.canvas.width && s.h === this.canvas.height;
@@ -1344,6 +1359,9 @@ export class PlayCanvasSplatViewer {
         // SAME viewport-relative x in every eye — a front at the zero-disparity plane, so both
         // eyes agree. `views` = eye viewports side by side across the buffer.
         p.mat.setParameter('dxrSnapWipe', wipe ? [wipe.t, wipe.band, wipe.views] : [-2, 0.1, 1]);
+        // setSource's particle transitions: the live outgoing image OVER the incoming one, and
+        // morph's scene weight (0 while the outgoing asset draws the incoming one)
+        p.mat.setParameter('dxrSnapMix', mix ? [mix.over ? 1 : 0, mix.scene ?? 1] : [0, 1]);
         p.mat.update();
       }
     }
@@ -2139,7 +2157,45 @@ export const SOURCE_TRANSITIONS = Object.freeze({
   crossfade: {},
   flip: { durationMs: 2200, easing: 'easeInOutSine' },
   wavefront: { durationMs: 2000, easing: 'easeInOutSine', band: 0.18, ridge: 0.03, ridgeMaxDisparity: 0.004 },
+  // the particle transitions (./inline3d-splat-effects.js PARTICLE_TRANSITIONS)
+  ...Object.fromEntries(Object.entries(PARTICLE_TRANSITIONS).map(([k, v]) => [k, { durationMs: v.durationMs, easing: v.easing, particle: true }])),
 });
+
+/**
+ * A particle transition's two sides, resolved: { out: { effect, opts }, in: { effect, opts },
+ * overlap, handover } — the table's defaults, then the page's shared particle options, then its
+ * per-side `outgoingFx` / `incomingFx` overrides. Every side is validated as its effect (throws).
+ */
+export function resolveParticleTransition(name, o = {}) {
+  const spec = PARTICLE_TRANSITIONS[name];
+  const shared = {};
+  for (const k of PARTICLE_TRANSITION_OPTIONS) if (o[k] !== undefined) shared[k] = o[k];
+  for (const k of ['outgoingFx', 'incomingFx']) {
+    if (o[k] !== undefined && (o[k] === null || typeof o[k] !== 'object')) throw new TypeError(`@displayxr/inline3d/splat: setSource ${k} must be an object of effect options.`);
+  }
+  const overlap = o.overlap ?? spec.overlap ?? 0;
+  if (!(typeof overlap === 'number' && overlap >= 0 && overlap <= 1)) throw new RangeError(`@displayxr/inline3d/splat: setSource overlap must be a number in [0, 1], got ${o.overlap}.`);
+  const side = (which, dflt, extra) => {
+    const effect = dflt.effect;
+    const opts = { ...dflt.opts, ...shared, ...(extra || {}) };
+    resolveEffectOptions(effect, { ...opts, scope: 'entity' }, 'set', { internal: true }); // throws on a bad one
+    return { effect, opts };
+  };
+  if (name === 'morph') {
+    const fb = PARTICLE_TRANSITIONS[spec.fallback];
+    const handover = o.handover ?? spec.handover;
+    if (!(typeof handover === 'number' && handover >= 0 && handover <= 0.5)) throw new RangeError(`@displayxr/inline3d/splat: setSource handover must be a number in [0, 0.5], got ${o.handover}.`);
+    return {
+      morph: side('out', { effect: 'morph', opts: {} }, o.outgoingFx),
+      // the swarm it falls back to (another count / order), and its incoming side for a frozen outgoing
+      out: side('out', fb.out),
+      in: side('in', fb.in, o.incomingFx),
+      overlap: o.overlap ?? fb.overlap,
+      handover,
+    };
+  }
+  return { out: side('out', spec.out, o.outgoingFx), in: side('in', spec.in, o.incomingFx), overlap, handover: 0 };
+}
 
 /** Validate setSource's options into a plan (throws on a page bug, before anything loads). */
 export function resolveSwap(o = {}) {
@@ -2155,9 +2211,10 @@ export function resolveSwap(o = {}) {
   const easing = o.easing ?? d.easing ?? 'linear';
   if (typeof easing !== 'function' && !EASINGS[easing]) throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
   const reveal = resolveRevealOption(o.reveal);
-  if (reveal && (transition === 'flip' || transition === 'wavefront')) {
+  if (reveal && (transition === 'flip' || transition === 'wavefront' || d.particle)) {
     throw new Error(`@displayxr/inline3d/splat: setSource reveal plays with transition 'cut' or 'crossfade'; '${transition}' is its own reveal.`);
   }
+  const particles = d.particle ? resolveParticleTransition(transition, o) : null;
   const band = o.band ?? d.band ?? 0.18;
   const ridge = o.ridge ?? d.ridge ?? 0.03;
   const ridgeMaxDisparity = o.ridgeMaxDisparity ?? d.ridgeMaxDisparity ?? 0.004;
@@ -2165,7 +2222,7 @@ export function resolveSwap(o = {}) {
     EFFECTS.wavefront.validate({ band, ridge, ridgeMaxDisparity });
   }
   const outgoing = resolveOutgoingOption(o.outgoing);
-  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity, outgoing };
+  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity, outgoing, particles };
 }
 
 /**
@@ -2971,10 +3028,23 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     const prev = current;
     pendingSwap?.finish();
-    const transition = prev ? plan.transition : 'cut';
+    let transition = prev ? plan.transition : 'cut';
+    // morph pairs the two assets gaussian by gaussian: only two SOG v2 files of the same count in
+    // the same grid order (two SHARP photos). Anything else plays its fallback, the swarm.
+    let morphPair = null;
+    if (transition === 'morph') {
+      const a = sogPairInfo(prev.res);
+      const b = sogPairInfo(loaded.res);
+      const why = morphPairing(a, b);
+      if (why) {
+        console.info(`[inline3d/splat] setSource morph: ${why} — playing '${PARTICLE_TRANSITIONS.morph.fallback}' instead`);
+        transition = PARTICLE_TRANSITIONS.morph.fallback;
+      } else morphPair = b;
+    }
+    const particle = plan.particles && transition in PARTICLE_TRANSITIONS ? plan.particles : null;
     // FRAME_SNAPSHOT: freeze the outgoing frame BEFORE anything of the new asset (or its rig) is
     // drawn. The overlay goes up in the same task, so no frame shows neither photo.
-    const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront';
+    const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront' || !!particle;
     const snapped = wantsSnapshot ? await viewer.captureFrame() : false;
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
@@ -2985,7 +3055,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // LIVE outgoing (default in 3D): the old asset stays resident and keeps rendering, through the
     // same eye views, into its own target; the frozen capture above bridges the first frames until
     // its camera has drawn a sorted frame. Its lens frame is read BEFORE adopt() switches the rig.
-    const outgoingMode = plan.outgoing || defaultOutgoing(viewer.is3D);
+    // A particle transition's outgoing photo MOVES, so it is live in 2D too (where the engine has
+    // the RenderView path); 'frozen' there = its snapshot fades out while the new one plays in.
+    const outgoingMode = plan.outgoing || (particle ? 'live' : defaultOutgoing(viewer.is3D));
     const live =
       snapped && outgoingMode === 'live' && viewer.canLiveOutgoing ? viewer.startLiveOutgoing(prev.entity, viewer.lensFrame()) : null;
     /** Each frame of the window: once the live camera is ready, the overlay samples it. */
@@ -3067,6 +3139,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         release(prev);
         adopt(entity);
       }
+      return out;
+    }
+
+    if (particle && snapped) {
+      playParticleTransition({ transition, particle, plan, prev, entity, live, morphPair, adopt, release, finishers, finish, isFinished: () => finished, pumpLive, isLiveShown: () => liveShown, setFade });
+      await done;
       return out;
     }
 
@@ -3173,6 +3251,149 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     return out;
   }
 
+  /**
+   * setSource's particle transitions (swarm, burst, shimmer-cross, dust, morph), once the frame
+   * snapshot is up. The OUTGOING asset plays its effect in reverse, on the live camera, keyed on
+   * its own frame (taken here, before the rig switches); the INCOMING one plays forwards on the eye
+   * camera, its frame re-taken when the clock starts. One clock drives both, on overlapping spans
+   * (particleSpan). The overlay puts the live outgoing image OVER the incoming one, per eye.
+   * morph: the outgoing asset flies to the incoming one's gaussians (the incoming one hidden
+   * meanwhile: scene weight 0), then the last `handover` of the clock lerps to the incoming
+   * asset's own render. With no live camera (outgoing:'frozen', or an engine without the
+   * RenderView path) the frozen frame fades out over the outgoing span while the incoming asset
+   * plays its side. The end: effects removed (modifiers deleted), overlay hidden, live camera off,
+   * old asset released — the frame is a plain cut's.
+   */
+  function playParticleTransition({ transition, particle, plan, prev, entity, live, morphPair, adopt, release, finishers, finish, isFinished, pumpLive, isLiveShown, setFade }) {
+    const isMorph = transition === 'morph' && !!live;
+    const ease = typeof plan.easing === 'function' ? plan.easing : EASINGS[plan.easing] || EASINGS.linear;
+    const overlap = particle.overlap;
+    const handover = isMorph ? particle.handover : 0;
+    // the outgoing side, BEFORE adopt(): its frame (eyes, focus, framing) is the old asset's
+    let outFx = null;
+    if (live && isMorph) {
+      outFx = fx.drive(prev.entity, 'morph', { ...particle.morph.opts, pair: morphBinding(morphPair, entity, live) });
+    } else if (live) {
+      outFx = fx.drive(prev.entity, particle.out.effect, particle.out.opts);
+    } else {
+      release(prev); // the frozen frame shows it from here on
+    }
+    if (outFx) outFx.set(1, 0);
+    adopt(entity);
+    // the incoming side, hidden (amount 0) until the clock starts; morph hides it in the overlay
+    const inFx = isMorph ? null : fx.drive(entity, particle.in.effect, particle.in.opts);
+    inFx?.set(0, 0);
+    // morph: the incoming asset is hidden (the overlay's scene weight 0) until the handover; its
+    // splats are also faded to alpha 0 meanwhile, so the engine draws nothing of them (measured:
+    // drawing it hidden doubled the frame)
+    let morphHidden = false;
+    if (isMorph) {
+      setFade(entity, 0);
+      morphHidden = true;
+    }
+    finishers.push(() => {
+      viewer._transitionState = null;
+      outFx?.remove();
+      inFx?.remove();
+      if (morphHidden) setFade(entity, null);
+      viewer.setSnapshotAlpha(0);
+      viewer.releaseSnapshot();
+      if (live) {
+        viewer.stopLiveOutgoing();
+        release(prev);
+      }
+    });
+    const dur = plan.durationMs;
+    let t0 = null;
+    let ticks = 0;
+    const bridge = () => viewer.setSnapshotAlpha(1); // the old frame alone (lerp at weight 1)
+    viewer._hooks.push((t) => {
+      if (removed) return (finish(), false);
+      if (isFinished()) return false;
+      if (live && !live.fits) {
+        finish(); // a resize or a 2D/3D switch mid-window: end now
+        return false;
+      }
+      pumpLive();
+      // The clock starts on the SECOND tick (the incoming asset's first frame builds its work
+      // buffer) and, live, once the live camera has drawn a sorted frame (until then the frozen
+      // capture stands in for the outgoing photo, untouched).
+      if (++ticks < 2 || (live && !isLiveShown())) {
+        if (!bridge()) {
+          finish();
+          return false;
+        }
+        return true;
+      }
+      if (t0 === null) {
+        t0 = t;
+        inFx?.restart(); // the incoming asset's frame, now its rig and first frames are in
+      }
+      const raw = dur > 0 ? Math.min(1, Math.max(0, (t - t0) / dur)) : 1;
+      const te = ease(raw);
+      viewer._transitionState = { transition, raw, live: !!live }; // diagnostics (docs §Gates)
+      const timeS = (t - t0) / 1000;
+      let ok;
+      if (isMorph) {
+        const m = Math.min(1, te / Math.max(1 - handover, 1e-6));
+        outFx.set(1 - m, timeS);
+        const h = handover > 0 ? Math.min(1, Math.max(0, (te - (1 - handover)) / handover)) : te >= 1 ? 1 : 0;
+        if (morphHidden && (h > 0 || m >= 1)) {
+          // one frame before the handover shows it: its work buffer re-renders untouched
+          setFade(entity, null);
+          morphHidden = false;
+        }
+        ok = h > 0 ? viewer.setSnapshotAlpha(1 - h) : viewer.setSnapshotAlpha(1, null, { over: true, scene: 0 });
+      } else {
+        outFx?.set(1 - particleSpan(te, overlap, 'out'), timeS);
+        inFx.set(particleSpan(te, overlap, 'in'), timeS);
+        ok = live ? viewer.setSnapshotAlpha(1, null, { over: true, scene: 1 }) : viewer.setSnapshotAlpha(1 - particleSpan(te, overlap, 'out'));
+      }
+      if (!ok) {
+        finish();
+        return false;
+      }
+      if (raw >= 1) {
+        finish();
+        return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * morph's view of the incoming asset: its SOG textures + dequantisation, and T — its file space
+   * into the outgoing asset's render world (the live camera's frame): T = C · Rig⁻¹ · W_in, with C
+   * the live camera's parent chain and Rig the eye's. Recomputed every frame (the rig can move).
+   */
+  function morphBinding(pair, entity, live) {
+    const tx = pair.textures;
+    const cols = new Float64Array(16);
+    const data = (m) => (m ? m.data || m : null);
+    return {
+      textures: { Bml: tx.get('means_l'), Bmu: tx.get('means_u'), Bq: tx.get('quats'), Bs: tx.get('scales'), Bsh: tx.get('sh0'), Bcb: tx.get('sogCodebook') },
+      mins: toArray3(pair.params?.get?.('means_mins') ?? [0, 0, 0]),
+      maxs: toArray3(pair.params?.get?.('means_maxs') ?? [0, 0, 0]),
+      frame: () => {
+        const W = data(entity.getWorldTransform?.());
+        if (!W) return null;
+        const R = data(viewer.rigNode?.getWorldTransform?.());
+        const C = data(live.nodes?.n3?.getWorldTransform?.());
+        const T = R && C ? mat4Mul(mat4Mul(C, mat4Invert(R)), W) : Float64Array.from(W);
+        // T's rotation (columns normalised) and its mean scale: a gaussian's shape is carried by
+        // one rotation and one scale factor (T is a similarity unless the two lenses differ)
+        const sx = Math.hypot(T[0], T[1], T[2]) || 1, sy = Math.hypot(T[4], T[5], T[6]) || 1, sz = Math.hypot(T[8], T[9], T[10]) || 1;
+        cols.set(T);
+        for (let i = 0; i < 3; i++) {
+          cols[i] /= sx;
+          cols[4 + i] /= sy;
+          cols[8 + i] /= sz;
+        }
+        return { T: Float32Array.from(T), q: similarityTRS(cols).rotation, s: Math.cbrt(sx * sy * sz) };
+      },
+    };
+  }
+
   // The load promise is RETURNED, never written to `out.ready`: ./splat's addSplat owns that
   // field (one promise, one owner).
   return first
@@ -3181,6 +3402,23 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       console.warn('[inline3d/splat] failed to load (engine:playcanvas)', src, err);
       throw err;
     });
+}
+
+/** What morph needs to know of a loaded SOG resource (morphPairing's input + its textures). */
+function sogPairInfo(res) {
+  const tx = res?.streams?.textures;
+  const ml = tx?.get?.('means_l');
+  const centers = res?.centers ?? null;
+  return {
+    numSplats: res?.gsplatData?.numSplats ?? (centers ? Math.floor(centers.length / 3) : 0),
+    width: ml?.width ?? 0,
+    height: ml?.height ?? 0,
+    codebook: tx?.get?.('sogCodebook') ?? null,
+    centers,
+    shBands: res?.gsplatData?.shBands ?? 0,
+    textures: tx,
+    params: res?.parameters,
+  };
 }
 
 let byteSeq = 0;

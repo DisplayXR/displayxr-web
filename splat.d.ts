@@ -374,6 +374,10 @@ export interface SplatParticleOptions {
    * home; max 0.05). In 2D a nominal 64 mm-at-1.7 m separation is assumed.
    */
   maxDisparity?: number;
+  /** Fade a particle over the first `vanish` of its flight (0 = off, the reveals' default; the particle transitions use ~0.3–0.45). */
+  vanish?: number;
+  /** Share of the gaussians drawn while in flight, 0..1 (1 = all, the reveals' default; the swarm uses 0.2). */
+  density?: number;
   /** `order: 'layers'`: gaussians per layer (default 768² = 589 824, SHARP). */
   layerSize?: number;
   /** `assemble`: how far out the swarm starts (half-view-widths), its spiral (rad), its curl turbulence, how coherent its start field is (0..1), and how much of it reaches back in depth (0..1). */
@@ -497,8 +501,17 @@ export interface SplatSourceOptions {
    * inflates out of its own; default 2200 ms), `'wavefront'` (a soft front crosses left → right
    * with a thin depth ridge riding it; default 2000 ms, ease-in-out; falls back to the crossfade
    * in a hidden tab). For photo slideshows: `crossfade` or `wavefront`.
+   *
+   * The particle transitions (docs/splat-effects.md §Particle transitions): `'swarm'` (the old
+   * photo disperses into a curl-noise swarm while the new one assembles out of one), `'burst'`
+   * (the old one collapses into its focus, the new one bursts out of its own), `'shimmer-cross'`
+   * (nothing moves: twinkling points out, twinkling points in), `'dust'` (drifting dust out,
+   * gathering dust in) and EXPERIMENTAL `'morph'` (index-paired: each gaussian of the old photo
+   * flies to gaussian i of the new one; two SHARP files only — anything else plays `'swarm'`, with
+   * one console.info line). 2.6–2.8 s, linear shared clock (each particle eases itself). The old
+   * photo is live, in 2D too; a hidden tab gets the crossfade.
    */
-  transition?: 'cut' | 'crossfade' | 'flip' | 'wavefront';
+  transition?: 'cut' | 'crossfade' | 'flip' | 'wavefront' | SplatParticleTransitionName;
   durationMs?: number;
   easing?: SplatEasing;
   /** `cut`/`crossfade` only: reveal the INCOMING asset (entity scope) while the old one fades. */
@@ -519,7 +532,27 @@ export interface SplatSourceOptions {
    * the single-camera RenderView path always use `'frozen'`.
    */
   outgoing?: 'live' | 'frozen';
+  /** Particle transitions: particle options for BOTH photos (the shared ones of the particle reveals). */
+  order?: SplatParticleOptions['order'];
+  stagger?: number;
+  jitter?: number;
+  maxDisparity?: number;
+  dotSize?: number;
+  noiseScale?: number;
+  layerSize?: number;
+  origin?: SplatEffectOrigin;
+  /** Particle transitions: how much of the clock the two photos' spans share, 0..1 (0 = one after the other). */
+  overlap?: number;
+  /** Particle transitions: option overrides for the OUTGOING photo's effect (for `morph`: the morph's own). */
+  outgoingFx?: SplatParticleOptions & Record<string, unknown>;
+  /** Particle transitions: option overrides for the INCOMING photo's effect. */
+  incomingFx?: SplatParticleOptions & Record<string, unknown>;
+  /** `morph`: the last fraction of the clock that lerps into the new photo's own render (default 0.08, max 0.5). */
+  handover?: number;
 }
+
+/** setSource's particle transitions (docs/splat-effects.md §Particle transitions). */
+export type SplatParticleTransitionName = 'swarm' | 'burst' | 'shimmer-cross' | 'dust' | 'morph';
 
 /**
  * What `prepareSource()` resolves to: an opaque, single-use handle for `setSource`. The asset is

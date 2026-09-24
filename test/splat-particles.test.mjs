@@ -213,3 +213,74 @@ test('a particle reveal composes with a grade in one chunk, grade first', () => 
   w.fx.stop('shimmer');
   assert.ok(!w.chunks.get('gsplatModifyVS').includes('shimmer'));
 });
+
+// ── setSource's particle transitions: the effect-side pieces ────────────────────────────────
+
+test('drive(): an adapter-clocked entity effect — hidden from effects() and stopEffect(), amount + time set directly, remove() restores the default', async () => {
+  const { fx, entity, eparams, tick } = fakeWorld({ separation: 0.064 });
+  const d = fx.drive(entity, 'assemble', { vanish: 0.4, density: 0.2 });
+  assert.match(entity.gsplat.modifier.glsl, /dxrFx_assemble_center\(center\)/);
+  assert.equal(entity.gsplat.workBufferUpdate, 2);
+  assert.deepEqual(fx.list(), [], 'not a page effect');
+  fx.stop(); // a page's stopEffect() leaves it alone
+  assert.ok(d.alive);
+  d.set(0.3, 1.25);
+  tick(100);
+  assert.equal(eparams.get('dxrFx_assemble_amount'), 0.3, 'amount as set, not from the runner clock');
+  assert.equal(eparams.get('dxrFx_assemble_time'), 1.25, 'time from the adapter');
+  assert.equal(eparams.get('dxrFx_assemble_van'), 0.4);
+  assert.equal(eparams.get('dxrFx_assemble_dens'), 0.2);
+  d.remove();
+  assert.equal(entity.gsplat.modifier, null, 'modifier deleted: the engine default');
+  assert.equal(entity.gsplat.workBufferUpdate, 1);
+  assert.equal(d.alive, false);
+  d.set(0.5); // a no-op once removed
+});
+
+test('vanish + density default off: the reveals are unchanged (density 1 skips the hash, vanish 0 skips the fade)', () => {
+  for (const n of PARTICLES) {
+    const r = resolveRevealOption(n);
+    assert.equal(r.opts.vanish, 0, n);
+    assert.equal(r.opts.density, 1, n);
+    const { code } = composeModifier([{ name: n, def: EFFECTS[n], opts: r.opts }]);
+    const P = prefixOf(n);
+    assert.ok(code.includes(`if (${P}van > 0.0) col.a *= smoothstep(0.0, ${P}van, lp);`), n);
+    assert.ok(code.includes(`if (${P}dens < 1.0 && ${P}h(c, 9.0) > ${P}dens) col.a *= g;`), n);
+  }
+  assert.throws(() => resolveEffectOptions('assemble', { vanish: 2 }), /vanish/);
+  assert.throws(() => resolveEffectOptions('assemble', { density: -1 }), /density/);
+});
+
+test('morph: internal, entity-only; its body reads the incoming streams at splat.uv and returns at amount >= 1', async () => {
+  const { PUBLIC_EFFECTS: pub } = await import('../js/inline3d-splat-effects.js');
+  assert.ok(!pub.includes('morph'), 'setSource-only');
+  assert.throws(() => resolveEffectOptions('morph', {}), /unknown effect 'morph'/);
+  const o = resolveEffectOptions('morph', { scope: 'entity' }, 'set', { internal: true });
+  const P = prefixOf('morph');
+  const { code } = composeModifier([{ name: 'morph', def: EFFECTS.morph, opts: o }]);
+  for (const k of ['Bml', 'Bmu', 'Bq', 'Bs', 'Bsh', 'Bcb']) assert.match(code, new RegExp(`uniform highp sampler2D ${P}${k};`));
+  assert.match(code, new RegExp(`texelFetch\\(${P}Bml, splat\\.uv, 0\\)`));
+  for (const fn of ['center', 'rs', 'color']) {
+    const body = code.slice(code.indexOf(`void ${P}${fn}(`));
+    assert.match(body.slice(0, 200), new RegExp(`if \\(${P}amount >= 1\\.0\\) return;`), fn);
+  }
+});
+
+test('morphPairing / gridOrderScore: same count, same textures, v2 codebook, grid order — else the reason', async () => {
+  const { morphPairing, gridOrderScore } = await import('../js/inline3d-splat-effects.js');
+  const W = 64, H = 32;
+  const grid = new Float32Array(W * H * 3);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x; const z = 2 + 0.3 * Math.sin(x * 0.7 + y); grid[3 * i] = (x - W / 2) * 0.01 * z; grid[3 * i + 1] = (y - H / 2) * 0.01 * z; grid[3 * i + 2] = z; } // each gaussian on its pixel's ray, at any depth
+  const shuffled = Float32Array.from(grid);
+  let s = 7;
+  const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  for (let i = W * H - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); for (let c = 0; c < 3; c++) [shuffled[3 * i + c], shuffled[3 * j + c]] = [shuffled[3 * j + c], shuffled[3 * i + c]]; }
+  assert.ok(gridOrderScore(grid, W) > 0.99);
+  assert.ok(gridOrderScore(shuffled, W) < 0.7);
+  const a = { numSplats: W * H, width: W, height: H, codebook: {}, centers: grid };
+  assert.equal(morphPairing(a, { ...a }), null);
+  assert.match(morphPairing(a, { ...a, numSplats: 5 }), /different counts/);
+  assert.match(morphPairing(a, { ...a, codebook: null }), /not SOG v2/);
+  assert.match(morphPairing(a, { ...a, width: 32, height: 64 }), /different data textures/);
+  assert.match(morphPairing(a, { ...a, centers: shuffled }), /incoming asset is not in grid order/);
+});

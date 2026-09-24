@@ -121,6 +121,7 @@ function farthestCorner(c, box) {
   }
   return m > 0 ? m : 1;
 }
+const IDENTITY16 = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 const maxExtent = (box) => (box ? Math.max(box.extent[0], box.extent[1], box.extent[2], 1e-6) : 1);
 
 // ── the registry ──────────────────────────────────────────────────────────────────────────────
@@ -626,6 +627,8 @@ uniform float ${P}grow;
 uniform float ${P}tx;
 uniform vec3 ${P}glow;
 uniform float ${P}falpha;
+uniform float ${P}van;
+uniform float ${P}dens;
 float ${P}lp = -1.0;
 float ${P}h(vec3 c, float s) { return dxrFxHash(c + vec3(s * 17.13, s * 31.71, s * 7.31)); }
 // where a point sits in the PICTURE (image x, y in half-view-widths) and its log depth: noise is
@@ -683,6 +686,12 @@ void ${P}color(vec3 c, inout vec4 col) {
   float g = smoothstep(${P}grow, 1.0, lp);
   col.rgb += ${P}glow * (1.0 - g);
   col.a *= mix(${P}falpha, 1.0, g);
+  // setSource's particle transitions: a particle fades over the first "vanish" of its flight, so a
+  // swarm gathers out of nothing and a leaving photo's swarm thins out to nothing (0 = off)
+  if (${P}van > 0.0) col.a *= smoothstep(0.0, ${P}van, lp);
+  // "density" < 1: only that share of the gaussians is drawn in flight (the rest appear as they
+  // grow home), so a million-point swarm reads as a swarm, not as snow
+  if (${P}dens < 1.0 && ${P}h(c, 9.0) > ${P}dens) col.a *= g;
   ${extra}
 }
 `;
@@ -705,6 +714,8 @@ const PARTICLE_VALIDATE = (what, o) => {
   if (o.color !== undefined) vec3Of(o.color, `${what} color`);
   if (o.noiseScale !== undefined) num(o.noiseScale, `${what} noiseScale`, 1e-3, 1e3);
   if (o.maxDisparity !== undefined) num(o.maxDisparity, `${what} maxDisparity`, 0, 0.05);
+  if (o.vanish !== undefined) num(o.vanish, `${what} vanish`, 0, 1);
+  if (o.density !== undefined) num(o.density, `${what} density`, 0, 1);
   if (o.layerSize !== undefined && !(Number.isInteger(o.layerSize) && o.layerSize > 0)) {
     throw new RangeError(`@displayxr/inline3d/splat: ${what} layerSize must be a positive integer.`);
   }
@@ -773,6 +784,8 @@ const particleUniforms = (ctx, inst, amount, tMs) => {
     tx: s.tanX,
     glow: o.color.map((x) => x * o.glow),
     falpha: o.flightAlpha,
+    van: o.vanish,
+    dens: o.density,
   };
 };
 
@@ -785,6 +798,8 @@ const PARTICLE_DEFAULTS = {
   noiseScale: 2,
   dotSize: 0.0007,
   grow: 0.6,
+  vanish: 0,
+  density: 1,
 };
 
 /** A particle reveal's registry entry: `body(P)` adds the centre/rs stages (and extra uniforms). */
@@ -1012,6 +1027,267 @@ void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
     },
   ),
 });
+
+// ── setSource's particle transitions ─────────────────────────────────────────────────────────
+//
+// swarm / burst / shimmer-cross / dust: the OUTGOING photo plays a particle reveal backwards (its
+// gaussians leave home as dots and thin out to nothing, `vanish`) while the INCOMING one plays it
+// forwards, on overlapping spans of one clock. Both run as entity-scope effects driven by the
+// adapter (SplatEffects.drive); the outgoing one is drawn by the LIVE outgoing camera, and the
+// adapter composites the two live images per eye, the old one OVER the new one. `morph` is its
+// own effect on the outgoing asset (below).
+
+/**
+ * The transitions and their defaults. `out` / `in` = the particle effect each side plays (out: in
+ * reverse) with its option overrides; `overlap` = how much of the clock the two spans share (0 =
+ * one after the other, 1 = both over the whole clock): out over [0, (1 + overlap)/2], in over
+ * [(1 − overlap)/2, 1] of the eased clock.
+ */
+export const PARTICLE_TRANSITIONS = Object.freeze({
+  swarm: {
+    durationMs: 2800,
+    easing: 'linear',
+    overlap: 0.45,
+    out: { effect: 'assemble', opts: { stagger: 0.65, jitter: 0.35, spread: 0.3, swirl: 1.8, density: 0.2, dotSize: 0.0009, vanish: 0.45, glow: 0.1 } },
+    in: { effect: 'assemble', opts: { stagger: 0.65, spread: 0.3, swirl: 1.8, density: 0.2, dotSize: 0.0009, vanish: 0.35, glow: 0.1 } },
+  },
+  burst: {
+    durationMs: 2600,
+    easing: 'linear',
+    overlap: 0.3,
+    out: { effect: 'converge', opts: { stagger: 0.5, density: 0.5, glow: 0.25 } },
+    in: { effect: 'converge', opts: { stagger: 0.55, density: 0.5 } },
+  },
+  'shimmer-cross': {
+    durationMs: 2600,
+    easing: 'linear',
+    overlap: 0.45,
+    out: { effect: 'shimmer', opts: { stagger: 0.75 } },
+    in: { effect: 'shimmer', opts: { stagger: 0.75 } },
+  },
+  dust: {
+    durationMs: 2800,
+    easing: 'linear',
+    overlap: 0.4,
+    out: { effect: 'dissolve-in', opts: { density: 0.4, vanish: 0.4, drift: 0.45 } },
+    in: { effect: 'dissolve-in', opts: { density: 0.4, vanish: 0.3 } },
+  },
+  morph: {
+    durationMs: 2600,
+    easing: 'linear',
+    // the last `handover` of the clock lerps the morphed image into the incoming asset's own
+    // render (the two differ by the sort order and any SH bands; see the morph effect)
+    handover: 0.08,
+    fallback: 'swarm',
+  },
+});
+
+/** Where a side stands at eased clock t: 0..1 over its span. */
+export function particleSpan(t, overlap, side) {
+  const v = Math.min(1, Math.max(0, overlap));
+  const a = side === 'out' ? 0 : (1 - v) / 2;
+  const b = side === 'out' ? (1 + v) / 2 : 1;
+  return Math.min(1, Math.max(0, (t - a) / Math.max(b - a, 1e-6)));
+}
+
+/** Options a page may pass through setSource to both sides of a particle transition. */
+export const PARTICLE_TRANSITION_OPTIONS = Object.freeze(['order', 'stagger', 'jitter', 'maxDisparity', 'dotSize', 'noiseScale', 'layerSize', 'origin']);
+
+/** SHARP's grid: 2 layers × 768², in a 768 × 1536 texture. */
+export const SHARP_GRID = Object.freeze({ width: 768, height: 1536, count: 2 * 768 * 768 });
+
+/**
+ * Can `morph` pair these two assets gaussian by gaussian? Both SOG v2 resources with the same
+ * count and the same data-texture size, and the outgoing one's centres in grid order (a row of
+ * the visible layer runs left to right in the picture). Returns null when it can, else the reason.
+ * `a` / `b`: { numSplats, width, height, codebook, centers, shBands }.
+ */
+export function morphPairing(a, b, frame) {
+  if (!a || !b) return 'no asset';
+  if (!a.codebook || !b.codebook) return 'not SOG v2 (no codebook)';
+  if (!(a.numSplats > 0) || a.numSplats !== b.numSplats) return `different counts (${a.numSplats} vs ${b.numSplats})`;
+  if (a.width !== b.width || a.height !== b.height) return `different data textures (${a.width}×${a.height} vs ${b.width}×${b.height})`;
+  for (const [tag, x] of [['outgoing', a], ['incoming', b]]) {
+    const r = gridOrderScore(x.centers, x.width, frame?.[tag]);
+    if (r < 0.9) return `the ${tag} asset is not in grid order (${(r * 100).toFixed(0)} % of sampled row steps run left to right)`;
+  }
+  return null;
+}
+
+/**
+ * The share of sampled steps along texture rows whose picture x (x/z seen from the camera, `f`:
+ * { O, A, X } or the file's own +z-forward frame) increases: ≈1 for SHARP's grid order, ≈0.5
+ * for a sorted (Morton) file.
+ */
+export function gridOrderScore(centers, width, f) {
+  if (!centers || !(width > 1)) return 0;
+  const n = Math.floor(centers.length / 3);
+  const rows = Math.max(1, Math.floor(n / width));
+  const px = (i) => {
+    const x = centers[3 * i], y = centers[3 * i + 1], z = centers[3 * i + 2];
+    if (!f) return Math.abs(z) > 1e-9 ? x / Math.abs(z) : x;
+    const vx = x - f.O[0], vy = y - f.O[1], vz = z - f.O[2];
+    const d = vx * f.A[0] + vy * f.A[1] + vz * f.A[2];
+    return (vx * f.X[0] + vy * f.X[1] + vz * f.X[2]) / (Math.abs(d) > 1e-9 ? d : 1e-9);
+  };
+  let up = 0, all = 0;
+  for (let k = 0; k < 24; k++) {
+    const row = Math.floor(((k + 0.5) / 24) * Math.min(rows, Math.max(1, rows / 2)));
+    for (let j = 0; j < 32; j++) {
+      const col = Math.floor(((j + 0.5) / 32) * (width - 1));
+      const i = row * width + col;
+      if (i + 1 >= n) continue;
+      const a = px(i), b = px(i + 1);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) continue;
+      all++;
+      if (b > a) up++;
+    }
+  }
+  return all ? up / all : 0;
+}
+
+// morph: index-paired. The OUTGOING asset's gaussian i flies to the place of the INCOMING asset's
+// gaussian i while its colour, opacity, rotation and scale interpolate to i's; at the end the
+// outgoing asset draws the incoming one (then the adapter hands over to it). Only for two assets
+// in the same grid order (two SHARP files: i = layer·768² + y·768 + x is the same picture pixel in
+// both) — the adapter checks with morphPairing() and falls back to `swarm`.
+//
+// The incoming asset's per-gaussian data is read HERE, from its own SOG textures (means_l/u,
+// quats, scales, sh0 + the v2 codebook) at splat.uv — the engine's own decode (gsplatSogVS),
+// renamed — and mapped by `T` from its file space into this asset's render world (the live
+// outgoing camera's frame: T = C · Rig⁻¹ · W_in). A gaussian that travels far (more than
+// `travel` picture units) is a dot in flight, as the particle reveals do (the sort caveat); one
+// that stays near keeps its splat, so a photo morphing into another version of itself stays a
+// picture throughout.
+EFFECTS.morph = particleEffect(
+  'morph',
+  { durationMs: 2600, easing: 'linear', order: 'radial', stagger: 0.3, jitter: 0.6, grow: 0.75, swirl: 0.2, travel: [0.04, 0.2], color: [1, 1, 1], glow: 0, flightAlpha: 1 },
+  {
+    validate: (o) => {
+      if (o.swirl !== undefined) num(o.swirl, 'morph swirl', -10, 10);
+      if (o.travel !== undefined && !(Array.isArray(o.travel) && o.travel.length === 2 && o.travel.every(Number.isFinite) && o.travel[1] > o.travel[0])) {
+        throw new RangeError('@displayxr/inline3d/splat: morph travel must be [from, to] picture units, from < to.');
+      }
+    },
+    uniforms: (ctx, inst) => {
+      const b = inst.opts.pair || {};
+      const m = typeof b.frame === 'function' ? b.frame() : null;
+      return {
+        swirl: inst.opts.swirl,
+        tr0: inst.opts.travel[0],
+        tr1: inst.opts.travel[1],
+        ...(b.textures || {}),
+        Bmin: b.mins || [0, 0, 0],
+        Bmax: b.maxs || [0, 0, 0],
+        T: m?.T || IDENTITY16,
+        Tq: m?.q || [0, 0, 0, 1],
+        Ts: m?.s ?? 1,
+      };
+    },
+    body: (P) => `
+uniform highp sampler2D ${P}Bml;
+uniform highp sampler2D ${P}Bmu;
+uniform highp sampler2D ${P}Bq;
+uniform highp sampler2D ${P}Bs;
+uniform highp sampler2D ${P}Bsh;
+uniform highp sampler2D ${P}Bcb;
+uniform vec3 ${P}Bmin;
+uniform vec3 ${P}Bmax;
+uniform mat4 ${P}T;
+uniform vec4 ${P}Tq;
+uniform float ${P}Ts;
+uniform float ${P}swirl;
+uniform float ${P}tr0;
+uniform float ${P}tr1;
+float ${P}e = -1.0;
+vec3 ${P}bc;
+// the incoming asset's gaussian at this index: the engine's SOG v2 decode (gsplatSogVS)
+vec3 ${P}bCenter() {
+  vec3 l = texelFetch(${P}Bml, splat.uv, 0).xyz;
+  vec3 u = texelFetch(${P}Bmu, splat.uv, 0).xyz;
+  vec3 v = mix(${P}Bmin, ${P}Bmax, (l + u * 256.0) / 257.0);
+  return sign(v) * (exp(abs(v)) - 1.0);
+}
+vec4 ${P}bRotation() {
+  vec4 q = texelFetch(${P}Bq, splat.uv, 0);
+  uint m = uint(q.w * 255.0 + 0.5) - 252u;
+  vec3 abc = (q.xyz - 0.5) * sqrt(2.0);
+  float d = sqrt(max(0.0, 1.0 - dot(abc, abc)));
+  vec4 r = (m == 0u) ? vec4(d, abc) : ((m == 1u) ? vec4(abc.x, d, abc.yz) : ((m == 2u) ? vec4(abc.xy, d, abc.z) : vec4(abc, d)));
+  return r.yzwx;
+}
+vec3 ${P}bScale() {
+  ivec3 i = ivec3(texelFetch(${P}Bs, splat.uv, 0).xyz * 255.0 + 0.5);
+  return exp(vec3(texelFetch(${P}Bcb, ivec2(i.x, 0), 0).r, texelFetch(${P}Bcb, ivec2(i.y, 0), 0).r, texelFetch(${P}Bcb, ivec2(i.z, 0), 0).r));
+}
+vec4 ${P}bColor() {
+  vec4 c = texelFetch(${P}Bsh, splat.uv, 0);
+  ivec3 i = ivec3(c.xyz * 255.0 + 0.5);
+  vec3 rgb = vec3(texelFetch(${P}Bcb, ivec2(i.x, 0), 0).g, texelFetch(${P}Bcb, ivec2(i.y, 0), 0).g, texelFetch(${P}Bcb, ivec2(i.z, 0), 0).g);
+  return vec4(vec3(0.5) + rgb * 0.28209479177387814, c.w);
+}
+vec4 ${P}qmul(vec4 a, vec4 b) {
+  return vec4(
+    a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z);
+}
+// 0 at the outgoing gaussian, 1 at the incoming one (smoothstep of its own progress)
+float ${P}eOf(float lp) {
+  float f = 1.0 - lp;
+  return f * f * (3.0 - 2.0 * f);
+}
+void ${P}center(inout vec3 c) {
+  ${P}lp = -1.0;
+  ${P}e = -1.0;
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}local(c);
+  ${P}lp = lp;
+  if (lp >= 1.0) return;
+  float e = ${P}eOf(lp);
+  ${P}e = e;
+  vec3 home = c;
+  vec3 b = (${P}T * vec4(${P}bCenter(), 1.0)).xyz;
+  ${P}bc = b;
+  vec3 p = mix(home, b, e);
+  // a gentle swirl about the view axis through the origin, zero at both ends, as far as it travels
+  float tr = length(b - home) / ${P}unit(home);
+  p = ${P}F + ${P}rot(p - ${P}F, ${P}A, ${P}swirl * sin(3.14159265 * e) * min(tr, 1.0) * (0.6 + 0.8 * ${P}h(home, 6.0)));
+  // comfort: never nearer than the nearer of its two homes allows
+  c = ${P}near(dot(b - ${P}O, ${P}A) < dot(home - ${P}O, ${P}A) ? b : home, p);
+}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(oc);
+  if (lp >= 1.0) return;
+  float e = ${P}e >= 0.0 ? ${P}e : ${P}eOf(lp);
+  vec4 bq = ${P}qmul(${P}Tq, ${P}bRotation());
+  if (dot(bq, r) < 0.0) bq = -bq;
+  r = normalize(mix(r, bq, e));
+  vec3 bs = ${P}Ts * ${P}bScale();
+  sc = exp(mix(log(max(sc, vec3(1e-12))), log(max(bs, vec3(1e-12))), e));
+  // far travellers are dots in flight (the sort caveat), full splats again near either end
+  vec3 b = ${P}e >= 0.0 ? ${P}bc : (${P}T * vec4(${P}bCenter(), 1.0)).xyz;
+  float tr = length(b - oc) / ${P}unit(oc);
+  float w = smoothstep(${P}tr0, ${P}tr1, tr) * smoothstep(0.0, 0.25, e) * (1.0 - smoothstep(0.75, 1.0, e));
+  float d = max(dot(mc - ${P}O, ${P}A), 1e-4);
+  sc = mix(sc, min(sc, vec3(${P}dotK * d)), w);
+}
+`,
+    color: (P) => `
+void ${P}color(vec3 c, inout vec4 col) {
+  if (${P}amount >= 1.0) return;
+  float lp = ${P}lpOf(c);
+  if (lp >= 1.0) return;
+  float e = ${P}e >= 0.0 ? ${P}e : ${P}eOf(lp);
+  col = mix(col, ${P}bColor(), e);
+}
+`,
+  },
+);
+EFFECTS.morph.internal = true;
+EFFECTS.morph.entityOnly = true;
 
 /**
  * The wavefront's per-column commit, lt ∈ [0, 1], for eased progress `t` at normalised u — the
@@ -1243,7 +1519,8 @@ export class SplatEffects {
       resolve: null,
       promise: null,
       originPoint: (ctx, eyes) => this._origin(inst, ctx, eyes),
-      elapsedS: (tMs) => (inst.startedAt === null ? 0 : Math.max(0, (tMs - inst.startedAt) / 1000)),
+      // a driven instance (drive()) is handed its time by the adapter's clock
+      elapsedS: (tMs) => (inst.timeS !== undefined ? inst.timeS : inst.startedAt === null ? 0 : Math.max(0, (tMs - inst.startedAt) / 1000)),
     };
     inst.promise = new Promise((r) => (inst.resolve = r));
     return inst;
@@ -1326,6 +1603,49 @@ export class SplatEffects {
     this._install(entity);
   }
 
+  /**
+   * An effect on one entity driven by the ADAPTER's clock, not the runner's (setSource's particle
+   * transitions: two effects on two assets, on overlapping spans of one transition clock). Hidden
+   * from effects() and from a page's stopEffect(). Returns { set(amount, timeS), restart(),
+   * remove() }: `amount` as the GLSL reads it (1 = the untouched asset), `restart()` re-takes the
+   * effect's frame (start()) — the incoming asset's, once its rig and first frames are in.
+   */
+  drive(entity, name, opts) {
+    const o = resolveEffectOptions(name, { ...opts, scope: 'entity', direction: 'in', progress: 0 }, 'set', { internal: true });
+    o.entity = entity;
+    const inst = this._makeInstance(name, o, 'set');
+    inst.hidden = true;
+    inst.timeS = 0;
+    this._replace(entity, name, inst);
+    this._setupInstance(inst);
+    this._apply(entity, inst, this.ctx.now());
+    this._install(entity);
+    const alive = () => !this._disposed && this.scopes.get(entity)?.get(name) === inst;
+    return {
+      set: (amount, timeS = inst.timeS) => {
+        if (!alive()) return;
+        inst.opts.progress = Math.min(1, Math.max(0, amount));
+        inst.timeS = timeS;
+        this._apply(entity, inst, this.ctx.now());
+      },
+      restart: () => {
+        if (!alive()) return;
+        inst.state = {};
+        this._setupInstance(inst);
+        this._apply(entity, inst, this.ctx.now());
+      },
+      remove: () => {
+        if (!alive()) return;
+        this.scopes.get(entity).delete(name);
+        inst.resolve({ finished: true });
+        this._install(entity);
+      },
+      get alive() {
+        return alive();
+      },
+    };
+  }
+
   _setupInstance(inst) {
     // Also for a gated one (its held START state needs the geometry); re-run when the gate opens,
     // since the rig/framing may have changed meanwhile (setSource's flip adopts a new asset).
@@ -1346,7 +1666,7 @@ export class SplatEffects {
    */
   stop(name, { finish = false, entity = null } = {}) {
     for (const [key, n, inst] of [...this._all()]) {
-      if (name ? n !== name : inst.def.internal) continue;
+      if (inst.hidden || (name ? n !== name : inst.def.internal)) continue;
       if (entity && key !== entity) continue;
       const m = this.scopes.get(key);
       if (finish && inst.mode === 'play' && inst.opts.direction === 'out') {
@@ -1366,7 +1686,7 @@ export class SplatEffects {
   list() {
     const out = [];
     for (const [key, name, inst] of this._all()) {
-      if (inst.def.internal) continue;
+      if (inst.def.internal || inst.hidden) continue;
       out.push({
         name,
         scope: key === 'tile' ? 'tile' : 'entity',
