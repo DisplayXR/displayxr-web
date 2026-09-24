@@ -145,6 +145,17 @@ const PAGE_POSE_ERROR =
 
 const DEG = Math.PI / 180;
 
+/** Tone-mapping names the viewer takes → the engine's constant names. */
+export const TONE_MAPPINGS = Object.freeze({
+  none: 'TONEMAP_NONE',
+  linear: 'TONEMAP_LINEAR',
+  neutral: 'TONEMAP_NEUTRAL',
+  aces: 'TONEMAP_ACES',
+  aces2: 'TONEMAP_ACES2',
+  filmic: 'TONEMAP_FILMIC',
+  hejl: 'TONEMAP_HEJL',
+});
+
 // ── pure matrix arithmetic (column-major, the layout XRView, three and the engine all use) ──
 
 /** three's `Matrix4.makePerspective(left, right, top, bottom, near, far)`, element for element. */
@@ -606,6 +617,7 @@ export class PlayCanvasSplatViewer {
       farClip,
       sky = false,
       pageCamera = false,
+      toneMapping = 'none',
     } = opts;
     this.canvas = canvas;
     // controls:'page': the PAGE owns the camera (setPageCamera). No orbit, no idle, no fit; the
@@ -620,6 +632,10 @@ export class PlayCanvasSplatViewer {
     // hidden (mid-setSource, or a page showing only its meshes). The SDK's contract is a
     // transparent canvas the page shows through, so the sky layer is off unless asked for.
     this.sky = sky === true;
+    // The eye camera's tone mapping, by name (the engine constant is looked up once the engine has
+    // loaded). 'none' for splats — their colours are already display-referred; ./model's mesh
+    // tiles pass 'neutral' (Khronos PBR Neutral), the glTF Sample Viewer's default.
+    this.toneMapping = toneMapping;
     // Depth range for a MIXED scene (meshes under handle.engine.root depth-test against each
     // other; splats only test against them). The projections' own near/far stay the adapter's —
     // these only raise the near (floor) and lower the far (cap). Unset: untouched.
@@ -972,13 +988,15 @@ export class PlayCanvasSplatViewer {
    * @param {object} o.perf  the resolved playcanvasPerfSettings().
    * @param {string} [o.viewPath]  force 'cameras' | 'renderview' (diagnostics).
    */
-  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath } = {}) {
+  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true } = {}) {
     this.pc = pc;
     const device = await pc.createGraphicsDevice(this.canvas, {
       deviceTypes: [pc.DEVICETYPE_WEBGL2],
       alpha: true,
       premultipliedAlpha: true,
-      antialias: false,
+      // Off for splats (alpha-blended quads gain nothing from MSAA); ./model turns it on, as
+      // three's SceneViewer has it, because mesh silhouettes alias visibly without it.
+      antialias,
       xrCompatible: false,
       preserveDrawingBuffer,
     });
@@ -1022,10 +1040,12 @@ export class PlayCanvasSplatViewer {
     // Footprint fix (§ patchGsplatFootprint) and the perf quad-extent cap, both as chunk
     // overrides. The gsplat chunks are registered by GSplatComponentSystem during init, so
     // after it; before any gsplat material compiles.
-    const chunks = pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL);
-    const corner = patchGsplatFootprint(chunks.get('gsplatCornerVS'));
+    // ./model passes patchSplats:false: its subject is a mesh, and a page adding a splat under
+    // handle.engine.root on a model tile gets the engine's stock footprint (documented).
+    const chunks = patchSplats ? pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL) : null;
+    const corner = chunks ? patchGsplatFootprint(chunks.get('gsplatCornerVS')) : { ok: false, skipped: true };
     if (corner.ok) chunks.set('gsplatCornerVS', corner.src);
-    else if (!warnedFootprint) {
+    else if (!corner.skipped && !warnedFootprint) {
       warnedFootprint = true;
       console.warn(
         '[inline3d/splat] engine:playcanvas — this engine build does not have the gsplatCornerVS ' +
@@ -1035,7 +1055,7 @@ export class PlayCanvasSplatViewer {
       );
     }
     this.footprintPatched = corner.ok;
-    if (perf?.quadExtent) {
+    if (chunks && perf?.quadExtent) {
       const q = patchPlayCanvasQuadExtent(chunks.get('gsplatCommonVS'), perf.quadExtent);
       if (q.ok) chunks.set('gsplatCommonVS', q.src);
       else if (!warnedQuadExtent) {
@@ -1184,7 +1204,7 @@ export class PlayCanvasSplatViewer {
     // The engine's default camera tonemap is LINEAR, which routes every splat colour through
     // decodeGamma → toneMap → gammaCorrectOutput. Spark writes the stored colour straight out;
     // NONE is the same thing here (GAMMA_SRGB alone leaves a gamma-space colour untouched).
-    e.camera.toneMapping = pc.TONEMAP_NONE;
+    e.camera.toneMapping = TONE_MAPPINGS[this.toneMapping] ? pc[TONE_MAPPINGS[this.toneMapping]] ?? pc.TONEMAP_NONE : pc.TONEMAP_NONE;
     this.rigNode.addChild(e);
     return e;
   }
@@ -2415,7 +2435,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   let pcModule = null;
   const booted = (async () => {
-    const pc = opts.playcanvas || (await import('playcanvas'));
+    // Named re-exports, not the package namespace: lets a bundler drop the ~40% of the engine the
+    // SDK never touches (./inline3d-playcanvas-engine.js).
+    const pc = opts.playcanvas || (await import('./inline3d-playcanvas-engine.js'));
     if (removed) return null;
     const app = await viewer.attachEngine(pc, {
       preserveDrawingBuffer,
