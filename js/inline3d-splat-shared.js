@@ -437,3 +437,36 @@ export function normalizeCameraPose(matrixWorld, o = {}) {
   }
   return { matrixWorld: m, verticalFovDeg: fov, near, far, convergence };
 }
+
+// ── coverage-linear alpha (setSource's crossfade, the `fade` effect) ────────────────────────────
+
+/**
+ * Nominal optical depth of a dense photo's splat stack, per pixel: −ln(transmittance) through the
+ * whole stack at rest. The remap below is exact for a pixel of optical depth `L`. Real pictures
+ * spread widely around any single value (measured 13–25 on SHARP photos), which is why the
+ * crossfade blends IMAGES (FRAME_SNAPSHOT in ./inline3d-splat-playcanvas.js) and uses this only
+ * to shape ramps — never as the thing that makes a fade linear.
+ */
+export const FADE_OPTICAL_DEPTH = 3;
+
+/**
+ * Smallest per-splat transmittance the remap works from. A fully opaque splat (SOG alpha 255/255
+ * decodes to exactly 1, common in photos) has transmittance 0, and 0^k is 0 for every k > 0 — so
+ * without a floor it could never fade at all. 0.02 caps one splat's optical depth at ~3.9.
+ */
+export const FADE_TRANSMITTANCE_FLOOR = 0.02;
+
+/**
+ * The per-splat alpha exponent `k` that puts a stack of nominal optical depth `L` at screen
+ * coverage `c` (0..1).
+ *
+ * Scaling every splat's alpha by `c` saturates: a pixel under n near-opaque splats is covered
+ * `1 − (1 − c·α)^n`. Raising each splat's transmittance to a power instead, `α' = 1 − (1 − α)^k`,
+ * multiplies the stack's optical depth by k: coverage is `1 − e^{−kL}`. Solving for coverage =
+ * c·(1 − e^{−L}) gives this k. Exact ends: k(0) = 0 (α' = 0, invisible) and k(1) = 1 (untouched).
+ */
+export function coverageExponent(c, L = FADE_OPTICAL_DEPTH) {
+  if (!(c > 0)) return 0;
+  if (c >= 1) return 1;
+  return -Math.log(1 - c * (1 - Math.exp(-L))) / L;
+}

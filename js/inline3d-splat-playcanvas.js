@@ -84,6 +84,8 @@ import {
   streamedBytesError,
   resolveControls,
   normalizeCameraPose,
+  coverageExponent,
+  FADE_TRANSMITTANCE_FLOOR,
 } from './inline3d-splat-shared.js';
 
 /**
@@ -653,6 +655,10 @@ export class PlayCanvasSplatViewer {
     this.onCaptureFov = null;
     /** Per-frame hooks, `(tMs) => boolean` — return false to be removed. setSource's crossfade. */
     this._hooks = [];
+    /** captureFrame() callers waiting for the next drawn frame. */
+    this._captureWaiters = [];
+    /** The crossfade's frame snapshot: { w, h, tex, rt, mi, mat } once captured. */
+    this._snap = null;
     this.vH = virtualDisplayHeight;
     this.fit = fit;
     this.margin = margin;
@@ -968,6 +974,10 @@ export class PlayCanvasSplatViewer {
     if (this._ro) this._ro.disconnect();
     else if (typeof removeEventListener === 'function') removeEventListener('resize', this._onResize);
     this._unbindOrbit();
+    for (const w of this._captureWaiters.splice(0)) {
+      clearTimeout(w.timer);
+      w.resolve(false);
+    }
     try {
       this.app?.destroy();
     } catch (err) {
@@ -1177,8 +1187,152 @@ export class PlayCanvasSplatViewer {
     if (this.app.scene.gsplat.splatBudget !== per) this.app.scene.gsplat.splatBudget = per;
   }
 
+  /**
+   * Copy the frame just drawn (the whole buffer: both eyes in 3D) into a texture, on the next
+   * drawn frame. Resolves true once copied, false if no frame is drawn within `timeoutMs` (a
+   * hidden tab) or the engine cannot copy. setSource's crossfade (FRAME_SNAPSHOT).
+   */
+  captureFrame(timeoutMs = 250) {
+    return new Promise((resolve) => {
+      if (!this.app || this._disposed || !this.pc?.RenderTarget) return resolve(false);
+      const waiter = { resolve, timer: 0 };
+      waiter.timer = setTimeout(() => {
+        const i = this._captureWaiters.indexOf(waiter);
+        if (i >= 0) this._captureWaiters.splice(i, 1);
+        resolve(false);
+      }, timeoutMs);
+      this._captureWaiters.push(waiter);
+    });
+  }
+
+  _doCapture() {
+    const run = this._captureWaiters.splice(0);
+    let ok = false;
+    try {
+      const pc = this.pc;
+      const device = this.app.graphicsDevice;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      let s = this._snap;
+      if (!s || s.w !== w || s.h !== h) {
+        this._destroySnapshot();
+        const tex = new pc.Texture(device, {
+          name: 'inline3d-snapshot',
+          width: w,
+          height: h,
+          format: pc.PIXELFORMAT_RGBA8,
+          mipmaps: false,
+          minFilter: pc.FILTER_NEAREST,
+          magFilter: pc.FILTER_NEAREST,
+          addressU: pc.ADDRESS_CLAMP_TO_EDGE,
+          addressV: pc.ADDRESS_CLAMP_TO_EDGE,
+        });
+        s = this._snap = { w, h, tex, rt: new pc.RenderTarget({ colorBuffer: tex, depth: false }), parts: null };
+      }
+      // null source = the back buffer, still holding this frame (same task, before compositing).
+      ok = device.copyRenderTarget(null, s.rt, true, false) !== false;
+      if (ok) this._ensureSnapshotOverlay();
+    } catch (err) {
+      console.warn('[inline3d/splat] frame snapshot failed; the crossfade falls back to one pass', err);
+      ok = false;
+    }
+    for (const w of run) {
+      clearTimeout(w.timer);
+      w.resolve(ok);
+    }
+  }
+
+  /**
+   * FRAME_SNAPSHOT: the captured frame lerped with the live scene, in two clip-space quads in the
+   * UI layer (under the edge feather), drawn once per view like the feather. Each samples the
+   * capture at gl_FragCoord, so an eye's viewport reads its own half. Quad 1 scales what the scene
+   * drew by (1 − α) (blend ZERO / SRC_ALPHA, colour AND alpha); quad 2 adds α·A (ONE / ONE). The
+   * result is the plain lerp of the two premultiplied images, `α·A + (1 − α)·B` — alpha included,
+   * so a region only one of the two photos covers fades against the page, not against black.
+   */
+  _ensureSnapshotOverlay() {
+    const s = this._snap;
+    if (s.parts) {
+      for (const p of s.parts) {
+        p.mat.setParameter('dxrSnap', s.tex);
+        p.mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
+        p.mat.update();
+      }
+      return;
+    }
+    const pc = this.pc;
+    const mesh = new pc.Mesh(this.app.graphicsDevice);
+    mesh.setPositions(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]));
+    mesh.setIndices([0, 1, 2, 0, 2, 3]);
+    mesh.update();
+    const part = (name, body, src, dst, drawOrder) => {
+      const mat = new pc.ShaderMaterial({
+        uniqueName: name,
+        attributes: { vertex_position: pc.SEMANTIC_POSITION },
+        vertexGLSL: `
+        attribute vec3 vertex_position;
+        void main() { gl_Position = vec4(vertex_position.xy, 0.0, 1.0); }`,
+        fragmentGLSL: `
+        uniform sampler2D dxrSnap;
+        uniform vec2 dxrSnapInvSize;
+        uniform float dxrSnapAlpha;
+        void main() { ${body} }`,
+      });
+      mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, src, dst, pc.BLENDEQUATION_ADD, src, dst);
+      mat.depthTest = false;
+      mat.depthWrite = false;
+      mat.cull = pc.CULLFACE_NONE;
+      mat.setParameter('dxrSnap', s.tex);
+      mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
+      mat.setParameter('dxrSnapAlpha', 0);
+      mat.update();
+      const mi = new pc.MeshInstance(mesh, mat, new pc.GraphNode(name));
+      mi.cull = false;
+      mi.drawOrder = drawOrder; // both before the edge feather (drawOrder 0)
+      mi.visible = false;
+      return { mat, mi };
+    };
+    s.parts = [
+      part('inline3dSnapshotScale', 'gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - dxrSnapAlpha);', pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA, -2),
+      part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapAlpha;', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1),
+    ];
+    this.app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances(s.parts.map((p) => p.mi));
+  }
+
+  /**
+   * Lerp the snapshot over the scene at `alpha` (0 hides it). Returns false when the canvas buffer
+   * no longer matches the capture (resize, 2D/3D switch): the caller ends its fade.
+   */
+  setSnapshotAlpha(alpha) {
+    const s = this._snap;
+    if (!s?.parts) return false;
+    const fits = s.w === this.canvas.width && s.h === this.canvas.height;
+    const show = alpha > 0 && fits;
+    for (const p of s.parts) {
+      p.mi.visible = show;
+      if (show) {
+        p.mat.setParameter('dxrSnapAlpha', Math.min(1, alpha));
+        p.mat.update();
+      }
+    }
+    return alpha <= 0 || fits;
+  }
+
+  _destroySnapshot() {
+    const s = this._snap;
+    if (!s) return;
+    this._snap = null;
+    if (s.parts) {
+      this.app?.scene?.layers?.getLayerById(this.pc.LAYERID_UI)?.removeMeshInstances?.(s.parts.map((p) => p.mi));
+      s.parts[0].mi.mesh?.destroy?.();
+    }
+    s.rt?.destroy?.();
+    s.tex?.destroy?.();
+  }
+
   /** Read back what the tick just did. Cheap: two numbers off the renderer. */
   _afterTick() {
+    if (this._captureWaiters.length) this._doCapture();
     const n = this.app?.renderer?._gsplatCount ?? 0;
     this.resident = n;
     if (n > this.peakResident) this.peakResident = n;
@@ -1820,23 +1974,48 @@ export function describeResource(res) {
 // ── the handle ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * The per-splat crossfade for `setSource`: a work-buffer modifier multiplying each splat's alpha
- * by this ENTITY's `dxrFade` parameter.
+ * setSource's crossfade.
  *
- * Per entity, not per material: the engine's unified renderer composites every splat of a tile
- * through ONE material and ONE work buffer, so a material uniform cannot tell the outgoing asset
- * from the incoming one. `setWorkBufferModifier` + `setParameter` is the engine's supported
- * per-component hook for exactly this; during a fade the work buffer is re-rendered each frame
- * (WORKBUFFER_UPDATE_ALWAYS), and the modifier is removed when the fade ends.
+ * The 1.11 fade multiplied each splat's alpha by t and drew both assets in ONE sorted pass. That
+ * is not a crossfade: whichever photo sits in FRONT wins. Measured on SHARP photo pairs (the blend
+ * fraction c, least squares of the frame between A-alone and B-alone): the incoming photo in front
+ * reached c = 0.64 at t = 0.2 (a snap), behind it c = 0.18 at t = 0.5 (a late pop). No per-splat
+ * alpha remap fixes that, because a pixel's coverage depends on how many splats stack there and
+ * which asset is nearer — both vary across the picture and between photos (docs/splat-effects.md
+ * §Crossfade has the numbers).
+ *
+ * FRAME_SNAPSHOT: blend IMAGES instead. The last frame of the outgoing asset (both eyes) is copied
+ * into a texture, the outgoing asset is released at once, and the incoming one is drawn untouched;
+ * two overlay quads then lerp the frozen frame with it, `out = (1 − t)·A + t·B` per premultiplied
+ * pixel, alpha included (PlayCanvasSplatViewer._ensureSnapshotOverlay). Linear by construction,
+ * whatever the depth order, coverage or framing; each eye samples its own half of the capture, so
+ * the eyes stay consistent. End state: overlay hidden — exactly the untouched incoming asset.
+ * Trade-offs: the outgoing frame is frozen for the fade (camera and head motion stop for it), and
+ * the new asset's rig applies at once (each photo is seen through its own rig).
+ *
+ * Fallback (no frame drawn within 250 ms — a hidden tab — or no copy on this engine build): the
+ * one-pass fade, with the coverage-linear alpha remap on both assets.
+ */
+
+/**
+ * Per-entity work-buffer modifier: each splat's alpha becomes `1 − (1 − α)^k`, k = `dxrFade`
+ * (coverageExponent). Per entity, not per material: the unified renderer composites every splat of
+ * a tile through ONE material, so only `setWorkBufferModifier` + `setParameter` can tell the two
+ * assets apart. During a fade the work buffer re-renders each frame (WORKBUFFER_UPDATE_ALWAYS);
+ * the modifier is removed when the fade ends. The transmittance floor keeps a fully opaque splat
+ * (SOG alpha 255/255, common in photos) fadeable at all: pow(0, k) is 0 for every k.
  */
 const FADE_MODIFIER_GLSL = `
 uniform float dxrFade;
 void modifySplatCenter(inout vec3 center) {}
 void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {}
-void modifySplatColor(vec3 center, inout vec4 color) { color.a *= dxrFade; }
+void modifySplatColor(vec3 center, inout vec4 color) {
+  if (dxrFade >= 1.0) return;
+  color.a = dxrFade <= 0.0 ? 0.0 : 1.0 - pow(max(1.0 - color.a, ${FADE_TRANSMITTANCE_FLOOR.toFixed(4)}), dxrFade);
+}
 `;
 
-/** Set (or clear, with null) the crossfade alpha on one splat entity. */
+/** Set (or clear, with null) the crossfade alpha exponent on one splat entity. */
 function setFade(pc, entity, value) {
   const g = entity?.gsplat;
   if (!g) return;
@@ -2496,9 +2675,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return out;
     }
     const prev = current;
-    const entity = viewer.addSplatAsset(loaded.asset);
     const fade = Number.isFinite(fadeMs) && fadeMs > 0 ? fadeMs : 0;
-    if (fade && prev) setFade(pc, entity, 0);
+    pendingSwap?.finish();
+    // FRAME_SNAPSHOT: freeze the outgoing frame BEFORE anything of the new asset (or its rig) is
+    // drawn. The overlay goes up in the same task, so no frame shows neither photo.
+    const snapped = fade && prev ? await viewer.captureFrame() : false;
+    if (removed || gen !== sourceGen) {
+      app.assets.remove(loaded.asset);
+      loaded.asset.unload?.();
+      return out;
+    }
+    if (snapped) viewer.setSnapshotAlpha(1);
+    const entity = viewer.addSplatAsset(loaded.asset);
+    if (fade && prev && !snapped) setFade(pc, entity, 0);
     out.mesh = {
       numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
       entity,
@@ -2528,7 +2717,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       release();
       return out;
     }
-    pendingSwap?.finish();
+    if (snapped) release(); // the snapshot shows it from here on
+    else setFade(pc, prev.entity, 1);
     await new Promise((resolve) => {
       // The fade clock starts on the SECOND tick after the swap, not now: the first frame that
       // draws the new asset also builds its work buffer (hundreds of ms for a 1M-splat file), and
@@ -2537,21 +2727,31 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       let t0 = null;
       let ticks = 0;
       const finish = () => {
-        setFade(pc, entity, null);
-        release();
+        if (snapped) viewer.setSnapshotAlpha(0);
+        else {
+          setFade(pc, entity, null);
+          release();
+        }
         pendingSwap = null;
         resolve();
       };
       pendingSwap = { finish };
-      setFade(pc, prev.entity, 1);
       viewer._hooks.push((t) => {
         if (removed) return (resolve(), false);
         if (pendingSwap?.finish !== finish) return false; // superseded: already finished
         if (++ticks < 2) return true;
         if (t0 === null) t0 = t;
         const k = Math.min(1, Math.max(0, (t - t0) / fade));
-        setFade(pc, entity, k);
-        setFade(pc, prev.entity, 1 - k);
+        if (snapped) {
+          // A resize or a 2D/3D switch mid-fade: the capture no longer fits the buffer — end now.
+          if (!viewer.setSnapshotAlpha(1 - k)) {
+            finish();
+            return false;
+          }
+        } else {
+          setFade(pc, entity, coverageExponent(k));
+          setFade(pc, prev.entity, coverageExponent(1 - k));
+        }
         if (k >= 1) {
           finish();
           return false;

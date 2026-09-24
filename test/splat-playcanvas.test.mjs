@@ -39,6 +39,7 @@ import {
   describeResource,
   readCloud,
 } from '../js/inline3d-splat-playcanvas.js';
+import { coverageExponent } from '../js/inline3d-splat-shared.js';
 import {
   resolveSplatEngine,
   sampleCloudRestSpace,
@@ -839,7 +840,7 @@ const settle = async (cond) => {
   assert.ok(cond(), 'condition never became true');
 };
 
-test('setSource crossfades: new fades 0→1, old 1→0, old released after; rig re-runs; pose kept', async (t) => {
+test('setSource crossfade FALLBACK (no frame copy): coverage-linear exponents 0→1 / 1→0, old released after; rig re-runs; pose kept', async (t) => {
   installDom();
   let T = 1000;
   t.mock.method(performance, 'now', () => T);
@@ -859,7 +860,8 @@ test('setSource crossfades: new fades 0→1, old 1→0, old released after; rig 
   const e2 = out.mesh.entity;
   await settle(() => e1.gsplat.getParameter('dxrFade') === 1);
   assert.equal(e2.gsplat.getParameter('dxrFade'), 0, 'the new asset starts invisible');
-  assert.match(e2.gsplat.modifier.glsl, /color\.a \*= dxrFade/);
+  assert.match(e2.gsplat.modifier.glsl, /1\.0 - pow\(max\(1\.0 - color\.a, 0\.0200\), dxrFade\)/, 'alpha remapped, not scaled');
+  assert.match(e2.gsplat.modifier.glsl, /if \(dxrFade >= 1\.0\) return;/, 'k = 1 leaves alpha untouched');
   assert.equal(e2.gsplat.workBufferUpdate, 2, 'work buffer re-rendered every frame while fading');
   // The clock starts on the second tick (the first frame builds the new work buffer): a slow
   // first frame must not eat the fade.
@@ -870,8 +872,8 @@ test('setSource crossfades: new fades 0→1, old 1→0, old released after; rig 
   assert.equal(e2.gsplat.getParameter('dxrFade'), 0);
   T += 50;
   out.viewer._tick();
-  near(e2.gsplat.getParameter('dxrFade'), 0.5, 1e-9, 'half way in');
-  near(e1.gsplat.getParameter('dxrFade'), 0.5, 1e-9, 'half way out');
+  near(e2.gsplat.getParameter('dxrFade'), coverageExponent(0.5), 1e-9, 'half way in');
+  near(e1.gsplat.getParameter('dxrFade'), coverageExponent(0.5), 1e-9, 'half way out');
   T += 60;
   out.viewer._tick();
   await done;
@@ -905,6 +907,93 @@ test('setSource: fadeMs 0 swaps at once; resetPose:true resets; a Spark-only for
   assert.equal(out.viewer.getPose().yaw, 0);
   await assert.rejects(out.setSource('c.spz'), /reads \.sog, \.ply/);
   out.remove();
+});
+
+test('setSource crossfade = FRAME_SNAPSHOT: capture on the next drawn frame, old released at once, lerp 1→0, new asset untouched', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  pc.Texture = class { constructor(d, o) { this.o = o; } destroy() { this.destroyed = true; } };
+  pc.RenderTarget = class { constructor(o) { this.o = o; } destroy() {} };
+  Object.assign(pc, { PIXELFORMAT_RGBA8: 7, FILTER_NEAREST: 0, ADDRESS_CLAMP_TO_EDGE: 1, BLENDMODE_ONE: 'ONE', BLENDMODE_ONE_MINUS_SRC_ALPHA: 'OMSA' });
+  rec.queue = [fakeFlat(600, 0), fakeFlat(600, 5)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  const copies = [];
+  out.viewer.app.graphicsDevice.copyRenderTarget = (src, dst, color, depth) => (copies.push({ src, dst, color, depth }), true);
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { fadeMs: 100 });
+  await settle(() => out.viewer._captureWaiters.length === 1);
+  assert.equal(out.mesh.entity, e1, 'nothing of the new asset before the capture');
+  out.viewer._afterTick(); // a frame was drawn
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.equal(copies.length, 1);
+  assert.deepEqual([copies[0].src, copies[0].color, copies[0].depth], [null, true, false], 'back buffer → texture, colour only');
+  assert.equal(copies[0].dst.o.colorBuffer.o.width, out.viewer.canvas.width, 'capture = the whole buffer');
+  const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
+  assert.equal(parts.length, 2, 'scale + add quads');
+  assert.deepEqual(parts[0].material.blendState.args, [true, 'ADD', 'ZERO', 'SRC_ALPHA', 'ADD', 'ZERO', 'SRC_ALPHA'], 'dst *= 1 − α, colour and alpha');
+  assert.deepEqual(parts[1].material.blendState.args, [true, 'ADD', 'ONE', 'ONE', 'ADD', 'ONE', 'ONE'], 'dst += α·A');
+  assert.ok(parts.every((mi) => mi.drawOrder < 0), 'under the feather');
+  assert.ok(parts.every((mi) => mi.visible), 'overlay up in the same task as the swap');
+  assert.equal(parts[1].material.params.get('dxrSnapAlpha'), 1);
+  assert.equal(e1.enabled, false, 'the snapshot shows the old asset: released at once');
+  assert.equal(e2.gsplat.modifier, null, 'the new asset is drawn untouched (no work-buffer modifier)');
+  out.viewer._tick(); // build frame
+  T += 800;
+  out.viewer._tick(); // clock starts
+  assert.equal(parts[1].material.params.get('dxrSnapAlpha'), 1);
+  T += 25;
+  out.viewer._tick();
+  near(parts[1].material.params.get('dxrSnapAlpha'), 0.75, 1e-9, 'linear');
+  T += 100;
+  out.viewer._tick();
+  await done;
+  assert.ok(parts.every((mi) => !mi.visible), 'overlay hidden at the end');
+  assert.equal(e2.gsplat.getParameter('dxrFade'), undefined);
+  out.remove();
+});
+
+test('FRAME_SNAPSHOT: a buffer resize mid-fade ends the fade (the capture no longer fits)', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  pc.Texture = class { destroy() {} };
+  pc.RenderTarget = class { destroy() {} };
+  rec.queue = [fakeFlat(300, 0), fakeFlat(300, 5)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  out.viewer.app.graphicsDevice.copyRenderTarget = () => true;
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { fadeMs: 1000 });
+  await settle(() => out.viewer._captureWaiters.length === 1);
+  out.viewer._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  out.viewer._tick();
+  out.viewer._tick();
+  out.viewer.canvas.width = 999; // a resize / 2D↔3D switch
+  T += 10;
+  out.viewer._tick();
+  await done;
+  assert.ok(rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName)).every((mi) => !mi.visible));
+  out.remove();
+});
+
+test('coverageExponent: exact ends, monotonic, inverts coverage 1 − e^{−kL}', () => {
+  assert.equal(coverageExponent(0), 0);
+  assert.equal(coverageExponent(-1), 0);
+  assert.equal(coverageExponent(1), 1);
+  assert.equal(coverageExponent(2), 1);
+  let prev = 0;
+  for (let c = 0.05; c < 1; c += 0.05) {
+    const k = coverageExponent(c, 5);
+    assert.ok(k > prev && k < 1);
+    near((1 - Math.exp(-k * 5)) / (1 - Math.exp(-5)), c, 1e-12, 'coverage recovered');
+    prev = k;
+  }
 });
 
 // ── 14. feather ─────────────────────────────────────────────────────────────────────────────
