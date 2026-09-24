@@ -69,8 +69,14 @@ export function normalizePlayerOptions(opts = {}) {
     muted: opts.muted === undefined ? true : !!opts.muted,
     loop: !!opts.loop,
     keyboard: opts.keyboard === undefined ? true : !!opts.keyboard,
-    // Accepted, not implemented in v1 — see the module doc comment above setSource() below.
     fadeMs: typeof opts.fadeMs === 'number' && opts.fadeMs > 0 ? opts.fadeMs : 0,
+    // Chrome skin. `accent` is written to the transport's `--dxr-accent` custom property, so a
+    // page brands the player without forking its CSS; anything CSS accepts as a colour works.
+    accent: typeof opts.accent === 'string' && opts.accent ? opts.accent : null,
+    // A small "3D" pill in the control row. Opt-in, and the PAGE decides — the module will not
+    // infer it from `wall.supported`, because a supported wall whose tile is scrolled away, or
+    // whose panel sits in a 2D mode, is not showing 3D at that moment and the badge would lie.
+    badge3d: opts.badge3d === undefined ? false : opts.badge3d,
     crossOrigin: opts.crossOrigin,
     width: opts.width,
     height: opts.height,
@@ -159,22 +165,36 @@ function paintPosterSBS(canvas, img) {
 }
 
 /**
- * Paint the poster into a LIVE, woven SBS window until the video has a real frame to show, or
- * ~3 s pass. Bounded and self-terminating on purpose ("measure nothing, just wire it") — a
- * canvas that is still 0×0 when this gives up (an off-screen lazy tile that hasn't activated
- * yet) simply shows nothing until it does, exactly as an addVideo/addImage window with no
- * poster support already would.
+ * Paint the poster into a LIVE, woven SBS window until the video has a real frame to show.
+ *
+ * Runs until the FIRST FRAME, not until a timer expires. The earlier version gave up after
+ * ~3 s of rAF, which is the wrong shape twice over: `preload:'metadata'` + no autoplay is the
+ * default here, so a title that is never played never reaches `readyState >= 2` at all and the
+ * tile went black the moment the timer ran out; and a lazy tile that is still 0×0 at 3 s (it
+ * hasn't scrolled into view yet) had nothing painted into it by the time it activated.
+ *
+ * It is a 4 Hz `setTimeout`, not rAF, and that is deliberate: the SDK's own paint re-commits
+ * whatever the canvas already holds while a video is below `readyState 2`
+ * (`_recommitLastFrame`), so the poster only has to be (re)committed when the buffer is
+ * resized or replaced — 60 Hz would buy nothing and cost a full-resolution SBS draw per frame
+ * on a tile that is, by definition, showing a still.
  */
 function startPosterPoll(canvas, getPoster, isVideoReady) {
-  let frames = 0;
-  const MAX_FRAMES = 180;
+  let timer = 0;
+  let stopped = false;
   function tick() {
-    if (isVideoReady() || frames++ > MAX_FRAMES) return;
+    if (stopped || isVideoReady()) return;
     const img = getPoster();
     if (img) paintPosterSBS(canvas, img);
-    requestAnimationFrame(tick);
+    timer = setTimeout(tick, 250);
   }
-  requestAnimationFrame(tick);
+  tick();
+  return {
+    stop() {
+      stopped = true;
+      clearTimeout(timer);
+    },
+  };
 }
 
 /**
@@ -260,32 +280,159 @@ function attachFlatPaint(canvas, video, { mode, getPoster }) {
 }
 
 // ── SDK-drawn transport chrome ──────────────────────────────────────────────────────────────
+//
+// THREE HARD CONSTRAINTS shape everything below; they are the overlay contract from
+// docs/authoring-inline-3d.md § "2D overlays ON a 3D window", not taste:
+//
+//  1. EVERY overlay is a PARTIAL region of the tile, never the whole thing. A legacy
+//     (pre-draw-order-occlusion) browser excludes an overlay by geometrically matching its rect
+//     to a composited quad at >=70% area overlap — a full-tile plate matches the CANVAS's own
+//     quad, so the canvas leaves the weave input and the tile presents its raw side-by-side
+//     pair: two squished halves, no 3D. That is why the "scrim" here is a bottom band with a
+//     capped height, and NOT the full-height gradient a 2D player would reach for. Same reason
+//     the centre badge is a small circle rather than a full-tile click-catcher.
+//  2. NO `backdrop-filter`, anywhere. Exclusion needs the element as an isolated composited
+//     resource; `backdrop-filter` is defined as a function of what is behind it, so there is
+//     nothing to hand the compositor and the element either weaves anyway or drops out. The
+//     near-solid background below is the documented substitute for frosted glass.
+//  3. Promotion is `will-change: transform`, never a CSS `filter` — a filter's render surface is
+//     flattened away in the weave path.
+//
+// Everything visual is driven off CSS custom properties (`--dxr-accent`, `--dxr-p`, `--dxr-b`)
+// so the per-frame work is two property writes, not a rebuilt gradient string, and so a page can
+// re-skin the transport without forking it.
 
 let styleInjected = false;
 const PLAYER_STYLE_ID = 'dxr-player-style';
 const PLAYER_CSS = `
-.dxr-player-bar{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;
-  gap:8px;padding:6px 10px;background:rgba(12,13,16,.72);color:#fff;
-  font:12px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;box-sizing:border-box;
-  opacity:1;transition:opacity .15s ease;}
-.dxr-player-bar--hidden{opacity:0;pointer-events:none;}
-@media (prefers-reduced-motion: reduce){.dxr-player-bar{transition:none;}}
+/* The tokens live on the HOST, not on the bar: the centre badge, the key pip and the spinner are
+   SIBLINGS of the bar (each has to be its own partial overlay — constraint 1), so tokens declared
+   on the bar would not reach them and they would render with an invalid background/accent. */
+.dxr-player-host{--dxr-accent:#4da3ff;--dxr-ink:#fff;--dxr-shell:rgba(10,11,15,.92);}
+.dxr-player{position:absolute;left:0;right:0;bottom:0;z-index:2;box-sizing:border-box;
+  padding:34px 12px 10px 12px;color:var(--dxr-ink);
+  font:13px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  /* A BOUNDED bottom band — see constraint 1. The gradient fades out well before the top of the
+     tile, so the excluded rect stays a partial region at any tile height.
+     The ramp is front-loaded on purpose: the scrub row sits at the TOP of this band, and a
+     gentle linear fade leaves it sitting on near-transparent pixels — over bright or captioned
+     content (this sample's clip has burned-in credits exactly there) the track and the knob
+     stop being readable. Most of the darkening is therefore spent in the first 60%, and only
+     the last third is allowed to go sheer. */
+  background:linear-gradient(to top,rgba(8,9,12,.96) 0%,rgba(8,9,12,.92) 30%,
+    rgba(8,9,12,.80) 52%,rgba(8,9,12,.55) 70%,rgba(8,9,12,.22) 87%,rgba(8,9,12,0) 100%);
+  max-height:42%;
+  text-shadow:0 1px 2px rgba(0,0,0,.55);
+  opacity:1;transform:translateY(0);transition:opacity .22s ease,transform .22s ease;
+  will-change:transform;}
+.dxr-player--hidden{opacity:0;transform:translateY(8px);pointer-events:none;}
+.dxr-player *{box-sizing:border-box;}
+
+/* ── scrub row ── */
+.dxr-player-scrubwrap{--dxr-p:0%;--dxr-b:0%;position:relative;height:16px;margin:0 2px 2px;
+  display:flex;align-items:center;cursor:pointer;touch-action:none;}
+.dxr-player-scrubwrap::before{content:"";position:absolute;left:0;right:0;height:4px;
+  border-radius:99px;background:
+    linear-gradient(to right,rgba(255,255,255,.34) 0 var(--dxr-b),transparent var(--dxr-b)),
+    rgba(255,255,255,.18);
+  transition:height .14s ease;}
+.dxr-player-scrubwrap::after{content:"";position:absolute;left:0;height:4px;width:var(--dxr-p);
+  border-radius:99px;background:var(--dxr-accent);transition:height .14s ease;}
+.dxr-player-scrubwrap:hover::before,.dxr-player-scrubwrap--active::before,
+.dxr-player-scrubwrap:focus-within::before{height:6px;}
+.dxr-player-scrubwrap:hover::after,.dxr-player-scrubwrap--active::after,
+.dxr-player-scrubwrap:focus-within::after{height:6px;}
+/* The real <input type=range> stays in the DOM, transparent, on top: native keyboard handling,
+   native AT semantics, native drag — we only take over how it LOOKS. */
+.dxr-player-scrub{position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;
+  opacity:0;cursor:pointer;appearance:none;-webkit-appearance:none;background:transparent;}
+.dxr-player-scrub::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;
+  height:16px;border-radius:50%;background:#000;}
+.dxr-player-scrub::-moz-range-thumb{width:16px;height:16px;border:0;border-radius:50%;
+  background:#000;}
+.dxr-player-knob{position:absolute;left:var(--dxr-p);top:50%;width:13px;height:13px;
+  margin-left:-6.5px;margin-top:-6.5px;border-radius:50%;background:var(--dxr-accent);
+  box-shadow:0 1px 4px rgba(0,0,0,.55);pointer-events:none;
+  transform:scale(0);transition:transform .14s ease;}
+.dxr-player-scrubwrap:hover .dxr-player-knob,.dxr-player-scrubwrap--active .dxr-player-knob,
+.dxr-player-scrub:focus-visible~.dxr-player-knob{transform:scale(1);}
+.dxr-player-scrub:focus-visible~.dxr-player-knob{box-shadow:0 0 0 3px rgba(77,163,255,.45),
+  0 1px 4px rgba(0,0,0,.55);}
+.dxr-player-tip{position:absolute;bottom:20px;left:var(--dxr-tip,0%);transform:translateX(-50%);
+  padding:3px 7px;border-radius:5px;background:var(--dxr-shell);font-variant-numeric:tabular-nums;
+  font-size:12px;line-height:1;white-space:nowrap;pointer-events:none;opacity:0;
+  transition:opacity .12s ease;}
+.dxr-player-scrubwrap:hover .dxr-player-tip,
+.dxr-player-scrubwrap--active .dxr-player-tip{opacity:1;}
+
+/* ── control row ── */
+.dxr-player-row{display:flex;align-items:center;gap:4px;min-height:32px;}
 .dxr-player-btn{appearance:none;-webkit-appearance:none;border:0;background:transparent;
-  color:inherit;width:26px;height:26px;padding:4px;border-radius:5px;cursor:pointer;
-  display:inline-flex;align-items:center;justify-content:center;flex:none;}
-.dxr-player-btn svg{width:100%;height:100%;fill:currentColor;}
-.dxr-player-btn:hover{background:rgba(255,255,255,.14);}
-.dxr-player-btn:focus-visible{outline:2px solid #5aa8ff;outline-offset:2px;}
-.dxr-player-time,.dxr-player-dur{font-variant-numeric:tabular-nums;min-width:3.4em;
-  text-align:center;opacity:.85;}
-.dxr-player-seek{flex:1 1 auto;appearance:none;-webkit-appearance:none;height:4px;
-  border-radius:2px;background:rgba(255,255,255,.25);margin:0;}
-.dxr-player-seek:focus-visible{outline:2px solid #5aa8ff;outline-offset:4px;}
-.dxr-player-seek::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;
-  height:12px;border-radius:50%;background:#5aa8ff;cursor:pointer;margin-top:-4px;}
-.dxr-player-seek::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#5aa8ff;
-  border:0;cursor:pointer;}
-.dxr-player-seek::-moz-range-progress{background:#5aa8ff;height:4px;border-radius:2px;}
+  color:inherit;width:32px;height:32px;padding:6px;border-radius:7px;cursor:pointer;flex:none;
+  display:inline-flex;align-items:center;justify-content:center;
+  transition:background-color .14s ease,transform .14s ease;}
+.dxr-player-btn svg{width:100%;height:100%;fill:currentColor;display:block;}
+.dxr-player-btn:hover{background:rgba(255,255,255,.16);}
+.dxr-player-btn:active{transform:scale(.92);}
+.dxr-player-btn:focus-visible{outline:2px solid var(--dxr-accent);outline-offset:2px;}
+.dxr-player-vol{display:flex;align-items:center;flex:none;}
+.dxr-player-volslider{width:0;opacity:0;margin:0;height:4px;border-radius:99px;flex:none;
+  appearance:none;-webkit-appearance:none;cursor:pointer;
+  background:linear-gradient(to right,var(--dxr-accent) 0 var(--dxr-v,100%),
+    rgba(255,255,255,.22) var(--dxr-v,100%));
+  transition:width .18s ease,opacity .18s ease,margin .18s ease;}
+.dxr-player-vol:hover .dxr-player-volslider,.dxr-player-vol:focus-within .dxr-player-volslider,
+.dxr-player-volslider:focus-visible{width:62px;opacity:1;margin:0 8px 0 2px;}
+.dxr-player-volslider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:11px;
+  height:11px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.5);}
+.dxr-player-volslider::-moz-range-thumb{width:11px;height:11px;border:0;border-radius:50%;
+  background:#fff;}
+.dxr-player-volslider:focus-visible{outline:2px solid var(--dxr-accent);outline-offset:3px;}
+.dxr-player-clock{margin-left:6px;font-variant-numeric:tabular-nums;letter-spacing:.2px;
+  white-space:nowrap;}
+.dxr-player-clock b{font-weight:600;}
+.dxr-player-clock span{opacity:.62;}
+.dxr-player-spacer{flex:1 1 auto;}
+.dxr-player-badge3d{font-size:10px;font-weight:700;letter-spacing:.9px;padding:3px 7px;
+  border-radius:5px;border:1px solid rgba(255,255,255,.28);opacity:.82;flex:none;}
+
+/* ── centre affordances (small, partial — constraint 1) ── */
+.dxr-player-centre{position:absolute;left:50%;top:50%;width:66px;height:66px;margin:-33px 0 0 -33px;
+  z-index:2;border:0;border-radius:50%;padding:19px;cursor:pointer;color:#fff;
+  background:var(--dxr-shell);box-shadow:0 4px 18px rgba(0,0,0,.45);
+  display:inline-flex;align-items:center;justify-content:center;
+  transition:opacity .2s ease,transform .2s ease;will-change:transform;}
+.dxr-player-centre svg{width:100%;height:100%;fill:currentColor;display:block;}
+.dxr-player-centre:hover{transform:scale(1.07);}
+.dxr-player-centre:focus-visible{outline:2px solid var(--dxr-accent);outline-offset:3px;}
+.dxr-player-centre--hidden{opacity:0;transform:scale(.8);pointer-events:none;}
+.dxr-player-pip{position:absolute;left:50%;top:50%;width:60px;height:60px;margin:-30px 0 0 -30px;
+  z-index:2;border-radius:50%;padding:16px;color:#fff;background:rgba(10,11,15,.7);
+  display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:0;}
+.dxr-player-pip svg{width:100%;height:100%;fill:currentColor;display:block;}
+.dxr-player-pip--on{animation:dxr-pip .5s ease forwards;}
+@keyframes dxr-pip{0%{opacity:0;transform:scale(.72)}22%{opacity:1;transform:scale(1)}
+  100%{opacity:0;transform:scale(1.25)}}
+.dxr-player-spin{position:absolute;left:50%;top:50%;width:40px;height:40px;margin:-20px 0 0 -20px;
+  z-index:2;border-radius:50%;border:3px solid rgba(255,255,255,.22);
+  border-top-color:var(--dxr-accent);pointer-events:none;opacity:0;
+  transition:opacity .18s ease;}
+.dxr-player-spin--on{opacity:1;animation:dxr-spin .9s linear infinite;}
+@keyframes dxr-spin{to{transform:rotate(360deg)}}
+
+.dxr-player-host--idle{cursor:none;}
+@media (prefers-reduced-motion:reduce){
+  .dxr-player,.dxr-player-btn,.dxr-player-centre,.dxr-player-knob,.dxr-player-tip,
+  .dxr-player-volslider,.dxr-player-scrubwrap::before,.dxr-player-scrubwrap::after,
+  .dxr-player-spin{transition:none!important;}
+  .dxr-player-pip--on{animation-duration:.01ms;}
+  .dxr-player-spin--on{animation:none;}
+}
+@media (max-width:420px){
+  .dxr-player{padding:20px 8px 8px;}
+  .dxr-player-clock{font-size:12px;}
+  .dxr-player-vol:hover .dxr-player-volslider{width:44px;}
+}
 `;
 
 function ensureStyle() {
@@ -298,27 +445,124 @@ function ensureStyle() {
   document.head.appendChild(style);
 }
 
-const PLAY_ICON =
-  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2.2v11.6a.6.6 0 0 0 .93.5l9.2-5.8a.6.6 0 0 0 0-1L4.93 1.7a.6.6 0 0 0-.93.5Z"/></svg>';
-const PAUSE_ICON =
-  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="2" width="3.4" height="12" rx=".6"/><rect x="9.6" y="2" width="3.4" height="12" rx=".6"/></svg>';
-const MUTE_ICON =
-  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 6h2.8L8 3v10L3.8 10H1z"/><path d="M10.2 5.2 13.8 8.8M13.8 5.2l-3.6 3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>';
-const UNMUTE_ICON =
-  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 6h2.8L8 3v10L3.8 10H1z"/><path d="M10.4 5.4a3.6 3.6 0 0 1 0 5.2M12.2 3.6a6.2 6.2 0 0 1 0 8.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>';
+const svg = (body) =>
+  `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${body}</svg>`;
+
+const PLAY_ICON = svg(
+  '<path d="M8 5.2v13.6a1 1 0 0 0 1.53.85l10.2-6.8a1 1 0 0 0 0-1.7L9.53 4.35A1 1 0 0 0 8 5.2Z"/>'
+);
+const PAUSE_ICON = svg(
+  '<rect x="6" y="4.2" width="4.2" height="15.6" rx="1.6"/>' +
+    '<rect x="13.8" y="4.2" width="4.2" height="15.6" rx="1.6"/>'
+);
+const REPLAY_ICON = svg(
+  '<path d="M12 5V2.6a.5.5 0 0 0-.82-.38L7.3 5.35a.5.5 0 0 0 0 .77l3.88 3.13A.5.5 0 0 0 12 8.87V7a5 5 0 1 1-5 5 1 1 0 1 0-2 0 7 7 0 1 0 7-7Z"/>'
+);
+// Three volume states, so the button reports level as well as mute — a speaker with no waves at
+// volume 0 is a different thing from a muted speaker, and a player that conflates them makes
+// "why is there no sound" unanswerable from the chrome.
+const VOL_HIGH_ICON = svg(
+  '<path d="M4 9.2h3.3L12 5.1a.6.6 0 0 1 1 .46v12.88a.6.6 0 0 1-1 .46L7.3 14.8H4a.8.8 0 0 1-.8-.8v-4a.8.8 0 0 1 .8-.8Z"/>' +
+    '<path d="M15.8 9a4 4 0 0 1 0 6M18.3 6.4a7.4 7.4 0 0 1 0 11.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/>'
+);
+const VOL_LOW_ICON = svg(
+  '<path d="M4 9.2h3.3L12 5.1a.6.6 0 0 1 1 .46v12.88a.6.6 0 0 1-1 .46L7.3 14.8H4a.8.8 0 0 1-.8-.8v-4a.8.8 0 0 1 .8-.8Z"/>' +
+    '<path d="M15.8 9a4 4 0 0 1 0 6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/>'
+);
+const MUTE_ICON = svg(
+  '<path d="M4 9.2h3.3L12 5.1a.6.6 0 0 1 1 .46v12.88a.6.6 0 0 1-1 .46L7.3 14.8H4a.8.8 0 0 1-.8-.8v-4a.8.8 0 0 1 .8-.8Z"/>' +
+    '<path d="m16.2 9.4 4.4 4.4M20.6 9.4l-4.4 4.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>'
+);
+const FWD_ICON = svg(
+  '<path d="M12 5V2.6a.5.5 0 0 1 .82-.38l3.88 3.13a.5.5 0 0 1 0 .77l-3.88 3.13A.5.5 0 0 1 12 8.87V7a5 5 0 1 0 5 5 1 1 0 1 1 2 0 7 7 0 1 1-7-7Z"/>'
+);
+const BACK_ICON = REPLAY_ICON;
+
+function volumeIcon(video) {
+  if (video.muted || video.volume === 0) return MUTE_ICON;
+  return video.volume < 0.5 ? VOL_LOW_ICON : VOL_HIGH_ICON;
+}
+
+const pct = (n) => `${Math.max(0, Math.min(100, n * 100)).toFixed(3)}%`;
 
 /**
- * Build the SDK-drawn transport as a PARTIAL bottom bar, `data-inline3d-overlay`, inside
- * `canvas.parentElement`. Never full-tile — see the "one contract" for overlays in
- * docs/authoring-inline-3d.md; a full-bleed transport would be refused on legacy browsers.
+ * How much of the source is buffered AHEAD OF the playhead, as a 0..1 fraction of duration.
+ * Pure, and exported for the unit tests: it takes the two numbers a `TimeRanges` yields rather
+ * than the object, so it can be checked without a `<video>`.
+ *
+ * Reported as "the end of the range CONTAINING the playhead", not "the end of the last range" —
+ * after a seek into an unbuffered region the last range is behind you, and painting it as
+ * buffered-ahead is the lie that makes a scrub bar look full while the player stalls.
+ *
+ * @param {Array<[number, number]>} ranges  [start, end] pairs, in seconds
+ * @param {number} currentTime
+ * @param {number} duration
  */
-function buildTransportBar(container, canvas, video, { keyboard }) {
+export function bufferedFraction(ranges, currentTime, duration) {
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  for (const [start, end] of ranges || []) {
+    if (currentTime >= start - 0.25 && currentTime <= end) {
+      return Math.max(0, Math.min(1, end / duration));
+    }
+  }
+  return 0;
+}
+
+function readBuffered(video) {
+  const out = [];
+  const b = video.buffered;
+  if (!b) return out;
+  for (let i = 0; i < b.length; i++) {
+    try {
+      out.push([b.start(i), b.end(i)]);
+    } catch {
+      /* an index that went away between length and start(): ignore this range */
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the SDK-drawn transport: a bottom band, a centre play badge, a keyboard-action pip and a
+ * buffering spinner — each its own `data-inline3d-overlay`, each a PARTIAL region of the tile
+ * (constraint 1 at the top of this section). Returns the bar element and a cleanup.
+ */
+function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d }) {
   ensureStyle();
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+  container.classList.add('dxr-player-host');
+  // One write, on the host: every overlay below inherits it.
+  if (accent) container.style.setProperty('--dxr-accent', accent);
 
   const bar = document.createElement('div');
-  bar.className = 'dxr-player-bar';
+  bar.className = 'dxr-player';
   bar.setAttribute('data-inline3d-overlay', '');
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'Video player controls');
+
+  // ── scrub ──
+  const scrubWrap = document.createElement('div');
+  scrubWrap.className = 'dxr-player-scrubwrap';
+
+  const seek = document.createElement('input');
+  seek.type = 'range';
+  seek.className = 'dxr-player-scrub';
+  seek.min = '0';
+  seek.max = '0';
+  seek.step = '0.05';
+  seek.value = '0';
+  seek.setAttribute('aria-label', 'Seek');
+
+  const knob = document.createElement('div');
+  knob.className = 'dxr-player-knob';
+  const tip = document.createElement('div');
+  tip.className = 'dxr-player-tip';
+  tip.textContent = '0:00';
+  scrubWrap.append(seek, knob, tip);
+
+  // ── controls ──
+  const row = document.createElement('div');
+  row.className = 'dxr-player-row';
 
   const playBtn = document.createElement('button');
   playBtn.type = 'button';
@@ -326,105 +570,220 @@ function buildTransportBar(container, canvas, video, { keyboard }) {
   playBtn.setAttribute('aria-label', 'Play');
   playBtn.innerHTML = PLAY_ICON;
 
-  const time = document.createElement('span');
-  time.className = 'dxr-player-time';
-  time.setAttribute('aria-hidden', 'true');
-  time.textContent = '0:00';
-
-  const seek = document.createElement('input');
-  seek.type = 'range';
-  seek.className = 'dxr-player-seek';
-  seek.min = '0';
-  seek.max = '0';
-  seek.step = '0.1';
-  seek.value = '0';
-  seek.setAttribute('aria-label', 'Seek');
-
-  const dur = document.createElement('span');
-  dur.className = 'dxr-player-dur';
-  dur.setAttribute('aria-hidden', 'true');
-  dur.textContent = '0:00';
-
+  const volGroup = document.createElement('div');
+  volGroup.className = 'dxr-player-vol';
   const muteBtn = document.createElement('button');
   muteBtn.type = 'button';
   muteBtn.className = 'dxr-player-btn dxr-player-mute';
+  muteBtn.innerHTML = volumeIcon(video);
   muteBtn.setAttribute('aria-label', video.muted ? 'Unmute' : 'Mute');
-  muteBtn.innerHTML = video.muted ? MUTE_ICON : UNMUTE_ICON;
+  const vol = document.createElement('input');
+  vol.type = 'range';
+  vol.className = 'dxr-player-volslider';
+  vol.min = '0';
+  vol.max = '1';
+  vol.step = '0.01';
+  vol.value = String(video.muted ? 0 : video.volume);
+  vol.setAttribute('aria-label', 'Volume');
+  volGroup.append(muteBtn, vol);
 
-  bar.append(playBtn, time, seek, dur, muteBtn);
-  if (canvas.nextSibling) container.insertBefore(bar, canvas.nextSibling);
-  else container.appendChild(bar);
+  const clock = document.createElement('div');
+  clock.className = 'dxr-player-clock';
+  clock.setAttribute('aria-hidden', 'true');
+  clock.innerHTML = '<b>0:00</b><span> / 0:00</span>';
 
-  // Focusable so keyboard control works without first clicking a button (see onKeydown below).
+  const spacer = document.createElement('div');
+  spacer.className = 'dxr-player-spacer';
+
+  row.append(playBtn, volGroup, clock, spacer);
+  if (badge3d) {
+    const badge = document.createElement('span');
+    badge.className = 'dxr-player-badge3d';
+    badge.textContent = badge3d === true ? '3D' : String(badge3d);
+    badge.setAttribute('aria-label', 'Glasses-free 3D');
+    row.append(badge);
+  }
+
+  bar.append(scrubWrap, row);
+
+  // ── centre affordances ──
+  const centre = document.createElement('button');
+  centre.type = 'button';
+  centre.className = 'dxr-player-centre';
+  centre.setAttribute('data-inline3d-overlay', '');
+  centre.setAttribute('aria-label', 'Play');
+  centre.innerHTML = PLAY_ICON;
+
+  const pip = document.createElement('div');
+  pip.className = 'dxr-player-pip';
+  pip.setAttribute('data-inline3d-overlay', '');
+  pip.setAttribute('aria-hidden', 'true');
+
+  const spinner = document.createElement('div');
+  spinner.className = 'dxr-player-spin';
+  spinner.setAttribute('data-inline3d-overlay', '');
+  spinner.setAttribute('aria-hidden', 'true');
+
+  const anchor = canvas.nextSibling;
+  for (const el of [bar, centre, pip, spinner]) {
+    if (anchor) container.insertBefore(el, anchor);
+    else container.appendChild(el);
+  }
+
+  // Focusable so keyboard control works without first clicking a button.
   if (!canvas.hasAttribute('tabindex')) canvas.tabIndex = 0;
 
   let scrubbing = false;
+  let pipTimer = 0;
+
+  function flashPip(icon) {
+    pip.innerHTML = icon;
+    pip.classList.remove('dxr-player-pip--on');
+    void pip.offsetWidth; // restart the animation
+    pip.classList.add('dxr-player-pip--on');
+    clearTimeout(pipTimer);
+    pipTimer = setTimeout(() => pip.classList.remove('dxr-player-pip--on'), 520);
+  }
 
   function syncPlayIcon() {
     const playing = !video.paused && !video.ended;
-    playBtn.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
-    playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    playBtn.innerHTML = playing ? PAUSE_ICON : video.ended ? REPLAY_ICON : PLAY_ICON;
+    playBtn.setAttribute('aria-label', playing ? 'Pause' : video.ended ? 'Replay' : 'Play');
+    centre.innerHTML = video.ended ? REPLAY_ICON : PLAY_ICON;
+    centre.setAttribute('aria-label', video.ended ? 'Replay' : 'Play');
+    centre.classList.toggle('dxr-player-centre--hidden', playing);
   }
-  function syncMuteIcon() {
-    muteBtn.innerHTML = video.muted ? MUTE_ICON : UNMUTE_ICON;
+  function syncVolume() {
+    muteBtn.innerHTML = volumeIcon(video);
     muteBtn.setAttribute('aria-label', video.muted ? 'Unmute' : 'Mute');
+    const level = video.muted ? 0 : video.volume;
+    vol.value = String(level);
+    vol.style.setProperty('--dxr-v', pct(level));
   }
   function syncDuration() {
-    if (Number.isFinite(video.duration)) {
+    if (Number.isFinite(video.duration) && video.duration > 0) {
       seek.max = String(video.duration);
-      dur.textContent = formatTime(video.duration);
+      clock.querySelector('span').textContent = ` / ${formatTime(video.duration)}`;
     }
   }
   function syncTime() {
-    if (!scrubbing) seek.value = String(video.currentTime || 0);
-    time.textContent = formatTime(video.currentTime);
-    seek.setAttribute('aria-valuetext', formatTime(video.currentTime));
+    const d = video.duration;
+    const t = video.currentTime || 0;
+    if (!scrubbing) {
+      seek.value = String(t);
+      if (Number.isFinite(d) && d > 0) scrubWrap.style.setProperty('--dxr-p', pct(t / d));
+    }
+    scrubWrap.style.setProperty('--dxr-b', pct(bufferedFraction(readBuffered(video), t, d)));
+    clock.querySelector('b').textContent = formatTime(t);
+    seek.setAttribute('aria-valuetext', `${formatTime(t)} of ${formatTime(d)}`);
   }
-
-  playBtn.addEventListener('click', () => {
+  function togglePlay() {
     if (video.paused || video.ended) video.play().catch(() => {});
     else video.pause();
-  });
+  }
+
+  playBtn.addEventListener('click', togglePlay);
+  centre.addEventListener('click', togglePlay);
   muteBtn.addEventListener('click', () => {
     video.muted = !video.muted;
-    syncMuteIcon();
+    if (!video.muted && video.volume === 0) video.volume = 0.5;
+  });
+  vol.addEventListener('input', () => {
+    const v = Number(vol.value);
+    video.volume = v;
+    video.muted = v === 0;
+  });
+
+  function ratioFromEvent(e) {
+    const rect = scrubWrap.getBoundingClientRect();
+    if (!rect.width) return 0;
+    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  }
+  scrubWrap.addEventListener('pointermove', (e) => {
+    const r = ratioFromEvent(e);
+    scrubWrap.style.setProperty('--dxr-tip', pct(r));
+    if (Number.isFinite(video.duration)) tip.textContent = formatTime(r * video.duration);
   });
   seek.addEventListener('pointerdown', () => {
     scrubbing = true;
+    scrubWrap.classList.add('dxr-player-scrubwrap--active');
   });
   seek.addEventListener('input', () => {
-    video.currentTime = Number(seek.value) || 0;
+    const t = Number(seek.value) || 0;
+    video.currentTime = t;
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      scrubWrap.style.setProperty('--dxr-p', pct(t / video.duration));
+    }
   });
-  seek.addEventListener('change', () => {
+  function endScrub() {
     scrubbing = false;
-  });
-  seek.addEventListener('blur', () => {
-    scrubbing = false;
-  });
+    scrubWrap.classList.remove('dxr-player-scrubwrap--active');
+  }
+  seek.addEventListener('change', endScrub);
+  seek.addEventListener('pointerup', endScrub);
+  seek.addEventListener('pointercancel', endScrub);
+  seek.addEventListener('blur', endScrub);
+
+  // The spinner means "playback is stalled waiting for data", which a PAUSED player never is.
+  // Gating on that is not cosmetic: `waiting` fires when you seek into an unbuffered region, and
+  // if the video is paused there is then no `playing` to follow — only `seeked` — so a spinner
+  // cleared solely by `playing`/`canplay` latches on forever behind the centre badge.
+  const onWaiting = () => {
+    if (!video.paused) spinner.classList.add('dxr-player-spin--on');
+  };
+  const onPlayingOrStall = () => spinner.classList.remove('dxr-player-spin--on');
 
   video.addEventListener('play', syncPlayIcon);
   video.addEventListener('pause', syncPlayIcon);
   video.addEventListener('ended', syncPlayIcon);
-  video.addEventListener('volumechange', syncMuteIcon);
+  video.addEventListener('volumechange', syncVolume);
   video.addEventListener('loadedmetadata', syncDuration);
   video.addEventListener('durationchange', syncDuration);
   video.addEventListener('timeupdate', syncTime);
+  video.addEventListener('progress', syncTime);
+  video.addEventListener('seeking', syncTime);
+  video.addEventListener('waiting', onWaiting);
+  video.addEventListener('playing', onPlayingOrStall);
+  video.addEventListener('canplay', onPlayingOrStall);
+  video.addEventListener('seeked', onPlayingOrStall);
+  video.addEventListener('pause', onPlayingOrStall);
+  video.addEventListener('ended', onPlayingOrStall);
+  video.addEventListener('error', onPlayingOrStall);
 
-  // Hidden after 3 s of no pointer movement while playing; shown on hover/keypress/pause.
+  // Auto-hide: 3 s idle while playing. Never while paused, scrubbing, or the pointer is over the
+  // chrome itself — a bar that vanishes under the cursor you are aiming with is the classic
+  // version of this bug.
   let hideTimer = 0;
+  let pointerInChrome = false;
   function show() {
-    bar.classList.remove('dxr-player-bar--hidden');
+    bar.classList.remove('dxr-player--hidden');
+    container.classList.remove('dxr-player-host--idle');
     clearTimeout(hideTimer);
     if (!video.paused && !video.ended) arm();
   }
   function arm() {
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => bar.classList.add('dxr-player-bar--hidden'), 3000);
+    hideTimer = setTimeout(() => {
+      if (scrubbing || pointerInChrome || video.paused || video.ended) return;
+      bar.classList.add('dxr-player--hidden');
+      container.classList.add('dxr-player-host--idle');
+    }, 3000);
   }
+  const onChromeEnter = () => {
+    pointerInChrome = true;
+    show();
+  };
+  const onChromeLeave = () => {
+    pointerInChrome = false;
+    arm();
+  };
+  bar.addEventListener('pointerenter', onChromeEnter);
+  bar.addEventListener('pointerleave', onChromeLeave);
   container.addEventListener('pointermove', show);
   container.addEventListener('pointerenter', show);
   container.addEventListener('focusin', show);
   video.addEventListener('pause', show);
+  video.addEventListener('ended', show);
   video.addEventListener('play', arm);
 
   function onKeydown(e) {
@@ -435,43 +794,61 @@ function buildTransportBar(container, canvas, video, { keyboard }) {
     show();
     switch (action) {
       case 'toggle':
-        if (video.paused || video.ended) video.play().catch(() => {});
-        else video.pause();
+        togglePlay();
+        flashPip(video.paused ? PAUSE_ICON : PLAY_ICON);
         break;
       case 'seek-5':
         video.currentTime = Math.max(0, video.currentTime - 5);
+        flashPip(BACK_ICON);
         break;
       case 'seek+5':
         video.currentTime = video.currentTime + 5;
+        flashPip(FWD_ICON);
         break;
       case 'seek-10':
         video.currentTime = Math.max(0, video.currentTime - 10);
+        flashPip(BACK_ICON);
         break;
       case 'seek+10':
         video.currentTime = video.currentTime + 10;
+        flashPip(FWD_ICON);
         break;
       case 'mute':
         video.muted = !video.muted;
-        syncMuteIcon();
+        flashPip(volumeIcon(video));
         break;
     }
   }
   container.addEventListener('keydown', onKeydown);
 
   syncPlayIcon();
-  syncMuteIcon();
+  syncVolume();
   syncDuration();
   syncTime();
 
   return {
     el: bar,
+    /** Called by addPlayer on setSource() so the chrome resets with the new title. */
+    resync() {
+      scrubWrap.style.setProperty('--dxr-p', '0%');
+      scrubWrap.style.setProperty('--dxr-b', '0%');
+      seek.value = '0';
+      seek.max = '0';
+      clock.innerHTML = '<b>0:00</b><span> / 0:00</span>';
+      syncPlayIcon();
+      syncVolume();
+      show();
+    },
     cleanup() {
       clearTimeout(hideTimer);
+      clearTimeout(pipTimer);
       container.removeEventListener('pointermove', show);
       container.removeEventListener('pointerenter', show);
       container.removeEventListener('focusin', show);
       container.removeEventListener('keydown', onKeydown);
-      bar.remove();
+      container.classList.remove('dxr-player-host', 'dxr-player-host--idle');
+      container.style.removeProperty('--dxr-accent');
+      for (const el of [bar, centre, pip, spinner]) el.remove();
     },
   };
 }
@@ -570,6 +947,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   const wantWeave = o.format === 'sbs' && !!(wall && wall.supported);
   let innerHandle = null;
   let ownLoop = null;
+  let posterPoll = null;
 
   function paintPosterNow() {
     if (!posterImg) return;
@@ -585,7 +963,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       feather: o.feather,
       ...(o.observe ? { observe: o.observe } : {}),
     });
-    startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
+    posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
   } else {
     ownLoop = attachFlatPaint(canvas, video, {
       mode: o.format === 'mono' ? 'mono' : 'sbs-fallback',
@@ -600,11 +978,17 @@ export function addPlayer(wall, canvas, src, opts = {}) {
 
   let bar = null;
   let cleanupBar = null;
+  let resyncBar = null;
   if (o.controls === 'sdk') {
     if (container) {
-      const built = buildTransportBar(container, canvas, video, { keyboard: o.keyboard });
+      const built = buildTransportBar(container, canvas, video, {
+        keyboard: o.keyboard,
+        accent: o.accent,
+        badge3d: o.badge3d,
+      });
       bar = built.el;
       cleanupBar = built.cleanup;
+      resyncBar = built.resync;
     } else {
       console.warn(
         '[inline3d/player] controls:"sdk" needs canvas.parentElement to attach the transport ' +
@@ -667,6 +1051,16 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       if (nextCross) video.crossOrigin = nextCross;
       video.src = resolveSrcUrl(newSrc);
       video.load();
+      // The chrome is bound to this same <video>, so its listeners survive the swap — but the
+      // values they last rendered belong to the OLD title (a 24 s duration, a full scrub bar).
+      // Nothing re-fires them until the new metadata lands, so reset them now rather than show
+      // the previous title's numbers over the new one's first frames.
+      resyncBar?.();
+      // The poster is the right thing on screen again until the new source has a frame.
+      posterPoll?.stop();
+      if (wantWeave) {
+        posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
+      }
       if (o.autoplay) video.play().catch(() => {});
     },
     exclude(el) {
@@ -677,6 +1071,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     },
     remove() {
       ownLoop?.stop();
+      posterPoll?.stop();
       cleanupBar?.();
       innerHandle?.remove();
       try {

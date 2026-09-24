@@ -109,10 +109,32 @@ never calls a method that doesn't exist on an unsupported `wall`. `opts.controls
 true) binds Space/K play-pause, ←/→ ±5 s, J/L ±10 s, M mute, scoped to the canvas/transport so
 several players on one page don't fight over the keyboard.
 
-The SDK transport is a **partial** bottom bar, auto-tagged `data-inline3d-overlay` — never
+The SDK transport is a **partial** bottom band, auto-tagged `data-inline3d-overlay` — never
 full-tile, per the overlay rule below — hidden after 3 s idle while playing, shown on
 hover/keypress/pause. It needs `canvas.parentElement` to attach into (a `<div>` wrapping the
-`<canvas>`, same as every sample's `.stage`).
+`<canvas>`, same as every sample's `.stage`). It carries a scrub bar that grows on hover and
+shades the buffered range, a hover time tooltip, a drag knob, play/pause, a volume button that
+expands to a slider, and a `current / duration` clock; a centre play badge, a keyboard-action
+pip and a buffering spinner sit over the tile as their own small overlays. `opts.accent` (any
+CSS colour) re-skins all of it through the `--dxr-accent` custom property, and
+`opts.badge3d` (`true`, or your own short string) adds a pill to the control row.
+
+Three things about the chrome are the **overlay contract**, not taste, and they are the first
+things to check if you restyle it:
+
+- the darkening behind the controls is a **bounded bottom band**, not the full-height gradient a
+  2D player would use — a full-tile plate matches the canvas's own quad and kicks the canvas out
+  of the weave input (see the overlay rule below), so the tile would present its raw
+  side-by-side pair instead of 3D;
+- there is **no `backdrop-filter`** anywhere in it — an element defined as a function of what is
+  behind it has no isolated composited resource to hand the compositor, so it cannot be excluded
+  at all. The near-solid `rgba(10,11,15,.92)` shell is the documented substitute;
+- promotion is `will-change: transform`, never a CSS `filter`.
+
+`opts.badge3d` is deliberately **page-driven and off by default**: the module will not infer it
+from `wall.supported`, because a supported wall whose tile has scrolled away — or whose panel is
+in a 2D mode — is not showing 3D at that moment, and a badge that claims otherwise is worse than
+no badge at all.
 
 | Handle | |
 |---|---|
