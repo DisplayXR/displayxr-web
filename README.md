@@ -177,6 +177,7 @@ js/
                       preview: the `engine: 'playcanvas'` backend of addSplat(), loaded on demand
   inline3d-model-entry.js       experimental: addModel() — picks the engine (PlayCanvas default)
   inline3d-model-playcanvas.js  the PlayCanvas model backend (Sample-Viewer lighting, engine decoders)
+  inline3d-pc-look.js           PlayCanvas look helpers for both adapters (environments, transmission)
   inline3d-model.js             the three.js model backend (engine:'three'; ./model/three)
   inline3d-playcanvas-engine.js named playcanvas imports for both PlayCanvas adapters (tree-shaking)
   inline3d-splat-effects.js     splat shader effects: the runner, the effect registry (PlayCanvas)

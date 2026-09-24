@@ -3223,7 +3223,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let rigSeq = 0;
   /** The IBL setRig('display') installed ({ kind, atlas, prev }), and what it replaced — or null. */
   let rigEnv = null;
-  /** ./inline3d-model-playcanvas.js once a display rig has loaded it (transmission, environments). */
+  /** ./inline3d-pc-look.js once a display rig has loaded it (transmission, environments). Never the
+   *  model module: that one holds the optional meshoptimizer import, which ./splat must not reach. */
   let rigModelModule = null;
   /** Mesh instances / materials prepareTransmission has handled, and whether it turned the grab on. */
   const rigTransmissionSeen = new WeakSet();
@@ -3322,7 +3323,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   /** Install addModel's IBL (`disp.environment`) for the display rig, if the page has none of its own. */
   async function ensureRigEnvironment(disp, seq) {
-    const m = (rigModelModule ||= await import('./inline3d-model-playcanvas.js'));
+    const m = (rigModelModule ||= await import('./inline3d-pc-look.js'));
     if (removed || seq !== rigSeq || rigOverride?.type !== 'display') return;
     rigTick = 0; // transmission check on the next tick
     const kind = disp.environment;

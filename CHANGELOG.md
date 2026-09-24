@@ -5,6 +5,30 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — patch
+
+Touches packaging only (`./splat` and `./model`, `engine: 'playcanvas'`). No pixels move: the
+code is moved, not changed.
+
+### Fixed
+
+- **A bundled app that uses only `./splat` builds again without `meshoptimizer` installed**
+  (#36). This was a regression in 1.16.0.
+  - `setRig('display')` lazily imported `inline3d-model-playcanvas.js` for its look helpers. That
+    module also contains `import('meshoptimizer/decoder')` for `./model`'s optional meshopt
+    decoder.
+  - Bundlers (webpack, Turbopack, Vite/rollup, esbuild) follow every `import()` in the graph, so
+    the build failed with *Can't resolve 'meshoptimizer/decoder'*.
+  - The two generated environments, their yaw constants and `prepareTransmission` now live in a
+    new internal module, `js/inline3d-pc-look.js`. The splat adapter imports that module, which
+    reaches nothing optional. `inline3d-model-playcanvas.js` re-exports every name it exported
+    before.
+  - `./model` still needs `meshoptimizer` only for EXT_meshopt_compression assets, as before.
+  - A unit test walks the import graph from each package entry. It fails if `./splat` reaches
+    meshoptimizer, and also if `./model` stops reaching it.
+  - Gate, on a real GPU: `setRig('display')` vs `addModel` is still **MAE 0.0000** (max 0), mono
+    and stereo, with `antialias: true`. The renders are pixel-identical to the 1.16 gate's.
+
 ## 1.19.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat` and `./model`, `engine: 'playcanvas'` only). The defaults
