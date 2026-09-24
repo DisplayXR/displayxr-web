@@ -205,7 +205,7 @@ function startPosterPoll(canvas, getPoster, isVideoReady) {
  * `requestVideoFrameCallback` where available, falling back to an every-frame `drawImage` loop
  * where it is not.
  */
-function attachFlatPaint(canvas, video, { mode, getPoster }) {
+function attachFlatPaint(canvas, video, { mode, getPoster, dissolve }) {
   const ctx = canvas.getContext('2d');
   let stopped = false;
   let rafId = 0;
@@ -223,17 +223,26 @@ function attachFlatPaint(canvas, video, { mode, getPoster }) {
     if (canvas.height !== h) canvas.height = h;
   }
 
+  const nowMs = () =>
+    typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+
   function draw() {
     if (stopped) return;
     const w = canvas.width;
     const h = canvas.height;
     if (!w || !h) return;
-    if (video.readyState >= 2 && video.videoWidth) {
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
+    // With a dissolve armed the mixer is the source of truth: it holds either the live frame,
+    // the frozen outgoing one, or the blend of the two. Its dimensions match the video's, so
+    // the SBS half-crop below is the same arithmetic either way.
+    if (dissolve) dissolve.paint(nowMs());
+    const src = dissolve ? dissolve.el : video;
+    const ready = (src.readyState || 0) >= 2 && (src.videoWidth || src.width);
+    if (ready) {
+      const vw = src.videoWidth || src.width;
+      const vh = src.videoHeight || src.height;
       ctx.clearRect(0, 0, w, h);
-      if (mode === 'sbs-fallback') ctx.drawImage(video, 0, 0, vw / 2, vh, 0, 0, w, h);
-      else ctx.drawImage(video, 0, 0, vw, vh, 0, 0, w, h);
+      if (mode === 'sbs-fallback') ctx.drawImage(src, 0, 0, vw / 2, vh, 0, 0, w, h);
+      else ctx.drawImage(src, 0, 0, vw, vh, 0, 0, w, h);
       return;
     }
     const poster = getPoster();
@@ -246,7 +255,9 @@ function attachFlatPaint(canvas, video, { mode, getPoster }) {
   function loop() {
     if (stopped) return;
     draw();
-    if (video.readyState >= 2 && typeof video.requestVideoFrameCallback === 'function') {
+    // A running dissolve advances on frames the video does not produce, so it needs rAF.
+    if (!dissolve?.active && video.readyState >= 2 &&
+        typeof video.requestVideoFrameCallback === 'function') {
       rvfcId = video.requestVideoFrameCallback(loop);
     } else {
       rafId = requestAnimationFrame(loop);
@@ -853,6 +864,183 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   };
 }
 
+// ── setSource() cross-dissolve (opts.fadeMs) ────────────────────────────────────────────────
+//
+// WHAT THIS ACTUALLY IS, so nobody reads more into the option name than it delivers: a dissolve
+// from the outgoing title's LAST FRAME to the incoming title, not a blend of two simultaneously
+// decoding streams. That distinction is invisible on screen — the outgoing title is being
+// replaced, so nothing is lost by freezing it — and it costs one `<video>` instead of two, which
+// is what keeps the handle, the event plumbing and the whole transport bound to a single
+// element. A genuine two-stream blend would mean a second decode, a second audio track to
+// arbitrate, and every getter on the handle growing an "and which video do you mean" branch.
+//
+// HOW IT REACHES THE WOVEN PATH. `wall.addVideo(canvas, video)` stores the source and paints it
+// every frame; there is no setter to swap it afterwards, and removing + re-adding the window
+// would tear down and rebuild the weave layer — a visible blink, which is exactly what the fade
+// exists to avoid. But the SDK's paint reads
+//
+//     const srcW = src.videoWidth || src.naturalWidth || src.width;
+//
+// so ANY drawable with a width works as a source, and its readiness gate is
+// `(src.readyState || 0) < 2`. A canvas therefore stands in for the `<video>` provided it
+// answers `readyState` — hence the expando below. So when a fade is asked for, `addVideo` is
+// handed a MIXER canvas that this module paints, and the stereo paint downstream of it is
+// unchanged: the mixer is the same pixels in the same layout, one composite earlier.
+//
+// IT IS OPT-IN, AND THAT IS THE POINT. The mixer costs one extra full-frame `drawImage` per
+// painted frame, so it is only created when `opts.fadeMs > 0` was given at construction. Every
+// player that does not ask for fades keeps the byte-identical `addVideo(canvas, video)` path it
+// has today and pays nothing. A per-call `setSource(src, {fadeMs})` can therefore change the
+// DURATION of a fade but cannot switch one on — there would be no mixer to run it through.
+
+/**
+ * The dissolve's alpha ramp: how much of the INCOMING title to composite over the frozen
+ * outgoing frame. Pure, and exported so the ramp is testable without a canvas.
+ *
+ * Clamped at both ends, and a non-positive/non-finite duration collapses to a hard cut (1)
+ * rather than dividing by zero and painting NaN alpha — which Chromium treats as "leave
+ * globalAlpha alone", i.e. a stuck half-dissolved frame.
+ *
+ * @param {number} elapsedMs  time since the incoming title's first frame
+ * @param {number} fadeMs
+ * @returns {number} 0..1
+ */
+export function dissolveAlpha(elapsedMs, fadeMs) {
+  if (!Number.isFinite(fadeMs) || fadeMs <= 0) return 1;
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
+  return Math.max(0, Math.min(1, elapsedMs / fadeMs));
+}
+
+/**
+ * The mixer. Owns a canvas that can stand in for the `<video>` as a paint source, plus a freeze
+ * buffer holding the outgoing title's last frame.
+ *
+ * @param {HTMLVideoElement} video
+ */
+function createDissolve(video) {
+  const mix = document.createElement('canvas');
+  const mctx = mix.getContext('2d');
+  const freeze = document.createElement('canvas');
+  const fctx = freeze.getContext('2d');
+  let hasFreeze = false;
+  let fadeMs = 0;
+  let startedAt = 0;
+
+  // The SDK's video branch gates on `(src.readyState || 0) < 2` and re-commits the last frame
+  // below it. Answering that question honestly is what lets a canvas be a drop-in source: 0
+  // while there is genuinely nothing to show, 4 once the mixer holds a frame — including while
+  // it holds only the FROZEN one, which is the whole reason the tile does not go black between
+  // two titles.
+  mix.readyState = 0;
+
+  function size(w, h) {
+    if (mix.width !== w) mix.width = w;
+    if (mix.height !== h) mix.height = h;
+  }
+  const videoLive = () => video.readyState >= 2 && video.videoWidth > 0;
+
+  return {
+    el: mix,
+
+    /**
+     * Snapshot what is on screen, BEFORE `video.src` is pointed at the new title. Returns
+     * whether there was anything to snapshot — a player swapped before its first frame has
+     * nothing to dissolve from, and says so rather than fading from a blank buffer.
+     */
+    capture() {
+      if (!videoLive()) return false;
+      freeze.width = video.videoWidth;
+      freeze.height = video.videoHeight;
+      fctx.drawImage(video, 0, 0);
+      hasFreeze = true;
+      return true;
+    },
+
+    /** Arm the ramp. The clock does NOT start here — it starts at the incoming first frame. */
+    arm(ms) {
+      fadeMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+      startedAt = 0;
+    },
+
+    /** True while the mixer still has work only rAF can drive (a ramp, or a held freeze). */
+    get active() {
+      return (hasFreeze && fadeMs > 0) || (hasFreeze && !videoLive());
+    },
+
+    paint(now) {
+      if (!videoLive()) {
+        // Between titles: hold the outgoing frame rather than blank the tile.
+        if (!hasFreeze) {
+          mix.readyState = 0;
+          return;
+        }
+        size(freeze.width, freeze.height);
+        mctx.globalAlpha = 1;
+        mctx.drawImage(freeze, 0, 0);
+        mix.readyState = 4;
+        return;
+      }
+      size(video.videoWidth, video.videoHeight);
+      mctx.globalAlpha = 1;
+      if (!hasFreeze || fadeMs <= 0) {
+        mctx.drawImage(video, 0, 0, mix.width, mix.height);
+        mix.readyState = 4;
+        hasFreeze = false;
+        return;
+      }
+      if (!startedAt) startedAt = now; // first frame of the incoming title
+      const a = dissolveAlpha(now - startedAt, fadeMs);
+      mctx.drawImage(freeze, 0, 0, mix.width, mix.height);
+      mctx.globalAlpha = a;
+      mctx.drawImage(video, 0, 0, mix.width, mix.height);
+      mctx.globalAlpha = 1;
+      mix.readyState = 4;
+      if (a >= 1) {
+        hasFreeze = false;
+        fadeMs = 0;
+      }
+    },
+  };
+}
+
+/**
+ * Keep the mixer painted for the WOVEN path, where the SDK reads the canvas on its own loop and
+ * this module only has to make sure there is something current in it.
+ *
+ * Paints on new video frames via `requestVideoFrameCallback` in the steady state, and switches
+ * to rAF while a dissolve is running — a ramp has to advance on frames the video does not
+ * produce, which is precisely the case when the incoming title has not started decoding yet.
+ */
+function driveMixer(video, dissolve) {
+  let stopped = false;
+  let rafId = 0;
+  let rvfcId = 0;
+  const nowMs = () =>
+    typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+
+  function tick() {
+    if (stopped) return;
+    dissolve.paint(nowMs());
+    const canUseRvfc =
+      !dissolve.active &&
+      video.readyState >= 2 &&
+      typeof video.requestVideoFrameCallback === 'function';
+    if (canUseRvfc) rvfcId = video.requestVideoFrameCallback(tick);
+    else rafId = requestAnimationFrame(tick);
+  }
+  tick();
+
+  return {
+    stop() {
+      stopped = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (rvfcId && typeof video.cancelVideoFrameCallback === 'function') {
+        video.cancelVideoFrameCallback(rvfcId);
+      }
+    },
+  };
+}
+
 // ── addPlayer ────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -948,6 +1136,10 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   let innerHandle = null;
   let ownLoop = null;
   let posterPoll = null;
+  let mixerLoop = null;
+  // Opt-in: no fade asked for at construction => no mixer, and the woven path stays the
+  // byte-identical `addVideo(canvas, video)` it is today. See the dissolve section above.
+  const dissolve = o.fadeMs > 0 ? createDissolve(video) : null;
 
   function paintPosterNow() {
     if (!posterImg) return;
@@ -956,18 +1148,21 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   }
 
   if (wantWeave) {
-    innerHandle = wall.addVideo(canvas, video, {
+    innerHandle = wall.addVideo(canvas, dissolve ? dissolve.el : video, {
       width: o.width,
       height: o.height,
       cornerRadius: o.cornerRadius,
       feather: o.feather,
       ...(o.observe ? { observe: o.observe } : {}),
     });
+    if (dissolve) mixerLoop = driveMixer(video, dissolve);
     posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
   } else {
+    // The flat loop paints the mixer itself rather than running a second loop beside it.
     ownLoop = attachFlatPaint(canvas, video, {
       mode: o.format === 'mono' ? 'mono' : 'sbs-fallback',
       getPoster: () => posterImg,
+      dissolve,
     });
   }
 
@@ -1039,12 +1234,21 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       video.muted = m;
     },
     /**
-     * Swap the source in place. `fadeMs` is ACCEPTED and IGNORED in v1: a cheap cross-fade would
-     * need a second decoded stream composited alongside the first (two hidden <video>s blended
-     * per frame on the woven path, or on the canvas for the flat path) — real engineering, not
-     * "wire it and document it" — so it is left for a v2 pass. See docs/authoring-inline-3d.md.
+     * Swap the source in place, dissolving from the outgoing title's last frame if a fade was
+     * armed — see the dissolve section above for what that is and is not (it is not a blend of
+     * two live streams, deliberately). `sOpts.fadeMs` overrides the duration for this one swap;
+     * it cannot switch fading ON, because the mixer that runs it only exists when
+     * `opts.fadeMs > 0` was given at construction, and creating it lazily would mean swapping
+     * the woven window's paint source mid-flight — a layer rebuild, i.e. the visible blink the
+     * fade exists to remove.
+     *
+     * Without a fade this is a hard cut, and the tile holds the old frame until the new source
+     * reaches `readyState >= 2`.
      */
     setSource(newSrc, sOpts = {}) {
+      // Snapshot BEFORE the src is repointed — once `load()` runs, the old frame is gone.
+      const ms = typeof sOpts.fadeMs === 'number' ? sOpts.fadeMs : o.fadeMs;
+      if (dissolve && ms > 0 && dissolve.capture()) dissolve.arm(ms);
       video.pause();
       if (sOpts.poster !== undefined) loadPoster(sOpts.poster);
       const nextCross = resolveCrossOrigin(newSrc, o.crossOrigin);
@@ -1056,9 +1260,12 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       // Nothing re-fires them until the new metadata lands, so reset them now rather than show
       // the previous title's numbers over the new one's first frames.
       resyncBar?.();
-      // The poster is the right thing on screen again until the new source has a frame.
+      // The poster is the right thing on screen again until the new source has a frame — but
+      // NOT when a dissolve is running: the mixer is holding the outgoing title's last frame
+      // there on purpose, and painting the poster over it is the hard cut this option exists
+      // to remove.
       posterPoll?.stop();
-      if (wantWeave) {
+      if (wantWeave && !dissolve?.active) {
         posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
       }
       if (o.autoplay) video.play().catch(() => {});
@@ -1071,6 +1278,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     },
     remove() {
       ownLoop?.stop();
+      mixerLoop?.stop();
       posterPoll?.stop();
       cleanupBar?.();
       innerHandle?.remove();

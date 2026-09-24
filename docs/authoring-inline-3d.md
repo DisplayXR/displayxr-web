@@ -136,10 +136,25 @@ no badge at all.
 | `play()` / `pause()` / `seek(t)` | `<video>`'s own vocabulary — a page that knows `HTMLMediaElement` already knows this |
 | `currentTime`, `duration`, `paused`, `ended` | getters (`currentTime` also settable) |
 | `volume`, `muted` | get/set |
-| `setSource(src, {poster})` | swap titles in place; `opts.fadeMs` is accepted, not implemented in v1 (documented in `player.d.ts`) |
+| `setSource(src, {poster, fadeMs})` | swap titles in place, dissolving from the outgoing title's last frame when `opts.fadeMs` was set at construction |
 | `exclude(el)` / `unexclude(el)` | `'sbs'` + a supported wall only; a no-op elsewhere (nothing is woven to protect an overlay from) |
 | `remove()` | stop the paint loop or weave window, tear down the transport, release the `<video>` |
 | `on(event, fn)` / `off(event, fn)` | `'play'\|'pause'\|'ended'\|'timeupdate'\|'ready'\|'error'`; `on` returns an unsubscribe function |
+
+`opts.fadeMs` makes `setSource()` a dissolve rather than a hard cut. It is **opt-in at
+construction**, and that is structural rather than fussy: the dissolve runs through a mixer
+canvas that stands in for the `<video>` as the window's paint source, so a player that never
+asks for it keeps the byte-identical `addVideo(canvas, video)` path and pays no extra draw per
+frame. A per-call `setSource(src, {fadeMs})` therefore changes the *duration* of a fade but
+cannot switch one on — there would be no mixer to run it through, and building one mid-flight
+means swapping a live window's paint source, which rebuilds the weave layer and produces
+exactly the blink the fade removes.
+
+What it dissolves is the outgoing title's **last frame**, not two simultaneously decoding
+streams. On screen that is the same thing (the outgoing title is being replaced), and it costs
+one `<video>` rather than two — which is what keeps the handle, the events and the transport
+bound to a single element. A side effect worth having: between the swap and the incoming
+title's first frame the tile holds the old frame instead of going black.
 
 v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename format auto-detect, HLS, undock, or
 a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
