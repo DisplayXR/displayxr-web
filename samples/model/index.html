@@ -47,20 +47,17 @@
 
   <p>First is <code>addModel()</code>: same options, same handle and same framing as
      <code>addSplat()</code>, so a catalogue switches a product between a captured splat and a
-     vendor mesh by changing one word. Second is both at once, in a single three.js scene, sorting
+     vendor mesh by changing one word. Second is both at once, in a single engine scene, sorting
      against each other — which is what makes a mixed catalogue possible instead of forcing every
      product into one representation. Third is the file a real catalogue actually holds: a
-     <strong>Draco-compressed</strong> glTF. Tiles one and three render with PlayCanvas, the
-     SDK's default model engine; add <code>?engine=three</code> to the URL for the three.js
-     renderer.</p>
+     <strong>Draco-compressed</strong> glTF.</p>
 
-  <p style="font-size:14px;opacity:.8">The mesh tiles render with three.js: <code>addModel()</code>
-     has no PlayCanvas backend yet (<a href="../../docs/playcanvas-model-backend.md">plan</a>).
-     The mixed tile can already render with the PlayCanvas engine: the splat through
-     <code>addSplat()</code>, and the fox added to the same engine scene through
-     <code>handle.engine</code>. That path needs a <code>.sog</code>, so it runs when you pass
-     <code>?splat=&lt;your .sog&gt;</code>. Without one, and with <code>?engine=spark</code>, the
-     tile uses three.js and a Spark splat.</p>
+  <p style="font-size:14px;opacity:.8">Every tile renders with <a href="https://playcanvas.com/">PlayCanvas</a>,
+     the SDK's default engine. In the mixed tile the splat comes from <code>addSplat()</code> and
+     the helmet is added to the same engine scene through <code>handle.engine</code>. Add
+     <code>?engine=three</code> to the URL for the three.js twin: the mesh tiles on the three.js
+     renderer, and the mixed tile as a three.js scene with a <a href="https://sparkjs.dev/">Spark</a>
+     splat in it. <code>?splat=&lt;url&gt;</code> swaps the mixed tile's splat.</p>
 
   <div class="pair">
     <div class="cell">
@@ -108,23 +105,26 @@
 
   <p class="foot">← <a href="../../">All samples</a> ·
      <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a><br>
-     <span style="font-size:13px">Fox model © PixelMannen,
-     <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via Khronos
-     glTF-Sample-Assets. Duck (Draco variant) © Sony,
+     <span style="font-size:13px">"Damaged Helmet": glTF 2.0 rebuild © 2018 ctxwing,
+     <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>; earlier version of
+     the model ("Battle Damaged Sci-fi Helmet") © 2016 theblueturtle_,
+     <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC BY-NC 4.0</a>; via
+     <a href="https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/DamagedHelmet">Khronos
+     glTF-Sample-Assets</a>, unmodified. Duck (Draco variant) © Sony,
      <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>, via the same.
-     Draco decoder files © The Draco Authors, Apache-2.0, from three.js. Splat (Spark path) is
-     Spark's public demo asset.</span></p>
+     Draco decoder files © The Draco Authors, Apache-2.0, from three.js. Butterfly splat &copy; World Labs
+     (from Spark, <a href="https://sparkjs.dev/">sparkjs.dev</a>), used with permission; converted to SOG.</span></p>
 </div>
 
-<!-- "playcanvas" renders tiles A and C (addModel's default engine from 1.12); add ?engine=three to
-     render them with the 1.11 three.js path instead. three is still loaded here because tile B
+<!-- "playcanvas" renders every tile (addModel's default engine from 1.12, and addSplat's
+     engine: 'playcanvas' for the mixed tile); ?engine=three renders the three.js twin. three and
+     Spark are still mapped because ./splat imports them statically, and the twin's mixed tile
      composes a Spark splat into a three scene.
      three/addons/ is REQUIRED: GLTFLoader lives there, and Spark reaches into
      three/addons/postprocessing/Pass.js internally. Without the prefix mapping the page dies at
      import time with "Failed to resolve module specifier". Bundler users get it free.
      SDK is mapped to this repo's sources — ./viewer, ./splat and ./model are not in the
-     published 1.0.0 yet. The app code still imports the bare specifiers a consumer writes.
-     "playcanvas" is fetched only when the mixed tile renders with it (?splat=<.sog>). -->
+     published 1.0.0 yet. The app code still imports the bare specifiers a consumer writes. -->
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",

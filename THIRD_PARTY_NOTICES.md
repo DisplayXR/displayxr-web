@@ -74,3 +74,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## Sample assets (repo samples only, not in the npm package)
+
+The pages under `samples/` show these assets. None is in the published `@displayxr/inline3d`
+package.
+
+| Asset | Used by | Source | Credit and licence |
+|---|---|---|---|
+| Damaged Helmet (`DamagedHelmet.glb`) | `samples/model/` (tiles A and B), loaded at run time, not vendored | [KhronosGroup/glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/DamagedHelmet) at commit `c6a6bd13ab2b3c685c7903d03561b8a9392f38b8`, via jsDelivr, unmodified | © 2018 ctxwing (rebuild and conversion to glTF 2.0), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/legalcode). Earlier version of the model ("Battle Damaged Sci-fi Helmet") © 2016 theblueturtle_, [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/legalcode). As stated in the asset's `README.md` and `LICENSE.md`. |
+| Duck, Draco variant (`samples/model/assets/glTF-Draco/`) | `samples/model/` (tile C) | Khronos glTF-Sample-Assets | © Sony, [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). |
+| Butterfly splat (`samples/splat/assets/butterfly.sog`) | `samples/splat/`, `samples/model/` (tile B) | [Spark](https://sparkjs.dev/) `assets/splats/butterfly.spz`, converted to SOG with PlayCanvas splat-transform (177,132 gaussians, 3 SH bands kept) | Butterfly splat © World Labs (from Spark, sparkjs.dev), used with permission; converted to SOG. |
+| Draco decoder (`vendor/draco/`) | `samples/model/` | three.js `examples/jsm/libs/draco/` | © The Draco Authors, Apache-2.0. |

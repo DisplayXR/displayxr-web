@@ -6,8 +6,12 @@ import { createInline3D } from '@displayxr/inline3d';
 import { addModel } from '@displayxr/inline3d/model';
 import { addSplat, measureSplatBounds } from '@displayxr/inline3d/splat';
 
-const GLB = './assets/Fox.glb';
-const SPLAT = 'https://sparkjs.dev/assets/splats/butterfly.spz';
+// Khronos DamagedHelmet (glTF-Sample-Assets, pinned commit; credit on the page and in
+// THIRD_PARTY_NOTICES.md), the same file the DisplayXR model-viewer demo bundles. Served from
+// jsDelivr with CORS, so it is fetched cross-origin exactly as a catalogue CDN asset would be.
+const GLB = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+// The splat sample's butterfly (World Labs, used with permission; see samples/splat/).
+const SPLAT = new URL('../splat/assets/butterfly.sog', import.meta.url).href;
 const DRACO_GLTF = './assets/glTF-Draco/Duck.gltf';
 // Where THIS SITE serves three's Draco decoder. The SDK defaults to `/draco/` on your origin and
 // deliberately never falls back to a CDN, so a page hosted under a path prefix (as GitHub Pages
@@ -16,11 +20,13 @@ const DECODER_PATH = { draco: new URL('../../vendor/draco/', import.meta.url).pa
 
 const wall = await createInline3D({ lazy: false });
 const woven = wall.supported;
-// Which engine renders tiles A and C. Unset is the SDK default (PlayCanvas, from 1.12);
-// `?engine=three` is the 1.11 renderer, kept as the kill switch. Tile B is three.js either way —
-// it composes a Spark splat into the tile's three scene, which is a three-only thing to do.
-const ENGINE = new URLSearchParams(location.search).get('engine') || undefined;
-const engineOpt = ENGINE ? { engine: ENGINE } : {};
+// Which engine renders the page. Unset is the SDK default (PlayCanvas, from 1.12) for every tile.
+// `?engine=three` (or `?engine=spark`) is the three.js twin: tiles A and C on the 1.11 three
+// renderer, tile B as a three scene with a Spark splat in it.
+const pageParams = new URLSearchParams(location.search);
+const ENGINE = pageParams.get('engine') || undefined;
+const onThree = ENGINE === 'three' || ENGINE === 'spark';
+const engineOpt = onThree ? { engine: 'three' } : ENGINE ? { engine: ENGINE } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
@@ -39,25 +45,28 @@ report(a.ready, 'noteA', () => {
 
 // ── B. a mesh and a splat in ONE scene ────────────────────────────────────────────────────
 // Two ways to build it, one per splat engine:
-//   PlayCanvas (the default once a .sog is configured): addSplat renders the splat, and the fox
-//     goes into the SAME engine scene through handle.engine (SDK >= 1.9.1 registers the glTF
-//     handler and the render / light / anim systems on the tile's app).
-//   Spark: addModel renders the fox in three.js, and a Spark SplatMesh joins its scene.
+//   PlayCanvas (the default): addSplat renders the splat, and the helmet goes into the SAME
+//     engine scene through handle.engine (SDK >= 1.9.1 registers the glTF handler and the
+//     render / light / anim systems on the tile's app).
+//   three.js (?engine=three or ?engine=spark): addModel renders the helmet in three.js, and a
+//     Spark SplatMesh joins its scene.
 // Either way the splat sorts against the mesh in one pass: splats depth-test against the mesh.
 //
-// The PlayCanvas path needs a .sog or .ply (it cannot read Spark's .spz). There is no default
-// .sog with publishing rights yet, so until one is set here, the tile uses the Spark path unless
-// the page gets ?splat=<.sog url>. ?engine=spark forces the Spark path.
-const MIXED_SOG = '';
-const pageParams = new URLSearchParams(location.search);
-const mixedSog = pageParams.get('splat') || MIXED_SOG;
-const mixedEngine = pageParams.get('engine') === 'spark' || !mixedSog ? 'spark' : 'playcanvas';
+// ?splat=<url> swaps the splat. The PlayCanvas path reads .sog or .ply (not Spark's .spz).
+const mixedSplat = pageParams.get('splat') || SPLAT;
+const mixedEngine = onThree ? 'spark' : 'playcanvas';
 
 // SAME virtualDisplayHeight as tile A, deliberately. The fit normalises apparent size against
 // vH, so a different value does not change how big anything looks — but it does change the
 // world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
 // them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
 const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6 };
+// Layout of the pair, the same on both paths: the splat stands SPLAT_H of the mesh's height,
+// to the mesh's right, GAP of the mesh's width apart, bases level. The gap has to cover the
+// turntable: both subjects turn about the union's centre, so a box's corners swing wider than
+// its face-on width.
+const SPLAT_H = 0.7;
+const GAP = 0.25;
 const tileB = document.getElementById('tileB');
 
 const { handle: b, ready: mixed } = mixedEngine === 'playcanvas' ? mixedPlayCanvas() : mixedSpark();
@@ -82,26 +91,26 @@ function unionBox(p, q) {
 }
 
 function mixedPlayCanvas() {
-  const h = addSplat(wall, tileB, mixedSog, { engine: 'playcanvas', ...TILE_OPTS });
+  const h = addSplat(wall, tileB, mixedSplat, { engine: 'playcanvas', ...TILE_OPTS });
   const ready = h.ready.then(async () => {
     const pc = await import('playcanvas');
     const { app, root } = h.engine;
 
-    // The splat framed itself. The fox is sized RELATIVE TO IT (the splat about 45 % of the
-    // fox's height, as on the Spark path) and stands to its left. The two assets are in
+    // The splat framed itself. The helmet is sized RELATIVE TO IT (SPLAT_H, as on the Spark
+    // path) and stands to its left. The two assets are in
     // unrelated unit systems, so both sizes come from measured bounds, never from a guess.
-    const asset = new pc.Asset('fox', 'container', { url: new URL(GLB, import.meta.url).href });
+    const asset = new pc.Asset('helmet', 'container', { url: new URL(GLB, import.meta.url).href });
     app.assets.add(asset);
     await new Promise((resolve, reject) => {
       asset.ready(resolve);
-      asset.on('error', (e) => reject(new Error(`Fox.glb: ${e}`)));
+      asset.on('error', (e) => reject(new Error(`DamagedHelmet.glb: ${e}`)));
       app.assets.load(asset);
     });
-    const fox = asset.resource.instantiateRenderEntity();
-    root.addChild(fox);
+    const mesh = asset.resource.instantiateRenderEntity();
+    root.addChild(mesh);
     const aabb = new pc.BoundingBox();
     let first = true;
-    for (const r of fox.findComponents('render')) {
+    for (const r of mesh.findComponents('render')) {
       for (const mi of r.meshInstances) {
         if (first) aabb.copy(mi.aabb);
         else aabb.add(mi.aabb);
@@ -111,21 +120,21 @@ function mixedPlayCanvas() {
     const splatBox = h.frame;
     const c = aabb.center;
     const he = aabb.halfExtents;
-    const k = splatBox.extent[1] / 0.45 / (he.y * 2 || 1);
-    fox.setLocalScale(k, k, k);
-    const foxBox = {
+    const k = splatBox.extent[1] / SPLAT_H / (he.y * 2 || 1);
+    mesh.setLocalScale(k, k, k);
+    const meshBox = {
       extent: [he.x * 2 * k, he.y * 2 * k, he.z * 2 * k],
       center: [
-        splatBox.center[0] - splatBox.extent[0] / 2 - he.x * k * 1.1, // right side at the splat's left
-        splatBox.center[1] - splatBox.extent[1] / 2 + he.y * k, // feet level with the splat's base
+        splatBox.center[0] - splatBox.extent[0] / 2 - he.x * k * (1 + 2 * GAP), // GAP left of the splat
+        splatBox.center[1] - splatBox.extent[1] / 2 + he.y * k, // base level with the splat's base
         splatBox.center[2],
       ],
     };
-    // aabb was measured at scale 1 and the origin, so its centre offset scales with the fox.
-    fox.setLocalPosition(
-      foxBox.center[0] - c.x * k,
-      foxBox.center[1] - c.y * k,
-      foxBox.center[2] - c.z * k,
+    // aabb was measured at scale 1 and the origin, so its centre offset scales with the mesh.
+    mesh.setLocalPosition(
+      meshBox.center[0] - c.x * k,
+      meshBox.center[1] - c.y * k,
+      meshBox.center[2] - c.z * k,
     );
 
     // A splat carries its own lighting; a mesh needs some. A light shines along its local −Y,
@@ -137,7 +146,7 @@ function mixedPlayCanvas() {
     root.addChild(sun);
 
     // TWO SUBJECTS, ONE FRAME: re-fit to the union of both boxes, as the Spark path does.
-    const union = unionBox(splatBox, foxBox);
+    const union = unionBox(splatBox, meshBox);
     h.union = union;
     h.viewer.fitTo(union.center, union.extent);
     return h.mesh.numSplats;
@@ -146,7 +155,7 @@ function mixedPlayCanvas() {
 }
 
 function mixedSpark() {
-  const h = addModel(wall, tileB, GLB, TILE_OPTS);
+  const h = addModel(wall, tileB, GLB, { ...TILE_OPTS, engine: 'three' }); // reaches into h.viewer.scene
   // addModel/addSplat each own a viewer, but the viewer's `scene` and `content` are public on
   // purpose: composing beyond what the two wrappers do is meant to be a few lines, not a fork.
   const ready = h.ready.then(async () => {
@@ -154,7 +163,7 @@ function mixedSpark() {
     const spark = new SparkRenderer({ renderer: h.viewer.renderer, minSortIntervalMs: 16 });
     h.viewer.scene.add(spark);
 
-    const splat = new SplatMesh({ url: mixedSog || SPLAT });
+    const splat = new SplatMesh({ url: mixedSplat });
     splat.quaternion.set(1, 0, 0, 0); // most exports are Y-down; three.js is Y-up
     await splat.initialized;
 
@@ -163,9 +172,17 @@ function mixedSpark() {
     // unrelated unit systems, which is exactly how you end up with a splat towering over a model.
     const sb = measureSplatBounds(splat, THREE);
     const mesh = h.frame;
-    const scale = (mesh.extent[1] * 0.45) / (sb?.extent[1] || 1); // ~half the mesh's height
+    const scale = (mesh.extent[1] * SPLAT_H) / (sb?.extent[1] || 1);
     splat.scale.setScalar(scale);
-    splat.position.set(mesh.extent[0] * 0.9, mesh.extent[1] * 0.3, 0);
+    if (sb) {
+      // sb was measured at scale 1 and the origin (rotation included), so its centre scales too.
+      const want = [
+        mesh.center[0] + mesh.extent[0] * (0.5 + GAP) + (sb.extent[0] * scale) / 2, // GAP right of the mesh
+        mesh.center[1] - mesh.extent[1] / 2 + (sb.extent[1] * scale) / 2, // bases level
+        mesh.center[2],
+      ];
+      splat.position.set(...want.map((v, i) => v - sb.center[i] * scale));
+    }
     h.viewer.content.add(splat);
 
     // TWO SUBJECTS, ONE FRAME. Fitting to the mesh alone would let the splat hang out of the
@@ -230,8 +247,8 @@ function report(p, id, ok) {
 // difference only shows once something turns.
 //
 //   swept  — fit the box's horizontal DIAGONAL, so the subject stays inside the tile at every
-//            yaw. The Fox is 25 wide but 155 deep: fit its width and it looks right face-on,
-//            then swings a metre and a half out of frame as the turntable turns it.
+//            yaw. A long subject (the glTF sample Fox is 25 wide but 155 deep) fit by its width
+//            looks right face-on, then swings out of frame as the turntable turns it.
 //   width  — fit the width only. Bigger face-on, wrong the moment it moves.
 const sweepBtn = document.getElementById('sweep');
 const zNote = document.getElementById('noteZ');
@@ -254,7 +271,7 @@ const applyFit = () => {
     // reading v._fitScale, which is why web#26 exists; getSubjectBounds() is the supported way.
     const s = v.getSubjectBounds().scale;
     zNote.textContent =
-      `Fox is ${e[0].toFixed(0)} wide and ${e[2].toFixed(0)} deep. ` +
+      `The model is ${e[0].toFixed(2)} wide and ${e[2].toFixed(2)} deep. ` +
       `Face-on it spans ${((e[0] * s) / tileWidthMetres(v) * 100).toFixed(0)}% of the tile width; ` +
       `turned side-on, ${((e[2] * s) / tileWidthMetres(v) * 100).toFixed(0)}%.`;
     zNote.appendChild(live);
