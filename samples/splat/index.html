@@ -57,8 +57,9 @@
      as you move; in any other browser you get the same asset, flat. Drag to tilt it (it relaxes
      back when you let go), scroll to zoom.</p>
 
-  <p><strong>No default asset yet.</strong> Load one with <code>?url=</code> (see
-     <em>Bring your own splat</em> below).</p>
+  <p>The default subject is Spark's butterfly, converted to <code>.sog</code> with its
+     spherical harmonics intact, so its colour changes as you look around it. Load your own
+     with <code>?url=</code> (see <em>Bring your own splat</em> below).</p>
 
   <div class="stage">
     <canvas id="tile" width="1280" height="720"></canvas>
@@ -95,7 +96,8 @@
   </div>
 
   <p class="foot">← <a href="../../">All samples</a> ·
-     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a></p>
+     <a href="https://github.com/DisplayXR/displayxr-browser">Get the DisplayXR Browser</a><br>
+     <span style="font-size:13px">Butterfly splat &copy; World Labs (from Spark, <a href="https://sparkjs.dev/">sparkjs.dev</a>), used with permission; converted to SOG.</span></p>
 </div>
 
 <!-- The SDK is mapped to THIS repo's sources rather than a jsDelivr pin, so the page always
@@ -105,7 +107,7 @@
      "playcanvas" is the engine this page renders with. ./splat imports it with a dynamic
      import() only when engine: 'playcanvas' is asked for.
 
-     three and Spark are still mapped because @displayxr/inline3d/splat 1.9 imports them
+     three and Spark are still mapped because @displayxr/inline3d/splat (1.19) imports them
      statically, so every page that uses addSplat loads them, even when it renders with
      PlayCanvas. The SDK entry split that removes those loads is planned. The page itself only
      renders with Spark on ?engine=spark. three is pinned to 0.180, Spark's peer floor, and Spark

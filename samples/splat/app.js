@@ -11,11 +11,11 @@ const canvas = document.getElementById('tile');
 const statusEl = document.getElementById('status');
 const buyEl = document.getElementById('buy');
 
-// Default asset: NONE YET. This page used Spark's public butterfly.spz, which the PlayCanvas
-// engine cannot read, and a default needs an asset we hold the rights to show publicly. Until
-// one is chosen, the page asks for ?url=…. Anything you ship to a customer needs to be an asset
-// you actually hold rights to, which a demo file on someone else's CDN is not.
-const DEFAULT_URL = '';
+// Default asset: Spark's butterfly, © World Labs, used with permission and converted to SOG
+// with all three spherical-harmonic bands kept, so its colour shifts with the viewing angle.
+// ?url= loads your own. Anything you ship to a customer needs to be an asset you actually hold
+// rights to, which a demo file on someone else's CDN is not.
+const DEFAULT_URL = new URL('./assets/butterfly.sog', import.meta.url).href;
 const params = new URLSearchParams(location.search);
 const url = params.get('url') || DEFAULT_URL;
 
@@ -46,38 +46,32 @@ function setSpin(on) {
 spinBtn.addEventListener('click', () => setSpin(!spinning));
 document.getElementById('reset').addEventListener('click', () => handle?.resetPose());
 
-if (!url) {
-  statusEl.textContent =
-    'No splat configured. Append ?url=<your .sog, .ply or lod-meta.json> (same-origin or CORS).';
-  buyEl.hidden = true;
-} else {
-  // Spark reads a .sog's camera block from BYTES only, so on the Spark path a .sog is fetched
-  // here and handed over as bytes. Without that the two engines would open the same file with
-  // different rigs. PlayCanvas reads the block from the URL. A failed fetch falls back to the
-  // URL, so the load error is reported by addSplat below.
-  const isSog = /\.sog(\?|#|$)/i.test(url);
-  const src =
-    engine === 'spark' && isSog
-      ? await fetch(url).then((r) => (r.ok ? r.arrayBuffer() : url)).catch(() => url)
-      : url;
+// Spark reads a .sog's camera block from BYTES only, so on the Spark path a .sog is fetched
+// here and handed over as bytes. Without that the two engines would open the same file with
+// different rigs. PlayCanvas reads the block from the URL. A failed fetch falls back to the
+// URL, so the load error is reported by addSplat below.
+const isSog = /\.sog(\?|#|$)/i.test(url);
+const src =
+  engine === 'spark' && isSog
+    ? await fetch(url).then((r) => (r.ok ? r.arrayBuffer() : url)).catch(() => url)
+    : url;
 
-  wall = await createInline3D({ lazy: false }); // ← 1. open the session
-  try {
-    handle = addSplat(wall, canvas, src, {
-      // ← 2. add the splat
-      engine,
-      idleSpin: 0, // started below once the rig is known
-      feather: 24,
-      // Half-scale per eye. After the interlace each eye receives roughly half the panel's
-      // samples anyway, so the detail beyond this is rendered and then discarded.
-      renderScale: 0.6,
-    });
-  } catch (err) {
-    // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)
-    // throws at call time, with a message saying what to pass instead.
-    statusEl.textContent = err.message;
-    buyEl.hidden = true;
-  }
+wall = await createInline3D({ lazy: false }); // ← 1. open the session
+try {
+  handle = addSplat(wall, canvas, src, {
+    // ← 2. add the splat
+    engine,
+    idleSpin: 0, // started below once the rig is known
+    feather: 24,
+    // Half-scale per eye. After the interlace each eye receives roughly half the panel's
+    // samples anyway, so the detail beyond this is rendered and then discarded.
+    renderScale: 0.6,
+  });
+} catch (err) {
+  // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)
+  // throws at call time, with a message saying what to pass instead.
+  statusEl.textContent = err.message;
+  buyEl.hidden = true;
 }
 
 if (handle) {

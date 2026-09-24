@@ -44,9 +44,10 @@
 
   <div class="card">
     <h2><a href="samples/splat/">gaussian splat</a></h2>
-    <p>A photoreal 3D Gaussian splat as a glasses-free tile, loaded with one
-       <code>addSplat()</code> call and rendered with the PlayCanvas engine. It opens at the
-       camera the photo was taken from, drag to tilt, with a 2D plate composited crisply over the
+    <p>A 3D Gaussian splat as a glasses-free tile, loaded with one
+       <code>addSplat()</code> call and rendered with the PlayCanvas engine. It auto-frames on
+       the display plane and turns slowly (a <code>.sog</code> that records its capture camera
+       opens at that camera instead), drag to tilt, with a 2D plate composited crisply over the
        woven 3D. <code>?engine=spark</code> renders the same tile with Spark.</p>
   </div>
 
@@ -54,7 +55,8 @@
     <h2><a href="samples/model/">glTF model</a></h2>
     <p>A glTF mesh as a glasses-free tile via <code>addModel()</code> — and, beside it, a mesh and a
        Gaussian splat sharing one scene and sorting against each other, so a catalogue can mix
-       captured and authored content instead of committing to one.</p>
+       captured and authored content instead of committing to one. PlayCanvas by default,
+       <code>?engine=three</code> for the three.js twin.</p>
   </div>
 
   <div class="card">
