@@ -50,7 +50,7 @@ import {
   budgetPerManager,
 } from './inline3d-splat-perf.js';
 import { boundsFromPositions, boundsFromPositionsAsync } from './inline3d-viewer.js';
-import { cameraRigFromPose } from './inline3d-three.js';
+import { cameraRigFromPose, displayRig } from './inline3d-three.js';
 import {
   SplatEffects,
   EFFECTS,
@@ -910,6 +910,21 @@ export class PlayCanvasSplatViewer {
     this.mono.fov = captureVerticalFovDeg(rig.intrinsics, NaN, this.mono.near, 'height');
     this.mono.far = Math.max(this.mono.far, CAPTURE_FAR);
     this._updateMonoProjection();
+  }
+
+  /**
+   * Switch the eye camera(s) to another tone mapping, by name (TONE_MAPPINGS). Live: the engine
+   * picks the new shader variant on the next draw. handle.setRig's display rig uses it to give a
+   * page's meshes addModel's 'neutral' while the splat is hidden.
+   */
+  setToneMapping(name) {
+    const key = TONE_MAPPINGS[name] ? name : 'none';
+    this.toneMapping = key;
+    const pc = this.pc;
+    if (!pc) return;
+    const v = pc[TONE_MAPPINGS[key]] ?? pc.TONEMAP_NONE;
+    if (this.eye?.camera) this.eye.camera.toneMapping = v;
+    if (this._viewPath === 'cameras') for (const c of this._views) if (c?.camera) c.camera.toneMapping = v;
   }
 
   /** Forget the auto-fit (scale 1, no subject box) — the camera rig's framing. */
@@ -2151,6 +2166,100 @@ export function describeResource(res) {
  * one-pass fade, with the coverage-linear alpha remap on both assets.
  */
 
+/**
+ * handle.setRig's DISPLAY-rig defaults: addModel's, so a mesh framed through setRig('display')
+ * sits exactly where `addModel(url, { engine: 'playcanvas' })` puts it (docs/playcanvas-adapter.md
+ * §setRig). `toneMapping` applies to the page's meshes while the splat is hidden (the splat keeps
+ * 'none' whenever it is shown); `environment: 'room'` installs addModel's neutral-studio IBL when
+ * the page has no `scene.envAtlas` of its own, and removes it again when the rig changes back.
+ */
+export const SET_RIG_DISPLAY_DEFAULTS = Object.freeze({
+  virtualDisplayHeight: 0.24,
+  fit: 'contain',
+  margin: 0.8,
+  depthLimit: DEFAULT_DEPTH_LIMIT,
+  fitSweep: true,
+  idleSpin: 8,
+  ipdFactor: 1,
+  parallaxFactor: 1,
+  perspectiveFactor: 1,
+  toneMapping: 'neutral',
+  environment: 'room',
+});
+
+export const SET_RIG_TYPES = Object.freeze(['display', 'camera', 'auto']);
+const SET_RIG_FITS = ['contain', 'cover', 'height', 'none'];
+let warnedSetRigKeys = false;
+
+const PAGE_SETRIG_ERROR =
+  "@displayxr/inline3d/splat: setRig() is not available with controls:'page' — the page owns the " +
+  'camera (its camera IS the rig). Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).';
+
+/**
+ * handle.setRig's arguments, validated and resolved (throws at the call, before anything runs).
+ * @returns {{type:'display'|'camera'|'auto', o?:object}}
+ */
+export function validateSetRig(type, o = {}, pageMode = false) {
+  if (pageMode) throw new Error(PAGE_SETRIG_ERROR);
+  if (!SET_RIG_TYPES.includes(type)) {
+    throw new Error(`@displayxr/inline3d/splat: setRig("${type}") — expected 'display', 'camera' or 'auto'.`);
+  }
+  if (o === null || typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: setRig options must be an object.');
+  if (type !== 'display') return { type };
+  const D = SET_RIG_DISPLAY_DEFAULTS;
+  const known = new Set([...Object.keys(D), 'frame']);
+  const unknown = Object.keys(o).filter((k) => !known.has(k));
+  if (unknown.length && !warnedSetRigKeys) {
+    warnedSetRigKeys = true;
+    console.warn(
+      `[inline3d/splat] setRig('display') ignores ${unknown.join(', ')}` +
+        (unknown.includes('transitionMs') ? ' — a rig switch is a clean cut (no eased transition in this version)' : '') +
+        '.',
+    );
+  }
+  const num = (k, ok) => {
+    const v = o[k] === undefined ? D[k] : o[k];
+    if (!Number.isFinite(v) || !ok(v)) throw new Error(`@displayxr/inline3d/splat: setRig('display') — bad ${k}: ${o[k]}.`);
+    return v;
+  };
+  const fit = o.fit === undefined ? D.fit : o.fit;
+  if (!SET_RIG_FITS.includes(fit)) throw new Error(`@displayxr/inline3d/splat: setRig('display') — fit "${fit}", expected ${SET_RIG_FITS.join(' | ')}.`);
+  const toneMapping = o.toneMapping === undefined ? D.toneMapping : o.toneMapping;
+  if (!TONE_MAPPINGS[toneMapping]) {
+    throw new Error(`@displayxr/inline3d/splat: setRig('display') — toneMapping "${toneMapping}", expected ${Object.keys(TONE_MAPPINGS).join(' | ')}.`);
+  }
+  const environment = o.environment === undefined ? D.environment : o.environment;
+  if (!['room', 'neutral', 'none'].includes(environment)) {
+    throw new Error(`@displayxr/inline3d/splat: setRig('display') — environment "${environment}", expected 'room' | 'neutral' | 'none'.`);
+  }
+  let frame = null;
+  if (o.frame != null) {
+    const c = o.frame.center;
+    const e = o.frame.extent;
+    const v3 = (v) => (Array.isArray(v) || ArrayBuffer.isView(v) ? v.length >= 3 && [0, 1, 2].every((i) => Number.isFinite(v[i])) : v && [v.x, v.y, v.z].every(Number.isFinite));
+    if (!v3(c) || !v3(e)) throw new Error("@displayxr/inline3d/splat: setRig('display') — frame must be { center: [x,y,z], extent: [x,y,z] }.");
+    const a3 = (v) => (Array.isArray(v) || ArrayBuffer.isView(v) ? [v[0], v[1], v[2]] : [v.x, v.y, v.z]);
+    frame = { center: a3(c), extent: a3(e) };
+  }
+  return {
+    type,
+    o: {
+      vH: num('virtualDisplayHeight', (v) => v > 0),
+      fit,
+      margin: num('margin', (v) => v > 0),
+      depthLimit: num('depthLimit', (v) => v > 0),
+      fitSweep: o.fitSweep === undefined ? D.fitSweep : o.fitSweep !== false,
+      idleSpin: num('idleSpin', () => true),
+      ipdFactor: num('ipdFactor', (v) => v >= 0),
+      parallaxFactor: num('parallaxFactor', (v) => v >= 0),
+      perspectiveFactor: num('perspectiveFactor', (v) => v > 0),
+      toneMapping,
+      environment,
+      frame,
+    },
+  };
+}
+
 /** setSource's transitions and their defaults. */
 export const SOURCE_TRANSITIONS = Object.freeze({
   cut: {},
@@ -2248,6 +2357,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     observe,
     firstWovenHoldMs,
     preserveDrawingBuffer = false,
+    antialias = false,
   } = opts;
   // `sortIntervalMs` is accepted and has no effect here: the engine re-sorts when the camera
   // ROTATES (one directional sort serves every view), not on a timer — docs/playcanvas-adapter.md.
@@ -2361,6 +2471,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     },
     setSource,
     prepareSource,
+    setRig,
     /**
      * Play a transition effect (inflate, deflate, sweep, dissolve, fade, pulse, custom) — see
      * docs/splat-effects.md. Validated now; runs once the first asset is on screen. Resolves
@@ -2588,6 +2699,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   // ── focus → view rig ──
   let lastConvergence = Number.NaN;
+  // The camera rig's descriptor object (rewritten in place per focus change) and the DISPLAY rig
+  // declared through setViewRig, if any. `declaredDisplay` null + no camera rig pushed = the
+  // `virtualDisplayHeight` shorthand addScene was built with, which is where every non-page tile
+  // starts. A display rig after a camera rig has to be SENT (the shorthand cannot be restored),
+  // as the explicit descriptor it is shorthand for (displayRig: identity pose, factors 1).
+  let camRigObj = null;
+  let declaredDisplay = pageMode ? 'page' : 'shorthand';
   function pushViewRig(force) {
     if (pageMode) return; // pageTick declares the rig every frame
     if (!out.rig || out.rig.type !== 'camera') return;
@@ -2600,7 +2718,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     lastConvergence = d;
     out.rig.convergence = d;
     const q = quatFromMatrix(pose);
-    out.viewRig = cameraRigFromPose(
+    camRigObj ||= {};
+    declaredDisplay = null;
+    out.viewRig = camRigObj = cameraRigFromPose(
       {
         position: { x: pose[12], y: pose[13], z: pose[14] },
         orientation: { x: q[0], y: q[1], z: q[2], w: q[3] },
@@ -2610,7 +2730,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         convergence: d > 0 ? d : 0,
         ipdFactor: out.rig.ipdFactor,
         parallaxFactor: out.rig.parallaxFactor,
-        out: out.viewRig || {},
+        out: camRigObj,
       },
     );
     handle?.setViewRig?.(out.viewRig);
@@ -2821,16 +2941,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             ? lift(frame)
             : null;
 
-    const sample = loaded.pre?.rest || null;
-    const box = canvas.getBoundingClientRect();
-    const resolved = resolveRig({
-      camera: loaded.camera,
-      opts: rigOpts,
-      cloud: sample,
-      canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
-    });
-    resolved.focusDefault = resolved.focus.slice();
-    resolved.focusDefaultSource = resolved.focusSource;
+    // What the waterfall was fed, kept with the asset: handle.setRig re-resolves from exactly this
+    // (never from a stale copy of the result), so setRig('camera') / ('auto') land where a load did.
+    const rigIn = { camera: loaded.camera, sample: loaded.pre?.rest || null, bounds };
+    // A setRig choice is STICKY across setSource: the new asset is resolved on the chosen rig.
+    const resolved = resolveFor(rigIn, rigOverride ? rigOverride.type : 'auto');
     perfSpan('applyLoaded:rig', tB);
     out.camera = loaded.camera;
     out.rig = resolved;
@@ -2862,8 +2977,66 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           }),
         );
       }
-    } else if (resolved.type === 'camera') {
+    } else {
+      applyRig(resolved, bounds, false);
+    }
+    return { pickCentres, alpha8: cloud?.alpha8 || null, rigIn };
+  }
+
+  /** resolveRig on an asset's kept inputs: 'auto' = the load-time waterfall, else forced. */
+  function resolveFor(rigIn, type) {
+    const box = canvas.getBoundingClientRect();
+    const resolved = resolveRig({
+      camera: rigIn.camera,
+      opts: type === 'auto' ? rigOpts : { ...rigOpts, rig: type },
+      cloud: rigIn.sample,
+      canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
+    });
+    if (type !== 'auto') resolved.typeSource = 'setRig';
+    resolved.focusDefault = resolved.focus.slice();
+    resolved.focusDefaultSource = resolved.focusSource;
+    return resolved;
+  }
+
+  /** The framing knobs the viewer's fit reads, as addSplat was booted with. */
+  const bootFraming = { vH: virtualDisplayHeight, fit, margin, depthLimit, fitSweep };
+  function setFraming(f) {
+    viewer.vH = f.vH;
+    viewer.fit = f.fit;
+    viewer.margin = f.margin;
+    viewer.depthLimit = f.depthLimit;
+    viewer.fitSweep = f.fitSweep;
+  }
+
+  /** Declare a DISPLAY rig to the runtime, unless that exact one is already declared. */
+  function declareDisplay(f) {
+    const key = `${f.vH}|${f.ipdFactor ?? 1}|${f.parallaxFactor ?? 1}|${f.perspectiveFactor ?? 1}`;
+    if (declaredDisplay === key) return;
+    // Back at the boot rig from the shorthand it was built with: nothing to say.
+    if (declaredDisplay === 'shorthand' && key === `${bootFraming.vH}|1|1|1`) return;
+    declaredDisplay = key;
+    lastConvergence = Number.NaN;
+    out.viewRig = displayRig({
+      virtualDisplayHeight: f.vH,
+      ipdFactor: f.ipdFactor ?? 1,
+      parallaxFactor: f.parallaxFactor ?? 1,
+      perspectiveFactor: f.perspectiveFactor ?? 1,
+    });
+    handle?.setViewRig?.(out.viewRig);
+  }
+
+  /**
+   * Put the viewer on a resolved rig: lens, framing, focus, and the rig declared to the runtime.
+   * Shared by every load / setSource (reset=false: the pose is kept) and handle.setRig
+   * (reset=true: the pose goes back to the rig's rest, yaw = pitch = 0, zoom 1, depth 0).
+   */
+  function applyRig(resolved, bounds, reset) {
+    const disp = rigOverride?.type === 'display' ? rigOverride.o : null;
+    if (reset) viewer.resetPose();
+    if (resolved.type === 'camera') {
+      setFraming(bootFraming);
       if (!('idleSpin' in opts)) viewer.idleSpin = 0;
+      else if (reset) viewer.idleSpin = idleSpin;
       // The camera rig never auto-fits (the capture IS the framing): a scale left by a previous
       // display-rig asset (setSource) must not shrink this one.
       viewer.resetFit();
@@ -2871,15 +3044,170 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: false });
       lastConvergence = Number.NaN;
       pushViewRig(true);
-    } else {
-      if (viewer.mono.capture) viewer.useDisplayCamera();
-      if (bounds) viewer.fitTo(bounds.center, bounds.extent);
-      else console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
-      if (resolved.focusSource === 'caller' || resolved.focusSource === 'block') {
-        viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: true });
+      return;
+    }
+    if (viewer.mono.capture) viewer.useDisplayCamera();
+    // The display rig orbits the frame centre (SceneViewer's recentre), whatever a camera rig
+    // before it left in the viewer.
+    viewer._focusRecentres = true;
+    const target = disp ? displayTarget(disp) : null;
+    if (target) {
+      // setRig('display') framing the page's content: addModel's fit, on addModel's defaults.
+      setFraming(disp);
+      viewer.idleSpin = disp.idleSpin;
+      viewer.fitTo(target.center, target.extent);
+      resolved.focus = contentToModel(target.center);
+      resolved.focusSource = 'frame';
+      resolved.focusDefault = resolved.focus.slice();
+      resolved.focusDefaultSource = 'frame';
+      resolved.frame = target;
+      declareDisplay(disp);
+      return;
+    }
+    // The splat itself, as a display-rig addSplat frames it (the load-time path).
+    setFraming(disp || bootFraming);
+    if (reset) viewer.idleSpin = disp ? disp.idleSpin : idleSpin;
+    if (bounds) viewer.fitTo(bounds.center, bounds.extent);
+    else console.warn('[inline3d/splat] no usable bounds — subject is UNFRAMED (model scale)', src);
+    if (resolved.focusSource === 'caller' || resolved.focusSource === 'block') {
+      viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: true });
+    }
+    if (disp) resolved.frame = bounds ? { center: bounds.center.slice(), extent: bounds.extent.slice(), source: 'splat' } : null;
+    declareDisplay(disp || { vH: bootFraming.vH });
+  }
+
+  // ── handle.setRig: a live, reversible rig switch (docs/playcanvas-adapter.md §setRig) ──
+  /** null = 'auto' (the per-asset waterfall); else { type: 'camera' } | { type: 'display', o }. */
+  let rigOverride = null;
+  let rigSeq = 0;
+  /** The neutral-studio IBL setRig('display') installed, and what it replaced — or null. */
+  let rigEnv = null;
+  const baseToneMapping = viewer.toneMapping;
+
+  /** Is the splat on screen: its entity (and every ancestor) enabled. */
+  function splatShown() {
+    let e = current?.entity || null;
+    if (!e) return false;
+    for (; e; e = e.parent) if (e.enabled === false) return false;
+    return true;
+  }
+
+  /**
+   * World AABB of the page's meshes under handle.engine.root — enabled render components only,
+   * union of their mesh instances' `aabb` (the engine's world box, skinning included). Content
+   * space. The same measurement addModel's boundsOfEntity takes of its glTF.
+   */
+  function rootMeshBounds() {
+    const root = viewer.content;
+    const renders = root?.findComponents ? root.findComponents('render') : [];
+    let min = null;
+    let max = null;
+    for (const r of renders) {
+      if (r.enabled === false || r.entity?.enabled === false) continue;
+      for (const mi of r.meshInstances || []) {
+        const b = mi.aabb;
+        if (!b) continue;
+        const c = b.center;
+        const h = b.halfExtents;
+        const lo = [c.x - h.x, c.y - h.y, c.z - h.z];
+        const hi = [c.x + h.x, c.y + h.y, c.z + h.z];
+        if (!lo.every(Number.isFinite) || !hi.every(Number.isFinite)) continue;
+        if (!min) {
+          min = lo;
+          max = hi;
+        } else {
+          for (let i = 0; i < 3; i++) {
+            if (lo[i] < min[i]) min[i] = lo[i];
+            if (hi[i] > max[i]) max[i] = hi[i];
+          }
+        }
       }
     }
-    return { pickCentres, alpha8: cloud?.alpha8 || null };
+    return min ? { min, max } : null;
+  }
+
+  /**
+   * What setRig('display') frames: the caller's `frame`, else the meshes under root (plus the
+   * splat's measured box if it is shown), else null — the splat, as a display-rig addSplat would.
+   */
+  function displayTarget(disp) {
+    if (disp.frame) {
+      return { center: toArray3(disp.frame.center), extent: toArray3(disp.frame.extent).map((v) => Math.max(Math.abs(v), 1e-6)), source: 'caller' };
+    }
+    const m = rootMeshBounds();
+    if (!m) return null;
+    let { min, max } = m;
+    let source = 'root';
+    const sb = splatShown() ? out.frame : null;
+    if (sb) {
+      source = 'root+splat';
+      min = min.map((v, i) => Math.min(v, sb.center[i] - sb.extent[i] / 2));
+      max = max.map((v, i) => Math.max(v, sb.center[i] + sb.extent[i] / 2));
+    }
+    return {
+      center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2],
+      extent: [Math.max(max[0] - min[0], 1e-6), Math.max(max[1] - min[1], 1e-6), Math.max(max[2] - min[2], 1e-6)],
+      source,
+    };
+  }
+
+  /** Per tick: addModel's tone mapping for the page's meshes while the splat is hidden. */
+  viewer.onTick = pageMode
+    ? viewer.onTick
+    : () => {
+        const want = rigOverride?.type === 'display' && !splatShown() ? rigOverride.o.toneMapping : baseToneMapping;
+        if (want !== viewer.toneMapping) viewer.setToneMapping(want);
+      };
+
+  /** Install addModel's default IBL for the display rig, if the page has none of its own. */
+  async function ensureRigEnvironment(disp, seq) {
+    if (disp.environment === 'none' || viewer.sky || rigEnv) return;
+    const app = viewer.app;
+    const scene = app?.scene;
+    if (!scene || scene.envAtlas) return; // the page lights its own meshes: leave it alone
+    const m = await import('./inline3d-model-playcanvas.js');
+    if (removed || seq !== rigSeq || rigOverride?.type !== 'display' || scene.envAtlas || rigEnv) return;
+    const prev = { skyboxIntensity: scene.skyboxIntensity, exposure: scene.exposure, skyboxRotation: scene.skyboxRotation };
+    const atlas = m.useNeutralStudio(pcModule, app, m.ENV_YAW_DEG);
+    rigEnv = { atlas, prev };
+  }
+
+  /** Undo ensureRigEnvironment (only what it installed, only if the page has not replaced it). */
+  function dropRigEnvironment() {
+    if (!rigEnv) return;
+    const scene = viewer.app?.scene;
+    const { atlas, prev } = rigEnv;
+    rigEnv = null;
+    if (!scene || scene.envAtlas !== atlas) return;
+    scene.envAtlas = null;
+    scene.skyboxIntensity = prev.skyboxIntensity;
+    scene.exposure = prev.exposure;
+    if (prev.skyboxRotation !== undefined) scene.skyboxRotation = prev.skyboxRotation;
+    atlas.destroy?.();
+  }
+
+  /**
+   * handle.setRig(type, options) — switch the rig the window is seen through, live: no remount,
+   * no reload, no new session. 'display' frames the page's meshes under handle.engine.root (plus
+   * the splat when shown) on addModel's defaults; 'camera' is the asset's capture rig re-resolved
+   * from the waterfall's own inputs; 'auto' is exactly what the load resolved. The pose resets to
+   * the new rig's rest. Sticky across setSource until setRig('auto'). Resolves to the handle once
+   * applied (the display rig's default environment included).
+   */
+  function setRig(type, o = {}) {
+    const req = validateSetRig(type, o, pageMode);
+    const seq = ++rigSeq;
+    return first.then(async () => {
+      if (removed || seq !== rigSeq || !current) return out;
+      rigOverride = req.type === 'auto' ? null : req;
+      if (req.type !== 'display') dropRigEnvironment();
+      const resolved = resolveFor(current.rigIn, req.type);
+      out.rig = resolved;
+      applyRig(resolved, current.rigIn.bounds, true);
+      viewer.onTick?.(); // tone mapping now, not a frame late
+      if (req.type === 'display') await ensureRigEnvironment(req.o, seq);
+      return out;
+    });
   }
 
   let pcModule = null;
@@ -2892,6 +3220,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       preserveDrawingBuffer,
       perf: perfResolved,
       viewPath: opts.playcanvasViewPath,
+      antialias: antialias === true,
     });
     if (!app || removed) return null;
     pcModule = pc;

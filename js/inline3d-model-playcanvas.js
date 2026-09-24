@@ -346,7 +346,7 @@ export function neutralStudioRGBE(width = 256, height = 128, env = NEUTRAL_STUDI
 export const ENV_YAW_DEG = 0;
 
 /** Build the default environment on this app and set it as the scene's envAtlas. */
-function useNeutralStudio(pc, app, yawDeg) {
+export function useNeutralStudio(pc, app, yawDeg) {
   const W = 256;
   const H = 128;
   const tex = new pc.Texture(app.graphicsDevice, {
