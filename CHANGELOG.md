@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased — minor
+## 1.14.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). New particle reveals are additive. One default changes pixels
 DURING a transition in a woven 3D session (the old photo is now live); end states and 2D are
