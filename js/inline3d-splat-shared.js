@@ -242,6 +242,12 @@ export const ORBIT_TAU_REST_S = 0.6;
 
 /** Wheel "release": this long with no wheel event ends the gesture and starts the relax, ms. */
 export const ZOOM_WHEEL_IDLE_MS = 150;
+/**
+ * The zoom relax's landing floor, log-zoom per second. The relax is the orbit's exponential
+ * (τ = 0.6 s), except it never moves slower than this, so it lands in finite time: from 2× the
+ * exponential carries it to 1.5 % from home in ≈2.3 s and the floor finishes in ≈0.6 s more.
+ */
+export const ZOOM_RELAX_MIN_RATE = 0.025;
 
 /**
  * Validate + default the `zoom` option: `{ min, max, relax, ease }`.

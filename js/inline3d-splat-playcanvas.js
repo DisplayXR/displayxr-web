@@ -85,6 +85,7 @@ import {
   WHEEL_MAX_PX,
   ZOOM_PER_PX,
   ZOOM_WHEEL_IDLE_MS,
+  ZOOM_RELAX_MIN_RATE,
   resolveZoomOption,
   MONO_FOV,
   MONO_NEAR,
@@ -1775,14 +1776,23 @@ export class PlayCanvasSplatViewer {
     }
     // Relaxing eases with τ = zoomOpts.ease (the orbit's 0.6 s by default); the wheel's own
     // damping otherwise. Both in log space, so 2× → 1× reads like 1× → ½×.
-    const kz = this._zoomMode === 'rest' ? (dt > 0 ? 1 - Math.exp(-dt / this.zoomOpts.ease) : 0) : k;
-    // The relax snaps home inside 0.1 % (sub-pixel for any tile), or an exponential never lands.
-    const zEps = this._zoomMode === 'rest' ? 1e-3 * this._targetZoom : 1e-4;
-    if (Math.abs(this._targetZoom - this._zoom) > zEps) {
-      this._zoom *= Math.pow(this._targetZoom / this._zoom, kz);
+    if (this._zoomMode === 'rest') {
+      // The exponential (τ = zoomOpts.ease) with a landing floor: it never moves slower than
+      // ZOOM_RELAX_MIN_RATE (log-zoom per second), so it ARRIVES — 2× is home in ≈3 s — instead of
+      // creeping in forever or popping at a snap. Above ~1 % from home the floor never binds.
+      const gap = Math.log(this._targetZoom / this._zoom);
+      const ko = dt > 0 ? 1 - Math.exp(-dt / this.zoomOpts.ease) : 0;
+      const step = Math.min(Math.abs(gap), Math.max(Math.abs(gap) * ko, ZOOM_RELAX_MIN_RATE * dt));
+      if (Math.abs(gap) - step < 1e-6) {
+        this._zoom = this._targetZoom;
+        this._zoomMode = null;
+      } else {
+        this._zoom *= Math.exp(Math.sign(gap) * step);
+      }
+    } else if (Math.abs(this._targetZoom - this._zoom) > 1e-4) {
+      this._zoom *= Math.pow(this._targetZoom / this._zoom, k);
     } else {
       this._zoom = this._targetZoom;
-      if (this._zoomMode === 'rest') this._zoomMode = null;
     }
     this._easeFocus();
     this._applyTransform();
@@ -1919,7 +1929,11 @@ export class PlayCanvasSplatViewer {
     this._onDown = (ev) => {
       if (this.inputLocked) return; // handle.setVideo: a screen-locked plane has nothing to orbit
       if (ev.pointerId !== undefined) pointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
-      el.setPointerCapture?.(ev.pointerId);
+      try {
+        el.setPointerCapture?.(ev.pointerId);
+      } catch {
+        // An inactive pointer id (a synthetic event) throws; the gesture works without capture.
+      }
       if (pointers.size === 2) {
         if (dragging) endDrag();
         this._pinching = true;
@@ -1970,7 +1984,11 @@ export class PlayCanvasSplatViewer {
         this._lastWheel = now() - ZOOM_WHEEL_IDLE_MS - 1;
         this._lastInput = now();
       }
-      if (had || ev.pointerId === undefined) el.releasePointerCapture?.(ev.pointerId);
+      try {
+        if (had || ev.pointerId === undefined) el.releasePointerCapture?.(ev.pointerId);
+      } catch {
+        // see pointerdown
+      }
       if (!dragging) return;
       endDrag();
       this._lastInput = now();

@@ -1295,7 +1295,7 @@ const wheel = (v, deltaY, n = 1) => {
 test('zoom defaults are today’s: [0.2, 6], no relax, wheel damping unchanged', async (t) => {
   const S = await import('../js/inline3d-splat-shared.js');
   assert.deepEqual(S.resolveZoomOption(undefined), { min: 0.2, max: 6, relax: false, ease: 0.6 });
-  assert.deepEqual([S.ZOOM_MIN, S.ZOOM_MAX, S.ZOOM_WHEEL_IDLE_MS], [0.2, 6, 150]);
+  assert.deepEqual([S.ZOOM_MIN, S.ZOOM_MAX, S.ZOOM_WHEEL_IDLE_MS, S.ZOOM_RELAX_MIN_RATE], [0.2, 6, 150, 0.025]);
   const { v, frames } = await zoomViewer(t);
   wheel(v, 120, 40); // far out
   near(v.getPose({ target: true }).zoom, 0.2, 1e-12, 'clamped at the old ZOOM_MIN');
@@ -1331,8 +1331,25 @@ test('zoom relax: wheel to 2×, idle → eases back to 1× with τ 0.6 s (at 1×
   near(Math.log(v.getPose().zoom), Math.log(z0) * Math.exp(-1), 0.02, 'one τ closes 1 − 1/e of the log gap');
   frames(1.2); // ≈ 3τ since the relax began
   near(v.getPose().zoom, 1, 0.05, 'at 1× within ~3τ');
-  frames(1.5); // ≈ 5.5τ: inside the 0.1 % snap
+  frames(1.2); // ≈ 3.2 s since the wheel went idle: the landing floor has brought it home
   assert.equal(v.getPose().zoom, 1, 'exactly home, relax finished');
+  assert.equal(v._zoomMode, null);
+  v.dispose();
+});
+
+test('zoom relax from a settled 2× lands EXACTLY on 1× in ≈3 s, monotonically, never overshooting', async (t) => {
+  const { v, frames } = await zoomViewer(t, { zoom: { min: 1, max: 2, relax: true } });
+  v._zoom = v._targetZoom = 2; // as if held at the cap
+  v._lastWheel = performance.now(); // …and the wheel just went idle
+  let prev = 2, tLand = 0;
+  for (let i = 1; i < 400; i++) {
+    frames(0.016);
+    const z = v.getPose().zoom;
+    assert.ok(z <= prev && z >= 1, `monotone, no overshoot (${z})`);
+    prev = z;
+    if (z === 1) { tLand = i * 0.016; break; }
+  }
+  assert.ok(tLand > 2.8 && tLand < 3.2, `landed at ${tLand} s (150 ms idle + ≈2.9 s relax)`);
   assert.equal(v._zoomMode, null);
   v.dispose();
 });
@@ -1390,8 +1407,8 @@ test('pinch: two pointers zoom by their spread ratio, clamped; drag ends; relax 
   assert.equal(v._zoomMode, 'rest', 'pinch end starts the relax at once');
   frames(1.8); // 3τ
   near(v.getPose().zoom, 1, 0.03, 'within ~3τ');
-  frames(2);
-  assert.equal(v.getPose().zoom, 1);
+  frames(1.0);
+  assert.equal(v.getPose().zoom, 1, 'landed (1.5× is home in ≈2.7 s)');
   v._onUp({ pointerId: 1 });
   // All up: an ordinary drag orbits again.
   v._onDown({ clientX: 200, clientY: 150, pointerId: 3 });
