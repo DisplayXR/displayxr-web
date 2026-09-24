@@ -50,6 +50,7 @@
     "js/inline3d-splat-rig.js",
     "js/inline3d-splat-playcanvas.js",
     "js/inline3d-splat-shared.js",
+    "js/inline3d-splat-effects.js",
     "js/inline3d-model.js",
     "js/inline3d-model-entry.js",
     "js/inline3d-model-playcanvas.js",
@@ -61,7 +62,8 @@
     "model.d.ts",
     "CHANGELOG.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "keywords": [
     "displayxr",
