@@ -1052,7 +1052,13 @@ export class SplatEffects {
       if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ALWAYS ?? 2;
     } else {
       g.setWorkBufferModifier?.(null);
-      if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE ?? 1;
+      if ('workBufferUpdate' in g) {
+        // AUTO first: the engine's placement setter treats ONCE as a one-shot re-render and never
+        // leaves ALWAYS, so ONCE alone kept the asset re-rendering its work buffer (and re-sorting)
+        // every frame after its effect had ended.
+        g.workBufferUpdate = pc.WORKBUFFER_UPDATE_AUTO ?? 0;
+        g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE ?? 1;
+      }
       this.scopes.delete(key);
       this._installed.delete(key);
     }
