@@ -25,6 +25,10 @@
     },
     "./model": {
       "types": "./model.d.ts",
+      "import": "./js/inline3d-model-entry.js"
+    },
+    "./model/three": {
+      "types": "./model.d.ts",
       "import": "./js/inline3d-model.js"
     },
     "./package.json": "./package.json",
@@ -47,6 +51,9 @@
     "js/inline3d-splat-playcanvas.js",
     "js/inline3d-splat-shared.js",
     "js/inline3d-model.js",
+    "js/inline3d-model-entry.js",
+    "js/inline3d-model-playcanvas.js",
+    "js/inline3d-playcanvas-engine.js",
     "index.d.ts",
     "three.d.ts",
     "viewer.d.ts",
@@ -64,7 +71,8 @@
     "stereo",
     "3d-display",
     "lightfield",
-    "three"
+    "three",
+    "playcanvas"
   ],
   "homepage": "https://displayxr.github.io/displayxr-web/",
   "repository": {
@@ -78,7 +86,8 @@
   "peerDependencies": {
     "three": ">=0.150.0",
     "@sparkjsdev/spark": ">=2.0.0",
-    "playcanvas": ">=2.22.3 <3"
+    "playcanvas": ">=2.22.3 <3",
+    "meshoptimizer": ">=1.0.0"
   },
   "peerDependenciesMeta": {
     "three": {
@@ -88,6 +97,9 @@
       "optional": true
     },
     "playcanvas": {
+      "optional": true
+    },
+    "meshoptimizer": {
       "optional": true
     }
   },

@@ -24,7 +24,7 @@ const V_H = 0.3;
 //
 // Shopify's own optimiser does not emit Draco, so this asset does not need it. It is wired up
 // because merchants routinely upload pre-Draco'd GLBs and Shopify passes those through untouched:
-// without a decoder configured, GLTFLoader throws rather than degrading, and the failure would
+// without a decoder configured, the loader throws rather than degrading, and the failure would
 // look like a broken product instead of a missing decoder.
 const DECODER_PATH = { draco: new URL('../../vendor/draco/', import.meta.url).pathname };
 
@@ -34,6 +34,8 @@ const input = document.getElementById('url');
 const hint = document.getElementById('hint');
 
 const wall = await createInline3D({ lazy: false });
+// PlayCanvas renders by default (1.12); `?engine=three` is the 1.11 three.js renderer.
+const ENGINE = new URLSearchParams(location.search).get('engine') || undefined;
 input.value = SHOPIFY_GLB;
 
 if (!wall.supported) {
@@ -63,6 +65,7 @@ async function show(url) {
       feather: 24,
       renderScale: 0.6,
       decoderPath: DECODER_PATH,
+      ...(ENGINE ? { engine: ENGINE } : {}),
     });
     await handle.ready;
 
@@ -72,7 +75,7 @@ async function show(url) {
     // some other unit scale this is where it would be visible, rather than silently mis-framed.
     note.textContent =
       `loaded from cdn.shopify.com in ${ms} ms · measured ${w} × ${h} × ${d} m · ` +
-      (wall.supported ? 'woven' : 'flat fallback');
+      (wall.supported ? 'woven' : 'flat fallback') + ` · ${handle.backend}`;
   } catch (err) {
     // Name the likely cause. A cross-origin failure and a missing decoder look identical from the
     // outside, and guessing between them is what wastes the afternoon.

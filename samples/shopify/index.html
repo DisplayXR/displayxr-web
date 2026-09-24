@@ -101,14 +101,18 @@
      trademark of Shopify Inc. This sample is not affiliated with or endorsed by Shopify.</span></p>
 </div>
 
+<!-- "playcanvas" is what addModel renders with by default (1.12); three is only fetched with
+     ?engine=three (./model imports both engines dynamically). -->
 <script type="importmap">
 { "imports": {
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs",
+  "meshoptimizer/decoder": "https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_decoder.mjs",
   "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
   "@displayxr/inline3d": "../../js/inline3d.js",
   "@displayxr/inline3d/three": "../../js/inline3d-three.js",
   "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js",
-  "@displayxr/inline3d/model": "../../js/inline3d-model.js"
+  "@displayxr/inline3d/model": "../../js/inline3d-model-entry.js"
 } }
 </script>
 <script type="module" src="./app.js"></script>

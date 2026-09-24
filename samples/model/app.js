@@ -16,6 +16,11 @@ const DECODER_PATH = { draco: new URL('../../vendor/draco/', import.meta.url).pa
 
 const wall = await createInline3D({ lazy: false });
 const woven = wall.supported;
+// Which engine renders tiles A and C. Unset is the SDK default (PlayCanvas, from 1.12);
+// `?engine=three` is the 1.11 renderer, kept as the kill switch. Tile B is three.js either way —
+// it composes a Spark splat into the tile's three scene, which is a three-only thing to do.
+const ENGINE = new URLSearchParams(location.search).get('engine') || undefined;
+const engineOpt = ENGINE ? { engine: ENGINE } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
@@ -23,12 +28,13 @@ const a = addModel(wall, document.getElementById('tileA'), GLB, {
   idleSpin: 12,
   feather: 24,
   renderScale: 0.6,
+  ...engineOpt,
 });
 a.exclude(document.getElementById('plateA')); // crisp 2D price plate over the woven 3D
 
 report(a.ready, 'noteA', () => {
   const [w, h, d] = a.frame.extent.map((n) => n.toFixed(2));
-  return `glTF loaded · Box3 bounds ${w} x ${h} x ${d} · framed on the display plane`;
+  return `glTF loaded · bounds ${w} x ${h} x ${d} · framed on the display plane · ${a.backend}`;
 });
 
 // ── B. the same viewer, with a splat added alongside the mesh ───────────────────────────────
@@ -39,6 +45,7 @@ report(a.ready, 'noteA', () => {
 // world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
 // them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
 const b = addModel(wall, document.getElementById('tileB'), GLB, {
+  engine: 'three', // this tile reaches into the three scene (b.viewer.renderer / .scene)
   virtualDisplayHeight: 0.16,
   idleSpin: 12,
   feather: 24,
@@ -104,13 +111,24 @@ const c = addModel(wall, document.getElementById('tileC'), DRACO_GLTF, {
   feather: 24,
   renderScale: 0.6,
   decoderPath: DECODER_PATH,
+  ...engineOpt,
 });
 
-report(c.ready, 'noteC', () => {
+report(c.ready, 'noteC', () => `Draco decoded · ${vertexCount(c).toLocaleString()} vertices · ` +
+  `same call, same handle, same framing · ${c.backend}`);
+
+/** Vertices in a model handle, on either engine (`model` is an engine object). */
+function vertexCount(h) {
   let verts = 0;
-  c.model.traverse((o) => { if (o.isMesh) verts += o.geometry.attributes.position.count; });
-  return `Draco decoded · ${verts.toLocaleString()} vertices · same call, same handle, same framing`;
-});
+  if (h.backend === 'three') {
+    h.model.traverse((o) => { if (o.isMesh) verts += o.geometry.attributes.position.count; });
+  } else {
+    for (const r of h.model.findComponents('render')) {
+      for (const mi of r.meshInstances) verts += mi.mesh.vertexBuffer?.numVertices || 0;
+    }
+  }
+  return verts;
+}
 
 // ── page furniture ──────────────────────────────────────────────────────────────────────────
 function report(p, id, ok) {
