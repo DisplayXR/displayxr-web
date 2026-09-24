@@ -551,7 +551,10 @@ dwell.
 
 The live window's price, per frame: GPU-synced frame time (1× CPU, 2560×720, a 1-px readback per
 frame) is 14.5 ms steady and 25.2–25.6 ms live (13.1–13.7 ms frozen), i.e. both photos drawn. The
-second manager adds about 73 MB of GPU textures for the window only.
+second manager adds about 73 MB of GPU textures for the window only. Since the patch after 1.19.1,
+the `wavefront` draws each photo only on its side of the front, and its ridge no longer rewrites
+the work buffer: about 1.4× a still photo in stereo instead of 2×. The `crossfade` still draws
+both. See [`splat-effects.md` § Wavefront: one draw's worth](splat-effects.md#wavefront-one-draws-worth).
 
 ## `perf` on this engine
 

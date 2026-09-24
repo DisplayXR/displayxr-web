@@ -184,7 +184,7 @@ await h.setSource(next, { transition: 'wavefront', durationMs: 1800, ridge: 0.02
 | `'cut'` | At once. | the default with no `fadeMs` |
 | `'crossfade'` | Blends IMAGES. Two overlay quads lerp the old photo's image A with the new one's B, `out = (1 − t)·A + t·B` per premultiplied pixel, alpha included. The result is linear in t whatever the depth order: blend fraction = t to ±0.001 at every tenth, identical in both eyes (1.12.1). A is LIVE in a woven 3D session: the old photo keeps rendering with head motion (see [Live or frozen outgoing](#live-or-frozen-outgoing)). | `fadeMs > 0` |
 | `'flip'` (kept, not extended) | Phase 1: the old photo `deflate`s onto ITS convergence plane under ITS rig. The new photo is resident but hidden, so its work buffer builds meanwhile. At the flat moment the rig switches and the photos swap, with zero disparity on both sides. Phase 2: the new photo `inflate`s out of its own plane. | 2200 ms, `easeInOutSine` |
-| `'wavefront'` | The photo-frame prototype's Wavefront Sweep. A soft front crosses the picture from left to right over normalised u. Each column commits from the old photo to the new one over `lt = clamp((t − u·(1 − band)) / band, 0, 1)` with a smoothstep, so u = 0 starts at t = 0 and u = 1 finishes at t = 1. **Image half:** the old photo's image (live in 3D, the frozen frame in 2D) gives way at the same viewport-relative u in every eye, a front on the zero-disparity plane. **Depth half:** a RIDGE rides the front on the new photo, `sin(π·lt) × ridge` world units toward the eyes. Each splat moves along its own ray, with its scale scaled by the same λ, so it keeps its place and size in the picture and only comes forward. The ridge is capped so its extra disparity never exceeds `ridgeMaxDisparity` of the eye view's width: `Δ ≤ cap · 2·tan(fovX/2) · d² / eyeSeparation`. u is the splat's angle in the transition's fixed camera frame (x/z; for a photo, its grid column), so it depends on world position only. With no frame to wipe from (a hidden tab), it falls back to the one-pass crossfade over the same duration. | 2000 ms, `easeInOutSine`, `band` 0.18, `ridge` 0.03 (m on a metric photo), `ridgeMaxDisparity` 0.004 |
+| `'wavefront'` | The photo-frame prototype's Wavefront Sweep. A soft front crosses the picture from left to right over normalised u. Each column commits from the old photo to the new one over `lt = clamp((t − u·(1 − band)) / band, 0, 1)` with a smoothstep, so u = 0 starts at t = 0 and u = 1 finishes at t = 1. **Image half:** the old photo's image (live in 3D, the frozen frame in 2D) gives way at the same viewport-relative u in every eye, a front on the zero-disparity plane. **Depth half:** a RIDGE rides the front on the new photo, `sin(π·lt) × ridge` world units toward the eyes. Each splat moves along its own ray, with its scale scaled by the same λ, so it keeps its place and size in the picture and only comes forward. The ridge is capped so its extra disparity never exceeds `ridgeMaxDisparity` of the eye view's width: `Δ ≤ cap · 2·tan(fovX/2) · d² / eyeSeparation`. u is the splat's angle in the transition's fixed camera frame (x/z; for a photo, its grid column), so it depends on world position only. The ridge runs at render time, and each photo is drawn only on its own side of the front (see [Wavefront: one draw's worth](#wavefront-one-draws-worth)). With no frame to wipe from (a hidden tab), it falls back to the one-pass crossfade over the same duration. | 2000 ms, `easeInOutSine`, `band` 0.18, `ridge` 0.03 (m on a metric photo), `ridgeMaxDisparity` 0.004 |
 
 | `'swarm'`, `'burst'`, `'shimmer-cross'`, `'dust'` | Particle transitions: the old photo plays a particle reveal backwards while the new one plays it forwards, both live. See [Particle transitions](#particle-transitions). | 2600–2800 ms, linear shared clock (each particle eases) |
 
@@ -211,7 +211,7 @@ incoming photo starts invisible.
 
 | `outgoing` | What the old photo is during the window | Cost | Default |
 |---|---|---|---|
-| `'live'` | Still resident, re-rendered every frame through the same eye views (head motion included), into its own render target; the overlay lerps / wipes the two live images per eye. | about 2× splat draw for the window; both assets resident | woven (3D) session |
+| `'live'` | Still resident, re-rendered every frame through the same eye views (head motion included), into its own render target; the overlay lerps / wipes the two live images per eye. | `crossfade`: 2× splat draw for the window (every pixel needs both images). `wavefront`: each photo drawn only on its side of the front, about 1.2–1.3× a still photo. Both assets resident | woven (3D) session |
 | `'frozen'` | Its last frame, copied to a texture (1.12.1). | one draw; the old asset is released at the start | 2D |
 
 How live works on the engine's single-camera N-RenderView path: a second camera with its OWN
@@ -251,6 +251,103 @@ own window and zero-disparity plane. Two display-rig assets reduce to the old ri
   camera costs no long task either: the first frames show the frozen bridge while its manager
   builds its work buffer and first sort. Full tables:
   [`playcanvas-adapter.md` § setSource](playcanvas-adapter.md#setsource--what-a-swap-costs-the-main-thread).
+
+### Wavefront: one draw's worth
+
+The live `crossfade` draws both photos in full for the whole window, and must: at mid-fade every
+pixel is `(1 − t)·A + t·B`, so it needs both images. The `wavefront` does not. At any moment a
+column shows the old photo, the new one, or (inside the `band`) both. So since the unreleased
+patch after 1.19.1:
+
+- **The ridge runs at render time.** It used to be an entity-scope work-buffer modifier, which
+  forces the engine's `WORKBUFFER_UPDATE_ALWAYS`: a full rewrite of the new photo's work buffer
+  and a CPU re-sort, every frame (0.92–0.96 of each per frame, measured). It is now a tile-scope
+  body whose values sit on the eye camera's gsplat manager, as the particle transitions' do. The
+  old photo's manager (the live camera's) gets no values, so it reads the material default: no
+  ridge.
+- **Each photo is drawn only on its side of the front.** The overlay's wipe gives column u the
+  commit `lt = clamp((t − u·(1 − band)) / band, 0, 1)`. The new photo's weight is 0 wherever
+  u ≥ t / (1 − band), and the old photo's wherever u ≤ (t − band) / (1 − band). An internal last
+  stage, `wipecull`, gives a gaussian alpha 0 (the engine's own alpha clip then drops it in the
+  vertex stage) when its whole footprint lies past that edge in every eye.
+  - The footprint is bounded the way the engine sizes its quad (`gsplatCorner`):
+    `λ₁ ≤ ‖J‖²·s²·σ²max + 0.3`, with `‖J‖² = (f/z)²·(1 + (x² + y²)/z²)` and s the view's scale.
+    Then `l₁ = 2·√(2λ₁)`, a corner reaches at most `2·l₁`, and 4 px are added.
+  - It uses the final centre and scale, so the ridge and any tile effect before it are included.
+  - The eye views are the ones the engine composes that frame (the camera's parent world
+    transform · each view's pose). The adapter hands them over just before the engine renders.
+  - A unit test checks the bound against the engine's quad in JS, over 4,000 random gaussians,
+    views, skews and view scales. Shrinking the margin fails it.
+  - It only removes gaussians no shown pixel can receive, so it is not an effect in the sense of
+    the stereo rule. `viewer._wipeCull = false` turns it off, for the gate below.
+
+Result: the two photos share the GPU only inside the band, plus the vertex stage of the culled
+ones (about a quarter of a draw).
+
+**Gates** (headless, real GPU, M1; Tahoe → bakery, `5e5c097e.mono.sog` → `a36d278b.mono.sog`,
+1,179,648 gaussians each):
+
+- **Cull on vs off:** bit-identical at t = 0.1, 0.3, 0.5, 0.7 and 0.9, in both eyes and in 2D:
+  MAE 0.000, max 0, colour and alpha.
+- **End vs `cut`:** 0.000, both eyes, colour and alpha, for live `crossfade`, live `wavefront` and
+  frozen `crossfade`. The same holds for `ports_100_cam.sog` → `mg_tahoe_k100.sog`.
+- **Crossfade midpoint:** the lerp of the two photos' own renders to 0.39 grey levels (8-bit
+  rounding), in both eyes, as before.
+- **Head tracking (the 4-pose test):** with the old photo at weight 1, `crossfade` and `wavefront`
+  both match that photo's own render at each head pose with MAE 0.000 on the PR #55 pair
+  (`ports_100_cam` → `mg_tahoe_k100`). On Tahoe → bakery it is 0.001, and 1.19.1 gives the same
+  0.001.
+- **Resources:** VRAM goes 58.8 → 131.6 → 58.8 MB, and there is 1 manager after the window.
+
+**GPU cost** (a 30-frame batch plus a 1-px `readPixels`, median of 10 batches, held at t = 0.5,
+median of 3 page loads). Each cell is the window's frame time as a multiple of the still photo's
+on the same page:
+
+| | 1.19.1 | now |
+|---|---|---|
+| stereo `wavefront` | 1.66× | **1.42×** |
+| stereo `crossfade` | 1.76× | 1.95× (same code; both draw two photos) |
+| 2D `wavefront` | 1.31× | **1.22×** |
+| 2D `crossfade` (live) | 1.52× | 1.55× |
+
+In the same page at t = 0.5, the cull alone takes a stereo frame from 40.8 to 31.2 ms (2D: 12.8 to
+8.9 ms). With every gaussian culled, a photo still costs about 6 of its 22–25 ms stereo frame:
+that is the vertex stage, which is what remains above 1×.
+
+Where the live `crossfade` goes (stereo, held at t = 0.5, 1.19.1): hiding the old photo's draw
+brings the frame to the still photo's, and so does hiding the new one's. Hiding both leaves
+0.3–0.5 ms: the target clear, the overlay's two quads and the rest. The target is the canvas buffer
+(each eye draws only its own viewport), and it is made once per window. With a still head, sorts
+run only at the start (0.05–0.1 per frame over the window).
+
+**Pacing, as seen:** a visible Chrome 153 window, 120 Hz, M1 Pro, `prepareSource(src,
+{ transition })` then `setSource`, one configuration per launch, before and after interleaved,
+5 launches each. Each cell is the median of the runs' rAF interval over the window:
+median / p95 / p99 / max, then frames over 25 ms of all frames.
+
+**This Mac was very busy during these runs** (load average 11–95, with another agent's headless
+Chrome on the GPU). The still photo, measured first on every page, read 15–18 ms in 2D and 26–29 ms
+in stereo, where a quiet machine reads 8.3 and 15.5. Compare the columns, not the absolute values.
+
+| | still (same pages) | 1.19.1 | now |
+|---|---|---|---|
+| 2D `wavefront` (live) | 14.6–16.7 | 25.5 / 42.5 / 77.9 / 77.9, 43 of 83 | **17.2 / 28.8 / 32.9 / 39.5, 19 of 117** |
+| stereo `wavefront` | 26.8–28.9 | 58.0 / 120.9 / 121.7 / 121.7, 31 of 39 | **35.2 / 55.5 / 63.1 / 63.1, 50 of 60** |
+| 2D `crossfade` (live) | 16.9–17.1 | 18.7 / 40.8 / 57.9 / 57.9, 15 of 39 | 24.4 / 46.0 / 77.6 / 77.6, 15 of 33 |
+| stereo `crossfade` | 26.5–27.3 | 41.0 / 91.9 / 98.3 / 98.3, 18 of 25 | 41.4 / 57.6 / 68.0 / 68.0, 20 of 22 |
+
+Per frame in the `wavefront` window: work-buffer rewrites 0.92–0.94 → 0.02–0.03, sort requests
+0.92–0.94 → 0.02–0.03, sort results on the main thread 1.3–4.0 → 0.05–0.13 ms. Program links inside
+the window: 3 → 0 (`wavefront`), 2 → 0 (`crossfade`); see the pre-warm below. The 2D `wavefront`
+now paces like the still photo. The stereo one draws about 1.4 photos' worth, as the GPU table
+says. The `crossfade`'s median does not move: 1.19.1's window contained a 25–100 ms link stall
+followed by cheaper frames, and without the stall there are fewer, evenly heavy frames.
+
+**Not shipped: a half-rate old photo in the `crossfade`.** Drawing the old photo on alternate
+frames only, and keeping its target in between, took a stereo `crossfade` from 40.8–42.4 to
+29.1–36.1 ms median in the same conditions. It was not kept. Every other frame, the old photo
+would be a frame behind the head, and that is exactly what the live outgoing exists to prevent. It
+cannot be judged without a tracked panel.
 
 ### Preloading the next photo: `prepareSource`
 
@@ -365,7 +462,8 @@ reads the FILE index `splat.index`, which a render-time body does not have (ther
 work-buffer slot), so transitions refuse it.
 
 An engine whose managers are not reachable falls back to the entity-scope modifiers: the result
-is correct, but it hitches on large files. `handle.viewer._transitionPath` says which path ran
+is correct, but it hitches on large files. The `wavefront`'s ridge does the same. There the
+fallback draws both photos in full. `handle.viewer._transitionPath` says which path ran
 (`'render'` or `'entity'`), for diagnostics.
 
 **Shader pre-warm: `prepareSource(src, { transition, …})`.** The first transition of each kind in a
@@ -375,7 +473,11 @@ page compiles a new program variant, and its first frame blocks on the link. Mea
 - 190 + 260 ms the first time ever;
 - plus the two overlay quads, on the very first transition.
 
-Pass the transition (and the options that shape the shader, `order`) to `prepareSource`. It then
+Pass the transition (and the options that shape the shader, `order`) to `prepareSource`. The
+`wavefront` has a render-time variant too (its ridge and cull), warmed the same way. The overlay's
+two quads, which every `crossfade`, `wavefront` and particle transition draws through, are warmed
+by ANY `prepareSource`, and by an unprepared `setSource` while its asset loads. Before that, they
+linked on the first frames of each page's first window (about 25–180 ms, measured on the M1). It then
 builds the same variants in the dwell and finishes their link there. It asks the engine's program
 library with a throwaway material that copies the eye renderer's description, defines and chunks
 and adds the transition's chunk. The library keys on the generated source, so the renderer gets
@@ -603,9 +705,10 @@ variant the machine had never compiled, it blocked 190 + 260 ms. With `prepareSo
 the link finishes in the dwell: no program is finalized inside the window (instrumented
 `WebglShader.finalize`), and 0 new shaders are created by the transition.
 
-For reference, the approved live `crossfade` / `wavefront` runs at about 40 Hz in stereo on this
-Mac: median 25.6 ms over the whole window, 20 and 49 frames over 25 ms. That is slower than the
-particle transitions now.
+For reference, 1.19.1's live `crossfade` / `wavefront` ran at about 40 Hz in stereo on this Mac:
+median 25.6 ms over the whole window, 20 and 49 frames over 25 ms. The `wavefront` now draws about
+one photo's worth; the `crossfade` still draws two. See
+[Wavefront: one draw's worth](#wavefront-one-draws-worth).
 
 These numbers come from a Mac that was also in use; the load average was 13–19 during the later
 runs. Rows whose still-photo baseline had itself degraded were discarded and re-run. The rest
@@ -623,6 +726,10 @@ still vary by a frame or two between runs.
 - Particle reveals on the real 3D display: how the swarm and its comfort cap feel woven, and whether the default cap should be larger.
 - Particle reveals: the engine's colour-only work-buffer pass. If the engine ever re-colours without re-running the centre stage, an entity-scope particle's in-flight colour would key on its moved centre. The end state is unaffected.
 - Particle reveals on Windows/Android GPUs, on streamed SOG, and with `order: 'layers'` on a non-SHARP asset.
+- The `wavefront` cull and render-time ridge: on the DisplayXR Browser's real weave, on Windows or
+  Android GPUs, with more than 2 eye views (up to 4 are culled; beyond that both photos are drawn
+  in full), and with a page's own tile effects active during the window.
+- Pacing on a quiet machine: the `wavefront` / `crossfade` pacing tables above were measured under a load average of 11–95.
 - Particle transitions:
   - on the DisplayXR Browser's real weave, and on Windows or Android GPUs;
   - with a page's own tile effects active at the same time (they share the chunk);
