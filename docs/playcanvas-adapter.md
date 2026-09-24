@@ -117,6 +117,116 @@ so **`nearClip` / `farClip`** (both optional, `perf`-independent) are a **floor 
 on far**. They never widen the range, and they rewrite only the depth mapping, not the frustum.
 Anything nearer than `nearClip` is clipped, splats included.
 
+## `setRig` — switching between the display rig and the camera rig (#36)
+
+A page with one persistent tile (one canvas, one `addSplat` handle for the whole document)
+sometimes has to show something other than the photograph: a glTF product or a bird under
+`handle.engine.root`, with the splat hidden. That mesh should look exactly as it would in its own
+`addModel(url, { engine: 'playcanvas' })` tile, which renders through a **display rig** with 1:1
+perspective. A photo, though, sits on its **camera rig**, the ~70° phone lens it was captured
+with, and before 1.16 nothing could change the rig after boot: `rig` was a boot option,
+`viewer.fitTo` / `setFocus` moved shared state with no way back, and writing
+`handle.engine.camera` does nothing because the adapter re-places it from the views every frame.
+
+```js
+const h = addSplat(wall, canvas, photoBytes, { engine: 'playcanvas' });
+await h.ready;
+// a product screen:
+h.mesh.entity.enabled = false;          // hide the photo
+h.engine.root.addChild(productEntity);  // the page's glTF, as in § handle.engine
+await h.setRig('display');              // framed like addModel, declared as a display rig
+// back to the photo:
+productEntity.enabled = false;
+h.mesh.entity.enabled = true;
+await h.setRig('camera');               // exactly the pre-switch rest render
+```
+
+`handle.setRig(type, options?)` returns a `Promise<handle>` and takes effect on the next frame.
+There is no remount, no reload of the splat and no new session.
+
+| `type` | What you get |
+|---|---|
+| `'display'` | A display rig framing the page's content, on **addModel's defaults**. |
+| `'camera'` | The asset's capture rig, **re-resolved** from the waterfall's own inputs (the camera block, the rest-space cloud sample, `captureFit`, the caller's rig options). It is not a copy saved before the switch, so the lens, intrinsics source and focus rung are the ones a load would pick. |
+| `'auto'` | Whatever the load-time waterfall picks for this asset (`typeSource` is the waterfall's again). |
+
+- **`handle.rig`** reports the active rig. After a `setRig('display'|'camera')` its `typeSource`
+  is `'setRig'`. On a display rig from `setRig`, `rig.frame` is `{ center, extent, source }`, where
+  `source` is `'root'`, `'root+splat'`, `'splat'` or `'caller'`.
+- **The pose resets to the new rig's rest:** yaw = pitch = 0, zoom 1, depth offset 0, and focus at
+  the rig's own focus (the frame centre on a display rig, the waterfall's focus on a camera
+  rig). A drag or `setPose` made under the previous rig does not carry over.
+- **The view rig declared to the runtime switches with it.** The camera rig sends the same
+  `cameraRigFromPose` descriptor a load sends, byte for byte. The display rig sends
+  `displayRig({ virtualDisplayHeight, ipdFactor, parallaxFactor, perspectiveFactor })`, which is
+  the explicit form of the `virtualDisplayHeight` shorthand `addModel` / `addSplat` build their
+  layer with. It has to be explicit: after a camera rig the shorthand cannot be restored. Returning
+  to the boot display rig from the shorthand sends nothing.
+- **The choice sticks across `setSource`**, so a new asset is resolved on the chosen rig, until
+  `setRig('auto')`.
+- **`controls:'page'` throws.** The page owns the camera there; its camera is the rig.
+- **The switch is a clean cut.** There is no eased transition in this version; `transitionMs` is
+  ignored, with a one-time warning.
+
+**What `'display'` frames**, in order:
+1. `frame: { center, extent }` if you pass one, in `handle.engine.root`'s space.
+2. Otherwise, the union of the world AABBs of every **enabled** `render` component under
+   `handle.engine.root`. This is the same measurement `addModel` takes of its glTF, skinning
+   included. If the splat is shown, its measured box (`handle.frame`) is included too.
+3. With no meshes under root, the splat itself, exactly as a display-rig `addSplat` frames it.
+
+**Options** for `'display'`, all optional. The defaults are addModel's, so framing, placement and
+the mono camera are identical to a fresh `addModel` tile:
+
+| option | default | |
+|---|---|---|
+| `virtualDisplayHeight` | `0.24` | |
+| `fit` | `'contain'` | `'contain'`, `'cover'`, `'height'`, `'none'` |
+| `margin` | `0.8` | |
+| `depthLimit` | `4` | |
+| `fitSweep` | `true` | |
+| `idleSpin` | `8` | °/s after 2.5 s idle, as `addModel` (pass `0` for a still product) |
+| `ipdFactor`, `parallaxFactor`, `perspectiveFactor` | `1` | on the declared display rig |
+| `toneMapping` | `'neutral'` | applied to the page's meshes **while the splat is hidden** |
+| `environment` | `'room'` | `'room'` / `'neutral'`: addModel's IBL if the page has none; `'none'` |
+| `frame` | — | `{ center, extent }` (arrays or `{x,y,z}`) |
+
+**Lighting and tone mapping follow addModel, but only where that is safe.** A splat tile renders
+with `TONEMAP_NONE`, because splat colours are already display-referred. addModel renders meshes
+with Khronos PBR Neutral and lights them with its generated neutral-studio IBL. On `setRig('display')`:
+- The eye camera switches to `toneMapping` (default `'neutral'`) while the splat entity is disabled,
+  and back to `'none'` on the first frame the splat is shown again.
+- If the scene has no `envAtlas` of its own, the neutral studio is installed as addModel installs
+  it. It is removed again (and `exposure` / `skyboxIntensity` / `skyboxRotation` restored) when the
+  rig switches away. A page that lights its own meshes (`scene.envAtlas` set) is never touched.
+  Neither is a tile with `sky: true`.
+
+**MSAA is the one thing a live switch cannot match.** Antialiasing is fixed when the WebGL
+context is created. `addModel` creates its context with MSAA on, and a splat tile creates it off,
+because MSAA only costs memory and bandwidth on alpha-blended quads. So mesh silhouettes on a
+default splat tile alias where addModel's do not. Pass `addSplat(…, { antialias: true })` (new in
+1.16, PlayCanvas only) to create the tile's context with MSAA. It costs the MSAA buffer and
+changes nothing else, and with it the parity below is exact.
+
+**Gates** (headless Chrome, real GPU (Metal/ANGLE, M1 Pro), 1280×720 CSS at DPR 1). The
+harness uses a fixed clock and fake stereo: two views off the mono camera, ±32 mm, skewed. Both
+tiles use `idleSpin: 0`, the only non-default, to remove the time dependence. `ports_100_cam.sog`
+(a camera-block photo) is the splat, hidden. The mesh is added under `root` with the engine's
+container loader, as addModel loads it.
+
+| comparison | mono MAE | stereo MAE |
+|---|---|---|
+| DamagedHelmet: `setRig('display')` vs `addModel` defaults, `antialias: true` | **0.0000** (max 0) | **0.0000** (max 0) |
+| DamagedHelmet: same, splat tile's default MSAA off | 0.44 (edges only) | 0.43 |
+| Fox (skinned): `antialias: true` | **0.0000** (max 0) | **0.0000** (max 0) |
+| Fox: MSAA off | 0.11 (edges only) | 0.12 |
+| Round trip: rest → `setRig('display')` (+glTF, splat hidden) → `setRig('camera')` vs rest | **0.0000** | **0.0000** |
+
+MAE is RGB on 0–255, over the whole buffer. The MSAA-off residual is all silhouette: interior
+pixels match exactly. In the round trip, the mono camera, projection, rig-node matrix, fit scale,
+tone mapping and the declared camera-rig descriptor are bit-identical to before the switch. The
+IBL installed for the display rig is gone afterwards.
+
 ## `controls:'page'` — the page owns the camera
 
 For a game, or any page that already has a camera. The adapter stops being a viewer: no orbit,

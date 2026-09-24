@@ -5,6 +5,41 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — minor
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive. A page that never
+calls `setRig` renders the same pixels, except for the `setSource` fix below.
+
+### Added
+
+- **`handle.setRig(type, options?)`** (#36): a live, reversible rig switch on the PlayCanvas splat
+  handle. It applies on the next frame with no remount, reload or new session, and returns a
+  `Promise<handle>`.
+  - `setRig('display', { virtualDisplayHeight, fit, margin, frame, … })` frames the enabled meshes
+    under `handle.engine.root`, plus the splat when it is shown. The defaults are addModel's (0.24,
+    `contain`, 0.8, depthLimit 4, idleSpin 8), and it declares a display rig.
+  - While the splat is hidden, the page's meshes get addModel's tone mapping (`'neutral'`) and, if
+    the scene has no `envAtlas` of its own, addModel's neutral-studio IBL. Both are removed when the
+    rig switches away.
+  - `setRig('camera')` goes back to the asset's capture rig, re-resolved from the waterfall's own
+    inputs. `setRig('auto')` is the load-time result.
+  - The pose resets to the new rig's rest. `handle.rig.typeSource` reads `'setRig'`. The choice
+    sticks across `setSource` until `'auto'`, and `controls:'page'` throws.
+  - Gates, on a real GPU: a hidden splat plus `setRig('display')` plus DamagedHelmet or Fox renders
+    **MAE 0.0000** against `addModel(url, { engine: 'playcanvas' })`, in mono and fake stereo, with
+    `antialias: true`. With the tile's default MSAA off the residual is 0.11–0.44, silhouette edges
+    only. The round trip `setRig('display')` → `setRig('camera')` returns to the exact pre-switch
+    render (**MAE 0.0000**) and the same camera-rig declaration.
+  - See [`docs/playcanvas-adapter.md` § setRig](docs/playcanvas-adapter.md#setrig--switching-between-the-display-rig-and-the-camera-rig-36).
+- **`addSplat(…, { engine: 'playcanvas', antialias: true })`** creates the tile's WebGL context with
+  MSAA. The default stays off. Use it when a page draws meshes under `handle.engine.root`.
+
+### Fixed
+
+- **`setSource` from a camera-rig asset to a display-rig asset** now declares the display rig to the
+  runtime. The camera rig used to stay declared. The new asset also orbits its frame centre again
+  (the camera rig's `recentre: false` was left behind).
+
 ## 1.15.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; the existing transitions

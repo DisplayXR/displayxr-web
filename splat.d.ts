@@ -131,7 +131,8 @@ export interface SogCamera {
  */
 export interface ResolvedRig {
   type: 'camera' | 'display';
-  typeSource: 'caller' | 'block' | 'block-present' | 'default';
+  /** `'setRig'` after `handle.setRig('display' | 'camera')`; the waterfall's step otherwise. */
+  typeSource: 'caller' | 'block' | 'block-present' | 'default' | 'setRig';
   rest: { position: number[]; rotation: number[] };
   intrinsics: SogIntrinsics;
   intrinsicsSource: 'block' | 'caller' | 'estimated' | 'fallback-28mm';
@@ -154,7 +155,14 @@ export interface ResolvedRig {
     | 'median-disparity'
     | 'default'
     | 'picked'
-    | 'set';
+    | 'set'
+    | 'frame';
+  /**
+   * On a display rig set by `handle.setRig('display')`: what it framed, in `handle.engine.root`'s
+   * space, and where that came from (the page's meshes, meshes + the shown splat, the splat alone,
+   * or the caller's `frame`). Absent otherwise.
+   */
+  frame?: { center: number[]; extent: number[]; source: 'root' | 'root+splat' | 'splat' | 'caller' } | null;
   /** The block's own `focus.source` string (e.g. `'convergence'`, `'cloud-median'`), for diagnostics. */
   blockFocusSource: string | null;
   /** Fraction of the central crop's opacity-weighted mass the winning clump carried (`nearest-clump` only). */
@@ -187,6 +195,13 @@ export interface SplatOptions {
    * the knob for the weave's zero-copy read race on large canvases.
    */
   preserveDrawingBuffer?: boolean;
+  /**
+   * `engine: 'playcanvas'` only: create the tile's WebGL context with MSAA (default false — it buys
+   * nothing on alpha-blended splats). Turn it on when the page draws meshes under
+   * `handle.engine.root` and wants addModel's silhouettes (addModel's context has MSAA on);
+   * `setRig('display')` is then pixel-identical to an addModel tile. Fixed at context creation.
+   */
+  antialias?: boolean;
   /**
    * `engine: 'playcanvas'` only: the `playcanvas` module namespace to use instead of
    * `import('playcanvas')` — for a page that already bundles its own copy.
@@ -490,6 +505,46 @@ export interface SplatEffectState {
   progress: number;
 }
 
+/**
+ * `handle.setRig('display', opts)`'s options. Every default is addModel's, so a mesh framed this
+ * way renders exactly as `addModel(url, { engine: 'playcanvas' })` renders it.
+ * docs/playcanvas-adapter.md §setRig.
+ */
+export interface SplatSetRigDisplayOptions {
+  /** Default 0.24. */
+  virtualDisplayHeight?: number;
+  /** Default `'contain'`. */
+  fit?: 'contain' | 'cover' | 'height' | 'none';
+  /** Default 0.8. */
+  margin?: number;
+  /** Default 4. */
+  depthLimit?: number;
+  /** Default true. */
+  fitSweep?: boolean;
+  /** Idle turntable, °/s after 2.5 s without input. Default 8 (addModel's); 0 for a still product. */
+  idleSpin?: number;
+  /** On the declared display rig. Default 1 each. */
+  ipdFactor?: number;
+  parallaxFactor?: number;
+  perspectiveFactor?: number;
+  /**
+   * The eye camera's tone mapping WHILE THE SPLAT IS HIDDEN (the splat's display-referred colours
+   * keep `'none'` whenever it is shown). Default `'neutral'` — addModel's (Khronos PBR Neutral).
+   */
+  toneMapping?: 'none' | 'linear' | 'neutral' | 'aces' | 'aces2' | 'filmic' | 'hejl';
+  /**
+   * `'room'` (default; `'neutral'` is the same): install addModel's generated neutral-studio IBL
+   * when the scene has no `envAtlas` of its own, removed again when the rig switches away. A page
+   * that lights its own meshes is never touched. `'none'`: never install it.
+   */
+  environment?: 'room' | 'neutral' | 'none';
+  /**
+   * Frame THIS box (in `handle.engine.root`'s space) instead of measuring. Default: the enabled
+   * meshes under root (+ the splat's box when it is shown); with no meshes, the splat itself.
+   */
+  frame?: { center: number[] | { x: number; y: number; z: number }; extent: number[] | { x: number; y: number; z: number } };
+}
+
 /** `setSource`'s options. */
 export interface SplatSourceOptions {
   /** > 0 = a crossfade of this length (the 1.10 option; same as `transition: 'crossfade'`). */
@@ -727,6 +782,19 @@ export interface SplatHandle {
    * SOG). `remove()` disposes any still unused.
    */
   prepareSource(src: string | Blob | ArrayBuffer | Uint8Array, opts?: SplatPrepareOptions): Promise<SplatPreparedSource>;
+  /**
+   * PlayCanvas backend only — throws on Spark, and with `controls:'page'` (the page's camera IS
+   * the rig). Switch the rig live, on the next frame: no remount, no reload, no new session.
+   *
+   * `'display'` frames the page's meshes under `handle.engine.root` (+ the splat when shown) on
+   * addModel's defaults and declares a display rig; `'camera'` returns to the asset's capture rig,
+   * re-resolved from the waterfall's own inputs (lens, captureFit, focus rung); `'auto'` is what
+   * the load resolved. The pose resets to the new rig's rest; the declared view rig switches with
+   * it; the choice is sticky across `setSource` until `'auto'`. A clean cut (no eased transition).
+   * `handle.rig.typeSource` reads `'setRig'`. Resolves once applied. docs/playcanvas-adapter.md §setRig.
+   */
+  setRig(type: 'display', opts?: SplatSetRigDisplayOptions): Promise<SplatHandle>;
+  setRig(type: 'camera' | 'auto'): Promise<SplatHandle>;
   /**
    * `engine: 'playcanvas'` only (throws on Spark). Play a transition/pulse/custom effect;
    * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —
