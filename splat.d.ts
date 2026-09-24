@@ -529,13 +529,18 @@ export interface SplatSetRigDisplayOptions {
   perspectiveFactor?: number;
   /**
    * The eye camera's tone mapping WHILE THE SPLAT IS HIDDEN (the splat's display-referred colours
-   * keep `'none'` whenever it is shown). Default `'neutral'` — addModel's (Khronos PBR Neutral).
+   * keep `'none'` whenever it is shown). Default: the environment's own — `'neutral'` (Khronos PBR
+   * Neutral) for `environment: 'neutral'`, `'none'` (three's) for `environment: 'room'`.
    */
   toneMapping?: 'none' | 'linear' | 'neutral' | 'aces' | 'aces2' | 'filmic' | 'hejl';
   /**
-   * `'room'` (default; `'neutral'` is the same): install addModel's generated neutral-studio IBL
-   * when the scene has no `envAtlas` of its own, removed again when the rig switches away. A page
-   * that lights its own meshes is never touched. `'none'`: never install it.
+   * addModel's IBL of the same name, installed when the scene has no `envAtlas` of its own and
+   * removed again when the rig switches away (a page that lights its own meshes is never touched):
+   * `'neutral'` (default) the Sample-Viewer-matched studio; `'room'` three's RoomEnvironment (the
+   * look `addModel(…, { engine: 'three', environment: 'room' })` gives), with tone mapping
+   * `'none'` unless `toneMapping` is passed; `'none'` installs nothing. (Through 1.16 `'room'` was
+   * the default and an alias of `'neutral'`.) A transmissive glTF under root (KHR_materials_
+   * transmission) also gets the scene-colour grab pass while the display rig is active.
    */
   environment?: 'room' | 'neutral' | 'none';
   /**

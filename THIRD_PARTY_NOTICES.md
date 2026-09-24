@@ -6,7 +6,7 @@ it are adapted from, or run on, the MIT-licensed projects below. Their notices f
 | Project | Version | How it is used |
 |---|---|---|
 | [PlayCanvas engine](https://github.com/playcanvas/engine) | 2.22.3 | Optional peer (`playcanvas`): the default splat backend and the `./model` backend. Shader code in this package is **adapted** from it: the non-square-pixel footprint rewrite of `src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatCorner.js` (`js/inline3d-splat-playcanvas.js`), the quad-extent cap in `gsplatCommon.js` (`js/inline3d-splat-perf.js`), and the dissolve effect and its hash/noise/fbm helpers from `scripts/esm/gsplat/shader-effect-dissolve.mjs` (`js/inline3d-splat-effects.js`). Each adapted site carries a provenance comment. |
-| [three.js](https://github.com/mrdoob/three.js) | ≥ 0.150 | Optional peer (`three`): the `./three` helpers, the Spark splat path, `./model`'s `engine: 'three'`. |
+| [three.js](https://github.com/mrdoob/three.js) | ≥ 0.150 | Optional peer (`three`): the `./three` helpers, the Spark splat path, `./model`'s `engine: 'three'`. The PlayCanvas backend's `environment: 'room'` is **adapted** from `examples/jsm/environments/RoomEnvironment.js` (its scene numbers, re-rendered by ray casting in `js/inline3d-model-playcanvas.js`, `ROOM_ENVIRONMENT`). |
 | [Spark](https://github.com/sparkjsdev/spark) | ≥ 2.0 | Optional peer (`@sparkjsdev/spark`): the Spark splat backend. |
 
 ## PlayCanvas engine — MIT

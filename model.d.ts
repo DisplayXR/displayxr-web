@@ -40,18 +40,24 @@ export interface ModelOptions {
   /**
    * How the mesh is lit.
    *
-   * PlayCanvas (default engine): `room` (default; `neutral` is an alias) is image-based lighting
-   * from an in-memory neutral photo studio fitted to the Khronos glTF Sample Viewer's "Studio
-   * Neutral", with Khronos PBR Neutral tone mapping and exposure 1 — the Sample Viewer's look.
-   * three: `room` bakes three's procedural RoomEnvironment, untonemapped (unchanged since 1.11).
+   * PlayCanvas (default engine):
+   * - `neutral` (default): image-based lighting from an in-memory neutral photo studio fitted to
+   *   the Khronos glTF Sample Viewer's "Studio Neutral", with Khronos PBR Neutral tone mapping and
+   *   exposure 1 — the Sample Viewer's look.
+   * - `room`: three.js's procedural RoomEnvironment, regenerated in memory (no asset), untonemapped
+   *   — the look `engine: 'three'` gives `room`. Pass it when a page was tuned on the three path.
+   *   (Through 1.16 `room` was an alias of `neutral` here.)
+   *
+   * three: `room` (default) bakes three's procedural RoomEnvironment, untonemapped (unchanged since
+   * 1.11); `neutral` is not offered.
    *
    * Both: `studio` is the three-point punctual rig (metal renders dark under it — nothing to
    * reflect); `none` adds no light at all. Anything else throws on PlayCanvas.
    */
   environment?: 'room' | 'neutral' | 'studio' | 'none';
   /**
-   * PlayCanvas only: yaw of the environment about +Y, degrees (default 0 = the Sample Viewer's
-   * default orientation).
+   * PlayCanvas only: yaw of the environment about +Y, degrees, on top of its own calibrated
+   * orientation (default 0 = the Sample Viewer's orientation for `neutral`, three's for `room`).
    */
   environmentRotation?: number;
   /**
