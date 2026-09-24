@@ -373,6 +373,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
     prepareSource() {
       throw new Error("@displayxr/inline3d/splat: prepareSource() is implemented on the PlayCanvas backend only.");
     },
+    /** Not on this backend: the live rig switch is a PlayCanvas-backend feature. */
+    setRig() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setRig() is implemented on the PlayCanvas backend only " +
+          "(addSplat(…, { engine:'playcanvas' })).",
+      );
+    },
     /** Not on this backend (splat effects are PlayCanvas-only in this version). */
     playEffect() {
       throw effectsNotOnSpark('playEffect()');
@@ -657,6 +664,16 @@ export function addSplat(wall, canvas, src, opts = {}) {
  * Fields (`viewer`, `mesh`, `rig`, …) are null until then; `viewer` in particular appears one
  * module-load later than on Spark.
  */
+/** setRig's type/options shape, checked at the call before the adapter has loaded (it re-checks all of it). */
+function validateSetRigArgs(type, o) {
+  if (!['display', 'camera', 'auto'].includes(type)) {
+    throw new Error(`@displayxr/inline3d/splat: setRig("${type}") — expected 'display', 'camera' or 'auto'.`);
+  }
+  if (o !== undefined && (o === null || typeof o !== 'object')) {
+    throw new TypeError('@displayxr/inline3d/splat: setRig options must be an object.');
+  }
+}
+
 function addSplatDeferred(wall, canvas, src, opts) {
   const pending = [];
   const queue = (name) => (...args) => {
@@ -711,6 +728,14 @@ function addSplatDeferred(wall, canvas, src, opts) {
     // setSource replaces this stub on the same object by then).
     setSource: (...args) => out.ready.then(() => out.setSource(...args)),
     prepareSource: (...args) => out.ready.then(() => out.prepareSource(...args)),
+    // A rig switch before the first asset has landed: validated now (controls:'page' and a bad
+    // type throw at the call's own line), applied once it has.
+    setRig: page
+      ? pageOnly('setRig')
+      : (type, o) => {
+          validateSetRigArgs(type, o);
+          return out.ready.then(() => out.setRig(type, o));
+        },
     // Effects before the adapter has loaded: validated NOW (a bad call throws at its own line),
     // then run once the first asset is on screen.
     playEffect: (name, o) => {
