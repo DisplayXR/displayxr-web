@@ -5,6 +5,33 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — minor
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive: a page that never
+calls `setVideo` renders the same pixels.
+
+### Added
+
+- **`handle.setVideo(src, options?)`** (#36): a stereo video on the persistent PlayCanvas splat
+  handle, with no second canvas, layer or session. This is for pages that keep one woven canvas for
+  the whole app, where a fresh `addVideo` canvas after a navigation is the side-by-side flash.
+  - `src` is a URL (an SDK-owned `<video>`, autoplaying) or your `HTMLVideoElement`. Options:
+    `format: 'sbs' | 'tb' | 'mono'`, `fit: 'contain' | 'cover'`, `rig: 'display'`,
+    `virtualDisplayHeight`, `loop`, `muted`, `autoplay`.
+  - It resolves on the video's first frame to `{ video, format, fit, remove(), stats() }`. The page
+    drives transport through `video`.
+  - The splat is hidden and a screen-locked plane on the display rig shows the video. Each eye
+    samples only its own half. Flat (mono), it shows the left half at full resolution.
+  - Upload is gated on `requestVideoFrameCallback`. The colour is `addVideo`'s own.
+  - `setVideo(null)` restores the splat, the pose, the lens and the declared view rig exactly.
+  - It throws during an in-flight `setSource`. While a video is on, `setSource` rejects and
+    `setRig` throws. `controls:'page'` throws.
+  - Gates, on a real GPU: each eye shows 0 px of the other half, exit renders **MAE 0.0000**
+    against the pre-video frame with the same declared rig, and colour matches `addVideo`'s paint
+    at MAE 0.003. At 3840×1080 the upload runs 29.9/s with `texImage2D` at p50 0.1 ms, and 0 video
+    frames drop on a 120 Hz panel.
+  - See [`docs/playcanvas-adapter.md` § setVideo](docs/playcanvas-adapter.md#setvideo--a-stereo-video-on-the-persistent-handle-36).
+
 ## 1.17.0 — 2026-09-24
 
 Touches the **preview tier** (`./model` and `./splat`, `engine: 'playcanvas'` only). The default look

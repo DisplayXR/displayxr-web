@@ -21,7 +21,7 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
   large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, and `captureFit` (both backends).
 - **Extra handle members:** `setSource(src, { fadeMs, resetPose, transition, reveal })` (it throws
-  on Spark), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
+  on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
   `setEffect`, `stopEffect`, `effects()` ([`splat-effects.md`](splat-effects.md)).
 - **Third-party notices:** the engine is MIT; shader code adapted from it (the footprint fix, the
   quad-extent cap, the dissolve effect) is listed in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
@@ -232,6 +232,119 @@ MAE is RGB on 0–255, over the whole buffer. The MSAA-off residual is all silho
 pixels match exactly. In the round trip, the mono camera, projection, rig-node matrix, fit scale,
 tone mapping and the declared camera-rig descriptor are bit-identical to before the switch. The
 IBL installed for the display rig is gone afterwards.
+
+## `setVideo` — a stereo video on the persistent handle (#36)
+
+A page that renders everything through **one persistent woven canvas and one `addSplat` handle**
+([woven canvas rules, rule 3](woven-canvas-rules.md#3-prefer-one-persistent-canvas-for-the-whole-app))
+cannot put a movie in its own `addVideo` canvas. That canvas would be fresh to the compositor, and
+a fresh canvas after a navigation is exactly what shows the raw side-by-side flash. So the tile's
+own engine draws the video, in the tile's own frame:
+
+```js
+const v = await handle.setVideo('movie_sbs.mp4', { format: 'sbs', fit: 'contain' });
+v.video.play();                      // the page owns transport: play / pause / currentTime / events
+// … back to the photo:
+await handle.setVideo(null);         // splat, pose, lens and declared rig exactly as they were
+```
+
+`handle.setVideo(src, options?)`:
+- **`src`** is a URL or an `HTMLVideoElement`.
+  - **A URL** gets an SDK-owned `<video>` (`crossOrigin: 'anonymous'`, `playsInline`). It autoplays
+    unless `autoplay: false`. If the browser refuses sound without a user gesture, it plays
+    **muted** (logged once); set `v.video.muted = false` on the next gesture. The SDK frees the
+    decoder (pause, drop `src`, `load()`) on exit, on a replacing `setVideo` and on `remove()`.
+  - **An element you pass stays yours.** The SDK never plays or pauses it unless you pass
+    `autoplay: true`, and it never releases it.
+- **The promise resolves on the first frame the video has**, to `{ video, format, fit, remove(),
+  stats() }`. The switch happens in one task at that point: the splat is hidden, the display rig is
+  declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
+  that fails to load rejects, and the splat stays on screen. A call superseded before its first
+  frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and
+  changes nothing.
+- **`setVideo(null)`** exits and restores everything the entry changed: the splat's `enabled`,
+  yaw / pitch / zoom / depth / focus (targets included), the mono lens (a camera rig's capture lens
+  comes back), the idle spin, and the declared view rig. If the declaration changed, the previous
+  descriptor is re-sent byte for byte. A tile still on its boot `virtualDisplayHeight` shorthand
+  gets its explicit form, since the shorthand cannot be re-sent. A second `setVideo` while one is on
+  replaces the video and keeps the original pre-video state.
+
+| option | default | |
+|---|---|---|
+| `format` | `'sbs'` | `'sbs'` (left eye = left half), `'tb'` (left eye = top half), `'mono'` (both eyes the whole frame) |
+| `fit` | `'contain'` | `'contain'`: the whole eye image, with transparent bars where the aspects differ (the page shows through). `'cover'`: the window is full and the overflow is cut at its edges. |
+| `rig` | `'display'` | Only `'display'`; anything else throws. |
+| `virtualDisplayHeight` | the tile's own | The display rig's height while the video is on. A flat plane at the window has no disparity of its own, so it does not change the picture. |
+| `loop`, `muted` | the element's | Applied when given. |
+| `autoplay` | `true` for a URL, `false` for an element | |
+
+**How it is drawn.**
+- **The plane.** One quad is parented under the **rig node**, the eye camera's parent, at display
+  space z = 0. Every `RenderView` composes the rig node, so the quad is fixed relative to the eyes
+  whatever the pose, and exit has no pose to undo. On the display rig the z = 0 plane spans the
+  element, so the quad is the element box contained or covered by the video's per-eye aspect. The
+  quad itself has zero disparity, and the depth you see is the video's own.
+- **Each eye sees only its own half.** One camera draws both views, so no per-view uniform can say
+  which eye this is. The eye viewports sit side by side in the buffer, so the fragment compares
+  `gl_FragCoord.x` with the first right-eye viewport's x. With N > 2 views, the first half are left
+  eyes. The sample is clamped half a texel inside its half, so linear filtering never bleeds the
+  other eye across the seam.
+- **Not woven** (the mono path: a normal browser, or the layer is lost) draws the **left half**
+  across the whole 1:1 buffer, at full resolution. The page's feather applies in 3D, as for the
+  splat.
+- **Upload** happens only when the element presents a new frame (`requestVideoFrameCallback`).
+  A landed `seeked` event also triggers it, and without rVFC a `currentTime` change does. There is
+  one RGBA8 texture per video size, re-specified from the `<video>` by the engine
+  (`texImage2D`, GPU to GPU in Chromium), and no allocation per frame.
+- **Colour.** The texture holds the encoded sRGB values and the shader writes them unchanged, so
+  the pixels are the ones `addVideo`'s 2D-canvas paint puts in the buffer.
+
+**Rules, as for `setRig`.**
+- It applies on the next frame, with no remount, no new canvas and no new session.
+- **It throws during an in-flight `setSource`**, from the call until the swap settles.
+- While a video is on, **`setSource` rejects and `setRig` throws** until `setVideo(null)`.
+  **`prepareSource` stays available**, so a Watch screen can prefetch the next photo.
+- **`controls:'page'` throws**, because a page-owned camera has no display rig to put the plane on.
+- Orbit, zoom and double-click focus are ignored while the plane is up.
+- `handle.rig` and `handle.frame` keep describing the (hidden) splat.
+- Only the splat is hidden. Entities the page hung under `handle.engine.root` stay as they are,
+  and a page hides its own.
+
+**Transport chrome is the page's.** The player module RFC ([`docs/rfcs/0001-media-player.md` on
+`feat/player`](https://github.com/DisplayXR/displayxr-web/blob/feat/player/docs/rfcs/0001-media-player.md))
+has a partial-region transport bar (`data-inline3d-overlay`). It is internal to that unmerged
+module (`buildTransportBar` is not exported) and bound to `addPlayer`'s own canvas, so it is not
+reused here. The integration point is `v.video`: the same `HTMLMediaElement` vocabulary
+(`play/pause/currentTime/duration/ended`, `timeupdate`/`ended` events) the RFC's handle uses. If
+the bar ever becomes an export taking `(container, video)`, it applies to `setVideo` unchanged. As
+[rule 8](woven-canvas-rules.md#8-chrome-over-a-woven-canvas-is-a-partial-region) requires, keep the
+chrome a partial region of the tile.
+
+**Gates** (Chrome 153, real GPU (Metal/ANGLE, M1 Pro), a 1280×720 CSS tile at DPR 1, on the
+camera-rig photo `ports_100_cam.sog`). The pixel gates are headless, with fake stereo: two
+Kooima-correct views off the mono camera, ±32 mm, so the z = 0 window stays put. The test clip is a
+synthetic 3840×1080 H.264 SBS: a red `L` on the left, a blue `R` on the right, and a 16-bit frame
+barcode in both.
+
+| gate | result |
+|---|---|
+| each eye only its half (6 seeked frames) | left eye: **0** blue px of 810,240; right eye: **0** red px; barcode exact in both |
+| mono | the 1280×720 buffer is the left half at full res: 0 blue px, 100% plane coverage |
+| exit vs the pre-video render | **MAE 0.0000** (max 0), stereo and mono; declared rig byte-identical (`display:0.24` in, the same camera rig out) |
+| colour vs `addVideo`'s drawImage of the same frame | MAE 0.003, max 0.67 (flat regions 0) |
+| frame tracking while playing (barcode vs the element's last rVFC `mediaTime`) | 238 / 240 draws the same frame, 2 one frame newer, **none older**, none backwards |
+| `setVideo` during `setSource` | throws; works once the swap has settled |
+
+Upload cost and pacing were measured in a **visible** Chrome on the real clip (3840×1080 H.264 SBS,
+38 Mbps, 30 fps), with a 2560×720 SBS buffer on a 120 Hz panel, over 10 s:
+
+| | |
+|---|---|
+| uploads | **29.9/s** (the video's rate: 299 of 1,199 draws; the other 900 upload nothing) |
+| `texImage2D(video)` | p50 **0.1 ms**, p95 0.2 ms, max 1.0 (CPU). With a `gl.finish()` after it: p95 0.3 ms, max 1.5 |
+| whole draw (engine tick) | 0.4 ms p50 with an upload, 0.2 ms without |
+| rAF interval | p50 8.3 ms, p95 9.2 ms, none over 25 ms |
+| video frames | **0 dropped** of 299; presented interval p50 33.3 ms |
 
 ## `controls:'page'` — the page owns the camera
 

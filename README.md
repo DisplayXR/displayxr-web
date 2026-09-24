@@ -48,7 +48,9 @@ engine's knobs) — and adds `setSource(src, { fadeMs })` (crossfading asset swa
 tilt-and-relax orbit, `handle.engine` (the engine objects, for advanced pages) and
 `handle.setRig('display' | 'camera' | 'auto')`: a live, reversible rig switch, so one persistent tile
 can show a glTF under `handle.engine.root` exactly as `addModel` would and then go back to the photo's
-capture rig ([§setRig](docs/playcanvas-adapter.md#setrig--switching-between-the-display-rig-and-the-camera-rig-36)). It needs the
+capture rig ([§setRig](docs/playcanvas-adapter.md#setrig--switching-between-the-display-rig-and-the-camera-rig-36)), and
+`handle.setVideo(src, { format: 'sbs' | 'tb' | 'mono' })`: a stereo video on that same tile, each eye
+its own half, with no second canvas ([§setVideo](docs/playcanvas-adapter.md#setvideo--a-stereo-video-on-the-persistent-handle-36)). It needs the
 optional peer `playcanvas` (`>=2.22.3 <3`) and reads `.sog`, `.ply` and a Streamed-SOG
 `lod-meta.json`. **Spark stays the default**; a page that never passes `engine` never loads
 `playcanvas`. What differs, and why: [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md).
