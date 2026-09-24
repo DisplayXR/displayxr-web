@@ -693,6 +693,8 @@ export class PlayCanvasSplatViewer {
     this._snap = null;
     /** setSource's live outgoing asset (./inline3d-splat-live.js), made on first use. */
     this._live = null;
+    /** (entries, rect) => void: once per drawn frame, after the views are set, before the engine renders. */
+    this.onBeforeRender = null;
     this.vH = virtualDisplayHeight;
     this.fit = fit;
     this.margin = margin;
@@ -1447,6 +1449,34 @@ export class PlayCanvasSplatViewer {
     return { rig: this.rigMatrix(), pose, c, t: Math.tan((this.mono.fov * DEG) / 2) };
   }
 
+  /**
+   * One camera's eye views as the engine composes them this frame (RenderView.updateTransforms:
+   * the camera node's PARENT world transform · each view's pose), packed for the wavefront's cull
+   * (EFFECTS.wipecull): V = the view matrix, X / W = rows 0 and 3 of proj · V, K = (the engine's
+   * focal f = viewport width · proj[0], 1 / viewport width, the view's squared scale). `into` is
+   * reused frame to frame. Null when a matrix is singular.
+   */
+  cullViews(cam, entries, rect, into = []) {
+    const parent = cam?.parent?.getWorldTransform?.()?.data ?? null;
+    into.length = entries.length;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const V = mat4Invert(parent ? mat4Mul(parent, e.pose) : e.pose);
+      if (!V) return null;
+      const C = mat4Mul(e.proj, V);
+      const w = Math.max(1, rect(e)[2]);
+      const o = (into[i] ||= { V: new Float32Array(16), X: new Float32Array(4), W: new Float32Array(4), K: new Float32Array(4) });
+      o.V.set(V);
+      o.X[0] = C[0]; o.X[1] = C[4]; o.X[2] = C[8]; o.X[3] = C[12];
+      o.W[0] = C[3]; o.W[1] = C[7]; o.W[2] = C[11]; o.W[3] = C[15];
+      o.K[0] = w * e.proj[0];
+      o.K[1] = 1 / w;
+      o.K[2] = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+      o.K[3] = 0;
+    }
+    return into;
+  }
+
   /** Can this tile render a live outgoing asset (the single-camera RenderView path)? */
   get canLiveOutgoing() {
     return LiveOutgoing.supported(this);
@@ -1643,6 +1673,8 @@ export class PlayCanvasSplatViewer {
       placeNode(this.eye, entries[0].pose);
       // setSource's live outgoing: the same views on its own camera, into its own target.
       if (this._live?.active) this._live.sync(entries, rect, f);
+      // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
+      this.onBeforeRender?.(entries, rect);
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
       const cams = this._views;
@@ -3680,7 +3712,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const loaded = await loadOne(pcModule, app, src, { background: true });
     perfSpan('prepareSource', t0);
     // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
-    if (warm?.particles) await prewarmTransition(warm);
+    if (warm?.particles || warm?.transition === 'wavefront') await prewarmTransition(warm);
     const entry = { loaded, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
@@ -3721,14 +3753,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * engine whose internals differ just compiles on the transition's first frame, as before.
    */
   async function prewarmTransition(plan) {
-    const key = `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`;
+    const key = plan.particles ? `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}` : plan.transition;
     if (!fx || prewarmed.has(key)) return;
     await yieldIdle();
     if (removed || !fx) return;
     try {
       const pc = pcModule;
       const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
-      const code = fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order });
+      const code = plan.particles
+        ? fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order })
+        : fx.sharedChunkCodeFor([
+            ['transition', 'wavefront', {}],
+            ['transition-cull', 'wipecull', {}],
+          ]);
       const made = [];
       let issued = 0;
       for (const cam of cams) {
@@ -3977,15 +4014,24 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         });
       } else release(prev); // the snapshot shows it from here on
       const band = plan.band;
+      finishers.push(() => {
+        viewer._transitionState = null;
+        viewer.setSnapshotAlpha(0);
+        viewer.releaseSnapshot();
+      });
+      if (fx && managerMi(viewer.eye, null)) {
+        playWavefrontRender({ plan, entity, live, finishers, finish, isFinished: () => finished, pumpLive });
+        await done;
+        return out;
+      }
+      // FALLBACK (an engine whose managers are not reachable): the ridge as an entity-scope
+      // modifier — correct, but it rewrites the new photo's work buffer and re-sorts it every frame.
+      viewer._transitionPath = 'entity';
       const ridge = fx.play(
         'wavefront',
         { durationMs: plan.durationMs, easing: plan.easing, band, ridge: plan.ridge, ridgeMaxDisparity: plan.ridgeMaxDisparity, scope: 'entity' },
         { entity, gate: afterTicks(2), internal: true },
       );
-      finishers.push(() => {
-        viewer.setSnapshotAlpha(0);
-        viewer.releaseSnapshot();
-      });
       viewer._hooks.push(() => {
         if (finished || removed) return false;
         if (live && !live.fits) {
@@ -4064,6 +4110,94 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     return out;
   }
 
+  /** The mesh instance of the gsplat manager that `cam` draws `layer` with (any layer: null). */
+  const managerMi = (cam, layer) => {
+    const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam?.camera?.camera);
+    if (!cd?.layersMap) return null;
+    if (layer) return cd.layersMap.get(layer)?.gsplatManager?.renderer?.meshInstance ?? null;
+    for (const ld of cd.layersMap.values()) if (ld?.gsplatManager?.renderer?.meshInstance) return ld.gsplatManager.renderer.meshInstance;
+    return null;
+  };
+
+  /**
+   * setSource's wavefront, RENDER-TIME (the default): the ridge is a tile-scope body whose values
+   * sit on the eye camera's manager (the incoming photo), as the particle transitions do — no
+   * work-buffer rewrite and no re-sort per frame. Each photo is drawn only on its side of the
+   * front (EFFECTS.wipecull, the last stage): the incoming one left of where its commit starts,
+   * the outgoing one (on the live camera) right of where it ends, so the two share only the
+   * `band`. The overlay still wipes the same two live images on the same lt; the frame is the
+   * one the full draws give, bit for bit. The clock starts on the second tick (the incoming
+   * asset's first frame builds its work buffer), as the crossfade's does.
+   */
+  function playWavefrontRender({ plan, entity, live, finishers, finish, isFinished, pumpLive }) {
+    const band = plan.band;
+    const ease = typeof plan.easing === 'function' ? plan.easing : EASINGS[plan.easing] || EASINGS.linear;
+    const eyeMi = () => managerMi(viewer.eye, null);
+    const liveMi = () => (live?.active ? managerMi(live.cam, live.layer) : null);
+    const ridgeFx = fx.driveShared('transition', 'wavefront', {});
+    const cullFx = fx.driveShared('transition-cull', 'wipecull', {});
+    const ridgeIn = ridgeFx.side(eyeMi, { band, ridge: plan.ridge, ridgeMaxDisparity: plan.ridgeMaxDisparity });
+    const cull = { in: null, out: null };
+    const cullIn = cullFx.side(eyeMi, { cull: () => cull.in });
+    const cullOut = live ? cullFx.side(liveMi, { cull: () => cull.out }) : null;
+    const views = { in: [], out: [] };
+    let amount = 0;
+    ridgeIn.set(0);
+    viewer._transitionPath = 'render';
+    // Where each photo still shows, in each eye's viewport-relative NDC (setSnapshotAlpha's wipe:
+    // column u has committed lt = clamp((t − u·(1 − band)) / band, 0, 1) to the new photo).
+    const clampEdge = (x) => Math.min(3, Math.max(-3, x));
+    viewer.onBeforeRender = (entries, rect) => {
+      if (isFinished()) return;
+      const span = 1 - band;
+      // band 1: the whole picture is the band — draw both in full. `_wipeCull = false`: the
+      // diagnostics switch the exactness gate compares against (docs §Gates).
+      if (!(span > 1e-6) || viewer._wipeCull === false) {
+        cull.in = cull.out = null;
+        cullIn.set(amount);
+        cullOut?.set(amount);
+        return;
+      }
+      const vin = viewer.cullViews(viewer.eye, entries, rect, views.in);
+      cull.in = vin ? { side: -1, edge: clampEdge((2 * amount) / span - 1), views: vin } : null;
+      cullIn.set(amount);
+      if (cullOut) {
+        const vout = viewer.cullViews(live.cam, entries, rect, views.out);
+        cull.out = vout ? { side: 1, edge: clampEdge((2 * (amount - band)) / span - 1), views: vout } : null;
+        cullOut.set(amount);
+      }
+    };
+    finishers.push(() => {
+      if (viewer.onBeforeRender) viewer.onBeforeRender = null;
+      ridgeFx.remove();
+      cullFx.remove();
+    });
+    let t0 = null;
+    let ticks = 0;
+    viewer._hooks.push((t) => {
+      if (removed) return (finish(), false);
+      if (isFinished()) return false;
+      if (live && !live.fits) {
+        finish(); // a resize or a 2D/3D switch mid-window: end now
+        return false;
+      }
+      pumpLive();
+      if (++ticks >= 2 && t0 === null) {
+        t0 = t;
+        ridgeIn.restart(); // the eyes' frame, now the new rig and first frames are in
+      }
+      const raw = t0 === null ? 0 : plan.durationMs > 0 ? Math.min(1, Math.max(0, (t - t0) / plan.durationMs)) : 1;
+      amount = ease(raw);
+      viewer._transitionState = { raw, live: !!live }; // diagnostics
+      ridgeIn.set(amount);
+      if (!viewer.setSnapshotAlpha(1, { t: amount, band, views: viewer.viewsAcross }) || raw >= 1) {
+        finish();
+        return false;
+      }
+      return true;
+    });
+  }
+
   /**
    * setSource's particle transitions (swarm, burst, shimmer-cross, dust), once the frame snapshot
    * is up. The OUTGOING asset plays its effect in reverse, on the live camera, keyed on its own
@@ -4083,13 +4217,6 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // (outgoing). No work-buffer rewrite and no re-sort per frame. An engine that does not expose
     // the managers' mesh instances gets the entity-scope modifiers instead (a full work-buffer
     // rewrite + a re-sort per asset per frame: correct, but it hitches on a 1.18M photo).
-    const managerMi = (cam, layer) => {
-      const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam?.camera?.camera);
-      if (!cd?.layersMap) return null;
-      if (layer) return cd.layersMap.get(layer)?.gsplatManager?.renderer?.meshInstance ?? null;
-      for (const ld of cd.layersMap.values()) if (ld?.gsplatManager?.renderer?.meshInstance) return ld.gsplatManager.renderer.meshInstance;
-      return null;
-    };
     const eyeMi = () => managerMi(viewer.eye, null);
     const liveMi = () => (live?.active ? managerMi(live.cam, live.layer) : null);
     const shared = particle.out.effect === particle.in.effect && eyeMi() ? fx.driveShared('transition', particle.in.effect, { order: particle.in.opts.order }) : null;

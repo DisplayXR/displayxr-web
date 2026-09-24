@@ -35,7 +35,8 @@
 // same splats; a decision keyed on a screen position would differ between the eyes and read as
 // rivalry. So no effect here reads gl_FragCoord or a view matrix, and the custom hook exposes no
 // screen-space input. (The one image-space piece, setSource's frame snapshot, lives in the
-// adapter and samples each eye's own half at the zero-disparity plane.)
+// adapter and samples each eye's own half at the zero-disparity plane.) The one exception,
+// `wipecull`, is not an effect: it only skips gaussians no shown pixel can receive.
 //
 // ── Sort caveat ───────────────────────────────────────────────────────────────────────────────
 //
@@ -46,7 +47,12 @@
 import { coverageExponent, FADE_TRANSMITTANCE_FLOOR } from './inline3d-splat-shared.js';
 
 /** The fixed composition order of a generated chunk. */
-export const STAGE_ORDER = Object.freeze(['grade', 'clip', 'reveal', 'pulse', 'custom']);
+export const STAGE_ORDER = Object.freeze(['grade', 'clip', 'reveal', 'pulse', 'custom', 'cull']);
+
+/** The most eye views setSource's wavefront culls for (more: every gaussian is drawn). */
+export const WIPE_CULL_MAX_VIEWS = 4;
+const IDENTITY16 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const ZERO4 = new Float32Array(4);
 
 /** Named easings (a function `(x) => y` on [0, 1] is accepted too). */
 export const EASINGS = Object.freeze({
@@ -527,6 +533,74 @@ void ${P}color(vec3 c, inout vec4 col) {}
       X: inst.state.X,
       tanX: inst.state.tanX,
     }),
+  },
+
+  // Internal: setSource's wavefront, both photos — draw each photo only on ITS side of the image
+  // front. NOT an effect: nothing it removes could have reached a pixel the overlay shows (the
+  // frame is bit-exact with it on or off), it only saves the fragments of the half nobody sees.
+  // Each gaussian whose on-screen footprint lies wholly on the far side of the front in EVERY eye
+  // gets alpha 0, which the engine's own alpha clip culls in the vertex stage. The footprint is
+  // bounded the way the engine sizes its quad (gsplatCorner): λ₁ ≤ ‖J‖²·s²·σ²max + 0.3 with
+  // ‖J‖² = (f/z)²·(1 + (x² + y²)/z²), l₁ = 2·√(2λ₁), and a corner offset ≤ l₁ + l₂ ≤ 2·l₁, plus
+  // 4 px. The front is the overlay's own (setSnapshotAlpha's wipe), in each eye's viewport-
+  // relative NDC. The eye views are the camera's (its parent's world transform · each view's
+  // pose), set by the adapter just before the engine renders — the live outgoing camera has its
+  // own. It is the LAST stage, so it sees the final centre and scale of every stage before it.
+  // Per mesh instance: `side` +1 keeps the right of `edge` (the outgoing photo), −1 the left
+  // (the incoming one); the material default is off.
+  wipecull: {
+    stage: 'cull',
+    kind: 'transition',
+    internal: true,
+    defaults: { durationMs: 0, easing: 'linear', holdMs: 0, direction: 'in' },
+    glsl: (P) => {
+      const views = [0, 1, 2, 3];
+      return `
+uniform float ${P}on;
+uniform float ${P}side;
+uniform float ${P}edge;
+uniform float ${P}n;
+${views.map((i) => `uniform mat4 ${P}V${i};\nuniform vec4 ${P}X${i};\nuniform vec4 ${P}W${i};\nuniform vec4 ${P}K${i};`).join('\n')}
+bool ${P}cut;
+// true when some of the footprint may reach the kept side of the front in this view
+bool ${P}reach(mat4 V, vec4 X, vec4 Wr, vec4 K, vec3 c, float s) {
+  vec4 p = vec4(c, 1.0);
+  vec4 v = V * p;
+  float z = -v.z;
+  float w = dot(Wr, p);
+  if (z <= 1e-6 || w <= 1e-6) return true; // at or behind the eye: the engine decides
+  float xn = dot(X, p) / w;
+  float jz = K.x / z;
+  float j2 = jz * jz * (1.0 + dot(v.xy, v.xy) / (z * z));
+  float l1 = 2.0 * sqrt(2.0 * (j2 * K.z * s * s + 0.3));
+  return ${P}side * (xn - ${P}edge) + (2.0 * l1 + 8.0) * K.y > 0.0;
+}
+void ${P}center(inout vec3 c) {}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
+  ${P}cut = false;
+  if (${P}on < 0.5) return;
+  float s = max(sc.x, max(sc.y, sc.z));
+${views.map((i) => `  if (${i > 0 ? `${P}n > ${i}.5 && ` : ''}${P}reach(${P}V${i}, ${P}X${i}, ${P}W${i}, ${P}K${i}, mc, s)) return;`).join('\n')}
+  ${P}cut = true;
+}
+void ${P}color(vec3 c, inout vec4 col) { if (${P}cut) col.a = 0.0; }
+`;
+    },
+    // opts.cull() → { side, edge, views: [{ V, X, W, K }] } (at most WIPE_CULL_MAX_VIEWS), or null
+    // (off: every gaussian drawn). No `cull` (the material default): off.
+    uniforms: (ctx, inst) => {
+      const c = typeof inst.opts.cull === 'function' ? inst.opts.cull() : null;
+      const on = !!(c && c.views.length && c.views.length <= WIPE_CULL_MAX_VIEWS);
+      const out = { on: on ? 1 : 0, side: on ? c.side : 1, edge: on ? c.edge : 0, n: on ? c.views.length : 0 };
+      for (let i = 0; i < WIPE_CULL_MAX_VIEWS; i++) {
+        const v = on ? c.views[i] : null;
+        out['V' + i] = v ? v.V : IDENTITY16;
+        out['X' + i] = v ? v.X : ZERO4;
+        out['W' + i] = v ? v.W : ZERO4;
+        out['K' + i] = v ? v.K : ZERO4;
+      }
+      return out;
+    },
   },
 
   // Internal: setSource's crossfade FALLBACK (no frame snapshot) — the coverage remap on one
@@ -1528,9 +1602,18 @@ export class SplatEffects {
    * setSource's shader pre-warm compiles ahead of the transition.
    */
   sharedChunkCode(name, effect, opts) {
-    const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
-    const insts = [...(this.scopes.get('tile')?.values() ?? [])].filter((i) => i.name !== name);
-    return composeModifier([...insts, { name, def: EFFECTS[effect], opts: o }]).code;
+    return this.sharedChunkCodeFor([[name, effect, opts]]);
+  }
+
+  /** sharedChunkCode for several driveShared bodies at once: [[name, effect, opts], …]. */
+  sharedChunkCodeFor(list) {
+    const names = new Set(list.map((x) => x[0]));
+    const insts = [...(this.scopes.get('tile')?.values() ?? [])].filter((i) => !names.has(i.name));
+    for (const [name, effect, opts] of list) {
+      const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
+      insts.push({ name, def: EFFECTS[effect], opts: o });
+    }
+    return composeModifier(insts).code;
   }
 
   _setupInstance(inst) {
