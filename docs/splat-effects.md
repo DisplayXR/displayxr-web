@@ -473,11 +473,7 @@ page compiles a new program variant, and its first frame blocks on the link. Mea
 - 190 + 260 ms the first time ever;
 - plus the two overlay quads, on the very first transition.
 
-Pass the transition (and the options that shape the shader, `order`) to `prepareSource`. The
-`wavefront` has a render-time variant too (its ridge and cull), warmed the same way. The overlay's
-two quads, which every `crossfade`, `wavefront` and particle transition draws through, are warmed
-by ANY `prepareSource`, and by an unprepared `setSource` while its asset loads. Before that, they
-linked on the first frames of each page's first window (about 25–180 ms, measured on the M1). It then
+Pass the transition (and the options that shape the shader, `order`) to `prepareSource`. It then
 builds the same variants in the dwell and finishes their link there. It asks the engine's program
 library with a throwaway material that copies the eye renderer's description, defines and chunks
 and adds the transition's chunk. The library keys on the generated source, so the renderer gets
@@ -485,6 +481,11 @@ this program back on the transition's first frame. It then polls `KHR_parallel_s
 in idle periods, and finalizes when the link is done. Creating a program is not enough: the
 browser resolves the link on the first query, which is the draw. The warm-up is best effort: an
 engine whose internals differ compiles on the first frame, as before.
+
+The `wavefront` has a render-time variant too (its ridge and cull), warmed the same way. The
+overlay's two quads, which every `crossfade`, `wavefront` and particle transition draws through,
+are warmed by ANY `prepareSource`, and by an unprepared `setSource` while its asset loads. Before
+that, they linked on the first frames of each page's first window (about 25–180 ms on the M1).
 
 **End state.** The chunk is deleted and each photo's values are removed from its mesh instance.
 The overlay is hidden. The live camera is disabled, which drops its manager, and its target is
