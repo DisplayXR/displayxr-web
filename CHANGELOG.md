@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased — minor
+## 1.19.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat` and `./model`, `engine: 'playcanvas'` only). The defaults
 keep the wheel's pixels. One default does change: a two-finger touch now pinch-zooms (within the
