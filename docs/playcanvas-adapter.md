@@ -20,8 +20,11 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   time** when it can tell (a URL extension, gzip bytes, a Spark-only `fileType`).
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
   large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, and `captureFit` (both backends).
-- **Extra handle members:** `setSource(src, { fadeMs, resetPose })` (it throws on Spark) and
-  `engine` → `{ app, root, camera }`.
+- **Extra handle members:** `setSource(src, { fadeMs, resetPose, transition, reveal })` (it throws
+  on Spark), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
+  `setEffect`, `stopEffect`, `effects()` ([`splat-effects.md`](splat-effects.md)).
+- **Third-party notices:** the engine is MIT; shader code adapted from it (the footprint fix, the
+  quad-extent cap, the dissolve effect) is listed in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 ## How it is built
 

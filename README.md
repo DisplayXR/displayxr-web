@@ -53,6 +53,16 @@ Bundlers: the engine is reached through a named-import module (`js/inline3d-play
 so the unused ~40% of the engine tree-shakes away); its sort workers are Blob URLs (CSP
 `worker-src blob:`), and esbuild needs `node:worker_threads` marked external.
 
+**Splat effects (preview, `engine: 'playcanvas'`).** Shader effects on the splats themselves,
+keyed on world position and time so both eyes agree: `addSplat(…, { reveal: 'inflate' | 'sweep' |
+'dissolve' | 'fade' })` (plays once the tile is woven), `handle.playEffect` / `setEffect` /
+`stopEffect` / `effects()` (inflate, deflate, sweep, dissolve, fade, pulse, grade, clip, custom
+GLSL), and `setSource(src, { transition: 'crossfade' | 'flip' | 'wavefront', reveal })`. Spark
+throws on all of them for now. [`docs/splat-effects.md`](docs/splat-effects.md).
+
+Splat and model rendering on the PlayCanvas backend uses the PlayCanvas engine (MIT); see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
 **Models render with PlayCanvas by default (1.12).** `addModel(wall, canvas, 'chair.glb')` loads
 the glTF with the PlayCanvas engine (optional peer `playcanvas`), lit to match the Khronos glTF
 Sample Viewer: an in-memory neutral studio environment, Khronos PBR Neutral tone mapping,
@@ -162,6 +172,7 @@ js/
   inline3d-model-playcanvas.js  the PlayCanvas model backend (Sample-Viewer lighting, engine decoders)
   inline3d-model.js             the three.js model backend (engine:'three'; ./model/three)
   inline3d-playcanvas-engine.js named playcanvas imports for both PlayCanvas adapters (tree-shaking)
+  inline3d-splat-effects.js     splat shader effects: the runner, the effect registry (PlayCanvas)
                       from what the asset declares (you serve the decoder files — see the guide)
 docs/
   authoring-inline-3d.md   the authoring guide

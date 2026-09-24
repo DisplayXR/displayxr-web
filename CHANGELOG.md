@@ -5,6 +5,46 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — minor
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), additively. A page that
+passes none of the new options renders the same pixels (rest view MAE 0.000 vs 1.12.1).
+
+### Added
+
+- **Splat shader effects** ([`docs/splat-effects.md`](docs/splat-effects.md)). Every effect is keyed
+  on world position and time only, so both eyes of a woven tile agree (measured: coincident eyes,
+  L == R, MAE 0.000, for every effect).
+  - `addSplat(…, { reveal: 'inflate' | 'sweep' | 'dissolve' | 'fade' | { type, durationMs, holdMs,
+    easing, origin } })`: installed at its start state before the first frame, played once
+    `firstWoven` settles (at once in 2D).
+  - `handle.playEffect(name, { durationMs, holdMs, easing, origin, direction, scope }) →
+    Promise<{ finished }>`, `handle.setEffect(name, params | null)` (persistent effects, or any
+    effect held at `{ progress }`), `handle.stopEffect(name?, { finish })`, `handle.effects()`.
+  - Effects: `inflate` (the gallery's reveal, `z' = D + (z − D)·s` along rays from the eyes),
+    `deflate`, `sweep` (radial, sized from the framing box), `fade` (coverage-linear to ±8 %),
+    `dissolve` (the engine's dissolve script, as a reveal), `pulse`, `grade`, `clip`, and
+    `custom` / `custom:<name>` GLSL (engine-shaped functions, `dxrProgress`, `dxrTime`,
+    `splat.index` in entity scope; screen-space inputs refused).
+  - The SDK owns ONE generated chunk per scope (tile: the unified material's `gsplatModifyVS`;
+    entity: a work-buffer modifier), composed grade → clip → reveal → pulse → custom. Removing
+    the last effect restores the engine's own chunk: MAE 0.000, colour and alpha.
+  - `setSource(src, { transition: 'cut' | 'crossfade' | 'flip' | 'wavefront', durationMs, easing,
+    reveal, ridge, ridgeMaxDisparity })`. **`wavefront`** is the photo-frame prototype's sweep:
+    a soft left → right front, 0.18 of the travel wide, commits each column from the old photo
+    (a frozen frame, wiped at the same viewport u in both eyes) to the new one, with a 0.03 m
+    depth ridge riding it (capped at 0.4 % of the view width in disparity). It takes 2000 ms,
+    ease-in-out, and falls back to the crossfade in a hidden tab. `flip` flattens the old photo
+    onto its convergence plane, swaps at zero disparity and inflates the new one. `reveal`
+    reveals the incoming asset (entity scope) while the old one fades. `fadeMs` keeps its 1.12.1
+    meaning. For photo slideshows: `crossfade` or `wavefront`.
+  - Frame cost within noise (stereo 18.10 ms → 18.73 ms with an animating inflate; hiding effects
+    are cheaper).
+  - Spark: `reveal`, `playEffect`, `setEffect`, `stopEffect` throw "PlayCanvas-only in this
+    version".
+- **`THIRD_PARTY_NOTICES.md`** (in the package): the MIT notices of PlayCanvas engine, three.js
+  and Spark. Shader code adapted from the engine carries a provenance comment.
+
 ## 1.12.1 — 2026-09-24
 
 ### Fixed

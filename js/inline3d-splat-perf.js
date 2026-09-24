@@ -470,6 +470,9 @@ const PC_CLIP_ANCHOR = /float\s+clip\s*=\s*min\(\s*1\.0\s*,/;
  * profile squashed. Returns the source unchanged (and `ok:false`) when the anchor is missing;
  * the caller warns once and renders at the engine's own extent.
  *
+ * The rewritten line is adapted from PlayCanvas engine src/scene/shader-lib/glsl/chunks/gsplat/vert/
+ * gsplatCommon.js (the `gsplatCommonVS` chunk's clipCorner) @ v2.22.3, MIT (THIRD_PARTY_NOTICES.md).
+ *
  * @param {string} src  the current `gsplatCommonVS` chunk.
  * @param {number} k  in (0, 1).
  * @returns {{src:string, ok:boolean}}
