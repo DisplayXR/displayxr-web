@@ -5,23 +5,6 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## 1.13.1 — 2026-09-24
-
-Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No pixel change.
-
-### Fixed
-
-- **An asset kept re-rendering its work buffer, and re-sorting, every frame after any entity-scope
-  effect had ended**: the `wavefront` and `flip` transitions, a load-time `reveal`, a `setSource`
-  `reveal`, and `playEffect`/`setEffect` with `scope: 'entity'`. The effects runner ended an effect
-  with `workBufferUpdate = ONCE`. The engine's placement setter treats ONCE as a one-shot re-render
-  and never leaves ALWAYS, so the photo shown after a wavefront paid a full work-buffer copy, a CPU
-  sort and a 4.7 MB order-texture upload every frame until the next swap. Removal now sets AUTO,
-  then ONCE, for one clean re-render. Measured on an M1 (headless Chrome, 1,179,648 gaussians,
-  steady state after a `wavefront`, 3 runs): sorts went from 60/s (every frame) to 0. Main-thread
-  frame time at 4× CPU throttling went from 1.9–2.1 ms to 0.2–0.7 ms. GPU-synced frame time at 1×
-  went from 16.0 ms to 14.4–14.6 ms, the same as after a `crossfade` (14.3–14.7 ms), which never
-  had the bug.
 ## Unreleased — minor
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). One default changes pixels
@@ -60,6 +43,23 @@ unchanged.
   engine's centre array (≈14 MB) per prepared 1.18M SOG, until used.
 - `setSource`'s `outgoing: 'live' | 'frozen'` option; `SplatPreparedSource` in `splat.d.ts`.
 
+## 1.13.1 — 2026-09-24
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No pixel change.
+
+### Fixed
+
+- **An asset kept re-rendering its work buffer, and re-sorting, every frame after any entity-scope
+  effect had ended**: the `wavefront` and `flip` transitions, a load-time `reveal`, a `setSource`
+  `reveal`, and `playEffect`/`setEffect` with `scope: 'entity'`. The effects runner ended an effect
+  with `workBufferUpdate = ONCE`. The engine's placement setter treats ONCE as a one-shot re-render
+  and never leaves ALWAYS, so the photo shown after a wavefront paid a full work-buffer copy, a CPU
+  sort and a 4.7 MB order-texture upload every frame until the next swap. Removal now sets AUTO,
+  then ONCE, for one clean re-render. Measured on an M1 (headless Chrome, 1,179,648 gaussians,
+  steady state after a `wavefront`, 3 runs): sorts went from 60/s (every frame) to 0. Main-thread
+  frame time at 4× CPU throttling went from 1.9–2.1 ms to 0.2–0.7 ms. GPU-synced frame time at 1×
+  went from 16.0 ms to 14.4–14.6 ms, the same as after a `crossfade` (14.3–14.7 ms), which never
+  had the bug.
 ## 1.13.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), additively. A page that
