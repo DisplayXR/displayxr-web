@@ -454,6 +454,29 @@ export interface SplatSourceOptions {
   ridge?: number;
   /** `wavefront`: the ridge's disparity cap, a fraction of the eye view's width (default 0.004, max 0.05). */
   ridgeMaxDisparity?: number;
+  /**
+   * `crossfade` / `wavefront`: how the OUTGOING photo is shown during the window.
+   * `'live'` (the default in a woven 3D session): it stays resident and keeps rendering every frame
+   * through the same eye views (head motion included) into its own target, blended per eye with
+   * the live incoming one — about 2× draw for the window, both assets resident. `'frozen'` (the
+   * default in 2D): its last frame, frozen into a texture (1.12.1); one draw, but no head parallax
+   * on the outgoing photo — on a tracked panel it reads as tracking pausing. Engine builds without
+   * the single-camera RenderView path always use `'frozen'`.
+   */
+  outgoing?: 'live' | 'frozen';
+}
+
+/**
+ * What `prepareSource()` resolves to: an opaque, single-use handle for `setSource`. The asset is
+ * fully resident (GPU textures + the engine's centre array) until used or disposed.
+ */
+export interface SplatPreparedSource {
+  /** The asset's own count (every splat of a flat source). */
+  readonly numSplats: number;
+  /** `'ready'` until `setSource` uses it (`'used'`) or `dispose()` drops it (`'disposed'`). */
+  readonly state: 'ready' | 'used' | 'disposed';
+  /** Release the prepared asset (no-op once used or disposed). */
+  dispose(): void;
 }
 
 /** What `onBeforeFrame` receives. */
@@ -592,15 +615,26 @@ export interface SplatHandle {
   /**
    * Swap the asset (URL or bytes) in place. PlayCanvas backend only — throws on Spark.
    *
-   * The new file loads BEHIND the current one; then the two crossfade over `fadeMs` (0 = a cut)
-   * and the old one is released. The crossfade blends the two IMAGES linearly: the last frame of
-   * the old asset is frozen (both eyes) and lerped with the live new one, so the mix is exactly
-   * `t` whatever the two photos' depth order (the old asset's own motion stops during the fade). The rig waterfall re-runs for the new file (rig, lens, focus and
+   * The new file loads BEHIND the current one (or pass a `prepareSource()` result: no load at all
+   * on this path); then the two crossfade over `fadeMs` (0 = a cut) and the old one is released.
+   * The crossfade blends the two IMAGES linearly, per eye, so the mix is exactly `t` whatever the
+   * two photos' depth order. The old image is LIVE in a woven 3D session (it keeps rendering with
+   * head motion; `outgoing: 'frozen'` restores the 1.12.1 frozen last frame, the 2D default). The
+   * end state is exactly a plain swap. The rig waterfall re-runs for the new file (rig, lens, focus and
    * frame update; `onFocusChange` fires). The pose (yaw/pitch/zoom/depth) is kept unless
    * `resetPose`. A newer call supersedes an older one still loading. Resolves once the fade has
    * finished; rejects if the new asset cannot be loaded (the current one stays on screen).
    */
-  setSource(src: string | Blob | ArrayBuffer | Uint8Array, opts?: SplatSourceOptions): Promise<SplatHandle>;
+  setSource(src: string | Blob | ArrayBuffer | Uint8Array | SplatPreparedSource, opts?: SplatSourceOptions): Promise<SplatHandle>;
+  /**
+   * PlayCanvas backend only — throws on Spark. Fetch, decode and upload `src` now, in the
+   * background (the SDK's own passes in idle periods; the engine's end-of-load unpack runs when
+   * it must), without rendering it. `setSource(prepared, opts)` then starts on the next frame with
+   * no load on the transition path. Single use; `dispose()` it if the page changes its mind.
+   * Memory: two full assets resident until the swap (≈ +70 MB of GPU textures per 1.18M-gaussian
+   * SOG). `remove()` disposes any still unused.
+   */
+  prepareSource(src: string | Blob | ArrayBuffer | Uint8Array): Promise<SplatPreparedSource>;
   /**
    * `engine: 'playcanvas'` only (throws on Spark). Play a transition/pulse/custom effect;
    * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —

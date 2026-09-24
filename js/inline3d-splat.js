@@ -369,6 +369,10 @@ export function addSplat(wall, canvas, src, opts = {}) {
           "only; with the Spark backend, remove() this handle and addSplat() the new asset.",
       );
     },
+    /** Not on this backend: prepareSource() feeds setSource(), a PlayCanvas-backend feature. */
+    prepareSource() {
+      throw new Error("@displayxr/inline3d/splat: prepareSource() is implemented on the PlayCanvas backend only.");
+    },
     /** Not on this backend (splat effects are PlayCanvas-only in this version). */
     playEffect() {
       throw effectsNotOnSpark('playEffect()');
@@ -706,6 +710,7 @@ function addSplatDeferred(wall, canvas, src, opts) {
     // A swap requested before the first asset has landed runs once it has (the adapter's own
     // setSource replaces this stub on the same object by then).
     setSource: (...args) => out.ready.then(() => out.setSource(...args)),
+    prepareSource: (...args) => out.ready.then(() => out.prepareSource(...args)),
     // Effects before the adapter has loaded: validated NOW (a bad call throws at its own line),
     // then run once the first asset is on screen.
     playEffect: (name, o) => {

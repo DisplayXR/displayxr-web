@@ -49,7 +49,7 @@ import {
   tileSplatBudget,
   budgetPerManager,
 } from './inline3d-splat-perf.js';
-import { boundsFromPositions } from './inline3d-viewer.js';
+import { boundsFromPositions, boundsFromPositionsAsync } from './inline3d-viewer.js';
 import { cameraRigFromPose } from './inline3d-three.js';
 import {
   SplatEffects,
@@ -58,6 +58,7 @@ import {
   resolveRevealOption,
   validateEffectCall,
 } from './inline3d-splat-effects.js';
+import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import {
   clamp,
   finite,
@@ -668,6 +669,8 @@ export class PlayCanvasSplatViewer {
     this._captureWaiters = [];
     /** The crossfade's frame snapshot: { w, h, tex, rt, mi, mat } once captured. */
     this._snap = null;
+    /** setSource's live outgoing asset (./inline3d-splat-live.js), made on first use. */
+    this._live = null;
     this.vH = virtualDisplayHeight;
     this.fit = fit;
     this.margin = margin;
@@ -987,6 +990,8 @@ export class PlayCanvasSplatViewer {
       clearTimeout(w.timer);
       w.resolve(false);
     }
+    this._live?.destroy();
+    this._live = null;
     try {
       this.app?.destroy();
     } catch (err) {
@@ -1223,8 +1228,12 @@ export class PlayCanvasSplatViewer {
       const w = this.canvas.width;
       const h = this.canvas.height;
       let s = this._snap;
-      if (!s || s.w !== w || s.h !== h) {
-        this._destroySnapshot();
+      if (!s || !s.tex || s.w !== w || s.h !== h) {
+        // A new size, or the texture was released after the last transition: a new texture.
+        // The overlay quads (and their compiled materials) are kept.
+        const parts = s?.parts || null;
+        s?.rt?.destroy?.();
+        s?.tex?.destroy?.();
         const tex = new pc.Texture(device, {
           name: 'inline3d-snapshot',
           width: w,
@@ -1236,7 +1245,7 @@ export class PlayCanvasSplatViewer {
           addressU: pc.ADDRESS_CLAMP_TO_EDGE,
           addressV: pc.ADDRESS_CLAMP_TO_EDGE,
         });
-        s = this._snap = { w, h, tex, rt: new pc.RenderTarget({ colorBuffer: tex, depth: false }), parts: null };
+        s = this._snap = { w, h, tex, rt: new pc.RenderTarget({ colorBuffer: tex, depth: false }), parts };
       }
       // null source = the back buffer, still holding this frame (same task, before compositing).
       ok = device.copyRenderTarget(null, s.rt, true, false) !== false;
@@ -1325,7 +1334,7 @@ export class PlayCanvasSplatViewer {
   setSnapshotAlpha(alpha, wipe = null) {
     const s = this._snap;
     if (!s?.parts) return false;
-    const fits = s.w === this.canvas.width && s.h === this.canvas.height;
+    const fits = !!s.tex && s.w === this.canvas.width && s.h === this.canvas.height;
     const show = alpha > 0 && fits;
     for (const p of s.parts) {
       p.mi.visible = show;
@@ -1339,6 +1348,67 @@ export class PlayCanvasSplatViewer {
       }
     }
     return alpha <= 0 || fits;
+  }
+
+  /**
+   * The overlay's source: the live outgoing target, or null for the frozen capture. The same two
+   * quads, the same lerp / wipe — only the texture changes.
+   */
+  setSnapshotSource(tex) {
+    const s = this._snap;
+    if (!s?.parts) return;
+    for (const p of s.parts) {
+      p.mat.setParameter('dxrSnap', tex || s.tex);
+      p.mat.update();
+    }
+  }
+
+  /**
+   * The mono/capture camera as a lens frame, for the live outgoing's rig chain
+   * (./inline3d-splat-live.js): the rig node's matrix, the camera pose in rig space, the
+   * convergence distance c (along the view axis to the focus, which the pivot puts at the orbit
+   * centre) and t = tan(vertical fov / 2).
+   */
+  lensFrame() {
+    const pose = Float64Array.from(this.mono.pose);
+    const o = this._orbitCentre;
+    const fz = o.z + this._depthOffset;
+    let c = -((o.x - pose[12]) * pose[8] + (o.y - pose[13]) * pose[9] + (fz - pose[14]) * pose[10]);
+    if (!(c > 1e-6)) c = 1;
+    return { rig: this.rigMatrix(), pose, c, t: Math.tan((this.mono.fov * DEG) / 2) };
+  }
+
+  /** Can this tile render a live outgoing asset (the single-camera RenderView path)? */
+  get canLiveOutgoing() {
+    return LiveOutgoing.supported(this);
+  }
+
+  /** Start rendering `entity` live into its own target (see ./inline3d-splat-live.js). */
+  startLiveOutgoing(entity, oldFrame) {
+    this._live ||= new LiveOutgoing(this);
+    return this._live.start(entity, oldFrame) ? this._live : null;
+  }
+
+  /** End the live window: overlay back on the frozen capture, camera off, target freed. */
+  stopLiveOutgoing() {
+    if (!this._live?.active) return;
+    this.setSnapshotSource(null);
+    this._live.stop();
+  }
+
+  /**
+   * A transition has ended: free the frozen frame's texture (7 MB at 2560×720; it used to stay
+   * allocated until the next swap). The overlay quads stay, hidden; the next capture makes a new
+   * texture.
+   */
+  releaseSnapshot() {
+    const s = this._snap;
+    if (!s?.tex) return;
+    for (const p of s.parts || []) p.mi.visible = false;
+    s.rt?.destroy?.();
+    s.tex.destroy?.();
+    s.rt = s.tex = null;
+    s.w = s.h = 0;
   }
 
   /** How many eye viewports sit side by side in the buffer right now (1 in mono). */
@@ -1500,6 +1570,8 @@ export class PlayCanvasSplatViewer {
       // The camera NODE drives the sort direction and LOD distance; the views ignore it (they
       // compose the node's PARENT with their own pose). Park it on the first eye.
       placeNode(this.eye, entries[0].pose);
+      // setSource's live outgoing: the same views on its own camera, into its own target.
+      if (this._live?.active) this._live.sync(entries, rect, f);
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
       const cams = this._views;
@@ -1859,7 +1931,7 @@ function perfSpan(name, t0) {
   }
 }
 
-export async function readCloud(resource) {
+export async function readCloud(resource, yielder = yieldToMain) {
   if (!resource) return null;
   const centers = resource.centers;
   const data = resource.gsplatData;
@@ -1869,7 +1941,7 @@ export async function readCloud(resource) {
   const total = Math.ceil(sourceTotal / stride);
   // Not in the task that delivered the asset: the engine's own end-of-load work (its centre
   // readback unpack) runs there, and stacking ours on it made one long task.
-  await yieldToMain();
+  await yielder();
   let t0 = performance.now();
   const xyz = new Float32Array(total * 3);
   for (let j = 0, i = 0; j < total; j++, i += stride) {
@@ -1878,7 +1950,7 @@ export async function readCloud(resource) {
     xyz[j * 3 + 2] = centers[i * 3 + 2];
   }
   perfSpan('readCloud:copy', t0);
-  await yieldToMain();
+  await yielder();
   let opacity = null;
   // Full-resolution peak opacity, ONE BYTE per splat, kept for the exact pick (which walks the
   // engine's own full centre set at pick time): 1.18 MB on the 1.18M bench asset.
@@ -1888,7 +1960,7 @@ export async function readCloud(resource) {
       t0 = performance.now();
       const px = await data.sh0.read(0, 0, data.sh0.width, data.sh0.height, { mipLevel: 0, face: 0, immediate: true });
       perfSpan('readCloud:sh0-readback(async)', t0);
-      await yieldToMain();
+      await yielder();
       t0 = performance.now();
       if (px && px.length >= sourceTotal * 4) {
         const v2 = data.meta?.version === 2;
@@ -2091,7 +2163,8 @@ export function resolveSwap(o = {}) {
   if (transition === 'wavefront') {
     EFFECTS.wavefront.validate({ band, ridge, ridgeMaxDisparity });
   }
-  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity };
+  const outgoing = resolveOutgoingOption(o.outgoing);
+  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity, outgoing };
 }
 
 /**
@@ -2164,6 +2237,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let handle = null;
   let unbindFocusInput = null;
   let removed = false;
+  /** prepareSource: prepared handle → { loaded, state: 'ready' | 'used' | 'disposed', dispose }. */
+  const preparedAssets = new WeakMap();
+  const livePrepared = new Set();
   /** The asset on screen: its resource, kind, the pick data it keeps. */
   let current = null; // { asset, entity, res, kind, streamedBounds, alpha8, pickCentres }
 
@@ -2232,6 +2308,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return pickModel(clientX, clientY);
     },
     setSource,
+    prepareSource,
     /**
      * Play a transition effect (inflate, deflate, sweep, dissolve, fade, pulse, custom) — see
      * docs/splat-effects.md. Validated now; runs once the first asset is on screen. Resolves
@@ -2259,6 +2336,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     remove() {
       removed = true;
       current = null;
+      for (const p of [...livePrepared]) p.dispose();
       fx?.dispose();
       fx = null;
       unbindFocusInput?.();
@@ -2587,7 +2665,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // ── load ──
   let byteSeqLocal = 0;
   /** Fetch/parse one source into an engine asset, and read what the waterfall needs from it. */
-  async function loadOne(pc, app, source) {
+  async function loadOne(pc, app, source, { background = false } = {}) {
+    // prepareSource: our own passes run in idle periods; setSource: at the task's own priority.
+    const y = background ? yieldIdle : yieldToMain;
     let bytes = null;
     if (typeof source !== 'string') {
       const buf = source instanceof Blob ? await source.arrayBuffer() : source;
@@ -2634,7 +2714,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // A URL `.sog` carries its meta in the resource (the engine keeps unknown keys); a Streamed
     // SOG carries it at the top level of lod-meta.json. Both validated by the same reader.
     if (!bytes && rigOpts.rig !== 'display') camera = sogCameraFromMeta(desc.meta);
-    const cloud = desc.kind === 'flat' ? await readCloud(res) : null;
+    const cloud = desc.kind === 'flat' ? await readCloud(res, y) : null;
     // The cloud passes, each in its OWN task: framing, the rest-space sample and the pick set
     // were one ~60 ms main-thread block on a 1.18M-gaussian swap — pointer input waited on it.
     // Split with a yield between them (and a linear-time percentile in boundsFromPositions),
@@ -2642,20 +2722,26 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const pre = { local: null, rest: null, pickCentres: null };
     if (cloud) {
       const walk = centresVisitor(cloud.xyz, cloud.opacity, cloud.total);
-      await yieldToMain();
+      await y();
       let t = performance.now();
-      pre.local = boundsFromPositions(sampleCloudCentres(cloud.total, walk) || []);
+      const framed = sampleCloudCentres(cloud.total, walk) || [];
+      perfSpan('cloud:frame-sample', t);
+      await y();
+      // The percentile core per axis + the window pass, each in its own task (bit-identical to
+      // boundsFromPositions): one ~60-80 ms task per 1.18M gaussians at 4× CPU before.
+      t = performance.now();
+      pre.local = await boundsFromPositionsAsync(framed, undefined, y);
       perfSpan('cloud:bounds', t);
-      await yieldToMain();
+      await y();
       t = performance.now();
       if (rigNeedsCloud(camera)) pre.rest = sampleCloudRestSpace(cloud.total, walk, camera?.rest);
       perfSpan('cloud:rest-sample', t);
-      await yieldToMain();
+      await y();
       t = performance.now();
       const s = sampleCloudCentres(cloud.total, walk, { cap: RIG_SAMPLE_CAP });
       pre.pickCentres = s ? s.slice() : null;
       perfSpan('cloud:pick-set', t);
-      await yieldToMain();
+      await y();
     }
     return { asset, res, desc, camera, cloud, pre };
   }
@@ -2796,6 +2882,49 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     return out;
   });
 
+  // ── prepareSource: load the next asset in the background, for a setSource with no load ──
+  /**
+   * Fetch, decode and upload `src` now, without rendering it: the engine's load (its own unpack
+   * runs when it must) and our cloud passes (framing, rig sample, pick set — in IDLE periods).
+   * Resolves to an opaque handle for setSource(prepared, opts), which then starts on the next
+   * frame with no load on the transition frame. `dispose()` if the page changes its mind.
+   * Memory: the prepared asset is fully resident (a 1.18M-gaussian SOG: its GPU textures plus the
+   * engine's centre array) alongside the current one until it is used or disposed.
+   */
+  async function prepareSource(src) {
+    const app = await booted;
+    await first.catch(() => null);
+    if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
+    const t0 = performance.now();
+    const loaded = await loadOne(pcModule, app, src, { background: true });
+    perfSpan('prepareSource', t0);
+    const entry = { loaded, state: 'ready', dispose: null };
+    const prepared = {
+      [PREPARED_TAG]: true,
+      /** The asset's own count (every splat of a flat source). */
+      numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
+      /** 'ready' until setSource uses it ('used') or dispose() drops it ('disposed'). */
+      get state() {
+        return entry.state;
+      },
+      dispose() {
+        if (entry.state !== 'ready') return;
+        entry.state = 'disposed';
+        livePrepared.delete(entry);
+        app.assets.remove(loaded.asset);
+        loaded.asset.unload?.();
+      },
+    };
+    entry.dispose = prepared.dispose;
+    preparedAssets.set(prepared, entry);
+    if (removed) {
+      prepared.dispose();
+      throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
+    }
+    livePrepared.add(entry);
+    return prepared;
+  }
+
   // ── setSource: swap the asset — a cut, a crossfade, or a transition ──
   let sourceGen = 0;
   let pendingSwap = null;
@@ -2818,11 +2947,22 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const plan = resolveSwap(o);
     const { resetPose = false } = o;
     const gen = ++sourceGen;
+    // A prepareSource() result: already fetched, decoded and uploaded — no load on this path.
+    const prep = preparedAssets.get(next) || null;
+    if (prep) {
+      if (prep.state !== 'ready') {
+        throw new Error(`@displayxr/inline3d/splat: setSource got a prepared source that was already ${prep.state === 'used' ? 'used' : 'disposed'}.`);
+      }
+      prep.state = 'used';
+      livePrepared.delete(prep);
+    } else if (next && typeof next === 'object' && next[PREPARED_TAG]) {
+      throw new Error('@displayxr/inline3d/splat: setSource got a prepared source from another handle.');
+    }
     const app = await booted;
     await first.catch(() => null); // a failed first asset may be replaced
     if (!app || removed) return out;
     const pc = pcModule;
-    const loaded = await loadOne(pc, app, next);
+    const loaded = prep ? prep.loaded : await loadOne(pc, app, next);
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
       loaded.asset.unload?.();
@@ -2841,6 +2981,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return out;
     }
     if (snapped) viewer.setSnapshotAlpha(1, transition === 'wavefront' ? { t: 0, band: plan.band, views: viewer.viewsAcross } : null);
+    // LIVE outgoing (default in 3D): the old asset stays resident and keeps rendering, through the
+    // same eye views, into its own target; the frozen capture above bridges the first frames until
+    // its camera has drawn a sorted frame. Its lens frame is read BEFORE adopt() switches the rig.
+    const outgoingMode = plan.outgoing || defaultOutgoing(viewer.is3D);
+    const live =
+      snapped && outgoingMode === 'live' && viewer.canLiveOutgoing ? viewer.startLiveOutgoing(prev.entity, viewer.lensFrame()) : null;
+    /** Each frame of the window: once the live camera is ready, the overlay samples it. */
+    let liveShown = false;
+    const pumpLive = () => {
+      if (!live || liveShown || !live.active || !live.ready) return;
+      viewer.setSnapshotSource(live.texture);
+      liveShown = true;
+    };
 
     const release = (p) => {
       if (!p) return;
@@ -2925,16 +3078,30 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
 
     if (transition === 'wavefront' && snapped) {
-      release(prev); // the snapshot shows it from here on
+      if (live) {
+        finishers.push(() => {
+          viewer.stopLiveOutgoing();
+          release(prev);
+        });
+      } else release(prev); // the snapshot shows it from here on
       const band = plan.band;
       const ridge = fx.play(
         'wavefront',
         { durationMs: plan.durationMs, easing: plan.easing, band, ridge: plan.ridge, ridgeMaxDisparity: plan.ridgeMaxDisparity, scope: 'entity' },
         { entity, gate: afterTicks(2), internal: true },
       );
-      finishers.push(() => viewer.setSnapshotAlpha(0));
+      finishers.push(() => {
+        viewer.setSnapshotAlpha(0);
+        viewer.releaseSnapshot();
+      });
       viewer._hooks.push(() => {
         if (finished || removed) return false;
+        if (live && !live.fits) {
+          fx?.stop('wavefront', { finish: true, entity });
+          finish();
+          return false;
+        }
+        pumpLive();
         const inst = fx?.scopes.get(entity)?.get('wavefront');
         const amount = inst ? inst.amount : 1;
         if (!viewer.setSnapshotAlpha(1, { t: amount, band, views: viewer.viewsAcross })) {
@@ -2953,14 +3120,21 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // the 1.12.1 one-pass fade, over the same duration.
     const fade = plan.durationMs;
     if (plan.reveal) fx.play(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
-    if (snapped) release(prev); // the snapshot shows it from here on
-    else {
+    if (snapped) {
+      if (!live) release(prev); // the snapshot shows it from here on
+    } else {
       setFade(entity, 0);
       setFade(prev.entity, 1);
     }
     finishers.push(() => {
-      if (snapped) viewer.setSnapshotAlpha(0);
-      else {
+      if (snapped) {
+        viewer.setSnapshotAlpha(0);
+        viewer.releaseSnapshot();
+        if (live) {
+          viewer.stopLiveOutgoing();
+          release(prev);
+        }
+      } else {
         setFade(entity, null);
         release(prev);
       }
@@ -2974,12 +3148,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     viewer._hooks.push((t) => {
       if (removed) return (finish(), false);
       if (finished) return false; // superseded: already finished
+      pumpLive();
       if (++ticks < 2) return true;
       if (t0 === null) t0 = t;
       const k = Math.min(1, Math.max(0, (t - t0) / fade));
       if (snapped) {
         // A resize or a 2D/3D switch mid-fade: the capture no longer fits the buffer — end now.
-        if (!viewer.setSnapshotAlpha(1 - k)) {
+        if (!viewer.setSnapshotAlpha(1 - k) || (live && !live.fits)) {
           finish();
           return false;
         }
@@ -3008,3 +3183,5 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 }
 
 let byteSeq = 0;
+/** Marks a prepareSource() result (so one from another handle is caught, not loaded as bytes). */
+const PREPARED_TAG = Symbol.for('@displayxr/inline3d/splat.prepared');

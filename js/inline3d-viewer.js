@@ -152,7 +152,30 @@ function swap(a, i, j) {
  *        Set 0 to get the old percentile-only box back.
  * @returns {{center:number[], extent:number[]}|null} null if there is nothing to measure.
  */
-export function boundsFromPositions(xyz, { lo = 0.05, hi = 0.95, expand = 2.5 } = {}) {
+export function boundsFromPositions(xyz, opts) {
+  const it = boundsSteps(xyz, opts);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+
+/**
+ * boundsFromPositions, in steps: the same code, the same numbers bit for bit, but a caller can
+ * give the main thread back between the per-axis selections and the window pass. On a 1.18M
+ * gaussian cloud under 4× CPU throttling the one-shot version was a single 60-80 ms task.
+ * `await boundsFromPositionsAsync(xyz, opts, yielder)` runs it with `yielder()` between steps.
+ */
+export async function boundsFromPositionsAsync(xyz, opts, yielder) {
+  const it = boundsSteps(xyz, opts);
+  let r = it.next();
+  while (!r.done) {
+    await yielder();
+    r = it.next();
+  }
+  return r.value;
+}
+
+function* boundsSteps(xyz, { lo = 0.05, hi = 0.95, expand = 2.5 } = {}) {
   const n = Math.floor(xyz.length / 3);
   if (n < 1) return null;
   // Below a few hundred points the percentiles are noise — just use the true box.
@@ -171,6 +194,7 @@ export function boundsFromPositions(xyz, { lo = 0.05, hi = 0.95, expand = 2.5 } 
     const hiV = selectKth(axisVals, n, kHi);
     center[axis] = 0.5 * (loV + hiV);
     extent[axis] = Math.max(hiV - loV, 1e-6);
+    yield;
   }
   // Untrimmed already IS the true box, and expand 0 asks for the old behaviour.
   if (!trim || expand <= 0) return { center, extent };
