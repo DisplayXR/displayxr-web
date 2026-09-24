@@ -7,7 +7,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizePlayerOptions, formatTime, mapKeyToAction } from '../js/inline3d-player.js';
+import {
+  normalizePlayerOptions,
+  formatTime,
+  mapKeyToAction,
+  bufferedFraction,
+} from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
 
@@ -139,4 +144,65 @@ test('an unmapped key returns null — so the caller never calls preventDefault 
   for (const key of ['Tab', 'Escape', 'a', 'Enter', 'ArrowUp', 'ArrowDown', '1']) {
     assert.equal(mapKeyToAction(key), null, `key ${JSON.stringify(key)}`);
   }
+});
+
+// ── bufferedFraction ─────────────────────────────────────────────────────────────────────────
+//
+// The scrub bar's buffered shading. Takes [start,end] pairs rather than a live `TimeRanges`
+// precisely so it can be checked here, without a <video>.
+
+test('bufferedFraction reports the end of the range CONTAINING the playhead', () => {
+  assert.equal(bufferedFraction([[0, 30]], 5, 60), 0.5);
+  assert.equal(bufferedFraction([[0, 60]], 5, 60), 1);
+});
+
+test('a range the playhead has not reached does not count as buffered ahead', () => {
+  // Seeked to 5 s; the only buffered region is 40-60 s. Nothing ahead of the playhead is ready,
+  // and painting 100% there is the lie that makes a stalled player look fully loaded.
+  assert.equal(bufferedFraction([[40, 60]], 5, 60), 0);
+});
+
+test('with several ranges, the one straddling the playhead wins — not the last one', () => {
+  const ranges = [
+    [0, 10],
+    [45, 60],
+  ];
+  assert.equal(bufferedFraction(ranges, 3, 60), 10 / 60);
+  assert.equal(bufferedFraction(ranges, 50, 60), 1);
+});
+
+test('a playhead a hair before a range start still counts (the 0.25 s seek tolerance)', () => {
+  // A fresh seek lands the playhead marginally before the range the browser then reports.
+  assert.equal(bufferedFraction([[10, 30]], 9.9, 60), 0.5);
+  assert.equal(bufferedFraction([[10, 30]], 9.0, 60), 0);
+});
+
+test('an unknown duration yields 0 rather than NaN — a live stream must not paint a fill', () => {
+  assert.equal(bufferedFraction([[0, 30]], 5, NaN), 0);
+  assert.equal(bufferedFraction([[0, 30]], 5, Infinity), 0);
+  assert.equal(bufferedFraction([[0, 30]], 5, 0), 0);
+});
+
+test('no ranges at all, or a missing buffered object, is 0 and never throws', () => {
+  assert.equal(bufferedFraction([], 5, 60), 0);
+  assert.equal(bufferedFraction(undefined, 5, 60), 0);
+});
+
+test('the fraction is clamped to 1 even if a range overruns the reported duration', () => {
+  assert.equal(bufferedFraction([[0, 75]], 5, 60), 1);
+});
+
+// ── new chrome options ───────────────────────────────────────────────────────────────────────
+
+test('accent is kept only as a non-empty string, else null', () => {
+  assert.equal(normalizePlayerOptions({ accent: '#ff0066' }).accent, '#ff0066');
+  assert.equal(normalizePlayerOptions({ accent: '' }).accent, null);
+  assert.equal(normalizePlayerOptions({ accent: 0xff0066 }).accent, null);
+  assert.equal(normalizePlayerOptions({}).accent, null);
+});
+
+test('badge3d defaults OFF and passes a custom label through', () => {
+  assert.equal(normalizePlayerOptions({}).badge3d, false);
+  assert.equal(normalizePlayerOptions({ badge3d: true }).badge3d, true);
+  assert.equal(normalizePlayerOptions({ badge3d: 'SPATIAL' }).badge3d, 'SPATIAL');
 });

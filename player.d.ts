@@ -37,6 +37,19 @@ export interface PlayerOptions {
    * {@link PlayerHandle.setSource}. Reserved so a v2 that adds it needs no signature change.
    */
   fadeMs?: number;
+  /**
+   * Accent colour for the transport — written to the `--dxr-accent` custom property on the
+   * chrome, so it re-skins the scrub fill, the knob, the focus rings and the spinner in one
+   * value. Any CSS colour. Default `#4da3ff`.
+   */
+  accent?: string;
+  /**
+   * Show a small pill in the control row (`true` → "3D", or your own short string). Opt-in and
+   * page-driven on purpose: the module will NOT infer it from `wall.supported`, because a
+   * supported wall whose tile is scrolled out of view — or whose panel is in a 2D mode — is not
+   * showing 3D at that moment, and a badge that says otherwise is worse than no badge.
+   */
+  badge3d?: boolean | string;
   /** Default: `'anonymous'` iff `src` is a cross-origin URL; unset (browser default) otherwise. */
   crossOrigin?: 'anonymous' | 'use-credentials';
   /** Per-eye buffer resolution in px. `'sbs'` + supported wall only — see {@link TileOptions}. */
