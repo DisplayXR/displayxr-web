@@ -69,7 +69,8 @@ Splat and model rendering on the PlayCanvas backend uses the PlayCanvas engine (
 **Models render with PlayCanvas by default (1.12).** `addModel(wall, canvas, 'chair.glb')` loads
 the glTF with the PlayCanvas engine (optional peer `playcanvas`), lit to match the Khronos glTF
 Sample Viewer: an in-memory neutral studio environment, Khronos PBR Neutral tone mapping,
-exposure 1. `engine: 'three'` is the 1.11 three.js renderer, unchanged (also importable as
+exposure 1. `environment: 'room'` gives three's RoomEnvironment look instead (a page tuned on the
+three path). `engine: 'three'` is the 1.11 three.js renderer, unchanged (also importable as
 `@displayxr/inline3d/model/three`). Each engine is imported only when a tile asks for it. Draco
 and KTX2 use the same served decoder folders on both engines. Design, the Sample-Viewer MAE table
 and what throws: [`docs/playcanvas-model-backend.md`](docs/playcanvas-model-backend.md).

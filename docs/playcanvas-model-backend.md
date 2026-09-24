@@ -82,7 +82,7 @@ reference.
 
 **What the PlayCanvas default does to match it.**
 
-| | PlayCanvas default (1.12) | three (1.11, unchanged) |
+| | PlayCanvas default (1.12; `environment: 'neutral'`) | three (1.11, unchanged) |
 |---|---|---|
 | environment | in-memory neutral studio → `EnvLighting` → `scene.envAtlas` | RoomEnvironment → PMREM |
 | tone mapping | `TONEMAP_NEUTRAL` (Khronos PBR Neutral) | none |
@@ -121,10 +121,102 @@ smooth fitted studio instead of the photographed one (mean on-object 94 vs the r
 The silhouette IoU is below 1 by MSAA edge pixels and the Sample Viewer's own bounds handling; it is
 identical for both engines.
 
+`environment: 'room'` is three's room on this engine — [§ Environments](#environments--neutral-default-and-room-three).
 `environment: 'studio'` maps three's three-point rig onto directional lights (intensity ÷ π, since
 the engine's BRDF has no Lambert 1/π; aimed by rotation because engine lights shine along −Y) and
 three's hemisphere light onto `scene.ambientLight`. It is not tuned against anything; it exists so
 `samples/shopify` and pages that chose it keep a punctual look.
+
+## Environments — `neutral` (default) and `room` (three)
+
+| `environment` | PlayCanvas | tone mapping | three (`engine: 'three'`) |
+|---|---|---|---|
+| `neutral` — **default** | generated neutral studio, fitted to the Sample Viewer's Studio Neutral (above) | Khronos PBR Neutral | — |
+| `room` | three's RoomEnvironment, regenerated in memory (below) | **none** (three's) | RoomEnvironment → PMREM (default) |
+| `studio` | three's three-point rig as directional lights | Khronos PBR Neutral | three-point rig |
+| `none` | nothing | Khronos PBR Neutral | nothing |
+
+`handle.setRig('display', { environment })` on a splat tile takes `neutral` (default), `room` and
+`none` with the same meaning, and the same tone mapping unless `toneMapping` is passed
+([adapter § setRig](playcanvas-adapter.md#setrig--switching-between-the-display-rig-and-the-camera-rig-36)).
+**Through 1.16 `room` was an alias of `neutral` on this engine**, so a page that passed
+`environment: 'room'` to keep its three look silently got the Sample-Viewer studio and PBR Neutral
+tone mapping. The default did not move.
+
+**Why `room` exists.** The Sample Viewer, not three, is the reference for the default (above), and
+that stays. But a page tuned on the three path chose three's room, and on a real catalogue (the Show
+app's storm lantern, handbag, boot, compass) that choice, not an engine difference, was most of
+the gap. Object MAE (/255, 512², rest pose, mono) of each PlayCanvas render against three r180 with
+`environment: 'room'`, factor by factor:
+
+| step (cumulative) | lantern | handbag | boot | compass |
+|---|---|---|---|---|
+| PlayCanvas default (neutral studio + PBR Neutral) | 20.5 | 54.4 | 29.5 | 23.3 |
+| + tone mapping none | 15.1 | 40.4 | 14.1 | 12.8 |
+| + three's own RoomEnvironment (its PMREM read back, `yaw 90`) | 11.9 | 12.8 | 7.4 | 6.4 |
+| + transmission fixes ([below](#transmission-khr_materials_transmission--volume)) | 10.2 | 12.8 | 7.4 | 6.4 |
+| + three's 0.04-rad blur | 10.2 | 11.2 | 6.9 | 6.2 |
+| **`environment: 'room'` as shipped** (the generated room) | **10.2** | **11.0** | **7.1** | **6.3** |
+
+Split with both orders (Shapley over the two big factors): tone mapping accounts for 7.4 / 11.6 /
+13.4 / 11.5 of the gap and the environment for 1.2 / 29.9 / 8.7 / 5.5 — the handbag's "less glossy
+highlights" is mostly the environment (three's room has a 100-nit ceiling panel and two 50-nit
+wall panels; the neutral studio's brightest lobe is far softer). Neither engine adds a punctual
+light for `room`, both write sRGB, and env intensity 0.9 / 1.1 is worse than 1 on three of four
+items, so none of those is a factor.
+
+**What is left is three, not this engine.** Rendering the same four assets in the Sample Viewer
+with three's room as its environment (exported from three's own PMREM, tone mapping NONE, rotation
+calibrated) and comparing both engines to THAT:
+
+| vs Sample Viewer + room | lantern | handbag | boot | compass |
+|---|---|---|---|---|
+| three `room` | 11.8 | 13.4 | 8.3 | 8.5 |
+| PlayCanvas `room` | **10.6** | **4.8** | **4.7** | **5.7** |
+
+The residual against three is where three departs from the reference (its handbag reads glossier
+than the Sample Viewer's), so it was not chased.
+
+**How the room is made.** `ROOM_ENVIRONMENT` holds the scene numbers of three's
+`RoomEnvironment.js` (MIT — see `THIRD_PARTY_NOTICES.md`): a white room lit by one point light,
+six grey boxes, six emissive panels. `roomRadiance(dir)` ray-casts it from the origin and shades a
+hit the way three shades it when it bakes the PMREM — the panel's emissive value, or Lambert + GGX
+at roughness 1 from the point light with three's falloff window, no shadows. `roomEquirect()` fills
+a 256×128 equirect and applies three's 0.04-rad blur; it is RGBE-encoded and prefiltered by the
+engine like the neutral studio. Against three r180's own bake (its PMREM read back through
+`textureCubeUV`), texel ratio median 1.000 (p10 0.989, p90 1.006), solid-angle-weighted MAE 0.04.
+Cost: ~16 ms once per page (cached), then the engine prefilter per tile. **Orientation**:
+`ROOM_YAW_DEG = 90`, from a 0/90/180/270 × mirrored sweep with a clean minimum at 90 unmirrored on
+two assets.
+
+## Transmission (`KHR_materials_transmission` / `_volume`)
+
+The engine reads both into `useDynamicRefraction` + `BLEND_NORMAL`: the material samples the
+camera's scene-colour map. Three things are the app's job, and the backend now does them for every
+transmissive draw (`prepareTransmission`), on the default too; `setRig('display')` does the same for
+meshes under root:
+
+1. **The grab pass.** No camera rendered the scene-colour map, so the material sampled an unbound
+   texture: the storm lantern's burner rendered as a **magenta** blob inside its globe.
+   `viewer.useSceneColor()` turns it on for every eye camera, only when a transmissive draw exists.
+2. **Pass order.** The Sample Viewer and three draw opaque → transmissive → blended. The engine sorts
+   transmissive and blended draws in one back-to-front list, so the lantern's blended globe
+   (depthWrite off) was drawn first and the transmissive body painted over it; the burner showed
+   through an opaque-alpha globe. Transmissive draws now sort ahead of blended ones.
+3. **Stereo.** The engine maps the refracted point's view NDC over the whole render target
+   (`getGrabScreenPos`). A stereo tile draws two views side by side, so each eye sampled across
+   both. A patched `refractionDynamicPS` takes the offset from the fragment itself (NDC delta ÷
+   NDC-per-pixel, from derivatives): identical in mono (max 1/255), and left/right consistency on a
+   refractive plane goes from MAE 3.5 to 0.4 (the unpatched right eye shows a squashed copy of the
+   whole frame).
+
+Lantern object MAE: vs three `room` 11.9 → 10.2; vs the Sample Viewer, default 14.4 → 12.4 and room
+11.5 → 10.6. The four Khronos gate models carry no transmission, so the default's table above is
+unchanged (re-run: 16.7 / 6.4 / 2.7 / 9.4).
+
+Not done: three renders a double-sided BLENDED material in two passes (back faces, then front);
+the Sample Viewer and this engine draw it once. Two passes would bring the lantern's globe closer
+to three (glass alone 12.5 → 7.4) but move it away from the Sample Viewer, so it was left alone.
 
 ## What throws, at call time
 
@@ -194,9 +286,17 @@ mesh bench's no-MSAA throughput (0.54 vs 0.59 ms on the Helmet) is the like-for-
   surface, not its fields: no `scene`, `renderer`, `content` as three objects).
 - The orbit is tilt-and-relax (the splat adapter's), not SceneViewer's cumulative turntable drag.
 - One Draco / Basis pool per page (above).
-- `KHR_materials_transmission` differs visibly between the engines (the FlightHelmet's goggle lenses).
+- `KHR_materials_transmission` still differs between the engines in detail (three draws a
+  double-sided blended material in two passes, § Transmission).
 
 ## NOT TESTED
+
+- `environment: 'room'` on the real DisplayXR Browser weave, and on assets beyond the four catalogue
+  items (the calibration is two assets for orientation, four for the table).
+- `KHR_materials_volume` with a thickness on real assets (the stereo grab UV was checked on a
+  synthetic plane at thickness 0 and 0.3); `KHR_materials_dispersion` (three extra grab samples,
+  same patched function).
+- setRig's transmission check on a page that adds a transmissive mesh while the splat is SHOWN.
 
 - The real DisplayXR Browser weave (views came from a fake wall), Windows/D3D11 ANGLE, Android.
 - Multi-tile pages beyond the model sample's three tiles; memory and GPU residency over a long

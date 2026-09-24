@@ -24,6 +24,8 @@
 //     and was fitted to the Sample Viewer's "Studio Neutral". three's path keeps RoomEnvironment
 //     and no tone mapping (unchanged since 1.11); the two backends therefore do not look
 //     identical, by design — docs/playcanvas-model-backend.md §Lighting has the MAE table.
+//     `environment: 'room'` is three's room on this engine (§ the room environment), untonemapped,
+//     for a page tuned on the three path (§Environments).
 //   · Decoders are the ENGINE's: Draco and Basis through the engine's own worker readers (fed the
 //     SAME files three's `libs/draco/` and `libs/basis/` folders hold), meshopt through the
 //     container's bufferView hook with meshoptimizer's `MeshoptDecoder` (the engine has no

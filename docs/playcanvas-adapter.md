@@ -187,8 +187,8 @@ the mono camera are identical to a fresh `addModel` tile:
 | `fitSweep` | `true` | |
 | `idleSpin` | `8` | °/s after 2.5 s idle, as `addModel` (pass `0` for a still product) |
 | `ipdFactor`, `parallaxFactor`, `perspectiveFactor` | `1` | on the declared display rig |
-| `toneMapping` | `'neutral'` | applied to the page's meshes **while the splat is hidden** |
-| `environment` | `'room'` | `'room'` / `'neutral'`: addModel's IBL if the page has none; `'none'` |
+| `toneMapping` | the environment's: `'neutral'`, or `'none'` for `'room'` | applied to the page's meshes **while the splat is hidden** |
+| `environment` | `'neutral'` | addModel's IBL of that name if the page has none: `'neutral'` (Sample-Viewer studio) or `'room'` (three's RoomEnvironment, [model backend § Environments](playcanvas-model-backend.md#environments--neutral-default-and-room-three)); `'none'` |
 | `frame` | — | `{ center, extent }` (arrays or `{x,y,z}`) |
 
 **Lighting and tone mapping follow addModel, but only where that is safe.** A splat tile renders
@@ -196,10 +196,16 @@ with `TONEMAP_NONE`, because splat colours are already display-referred. addMode
 with Khronos PBR Neutral and lights them with its generated neutral-studio IBL. On `setRig('display')`:
 - The eye camera switches to `toneMapping` (default `'neutral'`) while the splat entity is disabled,
   and back to `'none'` on the first frame the splat is shown again.
-- If the scene has no `envAtlas` of its own, the neutral studio is installed as addModel installs
-  it. It is removed again (and `exposure` / `skyboxIntensity` / `skyboxRotation` restored) when the
-  rig switches away. A page that lights its own meshes (`scene.envAtlas` set) is never touched.
-  Neither is a tile with `sky: true`.
+- If the scene has no `envAtlas` of its own, the `environment` (default the neutral studio; `'room'`
+  for three's RoomEnvironment) is installed as addModel installs it. A later `setRig('display')`
+  with another environment swaps it. It is removed again (and `exposure` / `skyboxIntensity` /
+  `skyboxRotation` restored) when the rig switches away. A page that lights its own meshes
+  (`scene.envAtlas` set) is never touched. Neither is a tile with `sky: true`.
+- A glTF under root with `KHR_materials_transmission` / `_volume` gets what addModel gives it
+  (checked every 30 frames, since a page adds meshes whenever they load): the scene-colour grab
+  pass, transmissive-first sorting and the per-eye grab UV
+  ([model backend § Transmission](playcanvas-model-backend.md#transmission-khr_materials_transmission--volume)).
+  The grab pass is dropped when the rig switches away.
 
 **MSAA is the one thing a live switch cannot match.** Antialiasing is fixed when the WebGL
 context is created. `addModel` creates its context with MSAA on, and a splat tile creates it off,

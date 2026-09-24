@@ -5,6 +5,43 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./model` and `./splat`, `engine: 'playcanvas'` only). The default look
+does not move except on glTFs that use `KHR_materials_transmission`.
+
+### Changed
+
+- **`environment: 'room'` is now three's room on the PlayCanvas backend** (#36). `addModel(…, {
+  environment: 'room' })` and `setRig('display', { environment: 'room' })` light with three.js's
+  procedural RoomEnvironment, regenerated in memory (ray cast, no asset, ~16 ms once per page), and
+  default to tone mapping `'none'`, three's. Through 1.16 `'room'` was an alias of `'neutral'` on
+  this engine, so a page that passed it to keep its three look got the Sample-Viewer studio with PBR
+  Neutral. **The default is now spelled `'neutral'` and renders exactly as before** (Khronos gate
+  re-run: 16.7 / 6.4 / 2.7 / 9.4, unchanged). On the Show catalogue, object MAE against three r180
+  `room` goes from 20.5 / 54.4 / 29.5 / 23.3 (the default) to **10.2 / 11.0 / 7.1 / 6.3** (storm
+  lantern / handbag / boot / compass). Tone mapping and the environment explain the gap, and what is
+  left is where three departs from the Sample Viewer (PlayCanvas `room` is closer to the Sample
+  Viewer lit by the same room than three is: handbag 4.8 vs 13.4). `setRig('display')` with
+  `'room'` renders pixel-identical to `addModel` with it. See
+  [`docs/playcanvas-model-backend.md` § Environments](docs/playcanvas-model-backend.md#environments--neutral-default-and-room-three).
+- `setRig('display')`'s `toneMapping` now defaults to the environment's (`'none'` for `'room'`,
+  `'neutral'` otherwise). A second `setRig('display')` with another environment swaps the IBL it
+  installed.
+
+### Fixed
+
+- **`KHR_materials_transmission` / `_volume` on PlayCanvas** (#36), for `addModel` and for meshes
+  under root on `setRig('display')`:
+  - The scene-colour grab pass the material samples is now requested. Without it the storm lantern's
+    burner rendered as a magenta blob inside the globe.
+  - Transmissive draws sort ahead of blended ones, the pass order of the Sample Viewer and three.
+    The lantern's opaque-alpha globe no longer shows the burner through it.
+  - The grab UV is taken per view. The engine mapped each view's NDC over the whole target, so in
+    stereo each eye sampled across both. Mono renders are identical.
+  - Lantern object MAE vs the Sample Viewer (default look): 14.4 → 12.4.
+  - See [§ Transmission](docs/playcanvas-model-backend.md#transmission-khr_materials_transmission--volume).
+
 ## 1.16.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive. A page that never
