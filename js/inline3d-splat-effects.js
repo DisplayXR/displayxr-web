@@ -26,7 +26,7 @@
 // pulse → custom. Removing the last effect deletes the chunk (tile) or the modifier (entity),
 // which restores the engine's own default — the exact baseline, not a no-op look-alike.
 //
-// Adding an effect = one GLSL body + one registry entry in EFFECTS below: `glsl(P)` defines
+// Adding an effect = one GLSL body + one registry entry in EFFECTS below: `glsl(P, opts)` defines
 // `P##center`, `P##rs`, `P##color`, and `uniforms(ctx, inst, amount)` returns the values.
 //
 // ── The stereo rule ───────────────────────────────────────────────────────────────────────────
@@ -883,6 +883,7 @@ void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) {
       body: (P) => `
 uniform float ${P}lift;
 uniform float ${P}drift;
+${CURL_GLSL(P)}
 void ${P}center(inout vec3 c) {
   ${P}lp = -1.0;
   if (${P}amount >= 1.0) return;
@@ -895,7 +896,7 @@ void ${P}center(inout vec3 c) {
   float u = ${P}unit(c);
   vec3 q = ${P}iq(c) * ${P}freq * 0.7;
   float t = ${P}time * 0.25;
-  vec3 n = vec3(dxrFxNoise(q + vec3(t, 0.0, 0.0)), dxrFxNoise(q + vec3(19.1, t, 0.0)), dxrFxNoise(q + vec3(0.0, 47.3, t))) * 2.0 - 1.0;
+  vec3 n = ${P}curl(q * 2.0, t * 4.0) * 0.5; // the cheap sine field, not 3 value noises (stereo cost)
   // mostly each particle's own random drift, bent by a slow shared swirl (a purely coherent field
   // would warp the picture in chunks instead of scattering it)
   vec3 r = vec3(${P}h(c, 3.0), ${P}h(c, 4.0), ${P}h(c, 5.0)) * 2.0 - 1.0;
