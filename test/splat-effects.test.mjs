@@ -294,7 +294,7 @@ test('option validation: names, kinds, numbers, easings, origins, scopes', () =>
   assert.deepEqual(resolveOriginSpec({ clientX: 5, clientY: 6 }), { kind: 'client', x: 5, y: 6 });
   assert.doesNotThrow(() => validateEffectCall('grade', null, 'set'));
   assert.throws(() => validateEffectCall('nope', null, 'set'), /unknown effect/);
-  assert.deepEqual(PUBLIC_EFFECTS, ['clip', 'custom', 'deflate', 'dissolve', 'fade', 'grade', 'inflate', 'pulse', 'sweep']);
+  assert.deepEqual(PUBLIC_EFFECTS, ['assemble', 'clip', 'converge', 'custom', 'deflate', 'dissolve', 'dissolve-in', 'fade', 'grade', 'inflate', 'pulse', 'shimmer', 'sweep']);
 });
 
 test('reveal option: false/undefined → none, a name, or {type,…}; bad ones throw', () => {
