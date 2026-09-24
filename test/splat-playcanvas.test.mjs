@@ -38,6 +38,8 @@ import {
   attachPlayCanvasSplat,
   describeResource,
   readCloud,
+  validateSetRig,
+  SET_RIG_DISPLAY_DEFAULTS,
 } from '../js/inline3d-splat-playcanvas.js';
 import { coverageExponent } from '../js/inline3d-splat-shared.js';
 import {
@@ -449,6 +451,16 @@ function makeFakePc() {
     }
     addChild(c) {
       this.children.push(c);
+      c.parent = this;
+    }
+    findComponents(type) {
+      const found = [];
+      const walk = (e) => {
+        if (e[type]) found.push(e[type]);
+        for (const c of e.children || []) walk(c);
+      };
+      walk(this);
+      return found;
     }
     addComponent(type, data) {
       if (type === 'camera') this.camera = { layers: [0, 1, 2, 4, 3], ...data, camera: { setXrProperties() {} } };
@@ -525,6 +537,17 @@ function makeFakePc() {
     RESOLUTION_FIXED: 'fixed',
     SHADERLANGUAGE_GLSL: 'glsl',
     TONEMAP_NONE: 6,
+    TONEMAP_NEUTRAL: 9,
+    PIXELFORMAT_RGBA8: 'rgba8',
+    TEXTURETYPE_RGBE: 'rgbe',
+    TEXTUREPROJECTION_EQUIRECT: 'equirect',
+    ADDRESS_REPEAT: 'repeat',
+    ADDRESS_CLAMP_TO_EDGE: 'clamp',
+    Texture: class { constructor(device, o) { this.o = o; } destroy() { this.destroyed = true; } },
+    EnvLighting: {
+      generateLightingSource: () => ({ destroy() {} }),
+      generateAtlas: () => ({ isAtlas: true, destroy() { this.destroyed = true; } }),
+    },
     createGraphicsDevice: async (canvas, o) => ((rec.deviceOpts = o), { canvas }),
     AppOptions: class {},
     AppBase,
@@ -2083,5 +2106,203 @@ test('prepareSource(src, { transition }): validates the transition at the call, 
   assert.equal(prep.state, 'ready');
   assert.ok(v._snap?.parts, 'the overlay quads exist already (their shaders compile in the dwell)');
   prep.dispose();
+  out.remove();
+});
+
+// ── handle.setRig: live, reversible display/camera rig switch ───────────────────────────────
+
+const CAM_BLOCK = {
+  convention: 'opencv',
+  rest: { position: [0, 0, 0], rotation: [0, 0, 0, 1] },
+  intrinsics: { fx: 900, fy: 900, cx: 640, cy: 360, width: 1280, height: 720 },
+  focus: { point: [0, 0, 2.5] },
+};
+function camFlat(n = 600) {
+  const r = fakeFlat(n, 0);
+  r.gsplatData.meta = { camera: CAM_BLOCK };
+  return r;
+}
+/** A glTF-ish render component under handle.engine.root, with one world AABB. */
+function addMesh(pc, out, center, half) {
+  const e = new pc.Entity('page-mesh', out.engine.app);
+  e.render = { enabled: true, entity: e, meshInstances: [{ aabb: { center: { x: center[0], y: center[1], z: center[2] }, halfExtents: { x: half[0], y: half[1], z: half[2] } } }] };
+  out.engine.root.addChild(e);
+  return e;
+}
+function rigWall() {
+  const pushed = [];
+  return {
+    pushed,
+    wall: { supported: true, addScene: () => ({ exclude() {}, unexclude() {}, remove() {}, setViewRig: (r) => pushed.push(JSON.parse(JSON.stringify(r))) }) },
+  };
+}
+const viewState = (v) => ({
+  pose: Array.from(v.mono.pose),
+  proj: Array.from(v.mono.proj),
+  fov: v.mono.fov,
+  far: v.mono.far,
+  capture: v.mono.capture,
+  rig: Array.from(v.rigMatrix()),
+  fit: v._fitScale,
+  idle: v.idleSpin,
+  tone: v.toneMapping,
+});
+
+test("setRig('display'): frames the meshes under root on addModel's defaults, declares a display rig, pose to rest", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.rig.type, 'camera');
+  assert.equal(pushed.at(-1).type, 'camera');
+  out.setPose({ yaw: 12, zoom: 1.5 });
+  addMesh(pc, out, [0.5, 1, -2], [0.1, 0.2, 0.05]);
+  out.mesh.entity.enabled = false; // the page hides the splat
+  const r = await out.setRig('display');
+  assert.equal(r, out);
+  assert.equal(out.rig.type, 'display');
+  assert.equal(out.rig.typeSource, 'setRig');
+  assert.equal(out.rig.frame.source, 'root', 'the hidden splat is not framed');
+  assert.deepEqual(out.rig.frame.center, [0.5, 1, -2]);
+  const v = out.viewer;
+  assert.equal(v.mono.capture, null, 'off the capture lens');
+  assert.equal(v.vH, 0.24);
+  near(v._fitScale, fitScale({ extent: [0.2, 0.4, 0.1], fit: 'contain', margin: 0.8, vH: 0.24, aspect: 320 / 180, fitSweep: true, depthLimit: 4 }), 1e-12, 'addModel fit');
+  assert.deepEqual(v.getFocus(), { x: 0.5, y: 1, z: -2 });
+  assert.equal(v._focusRecentres, true, 'orbits the frame centre');
+  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 }, 'rest');
+  assert.equal(v.idleSpin, 8, "addModel's idle spin");
+  assert.deepEqual(pushed.at(-1), {
+    type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 },
+    virtualDisplayHeight: 0.24, ipdFactor: 1, parallaxFactor: 1, perspectiveFactor: 1,
+  });
+  assert.equal(v.toneMapping, 'neutral', "addModel's tone mapping while the splat is hidden");
+  assert.equal(v.eye.camera.toneMapping, pc.TONEMAP_NEUTRAL);
+  assert.equal(out.engine.app.scene.envAtlas?.isAtlas, true, "addModel's neutral studio (the page had none)");
+  // Splat shown again: its colours are display-referred, tone mapping back to none on the next tick.
+  out.mesh.entity.enabled = true;
+  v._tick();
+  assert.equal(v.eye.camera.toneMapping, pc.TONEMAP_NONE);
+  out.remove();
+});
+
+test("setRig round trip: display → camera lands on the exact pre-switch rest and the same declared rig; 'auto' = load", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const before = viewState(out.viewer);
+  const rigBefore = { ...out.rig };
+  const declBefore = pushed.at(-1);
+  const focusBefore = out.getFocus();
+  addMesh(pc, out, [0, 0, 1], [0.1, 0.1, 0.1]);
+  const scene = out.engine.app.scene;
+  await out.setRig('display', { virtualDisplayHeight: 0.3, fit: 'cover' });
+  const atlas = scene.envAtlas;
+  assert.ok(atlas);
+  assert.equal(out.viewer.vH, 0.3);
+  await out.setRig('camera');
+  assert.deepEqual(viewState(out.viewer), before, 'bit-identical camera, lens, rig node, fit, idle, tone');
+  assert.deepEqual(pushed.at(-1), declBefore, 'the same camera-rig descriptor');
+  assert.deepEqual(out.getFocus(), focusBefore);
+  assert.equal(out.rig.typeSource, 'setRig');
+  for (const k of ['type', 'intrinsicsSource', 'focusSource', 'convergence']) assert.deepEqual(out.rig[k], rigBefore[k], k);
+  assert.deepEqual(out.rig.focus, rigBefore.focus);
+  assert.equal(scene.envAtlas, null, 'the IBL setRig installed is removed');
+  assert.equal(atlas.destroyed, true);
+  await out.setRig('auto');
+  assert.equal(out.rig.typeSource, rigBefore.typeSource, 'the waterfall result, as at load');
+  assert.deepEqual(viewState(out.viewer), before);
+  out.remove();
+});
+
+test("setRig('display') with no meshes frames the splat like a display-rig addSplat; an explicit frame wins; env left alone if the page set one", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const pageEnv = { mine: true };
+  out.engine.app.scene.envAtlas = pageEnv;
+  await out.setRig('display');
+  assert.equal(out.rig.frame.source, 'splat');
+  near(out.viewer._fitScale, fitScale({ extent: out.frame.extent, vH: 0.24, aspect: 320 / 180 }), 1e-12);
+  assert.equal(out.engine.app.scene.envAtlas, pageEnv, "the page's own lighting is never replaced");
+  await out.setRig('display', { frame: { center: [1, 2, 3], extent: { x: 2, y: 2, z: 2 } }, idleSpin: 0 });
+  assert.equal(out.rig.frame.source, 'caller');
+  assert.deepEqual(out.viewer.getFocus(), { x: 1, y: 2, z: 3 });
+  assert.equal(out.viewer.idleSpin, 0);
+  out.remove();
+});
+
+test('setRig is sticky across setSource until setRig("auto")', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [camFlat(), camFlat(), camFlat()];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  addMesh(pc, out, [0, 0, 0], [0.2, 0.2, 0.2]);
+  out.mesh.entity.enabled = false;
+  await out.setRig('display', { environment: 'none' });
+  await out.setSource('b.sog');
+  assert.equal(out.rig.type, 'display', 'the new asset is resolved on the chosen rig');
+  assert.equal(out.rig.typeSource, 'setRig');
+  assert.equal(out.viewer.mono.capture, null);
+  await out.setRig('auto');
+  assert.equal(out.rig.type, 'camera');
+  assert.equal(out.rig.typeSource, 'block-present');
+  out.remove();
+});
+
+test("setRig throws at the call: controls:'page', an unknown type, a bad option", async () => {
+  assert.throws(() => validateSetRig('display', {}, true), /controls:'page'/);
+  assert.throws(() => validateSetRig('photo'), /expected 'display', 'camera' or 'auto'/);
+  assert.throws(() => validateSetRig('display', { fit: 'stretch' }), /fit "stretch"/);
+  assert.throws(() => validateSetRig('display', { virtualDisplayHeight: -1 }), /virtualDisplayHeight/);
+  assert.throws(() => validateSetRig('display', { toneMapping: 'reinhard' }), /toneMapping/);
+  assert.throws(() => validateSetRig('display', { frame: { center: [0, 0] } }), /frame must be/);
+  const d = validateSetRig('display', {});
+  assert.equal(d.o.vH, SET_RIG_DISPLAY_DEFAULTS.virtualDisplayHeight);
+  assert.equal(d.o.toneMapping, 'neutral');
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, controls: 'page', focusInput: false }, []);
+  assert.throws(() => out.setRig('display'), /controls:'page'/);
+  assert.throws(() => out.setRig('camera'), /controls:'page'/);
+  out.remove();
+});
+
+test('./splat: setRig on the deferred stub queues until ready; Spark refuses it (source check)', async () => {
+  const src = await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  assert.match(src, /setRig: page\s*\?\s*pageOnly\('setRig'\)/);
+  assert.match(src, /setRig\(\) is implemented on the PlayCanvas backend only/);
+});
+
+test("setRig on a display-rig asset: the boot shorthand is never re-sent needlessly; a page's idleSpin survives the round trip", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeFlat(600, 0); // no camera block → display rig
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 3 }, []);
+  assert.equal(out.rig.type, 'display');
+  assert.equal(pushed.length, 0, 'addScene’s virtualDisplayHeight shorthand is the declaration');
+  const before = viewState(out.viewer);
+  await out.setRig('display', { environment: 'none' });
+  assert.equal(out.viewer.idleSpin, 8, "setRig('display') is on addModel's defaults");
+  await out.setRig('camera');
+  assert.equal(out.rig.type, 'camera');
+  assert.equal(pushed.at(-1).type, 'camera');
+  assert.equal(out.viewer.idleSpin, 3, "the page's own idleSpin, not the camera rig's 0");
+  await out.setRig('auto');
+  assert.equal(pushed.at(-1).type, 'display', 'back to a display rig: SENT (the shorthand cannot be restored)');
+  assert.equal(pushed.at(-1).virtualDisplayHeight, 0.24);
+  assert.deepEqual(viewState(out.viewer), before, 'exactly the load-time framing');
   out.remove();
 });
