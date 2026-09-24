@@ -478,7 +478,14 @@ function makeFakePc() {
     constructor(canvas) {
       this.canvas = canvas;
       this.root = new Entity('root', this);
-      this.scene = { gsplat: { minPixelSize: 2, alphaClipForward: 1 / 255 } };
+      const tileChunks = (rec.tileChunks = new Map());
+      const tileParams = (rec.tileParams = new Map());
+      const material = {
+        getShaderChunks: () => ({ set: (k, v) => tileChunks.set(k, v), delete: (k) => tileChunks.delete(k), get: (k) => tileChunks.get(k) }),
+        setParameter: (n, v) => tileParams.set(n, v),
+        update() {},
+      };
+      this.scene = { gsplat: { minPixelSize: 2, alphaClipForward: 1 / 255, material } };
       this.resolutionMode = 'fixed';
       this.scene.layers = { getLayerById: (id) => ({ id, addMeshInstances: (mis) => rec.meshInstances.push(...mis) }) };
       this.graphicsDevice = {};
@@ -842,6 +849,7 @@ const settle = async (cond) => {
 
 test('setSource crossfade FALLBACK (no frame copy): coverage-linear exponents 0→1 / 1→0, old released after; rig re-runs; pose kept', async (t) => {
   installDom();
+  const K = 'dxrFx_xfade_k';
   let T = 1000;
   t.mock.method(performance, 'now', () => T);
   const { pc, rec } = makeFakePc();
@@ -858,27 +866,27 @@ test('setSource crossfade FALLBACK (no frame copy): coverage-linear exponents 0�
   const done = out.setSource('b.sog', { fadeMs: 100 });
   await settle(() => out.mesh.entity !== e1);
   const e2 = out.mesh.entity;
-  await settle(() => e1.gsplat.getParameter('dxrFade') === 1);
-  assert.equal(e2.gsplat.getParameter('dxrFade'), 0, 'the new asset starts invisible');
-  assert.match(e2.gsplat.modifier.glsl, /1\.0 - pow\(max\(1\.0 - color\.a, 0\.0200\), dxrFade\)/, 'alpha remapped, not scaled');
-  assert.match(e2.gsplat.modifier.glsl, /if \(dxrFade >= 1\.0\) return;/, 'k = 1 leaves alpha untouched');
+  await settle(() => e1.gsplat.getParameter(K) === 1);
+  assert.equal(e2.gsplat.getParameter(K), 0, 'the new asset starts invisible');
+  assert.match(e2.gsplat.modifier.glsl, /1\.0 - pow\(max\(1\.0 - col\.a, 0\.0200\), dxrFx_xfade_k\)/, 'alpha remapped, not scaled');
+  assert.match(e2.gsplat.modifier.glsl, /if \(dxrFx_xfade_k >= 1\.0\) return;/, 'k = 1 leaves alpha untouched');
   assert.equal(e2.gsplat.workBufferUpdate, 2, 'work buffer re-rendered every frame while fading');
   // The clock starts on the second tick (the first frame builds the new work buffer): a slow
   // first frame must not eat the fade.
   T += 800; // a slow build frame
   out.viewer._tick();
-  assert.equal(e2.gsplat.getParameter('dxrFade'), 0, 'still 0 after the build frame');
+  assert.equal(e2.gsplat.getParameter(K), 0, 'still 0 after the build frame');
   out.viewer._tick(); // clock starts here
-  assert.equal(e2.gsplat.getParameter('dxrFade'), 0);
+  assert.equal(e2.gsplat.getParameter(K), 0);
   T += 50;
   out.viewer._tick();
-  near(e2.gsplat.getParameter('dxrFade'), coverageExponent(0.5), 1e-9, 'half way in');
-  near(e1.gsplat.getParameter('dxrFade'), coverageExponent(0.5), 1e-9, 'half way out');
+  near(e2.gsplat.getParameter(K), coverageExponent(0.5), 1e-9, 'half way in');
+  near(e1.gsplat.getParameter(K), coverageExponent(0.5), 1e-9, 'half way out');
   T += 60;
   out.viewer._tick();
   await done;
-  assert.equal(e2.gsplat.getParameter('dxrFade'), undefined, 'fade cleared on the survivor');
-  assert.equal(e2.gsplat.modifier, null);
+  assert.equal(e2.gsplat.modifier, null, 'fade modifier removed from the survivor');
+  assert.equal(e2.gsplat.workBufferUpdate, 1, 'one clean re-render without it');
   assert.equal(e1.enabled, false, 'old one hidden at once');
   for (let i = 0; i < 4; i++) {
     T += 16;
@@ -903,7 +911,7 @@ test('setSource: fadeMs 0 swaps at once; resetPose:true resets; a Spark-only for
   await out.setSource('b.sog', { resetPose: true });
   assert.notEqual(out.mesh.entity, e1);
   assert.equal(e1.enabled, false);
-  assert.equal(out.mesh.entity.gsplat.getParameter('dxrFade'), undefined, 'no fade machinery for a cut');
+  assert.equal(out.mesh.entity.gsplat.modifier, null, 'no fade machinery for a cut');
   assert.equal(out.viewer.getPose().yaw, 0);
   await assert.rejects(out.setSource('c.spz'), /reads \.sog, \.ply/);
   out.remove();
@@ -952,7 +960,7 @@ test('setSource crossfade = FRAME_SNAPSHOT: capture on the next drawn frame, old
   out.viewer._tick();
   await done;
   assert.ok(parts.every((mi) => !mi.visible), 'overlay hidden at the end');
-  assert.equal(e2.gsplat.getParameter('dxrFade'), undefined);
+  assert.equal(e2.gsplat.modifier, null);
   out.remove();
 });
 
@@ -994,6 +1002,135 @@ test('coverageExponent: exact ends, monotonic, inverts coverage 1 − e^{−kL}'
     near((1 - Math.exp(-k * 5)) / (1 - Math.exp(-5)), c, 1e-12, 'coverage recovered');
     prev = k;
   }
+});
+
+test('reveal: installed at its START state before the first frame, played once woven, then removed', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(600, 0)];
+  const out = {};
+  let woven;
+  out.firstWoven = new Promise((r) => (woven = r));
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0, reveal: { type: 'sweep', durationMs: 100, easing: 'linear' } }, []);
+  assert.match(rec.tileChunks.get('gsplatModifyVS'), /dxrFx_sweep_color/, 'tile chunk up before any frame');
+  assert.equal(rec.tileParams.get('dxrFx_sweep_amount'), 0, 'at its start state: nothing shows');
+  for (let i = 0; i < 5; i++) ((T += 500), out.viewer._tick());
+  assert.equal(rec.tileParams.get('dxrFx_sweep_amount'), 0, 'held until firstWoven');
+  assert.deepEqual(out.effects().map((e) => [e.name, e.waiting]), [['sweep', true]]);
+  woven({ woven: true });
+  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 3; i++) {
+    out.viewer._tick(); // the two build frames, then the clock starts
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  out.viewer._tick();
+  T += 50;
+  out.viewer._tick();
+  near(rec.tileParams.get('dxrFx_sweep_amount'), 0.5, 1e-9);
+  T += 60;
+  out.viewer._tick();
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'removed at the end: the engine chunk again');
+  assert.deepEqual(out.effects(), []);
+  out.remove();
+});
+
+test('handle.playEffect / setEffect / stopEffect / effects on the adapter; bad calls throw at the call', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(300, 0)];
+  const out = {};
+  // a setEffect the page made on ./splat's stub before this module loaded (replayed, queued to load)
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, [['setEffect', ['grade', { saturation: 0 }]]]);
+  assert.match(rec.tileChunks.get('gsplatModifyVS'), /dxrFx_grade_color/, 'the queued setEffect ran after load');
+  assert.throws(() => out.playEffect('grade', {}), /persistent effect/);
+  assert.throws(() => out.playEffect('nope'), /unknown effect/);
+  assert.throws(() => out.setEffect('custom', { glsl: 'void modifySplatColor(vec3 c, inout vec4 col) { col.r = gl_FragCoord.x; }' }), /screen-space/);
+  const p = out.playEffect('pulse', { durationMs: 100 });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(out.effects().map((e) => e.name).sort(), ['grade', 'pulse']);
+  out.stopEffect('pulse');
+  assert.deepEqual(await p, { finished: false });
+  out.stopEffect();
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false);
+  out.remove();
+});
+
+test('setSource fallback + reveal: the incoming asset carries ONE modifier (fade + reveal), the outgoing its own fade', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(600, 0), fakeFlat(600, 5)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { fadeMs: 100, reveal: 'sweep' });
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  const code = e2.gsplat.modifier.glsl;
+  assert.match(code, /dxrFx_xfade_color\(center, color\)/);
+  assert.match(code, /dxrFx_sweep_color\(center, color\)/);
+  assert.equal(code.split('void modifySplatColor(').length - 1, 1, 'one composed modifier');
+  assert.doesNotMatch(e1.gsplat.modifier.glsl, /sweep/, 'only the incoming asset reveals');
+  for (let i = 0; i < 4; i++) ((T += 60), out.viewer._tick());
+  await done;
+  assert.equal(e1.enabled, false);
+  out.remove();
+});
+
+test('wavefront with no frame to wipe from (hidden tab / no copy): falls back to the 1.12.1 crossfade', async (t) => {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc(); // no RenderTarget: captureFrame() → false
+  rec.queue = [fakeFlat(300, 0), fakeFlat(300, 5)];
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'wavefront', durationMs: 100 });
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.match(e2.gsplat.modifier.glsl, /dxrFx_xfade_color/, 'the one-pass crossfade');
+  assert.doesNotMatch(e2.gsplat.modifier.glsl, /wavefront/);
+  for (let i = 0; i < 4; i++) ((T += 60), out.viewer._tick());
+  await done;
+  assert.equal(e2.gsplat.modifier, null, 'end state: the untouched asset');
+  assert.equal(e1.enabled, false);
+  out.remove();
+});
+
+test('setSource options: transitions validated before anything loads', async () => {
+  const { resolveSwap } = await import('../js/inline3d-splat-playcanvas.js');
+  assert.equal(resolveSwap({}).transition, 'cut');
+  assert.equal(resolveSwap({ fadeMs: 300 }).transition, 'crossfade');
+  assert.equal(resolveSwap({ fadeMs: 300 }).durationMs, 300);
+  assert.equal(resolveSwap({ transition: 'flip' }).durationMs, 2200);
+  assert.equal(resolveSwap({ transition: 'wavefront' }).band, 0.18);
+  assert.throws(() => resolveSwap({ transition: 'spin' }), /transition 'spin'/);
+  assert.throws(() => resolveSwap({ transition: 'flip', reveal: 'sweep' }), /its own reveal/);
+  assert.throws(() => resolveSwap({ reveal: 'bogus' }), /reveal type 'bogus'/);
+  assert.equal(resolveSwap({ transition: 'wavefront' }).durationMs, 2000, 'the approved default');
+  assert.equal(resolveSwap({ transition: 'wavefront' }).easing, 'easeInOutSine');
+  assert.equal(resolveSwap({ transition: 'wavefront' }).ridge, 0.03);
+  assert.equal(resolveSwap({ transition: 'wavefront' }).ridgeMaxDisparity, 0.004);
+  assert.throws(() => resolveSwap({ transition: 'wavefront', ridge: 2 }), /ridge/);
+  assert.throws(() => resolveSwap({ transition: 'wavefront', ridgeMaxDisparity: 0.5 }), /ridgeMaxDisparity/);
+  assert.throws(() => resolveSwap({ easing: 'wobble' }), /unknown easing/);
+});
+
+test('Spark refuses every effect entry point by name (source check: ./splat imports three)', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const spark = src.slice(src.indexOf("if (resolveSplatEngine(opts) === 'playcanvas')"));
+  assert.match(spark, /if \(opts\.reveal !== undefined && opts\.reveal !== false\) throw effectsNotOnSpark\('reveal'\);/);
+  for (const m of ['playEffect', 'setEffect', 'stopEffect']) assert.match(spark, new RegExp(`${m}\\(\\) \\{\\n\\s+throw effectsNotOnSpark\\('${m}\\(\\)'\\);`));
+  const { effectsNotOnSpark } = await import('../js/inline3d-splat-effects.js');
+  assert.match(effectsNotOnSpark('reveal').message, /PlayCanvas-only in this version/);
+  assert.match(src, /resolveRevealOption\(opts\.reveal\);/, 'PlayCanvas branch validates reveal at the call');
 });
 
 // ── 14. feather ─────────────────────────────────────────────────────────────────────────────
