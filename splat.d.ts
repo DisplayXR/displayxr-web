@@ -466,7 +466,9 @@ export interface SplatHandle {
    * Swap the asset (URL or bytes) in place. PlayCanvas backend only — throws on Spark.
    *
    * The new file loads BEHIND the current one; then the two crossfade over `fadeMs` (0 = a cut)
-   * and the old one is released. The rig waterfall re-runs for the new file (rig, lens, focus and
+   * and the old one is released. The crossfade blends the two IMAGES linearly: the last frame of
+   * the old asset is frozen (both eyes) and lerped with the live new one, so the mix is exactly
+   * `t` whatever the two photos' depth order (the old asset's own motion stops during the fade). The rig waterfall re-runs for the new file (rig, lens, focus and
    * frame update; `onFocusChange` fires). The pose (yaw/pitch/zoom/depth) is kept unless
    * `resetPose`. A newer call supersedes an older one still loading. Resolves once the fade has
    * finished; rejects if the new asset cannot be loaded (the current one stays on screen).

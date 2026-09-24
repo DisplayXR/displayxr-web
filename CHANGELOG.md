@@ -5,6 +5,21 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed
+
+- **`setSource(…, { fadeMs })` is a real crossfade** (`./splat`, `engine: 'playcanvas'`). The fade
+  scaled every splat's alpha by t and drew both photos in one sorted pass, so whichever photo sat in
+  front won: an incoming photo in front covered 64 % of the picture at t = 0.2 (an 800 ms fade read
+  as a snap), one behind it only 18 % at t = 0.5 (a late pop). Now the last frame of the outgoing
+  asset is frozen into a texture (both eyes) and lerped with the live incoming one, per
+  premultiplied pixel, alpha included. Measured on three SHARP photo pairs, mono and a fake 2-view
+  stereo pair: the blend fraction is **t to ±0.001** at every tenth, identical in both eyes; the
+  frame at t = 0 equals the outgoing frame and the end state equals a `fadeMs: 0` swap (MAE 0.000,
+  colour and alpha). The outgoing photo holds still during the fade. If no frame is drawn within
+  250 ms (a hidden tab) the old one-pass fade runs, now with a coverage-linear alpha remap.
+
 ## 1.12.0 — 2026-09-24
 
 Touches the **preview tier** (`./model`, and `./splat`'s `engine: 'playcanvas'` import path). A
