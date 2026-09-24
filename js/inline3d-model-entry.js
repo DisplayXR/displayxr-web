@@ -54,7 +54,7 @@ export function resolveModelEngine(opts = {}) {
 }
 
 /** Options that exist only on the PlayCanvas backend: an error on an explicit engine:'three'. */
-const PLAYCANVAS_ONLY = ['playcanvas', 'environmentRotation', 'controls', 'comfortDepth', 'onBeforeFrame', 'antialias', 'preserveDrawingBuffer', 'nearClip', 'farClip', 'orbitMaxDeg', 'orbitEase'];
+const PLAYCANVAS_ONLY = ['playcanvas', 'environmentRotation', 'controls', 'comfortDepth', 'onBeforeFrame', 'antialias', 'preserveDrawingBuffer', 'nearClip', 'farClip', 'orbitMaxDeg', 'orbitEase', 'zoom'];
 
 /**
  * Everything that can be checked before a module loads. Throws at CALL time — a page bug is true

@@ -903,6 +903,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     flipY: false, // glTF is already Y-up
     orbitMaxDeg: opts.orbitMaxDeg,
     orbitEase: opts.orbitEase,
+    zoom: opts.zoom,
     feather,
     nearClip: opts.nearClip,
     farClip: opts.farClip,

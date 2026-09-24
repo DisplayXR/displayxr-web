@@ -1270,6 +1270,165 @@ test('orbit: the cap, pitch, pitchLimit, re-press mid-relax, setPose snaps, idle
   v.dispose();
 });
 
+// ── 15b. zoom: bounds + relax (#36) ─────────────────────────────────────────────────────────
+
+/** A zoom-test viewer with a mock clock; `frames(s)` ticks 16 ms frames for `s` seconds. */
+async function zoomViewer(t, opts) {
+  installDom();
+  const clock = { T: 1000 };
+  t.mock.method(performance, 'now', () => clock.T);
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const v = new PlayCanvasSplatViewer(makeCanvas(400, 300), { orbit: true, idleSpin: 0, ...opts });
+  const frames = (s) => {
+    for (let i = 0; i < Math.round(s / 0.016); i++) {
+      clock.T += 16;
+      v._tick();
+    }
+  };
+  v._tick();
+  return { v, clock, frames };
+}
+const wheel = (v, deltaY, n = 1) => {
+  for (let i = 0; i < n; i++) v._onWheel({ deltaY, deltaMode: 0, preventDefault() {} });
+};
+
+test('zoom defaults are today’s: [0.2, 6], no relax, wheel damping unchanged', async (t) => {
+  const S = await import('../js/inline3d-splat-shared.js');
+  assert.deepEqual(S.resolveZoomOption(undefined), { min: 0.2, max: 6, relax: false, ease: 0.6 });
+  assert.deepEqual([S.ZOOM_MIN, S.ZOOM_MAX, S.ZOOM_WHEEL_IDLE_MS], [0.2, 6, 150]);
+  const { v, frames } = await zoomViewer(t);
+  wheel(v, 120, 40); // far out
+  near(v.getPose({ target: true }).zoom, 0.2, 1e-12, 'clamped at the old ZOOM_MIN');
+  wheel(v, -120, 80);
+  near(v.getPose({ target: true }).zoom, 6, 1e-12, 'clamped at the old ZOOM_MAX');
+  frames(3);
+  near(v.getPose().zoom, 6, 1e-3, 'no relax by default: it stays zoomed');
+  v.dispose();
+});
+
+test('zoom {min:1, max:2}: wheel never goes below 1× nor above 2×', async (t) => {
+  const { v } = await zoomViewer(t, { zoom: { min: 1, max: 2 } });
+  wheel(v, 120);
+  assert.equal(v.getPose({ target: true }).zoom, 1, 'zoom OUT from rest is refused');
+  wheel(v, -120, 20);
+  assert.equal(v.getPose({ target: true }).zoom, 2, 'zoom IN caps at 2×');
+  v.setPose({ zoom: 0.5 });
+  assert.equal(v.getPose().zoom, 1, 'setPose clamps to the same bounds');
+  v.dispose();
+});
+
+test('zoom relax: wheel to 2×, idle → eases back to 1× with τ 0.6 s (at 1× within 3τ)', async (t) => {
+  const { v, frames } = await zoomViewer(t, { zoom: { min: 1, max: 2, relax: true } });
+  wheel(v, -120, 20);
+  frames(0.1); // < 150 ms idle: still heading for 2×
+  assert.equal(v.getPose({ target: true }).zoom, 2, 'no relax while the wheel is live');
+  frames(1.0);
+  assert.equal(v.getPose({ target: true }).zoom, 1, 'idle > 150 ms → target back to rest');
+  assert.equal(v._zoomMode, 'rest');
+  // From wherever it was, log-distance decays as exp(−t/τ).
+  const z0 = v.getPose().zoom;
+  frames(0.6);
+  near(Math.log(v.getPose().zoom), Math.log(z0) * Math.exp(-1), 0.02, 'one τ closes 1 − 1/e of the log gap');
+  frames(1.2); // ≈ 3τ since the relax began
+  near(v.getPose().zoom, 1, 0.05, 'at 1× within ~3τ');
+  frames(1.5); // ≈ 5.5τ: inside the 0.1 % snap
+  assert.equal(v.getPose().zoom, 1, 'exactly home, relax finished');
+  assert.equal(v._zoomMode, null);
+  v.dispose();
+});
+
+test('zoom relax does not fight a live wheel, and a wheel tick mid-relax restarts from where it is', async (t) => {
+  const { v, frames } = await zoomViewer(t, { zoom: { min: 1, max: 2, relax: true } });
+  for (let i = 0; i < 30; i++) {
+    wheel(v, -40);
+    frames(0.1); // a steady trackpad scroll, 100 ms apart
+  }
+  assert.equal(v._zoomMode, null, 'never relaxed while ticks keep coming');
+  assert.ok(v.getPose().zoom > 1.9, `zoomed in ${v.getPose().zoom}`);
+  frames(0.5); // relax under way
+  const mid = v.getPose().zoom;
+  assert.ok(mid < 1.9 && mid > 1, `mid-relax ${mid}`);
+  wheel(v, -10);
+  near(v.getPose({ target: true }).zoom, mid * Math.exp(0.01), 1e-9, 'from the current zoom, not from rest');
+  v.dispose();
+});
+
+test('zoom relax comes home to the last setPose zoom, not always 1×', async (t) => {
+  const { v, frames } = await zoomViewer(t, { zoom: { min: 1, max: 2, relax: true } });
+  v.setPose({ zoom: 1.5 });
+  wheel(v, -120, 10);
+  frames(4);
+  near(v.getPose().zoom, 1.5, 1e-3);
+  v.resetPose();
+  assert.equal(v.getPose().zoom, 1);
+  v.dispose();
+});
+
+test('pinch: two pointers zoom by their spread ratio, clamped; drag ends; relax on release', async (t) => {
+  const { v, frames } = await zoomViewer(t, { zoom: { min: 1, max: 2, relax: true } });
+  v._onDown({ clientX: 150, clientY: 150, pointerId: 1 });
+  v._onMove({ clientX: 170, clientY: 150, pointerId: 1 });
+  assert.equal(v._orbitMode, 'drag', 'one finger orbits');
+  v._onDown({ clientX: 250, clientY: 150, pointerId: 2 }); // spread 80
+  assert.equal(v._orbitMode, 'rest', 'the second finger ends the drag (tilt relaxes)');
+  assert.equal(v.getPose({ target: true }).yaw, 0);
+  v._onMove({ clientX: 290, clientY: 150, pointerId: 2 }); // spread 120 → 1.5×
+  near(v.getPose({ target: true }).zoom, 1.5, 1e-9);
+  v._onMove({ clientX: 450, clientY: 150, pointerId: 2 }); // spread 280 → 3.5× → capped
+  assert.equal(v.getPose({ target: true }).zoom, 2, 'capped at 2×');
+  v._onMove({ clientX: 180, clientY: 150, pointerId: 2 }); // spread 10 → below 1 → floor
+  assert.equal(v.getPose({ target: true }).zoom, 1, 'never below 1×');
+  v._onMove({ clientX: 290, clientY: 150, pointerId: 2 });
+  frames(2);
+  assert.equal(v._zoomMode, null, 'no relax while pinching, however long');
+  near(v.getPose().zoom, 1.5, 1e-3);
+  v._onUp({ pointerId: 2 });
+  // The remaining finger does not start an orbit.
+  v._onMove({ clientX: 300, clientY: 150, pointerId: 1 });
+  assert.equal(v.getPose({ target: true }).yaw, 0, 'leftover finger does not orbit');
+  frames(0.02);
+  assert.equal(v._zoomMode, 'rest', 'pinch end starts the relax at once');
+  frames(1.8); // 3τ
+  near(v.getPose().zoom, 1, 0.03, 'within ~3τ');
+  frames(2);
+  assert.equal(v.getPose().zoom, 1);
+  v._onUp({ pointerId: 1 });
+  // All up: an ordinary drag orbits again.
+  v._onDown({ clientX: 200, clientY: 150, pointerId: 3 });
+  v._onMove({ clientX: 300, clientY: 150, pointerId: 3 });
+  assert.equal(v.getPose({ target: true }).yaw, 7.5);
+  v._onUp({ pointerId: 3 });
+  v.dispose();
+});
+
+test('zoom scales ABOUT the focus: its display position (on the glass → zero disparity) is zoom-invariant', async () => {
+  const { pivotMatrix } = await import('../js/inline3d-splat-playcanvas.js');
+  const apply = (M, p) => [0, 1, 2].map((r) => M[r] * p[0] + M[4 + r] * p[1] + M[8 + r] * p[2] + M[12 + r]);
+  const focus = [0.3, -0.2, 1.7];
+  for (const orbitCentre of [[0, 0, 0], [0.05, -0.02, 0]]) {
+    const base = { yaw: 7, pitch: -3, focus, orbitCentre };
+    const at1 = apply(pivotMatrix({ ...base, scale: 0.1 }), focus);
+    const at2 = apply(pivotMatrix({ ...base, scale: 0.2 }), focus);
+    nearArr(at1, orbitCentre, 1e-12, 'focus lands on the orbit centre');
+    nearArr(at2, at1, 1e-12, 'and stays there at 2×');
+    // A neighbour moves away from it by exactly the zoom ratio.
+    const q = [focus[0] + 0.1, focus[1], focus[2]];
+    const d1 = apply(pivotMatrix({ ...base, scale: 0.1 }), q).map((x, i) => x - at1[i]);
+    const d2 = apply(pivotMatrix({ ...base, scale: 0.2 }), q).map((x, i) => x - at2[i]);
+    nearArr(d2, d1.map((x) => 2 * x), 1e-12);
+  }
+});
+
+test('zoom option validation', async () => {
+  const { resolveZoomOption } = await import('../js/inline3d-splat-shared.js');
+  assert.throws(() => resolveZoomOption({ min: 0 }), /zoom\.min/);
+  assert.throws(() => resolveZoomOption({ min: 2, max: 1 }), /below zoom\.min/);
+  assert.throws(() => resolveZoomOption({ relax: 'yes' }), /zoom\.relax/);
+  assert.throws(() => resolveZoomOption(3), /expected \{ min, max, relax, ease \}/);
+  assert.deepEqual(resolveZoomOption({ min: 1, max: 2, relax: true }), { min: 1, max: 2, relax: true, ease: 0.6 });
+  assert.equal(resolveZoomOption({ ease: 0.3 }).ease, 0.3);
+});
+
 // ── 16. focus: the nearest disparity clump ──────────────────────────────────────────────────
 
 const LENS = { fx: 1000, fy: 1000, cx: 640, cy: 360, width: 1280, height: 720 };
