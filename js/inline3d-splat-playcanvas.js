@@ -52,6 +52,13 @@ import {
 import { boundsFromPositions } from './inline3d-viewer.js';
 import { cameraRigFromPose } from './inline3d-three.js';
 import {
+  SplatEffects,
+  EFFECTS,
+  EASINGS,
+  resolveRevealOption,
+  validateEffectCall,
+} from './inline3d-splat-effects.js';
+import {
   clamp,
   finite,
   now,
@@ -85,7 +92,6 @@ import {
   resolveControls,
   normalizeCameraPose,
   coverageExponent,
-  FADE_TRANSMITTANCE_FLOOR,
 } from './inline3d-splat-shared.js';
 
 /**
@@ -501,6 +507,9 @@ export function capturePose(rest, flipY) {
  * this. On square pixels (the mono view) it changes nothing (MAE 2.5e-6). Upstream fix pending
  * (epic #36, P4d); until then the anchors are regexes (the npm build re-indents chunks with
  * tabs) and a miss warns once and renders unpatched rather than failing.
+ *
+ * The rewritten lines are adapted from PlayCanvas engine src/scene/shader-lib/glsl/chunks/gsplat/vert/
+ * gsplatCorner.js (the `gsplatCornerVS` chunk) @ v2.22.3, MIT (THIRD_PARTY_NOTICES.md).
  *
  * @returns {{src:string, ok:boolean}}
  */
@@ -1276,6 +1285,15 @@ export class PlayCanvasSplatViewer {
         uniform sampler2D dxrSnap;
         uniform vec2 dxrSnapInvSize;
         uniform float dxrSnapAlpha;
+        uniform vec3 dxrSnapWipe; // t, band, views across (t < -1: no wipe)
+        float dxrSnapWeight() {
+          if (dxrSnapWipe.x < -1.0) return dxrSnapAlpha;
+          float vw = 1.0 / (dxrSnapInvSize.x * dxrSnapWipe.z);
+          float u = mod(gl_FragCoord.x, vw) / vw;
+          // wavefrontCommit(): column u has committed lt of the way to the new photo
+          float lt = clamp((dxrSnapWipe.x - u * (1.0 - dxrSnapWipe.y)) / dxrSnapWipe.y, 0.0, 1.0);
+          return dxrSnapAlpha * (1.0 - smoothstep(0.0, 1.0, lt));
+        }
         void main() { ${body} }`,
       });
       mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, src, dst, pc.BLENDEQUATION_ADD, src, dst);
@@ -1285,6 +1303,7 @@ export class PlayCanvasSplatViewer {
       mat.setParameter('dxrSnap', s.tex);
       mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
       mat.setParameter('dxrSnapAlpha', 0);
+      mat.setParameter('dxrSnapWipe', [-2, 0.1, 1]);
       mat.update();
       const mi = new pc.MeshInstance(mesh, mat, new pc.GraphNode(name));
       mi.cull = false;
@@ -1293,8 +1312,8 @@ export class PlayCanvasSplatViewer {
       return { mat, mi };
     };
     s.parts = [
-      part('inline3dSnapshotScale', 'gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - dxrSnapAlpha);', pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA, -2),
-      part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapAlpha;', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1),
+      part('inline3dSnapshotScale', 'gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - dxrSnapWeight());', pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA, -2),
+      part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapWeight();', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1),
     ];
     this.app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances(s.parts.map((p) => p.mi));
   }
@@ -1303,7 +1322,7 @@ export class PlayCanvasSplatViewer {
    * Lerp the snapshot over the scene at `alpha` (0 hides it). Returns false when the canvas buffer
    * no longer matches the capture (resize, 2D/3D switch): the caller ends its fade.
    */
-  setSnapshotAlpha(alpha) {
+  setSnapshotAlpha(alpha, wipe = null) {
     const s = this._snap;
     if (!s?.parts) return false;
     const fits = s.w === this.canvas.width && s.h === this.canvas.height;
@@ -1312,10 +1331,19 @@ export class PlayCanvasSplatViewer {
       p.mi.visible = show;
       if (show) {
         p.mat.setParameter('dxrSnapAlpha', Math.min(1, alpha));
+        // WIPE (setSource's wavefront): the frozen frame gives way behind a vertical front at the
+        // SAME viewport-relative x in every eye — a front at the zero-disparity plane, so both
+        // eyes agree. `views` = eye viewports side by side across the buffer.
+        p.mat.setParameter('dxrSnapWipe', wipe ? [wipe.t, wipe.band, wipe.views] : [-2, 0.1, 1]);
         p.mat.update();
       }
     }
     return alpha <= 0 || fits;
+  }
+
+  /** How many eye viewports sit side by side in the buffer right now (1 in mono). */
+  get viewsAcross() {
+    return this._mode === '3d' && this._lastGood ? this._lastGood.entries.length : 1;
   }
 
   _destroySnapshot() {
@@ -1604,7 +1632,42 @@ export class PlayCanvasSplatViewer {
       const keep = run.filter((h) => h(t) !== false);
       this._hooks = keep.concat(this._hooks);
     }
+    // Splat effects (./inline3d-splat-effects.js): clocks + uniforms, before the engine renders.
+    this.onEffectsTick?.(t);
     this.onTick?.();
+  }
+
+  /**
+   * The eyes' frame in WORLD (content) space, for effects keyed on "where the viewer is":
+   * `origin` = the midpoint of the eyes drawn last (the mono camera in 2D), `axis`/`right`/`up` =
+   * the first eye's forward/right/up, `tanHalfFovX` its lens half-width.
+   */
+  eyeFrame() {
+    const R = this.rigMatrix();
+    const es = this._mode === '3d' && this._lastGood ? this._lastGood.entries : [{ pose: this.mono.pose, proj: this.mono.proj }];
+    const o = [0, 0, 0];
+    for (const e of es) {
+      const M = mat4Mul(R, e.pose);
+      o[0] += M[12] / es.length;
+      o[1] += M[13] / es.length;
+      o[2] += M[14] / es.length;
+    }
+    const M = mat4Mul(R, es[0].pose);
+    const unit = (x, y, z) => {
+      const l = Math.hypot(x, y, z) || 1;
+      return [x / l, y / l, z / l];
+    };
+    const p0 = es[0].proj?.[0];
+    const Mn = mat4Mul(R, es[es.length - 1].pose);
+    return {
+      origin: o,
+      // first ↔ last eye, world units (0 in 2D)
+      separation: es.length > 1 ? Math.hypot(Mn[12] - M[12], Mn[13] - M[13], Mn[14] - M[14]) : 0,
+      axis: unit(-M[8], -M[9], -M[10]),
+      right: unit(M[0], M[1], M[2]),
+      up: unit(M[4], M[5], M[6]),
+      tanHalfFovX: p0 > 0 ? 1 / p0 : 0.5,
+    };
   }
 
   _easeFocus() {
@@ -1997,41 +2060,38 @@ export function describeResource(res) {
  * one-pass fade, with the coverage-linear alpha remap on both assets.
  */
 
-/**
- * Per-entity work-buffer modifier: each splat's alpha becomes `1 − (1 − α)^k`, k = `dxrFade`
- * (coverageExponent). Per entity, not per material: the unified renderer composites every splat of
- * a tile through ONE material, so only `setWorkBufferModifier` + `setParameter` can tell the two
- * assets apart. During a fade the work buffer re-renders each frame (WORKBUFFER_UPDATE_ALWAYS);
- * the modifier is removed when the fade ends. The transmittance floor keeps a fully opaque splat
- * (SOG alpha 255/255, common in photos) fadeable at all: pow(0, k) is 0 for every k.
- */
-const FADE_MODIFIER_GLSL = `
-uniform float dxrFade;
-void modifySplatCenter(inout vec3 center) {}
-void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {}
-void modifySplatColor(vec3 center, inout vec4 color) {
-  if (dxrFade >= 1.0) return;
-  color.a = dxrFade <= 0.0 ? 0.0 : 1.0 - pow(max(1.0 - color.a, ${FADE_TRANSMITTANCE_FLOOR.toFixed(4)}), dxrFade);
-}
-`;
+/** setSource's transitions and their defaults. */
+export const SOURCE_TRANSITIONS = Object.freeze({
+  cut: {},
+  crossfade: {},
+  flip: { durationMs: 2200, easing: 'easeInOutSine' },
+  wavefront: { durationMs: 2000, easing: 'easeInOutSine', band: 0.18, ridge: 0.03, ridgeMaxDisparity: 0.004 },
+});
 
-/** Set (or clear, with null) the crossfade alpha exponent on one splat entity. */
-function setFade(pc, entity, value) {
-  const g = entity?.gsplat;
-  if (!g) return;
-  if (value === null) {
-    g._dxrFading = false;
-    g.setWorkBufferModifier?.(null);
-    g.deleteParameter?.('dxrFade');
-    if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE ?? 1;
-    return;
+/** Validate setSource's options into a plan (throws on a page bug, before anything loads). */
+export function resolveSwap(o = {}) {
+  if (o === null || typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: setSource options must be an object.');
+  const fadeMs = Number.isFinite(o.fadeMs) && o.fadeMs > 0 ? o.fadeMs : 0;
+  const transition = o.transition ?? (fadeMs > 0 ? 'crossfade' : 'cut');
+  if (!(transition in SOURCE_TRANSITIONS)) {
+    throw new Error(`@displayxr/inline3d/splat: setSource transition '${transition}' — expected one of ${Object.keys(SOURCE_TRANSITIONS).join(', ')}.`);
   }
-  if (!g._dxrFading) {
-    g._dxrFading = true;
-    g.setWorkBufferModifier?.({ glsl: FADE_MODIFIER_GLSL });
-    if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ALWAYS ?? 2;
+  const d = SOURCE_TRANSITIONS[transition];
+  const durationMs = o.durationMs ?? (transition === 'crossfade' ? fadeMs || 800 : d.durationMs ?? 0);
+  if (!Number.isFinite(durationMs) || durationMs < 0) throw new RangeError(`@displayxr/inline3d/splat: setSource durationMs must be ≥ 0, got ${o.durationMs}.`);
+  const easing = o.easing ?? d.easing ?? 'linear';
+  if (typeof easing !== 'function' && !EASINGS[easing]) throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
+  const reveal = resolveRevealOption(o.reveal);
+  if (reveal && (transition === 'flip' || transition === 'wavefront')) {
+    throw new Error(`@displayxr/inline3d/splat: setSource reveal plays with transition 'cut' or 'crossfade'; '${transition}' is its own reveal.`);
   }
-  g.setParameter?.('dxrFade', value);
+  const band = o.band ?? d.band ?? 0.18;
+  const ridge = o.ridge ?? d.ridge ?? 0.03;
+  const ridgeMaxDisparity = o.ridgeMaxDisparity ?? d.ridgeMaxDisparity ?? 0.004;
+  if (transition === 'wavefront') {
+    EFFECTS.wavefront.validate({ band, ridge, ridgeMaxDisparity });
+  }
+  return { transition, durationMs: transition === 'crossfade' && durationMs === 0 ? 800 : durationMs, easing, reveal, band, ridge, ridgeMaxDisparity };
 }
 
 /**
@@ -2172,9 +2232,35 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return pickModel(clientX, clientY);
     },
     setSource,
+    /**
+     * Play a transition effect (inflate, deflate, sweep, dissolve, fade, pulse, custom) — see
+     * docs/splat-effects.md. Validated now; runs once the first asset is on screen. Resolves
+     * { finished } (false when stopped or replaced).
+     */
+    playEffect(name, o = {}) {
+      validateEffectCall(name, o, 'play');
+      return first.then(() => (fx && !removed ? fx.play(name, o) : { finished: false }));
+    },
+    /** Set a persistent effect (grade, clip, custom), hold a transition at `progress`, or null to remove. */
+    setEffect(name, params) {
+      validateEffectCall(name, params, 'set');
+      if (fx) fx.set(name, params);
+      else fxPending.push(['set', name, params]);
+      return out;
+    },
+    /** Stop one effect (or all): `finish: true` jumps to its end state, else removes it. */
+    stopEffect(name, o = {}) {
+      if (fx) fx.stop(name, o);
+      else fxPending.push(['stop', name, o]);
+      return out;
+    },
+    /** What is on: [{ name, scope, stage, playing, waiting, progress }]. */
+    effects: () => (fx ? fx.list() : []),
     remove() {
       removed = true;
       current = null;
+      fx?.dispose();
+      fx = null;
       unbindFocusInput?.();
       viewer.onFocusChange = null;
       handle?.remove();
@@ -2194,6 +2280,52 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
   function contentToModel(c) {
     return flipY ? [c[0], -c[1], -c[2]] : [c[0], c[1], c[2]];
+  }
+
+  // ── splat effects (./inline3d-splat-effects.js) ──
+  let fx = null;
+  const fxPending = []; // setEffect / stopEffect before the first asset landed
+  const revealSpec = resolveRevealOption(opts.reveal); // throws on a bad one (./splat did too)
+  /** A promise resolved after `n` more viewer ticks: the first draw of a new asset builds its
+   * work buffer (hundreds of ms on a big file) and must not eat an effect's clock. */
+  const afterTicks = (n) =>
+    new Promise((resolve) => {
+      let k = 0;
+      viewer._hooks.push(() => {
+        if (++k < n) return true;
+        resolve();
+        return false;
+      });
+    });
+  function makeEffects(pc) {
+    const ctx = {
+      pc: () => pc,
+      app: () => viewer.app,
+      now: () => now(),
+      eyes: () => viewer.eyeFrame(),
+      focus: () => {
+        if (pageMode) {
+          const f = pageFocusPoint();
+          return f ? modelToContent(f) : viewer.eyeFrame().origin;
+        }
+        const f = viewer.getFocus();
+        return [f.x, f.y, f.z];
+      },
+      framing: () => out.frame,
+      pick: (x, y) => {
+        const m = pickModel(x, y);
+        return m ? modelToContent(m) : null;
+      },
+      modelToContent,
+      entity: () => current?.entity ?? null,
+    };
+    const f = new SplatEffects(ctx);
+    viewer.onEffectsTick = (t) => {
+      if (!f.active) return;
+      f.tick(t);
+      f.flush();
+    };
+    return f;
   }
 
   // ── controls:'page' state (null/unused on the viewer's own controls) ──
@@ -2649,20 +2781,42 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     };
     const kept = applyLoaded(loaded);
     current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
+    fx = makeEffects(pcModule);
+    // `reveal`: installed at its START state before the asset's first frame, played once the
+    // tile is woven (handle.firstWoven — which is immediate in 2D) and the first frames are built.
+    if (revealSpec) {
+      const gate = Promise.resolve(out.firstWoven).then(() => afterTicks(2));
+      fx.play(revealSpec.type, revealSpec.raw, { gate });
+    }
+    for (const [what, name, arg] of fxPending.splice(0)) {
+      if (what === 'set') fx.set(name, arg);
+      else fx.stop(name, arg);
+    }
     bindFocusInput();
     return out;
   });
 
-  // ── setSource: swap the asset, optionally crossfading ──
+  // ── setSource: swap the asset — a cut, a crossfade, or a transition ──
   let sourceGen = 0;
   let pendingSwap = null;
+  /** setSource's crossfade FALLBACK: the coverage remap on one entity (null clears it). */
+  const setFade = (entity, k) => fx?.setInternal(entity, 'xfade', k === null ? null : { k });
   /**
-   * Load `next` behind the current asset, then crossfade to it over `fadeMs` and release the old
-   * one. The rig waterfall re-runs for the new file (rig, lens, focus, frame; `onFocusChange`
-   * fires). The pose (yaw/pitch/zoom/depth) is kept unless `resetPose: true`. A newer call
-   * supersedes an older one still loading. Resolves to the handle once the fade has finished.
+   * Load `next` behind the current asset, then swap to it:
+   *   transition 'cut' (fadeMs 0, the default) — at once;
+   *   'crossfade' (fadeMs > 0) — the IMAGES lerp over fadeMs (FRAME_SNAPSHOT);
+   *   'flip' — the outgoing photo flattens onto its convergence plane (zero disparity), the swap
+   *            happens there, the incoming one inflates out of its own plane;
+   *   'wavefront' — a soft front crosses the picture left → right; behind it the new photo, with
+   *            a thin depth ridge riding the front.
+   * `reveal` (cut/crossfade only) plays an entity-scope reveal on the INCOMING asset while the
+   * outgoing one fades. The rig waterfall re-runs for the new file (rig, lens, focus, frame;
+   * `onFocusChange` fires); the pose is kept unless `resetPose: true`. A newer call supersedes an
+   * older one still loading. Resolves to the handle once the swap has finished.
    */
-  async function setSource(next, { fadeMs = 0, resetPose = false } = {}) {
+  async function setSource(next, o = {}) {
+    const plan = resolveSwap(o);
+    const { resetPose = false } = o;
     const gen = ++sourceGen;
     const app = await booted;
     await first.catch(() => null); // a failed first asset may be replaced
@@ -2675,90 +2829,171 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return out;
     }
     const prev = current;
-    const fade = Number.isFinite(fadeMs) && fadeMs > 0 ? fadeMs : 0;
     pendingSwap?.finish();
+    const transition = prev ? plan.transition : 'cut';
     // FRAME_SNAPSHOT: freeze the outgoing frame BEFORE anything of the new asset (or its rig) is
     // drawn. The overlay goes up in the same task, so no frame shows neither photo.
-    const snapped = fade && prev ? await viewer.captureFrame() : false;
+    const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront';
+    const snapped = wantsSnapshot ? await viewer.captureFrame() : false;
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
       loaded.asset.unload?.();
       return out;
     }
-    if (snapped) viewer.setSnapshotAlpha(1);
-    const entity = viewer.addSplatAsset(loaded.asset);
-    if (fade && prev && !snapped) setFade(pc, entity, 0);
-    out.mesh = {
-      numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
-      entity,
-      asset: loaded.asset,
-      resource: loaded.res,
-    };
-    const kept = applyLoaded(loaded);
-    current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
-    if (resetPose && !pageMode) viewer.resetPose(); // the page owns the pose on controls:'page'
+    if (snapped) viewer.setSnapshotAlpha(1, transition === 'wavefront' ? { t: 0, band: plan.band, views: viewer.viewsAcross } : null);
 
-    const release = () => {
-      if (!prev) return;
+    const release = (p) => {
+      if (!p) return;
       // Disable first, destroy + unload a few frames LATER: the engine's gsplat world keeps the
       // old placement in its list until its next rebuild, and tearing the resource down in the
       // same frame throws inside the engine's update (found by running the swap).
-      prev.entity.enabled = false;
+      p.entity.enabled = false;
+      fx?.dropEntity(p.entity);
       let frames = 0;
       viewer._hooks.push(() => {
         if (++frames < 4) return true;
-        prev.entity.destroy?.();
-        app.assets.remove(prev.asset);
-        prev.asset.unload?.();
+        p.entity.destroy?.();
+        app.assets.remove(p.asset);
+        p.asset.unload?.();
         return false;
       });
     };
-    if (!fade || !prev) {
-      release();
+    /** The incoming asset becomes THE asset: waterfall, rig, handle fields. */
+    const adopt = (entity) => {
+      out.mesh = {
+        numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
+        entity,
+        asset: loaded.asset,
+        resource: loaded.res,
+      };
+      const kept = applyLoaded(loaded);
+      current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
+      if (resetPose && !pageMode) viewer.resetPose(); // the page owns the pose on controls:'page'
+    };
+
+    const entity = viewer.addSplatAsset(loaded.asset);
+    let settle = () => {};
+    const done = new Promise((resolve) => (settle = resolve));
+    let finished = false;
+    const finishers = [];
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      for (const f of finishers) f();
+      if (pendingSwap?.finish === finish) pendingSwap = null;
+      settle();
+    };
+    pendingSwap = { finish };
+
+    if (transition === 'flip') {
+      // Phase 1: the outgoing photo flattens onto ITS convergence plane under ITS rig; the new
+      // asset is resident but hidden (its first frames build its work buffer meanwhile), held
+      // flat for phase 2. The rig switches at the flat moment — zero disparity on both sides.
+      const half = plan.durationMs / 2;
+      setFade(entity, 0);
+      let openGate = () => {};
+      const gate = new Promise((r) => (openGate = r));
+      const flatOut = fx.play('deflate', { durationMs: half, easing: plan.easing, scope: 'entity' }, { entity: prev.entity });
+      const inflateIn = fx.play('inflate', { durationMs: half, easing: plan.easing, scope: 'entity' }, { entity, gate });
+      finishers.push(() => {
+        openGate();
+        fx?.stop('inflate', { finish: true, entity });
+      });
+      flatOut.then(() => {
+        if (finished || removed) return;
+        setFade(entity, null);
+        release(prev);
+        adopt(entity);
+        afterTicks(2).then(openGate);
+      });
+      inflateIn.then(finish);
+      await done;
+      if (current?.entity !== entity && !removed) {
+        // superseded before the flat moment: this asset never showed
+        release(prev);
+        adopt(entity);
+      }
       return out;
     }
-    if (snapped) release(); // the snapshot shows it from here on
-    else setFade(pc, prev.entity, 1);
-    await new Promise((resolve) => {
-      // The fade clock starts on the SECOND tick after the swap, not now: the first frame that
-      // draws the new asset also builds its work buffer (hundreds of ms for a 1M-splat file), and
-      // a clock started before it would spend the whole fade inside that one frame — a cut, not a
-      // crossfade (found by screenshotting mid-fade).
-      let t0 = null;
-      let ticks = 0;
-      const finish = () => {
-        if (snapped) viewer.setSnapshotAlpha(0);
-        else {
-          setFade(pc, entity, null);
-          release();
-        }
-        pendingSwap = null;
-        resolve();
-      };
-      pendingSwap = { finish };
-      viewer._hooks.push((t) => {
-        if (removed) return (resolve(), false);
-        if (pendingSwap?.finish !== finish) return false; // superseded: already finished
-        if (++ticks < 2) return true;
-        if (t0 === null) t0 = t;
-        const k = Math.min(1, Math.max(0, (t - t0) / fade));
-        if (snapped) {
-          // A resize or a 2D/3D switch mid-fade: the capture no longer fits the buffer — end now.
-          if (!viewer.setSnapshotAlpha(1 - k)) {
-            finish();
-            return false;
-          }
-        } else {
-          setFade(pc, entity, coverageExponent(k));
-          setFade(pc, prev.entity, coverageExponent(1 - k));
-        }
-        if (k >= 1) {
+
+    adopt(entity);
+    if (transition === 'cut') {
+      release(prev);
+      if (plan.reveal) fx.play(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
+      finish();
+      return out;
+    }
+
+    if (transition === 'wavefront' && snapped) {
+      release(prev); // the snapshot shows it from here on
+      const band = plan.band;
+      const ridge = fx.play(
+        'wavefront',
+        { durationMs: plan.durationMs, easing: plan.easing, band, ridge: plan.ridge, ridgeMaxDisparity: plan.ridgeMaxDisparity, scope: 'entity' },
+        { entity, gate: afterTicks(2), internal: true },
+      );
+      finishers.push(() => viewer.setSnapshotAlpha(0));
+      viewer._hooks.push(() => {
+        if (finished || removed) return false;
+        const inst = fx?.scopes.get(entity)?.get('wavefront');
+        const amount = inst ? inst.amount : 1;
+        if (!viewer.setSnapshotAlpha(1, { t: amount, band, views: viewer.viewsAcross })) {
+          fx?.stop('wavefront', { finish: true, entity });
           finish();
           return false;
         }
         return true;
       });
+      ridge.then(finish);
+      await done;
+      return out;
+    }
+
+    // crossfade — also the wavefront's fallback when no frame could be captured (a hidden tab):
+    // the 1.12.1 one-pass fade, over the same duration.
+    const fade = plan.durationMs;
+    if (plan.reveal) fx.play(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
+    if (snapped) release(prev); // the snapshot shows it from here on
+    else {
+      setFade(entity, 0);
+      setFade(prev.entity, 1);
+    }
+    finishers.push(() => {
+      if (snapped) viewer.setSnapshotAlpha(0);
+      else {
+        setFade(entity, null);
+        release(prev);
+      }
     });
+    // The fade clock starts on the SECOND tick after the swap, not now: the first frame that
+    // draws the new asset also builds its work buffer (hundreds of ms for a 1M-splat file), and
+    // a clock started before it would spend the whole fade inside that one frame — a cut, not a
+    // crossfade (found by screenshotting mid-fade).
+    let t0 = null;
+    let ticks = 0;
+    viewer._hooks.push((t) => {
+      if (removed) return (finish(), false);
+      if (finished) return false; // superseded: already finished
+      if (++ticks < 2) return true;
+      if (t0 === null) t0 = t;
+      const k = Math.min(1, Math.max(0, (t - t0) / fade));
+      if (snapped) {
+        // A resize or a 2D/3D switch mid-fade: the capture no longer fits the buffer — end now.
+        if (!viewer.setSnapshotAlpha(1 - k)) {
+          finish();
+          return false;
+        }
+      } else {
+        setFade(entity, coverageExponent(k));
+        setFade(prev.entity, coverageExponent(1 - k));
+      }
+      if (k >= 1) {
+        finish();
+        return false;
+      }
+      return true;
+    });
+    await done;
     return out;
   }
 

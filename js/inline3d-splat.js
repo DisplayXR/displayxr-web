@@ -23,6 +23,7 @@ import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js';
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
+import { resolveRevealOption, effectsNotOnSpark, validateEffectCall } from './inline3d-splat-effects.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
 import {
   toArray3,
@@ -172,6 +173,8 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
   // resolves `playcanvas` — see addSplatDeferred.
   if (resolveSplatEngine(opts) === 'playcanvas') {
+    // A bad `reveal` is a page bug true of every call: throw at the call.
+    resolveRevealOption(opts.reveal);
     // A format that engine provably cannot read (a .spz URL, gzip bytes, a Spark-only fileType)
     // is a page bug: say so NOW rather than fail inside a loader later.
     const why = playcanvasCannotRead(src, opts);
@@ -182,6 +185,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // controls:'page' is a PlayCanvas-backend feature (docs/playcanvas-adapter.md §controls:'page'):
   // on Spark it would need SceneViewer — which ./viewer and ./model share — to take an external
   // camera in both its mono and eye paths. Refused by name rather than half-supported.
+  if (opts.reveal !== undefined && opts.reveal !== false) throw effectsNotOnSpark('reveal');
   if (pageControls) {
     throw new Error(
       "@displayxr/inline3d/splat: controls:'page' is not supported on Spark (the default engine) — " +
@@ -365,6 +369,17 @@ export function addSplat(wall, canvas, src, opts = {}) {
           "only; with the Spark backend, remove() this handle and addSplat() the new asset.",
       );
     },
+    /** Not on this backend (splat effects are PlayCanvas-only in this version). */
+    playEffect() {
+      throw effectsNotOnSpark('playEffect()');
+    },
+    setEffect() {
+      throw effectsNotOnSpark('setEffect()');
+    },
+    stopEffect() {
+      throw effectsNotOnSpark('stopEffect()');
+    },
+    effects: () => [],
   };
 
   // `src` may be a URL or the bytes themselves.
@@ -691,6 +706,19 @@ function addSplatDeferred(wall, canvas, src, opts) {
     // A swap requested before the first asset has landed runs once it has (the adapter's own
     // setSource replaces this stub on the same object by then).
     setSource: (...args) => out.ready.then(() => out.setSource(...args)),
+    // Effects before the adapter has loaded: validated NOW (a bad call throws at its own line),
+    // then run once the first asset is on screen.
+    playEffect: (name, o) => {
+      validateEffectCall(name, o, 'play');
+      return out.ready.then(() => out.playEffect(name, o));
+    },
+    setEffect: (name, params) => {
+      validateEffectCall(name, params, 'set');
+      pending.push(['setEffect', [name, params]]);
+      return out;
+    },
+    stopEffect: queue('stopEffect'),
+    effects: () => [],
     getFocus: () => null,
     // A plain data slot the adapter reads at call time, so a callback assigned on the very next
     // line after addSplat — before the module has loaded — is the one that fires.

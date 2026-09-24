@@ -327,6 +327,133 @@ export interface SplatOptions {
    * caught and warned once; frames keep rendering.
    */
   onBeforeFrame?: (frame: SplatFrameInfo) => void;
+  /**
+   * `engine: 'playcanvas'` only (throws on Spark): play a reveal on the first asset. Installed at
+   * its start state before the first frame, played once `firstWoven` settles (at once in 2D) —
+   * docs/splat-effects.md. A name uses that effect's defaults; an object overrides them.
+   */
+  reveal?: SplatRevealName | false | SplatRevealSpec;
+}
+
+/** The transition effects `reveal` accepts. */
+export type SplatRevealName = 'inflate' | 'sweep' | 'dissolve' | 'fade';
+
+/** Named easings; a function `(x) => y` on [0, 1] also works. */
+export type SplatEasing =
+  | 'linear'
+  | 'easeInQuad'
+  | 'easeOutQuad'
+  | 'easeInOutQuad'
+  | 'easeInCubic'
+  | 'easeOutCubic'
+  | 'easeInOutCubic'
+  | 'easeInOutSine'
+  | ((x: number) => number);
+
+/**
+ * Where an effect is centred: `'focus'` (the focus point), `'eyes'` (the eyes' midpoint — the
+ * inflate default), a point in the splat's OWN space `[x, y, z]`, or a canvas point
+ * `[clientX, clientY]` / `{ clientX, clientY }` resolved with `pick()` when the effect starts.
+ * All effects are keyed on world position and time only, so both eyes agree.
+ */
+export type SplatEffectOrigin = 'focus' | 'eyes' | [number, number, number] | [number, number] | { clientX: number; clientY: number };
+
+/** Options every played effect takes. */
+export interface SplatEffectTiming {
+  durationMs?: number;
+  /** Wait this long at the start state before the clock runs. */
+  holdMs?: number;
+  easing?: SplatEasing;
+  origin?: SplatEffectOrigin;
+  /** `'in'` (default): arrive, then the effect is removed. `'out'`: leave; the end state is held until `stopEffect`. */
+  direction?: 'in' | 'out';
+  /** `'tile'` (default, every splat of the tile, render time) or `'entity'` (the current asset only, work buffer). */
+  scope?: 'tile' | 'entity';
+}
+
+/** `reveal: { type, … }`. */
+export interface SplatRevealSpec extends Omit<SplatEffectTiming, 'direction' | 'scope'> {
+  type: SplatRevealName;
+  [param: string]: unknown;
+}
+
+/** A custom effect's GLSL (PlayCanvas-shaped) — docs/splat-effects.md §custom. */
+export interface SplatCustomEffect extends SplatEffectTiming {
+  /**
+   * Any of `void modifySplatCenter(inout vec3 center)`, `void modifySplatRotationScale(vec3
+   * originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale)`, `void
+   * modifySplatColor(vec3 center, inout vec4 color)` — world-space centres. `dxrProgress` (0..1)
+   * and `dxrTime` (s) are defined; `splat.index` / `splat.uv` are the asset's own file index in
+   * `scope: 'entity'`. Screen-space inputs are refused.
+   */
+  glsl: string;
+  /** Tile scope only: `void modifySplatColor(vec2 gaussianUV, inout vec4 color)` per fragment. */
+  fragmentGlsl?: string;
+  /** Uniform values, set every frame; a function gets the frame time in ms. */
+  uniforms?: Record<string, number | number[] | ((tMs: number) => number | number[])>;
+  /** `setEffect` only: hold `dxrProgress` here (default 1). */
+  progress?: number;
+  /** `playEffect` only: keep the effect at its end instead of removing it. */
+  hold?: boolean;
+}
+
+export type SplatEffectName = 'inflate' | 'deflate' | 'sweep' | 'dissolve' | 'fade' | 'pulse' | 'grade' | 'clip' | 'custom' | `custom:${string}`;
+
+/** `setEffect('grade', …)`. */
+export interface SplatGradeParams {
+  /** Stops; default 0. */
+  exposure?: number;
+  contrast?: number;
+  saturation?: number;
+  tint?: [number, number, number];
+  scope?: 'tile' | 'entity';
+}
+
+/** `setEffect('clip', …)` — in the splat's own space, like setFocus. Exactly one shape. */
+export interface SplatClipParams {
+  box?: { min: [number, number, number]; max: [number, number, number] };
+  sphere?: { center: [number, number, number]; radius: number };
+  /** Keep the outside instead. */
+  invert?: boolean;
+  scope?: 'tile' | 'entity';
+}
+
+/** One row of `handle.effects()`. */
+export interface SplatEffectState {
+  name: string;
+  scope: 'tile' | 'entity';
+  stage: 'grade' | 'clip' | 'reveal' | 'pulse' | 'custom';
+  /** Played (has a clock) vs set (held). */
+  playing: boolean;
+  /** Held at its start state until a gate settles (a reveal waiting for `firstWoven`). */
+  waiting: boolean;
+  /** 0..1, before easing. */
+  progress: number;
+}
+
+/** `setSource`'s options. */
+export interface SplatSourceOptions {
+  /** > 0 = a crossfade of this length (the 1.10 option; same as `transition: 'crossfade'`). */
+  fadeMs?: number;
+  resetPose?: boolean;
+  /**
+   * `'cut'` (default), `'crossfade'` (images lerp, see setSource), `'flip'` (the old photo
+   * flattens to its convergence plane — zero disparity — the swap happens there, the new one
+   * inflates out of its own; default 2200 ms), `'wavefront'` (a soft front crosses left → right
+   * with a thin depth ridge riding it; default 2000 ms, ease-in-out; falls back to the crossfade
+   * in a hidden tab). For photo slideshows: `crossfade` or `wavefront`.
+   */
+  transition?: 'cut' | 'crossfade' | 'flip' | 'wavefront';
+  durationMs?: number;
+  easing?: SplatEasing;
+  /** `cut`/`crossfade` only: reveal the INCOMING asset (entity scope) while the old one fades. */
+  reveal?: SplatRevealName | false | SplatRevealSpec;
+  /** `wavefront`: the soft band, a fraction of the picture width (default 0.18). */
+  band?: number;
+  /** `wavefront`: the ridge's pull toward the eyes, world units (default 0.03 — 3 cm on a metric photo). */
+  ridge?: number;
+  /** `wavefront`: the ridge's disparity cap, a fraction of the eye view's width (default 0.004, max 0.05). */
+  ridgeMaxDisparity?: number;
 }
 
 /** What `onBeforeFrame` receives. */
@@ -473,10 +600,28 @@ export interface SplatHandle {
    * `resetPose`. A newer call supersedes an older one still loading. Resolves once the fade has
    * finished; rejects if the new asset cannot be loaded (the current one stays on screen).
    */
-  setSource(
-    src: string | Blob | ArrayBuffer | Uint8Array,
-    opts?: { fadeMs?: number; resetPose?: boolean },
-  ): Promise<SplatHandle>;
+  setSource(src: string | Blob | ArrayBuffer | Uint8Array, opts?: SplatSourceOptions): Promise<SplatHandle>;
+  /**
+   * `engine: 'playcanvas'` only (throws on Spark). Play a transition/pulse/custom effect;
+   * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —
+   * false when stopped or replaced. docs/splat-effects.md.
+   */
+  playEffect(
+    name: Exclude<SplatEffectName, 'grade' | 'clip'>,
+    opts?: SplatEffectTiming & Record<string, unknown>,
+  ): Promise<{ finished: boolean }>;
+  /**
+   * `engine: 'playcanvas'` only. Set a persistent effect (`grade`, `clip`, `custom`), hold a
+   * transition at `{ progress }`, or pass `null` to remove it (the exact baseline).
+   */
+  setEffect(name: 'grade', params: SplatGradeParams | null): SplatHandle;
+  setEffect(name: 'clip', params: SplatClipParams | null): SplatHandle;
+  setEffect(name: 'custom' | `custom:${string}`, params: SplatCustomEffect | null): SplatHandle;
+  setEffect(name: SplatEffectName, params: (SplatEffectTiming & { progress?: number } & Record<string, unknown>) | null): SplatHandle;
+  /** Stop one effect (all with no name): `finish: true` jumps to its end state, else removes it. */
+  stopEffect(name?: SplatEffectName, opts?: { finish?: boolean }): SplatHandle;
+  /** What is on right now. */
+  effects(): SplatEffectState[];
   /**
    * Called with the live focus (the splat's own space) whenever it moves — easing included — and
    * which waterfall step it came from. PlayCanvas backend; assign any time, even before `ready`.
