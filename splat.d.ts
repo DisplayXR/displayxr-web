@@ -178,6 +178,35 @@ export interface ResolvedRig {
   parallaxFactor: number;
 }
 
+/** `handle.setVideo` options. */
+export interface SplatVideoOptions {
+  /** Stereo layout of the frame: `'sbs'` (default, left eye = left half), `'tb'` (left = top), `'mono'` (both eyes the whole frame). */
+  format?: 'sbs' | 'tb' | 'mono';
+  /** `'contain'` (default): the whole eye image, bars where the aspects differ. `'cover'`: the window full, the overflow cropped. */
+  fit?: 'contain' | 'cover';
+  /** Only `'display'`. */
+  rig?: 'display';
+  /** The display rig's height while the video is on (default: the tile's own `virtualDisplayHeight`). No visible effect on a flat plane at the window. */
+  virtualDisplayHeight?: number;
+  /** Applied to the element when given. */
+  loop?: boolean;
+  muted?: boolean;
+  /** Default true for a URL (the SDK's own element), false for an element you pass. */
+  autoplay?: boolean;
+}
+
+/** What `handle.setVideo(src)` resolves to. */
+export interface SplatVideo {
+  /** The element: play / pause / currentTime / duration / ended / events are the page's to drive. */
+  readonly video: HTMLVideoElement;
+  readonly format: 'sbs' | 'tb' | 'mono';
+  readonly fit: 'contain' | 'cover';
+  /** `handle.setVideo(null)`, or a no-op if another setVideo has replaced this one. */
+  remove(): Promise<null>;
+  /** Frames drawn with the plane up, and texture uploads (new video frames). */
+  stats(): { frames: number; uploads: number };
+}
+
 export interface SplatOptions {
   /**
    * Which renderer. `'spark'` (the default) is three.js + Spark. `'playcanvas'` is the PlayCanvas
@@ -800,6 +829,25 @@ export interface SplatHandle {
    */
   setRig(type: 'display', opts?: SplatSetRigDisplayOptions): Promise<SplatHandle>;
   setRig(type: 'camera' | 'auto'): Promise<SplatHandle>;
+  /**
+   * PlayCanvas backend only — throws on Spark, and with `controls:'page'`. Play a stereo video ON
+   * this handle: no new canvas, layer or session (docs/playcanvas-adapter.md §setVideo). The splat
+   * is hidden and a screen-locked plane on the display rig shows the video, sized to its per-eye
+   * aspect by `fit`; each eye samples only its own half (`'sbs'`: left/right, `'tb'`: top/bottom).
+   * Not woven (the mono path): the LEFT half at the full buffer resolution. The texture is
+   * re-uploaded only when the video presents a new frame (requestVideoFrameCallback).
+   *
+   * Applies on the first frame the video has; resolves to a {@link SplatVideo}. The page drives
+   * transport through `v.video`. A URL makes an SDK-owned `<video>` (autoplays unless
+   * `autoplay: false`; muted automatically if the browser refuses sound without a gesture); an
+   * element you pass stays yours (the SDK never plays or pauses it unless `autoplay: true`).
+   * `setVideo(null)` exits and restores the splat's visibility, the pose, the lens and the declared
+   * view rig exactly as they were. A second setVideo replaces the video and keeps the pre-video
+   * state. Throws during an in-flight `setSource`; while a video is on, `setSource` rejects and
+   * `setRig` throws (`setVideo(null)` first). `prepareSource` stays available.
+   */
+  setVideo(src: string | HTMLVideoElement, opts?: SplatVideoOptions): Promise<SplatVideo>;
+  setVideo(src: null): Promise<null>;
   /**
    * `engine: 'playcanvas'` only (throws on Spark). Play a transition/pulse/custom effect;
    * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —
