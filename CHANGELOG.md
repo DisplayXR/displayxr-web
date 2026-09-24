@@ -5,6 +5,34 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — patch
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change and no pixel
+change: every frame of a `crossfade` or `wavefront` is the one 1.19.1 draws, and the end is still a
+plain `cut` (MAE 0.000).
+
+### Changed
+
+- **The live `wavefront` costs about one photo's draw, not two** (#36).
+  - Its depth ridge was an entity-scope work-buffer modifier: a full rewrite of the new photo's
+    1.18M-gaussian work buffer and a CPU re-sort, every frame (0.9–1.0 of each per frame, measured).
+    It now runs at render time on the eye camera's gsplat manager, as the particle transitions do:
+    0 rewrites and 0 sorts in the window.
+  - Each photo is drawn only on its side of the front: the new one left of where its commit
+    starts, the old one right of where it ends, so the two overlap only in the band. A gaussian
+    whose on-screen footprint (bounded the way the engine sizes its quad) lies wholly on the far
+    side in every eye gets alpha 0, which the engine culls in the vertex stage. Frames with the
+    cull on and off are bit-identical (both eyes, colour and alpha, 5 points of the window).
+  - An engine whose managers are not reachable keeps the entity-scope ridge (`_transitionPath`
+    says which ran).
+- **No shader links inside a `crossfade` or `wavefront` window.** The overlay's two quads compiled
+  on the window's first frames (30–180 ms on the M1). `prepareSource()` now warms them whatever
+  transition follows, `prepareSource(src, { transition: 'wavefront' })` also builds the render-time
+  ridge and cull, and an unprepared `setSource` warms them while its asset loads.
+
+Measured pacing and GPU cost: [`docs/splat-effects.md` § Wavefront: one draw's worth](docs/splat-effects.md#wavefront-one-draws-worth).
+The live `crossfade` still draws both photos in full: at mid-fade every pixel needs both images.
+
 ## 1.19.1 — 2026-09-24
 
 Touches packaging only (`./splat` and `./model`, `engine: 'playcanvas'`). No pixels move: the
