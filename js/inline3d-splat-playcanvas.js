@@ -63,6 +63,7 @@ import {
   particleSpan,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
+import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR } from './inline3d-splat-video.js';
 import {
   clamp,
   finite,
@@ -664,6 +665,11 @@ export class PlayCanvasSplatViewer {
     this.orbitMaxDeg = orbitMaxDeg;
     this.orbitEase = { drag: orbitEase.drag ?? ORBIT_TAU_DRAG_S, rest: orbitEase.rest ?? ORBIT_TAU_REST_S };
     this._orbitMode = null;
+    /** handle.setVideo: orbit/zoom input ignored while a video plane is on. */
+    this.inputLocked = false;
+    /** handle.setVideo's plane (./inline3d-splat-video.js) while a video is on, else null. */
+    this._videoPlane = null;
+    this.boxAspect = 1;
     this.featherPx = feather > 0 ? feather : 0;
     this.captureFit = captureFit;
     /** Called when the capture camera's vertical FOV changes (captureFit 'cover' on a resize). */
@@ -1024,6 +1030,8 @@ export class PlayCanvasSplatViewer {
     }
     this._live?.destroy();
     this._live = null;
+    this._videoPlane?.destroy();
+    this._videoPlane = null;
     try {
       this.app?.destroy();
     } catch (err) {
@@ -1544,6 +1552,7 @@ export class PlayCanvasSplatViewer {
   _updateMonoProjection() {
     const box = this.canvas.getBoundingClientRect();
     const aspect = box.height > 0 ? box.width / box.height : 1;
+    this.boxAspect = aspect; // setVideo's plane reads it per frame (no layout read in the draw)
     if (this.mono.capture) {
       captureProjection(this.mono.capture, aspect, this.mono.near, this.mono.far, this.mono.proj, this.captureFit);
       if (this.captureFit !== 'height') {
@@ -1652,6 +1661,8 @@ export class PlayCanvasSplatViewer {
       }
     }
     this._updateFeather(entries[0].width * sx, entries[0].height * sy);
+    // handle.setVideo's plane: size, eye split, and a new frame's upload (./inline3d-splat-video.js).
+    this._videoPlane?.beforeDraw(entries, rect);
     app.tick(now());
     this._afterTick();
     return true;
@@ -1859,6 +1870,7 @@ export class PlayCanvasSplatViewer {
     let restYaw = 0;
     let restPitch = 0;
     this._onDown = (ev) => {
+      if (this.inputLocked) return; // handle.setVideo: a screen-locked plane has nothing to orbit
       dragging = true;
       startX = ev.clientX;
       startY = ev.clientY;
@@ -1893,6 +1905,7 @@ export class PlayCanvasSplatViewer {
       el.releasePointerCapture?.(ev.pointerId);
     };
     this._onWheel = (ev) => {
+      if (this.inputLocked) return;
       ev.preventDefault();
       let px = ev.deltaY;
       if (ev.deltaMode === 1) px *= WHEEL_LINE_PX;
@@ -2210,6 +2223,10 @@ export const SET_RIG_TYPES = Object.freeze(['display', 'camera', 'auto']);
 const SET_RIG_FITS = ['contain', 'cover', 'height', 'none'];
 let warnedSetRigKeys = false;
 
+const VIDEO_BUSY = (what) =>
+  `@displayxr/inline3d/splat: ${what}() while a video is on — call handle.setVideo(null) first ` +
+  '(the video holds the display rig and hides the splat until it exits).';
+
 const PAGE_SETRIG_ERROR =
   "@displayxr/inline3d/splat: setRig() is not available with controls:'page' — the page owns the " +
   'camera (its camera IS the rig). Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).';
@@ -2423,6 +2440,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   const livePrepared = new Set();
   /** The asset on screen: its resource, kind, the pick data it keeps. */
   let current = null; // { asset, entity, res, kind, streamedBounds, alpha8, pickCentres }
+  // handle.setVideo (below). Declared up here: a remove() queued before load runs during attach.
+  let vid = null;
+  let videoSeq = 0;
+  /** The pending setVideo's canceller (a newer call, setVideo(null) or remove() supersedes it). */
+  let cancelPendingVideo = null;
+  let warnedAutoplayMuted = false;
 
   Object.assign(out, {
     backend: 'playcanvas',
@@ -2491,6 +2514,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     setSource,
     prepareSource,
     setRig,
+    setVideo,
     /**
      * Play a transition effect (inflate, deflate, sweep, dissolve, fade, pulse, custom) — see
      * docs/splat-effects.md. Validated now; runs once the first asset is on screen. Resolves
@@ -2517,6 +2541,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     effects: () => (fx ? fx.list() : []),
     remove() {
       removed = true;
+      dropVideo(); // before the app goes: the plane's rVFC, and a <video> this handle made
       current = null;
       for (const p of [...livePrepared]) p.dispose();
       fx?.dispose();
@@ -2727,6 +2752,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let declaredDisplay = pageMode ? 'page' : 'shorthand';
   function pushViewRig(force) {
     if (pageMode) return; // pageTick declares the rig every frame
+    if (vid?.on) return; // setVideo holds the display rig; exit re-declares what was there
     if (!out.rig || out.rig.type !== 'camera') return;
     const pose = viewer.mono.pose;
     const f = viewer.getFocus();
@@ -2841,6 +2867,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     if (pageMode || focusInput === false || unbindFocusInput) return;
     unbindFocusInput = bindFocusGestures(canvas, {
       onDoubleClick: (e) => {
+        if (vid?.on) return false; // a video plane: nothing to focus on
         const m = pickModel(e.clientX, e.clientY);
         if (!m) return false;
         out.rig.focus = m;
@@ -3239,6 +3266,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    */
   function setRig(type, o = {}) {
     const req = validateSetRig(type, o, pageMode);
+    if (vid) throw new Error(VIDEO_BUSY('setRig'));
     const seq = ++rigSeq;
     return first.then(async () => {
       if (removed || seq !== rigSeq || !current) return out;
@@ -3311,6 +3339,231 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     bindFocusInput();
     return out;
   });
+
+  // ── handle.setVideo: a stereo video on this handle (docs/playcanvas-adapter.md §setVideo) ──
+  /**
+   * The video state: null = no video. `on` once the plane is up (the splat hidden, the display rig
+   * declared); `saved` is everything the entry changed, restored exactly by setVideo(null).
+   */
+  // (state: `vid`, `videoSeq`, `cancelPendingVideo` — declared with `current`, above: remove() reads them)
+
+  /** The <video> for a URL: made here, owned (and released) by this handle. */
+  function makeVideoElement(url) {
+    const v = document.createElement('video');
+    v.crossOrigin = 'anonymous'; // WebGL refuses a tainted frame; same-origin is unaffected
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.src = url;
+    return v;
+  }
+  /** Let go of a <video> this handle made: stop it and free its decoder. */
+  function releaseOwned(v) {
+    try {
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    } catch {
+      /* already gone */
+    }
+  }
+  /** Resolves once `v` has a current frame (readyState ≥ 2); rejects on error or cancel. */
+  function waitForFrame(v, seq) {
+    return new Promise((resolve, reject) => {
+      const off = () => {
+        v.removeEventListener('loadeddata', ok);
+        v.removeEventListener('error', bad);
+        if (cancelPendingVideo === cancel) cancelPendingVideo = null;
+      };
+      const ok = () => (off(), resolve());
+      const bad = () => {
+        off();
+        const e = v.error;
+        reject(new Error(`@displayxr/inline3d/splat: setVideo — the video failed to load${e ? ` (${e.message || `code ${e.code}`})` : ''}.`));
+      };
+      const cancel = () => {
+        off();
+        const err = new Error('@displayxr/inline3d/splat: setVideo — superseded by a later setVideo / remove() before its first frame.');
+        err.name = 'AbortError';
+        reject(err);
+      };
+      cancelPendingVideo = cancel;
+      if (seq !== videoSeq) return cancel();
+      if ((v.readyState || 0) >= 2 && v.videoWidth > 0) return ok();
+      v.addEventListener('loadeddata', ok);
+      v.addEventListener('error', bad);
+    });
+  }
+  function autoplay(v) {
+    const p = v.play?.();
+    if (!p || typeof p.catch !== 'function') return;
+    p.catch((err) => {
+      // No user gesture yet: the browser allows a MUTED play. The page unmutes on its next gesture.
+      if (err?.name !== 'NotAllowedError' || v.muted) return;
+      v.muted = true;
+      if (!warnedAutoplayMuted) {
+        warnedAutoplayMuted = true;
+        console.info('[inline3d/splat] setVideo: autoplay with sound was refused (no user gesture yet) — playing MUTED; set video.muted = false on a gesture.');
+      }
+      v.play().catch(() => {});
+    });
+  }
+
+  /** Everything the entry changes, for an exact restore. */
+  function snapshotForVideo() {
+    const v = viewer;
+    const entity = current?.entity || null;
+    return {
+      entity,
+      splatEnabled: entity ? entity.enabled : null,
+      vH: v.vH,
+      idleSpin: v.idleSpin,
+      mono: { fov: v.mono.fov, near: v.mono.near, far: v.mono.far, pose: Float64Array.from(v.mono.pose), capture: v.mono.capture },
+      pose: {
+        _yaw: v._yaw, _pitch: v._pitch, _targetYaw: v._targetYaw, _targetPitch: v._targetPitch,
+        _zoom: v._zoom, _targetZoom: v._targetZoom, _depthOffset: v._depthOffset,
+        _focusSettled: v._focusSettled, _focusRecentres: v._focusRecentres, _orbitMode: v._orbitMode, _lastInput: v._lastInput,
+      },
+      focus: { ...v._focus },
+      targetFocus: { ...v._targetFocus },
+      viewRig: out.viewRig,
+      declaredDisplay,
+      lastConvergence,
+    };
+  }
+
+  /** Enter: the splat hidden, the display camera + rig, the plane up. One task: one frame sees it all. */
+  function enterVideo(state) {
+    const v = viewer;
+    state.saved = snapshotForVideo();
+    if (state.saved.entity) state.saved.entity.enabled = false;
+    v.inputLocked = true;
+    v.idleSpin = 0;
+    v.vH = state.vH;
+    if (v.mono.capture) v.useDisplayCamera(); // camera rig → the display rig's mono camera
+    else {
+      v._placeMonoForFit();
+      v._updateMonoProjection();
+    }
+    declareDisplay({ vH: state.vH });
+    state.on = true;
+  }
+
+  /** Exit: put back exactly what enterVideo changed, and the declaration that was there. */
+  function exitVideo(state) {
+    const v = viewer;
+    const s = state.saved;
+    v._videoPlane?.destroy();
+    v._videoPlane = null;
+    if (s.entity) s.entity.enabled = s.splatEnabled;
+    v.vH = s.vH;
+    v.idleSpin = s.idleSpin;
+    Object.assign(v.mono, { fov: s.mono.fov, near: s.mono.near, far: s.mono.far, pose: s.mono.pose, capture: s.mono.capture });
+    Object.assign(v, s.pose);
+    v._focus = { ...s.focus };
+    v._targetFocus = { ...s.targetFocus };
+    v._updateMonoProjection(); // recomputed, not copied: the box may have been resized meanwhile
+    v._applyTransform();
+    v.inputLocked = false;
+    lastConvergence = s.lastConvergence;
+    if (declaredDisplay !== s.declaredDisplay) {
+      if (s.declaredDisplay === 'shorthand') {
+        // The boot shorthand cannot be restored: its explicit form (what it is shorthand for).
+        declaredDisplay = null;
+        declareDisplay({ vH: bootFraming.vH });
+      } else {
+        declaredDisplay = s.declaredDisplay;
+        out.viewRig = s.viewRig;
+        handle?.setViewRig?.(out.viewRig);
+      }
+    } else out.viewRig = s.viewRig;
+    lastConvergence = s.lastConvergence;
+    state.on = false;
+  }
+
+  /** Tear the video down now (setVideo(null) / remove()). */
+  function dropVideo() {
+    videoSeq++;
+    cancelPendingVideo?.();
+    const state = vid;
+    vid = null;
+    if (!state) return;
+    if (state.on) exitVideo(state);
+    if (state.owned) releaseOwned(state.el);
+  }
+
+  /**
+   * handle.setVideo(src, options) — play a stereo video on THIS handle: no new canvas, layer or
+   * session. The splat is hidden and a screen-locked plane on the display rig shows the video, each
+   * eye its own half (sbs: left/right, tb: top/bottom); flat (mono), the left half at full
+   * resolution. Applies on the first frame the video has. Resolves to `{ video, remove(), stats() }`;
+   * the page drives transport through `video`. setVideo(null) exits and restores the splat, the rig
+   * and its declaration exactly as they were. Throws during an in-flight setSource.
+   */
+  function setVideo(src, o = {}) {
+    if (src === null || src === undefined) {
+      if (pageMode) throw new Error(PAGE_VIDEO_ERROR);
+      dropVideo();
+      return Promise.resolve(null);
+    }
+    const r = validateSetVideo(src, o, pageMode);
+    if (sourceInFlight > 0) {
+      throw new Error(
+        '@displayxr/inline3d/splat: setVideo() during an in-flight setSource() — await the swap first ' +
+          '(a video and a transition cannot share the tile).',
+      );
+    }
+    const seq = ++videoSeq;
+    cancelPendingVideo?.();
+    const prev = vid;
+    const owned = typeof r.src === 'string';
+    const el = owned ? makeVideoElement(r.src) : r.src;
+    if (r.loop !== undefined) el.loop = r.loop;
+    if (r.muted !== undefined) el.muted = r.muted;
+    if (owned ? r.autoplay !== false : r.autoplay === true) autoplay(el);
+    // The guard state is taken NOW (setSource / setRig refuse from this call on), the pixels change
+    // on the first frame the video has.
+    const state = { seq, el, owned, format: r.format, fit: r.fit, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true };
+    if (!prev || !prev.on) vid = state; // a pending one it supersedes is cancelled above
+    return first
+      .catch(() => null)
+      .then(() => waitForFrame(el, seq))
+      .then(() => {
+        if (removed || seq !== videoSeq || !viewer.app) throw Object.assign(new Error('@displayxr/inline3d/splat: setVideo — superseded.'), { name: 'AbortError' });
+        const live = vid && vid.on ? vid : null;
+        if (live) {
+          // Another video on screen: keep ITS snapshot (the pre-video state), swap the source.
+          state.saved = live.saved;
+          state.on = true;
+          if (live.owned && live.el !== el) releaseOwned(live.el);
+          if (state.vH !== live.vH) {
+            viewer.vH = state.vH;
+            viewer._placeMonoForFit();
+            viewer._updateMonoProjection();
+            declareDisplay({ vH: state.vH });
+          }
+        } else enterVideo(state);
+        vid = state;
+        state.pending = false;
+        viewer._videoPlane ||= new VideoPlane(viewer);
+        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH });
+        const plane = viewer._videoPlane;
+        return Object.freeze({
+          video: el,
+          format: state.format,
+          fit: state.fit,
+          /** Exit (setVideo(null)) — a no-op once another setVideo replaced this one. */
+          remove: () => (vid === state ? setVideo(null) : Promise.resolve(null)),
+          /** Upload accounting: frames drawn with the plane up, and texture uploads (new frames). */
+          stats: () => ({ frames: plane.frames, uploads: plane.uploads }),
+        });
+      })
+      .catch((err) => {
+        // Failed or superseded before it showed: nothing changed on screen; free what we made.
+        if (vid === state) vid = null;
+        if (owned && (!vid || vid.el !== el)) releaseOwned(el);
+        throw err;
+      });
+  }
 
   // ── prepareSource: load the next asset in the background, for a setSource with no load ──
   /**
@@ -3453,6 +3706,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   // ── setSource: swap the asset — a cut, a crossfade, or a transition ──
   let sourceGen = 0;
+  /** setSource calls between their call and their settle (setVideo refuses to start inside one). */
+  let sourceInFlight = 0;
   let pendingSwap = null;
   /** setSource's crossfade FALLBACK: the coverage remap on one entity (null clears it). */
   const setFade = (entity, k) => fx?.setInternal(entity, 'xfade', k === null ? null : { k });
@@ -3469,7 +3724,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * `onFocusChange` fires); the pose is kept unless `resetPose: true`. A newer call supersedes an
    * older one still loading. Resolves to the handle once the swap has finished.
    */
-  async function setSource(next, o = {}) {
+  function setSource(next, o = {}) {
+    // A video owns the tile (display rig, splat hidden) until setVideo(null).
+    if (vid) return Promise.reject(new Error(VIDEO_BUSY('setSource')));
+    sourceInFlight++;
+    return setSourceNow(next, o).finally(() => sourceInFlight--);
+  }
+  async function setSourceNow(next, o = {}) {
     const plan = resolveSwap(o);
     const { resetPose = false } = o;
     const gen = ++sourceGen;

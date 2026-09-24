@@ -373,6 +373,13 @@ export function addSplat(wall, canvas, src, opts = {}) {
     prepareSource() {
       throw new Error("@displayxr/inline3d/splat: prepareSource() is implemented on the PlayCanvas backend only.");
     },
+    /** Not on this backend: a video on the splat handle is a PlayCanvas-backend feature. */
+    setVideo() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setVideo() is implemented on the PlayCanvas backend only " +
+          "(addSplat(…, { engine:'playcanvas' })); with Spark, use wall.addVideo on its own canvas.",
+      );
+    },
     /** Not on this backend: the live rig switch is a PlayCanvas-backend feature. */
     setRig() {
       throw new Error(
@@ -736,6 +743,9 @@ function addSplatDeferred(wall, canvas, src, opts) {
           validateSetRigArgs(type, o);
           return out.ready.then(() => out.setRig(type, o));
         },
+    // A video before the first asset has landed: controls:'page' throws at the call's own line,
+    // the rest is validated by the adapter's setVideo, which runs once the asset is on screen.
+    setVideo: page ? pageOnly('setVideo') : (src, o) => out.ready.then(() => out.setVideo(src, o)),
     // Effects before the adapter has loaded: validated NOW (a bad call throws at its own line),
     // then run once the first asset is on screen.
     playEffect: (name, o) => {

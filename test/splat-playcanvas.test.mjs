@@ -2373,3 +2373,267 @@ test("setRig on a display-rig asset: the boot shorthand is never re-sent needles
   assert.deepEqual(viewState(out.viewer), before, 'exactly the load-time framing');
   out.remove();
 });
+
+// ── handle.setVideo: a stereo video on the persistent handle ────────────────────────────────
+
+/** A recording <video>: listeners, rVFC (optional), transport calls. */
+function fakeVideo({ w = 3840, h = 1080, ready = 4, rvfc = true } = {}) {
+  const ls = new Map();
+  const v = {
+    videoWidth: w, videoHeight: h, readyState: ready, currentTime: 0, loop: false, muted: false, paused: true, src: '',
+    plays: 0, loads: 0,
+    addEventListener(t, f) { if (!ls.has(t)) ls.set(t, new Set()); ls.get(t).add(f); },
+    removeEventListener(t, f) { ls.get(t)?.delete(f); },
+    emit(t) { for (const f of [...(ls.get(t) || [])]) f(); },
+    play() { this.paused = false; this.plays++; return Promise.resolve(); },
+    pause() { this.paused = true; },
+    load() { this.loads++; },
+    removeAttribute(k) { if (k === 'src') this.src = ''; },
+  };
+  if (rvfc) {
+    const cbs = new Map();
+    let id = 0;
+    v.requestVideoFrameCallback = (cb) => (cbs.set(++id, cb), id);
+    v.cancelVideoFrameCallback = (i) => cbs.delete(i);
+    v.present = () => { const c = [...cbs.values()]; cbs.clear(); for (const f of c) f(); };
+    v.pendingRvfc = () => cbs.size;
+  }
+  return v;
+}
+
+async function videoRig({ camera = true, stereo = false, opts = {} } = {}) {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [camera ? camFlat() : fakeFlat(600, 0), camFlat(), camFlat()];
+  const textures = [];
+  pc.Texture = class {
+    constructor(d, o) { this.o = o; this.width = o.width; this.height = o.height; this.uploads = 0; textures.push(this); }
+    setSource(s) { this.src = s; this.uploads++; }
+    upload() { this.uploads++; }
+    destroy() { this.destroyed = true; }
+  };
+  pc.RenderView = class {
+    setView(p, v) { this.proj = Float64Array.from(p); this.pose = Float64Array.from(v); }
+    setViewport(...a) { this.vp = a; }
+  };
+  Object.assign(pc, { LAYERID_WORLD: 0, FILTER_LINEAR: 1, ADDRESS_CLAMP_TO_EDGE: 1, PIXELFORMAT_RGBA8: 7 });
+  pc.GraphNode = class { constructor(name) { this.name = name; } setLocalScale(x, y, z) { this.scale = [x, y, z]; } };
+  pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); c.parent = null; };
+  const removedMI = [];
+  const AppBase = pc.AppBase;
+  pc.AppBase = class extends AppBase {
+    constructor(c) {
+      super(c);
+      this.scene.layers = { getLayerById: (id) => ({ id, addMeshInstances: (mis) => rec.meshInstances.push(...mis.map((mi) => ((mi.layerId = id), mi))), removeMeshInstances: (mis) => removedMI.push(...mis) }) };
+    }
+  };
+  const { wall, pushed } = rigWall();
+  let frameCb = null;
+  const w = stereo ? { supported: true, addScene: (cv, f) => ((frameCb = f), wall.addScene()) } : wall;
+  const canvas = makeCanvas(320, 180);
+  const out = {};
+  await attachPlayCanvasSplat(out, w, canvas, 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0, ...opts }, []);
+  const v = out.viewer;
+  const layer = { getViewport: (vw) => ({ x: vw.eye === 'left' ? 0 : 320, y: 0, width: 320, height: 180 }) };
+  const views = () => ['left', 'right'].map((eye) => ({ eye, projectionMatrix: Float32Array.from(v.mono.proj), transform: { matrix: Float32Array.from(v.mono.pose) } }));
+  /** One drawn frame: fake stereo through the scene callback, or the mono draw. */
+  const frame = () => {
+    if (stereo) { canvas.width = 640; canvas.height = 180; frameCb(views(), layer); }
+    else { v._tick(); v._drawMono(); }
+  };
+  return { pc, rec, out, v, pushed, textures, removedMI, frame, canvas };
+}
+const plane = (rec) => rec.meshInstances.find((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane');
+
+test('setVideo pure parts: validation, eye regions, per-eye aspect, contain/cover, eye split', async () => {
+  const { validateSetVideo, eyeRegions, eyeAspect, videoPlaneSize, eyeSplit } = await import('../js/inline3d-splat-video.js');
+  const el = fakeVideo();
+  assert.throws(() => validateSetVideo(el, {}, true), /controls:'page'/);
+  assert.throws(() => validateSetVideo(42), /expected a URL string, an HTMLVideoElement/);
+  assert.throws(() => validateSetVideo(el, { format: 'ou' }), /format "ou"/);
+  assert.throws(() => validateSetVideo(el, { fit: 'fill' }), /fit "fill"/);
+  assert.throws(() => validateSetVideo(el, { rig: 'camera' }), /display rig only/);
+  assert.throws(() => validateSetVideo(el, { virtualDisplayHeight: 0 }), /virtualDisplayHeight/);
+  assert.throws(() => validateSetVideo(el, null), /options must be an object/);
+  const d = validateSetVideo('a.mp4');
+  assert.deepEqual([d.format, d.fit, d.vH, d.loop, d.muted, d.autoplay], ['sbs', 'contain', undefined, undefined, undefined, undefined]);
+  assert.deepEqual(eyeRegions('sbs'), { L: [0, 0, 0.5, 1], R: [0.5, 0, 0.5, 1] });
+  assert.deepEqual(eyeRegions('tb'), { L: [0, 0, 1, 0.5], R: [0, 0.5, 1, 0.5] });
+  assert.deepEqual(eyeRegions('mono').L, eyeRegions('mono').R);
+  assert.equal(eyeAspect('sbs', 3840, 1080), 16 / 9);
+  assert.equal(eyeAspect('tb', 1920, 2160), 16 / 9);
+  assert.equal(eyeAspect('mono', 1920, 1080), 16 / 9);
+  // 16:9 eye in a 16:9 box: the whole window, either fit
+  assert.deepEqual(videoPlaneSize({ boxAspect: 16 / 9, eyeAspect: 16 / 9, vH: 0.24 }), { w: 0.24 * 16 / 9, h: 0.24 });
+  // 2:1 eye in a 4:3 box: contain = full width, bars top/bottom; cover = full height, cropped sides
+  const c = videoPlaneSize({ boxAspect: 4 / 3, eyeAspect: 2, vH: 0.3, fit: 'contain' });
+  near(c.w, 0.4, 1e-12); near(c.h, 0.2, 1e-12);
+  const k = videoPlaneSize({ boxAspect: 4 / 3, eyeAspect: 2, vH: 0.3, fit: 'cover' });
+  near(k.w, 0.6, 1e-12); near(k.h, 0.3, 1e-12);
+  const id = (e) => [e.x, 0, 0, 0];
+  assert.equal(eyeSplit([{ x: 0 }], id), 1e9, 'mono: every fragment is the left eye');
+  assert.equal(eyeSplit([{ x: 0 }, { x: 640 }], id), 640);
+  assert.equal(eyeSplit([{ x: 0 }, { x: 10 }, { x: 20 }, { x: 30 }], id), 20, 'N views: the first half are left eyes');
+});
+
+test('setVideo on a camera-rig photo: display rig declared, splat hidden, screen-locked plane; setVideo(null) restores the exact pre-video state and declaration', async () => {
+  const { out, v, pushed, rec, textures, removedMI, frame } = await videoRig();
+  out.setPose({ yaw: 7, pitch: -3, zoom: 1.3 }); // a pose the page left: must come back exactly
+  frame();
+  const before = viewState(v);
+  const poseBefore = v.getPose({ target: true });
+  const focusBefore = v.getFocus();
+  const declBefore = pushed.at(-1);
+  const nPushed = pushed.length;
+  assert.equal(declBefore.type, 'camera');
+  const el = fakeVideo();
+  const h = await out.setVideo(el, { format: 'sbs' });
+  assert.equal(h.video, el);
+  assert.equal(out.mesh.entity.enabled, false, 'the splat is hidden');
+  assert.equal(v.inputLocked, true);
+  assert.equal(pushed.at(-1).type, 'display', 'a display rig declared');
+  assert.equal(pushed.at(-1).virtualDisplayHeight, 0.24, 'the boot virtualDisplayHeight by default');
+  assert.equal(v.mono.capture, null, "the display rig's mono camera");
+  const mi = plane(rec);
+  assert.ok(mi && mi.visible, 'the plane is up');
+  assert.equal(mi.layerId, 0, 'world layer');
+  assert.equal(mi.node.parent, v.rigNode, 'under the rig node: fixed relative to the eyes');
+  assert.deepEqual(mi.material.params.get('dxrVidL'), [0, 0, 0.5, 1]);
+  assert.deepEqual(mi.material.params.get('dxrVidR'), [0.5, 0, 0.5, 1]);
+  frame();
+  assert.equal(mi.material.params.get('dxrVidSplit'), 1e9, 'mono: the left half only');
+  near(mi.node.scale[0], 0.24 * 320 / 180, 1e-12, 'plane width = the window');
+  near(mi.node.scale[1], 0.24, 1e-12, 'plane height = vH');
+  const tex = textures.at(-1);
+  assert.deepEqual([tex.width, tex.height, tex.o.mipmaps, tex.o.flipY], [3840, 1080, false, false]);
+  await out.setVideo(null);
+  assert.equal(out.mesh.entity.enabled, true);
+  assert.equal(v.inputLocked, false);
+  assert.equal(v._videoPlane, null);
+  assert.ok(removedMI.includes(mi), 'plane removed from the layer');
+  assert.equal(tex.destroyed, true, 'texture freed');
+  assert.deepEqual(viewState(v), before, 'camera, lens, rig node, fit, idle, tone: bit-identical');
+  assert.deepEqual(v.getPose({ target: true }), poseBefore);
+  assert.deepEqual(v.getFocus(), focusBefore);
+  assert.equal(pushed.length, nPushed + 2, 'one display rig in, one camera rig back');
+  assert.deepEqual(pushed.at(-1), declBefore, 'the same camera-rig descriptor, byte for byte');
+  assert.equal(el.paused, true, 'a page-owned <video> is never played or paused by the SDK');
+  assert.equal(el.loads, 0);
+  out.remove();
+});
+
+test('setVideo in fake stereo: the eye split is the right viewport; display-rig asset keeps its shorthand when vH matches, and gets it back explicitly otherwise', async () => {
+  const { out, pushed, rec, frame } = await videoRig({ camera: false, stereo: true });
+  assert.equal(out.rig.type, 'display');
+  assert.equal(pushed.length, 0);
+  await out.setVideo(fakeVideo(), { format: 'tb' });
+  assert.equal(pushed.length, 0, 'same vH as the boot shorthand: nothing to declare');
+  frame();
+  const mi = plane(rec);
+  assert.equal(mi.material.params.get('dxrVidSplit'), 320, 'fragments at x ≥ 320 are the right eye');
+  assert.deepEqual(mi.material.params.get('dxrVidL'), [0, 0, 1, 0.5]);
+  await out.setVideo(null);
+  assert.equal(pushed.length, 0);
+  await out.setVideo(fakeVideo(), { virtualDisplayHeight: 0.4 });
+  assert.equal(pushed.at(-1).virtualDisplayHeight, 0.4);
+  await out.setVideo(null);
+  assert.equal(pushed.at(-1).type, 'display');
+  assert.equal(pushed.at(-1).virtualDisplayHeight, 0.24, "the boot rig, as the shorthand's explicit form");
+  out.remove();
+});
+
+test('setVideo upload gating: a new frame (rVFC) uploads once; no new frame, no upload; seeked forces one; without rVFC the clock gates it', async () => {
+  const { out, textures, frame } = await videoRig();
+  const el = fakeVideo();
+  const h = await out.setVideo(el);
+  frame(); // first frame: the setSource upload
+  const tex = textures.at(-1);
+  const u0 = tex.uploads;
+  frame(); frame();
+  assert.equal(tex.uploads, u0, 'no presented frame: no upload');
+  el.currentTime = 0.033; el.present();
+  frame();
+  assert.equal(tex.uploads, u0 + 1, 'one presented frame: one upload');
+  assert.equal(el.pendingRvfc(), 1, 're-armed');
+  frame();
+  assert.equal(tex.uploads, u0 + 1);
+  el.emit('seeked');
+  frame();
+  assert.equal(tex.uploads, u0 + 2, 'a landed seek uploads');
+  assert.equal(h.stats().uploads >= 2, true);
+  const el2 = fakeVideo({ rvfc: false, w: 1920, h: 540 });
+  await out.setVideo(el2);
+  assert.equal(el.pendingRvfc(), 0, 'the old element is unwatched');
+  frame();
+  const t2 = textures.at(-1);
+  assert.notEqual(t2, tex, 'a new size: a new texture');
+  const u1 = t2.uploads;
+  frame();
+  assert.equal(t2.uploads, u1, 'clock unchanged');
+  el2.currentTime = 1;
+  frame();
+  assert.equal(t2.uploads, u1 + 1, 'clock moved');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('setVideo guards: throws during an in-flight setSource; setSource / setRig refuse while a video is on; prepareSource is allowed; controls:page throws', async () => {
+  const { out } = await videoRig();
+  const swap = out.setSource('b.sog');
+  assert.throws(() => out.setVideo(fakeVideo()), /in-flight setSource/);
+  await swap;
+  await out.setVideo(fakeVideo());
+  await assert.rejects(out.setSource('c.sog'), /setVideo\(null\) first/);
+  assert.throws(() => out.setRig('display'), /setVideo\(null\) first/);
+  const prep = await out.prepareSource('c.sog');
+  assert.equal(prep.state, 'ready');
+  await out.setVideo(null);
+  await out.setSource(prep);
+  out.remove();
+  const p = await videoRig({ opts: { controls: 'page' } });
+  assert.throws(() => p.out.setVideo(fakeVideo()), /controls:'page'/);
+  assert.throws(() => p.out.setVideo(null), /controls:'page'/);
+  p.out.remove();
+});
+
+test('setVideo(url): the SDK makes, autoplays and releases its own <video>; a pending one is cancelled (AbortError) and changes nothing', async () => {
+  const { out, v, rec } = await videoRig();
+  const made = [];
+  globalThis.document = { createElement: (t) => (assert.equal(t, 'video'), made.push(fakeVideo({ ready: 0 })), made.at(-1)) };
+  try {
+    const p = out.setVideo('clip_sbs.mp4', { loop: true, muted: true });
+    const el = made[0];
+    assert.equal(el.src, 'clip_sbs.mp4');
+    assert.equal(el.crossOrigin, 'anonymous');
+    assert.deepEqual([el.loop, el.muted, el.plays], [true, true, 1], 'autoplay by default for a URL');
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(out.mesh.entity.enabled, true, 'nothing changes before the first frame');
+    el.readyState = 2;
+    el.emit('loadeddata');
+    const h = await p;
+    assert.equal(h.video, el);
+    assert.equal(out.mesh.entity.enabled, false);
+    await h.remove();
+    assert.equal(el.paused, true);
+    assert.equal(el.src, '', 'decoder freed');
+    assert.equal(el.loads, 1);
+    // pending, then exited before its first frame
+    const q = out.setVideo('never.mp4', { autoplay: false });
+    assert.equal(made[1].plays, 0);
+    await out.setVideo(null);
+    await assert.rejects(q, (e) => e.name === 'AbortError');
+    assert.equal(out.mesh.entity.enabled, true);
+    assert.equal(v._videoPlane, null);
+    assert.equal(made[1].src, '');
+    assert.equal(plane(rec).visible, true, 'the only plane ever shown was the first one (now destroyed)');
+  } finally {
+    delete globalThis.document;
+  }
+  out.remove();
+});
+
+test('./splat: setVideo on the deferred stub waits for ready; controls:page and Spark refuse it (source check)', async () => {
+  const src = await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  assert.match(src, /setVideo: page \? pageOnly\('setVideo'\)/);
+  assert.match(src, /setVideo\(\) is implemented on the PlayCanvas backend only/);
+});
