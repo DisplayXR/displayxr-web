@@ -25,6 +25,12 @@ import {
   meshoptBufferViewHook,
   neutralStudioRGBE,
   neutralStudioRadiance,
+  roomRadiance,
+  roomEquirect,
+  roomRGBE,
+  prepareTransmission,
+  ROOM_ENVIRONMENT,
+  ROOM_YAW_DEG,
   boundsOfEntity,
   aimDownAt,
   decoderError,
@@ -51,7 +57,7 @@ function makeFakePc({ aabbs = [{ c: [0, 1, 0], h: [0.5, 1, 0.25] }], loadError =
     }
     addComponent(type, data) {
       if (type === 'camera') {
-        this.camera = { layers: [0, 1, 2, 4, 3], ...data, camera: { setXrProperties() {} } };
+        this.camera = { layers: [0, 1, 2, 4, 3], renderSceneColorMap: false, ...data, camera: { setXrProperties() {} } };
       }
       if (type === 'light') this.light = data;
     }
@@ -86,8 +92,9 @@ function makeFakePc({ aabbs = [{ c: [0, 1, 0], h: [0.5, 1, 0.25] }], loadError =
                 const e = new Entity('gltf', this);
                 e._renders = [
                   {
-                    meshInstances: aabbs.map(({ c, h }) => ({
+                    meshInstances: aabbs.map(({ c, h, material }) => ({
                       aabb: { center: { x: c[0], y: c[1], z: c[2] }, halfExtents: { x: h[0], y: h[1], z: h[2] } },
+                      ...(material ? { material } : {}),
                     })),
                   },
                 ];
@@ -371,6 +378,77 @@ test("environment:'studio' = three's three-point rig as directional lights aimed
   await h.ready;
   assert.equal(h.viewer.content.children.filter((e) => e.light).length, 0);
   assert.equal(h.engine.app.scene.envAtlas, undefined);
+});
+
+test("environment:'room' = three's RoomEnvironment regenerated in memory, untonemapped; the default stays the neutral studio", async () => {
+  installDom();
+  let { pc, rec } = makeFakePc();
+  pc.Quat = class { setFromEulerAngles(x, y, z) { this.e = [x, y, z]; return this; } };
+  installFetch(glb());
+  let h = addModel(null, makeCanvas(), 'https://x/a.glb', { playcanvas: pc, environment: 'room' });
+  await h.ready;
+  assert.equal(h.viewer.eye.camera.toneMapping, 'none', "three's room look is untonemapped");
+  assert.equal(rec.textures[0].name, 'inline3d-room');
+  assert.equal(rec.textures[0].type, 'rgbe');
+  assert.deepEqual(h.engine.app.scene.skyboxRotation.e, [0, ROOM_YAW_DEG, 0], "lined up with three's world");
+  h = addModel(null, makeCanvas(), 'https://x/a.glb', { playcanvas: pc, environment: 'room', environmentRotation: 30 });
+  await h.ready;
+  assert.deepEqual(h.engine.app.scene.skyboxRotation.e, [0, ROOM_YAW_DEG + 30, 0]);
+  ({ pc, rec } = makeFakePc());
+  h = addModel(null, makeCanvas(), 'https://x/a.glb', { playcanvas: pc });
+  await h.ready;
+  assert.equal(h.viewer.eye.camera.toneMapping, 'neutral');
+  assert.equal(rec.textures[0].name, 'inline3d-neutral-studio', 'default unchanged: the Sample-Viewer studio');
+});
+
+test('room radiance: the panels, the lit walls, grey, deterministic, cached', () => {
+  const dir = (p) => { const l = Math.hypot(...p); return p.map((v) => v / l); };
+  assert.equal(roomRadiance(0, 1, 0), 100, 'the ceiling panel straight up');
+  for (const [px, py, pz, , , , e] of ROOM_ENVIRONMENT.panels) assert.equal(roomRadiance(...dir([px, py, pz])), e, `panel at ${px},${py},${pz}`);
+  const floor = roomRadiance(0, -1, 0);
+  assert.ok(floor > 0.1 && floor < 5, `the floor is lit by the point light, not emissive (${floor})`);
+  for (let k = 0; k < 300; k++) {
+    const t = Math.acos(1 - 2 * ((k + 0.5) / 300));
+    const p = k * 2.399963;
+    const v = roomRadiance(Math.sin(t) * Math.cos(p), Math.cos(t), Math.sin(t) * Math.sin(p));
+    assert.ok(v >= 0 && v <= 100 && Number.isFinite(v));
+  }
+  const blurred = roomEquirect(64, 32);
+  const sharp = roomEquirect(64, 32, 0);
+  assert.ok(Math.max(...blurred) < Math.max(...sharp), 'the 0.04-rad blur softens the panels');
+  const a = roomRGBE(64, 32);
+  const b = roomRGBE(64, 32);
+  assert.deepEqual(a, b);
+  assert.notEqual(a, b, 'a copy per call (the engine may keep the array)');
+  for (let i = 0; i < a.length; i += 4) assert.ok(a[i] === a[i + 1] && a[i] === a[i + 2], 'r = g = b');
+});
+
+test('KHR_materials_transmission: grab pass on, transmissive draws sorted first, per-eye grab chunk; plain models untouched', async () => {
+  installDom();
+  const engineChunk = 'uniform float x;\nvec3 evalRefractionColor(vec3 v, float g, float i) {\n\tvec4 projectionPoint = v4;\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n}';
+  const chunks = new Map();
+  const glassMat = { useDynamicRefraction: true, getShaderChunks: () => chunks, update() {} };
+  let { pc } = makeFakePc({ aabbs: [{ c: [0, 1, 0], h: [0.5, 1, 0.25], material: glassMat }, { c: [0, 0, 0], h: [1, 1, 1], material: { useDynamicRefraction: false } }] });
+  pc.ShaderChunks = { get: () => ({ get: (k) => (k === 'refractionDynamicPS' ? engineChunk : '') }) };
+  installFetch(glb(['KHR_materials_transmission']));
+  let h = addModel(null, makeCanvas(), 'https://x/a.glb', { playcanvas: pc });
+  await h.ready;
+  assert.equal(h.viewer.eye.camera.renderSceneColorMap, true, 'the grab pass the material samples');
+  const [glass, body] = h.model._renders[0].meshInstances;
+  assert.equal(typeof glass.calculateSortDistance, 'function');
+  assert.equal(body.calculateSortDistance, undefined);
+  const near1 = glass.calculateSortDistance(glass, { x: 0, y: 1, z: 1 }, { x: 0, y: 0, z: -1 });
+  const far1 = glass.calculateSortDistance(glass, { x: 0, y: 1, z: 5 }, { x: 0, y: 0, z: -1 });
+  assert.ok(near1 > 1e5 && far1 > near1, 'ahead of blended draws, back-to-front among themselves');
+  const patched = chunks.get('refractionDynamicPS');
+  assert.match(patched, /vec2 uv = inline3dGrabUV\(projectionPoint\);/);
+  assert.ok(patched.indexOf('vec2 inline3dGrabUV') < patched.indexOf('vec3 evalRefractionColor'), 'defined before use');
+  assert.equal(prepareTransmission(pc, h.model, {}, new WeakSet()), 1, 'counts transmissive draws');
+  ({ pc } = makeFakePc());
+  installFetch(glb());
+  h = addModel(null, makeCanvas(), 'https://x/a.glb', { playcanvas: pc });
+  await h.ready;
+  assert.equal(h.viewer.eye.camera.renderSceneColorMap, false, 'no grab pass without a transmissive material');
 });
 
 test('aimDownAt rotates the engine light axis (−Y) onto the given direction', () => {

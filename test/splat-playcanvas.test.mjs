@@ -2258,6 +2258,69 @@ test('setRig is sticky across setSource until setRig("auto")', async () => {
   out.remove();
 });
 
+test("setRig('display', { environment: 'room' }): three's room IBL + tone mapping 'none'; switching environment swaps the IBL; an explicit toneMapping wins", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const sources = [];
+  const gen = pc.EnvLighting.generateLightingSource;
+  pc.EnvLighting.generateLightingSource = (src, o) => (sources.push(src.o.name), gen(src, o));
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  addMesh(pc, out, [0, 0, 0], [0.1, 0.1, 0.1]);
+  out.mesh.entity.enabled = false;
+  const scene = out.engine.app.scene;
+  await out.setRig('display', { environment: 'room' });
+  assert.deepEqual(sources, ['inline3d-room']);
+  assert.equal(out.viewer.toneMapping, 'none', "room defaults to three's (untonemapped) look");
+  const room = scene.envAtlas;
+  assert.equal(room?.isAtlas, true);
+  await out.setRig('display', { environment: 'room' });
+  assert.equal(scene.envAtlas, room, 'the same environment again is kept, not rebuilt');
+  await out.setRig('display');
+  assert.deepEqual(sources, ['inline3d-room', 'inline3d-neutral-studio'], 'the default is the neutral studio');
+  assert.equal(room.destroyed, true, 'the room atlas it replaced is released');
+  assert.equal(out.viewer.toneMapping, 'neutral');
+  await out.setRig('display', { environment: 'room', toneMapping: 'neutral' });
+  assert.equal(out.viewer.toneMapping, 'neutral', 'an explicit toneMapping wins over the environment default');
+  await out.setRig('camera');
+  assert.equal(scene.envAtlas, null, 'removed on the way out');
+  out.remove();
+});
+
+test("setRig('display'): a transmissive mesh under root gets the grab pass, transmissive-first sorting and the per-eye grab chunk; setRig('camera') drops the grab", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const engineChunk = 'vec3 evalRefractionColor(vec3 v) {\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n}';
+  pc.ShaderChunks = { get: () => ({ get: (k) => (k === 'refractionDynamicPS' ? engineChunk : ''), set() {} }) };
+  pc.SHADERLANGUAGE_GLSL = pc.SHADERLANGUAGE_GLSL || 'glsl';
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  for (const c of [out.viewer.eye]) c.camera.renderSceneColorMap = false;
+  const glass = addMesh(pc, out, [0, 0, 0], [0.1, 0.1, 0.1]);
+  const chunks = new Map();
+  const mat = { useDynamicRefraction: true, getShaderChunks: () => chunks, update() { this.updated = true; } };
+  glass.render.meshInstances[0].material = mat;
+  const plain = addMesh(pc, out, [0, 0, 1], [0.1, 0.1, 0.1]);
+  plain.render.meshInstances[0].material = { useDynamicRefraction: false };
+  out.mesh.entity.enabled = false;
+  await out.setRig('display', { environment: 'none' });
+  out.viewer._tick();
+  assert.equal(out.viewer.eye.camera.renderSceneColorMap, true, 'grab pass on');
+  const mi = glass.render.meshInstances[0];
+  assert.equal(typeof mi.calculateSortDistance, 'function');
+  const d = mi.calculateSortDistance(mi, { x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: -1 });
+  assert.ok(d > 1e5, 'sorted ahead of every blended draw');
+  assert.equal(plain.render.meshInstances[0].calculateSortDistance, undefined, 'a non-transmissive draw is untouched');
+  assert.match(chunks.get('refractionDynamicPS'), /inline3dGrabUV\(projectionPoint\)/);
+  assert.match(chunks.get('refractionDynamicPS'), /vec2 inline3dGrabUV\(vec4 clipPos\)/);
+  assert.equal(mat.updated, true);
+  await out.setRig('camera');
+  assert.equal(out.viewer.eye.camera.renderSceneColorMap, false, 'grab pass off with the display rig');
+  out.remove();
+});
+
 test("setRig throws at the call: controls:'page', an unknown type, a bad option", async () => {
   assert.throws(() => validateSetRig('display', {}, true), /controls:'page'/);
   assert.throws(() => validateSetRig('photo'), /expected 'display', 'camera' or 'auto'/);
@@ -2268,6 +2331,10 @@ test("setRig throws at the call: controls:'page', an unknown type, a bad option"
   const d = validateSetRig('display', {});
   assert.equal(d.o.vH, SET_RIG_DISPLAY_DEFAULTS.virtualDisplayHeight);
   assert.equal(d.o.toneMapping, 'neutral');
+  assert.equal(d.o.environment, 'neutral');
+  assert.equal(validateSetRig('display', { environment: 'room' }).o.toneMapping, 'none', "room's default tone mapping is three's");
+  assert.equal(validateSetRig('display', { environment: 'room', toneMapping: 'aces' }).o.toneMapping, 'aces');
+  assert.throws(() => validateSetRig('display', { environment: 'studio' }), /environment "studio"/);
   installDom();
   const { pc, rec } = makeFakePc();
   rec.resource = camFlat();
