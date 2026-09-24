@@ -122,6 +122,35 @@ test('entity scope: one work-buffer modifier per entity, UPDATE_ALWAYS while on,
   assert.equal(g.workBufferUpdate, 1, 'one clean re-render without it');
 });
 
+test('an entity effect that ends puts the engine placement back on AUTO: no per-frame work-buffer re-render after it', () => {
+  const w = fakeWorld();
+  const pc = w.ctx.pc();
+  w.ctx.pc = () => ({ ...pc, WORKBUFFER_UPDATE_AUTO: 0 });
+  // The engine's GSplatPlacement setter, verbatim semantics (playcanvas 2.22.3): ONCE is a
+  // one-shot (dirtyVersion++) and does NOT change the mode; any other value becomes the mode.
+  const placement = { mode: 0, dirtyVersion: 0 };
+  const g = w.entity.gsplat;
+  let comp = g.workBufferUpdate;
+  Object.defineProperty(g, 'workBufferUpdate', {
+    get: () => comp,
+    set: (v) => {
+      comp = v;
+      if (v === 1) placement.dirtyVersion++;
+      else placement.mode = v;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+  for (const name of ['inflate', 'sweep', 'fade']) {
+    w.fx.set(name, { progress: 0.5, scope: 'entity' });
+    assert.equal(placement.mode, 2, `${name}: ALWAYS while on`);
+    const dv = placement.dirtyVersion;
+    w.fx.stop();
+    assert.equal(placement.mode, 0, `${name}: back on AUTO once it ends (was stuck on ALWAYS: re-render + re-sort every frame)`);
+    assert.equal(placement.dirtyVersion, dv + 1, `${name}: exactly one clean re-render without it`);
+  }
+});
+
 test('internal xfade + an entity reveal on the same entity compose into ONE modifier (setSource)', () => {
   const w = fakeWorld();
   w.fx.setInternal(w.entity, 'xfade', { k: 0.3 });

@@ -57,6 +57,7 @@ export {
   RenderTarget,
   FILTER_NEAREST,
   // splats
+  WORKBUFFER_UPDATE_AUTO,
   WORKBUFFER_UPDATE_ALWAYS,
   WORKBUFFER_UPDATE_ONCE,
   // tone mapping (TONE_MAPPINGS)
