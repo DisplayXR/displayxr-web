@@ -5,6 +5,61 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — 1.12.0 (minor, BEHAVIOUR CHANGE: addModel renders with PlayCanvas by default; `engine:'three'` keeps 1.11)
+
+Touches the **preview tier** (`./model`, and `./splat`'s `engine: 'playcanvas'` import path). A
+page that calls `addModel` without `engine` now renders with PlayCanvas and **looks different**:
+it is lit to match the Khronos glTF Sample Viewer instead of three's RoomEnvironment. Pass
+`engine: 'three'` to keep 1.11 exactly. Epic [#36](https://github.com/DisplayXR/displayxr-web/issues/36);
+design and measurements: [`docs/playcanvas-model-backend.md`](docs/playcanvas-model-backend.md).
+
+### Changed
+
+- **`addModel` defaults to PlayCanvas** (optional peer `playcanvas >=2.22.3 <3`). The handle is
+  the same: `ready`, `firstWoven`, `setPose`, `resetPose`, `exclude`, `unexclude`, `remove`,
+  `frame`, `model`, `viewer`. On PlayCanvas `model` is the render `pc.Entity`, and the handle also
+  carries `backend`, `engine` (`{ app, root, camera }`) and `container`.
+- **Both engines are imported dynamically** by `./model` (now `js/inline3d-model-entry.js`): a
+  default page loads no three, an `engine: 'three'` page loads no PlayCanvas.
+- **`handle.viewer` is null until the backend module has loaded**, on both engines (1.11 set it
+  synchronously). Read it after `ready`, or import **`@displayxr/inline3d/model/three`**: the 1.11
+  module, byte for byte, synchronous `viewer` included.
+- **No `engine` and no `playcanvas` installed:** the tile renders on three with one console
+  warning. Neither installed: `ready` rejects naming both. With no `engine`, a three.js object in
+  `GLTFLoader` / `DRACOLoader` / `KTX2Loader` / `envMap` selects three (a 1.11 page that injects
+  loaders keeps working unchanged).
+- **The PlayCanvas adapters import `playcanvas` by name** (`js/inline3d-playcanvas-engine.js`), not
+  as a namespace, so bundlers tree-shake the engine: 2,434,536 → 1,499,851 bytes minified,
+  **626 → 397 KB gzip** (esbuild 0.28.2), for `addModel` and for `addSplat(…, {engine:'playcanvas'})`.
+
+### Added (PlayCanvas backend)
+
+- **Lighting matched to the Khronos glTF Sample Viewer** (not to three.js): an in-memory neutral
+  studio fitted to the Sample Viewer's "Studio Neutral" (no asset, no licence), Khronos PBR Neutral
+  tone mapping, exposure 1, sRGB output, MSAA on. On-object MAE vs the Sample Viewer (/255):
+  DamagedHelmet 16.7 (three 36.2), Fox 6.4 (19.5), BrainStem 2.7 (26.7), MetalRoughSpheres 9.4 (26.4).
+- `environment: 'neutral'` (alias of the default `'room'`), `environmentRotation` (degrees),
+  `envMap` as a URL (equirect .hdr/.png/.jpg) or a `pc.Texture`; `'studio'` and `'none'` as on three.
+- Compressed glTF with the **same served files as three**: Draco and KTX2/Basis through the
+  engine's own workers, fed three's `libs/draco/` and `libs/basis/`; `decoderPath` unchanged; a
+  mis-served folder rejects `ready` naming the extension, the file and the option.
+  `EXT_meshopt_compression` via meshoptimizer's `MeshoptDecoder` (new optional peer
+  `meshoptimizer >=1`, loaded only for an asset that declares it; `meshoptDecoder` injects it).
+- `controls: 'page'` + `setCameraPose` / `getCameraPose` / `onBeforeFrame` / `comfortDepth` on
+  models, as on splats (the rig converges on the model's bounds centre unless the pose says).
+- `antialias`, `preserveDrawingBuffer`, `nearClip`, `farClip`, `orbitMaxDeg`, `orbitEase`, `playcanvas`.
+
+### Throws at call time
+
+- An unknown `engine` or `environment`; a PlayCanvas-only option with `engine: 'three'`; a three.js
+  loader or texture with `engine: 'playcanvas'`; a `meshoptDecoder` without `decodeGltfBuffer`;
+  `setCameraPose` without `controls: 'page'`; `setPose` / `resetPose` with it.
+
+### Samples
+
+- `samples/model/` (tiles A and C) and `samples/shopify/` render on the new default;
+  `?engine=three` switches back. Tile B stays on three (it composes a Spark splat into a three scene).
+
 ## 1.11.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only), additively. Nothing changes

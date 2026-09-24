@@ -940,7 +940,7 @@ Two things to know about chrome specifically:
 
 ## Compressed glTF
 
-`addModel()` (the experimental [`/model`](../js/inline3d-model.js) subpath) loads Draco-, meshopt-
+`addModel()` (the experimental [`/model`](../js/inline3d-model-entry.js) subpath) loads Draco-, meshopt-
 and KTX2-compressed assets, which matters because a catalogue GLB that came out of a real pipeline
 is almost never uncompressed. A bare `GLTFLoader` does not *degrade* on these — it **throws**
 (`"No DRACOLoader instance provided."`) — so "your existing 3D assets already work here" is a claim
@@ -955,6 +955,13 @@ none, and the inspection replaces the loader's own fetch rather than adding a se
 | `KHR_draco_mesh_compression` | `DRACOLoader` | `three/examples/jsm/libs/draco/` → `/draco/` |
 | `KHR_texture_basisu` | `KTX2Loader` | `three/examples/jsm/libs/basis/` → `/basis/` |
 | `EXT_meshopt_compression` | `MeshoptDecoder` | **none** — pure JS |
+
+The decoder column is the `engine: 'three'` path. On the PlayCanvas default (1.12) the SAME
+served files are read by the engine's own Draco and Basis workers, and meshopt comes from
+`meshoptimizer/decoder` (optional peer `meshoptimizer`) — so switching `engine` never moves a file.
+The engine keeps one Draco and one Basis worker pool per page: the first tile's `decoderPath` wins.
+The three loader options (`DRACOLoader`, `KTX2Loader`, `GLTFLoader`) are three-only and throw on
+`engine: 'playcanvas'`; `meshoptDecoder` works on both.
 
 ### You must serve the decoder files yourself
 
