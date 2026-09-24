@@ -204,7 +204,7 @@ with Khronos PBR Neutral and lights them with its generated neutral-studio IBL. 
 - A glTF under root with `KHR_materials_transmission` / `_volume` gets what addModel gives it
   (checked every 30 frames, since a page adds meshes whenever they load): the scene-colour grab
   pass, transmissive-first sorting and the per-eye grab UV
-  ([model backend § Transmission](playcanvas-model-backend.md#transmission-khr_materials_transmission--volume)).
+  ([model backend § Transmission](playcanvas-model-backend.md#transmission-khr_materials_transmission--_volume)).
   The grab pass is dropped when the rig switches away.
 
 **MSAA is the one thing a live switch cannot match.** Antialiasing is fixed when the WebGL
