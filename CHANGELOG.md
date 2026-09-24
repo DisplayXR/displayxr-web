@@ -7,7 +7,7 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased — minor
 
-Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). One default changes pixels
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). New particle reveals are additive. One default changes pixels
 DURING a transition in a woven 3D session (the old photo is now live); end states and 2D are
 unchanged.
 
@@ -42,6 +42,24 @@ unchanged.
   longest rAF gap from 138 / 196 ms to 18 / 17 ms. Memory: +22.5 MB of GPU textures plus the
   engine's centre array (≈14 MB) per prepared 1.18M SOG, until used.
 - `setSource`'s `outgoing: 'live' | 'frozen'` option; `SplatPreparedSource` in `splat.d.ts`.
+- **Particle reveals** ([`docs/splat-effects.md` §Particle reveals](docs/splat-effects.md#particle-reveals)),
+  usable as `reveal: '<name>'`, `playEffect(name)` and `setSource(…, { reveal })`. Every gaussian is
+  a particle with its own start time:
+  - `assemble`: a swarm that flies home along spiralling curl-noise paths.
+  - `dissolve-in`: a dissolve played backwards; dust drifts in and gathers patch by patch.
+  - `converge`: a burst from the focus that flies out and settles.
+  - `shimmer`: twinkling points that grow into the picture.
+  - Options: `order` (`'radial'`, `'depth'`, `'noise'`, `'random'`, or `'layers'` for SHARP grid
+    order via `splat.index`, which is entity scope only), `stagger`, `jitter`, `dotSize`, `grow`,
+    `flightAlpha`, `color`/`glow`, `noiseScale`, plus per-effect shape options.
+  - Comfort cap `maxDisparity` (default 0.004 of the view width, exact at every depth; nominal
+    separation in 2D). The swarm never comes nearer the viewer than that.
+  - Every effect ends bit-identical to the plain render. Measured on the real GPU: MAE 0.000,
+    colour and alpha, mono and fake stereo, tile and entity scope; removal is exact too.
+  - In-flight particles are ~1 px dots until nearly home, which hides the engine's
+    original-centre sort order.
+- The eye frame that effects receive now carries `tanHalfFovY` (internal; the `'radial'` key spans the
+  view actually seen).
 
 ## 1.13.1 — 2026-09-24
 
