@@ -18,7 +18,7 @@ does not move except on glTFs that use `KHR_materials_transmission`.
   default to tone mapping `'none'`, three's. Through 1.16 `'room'` was an alias of `'neutral'` on
   this engine, so a page that passed it to keep its three look got the Sample-Viewer studio with PBR
   Neutral. **The default is now spelled `'neutral'` and renders exactly as before** (Khronos gate
-  re-run: 16.7 / 6.4 / 2.7 / 9.4, unchanged). On the Show catalogue, object MAE against three r180
+  re-run: 16.7 / 6.4 / 2.7 / 9.4, unchanged). On a four-item product catalogue, object MAE against three r180
   `room` goes from 20.5 / 54.4 / 29.5 / 23.3 (the default) to **10.2 / 11.0 / 7.1 / 6.3** (storm
   lantern / handbag / boot / compass). Tone mapping and the environment explain the gap, and what is
   left is where three departs from the Sample Viewer (PlayCanvas `room` is closer to the Sample

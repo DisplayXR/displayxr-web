@@ -3183,7 +3183,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         const display = rigOverride?.type === 'display';
         const want = display && !splatShown() ? rigOverride.o.toneMapping : baseToneMapping;
         if (want !== viewer.toneMapping) viewer.setToneMapping(want);
-        // A transmissive glTF the page hangs under root on the display rig (the Shop's glass
+        // A transmissive glTF the page hangs under root on the display rig (a glass
         // lantern): addModel's grab pass + pass order + per-eye grab UV. Re-checked every 30
         // frames, since a page adds its meshes whenever they load — before or after setRig.
         if (display && rigModelModule && pcModule && (rigTick++ % 30 === 0)) syncRigTransmission();

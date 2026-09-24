@@ -144,8 +144,8 @@ three's hemisphere light onto `scene.ambientLight`. It is not tuned against anyt
 tone mapping. The default did not move.
 
 **Why `room` exists.** The Sample Viewer, not three, is the reference for the default (above), and
-that stays. But a page tuned on the three path chose three's room, and on a real catalogue (the Show
-app's storm lantern, handbag, boot, compass) that choice, not an engine difference, was most of
+that stays. But a page tuned on the three path chose three's room, and on a real product catalogue (a
+storm lantern, a handbag, a boot, a compass) that choice, not an engine difference, was most of
 the gap. Object MAE (/255, 512², rest pose, mono) of each PlayCanvas render against three r180 with
 `environment: 'room'`, factor by factor:
 
