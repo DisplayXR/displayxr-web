@@ -12,6 +12,7 @@ import {
   formatTime,
   mapKeyToAction,
   bufferedFraction,
+  dissolveAlpha,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -205,4 +206,40 @@ test('badge3d defaults OFF and passes a custom label through', () => {
   assert.equal(normalizePlayerOptions({}).badge3d, false);
   assert.equal(normalizePlayerOptions({ badge3d: true }).badge3d, true);
   assert.equal(normalizePlayerOptions({ badge3d: 'SPATIAL' }).badge3d, 'SPATIAL');
+});
+
+// ── dissolveAlpha ────────────────────────────────────────────────────────────────────────────
+//
+// The setSource() dissolve ramp: how much of the INCOMING title to composite over the frozen
+// outgoing frame, as a function of time since the incoming title's first frame.
+
+test('dissolveAlpha ramps linearly from 0 to 1 across the fade', () => {
+  assert.equal(dissolveAlpha(0, 400), 0);
+  assert.equal(dissolveAlpha(100, 400), 0.25);
+  assert.equal(dissolveAlpha(200, 400), 0.5);
+  assert.equal(dissolveAlpha(400, 400), 1);
+});
+
+test('dissolveAlpha clamps past the end rather than overshooting', () => {
+  assert.equal(dissolveAlpha(10_000, 400), 1);
+});
+
+test('negative elapsed time reads as 0, not a negative alpha', () => {
+  // A clock that ticks backwards (a coarse timer, a tab restore) must not invert the blend.
+  assert.equal(dissolveAlpha(-50, 400), 0);
+});
+
+test('a non-positive or non-finite duration collapses to a hard cut, never NaN alpha', () => {
+  // NaN passed to globalAlpha is ignored by Chromium, which would leave the compositor stuck
+  // half-dissolved — so the degenerate cases have to resolve to a number, and 1 (show the new
+  // title) is the only safe one.
+  for (const bad of [0, -1, NaN, Infinity, undefined]) {
+    assert.equal(dissolveAlpha(100, bad), 1, `fadeMs ${String(bad)}`);
+  }
+});
+
+test('fadeMs normalisation still rejects non-positive and non-numeric values', () => {
+  assert.equal(normalizePlayerOptions({ fadeMs: 250 }).fadeMs, 250);
+  assert.equal(normalizePlayerOptions({ fadeMs: -1 }).fadeMs, 0);
+  assert.equal(normalizePlayerOptions({ fadeMs: '250' }).fadeMs, 0);
 });

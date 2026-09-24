@@ -33,8 +33,13 @@ export interface PlayerOptions {
    */
   keyboard?: boolean;
   /**
-   * Cross-source fade on `setSource()`, in ms. ACCEPTED, NOT IMPLEMENTED in v1 — see
-   * {@link PlayerHandle.setSource}. Reserved so a v2 that adds it needs no signature change.
+   * Dissolve duration for `setSource()`, in ms. Opt-in: giving it here creates the mixer canvas
+   * that runs the dissolve, so a player that never sets it keeps the byte-identical
+   * `addVideo(canvas, video)` paint path and pays nothing per frame.
+   *
+   * The dissolve goes from the outgoing title's LAST FRAME to the incoming one — not a blend of
+   * two simultaneously decoding streams. Visually identical (the outgoing title is being
+   * replaced), one `<video>` instead of two.
    */
   fadeMs?: number;
   /**
@@ -81,13 +86,18 @@ export interface PlayerHandle {
   muted: boolean;
 
   /**
-   * Swap the source in place (and its poster, if given). `opts.fadeMs` from {@link PlayerOptions}
-   * is accepted and ignored in v1 — a cheap cross-fade needs a second decoded stream composited
-   * alongside the first, which is real engineering rather than "wire it and document it"; left
-   * for a v2 pass. Without it this is a hard cut: the old frame holds until the new source
-   * reaches `readyState >= 2`.
+   * Swap the source in place (and its poster, if given), dissolving from the outgoing title's
+   * last frame when a fade is armed.
+   *
+   * `opts.fadeMs` overrides the duration for this one swap. It cannot switch fading on — the
+   * mixer exists only when {@link PlayerOptions.fadeMs} was given at construction, because
+   * creating it later would mean swapping the woven window's paint source mid-flight, which
+   * rebuilds the weave layer and produces exactly the blink the fade removes.
+   *
+   * With no fade this is a hard cut: the old frame holds until the new source reaches
+   * `readyState >= 2`.
    */
-  setSource(src: string | Blob, opts?: { poster?: string }): void;
+  setSource(src: string | Blob, opts?: { poster?: string; fadeMs?: number }): void;
 
   /** Mark a 2D element painted over this window so the weave leaves it crisp — `'sbs'` + a
    * supported wall only; a no-op everywhere else (there is no weave to protect it from). */
