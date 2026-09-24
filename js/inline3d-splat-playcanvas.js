@@ -1273,8 +1273,9 @@ export class PlayCanvasSplatViewer {
    * so a region only one of the two photos covers fades against the page, not against black.
    */
   _ensureSnapshotOverlay() {
-    const s = this._snap;
+    const s = (this._snap ||= { w: 0, h: 0, tex: null, rt: null, parts: null }); // prewarm: no capture yet
     if (s.parts) {
+      if (!s.tex) return;
       for (const p of s.parts) {
         p.mat.setParameter('dxrSnap', s.tex);
         p.mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
@@ -1314,8 +1315,10 @@ export class PlayCanvasSplatViewer {
       mat.depthTest = false;
       mat.depthWrite = false;
       mat.cull = pc.CULLFACE_NONE;
-      mat.setParameter('dxrSnap', s.tex);
-      mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
+      if (s.tex) {
+        mat.setParameter('dxrSnap', s.tex);
+        mat.setParameter('dxrSnapInvSize', [1 / s.w, 1 / s.h]);
+      }
       mat.setParameter('dxrSnapAlpha', 0);
       mat.setParameter('dxrSnapWipe', [-2, 0.1, 1]);
       mat.setParameter('dxrSnapOver', 0);
@@ -2940,13 +2943,17 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * Memory: the prepared asset is fully resident (a 1.18M-gaussian SOG: its GPU textures plus the
    * engine's centre array) alongside the current one until it is used or disposed.
    */
-  async function prepareSource(src) {
+  async function prepareSource(src, po = {}) {
+    if (po === null || typeof po !== 'object') throw new TypeError('@displayxr/inline3d/splat: prepareSource options must be an object.');
+    const warm = po.transition !== undefined ? resolveSwap(po) : null; // the setSource options it will get; throws on a bad one
     const app = await booted;
     await first.catch(() => null);
     if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
     const t0 = performance.now();
     const loaded = await loadOne(pcModule, app, src, { background: true });
     perfSpan('prepareSource', t0);
+    // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
+    if (warm?.particles) await prewarmTransition(warm);
     const entry = { loaded, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
@@ -2972,6 +2979,98 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     livePrepared.add(entry);
     return prepared;
+  }
+
+  // ── shader pre-warm for the particle transitions ──
+  const prewarmed = new Set();
+  /**
+   * Compile + link the render-time variant a particle transition will install, ahead of it. The
+   * first frame of a transition otherwise blocks on the link (GetProgramiv: 35–45 ms on an M1,
+   * measured with a trace) — on the very transition a user sees first. A throwaway material with
+   * the eye renderer's own description, defines and chunks, plus the transition's chunk, asks the
+   * engine's program library for the same variant the renderer will ask for (the library keys on
+   * the generated source + processing options, not on the material), so the compile is issued
+   * now and, with KHR_parallel_shader_compile, finishes off the main thread. Best effort: an
+   * engine whose internals differ just compiles on the transition's first frame, as before.
+   */
+  async function prewarmTransition(plan) {
+    const key = `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`;
+    if (!fx || prewarmed.has(key)) return;
+    await yieldIdle();
+    if (removed || !fx) return;
+    try {
+      const pc = pcModule;
+      const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
+      const code = fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order });
+      const made = [];
+      let issued = 0;
+      for (const cam of cams) {
+        const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam.camera?.camera);
+        let mi = null;
+        if (cd?.layersMap) for (const ld of cd.layersMap.values()) mi ||= ld?.gsplatManager?.renderer?.meshInstance ?? null;
+        const src = mi?.material;
+        const camera = cam.camera?.camera;
+        if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
+        const m = new pc.ShaderMaterial(src.shaderDesc);
+        src.defines.forEach((v, k) => m.setDefine(k, v));
+        m.shaderChunks.copy(src.shaderChunks);
+        m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
+        m.blendState = src.blendState;
+        made.push(m.getShaderVariant({
+          device: viewer.app.graphicsDevice,
+          scene: viewer.app.scene,
+          objDefs: mi._shaderDefs,
+          cameraShaderParams: camera.shaderParams,
+          pass: 0, // SHADER_FORWARD
+          sortedLights: [],
+          viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+          vertexFormat: mi.mesh?.vertexBuffer?.format,
+        }));
+        issued++;
+      }
+      // the overlay's two quads (created on the first capture otherwise, and compiled on its draw)
+      const cam = viewer.eye?.camera?.camera;
+      if (cam?.shaderParams) {
+        viewer._ensureSnapshotOverlay();
+        for (const p of viewer._snap?.parts || []) {
+          made.push(p.mat.getShaderVariant?.({
+            device: viewer.app.graphicsDevice,
+            scene: viewer.app.scene,
+            objDefs: p.mi._shaderDefs,
+            cameraShaderParams: cam.shaderParams,
+            pass: 0,
+            sortedLights: [],
+            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+            vertexFormat: p.mi.mesh?.vertexBuffer?.format,
+          }));
+        }
+      }
+      if (issued) prewarmed.add(key);
+      await finalizeWhenLinked(made.filter(Boolean));
+    } catch (err) {
+      console.info('[inline3d/splat] transition shader pre-warm skipped', err);
+    }
+  }
+
+  /**
+   * Creating a program only ISSUES its compile + link; the browser resolves the link when the
+   * program is first queried — the engine's first draw, blocking (the 35–50 ms GetProgramiv the
+   * trace shows, even for a program created seconds earlier). So finish the engine's own
+   * finalize here, in the dwell: wait (in idle periods, not blocking) for the link to complete
+   * where the browser reports it (KHR_parallel_shader_compile), then finalize.
+   */
+  async function finalizeWhenLinked(shaders) {
+    const dev = viewer.app?.graphicsDevice;
+    if (!dev) return;
+    const pending = () => shaders.filter((x) => x && !x.ready && !x.failed && x.impl?.finalize);
+    for (let i = 0; i < 40 && pending().length; i++) {
+      for (const x of pending()) if (x.impl.isLinked?.(dev)) x.impl.finalize(dev, x) || (x.failed = true);
+      if (pending().length) await yieldIdle(50);
+      if (removed) return;
+    }
+    // still linking (or no completion query): finalize now — a block in the dwell, not on the
+    // transition's first frame
+    for (const x of pending()) x.impl.finalize(dev, x) || (x.failed = true);
   }
 
   // ── setSource: swap the asset — a cut, a crossfade, or a transition ──

@@ -5,6 +5,43 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — minor
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; the existing transitions
+and reveals render the same pixels.
+
+### Added
+
+- **Particle transitions for `setSource`** (#36): `transition: 'swarm' | 'burst' | 'shimmer-cross' | 'dust'`.
+  They play the particle reveals across a slide change, with both photos live, in 3D and in 2D.
+  The old photo plays its effect backwards while the new one plays it forwards, on overlapping
+  spans of one clock (`overlap`).
+  - `swarm`: the old photo disperses into a curl-noise swarm and the new one assembles out of one.
+  - `burst`: the old photo collapses into its focus and the new one bursts out of its own.
+  - `shimmer-cross`: twinkling points out and twinkling points in; nothing moves.
+  - `dust`: drifting dust out, gathering dust in.
+
+  Defaults are 2.6–2.8 s on a linear shared clock; each particle eases on its own path. The end
+  state is a `cut`, MAE 0.000 in colour and alpha in both eyes, and VRAM goes back to baseline.
+  A hidden tab gets the crossfade.
+  See [`docs/splat-effects.md` § Particle transitions](docs/splat-effects.md#particle-transitions).
+- They render at RENDER TIME. One tile-scope chunk serves both photos, and each photo's values
+  sit on the mesh instance of the gsplat manager that draws it. A first cut used entity-scope
+  work-buffer modifiers, which rewrote both 1.18M work buffers and re-sorted both every frame.
+  Measured in a visible Chrome, that cost 2D pacing its 120 Hz: p95 went from 16.7 ms to 9.8–10.1.
+  A photo with nothing to draw skips its draw.
+- **`prepareSource(src, { transition, … })`**: with a particle transition, this also compiles and
+  links its shaders in the dwell. Otherwise the first transition of each kind blocks its first
+  frame on the link: 35–50 ms, and 190 + 260 ms on a variant the machine has never compiled.
+- Particle options `vanish` (fade over the first part of the flight) and `density` (the share
+  drawn in flight). Both are off for the reveals.
+
+### Not changed
+
+- The live `crossfade` / `wavefront` still run at about 40 Hz in stereo on an M1 (median 25.6 ms).
+  They draw both photos in full for the whole window. The same skip-what-is-not-visible idea may
+  apply there; that is a follow-up.
+
 ## 1.14.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). New particle reveals are additive. One default changes pixels

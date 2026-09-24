@@ -547,6 +547,14 @@ export interface SplatSourceOptions {
   incomingFx?: SplatParticleOptions & Record<string, unknown>;
 }
 
+/**
+ * `prepareSource`'s options: the `setSource` options the prepared asset will be swapped in with.
+ * For a particle transition, its shaders are compiled and linked NOW, in the dwell — otherwise the
+ * first transition of each kind in a page blocks its first frame on the link (tens of ms, hundreds
+ * the first time a machine sees the variant). Validated like setSource's.
+ */
+export type SplatPrepareOptions = SplatSourceOptions;
+
 /** setSource's particle transitions (docs/splat-effects.md §Particle transitions). */
 export type SplatParticleTransitionName = 'swarm' | 'burst' | 'shimmer-cross' | 'dust';
 
@@ -718,7 +726,7 @@ export interface SplatHandle {
    * Memory: two full assets resident until the swap (≈ +70 MB of GPU textures per 1.18M-gaussian
    * SOG). `remove()` disposes any still unused.
    */
-  prepareSource(src: string | Blob | ArrayBuffer | Uint8Array): Promise<SplatPreparedSource>;
+  prepareSource(src: string | Blob | ArrayBuffer | Uint8Array, opts?: SplatPrepareOptions): Promise<SplatPreparedSource>;
   /**
    * `engine: 'playcanvas'` only (throws on Spark). Play a transition/pulse/custom effect;
    * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —

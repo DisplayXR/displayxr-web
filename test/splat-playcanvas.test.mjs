@@ -2072,3 +2072,16 @@ test("particle transitions: one order for both photos; 'layers' refused (a rende
   assert.throws(() => resolveSwap({ transition: 'dust', outgoingFx: { order: 'radial' } }), /same order/);
   assert.equal(resolveSwap({ transition: 'dust', order: 'random' }).particles.out.opts.order, 'random');
 });
+
+test('prepareSource(src, { transition }): validates the transition at the call, pre-warms best-effort, and still resolves a usable prepared source', async (t) => {
+  const { out, v } = await liveRig(t);
+  await assert.rejects(out.prepareSource('b.sog', { transition: 'nope' }), /setSource transition 'nope'/);
+  await assert.rejects(out.prepareSource('b.sog', { transition: 'swarm', order: 'layers' }), /reveal-only order/);
+  await assert.rejects(out.prepareSource('b.sog', 3), /prepareSource options must be an object/);
+  v.eye.camera.camera.shaderParams = {}; // the fake has no renderers: only the overlay path runs
+  const prep = await out.prepareSource('b.sog', { transition: 'swarm' });
+  assert.equal(prep.state, 'ready');
+  assert.ok(v._snap?.parts, 'the overlay quads exist already (their shaders compile in the dwell)');
+  prep.dispose();
+  out.remove();
+});

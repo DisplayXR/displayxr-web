@@ -1523,6 +1523,16 @@ export class SplatEffects {
     };
   }
 
+  /**
+   * The tile chunk driveShared(name, effect, opts) WOULD install, without installing it — what
+   * setSource's shader pre-warm compiles ahead of the transition.
+   */
+  sharedChunkCode(name, effect, opts) {
+    const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
+    const insts = [...(this.scopes.get('tile')?.values() ?? [])].filter((i) => i.name !== name);
+    return composeModifier([...insts, { name, def: EFFECTS[effect], opts: o }]).code;
+  }
+
   _setupInstance(inst) {
     // Also for a gated one (its held START state needs the geometry); re-run when the gate opens,
     // since the rig/framing may have changed meanwhile (setSource's flip adopts a new asset).
