@@ -84,8 +84,8 @@ import {
   WHEEL_PAGE_PX,
   WHEEL_MAX_PX,
   ZOOM_PER_PX,
-  ZOOM_MIN,
-  ZOOM_MAX,
+  ZOOM_WHEEL_IDLE_MS,
+  resolveZoomOption,
   MONO_FOV,
   MONO_NEAR,
   MONO_FAR,
@@ -628,6 +628,7 @@ export class PlayCanvasSplatViewer {
       pitchLimit = PITCH_LIMIT,
       orbitMaxDeg = ORBIT_MAX_DEG,
       orbitEase = {},
+      zoom,
       feather = 0,
       captureFit = 'height',
       nearClip,
@@ -665,6 +666,15 @@ export class PlayCanvasSplatViewer {
     this.orbitMaxDeg = orbitMaxDeg;
     this.orbitEase = { drag: orbitEase.drag ?? ORBIT_TAU_DRAG_S, rest: orbitEase.rest ?? ORBIT_TAU_REST_S };
     this._orbitMode = null;
+    // Zoom bounds + relax (./inline3d-splat-shared.js §ZOOM). Wheel and pinch clamp to
+    // [zoomOpts.min, zoomOpts.max]; with relax, the zoom eases back to `_restZoom` (1×, or the
+    // last setPose zoom) once the wheel is idle or the pinch ends. `_zoomMode` is 'rest' while
+    // relaxing, else null (the ordinary damping). `_pinching` holds the relax off.
+    this.zoomOpts = resolveZoomOption(zoom);
+    this._zoomMode = null;
+    this._restZoom = clamp(1, this.zoomOpts.min, this.zoomOpts.max);
+    this._lastWheel = 0;
+    this._pinching = false;
     /** handle.setVideo: orbit/zoom input ignored while a video plane is on. */
     this.inputLocked = false;
     /** handle.setVideo's plane (./inline3d-splat-video.js) while a video is on, else null. */
@@ -693,8 +703,8 @@ export class PlayCanvasSplatViewer {
     this.flipY = opts.flipY !== false;
 
     this._fitScale = 1;
-    this._zoom = 1;
-    this._targetZoom = 1;
+    this._zoom = this._restZoom;
+    this._targetZoom = this._restZoom;
     this._depthOffset = 0;
     this._subjectHalf = [0, 0, 0];
     this._yaw = 0;
@@ -815,7 +825,11 @@ export class PlayCanvasSplatViewer {
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
-    if (zoom !== undefined) this._targetZoom = this._zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
+    if (zoom !== undefined) {
+      // A snap, and the new rest: a relax comes home HERE, not to 1×.
+      this._targetZoom = this._zoom = this._restZoom = clamp(zoom, this.zoomOpts.min, this.zoomOpts.max);
+      this._zoomMode = null;
+    }
     if (depthOffset !== undefined) this._depthOffset = finite(depthOffset, this._depthOffset);
     this._applyTransform();
   }
@@ -1748,10 +1762,27 @@ export class PlayCanvasSplatViewer {
     ) {
       this._orbitMode = null; // at rest: the ordinary damping (and the idle turntable) take over
     }
-    if (Math.abs(this._targetZoom - this._zoom) > 1e-4) {
-      this._zoom *= Math.pow(this._targetZoom / this._zoom, k);
+    // Zoom relax: the wheel has gone idle (or the pinch ended) away from rest — head home.
+    if (
+      this.zoomOpts.relax &&
+      !this._zoomMode &&
+      !this._pinching &&
+      t - this._lastWheel > ZOOM_WHEEL_IDLE_MS &&
+      Math.abs(this._targetZoom - this._restZoom) > 1e-6
+    ) {
+      this._targetZoom = this._restZoom;
+      this._zoomMode = 'rest';
+    }
+    // Relaxing eases with τ = zoomOpts.ease (the orbit's 0.6 s by default); the wheel's own
+    // damping otherwise. Both in log space, so 2× → 1× reads like 1× → ½×.
+    const kz = this._zoomMode === 'rest' ? (dt > 0 ? 1 - Math.exp(-dt / this.zoomOpts.ease) : 0) : k;
+    // The relax snaps home inside 0.1 % (sub-pixel for any tile), or an exponential never lands.
+    const zEps = this._zoomMode === 'rest' ? 1e-3 * this._targetZoom : 1e-4;
+    if (Math.abs(this._targetZoom - this._zoom) > zEps) {
+      this._zoom *= Math.pow(this._targetZoom / this._zoom, kz);
     } else {
       this._zoom = this._targetZoom;
+      if (this._zoomMode === 'rest') this._zoomMode = null;
     }
     this._easeFocus();
     this._applyTransform();
@@ -1869,8 +1900,37 @@ export class PlayCanvasSplatViewer {
     let startY = 0;
     let restYaw = 0;
     let restPitch = 0;
+    // Pinch: two pointers down zoom by the ratio of their spread, about the focus (the pivot's
+    // scale is S(fit × zoom) about it), within zoomOpts' bounds. The drag ends when the second
+    // finger lands (its tilt relaxes); the finger left after a pinch does not orbit.
+    const pointers = new Map(); // pointerId → [clientX, clientY]
+    let pinchD0 = 0;
+    let pinchZ0 = 1;
+    const spread = () => {
+      const [a, b] = [...pointers.values()];
+      return Math.hypot(a[0] - b[0], a[1] - b[1]);
+    };
+    const endDrag = () => {
+      dragging = false;
+      this._targetYaw = restYaw;
+      this._targetPitch = clamp(restPitch, this.pitchLimit[0], this.pitchLimit[1]);
+      this._orbitMode = 'rest';
+    };
     this._onDown = (ev) => {
       if (this.inputLocked) return; // handle.setVideo: a screen-locked plane has nothing to orbit
+      if (ev.pointerId !== undefined) pointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+      el.setPointerCapture?.(ev.pointerId);
+      if (pointers.size === 2) {
+        if (dragging) endDrag();
+        this._pinching = true;
+        this._zoomMode = null; // a new gesture takes over from a relax
+        pinchD0 = Math.max(spread(), 1);
+        pinchZ0 = this._zoom;
+        this._targetZoom = this._zoom;
+        this._lastInput = now();
+        return;
+      }
+      if (pointers.size > 2) return;
       dragging = true;
       startX = ev.clientX;
       startY = ev.clientY;
@@ -1879,9 +1939,16 @@ export class PlayCanvasSplatViewer {
       restPitch = this._orbitMode ? restPitch : this._targetPitch;
       this._orbitMode = 'drag';
       this._lastInput = now();
-      el.setPointerCapture?.(ev.pointerId);
     };
     this._onMove = (ev) => {
+      if (pointers.has(ev.pointerId)) pointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+      if (this._pinching) {
+        if (pointers.size < 2) return;
+        const { min, max } = this.zoomOpts;
+        this._targetZoom = clamp(pinchZ0 * (spread() / pinchD0), min, max);
+        this._lastInput = now();
+        return;
+      }
       if (!dragging) return;
       const box = el.getBoundingClientRect();
       const dx = (ev.clientX - startX) / Math.max(box.width, 1);
@@ -1896,13 +1963,17 @@ export class PlayCanvasSplatViewer {
       this._lastInput = now();
     };
     this._onUp = (ev) => {
+      const had = pointers.delete(ev.pointerId);
+      if (this._pinching && pointers.size < 2) {
+        // The pinch ends when either finger lifts: the zoom relaxes (zoomOpts.relax) from here.
+        this._pinching = false;
+        this._lastWheel = now() - ZOOM_WHEEL_IDLE_MS - 1;
+        this._lastInput = now();
+      }
+      if (had || ev.pointerId === undefined) el.releasePointerCapture?.(ev.pointerId);
       if (!dragging) return;
-      dragging = false;
-      this._targetYaw = restYaw;
-      this._targetPitch = clamp(restPitch, this.pitchLimit[0], this.pitchLimit[1]);
-      this._orbitMode = 'rest';
+      endDrag();
       this._lastInput = now();
-      el.releasePointerCapture?.(ev.pointerId);
     };
     this._onWheel = (ev) => {
       if (this.inputLocked) return;
@@ -1911,7 +1982,11 @@ export class PlayCanvasSplatViewer {
       if (ev.deltaMode === 1) px *= WHEEL_LINE_PX;
       else if (ev.deltaMode === 2) px *= WHEEL_PAGE_PX;
       px = clamp(px, -WHEEL_MAX_PX, WHEEL_MAX_PX);
-      this._targetZoom = clamp(this._targetZoom * Math.exp(-px * ZOOM_PER_PX), ZOOM_MIN, ZOOM_MAX);
+      // A wheel tick during a relax restarts from where the zoom IS, not from the rest target.
+      const from = this._zoomMode === 'rest' ? this._zoom : this._targetZoom;
+      this._zoomMode = null;
+      this._targetZoom = clamp(from * Math.exp(-px * ZOOM_PER_PX), this.zoomOpts.min, this.zoomOpts.max);
+      this._lastWheel = now();
       this._lastInput = now();
     };
     if (el.style) el.style.touchAction = 'none';
@@ -1933,6 +2008,7 @@ export class PlayCanvasSplatViewer {
     el.removeEventListener('pointerleave', this._onUp);
     el.removeEventListener('wheel', this._onWheel);
     this._onDown = null;
+    this._pinching = false;
   }
 
   /** The camera currently on screen: [proj, pose] of the first eye in 3D, the mono camera else. */
@@ -2425,6 +2501,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     flipY,
     orbitMaxDeg: opts.orbitMaxDeg,
     orbitEase: opts.orbitEase,
+    zoom: opts.zoom,
     feather,
     captureFit,
     nearClip: opts.nearClip,

@@ -238,6 +238,43 @@ export const ORBIT_TAU_DRAG_S = 0.2;
 /** Time constant of the relax back to rest after release, seconds. */
 export const ORBIT_TAU_REST_S = 0.6;
 
+// ── ZOOM: bounds + relax (the PlayCanvas backend's `zoom` option) ───────────────────────────
+
+/** Wheel "release": this long with no wheel event ends the gesture and starts the relax, ms. */
+export const ZOOM_WHEEL_IDLE_MS = 150;
+
+/**
+ * Validate + default the `zoom` option: `{ min, max, relax, ease }`.
+ *
+ * Defaults are today's behaviour — ZOOM_MIN..ZOOM_MAX, no relax. `relax: true` eases the zoom
+ * back to its rest (1×, or the last setPose zoom) once the wheel has been idle
+ * ZOOM_WHEEL_IDLE_MS or a pinch ends, with τ = `ease` (default ORBIT_TAU_REST_S, the orbit's
+ * relax — the two gestures come home together).
+ *
+ * @returns {{min:number, max:number, relax:boolean, ease:number}}
+ */
+export function resolveZoomOption(zoom) {
+  if (zoom === undefined || zoom === null) return { min: ZOOM_MIN, max: ZOOM_MAX, relax: false, ease: ORBIT_TAU_REST_S };
+  if (typeof zoom !== 'object') {
+    throw new Error(`@displayxr/inline3d/splat: zoom ${zoom} — expected { min, max, relax, ease }.`);
+  }
+  const num = (k, v, d) => {
+    if (v === undefined) return d;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`@displayxr/inline3d/splat: zoom.${k} ${v} — expected a positive number.`);
+    }
+    return v;
+  };
+  const min = num('min', zoom.min, ZOOM_MIN);
+  const max = num('max', zoom.max, ZOOM_MAX);
+  if (max < min) throw new Error(`@displayxr/inline3d/splat: zoom.max ${max} is below zoom.min ${min}.`);
+  const ease = num('ease', zoom.ease, ORBIT_TAU_REST_S);
+  if (zoom.relax !== undefined && typeof zoom.relax !== 'boolean') {
+    throw new Error(`@displayxr/inline3d/splat: zoom.relax ${zoom.relax} — expected true or false.`);
+  }
+  return { min, max, relax: zoom.relax === true, ease };
+}
+
 /**
  * The capture camera's off-axis WINDOW at the near plane — the one projection both backends'
  * camera rigs draw the mono (flat) view through. Principal point honoured, so a deconverged
@@ -346,6 +383,7 @@ export const PAGE_IGNORED_OPTIONS = Object.freeze([
   'depthLimit',
   'orbitMaxDeg',
   'orbitEase',
+  'zoom',
   'captureFit',
 ]);
 
