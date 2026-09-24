@@ -1961,6 +1961,78 @@ test('LIVE outgoing with the wavefront: live during the wipe, stopped + released
   out.remove();
 });
 
+/** A gsplat manager's mesh instance, as far as the render-time transitions touch it. */
+function fakeManagerMi() {
+  const parameters = {};
+  return {
+    parameters,
+    visible: true,
+    setParameter(n, v) { parameters[n] = { data: v }; },
+    deleteParameter(n) { delete parameters[n]; },
+    get: (n) => parameters[n]?.data,
+  };
+}
+
+test('wavefront (render time): the ridge on the eye manager, no work-buffer modifier; each photo culled to its side of the front; the end is a cut', async (t) => {
+  const { out, v, frame, camerasMap, rec } = await liveRig(t, { transition: 'wavefront' });
+  const eyeMi = fakeManagerMi();
+  camerasMap.set(v.eye.camera.camera, { layersMap: new Map([['World', { gsplatManager: { renderer: { meshInstance: eyeMi } } }]]) });
+  const e1 = out.mesh.entity;
+  const done = out.setSource('b.sog', { transition: 'wavefront', durationMs: 100, easing: 'linear', outgoing: 'live' });
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  const liveMi = fakeManagerMi();
+  const world = { lastWorldStateVersion: 3, getState: (n) => (n === 3 ? { sortedBefore: true } : null) };
+  camerasMap.set(v._live.cam.camera.camera, { layersMap: new Map([[v._live.layer, { gsplatManager: { world, renderer: { meshInstance: liveMi } } }]]) });
+  assert.equal(v._transitionPath, 'render');
+  const chunk = rec.tileChunks.get('gsplatModifyVS');
+  assert.match(chunk, /dxrFx_transition_amount/, 'the ridge body, in the tile chunk');
+  assert.match(chunk, /dxrFx_transition_cull_side/, 'the cull body');
+  assert.ok(chunk.indexOf('// ── transition-cull') > chunk.indexOf('// ── transition '), 'the cull is the last stage: it sees the ridge’s centre and scale');
+  assert.equal(e2.gsplat.modifier, null, 'no work-buffer modifier: no rewrite, no re-sort per frame');
+  // the material default: ridge off (amount 1), cull off
+  assert.equal(rec.tileParams.get('dxrFx_transition_amount'), 1);
+  assert.equal(rec.tileParams.get('dxrFx_transition_cull_on'), 0);
+  frame(10); // tick 1: held
+  assert.equal(eyeMi.get('dxrFx_transition_cull_on'), 1);
+  near(eyeMi.get('dxrFx_transition_cull_edge'), -1, 1e-12, 'before the clock: the new photo shows nowhere');
+  frame(10); // tick 2: the clock starts
+  frame(10);
+  frame(10);
+  frame(10); // raw = 0.3
+  const tt = 0.3, band = 0.18;
+  near(eyeMi.get('dxrFx_transition_amount'), tt, 1e-9, 'the ridge rides the clock');
+  assert.equal(liveMi.get('dxrFx_transition_amount'), undefined, 'the old photo: no ridge (material default)');
+  assert.equal(eyeMi.get('dxrFx_transition_cull_side'), -1, 'the new photo keeps the LEFT of its edge');
+  near(eyeMi.get('dxrFx_transition_cull_edge'), (2 * tt) / (1 - band) - 1, 1e-9, 'where the commit starts: u = t / (1 − band)');
+  assert.equal(liveMi.get('dxrFx_transition_cull_side'), 1, 'the old photo keeps the RIGHT of its edge');
+  near(liveMi.get('dxrFx_transition_cull_edge'), (2 * (tt - band)) / (1 - band) - 1, 1e-9, 'where the commit ends: u = (t − band) / (1 − band)');
+  assert.equal(eyeMi.get('dxrFx_transition_cull_n'), 1, 'one view in 2D');
+  const K = eyeMi.get('dxrFx_transition_cull_K0');
+  near(K[1], 1 / v.canvas.width, 1e-9, '1 / viewport width');
+  near(K[0], v.canvas.width * v.mono.proj[0], 1e-3, 'the engine’s focal: viewport width · proj[0]');
+  // the overlay wipes on the same t
+  const wipe = v._snap.parts[0].mat.parameters?.dxrSnapWipe?.data ?? null;
+  if (wipe) near(wipe[0], tt, 1e-9);
+  // the diagnostics switch: cull off, both photos drawn in full
+  v._wipeCull = false;
+  frame(0);
+  assert.equal(eyeMi.get('dxrFx_transition_cull_on'), 0);
+  assert.equal(liveMi.get('dxrFx_transition_cull_on'), 0);
+  v._wipeCull = true;
+  for (let i = 0; i < 12; i++) frame(10);
+  await done;
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'chunk deleted: the engine default');
+  assert.deepEqual(Object.keys(eyeMi.parameters).filter((k) => k.startsWith('dxrFx_')), [], 'values removed from the eye manager');
+  assert.equal(v.onBeforeRender, null);
+  assert.equal(v._live.active, false, 'live camera off');
+  assert.equal(e1.enabled, false, 'old asset released');
+  assert.equal(v._transitionState, null);
+  out.remove();
+});
+
 test('a newer setSource supersedes a live window: it closes (camera off, old asset released) before the next swap starts', async (t) => {
   const { out, v, frame, opts } = await liveRig(t, { durationMs: 10000 });
   const e1 = out.mesh.entity;

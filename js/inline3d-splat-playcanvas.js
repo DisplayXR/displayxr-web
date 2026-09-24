@@ -3712,7 +3712,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const loaded = await loadOne(pcModule, app, src, { background: true });
     perfSpan('prepareSource', t0);
     // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
-    if (warm?.particles || warm?.transition === 'wavefront') await prewarmTransition(warm);
+    await prewarmTransition(warm); // null (no transition declared): the overlay only
     const entry = { loaded, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
@@ -3753,51 +3753,61 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * engine whose internals differ just compiles on the transition's first frame, as before.
    */
   async function prewarmTransition(plan) {
-    const key = plan.particles ? `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}` : plan.transition;
-    if (!fx || prewarmed.has(key)) return;
+    // The chunk variant the transition installs (particles, wavefront), and the overlay's two quads
+    // (crossfade, wavefront and the particles all composite through them; created on the first
+    // capture otherwise, and compiled on its draw: 30–180 ms on the first frames of the window).
+    const chunkKey = plan?.particles
+      ? `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`
+      : plan?.transition === 'wavefront'
+        ? 'wavefront'
+        : null;
+    const wantChunk = !!(fx && chunkKey && !prewarmed.has(chunkKey));
+    const wantOverlay = !prewarmed.has('overlay');
+    if (!wantChunk && !wantOverlay) return;
     await yieldIdle();
-    if (removed || !fx) return;
+    if (removed) return;
     try {
       const pc = pcModule;
-      const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
-      const code = plan.particles
-        ? fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order })
-        : fx.sharedChunkCodeFor([
-            ['transition', 'wavefront', {}],
-            ['transition-cull', 'wipecull', {}],
-          ]);
       const made = [];
-      let issued = 0;
-      for (const cam of cams) {
-        const cd = viewer.app?.renderer?.gsplatDirector?.camerasMap?.get?.(cam.camera?.camera);
-        let mi = null;
-        if (cd?.layersMap) for (const ld of cd.layersMap.values()) mi ||= ld?.gsplatManager?.renderer?.meshInstance ?? null;
-        const src = mi?.material;
-        const camera = cam.camera?.camera;
-        if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
-        const m = new pc.ShaderMaterial(src.shaderDesc);
-        src.defines.forEach((v, k) => m.setDefine(k, v));
-        m.shaderChunks.copy(src.shaderChunks);
-        m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
-        m.blendState = src.blendState;
-        made.push(m.getShaderVariant({
-          device: viewer.app.graphicsDevice,
-          scene: viewer.app.scene,
-          objDefs: mi._shaderDefs,
-          cameraShaderParams: camera.shaderParams,
-          pass: 0, // SHADER_FORWARD
-          sortedLights: [],
-          viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
-          vertexFormat: mi.mesh?.vertexBuffer?.format,
-        }));
-        issued++;
+      if (wantChunk && fx) {
+        const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
+        const code = plan.particles
+          ? fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order })
+          : fx.sharedChunkCodeFor([
+              ['transition', 'wavefront', {}],
+              ['transition-cull', 'wipecull', {}],
+            ]);
+        let issued = 0;
+        for (const cam of cams) {
+          const mi = managerMi(cam, null);
+          const src = mi?.material;
+          const camera = cam.camera?.camera;
+          if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
+          const m = new pc.ShaderMaterial(src.shaderDesc);
+          src.defines.forEach((v, k) => m.setDefine(k, v));
+          m.shaderChunks.copy(src.shaderChunks);
+          m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
+          m.blendState = src.blendState;
+          made.push(m.getShaderVariant({
+            device: viewer.app.graphicsDevice,
+            scene: viewer.app.scene,
+            objDefs: mi._shaderDefs,
+            cameraShaderParams: camera.shaderParams,
+            pass: 0, // SHADER_FORWARD
+            sortedLights: [],
+            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+            vertexFormat: mi.mesh?.vertexBuffer?.format,
+          }));
+          issued++;
+        }
+        if (issued) prewarmed.add(chunkKey);
       }
-      // the overlay's two quads (created on the first capture otherwise, and compiled on its draw)
       const cam = viewer.eye?.camera?.camera;
-      if (cam?.shaderParams) {
+      if (wantOverlay && cam?.shaderParams) {
         viewer._ensureSnapshotOverlay();
+        let issued = 0;
         for (const p of viewer._snap?.parts || []) {
-          made.push(p.mat.getShaderVariant?.({
+          const v = p.mat.getShaderVariant?.({
             device: viewer.app.graphicsDevice,
             scene: viewer.app.scene,
             objDefs: p.mi._shaderDefs,
@@ -3806,15 +3816,17 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             sortedLights: [],
             viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
             vertexFormat: p.mi.mesh?.vertexBuffer?.format,
-          }));
+          });
+          if (v) (made.push(v), issued++);
         }
+        if (issued) prewarmed.add('overlay');
       }
-      if (issued) prewarmed.add(key);
       await finalizeWhenLinked(made.filter(Boolean));
     } catch (err) {
       console.info('[inline3d/splat] transition shader pre-warm skipped', err);
     }
   }
+
 
   /**
    * Creating a program only ISSUES its compile + link; the browser resolves the link when the
@@ -3882,6 +3894,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     await first.catch(() => null); // a failed first asset may be replaced
     if (!app || removed) return out;
     const pc = pcModule;
+    // Not prepared: compile what the transition draws with (its chunk, the overlay) while the asset
+    // loads, rather than on the window's first frames. Best effort, not awaited.
+    if (!prep && current && plan.transition !== 'cut') prewarmTransition(plan);
     const loaded = prep ? prep.loaded : await loadOne(pc, app, next);
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
