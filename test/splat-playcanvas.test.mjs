@@ -1621,7 +1621,7 @@ test('the cloud passes yield between steps (source check: each in its own task; 
 // ── 13b. setSource: LIVE outgoing + prepareSource (./inline3d-splat-live.js) ─────────────────
 
 /** The fake engine plus what the live path touches: layers, targets, RenderViews, the director. */
-async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100, queue = null } = {}) {
+async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100 } = {}) {
   installDom();
   const clock = { T: 1000 };
   t.mock.method(performance, 'now', () => clock.T);
@@ -1637,7 +1637,7 @@ async function liveRig(t, { outgoing = 'live', transition = 'crossfade', duratio
   pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); };
   pc.Entity.prototype.getLocalPosition = () => ({ x: 0, y: 0, z: 0 });
   pc.Entity.prototype.getLocalRotation = () => ({ x: 0, y: 0, z: 0, w: 1 });
-  rec.queue = queue || [fakeFlat(600, 0), fakeFlat(600, 5), fakeFlat(600, 9)];
+  rec.queue = [fakeFlat(600, 0), fakeFlat(600, 5), fakeFlat(600, 9)];
   const out = {};
   await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
   const v = out.viewer;
@@ -1870,23 +1870,12 @@ test('an entity effect that ends puts the work buffer back on AUTO (ONCE alone l
 });
 
 
-// ── 13c. setSource: particle transitions (swarm, burst, shimmer-cross, dust, morph) ──────────
-
-/** A fake SOG v2 resource: fakeFlat's centres (grid order, 10 per row) + streams + dequantisation. */
-function fakeSog(n, off, { width = 10, codebook = true } = {}) {
-  const r = fakeFlat(n, off);
-  const tex = (name) => ({ name, width, height: Math.ceil(n / width) });
-  const textures = new Map(['means_l', 'means_u', 'quats', 'scales', 'sh0'].map((k) => [k, tex(k)]));
-  if (codebook) textures.set('sogCodebook', { name: 'sogCodebook', width: 256, height: 1 });
-  r.streams = { textures };
-  r.parameters = new Map([['means_mins', [-1, -1, -1]], ['means_maxs', [1, 1, 1]]]);
-  return r;
-}
+// ── 13c. setSource: particle transitions (swarm, burst, shimmer-cross, dust) ─────────────────
 
 test('particle transitions: validated before anything loads; linear shared clock, 2–3 s; no reveal; spans overlap', async () => {
   const { PARTICLE_TRANSITIONS, particleSpan } = await import('../js/inline3d-splat-effects.js');
   const { resolveSwap } = await import('../js/inline3d-splat-playcanvas.js');
-  for (const name of ['swarm', 'burst', 'shimmer-cross', 'dust', 'morph']) {
+  for (const name of ['swarm', 'burst', 'shimmer-cross', 'dust']) {
     const p = resolveSwap({ transition: name });
     assert.ok(PARTICLE_TRANSITIONS[name], name);
     assert.ok(p.durationMs >= 2000 && p.durationMs <= 3000, `${name}: ~2–3 s`);
@@ -1898,7 +1887,7 @@ test('particle transitions: validated before anything loads; linear shared clock
   assert.equal(resolveSwap({ transition: 'burst' }).particles.in.effect, 'converge');
   assert.equal(resolveSwap({ transition: 'shimmer-cross' }).particles.out.effect, 'shimmer');
   assert.equal(resolveSwap({ transition: 'dust' }).particles.in.effect, 'dissolve-in');
-  assert.equal(resolveSwap({ transition: 'morph' }).particles.morph.effect, 'morph');
+  assert.throws(() => resolveSwap({ transition: 'morph' }), /setSource transition 'morph'/, 'morph was prototyped and dropped');
   // shared particle options reach both sides; per-side overrides; bad values throw at the call
   const p = resolveSwap({ transition: 'swarm', order: 'noise', maxDisparity: 0, incomingFx: { spread: 0.2 } });
   assert.equal(p.particles.out.opts.order, 'noise');
@@ -1906,7 +1895,6 @@ test('particle transitions: validated before anything loads; linear shared clock
   assert.equal(p.particles.in.opts.spread, 0.2);
   assert.throws(() => resolveSwap({ transition: 'swarm', stagger: 2 }), /stagger/);
   assert.throws(() => resolveSwap({ transition: 'dust', overlap: 1.5 }), /overlap/);
-  assert.throws(() => resolveSwap({ transition: 'morph', handover: 0.9 }), /handover/);
   assert.throws(() => resolveSwap({ transition: 'swarm', outgoingFx: 3 }), /outgoingFx/);
   // the spans: out over [0, (1+v)/2], in over [(1−v)/2, 1]
   near(particleSpan(0, 0.4, 'out'), 0, 1e-12);
@@ -1934,14 +1922,14 @@ test('swarm (LIVE): the outgoing asset plays assemble in reverse on the live cam
   assert.equal(e2.gsplat.getParameter('dxrFx_assemble_amount'), 0, 'the incoming one starts hidden');
   assert.deepEqual(out.effects(), [], 'driven by setSource: not a page effect');
   const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
-  const mix = () => parts[0].material.params.get('dxrSnapMix');
+  const over = () => parts[0].material.params.get('dxrSnapOver');
   frame();
-  assert.deepEqual(mix(), [0, 1], 'bridge (frozen capture, not yet sorted): the old frame alone');
+  assert.equal(over(), 0, 'bridge (frozen capture, not yet sorted): the old frame alone');
   sortLive(v, camerasMap);
   frame(); // ready → live source
   frame(); // clock starts
   assert.equal(parts[1].material.params.get('dxrSnap'), live.tex);
-  assert.deepEqual(mix(), [1, 1], 'the live outgoing image OVER the incoming one');
+  assert.equal(over(), 1, 'the live outgoing image OVER the incoming one');
   assert.equal(v._transitionState.raw, 0);
   clock.T += 500;
   frame();
@@ -2011,57 +1999,5 @@ test('particle transition with no frame to capture (hidden tab / no copy): the o
   await done;
   assert.equal(e2.gsplat.modifier, null, 'end state: the untouched asset');
   assert.equal(e1.enabled, false);
-  out.remove();
-});
-
-test('morph: pairs two grid-order SOG v2 assets — the outgoing one reads the incoming streams; scene hidden, then the handover lerp; the end is a cut', async (t) => {
-  const { rec, out, v, frame, camerasMap, clock } = await liveRig(t, { queue: [fakeSog(600, 0), fakeSog(600, 5), fakeSog(300, 9)] });
-  const e1 = out.mesh.entity;
-  const info = t.mock.method(console, 'info', () => {});
-  const done = out.setSource('b.sog', { transition: 'morph', durationMs: 1000, handover: 0.1 });
-  await settle(() => v._captureWaiters.length === 1);
-  v._afterTick();
-  await settle(() => out.mesh.entity !== e1);
-  const e2 = out.mesh.entity;
-  const res2 = out.mesh.resource;
-  assert.equal(info.mock.callCount(), 0, 'paired: no fallback');
-  assert.match(e1.gsplat.modifier.glsl, /dxrFx_morph_center\(center\)/);
-  assert.match(e1.gsplat.modifier.glsl, /uniform highp sampler2D dxrFx_morph_Bcb;/);
-  assert.match(e2.gsplat.modifier.glsl, /dxrFx_xfade_color/, 'the incoming asset: alpha 0 until the handover (nothing of it drawn)');
-  assert.doesNotMatch(e2.gsplat.modifier.glsl, /morph|assemble/);
-  assert.equal(e1.gsplat.getParameter('dxrFx_morph_Bml'), res2.streams.textures.get('means_l'), "B's streams bound on A's entity");
-  assert.equal(e1.gsplat.getParameter('dxrFx_morph_Bcb'), res2.streams.textures.get('sogCodebook'));
-  assert.deepEqual(e1.gsplat.getParameter('dxrFx_morph_Bmax'), [1, 1, 1]);
-  const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
-  const mix = () => parts[0].material.params.get('dxrSnapMix');
-  sortLive(v, camerasMap);
-  frame();
-  frame();
-  frame();
-  assert.deepEqual(mix(), [1, 0], 'the morphing outgoing asset alone (scene weight 0)');
-  clock.T += 450;
-  frame();
-  near(e1.gsplat.getParameter('dxrFx_morph_amount'), 1 - 0.45 / 0.9, 1e-9, 'amount = 1 − t / (1 − handover)');
-  clock.T += 500; // t = 0.95: half-way through the handover
-  frame();
-  assert.deepEqual(mix(), [0, 1], 'handover: the plain lerp');
-  assert.equal(e2.gsplat.modifier, null, 'the incoming asset untouched from the handover on');
-  near(parts[1].material.params.get('dxrSnapAlpha'), 0.5, 1e-9);
-  clock.T += 100;
-  frame();
-  await done;
-  assert.equal(v._live.active, false);
-  assert.equal(e1.enabled, false);
-  assert.ok(parts.every((mi) => !mi.visible));
-  // another count: one console.info line, then the swarm
-  const done2 = out.setSource('c.sog', { transition: 'morph', durationMs: 100 });
-  await settle(() => v._captureWaiters.length === 1);
-  v._afterTick();
-  await settle(() => out.mesh.entity !== e2);
-  assert.equal(info.mock.callCount(), 1);
-  assert.match(String(info.mock.calls[0].arguments[0]), /morph: different counts \(600 vs 300\) — playing 'swarm' instead/);
-  assert.match(e2.gsplat.modifier.glsl, /dxrFx_assemble_center/, 'the swarm, not a morph');
-  out.setSource('d.sog', { transition: 'cut' }).catch(() => {});
-  await done2;
   out.remove();
 });

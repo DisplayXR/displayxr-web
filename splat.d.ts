@@ -505,10 +505,8 @@ export interface SplatSourceOptions {
    * The particle transitions (docs/splat-effects.md §Particle transitions): `'swarm'` (the old
    * photo disperses into a curl-noise swarm while the new one assembles out of one), `'burst'`
    * (the old one collapses into its focus, the new one bursts out of its own), `'shimmer-cross'`
-   * (nothing moves: twinkling points out, twinkling points in), `'dust'` (drifting dust out,
-   * gathering dust in) and EXPERIMENTAL `'morph'` (index-paired: each gaussian of the old photo
-   * flies to gaussian i of the new one; two SHARP files only — anything else plays `'swarm'`, with
-   * one console.info line). 2.6–2.8 s, linear shared clock (each particle eases itself). The old
+   * (nothing moves: twinkling points out, twinkling points in) and `'dust'` (drifting dust out,
+   * gathering dust in). 2.6–2.8 s, linear shared clock (each particle eases itself). The old
    * photo is live, in 2D too; a hidden tab gets the crossfade.
    */
   transition?: 'cut' | 'crossfade' | 'flip' | 'wavefront' | SplatParticleTransitionName;
@@ -543,16 +541,14 @@ export interface SplatSourceOptions {
   origin?: SplatEffectOrigin;
   /** Particle transitions: how much of the clock the two photos' spans share, 0..1 (0 = one after the other). */
   overlap?: number;
-  /** Particle transitions: option overrides for the OUTGOING photo's effect (for `morph`: the morph's own). */
+  /** Particle transitions: option overrides for the OUTGOING photo's effect. */
   outgoingFx?: SplatParticleOptions & Record<string, unknown>;
   /** Particle transitions: option overrides for the INCOMING photo's effect. */
   incomingFx?: SplatParticleOptions & Record<string, unknown>;
-  /** `morph`: the last fraction of the clock that lerps into the new photo's own render (default 0.08, max 0.5). */
-  handover?: number;
 }
 
 /** setSource's particle transitions (docs/splat-effects.md §Particle transitions). */
-export type SplatParticleTransitionName = 'swarm' | 'burst' | 'shimmer-cross' | 'dust' | 'morph';
+export type SplatParticleTransitionName = 'swarm' | 'burst' | 'shimmer-cross' | 'dust';
 
 /**
  * What `prepareSource()` resolves to: an opaque, single-use handle for `setSource`. The asset is
