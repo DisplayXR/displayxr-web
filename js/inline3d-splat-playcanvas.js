@@ -652,6 +652,7 @@ export class PlayCanvasSplatViewer {
     // loaded). 'none' for splats — their colours are already display-referred; ./model's mesh
     // tiles pass 'neutral' (Khronos PBR Neutral), the glTF Sample Viewer's default.
     this.toneMapping = toneMapping;
+    this.sceneColor = false;
     // Depth range for a MIXED scene (meshes under handle.engine.root depth-test against each
     // other; splats only test against them). The projections' own near/far stay the adapter's —
     // these only raise the near (floor) and lower the far (cap). Unset: untouched.
@@ -925,6 +926,18 @@ export class PlayCanvasSplatViewer {
     const v = pc[TONE_MAPPINGS[key]] ?? pc.TONEMAP_NONE;
     if (this.eye?.camera) this.eye.camera.toneMapping = v;
     if (this._viewPath === 'cameras') for (const c of this._views) if (c?.camera) c.camera.toneMapping = v;
+  }
+
+  /**
+   * Turn the scene-colour grab pass on (true) or off on every eye camera — what a
+   * KHR_materials_transmission material samples (./model's prepareTransmission). Idempotent: the
+   * engine's `renderSceneColorMap` setter counts one request per camera. Cameras made later (a
+   * view-path switch) inherit it via `_makeCamera`.
+   */
+  useSceneColor(on = true) {
+    this.sceneColor = !!on;
+    const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : [])];
+    for (const c of cams) if (c?.camera && c.camera.renderSceneColorMap !== undefined) c.camera.renderSceneColorMap = this.sceneColor;
   }
 
   /** Forget the auto-fit (scale 1, no subject box) — the camera rig's framing. */
@@ -1490,6 +1503,7 @@ export class PlayCanvasSplatViewer {
     // decodeGamma → toneMap → gammaCorrectOutput. Spark writes the stored colour straight out;
     // NONE is the same thing here (GAMMA_SRGB alone leaves a gamma-space colour untouched).
     e.camera.toneMapping = TONE_MAPPINGS[this.toneMapping] ? pc[TONE_MAPPINGS[this.toneMapping]] ?? pc.TONEMAP_NONE : pc.TONEMAP_NONE;
+    if (this.sceneColor) e.camera.renderSceneColorMap = true;
     this.rigNode.addChild(e);
     return e;
   }
@@ -2170,8 +2184,10 @@ export function describeResource(res) {
  * handle.setRig's DISPLAY-rig defaults: addModel's, so a mesh framed through setRig('display')
  * sits exactly where `addModel(url, { engine: 'playcanvas' })` puts it (docs/playcanvas-adapter.md
  * §setRig). `toneMapping` applies to the page's meshes while the splat is hidden (the splat keeps
- * 'none' whenever it is shown); `environment: 'room'` installs addModel's neutral-studio IBL when
- * the page has no `scene.envAtlas` of its own, and removes it again when the rig changes back.
+ * 'none' whenever it is shown); `environment` installs addModel's IBL of the same name when the
+ * page has no `scene.envAtlas` of its own, and removes it again when the rig changes back —
+ * `'neutral'` (default, the Sample Viewer's studio) or `'room'` (three's RoomEnvironment; its
+ * tone mapping defaults to `'none'`, three's, unless `toneMapping` is passed).
  */
 export const SET_RIG_DISPLAY_DEFAULTS = Object.freeze({
   virtualDisplayHeight: 0.24,
@@ -2184,8 +2200,11 @@ export const SET_RIG_DISPLAY_DEFAULTS = Object.freeze({
   parallaxFactor: 1,
   perspectiveFactor: 1,
   toneMapping: 'neutral',
-  environment: 'room',
+  environment: 'neutral',
 });
+
+/** The tone mapping each setRig environment defaults to (addModel's ENVIRONMENT_TONE_MAPPING). */
+const SET_RIG_ENV_TONE_MAPPING = Object.freeze({ neutral: 'neutral', room: 'none', none: 'neutral' });
 
 export const SET_RIG_TYPES = Object.freeze(['display', 'camera', 'auto']);
 const SET_RIG_FITS = ['contain', 'cover', 'height', 'none'];
@@ -2224,13 +2243,13 @@ export function validateSetRig(type, o = {}, pageMode = false) {
   };
   const fit = o.fit === undefined ? D.fit : o.fit;
   if (!SET_RIG_FITS.includes(fit)) throw new Error(`@displayxr/inline3d/splat: setRig('display') — fit "${fit}", expected ${SET_RIG_FITS.join(' | ')}.`);
-  const toneMapping = o.toneMapping === undefined ? D.toneMapping : o.toneMapping;
-  if (!TONE_MAPPINGS[toneMapping]) {
-    throw new Error(`@displayxr/inline3d/splat: setRig('display') — toneMapping "${toneMapping}", expected ${Object.keys(TONE_MAPPINGS).join(' | ')}.`);
-  }
   const environment = o.environment === undefined ? D.environment : o.environment;
   if (!['room', 'neutral', 'none'].includes(environment)) {
     throw new Error(`@displayxr/inline3d/splat: setRig('display') — environment "${environment}", expected 'room' | 'neutral' | 'none'.`);
+  }
+  const toneMapping = o.toneMapping === undefined ? SET_RIG_ENV_TONE_MAPPING[environment] : o.toneMapping;
+  if (!TONE_MAPPINGS[toneMapping]) {
+    throw new Error(`@displayxr/inline3d/splat: setRig('display') — toneMapping "${toneMapping}", expected ${Object.keys(TONE_MAPPINGS).join(' | ')}.`);
   }
   let frame = null;
   if (o.frame != null) {
@@ -3080,8 +3099,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   /** null = 'auto' (the per-asset waterfall); else { type: 'camera' } | { type: 'display', o }. */
   let rigOverride = null;
   let rigSeq = 0;
-  /** The neutral-studio IBL setRig('display') installed, and what it replaced — or null. */
+  /** The IBL setRig('display') installed ({ kind, atlas, prev }), and what it replaced — or null. */
   let rigEnv = null;
+  /** ./inline3d-model-playcanvas.js once a display rig has loaded it (transmission, environments). */
+  let rigModelModule = null;
+  /** Mesh instances / materials prepareTransmission has handled, and whether it turned the grab on. */
+  const rigTransmissionSeen = new WeakSet();
+  let rigGrab = false;
+  let rigTick = 0;
   const baseToneMapping = viewer.toneMapping;
 
   /** Is the splat on screen: its entity (and every ancestor) enabled. */
@@ -3155,21 +3180,39 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   viewer.onTick = pageMode
     ? viewer.onTick
     : () => {
-        const want = rigOverride?.type === 'display' && !splatShown() ? rigOverride.o.toneMapping : baseToneMapping;
+        const display = rigOverride?.type === 'display';
+        const want = display && !splatShown() ? rigOverride.o.toneMapping : baseToneMapping;
         if (want !== viewer.toneMapping) viewer.setToneMapping(want);
+        // A transmissive glTF the page hangs under root on the display rig (the Shop's glass
+        // lantern): addModel's grab pass + pass order + per-eye grab UV. Re-checked every 30
+        // frames, since a page adds its meshes whenever they load — before or after setRig.
+        if (display && rigModelModule && pcModule && (rigTick++ % 30 === 0)) syncRigTransmission();
       };
 
-  /** Install addModel's default IBL for the display rig, if the page has none of its own. */
+  /** prepareTransmission over root; the grab pass on while a transmissive mesh is there. */
+  function syncRigTransmission() {
+    const n = rigModelModule.prepareTransmission(pcModule, viewer.content, viewer.app?.graphicsDevice, rigTransmissionSeen);
+    if ((n > 0) !== rigGrab) {
+      rigGrab = n > 0;
+      viewer.useSceneColor(rigGrab);
+    }
+  }
+
+  /** Install addModel's IBL (`disp.environment`) for the display rig, if the page has none of its own. */
   async function ensureRigEnvironment(disp, seq) {
-    if (disp.environment === 'none' || viewer.sky || rigEnv) return;
+    const m = (rigModelModule ||= await import('./inline3d-model-playcanvas.js'));
+    if (removed || seq !== rigSeq || rigOverride?.type !== 'display') return;
+    rigTick = 0; // transmission check on the next tick
+    const kind = disp.environment;
+    if (rigEnv && rigEnv.kind === kind) return;
+    dropRigEnvironment(); // a different environment of ours (setRig('display') called again)
+    if (kind === 'none' || viewer.sky) return;
     const app = viewer.app;
     const scene = app?.scene;
     if (!scene || scene.envAtlas) return; // the page lights its own meshes: leave it alone
-    const m = await import('./inline3d-model-playcanvas.js');
-    if (removed || seq !== rigSeq || rigOverride?.type !== 'display' || scene.envAtlas || rigEnv) return;
     const prev = { skyboxIntensity: scene.skyboxIntensity, exposure: scene.exposure, skyboxRotation: scene.skyboxRotation };
-    const atlas = m.useNeutralStudio(pcModule, app, m.ENV_YAW_DEG);
-    rigEnv = { atlas, prev };
+    const atlas = kind === 'room' ? m.useRoomEnvironment(pcModule, app, m.ROOM_YAW_DEG) : m.useNeutralStudio(pcModule, app, m.ENV_YAW_DEG);
+    rigEnv = { kind, atlas, prev };
   }
 
   /** Undo ensureRigEnvironment (only what it installed, only if the page has not replaced it). */
@@ -3200,7 +3243,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     return first.then(async () => {
       if (removed || seq !== rigSeq || !current) return out;
       rigOverride = req.type === 'auto' ? null : req;
-      if (req.type !== 'display') dropRigEnvironment();
+      if (req.type !== 'display') {
+        dropRigEnvironment();
+        if (rigGrab) {
+          rigGrab = false;
+          viewer.useSceneColor(false);
+        }
+      }
       const resolved = resolveFor(current.rigIn, req.type);
       out.rig = resolved;
       applyRig(resolved, current.rigIn.bounds, true);

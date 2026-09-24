@@ -53,6 +53,7 @@ export {
   SEMANTIC_TEXCOORD0,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
+  CHUNKAPI_2_8,
   // setSource's frame snapshot
   RenderTarget,
   FILTER_NEAREST,
