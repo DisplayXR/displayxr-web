@@ -5,6 +5,28 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — minor
+
+Touches the **preview tier** (`./splat` and `./model`, `engine: 'playcanvas'` only). The defaults
+keep the wheel's pixels. One default does change: a two-finger touch now pinch-zooms (within the
+old 0.2–6 range, with no relax) where it used to act as an erratic one-finger drag.
+
+### Added
+
+- **`zoom: { min, max, relax, ease }`** (#36), bounded zoom that relaxes back to rest.
+  - Wheel, pinch and `setPose` clamp to `[min, max]`. Defaults are 0.2 and 6, as before.
+  - `relax: true` eases back to rest (1×, or the last `setPose` zoom) once the wheel has been idle
+    150 ms or the pinch ends. It uses the orbit's τ 0.6 s, with a landing floor so 2× is exactly
+    home in about 2.9 s, and it never fights a live gesture.
+  - The zoom scales about the focus, so the focus keeps its place and its disparity in both eyes.
+  - The gallery's Spatial View passes `{ min: 1, max: 2, relax: true }`: you can't zoom out past
+    the frame's edges, and a peek comes back on its own.
+- **Two-finger pinch zoom** on the PlayCanvas viewer, with Pointer Events and the same bounds.
+- Gates, on a real GPU (1280×720):
+  - Zooming out is refused: MAE 0 against the rest render.
+  - Wheel and pinch reach the 2× cap and return to **MAE 0** against rest 3 s after release.
+  - In fake stereo, the focus's disparity is unchanged at 1×, 1.5× and 2×.
+
 ## 1.18.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive: a page that never

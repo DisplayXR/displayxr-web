@@ -259,6 +259,15 @@ export interface SplatOptions {
   orbitMaxDeg?: number;
   /** PlayCanvas: easing time constants, seconds — `drag` while held (0.2), `rest` after release (0.6). */
   orbitEase?: { drag?: number; rest?: number };
+  /**
+   * PlayCanvas: zoom bounds + relax, for the wheel, the two-finger pinch and `setPose`. `min` /
+   * `max` clamp the zoom (defaults 0.2 / 6, the pre-1.19 range); `relax: true` eases it back to
+   * rest — 1×, or the last `setPose` zoom — once the wheel has been idle 150 ms or the pinch ends,
+   * with the orbit's time constant (`ease`, default 0.6 s) and a landing floor so it arrives (2×
+   * is home in ≈3 s). The zoom scales the subject about the focus, which keeps its screen position
+   * and its disparity. `{ min: 1, max: 2, relax: true }` is a peek that never shows the splat's edges.
+   */
+  zoom?: { min?: number; max?: number; relax?: boolean; ease?: number };
   fit?: 'contain' | 'height' | 'cover' | 'none';
   /** Fraction of the tile the subject may occupy (default 0.8) — width AND height. */
   margin?: number;
