@@ -14,6 +14,7 @@
 const log = [];
 const net = { caps: 0, depth: 0, gaussians: 0, other: [] };
 let depthStatus = 200;
+let fakeSog = null; // the first lift's own .sog stands in for the module's gaussians answer
 const realFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
   const url = typeof input === 'string' ? input : input.url;
@@ -34,7 +35,10 @@ window.fetch = async (input, init = {}) => {
       bmp.close();
       return new Response(d.buffer, { headers: { 'content-type': 'application/octet-stream', 'x-dxr-depth-width': String(w), 'x-dxr-depth-height': String(h), 'x-dxr-depth-semantics': 'metric', 'x-dxr-depth-focalpx': '230' } });
     }
-    if (url === 'displayxr-lift://lift/gaussians') { net.gaussians++; return new Response('no', { status: 404 }); }
+    if (url === 'displayxr-lift://lift/gaussians') {
+      net.gaussians++;
+      return fakeSog ? new Response(fakeSog, { headers: { 'content-type': 'application/octet-stream' } }) : new Response('no', { status: 404 });
+    }
     throw new TypeError('Failed to fetch');
   }
   if (!url.startsWith(location.origin)) net.other.push(url);
@@ -82,12 +86,27 @@ window.__run = async () => {
   out.img.explore = { attrs: attrs(img), canvasVisibility: h.canvas.style.visibility, imgVisibility: img.style.visibility, splats: h.stats.splats, stillDepthMs: h.stats.stillDepthMs, depthPosts: net.depth, stillProv: h._internals().stillProv?.id, stillSource: h._internals().stillProv?.info?.source };
   await new Promise((r) => setTimeout(r, 500));
   out.img.png = await h.capture().then((b) => new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); })).catch((e) => 'ERR ' + e.message);
+  fakeSog = await h.exportSog().then((b) => b.arrayBuffer()).catch(() => null);
   h.resume();
   await waitState(h, 'live');
   await new Promise((r) => setTimeout(r, 600)); // fade out
   out.img.back = { state: h.state, attrs: attrs(img), canvasVisibility: h.canvas.style.visibility, imgVisibility: img.style.visibility };
   h.remove();
   out.img.removed = { attrs: attrs(img), imgVisibility: img.style.visibility, hosts: document.querySelectorAll('[data-inline3d-lift]').length };
+
+  // ── image, module WITH gaussians: the explore scene comes from POST lift/gaussians ──
+  {
+    const hg = await lift(img, { native: { ...out.caps, modes: ['depth', 'sbs', 'gaussians'] } });
+    await waitState(hg, 'live');
+    const d0 = net.depth, g0 = net.gaussians;
+    hg.explore();
+    await waitState(hg, 'explore', 120000);
+    out.gauss = { fakeSogBytes: fakeSog ? fakeSog.byteLength : 0, gaussiansPosts: net.gaussians - g0, depthPosts: net.depth - d0,
+      liftSource: hg.stats.liftSource, liftProv: hg._internals().liftProv?.id ?? null, attrs: attrs(img), canExport: hg.canExport };
+    await new Promise((r) => setTimeout(r, 400));
+    out.gauss.png = await hg.capture().then((b) => new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); })).catch((e) => 'ERR ' + e.message);
+    hg.remove();
+  }
 
   // ── video ──
   const vid = document.getElementById('vid');

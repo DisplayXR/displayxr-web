@@ -46,6 +46,10 @@ try {
     await writeFile(join(outDir, 'img-explore.png'), Buffer.from(out.img.png.split(',')[1], 'base64'));
     out.img.png = join(outDir, 'img-explore.png');
   }
+  if (out.gauss && typeof out.gauss.png === 'string' && out.gauss.png.startsWith('data:')) {
+    await writeFile(join(outDir, 'gauss-explore.png'), Buffer.from(out.gauss.png.split(',')[1], 'base64'));
+    out.gauss.png = join(outDir, 'gauss-explore.png');
+  }
   await writeFile(join(outDir, 'report.json'), JSON.stringify(out, null, 1));
   console.log(JSON.stringify(out, null, 1));
 } catch (e) {
