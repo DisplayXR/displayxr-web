@@ -46,6 +46,7 @@
 /** @typedef {'sbs'|'mono'} PlayerFormat */
 
 const VALID_FORMATS = new Set(['sbs', 'mono']);
+const VALID_SKINS = new Set(['classic', 'dock']);
 const VALID_CONTROLS = new Set(['sdk', 'none']);
 
 function pickEnum(value, allowed, fallback, label) {
@@ -143,6 +144,9 @@ export function normalizePlayerOptions(opts = {}) {
   return {
     format: pickEnum(opts.format, VALID_FORMATS, 'sbs', 'format'),
     controls: pickEnum(opts.controls, VALID_CONTROLS, 'sdk', 'controls'),
+    // The transport's look. 'classic': a full-width bottom band. 'dock': a floating rounded dock
+    // with lit round buttons. Same controls, same overlay rules, CSS only.
+    skin: pickEnum(opts.skin, VALID_SKINS, 'classic', 'skin'),
     poster: opts.poster || null,
     autoplay: !!opts.autoplay,
     muted: opts.muted === undefined ? true : !!opts.muted,
@@ -543,6 +547,69 @@ const PLAYER_CSS = `
 @keyframes dxr-spin{to{transform:rotate(360deg)}}
 
 .dxr-player-host--idle{cursor:none;}
+/* ── skin: 'dock' ──────────────────────────────────────────────────────────────────────────────
+   Every glow stays INSIDE its element's own box. An overlay is excluded from the weave by its
+   rect; a shadow painted outside that rect is page content OVER the woven canvas, so it would be
+   woven with it — a soft double-imaged smudge around the dock. Hence: no outer box-shadow on the
+   dock, and the buttons' halos are inset or sit within the dock's padding. */
+.dxr-player-host--dock{--dxr-accent-hi:color-mix(in srgb,var(--dxr-accent) 62%,#fff);
+  --dxr-accent-lo:color-mix(in srgb,var(--dxr-accent) 72%,#000);}
+.dxr-player-host--dock .dxr-player{left:12px;right:12px;bottom:12px;padding:10px 12px 8px;
+  border-radius:18px;max-height:none;text-shadow:none;
+  background:linear-gradient(180deg,rgba(44,48,62,.95) 0%,rgba(20,22,30,.96) 55%,rgba(12,13,18,.97) 100%);
+  border:1px solid rgba(255,255,255,.09);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.10),inset 0 -1px 0 rgba(0,0,0,.4);}
+.dxr-player-host--dock .dxr-player--hidden{transform:translateY(10px) scale(.985);}
+.dxr-player-host--dock .dxr-player-row{gap:6px;min-height:40px;}
+.dxr-player-host--dock .dxr-player-btn{width:34px;height:34px;padding:7px;border-radius:50%;
+  background:radial-gradient(circle at 32% 26%,rgba(255,255,255,.22),rgba(255,255,255,.05) 58%,rgba(255,255,255,.02));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.12),inset 0 1px 0 rgba(255,255,255,.18),
+    inset 0 -2px 4px rgba(0,0,0,.35);
+  transition:box-shadow .16s ease,transform .12s ease,background .16s ease,color .16s ease;}
+.dxr-player-host--dock .dxr-player-btn:hover{background:radial-gradient(circle at 32% 26%,
+    rgba(255,255,255,.30),rgba(255,255,255,.08) 58%,rgba(255,255,255,.03));
+  box-shadow:inset 0 0 0 1.5px var(--dxr-accent),inset 0 0 10px color-mix(in srgb,var(--dxr-accent) 45%,transparent),
+    inset 0 1px 0 rgba(255,255,255,.2);color:#fff;}
+.dxr-player-host--dock .dxr-player-btn:active{transform:scale(.9);}
+.dxr-player-host--dock .dxr-player-skip{padding:6px;}
+/* The primary: a lit accent orb. */
+.dxr-player-host--dock .dxr-player-play{width:42px;height:42px;padding:10px;color:#07111d;
+  background:radial-gradient(circle at 34% 26%,var(--dxr-accent-hi),var(--dxr-accent) 55%,var(--dxr-accent-lo));
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.55),inset 0 -3px 6px rgba(0,0,0,.28),
+    inset 0 0 0 1px rgba(255,255,255,.18);}
+.dxr-player-host--dock .dxr-player-play:hover{color:#07111d;
+  background:radial-gradient(circle at 34% 26%,#fff,var(--dxr-accent-hi) 40%,var(--dxr-accent) 85%);
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.7),inset 0 -3px 6px rgba(0,0,0,.22),
+    inset 0 0 0 1px rgba(255,255,255,.3);}
+/* Scrub: a lit fill and a knob with a ring, inside the dock. */
+.dxr-player-host--dock .dxr-player-scrubwrap{margin:0 4px 6px;}
+.dxr-player-host--dock .dxr-player-scrubwrap::before{height:5px;
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.5);}
+.dxr-player-host--dock .dxr-player-scrubwrap::after{height:5px;
+  background:linear-gradient(90deg,var(--dxr-accent-lo),var(--dxr-accent) 60%,var(--dxr-accent-hi));
+  box-shadow:0 0 6px color-mix(in srgb,var(--dxr-accent) 70%,transparent);}
+.dxr-player-host--dock .dxr-player-knob{width:15px;height:15px;margin-left:-7.5px;margin-top:-7.5px;
+  background:radial-gradient(circle at 35% 30%,#fff,#dfe8f5 60%,#b9c6d8);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--dxr-accent) 55%,transparent),0 1px 3px rgba(0,0,0,.6);}
+.dxr-player-host--dock .dxr-player-tip{bottom:22px;border-radius:7px;
+  background:linear-gradient(180deg,rgba(52,57,72,.98),rgba(24,26,34,.98));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.1);}
+.dxr-player-host--dock .dxr-player-clock b{color:#fff;}
+.dxr-player-host--dock .dxr-player-badge3d{border:0;opacity:1;color:#07111d;
+  background:linear-gradient(180deg,var(--dxr-accent-hi),var(--dxr-accent));}
+/* Centre: a larger lit orb, ring included in its own box. */
+.dxr-player-host--dock .dxr-player-centre{width:78px;height:78px;margin:-39px 0 0 -39px;padding:22px;
+  color:#07111d;
+  background:radial-gradient(circle at 34% 26%,var(--dxr-accent-hi),var(--dxr-accent) 55%,var(--dxr-accent-lo));
+  box-shadow:inset 0 0 0 4px rgba(255,255,255,.14),inset 0 2px 2px rgba(255,255,255,.5),
+    inset 0 -5px 10px rgba(0,0,0,.3);}
+.dxr-player-host--dock .dxr-player-centre svg{transform:translateX(2px);}
+.dxr-player-host--dock .dxr-player-title{left:12px;right:12px;top:12px;padding:9px 14px;
+  border-radius:14px;max-height:none;width:max-content;max-width:calc(100% - 24px);text-shadow:none;
+  background:linear-gradient(180deg,rgba(44,48,62,.92),rgba(16,18,24,.94));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);}
+.dxr-player-host--dock .dxr-player-title--hidden{transform:translateY(-10px);}
+
 @media (prefers-reduced-motion:reduce){
   .dxr-player,.dxr-player-title,.dxr-player-btn,.dxr-player-centre,.dxr-player-knob,.dxr-player-tip,
   .dxr-player-volslider,.dxr-player-scrubwrap::before,.dxr-player-scrubwrap::after,
@@ -672,10 +739,11 @@ function readBuffered(video) {
  * buffering spinner — each its own `data-inline3d-overlay`, each a PARTIAL region of the tile
  * (constraint 1 at the top of this section). Returns the bar element and a cleanup.
  */
-function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen }) {
+function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin }) {
   ensureStyle();
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.classList.add('dxr-player-host');
+  if (skin === 'dock') container.classList.add('dxr-player-host--dock');
   // One write, on the host: every overlay below inherits it.
   if (accent) container.style.setProperty('--dxr-accent', accent);
 
@@ -1070,7 +1138,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       if (canFullscreen) document.removeEventListener('fullscreenchange', syncFullscreen);
       window.removeEventListener('resize', fitFullscreen);
       if (fsElement() === container) document.exitFullscreen?.().catch(() => {});
-      container.classList.remove('dxr-player-host', 'dxr-player-host--idle');
+      container.classList.remove('dxr-player-host', 'dxr-player-host--idle', 'dxr-player-host--dock');
       container.style.removeProperty('--dxr-accent');
       for (const el of [titleEl, bar, centre, pip, spinner]) el.remove();
     },
@@ -1419,6 +1487,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
         title: o.title,
         skipButtons: o.skipButtons,
         fullscreen: o.fullscreen,
+        skin: o.skin,
       });
       bar = built.el;
       cleanupBar = built.cleanup;

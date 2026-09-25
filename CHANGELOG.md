@@ -37,6 +37,10 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   canvas's container goes fullscreen so the transport comes along, and the canvas is sized to fit
   at its own aspect — never `object-fit`, which would letterbox inside the woven rect. The sample
   gains chapter chips (real `setSource()` crossfades) and an honest caption for the mono tile.
+- **`skin: 'dock'`** — a floating rounded dock, lit round buttons, an accent orb for play, a glowing
+  scrub fill and knob, a title pill. `'classic'` stays the default. Every glow is inside its
+  overlay's own box: a shadow outside the excluded rect would be woven with the canvas. The sample
+  uses `'dock'` (`?skin=classic` for the band) and stacks its tiles at 90% of the window.
 
 ## 1.24.0 — 2026-09-25
 
