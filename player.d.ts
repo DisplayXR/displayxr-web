@@ -64,6 +64,12 @@ export interface PlayerOptions {
    * showing 3D at that moment, and a badge that says otherwise is worse than no badge.
    */
   badge3d?: boolean | string;
+  /**
+   * The transport's look: `'classic'` (default) — a full-width bottom band; `'dock'` — a floating
+   * rounded dock with lit round buttons and an accent orb for play. Same controls, CSS only. Both
+   * keep every glow inside the overlay's own box (a shadow outside it would be woven).
+   */
+  skin?: 'classic' | 'dock';
   /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */
   title?: string;
   /** −10 s / +10 s buttons beside play. Default true (hidden on tiles narrower than 420 px). J / L work either way. */

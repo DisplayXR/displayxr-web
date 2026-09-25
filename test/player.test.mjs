@@ -309,3 +309,15 @@ test('chrome options: title is page text or null, skip buttons and fullscreen de
   assert.equal(normalizePlayerOptions({ skipButtons: false }).skipButtons, false);
   assert.equal(normalizePlayerOptions({ fullscreen: false }).fullscreen, false);
 });
+
+test("skin: 'classic' by default, 'dock' accepted, anything else falls back with a warning", () => {
+  assert.equal(normalizePlayerOptions().skin, 'classic');
+  assert.equal(normalizePlayerOptions({ skin: 'dock' }).skin, 'dock');
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(normalizePlayerOptions({ skin: 'neon' }).skin, 'classic');
+  } finally {
+    console.warn = warn;
+  }
+});

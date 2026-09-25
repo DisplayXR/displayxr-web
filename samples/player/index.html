@@ -16,8 +16,11 @@
   .status{font:13px/1.5 system-ui;padding:8px 12px;border-radius:8px;margin:0 0 20px;display:inline-block}
   .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
   .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
-  .cols{display:grid;grid-template-columns:1fr 1fr;gap:22px}
-  @media (max-width:640px){ .cols{grid-template-columns:1fr} }
+  /* One tile per row, 90% of the WINDOW wide (the text column stays readable at 900px). Widened
+     with margins, never a transform: a transformed ancestor of a woven canvas is asking for the
+     compositor to see a different rect than the page laid out. */
+  .cols{display:grid;grid-template-columns:1fr;gap:44px;width:90vw;margin-left:calc(50% - 45vw)}
+  .cols .cap{max-width:900px}
   .cap{font-size:13px;opacity:.65;margin:8px 0 0}
   /* Stage stays visually bare — border/radius/shadow here would be woven WITH the SBS pair on
      the 'sbs' tile and cropped in half. Decoration belongs in the buffer (cornerRadius/feather),

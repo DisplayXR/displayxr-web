@@ -22,6 +22,7 @@ const sbsPlayer = addPlayer(wall, document.getElementById('tile-sbs'), SRC, {
   format: 'sbs',
   loop: true,
   title: 'Fly Me to the Moon',
+  skin: new URLSearchParams(location.search).get('skin') || 'dock', // ?skin=classic for the band
   // Opt-in: creates the mixer that lets setSource() dissolve instead of cut.
   transition: 'crossfade',
   durationMs: 700,
