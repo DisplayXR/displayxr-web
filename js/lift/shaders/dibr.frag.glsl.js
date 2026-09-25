@@ -8,11 +8,13 @@
 // +z toward the viewer):
 //   p'   output pixel on the display plane          ((u-0.5)*A, v-0.5)
 //   E    this view's eye                             uEye  (from the projection matrix)
-//   D0   distance of the virtual SOURCE camera       uD0   (centred, same distance as the eyes)
-//   q    relative parallax of a scene point, q = z/(D0 - z) — linear in disparity, 0 on the glass.
+//   C    the virtual SOURCE camera                   uCam  (the eyes' CENTROID, not the window axis)
+//   q    relative parallax of a scene point, q = z/(C.z - z) — linear in disparity, 0 on the glass.
 // A ray from E through p' reaches depth z at lateral r = E + (p' - E)(E.z - z)/E.z, which the
-// source camera sees at x_s = r * (1 + q). For E.z == D0 this is the familiar x_s = p' + E.xy*q
-// (the marcher's  s1 = s2 + C.xy*invZ  with the convergence skew folded in).
+// source camera sees at x_s = C + (r - C)(1 + q). For E.z == C.z this is x_s = p' + (E - C).xy*q
+// (the marcher's  s1 = s2 + C.xy*invZ  with the convergence skew folded in, C there being the
+// eye's offset from the source camera). C on the window axis (the pre-fix code) is only right
+// for a tile seen head-on; seen obliquely it shears the whole frame by E.xy*q.
 export default /* glsl */ `#version 300 es
 precision highp float;
 precision highp sampler2D;
@@ -29,7 +31,7 @@ uniform float uQScale;      // q per unit of (n - conv): budget * A / (kappa * D
 uniform float uTaper;       // border taper width, fraction of the image
 uniform float uAspect;      // A = window width / height
 uniform vec3  uEye;         // eye relative to window centre, in window heights
-uniform float uD0;          // source-camera distance, window heights
+uniform vec3  uCam;         // source camera (eye centroid), same frame
 uniform int   uSteps;       // coarse march steps
 
 // Map sample uv (source) -> relative parallax q at that pixel.
@@ -44,9 +46,9 @@ float qAt(vec2 uvs) {
 
 // Source uv for the ray through output p' at relative parallax q.
 vec2 srcUv(vec2 pp, float q) {
-  float z = q * uD0 / (1.0 + q);
+  float z = q * uCam.z / (1.0 + q);
   vec2 r = uEye.xy + (pp - uEye.xy) * ((uEye.z - z) / uEye.z);
-  vec2 xs = r * (1.0 + q);
+  vec2 xs = uCam.xy + (r - uCam.xy) * (1.0 + q);
   return vec2(xs.x / uAspect + 0.5, xs.y + 0.5);
 }
 
@@ -84,9 +86,10 @@ void main() {
   // ---- disocclusion: background-side gather (iw3 shift_fill equivalent) ----
   // Probe the disparity a couple of depth texels either side along the parallax direction.
   // A steep jump means the hit landed on the stretched edge ramp: move the colour sample to
-  // the BACKGROUND side by the width of the hole this eye opens there (|E.xy| * dq_edge), so a
-  // neutral view (E.xy == 0) is never touched, and blend a short blur along the same line.
-  vec2 dir = length(uEye.xy) > 1e-6 ? normalize(uEye.xy) : vec2(1.0, 0.0);
+  // the BACKGROUND side by the width of the hole this eye opens there (|E.xy - C.xy| * dq_edge),
+  // so a neutral view (E == C) is never touched, and blend a short blur along the same line.
+  vec2 off = uEye.xy - uCam.xy;
+  vec2 dir = length(off) > 1e-6 ? normalize(off) : vec2(1.0, 0.0);
   vec2 texel = vec2(dir.x / uDispRes.x, dir.y / uDispRes.y);
   vec2 dUv = texel * 2.0;
   float qa = qAt(uv - dUv), qb = qAt(uv + dUv);
@@ -96,7 +99,7 @@ void main() {
   // its own colour (that is the occluding silhouette, not a disocclusion).
   edge *= clamp(2.0 * (max(qa, qb) - q) / max(jump, 1e-6), 0.0, 1.0);
   vec4 col = texture(uColor, uv);
-  float hole = length(uEye.xy) * jump;                 // hole width, window heights
+  float hole = length(off) * jump;                 // hole width, window heights
   if (edge > 0.0 && hole > 0.0) {
     float side = qa < qb ? -1.0 : 1.0;                   // toward the lower (farther) q
     vec2 step1 = vec2(dir.x / uAspect, dir.y) * hole * side;

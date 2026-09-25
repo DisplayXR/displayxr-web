@@ -10,7 +10,8 @@
 // Depth arrives at 10-15 fps, frames at 60: every render() reuses the last depth. Normalisation,
 // convergence and dilation are CPU-side at depth resolution (76k px - microseconds); the shader
 // reads the RAW dilated disparity and normalises with two uniforms, so an EMA step never
-// re-uploads. The view -> uniform mapping reads ONLY view.projectionMatrix (see viewEye()).
+// re-uploads. The view -> uniform mapping reads ONLY view.projectionMatrix (see viewEye()), and the
+// virtual SOURCE camera sits at the eyes' centroid (see sourceCamera()), never on the tile's axis.
 // Full write-up: docs/lift-dibr.md.
 
 import VERT from './shaders/dibr.vert.glsl.js';
@@ -31,7 +32,13 @@ export const DEFAULT_PARAMS = Object.freeze({
   hiPct: 0.98,
   ema: 0.9, // decay: state = ema*state + (1-ema)*new
   steps: 32, // coarse ray-march steps
+  lookAround: 0, // 0 = source camera ON the eye centroid (stereo only); 1 = head motion parallax
+  //                 against a slowly re-centring anchor (LOOK_AROUND_TAU_S). See sourceCamera().
 });
+
+/** Time constant (s) of the look-around anchor: how fast the source camera re-centres on a moved
+ *  head when `lookAround > 0`. */
+export const LOOK_AROUND_TAU_S = 1.0;
 
 // ---------------------------------------------------------------------------------------------
 // Pure math (unit-tested in test/lift-dibr-math.test.mjs)
@@ -184,6 +191,60 @@ export function viewEye(projectionMatrix) {
   };
 }
 
+/**
+ * THE source-camera placement. The 2D frame is treated as what a camera at C saw through the
+ * display window; every view re-projects it from its own eye E, so the per-view parallax is
+ * (E - C)·q. C must therefore sit where the VIEWER is — the centroid of this frame's eyes — not
+ * on the tile's normal axis: an inline tile is almost never head-on (runtime nominal viewer
+ * ~0.1 m above the panel centre, plus wherever the tile sits on the page), so an on-axis C turns
+ * that constant offset into a whole-frame shear E.xy·q identical in both eyes (the 1.0.2 panel
+ * bug: ~9 % vertical shift, borders smeared by the taper). With C at the centroid the nominal
+ * pair differs from C only by ±IPD/2 horizontally: pure stereo, no vertical parallax.
+ *
+ * `lookAround` (0..1) blends C.xy toward `anchor` (a slow EMA of the centroid kept by the
+ * caller), so a head MOVE gives transient motion parallax that re-centres. C.z always follows
+ * the centroid (forward/back motion is not turned into z-parallax).
+ * @param {{x:number,y:number,z:number}[]} eyes  viewEye() of every view this frame
+ * @param {{x:number,y:number}|null} [anchor]
+ * @param {number} [lookAround=0]
+ * @returns {{x:number,y:number,z:number}}  window heights, origin = window centre
+ */
+export function sourceCamera(eyes, anchor = null, lookAround = 0) {
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  for (const e of eyes) {
+    x += e.x;
+    y += e.y;
+    z += e.z;
+  }
+  const n = Math.max(1, eyes.length);
+  const c = { x: x / n, y: y / n, z: z / n };
+  const k = Math.min(1, Math.max(0, +lookAround || 0));
+  if (anchor && k > 0) {
+    c.x += k * (anchor.x - c.x);
+    c.y += k * (anchor.y - c.y);
+  }
+  return c;
+}
+
+/**
+ * JS mirror of the shader's srcUv(): the source uv (v up, 0..1) that the ray from eye E through
+ * output uv `uvOut` samples at relative parallax q, for source camera C (all window heights).
+ * Pinned against the GPU by samples/lift/dev-dibr.html ?check; unit-tested for the invariants.
+ */
+export function srcUvRef(uvOut, q, eye, cam, aspect) {
+  const px = (uvOut[0] - 0.5) * aspect;
+  const py = uvOut[1] - 0.5;
+  const z = (q * cam.z) / (1 + q);
+  const s = (eye.z - z) / eye.z;
+  const rx = eye.x + (px - eye.x) * s;
+  const ry = eye.y + (py - eye.y) * s;
+  const xs = cam.x + (rx - cam.x) * (1 + q);
+  const ys = cam.y + (ry - cam.y) * (1 + q);
+  return [xs / aspect + 0.5, ys + 0.5];
+}
+
 /** q (relative parallax) per unit of normalised disparity. Nominal pair (baseline KAPPA*D0)
  *  then sees `budget*gain` of the width between n=0 and n=1. */
 export function qScale(budget, gain, aspect, D0, kappa = KAPPA) {
@@ -257,7 +318,7 @@ export function createLiveDibr(opts = {}) {
   const U = {};
   for (const n of [
     'uColor', 'uDisp', 'uDispRes', 'uLo', 'uHi', 'uConv', 'uQScale', 'uTaper', 'uAspect',
-    'uEye', 'uD0', 'uSteps',
+    'uEye', 'uCam', 'uSteps',
   ]) {
     U[n] = gl.getUniformLocation(prog, n);
   }
@@ -289,6 +350,8 @@ export function createLiveDibr(opts = {}) {
   let dispH = 1;
   let lastRaw = null; // {data,w,h} in disparity space, pre-dilation (so setParams({dilate}) can redo it)
   let D0ema = NaN;
+  let anchor = null; // look-around anchor: slow EMA of the eye centroid (window heights)
+  let anchorT = 0;
   const stats = {
     frames: 0,
     depthUpdates: 0,
@@ -376,13 +439,24 @@ export function createLiveDibr(opts = {}) {
       if (!views || !views.length) return;
       const t0 = performance.now();
       uploadSource();
-      // Source camera distance: the mean eye distance of this frame's views, so a centred view
-      // at the viewer's distance is the IDENTITY (neutral view reproduces the source) and the
-      // effect is pure lateral parallax. See docs/lift-dibr.md "Forward/back motion".
+      // Source camera at the eyes' centroid (sourceCamera): the frame's neutral point reproduces
+      // the source whatever angle the tile is seen at, and the per-view parallax is (E - C)·q.
+      // See docs/lift-dibr.md "Where the source camera sits".
       const eyes = views.map((v) => viewEye(v.projectionMatrix));
-      let zsum = 0;
-      for (const e of eyes) zsum += e.z;
-      const D0 = zsum / eyes.length;
+      const cen = sourceCamera(eyes);
+      if (params.lookAround > 0) {
+        const now = performance.now();
+        const dt = anchor ? Math.min(1, (now - anchorT) / 1000) : 0;
+        anchorT = now;
+        if (!anchor || !Number.isFinite(anchor.x)) anchor = { x: cen.x, y: cen.y };
+        else {
+          const a = 1 - Math.exp(-dt / LOOK_AROUND_TAU_S);
+          anchor.x += a * (cen.x - anchor.x);
+          anchor.y += a * (cen.y - anchor.y);
+        }
+      } else anchor = null;
+      const cam = sourceCamera(eyes, anchor, params.lookAround);
+      const D0 = cam.z;
       D0ema = D0;
       const conv =
         params.convergence === 'auto'
@@ -409,7 +483,7 @@ export function createLiveDibr(opts = {}) {
       gl.uniform1f(U.uHi, hi);
       gl.uniform1f(U.uConv, lastRaw ? conv : 0);
       gl.uniform1f(U.uTaper, params.edgeTaper);
-      gl.uniform1f(U.uD0, D0);
+      gl.uniform3f(U.uCam, cam.x, cam.y, cam.z);
       gl.uniform1i(U.uSteps, Math.max(4, Math.min(64, params.steps | 0)));
       let qs = 0;
       for (let i = 0; i < views.length; i++) {
@@ -433,6 +507,7 @@ export function createLiveDibr(opts = {}) {
       stats.convergence = conv;
       stats.qScale = qs;
       stats.D0 = D0ema;
+      stats.cam = cam;
       stats.renderMs = performance.now() - t0;
     },
     getStats: () => ({ ...stats }),
