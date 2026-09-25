@@ -16,7 +16,7 @@ wall.addScene(canvas, (views, layer) => dibr.render({ views, layer }));
 
 `setDepth({reset:true})` on a scene cut drops the EMA state. `touchSource()` marks a canvas/image
 source as changed (a playing video is re-uploaded on its own). `getStats()` returns frames,
-depth updates, the live `lo/hi/convergence/qScale/D0`, and CPU timings.
+depth updates, the live `lo/hi/convergence/qScale`, the source camera `cam` (`D0 = cam.z`), and CPU timings.
 
 ## The view → uniform mapping
 
@@ -43,21 +43,59 @@ the screen. That skew/focal pair *is* the Kooima frustum; the runtime has alread
 already *is* the window:
 
 * output pixel `p' = ((u-0.5)·A, v-0.5)` on the glass;
-* a scene point has relative parallax `q = z/(D0 - z)` (0 on the glass, >0 in front), linear in
+* the 2D frame is what a virtual **source camera `C`** saw through the window;
+* a scene point has relative parallax `q = z/(C.z - z)` (0 on the glass, >0 in front), linear in
   disparity like the marcher's `invZ`;
 * the ray from `eye` through `p'` reaches depth `z` at `r = eye + (p'-eye)(eye.z - z)/eye.z`, which
-  the virtual source camera (centred, distance `D0`) sees at `x_s = r·(1+q)`.
+  `C` sees at `x_s = C + (r - C)(1+q)`.
 
-For `eye.z == D0` this collapses to `x_s = p' + eye.xy·q` — the marcher's
-`s1 = s2 + C.xy·invZ` with the convergence skew folded in. The march steps `q` from near to far
-(32 coarse steps, 6 bisection refinements — the marcher's halving), first surface hit wins.
+For `eye.z == C.z` this collapses to **`x_s = p' + (eye - C).xy·q`** — the marcher's
+`s1 = s2 + C.xy·invZ` with the convergence skew folded in, where the marcher's `C` is the eye's
+offset *from the source camera*. The march steps `q` from near to far (32 coarse steps, 6 bisection
+refinements — the marcher's halving), first surface hit wins. `q = 0` is the identity for every
+eye and every `C`: content on the glass never moves.
 
-`D0` = the mean `eye.z` of the frame's views, so a centred eye is exactly the identity (neutral view
-reproduces the source) and head motion gives lateral parallax. **Forward/back head motion is not
-turned into z-parallax** (the source camera follows the viewer's distance); the general
-`eye.z != D0` formula is in the shader if that is wanted later.
+### Where the source camera sits (the 1.0.2 panel bug)
 
-**Parallax sign.** A right eye (`eye.x > 0`) samples the source to the right of `p'` for `q > 0`,
+**`C` = the centroid of this frame's eyes** (`sourceCamera()`), in all three axes. It used to be
+`(0, 0, D0)` — on the tile's normal axis at the eyes' mean distance — which is only right for a tile
+seen head-on. An inline tile never is: the runtime's nominal viewer sits ~0.1 m above the panel
+centre, and the tile sits wherever the page put it. With `C` on the axis, the eyes' common offset
+`ē = mean(eye) - C` became a parallax **shared by both views**, `ē.xy·q`: a whole-frame shear, far
+content one way and near content the other, pinned to zero only in the border taper (the smear).
+
+First real panel run (DisplayXR Browser 1.0.2, Leia SR 3840×2160, tile 800×450 CSS @ dpr 2.5 →
+2×2000×1125 views). The dumped matrices decode (`viewEye`) to eyes at
+`(-0.403, 0.442, 5.481)` / `(0.209, 0.456, 5.473)` tile heights — **0.45 tile heights above the
+tile centre** (P9 ≈ -0.9), 0.61 apart. Rebuilding each matrix from that eye with the runtime's own
+Kooima (`l/r/b/t = near·(±half - e)/e.z`, displayxr-common `dxr_display3d`) gives the dump back
+to 1e-5, so the matrices and `viewEye` were right (no sign / half-height / y-down error) and no
+skew is applied twice (the shader has no skew of its own: the viewport *is* the window). The
+vertical offset alone gave far content (`q ≈ -0.6·qScale`) `0.45·0.046 = 2 %` of the tile height
+of upward shift at the dump's pose, and proportionally more wherever the tile sat further below
+the eyes (the panel capture showed ~8 %). Headless reproduction on the dev page
+(`?eyeY=0.1&dist=0.55`, 720-px views, convergence on the rect):
+
+| | far ground (x, y) px | near disc (x, y) px | rect at convergence |
+|---|---|---|---|
+| pre-fix, L / R | (-8, **-29**) / (8, **-29**) | (6.5, **22.5**) / (-6.5, **22.5**) | (0, 0) |
+| fixed, L / R | (-9, 0) / (9, 0) | (6.5, 0) / (-6.5, 0) | (0, 0) |
+
+(`y` top-down; the pre-fix vertical matched the prediction `E.y·q·H = -30 px`.) The verbatim panel
+matrices (`?panel`) give the same picture: pre-fix -13 px far / +10 px near vertically, fixed 0
+(±0.15 px from the ~0.007-tile-height head roll between the two eyes, which is real).
+
+Note the flat-source test does **not** catch this: a constant-depth source at convergence is `q = 0`
+everywhere, the identity for any `C`, so it passed (MAE 0) before the fix too. The shear only shows
+with depth off the convergence plane.
+
+**`lookAround`** (param, 0..1, default **0**). With `C` locked to the centroid, head motion gives
+no motion parallax, only stereo (the eyes differ from `C` by ±IPD/2). `lookAround > 0` blends
+`C.xy` toward an anchor that follows the centroid with a 1 s time constant (`LOOK_AROUND_TAU_S`), so
+a head *move* gives transient look-around that re-centres instead of a permanent shear. `C.z` always
+follows the viewer: forward/back motion is not turned into z-parallax.
+
+**Parallax sign.** A right eye (`eye.x > C.x`) samples the source to the right of `p'` for `q > 0`,
 so in-front content moves LEFT in the right view (crossed disparity), nearer content more; behind-
 glass content moves right. Same as the RGBD player (`C.x = +facePos.x` for the right eye).
 
@@ -76,7 +114,7 @@ state; first call ~8 ms JIT). At 12 fps that is ~2% of a core.
 
 ## Shader details
 
-* **Disparity** per pixel: `q = qScale·(n - conv)·taper`, `qScale = budget·depth·A / (κ·D0)`,
+* **Disparity** per pixel: `q = qScale·(n - conv)·taper`, `qScale = budget·depth·A / (κ·C.z)`,
   `κ = 0.063/0.6` (nominal IPD/distance). With this, the nominal eye pair sees **`budget·depth` of
   the width** between `n=0` and `n=1` (default `budget = 0.025`, i.e. ≈ 32 px across the full range
   at 1280 px). A tracked eye further out gets proportionally more; a multiview fan gets what its
@@ -86,8 +124,8 @@ state; first call ~8 ms JIT). At 12 fps that is ~2% of a core.
 * **Disocclusion** (gather form of iw3 `shift_fill`): probe `q` two depth texels either side of the
   hit along the parallax direction. A large jump **and** a hit on the ramp (not on the foreground
   plateau) means a hole: move the colour sample toward the lower-`q` (background) side by the hole
-  width `|eye.xy|·Δq`, and blend a 3-tap blur along that line. The move is proportional to
-  `|eye.xy|`, so the neutral view is never touched.
+  width `|eye.xy - C.xy|·Δq`, and blend a 3-tap blur along that line. The move is proportional to
+  `|eye.xy - C.xy|`, so the neutral view is never touched.
 * Output is opaque (`alpha = 1`); the source is stretched to the viewport (size the canvas to the
   source aspect).
 
@@ -102,6 +140,7 @@ state; first call ~8 ms JIT). At 12 fps that is ~2% of a core.
 | `stabilize` | true | EMA on range + convergence (false = per-frame values) |
 | `budget` | 0.025 | total near–far disparity for the nominal pair, fraction of width |
 | `steps` | 32 | coarse march steps (4–64) |
+| `lookAround` | 0 | 0 = source camera on the eye centroid (stereo only); >0 = transient head-motion parallax |
 | `loPct`/`hiPct`/`ema` | 0.02/0.98/0.9 | normalisation |
 
 ## Verification (`samples/lift/dev-dibr.html`)
@@ -110,7 +149,10 @@ The dev page plays `test/lift-dibr-clip.mp4` (synthetic 1280×720 60 fps, 4 s lo
 `node test/lift-dibr-make-clip.mjs` from `test/lift-dibr-scene.mjs`) and feeds the **analytic**
 disparity of the same scene at 364×210, 12 fps. With a DisplayXR session it weaves via
 `createInline3D` + `addScene`; otherwise it renders simulated Kooima eyes side by side
-(`?views=N`, `?eye=spacing-in-IPDs`). `?check` runs the checks at load (`&hold` keeps the checked
+(`?views=N`, `?eye=spacing-in-IPDs`; off-axis viewer `?eyeY=0.1&dist=0.55[&eyeX=][&tileH=]` in
+metres, or `?panel` for the two matrices dumped on the 1.0.2 panel run). Off-axis, `?check` adds:
+flat source at convergence = source in both eyes (MAE < 1/255), and with convergence on the rect:
+rect still, disc and far ground moving opposite ways horizontally, nothing moving vertically. `?check` runs the checks at load (`&hold` keeps the checked
 frame on screen); results land in `window.__dibr.results`.
 
 Headless Chrome (puppeteer-core, `--use-angle=metal`), M1 Pro, 2026-09-24:
@@ -133,4 +175,7 @@ Not verified here: a real DisplayXR session / Leia SR weave, estimated (non-grou
 and `maxLayers > 1` (throws).
 
 Unit tests: `node --test test/lift-dibr-math.test.mjs` (percentiles, EMA/reset, centre median,
-dilation, metric→disparity, projection round trip, budget scaling).
+dilation, metric→disparity, projection round trip, budget scaling, and — on the verbatim panel
+matrices — Kooima reconstruction, source-camera placement, q=0 identity, near/far opposite and
+level, plus a regression pinning the pre-fix shear). `srcUvRef()` is the JS mirror of the shader's
+`srcUv()`; the dev page's `?check` pins the GPU against the same invariants.
