@@ -6,7 +6,11 @@
 // `opts.fit`/letterboxing — see the report that shipped this file for the reasoning. Widening
 // any of those later is additive (new optional fields), so this stays forward-compatible.
 
-export type PlayerFormat = 'sbs' | 'mono';
+/** `'sbs'` side-by-side, `'tb'` top/bottom (left eye on top) — ./splat setVideo's names — or `'mono'`. */
+export type PlayerFormat = 'sbs' | 'tb' | 'mono';
+
+/** A source: a URL or Blob, or candidates best-first for {@link pickSource}. */
+export type PlayerSource = string | Blob | Array<string | Blob | { src: string | Blob; type?: string }>;
 export type PlayerControls = 'sdk' | 'none';
 
 export interface PlayerOptions {
@@ -78,6 +82,17 @@ export interface PlayerOptions {
    * stretched to the tile (the 1.x behaviour). On the woven path it costs one extra draw per frame.
    */
   fit?: 'contain' | 'cover';
+  /**
+   * A letterbox "band" slot: the picture is fitted into a centred band of this aspect inside the
+   * tile (e.g. `2.39` or `'2.39:1'` for a scope band in a 16:9 tile); the rest stays clear.
+   * Implies `fit: 'contain'` unless `fit` says otherwise.
+   */
+  band?: number | string;
+  /**
+   * What the poster image is: `'mono'` (one image for both eyes, the default), or a stereo still
+   * laid out like the video (`'sbs'` / `'tb'`), painted eye by eye so it is 3D before the first frame.
+   */
+  posterFormat?: 'mono' | 'sbs' | 'tb';
   /** Transport scale — `'s'` (0.84×), `'m'` (default), `'l'` (1.28×). Icons, fonts and hit targets scale together. */
   size?: 's' | 'm' | 'l';
   /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */
@@ -131,7 +146,7 @@ export interface PlayerHandle {
    * With a cut the old frame holds until the new source reaches `readyState >= 2`. Throws, and
    * changes nothing, on an unknown transition or easing.
    */
-  setSource(src: string | Blob, opts?: PlayerSourceOptions): void;
+  setSource(src: PlayerSource, opts?: PlayerSourceOptions): void;
 
   /**
    * Re-skin the SDK transport live — any of `accent` (a CSS colour; `''` = the default), `size`,
@@ -163,7 +178,7 @@ export interface PlayerHandle {
 export function addPlayer(
   wall: object | null | undefined,
   canvas: HTMLCanvasElement,
-  src: string | Blob,
+  src: PlayerSource,
   opts?: PlayerOptions,
 ): PlayerHandle;
 
@@ -207,3 +222,10 @@ export interface ResolvedPlayerTransition {
 
 /** The named accent presets `accent` accepts (any CSS colour works too). */
 export type PlayerAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' | 'ice';
+
+/**
+ * Pick the first source this browser can play from candidates listed best first; each is a URL, or
+ * `{ src, type }` with a FULL `canPlayType` string (`'video/webm; codecs="vp9, opus"'`). The
+ * DisplayXR Browser has no H.264/AAC, and a codec-less `'video/mp4'` still answers 'maybe'.
+ */
+export function pickSource(candidates: PlayerSource, canPlayType?: (type: string) => string): string | Blob | undefined;

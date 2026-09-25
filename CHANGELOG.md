@@ -51,6 +51,14 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
   working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
   shares `./splat` `setVideo`'s option names (`format`, later `fit`).
+- **For the Show Spatial team** (quick wins from their list): `format: 'tb'` (top/bottom, repacked
+  into the woven pair; `setVideo`'s vocabulary); `band` — a letterbox slot of a target aspect
+  (`2.39`, `'2.39:1'`) the picture is fitted into; `posterFormat: 'sbs' | 'tb'` — stereo poster
+  stills painted eye by eye; `on('ended')` also fires once if the clip had already ended when the
+  listener was attached; `src` / `setSource` take candidates best first and `pickSource()` plays
+  the first the browser supports by full `canPlayType` string. Docs: woven-canvas rule 9 (nothing
+  with a background above the woven canvas) and a Hosting video section (codec, range requests,
+  cache headers, CORS, square pixels).
 - **`fit: 'contain' | 'cover'`** — `./splat` `setVideo`'s names and meaning: contain letterboxes each
   eye (transparent bars), cover fills the tile and crops. Unset keeps the stretch-to-tile pixels.
   On the woven path a small per-eye fit canvas sits after the crossfade mixer (one extra draw per
