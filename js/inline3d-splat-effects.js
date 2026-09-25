@@ -1164,6 +1164,58 @@ export function particleSpan(t, overlap, side) {
 /** Options a page may pass through setSource to both sides of a particle transition. */
 export const PARTICLE_TRANSITION_OPTIONS = Object.freeze(['order', 'stagger', 'jitter', 'maxDisparity', 'dotSize', 'noiseScale', 'layerSize', 'origin']);
 
+// ── setSource's SEQUENCE transitions ('reassemble', { type: 'sequence', out, in }) ────────────
+//
+// One photo at a time: the current photo plays a reveal BACKWARDS until nothing of it is drawn,
+// it is released, the next one is loaded and placed hidden, and it plays a reveal FORWARDS. No
+// second camera, no live-outgoing layer, no overlay target, no frozen capture: the eye camera
+// renders every frame, with one asset in the scene.
+//
+// A reveal can take part only if it draws NOTHING at amount 0 — otherwise the swap would pop from
+// a visible end state to an empty start (inflate's end state is a flat photo: that swap is
+// 'flip'). `dissolve` is left out for the reason it is not a setSource transition: its sway has a
+// depth component (docs/splat-effects.md §Comfort).
+
+/**
+ * The reveals a sequence can run, with the option overrides each side gets by default. The
+ * particle ones reuse the tuned sides of the particle transitions (a sparse `density`, and a
+ * `vanish` so the swarm thins out to nothing and gathers out of nothing).
+ */
+export const SEQUENCE_REVEALS = Object.freeze({
+  assemble: { out: PARTICLE_TRANSITIONS.swarm.out.opts, in: PARTICLE_TRANSITIONS.swarm.in.opts },
+  'dissolve-in': { out: PARTICLE_TRANSITIONS.dust.out.opts, in: PARTICLE_TRANSITIONS.dust.in.opts },
+  converge: { out: PARTICLE_TRANSITIONS.burst.out.opts, in: PARTICLE_TRANSITIONS.burst.in.opts },
+  shimmer: { out: PARTICLE_TRANSITIONS['shimmer-cross'].out.opts, in: PARTICLE_TRANSITIONS['shimmer-cross'].in.opts },
+  sweep: { out: {}, in: {} },
+  fade: { out: {}, in: {} },
+});
+
+/** Named sequences: `transition: 'reassemble'` = assemble backwards, then forwards. */
+export const SEQUENCE_TRANSITIONS = Object.freeze({
+  reassemble: { out: 'assemble', in: 'assemble', durationMs: 3000, easing: 'linear', beat: 0.1 },
+});
+
+/**
+ * Does `effect` with resolved options `o` draw nothing at amount 0? sweep's front starts one band
+ * before its origin and fade's coverage is 0; a particle reveal needs `hiddenAtZero` (converge,
+ * shimmer: not yet launched; assemble, dissolve-in: `vanish` > 0).
+ */
+export function emptyAtZero(effect, o) {
+  if (effect === 'sweep' || effect === 'fade') return true;
+  const def = EFFECTS[effect];
+  return !!(def?.particle && def.hiddenAtZero?.(o));
+}
+
+/**
+ * The three spans of a sequence over its clock, as fractions: out over [0, a], the empty beat
+ * over [a, 1 − a], in over [1 − a, 1], with a = (1 − beat) / 2.
+ */
+export function sequenceSpans(beat) {
+  const b = Math.min(0.9, Math.max(0, beat));
+  const a = (1 - b) / 2;
+  return { out: a, beat: b, in: a };
+}
+
 
 /**
  * The wavefront's per-column commit, lt ∈ [0, 1], for eased progress `t` at normalised u — the
@@ -1515,6 +1567,55 @@ export class SplatEffects {
         this.scopes.get(entity).delete(name);
         inst.resolve({ finished: true });
         this._install(entity);
+      },
+      get alive() {
+        return alive();
+      },
+    };
+  }
+
+  /**
+   * A TILE-scope effect driven by the adapter's clock (setSource's sequence transitions: one photo
+   * in the scene, so the tile material carries its values and every manager of the tile reads
+   * them — a fresh one included, so a just-placed photo draws its hidden start state on its very
+   * first frame). Render time: no work-buffer rewrite, no re-sort. Named `name` (the chunk's
+   * prefix), so a sequence installs the same program as a particle transition of the same effect
+   * and order. Hidden from effects() and from a page's stopEffect(). Returns
+   * { set(amount, timeS), restart(), remove(), amount }.
+   */
+  driveTile(name, effect, opts) {
+    const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 0 }, 'set', { internal: true });
+    const inst = this._makeInstance(name, o, 'set');
+    inst.def = EFFECTS[effect];
+    inst.hidden = true;
+    inst.timeS = 0;
+    this._replace('tile', name, inst);
+    this._setupInstance(inst);
+    this._apply('tile', inst, this.ctx.now());
+    this._install('tile');
+    const alive = () => !this._disposed && this.scopes.get('tile')?.get(name) === inst;
+    return {
+      set: (amount, timeS = inst.timeS) => {
+        if (!alive()) return false;
+        inst.opts.progress = Math.min(1, Math.max(0, amount));
+        inst.timeS = timeS;
+        this._apply('tile', inst, this.ctx.now());
+        return true;
+      },
+      restart: () => {
+        if (!alive()) return;
+        inst.state = {};
+        this._setupInstance(inst);
+        this._apply('tile', inst, this.ctx.now());
+      },
+      remove: () => {
+        if (!alive()) return;
+        this.scopes.get('tile').delete(name);
+        inst.resolve({ finished: true });
+        this._install('tile');
+      },
+      get amount() {
+        return inst.opts.progress;
       },
       get alive() {
         return alive();

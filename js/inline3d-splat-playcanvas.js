@@ -61,6 +61,10 @@ import {
   PARTICLE_TRANSITIONS,
   PARTICLE_TRANSITION_OPTIONS,
   particleSpan,
+  SEQUENCE_REVEALS,
+  SEQUENCE_TRANSITIONS,
+  emptyAtZero,
+  sequenceSpans,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR } from './inline3d-splat-video.js';
@@ -2486,7 +2490,55 @@ export const SOURCE_TRANSITIONS = Object.freeze({
   wavefront: { durationMs: 2000, easing: 'easeInOutSine', band: 0.18, ridge: 0.03, ridgeMaxDisparity: 0.004 },
   // the particle transitions (./inline3d-splat-effects.js PARTICLE_TRANSITIONS)
   ...Object.fromEntries(Object.entries(PARTICLE_TRANSITIONS).map(([k, v]) => [k, { durationMs: v.durationMs, easing: v.easing, particle: true }])),
+  // the named sequences (./inline3d-splat-effects.js SEQUENCE_TRANSITIONS); the general form is
+  // `transition: { type: 'sequence', out, in }`
+  ...Object.fromEntries(Object.entries(SEQUENCE_TRANSITIONS).map(([k, v]) => [k, { durationMs: v.durationMs, easing: v.easing, sequence: true }])),
 });
+
+/** A sequence's own defaults (the general form, `{ type: 'sequence', out, in }`). */
+const SEQUENCE_DEFAULTS = Object.freeze({ durationMs: 3000, easing: 'linear', beat: 0.1 });
+
+/**
+ * A sequence transition's plan: { name, out: { effect, opts }, in: { effect, opts }, beat } —
+ * each side's defaults (SEQUENCE_REVEALS), then the page's shared particle options (particle
+ * sides only), then `outgoingFx` / `incomingFx`. Every side is validated as its effect, and must
+ * draw nothing at amount 0 (the swap happens there). `spec` = the named sequence or the object.
+ */
+export function resolveSequence(name, spec, o = {}) {
+  const want = (k) => {
+    const e = spec[k];
+    if (typeof e !== 'string' || !(e in SEQUENCE_REVEALS)) {
+      throw new Error(
+        `@displayxr/inline3d/splat: setSource sequence ${k} '${e}' — expected one of ${Object.keys(SEQUENCE_REVEALS).join(', ')} ` +
+          "(a reveal that draws nothing at its start; inflate's start is a flat photo — use transition 'flip').",
+      );
+    }
+    return e;
+  };
+  const outEffect = want('out');
+  const inEffect = want('in');
+  for (const k of ['outgoingFx', 'incomingFx']) {
+    if (o[k] !== undefined && (o[k] === null || typeof o[k] !== 'object')) throw new TypeError(`@displayxr/inline3d/splat: setSource ${k} must be an object of effect options.`);
+  }
+  const beat = o.beat ?? spec.beat ?? SEQUENCE_DEFAULTS.beat;
+  if (!(typeof beat === 'number' && beat >= 0 && beat <= 0.9)) throw new RangeError(`@displayxr/inline3d/splat: setSource beat must be a number in [0, 0.9], got ${o.beat ?? spec.beat}.`);
+  const side = (which, effect, extra) => {
+    const shared = {};
+    // sweep / fade take only the origin of the shared options
+    const keys = EFFECTS[effect].particle ? PARTICLE_TRANSITION_OPTIONS : ['origin'];
+    for (const k of keys) if (o[k] !== undefined) shared[k] = o[k];
+    const opts = { ...SEQUENCE_REVEALS[effect][which], ...shared, ...(extra || {}) };
+    if (opts.order === 'layers') {
+      throw new Error(`@displayxr/inline3d/splat: setSource sequence: order 'layers' is a reveal-only order (it needs the file index, which a render-time body does not have).`);
+    }
+    const r = resolveEffectOptions(effect, { ...opts, scope: 'tile' }, 'set', { internal: true }); // throws on a bad one
+    if (!emptyAtZero(effect, r)) {
+      throw new Error(`@displayxr/inline3d/splat: setSource sequence ${which}: '${effect}' with these options still draws at its start (vanish 0?) — the swap would pop. Give it vanish > 0.`);
+    }
+    return { effect, opts };
+  };
+  return { name, out: side('out', outEffect, o.outgoingFx), in: side('in', inEffect, o.incomingFx), beat };
+}
 
 /**
  * A particle transition's two sides, resolved: { out: { effect, opts }, in: { effect, opts },
@@ -2518,11 +2570,34 @@ export function resolveParticleTransition(name, o = {}) {
   return { out, in: inc, overlap };
 }
 
+/** resolveSwap for a sequence: the plan carries `sequence` (resolveSequence) and no outgoing image. */
+function resolveSequenceSwap(name, spec, o) {
+  if (resolveRevealOption(o.reveal)) throw new Error(`@displayxr/inline3d/splat: setSource reveal plays with transition 'cut' or 'crossfade'; '${name}' is its own reveal.`);
+  if (o.outgoing !== undefined && o.outgoing !== null) {
+    resolveOutgoingOption(o.outgoing); // a bad value is still a bad value
+    throw new Error(`@displayxr/inline3d/splat: setSource outgoing does not apply to '${name}' — one photo at a time, no outgoing image.`);
+  }
+  const durationMs = o.durationMs ?? spec.durationMs ?? SEQUENCE_DEFAULTS.durationMs;
+  if (!Number.isFinite(durationMs) || durationMs < 0) throw new RangeError(`@displayxr/inline3d/splat: setSource durationMs must be ≥ 0, got ${o.durationMs}.`);
+  const easing = o.easing ?? spec.easing ?? SEQUENCE_DEFAULTS.easing;
+  if (typeof easing !== 'function' && !EASINGS[easing]) throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
+  const sequence = resolveSequence(name, spec, o);
+  return { transition: 'sequence', durationMs, easing, reveal: null, outgoing: null, particles: null, sequence };
+}
+
 /** Validate setSource's options into a plan (throws on a page bug, before anything loads). */
 export function resolveSwap(o = {}) {
   if (o === null || typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: setSource options must be an object.');
+  // The general sequence form: transition: { type: 'sequence', out, in, durationMs?, beat?, easing? }
+  // — its own keys read like setSource's (setSource's win when both are given).
+  if (o.transition !== null && typeof o.transition === 'object') {
+    const { type, out: outName, in: inName, ...rest } = o.transition;
+    if (type !== 'sequence') throw new Error(`@displayxr/inline3d/splat: setSource transition object — expected { type: 'sequence', out, in }, got type '${type}'.`);
+    return resolveSequenceSwap('sequence', { out: outName, in: inName, ...SEQUENCE_DEFAULTS }, { ...rest, ...o, transition: 'sequence' });
+  }
   const fadeMs = Number.isFinite(o.fadeMs) && o.fadeMs > 0 ? o.fadeMs : 0;
   const transition = o.transition ?? (fadeMs > 0 ? 'crossfade' : 'cut');
+  if (SOURCE_TRANSITIONS[transition]?.sequence) return resolveSequenceSwap(transition, SEQUENCE_TRANSITIONS[transition], o);
   if (!(transition in SOURCE_TRANSITIONS)) {
     throw new Error(`@displayxr/inline3d/splat: setSource transition '${transition}' — expected one of ${Object.keys(SOURCE_TRANSITIONS).join(', ')}.`);
   }
@@ -3807,21 +3882,34 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
     const t0 = performance.now();
     if (diag && diag.phase === 'idle') diag.setPhase('prepare');
-    let loaded;
+    // A SEQUENCE keeps one splat resident: its prepare only FETCHES the bytes (nothing goes to the
+    // engine — no decode, no GPU upload) and compiles its shaders; the engine load runs at the swap,
+    // once the current asset is gone, in the empty beat. `resident: true` opts back into the full
+    // prepare (decoded + uploaded now, not in the scene): no load at the swap, two assets resident
+    // during the dwell.
+    if (po.resident !== undefined && typeof po.resident !== 'boolean') throw new TypeError('@displayxr/inline3d/splat: prepareSource resident must be a boolean.');
+    const fetchOnly = !!warm?.sequence && po.resident !== true;
+    let loaded = null;
+    let source = null;
     try {
-      loaded = await loadOne(pcModule, app, src, { background: true });
+      if (fetchOnly) {
+        const got = await fetchSourceBytes(src);
+        if (!got.ok) throw new Error(`@displayxr/inline3d/splat: prepareSource could not fetch ${src} (HTTP ${got.status}).`);
+        source = got.source;
+      }
+      else loaded = await loadOne(pcModule, app, src, { background: true });
     } finally {
       if (diag?.phase === 'prepare') diag.setPhase('idle');
     }
     perfSpan('prepareSource', t0);
-    diag?.mark('prepared', { ms: Math.round(performance.now() - t0) });
+    diag?.mark('prepared', { ms: Math.round(performance.now() - t0), fetchOnly });
     // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
     await prewarmTransition(warm); // null (no transition declared): the overlay only
-    const entry = { loaded, state: 'ready', dispose: null };
+    const entry = { loaded, source, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
-      /** The asset's own count (every splat of a flat source). */
-      numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0,
+      /** The asset's own count (every splat of a flat source); null for a fetch-only (sequence) prepare. */
+      numSplats: loaded ? loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0 : null,
       /** 'ready' until setSource uses it ('used') or dispose() drops it ('disposed'). */
       get state() {
         return entry.state;
@@ -3830,8 +3918,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         if (entry.state !== 'ready') return;
         entry.state = 'disposed';
         livePrepared.delete(entry);
-        app.assets.remove(loaded.asset);
-        loaded.asset.unload?.();
+        entry.source = null;
+        if (loaded) {
+          app.assets.remove(loaded.asset);
+          loaded.asset.unload?.();
+        }
       },
     };
     entry.dispose = prepared.dispose;
@@ -3861,27 +3952,28 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // The chunk variant the transition installs (particles, wavefront), and the overlay's two quads
     // (crossfade, wavefront and the particles all composite through them; created on the first
     // capture otherwise, and compiled on its draw: 30–180 ms on the first frames of the window).
-    const chunkKey = plan?.particles
-      ? `${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`
+    // [key, code()] per variant: a particle transition's one body, the wavefront's ridge + cull, a
+    // sequence's two (its out body, then its in body — one program each, or one when they match).
+    const orderOf = (side) => (EFFECTS[side.effect].particle ? { order: side.opts.order } : {});
+    const variants = plan?.particles
+      ? [[`${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`, () => fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order })]]
       : plan?.transition === 'wavefront'
-        ? 'wavefront'
-        : null;
-    const wantChunk = !!(fx && chunkKey && !prewarmed.has(chunkKey));
-    const wantOverlay = !prewarmed.has('overlay');
-    if (!wantChunk && !wantOverlay) return;
+        ? [['wavefront', () => fx.sharedChunkCodeFor([['transition', 'wavefront', {}], ['transition-cull', 'wipecull', {}]])]]
+        : plan?.sequence
+          ? [plan.sequence.out, plan.sequence.in].map((side) => [`${side.effect}|${side.opts.order ?? ''}`, () => fx.sharedChunkCode('transition', side.effect, orderOf(side))])
+          : [];
+    const wantChunks = fx ? variants.filter(([k], i) => !prewarmed.has(k) && variants.findIndex((v) => v[0] === k) === i) : [];
+    // A sequence draws through no overlay: nothing to warm there.
+    const wantOverlay = !prewarmed.has('overlay') && !plan?.sequence;
+    if (!wantChunks.length && !wantOverlay) return;
     await yieldIdle();
     if (removed) return;
     try {
       const pc = pcModule;
       const made = [];
-      if (wantChunk && fx) {
+      for (const [chunkKey, codeOf] of fx ? wantChunks : []) {
         const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
-        const code = plan.particles
-          ? fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order })
-          : fx.sharedChunkCodeFor([
-              ['transition', 'wavefront', {}],
-              ['transition-cull', 'wipecull', {}],
-            ]);
+        const code = codeOf();
         let issued = 0;
         for (const cam of cams) {
           const mi = managerMi(cam, null);
@@ -3987,7 +4079,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const gen = ++sourceGen;
     if (diag) {
       rigLockArmed = true;
-      diag.setPhase('swap', { transition: plan.transition, outgoing: plan.outgoing || 'default', prepared: preparedAssets.has(next) });
+      diag.setPhase('swap', {
+        transition: plan.sequence ? `${plan.sequence.name}(${plan.sequence.out.effect}>${plan.sequence.in.effect})` : plan.transition,
+        outgoing: plan.sequence ? 'none (one splat)' : plan.outgoing || 'default',
+        prepared: preparedAssets.has(next),
+      });
     }
     // A prepareSource() result: already fetched, decoded and uploaded — no load on this path.
     const prep = preparedAssets.get(next) || null;
@@ -4004,10 +4100,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     await first.catch(() => null); // a failed first asset may be replaced
     if (!app || removed) return out;
     const pc = pcModule;
+    // A sequence: one splat at a time (playSequence). Without the effects runner (no asset ever
+    // loaded) there is nothing to play out or in: a cut.
+    if (plan.sequence && fx) return playSequence({ next, plan, gen, prep, resetPose, app, pc });
     // Not prepared: compile what the transition draws with (its chunk, the overlay) while the asset
     // loads, rather than on the window's first frames. Best effort, not awaited.
-    if (!prep && current && plan.transition !== 'cut') prewarmTransition(plan);
-    const loaded = prep ? prep.loaded : await loadOne(pc, app, next);
+    if (!prep && current && plan.transition !== 'cut' && !plan.sequence) prewarmTransition(plan);
+    // (a fetch-only prepare — prepareSource for a sequence — loads here, from its bytes)
+    const loaded = prep ? prep.loaded || (await loadOne(pc, app, prep.source)) : await loadOne(pc, app, next);
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
       loaded.asset.unload?.();
@@ -4015,7 +4115,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     const prev = current;
     pendingSwap?.finish();
-    const transition = prev ? plan.transition : 'cut';
+    const transition = prev && !plan.sequence ? plan.transition : 'cut';
     const particle = plan.particles && transition in PARTICLE_TRANSITIONS ? plan.particles : null;
     // FRAME_SNAPSHOT: freeze the outgoing frame BEFORE anything of the new asset (or its rig) is
     // drawn. The overlay goes up in the same task, so no frame shows neither photo.
@@ -4255,6 +4355,240 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return true;
     });
     await done;
+    return out;
+  }
+
+  /**
+   * The BYTES of a source, fetched without touching the engine (a sequence's preload: CPU memory
+   * only — no decode, no GPU upload). Bytes / a Blob are returned as they are. A URL the engine
+   * must resolve itself (a Streamed SOG, an unbundled SOG's meta.json) is returned as the URL, and
+   * so is any URL whose fetch THROWS here (CORS, a scheme fetch does not take…): the engine's own
+   * load then runs at the swap. Resolves { source, ok }: ok = false only when the server answered
+   * and it was not the file (an HTTP error) — the one case known before the current photo goes.
+   */
+  async function fetchSourceBytes(src, signal) {
+    if (typeof src !== 'string') return { source: src, ok: true };
+    const fmt = engineFormatFor(src, null, opts.fileName, opts.fileType);
+    if (!fmt || fmt.streamed || fmt.ext === 'json' || typeof fetch !== 'function') return { source: src, ok: true };
+    try {
+      const r = await fetch(src, signal ? { signal } : undefined);
+      if (!r.ok) return { source: src, ok: false, status: r.status };
+      return { source: new Uint8Array(await r.arrayBuffer()), ok: true };
+    } catch (err) {
+      if (signal?.aborted) return { source: null, ok: false, aborted: true };
+      return { source: src, ok: true, fetchError: err };
+    }
+  }
+
+  /** The sequence on screen: the asset its effect is on and how much of it shows (a newer sequence starts from there). */
+  let seqShown = null;
+
+  /**
+   * setSource's SEQUENCE transitions ('reassemble', { type: 'sequence', out, in }): ONE splat at
+   * a time.
+   *   out   — the current photo plays `out` backwards on the eye camera (a tile-scope body at
+   *           render time) until nothing of it is drawn. Meanwhile the next file's BYTES are
+   *           fetched (a URL; a prepareSource() result is already in hand).
+   *   swap  — the current asset is released and DESTROYED (entity + GPU resource) before the next
+   *           one is given to the engine; then it is decoded, uploaded, placed and adopted (rig
+   *           waterfall, rig declared) in one task with its effect at amount 0, so its first frame
+   *           draws nothing.
+   *   in    — after the empty beat (and at least 3 frames, for its work buffer and sort and the
+   *           rig to land), its effect's frame is re-taken under the new rig and it plays `in`
+   *           forwards. The end removes the body: the exact baseline.
+   * No second camera, layer, target, overlay or capture. Latest wins: a newer sequence takes over
+   * from where this one stands (its out phase starts at the amount shown); a newer other call
+   * ends this one when its asset has loaded (or at once, once this one's photo is gone).
+   */
+  async function playSequence({ next, plan, gen, prep, resetPose, app, pc }) {
+    const seq = plan.sequence;
+    const ease = typeof plan.easing === 'function' ? plan.easing : EASINGS[plan.easing] || EASINGS.linear;
+    const spans = sequenceSpans(seq.beat);
+    const outMs = plan.durationMs * spans.out;
+    const beatMs = plan.durationMs * spans.beat;
+    const inMs = plan.durationMs * spans.in;
+    let finished = false;
+    const finishers = [];
+    /** Resolvers of the waits in flight: ending this call resolves them at once, not on a later frame. */
+    const wakers = new Set();
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      for (const f of finishers) f();
+      for (const w of [...wakers]) w();
+      wakers.clear();
+      viewer._transitionState = null;
+      if (gen === sourceGen) diag?.setPhase('settle');
+      if (pendingSwap?.finish === finish) pendingSwap = null;
+    };
+    const ac = typeof AbortController === 'function' ? new AbortController() : null;
+    finishers.push(() => ac?.abort());
+    let shown = null; // this call's seqShown
+    finishers.push(() => {
+      if (seqShown && seqShown === shown) seqShown = null;
+    });
+    const dropLoaded = (l) => {
+      if (!l) return;
+      app.assets.remove(l.asset);
+      l.asset.unload?.();
+    };
+    /** Superseded (a newer setSource) or removed: this call stops at its next step. */
+    const stale = () => finished || removed || gen !== sourceGen;
+    /** Run `step(k, s)` over `ms` of viewer ticks (k 0 → 1, s = seconds); false if ended early. */
+    const span = (ms, step) =>
+      new Promise((resolve) => {
+        let t0 = null;
+        const wake = () => resolve(false);
+        wakers.add(wake);
+        viewer._hooks.push((t) => {
+          if (finished || removed) return (resolve(false), false);
+          if (!wakers.has(wake)) return false;
+          if (t0 === null) t0 = t;
+          const k = ms > 0 ? Math.min(1, Math.max(0, (t - t0) / ms)) : 1;
+          step(k, (t - t0) / 1000);
+          if (k >= 1) return (wakers.delete(wake), resolve(true), false);
+          return true;
+        });
+      });
+    // The next asset's bytes, fetched during the out phase. Nothing of it goes to the engine yet.
+    const sourceP = prep ? Promise.resolve({ source: prep.loaded ? null : prep.source, ok: true }) : fetchSourceBytes(next, ac?.signal);
+    // Both bodies compiled before the clock starts. The photo stays on screen meanwhile, live — and
+    // a sequence already playing on it keeps playing: it is taken over only once this one can run.
+    await prewarmTransition(plan);
+    if (stale()) {
+      if (prep) dropLoaded(prep.loaded);
+      finish();
+      return out;
+    }
+    // a sequence already on this photo: take over from how much of it shows, in this same task
+    const startAmount = seqShown && current && seqShown.entity === current.entity ? seqShown.amount : 1;
+    pendingSwap?.finish(); // latest wins: whatever was in flight ends now (at its end state)
+    pendingSwap = { finish };
+    viewer._transitionPath = 'sequence'; // diagnostics
+    diag?.mark('sequence', { name: seq.name, out: seq.out.effect, in: seq.in.effect, beat: seq.beat, from: +startAmount.toFixed(3), prepared: prep ? (prep.loaded ? 'resident' : 'fetched') : 'no' });
+
+    // ── out ──
+    const prev = current;
+    diag?.setPhase('window');
+    if (prev) {
+      const fxOut = fx.driveTile('transition', seq.out.effect, seq.out.opts); // its frame: the current rig's
+      finishers.push(() => fxOut.remove());
+      fxOut.set(startAmount, 0);
+      shown = seqShown = { entity: prev.entity, amount: startAmount };
+      const full = await span(outMs * startAmount, (k, s) => {
+        const a = startAmount * (1 - ease(k));
+        fxOut.set(a, s);
+        shown.amount = a;
+        viewer._transitionState = { phase: 'out', raw: k }; // diagnostics
+      });
+      if (!full) {
+        // taken over (a newer call finished this one) or removed
+        if (prep) dropLoaded(prep.loaded);
+        return out;
+      }
+      diag?.mark('out-done');
+      // Nothing of the current photo is drawn now. Its file must have arrived before it is let go:
+      // if the next one cannot be fetched, the current one comes back instead.
+      const got = await sourceP;
+      if (!got.ok && !got.aborted && !stale()) {
+        diag?.mark('fetch-failed', { status: got.status ?? null });
+        viewer._transitionState = { phase: 'back', raw: 0 };
+        await span(inMs, (k, s) => {
+          const a = ease(k);
+          fxOut.set(a, s);
+          shown.amount = a;
+        });
+        finish();
+        throw new Error(`@displayxr/inline3d/splat: setSource could not fetch ${typeof next === 'string' ? next : 'the source'} (HTTP ${got.status}); the current photo stays.`);
+      }
+      // COMMITTED: release it, and wait until it is gone (entity destroyed, resource unloaded)
+      // before the next one is made resident. A newer call from here on finds nothing on screen.
+      current = null;
+      out.mesh = null;
+      shown = null;
+      seqShown = null;
+      await new Promise((resolve) => {
+        prev.entity.enabled = false;
+        fx?.dropEntity(prev.entity);
+        let frames = 0;
+        // the engine's gsplat world keeps the placement until its next rebuild: destroy a few frames later
+        viewer._hooks.push(() => {
+          if (++frames < 4 && !removed) return true;
+          prev.entity.destroy?.();
+          app.assets.remove(prev.asset);
+          prev.asset.unload?.();
+          resolve();
+          return false;
+        });
+      });
+      diag?.mark('released');
+    }
+    const outEndAt = now();
+    if (stale()) {
+      if (prep) dropLoaded(prep.loaded);
+      finish();
+      return out;
+    }
+
+    // ── swap ──
+    let loaded;
+    try {
+      const got = await sourceP;
+      viewer._transitionState = { phase: 'load', raw: 0 };
+      const loadP = prep?.loaded ? Promise.resolve(prep.loaded) : loadOne(pc, app, got.source ?? next);
+      // a newer call ends this one at once; the asset, when it lands, is dropped unseen
+      const r = await Promise.race([loadP.then((l) => ({ l })), new Promise((resolve) => wakers.add(() => resolve(null)))]);
+      if (!r) {
+        loadP.then(dropLoaded, () => {});
+        return out;
+      }
+      loaded = r.l;
+    } catch (err) {
+      finish();
+      if (stale()) return out;
+      throw err; // the tile is empty: the current photo was already gone
+    }
+    if (stale()) {
+      dropLoaded(loaded);
+      finish();
+      return out;
+    }
+    diag?.mark('loaded');
+    const entity = viewer.addSplatAsset(loaded.asset);
+    out.mesh = { numSplats: loaded.desc.numSplats || loaded.cloud?.sourceTotal || 0, entity, asset: loaded.asset, resource: loaded.res };
+    const kept = applyLoaded(loaded); // the rig waterfall; the rig is declared here, before any frame of it
+    current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
+    if (resetPose && !pageMode) viewer.resetPose();
+    // same task: the in body at amount 0 (tile material values), so its first frame draws nothing
+    const fxIn = fx.driveTile('transition', seq.in.effect, seq.in.opts);
+    finishers.push(() => fxIn.remove());
+    fxIn.set(0, 0);
+    shown = seqShown = { entity, amount: 0 };
+    diag?.mark('adopted');
+
+    // ── the empty beat: at least `beat` since the old photo went, and 3 frames of the new one ──
+    await new Promise((resolve) => {
+      let ticks = 0;
+      wakers.add(resolve);
+      viewer._hooks.push((t) => {
+        if (finished || removed) return (resolve(), false);
+        viewer._transitionState = { phase: 'beat', raw: 0 };
+        if (++ticks >= 3 && t - outEndAt >= beatMs) return (resolve(), false);
+        return true;
+      });
+    });
+    if (finished || removed) return out;
+
+    // ── in ──
+    fxIn.restart(); // its frame: the new photo under its own rig, now declared and drawn
+    diag?.mark('in-start');
+    const full = await span(inMs, (k, s) => {
+      const a = ease(k);
+      fxIn.set(a, s);
+      shown.amount = a;
+      viewer._transitionState = { phase: 'in', raw: k }; // diagnostics
+    });
+    if (full) finish(); // removes the body: the plain render, exactly
     return out;
   }
 
