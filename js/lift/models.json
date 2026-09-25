@@ -1,0 +1,352 @@
+{
+  "schema": 1,
+  "generated": "2026-09-24",
+  "defaults": {
+    "depth-video": {
+      "low": "vda-small-stream-364x210",
+      "medium": "vda-small-stream-518x294",
+      "high": "vda-small-stream-518x294"
+    },
+    "depth-still": {
+      "low": "da2-small",
+      "medium": "moge3-vitl-770x434",
+      "high": "moge3-vitl-1022x574"
+    },
+    "inpaint": {
+      "low": "light-inpaint-v1-512x288",
+      "medium": "light-inpaint-v1-512x288",
+      "high": "light-inpaint-v1-1024x576"
+    }
+  },
+  "families": {
+    "vda-small": {
+      "role": "depth-video",
+      "low": "vda-small-stream-364x210",
+      "medium": "vda-small-stream-518x294",
+      "high": "vda-small-stream-518x294"
+    },
+    "moge3": {
+      "role": "depth-still",
+      "low": "moge3-vitl-770x434",
+      "medium": "moge3-vitl-770x434",
+      "high": "moge3-vitl-1022x574"
+    },
+    "da3": {
+      "role": "depth-still",
+      "low": "da3mono-large-770x434",
+      "medium": "da3mono-large-770x434",
+      "high": "da3mono-large-1022x574"
+    },
+    "da2-small": {
+      "role": "depth-still",
+      "low": "da2-small",
+      "medium": "da2-small",
+      "high": "da2-small"
+    },
+    "light-inpaint-v1": {
+      "role": "inpaint",
+      "low": "light-inpaint-v1-512x288",
+      "medium": "light-inpaint-v1-512x288",
+      "high": "light-inpaint-v1-1024x576"
+    }
+  },
+  "models": [
+    {
+      "name": "vda-small-stream-518x294",
+      "version": "1.0.0",
+      "role": "depth-video",
+      "format": "onnx",
+      "precision": "w16",
+      "license": "Apache-2.0",
+      "origin": "DepthAnything/Video-Depth-Anything (Small), streaming export with explicit temporal cache; fp16 weights + fp32 compute",
+      "io": {
+        "inputs": {
+          "image": "image",
+          "cache": "cache_in",
+          "isFirst": "is_first"
+        },
+        "outputs": {
+          "depth": "depth",
+          "cache": "cache_out"
+        },
+        "width": 518,
+        "height": 294,
+        "cacheShape": [
+          42,
+          956160
+        ],
+        "normalize": null,
+        "space": "disparity"
+      },
+      "files": [
+        {
+          "path": "vda/vda_s_stream_518x294_w16.onnx",
+          "sha256": "71e3ae9e96606afe905eb2f4bab71700e7b9a5b6167bf9d145851720b452a949",
+          "size": 57803548,
+          "url": "${baseUrl}/vda/vda_s_stream_518x294_w16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "vda-small-stream-364x210",
+      "version": "1.0.0",
+      "role": "depth-video",
+      "format": "onnx",
+      "precision": "w16",
+      "license": "Apache-2.0",
+      "origin": "DepthAnything/Video-Depth-Anything (Small), streaming export with explicit temporal cache; fp16 weights + fp32 compute",
+      "io": {
+        "inputs": {
+          "image": "image",
+          "cache": "cache_in",
+          "isFirst": "is_first"
+        },
+        "outputs": {
+          "depth": "depth",
+          "cache": "cache_out"
+        },
+        "width": 364,
+        "height": 210,
+        "cacheShape": [
+          42,
+          479232
+        ],
+        "normalize": null,
+        "space": "disparity"
+      },
+      "files": [
+        {
+          "path": "vda/vda_s_stream_364x210_w16.onnx",
+          "sha256": "2bcf27020b45bd25f3ed4e28b3fc328c33af934661c0ee2be73a427a30d4f184",
+          "size": 57506238,
+          "url": "${baseUrl}/vda/vda_s_stream_364x210_w16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "da2-small",
+      "version": "1.0.0",
+      "role": "depth-still",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "Apache-2.0",
+      "origin": "onnx-community/depth-anything-v2-small (model_fp16.onnx); dynamic H/W, multiples of 14",
+      "io": {
+        "inputs": {
+          "image": "pixel_values"
+        },
+        "outputs": {
+          "depth": "predicted_depth"
+        },
+        "dynamic": true,
+        "multipleOf": 14,
+        "normalize": {
+          "mean": [
+            0.485,
+            0.456,
+            0.406
+          ],
+          "std": [
+            0.229,
+            0.224,
+            0.225
+          ]
+        },
+        "space": "disparity",
+        "longSide": 518
+      },
+      "files": [
+        {
+          "path": "da2/depth_anything_v2_small_fp16.onnx",
+          "sha256": "2df6223f206b5164e21f664ace61dabeb9bb6a49b8b5a3e00510b4807d0f5b04",
+          "size": 49642442,
+          "url": "${baseUrl}/da2/depth_anything_v2_small_fp16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "moge3-vitl-770x434",
+      "version": "1.0.0",
+      "role": "depth-still",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "MIT",
+      "origin": "microsoft/MoGe v3 ViT-L, backbone-only (refine_steps=0), static shape, pos-embed baked; focal/shift solve in JS (still-post.js). fp16 shifts focal ~+1.4%",
+      "io": {
+        "inputs": {
+          "image": "image"
+        },
+        "outputs": {
+          "points": "points",
+          "normal": "normal",
+          "mask": "mask",
+          "metricScale": "metric_scale"
+        },
+        "width": 770,
+        "height": 434,
+        "normalize": null,
+        "post": "moge",
+        "space": "metric"
+      },
+      "files": [
+        {
+          "path": "still/moge3_vitl_770x434_fp16.onnx",
+          "sha256": "46d6b8c0c800c160b83414a6beb49194a7be1a7e6774f4538603abea488c8b9f",
+          "size": 715220757,
+          "url": "${baseUrl}/still/moge3_vitl_770x434_fp16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "moge3-vitl-1022x574",
+      "version": "1.0.0",
+      "role": "depth-still",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "MIT",
+      "origin": "microsoft/MoGe v3 ViT-L, backbone-only (refine_steps=0), static shape, pos-embed baked; focal/shift solve in JS (still-post.js). fp16 shifts focal ~+1.4%",
+      "io": {
+        "inputs": {
+          "image": "image"
+        },
+        "outputs": {
+          "points": "points",
+          "normal": "normal",
+          "mask": "mask",
+          "metricScale": "metric_scale"
+        },
+        "width": 1022,
+        "height": 574,
+        "normalize": null,
+        "post": "moge",
+        "space": "metric"
+      },
+      "files": [
+        {
+          "path": "still/moge3_vitl_1022x574_fp16.onnx",
+          "sha256": "7db5c5273208dd04119bc4273907f9f653f383586cc5028ebd87417f8d8721a5",
+          "size": 757431203,
+          "url": "${baseUrl}/still/moge3_vitl_1022x574_fp16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "da3mono-large-770x434",
+      "version": "1.0.0",
+      "role": "depth-still",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "Apache-2.0",
+      "origin": "depth-anything/DA3MONO-LARGE, static shape; sky fill in JS (still-post.js); relative depth inverted to disparity",
+      "io": {
+        "inputs": {
+          "image": "image"
+        },
+        "outputs": {
+          "depth": "depth",
+          "sky": "sky"
+        },
+        "width": 770,
+        "height": 434,
+        "normalize": null,
+        "post": "da3",
+        "space": "disparity"
+      },
+      "files": [
+        {
+          "path": "still/da3mono_large_770x434_fp16.onnx",
+          "sha256": "c8cb2d8254d3515e5bac0e9747bd2477fab06649ebebd064e797a230d55585de",
+          "size": 669327885,
+          "url": "${baseUrl}/still/da3mono_large_770x434_fp16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "da3mono-large-1022x574",
+      "version": "1.0.0",
+      "role": "depth-still",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "Apache-2.0",
+      "origin": "depth-anything/DA3MONO-LARGE, static shape; sky fill in JS (still-post.js); relative depth inverted to disparity",
+      "io": {
+        "inputs": {
+          "image": "image"
+        },
+        "outputs": {
+          "depth": "depth",
+          "sky": "sky"
+        },
+        "width": 1022,
+        "height": 574,
+        "normalize": null,
+        "post": "da3",
+        "space": "disparity"
+      },
+      "files": [
+        {
+          "path": "still/da3mono_large_1022x574_fp16.onnx",
+          "sha256": "459676dadee0cd76d24b7723aca1a8113880f8d5afcc7410d9a085e75d554507",
+          "size": 671965743,
+          "url": "${baseUrl}/still/da3mono_large_1022x574_fp16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "light-inpaint-v1-1024x576",
+      "version": "1.0.0",
+      "role": "inpaint",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "MIT",
+      "origin": "nagadomi/nunif iw3 light_inpaint_v1; directional (background on the RIGHT of a hole)",
+      "io": {
+        "inputs": {
+          "rgb": "rgb",
+          "mask": "mask"
+        },
+        "outputs": {
+          "rgb": "out"
+        },
+        "width": 1024,
+        "height": 576
+      },
+      "files": [
+        {
+          "path": "inpaint/light_inpaint_v1_1024x576_fp16.onnx",
+          "sha256": "2af8952a4da6e8fde91da120329656ef885e16e159faa25b821902688658ad36",
+          "size": 6936267,
+          "url": "${baseUrl}/inpaint/light_inpaint_v1_1024x576_fp16.onnx"
+        }
+      ]
+    },
+    {
+      "name": "light-inpaint-v1-512x288",
+      "version": "1.0.0",
+      "role": "inpaint",
+      "format": "onnx",
+      "precision": "fp16",
+      "license": "MIT",
+      "origin": "nagadomi/nunif iw3 light_inpaint_v1; directional (background on the RIGHT of a hole)",
+      "io": {
+        "inputs": {
+          "rgb": "rgb",
+          "mask": "mask"
+        },
+        "outputs": {
+          "rgb": "out"
+        },
+        "width": 512,
+        "height": 288
+      },
+      "files": [
+        {
+          "path": "inpaint/light_inpaint_v1_512x288_fp16.onnx",
+          "sha256": "c1cd5b9ac2a37840efa135641f4f7e5824ee8f6b067472c0f5037d9b2e8be011",
+          "size": 5167981,
+          "url": "${baseUrl}/inpaint/light_inpaint_v1_512x288_fp16.onnx"
+        }
+      ]
+    }
+  ]
+}

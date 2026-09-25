@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lift depth — dev</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --fg: #ddd; --dim: #888; --acc: #6cf; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  figure { margin: 0; }
+  figcaption { color: var(--dim); font-size: 12px; }
+  video, img, canvas { display: block; width: 480px; max-width: calc(100vw - 32px); height: auto; background: #000; image-rendering: auto; }
+  .stat { font: 12px/1.4 ui-monospace, monospace; white-space: pre; color: var(--acc); }
+  progress { width: 480px; max-width: 100%; }
+  button { margin-right: 6px; }
+  code { color: var(--acc); }
+</style>
+</head>
+<body>
+<h1>Lift depth providers — dev harness</h1>
+<div>Query: <code>?models=</code> base URL of the model tree (default <code>/_scratch/models</code>),
+  <code>ort=</code> onnxruntime-web dist URL, <code>quality=low|medium|auto</code> (video),
+  <code>still=low|medium|high</code>, <code>pre=gpu|cpu</code>, <code>mode=video|still|both|inpaint</code>,
+  <code>video=</code>, <code>image=</code>, <code>stillModel=</code>. See <code>docs/lift-models.md</code>.</div>
+<div><progress id="prog" value="0" max="1"></progress> <span id="progTxt"></span></div>
+<div><button id="bReset">reset temporal cache</button><button id="bPause">pause</button></div>
+
+<div class="row">
+  <figure><video id="vid" muted loop playsinline crossorigin="anonymous"></video><figcaption>video source</figcaption></figure>
+  <figure><canvas id="vdepth"></canvas><figcaption>video depth (disparity, per-frame min/max)</figcaption></figure>
+  <div class="stat" id="vstat">video: loading…</div>
+</div>
+<div class="row">
+  <figure><img id="img" crossorigin="anonymous" alt="still source"><figcaption>still source</figcaption></figure>
+  <figure><canvas id="sdepth"></canvas><figcaption>still depth</figcaption></figure>
+  <div class="stat" id="sstat">still: waiting…</div>
+</div>
+
+<script type="module">
+import { createDepthProvider, createInpainter, createModelSource, loadOrt, getRegistry } from '../../js/lift/providers/index.js';
+
+const q = new URLSearchParams(location.search);
+const models = q.get('models') || '/_scratch/models';
+const mode = q.get('mode') || 'both';
+const auto = q.get('auto') === '1';            // headless: print RESULT lines + DONE and stop
+const FRAMES = +(q.get('frames') || 60);
+const $ = (id) => document.getElementById(id);
+const log = (...a) => { const s = a.map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); console.log(s); };
+
+async function getOrt() {
+  const tries = q.get('ort') ? [q.get('ort')] : ['/_scratch/ort/', undefined];   // local dev copy, then CDN
+  let err;
+  for (const baseUrl of tries) {
+    try { return await loadOrt({ baseUrl, bundle: q.get('bundle') || 'auto' }); } catch (e) { err = e; }
+  }
+  throw err;
+}
+
+// ── depth → colour (turbo-ish polynomial), normalised per frame ─────────────────────────────
+function turbo(t) {
+  const r = 34.61 + t * (1172.33 - t * (10793.56 - t * (33300.12 - t * (38394.49 - t * 14825.05))));
+  const g = 23.31 + t * (557.33 + t * (1225.33 - t * (3574.96 - t * (1073.77 + t * 707.56))));
+  const b = 27.2 + t * (3211.1 - t * (15327.97 - t * (27814 - t * (22569.18 - t * 6838.66))));
+  return [r, g, b];
+}
+const LUT = new Uint8ClampedArray(256 * 3);
+for (let i = 0; i < 256; i++) { const c = turbo(i / 255); LUT.set(c, i * 3); }
+function draw(canvas, { data, w, h, space }) {
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  // metric depth: show nearness (1/d) so both spaces read "bright = near"
+  const v = space === 'metric' ? Float32Array.from(data, (d) => (d > 0 ? 1 / d : 0)) : data;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < v.length; i++) { const x = v[i]; if (x > 0 || space !== 'metric') { if (x < lo) lo = x; if (x > hi) hi = x; } }
+  const s = 255 / Math.max(1e-9, hi - lo);
+  for (let i = 0, j = 0; i < v.length; i++, j += 4) {
+    const k = Math.max(0, Math.min(255, ((v[i] - lo) * s) | 0)) * 3;
+    img.data[j] = LUT[k]; img.data[j + 1] = LUT[k + 1]; img.data[j + 2] = LUT[k + 2]; img.data[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function progress(label) {
+  return ({ loaded, total }) => {
+    $('prog').max = total || 1; $('prog').value = loaded;
+    $('progTxt').textContent = `${label} ${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`;
+  };
+}
+
+const med = (a) => { const b = [...a].sort((x, y) => x - y); return b[b.length >> 1]; };
+
+async function runVideo(ort, source) {
+  const vid = $('vid');
+  vid.src = q.get('video') || `${models}/dev/pan.mp4`;
+  await vid.play().catch(() => {});
+  if (vid.readyState < 2) await new Promise((r) => vid.addEventListener('loadeddata', r, { once: true }));
+  const quality = q.get('quality') || 'auto';
+  const p = createDepthProvider({ kind: 'video', modelSource: source, ort, quality, preprocess: q.get('pre') || 'auto' });
+  const t0 = performance.now();
+  await p.load({ onProgress: progress('video model') });
+  const loadMs = performance.now() - t0;
+  $('bReset').onclick = () => p.reset();
+  $('bPause').onclick = () => (vid.paused ? vid.play() : vid.pause());
+  const times = [];
+  let n = 0, win0 = performance.now(), fps = 0, first = true;
+  const tRun = performance.now();
+  for (;;) {
+    const ts = performance.now();
+    const d = await p.estimate({ source: vid, t: vid.currentTime });
+    const dt = performance.now() - ts;
+    if (!first) times.push(dt);
+    first = false;
+    draw($('vdepth'), d);
+    n++;
+    if (performance.now() - win0 > 1000) { fps = n / ((performance.now() - win0) / 1000); n = 0; win0 = performance.now(); }
+    $('vstat').textContent = `video  ${p.info.model}\n  ${d.w}×${d.h}  pre=${p.info.preprocess}\n  ` +
+      `${fps.toFixed(1)} fps  ${dt.toFixed(1)} ms/frame\n  warm-up ${p.info.warmupMs?.toFixed(1) ?? '–'} ms` +
+      `${p.info.autoDropped ? ' → auto-dropped to low' : ''}\n  load ${loadMs.toFixed(0)} ms`;
+    if (auto && times.length >= FRAMES) break;
+    await new Promise((r) => requestAnimationFrame(r));   // yield so the page paints
+  }
+  const wall = performance.now() - tRun;
+  const res = { kind: 'video', model: p.info.model, w: p.info.width, h: p.info.height, quality, pre: p.info.preprocess,
+    warmupMs: +(p.info.warmupMs ?? NaN).toFixed(1), autoDropped: !!p.info.autoDropped, loadMs: Math.round(loadMs),
+    medMs: +med(times).toFixed(1), estimateFps: +(1000 / med(times)).toFixed(1),
+    loopFps: +((times.length + 1) / (wall / 1000)).toFixed(1), n: times.length };
+  log('RESULT', res);
+  await p.dispose();
+  return res;
+}
+
+async function runStill(ort, source) {
+  const img = $('img');
+  img.src = q.get('image') || `${models}/dev/synthetic.jpg`;
+  await img.decode();
+  const quality = q.get('still') || 'auto';
+  const p = createDepthProvider({ kind: 'still', modelSource: source, ort, quality, model: q.get('stillModel') || undefined,
+    preprocess: q.get('pre') || 'auto' });
+  const t0 = performance.now();
+  await p.load({ onProgress: progress('still model') });
+  const loadMs = performance.now() - t0;
+  const runs = [];
+  let d;
+  for (let i = 0; i < (auto ? 4 : 1); i++) {
+    const ts = performance.now();
+    d = await p.estimate({ source: img });
+    runs.push(performance.now() - ts);
+  }
+  draw($('sdepth'), d);
+  let lo = Infinity, hi = -Infinity, nan = 0;
+  for (const x of d.data) { if (Number.isNaN(x)) nan++; else { if (x < lo) lo = x; if (x > hi) hi = x; } }
+  const res = { kind: 'still', model: p.info.model, w: d.w, h: d.h, space: d.space, pre: p.info.preprocess,
+    focalPx: d.intrinsics ? +d.intrinsics.focalPx.toFixed(1) : null, fovXDeg: d.intrinsics ? +d.intrinsics.fovXDeg.toFixed(2) : null,
+    range: [+lo.toFixed(3), +hi.toFixed(3)], nan, loadMs: Math.round(loadMs), from: p.info.source,
+    firstMs: Math.round(runs[0]), medMs: runs.length > 1 ? Math.round(med(runs.slice(1))) : null };
+  $('sstat').textContent = `still  ${res.model}\n  ${d.w}×${d.h}  ${d.space}\n  first ${res.firstMs} ms` +
+    (res.medMs ? `, then ${res.medMs} ms` : '') + `\n  load ${res.loadMs} ms` + (res.focalPx ? `\n  focal ${res.focalPx} px (fovX ${res.fovXDeg}°)` : '');
+  log('RESULT', res);
+  await p.dispose();
+  return res;
+}
+
+// Inpainter smoke test: two 24 px hole bands on the still (one background-right, one background-left).
+async function runInpaint(ort, source) {
+  const img = $('img');
+  img.src = q.get('image') || `${models}/dev/synthetic.jpg`;
+  await img.decode();
+  const W = 960, H = 540, N = W * H;
+  const c = new OffscreenCanvas(W, H), g = c.getContext('2d');
+  g.drawImage(img, 0, 0, W, H);
+  const px = g.getImageData(0, 0, W, H).data;
+  const rgb = new Float32Array(3 * N), mR = new Float32Array(N), mL = new Float32Array(N);
+  for (let i = 0; i < N; i++) { rgb[i] = px[4 * i] / 255; rgb[N + i] = px[4 * i + 1] / 255; rgb[2 * N + i] = px[4 * i + 2] / 255; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < 24; x++) { mR[y * W + 300 + x] = 1; mL[y * W + 640 + x] = 1; }
+  for (let i = 0; i < N; i++) if (mR[i] || mL[i]) rgb[i] = rgb[N + i] = rgb[2 * N + i] = 0;
+  const ip = createInpainter({ modelSource: source, ort, quality: q.get('iq') || 'medium' });
+  const t0 = performance.now();
+  await ip.load({ onProgress: progress('inpaint model') });
+  const loadMs = performance.now() - t0;
+  const runs = [];
+  let out;
+  for (let i = 0; i < 3; i++) { const ts = performance.now(); out = await ip.inpaintTwoSided(rgb, mR, mL, W, H); runs.push(performance.now() - ts); }
+  let hole = 0, filled = 0;
+  for (let i = 0; i < N; i++) if (mR[i] || mL[i]) { hole++; filled += out[i] + out[N + i] + out[2 * N + i]; }
+  const cv = $('sdepth'); cv.width = W; cv.height = H;
+  const id = cv.getContext('2d').createImageData(W, H);
+  for (let i = 0; i < N; i++) { id.data[4 * i] = out[i] * 255; id.data[4 * i + 1] = out[N + i] * 255; id.data[4 * i + 2] = out[2 * N + i] * 255; id.data[4 * i + 3] = 255; }
+  cv.getContext('2d').putImageData(id, 0, 0);
+  const res = { kind: 'inpaint', model: ip.model, tile: [ip.width, ip.height], img: [W, H], loadMs: Math.round(loadMs),
+    firstMs: Math.round(runs[0]), medMs: Math.round(med(runs.slice(1))), meanHoleRgb: +(filled / hole / 3).toFixed(3) };
+  $('sstat').textContent = JSON.stringify(res, null, 1);
+  log('RESULT', res);
+  await ip.dispose();
+}
+
+try {
+  const ort = await getOrt();
+  log('ORT', ort.env.versions, 'providers', getRegistry().list());
+  const source = createModelSource({ baseUrl: models });
+  await source.ready();
+  if (mode === 'video' || mode === 'both') await runVideo(ort, source); else $('vstat').textContent = 'video: skipped (mode=' + mode + ')';
+  if (mode === 'inpaint') await runInpaint(ort, source);
+  else if (mode !== 'video') await runStill(ort, source);
+} catch (e) {
+  log('ERROR', String(e && e.stack || e));
+  $('vstat').textContent = String(e);
+}
+log('DONE');
+</script>
+</body>
+</html>
