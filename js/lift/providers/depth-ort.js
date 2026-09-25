@@ -263,7 +263,9 @@ export function createOrtDepthProvider(opts) {
       queue = p.catch(() => {});
       return p;
     },
-    reset() { dropCache(); lastT = null; },
+    // Serialised behind any in-flight estimate: dropping the temporal cache mid-run disposed the
+    // GPU buffer the running session was reading and nulled `cache` under runVideo (integration fix).
+    reset() { const p = queue.then(() => { dropCache(); lastT = null; }); queue = p.catch(() => {}); },
     async dispose() {
       disposed = true;
       await queue;

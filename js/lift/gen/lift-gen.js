@@ -267,9 +267,23 @@ export async function generateLift(opts) {
   mark('emit');
   progress('done', 1);
 
+  // Pivot = min(convergence, subject) — the gallery's Spatial View rule (integration). `subject` is
+  // the median layer-0 depth of the central box (r.pivotZ, A4). `convergence` is the depth at the
+  // MEAN normalised disparity of the central 60 % — the plane that balances crossed and uncrossed
+  // disparity. On a frame whose centre is mostly far background (a sky or a wall between near
+  // objects), the median alone lands on the background and the whole foreground swings under the
+  // orbit; the min keeps the zero-parallax plane among the content.
+  let convSum = 0, convN = 0;
+  for (let y = Math.floor(depth.h * 0.2); y < Math.ceil(depth.h * 0.8); y++)
+    for (let x = Math.floor(depth.w * 0.2); x < Math.ceil(depth.w * 0.8); x++) { convSum += dlo[y * depth.w + x]; convN++; }
+  const convergenceZ = 1 / (invFar + (convN ? convSum / convN : 0.5) * (invNear - invFar));
+  const pivotZ = Math.min(r.pivotZ, convergenceZ);
+
   const meta = {
     focalPx: f,
-    pivotZ: r.pivotZ,
+    pivotZ,
+    subjectZ: r.pivotZ,
+    convergenceZ,
     w: W,
     h: H,
     layers: 2,
@@ -305,7 +319,11 @@ export function normaliseDisparity(depth, space, P = LIFT_DEFAULTS) {
   const disp = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const v = depth.data[i];
-    disp[i] = space === 'metric' ? 1 / Math.max(v, 1e-3) : v;
+    // Metric providers mark invalid pixels (MoGe: sky / no-surface) with depth 0. That must read as
+    // FAR, not as 1/1e-3 = the nearest thing in the scene: NaN here stays out of the percentiles and
+    // normalises to 0 (the far end) below. (Integration fix: a MoGe sky became a curtain of
+    // foreground-depth splats in front of everything.)
+    disp[i] = space === 'metric' ? (v > 0 && Number.isFinite(v) ? 1 / Math.max(v, 1e-3) : NaN) : v;
   }
   const step = Math.max(1, Math.floor(n / 200000));
   const sample = [];

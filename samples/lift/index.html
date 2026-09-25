@@ -16,20 +16,31 @@
   .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px auto 0;max-width:800px}
   button{font:inherit;font-size:14px;padding:5px 12px;border-radius:8px;border:1px solid #8886;background:#8881;cursor:pointer}
   label{font-size:14px;opacity:.85}
-  .state{font:13px ui-monospace,Menlo,monospace;opacity:.8;margin-left:auto}
+  .state{font:12px/1.4 ui-monospace,Menlo,monospace;opacity:.85;width:100%;white-space:pre-wrap}
   pre#log{font:12px/1.45 ui-monospace,Menlo,monospace;max-height:220px;overflow:auto;background:#8881;padding:10px;border-radius:8px}
   code{background:#8882;padding:1px 5px;border-radius:4px}
 </style>
+<!-- The explore renderer needs the SDK's optional peers three + Spark (same as addSplat). -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+} }
+</script>
 </head>
 <body>
 <div class="wrap">
   <h1>lift — Convert to 3D</h1>
   <p class="sub">Any <code>&lt;video&gt;</code>, <code>&lt;img&gt;</code> or <code>&lt;canvas&gt;</code>, lifted in place:
-    live 3D while a video plays, an explorable 3D scene when it pauses. Alt-click any media to lift it
-    (<code>resolveMediaAt</code>). Backend: <b id="backend"></b> — add <code>?providers=real</code> for the real models.</p>
+    live 3D while a video plays, an explorable 3D scene when it pauses (drag to orbit). Alt-click any media to lift it
+    (<code>resolveMediaAt</code>). Backend: <b id="backend">…</b>.
+    Query: <code>providers=real|stub</code>, <code>models=</code> (model tree base URL, default <code>/_scratch/models</code>),
+    <code>ort=</code> (onnxruntime-web dist URL, default <code>/_scratch/ort/</code> else jsDelivr),
+    <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>.</p>
 
   <figure>
-    <video id="vid" src="assets/synthetic-720p.mp4" muted loop playsinline controls></video>
+    <video id="vid" muted loop playsinline controls></video>
     <div class="bar">
       <button data-act="lift" data-t="vid">Lift video</button>
       <button data-act="play" data-t="vid">Play / pause</button>
@@ -37,25 +48,25 @@
       <button data-act="resume" data-t="vid">Resume</button>
       <button data-act="remove" data-t="vid">Remove</button>
       <label>depth <input type="range" min="0" max="2" step="0.05" value="1" data-act="depth" data-t="vid"></label>
-      <span class="state" id="st-vid">—</span>
+      <div class="state" id="st-vid">—</div>
     </div>
   </figure>
 
   <figure>
-    <img id="img" src="assets/still.jpg" alt="synthetic still">
+    <img id="img" alt="still to lift">
     <div class="bar">
       <button data-act="lift" data-t="img">Lift image</button>
       <button data-act="remove" data-t="img">Remove</button>
-      <span class="state" id="st-img">—</span>
+      <div class="state" id="st-img">—</div>
     </div>
   </figure>
 
   <figure>
-    <img id="cov" class="cover" src="assets/still.jpg" alt="object-fit: cover still">
+    <img id="cov" class="cover" alt="object-fit: cover still">
     <div class="bar">
       <button data-act="lift" data-t="cov">Lift (object-fit: cover)</button>
       <button data-act="remove" data-t="cov">Remove</button>
-      <span class="state" id="st-cov">—</span>
+      <div class="state" id="st-cov">—</div>
     </div>
   </figure>
 
@@ -66,8 +77,33 @@
 import { lift, resolveMediaAt } from '../../js/lift/lift.js';
 
 const q = new URLSearchParams(location.search);
-const backend = q.get('providers') === 'real' ? 'real' : 'stub';
-document.getElementById('backend').textContent = backend;
+const MODELS = (q.get('models') || '/_scratch/models').replace(/\/$/, '');
+const reachable = (u) => fetch(u, { method: 'HEAD' }).then((r) => r.ok, () => false);
+
+// Real models by default when the model tree answers; the stubs otherwise (or with providers=stub).
+let backend = q.get('providers');
+if (backend !== 'real' && backend !== 'stub') {
+  backend = (await reachable(`${MODELS}/vda/vda_s_stream_364x210_w16.onnx`)) ? 'real' : 'stub';
+}
+// A local onnxruntime-web dist if there is one, else loadOrt's pinned jsDelivr build.
+let ORT = q.get('ort') || '/_scratch/ort/';
+if (backend === 'real' && !q.get('ort') && !(await reachable(ORT + 'ort.webgpu.min.mjs'))) ORT = undefined;
+
+document.getElementById('backend').textContent = backend + (backend === 'real' ? ` (models ${MODELS}, ort ${ORT || 'jsDelivr'})` : '');
+const vid = document.getElementById('vid');
+vid.src = q.get('video') || (backend === 'real' ? `${MODELS}/dev/pan.mp4` : 'assets/synthetic-720p.mp4');
+for (const id of ['img', 'cov']) document.getElementById(id).src = q.get('image') || 'assets/still.jpg';
+
+const opts = {
+  backend,
+  mode: 'auto',
+  quality: q.get('quality') || 'auto',
+  ...(backend === 'real' ? { models: MODELS, ort: ORT } : {}),
+  ...(q.get('exploreDpr') ? { exploreMaxDpr: +q.get('exploreDpr') } : {}),
+  ...(q.get('maxAngle') ? { orbit: { maxAngleDeg: +q.get('maxAngle') } } : {}),
+  ...(q.get('inpaint') === '1' ? { providers: { inpaint: 'light-inpaint-v1' } } : {}),
+};
+
 const logEl = document.getElementById('log');
 const log = (...a) => {
   const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
@@ -76,28 +112,38 @@ const log = (...a) => {
   console.log('[lift-sample]', line);
 };
 const handles = new Map();
-window.__lift = { handles, log };
 
 async function doLift(id, el = document.getElementById(id)) {
   if (handles.has(id)) return handles.get(id);
-  const h = await lift(el, { backend, mode: 'auto' });
+  const h = await lift(el, opts);
   handles.set(id, h);
-  const st = document.getElementById('st-' + id);
   h.on('statechange', ({ state, from, reason }) => {
-    if (st) st.textContent = state;
     log(`${id}: ${from} → ${state} (${reason})`);
     if (state === 'disposed') handles.delete(id);
   });
   let lastPct = -1;
   h.on('progress', ({ phase, value }) => {
     const pct = Math.round(value * 100);
-    if (pct !== lastPct && (pct % 25 === 0)) log(`${id}: progress ${phase} ${pct}%`);
+    if (pct !== lastPct && pct % 25 === 0) log(`${id}: progress ${phase} ${pct}%`);
     lastPct = pct;
   });
-  h.on('error', ({ error, fatal }) => log(`${id}: error${fatal ? ' (fatal)' : ''}: ${error && error.message}`));
+  h.on('error', ({ error, fatal, phase }) => log(`${id}: error${fatal ? ' (fatal)' : ''}${phase ? ' [' + phase + ']' : ''}: ${error && error.message}`));
   log(`${id}: lifted — layout=${h.layout} woven=${h.woven}`);
   return h;
 }
+
+// Status line: state · fps · depth ms · lift ms (4 Hz).
+setInterval(() => {
+  for (const id of ['vid', 'img', 'cov']) {
+    const el = document.getElementById('st-' + id), h = handles.get(id);
+    if (!h) { el.textContent = '—'; continue; }
+    const s = h.stats;
+    el.textContent =
+      `${s.state} · ${s.fps} fps · depth live ${s.liveDepthMs} ms / still ${s.stillDepthMs} ms · ` +
+      `lift ${s.generateMs} ms (${(s.splats / 1e3).toFixed(0)} k splats) + load ${s.exploreLoadMs} ms · ` +
+      `pause→explore ${s.pauseToExploreMs} ms · models ${s.modelLoadMs} ms`;
+  }
+}, 250);
 
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button[data-act]');
@@ -123,6 +169,8 @@ document.addEventListener('click', (e) => {
   e.preventDefault();
   doLift(el.id || 'media-' + Math.random().toString(36).slice(2, 6), el);
 }, true);
+
+window.__lift = { handles, doLift, log, backend, opts };
 </script>
 </body>
 </html>

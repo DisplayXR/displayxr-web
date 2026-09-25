@@ -90,14 +90,18 @@ async function acquireWall(given) {
   };
 }
 
-/** 'auto' → a tier from what the device admits to. Providers get a concrete tier, never 'auto'. */
+/**
+ * 'auto' → a tier from what the device admits to. Providers get a concrete tier, never 'auto'.
+ * 'auto' never picks 'high': on an M1 Pro, high = MoGe-3 1022×574 (2.8 s vs 1.3 s), a 1536-wide
+ * lift (~1.2 M splats for 720p vs ~0.8 M) and a full-dpr explore store that misses 60 fps at dpr 2.
+ * Ask for 'high' explicitly.
+ */
 export function resolveQuality(q, nav = typeof navigator !== 'undefined' ? navigator : {}) {
   if (q === 'low' || q === 'medium' || q === 'high') return q;
   const mem = nav.deviceMemory || 4;
   const cores = nav.hardwareConcurrency || 4;
   const mobile = /Android|iPhone|iPad|Mobile/i.test(nav.userAgent || '');
   if (mobile) return mem >= 8 ? 'medium' : 'low';
-  if (mem >= 8 && cores >= 8) return 'high';
   if (mem >= 4 && cores >= 4) return 'medium';
   return 'low';
 }
@@ -148,10 +152,17 @@ export async function lift(element, opts = {}) {
     qualityAsked: opts.quality || 'auto',
     models: opts.models || 'auto',
     ort: opts.ort || null,
-    providers: { video: 'vda-small', still: 'moge3', inpaint: 'light-inpaint-v1', ...(opts.providers || {}) },
+    prefetch: !!opts.prefetch,
+    exploreMaxDpr: Number.isFinite(opts.exploreMaxDpr) ? opts.exploreMaxDpr : null,
+    // inpaint defaults OFF (integration, 2026-09-25): on real photos light_inpaint_v1 filled the wide
+    // hidden bands with COPIES of the foreground (a second chair / lamp at background depth under the
+    // orbit) and cost ~1 s per lift; the generator's push-pull fill reads as a soft smear instead.
+    // `providers: { inpaint: 'light-inpaint-v1' }` turns it on.
+    providers: { video: 'vda-small', still: 'moge3', inpaint: 'none', ...(opts.providers || {}) },
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',
   };
+
 
   // ── listeners ─────────────────────────────────────────────────────────────────────────
   const listeners = new Map();
@@ -170,6 +181,10 @@ export async function lift(element, opts = {}) {
   // ── placement + session ───────────────────────────────────────────────────────────────
   const { wall, release } = await acquireWall(opts.wall);
   const cols = wall ? 2 : 1; // SBS backing store while a session is live
+  // Measured (M1 Pro, headless, GPU idle): the MONO 2D-fallback explore holds 60 fps at dpr 2
+  // (1600×900, 0.8-1.2 M splats, orbit spinning), so only the woven SBS store — 2 views, where
+  // A5 measured 26-53 fps at dpr 2 — is capped at dpr 1, and not at quality 'high'.
+  if (o.exploreMaxDpr === null) o.exploreMaxDpr = wall && o.quality !== 'high' ? 1 : Infinity;
   const placement = mountCanvas(el);
   const canvas = placement.canvas;
   let chip = null;
@@ -192,6 +207,9 @@ export async function lift(element, opts = {}) {
   let frozen = null; // { bitmap, depth }
   let liveGen = 0; // bumps on provider reset: stale live depth is dropped
   let inferBusy = false;
+  let inferP = Promise.resolve(); // the in-flight live estimate (never rejects)
+  let liveHold = false; // ORT is busy creating a session: no live estimates
+  let ortBusy = 0; // still depth / inpainting in flight (a resume mid-lift must not overlap them)
   let lastT = -1;
   let suspended = false;
   let disposed = false;
@@ -242,13 +260,11 @@ export async function lift(element, opts = {}) {
   });
 
   // ── sizing ────────────────────────────────────────────────────────────────────────────
-  // Explore draws ~1 M Gaussians per view: at dpr 2 that is 4× the fill of dpr 1 and misses 60 fps
-  // on an M1 Pro (docs/lift-explore.md §Performance), so the backing store drops to dpr 1 while the
-  // lifted scene is up, unless quality is 'high'. Live DIBR (a ~1 ms full-screen pass) keeps full dpr.
+  // Explore draws ~1 M Gaussians per view; o.exploreMaxDpr (see above) caps the backing store while
+  // the lifted scene is up. Live DIBR (a ~1 ms full-screen pass) always keeps full dpr.
   function effectiveDpr() {
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-    if (o.quality === 'high' || !explore) return dpr;
-    return Math.min(dpr, 1);
+    return explore ? Math.min(dpr, o.exploreMaxDpr) : dpr;
   }
   function syncBacking(force) {
     const changed = placement.update();
@@ -327,13 +343,13 @@ export async function lift(element, opts = {}) {
   }
 
   function maybeInfer(src) {
-    if (inferBusy || !videoProv || el.readyState < 2) return;
+    if (inferBusy || liveHold || ortBusy || !videoProv || el.readyState < 2) return;
     if (el.currentTime === lastT) return;
     lastT = el.currentTime;
     inferBusy = true;
     const g = liveGen;
     const t0 = performance.now();
-    Promise.resolve()
+    inferP = Promise.resolve()
       .then(() => videoProv.estimate({ source: src, t: el.currentTime }))
       .then((d) => {
         stats.liveDepthMs = +(performance.now() - t0).toFixed(1);
@@ -347,7 +363,8 @@ export async function lift(element, opts = {}) {
       })
       .finally(() => {
         inferBusy = false;
-      });
+      })
+      .catch(() => {});
   }
 
   function startFallbackLoop() {
@@ -394,11 +411,12 @@ export async function lift(element, opts = {}) {
     return inpainterP;
   }
 
-  function ensureStill(signal, base = 0, span = 1) {
+  function ensureStill(signal, base = 0, span = 1, quiet = false) {
     if (stillProv) return Promise.resolve(stillProv);
     if (!stillLoading) {
       const p = makeProvider('still', o.providers.still);
-      stillLoading = Promise.resolve(p.load({ signal, onProgress: (v) => progress('models', v, base, span) })).then(
+      const onProgress = quiet ? undefined : (v) => progress('models', v, base, span);
+      stillLoading = Promise.resolve(p.load({ signal, onProgress })).then(
         () => (stillProv = p),
         (e) => {
           stillLoading = null;
@@ -461,6 +479,26 @@ export async function lift(element, opts = {}) {
       stats.modelLoadMs = Math.round(performance.now() - tLoad);
       syncBacking(true);
       machine.send('loaded');
+      // `prefetch: true`: load the still model (and inpainter) right after live starts, so the first
+      // pause does not pay MoGe-3's ~3-5 s session creation. onnxruntime-web must NOT create a
+      // session while another one runs (measured: wasm `Aborted()` / `unreachable` / OOB, and the
+      // ORT instance is dead afterwards), so live inference is HELD meanwhile — DIBR keeps drawing
+      // with the last depth map, which lags a moving video for those seconds. Off by default.
+      if (kind === 'video' && o.prefetch) {
+        setTimeout(async () => {
+          if (disposed) return;
+          liveHold = true;
+          await inferP;
+          try {
+            await ensureStill(loadAbort.signal, 0, 1, true);
+            await ensureInpainter(loadAbort.signal);
+          } catch {
+            /* the pause path retries and reports */
+          } finally {
+            liveHold = false;
+          }
+        }, 500);
+      }
     } catch (error) {
       if (!disposed) machine.send('fail', { error });
     }
@@ -478,12 +516,21 @@ export async function lift(element, opts = {}) {
       const t = kind === 'video' ? el.currentTime : 0;
       const bitmap = await createImageBitmap(currentSource());
       if (isStale(gen)) return bitmap.close && bitmap.close();
-      await ensureStill(signal, 0, 0.25);
-      if (isStale(gen)) return bitmap.close && bitmap.close();
-      progress('depth', 0, 0.25, 0.1);
-      const tDepth = performance.now();
-      let depth = await stillProv.estimate({ source: bitmap, t });
-      stats.stillDepthMs = Math.round(performance.now() - tDepth);
+      // One ORT session at a time: let a live estimate still in flight finish before the still model
+      // is created/run (see the prefetch note in doLoad).
+      await inferP;
+      let depth;
+      ortBusy++;
+      try {
+        await ensureStill(signal, 0, 0.25);
+        if (isStale(gen)) return bitmap.close && bitmap.close();
+        progress('depth', 0, 0.25, 0.1);
+        const tDepth = performance.now();
+        depth = await stillProv.estimate({ source: bitmap, t });
+        stats.stillDepthMs = Math.round(performance.now() - tDepth);
+      } finally {
+        ortBusy--;
+      }
       if (isStale(gen)) return bitmap.close && bitmap.close();
       progress('depth', 1, 0.25, 0.1);
       // Depth comes back at MODEL resolution (e.g. 770×434) and MoGe's focalPx is in that grid;
@@ -505,17 +552,23 @@ export async function lift(element, opts = {}) {
   async function doLift(gen) {
     const signal = abort ? abort.signal : undefined;
     try {
-      const inpainter = await ensureInpainter(signal);
-      if (isStale(gen)) return;
+      let res;
       const tGen = performance.now();
-      const res = await impl.gen.generateLift({
-        rgb: frozen.bitmap,
-        depth: frozen.depth,
-        inpainter,
-        quality: o.quality,
-        signal,
-        onProgress: (v) => progress('lift', v, 0.35, 0.65),
-      });
+      ortBusy++;
+      try {
+        const inpainter = await ensureInpainter(signal);
+        if (isStale(gen)) return;
+        res = await impl.gen.generateLift({
+          rgb: frozen.bitmap,
+          depth: frozen.depth,
+          inpainter,
+          quality: o.quality,
+          signal,
+          onProgress: (v) => progress('lift', v, 0.35, 0.65),
+        });
+      } finally {
+        ortBusy--;
+      }
       stats.generateMs = Math.round(performance.now() - tGen);
       stats.splats = (res.meta && res.meta.splatCount) || 0;
       if (isStale(gen)) return;
@@ -529,6 +582,7 @@ export async function lift(element, opts = {}) {
         ply: res.ply,
         meta,
         axes: meta.axes || meta.convention || undefined,
+        clearAlpha: 1, // opaque: never let the page's flat media ghost through the lifted scene
         orbit: o.orbit,
       });
       stats.exploreLoadMs = Math.round(performance.now() - tEx);
@@ -742,6 +796,8 @@ export async function lift(element, opts = {}) {
     /** Live timings: fps (frames drawn), modelLoadMs, liveDepthMs (last video estimate),
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
+    /** Diagnostics only (not API): the live renderers. */
+    _internals: () => ({ explore, dibr, videoProv, stillProv }),
     get stats() {
       return { ...stats, state: machine.state };
     },
@@ -761,6 +817,11 @@ export async function lift(element, opts = {}) {
     /** Back to live: plays a paused video (its `play` event crossfades explore → live). */
     resume() {
       machine.send('resume-request');
+    },
+    /** Explore: turn the lifted scene to (yaw, pitch) degrees, clamped to orbit.maxAngleDeg; with
+     *  `relax` a drag release springs back to this pose. No-op outside explore. */
+    setOrbit(yaw, pitch = 0) {
+      if (explore && typeof explore.setTarget === 'function') explore.setTarget(+yaw || 0, +pitch || 0);
     },
     setDepth(x) {
       if (!Number.isFinite(x)) return;
@@ -792,6 +853,7 @@ export async function lift(element, opts = {}) {
  * @property {(type:string, cb:Function) => void} off
  * @property {() => void} explore
  * @property {() => void} resume
+ * @property {(yaw:number, pitch?:number) => void} setOrbit
  * @property {(x:number) => void} setDepth
  * @property {(x:'auto'|number) => void} setConvergence
  * @property {() => void} remove

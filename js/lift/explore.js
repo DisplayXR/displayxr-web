@@ -193,6 +193,7 @@ function attachDepthModifier(mesh, { dPivot, fwd }) {
  * @param {number} [o.depthGain=1]
  * @param {boolean} [o.startFlat=false]  hold the scene flat (the photo) until fadeIn().
  * @param {boolean} [o.startHidden=!!o.gl]  draw nothing (and clear nothing) until fadeIn().
+ * @param {number} [o.clearAlpha=0]  alpha of the clear (black unless `o.clearColor`); lift passes 1.
  * @param {boolean} [o.clear=true]  clear the canvas before drawing (outside a shared-context
  *        fade). false = always composite over whatever is already in the buffer.
  * @param {'exact'|'balanced'|'aggressive'|object} [o.perf]  Spark overdraw presets.
@@ -258,6 +259,10 @@ export async function createExplore(o) {
   // renderer's frame is underneath and the splats composite over it (premultiplied "over").
   let hidden = o.startHidden ?? shared;
   const clearFrames = o.clear !== false;
+  // Opaque clear for an in-page lift: with the default transparent clear, pixels the splat sheet
+  // does not fully cover (frame edges swung into view, sparse disocclusions) let the page's own
+  // <img>/<video> — the flat picture — show through as a ghost double under the orbit.
+  if (Number.isFinite(o.clearAlpha)) renderer.setClearColor(o.clearColor ?? 0x000000, o.clearAlpha);
   let fade = null; // { from, to, t0, ms, resolve }
   const setOpacity = (c) => {
     // Spark folds mesh.opacity into its per-splat alpha and regenerates on change by itself. That
