@@ -19,7 +19,10 @@
   .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
   /* Stages are VISUALLY BARE — anything drawn here would be woven with the tile. */
   .stage{aspect-ratio:16/9}
-  .stage canvas,.stage video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
+  /* The stage is the PER-EYE aspect (16:9). The SDK sizes the woven canvas's backing buffer to
+     2x the CSS width itself — never object-fit a woven canvas, it letterboxes the SBS quad. */
+  .stage canvas{display:block;width:100%;height:100%}
+  .stage video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
   .cap{font-size:12px;opacity:.6;margin-top:4px}
   #status{font-size:13px;padding:8px 12px;border-radius:8px;display:inline-block;background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
   #status.woven{background:#134e2a55;border-color:#24a05a55;color:#7ee2a4}
