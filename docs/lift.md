@@ -438,7 +438,22 @@ explored in the same PlayCanvas explore view (the file's own camera block is the
 - **Stats.** `liftSource` (`'remote-sharp'` | `'local'`), `remoteMs`, `remoteTimings` (`encodeMs`,
   `requestMs`, `downloadMs`, `totalMs`, `bytes`, `cacheHit`, `serverMs`).
 - **Latency / cost** (worker README): ~8.5 s warm, ~40 s cold on a Modal L4 (scale-to-zero), plus the
-  ~10–14 MB download; see the E2E numbers below for what was measured here.
+  ~10–14 MB download. Client side, measured (M1 Pro, headless Chrome, 2026-09-25, `samples/lift/`
+  through `serve.py --sharp` against a local stand-in worker replaying Apple SHARP's output for the same
+  JPEG): encode 30–50 ms (1536×1021, 285 kB), proxy + 12.5 MB download 20–60 ms on localhost, `.sog`
+  explore load 115–135 ms (vs 490–600 ms for the local PLY). Everything else is the worker.
+- **Quality vs the local lift** (tamarra2k, yaw −10/0/+10): SHARP's disocclusions are filled with
+  plausible background and hair — none of the local lift's stretched streaks behind the shoulder or
+  cut-outs along the arm — and the neutral view is the photo. But SHARP predicts nothing outside the
+  frame: at ±10° the leading edge shows ragged black (the local lift's outpaint border covers it).
+  With no EXIF (the JPEG is re-encoded) the worker assumes a 30 mm-equivalent lens.
+- **Explore from a `.sog` on the lift canvas** needed two engine fixes (`js/lift/explore.js`):
+  `TextureHandler` registered (a `.sog`'s webp planes are texture sub-assets — without it every
+  `.sog` explored BLACK), and the GL state re-adopted around the load, which issues a GPU pass
+  (the sort centres) and immediate texture uploads from async continuations between the live DIBR's
+  frames (it mis-sorted into a translucent, smeared foreground). `test/lift-sog-explore.run.mjs`
+  (GPU browser, not `npm test`) gates both: `.sog` vs PLY explore of the same lift on the DIBR's
+  context, MAE < 0.4/255.
 
 **Running it locally** — the proxy is in the dev server; the values stay in your shell:
 

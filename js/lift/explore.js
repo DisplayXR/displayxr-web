@@ -50,7 +50,7 @@ import {
   TONEMAP_NONE,
 } from '../inline3d-playcanvas-engine.js';
 import { playcanvasPerfSettings, patchPlayCanvasQuadExtent } from '../inline3d-splat-perf.js';
-import { LIFT_MODIFY_VS, patchGsplatFootprint, adoptGlState, releaseGlState } from './explore-gl.js';
+import { LIFT_MODIFY_VS, patchGsplatFootprint, adoptGlState, releaseGlState, syncUnpackState } from './explore-gl.js';
 import { readLiftSog } from './sog-input.js';
 import {
   createOrbit,
@@ -152,11 +152,38 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, format =
   // bundled SOG alike (the SDK's addSplat engine:'playcanvas' byte path does the same for .sog).
   const asset = new pc.Asset(url, 'gsplat', { url, filename: url, contents: new Response(u8) });
   app.assets.add(asset);
-  await new Promise((resolve, reject) => {
-    asset.ready(resolve);
-    asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
-    app.assets.load(asset);
-  });
+  // On a SHARED context the load itself draws: a .sog's loader runs a GPU pass (SogGenerateCenters,
+  // the sort keys) in an async continuation, between the live DIBR's frames and OUTSIDE the
+  // adoptGlState() that wraps our own draws — so it ran on whatever state the DIBR left (its
+  // UNPACK_FLIP_Y upload, blend, viewport) and produced wrong centres: the scene drew, but sorted
+  // wrong (a translucent, smeared foreground). Re-adopt the state before every render pass the
+  // load issues. (A PLY builds its centres on the CPU; it never hit this.)
+  // The same load also uploads its textures immediately (Texture.upload → setTexture), outside
+  // any pass: resync the pixel-store to the engine's caches before each (see syncUnpackState).
+  const origStart = gl ? device.startRenderPass : null;
+  const origSetTexture = gl ? device.setTexture : null;
+  if (origStart) {
+    device.startRenderPass = function (rp) {
+      adoptGlState(device);
+      return origStart.call(this, rp);
+    };
+    device.setTexture = function (...a) {
+      syncUnpackState(device);
+      return origSetTexture.apply(this, a);
+    };
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      asset.ready(resolve);
+      asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
+      app.assets.load(asset);
+    });
+  } finally {
+    if (origStart) {
+      delete device.startRenderPass; // back to the prototype's
+      delete device.setTexture;
+    }
+  }
 
   // EVERY entity gets its app explicitly (the default is the engine's global "current app").
   const splat = new pc.Entity('lift-splat', app);

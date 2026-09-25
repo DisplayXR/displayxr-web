@@ -94,6 +94,22 @@ export function adoptGlState(device) {
 }
 
 /**
+ * Force the GL pixel-store (UNPACK_*) state to what the engine's caches believe. Cheap and safe to
+ * call mid-pass (unlike adoptGlState). The engine uploads a loaded texture IMMEDIATELY
+ * (Texture.upload → WebglTexture.uploadImmediate → setTexture) from an async load continuation,
+ * outside our draws; with its caches stale, a sibling renderer's UNPACK_PREMULTIPLY_ALPHA (or
+ * FLIP_Y) would be applied to a .sog's data planes — premultiplied sh0 / quats are garbage.
+ */
+export function syncUnpackState(device) {
+  const gl = device.gl;
+  if (!gl) return;
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, !!device.unpackFlipY);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !!device.unpackPremultiplyAlpha);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  if (Number.isFinite(device.unpackAlignment)) gl.pixelStorei(gl.UNPACK_ALIGNMENT, device.unpackAlignment);
+}
+
+/**
  * And the other way: leave the context the way a plain WebGL2 renderer (the DIBR) expects to
  * find it — default framebuffer, no VAO/program, the fixed-function toggles off, the browser's
  * default colour-space conversion on uploads (the engine sets NONE, which would skip the page

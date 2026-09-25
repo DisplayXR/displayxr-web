@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><title>lift sog explore</title>
+<script type="importmap">{ "imports": { "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs" } }</script>
+</head><body style="margin:0;background:#222"><canvas id="c" width="640" height="400"></canvas>
+<script type="module">
+// Harness for createExplore({sog}) (test/lift-sog-explore.run.mjs): one lift, explored twice on the
+// SAME shared WebGL2 context a busy "DIBR" keeps dirtying — once from its PLY, once from the .sog
+// sog-export.js builds from it. The .sog's neutral view must not be black (it was: no
+// TextureHandler) and must match the PLY's (it did not: the SOG loader's centres pass ran on the
+// DIBR's GL state and mis-sorted the scene).
+import { generateLift } from '../js/lift/gen/lift-gen.js';
+import { buildSog } from '../js/lift/sog-export.js';
+import { createExplore } from '../js/lift/explore.js';
+import { createLiveDibr } from '../js/lift/live-dibr.js';
+
+const W = 640, H = 400;
+function scene() {
+  const c = new OffscreenCanvas(W, H), g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, W, H); gr.addColorStop(0, '#2a6'); gr.addColorStop(1, '#a62'); g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 40; i++) { g.fillStyle = `hsl(${i * 37},70%,${40 + (i % 3) * 15}%)`; g.fillRect((i * 97) % W, (i * 53) % H, 30, 18); }
+  g.fillStyle = '#ddd'; g.beginPath(); g.arc(W * 0.45, H * 0.55, 90, 0, 7); g.fill(); g.fillStyle = '#248'; g.fillRect(W * 0.45 - 40, H * 0.55 - 10, 80, 20);
+  const d = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d[y * W + x] = Math.hypot(x - W * 0.45, y - H * 0.55) < 90 ? 1.6 : 4 + y / H;
+  return { rgb: c, depth: { data: d, w: W, h: H, space: 'metric', intrinsics: { focalPx: 560 } } };
+}
+const canvas = document.getElementById('c');
+// The REAL live DIBR owns the context, exactly as in lift(): its per-frame state is what broke the
+// .sog load (the synthetic dirt below adds what it does not do, e.g. premultiplied uploads).
+const dibr = createLiveDibr({ canvas });
+const gl = dibr.gl;
+const I = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const MONO = { eye: 'none', projectionMatrix: I, transform: { position: { x: 0, y: 0, z: 0, w: 1 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, matrix: I } };
+const LAYER = { getViewport: () => ({ x: 0, y: 0, width: W, height: H }) };
+// the "DIBR": dirties exactly the state live-dibr.js leaves behind (and worse) every frame
+const junk = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, junk); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 8, 8, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+const junkFbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, junkFbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, junk, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x); return x; };
+const junkProg = gl.createProgram();
+gl.attachShader(junkProg, sh(gl.VERTEX_SHADER, '#version 300 es\nvoid main(){gl_Position=vec4(0);}'));
+gl.attachShader(junkProg, sh(gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float;out vec4 o;void main(){o=vec4(1);}'));
+gl.linkProgram(junkProg);
+const junkVao = gl.createVertexArray();
+const DIRTY = new URLSearchParams(location.search).get('dirty')?.split(',');
+const SYNTH = !new URLSearchParams(location.search).has('dibrOnly');
+let dirtyOn = !new URLSearchParams(location.search).has('clean');
+(function dirty() {
+  if (dirtyOn && window.__src) dibr.render({ views: [MONO], layer: LAYER });
+  if (dirtyOn && SYNTH) {
+    const on = (k) => !DIRTY || DIRTY.includes(k);
+    gl.bindTexture(gl.TEXTURE_2D, junk);
+    if (on('flip')) gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    if (on('premul')) gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    if (on('cs')) gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
+    if (on('blend')) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); }
+    if (on('vp')) gl.viewport(0, 0, 7, 5);
+    if (on('scissor')) { gl.enable(gl.SCISSOR_TEST); gl.scissor(0, 0, 3, 3); }
+    if (on('mask')) gl.colorMask(true, false, true, false);
+    // what live-dibr.js leaves bound between frames: its own program, VAO, and (mid-pass) FBO
+    if (on('prog')) { gl.useProgram(junkProg); gl.bindVertexArray(junkVao); }
+    if (on('fbo')) gl.bindFramebuffer(gl.FRAMEBUFFER, junkFbo);
+    if (on('tex')) { for (let u = 0; u < 4; u++) { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, junk); } gl.activeTexture(gl.TEXTURE0); }
+  }
+  requestAnimationFrame(dirty);
+})();
+const frame = () => new Promise((r) => requestAnimationFrame(r));
+async function neutral(src) {
+  const ex = await createExplore({ canvas, gl, ...src, clearAlpha: 1, orbit: { maxAngleDeg: 15 } });
+  ex.fadeIn(1);
+  for (let i = 0; i < 20; i++) { await frame(); ex.render({}); }
+  ex.render({});
+  const px = new Uint8Array(W * H * 4);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  ex.dispose();
+  return px;
+}
+const lum = (p) => { let s = 0; for (let i = 0; i < p.length; i += 4) s += 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2]; return s / (p.length / 4); };
+const mae = (a, b) => { let s = 0, n = 0; for (let i = 0; i < a.length; i += 4) { for (let k = 0; k < 3; k++) s += Math.abs(a[i + k] - b[i + k]); n += 3; } return s / n; };
+const toPng = (p) => { const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d'); const im = x.createImageData(W, H); for (let y = 0; y < H; y++) im.data.set(p.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4); x.putImageData(im, 0, 0); return c.toDataURL('image/png'); };
+window.__run = async () => {
+  const { rgb, depth } = scene();
+  const src = document.createElement('canvas'); src.width = W; src.height = H; src.getContext('2d').drawImage(rgb, 0, 0);
+  dibr.setSource(src); dibr.setDepth(depth); dibr.setParams({ depth: 1, convergence: 'auto', dilate: 0 }); window.__src = src;
+  const { ply, meta } = await generateLift({ rgb, depth, quality: 'low', params: { maxOrbitDeg: 15 } });
+  const { bytes: sog } = await buildSog({ ply, meta });
+  const a = await neutral({ ply, meta, axes: meta.axes || meta.convention, space: 'metric' });
+  const b = await neutral({ sog, space: 'metric' });
+  return { splats: meta.splatCount, sogBytes: sog.length, lumPly: lum(a), lumSog: lum(b), mae: mae(a, b), plyPng: toPng(a), sogPng: toPng(b) };
+};
+console.log('SOG READY');
+</script></body></html>
