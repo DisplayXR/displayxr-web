@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live DIBR dev</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#111; --mut:#666; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --mut:#999; } }
+  html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:1300px;margin:0 auto;padding:16px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--mut);margin:0 0 12px}
+  #scene{display:block;width:100%;aspect-ratio:2560/720;background:#000}
+  .row{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;margin:12px 0}
+  label{display:flex;gap:6px;align-items:center}
+  pre{background:#8881;padding:10px;border-radius:6px;overflow:auto;font-size:12px;margin:8px 0}
+  .ok{color:#1a7f37} .bad{color:#cf222e}
+  video{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Live DIBR — dev page</h1>
+  <p class="sub">Synthetic 720p clip + analytic ground-truth disparity (364×210 @ 12 fps) through
+    <code>createLiveDibr</code>. On a DisplayXR browser the canvas is woven via
+    <code>createInline3D</code> + <code>addScene</code>; elsewhere it shows the side-by-side views
+    from simulated Kooima eyes (<code>?views=N</code> for a multiview fan, <code>?eye=0.2</code> for the
+    per-view spacing in IPDs, default 1).</p>
+  <canvas id="scene" width="2560" height="720"></canvas>
+  <div class="row">
+    <label>depth <input id="depth" type="range" min="0" max="3" step="0.05" value="1"><span id="depthV">1</span></label>
+    <label><input id="convAuto" type="checkbox" checked> auto conv</label>
+    <label>conv <input id="conv" type="range" min="0" max="1" step="0.01" value="0.5"><span id="convV">auto</span></label>
+    <label>dilate <input id="dilate" type="range" min="0" max="5" step="1" value="2"><span id="dilateV">2</span></label>
+    <label>taper <input id="taper" type="range" min="0" max="0.1" step="0.005" value="0.03"><span id="taperV">0.03</span></label>
+    <button id="checkBtn">run checks</button>
+  </div>
+  <pre id="out">starting…</pre>
+  <video id="vid" src="../../test/lift-dibr-clip.mp4" muted loop playsinline crossorigin="anonymous"></video>
+</div>
+<script type="module">
+import { createInline3D } from '../../js/inline3d.js';
+import { createLiveDibr, kooimaProjection, KAPPA } from '../../js/lift/live-dibr.js';
+import { depthMap, W, H } from '../../test/lift-dibr-scene.mjs';
+
+const $ = (id) => document.getElementById(id);
+const canvas = $('scene');
+const video = $('vid');
+const out = $('out');
+const qs = new URLSearchParams(location.search);
+const DW = +(qs.get('dw') || 364), DH = +(qs.get('dh') || 210);
+const log = (s) => { out.textContent = s; };
+
+const dibr = createLiveDibr({ canvas, contextAttributes: { preserveDrawingBuffer: true } });
+const gl = dibr.gl;
+dibr.setSource(video);
+window.__dibr = { dibr, results: null };
+
+// ---- simulated session (no DisplayXR browser): N Kooima eyes on a row, SBS tiles ----
+const D0 = 2.5; // viewer distance in window heights (0.6 m from a 0.24 m-tall window)
+const ASPECT = W / H;
+function simViews(n, spacingIpd = 1, vpW = canvas.width / n, vpH = canvas.height) {
+  const views = [];
+  for (let i = 0; i < n; i++) {
+    const off = (i - (n - 1) / 2) * spacingIpd * KAPPA * D0; // n=2 -> +-IPD/2
+    const vp = { x: Math.round(i * vpW), y: 0, width: Math.round(vpW), height: vpH };
+    views.push({ eye: off, projectionMatrix: kooimaProjection({ x: off, y: 0, z: D0 }, ASPECT), vp });
+  }
+  return views;
+}
+const simLayer = { getViewport: (v) => v.vp };
+const NV = +(qs.get('views') || 2);
+const SPACING = +(qs.get('eye') || 1);
+
+// ---- depth feed: analytic ground truth at the video's time, ~12 fps ----
+let lastDepthAt = 0;
+function feedDepth(force) {
+  const now = performance.now();
+  if (!force && now - lastDepthAt < 1000 / 12) return;
+  lastDepthAt = now;
+  dibr.setDepth({ data: depthMap(video.currentTime, DW, DH), w: DW, h: DH, space: 'disparity' });
+}
+
+// ---- controls ----
+function applyParams() {
+  const auto = $('convAuto').checked;
+  const p = { depth: +$('depth').value, convergence: auto ? 'auto' : +$('conv').value,
+    dilate: +$('dilate').value, edgeTaper: +$('taper').value };
+  dibr.setParams(p);
+  $('depthV').textContent = p.depth; $('convV').textContent = auto ? 'auto' : p.convergence;
+  $('dilateV').textContent = p.dilate; $('taperV').textContent = p.edgeTaper;
+}
+for (const id of ['depth', 'convAuto', 'conv', 'dilate', 'taper']) $(id).addEventListener('input', applyParams);
+
+// ---- render loop: real session if present, else simulated ----
+let mode = 'simulated';
+let paused = false; // checks take over the canvas
+const wall = await createInline3D({ lazy: false });
+if (wall.supported) {
+  mode = 'inline-3d';
+  wall.addScene(canvas, (views, layer) => { if (!paused) { feedDepth(); dibr.render({ views, layer }); } });
+} else {
+  const loop = () => {
+    if (!paused) { feedDepth(); dibr.render({ views: simViews(NV, SPACING), layer: simLayer }); }
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+await video.play().catch(() => {});
+
+// ---- checks ----
+const seek = (t) => new Promise((r) => { video.addEventListener('seeked', () => r(), { once: true }); video.currentTime = t; });
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+function readRgba(x, y, w, h) {
+  const px = new Uint8Array(w * h * 4);
+  gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  // flip to top-down rows
+  const row = w * 4, f = new Uint8Array(px.length);
+  for (let j = 0; j < h; j++) f.set(px.subarray((h - 1 - j) * row, (h - j) * row), j * row);
+  return f;
+}
+function centroid(px, w, h, pred) {
+  let sx = 0, n = 0;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const k = (j * w + i) * 4;
+    if (pred(px[k], px[k + 1], px[k + 2])) { sx += i; n++; }
+  }
+  return n ? sx / n : NaN;
+}
+const isDisc = (r, g, b) => b > 200 && r < 130;           // blue rings
+const isRect = (r, g, b) => r > 200 && b < 80 && g < 190;  // orange stripes
+
+async function runChecks() {
+  paused = true;
+  video.pause();
+  await seek(1.0);
+  await nextFrame();
+  dibr.setSource(video);
+  dibr.setParams({ stabilize: false });
+  dibr.setDepth({ data: depthMap(video.currentTime, DW, DH), w: DW, h: DH, reset: true });
+  const res = { t: video.currentTime, mode };
+
+  // 1) Neutral view (eye on the window axis) must reproduce the source frame.
+  const nv = { projectionMatrix: kooimaProjection({ x: 0, y: 0, z: D0 }, ASPECT), vp: { x: 0, y: 0, width: W, height: H } };
+  dibr.render({ views: [nv], layer: simLayer });
+  const got = readRgba(0, 0, W, H);
+  const ref2d = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true });
+  ref2d.drawImage(video, 0, 0, W, H);
+  const ref = ref2d.getImageData(0, 0, W, H).data;
+  let sum = 0, mx = 0;
+  for (let k = 0; k < ref.length; k += 4) for (let c = 0; c < 3; c++) {
+    const d = Math.abs(got[k + c] - ref[k + c]); sum += d; if (d > mx) mx = d;
+  }
+  res.neutralMAE = sum / (W * H * 3);
+  res.neutralMaxErr = mx;
+  res.neutralPass = res.neutralMAE < 3;
+
+  // 2) Parallax sign: stereo pair (L = -IPD/2, R = +IPD/2), each 1280x720.
+  const pair = simViews(2, 1, W, H);
+  dibr.render({ views: pair, layer: simLayer });
+  const L = readRgba(0, 0, W, H), R = readRgba(W, 0, W, H);
+  const st = dibr.getStats();
+  const discShift = centroid(R, W, H, isDisc) - centroid(L, W, H, isDisc);
+  const rectShift = centroid(R, W, H, isRect) - centroid(L, W, H, isRect);
+  // expected screen disparity (R - L) in px for a point of normalised disparity n: -b*q*W/A
+  const n = (d) => (d - st.lo) / (st.hi - st.lo);
+  const expect = (d) => -(KAPPA * D0) * st.qScale * (n(d) - st.convergence) * H;
+  res.convergence = st.convergence; res.lo = st.lo; res.hi = st.hi;
+  res.discShiftPx = discShift; res.discExpectPx = expect(0.9);
+  res.rectShiftPx = rectShift; res.rectExpectPx = expect(0.6);
+  res.signPass = discShift < 0 && discShift < rectShift; // nearer = crossed, and MORE
+
+  // 3) Perf: 2 views x 1280x720, one GPU sync at the end of the batch. Each iteration CLEARS
+  //    first: without it Apple's tile-based hidden-surface removal culls every opaque draw but
+  //    the last one into the same tiles, and the batch reports ~20x too fast.
+  const N = 200;
+  const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+  const bench = (upload) => {
+    sync();
+    const t0 = performance.now();
+    for (let i = 0; i < N; i++) {
+      gl.clearColor(i & 1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      if (upload) dibr.touchSource();
+      dibr.render({ views: pair, layer: simLayer });
+    }
+    sync();
+    return (performance.now() - t0) / N;
+  };
+  res.msPerFrame2Views_withUpload = bench(true);
+  res.msPerFrame2Views = bench(false);
+  res.msPerView = res.msPerFrame2Views / 2;
+  res.depthCpuMs = st.depthCpuMs;
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  res.renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+
+  // leave the SBS stereo pair of the checked frame on screen (for the capture)
+  dibr.render({ views: pair, layer: simLayer });
+  dibr.setParams({ stabilize: true });
+  window.__dibr.results = res;
+  const f = (x) => (typeof x === 'number' ? +x.toFixed(3) : x);
+  log(Object.entries(res).map(([k, v]) => `${k.padEnd(28)} ${f(v)}`).join('\n'));
+  out.className = res.neutralPass && res.signPass ? 'ok' : 'bad';
+  if (!qs.has('hold')) { paused = false; video.play().catch(() => {}); }
+  return res;
+}
+$('checkBtn').onclick = runChecks;
+window.__dibr.runChecks = runChecks;
+if (qs.has('check')) runChecks();
+else log(`mode: ${mode}. Press "run checks" for neutral-view MAE, parallax sign and perf.`);
+</script>
+</body>
+</html>
