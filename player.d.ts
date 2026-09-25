@@ -33,14 +33,23 @@ export interface PlayerOptions {
    */
   keyboard?: boolean;
   /**
-   * Dissolve duration for `setSource()`, in ms. Opt-in: giving it here creates the mixer canvas
-   * that runs the dissolve, so a player that never sets it keeps the byte-identical
-   * `addVideo(canvas, video)` paint path and pays nothing per frame.
+   * What `setSource()` does by default — the `./splat` vocabulary, the part a video can mean.
+   * `'crossfade'` is opt-in HERE: it creates the mixer canvas that runs it (one extra full-frame
+   * draw per painted frame), so a player that never asks keeps the byte-identical
+   * `addVideo(canvas, video)` paint path and pays nothing. Default `'cut'`.
    *
-   * The dissolve goes from the outgoing title's LAST FRAME to the incoming one — not a blend of
-   * two simultaneously decoding streams. Visually identical (the outgoing title is being
-   * replaced), one `<video>` instead of two.
+   * The crossfade runs from the outgoing title's LAST FRAME to the incoming one (`./splat`'s
+   * `outgoing: 'frozen'`) — not a blend of two decoding streams. On an SBS video that is not
+   * the "tracking paused" look it is on a splat: the frame's disparity is baked in either way.
+   * `./splat`'s other transitions (`flip`, `wavefront`, particles, sequences) move a photo's
+   * gaussians and are refused by name.
    */
+  transition?: PlayerTransition;
+  /** The crossfade's length, ms. Default 600. */
+  durationMs?: number;
+  /** A `./splat` easing name, or `(x) => y` on [0, 1]. Default `'easeInOutSine'`. */
+  easing?: PlayerEasing;
+  /** LEGACY (the 1.10 spelling, kept as `./splat` keeps it): `> 0` = `transition: 'crossfade'` of this length. */
   fadeMs?: number;
   /**
    * Accent colour for the transport — written to the `--dxr-accent` custom property on the
@@ -86,18 +95,17 @@ export interface PlayerHandle {
   muted: boolean;
 
   /**
-   * Swap the source in place (and its poster, if given), dissolving from the outgoing title's
-   * last frame when a fade is armed.
+   * Swap the source in place (and its poster, if given). Each field of `opts` overrides the
+   * player's own for this one swap — `{ durationMs: 1200 }` lengthens its crossfade,
+   * `{ transition: 'cut' }` skips it. A crossfade cannot be switched ON here for a player built
+   * with `transition: 'cut'`: the mixer would have to become the woven window's paint source
+   * mid-flight, which rebuilds the weave layer (the blink a crossfade removes). That swap is a
+   * cut, and a console warning says so once.
    *
-   * `opts.fadeMs` overrides the duration for this one swap. It cannot switch fading on — the
-   * mixer exists only when {@link PlayerOptions.fadeMs} was given at construction, because
-   * creating it later would mean swapping the woven window's paint source mid-flight, which
-   * rebuilds the weave layer and produces exactly the blink the fade removes.
-   *
-   * With no fade this is a hard cut: the old frame holds until the new source reaches
-   * `readyState >= 2`.
+   * With a cut the old frame holds until the new source reaches `readyState >= 2`. Throws, and
+   * changes nothing, on an unknown transition or easing.
    */
-  setSource(src: string | Blob, opts?: { poster?: string; fadeMs?: number }): void;
+  setSource(src: string | Blob, opts?: PlayerSourceOptions): void;
 
   /** Mark a 2D element painted over this window so the weave leaves it crisp — `'sbs'` + a
    * supported wall only; a no-op everywhere else (there is no weave to protect it from). */
@@ -126,3 +134,40 @@ export function addPlayer(
   src: string | Blob,
   opts?: PlayerOptions,
 ): PlayerHandle;
+
+/** The `setSource()` transitions a video can mean. */
+export type PlayerTransition = 'cut' | 'crossfade';
+
+/** `./splat`'s easing names (the same curves), or a function on [0, 1]. */
+export type PlayerEasing =
+  | 'linear'
+  | 'easeInQuad'
+  | 'easeOutQuad'
+  | 'easeInOutQuad'
+  | 'easeInCubic'
+  | 'easeOutCubic'
+  | 'easeInOutCubic'
+  | 'easeInOutSine'
+  | ((x: number) => number);
+
+/** Per-call {@link PlayerHandle.setSource} options; each overrides the player's own. */
+export interface PlayerSourceOptions {
+  poster?: string;
+  transition?: PlayerTransition;
+  durationMs?: number;
+  easing?: PlayerEasing;
+  /** Only `'frozen'` — the player dissolves from the outgoing title's last frame. */
+  outgoing?: 'frozen';
+  /** LEGACY: `> 0` = a crossfade of this length, `0` = a cut. `durationMs` wins when both are given. */
+  fadeMs?: number;
+}
+
+/** The resolved form `resolveTransition()` returns. */
+export interface ResolvedPlayerTransition {
+  type: PlayerTransition;
+  /** 0 for a cut. */
+  durationMs: number;
+  easing: PlayerEasing;
+  ease: (x: number) => number;
+}
+

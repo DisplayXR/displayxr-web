@@ -23,8 +23,14 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   comment for why this is a different code path from the unsupported-`wall` fallback, and why
   neither one is the RFC's `untrackedFallback`/`trackingState` mechanism, which does not exist in
   this codebase. v1 is narrower than `docs/rfcs/0001-media-player.md`: no `'tb'`/`'auto'` format
-  detection, no `opts.group` one-active-player policy, no `opts.fit`/letterboxing, and
-  `opts.fadeMs` is accepted but not implemented. Sample: `samples/player/`.
+  detection, no `opts.group` one-active-player policy, no `opts.fit`/letterboxing. Sample:
+  `samples/player/`.
+- **`setSource()` transitions in `./splat`'s vocabulary.** `transition: 'cut' | 'crossfade'`,
+  `durationMs` (600), `easing` (the same named curves, `'easeInOutSine'`), `outgoing: 'frozen'`,
+  and `fadeMs` as the legacy alias. Per-call options override the player's own field by field.
+  The crossfade dissolves from the outgoing title's last frame through an opt-in mixer canvas (a
+  player built without one keeps the plain `addVideo` path). `./splat`'s other transitions,
+  unknown easings and `outgoing: 'live'` throw by name.
 
 ## 1.24.0 — 2026-09-25
 
