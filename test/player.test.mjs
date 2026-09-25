@@ -24,6 +24,9 @@ import {
   eyeRect,
   bandBox,
   pickSource,
+  normalizeTitles,
+  nextIndex,
+  backTarget,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -433,4 +436,41 @@ test('pickSource: best first, "probably" beats an earlier "maybe", untyped taken
   } finally {
     console.warn = warn;
   }
+});
+
+// ── playlist (RFC 0001 Addendum A4) ──────────────────────────────────────────────────────────────
+
+test('normalizeTitles: ids default to the index, bare sources are accepted, bad lists throw at the call', () => {
+  const t = normalizeTitles([{ src: 'a.webm', title: 'A' }, 'b.webm', { id: 'c', src: 'c.webm', poster: 'c.png' }]);
+  assert.deepEqual(t.map((x) => x.id), ['0', '1', 'c']);
+  assert.equal(t[1].src, 'b.webm');
+  assert.equal(t[0].title, 'A');
+  assert.equal(t[2].poster, 'c.png');
+  assert.ok(Object.isFrozen(t) && Object.isFrozen(t[0]), 'read-only, like handle.titles');
+  assert.deepEqual(normalizeTitles(undefined), []);
+  assert.throws(() => normalizeTitles('a.webm'), /must be an array/);
+  assert.throws(() => normalizeTitles([{ title: 'no src' }]), /titles\[0\] has no src/);
+  assert.throws(() => normalizeTitles([{ id: 'x', src: 'a' }, { id: 'x', src: 'b' }]), /duplicate title id "x"/);
+  assert.equal(normalizePlayerOptions({ titles: ['a', 'b'] }).titles.length, 2);
+});
+
+test('nextIndex: steps forward, stops at the end unless loopList, starts at 0 from nothing', () => {
+  assert.equal(nextIndex(0, 3, false), 1);
+  assert.equal(nextIndex(2, 3, false), -1, 'the end of the list without loopList');
+  assert.equal(nextIndex(2, 3, true), 0, 'loopList wraps');
+  assert.equal(nextIndex(-1, 3, false), 0, 'from no current title, the first');
+  assert.equal(nextIndex(0, 0, true), -1, 'no titles, no next');
+});
+
+test("backTarget: a remote's previous — restart past 3 s, else the previous title", () => {
+  assert.deepEqual(backTarget(10, 2, 3, false), { restart: true }, 'more than 3 s in: restart');
+  assert.deepEqual(backTarget(1, 2, 3, false), { index: 1 }, 'near the start: the previous title');
+  assert.deepEqual(backTarget(1, 0, 3, false), { restart: true }, 'at the first title: restart');
+  assert.deepEqual(backTarget(1, 0, 3, true), { index: 2 }, 'loopList wraps back to the last');
+  assert.deepEqual(backTarget(1, -1, 3, false), { restart: true }, 'no current title: restart');
+});
+
+test('loopList and autoAdvance default off', () => {
+  const o = normalizePlayerOptions();
+  assert.deepEqual([o.loopList, o.autoAdvance, o.titles.length], [false, false, 0]);
 });

@@ -93,6 +93,15 @@ export interface PlayerOptions {
    * laid out like the video (`'sbs'` / `'tb'`), painted eye by eye so it is 3D before the first frame.
    */
   posterFormat?: 'mono' | 'sbs' | 'tb';
+  /**
+   * A playlist. With `titles` and no `src`, the first title loads. Entries may be bare sources.
+   * Drive it with `play(id)`, `next()`, `back()`; `'titlechange'` fires on each switch.
+   */
+  titles?: ReadonlyArray<PlayerSource | { id?: string; src: PlayerSource; title?: string; poster?: string }>;
+  /** `next()` past the last title wraps to the first (and `back()` from the first to the last). Default false. */
+  loopList?: boolean;
+  /** A title that ends moves on to the next one and plays it. Default false. */
+  autoAdvance?: boolean;
   /** Transport scale — `'s'` (0.84×), `'m'` (default), `'l'` (1.28×). Icons, fonts and hit targets scale together. */
   size?: 's' | 'm' | 'l';
   /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */
@@ -117,15 +126,38 @@ export interface PlayerOptions {
   observe?: Element;
 }
 
-export type PlayerEvent = 'play' | 'pause' | 'ended' | 'timeupdate' | 'ready' | 'error';
+export type PlayerEvent = 'play' | 'pause' | 'ended' | 'timeupdate' | 'ready' | 'error' | 'titlechange';
+
+/** One playlist entry (RFC 0001 Addendum A4). */
+export interface PlayerTitle {
+  /** Stable id for `play(id)`; defaults to the entry's index as a string. */
+  readonly id: string;
+  readonly src: PlayerSource;
+  /** Shown in the title line while this title plays. */
+  readonly title?: string;
+  readonly poster?: string;
+}
 
 /** What {@link addPlayer} returns. Deliberately the `<video>` element's own vocabulary. */
 export interface PlayerHandle {
   /** The hidden `<video>` this handle owns — escape hatch for anything not covered above. */
   readonly video: HTMLVideoElement;
 
-  play(): Promise<void>;
+  /** Resume; or, with an id (or an index into `titles`), switch to that title and play it. */
+  play(id?: string | number): Promise<void>;
   pause(): void;
+  /** Play if paused or ended, else pause. */
+  toggle(): Promise<void>;
+  /** The playlist, read-only. */
+  readonly titles: ReadonlyArray<PlayerTitle>;
+  /** The title playing now, or null (no playlist, or a source that is not one of its titles). */
+  readonly current: PlayerTitle | null;
+  /** Replace the playlist; the current title stays current if the new list has its id. */
+  setTitles(list: PlayerOptions['titles']): void;
+  /** The next title, playing. At the end: nothing, unless `loopList`. */
+  next(): Promise<void>;
+  /** A remote's "previous": restart if more than 3 s in, else the previous title. */
+  back(): Promise<void>;
   /** Clamped to `[0, duration]` (or `[0, t]` before `duration` is known). */
   seek(t: number): void;
   currentTime: number;
@@ -178,7 +210,8 @@ export interface PlayerHandle {
 export function addPlayer(
   wall: object | null | undefined,
   canvas: HTMLCanvasElement,
-  src: PlayerSource,
+  /** `null` with `opts.titles` loads the first title. */
+  src: PlayerSource | null,
   opts?: PlayerOptions,
 ): PlayerHandle;
 

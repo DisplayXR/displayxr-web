@@ -199,6 +199,28 @@ is `outgoing: 'frozen'`, the only value the player accepts. Its splat-side cavea
 outgoing photo "reads as tracking pausing" — does not carry over: a splat re-renders for every
 head pose, an SBS video frame's disparity is baked in whether it is frozen or playing.
 
+**Playlists.** Give the player `titles` and drive it the way a remote or a voice command would:
+
+```js
+const player = addPlayer(wall, canvas, null, {
+  titles: [
+    { id: 'moon', src: 'moon_sbs.webm', title: 'Fly Me to the Moon', poster: 'moon.png' },
+    { id: 'reef', src: 'reef_sbs.webm', title: 'Reef' },
+  ],
+  autoAdvance: true,           // a title that ends plays the next one
+});
+player.play('reef');           // switch and play (an id, or an index into titles)
+player.next(); player.back();  // back() restarts if more than 3 s in, else the previous title
+player.toggle(); player.pause();
+player.current;                // { id, src, title?, poster? } or null
+player.on('titlechange', (t) => announce(t.title));
+```
+
+With `titles` and no `src`, the first title loads. Each switch goes through `setSource`, so the
+player's `transition` applies and the title line and poster change with it. `next()` stops at
+the last title unless `loopList: true` (which also lets `back()` wrap from the first). `'ended'`
+fires for each title, as before, including for a listener attached after it ended.
+
 **Layouts, bands and stereo posters.** `format` takes `'sbs'`, `'tb'` (top/bottom, left eye on
 top) or `'mono'`, as `./splat` `setVideo` does; a top/bottom source is repacked into the woven
 pair per frame. `band: 2.39` (or `'2.39:1'`) fits the picture into a centred letterbox slot of

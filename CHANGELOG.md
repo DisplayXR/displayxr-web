@@ -71,6 +71,12 @@ in, and none on a browser without the tracking-state surface.
   H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
   working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
   shares `./splat` `setVideo`'s option names (`format`, later `fit`).
+- **Playlist API** (RFC 0001 Addendum A4, for the Show Spatial team's voice commands): `titles`
+  (`[{ id, src, title?, poster? }]`, bare sources accepted), `loopList`, `autoAdvance`; on the
+  handle `titles`, `current`, `setTitles()`, `play(id)`, `toggle()`, `next()`, `back()` (restart
+  past 3 s, else the previous title), and a `'titlechange'` event. Switches go through
+  `setSource`, so transitions, the title line and posters follow. `normalizeTitles`,
+  `nextIndex` and `backTarget` are pure and tested.
 - **For the Show Spatial team** (quick wins from their list): `format: 'tb'` (top/bottom, repacked
   into the woven pair; `setVideo`'s vocabulary); `band` — a letterbox slot of a target aspect
   (`2.39`, `'2.39:1'`) the picture is fitted into; `posterFormat: 'sbs' | 'tb'` — stereo poster

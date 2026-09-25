@@ -193,6 +193,10 @@ export function normalizePlayerOptions(opts = {}) {
     muted: opts.muted === undefined ? true : !!opts.muted,
     loop: !!opts.loop,
     keyboard: opts.keyboard === undefined ? true : !!opts.keyboard,
+    // The playlist (RFC 0001 Addendum A4): titles, and what happens at a title's end and the list's.
+    titles: normalizeTitles(opts.titles),
+    loopList: !!opts.loopList,
+    autoAdvance: !!opts.autoAdvance,
     fadeMs: typeof opts.fadeMs === 'number' && opts.fadeMs > 0 ? opts.fadeMs : 0,
     // The resolved setSource transition (see resolveTransition). `fadeMs` above stays for 1.10
     // callers reading it back; this is what the player actually runs.
@@ -219,6 +223,56 @@ export function normalizePlayerOptions(opts = {}) {
     feather: opts.feather,
     observe: opts.observe,
   };
+}
+
+/**
+ * A playlist, validated. Pure. Each entry is `{ id, src, title?, poster? }`; a bare source
+ * (string, Blob or candidates array) is accepted as `{ src }`. A missing `id` becomes the entry's
+ * index as a string; a duplicate or missing `src` is a page bug and throws at the call.
+ * @param {Array|undefined|null} list
+ * @returns {ReadonlyArray<{id:string, src:any, title?:string, poster?:string}>}
+ */
+export function normalizeTitles(list) {
+  if (list === undefined || list === null) return Object.freeze([]);
+  if (!Array.isArray(list)) throw new TypeError('@displayxr/inline3d/player: titles must be an array.');
+  const seen = new Set();
+  const out = list.map((t, i) => {
+    const e = t && typeof t === 'object' && !Array.isArray(t) && !(typeof Blob !== 'undefined' && t instanceof Blob) ? t : { src: t };
+    if (e.src === undefined || e.src === null || e.src === '') {
+      throw new TypeError(`@displayxr/inline3d/player: titles[${i}] has no src.`);
+    }
+    const id = e.id === undefined || e.id === null ? String(i) : String(e.id);
+    if (seen.has(id)) throw new TypeError(`@displayxr/inline3d/player: duplicate title id "${id}".`);
+    seen.add(id);
+    const entry = { id, src: e.src };
+    if (typeof e.title === 'string') entry.title = e.title;
+    if (typeof e.poster === 'string') entry.poster = e.poster;
+    return Object.freeze(entry);
+  });
+  return Object.freeze(out);
+}
+
+/**
+ * The index `next()` goes to, or -1 when there is none (the end of the list without `loopList`).
+ * Pure. From no current title it starts at the first.
+ */
+export function nextIndex(i, n, loopList) {
+  if (!(n > 0)) return -1;
+  if (i < 0) return 0;
+  if (i + 1 < n) return i + 1;
+  return loopList ? 0 : -1;
+}
+
+/**
+ * What `back()` does, like a media remote's "previous": more than `restartAfterS` into the title
+ * restarts it; otherwise it goes to the previous title (wrapping only with `loopList`), and at
+ * the first title it restarts. Pure. Returns `{ restart: true }` or `{ index }`.
+ */
+export function backTarget(currentTime, i, n, loopList, restartAfterS = 3) {
+  if (!(n > 0) || i < 0) return { restart: true };
+  if (currentTime > restartAfterS) return { restart: true };
+  if (i > 0) return { index: i - 1 };
+  return loopList && n > 1 ? { index: n - 1 } : { restart: true };
 }
 
 /**
@@ -1629,6 +1683,9 @@ function driveMixer(video, stages) {
  * @param {string|function} [opts.easing='easeInOutSine']  a `./splat` easing name or `(x) => y`.
  * @param {number|string} [opts.band]  a letterbox slot: fit the picture into a centred band of
  *        this aspect (2.39, '2.39:1', '21/9') inside the tile; implies fit 'contain'.
+ * @param {Array} [opts.titles]  a playlist: `[{ id, src, title?, poster? }, …]` (RFC 0001 A4).
+ * @param {boolean} [opts.loopList=false]  `next()` past the last title wraps to the first.
+ * @param {boolean} [opts.autoAdvance=false]  a title that ends moves on to the next and plays it.
  * @param {'mono'|'sbs'|'tb'} [opts.posterFormat='mono']  a stereo poster still is painted eye by eye.
  * @param {'contain'|'cover'} [opts.fit]  ./splat setVideo's fit: 'contain' letterboxes each eye
  *        (transparent bars), 'cover' fills the tile and crops. Unset: stretched to the tile.
@@ -1642,6 +1699,18 @@ function driveMixer(video, stages) {
  */
 export function addPlayer(wall, canvas, src, opts = {}) {
   const o = normalizePlayerOptions(opts);
+  // The playlist. With `titles` and no `src`, the first title is loaded; with both, `src` is loaded
+  // and becomes the current title if it is one of the list's (by identity or URL).
+  let titles = o.titles;
+  let currentIdx = -1;
+  if ((src === undefined || src === null) && titles.length) {
+    currentIdx = 0;
+    src = titles[0].src;
+    if (!o.title && titles[0].title) o.title = titles[0].title;
+    if (!o.poster && titles[0].poster) o.poster = titles[0].poster;
+  } else if (titles.length) {
+    currentIdx = titles.findIndex((t) => t.src === src);
+  }
   const container = canvas.parentElement;
 
   const video = document.createElement('video');
@@ -1688,7 +1757,15 @@ export function addPlayer(wall, canvas, src, opts = {}) {
 
   video.addEventListener('play', () => emit('play'));
   video.addEventListener('pause', () => emit('pause'));
-  video.addEventListener('ended', () => emit('ended'));
+  video.addEventListener('ended', () => {
+    emit('ended');
+    // `autoAdvance`: a title that ends moves on to the next one and plays it. The end of the list
+    // stops there unless `loopList`. (A single title with `loop: true` never ends at all.)
+    if (o.autoAdvance && titles.length) {
+      const n = nextIndex(currentIdx, titles.length, o.loopList);
+      if (n >= 0) selectTitle(n, true);
+    }
+  });
   video.addEventListener('timeupdate', () => emit('timeupdate'));
   video.addEventListener('loadedmetadata', () => emit('ready'));
   video.addEventListener('error', () => {
@@ -1795,15 +1872,74 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     }
   }
 
+  function findTitle(id) {
+    if (typeof id === 'number') return Number.isInteger(id) && id >= 0 && id < titles.length ? id : -1;
+    return titles.findIndex((t) => t.id === String(id));
+  }
+  /** Make title `i` current: load it through setSource (its title line and poster ride along). */
+  function selectTitle(i, andPlay) {
+    const t = titles[i];
+    currentIdx = i;
+    const sOpts = {};
+    if (t.title !== undefined) sOpts.title = t.title;
+    if (t.poster !== undefined) sOpts.poster = t.poster;
+    handle.setSource(t.src, sOpts);
+    emit('titlechange', t);
+    return andPlay ? video.play().catch(() => {}) : Promise.resolve();
+  }
+
   const handle = {
     get video() {
       return video;
     },
-    play() {
-      return video.play();
+    /**
+     * `play()` resumes. `play(id)` switches to that title (an id, or an index into `titles`) and
+     * plays it — the switch goes through `setSource`, so the player's transition applies.
+     */
+    play(id) {
+      if (id === undefined) return video.play();
+      const i = findTitle(id);
+      if (i < 0) return Promise.reject(new RangeError(`@displayxr/inline3d/player: no title "${id}".`));
+      return selectTitle(i, true);
     },
     pause() {
       video.pause();
+    },
+    toggle() {
+      if (video.paused || video.ended) return video.play();
+      video.pause();
+      return Promise.resolve();
+    },
+    /** The playlist, read-only. Set it with `opts.titles` or `setTitles()`. */
+    get titles() {
+      return titles;
+    },
+    /** The title playing now, or null (no playlist, or a source that is not one of its titles). */
+    get current() {
+      return currentIdx >= 0 ? titles[currentIdx] : null;
+    },
+    /**
+     * Replace the playlist. The current title stays current if the new list has its id; nothing
+     * is reloaded.
+     */
+    setTitles(list) {
+      const prev = currentIdx >= 0 ? titles[currentIdx].id : null;
+      titles = normalizeTitles(list);
+      currentIdx = prev === null ? -1 : titles.findIndex((t) => t.id === prev);
+    },
+    /** The next title, playing. At the end of the list: nothing, unless `loopList`. */
+    next() {
+      const i = nextIndex(currentIdx, titles.length, o.loopList);
+      return i >= 0 ? selectTitle(i, true) : Promise.resolve();
+    },
+    /** A remote's "previous": restart if more than 3 s in, else the previous title. */
+    back() {
+      const b = backTarget(video.currentTime || 0, currentIdx, titles.length, o.loopList);
+      if (b.restart) {
+        video.currentTime = 0;
+        return video.play();
+      }
+      return selectTitle(b.index, true);
     },
     seek(t) {
       const max = Number.isFinite(video.duration) ? video.duration : Math.max(t, 0);
@@ -1848,6 +1984,11 @@ export function addPlayer(wall, canvas, src, opts = {}) {
      * A cut holds the old frame until the new source reaches `readyState >= 2`.
      */
     setSource(newSrc, sOpts = {}) {
+      // A page calling setSource directly with a playlist URL keeps `current` in step; any other
+      // source is "not one of the titles".
+      if (titles.length && !titles.some((t, k) => k === currentIdx && t.src === newSrc)) {
+        currentIdx = titles.findIndex((t) => t.src === newSrc);
+      }
       // Resolve (and validate) BEFORE touching anything: a refused option leaves the player as it was.
       const tr = resolveTransition(sOpts, o.transition);
       if (tr.type === 'crossfade' && !dissolve) noteNoMixer();
