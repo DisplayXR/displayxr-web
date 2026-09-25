@@ -474,3 +474,11 @@ test('loopList and autoAdvance default off', () => {
   const o = normalizePlayerOptions();
   assert.deepEqual([o.loopList, o.autoAdvance, o.titles.length], [false, false, 0]);
 });
+
+test("skins 'bars' and 'call' are accepted; 'call' implies a 2.39 band unless one is given", () => {
+  assert.equal(normalizePlayerOptions({ skin: 'bars' }).skin, 'bars');
+  assert.equal(normalizePlayerOptions({ skin: 'call' }).skin, 'call');
+  assert.equal(normalizePlayerOptions({ skin: 'call' }).band, 2.39, "'call' is a picture in a scope band");
+  assert.ok(Math.abs(normalizePlayerOptions({ skin: 'call', band: '16/9' }).band - 16 / 9) < 1e-9, 'an explicit band wins');
+  assert.equal(normalizePlayerOptions({ skin: 'bars' }).band, null, "'bars' does not invent a band");
+});

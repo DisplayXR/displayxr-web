@@ -50,7 +50,15 @@
 // 'tb' (top/bottom: left eye on top) matches ./splat setVideo's format vocabulary.
 const VALID_FORMATS = new Set(['sbs', 'tb', 'mono']);
 const VALID_POSTER_FORMATS = new Set(['sbs', 'tb', 'mono']);
-const VALID_SKINS = new Set(['classic', 'dock']);
+// 'bars' and 'call' are the Show Spatial team's layouts: 'bars' puts back / play / elapsed / scrub /
+// remaining in one row inside the bottom black bar; 'call' puts the name and a timer bar on top and
+// the controls at the bottom, around a 2.39:1 band.
+const VALID_SKINS = new Set(['classic', 'dock', 'bars', 'call']);
+// A black bar must be at least this tall (CSS px, before `size` zoom) for the controls to live in
+// it; a thinner one falls back to the overlay at the bottom of the tile.
+const MIN_BAR_PX = 44;
+// 'call' is a picture in a scope band.
+const CALL_DEFAULT_BAND = 2.39;
 const VALID_SIZES = new Set(['s', 'm', 'l']);
 // ./splat setVideo's `fit` values, same names and meaning (inline3d-splat-video.js VIDEO_FITS).
 const VALID_FITS = new Set(['contain', 'cover']);
@@ -184,7 +192,7 @@ export function normalizePlayerOptions(opts = {}) {
     // A letterboxed "band" slot: the picture is fitted into a centred band of this aspect inside
     // the tile (e.g. 2.39 for a scope band in a 16:9 tile), and the rest of the tile is left
     // clear. Implies fit 'contain' unless `fit` says otherwise. A number or 'W:H' / 'W/H'.
-    band: parseAspect(opts.band),
+    band: parseAspect(opts.band) ?? (opts.skin === 'call' ? CALL_DEFAULT_BAND : null),
     // What the poster image IS: 'mono' (one image, both eyes — the 1.x behaviour), or a stereo
     // still laid out like the video ('sbs' / 'tb'), painted eye by eye.
     posterFormat: pickEnum(opts.posterFormat, VALID_POSTER_FORMATS, 'mono', 'posterFormat'),
@@ -852,6 +860,42 @@ const PLAYER_CSS = `
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);}
 .dxr-player-host--dock .dxr-player-title--hidden{transform:translateY(-10px);}
 
+/* ── controls INSIDE the black bars (a band leaves bars above and below the picture) ─────────────
+   The host's --dxr-bar-top / --dxr-bar-bottom are the bars' heights, measured from the tile and
+   the band. Nothing sits over the picture: the centre button and the key pip stand down. */
+.dxr-player-back,.dxr-player-remain,.dxr-player-timer{display:none;}
+.dxr-player-host--inbars .dxr-player{top:auto;bottom:0;height:var(--dxr-bar-bottom);max-height:none;
+  display:flex;flex-direction:column;justify-content:center;padding-top:6px;padding-bottom:6px;
+  background:transparent;}
+.dxr-player-host--inbars .dxr-player-title{top:0;height:var(--dxr-bar-top);max-height:none;
+  display:flex;align-items:center;padding-top:0;padding-bottom:0;background:transparent;}
+.dxr-player-host--inbars .dxr-player-centre,.dxr-player-host--inbars .dxr-player-pip{display:none;}
+.dxr-player-host--inbars.dxr-player-host--dock .dxr-player{bottom:8px;height:calc(var(--dxr-bar-bottom) - 16px);}
+
+/* ── skin: 'bars' — one row in the bottom bar: back / play / elapsed / scrub / remaining ────────── */
+.dxr-player-host--bars .dxr-player{padding:4px 14px;text-shadow:none;
+  background:linear-gradient(to top,rgba(0,0,0,.92),rgba(0,0,0,.92));max-height:none;}
+.dxr-player-host--bars.dxr-player-host--inbars .dxr-player{background:transparent;}
+.dxr-player-host--bars .dxr-player-back{display:inline-flex;}
+.dxr-player-host--bars .dxr-player-skip,.dxr-player-host--bars .dxr-player-centre,
+.dxr-player-host--bars .dxr-player-pip{display:none;}
+.dxr-player-host--bars .dxr-player-row{gap:8px;}
+.dxr-player-host--bars .dxr-player-row .dxr-player-scrubwrap{flex:1 1 auto;margin:0 6px;}
+.dxr-player-host--bars .dxr-player-clock span{display:none;}
+.dxr-player-host--bars .dxr-player-remain{display:block;font-variant-numeric:tabular-nums;opacity:.72;
+  white-space:nowrap;}
+.dxr-player-host--bars .dxr-player-spacer{display:none;}
+
+/* ── skin: 'call' — name + timer bar on top, controls at the bottom, picture in a 2.39:1 band ── */
+.dxr-player-host--call .dxr-player-title{display:flex;flex-direction:column;justify-content:center;gap:6px;
+  background:transparent;text-shadow:none;}
+.dxr-player-host--call .dxr-player-timer{display:block;height:3px;border-radius:99px;
+  align-self:center;width:min(60%,520px);
+  background:linear-gradient(to right,var(--dxr-accent) 0 var(--dxr-p,0%),rgba(255,255,255,.22) var(--dxr-p,0%));}
+.dxr-player-host--call .dxr-player-scrubwrap,.dxr-player-host--call .dxr-player-skip,
+.dxr-player-host--call .dxr-player-centre,.dxr-player-host--call .dxr-player-pip{display:none;}
+.dxr-player-host--call .dxr-player{background:transparent;text-shadow:none;}
+
 /* ── size: 's' | 'm' | 'l' — "zoom" on overlay CONTENT only ──────────────────────────────────────
    The bar's row and scrub, and each centre affordance's glyph box, scale as a unit; the overlay
    boxes keep their own anchoring (bottom band / centred), so nothing drifts off-centre. */
@@ -947,6 +991,11 @@ const skipIcon = (dir) =>
       : '<path d="M12.8 6.3v11.4a.8.8 0 0 0 1.25.66l7.35-5.7a.8.8 0 0 0 0-1.32l-7.35-5.7a.8.8 0 0 0-1.25.66Z"/>' +
         '<path d="M3 6.3v11.4a.8.8 0 0 0 1.25.66l7.35-5.7a.8.8 0 0 0 0-1.32L4.25 5.64A.8.8 0 0 0 3 6.3Z"/>'
   );
+// Previous-track: a bar and a left-pointing triangle (no text in any button).
+const BACK_TRACK_ICON = svg(
+  '<rect x="5" y="5.5" width="2.4" height="13" rx="1"/>' +
+    '<path d="M19 6.3v11.4a.8.8 0 0 1-1.25.66L9.9 12.66a.8.8 0 0 1 0-1.32l7.85-5.7A.8.8 0 0 1 19 6.3Z"/>'
+);
 const fsElement = () => (typeof document !== 'undefined' ? document.fullscreenElement : null);
 
 function volumeIcon(video) {
@@ -998,15 +1047,23 @@ function readBuffered(video) {
  * buffering spinner — each its own `data-inline3d-overlay`, each a PARTIAL region of the tile
  * (constraint 1 at the top of this section). Returns the bar element and a cleanup.
  */
-function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin, size }) {
+function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin, size, band = null, onBack = null }) {
   ensureStyle();
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.classList.add('dxr-player-host');
   /** Skin, size and accent are all host state — one class or one property, inherited by every overlay. */
+  let currentSkin = skin || 'classic';
+  // The first applyAppearance runs before the bar's elements exist; layout waits for them.
+  let layoutReady = false;
   function applyAppearance(a) {
-    if (a.skin !== undefined) container.classList.toggle('dxr-player-host--dock', a.skin === 'dock');
+    if (a.skin !== undefined) {
+      currentSkin = a.skin;
+      for (const k of ['dock', 'bars', 'call']) container.classList.toggle(`dxr-player-host--${k}`, a.skin === k);
+      if (layoutReady) layoutForSkin();
+    }
     if (a.size !== undefined) {
       for (const k of VALID_SIZES) container.classList.toggle(`dxr-player-host--size-${k}`, k === a.size && k !== 'm');
+      if (layoutReady) placeInBars();
     }
     if (a.accent !== undefined) {
       if (a.accent) container.style.setProperty('--dxr-accent', resolveAccent(a.accent));
@@ -1085,7 +1142,19 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     b.addEventListener('click', () => skipBy(delta));
     return b;
   }
-  row.append(playBtn);
+  // 'bars' only: back (a remote's previous — restart, or the previous title) and the time left.
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.className = 'dxr-player-btn dxr-player-back';
+  backBtn.setAttribute('aria-label', 'Back');
+  backBtn.innerHTML = BACK_TRACK_ICON;
+  backBtn.addEventListener('click', () => (onBack ? onBack() : (video.currentTime = 0)));
+  const remain = document.createElement('div');
+  remain.className = 'dxr-player-remain';
+  remain.setAttribute('aria-hidden', 'true');
+  remain.textContent = '-0:00';
+
+  row.append(backBtn, playBtn);
   if (skipButtons) row.append(skipBtn(-10), skipBtn(10));
   row.append(volGroup, clock, spacer);
   if (badge3d) {
@@ -1111,14 +1180,58 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   bar.append(scrubWrap, row);
 
   // Always created (it is how setSource can add a title later); empty = hidden, no band drawn.
+  // The name, plus the thin timer bar the 'call' skin shows under it.
   const titleEl = document.createElement('div');
   titleEl.className = 'dxr-player-title';
   titleEl.setAttribute('data-inline3d-overlay', '');
+  const titleName = document.createElement('span');
+  const timer = document.createElement('div');
+  timer.className = 'dxr-player-timer';
+  timer.setAttribute('aria-hidden', 'true');
+  titleEl.append(titleName, timer);
   function setTitle(t) {
-    titleEl.textContent = t || '';
+    titleName.textContent = t || '';
     titleEl.style.display = t ? '' : 'none';
   }
   setTitle(title);
+
+  // The scrub bar is its own row in most skins, and inline between the two clocks in 'bars'.
+  function layoutForSkin() {
+    if (currentSkin === 'bars') {
+      if (scrubWrap.parentNode !== row) clock.after(scrubWrap);
+      if (remain.parentNode !== row) scrubWrap.after(remain);
+    } else {
+      if (scrubWrap.parentNode !== bar) bar.insertBefore(scrubWrap, row);
+      remain.remove();
+    }
+  }
+  layoutForSkin();
+  layoutReady = true;
+
+  // Where the black bars are. A band narrower than the tile leaves bars above and below the
+  // picture; when the bottom one is tall enough the controls move into it (and the title into the
+  // top one), so nothing sits over the picture. Re-measured whenever the tile's box changes.
+  function placeInBars() {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (!band || !(w > 0 && h > 0)) {
+      container.classList.remove('dxr-player-host--inbars');
+      return;
+    }
+    const b = bandBox(w, h, band);
+    const top = Math.max(0, b.y);
+    const bottom = Math.max(0, h - (b.y + b.h));
+    container.style.setProperty('--dxr-bar-top', `${top}px`);
+    container.style.setProperty('--dxr-bar-bottom', `${bottom}px`);
+    const z = Number(getComputedStyle(container).getPropertyValue('--dxr-z')) || 1;
+    container.classList.toggle('dxr-player-host--inbars', bottom >= MIN_BAR_PX * z);
+  }
+  let barRO = null;
+  if (typeof ResizeObserver === 'function') {
+    barRO = new ResizeObserver(placeInBars);
+    barRO.observe(container);
+  }
+  placeInBars();
 
   // ── centre affordances ──
   const centre = document.createElement('button');
@@ -1190,6 +1303,10 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     scrubWrap.style.setProperty('--dxr-b', pct(bufferedFraction(readBuffered(video), t, d)));
     clock.querySelector('b').textContent = formatTime(t);
     seek.setAttribute('aria-valuetext', `${formatTime(t)} of ${formatTime(d)}`);
+    if (Number.isFinite(d) && d > 0) {
+      remain.textContent = `-${formatTime(Math.max(0, d - t))}`;
+      titleEl.style.setProperty('--dxr-p', pct(t / d)); // the 'call' timer bar
+    }
   }
   function togglePlay() {
     if (video.paused || video.ended) video.play().catch(() => {});
@@ -1407,8 +1524,12 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       if (canFullscreen) document.removeEventListener('fullscreenchange', syncFullscreen);
       window.removeEventListener('resize', fitFullscreen);
       if (fsElement() === container) document.exitFullscreen?.().catch(() => {});
+      barRO?.disconnect();
       container.classList.remove('dxr-player-host', 'dxr-player-host--idle', 'dxr-player-host--dock',
+        'dxr-player-host--bars', 'dxr-player-host--call', 'dxr-player-host--inbars',
         'dxr-player-host--size-s', 'dxr-player-host--size-l');
+      container.style.removeProperty('--dxr-bar-top');
+      container.style.removeProperty('--dxr-bar-bottom');
       container.style.removeProperty('--dxr-accent');
       for (const el of [titleEl, bar, centre, pip, spinner]) el.remove();
     },
@@ -1858,6 +1979,8 @@ export function addPlayer(wall, canvas, src, opts = {}) {
         fullscreen: o.fullscreen,
         skin: o.skin,
         size: o.size,
+        band: o.band,
+        onBack: () => handle.back(),
       });
       bar = built.el;
       cleanupBar = built.cleanup;

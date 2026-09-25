@@ -71,10 +71,14 @@ export interface PlayerOptions {
   badge3d?: boolean | string;
   /**
    * The transport's look: `'classic'` (default) — a full-width bottom band; `'dock'` — a floating
-   * rounded dock with lit round buttons and an accent orb for play. Same controls, CSS only. Both
+   * rounded dock with lit round buttons and an accent orb for play.
+   * `'bars'` — one row inside the bottom black bar: back / play / elapsed / scrub / remaining.
+   * `'call'` — the name and a timer bar on top, the controls at the bottom, and a 2.39:1 `band`
+   * by default. With a `band`, every skin puts its controls INSIDE the black bars when the bottom
+   * bar is tall enough, and nothing sits over the picture. Same controls, CSS only. Both
    * keep every glow inside the overlay's own box (a shadow outside it would be woven).
    */
-  skin?: 'classic' | 'dock';
+  skin?: 'classic' | 'dock' | 'bars' | 'call';
   /**
    * How an eye image meets a tile of a different aspect — the same names and meaning as `./splat`
    * `setVideo`'s `fit`. `'contain'`: the whole eye image, transparent bars where the aspects
@@ -184,7 +188,7 @@ export interface PlayerHandle {
    * Re-skin the SDK transport live — any of `accent` (a CSS colour; `''` = the default), `size`,
    * `skin`. Invalid values warn and are ignored; a no-op with `controls: 'none'`.
    */
-  setAppearance(a: { accent?: PlayerAccent | (string & {}); size?: 's' | 'm' | 'l'; skin?: 'classic' | 'dock' }): void;
+  setAppearance(a: { accent?: PlayerAccent | (string & {}); size?: 's' | 'm' | 'l'; skin?: 'classic' | 'dock' | 'bars' | 'call' }): void;
 
   /** Mark a 2D element painted over this window so the weave leaves it crisp — `'sbs'` + a
    * supported wall only; a no-op everywhere else (there is no weave to protect it from). */

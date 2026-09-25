@@ -71,6 +71,12 @@ in, and none on a browser without the tracking-state surface.
   H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
   working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
   shares `./splat` `setVideo`'s option names (`format`, later `fit`).
+- **Controls inside the black bars, and skins `'bars'` / `'call'`** (the Show Spatial team's
+  layouts). With a `band`, when the bottom bar is at least 44 CSS px (times `size`), every skin
+  puts its controls in it and the title in the top bar; the centre button and key pip stand down,
+  so nothing sits over the picture; a thinner bar falls back to the overlay. Re-measured on
+  resize. `'bars'`: back / play / elapsed / scrub / remaining in one row (a solid bottom strip
+  without a band). `'call'`: name + timer bar on top, controls at the bottom, band 2.39 by default.
 - **Playlist API** (RFC 0001 Addendum A4, for the Show Spatial team's voice commands): `titles`
   (`[{ id, src, title?, poster? }]`, bare sources accepted), `loopList`, `autoAdvance`; on the
   handle `titles`, `current`, `setTitles()`, `play(id)`, `toggle()`, `next()`, `back()` (restart
