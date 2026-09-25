@@ -10,3 +10,7 @@ Thumbs.db
 
 # local test artifacts, never committed
 _scratch/
+
+# built-in "Convert to 3D" bundle output (tools/lift-builtin/build.mjs)
+lift-sdk/
+tools/lift-builtin/test/_out/
