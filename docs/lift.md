@@ -208,12 +208,16 @@ GPU idle (< 10 % for 6 s) before each run; the numbers are one run each — expe
 
 | | 2D fallback, dpr 1 | 2D fallback, dpr 2 | mock woven session (SBS), dpr 1 |
 |---|---|---|---|
-| video: `lift()` → live (VDA-S 364×210 + warm-up) | 3.1 s | 3.0 s | 3.1 s |
-| live: page fps / depth per frame | 60 / 77 ms (13 Hz) | 60 / 79 ms | 60 / 77 ms |
-| 1st pause → explore (MoGe load + depth + generate + PLY parse) | 7.4 s (≈ 4.5 + 1.5 + 0.4 + 0.3) | 6.5 s | 7.3 s |
-| 2nd pause → explore (model resident) | 2.9 s | 1.8 s | — |
-| explore fps, orbit spinning (~0.8 M splats) | 60 (p95 16.7 ms) | 60 (1600×900, p95 16.8 ms) | 60 |
-| image: `lift()` → explore | 3.4–4.8 s | | 2.0 s (warm cache) |
+| video: `lift()` → live (VDA-S, `auto` warm-up → 364×210) | 3.4 s | 3.0 s | 3.4 s |
+| live: page fps / depth per frame | 60 / 77 ms (13 Hz) | 60 / 79 ms | 60 / 79 ms |
+| 1st pause → explore, **cold** Cache API (MoGe download + sha256 + session, depth 1.5 s, generate 0.37 s, PLY parse 0.2 s) | 8.2–9.0 s | 6.5 s | 7.5–8.1 s |
+| 2nd pause → explore (model resident) | 1.8–2.9 s | 1.8 s | — |
+| explore fps, orbit spinning (0.76–0.86 M splats) | 60 (p95 16.7 ms) | 60 (1600×900, p95 16.8 ms) | 60 |
+| image (1022×574): `lift()` → explore, MoGe from a **warm** Cache API (load 1.1 s) | 3.1 s | | 3.2 s |
+
+Each harness run is a fresh Chrome profile, so the video's first pause always paid the 715 MB
+download + hash from localhost; with a warm cache (a returning visitor, or the DisplayXR Browser's
+native store) the first pause is ≈ 1.1 s load + 1.5 s depth + 0.6 s ≈ 3 s.
 
 `quality: 'high'` at dpr 2: live depth 147 ms/frame (518×294), pause → explore 9.7 s / 3.7 s, 1.2 M
 splats, explore still 60 fps in the mono fallback. With `inpaint: 'light-inpaint-v1'` add ~1.0 s to
