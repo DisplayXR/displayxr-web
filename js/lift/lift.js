@@ -193,6 +193,9 @@ export async function lift(element, opts = {}) {
     else caps = await liftCapabilities({ signal: opts.signal, webFallback: false }).catch(() => null);
   }
   const native = !!(caps && caps.native);
+  // Register the module's providers in the shared registry now (depth `native` at priority 100,
+  // `native-gaussians` when it lifts), before any provider is resolved.
+  if (native) ensureNativeProviders(caps);
   // Native live: the BROWSER converts the element (an <img> too), so an image behaves like a
   // paused video — live until explore() — and explore/resume toggles between the two.
   const machineKind = native ? 'video' : kind;
@@ -598,10 +601,8 @@ export async function lift(element, opts = {}) {
       registry = typeof M.getRegistry === 'function' ? M.getRegistry() : null;
       if (disposed) return;
       if (native) {
-        // The vendor module supersedes the web path: register its providers (depth `native` at
-        // priority 100, `native-gaussians` when it lifts), load NO model, mount NO DIBR. The
-        // `dxr-lift` attributes go on at `startLive`.
-        if (registry) ensureNativeProviders(caps, { registry });
+        // The vendor module supersedes the web path (its providers are registered above): load NO
+        // model, mount NO DIBR. The `dxr-lift` attributes go on at `startLive`.
         await mediaReady();
         if (disposed) return;
         stats.modelLoadMs = Math.round(performance.now() - tLoad);
