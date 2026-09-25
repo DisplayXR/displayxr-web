@@ -16,6 +16,7 @@ import {
   resolveTransition,
   PLAYER_EASINGS,
   DEFAULT_CROSSFADE_MS,
+  PLAYER_SIZE_SCALE,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -320,4 +321,18 @@ test("skin: 'classic' by default, 'dock' accepted, anything else falls back with
   } finally {
     console.warn = warn;
   }
+});
+
+test("size: 'm' by default, s/m/l accepted in any case, anything else falls back", () => {
+  assert.equal(normalizePlayerOptions().size, 'm');
+  assert.equal(normalizePlayerOptions({ size: 'L' }).size, 'l');
+  assert.equal(normalizePlayerOptions({ size: 's' }).size, 's');
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(normalizePlayerOptions({ size: 'xl' }).size, 'm');
+  } finally {
+    console.warn = warn;
+  }
+  assert.ok(PLAYER_SIZE_SCALE.s < PLAYER_SIZE_SCALE.m && PLAYER_SIZE_SCALE.m === 1 && PLAYER_SIZE_SCALE.l > 1);
 });

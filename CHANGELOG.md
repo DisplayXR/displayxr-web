@@ -41,6 +41,12 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   scrub fill and knob, a title pill. `'classic'` stays the default. Every glow is inside its
   overlay's own box: a shadow outside the excluded rect would be woven with the canvas. The sample
   uses `'dock'` (`?skin=classic` for the band) and stacks its tiles at 90% of the window.
+- **Developer customisation: `size: 's' | 'm' | 'l'` and `handle.setAppearance({ accent, size, skin })`**
+  (live re-skin). Size is CSS `zoom` on each overlay's content, so icons, fonts and hit targets
+  scale together and the centre badge stays centred (measured at all three). Round controls draw
+  their own feathered edge (a 1.6 px mask) instead of relying on the border-radius clip, which can
+  stair-step where an overlay is re-composited on its own. The sample gains a developer bar
+  (accent picker, S/M/L, skin) showing the exact `setAppearance` call.
 
 ## 1.24.0 — 2026-09-25
 
