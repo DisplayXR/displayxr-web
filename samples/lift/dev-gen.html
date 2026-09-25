@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lift-gen dev</title>
+<!--
+  DEV PAGE for js/lift/gen/lift-gen.js — photo → depth → generateLift → splat, with every
+  intermediate raster on screen and an orbit slider, so holes and halos at ±15° are VISIBLE.
+
+  It needs a depth model and (optionally) an inpainting model, which are NOT part of this repo.
+  Point it at them with query parameters (defaults match the author's dev box layout, where a
+  static server's root holds web/ = this repo, bench/ = an onnxruntime-web install + DA2 models,
+  x/ = the inpaint export):
+    ?img=URL           photo
+    &ort=URL/          directory holding onnxruntime-web's dist/ (ort.webgpu.min.mjs + wasm)
+    &depthModel=URL    Depth-Anything-V2-Small ONNX (input pixel_values [1,3,H,W], ImageNet norm)
+    &inpaint=0|1       use the inpainting net for the hidden layer's colour
+    &inpaintJs=URL     inpaint.js (createInpainter)   &inpaintModel=URL   its ONNX
+    &quality=low|medium|high   &depthH=392 (depth-net input height, multiple of 14)
+    &params={"snapStep":0.08,…}  overrides for LIFT_DEFAULTS (JSON)
+    &nosplat=1         generate only (for timing with an idle GPU)
+-->
+<style>
+  :root { color-scheme: light dark; --bg:#f6f6f4; --fg:#1b1b1b; --mute:#6a6a6a; --line:#0002; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#eee; --mute:#9a9a9a; --line:#fff2; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,-apple-system,sans-serif; }
+  .wrap { max-width:1200px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:0 0 8px; }
+  .ctl { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:8px 0 12px; }
+  .ctl label { display:flex; gap:6px; align-items:center; }
+  #tile { display:block; width:100%; aspect-ratio:16/9; background:#000; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; margin-top:12px; }
+  .grid figure { margin:0; }
+  .grid canvas { width:100%; height:auto; display:block; background:#888; image-rendering:pixelated; }
+  figcaption { color:var(--mute); font-size:12px; }
+  pre { font:12px/1.4 ui-monospace,monospace; white-space:pre-wrap; border-top:1px solid var(--line); padding-top:8px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+} }
+</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>lift-gen dev — photo → two-layer Gaussians</h1>
+  <div class="ctl">
+    <label>photo <select id="img"></select></label>
+    <label>quality <select id="quality"><option>low</option><option selected>medium</option><option>high</option></select></label>
+    <label><input type="checkbox" id="inpaint"> inpainting net</label>
+    <button id="go">generate</button>
+    <label>orbit <input type="range" id="yaw" min="-15" max="15" step="0.5" value="0"> <span id="yawv">0°</span></label>
+    <label>layers <select id="layers"><option value="both">both</option><option value="0">0 only</option><option value="1">1 only</option></select></label>
+  </div>
+  <canvas id="tile"></canvas>
+  <div class="grid" id="views"></div>
+  <pre id="log"></pre>
+</div>
+<script type="module">
+import { createInline3D } from '../../js/inline3d.js';
+import { addSplat } from '../../js/inline3d-splat.js';
+import { generateLift } from '../../js/lift/gen/lift-gen.js';
+
+const Q = new URLSearchParams(location.search);
+const ORT = Q.get('ort') || '/bench/ort130/node_modules/onnxruntime-web/dist/';
+const DEPTH_MODEL = Q.get('depthModel') || '/bench/models/model_fp16.onnx';
+const INPAINT_JS = Q.get('inpaintJs') || '/x/inpaint/inpaint.js';
+const INPAINT_MODEL = Q.get('inpaintModel') || '/x/inpaint/onnx/light_inpaint_v1_1024x576_fp16.onnx';
+const DEPTH_H = +(Q.get('depthH') || 392);
+const PHOTOS = (Q.get('photos') || '/photos/office.png,/photos/Big_Sur_Road.jpg,/photos/Sonoma.jpg').split(',');
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+const log = (...a) => { const s = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '); console.log(s); logEl.textContent += s + '\n'; };
+for (const p of PHOTOS) $('img').append(new Option(p.split('/').pop(), p));
+if (Q.get('img')) { $('img').append(new Option(Q.get('img'), Q.get('img'))); $('img').value = Q.get('img'); }
+$('quality').value = Q.get('quality') || 'medium';
+$('inpaint').checked = Q.get('inpaint') === '1';
+
+let ort = null, depthSess = null, inpainter = null;
+async function getOrt() {
+  if (ort) return ort;
+  ort = await import(ORT + 'ort.webgpu.min.mjs');
+  ort.env.wasm.wasmPaths = ORT;
+  return ort;
+}
+
+// Depth-Anything-V2-Small → relative disparity (bigger = nearer) at the net's input size.
+async function runDepth(bitmap) {
+  const o = await getOrt();
+  if (!depthSess) depthSess = await o.InferenceSession.create(DEPTH_MODEL, { executionProviders: ['webgpu'] });
+  const h = DEPTH_H, w = Math.max(14, Math.round((bitmap.width / bitmap.height) * h / 14) * 14);
+  const c = new OffscreenCanvas(w, h), x = c.getContext('2d');
+  x.drawImage(bitmap, 0, 0, w, h);
+  const px = x.getImageData(0, 0, w, h).data;
+  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+  const t = new Float32Array(3 * w * h);
+  for (let i = 0; i < w * h; i++) for (let k = 0; k < 3; k++) t[k * w * h + i] = (px[4 * i + k] / 255 - mean[k]) / std[k];
+  const r = await depthSess.run({ pixel_values: new o.Tensor('float32', t, [1, 3, h, w]) });
+  const out = r.predicted_depth;
+  const data = out.data instanceof Float32Array ? out.data : Float32Array.from(await out.getData());
+  const dims = out.dims; // [1,h,w]
+  return { data, w: dims[dims.length - 1], h: dims[dims.length - 2], space: 'disparity' };
+}
+
+async function getInpainter() {
+  if (inpainter) return inpainter;
+  const o = await getOrt();
+  const { createInpainter } = await import(INPAINT_JS);
+  inpainter = await createInpainter({ modelUrl: INPAINT_MODEL, ort: o, width: 1024, height: 576 });
+  return inpainter;
+}
+
+// ── debug views ──
+function view(title, w, h, fill) {
+  const fig = document.createElement('figure');
+  const c = Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const x = c.getContext('2d'), im = x.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) { const [r, g, b, a = 255] = fill(i); im.data.set([r, g, b, a], 4 * i); }
+  x.putImageData(im, 0, 0);
+  fig.append(c, Object.assign(document.createElement('figcaption'), { textContent: title }));
+  $('views').append(fig);
+}
+function showDebug(meta) {
+  $('views').textContent = '';
+  const D = meta.debug, { PW, PH } = D, W = meta.w, H = meta.h, bx = meta.border.x, by = meta.border.y;
+  view('layer 0 RGB × α (matte)', W, H, (i) => {
+    const u = i % W, v = (i / W) | 0, p = 4 * ((v + by) * PW + u + bx), a = D.out0[4 * i + 1];
+    return [D.rgbPad[p] * a, D.rgbPad[p + 1] * a, D.rgbPad[p + 2] * a];
+  });
+  view('disparity (upsampled + snapped)', PW, PH, (i) => { const d = D.dUp[4 * i] * 255; return [d, d, d]; });
+  view('edges (far side): R=fg left G=fg right B=fg up/down', PW, PH, (i) => {
+    const e = D.edges; return [e[4 * i] > 0 ? 255 : 0, e[4 * i + 1] > 0 ? 255 : 0, e[4 * i + 2] + e[4 * i + 3] > 0 ? 255 : 0];
+  });
+  view('hidden mask M: R=maskRight G=maskLeft (+border)', PW, PH, (i) => {
+    const d = D.dUp[4 * i] * 90; return [D.mask[4 * i] * 255 || d, D.mask[4 * i + 1] * 255 || d, d];
+  });
+  view('layer 1 RGB (hidden band + border; rest dimmed)', PW, PH, (i) => {
+    const on = D.out1[4 * i + 3] > -100, k = on ? 255 : 60;
+    return [D.out1[4 * i] * k, D.out1[4 * i + 1] * k, D.out1[4 * i + 2] * k];
+  });
+  if (D.outB) view('layer 1 backplate (half-res in the PLY)', PW, PH, (i) => {
+    const on = D.outB[4 * i + 3] > -100, k = on ? 255 : 40;
+    return [D.outB[4 * i] * k, D.outB[4 * i + 1] * k, D.outB[4 * i + 2] * k];
+  });
+  view('layer 1 disparity (band)', PW, PH, (i) => {
+    const on = D.out1[4 * i + 3] > -100; const d = on ? Math.max(0, D.out1[4 * i + 3]) * 255 : 0; return [d, on ? d : 40, d];
+  });
+}
+
+// ── the splat ──
+const wall = await createInline3D();
+let tile = null;
+async function showSplat(ply, meta, layers = 'both') {
+  if (tile) { tile.remove(); tile.spark?.dispose?.(); tile = null; }
+  let bytes = ply;
+  if (layers === '1') bytes = sliceLayer(ply, meta.layerCounts[0], meta.layerCounts[1]);
+  if (layers === '0') bytes = sliceLayer(ply, 0, meta.layerCounts[0]);
+  tile = addSplat(wall, $('tile'), bytes, {
+    rig: 'camera',
+    intrinsics: meta.intrinsics,
+    focus: [0, 0, meta.pivotZ],
+    idleSpin: 0,
+    orbit: false,
+    focusInput: false,
+  });
+  await tile.ready;
+  tile.setPose({ yaw: +$('yaw').value, pitch: 0 });
+}
+function sliceLayer(ply, skip, n) {
+  const u8 = new Uint8Array(ply);
+  const text = new TextDecoder().decode(u8.subarray(0, 4096));
+  const hb = new TextEncoder().encode(text.slice(0, text.indexOf('end_header\n') + 11)).length;
+  const head = text.slice(0, text.indexOf('end_header\n') + 11).replace(/element vertex \d+/, `element vertex ${n}`);
+  const hbytes = new TextEncoder().encode(head);
+  const out = new Uint8Array(hbytes.length + n * 68);
+  out.set(hbytes); out.set(u8.subarray(hb + skip * 68, hb + (skip + n) * 68), hbytes.length);
+  return out.buffer;
+}
+
+let last = null;
+async function run() {
+  logEl.textContent = '';
+  const url = $('img').value;
+  const bitmap = await createImageBitmap(await (await fetch(url)).blob());
+  log(`photo ${url} ${bitmap.width}×${bitmap.height}`);
+  let t = performance.now();
+  const depth = await runDepth(bitmap);
+  log(`depth ${depth.w}×${depth.h} in ${(performance.now() - t).toFixed(0)} ms (DA2-S fp16 WebGPU, first run includes session create)`);
+  const inp = $('inpaint').checked ? await getInpainter() : null;
+  t = performance.now();
+  const { ply, meta } = await generateLift({
+    rgb: bitmap, depth, inpainter: inp, quality: $('quality').value, debug: true,
+    params: Q.get('params') ? JSON.parse(Q.get('params')) : undefined,
+    onProgress: (p) => console.log('progress', p.stage, p.progress),
+  });
+  const total = performance.now() - t;
+  const { debug, ...m } = meta;
+  log(`generateLift ${total.toFixed(0)} ms`, m);
+  log(`PLY ${(ply.byteLength / 1048576).toFixed(1)} MiB`);
+  showDebug(meta);
+  last = { ply, meta: m, total, bytes: ply.byteLength };
+  if (Q.get('nosplat') !== '1') await showSplat(ply, meta, $('layers').value);
+  return last;
+}
+
+$('go').onclick = () => run().catch((e) => log('ERROR', String(e.stack || e)));
+$('yaw').oninput = () => { $('yawv').textContent = `${$('yaw').value}°`; tile?.setPose({ yaw: +$('yaw').value }); };
+$('layers').onchange = () => last && showSplat(last.ply, last.meta, $('layers').value);
+
+// automation hook for the headless harness
+window.__lift = {
+  run: () => run(),
+  setYaw: (y) => { $('yaw').value = y; $('yaw').oninput(); },
+  showLayers: async (which) => { $('layers').value = which; await showSplat(last.ply, last.meta, which); },
+  setImage: (u) => { if (![...$('img').options].some((o) => o.value === u)) $('img').append(new Option(u, u)); $('img').value = u; },
+  setInpaint: (on) => { $('inpaint').checked = on; },
+  last: () => last,
+};
+if (Q.get('auto') === '1') run().catch((e) => log('ERROR', String(e.stack || e)));
+</script>
+</body>
+</html>
