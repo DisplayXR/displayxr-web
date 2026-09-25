@@ -5,6 +5,28 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased (1.24.0)
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change. Pixels change
+during a live transition between two camera-rig photos (they were wrong), and for the frames in
+which a newly declared rig has not yet reached the runtime's views.
+
+- **No camera jump at the start of a live transition.** Crossfade, wavefront and the particle
+  transitions keep the outgoing photo alive next to the incoming one. Between two photos with
+  camera rigs (SOG camera blocks: each its own convergence and vertical FOV), the outgoing photo
+  was drawn from eyes scaled by the two rigs' window ratio from the swap on, a jump in its
+  disparity and head parallax. For the frame(s) before the declaration reached the views, both
+  photos were drawn through the wrong rig. Each photo is now drawn through its own rig for the whole
+  window. The SDK reads off the views which declared rig they were located for, and remaps them
+  exactly (window onto window, eye onto eye; the runtime's projection verbatim, no Kooima) where
+  they are not the photo's own. `reassemble` was never affected. Headless: 102–208 px of
+  reference-point error → < 0.005 px, and the live outgoing image equals the frame before the swap
+  (MAE 0.000). Docs: `docs/playcanvas-adapter.md` § Each photo through its own rig.
+- **Kill switch `?dxrdiag=oldrig`** (the 1.23 behaviour). The diag's per-frame record gains
+  `rigAt` / `rigIn` / `rigOut`: the rig the views were located for, the rig the current photo was
+  drawn through (`+` = remapped), and how the live outgoing photo was drawn.
+- `tools/rig-swap-capture`: the headless harness behind the numbers.
+
 ## 1.23.0 — 2026-09-25
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). New API; no pixel change for a

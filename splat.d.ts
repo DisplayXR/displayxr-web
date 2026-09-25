@@ -277,11 +277,12 @@ export interface SplatOptions {
    * A string / array adds A/B kill switches (also accepted as `?dxrdiag=norig,frozen`): `'norig'`
    * keeps the rig declared before the first setSource (drops every re-declaration), `'frozen'`
    * forces `outgoing: 'frozen'`, `'nowarm'` skips the transition shader pre-warm, `'cold'` skips
-   * the live outgoing pre-sort, `'nooverlay'` records without the overlay. The option wins over the
+   * the live outgoing pre-sort, `'nooverlay'` records without the overlay, `'oldrig'` draws the
+   * views as located (no rig tracking; the live outgoing photo on the pre-1.24 chain). The option wins over the
    * URL; `false` turns it off even with `?dxrdiag` present. See docs/playcanvas-adapter.md
    * § Diagnosing transition stalls.
    */
-  diag?: boolean | string | ReadonlyArray<'norig' | 'frozen' | 'nowarm' | 'cold' | 'nooverlay' | '1'>;
+  diag?: boolean | string | ReadonlyArray<'norig' | 'frozen' | 'nowarm' | 'cold' | 'nooverlay' | 'oldpick' | 'nolayerrig' | 'oldrig' | '1'>;
   /**
    * `engine: 'playcanvas'` only: the WebGL context's `preserveDrawingBuffer` (default false) —
    * the knob for the weave's zero-copy read race on large canvases.

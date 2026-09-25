@@ -69,6 +69,7 @@ import {
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
 import { LayerRigCameras, validateLayerRig } from './inline3d-splat-layer-rig.js';
+import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
 import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
   clamp,
@@ -823,6 +824,16 @@ export class PlayCanvasSplatViewer {
     this.layerRigSource = null;
     /** That descriptor as it stood when THIS frame's views were pulled (snapshotted in onFrame). */
     this._rigSnap = null;
+    /**
+     * The rigs this tile declared and which one each frame's views were located for
+     * (./inline3d-splat-rig-map.js). Null = the kill switch (diag 'oldrig'): views drawn as
+     * located, the live outgoing on its pre-1.24 node chain.
+     */
+    this.rigTrack = null;
+    /** This frame's rig mapping: { located, eye, remapped, entries } (see _mapViews). */
+    this.rigFrame = null;
+    this._eyeMap = [];
+    this._rigAtPull = null;
     this._eyeSplit = NaN;
     this.boxAspect = 1;
     this.featherPx = feather > 0 ? feather : 0;
@@ -1136,6 +1147,8 @@ export class PlayCanvasSplatViewer {
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
     // and the tick below may declare a new one (a focus ease) for the NEXT locate.
     if (this.layerRigs?.active) this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
+    // Same moment, for the rig map: the rig these views were most likely located for (a tie-break).
+    this._rigAtPull = this.rigTrack ? this.rigTrack.latest : null;
     // BEFORE the tick: a pose the page sets in here is the one this very frame renders.
     this._beforeFrame?.(views || null);
     this._tick();
@@ -1589,6 +1602,44 @@ export class PlayCanvasSplatViewer {
   }
 
   /**
+   * This frame's rig mapping (./inline3d-splat-rig-map.js): which declared rig the views were
+   * located for (`located`), which the current photo wants (`eye`, the last declared), and — only
+   * when those differ and both are camera rigs — the views remapped to `eye` (`entries`: proj,
+   * viewInv, view per view; `cull`: the same as { proj, pose } entries; `node`: the first eye's
+   * rigid pose). Otherwise `remapped` is false and the views are drawn exactly as located.
+   */
+  _mapViews(entries, prefer = null) {
+    const rt = this.rigTrack;
+    const rf = (this.rigFrame ||= { located: null, eye: null, remapped: false, entries: null, cull: [], node: new Float64Array(16) });
+    rf.remapped = false;
+    rf.located = rf.eye = null;
+    if (!rt || this._mode !== '3d' || entries.length < 2) return rf;
+    rf.located = rt.locate(entries, prefer);
+    rf.eye = rt.latest;
+    const L = rf.located;
+    const T = rf.eye;
+    if (!L || !T?.portal || L === T || sameRig(L.rig, T.rig)) return rf;
+    const r = remapViews(entries, L.portal, T.portal, this._eyeMap);
+    if (!r) return rf;
+    rf.remapped = true;
+    rf.entries = r;
+    rf.cull.length = r.length;
+    for (let i = 0; i < r.length; i++) {
+      const c = (rf.cull[i] ||= {});
+      c.proj = r[i].proj;
+      c.pose = r[i].viewInv;
+      c.x = r[i].x;
+      c.y = r[i].y;
+      c.width = r[i].width;
+      c.height = r[i].height;
+      c.node = null;
+    }
+    nodePose(T.portal, r[0].eye, rf.node);
+    rf.cull[0].node = rf.node; // a rigid pose for a camera NODE (the views are affine)
+    return rf;
+  }
+
+  /**
    * The mono/capture camera as a lens frame, for the live outgoing's rig chain
    * (./inline3d-splat-live.js): the rig node's matrix, the camera pose in rig space, the
    * convergence distance c (along the view axis to the focus, which the pivot puts at the orbit
@@ -1612,6 +1663,8 @@ export class PlayCanvasSplatViewer {
    */
   cullViews(cam, entries, rect, into = []) {
     const parent = cam?.parent?.getWorldTransform?.()?.data ?? null;
+    // A camera drawing remapped views (./inline3d-splat-rig-map.js) publishes them as _dxrViews.
+    if (cam?._dxrViews?.length === entries.length) entries = cam._dxrViews;
     into.length = entries.length;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -1625,7 +1678,8 @@ export class PlayCanvasSplatViewer {
       o.W[0] = C[3]; o.W[1] = C[7]; o.W[2] = C[11]; o.W[3] = C[15];
       o.K[0] = w * e.proj[0];
       o.K[1] = 1 / w;
-      o.K[2] = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+      // The view's largest column scale² (1 for a rigid view; a remapped view is affine).
+      o.K[2] = Math.max(V[0] * V[0] + V[1] * V[1] + V[2] * V[2], V[4] * V[4] + V[5] * V[5] + V[6] * V[6], V[8] * V[8] + V[9] * V[9] + V[10] * V[10]);
       o.K[3] = 0;
     }
     return into;
@@ -1857,12 +1911,18 @@ export class PlayCanvasSplatViewer {
         for (let i = 0; i < entries.length; i++) rvs.push(new pc.RenderView());
         this.eye.camera.camera.xrViews = rvs.slice();
       }
+      // The current photo through ITS rig (the last declared): the views are remapped only while
+      // they were located for another one (a declaration still in flight, ./inline3d-splat-rig-map.js).
+      const rf = this._mapViews(entries, cache ? cache.rigAt : null);
+      const eyeViews = rf.remapped ? rf.entries : null;
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
-        rvs[i].setView(e.proj, e.pose);
+        if (eyeViews) rvs[i].setView(eyeViews[i].proj, eyeViews[i].viewInv, eyeViews[i].view);
+        else rvs[i].setView(e.proj, e.pose);
         const [x, y, w, h] = rect(e);
         rvs[i].setViewport(x, y, w, h);
       }
+      this.eye._dxrViews = eyeViews ? rf.cull : null;
       // LOD and FOV-compensation read camera.fov/near/far, which under xrViews come from the
       // XR properties — the frustum the views actually have, as XrManager does it.
       const f = frustumFromProjection(entries[0].proj);
@@ -1873,13 +1933,16 @@ export class PlayCanvasSplatViewer {
       }
       // The camera NODE drives the sort direction and LOD distance; the views ignore it (they
       // compose the node's PARENT with their own pose). Park it on the first eye.
-      placeNode(this.eye, entries[0].pose);
-      // setSource's live outgoing: the same views on its own camera, into its own target.
-      if (this._live?.active || this._live?.warming) this._live.sync(entries, rect, f);
+      placeNode(this.eye, eyeViews ? rf.node : entries[0].pose);
+      // setSource's live outgoing: the same views on its own camera (through ITS photo's rig),
+      // into its own target.
+      if (this._live?.active || this._live?.warming) this._live.sync(entries, rect, f, rf);
       // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
       this.onBeforeRender?.(entries, rect);
       // handle.setLayerRig: the display / post run cameras, on the same views (display: rounded).
-      if (this.layerRigs && this.layerRigs.sync()) this.layerRigs.frame(entries, rect, f, cache ? cache.rig : null);
+      if (this.layerRigs && this.layerRigs.sync()) {
+        this.layerRigs.frame(eyeViews ? rf.cull : entries, rect, f, eyeViews ? rf.eye.rig : rf.located ? rf.located.rig : cache ? cache.rig : null);
+      }
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
       const cams = this._views;
@@ -1938,6 +2001,7 @@ export class PlayCanvasSplatViewer {
     g.bufW = el.width || 0;
     g.bufH = el.height || 0;
     g.rig = this._rigSnap ? { ...this._rigSnap } : null; // a replay re-uses the rig of its views
+    g.rigAt = this._rigAtPull ?? null;
     for (let i = 0; i < views.length; i++) {
       const e = g.entries[i];
       const vp = vps[i];
@@ -2869,6 +2933,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let rigLockArmed = false;
   if (diag) {
     diag.imageState = () => viewer.diagImageState();
+    diag.rigState = () => {
+      const rf = viewer.rigFrame;
+      if (!viewer.rigTrack || !rf) return null;
+      return {
+        at: rf.located ? rf.located.id : null,
+        in: rf.eye ? `${rf.eye.id}${rf.remapped ? '+' : ''}` : null,
+        out: viewer._live?.active ? viewer._live.path : null,
+      };
+    };
     diag.observeLongTasks();
     diag.observeLongFrames();
     diag.log(`on — switches [${[...diag.switches].join(', ') || 'none'}]; dump: copy(__dxrDiag.dump())`);
@@ -3109,6 +3182,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // toward `target` at the viewer's FOCUS_EASE unless snapped.
   const pageFocus = { d: Number.NaN, target: Number.NaN, fired: Number.NaN, source: null };
 
+  let initialViewRig = null; // the rig addScene is created with (controls:'page'), else the shorthand
   if (wall && wall.supported) {
     const onFrame = diag
       ? (views, layer) => {
@@ -3121,7 +3195,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       // controls:'page' starts on a camera rig (attach, provisional FOV/convergence until the page
       // and the waterfall say otherwise); the display rig's height means nothing there.
       ...(pageMode
-        ? { viewRig: pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth }) }
+        ? { viewRig: (initialViewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth })) }
         : { virtualDisplayHeight }),
       onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
@@ -3129,6 +3203,20 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
   } else {
     viewer.startMono();
+  }
+  // Every rig this tile declares, by VALUE (./inline3d-splat-rig-map.js): which one a frame's
+  // views were located for is read off the views, so each photo can be drawn through its own rig
+  // while a declaration is in flight or while a live outgoing photo is still on screen.
+  // `?dxrdiag=oldrig` turns it off (views drawn as located; the live outgoing's node chain).
+  if (handle && typeof handle.setViewRig === 'function' && !diag?.has('oldrig')) {
+    const rt = (viewer.rigTrack = new RigTracker());
+    rt.note(initialViewRig || { type: 'display', virtualDisplayHeight });
+    const push = handle.setViewRig;
+    handle.setViewRig = (rig) => {
+      const r = push.call(handle, rig);
+      rt.note(rig);
+      return r;
+    };
   }
   let diagLoop = null;
   if (diag) {
