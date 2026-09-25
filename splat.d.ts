@@ -220,6 +220,23 @@ export interface SplatOptions {
    */
   engine?: 'spark' | 'playcanvas';
   /**
+   * `engine: 'playcanvas'` only: TRANSITION DIAGNOSTICS (#36). Off by default; `true` (or the page
+   * URL's `?dxrdiag=1`) records every woven frame — its interval, whether its eye poses are
+   * bit-identical to the previous frame's (a tracking HOLD), whether the transition overlay shows
+   * the frozen capture — plus every `setViewRig` push with its values, long tasks, and the
+   * setSource phases (`prepare`, `swap`, `window`, `settle`). It shows a small overlay (excluded
+   * from the weave), logs `[dxr-diag]` console lines (one summary with a verdict per transition),
+   * and exposes `window.__dxrDiag` (`copy(__dxrDiag.dump())` for the JSON).
+   *
+   * A string / array adds A/B kill switches (also accepted as `?dxrdiag=norig,frozen`): `'norig'`
+   * keeps the rig declared before the first setSource (drops every re-declaration), `'frozen'`
+   * forces `outgoing: 'frozen'`, `'nowarm'` skips the transition shader pre-warm, `'nooverlay'`
+   * records without the overlay. The option wins over the
+   * URL; `false` turns it off even with `?dxrdiag` present. See docs/playcanvas-adapter.md
+   * § Diagnosing transition stalls.
+   */
+  diag?: boolean | string | ReadonlyArray<'norig' | 'frozen' | 'nowarm' | 'nooverlay' | '1'>;
+  /**
    * `engine: 'playcanvas'` only: the WebGL context's `preserveDrawingBuffer` (default false) —
    * the knob for the weave's zero-copy read race on large canvases.
    */
