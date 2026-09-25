@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lift — Convert to 3D</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:32px 20px 72px}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.7;margin:0 0 22px}
+  figure{margin:22px 0}
+  video,img{display:block;width:100%;max-width:800px;height:auto;margin:0 auto;background:#000}
+  .cover{width:100%;max-width:800px;aspect-ratio:1/1;object-fit:cover}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px auto 0;max-width:800px}
+  button{font:inherit;font-size:14px;padding:5px 12px;border-radius:8px;border:1px solid #8886;background:#8881;cursor:pointer}
+  label{font-size:14px;opacity:.85}
+  .state{font:13px ui-monospace,Menlo,monospace;opacity:.8;margin-left:auto}
+  pre#log{font:12px/1.45 ui-monospace,Menlo,monospace;max-height:220px;overflow:auto;background:#8881;padding:10px;border-radius:8px}
+  code{background:#8882;padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>lift — Convert to 3D</h1>
+  <p class="sub">Any <code>&lt;video&gt;</code>, <code>&lt;img&gt;</code> or <code>&lt;canvas&gt;</code>, lifted in place:
+    live 3D while a video plays, an explorable 3D scene when it pauses. Alt-click any media to lift it
+    (<code>resolveMediaAt</code>). Backend: <b id="backend"></b> — add <code>?providers=real</code> for the real models.</p>
+
+  <figure>
+    <video id="vid" src="assets/synthetic-720p.mp4" muted loop playsinline controls></video>
+    <div class="bar">
+      <button data-act="lift" data-t="vid">Lift video</button>
+      <button data-act="play" data-t="vid">Play / pause</button>
+      <button data-act="explore" data-t="vid">Explore</button>
+      <button data-act="resume" data-t="vid">Resume</button>
+      <button data-act="remove" data-t="vid">Remove</button>
+      <label>depth <input type="range" min="0" max="2" step="0.05" value="1" data-act="depth" data-t="vid"></label>
+      <span class="state" id="st-vid">—</span>
+    </div>
+  </figure>
+
+  <figure>
+    <img id="img" src="assets/still.jpg" alt="synthetic still">
+    <div class="bar">
+      <button data-act="lift" data-t="img">Lift image</button>
+      <button data-act="remove" data-t="img">Remove</button>
+      <span class="state" id="st-img">—</span>
+    </div>
+  </figure>
+
+  <figure>
+    <img id="cov" class="cover" src="assets/still.jpg" alt="object-fit: cover still">
+    <div class="bar">
+      <button data-act="lift" data-t="cov">Lift (object-fit: cover)</button>
+      <button data-act="remove" data-t="cov">Remove</button>
+      <span class="state" id="st-cov">—</span>
+    </div>
+  </figure>
+
+  <pre id="log"></pre>
+</div>
+
+<script type="module">
+import { lift, resolveMediaAt } from '../../js/lift/lift.js';
+
+const q = new URLSearchParams(location.search);
+const backend = q.get('providers') === 'real' ? 'real' : 'stub';
+document.getElementById('backend').textContent = backend;
+const logEl = document.getElementById('log');
+const log = (...a) => {
+  const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+  logEl.textContent += line + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+  console.log('[lift-sample]', line);
+};
+const handles = new Map();
+window.__lift = { handles, log };
+
+async function doLift(id, el = document.getElementById(id)) {
+  if (handles.has(id)) return handles.get(id);
+  const h = await lift(el, { backend, mode: 'auto' });
+  handles.set(id, h);
+  const st = document.getElementById('st-' + id);
+  h.on('statechange', ({ state, from, reason }) => {
+    if (st) st.textContent = state;
+    log(`${id}: ${from} → ${state} (${reason})`);
+    if (state === 'disposed') handles.delete(id);
+  });
+  let lastPct = -1;
+  h.on('progress', ({ phase, value }) => {
+    const pct = Math.round(value * 100);
+    if (pct !== lastPct && (pct % 25 === 0)) log(`${id}: progress ${phase} ${pct}%`);
+    lastPct = pct;
+  });
+  h.on('error', ({ error, fatal }) => log(`${id}: error${fatal ? ' (fatal)' : ''}: ${error && error.message}`));
+  log(`${id}: lifted — layout=${h.layout} woven=${h.woven}`);
+  return h;
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const id = b.dataset.t, el = document.getElementById(id), h = handles.get(id);
+  switch (b.dataset.act) {
+    case 'lift': await doLift(id); break;
+    case 'play': el.paused ? el.play() : el.pause(); break;
+    case 'explore': h && h.explore(); break;
+    case 'resume': h && h.resume(); break;
+    case 'remove': h && h.remove(); break;
+  }
+});
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.dataset.act === 'depth') handles.get(t.dataset.t)?.setDepth(+t.value);
+});
+// Alt-click anywhere: resolve the media under the pointer and lift it.
+document.addEventListener('click', (e) => {
+  if (!e.altKey) return;
+  const el = resolveMediaAt(e.clientX, e.clientY);
+  if (!el) return log('alt-click: no media here');
+  e.preventDefault();
+  doLift(el.id || 'media-' + Math.random().toString(36).slice(2, 6), el);
+}, true);
+</script>
+</body>
+</html>
