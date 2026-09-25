@@ -47,6 +47,9 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   their own feathered edge (a 1.6 px mask) instead of relying on the border-radius clip, which can
   stair-step where an overlay is re-composited on its own. The sample gains a developer bar
   (accent picker, S/M/L, skin) showing the exact `setAppearance` call.
+- **Named accents** — `accent: 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' |
+  'ice'` (or any CSS colour), exported as `PLAYER_ACCENTS`. Each is light enough for the dock's dark
+  play glyph. The sample shows them as swatches.
 
 ## 1.24.0 — 2026-09-25
 

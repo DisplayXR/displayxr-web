@@ -52,11 +52,12 @@ export interface PlayerOptions {
   /** LEGACY (the 1.10 spelling, kept as `./splat` keeps it): `> 0` = `transition: 'crossfade'` of this length. */
   fadeMs?: number;
   /**
-   * Accent colour for the transport — written to the `--dxr-accent` custom property on the
-   * chrome, so it re-skins the scrub fill, the knob, the focus rings and the spinner in one
-   * value. Any CSS colour. Default `#4da3ff`.
+   * Accent colour for the transport — a named preset (`'azure'` default, `'violet'`, `'magenta'`,
+   * `'sunset'`, `'amber'`, `'lime'`, `'mint'`, `'ice'`) or any CSS colour. Written to the
+   * `--dxr-accent` custom property on the host, so it re-skins the scrub fill, the knob, the play
+   * orb, the focus rings and the spinner in one value.
    */
-  accent?: string;
+  accent?: PlayerAccent | (string & {});
   /**
    * Show a small pill in the control row (`true` → "3D", or your own short string). Opt-in and
    * page-driven on purpose: the module will NOT infer it from `wall.supported`, because a
@@ -129,7 +130,7 @@ export interface PlayerHandle {
    * Re-skin the SDK transport live — any of `accent` (a CSS colour; `''` = the default), `size`,
    * `skin`. Invalid values warn and are ignored; a no-op with `controls: 'none'`.
    */
-  setAppearance(a: { accent?: string; size?: 's' | 'm' | 'l'; skin?: 'classic' | 'dock' }): void;
+  setAppearance(a: { accent?: PlayerAccent | (string & {}); size?: 's' | 'm' | 'l'; skin?: 'classic' | 'dock' }): void;
 
   /** Mark a 2D element painted over this window so the weave leaves it crisp — `'sbs'` + a
    * supported wall only; a no-op everywhere else (there is no weave to protect it from). */
@@ -197,3 +198,5 @@ export interface ResolvedPlayerTransition {
   ease: (x: number) => number;
 }
 
+/** The named accent presets `accent` accepts (any CSS colour works too). */
+export type PlayerAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' | 'ice';

@@ -17,6 +17,8 @@ import {
   PLAYER_EASINGS,
   DEFAULT_CROSSFADE_MS,
   PLAYER_SIZE_SCALE,
+  PLAYER_ACCENTS,
+  resolveAccent,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -335,4 +337,12 @@ test("size: 'm' by default, s/m/l accepted in any case, anything else falls back
     console.warn = warn;
   }
   assert.ok(PLAYER_SIZE_SCALE.s < PLAYER_SIZE_SCALE.m && PLAYER_SIZE_SCALE.m === 1 && PLAYER_SIZE_SCALE.l > 1);
+});
+
+test('accent: named presets resolve to their colour, anything else passes through', () => {
+  assert.equal(resolveAccent('sunset'), PLAYER_ACCENTS.sunset);
+  assert.equal(resolveAccent('Mint'), PLAYER_ACCENTS.mint);
+  assert.equal(resolveAccent('#123456'), '#123456');
+  assert.equal(resolveAccent('rebeccapurple'), 'rebeccapurple');
+  for (const c of Object.values(PLAYER_ACCENTS)) assert.match(c, /^#[0-9a-f]{6}$/);
 });

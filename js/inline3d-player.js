@@ -50,6 +50,23 @@ const VALID_SKINS = new Set(['classic', 'dock']);
 const VALID_SIZES = new Set(['s', 'm', 'l']);
 // What each size multiplies the transport by. Applied with CSS `zoom` on each overlay's CONTENT
 // (never the overlay boxes' own positioning), so every icon, font and hit target scales together.
+/**
+ * Named accents: `accent: 'sunset'` or any CSS colour. Each is light enough that the dock's dark
+ * play glyph (#07111d) stays legible on it, and saturated enough to read as the brand colour on a
+ * black tile.
+ */
+export const PLAYER_ACCENTS = Object.freeze({
+  azure: '#4da3ff',
+  violet: '#9b7bff',
+  magenta: '#ff4fa3',
+  sunset: '#ff7a45',
+  amber: '#ffc23d',
+  lime: '#9be15d',
+  mint: '#35e0b0',
+  ice: '#8fe3ff',
+});
+/** A named accent to its colour; anything else is passed through as a CSS colour. */
+export const resolveAccent = (a) => (typeof a === 'string' && PLAYER_ACCENTS[a.toLowerCase()]) || a;
 export const PLAYER_SIZE_SCALE = Object.freeze({ s: 0.84, m: 1, l: 1.28 });
 const VALID_CONTROLS = new Set(['sdk', 'none']);
 
@@ -773,7 +790,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       for (const k of VALID_SIZES) container.classList.toggle(`dxr-player-host--size-${k}`, k === a.size && k !== 'm');
     }
     if (a.accent !== undefined) {
-      if (a.accent) container.style.setProperty('--dxr-accent', a.accent);
+      if (a.accent) container.style.setProperty('--dxr-accent', resolveAccent(a.accent));
       else container.style.removeProperty('--dxr-accent');
     }
   }
