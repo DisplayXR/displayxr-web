@@ -5,6 +5,22 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). New API; no pixel change for a
+page that does not call it.
+
+- **`handle.setLayerRig(layer, 'display' | 'camera', { viewerDistance?, gain? })`** (and
+  `addSplat(…, { displayRigLayers: [...] })`): draw chosen engine layers through the display rig —
+  round objects with physical pop-out — while the splat and the declared view rig stay on the
+  photo's camera rig. The display-rig views are the runtime's own views times an exact shear that
+  fixes the convergence plane (a contact point never moves); the runtime's projection matrices are
+  used verbatim — no Kooima (docs/proposals/layer-display-rig.md). Mono / 2D is byte-identical to
+  today. Kill switch `?dxrdiag=nolayerrig`. `handle.layerRigState()` reports what it did.
+- **`handle.makeSbsMaterial(texture, { format })`**: per-eye side-by-side (or top/bottom) sampling
+  on any quad — the left half to left views, the right half to right views, the left half in mono.
+  The eye split is a scene-wide uniform, `dxr_eye_split`, set every draw.
+
 ## 1.22.0 — 2026-09-25
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change; no pixel change.

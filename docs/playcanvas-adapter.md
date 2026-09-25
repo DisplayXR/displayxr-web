@@ -346,6 +346,102 @@ Upload cost and pacing were measured in a **visible** Chrome on the real clip (3
 | rAF interval | p50 8.3 ms, p95 9.2 ms, none over 25 ms |
 | video frames | **0 dropped** of 299; presented interval p50 33.3 ms |
 
+## `setLayerRig` — stage objects through the display rig, on a photo's camera rig
+
+A photo-lifted splat is on a **camera rig**, and so is everything the page draws with it. Objects a
+page adds on top of the photo (a product, a UI prop, a video frame) therefore read as flat as the
+photo does: the rig damps stereo and head parallax by `n/D` (the viewer's distance over the photo's
+convergence distance). `setLayerRig` draws chosen **engine layers** through the **display rig**
+instead — physical eyes against the physical screen — while the splat, and the rig declared to the
+runtime, stay on the photo's camera rig.
+
+```js
+const h = await addSplat(wall, canvas, photoUrl, { engine: 'playcanvas' });
+const { app } = h.engine;
+const stage = new pc.Layer({ name: 'Stage' });
+const comp = app.scene.layers;
+const wi = comp.getTransparentIndex(comp.getLayerById(pc.LAYERID_WORLD));
+comp.insertOpaque(stage, wi + 1);
+comp.insertTransparent(stage, wi + 2);
+h.engine.camera.camera.layers = [...h.engine.camera.camera.layers, stage.id];
+
+h.setLayerRig('Stage', 'display');          // or addSplat(…, { displayRigLayers: ['Stage'] })
+h.setLayerRig('Stage', 'camera');           // back to the photo's rig
+```
+
+**How.** The photo's camera rig *is* a portal: every view looks through one window on the
+convergence plane. The display rig looks through the same window from the eyes the runtime's own
+`ipdFactor`/`parallaxFactor` = 1 would give — the photo's eyes scaled by `k = D / (m·n)` about the
+declared camera position. Two portals through one window differ only by the eye, and the affine
+shear that fixes the window plane and moves one eye onto the other turns one picture into the
+other **exactly**. So the display-rig views are the runtime's views, right-multiplied by that shear;
+the runtime's projection matrices are used verbatim and no frustum is built (no Kooima; the
+derivation and the runtime-math proof are in
+[`docs/proposals/layer-display-rig.md`](proposals/layer-display-rig.md)).
+
+- **The convergence plane is fixed pointwise.** An object's contact point on it (z = 0 in the
+  photo's window frame) does not move, in any view, and has zero disparity in both rigs.
+- **Mono / the 2D tier / a 1-view mode: identical to today** (one view sits at the camera; the shear
+  is the identity). So is a display rig (`setRig('display')`, `setVideo`, an object splat): there
+  is nothing to round.
+- **Order is kept.** PlayCanvas renders camera by camera, so the tile's composition is split into
+  runs: the eye camera draws everything before the display layers, a display camera (priority 1)
+  draws them, and a post camera (priority 2) draws what came after them (UI: the edge feather and
+  the transition overlay). Same N `RenderView`s, same viewports.
+- **Depth.** The display camera clears depth (only depth) in 3D: the two camera spaces never share a
+  depth test. The splat writes none; the display layers depth-test among themselves.
+- **Rounding.** `viewerDistance` (m, default **0.6**, the browser's nominal) or an explicit `gain`,
+  for the whole tile (last call wins). The runtime knows the real nominal distance but the browser
+  does not expose it yet — a wrong value scales the objects' depth by `n_true/n`; it never moves the
+  contact plane or the 2D picture.
+- **Kill switch:** `?dxrdiag=nolayerrig` — requests are recorded, never applied.
+- Needs the engine's `RenderView` path (the default); on the N-camera fallback it warns once and
+  the layer stays on the photo rig.
+
+**Measured** (headless Chrome, ANGLE Metal, 2560×720 SBS buffer; a splat, a z = 0 contact marker,
+markers 0.5 world units in front of and behind the plane; the page plays the runtime with
+`dxr_camera3d_compute_view`, and the expectation is `dxr_display3d_compute_view` on the rig the
+runtime's own conversion says the photo IS, with factors 1 — an independent oracle):
+
+| | camera rig (today) | display rig |
+|---|---|---|
+| contact marker, L / R x (px) | 459.5 / 459.5 (expected 459.5 / 459.5) | 459.5 / 459.5 — **unmoved, zero disparity** |
+| marker in front, disparity | +8.0 px (expected +8.53) | **+28.0 px** (expected +28.44) |
+| marker behind, disparity | −5.0 px (expected −5.12) | **−17.0 px** (expected −17.07) |
+| off-centre, leaning head (10 cm closer) | | L/R 892.0 / 855.5 (expected 892.07 / 855.50) |
+| `gain: 1` vs no layer rig | | **byte-identical** frame |
+| mono, camera vs display | | **byte-identical** frame |
+| after a `setSource` crossfade / at zoom 1.4× | | contact unmoved, disparity unchanged |
+| per-frame cost (CPU + sync, median of 6×60 frames) | 2.65 ms | 2.51 ms — within noise; same draw count (12) |
+
+The measured positions are centroids of axis-aligned squares, so they sit on half pixels: every one
+is within 0.5 px of the oracle. The extra camera costs one depth clear and a camera's culling/sort
+over the display layers' meshes; nothing else is drawn twice.
+
+## `makeSbsMaterial` — a stereo side-by-side clip on any quad
+
+```js
+const tex = new pc.Texture(app.graphicsDevice, { width: 1920, height: 540, mipmaps: false });
+tex.setSource(videoEl);                              // the page's one <video>; upload new frames as usual
+const mat = h.makeSbsMaterial(tex, { format: 'sbs' }); // 'sbs' | 'tb' | 'mono'; opacity, flipY, depthTest, …
+previewEntity.render.meshInstances[0].material = mat;
+```
+
+Each eye samples its own half — the left half in left-eye views, the right half in right-eye views
+— exactly as `setVideo`'s full-screen plane does, on a quad of any size, anywhere, on either layer
+rig. Mono / the 2D tier / a 1-view mode: the left half. The quad's geometry is untouched: put it at
+the screen plane and the clip's disparity is the only depth. Nothing is decoded by the SDK.
+
+How the eye is known: the eye viewports sit side by side in the buffer, so the SDK publishes the
+first right-eye pixel column every draw as a **scene-wide uniform, `dxr_eye_split`** (`1e9` in
+mono), and the shader compares `gl_FragCoord.x` with it. A custom shader can do the same by
+declaring the uniform (`SBS_EYE_GLSL` in `js/inline3d-splat-video.js`); it must not set it per
+material. PlayCanvas's own `view_index` uniform is also set per view on the RenderView path, but it
+is 0 for every camera on the N-camera fallback, which is why the split is what the SDK uses.
+Measured in the same capture: a 64×32 blue|yellow texture on a quad at z = 0 shows **only blue**
+(5,184 px, 0 yellow) in the left view and **only yellow** in the right, on both layer rigs; mono
+shows only blue.
+
 ## `controls:'page'` — the page owns the camera
 
 For a game, or any page that already has a camera. The adapter stops being a viewer: no orbit,

@@ -381,6 +381,14 @@ export function addSplat(wall, canvas, src, opts = {}) {
           "(addSplat(…, { engine:'playcanvas' })); with Spark, use wall.addVideo on its own canvas.",
       );
     },
+    /** Not on this backend: per-layer rigs are a PlayCanvas-backend feature. */
+    setLayerRig() {
+      throw new Error("@displayxr/inline3d/splat: setLayerRig() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
+    },
+    /** Not on this backend: per-eye SBS materials are a PlayCanvas-backend feature. */
+    makeSbsMaterial() {
+      throw new Error("@displayxr/inline3d/splat: makeSbsMaterial() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
+    },
     /** Not on this backend: the live rig switch is a PlayCanvas-backend feature. */
     setRig() {
       throw new Error(
@@ -759,6 +767,16 @@ function addSplatDeferred(wall, canvas, src, opts) {
       return out;
     },
     stopEffect: queue('stopEffect'),
+    // A layer-rig request before the adapter has loaded: queued, replayed in order once it has
+    // (it needs no asset, only the engine's layers — which the adapter resolves lazily).
+    setLayerRig: (...args) => {
+      pending.push(['setLayerRig', args]);
+      return out;
+    },
+    layerRigState: () => ({ display: [], disabled: false, rounded: false, gain: null }),
+    makeSbsMaterial: () => {
+      throw new Error('@displayxr/inline3d/splat: makeSbsMaterial() needs the engine — call it after `await handle.ready`.');
+    },
     effects: () => [],
     getFocus: () => null,
     // A plain data slot the adapter reads at call time, so a callback assigned on the very next

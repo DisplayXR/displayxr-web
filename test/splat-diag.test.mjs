@@ -23,7 +23,7 @@ test('resolveDiag: the option wins over the URL; tokens are switches; off values
   const u = resolveDiag('norig,bogus', '');
   assert.equal(u.on, true);
   assert.deepEqual(u.unknown, ['bogus'], 'unknown tokens are reported, never thrown');
-  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick']);
+  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig']);
 });
 
 test('poseDelta: bit-identical views are HELD; any real move is not; delta in world units and in eye separations', () => {

@@ -67,7 +67,8 @@ import {
   sequenceSpans,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
-import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR } from './inline3d-splat-video.js';
+import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
+import { LayerRigCameras, validateLayerRig } from './inline3d-splat-layer-rig.js';
 import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
   clamp,
@@ -816,6 +817,13 @@ export class PlayCanvasSplatViewer {
     this.inputLocked = false;
     /** handle.setVideo's plane (./inline3d-splat-video.js) while a video is on, else null. */
     this._videoPlane = null;
+    /** handle.setLayerRig's per-rig cameras (./inline3d-splat-layer-rig.js), made on first use. */
+    this.layerRigs = null;
+    /** () => the view-rig descriptor currently declared to the runtime (or null). */
+    this.layerRigSource = null;
+    /** That descriptor as it stood when THIS frame's views were pulled (snapshotted in onFrame). */
+    this._rigSnap = null;
+    this._eyeSplit = NaN;
     this.boxAspect = 1;
     this.featherPx = feather > 0 ? feather : 0;
     this.captureFit = captureFit;
@@ -1125,6 +1133,9 @@ export class PlayCanvasSplatViewer {
   onFrame(views, layer) {
     if (this._disposed) return;
     if (this._mode !== '3d') this.stopMono();
+    // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
+    // and the tick below may declare a new one (a focus ease) for the NEXT locate.
+    if (this.layerRigs?.active) this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
     // BEFORE the tick: a pose the page sets in here is the one this very frame renders.
     this._beforeFrame?.(views || null);
     this._tick();
@@ -1185,6 +1196,7 @@ export class PlayCanvasSplatViewer {
     this._live = null;
     this._videoPlane?.destroy();
     this._videoPlane = null;
+    this.layerRigs = null; // its cameras go with the app
     try {
       this.app?.destroy();
     } catch (err) {
@@ -1866,6 +1878,8 @@ export class PlayCanvasSplatViewer {
       if (this._live?.active || this._live?.warming) this._live.sync(entries, rect, f);
       // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
       this.onBeforeRender?.(entries, rect);
+      // handle.setLayerRig: the display / post run cameras, on the same views (display: rounded).
+      if (this.layerRigs && this.layerRigs.sync()) this.layerRigs.frame(entries, rect, f, cache ? cache.rig : null);
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
       const cams = this._views;
@@ -1899,6 +1913,12 @@ export class PlayCanvasSplatViewer {
       }
     }
     this._updateFeather(entries[0].width * sx, entries[0].height * sy);
+    // handle.makeSbsMaterial: the eye split, scene-wide (a material only declares the uniform).
+    const split = eyeSplit(entries, rect);
+    if (split !== this._eyeSplit) {
+      this._eyeSplit = split;
+      app.graphicsDevice?.scope?.resolve?.(EYE_SPLIT_UNIFORM)?.setValue(split);
+    }
     // handle.setVideo's plane: size, eye split, and a new frame's upload (./inline3d-splat-video.js).
     this._videoPlane?.beforeDraw(entries, rect);
     app.tick(now());
@@ -1917,6 +1937,7 @@ export class PlayCanvasSplatViewer {
     }
     g.bufW = el.width || 0;
     g.bufH = el.height || 0;
+    g.rig = this._rigSnap ? { ...this._rigSnap } : null; // a replay re-uses the rig of its views
     for (let i = 0; i < views.length; i++) {
       const e = g.entries[i];
       const vp = vps[i];
@@ -2257,6 +2278,23 @@ export class PlayCanvasSplatViewer {
     if (this._mode === '3d' && this._lastGood) return this._lastGood.entries[0];
     return { proj: this.mono.proj, pose: this.mono.pose };
   }
+}
+
+/**
+ * A copy of the declared rig's frame fields (the SDK rewrites its camera-rig descriptor in place),
+ * or null. Only what the layer rig reads: kind, pose, convergence, metres-to-virtual.
+ */
+export function snapshotRig(rig, into = null) {
+  if (!rig || typeof rig !== 'object') return null;
+  const o = into || { position: {}, orientation: {} };
+  o.type = rig.type;
+  const p = rig.position || {};
+  const q = rig.orientation || {};
+  o.position = { x: p.x || 0, y: p.y || 0, z: p.z || 0 };
+  o.orientation = { x: q.x || 0, y: q.y || 0, z: q.z || 0, w: q.w === undefined ? 1 : q.w };
+  o.convergenceDiopters = rig.convergenceDiopters;
+  o.metersToVirtual = rig.metersToVirtual;
+  return o;
 }
 
 /** Put an engine node at a rigid display-space pose (position + rotation; no scale). */
@@ -2836,6 +2874,17 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     diag.log(`on — switches [${[...diag.switches].join(', ') || 'none'}]; dump: copy(__dxrDiag.dump())`);
   }
   let removed = false;
+  // handle.setLayerRig: the per-rig cameras and where they read the declared rig from.
+  // Kill switch `nolayerrig`: requests are recorded but every layer stays on the eye camera.
+  let warnedLayerRigPath = false;
+  function layerRigs() {
+    if (!viewer.layerRigs) {
+      viewer.layerRigs = new LayerRigCameras(viewer);
+      viewer.layerRigs.disabled = !!diag?.has('nolayerrig');
+      viewer.layerRigSource = () => out.viewRig || null;
+    }
+    return viewer.layerRigs;
+  }
   /** prepareSource: prepared handle → { loaded, state: 'ready' | 'used' | 'disposed', dispose }. */
   const preparedAssets = new WeakMap();
   const livePrepared = new Set();
@@ -2916,6 +2965,42 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     prepareSource,
     setRig,
     setVideo,
+    /**
+     * Draw a layer of this tile's engine through the DISPLAY rig (round, physical-depth stage
+     * objects) while the splat and the declared view rig stay on the photo's camera rig — or back
+     * on the camera rig ('camera'). No second full pass: one extra camera over the named layers,
+     * into the same target, in composition order. docs/playcanvas-adapter.md §setLayerRig and
+     * docs/proposals/layer-display-rig.md (the exact mapping, and why it is not Kooima).
+     * `viewerDistance` (m) / `gain` set the rounding for the whole tile (last call wins).
+     */
+    setLayerRig(layer, rig, o = {}) {
+      const r = validateLayerRig(layer, rig, o);
+      if (viewer._viewPath === 'cameras' && !warnedLayerRigPath) {
+        warnedLayerRigPath = true;
+        console.warn('[inline3d/splat] setLayerRig needs the engine RenderView path; on the N-camera fallback the layer stays on the photo rig.');
+      }
+      layerRigs().set(layer, r.rig, { viewerDistance: r.viewerDistance, gain: r.gain });
+      return out;
+    },
+    /** The layers on the display rig (as the page named them), and what the last frame did. */
+    layerRigState() {
+      const lr = viewer.layerRigs;
+      return {
+        display: lr ? [...lr.requests.keys()] : [],
+        disabled: !!lr?.disabled,
+        rounded: !!lr?.last.rounded,
+        gain: lr?.last.gain ?? null,
+      };
+    },
+    /**
+     * An unlit material showing the left half of `texture` to left-eye views and the right half to
+     * right-eye views (format 'sbs' | 'tb' | 'mono'), on any mesh — mono / 2D: the left half. Needs
+     * the engine (after `ready`). docs/playcanvas-adapter.md §makeSbsMaterial.
+     */
+    makeSbsMaterial(texture, o = {}) {
+      if (!viewer.app || !viewer.pc) throw new Error('@displayxr/inline3d/splat: makeSbsMaterial() needs the engine — call it after `await handle.ready`.');
+      return makeSbsMaterial(viewer.pc, texture, o);
+    },
     /**
      * Play a transition effect (inflate, deflate, sweep, dissolve, fade, pulse, custom) — see
      * docs/splat-effects.md. Validated now; runs once the first asset is on screen. Resolves
@@ -3071,6 +3156,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     delete out._resolveFirstWoven;
   }
 
+  // addSplat's `displayRigLayers` sugar: [layer, …] or { layers: [...], viewerDistance, gain }.
+  if (opts.displayRigLayers !== undefined) {
+    const d = opts.displayRigLayers;
+    const list = Array.isArray(d) ? d : d && Array.isArray(d.layers) ? d.layers : null;
+    if (!list) throw new TypeError('@displayxr/inline3d/splat: displayRigLayers — expected an array of layers, or { layers, viewerDistance?, gain? }.');
+    const o = Array.isArray(d) ? {} : { ...(d.viewerDistance !== undefined ? { viewerDistance: d.viewerDistance } : {}), ...(d.gain !== undefined ? { gain: d.gain } : {}) };
+    for (const l of list) out.setLayerRig(l, 'display', o);
+  }
   // Replay what the page did before this module arrived — exclude() above all, which a product
   // page calls on the very next line after addSplat.
   for (const [name, args] of pending) {
