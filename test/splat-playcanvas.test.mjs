@@ -1059,6 +1059,39 @@ test('reveal: installed at its START state before the first frame, played once w
   out.remove();
 });
 
+test('reveal: the splat stays HIDDEN while the gate holds, and first shows on the frame its clock starts', async (t) => {
+  // David's panel report (gallery#100): the start state (assemble's scatter) sat frozen on screen
+  // for the rest of the firstWoven hold, then jumped into motion. No frame may show the held start.
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  rec.queue = [fakeFlat(600, 0)];
+  const out = {};
+  let woven;
+  out.firstWoven = new Promise((r) => (woven = r));
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0, reveal: { type: 'sweep', durationMs: 100, easing: 'linear' } }, []);
+  const entity = out.mesh.entity;
+  // One record per frame, as the renderer would see it: visibility + the effect's amount.
+  const frames = [];
+  const tick = async () => {
+    out.viewer._tick();
+    frames.push({ shown: entity.enabled !== false, amount: rec.tileParams.get('dxrFx_sweep_amount') });
+    await new Promise((r) => setTimeout(r, 0)); // microtasks between frames, as between rAFs
+  };
+  assert.equal(entity.enabled, false, 'hidden from the first frame');
+  for (let i = 0; i < 5; i++) ((T += 500), await tick());
+  assert.ok(frames.every((f) => !f.shown), 'hidden for the whole hold');
+  woven({ woven: true });
+  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 6; i++) ((T += 10), await tick());
+  const shown = frames.filter((f) => f.shown);
+  assert.ok(shown.length >= 4, 'shown once the gate opens');
+  assert.equal(shown[0].amount, 0, 'the first shown frame is the clock start…');
+  assert.ok(shown[1].amount > 0, '…and the next one is already moving');
+  out.remove();
+});
+
 test('handle.playEffect / setEffect / stopEffect / effects on the adapter; bad calls throw at the call', async (t) => {
   installDom();
   let T = 1000;
@@ -2906,6 +2939,21 @@ async function videoRig({ camera = true, stereo = false, opts = {} } = {}) {
   return { pc, rec, out, v, pushed, textures, removedMI, frame, canvas };
 }
 const plane = (rec) => rec.meshInstances.find((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane');
+
+test('reveal + setVideo during the hold: the video keeps the splat hidden, and its exit shows it', async () => {
+  const { out, frame } = await videoRig({ opts: { reveal: 'sweep' } });
+  const entity = out.mesh.entity;
+  assert.equal(entity.enabled, false, 'held reveal: hidden');
+  await out.setVideo(fakeVideo(), { format: 'sbs' });
+  for (let i = 0; i < 4; i++) {
+    frame(); // the reveal gate opens in here (no firstWoven on this handle: two build frames)
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  assert.equal(entity.enabled, false, 'the gate opening does not put the splat over the video');
+  await out.setVideo(null);
+  assert.equal(entity.enabled, true, 'setVideo(null) restores it SHOWN, not the hidden state it entered on');
+  out.remove();
+});
 
 test('setVideo pure parts: validation, eye regions, per-eye aspect, contain/cover, eye split', async () => {
   const { validateSetVideo, eyeRegions, eyeAspect, videoPlaneSize, eyeSplit } = await import('../js/inline3d-splat-video.js');
