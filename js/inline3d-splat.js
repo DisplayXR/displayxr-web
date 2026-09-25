@@ -37,6 +37,7 @@ import {
   STREAMED_NEEDS_PLAYCANVAS,
   resolveControls,
   normalizeCameraPose,
+  declareViewRig,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -486,7 +487,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
       parallaxFactor: out.rig.parallaxFactor,
       out: out.viewRig || {},
     });
-    handle?.setViewRig(out.viewRig);
+    declareViewRig(handle, out.viewRig);
   }
   viewer.onFocusChange = () => {
     pushViewRig(false);

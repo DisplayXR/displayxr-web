@@ -514,3 +514,35 @@ export function coverageExponent(c, L = FADE_OPTICAL_DEPTH) {
   if (c >= 1) return 1;
   return -Math.log(1 - c * (1 - Math.exp(-L))) / L;
 }
+
+// ── view-rig declaration (all three backends) ────────────────────────────────────────────────
+
+let warnedNoViewRig = false;
+
+/**
+ * Declare a view rig on the scene handle. A handle without `setViewRig` is a core that predates
+ * view rigs (inline3d.js before the view-rig commit — e.g. a page that vendors an older core and
+ * hands its wall to this adapter): the rig cannot reach the browser, and the wall weaves on the
+ * addScene display-rig shorthand instead. For a CAMERA rig that is a metric photo scene on a
+ * 0.24 m display rig — convergence and scale way off while 2D looks right — so it is said out
+ * loud, once per page, rather than dropped the way `handle?.setViewRig?.()` used to drop it.
+ * Returns whether the handle took the rig.
+ */
+export function declareViewRig(handle, rig) {
+  if (!handle) return false; // no wall (mono): nothing to declare to
+  if (typeof handle.setViewRig === 'function') {
+    handle.setViewRig(rig);
+    return true;
+  }
+  if (rig?.type === 'camera' && !warnedNoViewRig) {
+    warnedNoViewRig = true;
+    console.warn(
+      '[inline3d/splat] the view rig was dropped: your inline3d core predates view rigs (its ' +
+        'addScene handle has no setViewRig), so the wall will use the addScene display-rig ' +
+        'shorthand, not this camera rig — the scene will be mis-converged and mis-scaled in 3D. ' +
+        'Update the core (js/inline3d.js) that created the wall to the same SDK version as ./splat.',
+      rig,
+    );
+  }
+  return false;
+}

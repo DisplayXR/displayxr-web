@@ -99,6 +99,7 @@ import {
   resolveControls,
   normalizeCameraPose,
   coverageExponent,
+  declareViewRig,
 } from './inline3d-splat-shared.js';
 
 /**
@@ -2348,7 +2349,6 @@ const SET_RIG_ENV_TONE_MAPPING = Object.freeze({ neutral: 'neutral', room: 'none
 export const SET_RIG_TYPES = Object.freeze(['display', 'camera', 'auto']);
 const SET_RIG_FITS = ['contain', 'cover', 'height', 'none'];
 let warnedSetRigKeys = false;
-
 const VIDEO_BUSY = (what) =>
   `@displayxr/inline3d/splat: ${what}() while a video is on — call handle.setVideo(null) first ` +
   '(the video holds the display rig and hides the splat until it exits).';
@@ -2832,7 +2832,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       },
       out.viewRig || {},
     );
-    handle?.setViewRig?.(out.viewRig);
+    declareViewRig(handle, out.viewRig);
     if (!out.rig) return;
     out.rig.convergence = d;
     if (Math.abs(d - pageFocus.fired) > 1e-3 || source !== pageFocus.source) {
@@ -2905,7 +2905,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         out: camRigObj,
       },
     );
-    handle?.setViewRig?.(out.viewRig);
+    declareViewRig(handle, out.viewRig);
   }
   viewer.onFocusChange = (f) => {
     pushViewRig(false);
@@ -3195,7 +3195,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       parallaxFactor: f.parallaxFactor ?? 1,
       perspectiveFactor: f.perspectiveFactor ?? 1,
     });
-    handle?.setViewRig?.(out.viewRig);
+    declareViewRig(handle, out.viewRig);
   }
 
   /**
@@ -3601,7 +3601,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       } else {
         declaredDisplay = s.declaredDisplay;
         out.viewRig = s.viewRig;
-        handle?.setViewRig?.(out.viewRig);
+        declareViewRig(handle, out.viewRig);
       }
     } else out.viewRig = s.viewRig;
     lastConvergence = s.lastConvergence;
