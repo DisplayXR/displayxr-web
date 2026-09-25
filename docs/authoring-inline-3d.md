@@ -229,6 +229,18 @@ poster still eye by eye, so the tile is 3D before its first frame (the default `
 image in both eyes). `on('ended', fn)` also fires, once, if the clip had already ended when the
 listener was attached. `src` may be a list of candidates best first (see Hosting video below).
 
+**Controls in the black bars, and the `'bars'` / `'call'` skins.** With a `band`, the picture
+sits in a strip and the tile has black bars above and below it. When the bottom bar is tall enough
+(44 CSS px, times the `size` scale), every skin moves its controls **into** that bar and the title
+into the top one, and the centre button and key pip stand down, so nothing sits over the picture.
+A bar too thin for them falls back to the usual overlay. Two skins are built for this layout:
+
+- `skin: 'bars'`: one row in the bottom bar reading back / play / elapsed / scrub / remaining.
+  Back is the remote's "previous" (`back()`). Without a band it becomes a solid strip across the
+  bottom of the tile.
+- `skin: 'call'`: the name and a thin timer bar on top, the controls at the bottom, and the
+  picture in a 2.39:1 band by default (`band` overrides it).
+
 **Two video paths, one vocabulary.** The SDK also plays video through `./splat`'s
 `handle.setVideo(src, { format, fit, rig })` (a screen-locked plane where each eye samples its own
 half — docs/playcanvas-adapter.md §setVideo). `addPlayer` keeps the same option names —
