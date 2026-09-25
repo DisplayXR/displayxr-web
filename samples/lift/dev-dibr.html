@@ -26,7 +26,10 @@
     <code>createLiveDibr</code>. On a DisplayXR browser the canvas is woven via
     <code>createInline3D</code> + <code>addScene</code>; elsewhere it shows the side-by-side views
     from simulated Kooima eyes (<code>?views=N</code> for a multiview fan, <code>?eye=0.2</code> for the
-    per-view spacing in IPDs, default 1).</p>
+    per-view spacing in IPDs, default 1). Off-axis viewer, in metres:
+    <code>?eyeY=0.1&amp;dist=0.55</code> (+ <code>eyeX</code>, <code>tileH</code> = the tile's physical
+    height, default 0.1008 m = the 1.0.2 panel test's 800×450 CSS tile); <code>?panel</code> uses the
+    two projection matrices dumped from that panel run verbatim.</p>
   <canvas id="scene" width="2560" height="720"></canvas>
   <div class="row">
     <label>depth <input id="depth" type="range" min="0" max="3" step="0.05" value="1"><span id="depthV">1</span></label>
@@ -41,7 +44,7 @@
 </div>
 <script type="module">
 import { createInline3D } from '../../js/inline3d.js';
-import { createLiveDibr, kooimaProjection, KAPPA } from '../../js/lift/live-dibr.js';
+import { createLiveDibr, kooimaProjection, viewEye, sourceCamera, KAPPA } from '../../js/lift/live-dibr.js';
 import { depthMap, W, H } from '../../test/lift-dibr-scene.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -58,14 +61,33 @@ dibr.setSource(video);
 window.__dibr = { dibr, results: null };
 
 // ---- simulated session (no DisplayXR browser): N Kooima eyes on a row, SBS tiles ----
-const D0 = 2.5; // viewer distance in window heights (0.6 m from a 0.24 m-tall window)
 const ASPECT = W / H;
+// Viewer geometry. Default: on-axis at 2.5 window heights (0.6 m from a 0.24 m-tall window).
+// ?eyeY/?eyeX/?dist (metres) + ?tileH (m) put the viewer off the tile's axis, like a real inline
+// tile on a panel (1.0.2 panel run: nominal viewer y = +0.10 m, tile 0.1008 m tall).
+const TILE_H = +(qs.get('tileH') || 0.1008);
+const OFF_AXIS = qs.has('eyeY') || qs.has('eyeX') || qs.has('dist');
+const D0 = OFF_AXIS ? +(qs.get('dist') || 0.55) / TILE_H : 2.5;
+const EYE_X = OFF_AXIS ? +(qs.get('eyeX') || 0) / TILE_H : 0;
+const EYE_Y = OFF_AXIS ? +(qs.get('eyeY') || 0) / TILE_H : 0;
+// Verbatim from the DisplayXR Browser 1.0.2 / Leia SR 3840x2160 panel run (canvas 4000x1125 SBS).
+const PANEL_PM = [
+  [6.166205883026123, 0, 0, 0, 0, 10.96214485168457, 0, 0, 0.45363613963127136, -0.8832857012748718, -1.0001999139785767, -1, 0, 0, -0.2000199854373932, 0],
+  [6.157009124755859, 0, 0, 0, 0, 10.945794105529785, 0, 0, -0.2347441464662552, -0.9125044345855713, -1.0001999139785767, -1, 0, 0, -0.2000199854373932, 0],
+];
 function simViews(n, spacingIpd = 1, vpW = canvas.width / n, vpH = canvas.height) {
   const views = [];
+  if (qs.has('panel') && n === 2) {
+    for (let i = 0; i < 2; i++) {
+      views.push({ projectionMatrix: Float32Array.from(PANEL_PM[i]),
+        vp: { x: Math.round(i * vpW), y: 0, width: Math.round(vpW), height: vpH } });
+    }
+    return views;
+  }
   for (let i = 0; i < n; i++) {
     const off = (i - (n - 1) / 2) * spacingIpd * KAPPA * D0; // n=2 -> +-IPD/2
     const vp = { x: Math.round(i * vpW), y: 0, width: Math.round(vpW), height: vpH };
-    views.push({ eye: off, projectionMatrix: kooimaProjection({ x: off, y: 0, z: D0 }, ASPECT), vp });
+    views.push({ projectionMatrix: kooimaProjection({ x: EYE_X + off, y: EYE_Y, z: D0 }, ASPECT), vp });
   }
   return views;
 }
@@ -171,6 +193,12 @@ async function runChecks() {
   res.rectShiftPx = rectShift; res.rectExpectPx = expect(0.6);
   res.signPass = discShift < 0 && discShift < rectShift; // nearer = crossed, and MORE
 
+  // 2b) OFF-AXIS viewer (?eyeY / ?panel). The source camera must follow the viewer, so:
+  //   * a FLAT source at convergence reproduces the source in BOTH eyes (MAE < 1/255);
+  //   * with real depth + convergence on the rect: the rect does not move, the near disc and the
+  //     far ground move OPPOSITE ways horizontally, and nothing moves vertically (eyes level).
+  if (OFF_AXIS || qs.has('panel')) Object.assign(res, await offAxisChecks());
+
   // 3) Perf: 2 views x 1280x720, one GPU sync at the end of the batch. Each iteration CLEARS
   //    first: without it Apple's tile-based hidden-surface removal culls every opaque draw but
   //    the last one into the same tiles, and the batch reports ~20x too fast.
@@ -200,9 +228,97 @@ async function runChecks() {
   window.__dibr.results = res;
   const f = (x) => (typeof x === 'number' ? +x.toFixed(3) : x);
   log(Object.entries(res).map(([k, v]) => `${k.padEnd(28)} ${f(v)}`).join('\n'));
-  out.className = res.neutralPass && res.signPass ? 'ok' : 'bad';
+  out.className = res.neutralPass && res.signPass && res.offAxisPass !== false ? 'ok' : 'bad';
   if (!qs.has('hold')) { paused = false; video.play().catch(() => {}); }
   return res;
+}
+function mae(a, b) {
+  let sum = 0;
+  for (let k = 0; k < a.length; k += 4) for (let c = 0; c < 3; c++) sum += Math.abs(a[k + c] - b[k + c]);
+  return sum / ((a.length / 4) * 3);
+}
+function centroidXY(px, w, h, pred) {
+  let sx = 0, sy = 0, n = 0;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const k = (j * w + i) * 4;
+    if (pred(px[k], px[k + 1], px[k + 2])) { sx += i; sy += j; n++; }
+  }
+  return n ? [sx / n, sy / n] : [NaN, NaN];
+}
+// Integer block match of patch (x0,y0,bw,bh) of `img` against `ref`: the (dx,dy) such that
+// img(x,y) == ref(x+dx, y+dy), i.e. where the output pixel's content CAME FROM (top-down rows).
+function blockShift(img, ref, w, h, x0, y0, bw, bh, R = 48) {
+  let best = [Infinity, 0, 0];
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    let e = 0;
+    for (let j = 0; j < bh; j += 2) for (let i = 0; i < bw; i += 2) {
+      const a = ((y0 + j) * w + x0 + i) * 4, b = ((y0 + j + dy) * w + x0 + i + dx) * 4;
+      e += Math.abs(img[a] - ref[b]) + Math.abs(img[a + 1] - ref[b + 1]);
+    }
+    if (e < best[0]) best = [e, dx, dy];
+  }
+  return { dx: best[1], dy: best[2] };
+}
+async function offAxisChecks() {
+  const r = {};
+  const pair = simViews(2, 1, W, H);
+  const eyes = pair.map((v) => viewEye(v.projectionMatrix));
+  const cam = sourceCamera(eyes);
+  r.eyes = eyes.map((e) => `(${e.x.toFixed(3)}, ${e.y.toFixed(3)}, ${e.z.toFixed(3)})`).join(' ');
+  r.sourceCam = `(${cam.x.toFixed(3)}, ${cam.y.toFixed(3)}, ${cam.z.toFixed(3)})`;
+  // ---- flat source at convergence ----
+  await seek(3.0);
+  await nextFrame();
+  dibr.setSource(video);
+  const ref2d = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true });
+  ref2d.drawImage(video, 0, 0, W, H);
+  const ref = ref2d.getImageData(0, 0, W, H).data;
+  dibr.setParams({ convergence: 'auto', stabilize: false });
+  dibr.setDepth({ data: new Float32Array(DW * DH).fill(0.4), w: DW, h: DH, reset: true });
+  dibr.render({ views: pair, layer: simLayer });
+  r.flatMAE_L = mae(readRgba(0, 0, W, H), ref);
+  r.flatMAE_R = mae(readRgba(W, 0, W, H), ref);
+  r.flatPass = r.flatMAE_L < 1 && r.flatMAE_R < 1;
+  // ---- real depth, convergence on the rect (d = 0.6) ----
+  const t = video.currentTime;
+  dibr.setDepth({ data: depthMap(t, DW, DH), w: DW, h: DH, reset: true });
+  dibr.render({ views: pair, layer: simLayer }); // getStats() lo/hi are refreshed by render()
+  const st0 = dibr.getStats();
+  const nRect = (0.6 - st0.lo) / (st0.hi - st0.lo);
+  dibr.setParams({ convergence: nRect });
+  dibr.render({ views: pair, layer: simLayer });
+  const outs = [readRgba(0, 0, W, H), readRgba(W, 0, W, H)];
+  const st = dibr.getStats();
+  r.qScale = st.qScale;
+  const srcRect = centroidXY(ref, W, H, isRect), srcDisc = centroidXY(ref, W, H, isDisc);
+  const f1 = (v) => v.toFixed(2);
+  let pass = true;
+  outs.forEach((o, i) => {
+    const tag = i ? 'R' : 'L';
+    const rc = centroidXY(o, W, H, isRect), dc = centroidXY(o, W, H, isDisc);
+    // far ground patch (top middle, clear of both objects at t=3) — where its pixels came from
+    const bg = blockShift(o, ref, W, H, 560, 70, 96, 64);
+    const rectD = [rc[0] - srcRect[0], rc[1] - srcRect[1]];
+    const discD = [dc[0] - srcDisc[0], dc[1] - srcDisc[1]];
+    const bgD = [-bg.dx, -bg.dy]; // content displacement = minus the source offset
+    r['rectMove' + tag] = `${f1(rectD[0])}, ${f1(rectD[1])}`;
+    r['discMove' + tag] = `${f1(discD[0])}, ${f1(discD[1])}`;
+    r['farMove' + tag] = `${bgD[0]}, ${bgD[1]}`;
+    const side = Math.sign(eyes[i].x - cam.x); // +1 = right of the source camera
+    // expected: near moves AGAINST the eye offset (crossed), far WITH it, convergence stays.
+    const ok =
+      Math.abs(rectD[0]) < 0.75 && Math.abs(rectD[1]) < 0.75 &&
+      Math.sign(discD[0]) === -side && Math.abs(discD[0]) > 2 && Math.abs(discD[1]) < 0.75 &&
+      Math.sign(bgD[0]) === side && Math.abs(bgD[0]) >= 2 && bgD[1] === 0;
+    r['offAxisPass' + tag] = ok;
+    pass = pass && ok;
+    // what the pre-fix (source camera on the tile axis) mapping would have done to the far patch
+    const qFar = st.qScale * ((0.15 + 0.35 * (100 / H)) - st0.lo) / (st0.hi - st0.lo) - st.qScale * nRect;
+    r['farMovePreFixPred' + tag] = `${f1(-eyes[i].x * qFar * H)}, ${f1(eyes[i].y * qFar * H)}`;
+  });
+  r.offAxisPass = pass && r.flatPass;
+  dibr.setParams({ convergence: 'auto' });
+  return r;
 }
 $('checkBtn').onclick = runChecks;
 window.__dibr.runChecks = runChecks;
