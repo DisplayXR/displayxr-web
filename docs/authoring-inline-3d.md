@@ -199,6 +199,14 @@ is `outgoing: 'frozen'`, the only value the player accepts. Its splat-side cavea
 outgoing photo "reads as tracking pausing" — does not carry over: a splat re-renders for every
 head pose, an SBS video frame's disparity is baked in whether it is frozen or playing.
 
+**Layouts, bands and stereo posters.** `format` takes `'sbs'`, `'tb'` (top/bottom, left eye on
+top) or `'mono'`, as `./splat` `setVideo` does; a top/bottom source is repacked into the woven
+pair per frame. `band: 2.39` (or `'2.39:1'`) fits the picture into a centred letterbox slot of
+that aspect and leaves the rest of the tile clear. `posterFormat: 'sbs' | 'tb'` paints a stereo
+poster still eye by eye, so the tile is 3D before its first frame (the default `'mono'` puts one
+image in both eyes). `on('ended', fn)` also fires, once, if the clip had already ended when the
+listener was attached. `src` may be a list of candidates best first (see Hosting video below).
+
 **Two video paths, one vocabulary.** The SDK also plays video through `./splat`'s
 `handle.setVideo(src, { format, fit, rig })` (a screen-locked plane where each eye samples its own
 half — docs/playcanvas-adapter.md §setVideo). `addPlayer` keeps the same option names —
@@ -1176,6 +1184,10 @@ short:
 7. **No CSS effects on the canvas or its ancestors** (`filter`, `opacity < 1`, `mask`, radius,
    shadow). Use `cornerRadius` / `feather`.
 8. **Chrome over a tile is a partial region.**
+9. **Nothing with a background sits above the woven canvas; black goes UNDER it.** A section,
+   wrapper or later sibling with an opaque background painted over the canvas hides the tile while
+   its content keeps running (for video: sound, no picture). If you want black around a tile, put
+   it on an element behind the canvas.
 
 ```js
 const handle = wall.addScene(canvas, onFrame);
@@ -1192,6 +1204,30 @@ it will settle on the report with no change to your page.
 The reasoning for each rule, the SDK call that satisfies it, and a hardware checklist that reads
 the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
 **[Woven canvas rules](woven-canvas-rules.md)**.
+
+## Hosting video
+
+What decides whether a clip plays at all, and whether it stays smooth, is mostly the server:
+
+- **Codec.** The DisplayXR Browser has **no H.264 and no AAC**. Serve VP9 (or AV1) video with Opus
+  audio in WebM, and list alternatives best first with full `canPlayType` strings —
+  `addPlayer`'s `src` takes `[{ src, type: 'video/webm; codecs="vp9, opus"' }, …]` and plays the
+  first this browser supports (`pickSource()`). A codec-less `'video/mp4'` still answers "maybe",
+  which is why the codecs parameter matters.
+- **Range requests.** The server must answer `Range:` with `206 Partial Content` (object stores —
+  S3, GCS, Azure Blob — do by default; some CDNs need it enabled). Without it every seek restarts
+  the download and a long clip cannot start before it has fully arrived.
+- **Cache headers.** Clips in a bucket should carry a long `Cache-Control` (`public,
+  max-age=31536000, immutable`) under content-hashed or versioned names, so a revisit and a seek
+  back are served from cache rather than re-fetched; change the name, not the headers, to ship
+  a new cut.
+- **CORS.** A cross-origin clip needs `Access-Control-Allow-Origin` for your page's origin
+  (`addPlayer` sets `crossOrigin: 'anonymous'` automatically for a cross-origin URL); without it
+  the frame cannot be drawn into the woven canvas at all.
+- **Square pixels.** A stream whose container flags a non-square pixel aspect (a 3840×804 SBS
+  flagged 193:384 reports 3840×1600) is split into eyes from the wrong size and plays squashed.
+  The page cannot see the coded size, so rewrap it with square pixels — no re-encode:
+  `ffmpeg -i in.webm -c copy -aspect 3840:804 out.webm`.
 
 ## Gotchas checklist
 

@@ -45,7 +45,9 @@
 
 /** @typedef {'sbs'|'mono'} PlayerFormat */
 
-const VALID_FORMATS = new Set(['sbs', 'mono']);
+// 'tb' (top/bottom: left eye on top) matches ./splat setVideo's format vocabulary.
+const VALID_FORMATS = new Set(['sbs', 'tb', 'mono']);
+const VALID_POSTER_FORMATS = new Set(['sbs', 'tb', 'mono']);
 const VALID_SKINS = new Set(['classic', 'dock']);
 const VALID_SIZES = new Set(['s', 'm', 'l']);
 // ./splat setVideo's `fit` values, same names and meaning (inline3d-splat-video.js VIDEO_FITS).
@@ -177,6 +179,13 @@ export function normalizePlayerOptions(opts = {}) {
     // through). 'cover': the tile is full and the overflow is cut. Unset (null): stretched to the
     // tile, the 1.x behaviour, so a page that never asks keeps its pixels.
     fit: opts.fit === undefined || opts.fit === null ? null : pickEnum(opts.fit, VALID_FITS, null, 'fit'),
+    // A letterboxed "band" slot: the picture is fitted into a centred band of this aspect inside
+    // the tile (e.g. 2.39 for a scope band in a 16:9 tile), and the rest of the tile is left
+    // clear. Implies fit 'contain' unless `fit` says otherwise. A number or 'W:H' / 'W/H'.
+    band: parseAspect(opts.band),
+    // What the poster image IS: 'mono' (one image, both eyes — the 1.x behaviour), or a stereo
+    // still laid out like the video ('sbs' / 'tb'), painted eye by eye.
+    posterFormat: pickEnum(opts.posterFormat, VALID_POSTER_FORMATS, 'mono', 'posterFormat'),
     poster: opts.poster || null,
     autoplay: !!opts.autoplay,
     muted: opts.muted === undefined ? true : !!opts.muted,
@@ -208,6 +217,108 @@ export function normalizePlayerOptions(opts = {}) {
     feather: opts.feather,
     observe: opts.observe,
   };
+}
+
+/**
+ * An aspect ratio from a number or a 'W:H' / 'W/H' string; null when absent or invalid. Pure.
+ * @param {number|string|undefined|null} a
+ */
+export function parseAspect(a) {
+  if (a === undefined || a === null || a === '') return null;
+  if (typeof a === 'number') return Number.isFinite(a) && a > 0 ? a : null;
+  if (typeof a === 'string') {
+    const m = a.trim().match(/^(\d+(?:\.\d+)?)\s*[:/x]\s*(\d+(?:\.\d+)?)$/i);
+    if (m) {
+      const v = Number(m[1]) / Number(m[2]);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    }
+    const n = Number(a);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+}
+
+/**
+ * The rect of one eye inside a stereo frame. Pure. 'sbs': left/right halves; 'tb': top/bottom
+ * halves (left eye on top, as ./splat setVideo reads it); 'mono': the whole frame for both.
+ * @param {'sbs'|'tb'|'mono'} layout @param {number} w @param {number} h @param {0|1} eye
+ */
+export function eyeRect(layout, w, h, eye) {
+  if (layout === 'sbs') return { x: eye ? w / 2 : 0, y: 0, w: w / 2, h };
+  if (layout === 'tb') return { x: 0, y: eye ? h / 2 : 0, w, h: h / 2 };
+  return { x: 0, y: 0, w, h };
+}
+
+/**
+ * The centred band of aspect `band` inside a `w`×`h` box (full width if the band is wider than
+ * the box, full height if narrower); the whole box when `band` is unset. Pure.
+ */
+export function bandBox(w, h, band) {
+  if (!(band > 0) || !(w > 0 && h > 0)) return { x: 0, y: 0, w, h };
+  const a = w / h;
+  if (band >= a) {
+    const bh = w / band;
+    return { x: 0, y: (h - bh) / 2, w, h: bh };
+  }
+  const bw = h * band;
+  return { x: (w - bw) / 2, y: 0, w: bw, h };
+}
+
+/**
+ * Draw one eye of `src` (laid out as `layout`) into a destination box, fitted. `band` narrows the
+ * box to a centred letterbox slot first; a band with no `fit` means 'contain'.
+ */
+function drawFittedEye(ctx, src, srcW, srcH, layout, eye, dx, dy, dw, dh, fit, band) {
+  const e = eyeRect(layout, srcW, srcH, eye);
+  const b = bandBox(dw, dh, band);
+  const r = fitRect(e.w, e.h, b.w, b.h, fit || (band ? 'contain' : null));
+  ctx.drawImage(src, e.x + r.sx, e.y + r.sy, r.sw, r.sh, dx + b.x + r.dx, dy + b.y + r.dy, r.dw, r.dh);
+}
+
+/**
+ * Pick the first source this browser can play, from candidates listed BEST FIRST. Each candidate
+ * is a URL string, or `{ src, type }` where `type` is a full `canPlayType` string — e.g.
+ * `'video/webm; codecs="vp9, opus"'`. Codec-less types answer 'maybe' for anything in the
+ * container, which is why the full string matters: the DisplayXR Browser has no H.264 / AAC, and
+ * `'video/mp4'` alone still says 'maybe'. A 'probably' wins over an earlier 'maybe'. A candidate
+ * without a type is taken as-is if nothing typed was 'probably'. Warns and returns the first when
+ * nothing is playable, so the `error` event (and the poster) still happens the usual way.
+ *
+ * @param {string|Blob|Array<string|Blob|{src:string|Blob,type?:string}>} candidates
+ * @param {(type:string) => string} [canPlayType]  injectable for tests; defaults to a <video>'s
+ */
+export function pickSource(candidates, canPlayType) {
+  if (!Array.isArray(candidates)) return candidates;
+  const list = candidates.map((c) => (c && typeof c === 'object' && !(typeof Blob !== 'undefined' && c instanceof Blob) ? c : { src: c }));
+  if (!list.length) return undefined;
+  const probe =
+    canPlayType ||
+    ((t) => {
+      try {
+        return typeof document !== 'undefined' ? document.createElement('video').canPlayType(t) : '';
+      } catch {
+        return '';
+      }
+    });
+  let maybe = null;
+  let untyped = null;
+  for (const c of list) {
+    if (!c.type) {
+      if (!untyped) untyped = c;
+      continue;
+    }
+    const ans = probe(c.type);
+    if (ans === 'probably') return c.src;
+    if (ans === 'maybe' && !maybe) maybe = c;
+  }
+  if (untyped) return untyped.src;
+  if (maybe) return maybe.src;
+  console.warn(
+    '[inline3d/player] none of the candidate sources is playable here — trying the first. The ' +
+      'DisplayXR Browser plays VP9/AV1 + Opus in WebM, not H.264/AAC.',
+    list.map((c) => c.type || '(untyped)')
+  );
+  return list[0].src;
 }
 
 /**
@@ -308,16 +419,28 @@ function resolveCrossOrigin(src, explicit) {
   return null;
 }
 
-/** Duplicate `img` into BOTH halves of an already-sized SBS buffer — zero disparity, flat. */
-function paintPosterSBS(canvas, img) {
+/**
+ * Paint the poster into BOTH halves of an already-sized SBS buffer, eye by eye. A 'mono' poster
+ * is the same image in both (zero disparity, flat — the 1.x behaviour); an 'sbs' / 'tb' still
+ * gives each eye its own half, so the poster is 3D before the first frame. Fitted like the video.
+ */
+function paintPosterSBS(canvas, img, look = {}) {
   const w = canvas.width;
   const h = canvas.height;
   if (!w || !h) return false;
   const ctx = canvas.getContext('2d');
   const halfW = w / 2;
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
   ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(img, 0, 0, halfW, h);
-  ctx.drawImage(img, halfW, 0, halfW, h);
+  if (!iw || !ih || (!look.fit && !look.band && (look.posterFormat || 'mono') === 'mono')) {
+    ctx.drawImage(img, 0, 0, halfW, h);
+    ctx.drawImage(img, halfW, 0, halfW, h);
+    return true;
+  }
+  const layout = look.posterFormat || 'mono';
+  drawFittedEye(ctx, img, iw, ih, layout, 0, 0, 0, halfW, h, look.fit, look.band);
+  drawFittedEye(ctx, img, iw, ih, layout, 1, halfW, 0, halfW, h, look.fit, look.band);
   return true;
 }
 
@@ -336,13 +459,13 @@ function paintPosterSBS(canvas, img) {
  * resized or replaced — 60 Hz would buy nothing and cost a full-resolution SBS draw per frame
  * on a tile that is, by definition, showing a still.
  */
-function startPosterPoll(canvas, getPoster, isVideoReady) {
+function startPosterPoll(canvas, getPoster, isVideoReady, look) {
   let timer = 0;
   let stopped = false;
   function tick() {
     if (stopped || isVideoReady()) return;
     const img = getPoster();
-    if (img) paintPosterSBS(canvas, img);
+    if (img) paintPosterSBS(canvas, img, look);
     timer = setTimeout(tick, 250);
   }
   tick();
@@ -362,7 +485,7 @@ function startPosterPoll(canvas, getPoster, isVideoReady) {
  * `requestVideoFrameCallback` where available, falling back to an every-frame `drawImage` loop
  * where it is not.
  */
-function attachFlatPaint(canvas, video, { mode, getPoster, dissolve, fit = null }) {
+function attachFlatPaint(canvas, video, { mode, getPoster, dissolve, fit = null, layout = 'sbs', band = null, posterFormat = 'mono' }) {
   const ctx = canvas.getContext('2d');
   let stopped = false;
   let rafId = 0;
@@ -398,17 +521,17 @@ function attachFlatPaint(canvas, video, { mode, getPoster, dissolve, fit = null 
       const vw = src.videoWidth || src.width;
       const vh = src.videoHeight || src.height;
       ctx.clearRect(0, 0, w, h);
-      // One eye (the left half) for an SBS source shown flat, the whole frame for genuinely flat
-      // content — then fitted into the canvas the way `fit` asks.
-      const ew = mode === 'sbs-fallback' ? vw / 2 : vw;
-      const r = fitRect(ew, vh, w, h, fit);
-      ctx.drawImage(src, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
+      // One eye (the left one) for a stereo source shown flat, the whole frame for genuinely flat
+      // content — then fitted into the canvas (and its band) the way the options ask.
+      drawFittedEye(ctx, src, vw, vh, mode === 'mono' ? 'mono' : layout, 0, 0, 0, w, h, fit, band);
       return;
     }
     const poster = getPoster();
     if (poster) {
       ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(poster, 0, 0, w, h);
+      const pw = poster.naturalWidth || poster.width;
+      const ph = poster.naturalHeight || poster.height;
+      if (pw && ph) drawFittedEye(ctx, poster, pw, ph, posterFormat, 0, 0, 0, w, h, fit, band);
     }
   }
 
@@ -1412,7 +1535,7 @@ function createDissolve(video) {
  * @param {HTMLCanvasElement} tile  the woven canvas, for its CSS aspect
  * @param {'contain'|'cover'} fit
  */
-function createFitter(upstream, tile, fit) {
+function createFitter(upstream, tile, fit, layout = 'sbs', band = null) {
   const el = document.createElement('canvas');
   const ctx = el.getContext('2d');
   el.readyState = 0;
@@ -1426,15 +1549,14 @@ function createFitter(upstream, tile, fit) {
       if ((src.readyState || 0) < 2 || !vw || !vh) return; // keep the last fitted frame
       const tw = tile.clientWidth || tile.width || 16;
       const th = tile.clientHeight || tile.height || 9;
-      const eyeH = vh;
+      const e = eyeRect(layout, vw, vh, 0);
+      const eyeH = Math.max(1, Math.round(e.h));
       const eyeW = Math.max(1, Math.round(eyeH * (tw / th)));
       if (el.width !== eyeW * 2) el.width = eyeW * 2;
       if (el.height !== eyeH) el.height = eyeH;
       ctx.clearRect(0, 0, el.width, el.height);
-      const half = vw / 2;
-      const r = fitRect(half, vh, eyeW, eyeH, fit);
-      ctx.drawImage(src, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh); // left eye
-      ctx.drawImage(src, half + r.sx, r.sy, r.sw, r.sh, eyeW + r.dx, r.dy, r.dw, r.dh); // right eye
+      drawFittedEye(ctx, src, vw, vh, layout, 0, 0, 0, eyeW, eyeH, fit, band); // left eye
+      drawFittedEye(ctx, src, vw, vh, layout, 1, eyeW, 0, eyeW, eyeH, fit, band); // right eye
       el.readyState = 4;
     },
   };
@@ -1484,7 +1606,8 @@ function driveMixer(video, stages) {
  * @param {HTMLCanvasElement} canvas  a 2D canvas ALREADY inside a container element — the SDK
  *        transport is a sibling of the canvas, inside `canvas.parentElement` (required for
  *        `controls:'sdk'`, and for the box the transport is anchored to).
- * @param {string|Blob} src  the video URL (or a Blob/File, given an object URL).
+ * @param {string|Blob|Array} src  the video URL (or a Blob/File), or candidates best-first for
+ *        pickSource() — `[{ src, type: 'video/webm; codecs="vp9, opus"' }, …]`.
  * @param {object} [opts]
  * @param {'sbs'|'mono'} [opts.format='sbs']  `'sbs'` is a real stereo pair, woven via
  *        `wall.addVideo()`. `'mono'` is genuinely flat content, painted full-frame — see the
@@ -1502,6 +1625,9 @@ function driveMixer(video, stages) {
  *        dissolve section; `./splat`'s other transitions are refused by name.
  * @param {number} [opts.durationMs=600]  the crossfade's length.
  * @param {string|function} [opts.easing='easeInOutSine']  a `./splat` easing name or `(x) => y`.
+ * @param {number|string} [opts.band]  a letterbox slot: fit the picture into a centred band of
+ *        this aspect (2.39, '2.39:1', '21/9') inside the tile; implies fit 'contain'.
+ * @param {'mono'|'sbs'|'tb'} [opts.posterFormat='mono']  a stereo poster still is painted eye by eye.
  * @param {'contain'|'cover'} [opts.fit]  ./splat setVideo's fit: 'contain' letterboxes each eye
  *        (transparent bars), 'cover' fills the tile and crops. Unset: stretched to the tile.
  * @param {number} [opts.fadeMs]  LEGACY alias (1.10): `> 0` = `transition:'crossfade'` of that length.
@@ -1521,6 +1647,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   video.preload = 'metadata';
   video.muted = o.muted;
   video.loop = o.loop;
+  src = pickSource(src);
   const cross = resolveCrossOrigin(src, o.crossOrigin);
   if (cross) video.crossOrigin = cross;
 
@@ -1528,6 +1655,20 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   function on(event, fn) {
     if (!listeners.has(event)) listeners.set(event, new Set());
     listeners.get(event).add(fn);
+    // 'ended' is a STATE as much as an event: a clip that finished before the page attached its
+    // listener (a short clip, a slow page, a tab that was in the background) would otherwise
+    // never report it. Attaching to an already-ended player calls back once, asynchronously.
+    if (event === 'ended' && video.ended) {
+      queueMicrotask(() => {
+        if (listeners.get(event)?.has(fn)) {
+          try {
+            fn();
+          } catch (err) {
+            console.error('[inline3d/player] listener for "ended" threw', err);
+          }
+        }
+      });
+    }
     return () => listeners.get(event)?.delete(fn);
   }
   function off(event, fn) {
@@ -1571,7 +1712,8 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     img.src = url;
   }
 
-  const wantWeave = o.format === 'sbs' && !!(wall && wall.supported);
+  const wantWeave = (o.format === 'sbs' || o.format === 'tb') && !!(wall && wall.supported);
+  const look = { fit: o.fit, band: o.band, posterFormat: o.posterFormat };
   let innerHandle = null;
   let ownLoop = null;
   let posterPoll = null;
@@ -1580,11 +1722,16 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   // byte-identical `addVideo(canvas, video)` it is today. See the dissolve section above.
   const dissolve = o.transition.type === 'crossfade' ? createDissolve(video) : null;
   // The woven path's fit stage sits after the mixer (it fits whatever the mixer composed).
-  const fitter = wantWeave && o.fit ? createFitter(() => (dissolve ? dissolve.el : video), canvas, o.fit) : null;
+  // It is also what repacks a top/bottom source into the SBS pair the SDK weaves, and what lays a
+  // band slot out — so it exists for any of fit, band or 'tb'.
+  const fitter =
+    wantWeave && (o.fit || o.band || o.format === 'tb')
+      ? createFitter(() => (dissolve ? dissolve.el : video), canvas, o.fit, o.format, o.band)
+      : null;
 
   function paintPosterNow() {
     if (!posterImg) return;
-    if (wantWeave) paintPosterSBS(canvas, posterImg);
+    if (wantWeave) paintPosterSBS(canvas, posterImg, look);
     else ownLoop?.forceRepaint();
   }
 
@@ -1597,14 +1744,17 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       ...(o.observe ? { observe: o.observe } : {}),
     });
     if (dissolve || fitter) mixerLoop = driveMixer(video, [dissolve, fitter].filter(Boolean));
-    posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
+    posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2, look);
   } else {
     // The flat loop paints the mixer itself rather than running a second loop beside it.
     ownLoop = attachFlatPaint(canvas, video, {
       mode: o.format === 'mono' ? 'mono' : 'sbs-fallback',
+      layout: o.format === 'tb' ? 'tb' : 'sbs',
       getPoster: () => posterImg,
       dissolve,
       fit: o.fit,
+      band: o.band,
+      posterFormat: o.posterFormat,
     });
   }
 
@@ -1704,6 +1854,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       video.pause();
       if (sOpts.poster !== undefined) loadPoster(sOpts.poster);
       if (sOpts.title !== undefined) setBarTitle?.(sOpts.title);
+      newSrc = pickSource(newSrc);
       const nextCross = resolveCrossOrigin(newSrc, o.crossOrigin);
       if (nextCross) video.crossOrigin = nextCross;
       video.src = resolveSrcUrl(newSrc);
@@ -1719,7 +1870,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       // to remove.
       posterPoll?.stop();
       if (wantWeave && !dissolve?.active) {
-        posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
+        posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2, look);
       }
       if (o.autoplay) video.play().catch(() => {});
     },

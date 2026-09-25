@@ -20,6 +20,10 @@ import {
   PLAYER_ACCENTS,
   resolveAccent,
   fitRect,
+  parseAspect,
+  eyeRect,
+  bandBox,
+  pickSource,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -46,9 +50,9 @@ test('an invalid format/controls value falls back to the default and warns once,
   const warnings = [];
   console.warn = (...a) => warnings.push(a.join(' '));
   try {
-    assert.equal(normalizePlayerOptions({ format: 'tb' }).format, 'sbs');
+    assert.equal(normalizePlayerOptions({ format: 'ou' }).format, 'sbs');
     assert.equal(normalizePlayerOptions({ controls: 'custom' }).controls, 'sdk');
-    assert.ok(warnings.some((w) => w.includes('format') && w.includes('tb')));
+    assert.ok(warnings.some((w) => w.includes('format') && w.includes('ou')));
     assert.ok(warnings.some((w) => w.includes('controls') && w.includes('custom')));
   } finally {
     console.warn = real;
@@ -375,4 +379,58 @@ test('fitRect: contain letterboxes the destination, cover crops the source, same
   assert.ok(p.dx > 0 && p.dy === 0 && Math.abs(p.dh - 900) < 1e-6);
   assert.deepEqual(fitRect(1600, 900, 800, 450, 'cover'), { sx: 0, sy: 0, sw: 1600, sh: 900, dx: 0, dy: 0, dw: 800, dh: 450 });
   assert.deepEqual(fitRect(2390, 1000, 1600, 900, null), { sx: 0, sy: 0, sw: 2390, sh: 1000, dx: 0, dy: 0, dw: 1600, dh: 900 }, 'unset stretches');
+});
+
+// ── quick wins for the Show Spatial team ────────────────────────────────────────────────────────
+
+test("format 'tb' is accepted (setVideo's vocabulary); eyeRect splits sbs/tb/mono", () => {
+  assert.equal(normalizePlayerOptions({ format: 'tb' }).format, 'tb');
+  assert.deepEqual(eyeRect('sbs', 800, 200, 1), { x: 400, y: 0, w: 400, h: 200 });
+  assert.deepEqual(eyeRect('tb', 400, 400, 0), { x: 0, y: 0, w: 400, h: 200 }, 'left eye on top');
+  assert.deepEqual(eyeRect('tb', 400, 400, 1), { x: 0, y: 200, w: 400, h: 200 });
+  assert.deepEqual(eyeRect('mono', 400, 300, 1), { x: 0, y: 0, w: 400, h: 300 });
+});
+
+test('band: parsed from a number or W:H / W/H, and laid out as a centred slot', () => {
+  assert.equal(parseAspect(2.39), 2.39);
+  assert.ok(Math.abs(parseAspect('2.39:1') - 2.39) < 1e-9);
+  assert.ok(Math.abs(parseAspect('21/9') - 21 / 9) < 1e-9);
+  assert.equal(parseAspect('wide'), null);
+  assert.equal(parseAspect(0), null);
+  assert.equal(normalizePlayerOptions({ band: '2.39:1' }).band > 2.38, true);
+  const b = bandBox(1600, 900, 2.39); // scope band in a 16:9 box: full width, bars top/bottom
+  assert.equal(b.w, 1600);
+  assert.ok(Math.abs(b.h - 1600 / 2.39) < 1e-6 && Math.abs(b.y - (900 - b.h) / 2) < 1e-6);
+  const n = bandBox(1600, 900, 1); // square band: full height, centred
+  assert.deepEqual([n.w, n.h, n.x], [900, 900, 350]);
+  assert.deepEqual(bandBox(1600, 900, null), { x: 0, y: 0, w: 1600, h: 900 });
+});
+
+test("posterFormat: 'mono' by default; sbs/tb accepted", () => {
+  assert.equal(normalizePlayerOptions().posterFormat, 'mono');
+  assert.equal(normalizePlayerOptions({ posterFormat: 'sbs' }).posterFormat, 'sbs');
+  assert.equal(normalizePlayerOptions({ posterFormat: 'tb' }).posterFormat, 'tb');
+});
+
+test('pickSource: best first, "probably" beats an earlier "maybe", untyped taken as-is, warns when nothing plays', () => {
+  const dxr = (t) => (/vp9|av01|opus/.test(t) ? 'probably' : t.startsWith('video/mp4') ? 'maybe' : '');
+  assert.equal(pickSource('a.webm', dxr), 'a.webm', 'a plain source passes through');
+  assert.equal(
+    pickSource([{ src: 'a.mp4', type: 'video/mp4; codecs="avc1.640028, mp4a.40.2"' }, { src: 'a.webm', type: 'video/webm; codecs="vp9, opus"' }], () => ''),
+    'a.mp4',
+    'nothing playable: the first, with a warning'.length ? 'a.mp4' : ''
+  );
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(pickSource([{ src: 'h264.mp4', type: 'video/mp4' }, { src: 'vp9.webm', type: 'video/webm; codecs="vp9, opus"' }], dxr), 'vp9.webm', "'probably' beats an earlier 'maybe'");
+    assert.equal(pickSource([{ src: 'h264.mp4', type: 'video/mp4' }], dxr), 'h264.mp4', "a lone 'maybe' is taken");
+    assert.equal(pickSource([{ src: 'x', type: 'video/x' }, 'plain.webm'], dxr), 'plain.webm', 'an untyped candidate is taken as-is');
+    let warned = false;
+    console.warn = () => (warned = true);
+    assert.equal(pickSource([{ src: 'h264.mp4', type: 'video/mp4; codecs="avc1"' }], () => ''), 'h264.mp4');
+    assert.ok(warned, 'says so when nothing is playable');
+  } finally {
+    console.warn = warn;
+  }
 });
