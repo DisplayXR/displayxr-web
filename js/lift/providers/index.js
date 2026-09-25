@@ -5,4 +5,5 @@ export { createInpainter } from './inpaint-ort.js';
 export { createModelSource, parseManifest, sha256Hex, CACHE_NAME, NATIVE_ORIGIN, DEFAULT_MANIFEST_URL } from './models.js';
 export { getRegistry } from './registry.js';
 export { loadOrt, hasJspi, hasWebGpu, ORT_VERSION, ORT_DEFAULT_BASE } from './ort.js';
+export { createRemoteSharpLift, createPopupAuth, RemoteLiftError, REMOTE_SHARP_DEFAULTS } from './lift-remote-sharp.js';
 export { mogePost, da3Post, solveFocalShift } from './still-post.js';

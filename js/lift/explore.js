@@ -39,6 +39,7 @@ import {
   CameraComponentSystem,
   GSplatComponentSystem,
   GSplatHandler,
+  TextureHandler,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
   Asset,
@@ -49,7 +50,8 @@ import {
   TONEMAP_NONE,
 } from '../inline3d-playcanvas-engine.js';
 import { playcanvasPerfSettings, patchPlayCanvasQuadExtent } from '../inline3d-splat-perf.js';
-import { LIFT_MODIFY_VS, patchGsplatFootprint, adoptGlState, releaseGlState } from './explore-gl.js';
+import { LIFT_MODIFY_VS, patchGsplatFootprint, adoptGlState, releaseGlState, syncUnpackState } from './explore-gl.js';
+import { readLiftSog } from './sog-input.js';
 import {
   createOrbit,
   createClickTracker,
@@ -73,7 +75,7 @@ export * from './explore-gl.js';
 
 /** The engine members this module uses (tests / diagnostics). */
 const pc = {
-  WebglGraphicsDevice, AppOptions, AppBase, CameraComponentSystem, GSplatComponentSystem, GSplatHandler,
+  WebglGraphicsDevice, AppOptions, AppBase, CameraComponentSystem, GSplatComponentSystem, GSplatHandler, TextureHandler,
   ShaderChunks, SHADERLANGUAGE_GLSL, Asset, Entity, Color, RenderView, LAYERID_SKYBOX, TONEMAP_NONE,
 };
 
@@ -105,7 +107,7 @@ let warnedFootprint = false;
  * With `gl` the device ADOPTS that context (`WebglGraphicsDevice` takes `options.gl`; it never
  * calls getContext and its destroy() never loses the context — the live DIBR owns it).
  */
-export async function createPlayCanvasSplat({ canvas, gl = null, bytes, perf = null, preserveDrawingBuffer = false }) {
+export async function createPlayCanvasSplat({ canvas, gl = null, bytes, format = 'ply', perf = null, preserveDrawingBuffer = false }) {
   // WebGL2 only, constructed directly (createGraphicsDevice would drag the WebGPU backend into a
   // bundle). With `gl` the device adopts it: WebglGraphicsDevice takes `options.gl` @ 2.22.3.
   const device = new pc.WebglGraphicsDevice(canvas, {
@@ -119,7 +121,10 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, perf = n
   const opts = new pc.AppOptions();
   opts.graphicsDevice = device;
   opts.componentSystems = [pc.CameraComponentSystem, pc.GSplatComponentSystem];
-  opts.resourceHandlers = [pc.GSplatHandler];
+  // TextureHandler too: a bundled .sog is loaded by the engine as texture SUB-ASSETS (its webp
+  // planes). Without the handler they never decode, the parser swallows that (Promise.allSettled),
+  // and the resource comes up with the right numSplats and NO data — an all-black explore.
+  opts.resourceHandlers = [pc.GSplatHandler, pc.TextureHandler];
   const app = new pc.AppBase(canvas);
   app.init(opts);
   // RESOLUTION_FIXED is AppBase's default: the engine never resizes the canvas (the caller does).
@@ -141,15 +146,44 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, perf = n
   for (const [k, v] of Object.entries(perfApplied.settings || {})) app.scene.gsplat[k] = v;
 
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const url = `lift-${++byteSeq}.ply`;
-  // In-memory bytes through the engine's own loader: `contents` short-circuits the fetch.
+  // The extension picks the engine's parser (GSplatHandler: .ply → PLY, .sog → SogBundleParser).
+  const url = `lift-${++byteSeq}.${format === 'sog' ? 'sog' : 'ply'}`;
+  // In-memory bytes through the engine's own loader: `contents` short-circuits the fetch — PLY and
+  // bundled SOG alike (the SDK's addSplat engine:'playcanvas' byte path does the same for .sog).
   const asset = new pc.Asset(url, 'gsplat', { url, filename: url, contents: new Response(u8) });
   app.assets.add(asset);
-  await new Promise((resolve, reject) => {
-    asset.ready(resolve);
-    asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
-    app.assets.load(asset);
-  });
+  // On a SHARED context the load itself draws: a .sog's loader runs a GPU pass (SogGenerateCenters,
+  // the sort keys) in an async continuation, between the live DIBR's frames and OUTSIDE the
+  // adoptGlState() that wraps our own draws — so it ran on whatever state the DIBR left (its
+  // UNPACK_FLIP_Y upload, blend, viewport) and produced wrong centres: the scene drew, but sorted
+  // wrong (a translucent, smeared foreground). Re-adopt the state before every render pass the
+  // load issues. (A PLY builds its centres on the CPU; it never hit this.)
+  // The same load also uploads its textures immediately (Texture.upload → setTexture), outside
+  // any pass: resync the pixel-store to the engine's caches before each (see syncUnpackState).
+  const origStart = gl ? device.startRenderPass : null;
+  const origSetTexture = gl ? device.setTexture : null;
+  if (origStart) {
+    device.startRenderPass = function (rp) {
+      adoptGlState(device);
+      return origStart.call(this, rp);
+    };
+    device.setTexture = function (...a) {
+      syncUnpackState(device);
+      return origSetTexture.apply(this, a);
+    };
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      asset.ready(resolve);
+      asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
+      app.assets.load(asset);
+    });
+  } finally {
+    if (origStart) {
+      delete device.startRenderPass; // back to the prototype's
+      delete device.setTexture;
+    }
+  }
 
   // EVERY entity gets its app explicitly (the default is the engine's global "current app").
   const splat = new pc.Entity('lift-splat', app);
@@ -199,9 +233,13 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, perf = n
  *        state is re-synced before every draw and handed back neutral after it, the tile starts
  *        HIDDEN (drawing nothing, clearing nothing) until fadeIn(), and fades never clear — the
  *        other renderer's frame is underneath.
- * @param {ArrayBuffer|Uint8Array} o.ply  a standard binary 3DGS PLY (x,y,z,nx,ny,nz,f_dc_0..2,
- *        opacity(logit),scale_0..2(log),rot_0..3), both layers in one file.
- * @param {{focalPx:number,pivotZ:number,w:number,h:number,layers?:number,axes?:string}} o.meta
+ * @param {ArrayBuffer|Uint8Array} [o.ply]  a standard binary 3DGS PLY (x,y,z,nx,ny,nz,f_dc_0..2,
+ *        opacity(logit),scale_0..2(log),rot_0..3), both layers in one file. Or:
+ * @param {ArrayBuffer|Uint8Array} [o.sog]  a bundled `.sog` (SOG v2) — e.g. a remote SHARP lift —
+ *        loaded from memory the same way (no URL, no blob:). Its camera block v2 supplies the rig
+ *        (intrinsics → focalPx/w/h, focus.point[2] → pivotZ, OpenCV axes) unless `o.meta` gives them.
+ * @param {{focalPx:number,pivotZ:number,w:number,h:number,layers?:number,axes?:string}} [o.meta]
+ *        required with `ply`; optional with `sog` (merged over the block's).
  * @param {{maxAngleDeg?:number,relax?:boolean,gain?:number}} [o.orbit]
  * @param {'opengl'|'opencv'} [o.axes]  PLY convention override (see LIFT_AXES in ./orbit.js).
  * @param {'cover'|'contain'|'stretch'} [o.fit='cover']  photo window vs the viewport aspect.
@@ -228,14 +266,21 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, perf = n
  * @param {(ex:object)=>void} [o.onReady]
  */
 export async function createExplore(o) {
-  const { canvas, ply, meta } = o;
+  const { canvas, ply, sog } = o;
   if (!canvas) throw new Error('lift/explore: canvas is required');
-  if (!ply) throw new Error('lift/explore: ply bytes are required');
+  if (!ply && !sog) throw new Error('lift/explore: ply or sog bytes are required');
+  // A .sog carries its own rig (camera block v2); explicit meta fields win over it.
+  let meta = o.meta;
+  if (sog) {
+    const fromBlock = (await readLiftSog(sog, meta || {})).meta;
+    meta = { ...fromBlock, ...(meta || {}) };
+  }
+  if (!meta) throw new Error('lift/explore: meta is required with a ply');
   // Comfort: scale the scene about the capture camera (see comfortScale). The rig is built from the
   // SCALED pivot, and the splat entity carries the same scale, so every distance below is in the
   // scaled scene (the window, the cone, the reveal's pivot plane).
-  const sceneScale = comfortScale(meta, { ...(o.comfort || {}), space: o.space });
-  const rig = rigFromMeta(sceneScale === 1 ? meta : { ...meta, pivotZ: meta.pivotZ * sceneScale }, o.axes);
+  const sceneScale = comfortScale(meta, { ...(o.comfort || {}), space: o.space ?? meta.space });
+  const rig = rigFromMeta(sceneScale === 1 ? meta : { ...meta, pivotZ: meta.pivotZ * sceneScale }, o.axes ?? meta.axes ?? meta.convention);
   const orbitOpts = o.orbit || {};
   const maxDeg = orbitOpts.maxAngleDeg ?? ORBIT_MAX_DEG;
   const orbit = createOrbit({ maxAngleDeg: maxDeg, relax: orbitOpts.relax !== false, gain: orbitOpts.gain });
@@ -245,7 +290,13 @@ export async function createExplore(o) {
   const fit = o.fit || 'cover';
 
   const shared = !!o.gl;
-  const eng = await createPlayCanvasSplat({ canvas, gl: o.gl || null, bytes: ply, perf: o.perf ?? { antiAlias: true } });
+  const eng = await createPlayCanvasSplat({
+    canvas,
+    gl: o.gl || null,
+    bytes: sog || ply,
+    format: sog ? 'sog' : 'ply',
+    perf: o.perf ?? { antiAlias: true },
+  });
   const { pc, app, device, splat, rigNode, eye, material } = eng;
   if (shared) releaseGlState(o.gl); // device creation issued its own initial state
 
@@ -399,6 +450,8 @@ export async function createExplore(o) {
 
   const ex = {
     rig,
+    /** The lift meta the rig was built from (with a `sog`: read off its camera block). */
+    meta,
     /** The comfort normalisation applied (1 = none): the scene is scaled by this about the camera. */
     sceneScale,
     orbit,

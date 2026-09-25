@@ -39,7 +39,11 @@
     <code>ort=</code> (onnxruntime-web dist URL, default <code>/_scratch/ort/</code> else jsDelivr),
     <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>,
     <code>params={…}</code> (lift-gen overrides, JSON), <code>explore={…}</code> (explore view: <code>comfort</code>,
-    <code>pivotTargetM</code>, <code>eyes</code>).</p>
+    <code>pivotTargetM</code>, <code>eyes</code>).
+    <b>Remote SHARP (demo only):</b> <code>lift=remote-sharp</code> lifts pauses/stills on the SHARP worker
+    (<code>sharp=</code> endpoint, default the same-origin proxy <code>/api/sharp/predict</code> of
+    <code>serve.py --sharp</code>; <code>auth=google</code> [+ <code>login=</code>] for a hosted endpoint's popup sign-in).
+    Lift provider: <b id="liftprov">…</b> <button id="signin" hidden>Sign in for SHARP</button></p>
 
   <figure>
     <video id="vid" muted loop playsinline controls></video>
@@ -98,6 +102,26 @@ vid.src = q.get('video') || 'assets/synthetic-720p.webm';  // VP9: the DisplayXR
 vid.addEventListener('error', () => log(`video: failed to load ${vid.currentSrc || vid.src} (MediaError code ${vid.error?.code}) — check the path is under the served repo root`));
 for (const id of ['img', 'cov']) document.getElementById(id).src = q.get('image') || 'assets/still.jpg';
 
+// Remote SHARP (DEMO ONLY — Apple research-licence weights): ?lift=remote-sharp[&sharp=URL][&auth=google[&login=URL]]
+const LIFT = q.get('lift') || 'local';
+let liftProvider = LIFT;
+if (LIFT === 'remote-sharp') {
+  const { createRemoteSharpLift } = await import('../../js/lift/providers/lift-remote-sharp.js');
+  const endpoint = q.get('sharp') || '/api/sharp/predict';
+  const auth = q.get('auth') === 'google'
+    ? { kind: 'google', loginUrl: q.get('login') || new URL('/auth/popup', new URL(endpoint, location.href)).href }
+    : undefined;
+  // One provider instance for the page, so a popup sign-in (from the button's click — a lift that
+  // starts on a video pause is not a user gesture, and would be popup-blocked) is shared by every lift.
+  liftProvider = createRemoteSharpLift({ endpoint, auth, ...(q.get('timeout') ? { timeoutMs: +q.get('timeout') * 1000 } : {}) });
+  const btn = document.getElementById('signin');
+  if (auth) {
+    btn.hidden = false;
+    btn.onclick = () => liftProvider.signIn().then(() => { btn.textContent = 'Signed in ✓'; log('sharp: signed in'); }, (e) => log(`sharp: sign-in failed: ${e.message}`));
+  }
+  document.getElementById('liftprov').textContent = `remote-sharp → ${endpoint}${auth ? ' (google sign-in)' : ''}`;
+} else document.getElementById('liftprov').textContent = 'local';
+
 const opts = {
   backend,
   mode: 'auto',
@@ -105,7 +129,7 @@ const opts = {
   ...(backend === 'real' ? { models: MODELS, ort: ORT } : {}),
   ...(q.get('exploreDpr') ? { exploreMaxDpr: +q.get('exploreDpr') } : {}),
   ...(q.get('maxAngle') ? { orbit: { maxAngleDeg: +q.get('maxAngle') } } : {}),
-  ...(q.get('inpaint') === '1' ? { providers: { inpaint: 'light-inpaint-v1' } } : {}),
+  providers: { ...(q.get('inpaint') === '1' ? { inpaint: 'light-inpaint-v1' } : {}), ...(LIFT !== 'local' ? { lift: liftProvider } : {}) },
   ...(q.get('params') ? { genParams: JSON.parse(q.get('params')) } : {}),
   ...(q.get('lookAround') ? { live: { lookAround: +q.get('lookAround') } } : {}),
   // explore view A/B: explore={"comfort":"off"} | {"pivotTargetM":2.5} | {"eyes":"tracked"}
@@ -150,7 +174,8 @@ setInterval(() => {
     el.textContent =
       `${s.state} · ${s.fps} fps · depth live ${s.liveDepthMs} ms / still ${s.stillDepthMs} ms · ` +
       `lift ${s.generateMs} ms (${(s.splats / 1e3).toFixed(0)} k splats) + load ${s.exploreLoadMs} ms · ` +
-      `pause→explore ${s.pauseToExploreMs} ms · models ${s.modelLoadMs} ms`;
+      `pause→explore ${s.pauseToExploreMs} ms · models ${s.modelLoadMs} ms · lift by ${s.liftSource}` +
+      (s.remoteMs ? ` (${s.remoteMs} ms round trip)` : '') + (s.liftFallback ? ` · fell back: ${s.liftFallback}` : '');
   }
 }, 250);
 

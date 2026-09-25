@@ -11,4 +11,5 @@ export { lift, resolveMediaAt, resolveQuality, STATES } from './lift.js';
 export { getRegistry } from './providers/registry.js';
 export { liftCapabilities, LIFT_ATTRS, LIFT_PRIORITIES, createNativeDepthProvider, createNativeGaussiansLift, NativeLiftError } from './native.js';
 export { createModelSource } from './providers/models.js';
+export { createRemoteSharpLift, createPopupAuth, RemoteLiftError } from './providers/lift-remote-sharp.js';
 export { loadOrt } from './providers/ort.js';

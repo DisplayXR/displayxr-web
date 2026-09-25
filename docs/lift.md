@@ -57,7 +57,8 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 | `orbit` | `{ maxAngleDeg: 15, relax: true }` | explore orbit bounds; `relax` springs back to centre on release. |
 | `models` | `'auto'` | a `ModelSource`; a base URL string (= `createModelSource({ baseUrl })`); or `'auto'` (`createModelSource({})`: the native store in the DisplayXR Browser, else the public blob store). |
 | `ort` | — | onnxruntime-web: the module, its `dist/` URL, or `loadOrt` options. Default: `loadOrt()` (jsDelivr, pinned). |
-| `providers` | `{ video: 'vda-small', still: 'moge3', inpaint: 'none' }` | `still` also accepts `'da3'`, `'da2-small'`, a manifest name or a registered provider name. `inpaint: 'light-inpaint-v1'` enables the net (off by default: see *Known issues*). |
+| `providers` | `{ video: 'vda-small', still: 'moge3', inpaint: 'none' }` | `still` also accepts `'da3'`, `'da2-small'`, a manifest name or a registered provider name. `inpaint: 'light-inpaint-v1'` enables the net (off by default: see *Known issues*). `lift`: the lift stage — omitted/`'local'` = the local generator, `'remote-sharp'` = the **demo-only** remote SHARP provider (see *Remote SHARP*), or a `LiftProvider` instance. |
+| `remote` (alias `remoteSharp`) | `{}` | factory options for a named `providers.lift`: remote-sharp's `{ endpoint, auth, timeoutMs, mode, getAuthHeaders, fields, maxBytes }`. |
 | `prefetch` | `false` | load the still model as soon as live runs. Live depth is **held** while it compiles (see *One ORT session at a time*). |
 | `exploreMaxDpr` | 1 woven / ∞ flat | dpr cap on the canvas while explore is up. 1 on the woven SBS store unless `quality: 'high'`. |
 | `explore` | `{ comfort: 'auto', pivotTargetM: 2.0, eyes: 'nominal' }` | the explore view. `comfort: 'auto'` scales a **metric** lift about the camera so its pivot lands at `pivotTargetM` when it is > 25 % off (neutral image unchanged, parallax × pivot/target — the paused-CG-video "too flat" fix); `'always'` / `'off'` for A/B. `eyes: 'tracked'` takes the runtime's eye positions as metres instead of normalising their separation to 63 mm. docs/lift-explore.md § Comfort. |
@@ -258,6 +259,7 @@ These are fixed; each module is built against them independently.
 - `js/lift/sog-export.js`: `exportSog({ply|splats, meta, camera?}) → Promise<Blob>` (a `.sog` with the camera block v2; see *Download SOG*).
 - `js/lift/native.js`: `liftCapabilities()`, `createNativeDepthProvider(opts)` (a DepthProvider; extra opts `fetch`, `loadOrt`, `fallback`), `createNativeGaussiansLift()` (a LiftProvider: `{id:'native-gaussians', needsDepth:false, generateLift({rgb,signal,onProgress}) → {sog} | {ply, meta}}`), `ensureNativeProviders(caps)` — see *Vendor modules*.
 - `ModelSource.probe(name, {signal}) → Promise<boolean>`: reachable without a download (never rejects).
+- **LiftProvider** (optional; `js/lift/providers/registry.js` `registerLiftProvider(name, factory, {priority, optIn})` / `getLiftProvider(name, opts)`): `{ id, needsDepth, load?(), generateLift({rgb, depth?, quality, params, signal, onProgress}) → Promise<{ply?: ArrayBuffer, sog?: ArrayBuffer, meta}>, signIn?(), dispose?() }`. `meta` is the generator's shape (`focalPx, pivotZ, w, h, layers, splatCount, source`). A provider may return **`sog`** instead of `ply`; `createExplore({sog})` then reads the rig from the file's camera block v2 (`js/lift/sog-input.js`: `intrinsics` → focalPx/w/h, `focus.point[2]` → pivotZ, OpenCV axes), so the neutral view is the photo. `needsDepth: false` lets lift.js skip the still depth model. Selection: `providers.lift` by name; with no name the highest-priority non-`optIn` registration, else the local generator. **Any provider error but a caller abort falls back to the local lift** (still depth + generator), logged once (`console.warn`) and emitted as a non-fatal `error` with `phase: 'lift-provider'`.
 - Inpainter (`js/lift/providers/inpaint-ort.js`): `createInpainter({modelSource, ort?, quality, model?}) → { load(), inpaintTwoSided(rgbChw, maskRight, maskLeft, W, H) }`.
 
 ### How lift.js uses them (the parts the contracts leave open)
@@ -392,6 +394,84 @@ Anything the lift draws over its own woven tile must use a **near-solid backgrou
 
 `lift(el, { live: { lookAround: 0..1 } })` — with a real inline tile the source camera sits at the centroid of the current eye pair (stereo only, default `0`); `lookAround > 0` lets head motion produce transient parallax that re-centres over ~1 s. See `docs/lift-dibr.md`.
 
+
+## Remote SHARP (demo only)
+
+`lift(el, { providers: { lift: 'remote-sharp' }, remote: { endpoint, auth } })` lifts the paused frame /
+still on a **remote SHARP worker** instead of in the page: Apple's SHARP single-image Gaussian
+predictor (the gallery's Modal `sharp-sog` worker), 1152×1024×… = 1,179,648 gaussians, a ~10–14 MB `.sog`,
+explored in the same PlayCanvas explore view (the file's own camera block is the rig).
+`js/lift/providers/lift-remote-sharp.js`, `createRemoteSharpLift({ endpoint, timeoutMs, mode, auth })`.
+
+> **Licence — demo use only.** SHARP's weights are under Apple's **ML Research Model License**:
+> research purposes only, *no commercial exploitation or use in a commercial product or service*,
+> and the restriction follows fine-tuned derivatives. The provider is opt-in (never a default),
+> ships no model, and **must not be part of an OEM / product distribution**. It also needs the
+> network, sends the frame to a third-party GPU, and costs GPU time per lift.
+
+- **Wire.** `POST endpoint` multipart: `mode=mono`, `image` = the frame as JPEG (long side ≤ 1536 px,
+  q 0.92 — SHARP resamples to its fixed 1536² grid anyway; a hard **4 MB** cap re-encodes smaller,
+  because the gallery relay runs on Vercel, which rejects bodies over 4.5 MB), `focal_length_px` only
+  when the caller knows it (in pixels of the JPEG sent — lift.js skips local depth on this path, so
+  normally none is sent and the worker uses its default; the JPEG carries no EXIF). Answer: the `.sog`.
+- **Endpoint.** Default `/api/sharp/predict` on the **page's own origin**: a server there adds the
+  worker's bearer token, so a page never holds it (`samples/lift/serve.py`, below). A hosted relay
+  (the gallery's `POST /api/sharp/predict`, Google-allow-listed, cached, rate-limited — its
+  `docs/sharp-relay.md`) takes `auth: { kind: 'google', loginUrl: '<gallery>/auth/popup' }`: the
+  provider opens `loginUrl?origin=<page origin>` in a centred 480×640 popup, accepts only
+  `postMessage({ type: 'dxr-auth', accessToken, expiresAt, email })` **from that origin**, keeps the
+  token in memory until 30 s before `expiresAt`, sends `Authorization: Bearer`, and re-opens the popup
+  once on a 401. Open it from a click (`provider.signIn()`), or a lift started by a video pause will be
+  popup-blocked. `auth: { kind: 'bearer', token }` and `getAuthHeaders()` exist for other hosts.
+  Relay headers `X-DXR-Sharp: cache-hit|modal` and `X-DXR-Sharp-Ms` land in `meta.cacheHit` /
+  `meta.serverMs` and the chip.
+- **Progress** (`progress` events, `phase: 'lift'` with `stage` + `elapsedS`): `encoding`, `uploading`,
+  `waiting` (ticks every 250 ms), `downloading` (bytes / Content-Length). The chip reads
+  "Lifting with SHARP… 7s", then "Downloading SHARP scene (cached)…".
+- **Failures** are `RemoteLiftError` (`code`: `timeout` (default 90 s), `network`, `http`, `auth` (401
+  after the one re-login), `forbidden` (403 — "account not allowed"), `quota` (429, `retryAfterS`),
+  `too-large` (413), `format` (not a `.sog`), `popup-blocked`, `popup-closed`, `aborted`). Every one but
+  `aborted` falls back to the local MoGe-3 + generator lift, with the reason on the chip
+  ("SHARP quota reached — lifting locally"); `stats.liftFallback` records it.
+- **Download SOG** after a remote lift returns the worker's **original bytes** (its own camera block);
+  `exportSog({ camera })` overrides are ignored there.
+- **Stats.** `liftSource` (`'remote-sharp'` | `'local'`), `remoteMs`, `remoteTimings` (`encodeMs`,
+  `requestMs`, `downloadMs`, `totalMs`, `bytes`, `cacheHit`, `serverMs`).
+- **Latency / cost** (worker README): ~8.5 s warm, ~40 s cold on a Modal L4 (scale-to-zero), plus the
+  ~10–14 MB download. Client side, measured (M1 Pro, headless Chrome, 2026-09-25, `samples/lift/`
+  through `serve.py --sharp` against a local stand-in worker replaying Apple SHARP's output for the same
+  JPEG): encode 30–50 ms (1536×1021, 285 kB), proxy + 12.5 MB download 20–60 ms on localhost, `.sog`
+  explore load 115–135 ms (vs 490–600 ms for the local PLY). Everything else is the worker.
+- **Quality vs the local lift** (tamarra2k, yaw −10/0/+10): SHARP's disocclusions are filled with
+  plausible background and hair — none of the local lift's stretched streaks behind the shoulder or
+  cut-outs along the arm — and the neutral view is the photo. But SHARP predicts nothing outside the
+  frame: at ±10° the leading edge shows ragged black (the local lift's outpaint border covers it).
+  With no EXIF (the JPEG is re-encoded) the worker assumes a 30 mm-equivalent lens.
+- **Explore from a `.sog` on the lift canvas** needed two engine fixes (`js/lift/explore.js`):
+  `TextureHandler` registered (a `.sog`'s webp planes are texture sub-assets — without it every
+  `.sog` explored BLACK), and the GL state re-adopted around the load, which issues a GPU pass
+  (the sort centres) and immediate texture uploads from async continuations between the live DIBR's
+  frames (it mis-sorted into a translucent, smeared foreground). `test/lift-sog-explore.run.mjs`
+  (GPU browser, not `npm test`) gates both: `.sog` vs PLY explore of the same lift on the DIBR's
+  context, MAE < 0.4/255.
+
+**Running it locally** — the proxy is in the dev server; the values stay in your shell:
+
+```sh
+export DXR_SHARP_URL=…     # = the gallery's MODAL_SHARP_URL (the worker base URL; /v1/predict is appended)
+export DXR_SHARP_TOKEN=…   # = the gallery's MODAL_SHARP_TOKEN (Modal secret `sharp-auth`, SHARP_SHARED_TOKEN)
+python3 samples/lift/serve.py 8812 --sharp      # POST /api/sharp/predict → $DXR_SHARP_URL/v1/predict + bearer
+open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/tamarra2k.jpg&lift=remote-sharp'
+```
+
+The proxy forwards the multipart body unchanged, streams the answer back (only `Content-Type`,
+`Content-Length`, `X-Sharp-*`, `X-DXR-Sharp*` pass through), bounds the call with `DXR_SHARP_TIMEOUT`
+(s, default 180), maps an upstream 401/403 to 502 (it is *our* token that is wrong), and never logs
+or returns the token. Sample query: `lift=remote-sharp`, `sharp=<endpoint>` (default the proxy),
+`auth=google` [+ `login=<popup URL>`, default `<endpoint origin>/auth/popup`; a **Sign in for SHARP**
+button appears], `timeout=<s>`. For a cross-origin popup serve with `--allow-popups`
+(`Cross-Origin-Opener-Policy: same-origin-allow-popups`): `same-origin` severs the popup, which then
+reads as closed at once and cannot post back.
 
 ## Dev serving
 
