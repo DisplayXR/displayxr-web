@@ -34,6 +34,11 @@ uniform ivec2 uBase;
 uniform ivec2 uBorderW;
 uniform bool uMirror;
 uniform float uTau;
+uniform bool uBorderFar;
+uniform vec4 uTurn;   // (f, zp, cos θ, sin θ) — the border's orbit (lift-gen.js outpaintBorders)
+uniform vec2 uInv;    // (invFar, invNear)
+uniform float uBand;  // px of reveal per unit of normalised disparity step (./hidden)
+uniform float uPivotD; // the pivot's normalised disparity
 layout(location = 0) out vec4 o;
 layout(location = 1) out vec4 oB;
 void main() {
@@ -63,6 +68,47 @@ void main() {
     float d1 = max(d0, -0.2);
     o = vec4(c, far ? -1000.0 : d1);
     oB = vec4(c, far ? d1 : -1000.0);
+    if (uBorderFar) {
+      // A FOREGROUND edge (the frame pixel this border replicates is nearer than a background
+      // found behind it — a portrait's torso crossing the bottom of the frame): the border holds
+      // TWO surfaces there, like the frame. The continuation of the foreground stays (full res in
+      // the first uBase px, and further out only as far as ITS OWN reveal needs — a subject at the
+      // pivot barely moves), and behind it the edge pixel's hidden layer, replicated, fills the
+      // backplate slot. Without it any vertical motion (pitch drag, head height) pulled the far
+      // background up from under the frame where there was none: black under the subject.
+      ivec2 qe = clamp(q, ivec2(0), uInner - 1) + uPad;
+      vec4 fxE = texelFetch(uFX, qe, 0);
+      float dE = texelFetch(uD, qe, 0).r;
+      if (fxE.r > 0.5 && fxE.g < dE - uTau) {
+        vec4 fcE = texelFetch(uFC, qe, 0);
+        vec3 cF = fcE.a > 0.0 ? fcE.rgb : c;
+        float t = max(float(out2.x) / float(max(uBorderW.x, 1)), float(out2.y) / float(max(uBorderW.y, 1)));
+        cF = mix(cF, texelFetch(uFA, p, 0).rgb, 0.7 * smoothstep(0.0, 1.0, t));
+        // how far the continuation itself travels inward at the orbit — outpaintBorders' need()
+        // for this edge point (its off-axis offset foreshortens too), + 10 %
+        bool xs = out2.x * uBorderW.y >= out2.y * uBorderW.x;
+        float ue = xs ? (q.x < 0 ? -0.5 : 0.5) * float(uInner.x) : (q.y < 0 ? -0.5 : 0.5) * float(uInner.y);
+        float z = 1.0 / (uInv.x + dE * (uInv.y - uInv.x)), xx = ue * z / uTurn.x, r = z - uTurn.y;
+        float needFg = 0.0;
+        for (int k = 0; k < 2; k++) {
+          float sg = k == 0 ? -1.0 : 1.0;
+          float zz = uTurn.y + sg * xx * uTurn.w + r * uTurn.z;
+          if (zz > 1e-3) { float du = uTurn.x * (xx * uTurn.z - sg * r * uTurn.w) / zz - ue; needFg = max(needFg, ue < 0.0 ? du : -du); }
+        }
+        needFg = 1.1 * needFg + 2.0;
+        // top/bottom: what the continuation needs under a vertical move is its parallax about the
+        // pivot, not the yaw turn's foreshortening of the frame edge (which sized the border)
+        if (!xs) needFg = min(needFg, 1.1 * uBand * abs(dE - uPivotD) + 2.0);
+        float dist = float(xs ? out2.x : out2.y);
+        float dF = max(min(fxE.g, d1 - 0.5 * uTau), -0.2);
+        if (!far) oB = vec4(cF, dF);                       // continuation (band) + far behind it
+        // Past the continuation's own reach, the far layer only — on the TOP/BOTTOM borders. On the
+        // side borders yaw is the main motion and the border was sized for the continuation's
+        // depth: a farther surface there travels further than the border is wide (measured: office
+        // lost a wider strip at its left edge), so the sides keep the continuation.
+        else if (!xs && dist > needFg) { o = vec4(c, -1000.0); oB = vec4(cF, dF); }
+      }
+    }
     return;
   }
   bool inM = m.r + m.g > 0.5;

@@ -108,11 +108,36 @@ export const LIFT_DEFAULTS = Object.freeze({
   /** layer 1's colour without a net: 'farside' = the background just past the edges that bound the
    *  hole (./passes/farside), 'pushpull' = the harmonic fill (the old behaviour) */
   hiddenColour: 'farside',
-  /** smoothing of the far-side fill: blur radius = gain × distance to the edge, capped (px) */
-  farBlurGain: 0.5,
-  /** weight of the horizontal axes vs the vertical ones in the far-side fill (yaw dominates) */
-  farHWeight: 4,
-  farBlurMaxPx: 24,
+  /** smoothing of the far-side fill: blur radius = gain × distance to the edge, capped (px). Its
+   *  DEPTH is smoothed across surfaces up to farBlurDepthTol (normalised disparity), its colour
+   *  only within uTau. Deep under a subject the four axes disagree column by column (a street on
+   *  one side, a hedge on the other, hair above), and edge-preserved at tau every switch was a
+   *  depth step inside layer 1 that opened as a vertical crack at the orbit — the panel's
+   *  "holes behind the subject, uniform". Exact at the silhouette (radius → 0), a smooth
+   *  membrane inside. (Was 0.5 / 24 / tau.) */
+  farBlurGain: 1,
+  farBlurMaxPx: 48,
+  farBlurDepthTol: 0.15,
+  /** weight of the horizontal axes vs the vertical ones in the far-side fill. null = derived from
+   *  the rig: tan(horizontal reveal) / tan(vertical reveal) (see revealAngles), clamped to [1, 4]
+   *  — ~3.4 on a portrait at 0.9 m. A number overrides (4 = the previous fixed value). */
+  farHWeight: null,
+  /** The viewer the hidden layer is sized for, metres: x/y = the head excursion about the rest
+   *  head explore can see (lateral, vertical), z = the nominal viewing distance (a floor on the
+   *  eye distance the excursion is an angle at). explore's eyes move 1:1 in a scene whose pivot
+   *  sits at pivotZ (2 m once comfort-scaled), so the reveal they add is atan(offset / pivot) on
+   *  top of the drag orbit — tracked head motion ADDS to the ±maxOrbitDeg turntable. lift.js can
+   *  pass the real rig's figures here. */
+  viewerOffset: { x: 0.05, y: 0.1, z: 0.6 },
+  /** interocular: each eye sits half of it off the head (explore's nominal 63 mm) */
+  viewerIpd: 0.063,
+  /** extra degrees on the hidden band's reveal budget beyond maxOrbitDeg; null = derived from
+   *  viewerOffset (≈ 5° on a portrait at 0.9 m). The outpaint BORDER stays sized for maxOrbitDeg
+   *  (its area budget binds first). */
+  revealMarginDeg: null,
+  /** the outpaint border behind a foreground edge (a torso crossing the bottom of the frame)
+   *  carries the edge's hidden layer too — two surfaces, like the frame (./passes/compose) */
+  borderFar: true,
   /** pivot = median layer-0 depth of the central box of this half-size */
   pivotRegion: 0.2,
 });
@@ -202,8 +227,11 @@ export async function generateLift(opts) {
   mark('prep');
   progress('prep', 0.05);
 
-  // band width. w_px = f · zp · tanθ · Δ(1/z) and Δ(1/z) = Δd̂ · (invNear − invFar).
-  const band = f * zPivotLo * tanT * (invNear - invFar);
+  // band width. w_px = f · zp · tanθ · Δ(1/z) and Δ(1/z) = Δd̂ · (invNear − invFar), at the
+  // reveal budget — the drag orbit PLUS the viewer's own head/eye excursion (revealAngles).
+  const rv = revealAngles(Math.min(zPivotLo, convergenceZ), P);
+  const farHWeight = Number.isFinite(P.farHWeight) ? P.farHWeight : rv.hWeight;
+  const band = f * zPivotLo * Math.tan((rv.h * Math.PI) / 180) * (invNear - invFar);
   const K = Math.max(2, Math.min(256, Math.ceil(P.maxBandFrac * W)));
   const R = Math.min(256, K + 2);
   const Kb = P.backplateFrac > 0
@@ -239,12 +267,12 @@ export async function generateLift(opts) {
     const farReach = Math.min(480, Math.round(P.farReachFrac * Math.max(W, H)));
     const tFX = g.texture(PW, PH, 'rgba32f');
     const tFC = g.texture(PW, PH, 'rgba32f');
-    g.pass('farside', farsideFS, [tFX, tFC], { uD: tD, uE: tE, uRGB: tRGB, uPad: pad, uInner: inner, uReach: farReach, uHWeight: P.farHWeight, uBand: band, uTau: P.tau });
+    g.pass('farside', farsideFS, [tFX, tFC], { uD: tD, uE: tE, uRGB: tRGB, uPad: pad, uInner: inner, uReach: farReach, uHWeight: farHWeight, uBand: band, uTau: P.tau });
     let tFXs = tFX, tFCs = tFC;
     if (P.farBlurGain > 0) {
       tFXs = g.texture(PW, PH, 'rgba32f');
       tFCs = g.texture(PW, PH, 'rgba32f');
-      g.pass('farblur', farblurFS, [tFXs, tFCs], { uFX: tFX, uFC: tFC, uGain: P.farBlurGain, uMaxR: P.farBlurMaxPx, uTau: P.tau });
+      g.pass('farblur', farblurFS, [tFXs, tFCs], { uFX: tFX, uFC: tFC, uGain: P.farBlurGain, uMaxR: P.farBlurMaxPx, uTau: P.tau, uTolD: P.farBlurDepthTol ?? P.tau });
     }
     mark('mask', g);
     progress('mask', 0.25);
@@ -283,7 +311,7 @@ export async function generateLift(opts) {
     const tOut1 = g.texture(PW, PH, 'rgba32f');
     const tOutB = g.texture(PW, PH, 'rgba32f');
     g.pass('matte', matteFS, tOut0, { uD: tD, uRGB: tRGB, uPad: pad, uInner: inner, uTau: P.tau, uR: P.matteRadius });
-    g.pass('compose', composeFS, [tOut1, tOutB], { uD: tD, uM: tM, uMb: tMb, uFA: FA, uFB: FB, uFX: tFXs, uFC: tFCs, uFarDepth: P.hiddenDepth === 'farside', uFarColour: P.hiddenColour === 'farside', uRGB: tRGB, uPad: pad, uInner: inner, uBase: [bx0, by0], uBorderW: [Math.max(bxL, bxR), Math.max(byT, byB)], uMirror: P.borderColour === 'mirror', uTau: P.tau });
+    g.pass('compose', composeFS, [tOut1, tOutB], { uD: tD, uM: tM, uMb: tMb, uFA: FA, uFB: FB, uFX: tFXs, uFC: tFCs, uFarDepth: P.hiddenDepth === 'farside', uFarColour: P.hiddenColour === 'farside', uRGB: tRGB, uPad: pad, uInner: inner, uBase: [bx0, by0], uBorderW: [Math.max(bxL, bxR), Math.max(byT, byB)], uMirror: P.borderColour === 'mirror', uTau: P.tau, uBorderFar: P.borderFar !== false, uTurn: [f, Math.min(zPivotLo, convergenceZ), Math.cos(Math.atan(tanT)), Math.sin(Math.atan(tanT))], uInv: [invFar, invNear], uBand: band, uPivotD: Math.min(1, Math.max(0, (1 / Math.min(zPivotLo, convergenceZ) - invFar) / (invNear - invFar))) });
     mark('matte', g);
 
     out0 = g.read(tOut0, bxL, byT, W, H);
@@ -365,6 +393,8 @@ export async function generateLift(opts) {
     bandPxPerDisparity: band,
     maxBandPx: K,
     backplatePx: Kb > K ? Kb : 0,
+    /** the reveal budget the hidden layer was sized for, degrees (h = drag + head/eye, v = head) */
+    reveal: { h: +rv.h.toFixed(2), v: +rv.v.toFixed(2), hWeight: +farHWeight.toFixed(2) },
     inpainted: !!inpainter,
     timings,
   };
@@ -427,6 +457,32 @@ export function outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT,
     left: sd[0], right: sd[1], top: sd[2], bottom: sd[3],
     needed: Object.fromEntries(Object.entries(needed).map(([k, v]) => [k, Math.round(v)])),
   };
+}
+
+/**
+ * The reveal budget the hidden layer is sized for, degrees, from the rig. explore turns the scene
+ * by up to maxOrbitDeg about the pivot (drag), and ON TOP of that its eyes follow the tracked head
+ * 1:1 in scene metres (orbit.js createHeadTracker) — each eye half an IPD off the head, the head
+ * up to viewerOffset.{x,y} off its rest pose. At the pivot distance D (the scene's pivot, 2 m when
+ * explore's comfort normalisation rescales a metric scene beyond 4 m; never under viewerOffset.z)
+ * that adds atan(offset / D):
+ *   h = maxOrbitDeg + revealMarginDeg (default atan((x + ipd/2) / D))
+ *   v = atan(y / D)                      (the head's height excursion; pitch drag is rare)
+ * hWeight = tan h / tan v, clamped [1, 4]: how much more the far-side fill trusts the background
+ * continued horizontally than vertically. (The rig's CONSTANT offset — the runtime's nominal
+ * viewer ~0.45 tile heights above the tile centre — never reaches explore: the head tracker
+ * subtracts its median rest pose.)
+ */
+export function revealAngles(pivotZ, P = LIFT_DEFAULTS) {
+  const vo = { ...LIFT_DEFAULTS.viewerOffset, ...(P.viewerOffset || {}) };
+  const zp = pivotZ > 0 && pivotZ <= 4 ? pivotZ : 2;
+  const D = Math.max(vo.z > 0 ? vo.z : 0.6, zp);
+  const deg = (r) => (r * 180) / Math.PI;
+  const margin = Number.isFinite(P.revealMarginDeg) ? P.revealMarginDeg : deg(Math.atan((Math.abs(vo.x) + 0.5 * (P.viewerIpd ?? 0.063)) / D));
+  const h = Math.min(60, P.maxOrbitDeg + Math.max(0, margin));
+  const v = deg(Math.atan(Math.abs(vo.y) / D));
+  const hWeight = v > 0.01 ? Math.min(4, Math.max(1, Math.tan((h * Math.PI) / 180) / Math.tan((v * Math.PI) / 180))) : 4;
+  return { h, v, hWeight, D };
 }
 
 /**
