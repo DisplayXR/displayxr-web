@@ -74,10 +74,11 @@ export function createChip(root, actions) {
   let state = 'idle';
   let progress = null;
   let saving = false;
+  let note = null; // a provider's own status ("Lifting with SHARP… 7s"), shown instead of the % while busy
   const render = () => {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
-    label.textContent = busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
+    label.textContent = busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
     bExplore.hidden = state !== 'live';
     bSog.hidden = state !== 'explore' || !actions.onDownload;
     bSog.disabled = saving;
@@ -91,12 +92,17 @@ export function createChip(root, actions) {
     el: chip,
     setState(s) {
       state = s;
-      if (!(s === 'loading' || s === 'freezing' || s === 'lifting')) progress = null;
+      if (!(s === 'loading' || s === 'freezing' || s === 'lifting')) progress = note = null;
       render();
     },
     /** A long action in flight (only 'download' today): disables its button, relabels it. */
     setBusy(what, on) {
       if (what === 'download') saving = !!on;
+      render();
+    },
+    /** A status line that replaces the percentage while busy (null clears it). */
+    setNote(text) {
+      note = text ? String(text) : null;
       render();
     },
     setProgress(p) {

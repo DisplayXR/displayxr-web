@@ -55,7 +55,22 @@ export interface LiftOptions {
    * `da2-small`, a manifest name, or a registered provider name); `inpaint` default `none`
    * (`light-inpaint-v1` enables the net).
    */
-  providers?: { video?: string; still?: string; inpaint?: string };
+  providers?: {
+    video?: string;
+    still?: string;
+    inpaint?: string;
+    /**
+     * The lift stage (frozen frame → Gaussian scene). Omitted / `local` = the local generator
+     * (still depth + lift-gen). A registered name — `remote-sharp` is the DEMO-ONLY remote SHARP
+     * provider (Apple research-licence weights; docs/lift.md § Remote SHARP) — or a
+     * {@link LiftProvider} instance. Any provider failure but an abort falls back to local.
+     */
+    lift?: 'local' | 'remote-sharp' | (string & {}) | LiftProvider;
+  };
+  /** Factory options for a NAMED lift provider (`providers.lift`), e.g. remote-sharp's endpoint/auth. */
+  remote?: RemoteSharpLiftOptions;
+  /** Alias of `remote`. */
+  remoteSharp?: RemoteSharpLiftOptions;
   /** `builtin` (default): a small chip with progress and Explore / Resume / Exit. `none`: drive the handle yourself. */
   ui?: 'builtin' | 'none';
   /** Aborting removes the lift. */
@@ -92,6 +107,11 @@ export interface LiftProgress {
   phase: 'models' | 'depth' | 'lift';
   /** 0..1 within the phase. */
   value: number;
+  /** A lift provider's own stage (remote SHARP: encoding | uploading | waiting | downloading). */
+  stage?: string;
+  /** Seconds since the provider's request started. */
+  elapsedS?: number;
+  provider?: string;
 }
 
 export interface LiftStats {
@@ -118,6 +138,14 @@ export interface LiftStats {
   mode: 'native' | 'web';
   /** The vendor module's name (native mode), else null. */
   provider: string | null;
+  /** What produced the explore scene: `local`, or the lift provider's id (e.g. `remote-sharp`). */
+  liftSource: string;
+  /** The lift provider's round trip, ms (0 without one). */
+  remoteMs: number;
+  /** The provider's own timings (remote SHARP: encodeMs, requestMs, downloadMs, totalMs, bytes). */
+  remoteTimings: Record<string, number> | null;
+  /** Why the last provider lift fell back to local (a RemoteLiftError code), or null. */
+  liftFallback: string | null;
 }
 
 export interface LiftHandle {
@@ -153,7 +181,8 @@ export interface LiftHandle {
   /**
    * The last lifted scene as a `.sog` (SOG v2, lossless webp planes) carrying the DisplayXR camera
    * block v2 (rig `camera`, the lift's intrinsics, focus = the pivot), built in the page. Rejects
-   * before the first lift. `camera` is merged onto the block.
+   * before the first lift. `camera` is merged onto the block. After a REMOTE lift the worker's
+   * original `.sog` bytes are returned as they came (its own camera block; `camera` is ignored).
    */
   exportSog(opts?: { camera?: Record<string, unknown>; onProgress?: (p: number) => void }): Promise<Blob>;
   /** exportSog() saved as a file (`<media name>-3d.sog` by default). Resolves false if nothing was saved. */
@@ -221,7 +250,108 @@ export interface ProviderFactoryOptions {
   model?: string;
 }
 
+/** The lift stage: frozen frame (+ optional still depth) → a Gaussian scene. docs/lift.md § LiftProvider. */
+export interface LiftProvider {
+  readonly id?: string;
+  /** false: lift.js skips the still depth model (a remote provider); it runs only on fallback. */
+  readonly needsDepth?: boolean;
+  load?(o?: { signal?: AbortSignal }): Promise<unknown>;
+  generateLift(o: {
+    rgb: ImageBitmap | HTMLCanvasElement | Blob;
+    depth?: DepthMap & { intrinsics?: { focalPx: number; focalGridW?: number } };
+    quality?: LiftQuality;
+    params?: Record<string, unknown>;
+    signal?: AbortSignal;
+    onProgress?: (p: { stage: string; progress: number; elapsedS: number; loaded?: number; total?: number }) => void;
+  }): Promise<{ ply?: ArrayBuffer; sog?: ArrayBuffer; meta: LiftSceneMeta }>;
+  /** Interactive sign-in, when the provider has one (call it from a click). */
+  signIn?(): Promise<unknown>;
+  dispose?(): void;
+}
+
+export interface LiftSceneMeta {
+  /** Focal of the unprojection, px of a w × h raster (principal point at the centre). */
+  focalPx: number;
+  /** Pivot / convergence depth, metres along the view axis. */
+  pivotZ?: number;
+  w: number;
+  h: number;
+  layers?: number;
+  splatCount?: number;
+  source?: string;
+  axes?: 'opencv' | 'opengl';
+  /** Remote SHARP via the gallery relay: served from its cache (`X-DXR-Sharp: cache-hit`); null when unknown. */
+  cacheHit?: boolean | null;
+  /** The relay's own time to first byte (`X-DXR-Sharp-Ms`). */
+  serverMs?: number | null;
+  [k: string]: unknown;
+}
+
+export type RemoteSharpAuth = { kind: 'bearer'; token: string } | { kind: 'google'; loginUrl: string };
+
+export interface RemoteSharpLiftOptions {
+  /** Default `/api/sharp/predict` — a same-origin proxy that adds the worker token (serve.py --sharp). */
+  endpoint?: string;
+  /** Whole request, ms. Default 90000. */
+  timeoutMs?: number;
+  /** Default `mono`. */
+  mode?: 'mono' | 'sbs' | 'spatial';
+  /**
+   * Omitted: no Authorization header (the proxy's own). `bearer`: a token the page may hold.
+   * `google`: popup sign-in at `loginUrl`, answered by `postMessage({type:'dxr-auth', accessToken,
+   * expiresAt})` from that origin; cached in memory until expiry; a 401 re-opens it once.
+   */
+  auth?: RemoteSharpAuth;
+  /** Extra headers per request (merged last). */
+  getAuthHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
+  /** Extra multipart fields. */
+  fields?: Record<string, string | number>;
+  /** JPEG long side cap, px. Default 1536. */
+  maxSide?: number;
+  /** Default 0.92. */
+  jpegQuality?: number;
+  /** Hard upload cap, bytes (default 4e6: Vercel rejects bodies over 4.5 MB); re-encodes smaller to fit. */
+  maxBytes?: number;
+}
+
+/** A remote lift failure. `fallback` is false only for a caller abort. */
+export declare class RemoteLiftError extends Error {
+  readonly code: 'aborted' | 'timeout' | 'http' | 'auth' | 'forbidden' | 'quota' | 'too-large' | 'network' | 'format' | 'encode' | 'popup-blocked' | 'popup-closed';
+  readonly fallback: boolean;
+  readonly status?: number;
+  /** 429: the relay's Retry-After, seconds. */
+  readonly retryAfterS?: number;
+}
+
+/** DEMO ONLY — the remote SHARP lift provider (Apple research-licence weights; not for product use). */
+export declare function createRemoteSharpLift(o?: RemoteSharpLiftOptions): LiftProvider & {
+  readonly id: 'remote-sharp';
+  readonly endpoint: string;
+  readonly signedIn: boolean;
+  /** The signed-in account (popup `email`), or null. */
+  readonly email: string | null;
+  signIn(): Promise<string | null>;
+};
+
+/** The popup sign-in used by `auth: { kind: 'google' }`. */
+export declare function createPopupAuth(o: { loginUrl: string; win?: Window; width?: number; height?: number; timeoutMs?: number }): {
+  readonly origin: string;
+  readonly signedIn: boolean;
+  getToken(o?: { force?: boolean }): Promise<string>;
+  signIn(): Promise<string>;
+  clear(): void;
+};
+
 export interface LiftRegistry {
+  /** Register a lift provider. `optIn` ones are only ever picked by name. */
+  registerLiftProvider(
+    name: string,
+    factory: (o: RemoteSharpLiftOptions & Record<string, unknown>) => LiftProvider,
+    o?: { priority?: number; optIn?: boolean; available?: () => boolean },
+  ): () => void;
+  /** By name, or (null / `auto`) the best non-opt-in one; null = use the local generator. */
+  getLiftProvider(name: string | null, opts?: Record<string, unknown>): LiftProvider | null;
+  listLiftProviders(): Array<{ name: string; priority: number; kinds: string[] }>;
   /** Register (or replace, by name) a depth provider; the highest priority available one wins. */
   registerDepthProvider(
     name: string,

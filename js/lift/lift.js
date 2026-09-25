@@ -128,7 +128,12 @@ const MONO_VIEW = Object.freeze({
  * @param {object} [opts.wall]  an existing createInline3D() manager to join.
  * @param {{maxAngleDeg?:number, relax?:boolean}} [opts.orbit]
  * @param {'auto'|object} [opts.models='auto']  a ModelSource, or 'auto' for the default one.
- * @param {{video?:string, still?:string, inpaint?:string}} [opts.providers]
+ * @param {{video?:string, still?:string, inpaint?:string, lift?:string|object}} [opts.providers]
+ *        `lift`: the stage that turns the frozen frame into a Gaussian scene — omitted/'local' = the
+ *        local generator; a registered lift provider name (e.g. 'remote-sharp', DEMO ONLY); or a
+ *        LiftProvider instance. A provider failure falls back to the local lift (logged once).
+ * @param {object} [opts.remote]  options for a named lift provider's factory (remote-sharp:
+ *        `{ endpoint, auth, timeoutMs, mode, getAuthHeaders, fields }`).
  * @param {'builtin'|'none'} [opts.ui='builtin']
  * @param {AbortSignal} [opts.signal]  aborting it removes the lift.
  * @param {'real'|'stub'} [opts.backend='real']  'stub' = js/lift/stubs/* (no models; dev/demo).
@@ -173,6 +178,8 @@ export async function lift(element, opts = {}) {
     // still leaves textured seams on wide masks and costs 1.3–1.5 s per lift; the net-free fill was
     // cleaner on every photo tried. `providers: { inpaint: 'light-inpaint-v1' }` turns it on.
     providers: { video: 'vda-small', still: 'moge3', inpaint: 'none', ...(opts.providers || {}) },
+    // `remoteSharp` is an alias (the gallery relay's docs use it)
+    remote: [opts.remote, opts.remoteSharp].find((x) => x && typeof x === 'object') || {},
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',
     genParams: opts.genParams && typeof opts.genParams === 'object' ? opts.genParams : null,
@@ -247,6 +254,10 @@ export async function lift(element, opts = {}) {
   let videoProv = null;
   let stillProv = null;
   let stillLoading = null;
+  // The lift provider (null = the local generator). `ownLiftProv`: we created it, so we dispose it.
+  let liftProv = null;
+  let ownLiftProv = false;
+  let liftFallbackWarned = false;
   let explore = null;
   let pendingExplore = null;
   // The generator's output behind the explore scene — { ply, meta } — kept for exportSog(). The
@@ -298,13 +309,19 @@ export async function lift(element, opts = {}) {
     // 'web': the SDK's own pipeline. `provider`: the module's name from caps (native only).
     mode: native ? 'native' : 'web',
     provider: (native && caps.provider) || null,
+    // which stage produced the explore scene: 'local' or the provider id (e.g. 'remote-sharp')
+    liftSource: 'local',
+    // a lift provider's round trip (ms) and its own timings; why the last one fell back (or null)
+    remoteMs: 0,
+    remoteTimings: null,
+    liftFallback: null,
   };
   let fpsFrames = 0;
   let fpsT0 = 0;
   let freezeT0 = 0;
-  const progress = (phase, v, base = 0, span = 1) => {
+  const progress = (phase, v, base = 0, span = 1, extra) => {
     const value = frac(v);
-    emit('progress', { phase, value });
+    emit('progress', extra ? { phase, value, ...extra } : { phase, value });
     if (chip) chip.setProgress(base + span * value);
   };
 
@@ -533,6 +550,36 @@ export async function lift(element, opts = {}) {
     return inpainterP;
   }
 
+  /** The lift provider for `providers.lift` (null = local). Unknown names are non-fatal → local. */
+  async function resolveLiftProvider() {
+    const want = o.providers.lift;
+    if (!want || want === 'local') return null;
+    if (typeof want === 'object' && typeof want.generateLift === 'function') return want;
+    if (typeof want !== 'string') throw new TypeError('lift: providers.lift must be a name or a LiftProvider');
+    let p = null;
+    if (registry && typeof registry.getLiftProvider === 'function') p = registry.getLiftProvider(want, o.remote);
+    else if (want === 'remote-sharp') {
+      // A registry without lift providers (the stub backend): the module is still importable.
+      const m = await import('./providers/lift-remote-sharp.js');
+      p = m.createRemoteSharpLift(o.remote);
+    } else throw new Error(`lift: no lift provider registered as ${JSON.stringify(want)}`);
+    ownLiftProv = !!p;
+    return p;
+  }
+
+  /** Remote/provider progress → the chip ("Lifting with SHARP… 7s") and 'progress' events. */
+  function providerProgress(p) {
+    const stage = p && p.stage;
+    const elapsedS = p && Number.isFinite(p.elapsedS) ? p.elapsedS : undefined;
+    progress('lift', p, 0.05, 0.95, { stage, elapsedS, provider: liftProv && liftProv.id });
+    if (chip && chip.setNote) {
+      const who = liftProv && liftProv.id === 'remote-sharp' ? 'SHARP' : (liftProv && liftProv.id) || 'provider';
+      const secs = elapsedS !== undefined ? ` ${Math.round(elapsedS)}s` : '';
+      const cached = p && p.cacheHit === true ? ' (cached)' : '';
+      chip.setNote(stage === 'downloading' ? `Downloading ${who} scene${cached}…${secs}` : `Lifting with ${who}…${secs}`);
+    }
+  }
+
   function ensureStill(signal, base = 0, span = 1, quiet = false) {
     if (stillProv) return Promise.resolve(stillProv);
     if (!stillLoading) {
@@ -600,6 +647,14 @@ export async function lift(element, opts = {}) {
       }
       registry = typeof M.getRegistry === 'function' ? M.getRegistry() : null;
       if (disposed) return;
+      // Before the native branch: a native module's `native-gaussians` is a lift provider too.
+      try {
+        liftProv = await resolveLiftProvider();
+        if (liftProv && typeof liftProv.load === 'function') await liftProv.load({ signal });
+      } catch (error) {
+        liftProv = null;
+        emit('error', { error, fatal: false, phase: 'lift-provider' });
+      }
       if (native) {
         // The vendor module supersedes the web path (its providers are registered above): load NO
         // model, mount NO DIBR. The `dxr-lift` attributes go on at `startLive`.
@@ -615,7 +670,9 @@ export async function lift(element, opts = {}) {
       if (kind === 'video') {
         videoProv = makeProvider('video', o.providers.video);
         await videoProv.load({ signal, onProgress: (v) => progress('models', v) });
-      } else {
+      } else if (!(liftProv && liftProv.needsDepth === false)) {
+        // A provider that needs no local depth (remote SHARP) lets a still skip the 715 MB still
+        // model; it is loaded only if that provider fails and the lift falls back.
         await ensureStill(signal);
       }
       await mediaReady();
@@ -661,61 +718,120 @@ export async function lift(element, opts = {}) {
       const t = kind === 'video' ? el.currentTime : 0;
       const bitmap = await createImageBitmap(currentSource());
       if (isStale(gen)) return bitmap.close && bitmap.close();
-      // One ORT session at a time: let a live estimate still in flight finish before the still model
-      // is created/run (see the prefetch note in doLoad).
-      await inferP;
-      let depth;
-      ortBusy++;
-      try {
-        await ensureStill(signal, 0, 0.25);
-        if (isStale(gen)) return bitmap.close && bitmap.close();
-        progress('depth', 0, 0.25, 0.1);
-        const tDepth = performance.now();
-        depth = await stillProv.estimate({ source: bitmap, t });
-        stats.stillDepthMs = Math.round(performance.now() - tDepth);
-      } finally {
-        ortBusy--;
-      }
-      if (isStale(gen)) return bitmap.close && bitmap.close();
-      progress('depth', 1, 0.25, 0.1);
-      // Depth comes back at MODEL resolution (e.g. 770×434) and MoGe's focalPx is in that grid;
-      // lift-gen wants focalPx in pixels of the RGB it is given (it rescales to its own raster).
-      const fp = depth && depth.intrinsics && depth.intrinsics.focalPx;
-      if (fp > 0 && depth.w > 0 && bitmap.width > 0 && depth.w !== bitmap.width) {
-        depth = { ...depth, intrinsics: { ...depth.intrinsics, focalPx: (fp * bitmap.width) / depth.w, focalGridW: bitmap.width } };
+      // A lift provider that needs no local depth (remote SHARP) skips the still model here; the
+      // depth is computed in doLift only if that provider fails and the lift falls back.
+      let depth = null;
+      if (!(liftProv && liftProv.needsDepth === false)) {
+        depth = await stillDepthFor(bitmap, t, signal, gen);
+        if (!depth) return bitmap.close && bitmap.close();
       }
       if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
-      frozen = { bitmap, depth };
-      // The frozen frame's better (still-model) depth also improves the live view shown meanwhile.
-      if (dibr) dibr.setDepth(depth);
+      frozen = { bitmap, depth, t };
       machine.send('frozen', { gen });
     } catch (error) {
       if (!isStale(gen)) machine.send('lift-failed', { gen, error });
     }
   }
 
+  /**
+   * The still model's depth for a frozen frame (null when the freeze went stale meanwhile). Focal
+   * comes back rescaled to pixels of `bitmap`; the live view gets the better depth too.
+   */
+  async function stillDepthFor(bitmap, t, signal, gen) {
+    // One ORT session at a time: let a live estimate still in flight finish before the still model
+    // is created/run (see the prefetch note in doLoad).
+    await inferP;
+    let depth;
+    ortBusy++;
+    try {
+      await ensureStill(signal, 0, 0.25);
+      if (isStale(gen)) return null;
+      progress('depth', 0, 0.25, 0.1);
+      const tDepth = performance.now();
+      depth = await stillProv.estimate({ source: bitmap, t });
+      stats.stillDepthMs = Math.round(performance.now() - tDepth);
+    } finally {
+      ortBusy--;
+    }
+    if (isStale(gen)) return null;
+    progress('depth', 1, 0.25, 0.1);
+    // Depth comes back at MODEL resolution (e.g. 770×434) and MoGe's focalPx is in that grid;
+    // lift-gen wants focalPx in pixels of the RGB it is given (it rescales to its own raster).
+    const fp = depth && depth.intrinsics && depth.intrinsics.focalPx;
+    if (fp > 0 && depth.w > 0 && bitmap.width > 0 && depth.w !== bitmap.width) {
+      depth = { ...depth, intrinsics: { ...depth.intrinsics, focalPx: (fp * bitmap.width) / depth.w, focalGridW: bitmap.width } };
+    }
+    // The frozen frame's better (still-model) depth also improves the live view shown meanwhile.
+    if (dibr) dibr.setDepth(depth);
+    return depth;
+  }
+
   async function doLift(gen) {
     const signal = abort ? abort.signal : undefined;
     try {
-      let res;
+      let res = null;
+      let source = 'local';
       const tGen = performance.now();
-      ortBusy++;
-      try {
-        const inpainter = await ensureInpainter(signal);
-        if (isStale(gen)) return;
-        res = await impl.gen.generateLift({
-          rgb: frozen.bitmap,
-          depth: frozen.depth,
-          inpainter,
-          quality: o.quality,
-          // the hidden layer + outpaint border are sized for the orbit the explore view allows
-          params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
-          signal,
-          onProgress: (v) => progress('lift', v, 0.35, 0.65),
-        });
-      } finally {
-        ortBusy--;
+      // ── a lift provider first (remote SHARP, …); any failure but an abort falls back ──
+      if (liftProv) {
+        const tR = performance.now();
+        try {
+          res = await liftProv.generateLift({
+            rgb: frozen.bitmap,
+            depth: frozen.depth || undefined,
+            quality: o.quality,
+            params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
+            signal,
+            onProgress: providerProgress,
+          });
+          if (!res || !(res.sog || res.ply)) throw new Error('lift provider returned neither sog nor ply');
+          source = liftProv.id || 'provider';
+          stats.remoteMs = Math.round(performance.now() - tR);
+          stats.remoteTimings = (res.meta && res.meta.timings) ? { ...res.meta.timings, cacheHit: res.meta.cacheHit ?? null, serverMs: res.meta.serverMs ?? null } : null;
+          stats.liftFallback = null;
+        } catch (error) {
+          if (isStale(gen) || (signal && signal.aborted) || (error && error.fallback === false)) return;
+          res = null;
+          stats.liftFallback = (error && error.code) || 'error';
+          if (!liftFallbackWarned) {
+            liftFallbackWarned = true;
+            console.warn(`[inline3d/lift] ${liftProv.id || 'lift provider'} failed — falling back to the local lift:`, (error && error.message) || error);
+          }
+          emit('error', { error, fatal: false, phase: 'lift-provider', fallback: 'local' });
+          if (chip && chip.setNote) {
+            const who = liftProv.id === 'remote-sharp' ? 'SHARP' : 'Remote lift';
+            const why = { forbidden: 'account not allowed', quota: 'quota reached', auth: 'not signed in', timeout: 'timed out', 'popup-blocked': 'sign-in blocked' }[error && error.code] || 'unavailable';
+            chip.setNote(`${who} ${why} — lifting locally`);
+          }
+        } finally {
+          if (chip && chip.setNote && res) chip.setNote(null);
+        }
       }
+      if (!res) {
+        if (!frozen.depth) {
+          const depth = await stillDepthFor(frozen.bitmap, frozen.t || 0, signal, gen);
+          if (!depth) return;
+          frozen.depth = depth;
+        }
+        ortBusy++;
+        try {
+          const inpainter = await ensureInpainter(signal);
+          if (isStale(gen)) return;
+          res = await impl.gen.generateLift({
+            rgb: frozen.bitmap,
+            depth: frozen.depth,
+            inpainter,
+            quality: o.quality,
+            // the hidden layer + outpaint border are sized for the orbit the explore view allows
+            params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
+            signal,
+            onProgress: (v) => progress('lift', v, 0.35, 0.65),
+          });
+        } finally {
+          ortBusy--;
+        }
+      }
+      stats.liftSource = source;
       stats.generateMs = Math.round(performance.now() - tGen);
       stats.splats = (res.meta && res.meta.splatCount) || 0;
       // Diagnostics for A/B against other lifters: the intrinsics the generator used (output-raster
@@ -735,13 +851,14 @@ export async function lift(element, opts = {}) {
       const ex = await impl.explore.createExplore({
         canvas,
         gl: dibr && dibr.gl,
-        ply: res.ply,
+        // a local lift is a PLY; a remote one a .sog whose camera block is the rig (meta too)
+        ...(res.sog ? { sog: res.sog } : { ply: res.ply }),
         meta,
         axes: meta.axes || meta.convention || undefined,
         clearAlpha: 1, // opaque: never let the page's flat media ghost through the lifted scene
         orbit: o.orbit,
         depthGain: params.depth, // the page's depth strength carries into explore (setDepth)
-        space: frozen.depth && frozen.depth.space,
+        space: (frozen.depth && frozen.depth.space) || meta.space,
         comfort: { mode: o.explore.comfort, target: o.explore.pivotTargetM },
         eyes: o.explore.eyes,
       });
@@ -750,7 +867,7 @@ export async function lift(element, opts = {}) {
       stats.pauseToExploreMs = Math.round(performance.now() - freezeT0);
       if (isStale(gen)) return ex.dispose();
       pendingExplore = ex;
-      pendingLifted = { ply: res.ply, meta, sceneScale: ex.sceneScale || 1 };
+      pendingLifted = { ply: res.ply || null, sog: res.sog || null, meta: ex.meta || meta, sceneScale: ex.sceneScale || 1, source };
       machine.send('lifted', { gen });
     } catch (error) {
       if (!isStale(gen)) machine.send('lift-failed', { gen, error });
@@ -822,6 +939,7 @@ export async function lift(element, opts = {}) {
           canvas.style.visibility = '';
           attachRenderer();
         }
+        if (chip && chip.setNote) chip.setNote(null);
         if (explore) disposeExplore();
         explore = pendingExplore;
         pendingExplore = null;
@@ -940,7 +1058,7 @@ export async function lift(element, opts = {}) {
     if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
     detachRenderer();
     if (nativeLive) nativeLive.clear();
-    for (const x of [pendingExplore, explore, dibr, videoProv, stillProv]) {
+    for (const x of [pendingExplore, explore, dibr, videoProv, stillProv, ownLiftProv ? liftProv : null]) {
       if (!x) continue;
       try {
         x.dispose();
@@ -948,7 +1066,7 @@ export async function lift(element, opts = {}) {
         /* ignore */
       }
     }
-    pendingExplore = explore = dibr = videoProv = stillProv = null;
+    pendingExplore = explore = dibr = videoProv = stillProv = liftProv = null;
     lifted = pendingLifted = null;
     if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
     frozen = null;
@@ -989,7 +1107,7 @@ export async function lift(element, opts = {}) {
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
     /** Diagnostics only (not API): the live renderers. */
-    _internals: () => ({ explore, dibr, videoProv, stillProv, frozen, lifted }),
+    _internals: () => ({ explore, dibr, videoProv, stillProv, liftProv, frozen, lifted }),
     get stats() {
       return { ...stats, state: machine.state };
     },
@@ -1047,6 +1165,12 @@ export async function lift(element, opts = {}) {
      */
     async exportSog(opts = {}) {
       if (!lifted) throw new Error('[inline3d/lift] exportSog: nothing lifted yet (explore first)');
+      // A provider's .sog (remote SHARP) is returned as the ORIGINAL bytes: it already carries the
+      // worker's camera block. `opts.camera` overrides are not applied to it.
+      if (lifted.sog) {
+        if (opts.camera) console.warn('[inline3d/lift] exportSog: camera overrides are ignored for a remote lift (original bytes)');
+        return new Blob([lifted.sog], { type: 'application/octet-stream' });
+      }
       const { exportSog } = await import('./sog-export.js');
       // The file stays METRIC (the lift as generated). When explore applied its comfort scale k,
       // the block says so the way a camera rig expresses it — eye separation and head motion in
