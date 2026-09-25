@@ -3630,7 +3630,22 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // tile is woven (handle.firstWoven — which is immediate in 2D) and the first frames are built.
     if (revealSpec) {
       const gate = Promise.resolve(out.firstWoven).then(() => afterTicks(2));
+      // The splat stays HIDDEN until the gate opens, so the first frame anyone sees is the first
+      // frame of motion. The gate is `firstWoven`, a worst-case hold of up to 1.2 s past the
+      // layer's birth (docs/woven-canvas-rules.md §5), and the browser usually joins the canvas
+      // well before it ends. Drawn meanwhile, the start state (a particle reveal's scatter) sat
+      // frozen on the woven panel for the rest of the hold and then jumped into motion. Hidden,
+      // the tile is empty for that span, which also keeps stereo pixels off a canvas that may
+      // not be joined yet (rule 5). Registered after fx.play's own `.then`, so it lands in the
+      // same microtask that releases the effect: the clock starts on the frame it first shows.
+      entity.enabled = false;
       fx.play(revealSpec.type, revealSpec.raw, { gate });
+      gate.then(() => {
+        if (removed || current?.entity !== entity) return;
+        // setVideo took the splat off screen meanwhile: its exit restores what it saved.
+        if (vid?.saved?.entity === entity) vid.saved.splatEnabled = true;
+        else entity.enabled = true;
+      });
     }
     for (const [what, name, arg] of fxPending.splice(0)) {
       if (what === 'set') fx.set(name, arg);
