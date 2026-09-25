@@ -148,6 +148,9 @@ export class LiveOutgoing {
     this.frames = 0;
     this.views = [];
     this._frustumKey = '';
+    /** PRE-SORT (warm): the current asset is ALSO on the live layer, before the swap. */
+    this.warming = false;
+    this._warmLayers = null;
   }
 
   /** Engine support for this path: RenderViews on one camera, render targets, layers. */
@@ -213,20 +216,93 @@ export class LiveOutgoing {
   }
 
   /**
+   * PRE-SORT the live camera BEFORE the swap (the fix for the frozen bridge, #36). The current
+   * asset goes on the live layer IN ADDITION to its own (the eye keeps drawing it, untouched: its
+   * World placement set is unchanged, so its manager neither rebuilds nor re-sorts), and the live
+   * camera starts rendering it, through the same views, into its target. Its manager builds its
+   * work buffer and runs its first sort NOW, while the photo is still on screen and live. At the
+   * swap, start() takes the asset OFF World only: the live layer's placement set does not change,
+   * so its manager keeps its sorted state and the overlay can sample it on the very first frame.
+   *
+   * Without it, start() moved the asset onto a FRESH manager at the swap, and the overlay showed
+   * the frozen capture until that manager's first sort came back from the sort worker — a still
+   * image under a moving head for as long as that takes (the "tracking stops for a moment at
+   * every transition" report). Returns false if this engine build cannot (nothing changed).
+   */
+  warm(entity) {
+    const v = this.viewer;
+    if (this.active || !LiveOutgoing.supported(v) || !entity?.gsplat) return false;
+    if (this.warming) {
+      if (this.entity === entity) return true;
+      this.cancelWarm();
+    }
+    try {
+      this._ensureEngineObjects();
+      this._ensureTarget(v.canvas.width, v.canvas.height);
+      const own = Array.isArray(entity.gsplat.layers) ? entity.gsplat.layers.slice() : [];
+      this._warmLayers = own;
+      entity.gsplat.layers = [...own.filter((id) => id !== this.layer.id), this.layer.id];
+      this.entity = entity;
+      this.oldFrame = null; // same asset, same rig: the chain is the rig node itself
+      this.frames = 0;
+      this.cam.enabled = true;
+      this.warming = true;
+      return true;
+    } catch (err) {
+      console.warn('[inline3d/splat] live outgoing pre-sort unavailable; the transition keeps the frozen bridge', err);
+      this.cancelWarm();
+      return false;
+    }
+  }
+
+  /** The pre-sorted manager has drawn a sorted frame (what start() will then need no bridge for). */
+  get warmReady() {
+    if (!this.warming) return false;
+    const mgr = this.manager;
+    if (mgr === undefined) return this.frames >= 3;
+    const w = mgr?.world;
+    const st = w?.getState?.(w.lastWorldStateVersion);
+    return !!st?.sortedBefore && this.frames >= 1;
+  }
+
+  /** Drop a pre-sort that did not become a live window: the asset back on only its own layers. */
+  cancelWarm() {
+    if (!this.warming) return;
+    const e = this.entity;
+    const own = this._warmLayers;
+    this.warming = false;
+    this._warmLayers = null;
+    this.entity = null;
+    if (this.cam) this.cam.enabled = false;
+    this._destroyTarget();
+    try {
+      if (e?.gsplat && own) e.gsplat.layers = own;
+    } catch {
+      /* entity already gone */
+    }
+  }
+
+  /**
    * Take `entity` (the outgoing splat, still enabled) onto the live layer. `oldFrame` is
    * viewer.lensFrame() read BEFORE the incoming asset's rig was adopted. Returns false if this
-   * engine build cannot (the caller keeps the frozen frame).
+   * engine build cannot (the caller keeps the frozen frame). After warm(entity) the live
+   * manager is kept (only the World placement goes), so `ready` holds from the first frame.
    */
   start(entity, oldFrame) {
     const v = this.viewer;
     if (!LiveOutgoing.supported(v) || !entity?.gsplat) return false;
+    const warmed = this.warming && this.entity === entity;
+    if (this.warming && !warmed) this.cancelWarm();
     try {
       this._ensureEngineObjects();
       this._ensureTarget(v.canvas.width, v.canvas.height);
       entity.gsplat.layers = [this.layer.id];
       this.entity = entity;
       this.oldFrame = oldFrame;
-      this.frames = 0;
+      if (!warmed) this.frames = 0;
+      this.warming = false;
+      this._warmLayers = null;
+      this.warmed = warmed;
       this.cam.enabled = true;
       this.active = true;
       return true;
@@ -275,7 +351,7 @@ export class LiveOutgoing {
    * viewport), the eye's node pose, and the rig chain.
    */
   sync(entries, rect, frustum) {
-    if (!this.active) return;
+    if (!this.active && !this.warming) return;
     const v = this.viewer;
     const pc = v.pc;
     const rvs = this.views;
@@ -322,9 +398,11 @@ export class LiveOutgoing {
   stop() {
     // The outgoing entity is NOT put back on its old layer: the caller releases it right after,
     // and a round trip through World would dirty the eye's manager (a work-buffer rebuild).
+    if (this.warming) return this.cancelWarm();
     this.entity = null;
     this.oldFrame = null;
     this.active = false;
+    this.warmed = false;
     if (this.cam) this.cam.enabled = false;
     this._destroyTarget();
   }

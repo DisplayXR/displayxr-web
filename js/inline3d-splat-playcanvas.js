@@ -1508,6 +1508,43 @@ export class PlayCanvasSplatViewer {
     return { overlay: st.live ? 'live' : 'frozen', w: st.alpha * left };
   }
 
+  /** Pre-sort the live outgoing camera on `entity` before a swap (see LiveOutgoing.warm). */
+  warmLiveOutgoing(entity) {
+    this._live ||= new LiveOutgoing(this);
+    return this._live.warm(entity);
+  }
+
+  /**
+   * Resolves true once the pre-sorted live manager has drawn a sorted frame, false after
+   * `timeoutMs` (a hidden tab, a stalled sorter) or once the pre-sort was dropped.
+   */
+  liveWarmed(timeoutMs = 1500) {
+    const live = this._live;
+    if (!live?.warming) return Promise.resolve(false);
+    if (live.warmReady) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let done = false;
+      const end = (v) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(v);
+      };
+      const timer = setTimeout(() => end(false), timeoutMs);
+      this._hooks.push(() => {
+        if (done) return false;
+        if (this._disposed || !live.warming) return end(false), false;
+        if (live.warmReady) return end(true), false;
+        return true;
+      });
+    });
+  }
+
+  /** Drop a pre-sort that is not going to become a live window. */
+  cancelLiveWarm() {
+    this._live?.cancelWarm();
+  }
+
   /** End the live window: overlay back on the frozen capture, camera off, target freed. */
   stopLiveOutgoing() {
     if (!this._live?.active) return;
@@ -1692,7 +1729,7 @@ export class PlayCanvasSplatViewer {
       // compose the node's PARENT with their own pose). Park it on the first eye.
       placeNode(this.eye, entries[0].pose);
       // setSource's live outgoing: the same views on its own camera, into its own target.
-      if (this._live?.active) this._live.sync(entries, rect, f);
+      if (this._live?.active || this._live?.warming) this._live.sync(entries, rect, f);
       // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
       this.onBeforeRender?.(entries, rect);
     } else {
@@ -2583,7 +2620,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   // ── diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ──
   const diagCfg = resolveDiag(opts.diag);
-  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: norig, frozen, nowarm, nooverlay.`);
+  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: norig, frozen, nowarm, cold, nooverlay.`);
   const diag = diagCfg.on ? new DiagRecorder({ switches: diagCfg.switches }) : null;
   /** norig: armed by the first setSource — from then on the declared rig is kept. */
   let rigLockArmed = false;
@@ -3984,6 +4021,22 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // drawn. The overlay goes up in the same task, so no frame shows neither photo.
     const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront' || !!particle;
     const outgoingMode = plan.outgoing || (particle ? 'live' : defaultOutgoing(viewer.is3D));
+    // PRE-SORT the live outgoing camera on the current asset BEFORE the swap (LiveOutgoing.warm):
+    // its first sort runs while the photo is still on screen and live, so the frozen capture has
+    // nothing to bridge. The transition starts once it has sorted (bounded; a hidden tab or a
+    // stalled sorter falls back to the bridge). `?dxrdiag=cold` skips it (the 1.19.2 path).
+    if (wantsSnapshot && outgoingMode === 'live' && viewer.canLiveOutgoing && !diag?.has('cold') && viewer.warmLiveOutgoing(prev.entity)) {
+      const tw = performance.now();
+      const ok = await viewer.liveWarmed();
+      perfSpan('setSource:presort(async)', tw);
+      diag?.mark('presorted', { ok, ms: Math.round(performance.now() - tw) });
+      if (removed || gen !== sourceGen) {
+        // A newer setSource owns the pre-sort now (it warms the same asset, or drops it).
+        app.assets.remove(loaded.asset);
+        loaded.asset.unload?.();
+        return out;
+      }
+    }
     const snapped = wantsSnapshot ? await viewer.captureFrame() : false;
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
@@ -3998,7 +4051,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // the RenderView path); 'frozen' there = its snapshot fades out while the new one plays in.
     const live =
       snapped && outgoingMode === 'live' && viewer.canLiveOutgoing ? viewer.startLiveOutgoing(prev.entity, viewer.lensFrame()) : null;
-    diag?.mark('outgoing', { mode: live ? 'live (frozen bridge until sorted)' : snapped ? 'frozen' : 'none' });
+    if (!live) viewer.cancelLiveWarm(); // a pre-sort that is not becoming a live window
+    diag?.mark('outgoing', { mode: live ? (live.warmed ? 'live (pre-sorted)' : 'live (cold: frozen bridge until sorted)') : snapped ? 'frozen' : 'none' });
     /** Each frame of the window: once the live camera is ready, the overlay samples it. */
     let liveShown = false;
     const pumpLive = () => {
@@ -4007,6 +4061,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       liveShown = true;
       diag?.mark('live-shown');
     };
+    // Pre-sorted: the live target is already sorted, so the overlay samples it from the swap on.
+    if (live?.warmed) pumpLive();
 
     const release = (p) => {
       if (!p) return;

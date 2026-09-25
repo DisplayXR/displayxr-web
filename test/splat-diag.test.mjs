@@ -14,16 +14,16 @@ test('resolveDiag: the option wins over the URL; tokens are switches; off values
   assert.equal(resolveDiag(undefined, '?dxrdiag=1').on, true);
   assert.equal(resolveDiag(undefined, '?dxrdiag').on, true, 'bare ?dxrdiag = on');
   assert.deepEqual([...resolveDiag(undefined, '?a=b&dxrdiag=norig,frozen').switches], ['norig', 'frozen']);
-  assert.deepEqual([...resolveDiag(undefined, '?dxrdiag=nowarm&dxrdiag=frozen').switches], ['nowarm', 'frozen'], 'repeated params join');
+  assert.deepEqual([...resolveDiag(undefined, '?dxrdiag=nowarm&dxrdiag=cold').switches], ['nowarm', 'cold'], 'repeated params join');
   assert.equal(resolveDiag(false, '?dxrdiag=1').on, false, 'false beats the URL');
   assert.deepEqual([...resolveDiag(true, '?dxrdiag=norig').switches], [], 'the option wins: the URL switches are not merged');
   assert.deepEqual([...resolveDiag('frozen', '').switches], ['frozen']);
-  assert.deepEqual([...resolveDiag(['norig', 'nowarm'], '').switches], ['norig', 'nowarm']);
+  assert.deepEqual([...resolveDiag(['norig', 'cold'], '').switches], ['norig', 'cold']);
   assert.equal(resolveDiag(undefined, '?dxrdiag=0').on, false);
   const u = resolveDiag('norig,bogus', '');
   assert.equal(u.on, true);
   assert.deepEqual(u.unknown, ['bogus'], 'unknown tokens are reported, never thrown');
-  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'nooverlay']);
+  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay']);
 });
 
 test('poseDelta: bit-identical views are HELD; any real move is not; delta in world units and in eye separations', () => {
