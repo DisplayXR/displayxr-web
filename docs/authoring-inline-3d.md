@@ -229,6 +229,14 @@ poster still eye by eye, so the tile is 3D before its first frame (the default `
 image in both eyes). `on('ended', fn)` also fires, once, if the clip had already ended when the
 listener was attached. `src` may be a list of candidates best first (see Hosting video below).
 
+**One preview decoding at a time.** A shelf of previews that each play muted and looped is one
+video decoder per tile, which is the cost that shows on a panel PC. Give them a shared `group` and
+they take turns: starting one pauses every other player in the group.
+
+```js
+for (const tile of shelf) addPlayer(wall, tile.canvas, tile.src, { group: 'shelf', muted: true, loop: true });
+```
+
 **Controls in the black bars, and the `'bars'` / `'call'` skins.** With a `band`, the picture
 sits in a strip and the tile has black bars above and below it. When the bottom bar is tall enough
 (44 CSS px, times the `size` scale), every skin moves its controls **into** that bar and the title

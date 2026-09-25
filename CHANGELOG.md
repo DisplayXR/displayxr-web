@@ -51,6 +51,9 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
   working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
   shares `./splat` `setVideo`'s option names (`format`, later `fit`).
+- **`group`: one decoding player at a time.** Players sharing a group take turns: a `play` pauses
+  every other member, so a shelf of muted, looping previews decodes one video at a time. Leaving
+  on `remove()`.
 - **Controls inside the black bars, and skins `'bars'` / `'call'`** (the Show Spatial team's
   layouts). With a `band`, when the bottom bar is at least 44 CSS px (times `size`), every skin
   puts its controls in it and the title in the top bar; the centre button and key pip stand down,

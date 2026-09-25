@@ -482,3 +482,9 @@ test("skins 'bars' and 'call' are accepted; 'call' implies a 2.39 band unless on
   assert.ok(Math.abs(normalizePlayerOptions({ skin: 'call', band: '16/9' }).band - 16 / 9) < 1e-9, 'an explicit band wins');
   assert.equal(normalizePlayerOptions({ skin: 'bars' }).band, null, "'bars' does not invent a band");
 });
+
+test('group: a string or unset', () => {
+  assert.equal(normalizePlayerOptions().group, null);
+  assert.equal(normalizePlayerOptions({ group: 'shelf' }).group, 'shelf');
+  assert.equal(normalizePlayerOptions({ group: '' }).group, null);
+});
