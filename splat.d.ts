@@ -941,7 +941,9 @@ export interface SplatHandle {
    * What is under a point on the canvas, in the splat's own space — the double-click's pick.
    * PlayCanvas: the nearest gaussian CENTRE to the ray over the FULL centre set (haze under 5 %
    * opacity skipped); on a Streamed SOG, over the chunks currently resident. Spark: its surface
-   * raycast, falling back to the nearest centre.
+   * raycast, falling back to the nearest centre. PlayCanvas: a BURST of picks from one view (the
+   * same frame) builds a pick index at the second one, so N picks cost about three full scans, not
+   * N; the answer is the full scan's, exactly.
    */
   pick(clientX: number, clientY: number): number[] | null;
   /**

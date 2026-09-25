@@ -5,6 +5,27 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change; no pixel change.
+
+- **A burst of `pick()` calls no longer blocks the main thread.** Each pick scanned every centre of
+  the photo (~7.5 ms for 1.18M on an M1, more on a panel PC); a page that picks 24 then 81 times
+  right after `setSource` resolves (a photo slideshow app planning its companion's path) stalled
+  the main thread for ~1.3 s at every swap's end, so the woven image stopped following the head.
+  A second pick from the same eye position now builds a pick index (about two scans), and every
+  further pick from there reads a few cells: 105 picks went from ~820 ms to ~70 ms on an M1. The
+  answer is unchanged (the full scan's, exactly; the full scan still runs when the pick's cone is
+  empty). `?dxrdiag=oldpick` restores the full scan.
+- **`?dxrdiag` names what is on the main thread.** Per transition phase: every GL call that can
+  block (compile, link, status queries, readbacks, syncs; count and ms), `pick()` calls and their
+  per-task bursts, how long the settle's task kept running after the SDK resolved `setSource` (the
+  page's continuation), and long animation frames with their top scripts (file + function). The
+  verdict names them. The settle teardown is a User Timing measure, `inline3d:settle:teardown`.
+- **Measured: the SDK's settle does no GL work that can block.** Zero compile, link, status query,
+  readback or sync from the `setSource` call to 1.5 s after the settle, for `reassemble`,
+  `crossfade` and `wavefront` (docs/playcanvas-adapter.md § Diagnosing transition stalls).
+
 ## 1.21.1 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change; nothing changes at rest.
