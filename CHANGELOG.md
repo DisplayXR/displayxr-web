@@ -47,6 +47,10 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   their own feathered edge (a 1.6 px mask) instead of relying on the border-radius clip, which can
   stair-step where an overlay is re-composited on its own. The sample gains a developer bar
   (accent picker, S/M/L, skin) showing the exact `setAppearance` call.
+- **Docs: the overlay no-glow rule and three media traps** (codec: VP9/AV1 + Opus WebM only, no
+  H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
+  working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
+  shares `./splat` `setVideo`'s option names (`format`, later `fit`).
 - **Named accents** — `accent: 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' |
   'ice'` (or any CSS colour), exported as `PLAYER_ACCENTS`. Each is light enough for the dock's dark
   play glyph. The sample shows them as swatches.
