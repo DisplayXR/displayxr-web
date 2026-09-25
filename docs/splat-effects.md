@@ -219,10 +219,21 @@ RenderViews (set from the same entries as the eye's every frame) renders into an
 size of the canvas buffer, so every eye viewport sits in it exactly where it sits on the canvas.
 The old asset moves to its own layer that only this camera renders: the engine keeps one gsplat
 manager (work buffer, sort, budget) per camera × layer, so the eye's manager holds only the new
-asset and the live camera's only the old one, never both in both. The frozen capture bridges the
-first frames, until the live camera's manager has drawn a sorted frame (2 frames on the M1). When
-the window ends the camera is disabled, which drops its manager, and the old asset is released as
-before. On an engine build without the RenderView path the transition falls back to `'frozen'`.
+asset and the live camera's only the old one, never both in both. When the window ends the camera
+is disabled, which drops its manager, and the old asset is released as before. On an engine build
+without the RenderView path the transition falls back to `'frozen'`.
+
+**The pre-sort** (after 1.19.2). A fresh manager draws nothing until its first sort comes back
+from its sort worker, so until then the overlay showed the frozen capture: the old photo as a still,
+at full weight, right as the transition starts (2–7 frames measured; see
+[`playcanvas-adapter.md` § Diagnosing transition stalls](playcanvas-adapter.md#diagnosing-transition-stalls-diag--dxrdiag-36)).
+Now the live camera starts BEFORE the swap: the current asset is put on the live layer in addition
+to its own, so the eye keeps drawing it untouched (its placement set does not change) while the
+live camera's manager builds its work buffer and sorts. At the swap only the World placement goes,
+the live layer's set is unchanged, the manager keeps its sorted state, and the overlay samples the
+live target from the swap frame on. The price is latency, not a freeze: the transition starts once
+that sort is back (bounded at 1.5 s; a hidden tab or a stalled sorter falls back to the bridge).
+`?dxrdiag=cold` restores the old path for an A/B.
 
 The incoming photo's rig is adopted at once, so the views the runtime returns from then on are the
 NEW photo's. The live camera sits under a node chain `N = R_o·K_o·D_o·(K_n·D_n)⁻¹` that maps them

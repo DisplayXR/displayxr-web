@@ -5,6 +5,31 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No pixel change at rest; the
+first frames of a live `crossfade` / `wavefront` / particle transition change (see Fixed).
+
+### Added
+
+- **Transition diagnostics: `diag` / `?dxrdiag`** (#36). Off by default. Records every woven
+  frame (interval, whether its eye poses are bit-identical to the previous frame's, what the
+  transition overlay shows), every `setViewRig` push with its values, long tasks and the
+  `setSource` phases. Shows a small overlay excluded from the weave, logs one
+  `[dxr-diag] transition #N <verdict>` line per transition, and exposes `window.__dxrDiag`
+  (`copy(__dxrDiag.dump())`). Kill switches for A/B: `norig`, `frozen`, `nowarm`, `cold`,
+  `nooverlay`. See `docs/playcanvas-adapter.md` § Diagnosing transition stalls.
+
+### Fixed
+
+- **The live outgoing photo no longer starts as a still** (#36). A live transition put the old
+  photo on a FRESH gsplat manager at the swap, and until that manager's first sort came back the
+  overlay showed the frozen capture at full weight: the whole picture stood still for 2–7 frames
+  right as the transition started. The live camera now pre-sorts the current photo BEFORE the swap
+  (it stays on screen, untouched, meanwhile), so the overlay samples the live image from the swap
+  frame on: 0 frozen frames. The transition starts later by about the length of that sort instead
+  (bounded at 1.5 s, then the old bridge). `?dxrdiag=cold` restores the 1.19.2 path.
+
 ## 1.19.3 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `./model`). No API change and no pixel change on a core that

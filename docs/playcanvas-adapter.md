@@ -556,6 +556,100 @@ the `wavefront` draws each photo only on its side of the front, and its ridge no
 the work buffer: about 1.4× a still photo in stereo instead of 2×. The `crossfade` still draws
 both. See [`splat-effects.md` § Wavefront: one draw's worth](splat-effects.md#wavefront-one-draws-worth).
 
+### Diagnosing transition stalls (`diag` / `?dxrdiag`) (#36)
+
+After 1.19.2 a woven panel still showed head tracking "stopping for a moment" at every Photos
+transition (persistent handle, `prepareSource` in the dwell, live outgoing). Four causes look the
+same on the panel, and a headless browser can only see some of them, so the handle can record what
+each woven frame actually was. Turn it on with `addSplat(..., { engine: 'playcanvas', diag: true })`
+or by adding `?dxrdiag=1` to the page URL (the option wins; `diag: false` turns it off).
+
+**What is recorded, per woven frame** (the session's `onFrame`, after the draw):
+
+| field | meaning | what it catches |
+|---|---|---|
+| `dt` | time since the previous session frame | a MAIN-THREAD (or GPU back-pressure) stall: the page drew nothing new for `dt` |
+| `held` | every view's `transform` AND `projectionMatrix` bit-identical to the previous frame's | a TRACKING hold: frames still arrive, the eyes do not move. A live eye tracker never repeats itself to the last bit, so two or more in a row mean the browser handed back old views: it keeps the last good views when a locate reply comes back empty (for up to 29 replies), and it reuses the previous reply while its UI thread is busy |
+| `delta`, `rel`, `ipd` | the largest eye move (world units), the same in eye separations, the eye separation | how much the head moved; `rel` is comparable across rigs |
+| `img`, `imgW` | what the transition overlay shows: `none`, the `frozen` capture or the `live` outgoing target, and its share of the picture | a FROZEN IMAGE: poses move, but the picture on screen is a still |
+| `afterRig` | a `setViewRig` push in the last 3 frames | a pose jump there is the rig, not the head |
+| `phase`, `sinceCall` | `prepare` / `swap` / `window` / `settle` / `idle`, and ms since the `setSource` call | where in the transition it happened |
+
+Also recorded: every `setViewRig` push with its values (a changed rig only: `controls:'page'`
+re-declares per frame), every long task (`PerformanceObserver`), the window rAF cadence (the main
+thread's own clock, separate from the session's), and marks (`prepared`, `presorted`, `outgoing`,
+`live-shown`).
+
+**Where it goes.**
+- A small overlay at the bottom left, excluded from the weave. Top strip: the last 3 s, one bar
+  per session frame (height = frame interval, 0–100 ms). **Red** = held poses, **orange** = the
+  frozen capture on screen, **grey** = just after a rig push, **blue** = normal; the white line is
+  head motion. Bottom strip: the last transition, frozen at its settle, with its verdict.
+- One console line per transition, 1 s after it settles:
+  `[dxr-diag] transition #N <verdict> {...}`, plus a line per rig push and per phase.
+- `window.__dxrDiag`: `copy(__dxrDiag.dump())` in DevTools puts the whole record on the clipboard
+  as JSON (every tile: transitions with their frame windows, events, the last ~30 s of frames).
+
+**The verdict** (per transition, from 300 ms before the call to 1 s after the settle):
+
+| verdict | means | next step |
+|---|---|---|
+| `TRACKING-HELD n frames (x ms) with frames still arriving` | the browser/runtime gave the page the same eye poses n frames running | a browser-side issue, not the page's: run the browser with `--vmodule=displayxr_weave_client=1` and look for `inline3d rig miss` counts (`no_rect`, `pose_invalid`) at the transition; line it up with the rig pushes in the same summary |
+| `MAIN-THREAD gap x ms (longest task y ms)` | a session frame took more than 50 ms to come | the page (or the GPU) stalled; the long tasks and the `swap`/`window` phase say where |
+| `IMAGE-FROZEN n frames (x ms) on the frozen capture` | the picture was the frozen capture at >= 0.5 weight | the frozen bridge (should be 0 since the pre-sort; see below), or `outgoing:'frozen'` |
+| `CLEAN` | none of the above | if the panel still shows a stop, it is downstream of the page's frames (the weave), and the dump proves it |
+
+**What it found headlessly, and the fix.** On the fake 2-view wall (headless Chrome, M1, real
+GPU, `prepareSource` then `setSource(prepared, { transition })`, 1.18M gaussians each, head
+moving; median [range] over 3–4 runs; the box was heavily loaded by other work, load average
+100–300, so absolute gaps are pessimistic and the arms were interleaved run by run), the diag's
+own verdict on 1.19.2 is `IMAGE-FROZEN`: from the swap until the live camera's FRESH manager has
+sorted, the overlay shows the frozen capture at full weight. That is the whole picture standing
+still at the start of every transition while frames and poses keep coming. The pre-sort (next
+release; [`splat-effects.md` § Live or frozen outgoing](splat-effects.md#live-or-frozen-outgoing))
+removes it:
+
+| CPU | transition | frozen-image frames (ms), 1.19.2 | pre-sort | `setSource` call → swap, 1.19.2 | pre-sort |
+|---|---|---|---|---|---|
+| 1× | crossfade | 3 [2–7] (162 [111–260] ms) | **0** | 78 [65–112] ms | 245 [110–278] ms |
+| 1× | wavefront | 4 [4–5] (67 [66–83] ms) | **0** | 32 ms | 116 [114–132] ms |
+| 4× | crossfade | 6 [4–6] (108 [66–117] ms) | **0** | 27 [22–29] ms | 125 [123–140] ms |
+| 4× | wavefront | 6 [5–7] (133 [99–183] ms) | **0** | 25 [24–27] ms | 111 [109–141] ms |
+| 6× | crossfade | 8 [5–15] (330 [86–666] ms) | **0** | 37 [30–54] ms | 164 [136–238] ms |
+| 6× | wavefront | 5 [5–5] (124 [117–134] ms) | **0** | 32 [29–33] ms | 150 [125–161] ms |
+
+The cost is the second pair of columns: the transition starts ~80–130 ms later (the sort), while
+the current photo is still on screen and live, which is invisible in a 6 s slideshow.
+
+Main thread from the call to 30 frames after the swap (the same runs; CPU throttling set on the
+page's renderer AFTER navigation, calibrated before and after each run): no sort runs on the main
+thread (the engine sorts on a worker per gsplat manager). What does run at the swap: a new
+manager for the live camera (a sort WORKER created from a Blob URL), `setCenters` copying the
+1.18M centres (14 MB) for each manager that gets a new asset (≈45 ms self time at 6× for the
+two), render-target / work-buffer texture allocation, `applyLoaded`'s rig pass (4–12 ms; 31 ms
+once at 6×) and native GL time. Longest task: at 1×, none over 50 ms in 5 of 6 runs; at 4×,
+1.19.2 had 52–82 ms tasks on the swap frame in 2 of 7 runs, the pre-sort none; at 6×, 1.19.2 had
+118–278 ms on the swap frame in 4 of 7 runs, the pre-sort 59–123 ms in 2 of 6, at the START of the
+pre-sort (the live manager's creation moved there), with the current photo live on screen. So yes,
+a single task can exceed 30 ms under 4–6× throttling; on an unthrottled M1 it usually does not.
+The diag reports it on the panel as `MAIN-THREAD gap`.
+
+**Kill switches for A/B on the panel** (comma-separated, in `diag` or `?dxrdiag=`, e.g.
+`?dxrdiag=norig,frozen`; any switch also turns diag on):
+
+| switch | does | tests |
+|---|---|---|
+| `norig` | the rig declared before the first `setSource` stays declared; every later re-declaration is dropped (logged as `rig-dropped`). The incoming photo renders through the kept rig: its lens is wrong, accepted for the test. | "the rig change makes the browser/runtime hold or re-filter the eyes" |
+| `frozen` | forces `outgoing: 'frozen'` on every `setSource` | the old photo as a 800–2000 ms still: the unmistakable "hung" look, as a reference |
+| `nowarm` | skips the transition shader pre-warm (`prepareSource` / `setSource` compile nothing ahead) | a first-frame shader link |
+| `cold` | skips the live outgoing pre-sort (the 1.19.2 path: the frozen capture bridges until a fresh manager has sorted) | the frozen bridge |
+| `nooverlay` | records, logs and dumps, no overlay | the overlay's own cost |
+
+The recipe on the panel: run the Photos show with `?dxrdiag=1` for three or four transitions and
+read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same way; paste
+`copy(__dxrDiag.dump())` from each. Costs: a few floats per frame and one 2D canvas repainted at
+10 Hz; nothing when off.
+
 ## `perf` on this engine
 
 | Spark knob | engine | note |
