@@ -84,8 +84,7 @@
         {
           "path": "vda/vda_s_stream_518x294_w16.onnx",
           "sha256": "71e3ae9e96606afe905eb2f4bab71700e7b9a5b6167bf9d145851720b452a949",
-          "size": 57803548,
-          "url": "${baseUrl}/vda/vda_s_stream_518x294_w16.onnx"
+          "size": 57803548
         }
       ]
     },
@@ -121,8 +120,7 @@
         {
           "path": "vda/vda_s_stream_364x210_w16.onnx",
           "sha256": "2bcf27020b45bd25f3ed4e28b3fc328c33af934661c0ee2be73a427a30d4f184",
-          "size": 57506238,
-          "url": "${baseUrl}/vda/vda_s_stream_364x210_w16.onnx"
+          "size": 57506238
         }
       ]
     },
@@ -163,8 +161,7 @@
         {
           "path": "da2/depth_anything_v2_small_fp16.onnx",
           "sha256": "2df6223f206b5164e21f664ace61dabeb9bb6a49b8b5a3e00510b4807d0f5b04",
-          "size": 49642442,
-          "url": "${baseUrl}/da2/depth_anything_v2_small_fp16.onnx"
+          "size": 49642442
         }
       ]
     },
@@ -197,8 +194,7 @@
         {
           "path": "still/moge3_vitl_770x434_fp16.onnx",
           "sha256": "46d6b8c0c800c160b83414a6beb49194a7be1a7e6774f4538603abea488c8b9f",
-          "size": 715220757,
-          "url": "${baseUrl}/still/moge3_vitl_770x434_fp16.onnx"
+          "size": 715220757
         }
       ]
     },
@@ -231,8 +227,7 @@
         {
           "path": "still/moge3_vitl_1022x574_fp16.onnx",
           "sha256": "7db5c5273208dd04119bc4273907f9f653f383586cc5028ebd87417f8d8721a5",
-          "size": 757431203,
-          "url": "${baseUrl}/still/moge3_vitl_1022x574_fp16.onnx"
+          "size": 757431203
         }
       ]
     },
@@ -263,8 +258,7 @@
         {
           "path": "still/da3mono_large_770x434_fp16.onnx",
           "sha256": "c8cb2d8254d3515e5bac0e9747bd2477fab06649ebebd064e797a230d55585de",
-          "size": 669327885,
-          "url": "${baseUrl}/still/da3mono_large_770x434_fp16.onnx"
+          "size": 669327885
         }
       ]
     },
@@ -295,8 +289,7 @@
         {
           "path": "still/da3mono_large_1022x574_fp16.onnx",
           "sha256": "459676dadee0cd76d24b7723aca1a8113880f8d5afcc7410d9a085e75d554507",
-          "size": 671965743,
-          "url": "${baseUrl}/still/da3mono_large_1022x574_fp16.onnx"
+          "size": 671965743
         }
       ]
     },
@@ -324,8 +317,7 @@
         {
           "path": "inpaint/light_inpaint_v1_1024x576_fp16.onnx",
           "sha256": "2af8952a4da6e8fde91da120329656ef885e16e159faa25b821902688658ad36",
-          "size": 6936267,
-          "url": "${baseUrl}/inpaint/light_inpaint_v1_1024x576_fp16.onnx"
+          "size": 6936267
         }
       ]
     },
@@ -353,8 +345,7 @@
         {
           "path": "inpaint/light_inpaint_v1_512x288_fp16.onnx",
           "sha256": "c1cd5b9ac2a37840efa135641f4f7e5824ee8f6b067472c0f5037d9b2e8be011",
-          "size": 5167981,
-          "url": "${baseUrl}/inpaint/light_inpaint_v1_512x288_fp16.onnx"
+          "size": 5167981
         }
       ]
     }
