@@ -57,18 +57,20 @@ workers (`worker-src` falls back to `script-src`). The bundle is built for that:
 - **No `import.meta` and no static `import`**: the build fails if either survives. The only `import()` left
   is ORT's runtime URL. `js/lift/providers/models.js`'s `import.meta.url` manifest default is rewritten
   to `displayxr-lift://runtime/models.json`.
-- **`data:` wasm.** Spark loads its wasm from `data:` URLs. The bundle answers `data:` fetches locally, on
-  the main thread and in its worker twins.
-- **Workers.** On the first `convertAt` the bundle probes once with a blob worker that does what
-  Spark's does: `fetch` of `data:` wasm, then `instantiate`. If the probe does not answer cleanly within 1.5 s,
-  every worker the bundle owns runs **on the main thread**:
-  - **Spark's sort/decode workers** get an in-thread twin. The build compiles Spark's worker source string
-    into a function, so there is no eval at runtime. The real worker's blob is rebuilt from that same
-    function with `Function.prototype.toString`, so only one copy of its wasm ships.
+- **No wasm outside ORT.** The explore renderer is the PlayCanvas engine (until 2026-09: three + Spark,
+  whose workers fetched `data:` wasm that the bundle had to answer locally — gone with it). The PLY is
+  handed to the engine as in-memory bytes (`file.contents`), never a `blob:` URL.
+- **Workers.** On the first `convertAt` the bundle probes once with a `blob:` worker that just answers. If
+  the probe does not answer cleanly within 1.5 s, every worker the bundle owns runs **on the main thread**:
+  - **PlayCanvas's gsplat sort worker** (the explore renderer's only worker) runs in-thread behind
+    `workers.js` `mainThreadWorker()`. The build rewrites the engine's sorter so the worker function takes
+    its dependencies as parameters — `(self, GSplatSortBinWeights)` — which is also what makes the REAL
+    worker survive minification (the engine pastes the bin-weights class in by NAME, and the minifier
+    renames the function's reference to it). No eval.
   - **lift-gen's PLY emit** uses lift-gen's own in-thread path (`worker:false`).
   - **ORT** is always worker-free (see above).
 
-  Every path is therefore worker-free when it has to be. The cost is main-thread time (Spark's sort while
+  Every path is therefore worker-free when it has to be. The cost is main-thread time (the sort while
   orbiting, and the ~100–300 ms PLY emit), not correctness.
 - **Output canvas**: this is the SDK's closed shadow root (`placement.js`).
 - **Cross-origin media: NOT yet supported.** Patch 0222 exempts only WebGL `texImage2D` and
@@ -84,26 +86,29 @@ npm run build:lift-builtin        # = node tools/lift-builtin/build.mjs   [--out
 
 The SDK itself stays dependency-free. The build-only deps are pinned exactly in
 `tools/lift-builtin/package.json` (with a lockfile) and installed there on the first run:
-esbuild 0.28.2, three 0.180.0, @sparkjsdev/spark 2.1.0, onnxruntime-web
+esbuild 0.28.2, playcanvas 2.22.3 (bundled from its ES-module source tree, `build/playcanvas/src`, so
+esbuild keeps only what `js/lift/explore.js` names), onnxruntime-web
 `1.31.0-dev.20260918-bc8e7ed75`, and puppeteer-core (test only). The build **fails** if the installed
 onnxruntime-web differs from `ORT_VERSION` in `js/lift/providers/ort.js`, because the SDK's pin is the single source of truth.
-It also fails if any source transform stops matching, for example after a Spark bump. Each transform is a named
+It also fails if any source transform stops matching, for example after a playcanvas bump. Each transform is a named
 string replacement in `build.mjs`.
 
 Output in `lift-sdk/` (gitignored):
 
 | file | size | gzip | brotli |
 |---|---|---|---|
-| `displayxr-lift-builtin.js` (+ `.map`, not staged) | 5.4 MB | 1.9 MB | 0.88 MB |
+| `displayxr-lift-builtin.js` (+ `.map`, not staged) | 1.38 MB | 391 KB | 306 KB |
 | `ort.jspi.min.mjs` | 65 KB | 20 KB | 18 KB |
 | `ort-wasm-simd-threaded.jspi.mjs` | 50 KB | 18 KB | 16 KB |
 | `ort-wasm-simd-threaded.jspi.wasm` | 16.2 MB | 4.0 MB | 2.6 MB |
 | `MANIFEST.json` | | | |
 
-The bundle is 85 % Spark, and most of that is its two base64 worker wasm blobs. three is 12 % and the SDK 3 %.
-The pak brotli-compresses its resources, so the browser grows by about 3.5 MB.
+The bundle is 88 % PlayCanvas (the WebGL2 device, the scene/gsplat pipeline, the PLY parser — no WebGPU
+backend: the device is constructed directly) and 12 % SDK. With three + Spark it was 5.4 MB / 1.9 MB gzip /
+0.88 MB brotli (85 % Spark, mostly its two base64 worker wasm blobs): **−4.1 MB raw, −1.5 MB gzip, −0.58 MB
+brotli**. The pak brotli-compresses its resources, so the browser grows by about 3.0 MB (was 3.5 MB).
 
-`MANIFEST.json` holds `version`, `sdkVersion`, `commit`, `dirty`, the ORT/three/Spark/esbuild pins,
+`MANIFEST.json` holds `version`, `sdkVersion`, `commit`, `dirty`, the ORT/playcanvas/esbuild pins,
 `modelsJson` (the sha256 and `generated` of the manifest compiled into the bundle), and per staged file its
 `size`, `gzip`, `brotli` and `sha256`.
 
@@ -151,13 +156,18 @@ Measured on an M1 Pro with Chrome 154, same-origin media, models from localhost 
 | pause → explore | 4.2 s (MoGe load + depth 1.5 s, generate 0.33 s, 0.79 M splats) | 4.8 s |
 | image `convertAt` → explore (1.25 M splats) | 6.4 s | 6.3 s |
 | explore fps (mono fallback) | 60 | 40–47 while dragging |
+| **PlayCanvas bundle, 2026-09-25** (office photo; `explore` comfort on) | | |
+| bundle fetch / evaluate | 10 ms / 16 ms | 5 ms / 25 ms |
+| video `convertAt` → live / pause → explore | 5.6 s / 7.4 s (0.88 M splats, load 424 ms) | 4.9 s / 6.9 s |
+| image `convertAt` → explore (0.90 M splats) | 6.0 s (explore load 527 ms), 60 fps | 6.4 s, 44–60 fps |
 | API keys | `version, convertAt, cancelAll, status`, frozen | same |
-| globals added | `__dxrLift` only (three/Spark leave nothing) | same |
+| globals added | `__dxrLift` only (the engine leaves nothing) | same |
 
 Expected console noise:
 
 - `strict` mode: the probe's `worker-src` violation (by design).
-- Both modes: Spark's `new Function` probe (`script-src eval`, caught) and Spark's known `Worker terminate` rejection on dispose (docs/lift.md, Known issues).
+- Nothing else: the Spark-era `new Function` probe and `Worker terminate` rejection are gone with Spark
+  (re-run 2026-09-25 on the PlayCanvas bundle: `open` mode console empty; `strict` = the probe's violation only).
 
 What the harness cannot show:
 

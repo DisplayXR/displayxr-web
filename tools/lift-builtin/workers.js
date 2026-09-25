@@ -1,22 +1,21 @@
-// workers.js — Worker capability probe + the main-thread fallbacks the built-in bundle needs.
+// workers.js — Worker capability probe + the main-thread fallback the built-in bundle needs.
 //
-// The built-in runs in the DisplayXR Browser's "Convert to 3D" isolated world, on ANY page. Two
-// things there can make a Worker unusable, and neither throws where the SDK would catch it:
-//   1. the page's CSP (`worker-src` / `child-src` / `script-src` fallback) blocks the blob: URL the
-//      worker is created from — Chromium reports that as an async `error` event, not an exception;
-//   2. the isolated world's CSP (`connect-src displayxr-lift: https:`) or the worker's inherited one
-//      blocks `fetch('data:application/wasm…')`, which is how Spark's workers load their wasm —
-//      the worker then dies in `__wbg_init` and every request to it hangs forever.
-// So the built-in PROBES once, with a worker that does exactly what Spark's does (blob URL +
-// data: wasm fetch + instantiate), and on anything but a clean reply within PROBE_MS switches every
-// worker the bundle owns to an in-thread emulation:
-//   - Spark's two worker kinds (the sort/decode pool and the legacy worker) → `mainThreadWorker()`
-//     running the SAME worker code, compiled into the bundle as a function at build time
-//     (build.mjs extracts it from Spark's string literal — no eval at runtime, the world's CSP has
-//     no 'unsafe-eval');
+// The built-in runs in the DisplayXR Browser's "Convert to 3D" isolated world, on ANY page. The
+// page's CSP (`worker-src` / `child-src` / `script-src` fallback) can block the blob: URL a worker
+// is created from — Chromium reports that as an async `error` event, not an exception the SDK
+// would catch. So the built-in PROBES once, with a blob: worker that just answers, and on anything
+// but a clean reply within PROBE_MS switches every worker the bundle owns to an in-thread
+// emulation:
+//   - PlayCanvas's gsplat SORT worker (the explore renderer's one worker) → `mainThreadWorker()`
+//     running the SAME function, passed in at build time (build.mjs transformPcSorter — no eval,
+//     the world's CSP has no 'unsafe-eval');
 //   - lift-gen's PLY emit worker → lift-gen's own in-thread path (`emitLiftSplats`).
-// Everything here is worker-FREE when the probe fails; the cost is main-thread time (Spark's sort
-// on orbit, the ~100–300 ms PLY emit), not correctness.
+// Everything here is worker-FREE when the probe fails; the cost is main-thread time (the sort on
+// orbit, the ~100–300 ms PLY emit), not correctness.
+//
+// (Until 2026-09 the explore renderer was Spark, whose workers also fetched their wasm from data:
+// URLs; the probe tested that too and this file answered data: fetches locally. PlayCanvas's sort
+// worker is plain JS, so both are gone.)
 
 const PROBE_MS = 1500;
 
@@ -38,14 +37,10 @@ export function forceWorkerMode(mode) {
   }
 }
 
-// An 8-byte empty module: `\0asm` + version 1.
-const EMPTY_WASM_DATA_URL = 'data:application/wasm;base64,AGFzbQEAAAA=';
-const PROBE_SRC =
-  `fetch(${JSON.stringify(EMPTY_WASM_DATA_URL)}).then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b))` +
-  `.then(()=>postMessage('ok'),e=>postMessage('fail:'+(e&&e.message||e)));`;
+const PROBE_SRC = `postMessage('ok');`;
 
 /**
- * Resolve once: can this document run the bundle's workers (blob: worker + data: wasm fetch)?
+ * Resolve once: can this document run the bundle's workers (a blob: worker)?
  * @returns {Promise<{mode:'worker'|'main-thread', reason:string}>}
  */
 export function probeWorkers() {
@@ -71,7 +66,7 @@ export function probeWorkers() {
       url = URL.createObjectURL(new Blob([PROBE_SRC], { type: 'text/javascript' }));
       w = new Worker(url);
       w.onmessage = (e) =>
-        e.data === 'ok' ? finish('worker', 'blob worker + data: wasm ok') : finish('main-thread', String(e.data));
+        e.data === 'ok' ? finish('worker', 'blob worker ok') : finish('main-thread', String(e.data));
       w.onerror = (e) => {
         e.preventDefault?.();
         finish('main-thread', 'worker error: ' + ((e && e.message) || 'blocked (CSP?)'));
@@ -88,38 +83,13 @@ export function workersOk() {
   return workerState.mode === 'worker';
 }
 
-// ── data: URL fetch (Spark loads its wasm from a data: URL; the lift world's connect-src has no data:)
-function decodeDataUrl(u) {
-  const comma = u.indexOf(',');
-  const head = u.slice(5, comma);
-  const body = u.slice(comma + 1);
-  const b64 = /;base64$/i.test(head);
-  const type = head.replace(/;base64$/i, '').split(';')[0] || 'application/octet-stream';
-  let bytes;
-  if (b64) {
-    const bin = atob(body);
-    bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  } else {
-    bytes = new TextEncoder().encode(decodeURIComponent(body));
-  }
-  return new Response(bytes, { headers: { 'content-type': type } });
-}
-
-/** `fetch` that answers data: URLs locally and delegates everything else. */
-export function dataFetch(input, init) {
-  const u = typeof input === 'string' ? input : input && (input.href || input.url);
-  if (typeof u === 'string' && u.startsWith('data:')) return Promise.resolve(decodeDataUrl(u));
-  return globalThis.fetch(input, init);
-}
-
 // ── In-thread Worker emulation ─────────────────────────────────────────────────────────────
 function cloneMsg(data, transfer) {
   const t = Array.isArray(transfer) ? transfer : transfer && transfer.transfer;
   try {
     return structuredClone(data, t && t.length ? { transfer: t } : undefined);
   } catch {
-    return data; // not cloneable (should not happen for Spark's messages): hand it over as-is
+    return data; // not cloneable (should not happen for the sorter's messages): hand it over as-is
   }
 }
 
