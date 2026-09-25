@@ -39,6 +39,7 @@ import {
   CameraComponentSystem,
   GSplatComponentSystem,
   GSplatHandler,
+  TextureHandler,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
   Asset,
@@ -74,7 +75,7 @@ export * from './explore-gl.js';
 
 /** The engine members this module uses (tests / diagnostics). */
 const pc = {
-  WebglGraphicsDevice, AppOptions, AppBase, CameraComponentSystem, GSplatComponentSystem, GSplatHandler,
+  WebglGraphicsDevice, AppOptions, AppBase, CameraComponentSystem, GSplatComponentSystem, GSplatHandler, TextureHandler,
   ShaderChunks, SHADERLANGUAGE_GLSL, Asset, Entity, Color, RenderView, LAYERID_SKYBOX, TONEMAP_NONE,
 };
 
@@ -120,7 +121,10 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, format =
   const opts = new pc.AppOptions();
   opts.graphicsDevice = device;
   opts.componentSystems = [pc.CameraComponentSystem, pc.GSplatComponentSystem];
-  opts.resourceHandlers = [pc.GSplatHandler];
+  // TextureHandler too: a bundled .sog is loaded by the engine as texture SUB-ASSETS (its webp
+  // planes). Without the handler they never decode, the parser swallows that (Promise.allSettled),
+  // and the resource comes up with the right numSplats and NO data — an all-black explore.
+  opts.resourceHandlers = [pc.GSplatHandler, pc.TextureHandler];
   const app = new pc.AppBase(canvas);
   app.init(opts);
   // RESOLUTION_FIXED is AppBase's default: the engine never resizes the canvas (the caller does).
