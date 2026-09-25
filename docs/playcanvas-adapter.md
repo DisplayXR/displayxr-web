@@ -652,6 +652,64 @@ the `wavefront` draws each photo only on its side of the front, and its ridge no
 the work buffer: about 1.4× a still photo in stereo instead of 2×. The `crossfade` still draws
 both. See [`splat-effects.md` § Wavefront: one draw's worth](splat-effects.md#wavefront-one-draws-worth).
 
+### Each photo through its own rig, during a live transition
+
+A panel report: in a photo slideshow app (each photo a SOG with a camera block, so each has its own
+**camera rig** — its own convergence and vertical FOV), every transition that keeps the old photo
+alive next to the new one (crossfade, wavefront, the particle transitions) showed a small camera
+change right before it started; `reassemble` (one splat at a time) did not. Having two splats
+loaded was not the cause. The rig was:
+
+- **The live outgoing photo was drawn through the wrong eyes.** Once the incoming photo's rig is
+  declared, the runtime's views are the incoming rig's. The live outgoing camera mapped them back
+  with a node chain `N = R_o·K_o·D_o·D_n⁻¹·K_n⁻¹`, `D = diag(c·t, c·t, c)`. That maps the incoming
+  window onto the outgoing window exactly, but it scales the eyes with it. A camera rig's eyes are
+  the viewer's eyes (times `metersToVirtual`) and do not scale with the window, so the outgoing
+  photo's disparity and head parallax were multiplied by `(c_o·t_o)/(c_n·t_n)` from the swap on,
+  for the whole window.
+- **A declaration reaches the views a frame (or more) later.** For those frames the chain
+  "corrected" views that were still the outgoing rig's, and the incoming photo was drawn through
+  them.
+
+`reassemble` hid both: its rig switch lands in its empty beat, with no second photo on screen.
+
+**The fix (1.24.0), exact:** `js/inline3d-splat-rig-map.js`. The SDK records every rig it declares
+(by value), reads off each frame's views which one they were located for, and draws each photo
+through its own rig: the incoming (current) photo through the last declared rig, the outgoing
+photo through the rig it had. A camera rig is a portal, one window on the convergence plane seen
+from each eye. The map from one camera rig's views to another's sends window onto window (in-plane
+scale `t_T·D_T / t_F·D_F`, the same in x and y since both windows have the canvas's aspect) and eye
+onto eye (the runtime's ipd/parallax factors and `metersToVirtual` inverted and re-applied). That
+maps every ray onto its counterpart, so `viewInv_T = A·viewInv_F` with the runtime's projection
+verbatim renders exactly the target rig's view. Only the depth rows move (near/far divided by the
+map's depth scale, as `clampProjectionDepth` does). No frustum, tangent or off-axis matrix is built.
+
+Which rig a view set belongs to is read from the views: under the right descriptor each view's
+frustum crosses the window plane exactly in the window. The views pin the window (pose,
+convergence, vertical FOV) but not the eye factors: rigs that differ only in `ipdFactor` /
+`parallaxFactor` / `metersToVirtual` tie, and then the rig declared when the views were pulled wins.
+Views that no declared camera rig explains (a display rig, a runtime clamp) are drawn as located,
+and the outgoing photo keeps the old chain. A display rig is never mapped: its eyes are absolute,
+which would need the nominal viewer distance the browser does not expose.
+
+Measured with `tools/rig-swap-capture` (headless Chrome, ANGLE Metal; the page plays the runtime's
+camera rig with a 1- or 2-frame rig-arrival lag; `ports` → `bakery`, convergence 1.68 → 0.41 m,
+vertical FOV 51.5° → 54.1°). Error is the reference points' screen position against where each
+photo's own rig puts them, per eye, over the whole run:
+
+| transition, lag | outgoing, 1.23.0 | outgoing, 1.24.0 | incoming, 1.23.0 | incoming, 1.24.0 | live target vs. frame before the swap, 1.23.0 → 1.24.0 |
+|---|---|---|---|---|---|
+| crossfade, 1 | 102.5 px (whole window) | < 0.005 px | 0 | < 0.005 px | MAE 24.1 → 0.000 (max 1 LSB) |
+| crossfade, 2 | 208.0 px (lag frame), then 102.5 | < 0.005 px | 113.5 px (lag frame) | < 0.005 px | MAE 43.6 → 0.000 (max 1 LSB) |
+| wavefront, 1 / 2 | 102.5 / 208.0 px | < 0.005 px | 0 / 113.5 px | < 0.005 px | → 0.000 (max 1 LSB) |
+| swarm, 1 / 2 | 102.5 / 208.0 px | < 0.005 px | 0 / 113.5 px | < 0.005 px | → 0.000 (max 1 LSB) |
+
+(Eyes off-centre and leaning; at the nominal viewer the 1.23.0 outgoing error is ±41 px of
+disparity at half the convergence distance, 94 px on the lag frame.) The end frame of every
+transition equals a cut's (MAE 0). This pair's windows differ 4.1×; a pair that differs less jumps
+proportionally less, which is why it read as "small" on the panel. Unit tests:
+`test/rig-map.test.mjs`, against an independent runtime oracle (every mutant of the map caught).
+
 ### Diagnosing transition stalls (`diag` / `?dxrdiag`) (#36)
 
 After 1.19.2 a woven panel still showed head tracking "stopping for a moment" at every Photos
@@ -669,6 +727,7 @@ or by adding `?dxrdiag=1` to the page URL (the option wins; `diag: false` turns 
 | `delta`, `rel`, `ipd` | the largest eye move (world units), the same in eye separations, the eye separation | how much the head moved; `rel` is comparable across rigs |
 | `img`, `imgW` | what the transition overlay shows: `none`, the `frozen` capture or the `live` outgoing target, and its share of the picture | a FROZEN IMAGE: poses move, but the picture on screen is a still |
 | `afterRig` | a `setViewRig` push in the last 3 frames | a pose jump there is the rig, not the head |
+| `rigAt` / `rigIn` / `rigOut` | the declared rig (tracker id) the views were located for (null: none matched); the rig the current photo was drawn through (`+`: remapped to it); how the live outgoing photo was drawn (`own`, `remapped`, `eye`, `chain`; null: none) | how many frames a declaration takes to reach the views (`rigAt` catching up with `rigIn`), and which photo was drawn through what |
 | `phase`, `sinceCall` | `prepare` / `swap` / `window` / `settle` / `idle`, and ms since the `setSource` call | where in the transition it happened |
 
 Also recorded: every `setViewRig` push with its values (a changed rig only: `controls:'page'`
@@ -741,6 +800,7 @@ The diag reports it on the panel as `MAIN-THREAD gap`.
 | `cold` | skips the live outgoing pre-sort (the 1.19.2 path: the frozen capture bridges until a fresh manager has sorted) | the frozen bridge |
 | `nooverlay` | records, logs and dumps, no overlay | the overlay's own cost |
 | `oldpick` | `handle.pick()` always runs the full scan over every centre, no pick index (the 1.21.1 path) | "the page's own picks block the main thread at the swap's end" |
+| `oldrig` | no rig tracking: the views are drawn as the runtime located them, and a live outgoing photo goes back on the pre-1.24 node chain | "the outgoing photo jumps when the incoming photo's rig is declared" (§ Each photo through its own rig) |
 
 The recipe on the panel: run the Photos show with `?dxrdiag=1` for three or four transitions and
 read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same way; paste

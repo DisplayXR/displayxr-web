@@ -1,0 +1,195 @@
+<!doctype html><html><head><meta charset="utf-8"><title>rig swap capture</title>
+<style>html,body{margin:0;background:#000}canvas{display:block;width:1280px;height:720px}</style>
+<script type="importmap">{"imports":{"playcanvas":"https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs","three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/","@sparkjsdev/spark":"https://sparkjs.dev/releases/spark/2.1.0/spark.module.js","@displayxr/inline3d/splat":"../../js/inline3d-splat.js"}}</script>
+</head><body><canvas id="tile"></canvas>
+<script type="module">
+// Headless stereo harness for the rig map (js/inline3d-splat-rig-map.js). run.mjs drives it.
+// The page plays the RUNTIME: it locates camera-rig views (displayxr-common's
+// dxr_camera3d_compute_view, eye factors included) for the rig the SDK declared LAG frames ago,
+// on a manual clock, and logs per frame where each photo's reference points land vs. where its
+// OWN rig puts them.
+const q = new URLSearchParams(location.search);
+const LAG = +(q.get('lag') ?? 1);
+let clock = 1000;
+const realNow = performance.now.bind(performance);
+performance.now = () => clock;
+const rafQ = [];
+window.requestAnimationFrame = (cb) => { rafQ.push(cb); return rafQ.length; };
+window.cancelAnimationFrame = () => {};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const N = 0.6, IPD = 0.064;
+const SCREEN = { w: 0.3, h: 0.3 * 720 / 1280 };
+// static, off-centre, leaning head (exercises parallax + ipd, not only the nominal eye)
+const EYES = (q.get('eyes') === 'nominal') ? [[-IPD / 2, 0, N], [IPD / 2, 0, N]] : [[0.03 - IPD / 2, 0.012, 0.55], [0.03 + IPD / 2, 0.012, 0.55]];
+
+function rot(qq, v) { const [x, y, z, w] = qq; const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]); return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)]; }
+function poseM(p, qq) { const [x, y, z, w] = qq; const m = new Float64Array(16); m[0] = 1 - 2 * (y * y + z * z); m[1] = 2 * (x * y + w * z); m[2] = 2 * (x * z - w * y); m[4] = 2 * (x * y - w * z); m[5] = 1 - 2 * (x * x + z * z); m[6] = 2 * (y * z + w * x); m[8] = 2 * (x * z + w * y); m[9] = 2 * (y * z - w * x); m[10] = 1 - 2 * (x * x + y * y); m[12] = p[0]; m[13] = p[1]; m[14] = p[2]; m[15] = 1; return m; }
+function projT(l, r, d, u, n = 0.1, f = 100) { const P = new Float64Array(16); P[0] = 2 / (l + r); P[8] = (r - l) / (l + r); P[5] = 2 / (u + d); P[9] = (u - d) / (u + d); P[10] = -(f + n) / (f - n); P[11] = -1; P[14] = (-2 * f * n) / (f - n); return P; }
+// dxr_camera3d_compute_views: eye factors about the nominal viewer, then the portal
+function cameraViews(rig) {
+  const m = rig.metersToVirtual || 1, invd = rig.convergenceDiopters, t = Math.tan(rig.verticalFov / 2), ro = t * SCREEN.w / SCREEN.h, uo = t;
+  const ipd = rig.ipdFactor ?? 1, par = rig.parallaxFactor ?? 1;
+  const c = [0, 1, 2].map((k) => EYES.reduce((s, e) => s + e[k], 0) / EYES.length);
+  const qq = [rig.orientation.x, rig.orientation.y, rig.orientation.z, rig.orientation.w];
+  return EYES.map((e) => {
+    const pr = [par * c[0] + (e[0] - c[0]) * ipd, par * c[1] + (e[1] - c[1]) * ipd, N + par * (c[2] - N) + (e[2] - c[2]) * ipd];
+    const el = [m * pr[0], m * pr[1], m * (pr[2] - N)];
+    const w = rot(qq, el);
+    const s = [el[0] * invd, el[1] * invd, el[2] * invd], den = 1 + s[2];
+    return { pose: poseM([rig.position.x + w[0], rig.position.y + w[1], rig.position.z + w[2]], qq), proj: projT((ro + s[0]) / den, (ro - s[0]) / den, (uo + s[1]) / den, (uo - s[1]) / den) };
+  });
+}
+const mul = (a, b) => { const o = new Float64Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3]; return o; };
+function inv(m) { // Gauss-Jordan, column-major in/out
+  const a = [0, 1, 2, 3].map((r) => [0, 1, 2, 3].map((c) => m[c * 4 + r]).concat([0, 1, 2, 3].map((c) => (c === r ? 1 : 0))));
+  for (let c = 0; c < 4; c++) {
+    let p = c; for (let r = c + 1; r < 4; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
+    [a[c], a[p]] = [a[p], a[c]];
+    const d = a[c][c]; for (let k = 0; k < 8; k++) a[c][k] /= d;
+    for (let r = 0; r < 4; r++) if (r !== c) { const f = a[r][c]; for (let k = 0; k < 8; k++) a[r][k] -= f * a[c][k]; }
+  }
+  const o = new Float64Array(16); for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[c * 4 + r] = a[r][4 + c]; return o;
+}
+const xf = (M, X) => { const v = [0, 1, 2, 3].map((r) => M[r] * X[0] + M[4 + r] * X[1] + M[8 + r] * X[2] + M[12 + r]); return v; };
+const ndcOf = (PV, X) => { const c = xf(PV, X); return [c[0] / c[3], c[1] / c[3]]; };
+
+try {
+  const { addSplat } = await import('@displayxr/inline3d/splat');
+  const canvas = document.getElementById('tile');
+  let onFrame = null;
+  let declared = null; // JSON of the declared descriptor
+  const rigIds = new Map(); // JSON -> id
+  const rigById = [];
+  const idOf = (js) => { if (!js) return -1; if (!rigIds.has(js)) { rigIds.set(js, rigById.length); rigById.push(JSON.parse(js)); } return rigIds.get(js); };
+  let frameNo = 0;
+  const decls = [];
+  const wall = { supported: true, addScene: (cv, cb, o) => {
+    onFrame = cb;
+    declared = o?.viewRig ? JSON.stringify(o.viewRig) : null;
+    return { firstWoven: Promise.resolve(Object.freeze({ woven: true, confirmed: false, reason: 'fake', ms: 0 })), exclude() {}, unexclude() {}, remove() {},
+      setViewRig(r) { declared = JSON.stringify(r); decls.push({ frame: frameNo, id: idOf(declared) }); return true; } };
+  } };
+  const ASSETS = q.get('assets') || './assets/';
+  const load = async (name) => new Uint8Array(await (await fetch(ASSETS + name)).arrayBuffer());
+  const diag = q.get('diag');
+  const opts = { engine: 'playcanvas', idleSpin: 0, orbit: false, focusInput: false, renderScale: 1, preserveDrawingBuffer: true, ...(diag ? { diag } : {}) };
+  const h = addSplat(wall, canvas, await load(q.get('a') || 'ports.sog'), opts);
+  window.__h = h;
+  const hist = []; // declared-at-start-of-frame, per frame
+  let located = -1;
+  const layerObj = { getViewport: (v) => v._vp };
+  const recs = [];
+  let lastA = null, pixN = 0;
+  const toPng = (px, w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); const id = g.createImageData(w, h); for (let y = 0; y < h; y++) id.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4); for (let i = 3; i < id.data.length; i += 4) id.data[i] = 255; g.putImageData(id, 0, 0); return c.toDataURL('image/png'); };
+  let record = null;
+  const frameOnce = () => {
+    frameNo++;
+    hist.push(declared);
+    const js = hist[Math.max(0, hist.length - LAG)];
+    if (onFrame && js) {
+      located = idOf(js);
+      const rig = JSON.parse(js);
+      if (rig.type !== 'camera') throw new Error('harness: non-camera rig ' + js);
+      const vs = cameraViews(rig);
+      const half = canvas.width / 2;
+      const views = vs.map((v, i) => ({ eye: i ? 'right' : 'left', projectionMatrix: Float32Array.from(v.proj), transform: { matrix: Float32Array.from(v.pose) }, _vp: { x: i * half, y: 0, width: half, height: canvas.height } }));
+      onFrame(views, layerObj);
+    } else { const run = rafQ.splice(0); for (const cb of run) cb(clock); }
+    if (record) record();
+  };
+  window.__step = async (n = 1, dt = 16.667, wait = 0) => { for (let i = 0; i < n; i++) { clock += dt; frameOnce(); if (wait) await sleep(wait); } };
+  await h.ready;
+  for (let i = 0; i < 60; i++) await window.__step(1, 16.667, 10);
+  const gl = h.viewer.app.graphicsDevice.gl;
+  const viewer = h.viewer;
+
+  // reference points of a photo: model space (OpenCV, rest camera at the origin looking +z)
+  const refPoints = (ent, D) => {
+    const W = ent.getWorldTransform().data;
+    const pts = [[0.12, -0.08, 0.5], [-0.1, 0.06, 1.0], [0.15, 0.1, 2.0], [-0.2, -0.12, 3.0]].map(([a, b, k]) => [a * k * D, b * k * D, k * D]);
+    return pts.map((p) => xf(W, p).slice(0, 3));
+  };
+  const truthNdc = (rig, R, X) => cameraViews(rig).map((v) => { const V = inv(mul(R, v.pose)); return ndcOf(mul(v.proj, V), X); });
+  const camNdc = (cam, X) => {
+    const rvs = cam?.camera?.camera?.xrViews;
+    if (!rvs?.length) return null;
+    return rvs.map((rv) => ndcOf(rv.projViewOffMat.data, X));
+  };
+  const vpW = canvas.width / 2, vpH = canvas.height;
+  const px = (n) => [(n[0] * 0.5 + 0.5) * vpW, (n[1] * 0.5 + 0.5) * vpH];
+
+  // ── the run ──
+  const photos = {}; // name -> { ent, rigId, R, pts }
+  const latestRigFor = { A: null, B: null };
+  const setupA = () => {
+    const js = declared;
+    const rig = JSON.parse(js);
+    photos.A = { ent: h.mesh.entity, rig, rigId: idOf(js), R: Float64Array.from(viewer.rigMatrix()), pts: refPoints(h.mesh.entity, 1 / rig.convergenceDiopters) };
+  };
+  record = () => {
+    const live = viewer._live;
+    const r = { f: frameNo, t: clock, located, declared: idOf(declared), phase: viewer._transitionState ? { ...viewer._transitionState } : null, img: viewer.diagImageState?.(), liveActive: !!live?.active, liveReady: !!live?.ready, track: viewer.rigTrack && viewer.rigFrame ? { at: viewer.rigFrame.located?.id ?? null, in: viewer.rigFrame.eye ? viewer.rigFrame.eye.id + (viewer.rigFrame.remapped ? '+' : '') : null, out: live?.active ? live.path : null, res: viewer.rigTrack.lastResidual } : null, photos: {} };
+    for (const name of ['A', 'B']) {
+      const P = photos[name];
+      if (!P) continue;
+      let cam = null, who = null;
+      if (live?.active && live.entity === P.ent) { cam = live.cam; who = 'live'; }
+      else if (P.ent.enabled && !P.ent._destroyed && P.ent.gsplat) { cam = viewer.eye; who = 'eye'; }
+      if (!cam) continue;
+      // truth: the photo's OWN rig (A: as declared when it was current; B: the latest declared)
+      const rig = name === 'A' ? P.rig : JSON.parse(declared);
+      const R = name === 'A' ? P.R : Float64Array.from(viewer.rigMatrix());
+      let err = 0; const pos = []; const perr = [];
+      P.pts.forEach((X) => {
+        const m = camNdc(cam, X), tr = truthNdc(rig, R, X);
+        if (!m) return;
+        for (let e = 0; e < 2; e++) {
+          const a = px(m[e]), b = px(tr[e]);
+          err = Math.max(err, Math.hypot(a[0] - b[0], a[1] - b[1])); perr.push([+(a[0] - b[0]).toFixed(2), +(a[1] - b[1]).toFixed(2)]);
+          pos.push(+a[0].toFixed(3), +a[1].toFixed(3));
+        }
+      });
+      r.photos[name] = { who, err: +err.toFixed(3), pos, perr };
+    }
+    // pixels: the canvas while A is alone (the last such frame is the reference), then the live
+    // target (A alone, through the live camera) for the window's first frames
+    const W = canvas.width, H = canvas.height;
+    if (!photos.B && photos.A) { lastA = read(); }
+    else if (live?.active && live.rt && lastA && pixN < 8) {
+      const fb = live.rt._glFrameBuffer ?? live.rt.impl?._glFrameBuffer;
+      const p = new Uint8Array(W * H * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, p); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      // interior crop of each eye (the canvas has the edge feather; the target does not)
+      let sum = 0, n = 0, mx = 0, big = 0; const M = 48;
+      for (let e = 0; e < 2; e++) for (let y = M; y < H - M; y++) for (let x = e * W / 2 + M; x < (e + 1) * W / 2 - M; x++) {
+        const i = (y * W + x) * 4; for (let c = 0; c < 3; c++) { const d = Math.abs(p[i + c] - lastA[i + c]); sum += d; n++; if (d > mx) mx = d; if (d > 16) big++; }
+      }
+      r.pix = { mae: +(sum / n).toFixed(3), max: mx, bigPct: +(100 * big / n).toFixed(3), path: live.path };
+      if (pixN === 0 || pixN === 3) { window.__pix = window.__pix || {}; window.__pix['live' + pixN] = toPng(p, W, H); window.__pix.pre = window.__pix.pre || toPng(lastA, W, H); }
+      pixN++;
+    }
+    recs.push(r);
+  };
+  window.__rigs = () => rigById;
+  window.__recs = () => recs;
+  window.__decls = () => decls;
+  window.__setupA = () => { setupA(); return photos.A.rigId; };
+  window.__go = (b, o) => {
+    window.__done = false; window.__err2 = null;
+    const a0 = h.mesh.entity;
+    h.setSource(ASSETS + b, o).then(() => { window.__done = true; }, (e) => { window.__err2 = String(e && e.stack || e); });
+    // B's entity: the new one, once it exists
+    const hook = () => { if (!photos.B && h.mesh.entity !== a0) { photos.B = { ent: h.mesh.entity }; } };
+    const rec0 = record;
+    record = () => { hook(); if (photos.B && !photos.B.pts) { try { const js = declared; const rig = JSON.parse(js); photos.B.pts = refPoints(photos.B.ent, 1 / rig.convergenceDiopters); } catch {} } rec0(); };
+    return true;
+  };
+  window.__until = async (pred, n = 900, dt = 16.667, wait = 12) => { const f = new Function('return (' + pred + ')'); for (let i = 0; i < n; i++) { if (f()) return i; await window.__step(1, dt, wait); } return -1; };
+  const read = () => { const W = canvas.width, H = canvas.height; const p = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, p); return p; };
+  const snaps = {};
+  window.__keep = (k) => { snaps[k] = read(); return true; };
+  window.__mae = (k1, k2) => { const a = snaps[k1], b = snaps[k2]; let s = 0, mx = 0; for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b[i]); s += d; if (d > mx) mx = d; } return { mae: +(s / (a.length * 0.75)).toFixed(4), max: mx }; };
+  window.__png = () => canvas.toDataURL('image/png');
+  window.__ready = true;
+} catch (e) { window.__err = String(e && e.stack || e); console.error(e); }
+</script></body></html>

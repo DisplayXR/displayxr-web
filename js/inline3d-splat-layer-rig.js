@@ -19,6 +19,8 @@
 // nominal viewer distance in metres — the one quantity the browser does not expose (see the
 // design note §5). Everything here is PLAIN ARITHMETIC on arrays, unit-testable without a GPU.
 
+import { invertAffine } from './inline3d-splat-rig-map.js';
+
 /** handle.setLayerRig's rigs. 'camera' is the default every layer starts on. */
 export const LAYER_RIGS = Object.freeze(['display', 'camera']);
 
@@ -189,7 +191,7 @@ export function roundViews(entries, frame, k, into = []) {
     o.eye[1] = Eround[1];
     o.eye[2] = Eround[2];
     mul4(o.Minv, P, o.viewInv);
-    mul4(invertRigid(P), o.M, o.view);
+    mul4(invertAffine(P), o.M, o.view); // P is rigid, or affine once remapped to the declared rig (./inline3d-splat-rig-map.js)
   }
   return into;
 }
@@ -402,7 +404,7 @@ export class LayerRigCameras {
         cam.camera.camera.setXrProperties({ ...f, horizontalFov: false });
       }
       // The node drives transparent sorting (the views ignore it): on the (round) first eye.
-      const p = entries[0].pose;
+      const p = entries[0].node || entries[0].pose; // `node`: a rigid pose when the views are remapped
       const q = quatOf(p);
       cam.setLocalRotation(q[0], q[1], q[2], q[3]);
       if (r) cam.setLocalPosition(r[0].eye[0], r[0].eye[1], r[0].eye[2]);

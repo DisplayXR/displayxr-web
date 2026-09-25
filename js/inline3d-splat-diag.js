@@ -30,6 +30,15 @@
 //              pick index. Tests "the page's picks are what blocks the main thread".
 //   nolayerrig — handle.setLayerRig is recorded but never applied: every layer stays on the eye
 //              camera and the photo's camera rig (the pre-1.23 path, byte for byte).
+//   oldrig   — no rig tracking (./inline3d-splat-rig-map.js): the views are drawn as the runtime
+//              located them, and a live outgoing photo goes back on the pre-1.24 node chain (which
+//              scales its disparity by the two rigs' window ratio at the swap). A/B for "the
+//              outgoing photo jumps when the incoming rig is declared".
+//
+// Per frame, `rigAt` / `rigIn` / `rigOut` say which declared rig the views were located for
+// (the tracker's id; null = none matched), which rig the current photo was drawn through
+// (`+` = remapped to it) and how the live outgoing photo was drawn ('own' = its rig as located,
+// 'remapped', 'eye', 'chain'; null = no live outgoing).
 //
 // WHAT RUNS ON THE MAIN THREAD, per transition phase (the fifth cause: a stall at the swap's END
 // that is not the SDK's transition at all):
@@ -44,7 +53,7 @@
 //     after it (the page's continuation of `await setSource`).
 
 /** The switches `diag` / `?dxrdiag` understand, besides the plain on values. */
-export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig']);
+export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig']);
 const ON_TOKENS = new Set(['1', 'on', 'true', 'yes']);
 
 /**
@@ -191,6 +200,7 @@ export class DiagRecorder {
     this._frameNo = 0;
     this._open = null; // the transition being recorded
     this.imageState = null; // () => { overlay: 'none' | 'frozen' | 'live', w }
+    this.rigState = null; // () => { at, in, out } (see the header)
     this.longTasks = [];
     this._lto = null;
     this.rigLocked = null; // norig: the summary of the rig kept
@@ -373,6 +383,7 @@ export class DiagRecorder {
     this._lastFrameAt = t;
     this._frameNo++;
     const img = this.imageState ? safe(this.imageState) : null;
+    const rs = this.rigState ? safe(this.rigState) : null;
     const f = {
       n: this._frameNo,
       t: round1(t),
@@ -388,6 +399,9 @@ export class DiagRecorder {
       afterRig: this._frameNo - this._rigFrame <= 3,
       img: img ? img.overlay : 'none',
       imgW: img ? round4(img.w) : 0,
+      rigAt: rs ? rs.at : null,
+      rigIn: rs ? rs.in : null,
+      rigOut: rs ? rs.out : null,
     };
     this.frames.push(f);
     if (this.frames.length > FRAME_CAP) this.frames.splice(0, this.frames.length - FRAME_CAP);
