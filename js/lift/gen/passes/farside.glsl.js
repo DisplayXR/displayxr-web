@@ -17,8 +17,8 @@
 //       swung out from under it on orbit as a ghost silhouette.
 //   b = the distance to the nearest found edge, px (1e4 when none).
 //   a = unused.
-// and a second target, the far-side COLOUR: the RGB 2 px beyond each found edge (clear of the
-// mixed silhouette pixel), from the same axes with the same weights — so a hole is spanned by the background that actually borders it. A push-pull fill
+// and a second target, the far-side COLOUR: the median of the RGB 2, 5 and 9 px beyond each found
+// edge (clear of the mixed silhouette pixel and of a photographic halo), from the same axes with the same weights — so a hole is spanned by the background that actually borders it. A push-pull fill
 // here averaged in everything within its pyramid footprint (a floor, the frame's border), and the
 // hole — the object's own silhouette — came out a shade off the background around it: at orbit
 // the mask itself read as a translucent copy of the object.
@@ -63,7 +63,15 @@ void main() {
         float de = texelFetch(uD, e, 0).r;
         if (d > de + 0.5 * uTau) {
           v[a] = de; dst[a] = float(dist); best = min(best, float(dist));
-          col[a] = texelFetch(uRGB, clamp(e + dirs[a] * 2, lo, hi), 0).rgb;
+          // colour: per-channel median of the background 2, 5 and 9 px past the edge (same
+          // surface only) — clear of the mixed pixel AND of a halo/glow the photo itself has
+          // round the object (a long-exposure rock), which read as a pale outline at the orbit
+          vec3 c2 = texelFetch(uRGB, clamp(e + dirs[a] * 2, lo, hi), 0).rgb;
+          vec3 c5 = c2, c9 = c2;
+          ivec2 e5 = clamp(e + dirs[a] * 5, lo, hi), e9 = clamp(e + dirs[a] * 9, lo, hi);
+          if (abs(texelFetch(uD, e5, 0).r - de) < uTau) c5 = texelFetch(uRGB, e5, 0).rgb;
+          if (abs(texelFetch(uD, e9, 0).r - de) < uTau) c9 = texelFetch(uRGB, e9, 0).rgb;
+          col[a] = max(min(c2, c5), min(max(c2, c5), c9));
           break;
         }
       }

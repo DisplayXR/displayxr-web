@@ -155,10 +155,10 @@ export async function lift(element, opts = {}) {
     ort: opts.ort || null,
     prefetch: !!opts.prefetch,
     exploreMaxDpr: Number.isFinite(opts.exploreMaxDpr) ? opts.exploreMaxDpr : null,
-    // inpaint defaults OFF (integration, 2026-09-25): on real photos light_inpaint_v1 filled the wide
-    // hidden bands with COPIES of the foreground (a second chair / lamp at background depth under the
-    // orbit) and cost ~1 s per lift; the generator's push-pull fill reads as a soft smear instead.
-    // `providers: { inpaint: 'light-inpaint-v1' }` turns it on.
+    // inpaint defaults OFF (integration, 2026-09-25; re-tested after lift-gen's far-side fill the
+    // same day): the whole-object copies are gone with or without the net, but light_inpaint_v1
+    // still leaves textured seams on wide masks and costs 1.3–1.5 s per lift; the net-free fill was
+    // cleaner on every photo tried. `providers: { inpaint: 'light-inpaint-v1' }` turns it on.
     providers: { video: 'vda-small', still: 'moge3', inpaint: 'none', ...(opts.providers || {}) },
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',

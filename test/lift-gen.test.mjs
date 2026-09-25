@@ -240,3 +240,29 @@ test('normaliseDisparity: 2–98 % percentiles to [0,1]; relative maps to [zNear
   const rm = normaliseDisparity({ data: m, w, h }, 'metric');
   assert.ok(Math.abs(1 / rm.invFar - 10) < 1e-6 && Math.abs(1 / rm.invNear - 1) < 1e-6);
 });
+
+// ── outpaint border sizing ────────────────────────────────────────────────────────────────
+
+test('outpaintBorders: width = f·tanθ·|1 − zp/z| of the edge content, per side, clamped', async () => {
+  const { outpaintBorders } = await import('../js/lift/gen/lift-gen.js');
+  const w = 40, h = 30, W = 1000, H = 750, f = 1000, tanT = Math.tan((15 * Math.PI) / 180);
+  const invFar = 1 / 3, invNear = 1 / 0.7;
+  const dlo = new Float32Array(w * h).fill(0); // everything at zFar = 3 m ...
+  for (let y = 0; y < h; y++) dlo[y * w + w - 1] = 1; // ... except the RIGHT edge column at zNear
+  const zp = 1.5;
+  const P = { ...LIFT_DEFAULTS, borderMaxFrac: 0.5 };
+  const b = outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P });
+  const needFar = f * tanT * Math.abs(1 - zp / 3); // 0.5 · f·tanθ ≈ 134
+  const needNear = f * tanT * Math.abs(1 - zp / 0.7); // ≈ 306
+  assert.ok(Math.abs(b.needed.left - needFar) <= 1, `left ${b.needed.left} vs ${needFar}`);
+  assert.ok(Math.abs(b.needed.right - needNear) <= 1, `right ${b.needed.right} vs ${needNear}`);
+  assert.equal(b.left, Math.ceil(1.1 * needFar) + 2, 'left = ceil(1.1·need) + 2');
+  assert.ok(b.right > b.left, 'the side with near content needs more');
+  // the cap bites
+  const capped = outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P: { ...LIFT_DEFAULTS, borderMaxFrac: 0.1 } });
+  assert.equal(capped.right, 100);
+  // never below the full-res base border
+  const flat = outpaintBorders({ dlo: new Float32Array(w * h).fill(0.5), w, h, invFar, invNear, zp: 1 / (invFar + 0.5 * (invNear - invFar)), f, W, H, tanT, P });
+  assert.equal(flat.left, Math.round(LIFT_DEFAULTS.borderFrac * W));
+  assert.equal(flat.top, Math.round(LIFT_DEFAULTS.borderFrac * H));
+});

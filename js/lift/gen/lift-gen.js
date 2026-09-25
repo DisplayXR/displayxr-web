@@ -16,8 +16,8 @@
 //
 // The shape is Apple SHARP's: LAYER 0 is the visible surface, one Gaussian per output pixel;
 // LAYER 1 is the hidden background — present only in a band under each foreground silhouette,
-// as wide as the background can be revealed at the maximum orbit angle, plus a 4 % outpainted
-// border — so an orbit of ±15° uncovers background instead of holes.
+// as wide as the background can be revealed at the maximum orbit angle, plus an outpainted border
+// sized per side to the same orbit — so an orbit of ±15° uncovers background instead of holes.
 //
 // Image processing runs as WebGL2 fragment passes (./gl.js, ./passes/*); Gaussian emission and
 // PLY packing run in a module Worker (./ply-writer.js). The generator never touches a depth or
@@ -79,7 +79,7 @@ export const LIFT_DEFAULTS = Object.freeze({
   sigmaPx: 0.65,
   thin: 0.15,
   slopeGain: 0.5,
-  maxAniso: 8,
+  maxAniso: 24,
   /** cap on the same, in footprints, for a silhouette pixel (its steep one-sided slope is the
    *  object's limb; stretched 8 footprints deep it swung out as a soft fringe at the orbit) */
   maxAnisoEdge: 1.5,
