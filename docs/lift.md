@@ -258,3 +258,7 @@ running. Use `backend: 'stub'`.
 ## Media codecs
 
 The DisplayXR Browser is built without proprietary codecs: `<video>` sources must be VP9 or AV1 (WebM/MP4). An H.264/HEVC source never reaches `loadeddata`; `lift()` then fails fast with a `MediaError` (`code 4`, `MEDIA_ERR_SRC_NOT_SUPPORTED`) and an `error` event instead of staying in `loading`. YouTube serves VP9/AV1, so it is unaffected.
+
+## Chrome over the tile (chip, buttons, overlays)
+
+Anything the lift draws over its own woven tile must use a **near-solid background and no `backdrop-filter`** (the authoring guide's config C3). A frosted element over a tile makes the DisplayXR Browser send that tile raw — the panel shows side-by-side instead of 3D — until the element leaves the tile. This was hit on the first panel test with the builtin chip.
