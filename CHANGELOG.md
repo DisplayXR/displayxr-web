@@ -33,7 +33,7 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   unknown easings and `outgoing: 'live'` throw by name.
 - **Transport: title line, ±10 s skip, fullscreen.** `title` (a now-playing line in a bounded top
   band, its own overlay, fading with the bar; `setSource(src, { title })` changes it),
-  `skipButtons` (default on, hidden under 420 px) and `fullscreen` (default on, plus `F`): the
+  `skipButtons` (default on, plain rewind / fast-forward glyphs, hidden under 420 px) and `fullscreen` (default on, plus `F`): the
   canvas's container goes fullscreen so the transport comes along, and the canvas is sized to fit
   at its own aspect — never `object-fit`, which would letterbox inside the woven rect. The sample
   gains chapter chips (real `setSource()` crossfades) and an honest caption for the mono tile.

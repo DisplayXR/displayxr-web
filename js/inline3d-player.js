@@ -676,17 +676,15 @@ const FS_EXIT_ICON = svg(
   '<path d="M9 4v4a1 1 0 0 1-1 1H4M20 9h-4a1 1 0 0 1-1-1V4M15 20v-4a1 1 0 0 1 1-1h4M4 15h4a1 1 0 0 1 1 1v4" ' +
     'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
 );
-// Skip icons carry their number INSIDE the arc (a text label laid over the replay glyph collides
-// with its arrowhead). An open arc, a small arrowhead at its end, the seconds in the middle.
-const skipIcon = (dir, n) =>
+// Skip icons: plain rewind / fast-forward glyphs — no seconds label (text inside a 34 px button
+// reads as clutter; the aria-label and the ±10 s pip carry the amount).
+const skipIcon = (dir) =>
   svg(
-    (dir < 0
-      ? '<path d="M12 4.5a7.5 7.5 0 1 1-7.1 5.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>' +
-        '<path d="M12 1.6v5.8L8.2 4.5Z"/>'
-      : '<path d="M12 4.5a7.5 7.5 0 1 0 7.1 5.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>' +
-        '<path d="M12 1.6v5.8l3.8-2.9Z"/>') +
-      `<text x="12" y="15.4" text-anchor="middle" font-size="7.2" font-weight="700" ` +
-      `font-family="system-ui,-apple-system,'Segoe UI',sans-serif">${n}</text>`
+    dir < 0
+      ? '<path d="M11.2 6.3v11.4a.8.8 0 0 1-1.25.66L2.6 12.66a.8.8 0 0 1 0-1.32l7.35-5.7a.8.8 0 0 1 1.25.66Z"/>' +
+        '<path d="M21 6.3v11.4a.8.8 0 0 1-1.25.66l-7.35-5.7a.8.8 0 0 1 0-1.32l7.35-5.7A.8.8 0 0 1 21 6.3Z"/>'
+      : '<path d="M12.8 6.3v11.4a.8.8 0 0 0 1.25.66l7.35-5.7a.8.8 0 0 0 0-1.32l-7.35-5.7a.8.8 0 0 0-1.25.66Z"/>' +
+        '<path d="M3 6.3v11.4a.8.8 0 0 0 1.25.66l7.35-5.7a.8.8 0 0 0 0-1.32L4.25 5.64A.8.8 0 0 0 3 6.3Z"/>'
   );
 const fsElement = () => (typeof document !== 'undefined' ? document.fullscreenElement : null);
 
@@ -813,7 +811,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     b.type = 'button';
     b.className = 'dxr-player-btn dxr-player-skip';
     b.setAttribute('aria-label', delta < 0 ? `Back ${-delta} seconds` : `Forward ${delta} seconds`);
-    b.innerHTML = skipIcon(delta, Math.abs(delta));
+    b.innerHTML = skipIcon(delta);
     b.addEventListener('click', () => skipBy(delta));
     return b;
   }
@@ -931,7 +929,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     const d = video.duration;
     const t = (video.currentTime || 0) + delta;
     video.currentTime = Math.max(0, Number.isFinite(d) ? Math.min(d, t) : t);
-    flashPip(delta < 0 ? BACK_ICON : FWD_ICON);
+    flashPip(skipIcon(delta));
   }
   function toggleFullscreen() {
     if (!canFullscreen) return;

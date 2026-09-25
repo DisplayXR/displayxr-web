@@ -27,9 +27,6 @@ const sbsPlayer = addPlayer(wall, document.getElementById('tile-sbs'), SRC, {
   transition: 'crossfade',
   durationMs: 700,
   poster: POSTER,
-  // The page knows this tile is the woven one AND that it is on screen, so it can honestly say
-  // so. addPlayer never infers this for you — see docs/authoring-inline-3d.md#2b-player.
-  badge3d: wall.supported,
 });
 
 const monoPlayer = addPlayer(wall, document.getElementById('tile-mono'), SRC, {
