@@ -141,25 +141,42 @@ no badge at all.
 | `play()` / `pause()` / `seek(t)` | `<video>`'s own vocabulary — a page that knows `HTMLMediaElement` already knows this |
 | `currentTime`, `duration`, `paused`, `ended` | getters (`currentTime` also settable) |
 | `volume`, `muted` | get/set |
-| `setSource(src, {poster, fadeMs})` | swap titles in place, dissolving from the outgoing title's last frame when `opts.fadeMs` was set at construction |
+| `setSource(src, {poster, transition, durationMs, easing})` | swap titles in place; each option overrides the player's own for this swap (`fadeMs` is the legacy alias) |
 | `exclude(el)` / `unexclude(el)` | `'sbs'` + a supported wall only; a no-op elsewhere (nothing is woven to protect an overlay from) |
 | `remove()` | stop the paint loop or weave window, tear down the transport, release the `<video>` |
 | `on(event, fn)` / `off(event, fn)` | `'play'\|'pause'\|'ended'\|'timeupdate'\|'ready'\|'error'`; `on` returns an unsubscribe function |
 
-`opts.fadeMs` makes `setSource()` a dissolve rather than a hard cut. It is **opt-in at
-construction**, and that is structural rather than fussy: the dissolve runs through a mixer
-canvas that stands in for the `<video>` as the window's paint source, so a player that never
-asks for it keeps the byte-identical `addVideo(canvas, video)` path and pays no extra draw per
-frame. A per-call `setSource(src, {fadeMs})` therefore changes the *duration* of a fade but
-cannot switch one on — there would be no mixer to run it through, and building one mid-flight
-means swapping a live window's paint source, which rebuilds the weave layer and produces
-exactly the blink the fade removes.
+`setSource()` transitions use **`./splat`'s vocabulary**, so a page that swaps splats and videos
+writes one options object: `transition`, `durationMs` (default 600), `easing` (the same named
+curves, default `'easeInOutSine'`), and `fadeMs` as the legacy alias (`fadeMs: 400` = a 400 ms
+crossfade). The player takes the part a video can mean — `'cut'` (default) and `'crossfade'`.
+`flip`, `wavefront`, the particle and sequence transitions move a photo's gaussians; a video
+frame has none, so they throw by name rather than quietly becoming a crossfade.
+
+```js
+const player = addPlayer(wall, canvas, first, { transition: 'crossfade', durationMs: 800 });
+player.setSource(next);                            // the player's own 800 ms crossfade
+player.setSource(trailer, { durationMs: 1500 });   // longer, this once
+player.setSource(live, { transition: 'cut' });     // no crossfade, this once
+```
+
+A crossfade is **opt-in at construction**, and that is structural rather than fussy: it runs
+through a mixer canvas that stands in for the `<video>` as the window's paint source, so a
+player that never asks for it keeps the byte-identical `addVideo(canvas, video)` path and pays
+no extra draw per frame. A per-call option can change a crossfade's duration or easing, or skip
+it, but cannot switch one on — there would be no mixer to run it through, and building one
+mid-flight means swapping a live window's paint source, which rebuilds the weave layer and
+produces exactly the blink the crossfade removes. That swap is a cut, and says so once in the
+console.
 
 What it dissolves is the outgoing title's **last frame**, not two simultaneously decoding
 streams. On screen that is the same thing (the outgoing title is being replaced), and it costs
 one `<video>` rather than two — which is what keeps the handle, the events and the transport
 bound to a single element. A side effect worth having: between the swap and the incoming
-title's first frame the tile holds the old frame instead of going black.
+title's first frame the tile holds the old frame instead of going black. In `./splat` terms this
+is `outgoing: 'frozen'`, the only value the player accepts. Its splat-side caveat — a frozen
+outgoing photo "reads as tracking pausing" — does not carry over: a splat re-renders for every
+head pose, an SBS video frame's disparity is baked in whether it is frozen or playing.
 
 v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename format auto-detect, HLS, undock, or
 a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller

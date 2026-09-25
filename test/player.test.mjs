@@ -13,6 +13,9 @@ import {
   mapKeyToAction,
   bufferedFraction,
   dissolveAlpha,
+  resolveTransition,
+  PLAYER_EASINGS,
+  DEFAULT_CROSSFADE_MS,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -61,7 +64,7 @@ test('muted defaults true even when the caller omits it — autoplay needs this'
   assert.equal(normalizePlayerOptions({ muted: undefined }).muted, true);
 });
 
-test('fadeMs is accepted-not-implemented: kept when a positive number, dropped otherwise', () => {
+test('fadeMs (the legacy alias) is kept when a positive number, dropped otherwise', () => {
   assert.equal(normalizePlayerOptions({ fadeMs: 250 }).fadeMs, 250);
   assert.equal(normalizePlayerOptions({ fadeMs: 0 }).fadeMs, 0);
   assert.equal(normalizePlayerOptions({ fadeMs: -10 }).fadeMs, 0);
@@ -242,4 +245,56 @@ test('fadeMs normalisation still rejects non-positive and non-numeric values', (
   assert.equal(normalizePlayerOptions({ fadeMs: 250 }).fadeMs, 250);
   assert.equal(normalizePlayerOptions({ fadeMs: -1 }).fadeMs, 0);
   assert.equal(normalizePlayerOptions({ fadeMs: '250' }).fadeMs, 0);
+});
+
+// ── resolveTransition: ./splat's vocabulary, the subset a video can mean ────────────────────────
+
+test('default is a cut; transition:crossfade defaults to 600 ms easeInOutSine', () => {
+  assert.deepEqual(
+    (({ type, durationMs, easing }) => ({ type, durationMs, easing }))(resolveTransition()),
+    { type: 'cut', durationMs: 0, easing: 'easeInOutSine' }
+  );
+  const x = resolveTransition({ transition: 'crossfade' });
+  assert.equal(x.type, 'crossfade');
+  assert.equal(x.durationMs, DEFAULT_CROSSFADE_MS);
+  assert.equal(x.ease, PLAYER_EASINGS.easeInOutSine);
+});
+
+test('fadeMs is the legacy alias: > 0 is a crossfade of that length, 0 a cut', () => {
+  assert.deepEqual([resolveTransition({ fadeMs: 250 }).type, resolveTransition({ fadeMs: 250 }).durationMs], ['crossfade', 250]);
+  assert.equal(resolveTransition({ fadeMs: 0 }).type, 'cut');
+  assert.equal(resolveTransition({ transition: 'crossfade', fadeMs: 300, durationMs: 900 }).durationMs, 900, 'durationMs wins');
+  assert.equal(resolveTransition({ transition: 'crossfade', durationMs: 0 }).type, 'cut', 'a zero-length crossfade is a cut');
+});
+
+test('per-call options override the construction base field by field', () => {
+  const base = resolveTransition({ transition: 'crossfade', durationMs: 800, easing: 'linear' });
+  const longer = resolveTransition({ durationMs: 1500 }, base);
+  assert.deepEqual([longer.type, longer.durationMs, longer.easing], ['crossfade', 1500, 'linear']);
+  assert.equal(resolveTransition({ transition: 'cut' }, base).type, 'cut');
+  assert.equal(resolveTransition({}, base).durationMs, 800, 'no options = the base');
+  assert.equal(resolveTransition({ fadeMs: 0 }, base).type, 'cut', 'the legacy fadeMs:0 still means cut');
+});
+
+test("./splat's other transitions are refused by name, as are unknown easings and outgoing:'live'", () => {
+  for (const t of ['flip', 'wavefront', 'reassemble', 'swarm'])
+    assert.throws(() => resolveTransition({ transition: t }), /one of \.\/splat's/, t);
+  assert.throws(() => resolveTransition({ transition: { type: 'sequence', out: 'fade', in: 'fade' } }), /\.\/splat's/);
+  assert.throws(() => resolveTransition({ transition: 'wipe' }), /not a player transition\. Known: cut, crossfade/);
+  assert.throws(() => resolveTransition({ easing: 'bouncy' }), /unknown easing 'bouncy'/);
+  assert.throws(() => resolveTransition({ outgoing: 'live' }), /outgoing 'live' is not supported/);
+  assert.doesNotThrow(() => resolveTransition({ outgoing: 'frozen', easing: (x) => x }));
+});
+
+test('the easing table is the ./splat table, curve for curve', async () => {
+  const { EASINGS } = await import('../js/inline3d-splat-effects.js');
+  assert.deepEqual(Object.keys(PLAYER_EASINGS), Object.keys(EASINGS));
+  for (const k of Object.keys(EASINGS))
+    for (const x of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) assert.equal(PLAYER_EASINGS[k](x), EASINGS[k](x), `${k}(${x})`);
+});
+
+test('normalizePlayerOptions resolves the construction transition', () => {
+  assert.equal(normalizePlayerOptions({ fadeMs: 400 }).transition.type, 'crossfade');
+  assert.equal(normalizePlayerOptions({}).transition.type, 'cut');
+  assert.throws(() => normalizePlayerOptions({ transition: 'flip' }), /\.\/splat's/);
 });

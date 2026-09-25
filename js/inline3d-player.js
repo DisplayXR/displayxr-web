@@ -55,6 +55,85 @@ function pickEnum(value, allowed, fallback, label) {
   return fallback;
 }
 
+// ── setSource transitions: the splat module's vocabulary, the subset a video can mean ───────────
+//
+// `./splat` (1.10-1.17) settled the house spelling: `transition`, `durationMs`, `easing`,
+// `outgoing`, with `fadeMs` as the legacy alias for a crossfade. The player takes the same names
+// so a page that swaps splats and videos writes one options object. What it takes of them is
+// what a flat SBS frame can mean: a CUT and a CROSSFADE. `flip`, `wavefront`, the particle and
+// sequence transitions all move or re-light a 3D photo's gaussians; a video frame has none, so
+// they are refused BY NAME rather than silently turned into a crossfade.
+//
+// `outgoing` is 'frozen' only. The dissolve runs from the outgoing title's LAST frame (one
+// <video>, see the dissolve section), which is the splat module's 'frozen'. The splat docs warn
+// that frozen "reads as tracking pausing" on a tracked panel — true of a splat, which re-renders
+// per head pose, and not of an SBS video, whose disparity is baked into the frame either way.
+// 'live' would need two decoding <video>s; refused rather than pretended.
+
+/** Named easings — the same names and curves as `./splat` (inline3d-splat-effects.js EASINGS). */
+export const PLAYER_EASINGS = Object.freeze({
+  linear: (x) => x,
+  easeInQuad: (x) => x * x,
+  easeOutQuad: (x) => 1 - (1 - x) * (1 - x),
+  easeInOutQuad: (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2),
+  easeInCubic: (x) => x * x * x,
+  easeOutCubic: (x) => 1 - Math.pow(1 - x, 3),
+  easeInOutCubic: (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2),
+  easeInOutSine: (x) => -(Math.cos(Math.PI * x) - 1) / 2,
+});
+const PLAYER_TRANSITIONS = ['cut', 'crossfade'];
+/** `./splat`'s other transitions — named in the refusal so the page knows it was not a typo. */
+const SPLAT_ONLY_TRANSITIONS = ['flip', 'wavefront', 'reassemble', 'swarm', 'burst', 'shimmer-cross', 'dust', 'sequence'];
+export const DEFAULT_CROSSFADE_MS = 600;
+const DEFAULT_TRANSITION_EASING = 'easeInOutSine';
+
+/**
+ * Resolve setSource transition options into `{ type, durationMs, easing, ease }`. Pure.
+ *
+ * `base` is what construction resolved: a per-call option overrides it field by field, so
+ * `setSource(src, { durationMs: 1200 })` lengthens the player's crossfade without restating it.
+ * Precedence for the duration: `durationMs`, then the legacy `fadeMs`, then `base`, then 600 ms.
+ * A bare `fadeMs > 0` still means a crossfade and `fadeMs: 0` a cut, exactly as in 1.10.
+ *
+ * @param {object} [opts]
+ * @param {object} [base]
+ */
+export function resolveTransition(opts = {}, base = null) {
+  const t = opts.transition;
+  if (t !== undefined && (typeof t !== 'string' || !PLAYER_TRANSITIONS.includes(t))) {
+    const name = typeof t === 'string' ? t : t && typeof t === 'object' ? t.type || 'object' : String(t);
+    const splatOnly = typeof t === 'object' || SPLAT_ONLY_TRANSITIONS.includes(name);
+    throw new Error(
+      `@displayxr/inline3d/player: transition '${name}' is not a player transition` +
+        (splatOnly ? " — it is one of ./splat's, which move a 3D photo's gaussians; a video frame has none." : '.') +
+        ` Known: ${PLAYER_TRANSITIONS.join(', ')}.`
+    );
+  }
+  if (opts.outgoing !== undefined && opts.outgoing !== 'frozen') {
+    throw new Error(
+      `@displayxr/inline3d/player: outgoing '${opts.outgoing}' is not supported — the player dissolves ` +
+        "from the outgoing title's last frame ('frozen'), with one <video>."
+    );
+  }
+  const e = opts.easing;
+  if (e !== undefined && typeof e !== 'function' && !PLAYER_EASINGS[e]) {
+    throw new Error(
+      `@displayxr/inline3d/player: unknown easing '${e}'. Known: ${Object.keys(PLAYER_EASINGS).join(', ')}, or a function.`
+    );
+  }
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : undefined);
+  const fade = num(opts.fadeMs);
+  const dur = num(opts.durationMs);
+  let type = t || (fade !== undefined ? (fade > 0 ? 'crossfade' : 'cut') : base ? base.type : 'cut');
+  const baseDur = base && base.durationMs > 0 ? base.durationMs : DEFAULT_CROSSFADE_MS;
+  const durationMs = dur !== undefined ? dur : fade > 0 ? fade : baseDur;
+  // A crossfade of no length IS a cut; say so in the result rather than run a zero-length ramp.
+  if (type === 'crossfade' && durationMs <= 0) type = 'cut';
+  const easing = e !== undefined ? e : base ? base.easing : DEFAULT_TRANSITION_EASING;
+  const ease = typeof easing === 'function' ? easing : PLAYER_EASINGS[easing];
+  return { type, durationMs: type === 'cut' ? 0 : durationMs, easing, ease };
+}
+
 /**
  * Apply defaults and validate enum options. Pure (no DOM), so it is unit-testable without a
  * browser — see test/player-options.test.mjs.
@@ -70,6 +149,9 @@ export function normalizePlayerOptions(opts = {}) {
     loop: !!opts.loop,
     keyboard: opts.keyboard === undefined ? true : !!opts.keyboard,
     fadeMs: typeof opts.fadeMs === 'number' && opts.fadeMs > 0 ? opts.fadeMs : 0,
+    // The resolved setSource transition (see resolveTransition). `fadeMs` above stays for 1.10
+    // callers reading it back; this is what the player actually runs.
+    transition: resolveTransition(opts),
     // Chrome skin. `accent` is written to the transport's `--dxr-accent` custom property, so a
     // page brands the player without forking its CSS; anything CSS accepts as a colour works.
     accent: typeof opts.accent === 'string' && opts.accent ? opts.accent : null,
@@ -864,6 +946,17 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   };
 }
 
+let notedNoMixer = false;
+function noteNoMixer() {
+  if (notedNoMixer) return;
+  notedNoMixer = true;
+  console.warn(
+    "[inline3d/player] setSource(…, { transition: 'crossfade' }) on a player built without one — " +
+      "this swap is a CUT. Pass transition:'crossfade' to addPlayer() to create the mixer; it " +
+      'cannot be created mid-flight without rebuilding the weave layer (the blink a crossfade removes).'
+  );
+}
+
 // ── setSource() cross-dissolve (opts.fadeMs) ────────────────────────────────────────────────
 //
 // WHAT THIS ACTUALLY IS, so nobody reads more into the option name than it delivers: a dissolve
@@ -888,10 +981,11 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
 // unchanged: the mixer is the same pixels in the same layout, one composite earlier.
 //
 // IT IS OPT-IN, AND THAT IS THE POINT. The mixer costs one extra full-frame `drawImage` per
-// painted frame, so it is only created when `opts.fadeMs > 0` was given at construction. Every
-// player that does not ask for fades keeps the byte-identical `addVideo(canvas, video)` path it
-// has today and pays nothing. A per-call `setSource(src, {fadeMs})` can therefore change the
-// DURATION of a fade but cannot switch one on — there would be no mixer to run it through.
+// painted frame, so it is only created when the player was built with `transition: 'crossfade'`
+// (or the legacy `fadeMs > 0`). Every player that does not ask keeps the byte-identical
+// `addVideo(canvas, video)` path it has today and pays nothing. A per-call setSource option can
+// therefore change a crossfade's duration or easing, or skip it, but cannot switch one on —
+// there would be no mixer to run it through.
 
 /**
  * The dissolve's alpha ramp: how much of the INCOMING title to composite over the frozen
@@ -924,6 +1018,7 @@ function createDissolve(video) {
   const fctx = freeze.getContext('2d');
   let hasFreeze = false;
   let fadeMs = 0;
+  let ease = PLAYER_EASINGS.linear;
   let startedAt = 0;
 
   // The SDK's video branch gates on `(src.readyState || 0) < 2` and re-commits the last frame
@@ -957,8 +1052,9 @@ function createDissolve(video) {
     },
 
     /** Arm the ramp. The clock does NOT start here — it starts at the incoming first frame. */
-    arm(ms) {
+    arm(ms, easeFn) {
       fadeMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+      ease = typeof easeFn === 'function' ? easeFn : PLAYER_EASINGS.linear;
       startedAt = 0;
     },
 
@@ -989,13 +1085,16 @@ function createDissolve(video) {
         return;
       }
       if (!startedAt) startedAt = now; // first frame of the incoming title
-      const a = dissolveAlpha(now - startedAt, fadeMs);
+      const lin = dissolveAlpha(now - startedAt, fadeMs);
+      // The curve shapes the alpha; the END is decided on the linear clock, so a page easing
+      // that overshoots or never quite reaches 1 cannot leave the freeze held forever.
+      const a = lin >= 1 ? 1 : Math.max(0, Math.min(1, ease(lin)));
       mctx.drawImage(freeze, 0, 0, mix.width, mix.height);
       mctx.globalAlpha = a;
       mctx.drawImage(video, 0, 0, mix.width, mix.height);
       mctx.globalAlpha = 1;
       mix.readyState = 4;
-      if (a >= 1) {
+      if (lin >= 1) {
         hasFreeze = false;
         fadeMs = 0;
       }
@@ -1065,7 +1164,12 @@ function driveMixer(video, dissolve) {
  *        events + its own `data-inline3d-overlay` elements).
  * @param {boolean} [opts.keyboard=true]  Space/K play-pause, ←/→ ±5s, J/L ±10s, M mute — bound
  *        to the canvas/its controls, not `document`, so multiple players don't fight.
- * @param {number} [opts.fadeMs]  ACCEPTED, NOT IMPLEMENTED in v1 — see setSource() below.
+ * @param {'cut'|'crossfade'} [opts.transition='cut']  what setSource() does by default.
+ *        `'crossfade'` creates the mixer (one extra full-frame draw per painted frame) — see the
+ *        dissolve section; `./splat`'s other transitions are refused by name.
+ * @param {number} [opts.durationMs=600]  the crossfade's length.
+ * @param {string|function} [opts.easing='easeInOutSine']  a `./splat` easing name or `(x) => y`.
+ * @param {number} [opts.fadeMs]  LEGACY alias (1.10): `> 0` = `transition:'crossfade'` of that length.
  * @param {'anonymous'|'use-credentials'} [opts.crossOrigin]  default: `'anonymous'` iff `src` is
  *        a cross-origin URL, unset otherwise.
  * @param {number} [opts.width] [opts.height] [opts.cornerRadius] [opts.feather]  forwarded to
@@ -1139,7 +1243,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   let mixerLoop = null;
   // Opt-in: no fade asked for at construction => no mixer, and the woven path stays the
   // byte-identical `addVideo(canvas, video)` it is today. See the dissolve section above.
-  const dissolve = o.fadeMs > 0 ? createDissolve(video) : null;
+  const dissolve = o.transition.type === 'crossfade' ? createDissolve(video) : null;
 
   function paintPosterNow() {
     if (!posterImg) return;
@@ -1234,21 +1338,22 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       video.muted = m;
     },
     /**
-     * Swap the source in place, dissolving from the outgoing title's last frame if a fade was
-     * armed — see the dissolve section above for what that is and is not (it is not a blend of
-     * two live streams, deliberately). `sOpts.fadeMs` overrides the duration for this one swap;
-     * it cannot switch fading ON, because the mixer that runs it only exists when
-     * `opts.fadeMs > 0` was given at construction, and creating it lazily would mean swapping
-     * the woven window's paint source mid-flight — a layer rebuild, i.e. the visible blink the
-     * fade exists to remove.
+     * Swap the source in place. `sOpts` (transition / durationMs / easing / the legacy fadeMs)
+     * overrides the player's own transition field by field for this one swap — see
+     * resolveTransition. A crossfade dissolves from the outgoing title's last frame (see the
+     * dissolve section: not a blend of two live streams, deliberately). It cannot be switched ON
+     * here for a player built without one, because the mixer that runs it only exists from
+     * construction, and creating it lazily would mean swapping the woven window's paint source
+     * mid-flight — a layer rebuild, i.e. the visible blink the crossfade exists to remove.
      *
-     * Without a fade this is a hard cut, and the tile holds the old frame until the new source
-     * reaches `readyState >= 2`.
+     * A cut holds the old frame until the new source reaches `readyState >= 2`.
      */
     setSource(newSrc, sOpts = {}) {
+      // Resolve (and validate) BEFORE touching anything: a refused option leaves the player as it was.
+      const tr = resolveTransition(sOpts, o.transition);
+      if (tr.type === 'crossfade' && !dissolve) noteNoMixer();
       // Snapshot BEFORE the src is repointed — once `load()` runs, the old frame is gone.
-      const ms = typeof sOpts.fadeMs === 'number' ? sOpts.fadeMs : o.fadeMs;
-      if (dissolve && ms > 0 && dissolve.capture()) dissolve.arm(ms);
+      if (dissolve && tr.type === 'crossfade' && dissolve.capture()) dissolve.arm(tr.durationMs, tr.ease);
       video.pause();
       if (sOpts.poster !== undefined) loadPoster(sOpts.poster);
       const nextCross = resolveCrossOrigin(newSrc, o.crossOrigin);
