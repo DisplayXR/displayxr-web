@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lift explore — dev harness</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;background:#0a0a0a;color:#ddd;font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:16px}
+  h1{font-size:18px;margin:0 0 6px}
+  /* Bare canvas: no border/radius/shadow (the weave splits this rect as an SBS pair). */
+  #tile{display:block;width:100%;aspect-ratio:4/3;touch-action:none;cursor:grab;background:#000}
+  #tile:active{cursor:grabbing}
+  .ctl{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0;align-items:center}
+  .ctl label{display:flex;gap:6px;align-items:center}
+  #hud{font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre;opacity:.85}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Convert to 3D — explore renderer (dev harness)</h1>
+  <p>Synthesises a two-layer image-aligned 3DGS PLY (a procedural photo + analytic depth: three boxes
+     in front of a wall and floor), loads it through <code>js/lift/explore.js</code>, and renders it via
+     <code>createInline3D().addScene</code> — or, off the DisplayXR Browser, through synthetic eye views
+     (<code>?views=sbs</code>, default) or the flat path (<code>?views=mono</code>). Drag to orbit (±15°,
+     relaxes on release). Query: <code>grid=0.5</code> (fraction of full res), <code>axes=opencv</code>,
+     <code>fit=cover|contain</code>, <code>sync=1</code> (gl.finish per frame: GPU-bound timing),
+     <code>reveal=0</code>, <code>dpr=2</code> + <code>store=sbs</code> (size the backing store as the woven
+     layer would: double-width at device res).</p>
+  <canvas id="tile"></canvas>
+  <div class="ctl">
+    <label>yaw <input id="yaw" type="range" min="-15" max="15" step="0.5" value="0"><span id="yawv">0</span></label>
+    <label>pitch <input id="pitch" type="range" min="-15" max="15" step="0.5" value="0"><span id="pitchv">0</span></label>
+    <label>head x (synthetic) <input id="headx" type="range" min="-0.2" max="0.2" step="0.005" value="0"></label>
+    <label>depth gain <input id="gain" type="range" min="0" max="2" step="0.05" value="1"></label>
+    <button id="fade">fadeIn</button> <button id="fadeout">fadeOut</button>
+  </div>
+  <div id="hud">loading…</div>
+</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js"
+} }
+</script>
+<script type="module">
+import { createInline3D } from '@displayxr/inline3d';
+import { createExplore } from '../../js/lift/explore.js';
+
+const q = new URLSearchParams(location.search);
+const hud = document.getElementById('hud');
+const canvas = document.getElementById('tile');
+const log = (s) => { hud.textContent = s; };
+
+// ── 1. Synthesise the test lift ─────────────────────────────────────────────────────────────
+// A procedural "photo" + analytic depth, lifted exactly the way an image-aligned generator lifts:
+// one gaussian per pixel per layer, on that pixel's ray at its depth, footprint = one pixel.
+// Layer 0 = the visible surface; layer 1 = the disocclusion layer (the background with the boxes
+// removed, i.e. what an inpainter would put behind them).
+//
+// PLY layout — the standard INRIA 3DGS binary, 17 float32 per vertex, in this order:
+//   x y z  nx ny nz  f_dc_0 f_dc_1 f_dc_2  opacity(logit)  scale_0 scale_1 scale_2(log)  rot_0..3 (w,x,y,z)
+// Convention (the assumed A4 contract): camera at the origin looking down −z, x right, y up,
+// metres; focalPx from meta; principal point at the image centre. ?axes=opencv writes the
+// SHARP convention instead (y down, +z forward) to exercise the adapter.
+const PLY_FIELDS = ['x','y','z','nx','ny','nz','f_dc_0','f_dc_1','f_dc_2','opacity',
+                    'scale_0','scale_1','scale_2','rot_0','rot_1','rot_2','rot_3'];
+const SH_C0 = 0.28209479177387814;
+
+function synthLift({ W, H, grid, axes }) {
+  const gw = Math.round(W * grid), gh = Math.round(H * grid);
+  const f = (W / 2) / Math.tan(30 * Math.PI / 180);        // 60° horizontal FOV
+  const fg = f * grid;                                       // focal in GRID px
+  const cx = gw / 2, cy = gh / 2;
+  const WALL = 6.0, FLOOR_Y = -1.0;
+  const boxes = [
+    { lo: [-1.05, -1.0, -2.35], hi: [-0.35, -0.15, -1.75], col: [0.85, 0.22, 0.18] }, // red, mid
+    { lo: [ 0.25, -1.0, -3.40], hi: [ 1.00,  0.55, -2.70], col: [0.20, 0.45, 0.90] }, // blue, far
+    { lo: [-0.05, -1.0, -1.45], hi: [ 0.30, -0.30, -1.10], col: [0.95, 0.80, 0.15] }, // yellow, near
+  ];
+  const pivotZ = -2.0;                                       // the subject / convergence plane
+
+  // Ray–AABB slab test; ray from origin along d. Returns [t, faceAxis] or null.
+  function hitBox(d, b) {
+    let t0 = 0, t1 = Infinity, ax = -1;
+    for (let k = 0; k < 3; k++) {
+      if (Math.abs(d[k]) < 1e-9) { if (0 < b.lo[k] || 0 > b.hi[k]) return null; continue; }
+      let a = b.lo[k] / d[k], c = b.hi[k] / d[k];
+      if (a > c) { const s = a; a = c; c = s; }
+      if (a > t0) { t0 = a; ax = k; }
+      if (c < t1) t1 = c;
+      if (t0 > t1) return null;
+    }
+    return [t0, ax];
+  }
+  const bg = (d, u, v) => {
+    // wall at z = −WALL; floor at y = FLOOR_Y (if hit before the wall)
+    let t = WALL, kind = 'wall';
+    if (d[1] < 0) { const tf = FLOOR_Y / d[1]; if (tf < t) { t = tf; kind = 'floor'; } }
+    const p = [d[0] * t, d[1] * t, d[2] * t];
+    let c;
+    if (kind === 'wall') {
+      const g = 0.5 + 0.5 * (p[1] + 1) / 4;
+      const line = (Math.abs(((p[0] * 2) % 1 + 1) % 1 - 0.5) > 0.46 || Math.abs(((p[1] * 2) % 1 + 1) % 1 - 0.5) > 0.46) ? 0.55 : 1;
+      c = [0.35 * g * line, 0.55 * g * line, 0.62 * g * line];
+    } else {
+      const chk = ((Math.floor(p[0] * 2) + Math.floor(p[2] * 2)) & 1) ? 0.75 : 0.35;
+      c = [chk * 0.9, chk * 0.8, chk * 0.6];
+    }
+    return { t, c };
+  };
+
+  const N = gw * gh * 2;
+  const data = new Float32Array(N * 17);
+  const logit = (p) => Math.log(p / (1 - p));
+  let i = 0;
+  const put = (d, t, c, alpha) => {
+    const o = i * 17; i++;
+    let x = d[0] * t, y = d[1] * t, z = d[2] * t;
+    if (axes === 'opencv') { y = -y; z = -z; }
+    const fp = t / fg;                                       // one grid pixel at depth t, metres
+    data[o] = x; data[o + 1] = y; data[o + 2] = z;
+    // normals 0
+    data[o + 6] = (c[0] - 0.5) / SH_C0; data[o + 7] = (c[1] - 0.5) / SH_C0; data[o + 8] = (c[2] - 0.5) / SH_C0;
+    data[o + 9] = logit(alpha);
+    data[o + 10] = Math.log(fp * 0.75); data[o + 11] = Math.log(fp * 0.75); data[o + 12] = Math.log(fp * 0.15);
+    data[o + 13] = 1;                                        // rot = identity quaternion (w first)
+  };
+  for (let v = 0; v < gh; v++) {
+    for (let u = 0; u < gw; u++) {
+      const d = [(u + 0.5 - cx) / fg, -(v + 0.5 - cy) / fg, -1];
+      const b = bg(d, u, v);
+      let best = null;
+      for (const box of boxes) {
+        const h = hitBox(d, box);
+        if (h && h[0] < b.t && (!best || h[0] < best.t)) best = { t: h[0], ax: h[1], box };
+      }
+      if (best) {
+        const shade = best.ax === 2 ? 1 : best.ax === 0 ? 0.7 : 0.85;
+        const p = [d[0] * best.t, d[1] * best.t];
+        const stripe = (Math.floor((p[0] + p[1]) * 12) & 1) ? 1 : 0.72;
+        put(d, best.t, best.box.col.map((x) => x * shade * stripe), 0.98);
+        put(d, b.t, b.c, 0.98);                              // layer 1: background behind the box
+      } else {
+        put(d, b.t, b.c, 0.98);
+        put(d, b.t * 1.01, b.c, 0.4);                        // layer 1 coincident: faint, just behind
+      }
+    }
+  }
+  const header = `ply\nformat binary_little_endian 1.0\nelement vertex ${N}\n` +
+    PLY_FIELDS.map((n) => `property float ${n}\n`).join('') + 'end_header\n';
+  const hb = new TextEncoder().encode(header);
+  const out = new Uint8Array(hb.length + data.byteLength);
+  out.set(hb, 0); out.set(new Uint8Array(data.buffer), hb.length);
+  return {
+    ply: out.buffer,
+    meta: { focalPx: f, pivotZ: axes === 'opencv' ? -pivotZ : pivotZ, w: W, h: H, layers: 2, axes },
+    count: N,
+  };
+}
+
+// ── 2. Load through the module ──────────────────────────────────────────────────────────────
+const W = 896, H = 672;                                      // 2 × 896·672 = 1.20 M gaussians
+const grid = Math.min(1, Math.max(0.1, +(q.get('grid') || 1)));
+const axes = q.get('axes') || 'opengl';
+const tGen = performance.now();
+const lift = synthLift({ W, H, grid, axes });
+const genMs = performance.now() - tGen;
+
+const wall = await createInline3D({ lazy: false });
+const viewsMode = wall.supported ? 'woven' : (q.get('views') || 'sbs');
+const dpr = +(q.get('dpr') || 0) || window.devicePixelRatio || 1; // ?dpr=2: a retina-sized store on a dpr-1 harness
+function sizeCanvas() {
+  const r = canvas.getBoundingClientRect();
+  // Woven: the SBS store is double-width at device res (addScene's contract). Synthetic SBS:
+  // two half-width eyes in a normal-width store, so a screenshot shows both at the page's aspect.
+  canvas.width = Math.round(r.width * dpr * (viewsMode === 'woven' || q.get('store') === 'sbs' ? 2 : 1));
+  canvas.height = Math.round(r.height * dpr);
+}
+sizeCanvas();
+
+// ?shared=1 — the integration shape: ONE WebGL2 context on the canvas, owned by another renderer
+// (the live DIBR in the product; here a stand-in that draws a flat, tinted fullscreen gradient per
+// view and leaves GL state the way live-dibr.js does: its program + VAO bound, BLEND off,
+// SCISSOR toggled, a texture on unit 1). Explore gets `gl`, starts hidden, and fades in over it.
+const sharedGl = q.get('shared') === '1'
+  ? canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: true }) : null;
+let underlay = null;
+if (sharedGl) {
+  const gl = sharedGl;
+  const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x); return x; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, `#version 300 es
+    out vec2 uv; void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); uv = p; gl_Position = vec4(p*2.0-1.0,0,1); }`));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `#version 300 es
+    precision mediump float; in vec2 uv; out vec4 o; uniform sampler2D t;
+    void main(){ o = vec4(0.55*uv.x + 0.2, 0.15, 0.55*uv.y + 0.25, 1.0) * texture(t, uv).r; }`));
+  gl.linkProgram(prog);
+  const vao = gl.createVertexArray();
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([255]));
+  underlay = (views, layer) => {
+    gl.useProgram(prog); gl.bindVertexArray(vao);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.enable(gl.SCISSOR_TEST);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(prog, 't'), 1);
+    const vs = views || [null];
+    for (const v of vs) {
+      const vp = v ? layer.getViewport(v) : { x: 0, y: 0, width: canvas.width, height: canvas.height };
+      gl.viewport(vp.x, vp.y, vp.width, vp.height); gl.scissor(vp.x, vp.y, vp.width, vp.height);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.disable(gl.SCISSOR_TEST); gl.bindVertexArray(null);
+  };
+}
+
+const tLoad = performance.now();
+const ex = await createExplore({
+  canvas, gl: sharedGl || undefined, ply: lift.ply, meta: lift.meta,
+  orbit: { maxAngleDeg: 15, relax: true },
+  fit: q.get('fit') || 'cover',
+  perf: q.get('perf') || undefined,                          // ?perf=exact|balanced|aggressive
+  startFlat: q.get('reveal') !== '0',
+  onClick: (e) => console.info('[dev-explore] click', e.clientX, e.clientY),
+});
+const loadMs = performance.now() - tLoad;
+if (sharedGl) ex.fadeIn(+(q.get('fade') || 1500));        // opacity crossfade over the underlay
+else if (q.get('reveal') !== '0') ex.fadeIn(1400);
+
+// Pointer: forwarded exactly as the integrating page will.
+for (const [type, fn] of [['pointerdown', 'onPointerDown'], ['pointermove', 'onPointerMove'],
+                          ['pointerup', 'onPointerUp'], ['pointercancel', 'onPointerUp']]) {
+  canvas.addEventListener(type, (e) => ex[fn](e));
+}
+const $ = (id) => document.getElementById(id);
+const syncSliders = () => {
+  $('yawv').textContent = $('yaw').value; $('pitchv').textContent = $('pitch').value;
+  ex.setTarget(+$('yaw').value, +$('pitch').value);
+};
+$('yaw').oninput = syncSliders; $('pitch').oninput = syncSliders;
+$('gain').oninput = () => ex.setDepthGain(+$('gain').value);
+$('fade').onclick = () => ex.fadeIn(1400);
+$('fadeout').onclick = () => ex.fadeOut(600);
+
+// ── 3. Frame loop ───────────────────────────────────────────────────────────────────────────
+const gl = ex.engine.renderer.getContext();
+const sync = q.get('sync') === '1';
+let frames = 0, last = 0, ema = 0, cpuEma = 0, t0Stats = performance.now();
+const dts = [], cpus = [];
+function account(cpuMs) {
+  const t = performance.now();
+  if (last) { const d = t - last; ema = ema ? ema * 0.95 + d * 0.05 : d; dts.push(d); }
+  cpuEma = cpuEma ? cpuEma * 0.95 + cpuMs * 0.05 : cpuMs;
+  cpus.push(cpuMs);
+  last = t; frames++;
+}
+const pct = (a, p) => { if (!a.length) return 0; const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(p * b.length))]; };
+// Synthetic eye views: a display rig ~0.6 world units in front of the glass, eyes 0.063 apart.
+function fakeViews() {
+  const hx = +$('headx').value;
+  const mk = (x) => ({ transform: { position: { x, y: 0, z: 0.6 } }, projectionMatrix: null });
+  const views = [mk(hx - 0.0315), mk(hx + 0.0315)];
+  const layer = { getViewport: (v) => {
+    const half = Math.floor(canvas.width / 2);
+    return { x: v === views[0] ? 0 : half, y: 0, width: half, height: canvas.height };
+  } };
+  return { views, layer };
+}
+function renderOnce(arg) {
+  const t0 = performance.now();
+  underlay?.(arg.views, arg.layer);
+  ex.render(arg);
+  if (sync) gl.finish();
+  account(performance.now() - t0);
+}
+if (viewsMode === 'woven') {
+  wall.addScene(canvas, (views, layer) => renderOnce({ views, layer, session: wall }));
+} else {
+  const loop = () => {
+    requestAnimationFrame(loop);
+    renderOnce(viewsMode === 'mono' ? {} : fakeViews());
+  };
+  requestAnimationFrame(loop);
+}
+
+const renderer = gl.getExtension('WEBGL_debug_renderer_info');
+const gpu = renderer ? gl.getParameter(renderer.UNMASKED_RENDERER_WEBGL) : '?';
+setInterval(() => {
+  log(`mode ${viewsMode} · ${lift.count.toLocaleString()} gaussians (grid ${grid}) · axes ${axes} · ${gpu}\n` +
+      `synth ${genMs.toFixed(0)} ms · load+parse ${loadMs.toFixed(0)} ms · canvas ${canvas.width}×${canvas.height}\n` +
+      `frame ${ema.toFixed(2)} ms (${(1000 / (ema || 1)).toFixed(1)} fps) · render() ${cpuEma.toFixed(2)} ms${sync ? ' incl. gl.finish' : ' CPU'}\n` +
+      `yaw ${ex.orbit.yaw.toFixed(2)}° pitch ${ex.orbit.pitch.toFixed(2)}° · pivot ${ex.rig.dPivot.toFixed(2)} m`);
+}, 250);
+
+window.__explore = { ex, lift, stats: () => ({ splats: ex.engine.mesh.packedSplats?.numSplats, canvas: [canvas.width, canvas.height],
+    frames, meanFrameMs: (performance.now() - t0Stats) / Math.max(frames, 1), p50FrameMs: pct(dts, 0.5), p95FrameMs: pct(dts, 0.95),
+    p50RenderMs: pct(cpus, 0.5), p95RenderMs: pct(cpus, 0.95), genMs, loadMs, gpu, mode: viewsMode }),
+  resetStats: () => { ema = 0; cpuEma = 0; frames = 0; last = 0; dts.length = 0; cpus.length = 0; t0Stats = performance.now(); } };
+</script>
+</body>
+</html>
