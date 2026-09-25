@@ -83,6 +83,11 @@ export function createExplore({ canvas, ply, meta, orbit = {} }) {
 
   return {
     render({ views, layer }) {
+      // views: null = the 2D fallback's flat path (the real explore's contract): one mono view, whole canvas.
+      if (!views) {
+        views = [{ eye: 'none' }];
+        layer = { getViewport: () => ({ x: 0, y: 0, width: canvas.width, height: canvas.height }) };
+      }
       const idle = now() - lastInput > 1500 && !drag;
       if (idle && views.length === 1) tYaw = maxRad * 0.35 * Math.sin(now() / 900);
       else if (idle && relax) (tYaw = 0), (tPitch = 0);
