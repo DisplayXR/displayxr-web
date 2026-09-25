@@ -101,7 +101,7 @@ test('comfortScale: metric scenes off target are brought to it; everything else 
   assert.equal(comfortScale({ pivotZ: 10 }, { space: 'disparity' }), 1);
   assert.equal(comfortScale({ pivotZ: 10 }, { space: 'metric', mode: 'off' }), 1);
   assert.equal(comfortScale({ pivotZ: 2.2 }, { space: 'disparity', mode: 'always' }), 2 / 2.2);
-  assert.equal(comfortScale({ pivotZ: -8 }, { space: 'metric', target: 4 }), 0.5); // OpenGL-signed pivot
+  assert.equal(comfortScale({ pivotZ: -10 }, { space: 'metric', target: 4 }), 0.4); // OpenGL-signed pivot, beyond 2× target
   assert.equal(comfortScale({ pivotZ: 10, space: 'metric' }), 0.2); // meta.space
   // the neutral view is unchanged: the rig's window scales with the pivot, so its angular size holds
   const m = { focalPx: 700, pivotZ: 10, w: 900, h: 600 };
