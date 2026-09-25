@@ -1,9 +1,9 @@
 // inline3d-player.js — a media player as an inline-3D window, in one call.
 //
 // PREVIEW tier. Not covered by the SDK's 1.x semver promise — see docs/sdk-stability.md.
-// Implements the v1 slice of docs/rfcs/0001-media-player.md; see the report that shipped this
-// file for the deviations from that RFC (they are real, not cosmetic — read them before you
-// reach for `untrackedFallback` or `opts.group`, neither of which exists here).
+// Implements the v1 slice of docs/rfcs/0001-media-player.md. Two things the RFC names live
+// elsewhere or not yet: `untrackedFallback` is a CORE option (`createInline3D`, see the tracking
+// note below), not a player one; `opts.group` (one active player per group) is not built yet.
 //
 //   import { createInline3D } from '@displayxr/inline3d';
 //   import { addPlayer } from '@displayxr/inline3d/player';
@@ -18,30 +18,32 @@
 // are `addVideo`'s, unchanged. This file adds exactly two things on top: a small canvas-owned
 // paint loop for the cases `addVideo` cannot cover (below), and the SDK-drawn transport chrome.
 //
-// ── WHY THE "MONO" PATH LOOKS THE WAY IT DOES, NOT THE RFC's WAY ──────────────────────────
+// ── TRACKING LOSS, AND WHY THE "MONO" PATH IS ITS OWN LOOP ─────────────────────────────────
 //
-// The RFC says the mono fallback is "zero new code" because it reuses `wall`'s
-// `untrackedFallback: 'mono'` option and `wall.trackingState`. THAT MECHANISM DOES NOT EXIST IN
-// THIS CODEBASE (checked: no `untrackedFallback`, no `trackingState`, no `trackingstatechange`
-// anywhere in js/ or docs/). What DOES exist is `win.sbs` + `Inline3D._paintMono()` — an
-// INTERNAL, non-configurable fallback the manager applies to a window whose weave layer isn't
-// live (off-screen in lazy mode, an unsupported browser, or a layer that failed to construct):
-// draw the left half of the source, stretched, into a 1:1 buffer. It fires automatically and
-// for free under `format:'sbs'` — nothing here needs to ask for it — but a page CANNOT ask a
-// live, woven window to render this way, so it cannot carry `format:'mono'`'s job: content that
-// is genuinely flat and should never be split into eyes, independent of whether the browser
+// Tracking loss is handled by the CORE, not here. Since DisplayXR Browser patch 0195 the session
+// carries the runtime's tracking state (`XRSession.trackingState`: 'tracking' | 'searching' |
+// 'unknown', plus `trackingstatechange`), mirrored as `wall.trackingState` and
+// `wall.on('trackingstatechange')`. With `createInline3D({ untrackedFallback: 'mono' })` the
+// manager eases every image/video tile to flat on 'searching' and back on 'tracking'
+// (Inline3D#_trackBakedStereo) — the left eye in both halves of the SBS buffer, which stays a
+// valid pair for the live layer. A `format:'sbs'` player is `addVideo` underneath, so it gets that
+// for free; nothing in this file asks for it. The option is OFF by default because on a MANAGED
+// display (Leia) the vendor already goes 2D before it reports 'searching'; it is how a page on a
+// MANUAL display does its part.
+//
+// The other mono path in the core is `win.sbs` + `Inline3D._paintMono()`: a 1:1, left-eye-only
+// frame for a window whose weave layer is NOT live (off-screen in lazy mode, an unsupported
+// browser, a layer that failed to construct). Neither of the two can carry `format:'mono'`'s job:
+// content that is genuinely flat and should never be split into eyes, whether or not the browser
 // can weave.
 //
-// So: `format:'sbs'` calls `wall.addVideo()` unchanged, and inherits every real fallback it
-// already has, including the internal one above. `format:'mono'` — and `format:'sbs'` on an
-// absent/unsupported wall, where `wall.addVideo` does not even exist to call — instead run a
-// small paint loop this module owns, using the SAME visual convention as the SDK's internal
-// fallback (flat, 1:1, left-eye-only for content that IS a stereo pair but can't be woven; the
-// WHOLE frame for content that is genuinely 2D). Feeding a deliberately-flat source through
-// `addVideo` as a fake zero-disparity SBS pair was considered and rejected for v1: `addVideo`
-// requires a real `<video>`, so faking it would mean re-encoding the source through a
-// canvas-captured MediaStream into a second hidden `<video>` — real engineering, not "wire it
-// and document it," and out of scope here.
+// So: `format:'sbs'` calls `wall.addVideo()` unchanged and inherits both. `format:'mono'` — and
+// `format:'sbs'` on an absent/unsupported wall, where `wall.addVideo` does not exist to call —
+// run a small paint loop this module owns, with the same visual convention (flat, 1:1; the left
+// eye for content that IS a stereo pair but cannot be woven; the WHOLE frame for content that is
+// genuinely 2D). Feeding a deliberately-flat source through `addVideo` as a fake zero-disparity
+// SBS pair was considered and rejected for v1: it would mean re-encoding the source through a
+// canvas-captured MediaStream into a second hidden `<video>`, which is out of scope here.
 
 /** @typedef {'sbs'|'mono'} PlayerFormat */
 

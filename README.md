@@ -149,6 +149,15 @@ No projection math lands in your page or in the SDK — the off-axis frustum sta
 > OS weave service has bound (typically at page load), a false-negative that silently drops you to 2D.
 > `createInline3D()` detects by actually acquiring a session, which is authoritative.
 
+> **Nobody in front of the display?** `wall.trackingState` is `'tracking'`, `'searching'` or
+> `'unknown'`, and `wall.on('trackingstatechange', state => …)` tells you when it moves (tile
+> handles carry both too). `'searching'` means nobody is being tracked: the viewer left the
+> display's 3D zone, or the panel is in a 2D mode. On a MANAGED display (the default, and Leia's)
+> the vendor has already gone 2D by then, so use it for hints only. On a MANUAL display,
+> `createInline3D({ untrackedFallback: 'mono' })` eases `addImage` / `addVideo` windows flat for you.
+> `'unknown'` is "no opinion" (an older browser, or a closed session): render normally. See
+> [knowing when nobody is tracked](docs/authoring-inline-3d.md#knowing-when-nobody-is-tracked).
+
 Full API + authoring guidance: [`docs/authoring-inline-3d.md`](docs/authoring-inline-3d.md).
 Before you ship a page that navigates or remounts, read
 [`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md): how to avoid a raw side-by-side

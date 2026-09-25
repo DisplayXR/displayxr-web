@@ -157,6 +157,24 @@ export interface HardwareDisplayStateChange {
 
 export type DisplayModeChange = RenderingModeChange | HardwareDisplayStateChange;
 
+/**
+ * Is anyone being tracked in front of the display? From the DisplayXR runtime (which may hand the
+ * decision to the vendor plug-in), via the browser's `session.trackingState` (patch 0195).
+ *
+ * - `'tracking'` — a viewer is in the display's 3D zone.
+ * - `'searching'` — the runtime's derived isTracking is FALSE: nobody is in the zone, **or** the
+ *   display is in an untracked / 2D mode. It does **not** necessarily mean the tracker lost lock
+ *   on a viewer who is still there, so do not word a page's UI as if it did.
+ * - `'unknown'` — no opinion: this browser has no tracking-state surface, or the session ended.
+ */
+export type XRTrackingState = 'unknown' | 'tracking' | 'searching';
+
+/** The tracking state changed. The callback is handed the STATE first, this object second. */
+export interface TrackingStateChange {
+  type: 'trackingstatechange';
+  state: XRTrackingState;
+}
+
 /** What a page may lift into the floating native viewer. `null` = no `XRDisplayLayer.undock`. */
 export interface UndockCapabilities {
   model: boolean;
@@ -314,9 +332,17 @@ export interface TileHandle {
   /** Listen for one display event, re-emitted on this handle. Returns an unsubscribe function. */
   on(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): () => void;
   on(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): () => void;
+  /**
+   * Nobody-is-tracked changes, with the STATE as the first argument. The same subscription as the
+   * manager's; silent forever on a browser without the surface. See {@link Inline3D.trackingState}.
+   */
+  on(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): () => void;
   /** Drop a listener registered with {@link TileHandle.on}. */
   off(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): void;
   off(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): void;
+  off(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): void;
+  /** The manager's {@link Inline3D.trackingState}, read live. */
+  readonly trackingState: XRTrackingState;
   /**
    * Both display events through one callback — the older shape, still supported. Returns an
    * unsubscribe function; inert (a no-op unsubscribe) on a browser without the API.
@@ -367,10 +393,19 @@ export interface Inline3D {
   setStereoEnabled(enabled: boolean): Promise<boolean>;
   on(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): () => void;
   on(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): () => void;
+  on(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): () => void;
   off(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): void;
   off(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): void;
+  off(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): void;
   /** As last REPORTED by `hardwaredisplaystatechange` — never what was last requested. */
   readonly hardwareDisplayState: XRHardwareDisplayMode | null;
+  /**
+   * Is anyone being tracked in front of the display right now? Mirrors `session.trackingState` as
+   * last read — `'unknown'` where the browser has no such surface (silently), and again once the
+   * session ends. Pages use it for "step back into view" hints; see
+   * {@link CreateInline3DOptions.untrackedFallback} for having the SDK flatten image/video tiles.
+   */
+  readonly trackingState: XRTrackingState;
   /** The active mode as last read/reported. `viewCount: 0` means "not read yet". */
   readonly activeMode: { modeIndex: number; viewCount: number };
   /** True while the SDK is holding every window's rig flat because a 1-view mode is active. */
@@ -441,6 +476,8 @@ export interface Inline3D {
 /** The shape {@link createInline3D} resolves to when inline-3D is unavailable. */
 export interface Inline3DUnsupported {
   supported: false;
+  /** Always `'unknown'`: no session, nobody to track. Present so a page need not branch first. */
+  trackingState: 'unknown';
   error?: unknown;
 }
 
@@ -470,6 +507,26 @@ export interface CreateInline3DOptions {
   autoChrome?: boolean;
   /** The eased 2D<->3D transition. On by default; see {@link ModeSwitchOptions}. */
   modeSwitch?: ModeSwitchOptions;
+  /**
+   * What the SDK does to the image and video windows it owns the pixels of while **nobody is
+   * tracked** (`trackingState === 'searching'`). Default `'none'`.
+   *
+   * Whose job this is depends on the display's eye-tracking mode:
+   * - **MANAGED** (the default, and Leia's): the vendor owns tracking loss. It eases the eyes
+   *   together and reports `'searching'` only once the display is already 2D. Leave this at
+   *   `'none'`: a flatten here would be a second transition.
+   * - **MANUAL**: the vendor does nothing and the app handles tracking loss. Use `'mono'`.
+   *
+   * - `'none'` — nothing changes.
+   * - `'mono'` — each `addImage` / `addVideo` window eases to its LEFT eye in both halves of its
+   *   side-by-side buffer on `'searching'`, and back on `'tracking'`, over the mode switch's
+   *   duration. The buffer is never reallocated and the layer never closed; `'unknown'` leaves it
+   *   where it is.
+   *
+   * **Scene windows are never touched** — the page owns those pixels. Listen for
+   * `trackingstatechange` and do the same for a scene.
+   */
+  untrackedFallback?: 'none' | 'mono';
 }
 
 /**
