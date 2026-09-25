@@ -1,5 +1,10 @@
 # lift — Convert to 3D
 
+**EXPERIMENTAL** — the `./lift` subpath is preview tier (docs/sdk-stability.md). This page is the
+overview and the integration contract; each module has its own page:
+[models + providers](lift-models.md) · [live DIBR](lift-dibr.md) · [lift generator](lift-gen.md) ·
+[explore renderer](lift-explore.md).
+
 `lift(element, opts)` turns an ordinary `<video>`, `<img>` or `<canvas>` on a page into 3D **in place**:
 a video plays as **live** 3D (per-frame monocular depth + depth-image-based rendering), and when it
 pauses or ends the frame is **lifted** into a small 3D Gaussian scene you can **explore** with a
@@ -7,13 +12,15 @@ bounded orbit. A still goes straight to explore. On the DisplayXR Browser the ca
 glasses-free; everywhere else it renders the same pipeline as a single mono view (the 2D fallback).
 
 ```js
-import { lift, resolveMediaAt } from './js/lift/lift.js'; // package subpath: integrator's call
+import { lift, resolveMediaAt } from '@displayxr/inline3d/lift';
 
 const h = await lift(document.querySelector('video'));
 h.on('statechange', ({ state, from, reason }) => console.log(from, '→', state, reason));
 h.on('progress', ({ phase, value }) => {});   // phase: 'models' | 'depth' | 'lift', value 0..1
 h.on('error', ({ error, fatal }) => {});      // fatal=false: live/lift hiccup, still usable
 h.setDepth(1.4);
+h.stats;       // { state, fps, modelLoadMs, liveDepthMs, stillDepthMs, generateMs, exploreLoadMs, pauseToExploreMs, splats }
+h.setOrbit(8); // explore: turn the lifted scene (degrees, clamped to the orbit cap)
 h.explore();   // freeze + lift now (pauses a playing video)
 h.resume();    // back to live (plays the video; its `play` event crossfades explore → live)
 h.remove();    // unmounts; the element is exactly as it was
@@ -22,7 +29,20 @@ h.remove();    // unmounts; the element is exactly as it was
 addEventListener('click', (e) => { if (e.altKey) { const el = resolveMediaAt(e.clientX, e.clientY); el && lift(el); } });
 ```
 
-Sample: [`samples/lift/`](../samples/lift/) (runs on stubs; `?providers=real` for the real models).
+The explore renderer needs the SDK's optional peers `three` (≥ 0.180) and `@sparkjsdev/spark` (2.x),
+resolvable as bare specifiers (an import map or a bundler), exactly like `addSplat`. The models are
+never bundled: see [Models](#models-and-onnx-runtime).
+
+Sample: [`samples/lift/`](../samples/lift/) — runs the real models when its model tree answers
+(`?providers=real|stub` to force). Locally:
+
+```sh
+mkdir -p _scratch
+ln -sfn ~/dxr-2d3d-exports/models _scratch/models                          # vda/ still/ da2/ inpaint/ dev/
+ln -sfn /path/to/node_modules/onnxruntime-web/dist _scratch/ort           # optional; else jsDelivr
+python3 -m http.server 8812 --bind 127.0.0.1
+open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/office.png'
+```
 
 ## Options
 
@@ -31,18 +51,22 @@ Sample: [`samples/lift/`](../samples/lift/) (runs on stubs; `?providers=real` fo
 | `mode` | `'auto'` | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. |
 | `depth` | `1` | depth strength multiplier (live DIBR). |
 | `convergence` | `'auto'` | zero-disparity depth; handed to live-DIBR as given. |
-| `quality` | `'auto'` | `low`/`medium`/`high`; `auto` picks from `deviceMemory`/`hardwareConcurrency`/mobile UA. Providers always get a concrete tier. |
+| `quality` | `'auto'` | `low`/`medium`/`high`; `auto` picks `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, else `low` — **never `high`** (MoGe-3 1022×574 is 2.8 s vs 1.3 s, and a 1536-wide lift is ~1.2 M splats). The still model, generator and inpainter get the concrete tier; the video model keeps `auto` (its warm-up picks 364×210 vs 518×294 by measured frame time). |
 | `wall` | — | an existing `createInline3D()` manager to join. **Pass it if the page already has one** — one inline-3D session per document. |
 | `orbit` | `{ maxAngleDeg: 15, relax: true }` | explore orbit bounds; `relax` springs back to centre on release. |
-| `models` | `'auto'` | a `ModelSource`, or `'auto'` for `createModelSource({})`. |
-| `providers` | `{ video: 'vda-small', still: 'moge3', inpaint: 'iw3-light' }` | `still` also accepts `'da3'`, `'da2-small'`. |
+| `models` | `'auto'` | a `ModelSource`; a base URL string (= `createModelSource({ baseUrl })`); or `'auto'` (`createModelSource({})`: the native store in the DisplayXR Browser, else the public blob store). |
+| `ort` | — | onnxruntime-web: the module, its `dist/` URL, or `loadOrt` options. Default: `loadOrt()` (jsDelivr, pinned). |
+| `providers` | `{ video: 'vda-small', still: 'moge3', inpaint: 'none' }` | `still` also accepts `'da3'`, `'da2-small'`, a manifest name or a registered provider name. `inpaint: 'light-inpaint-v1'` enables the net (off by default: see *Known issues*). |
+| `prefetch` | `false` | load the still model as soon as live runs. Live depth is **held** while it compiles (see *One ORT session at a time*). |
+| `exploreMaxDpr` | 1 woven / ∞ flat | dpr cap on the canvas while explore is up. 1 on the woven SBS store unless `quality: 'high'`. |
 | `ui` | `'builtin'` | a small chip (progress %, Explore / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. |
 | `signal` | — | `AbortSignal`; aborting removes the lift. |
 | `backend` | `'real'` | `'stub'` swaps in `js/lift/stubs/*` (same contracts, no ML) — development and demos only. |
 
 Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRatio`/`overlay`),
-`woven` (true = inline-3D session, false = 2D fallback), `on(type, cb) → off`, `off`, `explore()`,
-`resume()`, `setDepth(x)`, `setConvergence(x)`, `remove()`.
+`woven` (true = inline-3D session, false = 2D fallback), `stats`, `on(type, cb) → off`, `off`,
+`explore()`, `resume()`, `setOrbit(yaw, pitch)`, `setDepth(x)`, `setConvergence(x)`, `remove()`.
+Types: [`lift.d.ts`](../lift.d.ts).
 
 ## State machine (`js/lift/state.js`)
 
@@ -112,7 +136,8 @@ These are fixed; each module is built against them independently.
 - `js/lift/providers/models.js`: `createModelSource({baseUrl?, manifest?}) → { get(name) → Promise<{stream, size, sha256}>, url(name) }`, plus `loadOrt({baseUrl}) → ort` and `getRegistry()` with `registerDepthProvider(name, factory, {priority})`.
 - `js/lift/live-dibr.js`: `createLiveDibr({canvas /*WebGL2*/}) → { setSource(el|VideoFrame), setDepth({data,w,h,space}), setParams({depth, convergence, dilate}), render({views, layer, session}) /* draws every view into layer.getViewport(view), same convention as addScene callbacks */, dispose() }`.
 - `js/lift/gen/lift-gen.js`: `generateLift({rgb: ImageBitmap|HTMLCanvasElement, depth:{data,w,h,space,intrinsics}, inpainter?, quality, signal, onProgress}) → Promise<{ply: ArrayBuffer /*binary 3DGS PLY*/, meta:{focalPx, pivotZ, w, h, layers:2}}>`.
-- `js/lift/explore.js`: `createExplore({canvas, ply, meta, orbit:{maxAngleDeg, relax}}) → { render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), dispose() }`.
+- `js/lift/explore.js`: `createExplore({canvas, gl?, ply, meta, axes?, clearAlpha?, orbit:{maxAngleDeg, relax}}) → Promise<{ render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), fadeOut(ms), setDepthGain(x), dispose() }>` (async: Spark parses the PLY in a worker).
+- Inpainter (`js/lift/providers/inpaint-ort.js`): `createInpainter({modelSource, ort?, quality, model?}) → { load(), inpaintTwoSided(rgbChw, maskRight, maskLeft, W, H) }`.
 
 ### How lift.js uses them (the parts the contracts leave open)
 
@@ -123,18 +148,91 @@ These are fixed; each module is built against them independently.
   clear** while its fade alpha is < 1 (the stub clears only at full opacity).
 - **Optional `fadeOut(ms)`** on the explore renderer is used for the explore → live crossfade when
   present; without it the switch is a cut.
-- **Provider selection.** `providers.video/still` names are looked up in the registry via
-  `getDepthProvider(name)` (or `get(name)`) when the registry offers such a lookup; otherwise
-  `createDepthProvider` is called. Either way the factory receives `{kind, modelSource, ort, quality,
-  model: name}` — `model` is an extra field outside the contract so a single factory can pick the
-  network by name.
-- **Inpainter.** `inpainter` is taken from `registry.getInpainter(providers.inpaint)` when the registry
-  has one, else `undefined` (the generator's default).
+- **Provider selection.** `registry.getDepthProvider(name, {kind, modelSource, ort, quality, model})`
+  returns an **instance**: `name` is a registered provider (`'ort'`, a native one) or a model family /
+  manifest name handed to the best provider as `model`. Without a registry lift falls back to
+  `createDepthProvider`. The ORT providers register themselves when `providers/index.js` loads.
+- **Inpainter.** `registry.getInpainter(providers.inpaint, {modelSource, ort, quality})`, `load()`ed
+  lazily on the first lift; any failure is a non-fatal `error` (`phase: 'inpaint'`) and the lift
+  continues with the generator's push-pull fill. `'none'` (the default) skips it.
+- **Focal.** The still depth arrives at model resolution (e.g. 770×434) and MoGe's
+  `intrinsics.focalPx` is in that grid. `generateLift` wants it in pixels of the RGB it is given
+  (it rescales to its own raster, and `meta.focalPx` is in output-raster px), so lift multiplies by
+  `bitmap.width / depth.w` first. Depth maps themselves go to live-DIBR and the generator at model
+  resolution; both upsample (bilinear `R16F` / joint-bilateral).
+- **Axes.** The generator writes the OpenCV camera frame (`meta.convention` / `meta.axes =
+  'opencv'`); explore defaults to OpenGL, so lift passes `axes: meta.axes || meta.convention`.
+- **Pivot.** `meta.pivotZ = min(convergenceZ, subjectZ)` — the gallery's Spatial View rule. `subjectZ`
+  is the median layer-0 depth of the central box; `convergenceZ` the depth at the mean normalised
+  disparity of the central 60 %. The median alone landed on the background whenever the frame's
+  centre is sky/wall between near objects, and the whole foreground then swung under the orbit.
+- **Opaque explore.** Explore clears opaque black (`clearAlpha: 1`). With a transparent clear, every
+  pixel the splat sheet did not fully cover showed the page's own flat `<img>`/`<video>` underneath —
+  a ghost double of the foreground under the orbit.
+- **One ORT session at a time.** onnxruntime-web must not create or run a second session while one
+  is running (measured: wasm `Aborted()` / `unreachable` / out-of-bounds, after which the ORT
+  instance is dead). lift awaits the in-flight live estimate before the still model is loaded or
+  run, holds live inference while still depth / inpainting run, and `prefetch` holds it while the
+  still model compiles. The video provider's `reset()` is serialised behind its queue.
 - **Convergence** is passed to `setParams` as given (`'auto'` or a number); live-DIBR resolves `'auto'`.
 - **Live inference** runs at most one `estimate()` at a time, only on a new video frame, and depth
   that arrives after a `reset()` is discarded. The frozen frame's still-model depth is also pushed to
   live-DIBR, so the paused frame looks its best while the lift runs.
 - **Progress.** The chip shows one bar per phase group: models 0–25 %, depth 25–35 %, lift 35–100 %.
+  Providers report `{loaded,total}` (downloads) or `{stage,progress}` (generator); lift normalises.
+- **dpr.** Live DIBR always renders at full dpr. While explore is up the canvas is capped at
+  `exploreMaxDpr` (default 1 on the woven SBS store; the mono 2D fallback held 60 fps at dpr 2).
+- **Shared GL.** Live-DIBR creates the canvas's WebGL2 context and exposes it as `dibr.gl`; explore
+  wraps it (`gl` option) and calls `resetState()` before each draw; DIBR sets its full state every
+  `render()`. During the 350 ms fade both draw in one callback (DIBR first).
+
+## Models and ONNX Runtime
+
+Models are never bundled. `js/lift/models.json` (schema 1) names every file with its size and
+sha256; [`lift-models.md`](lift-models.md) has the families, sizes, licences and measurements.
+A file's URL is, in order: the page's `baseUrl` + the file's `path`; an absolute per-file `url`;
+else the public content-addressed store `${blobBaseUrl}/${sha256}.${format}`
+(`blobBaseUrl` = `https://github.com/DisplayXR/displayxr-models/releases/download/blobs`). Each
+entry's `installer: true|false` marks the default set the DisplayXR Browser's Windows installer
+provisions (false only for the two DA3Mono-L files). **The browser installer carries a
+byte-identical copy of this manifest** (`displayxr-browser-pvt` `installer/models.json`, spec
+`docs/model-distribution.md` there), so a change here is a change to what the installer
+downloads — bump `generated` and re-sync the copy. Inside the DisplayXR Browser the models come from
+its native store (`displayxr-lift://models/<name>`) instead of the network.
+
+## Measured end-to-end (M1 Pro, Chrome headless `--use-angle=metal --enable-unsafe-webgpu`, 2026-09-25)
+
+`samples/lift/`, the synthetic 1280×720 pan (`dev/pan.mp4`) and the office photo (1022×574), models
+from localhost, the local ORT 1.31 dev build (JSPI), `quality: 'auto'` (→ medium), no inpainting.
+GPU idle (< 10 % for 6 s) before each run; the numbers are one run each — expect ±15 %.
+
+| | 2D fallback, dpr 1 | 2D fallback, dpr 2 | mock woven session (SBS), dpr 1 |
+|---|---|---|---|
+| video: `lift()` → live (VDA-S 364×210 + warm-up) | 3.1 s | 3.0 s | 3.1 s |
+| live: page fps / depth per frame | 60 / 77 ms (13 Hz) | 60 / 79 ms | 60 / 77 ms |
+| 1st pause → explore (MoGe load + depth + generate + PLY parse) | 7.4 s (≈ 4.5 + 1.5 + 0.4 + 0.3) | 6.5 s | 7.3 s |
+| 2nd pause → explore (model resident) | 2.9 s | 1.8 s | — |
+| explore fps, orbit spinning (~0.8 M splats) | 60 (p95 16.7 ms) | 60 (1600×900, p95 16.8 ms) | 60 |
+| image: `lift()` → explore | 3.4–4.8 s | | 2.0 s (warm cache) |
+
+`quality: 'high'` at dpr 2: live depth 147 ms/frame (518×294), pause → explore 9.7 s / 3.7 s, 1.2 M
+splats, explore still 60 fps in the mono fallback. With `inpaint: 'light-inpaint-v1'` add ~1.0 s to
+every lift.
+
+## Known issues
+
+- **Ghosts of thin foreground at background depth.** The hidden layer's colour is seeded from pixels
+  that are foreground but farther than the erosion radius from an edge (lamp arms, chair backs), so
+  a faint copy appears behind them under the orbit. The inpainting net makes it worse on wide bands
+  (it reproduces the foreground), hence `inpaint: 'none'` by default. Generator-side fix: erode by
+  the backplate radius, not the band radius, before push-pull.
+- **Frame edges.** At ±10° the frame edge of near content (or of the background, with the nearer
+  pivot) swings into view as black; the 4 % outpaint border is too small for it.
+- **First pause latency** is dominated by creating the 715 MB MoGe-3 session (~4.5 s).
+  `prefetch: true` moves it to just after live starts, at the price of held live depth meanwhile.
+- **Spark**: disposing the explore renderer surfaces an unhandled `Worker terminate` / `No target`
+  rejection from Spark's worker pool (harmless). `addSplat` still has the stereo double-regeneration
+  that `createSplatRenderer` fixes (CHANGELOG).
 
 ## Stubs (`js/lift/stubs/`)
 

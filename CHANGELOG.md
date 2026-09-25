@@ -5,6 +5,30 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased — proposed 1.22.0 (minor: a new experimental subpath)
+
+Adds a **preview-tier** subpath; nothing existing changes.
+
+### Added
+
+- **`@displayxr/inline3d/lift` — "Convert to 3D"** (experimental). `lift(element, opts)` lifts a
+  `<video>`, `<img>` or `<canvas>` in place: live depth-image-based rendering from a streaming
+  Video-Depth-Anything-Small while a video plays; on pause/end (or for a still) MoGe-3 depth → a
+  two-layer 3D Gaussian scene (`gen/`) → a bounded drag orbit with head parallax (`explore`). A state
+  machine (debounced pause, generation counter, visibility suspend), closed-shadow canvas placement
+  that follows `object-fit`, a builtin chip, and a pluggable provider registry
+  (`getRegistry().registerDepthProvider` for native/vendor depth). Models are never bundled:
+  `js/lift/models.json` (schema 1, with `blobBaseUrl` + per-entry `installer`) is resolved against
+  the page's `baseUrl`, else the public content-addressed blob store; onnxruntime-web is imported at
+  runtime. Types in `lift.d.ts`; guide in `docs/lift.md`.
+
+### Notes
+
+- `createSplatRenderer` in `js/lift/explore.js` fixes Spark's stereo **double regeneration**
+  (`autoUpdate` off, one `updateInternal` per frame from the eyes' midpoint): 26–33 → 60 fps at
+  1.2 M splats, dpr 1, SBS. **`addSplat` (`./splat`, Spark engine) still has the bug** — port the fix
+  when `createSplatRenderer` is factored out (not done in this release).
+
 ## 1.21.1 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change; nothing changes at rest.

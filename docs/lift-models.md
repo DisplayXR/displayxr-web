@@ -100,7 +100,10 @@ then:
    streamed. A separate small entry at `stampKey(url)` records the sha256 the bytes matched, so a
    warm load is not hashed again. An entry without a stamp is verified once and then stamped; if
    it fails, it is evicted.
-3. **Network.** The source fetches `baseUrl + '/' + path` and reports progress from
+3. **Network.** The URL is `baseUrl + '/' + path` when a `baseUrl` is given, else an absolute
+   per-file `url`, else the public content-addressed store `${blobBaseUrl}/${sha256}.${format}`
+   (manifest top-level `blobBaseUrl`; the same blobs the DisplayXR Browser installer provisions —
+   each entry's `installer: true|false` marks that default set). The source fetches it and reports progress from
    `Content-Length`. It checks the size and then the sha256 (WebCrypto). Bytes that fail
    (`err.code === 'EINTEGRITY'`) are never cached.
 

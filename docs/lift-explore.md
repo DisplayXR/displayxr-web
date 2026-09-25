@@ -7,7 +7,7 @@ gallery's **Spatial View** (displayxr-gallery-pvt `src/lib/spatialView/camera.ts
 camera rig in `SpatialView.tsx`) ported into the SDK as one module on the SDK's Spark path.
 
 ```js
-import { createExplore } from '@displayxr/inline3d/lift/explore'; // path TBD by the integrator
+import { createExplore } from './js/lift/explore.js'; // internal module; lift() is the public entry (@displayxr/inline3d/lift)
 const ex = await createExplore({ canvas, gl, ply, meta, orbit: { maxAngleDeg: 15, relax: true } });
 wall.addScene(canvas, (views, layer) => ex.render({ views, layer, session: wall }));
 canvas.addEventListener('pointerdown', (e) => ex.onPointerDown(e)); // + pointermove / pointerup / pointercancel

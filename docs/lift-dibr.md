@@ -6,7 +6,7 @@ rendered as one depth-image-based rendering per SDK view, straight into
 518×294 at 10–15 fps; every `render()` reuses the last depth.
 
 ```js
-import { createLiveDibr } from '@displayxr/inline3d/js/lift/live-dibr.js'; // path, not yet an export
+import { createLiveDibr } from './js/lift/live-dibr.js'; // internal module; lift() is the public entry (@displayxr/inline3d/lift)
 const dibr = createLiveDibr({ canvas, maxLayers: 1 });   // canvas = your addScene canvas
 dibr.setSource(video);                                    // video | image | canvas | VideoFrame
 onDepth = (f32, w, h) => dibr.setDepth({ data: f32, w, h, space: 'disparity' });
