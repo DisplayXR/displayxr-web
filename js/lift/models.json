@@ -1,6 +1,7 @@
 {
   "schema": 1,
-  "generated": "2026-09-24",
+  "generated": "2026-09-25",
+  "blobBaseUrl": "https://github.com/DisplayXR/displayxr-models/releases/download/blobs",
   "defaults": {
     "depth-video": {
       "low": "vda-small-stream-364x210",
@@ -58,6 +59,7 @@
       "format": "onnx",
       "precision": "w16",
       "license": "Apache-2.0",
+      "installer": true,
       "origin": "DepthAnything/Video-Depth-Anything (Small), streaming export with explicit temporal cache; fp16 weights + fp32 compute",
       "io": {
         "inputs": {
@@ -94,6 +96,7 @@
       "format": "onnx",
       "precision": "w16",
       "license": "Apache-2.0",
+      "installer": true,
       "origin": "DepthAnything/Video-Depth-Anything (Small), streaming export with explicit temporal cache; fp16 weights + fp32 compute",
       "io": {
         "inputs": {
@@ -130,6 +133,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "Apache-2.0",
+      "installer": true,
       "origin": "onnx-community/depth-anything-v2-small (model_fp16.onnx); dynamic H/W, multiples of 14",
       "io": {
         "inputs": {
@@ -171,6 +175,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "MIT",
+      "installer": true,
       "origin": "microsoft/MoGe v3 ViT-L, backbone-only (refine_steps=0), static shape, pos-embed baked; focal/shift solve in JS (still-post.js). fp16 shifts focal ~+1.4%",
       "io": {
         "inputs": {
@@ -204,6 +209,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "MIT",
+      "installer": true,
       "origin": "microsoft/MoGe v3 ViT-L, backbone-only (refine_steps=0), static shape, pos-embed baked; focal/shift solve in JS (still-post.js). fp16 shifts focal ~+1.4%",
       "io": {
         "inputs": {
@@ -237,6 +243,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "Apache-2.0",
+      "installer": false,
       "origin": "depth-anything/DA3MONO-LARGE, static shape; sky fill in JS (still-post.js); relative depth inverted to disparity",
       "io": {
         "inputs": {
@@ -268,6 +275,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "Apache-2.0",
+      "installer": false,
       "origin": "depth-anything/DA3MONO-LARGE, static shape; sky fill in JS (still-post.js); relative depth inverted to disparity",
       "io": {
         "inputs": {
@@ -299,6 +307,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "MIT",
+      "installer": true,
       "origin": "nagadomi/nunif iw3 light_inpaint_v1; directional (background on the RIGHT of a hole)",
       "io": {
         "inputs": {
@@ -327,6 +336,7 @@
       "format": "onnx",
       "precision": "fp16",
       "license": "MIT",
+      "installer": true,
       "origin": "nagadomi/nunif iw3 light_inpaint_v1; directional (background on the RIGHT of a hole)",
       "io": {
         "inputs": {

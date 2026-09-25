@@ -53,6 +53,7 @@ export function parseManifest(json) {
     if (!ROLES.has(e.role)) throw new Error(`${where}: bad role ${JSON.stringify(e.role)}`);
     if (e.format !== 'onnx') throw new Error(`${where}: unsupported format ${JSON.stringify(e.format)}`);
     if (!Array.isArray(e.files) || !e.files.length) throw new Error(`${where}: no files`);
+    if (e.installer !== undefined && typeof e.installer !== 'boolean') throw new Error(`${where}: installer must be a boolean`);
     for (const f of e.files) {
       if (!f || typeof f.path !== 'string' || !f.path || f.path.startsWith('/') || f.path.includes('..'))
         throw new Error(`${where}: bad file path ${JSON.stringify(f && f.path)}`);
@@ -66,7 +67,9 @@ export function parseManifest(json) {
     if (!f || !ROLES.has(f.role)) throw new Error(`lift manifest: family ${fam}: bad role`);
     for (const q of ['low', 'medium', 'high']) if (f[q] && !byName.has(f[q])) throw new Error(`lift manifest: family ${fam}.${q} → unknown model ${f[q]}`);
   }
-  return { schema: m.schema, generated: m.generated, defaults: m.defaults || {}, families, models: m.models, byName };
+  if (m.blobBaseUrl !== undefined && (typeof m.blobBaseUrl !== 'string' || !/^https?:\/\//.test(m.blobBaseUrl)))
+    throw new Error('lift manifest: blobBaseUrl must be an absolute http(s) URL');
+  return { schema: m.schema, generated: m.generated, blobBaseUrl: m.blobBaseUrl || null, defaults: m.defaults || {}, families, models: m.models, byName };
 }
 
 /** Lowercase hex sha256 of an ArrayBuffer / view, via WebCrypto. */
@@ -182,11 +185,18 @@ export function createModelSource(o = {}) {
     return proto === 'displayxr-lift:' || proto === 'displayxr:';
   }
 
+  // Download URL, in order: the page's own `baseUrl` + the file's `path` (page hosting / dev
+  // servers); an absolute per-file `url` (an explicit override — `${baseUrl}` templates only resolve
+  // through the first rule); else the content-addressed public store
+  // `${blobBaseUrl}/${sha256}.${format}` — the same blobs the DisplayXR Browser installer provisions
+  // (displayxr-browser-pvt docs/model-distribution.md §3).
   function url(name) {
-    const { file } = lookup(name);
+    const { entry, file } = lookup(name);
     if (baseUrl) return joinUrl(baseUrl, file.path);
     if (file.url && !file.url.includes('${')) return file.url;
-    throw new Error('lift models: no `baseUrl` given and the manifest has no absolute url for ' + name);
+    const blob = need().blobBaseUrl;
+    if (blob) return `${blob.replace(/\/+$/, '')}/${file.sha256}.${entry.format}`;
+    throw new Error('lift models: no `baseUrl` given and the manifest has neither an absolute url nor a blobBaseUrl for ' + name);
   }
 
   async function openCache() {

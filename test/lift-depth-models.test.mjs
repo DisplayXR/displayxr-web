@@ -209,3 +209,24 @@ test('a poisoned cache entry is evicted even when the refetch fails (no poisoned
   await assert.rejects(src.getBytes('s'), /HTTP 404/);
   assert.equal(c.map.has('https://m/s.onnx'), false);
 });
+
+test('url(): baseUrl + path, else absolute url, else ${blobBaseUrl}/${sha256}.${format}', async () => {
+  const blob = 'https://github.com/DisplayXR/displayxr-models/releases/download/blobs/';
+  const m = { ...manifest(), blobBaseUrl: blob };
+  m.models[1] = { ...m.models[1], files: [{ ...m.models[1].files[0], url: 'https://mirror.example/low.onnx' }] };
+  const paged = createModelSource({ manifest: m, baseUrl: 'http://127.0.0.1:1/models' });
+  assert.equal(paged.url('v-med'), 'http://127.0.0.1:1/models/vda/med.onnx');
+  const pub = createModelSource({ manifest: m });
+  assert.equal(pub.url('v-med'), `${blob.slice(0, -1)}/${SHA}.onnx`); // ${baseUrl} template is not absolute
+  assert.equal(pub.url('v-low'), 'https://mirror.example/low.onnx');
+  assert.throws(() => createModelSource({ manifest: manifest() }).url('s'), /blobBaseUrl/);
+  assert.throws(() => parseManifest({ ...manifest(), blobBaseUrl: 'ftp://x' }), /blobBaseUrl/);
+});
+
+test('shipped manifest: blobBaseUrl + installer flag on every entry (DA3Mono-L is the only opt-in)', () => {
+  assert.match(shipped.blobBaseUrl, /^https:\/\/github\.com\/DisplayXR\/displayxr-models\/releases\/download\/blobs$/);
+  for (const e of shipped.models) {
+    assert.equal(typeof e.installer, 'boolean', e.name);
+    assert.equal(e.installer, !e.name.startsWith('da3mono'), e.name);
+  }
+});
