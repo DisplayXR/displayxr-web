@@ -24,8 +24,11 @@ export function getRegistry() {
     registerDepthProvider(name, factory, { priority = 0 } = {}) {
       providers.set(name, { factory, priority });
     },
-    getDepthProvider(name) {
-      return providers.get(name)?.factory || null;
+    // Same semantics as the real registry: an INSTANCE for a registered name, else null (lift.js
+    // then falls back to createDepthProvider).
+    getDepthProvider(name, opts = {}) {
+      const e = providers.get(name);
+      return e ? e.factory({ ...opts, model: name }) : null;
     },
     list() {
       return [...providers.keys()];

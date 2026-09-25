@@ -40,7 +40,9 @@ const MAX_EYE_PX = 2048; // cap on one view's backing width
 const BACKENDS = {
   real: {
     depth: () => import('./providers/depth-ort.js'),
-    models: () => import('./providers/models.js'),
+    // index.js re-exports createModelSource + loadOrt + getRegistry and, by importing depth-ort.js /
+    // inpaint-ort.js, registers the ORT providers in the shared registry.
+    models: () => import('./providers/index.js'),
     dibr: () => import('./live-dibr.js'),
     gen: () => import('./gen/lift-gen.js'),
     explore: () => import('./explore.js'),
@@ -141,8 +143,12 @@ export async function lift(element, opts = {}) {
     convergence: opts.convergence ?? 'auto',
     quality: resolveQuality(opts.quality || 'auto'),
     orbit: { maxAngleDeg: 15, relax: true, ...(opts.orbit || {}) },
+    // What the caller asked for: the video provider keeps 'auto' (A2's warm-up picks 364×210 vs
+    // 518×294 by measured frame time), everything else gets the concrete tier.
+    qualityAsked: opts.quality || 'auto',
     models: opts.models || 'auto',
-    providers: { video: 'vda-small', still: 'moge3', inpaint: 'iw3-light', ...(opts.providers || {}) },
+    ort: opts.ort || null,
+    providers: { video: 'vda-small', still: 'moge3', inpaint: 'light-inpaint-v1', ...(opts.providers || {}) },
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',
   };
@@ -197,7 +203,29 @@ export async function lift(element, opts = {}) {
   let liveErrorWarned = false;
 
   const params = { depth: o.depth, convergence: o.convergence, dilate: 0 };
-  const progress = (phase, value, base = 0, span = 1) => {
+  // Providers report progress in their own shapes: a number, {loaded,total} (model download) or
+  // {stage,progress} (lift-gen). Normalise to 0..1.
+  const frac = (v) => {
+    const x =
+      typeof v === 'number' ? v : v && v.total > 0 ? v.loaded / v.total : v && Number.isFinite(v.progress) ? v.progress : 0;
+    return Math.max(0, Math.min(1, x || 0));
+  };
+  /** Timings (ms) the page can show: see LiftHandle.stats. */
+  const stats = {
+    fps: 0,
+    modelLoadMs: 0,
+    liveDepthMs: 0,
+    stillDepthMs: 0,
+    generateMs: 0,
+    exploreLoadMs: 0,
+    pauseToExploreMs: 0,
+    splats: 0,
+  };
+  let fpsFrames = 0;
+  let fpsT0 = 0;
+  let freezeT0 = 0;
+  const progress = (phase, v, base = 0, span = 1) => {
+    const value = frac(v);
     emit('progress', { phase, value });
     if (chip) chip.setProgress(base + span * value);
   };
@@ -214,10 +242,19 @@ export async function lift(element, opts = {}) {
   });
 
   // ── sizing ────────────────────────────────────────────────────────────────────────────
+  // Explore draws ~1 M Gaussians per view: at dpr 2 that is 4× the fill of dpr 1 and misses 60 fps
+  // on an M1 Pro (docs/lift-explore.md §Performance), so the backing store drops to dpr 1 while the
+  // lifted scene is up, unless quality is 'high'. Live DIBR (a ~1 ms full-screen pass) keeps full dpr.
+  function effectiveDpr() {
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    if (o.quality === 'high' || !explore) return dpr;
+    return Math.min(dpr, 1);
+  }
   function syncBacking(force) {
     const changed = placement.update();
-    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    const dpr = effectiveDpr();
     if (!changed && !force && dpr === lastDpr) return;
+    if (!changed && !force && machine.state === STATES.EXPLORE && fadeInUntil > performance.now()) return; // not mid-fade
     lastDpr = dpr;
     const f = placement.fit;
     let ew = Math.max(1, Math.round(f.dw * dpr));
@@ -271,10 +308,19 @@ export async function lift(element, opts = {}) {
     if (kind === 'video' && st === STATES.LIVE && !suspended) maybeInfer(src);
     const ctx = { views, layer, session };
     const now = performance.now();
+    if (!fpsT0) fpsT0 = now;
+    if (++fpsFrames >= 30) {
+      stats.fps = +((fpsFrames * 1000) / (now - fpsT0)).toFixed(1);
+      fpsFrames = 0;
+      fpsT0 = now;
+    }
     const fadingOut = explore && fadeOutUntil > 0;
     const showExplore = explore && (st === STATES.EXPLORE || fadingOut);
     if (!showExplore || now < fadeInUntil || fadingOut) dibr.render(ctx);
-    if (showExplore) explore.render(ctx);
+    // The 2D fallback has no tracked eyes: explore's own flat path (one eye at the rest head, the
+    // whole canvas) is `views: null` — handing it the single MONO_VIEW would read as the load-time
+    // mono blip and replay nothing.
+    if (showExplore) explore.render(session ? ctx : { views: null, layer, session });
     if (fadingOut && now >= fadeOutUntil) {
       disposeExplore();
     }
@@ -286,9 +332,11 @@ export async function lift(element, opts = {}) {
     lastT = el.currentTime;
     inferBusy = true;
     const g = liveGen;
+    const t0 = performance.now();
     Promise.resolve()
       .then(() => videoProv.estimate({ source: src, t: el.currentTime }))
       .then((d) => {
+        stats.liveDepthMs = +(performance.now() - t0).toFixed(1);
         if (!disposed && g === liveGen && d) dibr.setDepth(d);
       })
       .catch((error) => {
@@ -317,12 +365,33 @@ export async function lift(element, opts = {}) {
 
   // ── providers ─────────────────────────────────────────────────────────────────────────
   function makeProvider(which, name) {
-    const factory =
-      (registry && typeof registry.getDepthProvider === 'function' && registry.getDepthProvider(name)) ||
-      (registry && typeof registry.get === 'function' && registry.get(name)) ||
-      impl.depth.createDepthProvider;
-    // `model` is outside the frozen contract (A2 may pick the model from `kind` alone); harmless extra.
-    return factory({ kind: which, modelSource, ort, quality: o.quality, model: name });
+    const quality = which === 'video' && o.qualityAsked === 'auto' ? 'auto' : o.quality;
+    const popts = { kind: which, modelSource, ort, quality, model: name };
+    // registry.getDepthProvider(name, opts) returns an INSTANCE: `name` is a registered provider
+    // ('ort', 'native', …) or a model family / manifest name handed to the best provider as `model`.
+    if (registry && typeof registry.getDepthProvider === 'function') {
+      const p = registry.getDepthProvider(name, popts);
+      if (p) return p;
+    }
+    return impl.depth.createDepthProvider(popts);
+  }
+
+  /** The inpainter, loaded lazily on the first lift; any failure → none (push-pull colour). */
+  let inpainterP = null;
+  function ensureInpainter(signal) {
+    const name = o.providers.inpaint;
+    if (!name || name === 'none' || !registry || typeof registry.getInpainter !== 'function') return Promise.resolve(undefined);
+    if (!inpainterP) {
+      inpainterP = (async () => {
+        const ip = registry.getInpainter(name === 'iw3-light' ? 'light-inpaint-v1' : name, { modelSource, ort, quality: o.quality });
+        if (ip && typeof ip.load === 'function') await ip.load({ signal });
+        return ip || undefined;
+      })().catch((error) => {
+        emit('error', { error, fatal: false, phase: 'inpaint' });
+        return undefined;
+      });
+    }
+    return inpainterP;
   }
 
   function ensureStill(signal, base = 0, span = 1) {
@@ -361,9 +430,19 @@ export async function lift(element, opts = {}) {
     try {
       impl = await loadBackend(o.backend);
       const M = impl.models;
-      modelSource = o.models === 'auto' ? M.createModelSource({}) : o.models;
+      const tLoad = performance.now();
+      modelSource =
+        o.models === 'auto'
+          ? M.createModelSource({})
+          : typeof o.models === 'string'
+            ? M.createModelSource({ baseUrl: o.models })
+            : o.models;
       try {
-        ort = typeof M.loadOrt === 'function' ? await M.loadOrt({}) : null;
+        if (o.ort && typeof o.ort.InferenceSession === 'function') ort = o.ort; // a module
+        else if (typeof M.loadOrt === 'function') {
+          const ortOpts = typeof o.ort === 'string' ? { baseUrl: o.ort } : o.ort || {};
+          ort = await M.loadOrt(ortOpts);
+        } else ort = null;
       } catch (e) {
         ort = null; // a provider that needs it will fail its own load() with a better message
       }
@@ -379,6 +458,7 @@ export async function lift(element, opts = {}) {
       }
       await mediaReady();
       if (disposed) return;
+      stats.modelLoadMs = Math.round(performance.now() - tLoad);
       syncBacking(true);
       machine.send('loaded');
     } catch (error) {
@@ -391,6 +471,7 @@ export async function lift(element, opts = {}) {
   async function doFreeze(gen) {
     abort = new AbortController();
     const signal = abort.signal;
+    freezeT0 = performance.now();
     try {
       await mediaReady();
       if (isStale(gen)) return;
@@ -400,9 +481,17 @@ export async function lift(element, opts = {}) {
       await ensureStill(signal, 0, 0.25);
       if (isStale(gen)) return bitmap.close && bitmap.close();
       progress('depth', 0, 0.25, 0.1);
-      const depth = await stillProv.estimate({ source: bitmap, t });
+      const tDepth = performance.now();
+      let depth = await stillProv.estimate({ source: bitmap, t });
+      stats.stillDepthMs = Math.round(performance.now() - tDepth);
       if (isStale(gen)) return bitmap.close && bitmap.close();
       progress('depth', 1, 0.25, 0.1);
+      // Depth comes back at MODEL resolution (e.g. 770×434) and MoGe's focalPx is in that grid;
+      // lift-gen wants focalPx in pixels of the RGB it is given (it rescales to its own raster).
+      const fp = depth && depth.intrinsics && depth.intrinsics.focalPx;
+      if (fp > 0 && depth.w > 0 && bitmap.width > 0 && depth.w !== bitmap.width) {
+        depth = { ...depth, intrinsics: { ...depth.intrinsics, focalPx: (fp * bitmap.width) / depth.w, focalGridW: bitmap.width } };
+      }
       if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
       frozen = { bitmap, depth };
       // The frozen frame's better (still-model) depth also improves the live view shown meanwhile.
@@ -416,8 +505,9 @@ export async function lift(element, opts = {}) {
   async function doLift(gen) {
     const signal = abort ? abort.signal : undefined;
     try {
-      const inpainter =
-        registry && typeof registry.getInpainter === 'function' ? registry.getInpainter(o.providers.inpaint) : undefined;
+      const inpainter = await ensureInpainter(signal);
+      if (isStale(gen)) return;
+      const tGen = performance.now();
       const res = await impl.gen.generateLift({
         rgb: frozen.bitmap,
         depth: frozen.depth,
@@ -426,8 +516,23 @@ export async function lift(element, opts = {}) {
         signal,
         onProgress: (v) => progress('lift', v, 0.35, 0.65),
       });
+      stats.generateMs = Math.round(performance.now() - tGen);
+      stats.splats = (res.meta && res.meta.splatCount) || 0;
       if (isStale(gen)) return;
-      const ex = impl.explore.createExplore({ canvas, ply: res.ply, meta: res.meta, orbit: o.orbit });
+      const tEx = performance.now();
+      // Same canvas, same WebGL2 context: explore wraps live-DIBR's `gl` (never getContext itself).
+      // lift-gen writes the OpenCV camera frame (meta.convention); explore defaults to OpenGL.
+      const meta = res.meta || {};
+      const ex = await impl.explore.createExplore({
+        canvas,
+        gl: dibr && dibr.gl,
+        ply: res.ply,
+        meta,
+        axes: meta.axes || meta.convention || undefined,
+        orbit: o.orbit,
+      });
+      stats.exploreLoadMs = Math.round(performance.now() - tEx);
+      stats.pauseToExploreMs = Math.round(performance.now() - freezeT0);
       if (isStale(gen)) return ex.dispose();
       pendingExplore = ex;
       machine.send('lifted', { gen });
@@ -446,6 +551,7 @@ export async function lift(element, opts = {}) {
       }
     }
     explore = null;
+    if (!disposed) syncBacking(true); // live gets its full dpr back
   }
 
   // ── pointer → explore ─────────────────────────────────────────────────────────────────
@@ -491,6 +597,7 @@ export async function lift(element, opts = {}) {
         explore.fadeIn(FADE_MS);
         fadeInUntil = performance.now() + FADE_MS;
         placement.setInteractive(true);
+        syncBacking(true); // explore may cap the backing store at dpr 1
         break;
       case 'exitExplore':
         placement.setInteractive(false);
@@ -632,6 +739,12 @@ export async function lift(element, opts = {}) {
     layout: placement.layout,
     /** True when rendering through the inline-3D session, false in the 2D fallback. */
     woven: !!wall,
+    /** Live timings: fps (frames drawn), modelLoadMs, liveDepthMs (last video estimate),
+     *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
+     *  splats. Read-only snapshot. */
+    get stats() {
+      return { ...stats, state: machine.state };
+    },
     on(type, cb) {
       if (!listeners.has(type)) listeners.set(type, new Set());
       listeners.get(type).add(cb);
@@ -674,6 +787,7 @@ export async function lift(element, opts = {}) {
  * @property {HTMLCanvasElement} canvas
  * @property {string} layout
  * @property {boolean} woven
+ * @property {object} stats
  * @property {(type:'statechange'|'progress'|'error', cb:(detail:any)=>void) => () => void} on
  * @property {(type:string, cb:Function) => void} off
  * @property {() => void} explore

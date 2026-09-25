@@ -281,6 +281,8 @@ export async function generateLift(opts) {
     // convenience for addSplat's camera rig: one eye, OpenCV, the output raster
     intrinsics: { fx: f, fy: f, cx: W / 2, cy: H / 2, width: W, height: H },
     convention: 'opencv',
+    /** the same, under the name explore.js (rigFromMeta) reads */
+    axes: 'opencv',
     border: { x: bx, y: by },
     depthRange: { near: 1 / invNear, far: 1 / invFar },
     bandPxPerDisparity: band,
