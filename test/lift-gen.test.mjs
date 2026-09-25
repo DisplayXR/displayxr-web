@@ -226,6 +226,28 @@ test('hidden mask: the band is clamped at K and the outpaint border is always hi
   assert.deepEqual([at(W - 1, 5, 0), at(W - 1, 5, 1), at(W - 1, 5, 2)], [0, 1, -1], 'right border → maskLeft');
 });
 
+test('hidden mask: a soft rim does not shorten the band — reach uses the pixel\'s own step too', () => {
+  // 1-row scene: background 0.1 | a 3-px soft rim at 0.3 | a subject interior at 0.9, 200 px wide
+  const W = 260, H = 5, tau = 0.04, d = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d[y * W + x] = x < 20 ? 0.1 : x < 23 ? 0.3 : 0.9;
+  const E = edgesRef(d, W, H, { tau });
+  const M = hiddenRef(d, E, W, H, { K: 200, band: 100, tau });
+  const inM = (x) => M[4 * (2 * W + x) + 1] === 1; // maskLeft: background on the left
+  // the rim's own step (0.2) reaches 20 px; the interior (0.9 − 0.1 = 0.8) reaches 80 px
+  assert.ok(inM(21) && inM(60) && inM(95), 'interior within its own reveal is hidden-layer');
+  assert.ok(!inM(110), 'and stops at (d − d_bg)·band');
+});
+
+test('hidden mask: past 32 px the gather strides 2 px and still reaches K', () => {
+  const W = 300, H = 5, tau = 0.04, d = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d[y * W + x] = x < 10 ? 0 : 1;
+  const E = edgesRef(d, W, H, { tau });
+  const M = hiddenRef(d, E, W, H, { K: 250, band: 1000, tau });
+  const inM = (x) => M[4 * (2 * W + x) + 1] === 1;
+  // the far-side edge band is 2 px (x = 8, 9): every pixel out to K finds one of them
+  for (let x = 10; x < 10 + 240; x++) assert.ok(inM(x), `x=${x}`);
+});
+
 test('normaliseDisparity: 2–98 % percentiles to [0,1]; relative maps to [zNear, zFar]; metric keeps 1/z', () => {
   const w = 100, h = 100;
   const data = new Float32Array(w * h);
@@ -243,26 +265,44 @@ test('normaliseDisparity: 2–98 % percentiles to [0,1]; relative maps to [zNear
 
 // ── outpaint border sizing ────────────────────────────────────────────────────────────────
 
-test('outpaintBorders: width = f·tanθ·|1 − zp/z| of the edge content, per side, clamped', async () => {
+test('outpaintBorders: the inward move of the edge content under the orbit turn, per side, clamped', async () => {
   const { outpaintBorders } = await import('../js/lift/gen/lift-gen.js');
-  const w = 40, h = 30, W = 1000, H = 750, f = 1000, tanT = Math.tan((15 * Math.PI) / 180);
+  const w = 40, h = 30, W = 1000, H = 750, f = 1000, th = (15 * Math.PI) / 180, tanT = Math.tan(th);
   const invFar = 1 / 3, invNear = 1 / 0.7;
   const dlo = new Float32Array(w * h).fill(0); // everything at zFar = 3 m ...
   for (let y = 0; y < h; y++) dlo[y * w + w - 1] = 1; // ... except the RIGHT edge column at zNear
   const zp = 1.5;
-  const P = { ...LIFT_DEFAULTS, borderMaxFrac: 0.5 };
+  // reference: turn the edge point (x = ue·z/f, depth z) by ±θ about (0, 0, zp), project, take the
+  // larger INWARD image move
+  const turnNeed = (z, ue) => Math.max(...[-1, 1].map((sg) => {
+    const x = (ue * z) / f, r = z - zp;
+    const u = (f * (x * Math.cos(th) - sg * r * Math.sin(th))) / (zp + sg * x * Math.sin(th) + r * Math.cos(th));
+    return ue < 0 ? u - ue : ue - u;
+  }));
+  const P = { ...LIFT_DEFAULTS, borderMaxFrac: 0.5, borderAreaMax: Infinity };
   const b = outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P });
-  const needFar = f * tanT * Math.abs(1 - zp / 3); // 0.5 · f·tanθ ≈ 134
-  const needNear = f * tanT * Math.abs(1 - zp / 0.7); // ≈ 306
+  const needFar = turnNeed(3, -W / 2), needNear = turnNeed(0.7, W / 2);
   assert.ok(Math.abs(b.needed.left - needFar) <= 1, `left ${b.needed.left} vs ${needFar}`);
   assert.ok(Math.abs(b.needed.right - needNear) <= 1, `right ${b.needed.right} vs ${needNear}`);
+  // the turn foreshortens the frame edge too: more than the small-angle f·tanθ·|1 − zp/z|
+  assert.ok(needFar > f * tanT * Math.abs(1 - zp / 3) + 20, 'edge foreshortening counted');
   assert.equal(b.left, Math.ceil(1.1 * needFar) + 2, 'left = ceil(1.1·need) + 2');
   assert.ok(b.right > b.left, 'the side with near content needs more');
   // the cap bites
-  const capped = outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P: { ...LIFT_DEFAULTS, borderMaxFrac: 0.1 } });
+  const capped = outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P: { ...P, borderMaxFrac: 0.1 } });
   assert.equal(capped.right, 100);
+  // the padded-area budget shrinks every side in proportion, never below the base border
+  const tight = outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P: { ...P, borderAreaMax: 1.0 } });
+  assert.ok((W + tight.left + tight.right) * (H + tight.top + tight.bottom) <= W * W, 'within budget');
+  assert.ok(tight.left < b.left && tight.right < b.right && tight.right > tight.left, 'shrunk in proportion');
+  assert.ok(tight.left >= Math.round(LIFT_DEFAULTS.borderFrac * W));
+  // a flat scene AT the pivot still shows past its edge when turned (the plane foreshortens), but
   // never below the full-res base border
-  const flat = outpaintBorders({ dlo: new Float32Array(w * h).fill(0.5), w, h, invFar, invNear, zp: 1 / (invFar + 0.5 * (invNear - invFar)), f, W, H, tanT, P });
-  assert.equal(flat.left, Math.round(LIFT_DEFAULTS.borderFrac * W));
-  assert.equal(flat.top, Math.round(LIFT_DEFAULTS.borderFrac * H));
+  const zf = 1 / (invFar + 0.5 * (invNear - invFar));
+  const flat = outpaintBorders({ dlo: new Float32Array(w * h).fill(0.5), w, h, invFar, invNear, zp: zf, f, W, H, tanT, P });
+  const flatNeed = (half) => { const x = (half * zf) / f; return half - (f * x * Math.cos(th)) / (zf + x * Math.sin(th)); };
+  assert.equal(flat.left, Math.max(Math.round(LIFT_DEFAULTS.borderFrac * W), Math.ceil(1.1 * flatNeed(W / 2)) + 2));
+  assert.equal(flat.top, Math.max(Math.round(LIFT_DEFAULTS.borderFrac * H), Math.ceil(1.1 * flatNeed(H / 2)) + 2));
+  const tiny = outpaintBorders({ dlo: new Float32Array(w * h).fill(0.5), w, h, invFar, invNear, zp: zf, f, W, H, tanT: Math.tan(0.02), P });
+  assert.equal(tiny.top, Math.round(LIFT_DEFAULTS.borderFrac * H), 'base border floor');
 });

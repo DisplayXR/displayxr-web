@@ -1,9 +1,18 @@
 // FAR SIDE: for every pixel, the background it hides — gathered on all four axes.
 //
 // Along each axis direction the pass walks outward (1 px steps to 32 px, then 2 px steps: an edge
-// band is ≥ 2 px wide on its far side, so the coarse stride cannot jump one) up to uReach px, and
-// takes the FIRST far-side edge pixel whose foreground faces back toward us and whose background
-// we are nearer than by more than uTau/2 — the surface this pixel occludes in that direction.
+// band is ≥ 2 px wide on its far side, so the coarse stride cannot jump one) up to uReach px, over
+// the far-side edge pixels whose foreground faces back toward us and whose background we are
+// nearer than by more than uTau/2 — the surfaces this pixel occludes in that direction. Of those
+// whose reveal REACHES this pixel (an edge of step Δ = d − d_bg uncovers Δ·uBand px at the
+// maximum orbit, ./hidden) it takes the one with the FARTHEST background; when none reaches, the
+// farthest found stands in (deep interior, rarely seen). The walk used to stop at the first
+// edge: inside a large near subject (a portrait against a street 5–30 m back) that was an
+// internal edge — a sleeve over the torso, a fold — and layer 1 took its NEAR background. That
+// patch stayed under the subject at orbit while the street slid out ≈ f·zp·tanθ·Δ(1/z) px
+// (~290 px at 15° on such a photo) and opened as a black tear in the reveal. A two-layer scene
+// holds one hidden surface per pixel; the far one is the one a wide reveal needs, and the price —
+// street colour, not torso, in the thin gap an internal edge opens — is far less visible.
 //
 //   r = the number of axes that found one (0–4). ≥ 1 ⇒ this pixel is FOREGROUND over something:
 //       it may not seed the hidden layer's fill (lift-gen's seed exclusion — without it a big
@@ -33,6 +42,7 @@ uniform ivec2 uInner;
 uniform int uReach;
 uniform sampler2D uRGB;
 uniform float uHWeight;
+uniform float uBand;
 uniform float uTau;
 layout(location = 0) out vec4 o;
 layout(location = 1) out vec4 oC;
@@ -51,6 +61,7 @@ void main() {
   dirs[0] = ivec2(1, 0); dirs[1] = ivec2(-1, 0); dirs[2] = ivec2(0, 1); dirs[3] = ivec2(0, -1);
   float best = 1e4;
   for (int a = 0; a < 4; a++) {
+    bool hit = false;
     for (int k = 1; k <= 256; k++) {
       int dist = k <= 32 ? k : 32 + 2 * (k - 32);
       if (dist > uReach) break;
@@ -61,8 +72,13 @@ void main() {
       float s = a == 0 ? ev.r : a == 1 ? ev.g : a == 2 ? ev.b : ev.a;
       if (s > 0.0) {
         float de = texelFetch(uD, e, 0).r;
-        if (d > de + 0.5 * uTau) {
-          v[a] = de; dst[a] = float(dist); best = min(best, float(dist));
+        bool reaches = float(dist) <= 1.1 * (d - de) * uBand + 2.0;
+        // replace the current pick when this one reaches and is farther (or the pick does not
+        // reach), or neither reaches and this one is farther
+        bool take = v[a] < -0.5 || (reaches ? (!hit || de < v[a]) : (!hit && de < v[a]));
+        if (d > de + 0.5 * uTau && take) {
+          hit = hit || reaches;
+          v[a] = de; dst[a] = float(dist);
           // colour: per-channel median of the background 2, 5 and 9 px past the edge (same
           // surface only) — clear of the mixed pixel AND of a halo/glow the photo itself has
           // round the object (a long-exposure rock), which read as a pale outline at the orbit
@@ -72,11 +88,11 @@ void main() {
           if (abs(texelFetch(uD, e5, 0).r - de) < uTau) c5 = texelFetch(uRGB, e5, 0).rgb;
           if (abs(texelFetch(uD, e9, 0).r - de) < uTau) c9 = texelFetch(uRGB, e9, 0).rgb;
           col[a] = max(min(c2, c5), min(max(c2, c5), c9));
-          break;
         }
       }
     }
   }
+  for (int a = 0; a < 4; a++) if (v[a] > -0.5) best = min(best, dst[a]);
   // sort the found values (≤ 4, tiny network), median
   float n = 0.0;
   float s0 = 9.0, s1 = 9.0, s2 = 9.0, s3 = 9.0;

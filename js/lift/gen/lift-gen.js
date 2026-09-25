@@ -57,14 +57,26 @@ export const LIFT_DEFAULTS = Object.freeze({
   maxOrbitDeg: 15,
   /** hidden band cap, fraction of the output width (full-res, inpainted) */
   maxBandFrac: 0.05,
-  /** backplate cap: the hidden layer continues, at HALF resolution and with push-pull colour,
-   *  out to this fraction of the width (0 disables the backplate) */
+  /** backplate: the hidden layer continues, at HALF resolution, out to the widest reveal the
+   *  orbit can make — 1.1 × f·zp·tanθ·(1/zNear − 1/zFar) px, from the ACTUAL depth range — never
+   *  less than backplateFrac of the width (0 disables the backplate) and at most backplateMaxFrac.
+   *  A fixed 25 % left a near portrait against a far street (~290 px reveal at 15° on a 1024-wide
+   *  raster) with a black strip at the silhouette. */
   backplateFrac: 0.25,
+  backplateMaxFrac: 0.45,
   /** outpaint border: the full-resolution part, fraction of each dimension ... */
   borderFrac: 0.04,
   /** ... and its cap, fraction of the WIDTH (px on every side). Each side is sized to what the
-   *  orbit can reveal there (outpaintBorders); beyond borderFrac it is emitted at half resolution */
-  borderMaxFrac: 0.12,
+   *  orbit can reveal there (outpaintBorders); beyond borderFrac it is emitted at half resolution,
+   *  beyond borderQuarterFrac at quarter resolution. The cap was 12 %: a portrait at ~1 m against
+   *  a street 5–30 m back needs ~31 % at 15°, and the rest showed black. */
+  borderMaxFrac: 0.35,
+  borderQuarterFrac: 0.12,
+  /** ... and a budget on the whole padded raster (frame + border), × W²: every GPU pass, the
+   *  readback and the emit loop scale with its area. Over it, the sides are shrunk in proportion
+   *  (a far landscape with near ground at its edges needs more than any cap; 2.1 keeps a
+   *  1024-wide medium lift within ~+15 % of the 12 %-cap time). */
+  borderAreaMax: 2.1,
   /** border colour: 'mirror' = the frame reflected across its edge, fading into the push-pull
    *  colour with distance; 'pushpull' = the harmonic continuation only (the old behaviour) */
   borderColour: 'mirror',
@@ -194,7 +206,9 @@ export async function generateLift(opts) {
   const band = f * zPivotLo * tanT * (invNear - invFar);
   const K = Math.max(2, Math.min(256, Math.ceil(P.maxBandFrac * W)));
   const R = Math.min(256, K + 2);
-  const Kb = Math.max(K, Math.min(256, Math.ceil(P.backplateFrac * W)));
+  const Kb = P.backplateFrac > 0
+    ? Math.max(K, Math.min(480, Math.round(P.backplateMaxFrac * W), Math.max(Math.ceil(P.backplateFrac * W), Math.ceil(1.1 * band) + 2)))
+    : K;
 
   // ── 2. GPU passes ────────────────────────────────────────────────────────────────────────
   // Our OWN offscreen WebGL2 context, always — never a display canvas's (the live renderer owns
@@ -225,7 +239,7 @@ export async function generateLift(opts) {
     const farReach = Math.min(480, Math.round(P.farReachFrac * Math.max(W, H)));
     const tFX = g.texture(PW, PH, 'rgba32f');
     const tFC = g.texture(PW, PH, 'rgba32f');
-    g.pass('farside', farsideFS, [tFX, tFC], { uD: tD, uE: tE, uRGB: tRGB, uPad: pad, uInner: inner, uReach: farReach, uHWeight: P.farHWeight, uTau: P.tau });
+    g.pass('farside', farsideFS, [tFX, tFC], { uD: tD, uE: tE, uRGB: tRGB, uPad: pad, uInner: inner, uReach: farReach, uHWeight: P.farHWeight, uBand: band, uTau: P.tau });
     let tFXs = tFX, tFCs = tFC;
     if (P.farBlurGain > 0) {
       tFXs = g.texture(PW, PH, 'rgba32f');
@@ -317,6 +331,7 @@ export async function generateLift(opts) {
     W, H, PW, PH, bx: bxL, by: byT, f, invFar, invNear, out0, rgbPad, out1, outB,
     sigmaPx: P.sigmaPx, thin: P.thin, slopeGain: P.slopeGain, maxAniso: P.maxAniso, maxAnisoEdge: P.maxAnisoEdge, pivotRegion: P.pivotRegion, orient: P.orient,
     emitLayers: P.emitLayers ?? 3,
+    quarterPx: Math.max(bx0, Math.round(P.borderQuarterFrac * W)),
   };
   // the debug views need the rasters after the worker has taken them
   const keep = debug ? { out0: out0.slice(), out1: out1.slice(), outB: outB && outB.slice(), rgbPad: rgbPad.slice() } : null;
@@ -360,32 +375,56 @@ export async function generateLift(opts) {
 /**
  * How far past each frame edge the orbit can look, px at the output raster.
  *
- * The explore camera is an off-axis window camera: the window (the photo's frustum cut at the
- * pivot depth zp) is fixed and the eye moves on a cone of half-angle θ about the pivot, i.e.
- * laterally by e = zp·tanθ. A point at depth z then lands on the window displaced by
- * f·e·(1/zp − 1/z) px, so the screen edge sees f·tanθ·|1 − zp/z| px past the photo's edge at that
- * depth. The border is built at the depth of the content it continues (the edge pixel's, replicated),
- * so it travels with that content and must be exactly that wide. Per side: the 95th percentile over
- * the edge strip (1.5 % of the low-res width/height), + 10 %, clamped to [borderFrac, borderMaxFrac·W].
- * Near content at a frame edge needs a lot (0.7 m against a 1.5 m pivot at 15°: ~0.3·f) — the cap
- * bounds the cost, and past it the orbit still shows black.
+ * The explore orbit turns the scene by up to θ about the pivot (0, 0, zp) and views it through the
+ * photo's fixed window. A frame-edge point at depth z (image offset u_e from the centre, so
+ * x = u_e·z/f, r = z − zp behind the pivot) goes to x' = x·cosθ ∓ r·sinθ, z' = zp ± x·sinθ + r·cosθ
+ * and lands at u' = f·x'/z'. The border must cover how far u' moves INWARD (content leaving the
+ * frame edge uncovers the outside). The earlier small-angle form f·tanθ·|1 − zp/z| ignored the
+ * lateral offset of the edge itself, which the turn also foreshortens: at the edge of a 49° frame
+ * with a street ~30 m behind a 0.93 m pivot it said 290 px where the render moves 330, and the
+ * difference showed as a black strip. The border is built at the depth of the content it continues
+ * (the edge pixel's, replicated), so it travels with that content. Per side: the 95th percentile
+ * over the edge strip (1.5 % of the low-res width/height), + 10 %, clamped to [borderFrac,
+ * borderMaxFrac·W], then shrunk in proportion if the padded raster would exceed borderAreaMax·W²;
+ * top/bottom use the same turn in pitch. Near content at a frame edge can need a
+ * lot — the cap bounds the cost, and past it the orbit still shows black.
  */
 export function outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P = LIFT_DEFAULTS }) {
-  const need = (d) => f * tanT * Math.abs(1 - zp * (invFar + d * (invNear - invFar)));
+  const th = Math.atan(tanT), c = Math.cos(th), sn = Math.sin(th);
+  // inward displacement of an edge point (offset ue px from the centre, sign = side) at d̂
+  const need = (d, ue) => {
+    const z = 1 / (invFar + d * (invNear - invFar)), x = (ue * z) / f, r = z - zp;
+    let m = 0;
+    for (const sg of [-1, 1]) {
+      const zz = zp + sg * x * sn + r * c;
+      if (!(zz > 1e-3)) continue;
+      const du = (f * (x * c - sg * r * sn)) / zz - ue; // + = moved right
+      m = Math.max(m, ue < 0 ? du : -du);
+    }
+    return m;
+  };
   const p95 = (a) => { a.sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * 0.95))] : 0; };
   const sx = Math.max(1, Math.round(0.015 * w)), sy = Math.max(1, Math.round(0.015 * h));
   const L = [], Rt = [], T = [], B = [];
   for (let y = 0; y < h; y++)
-    for (let k = 0; k < sx; k++) { L.push(need(dlo[y * w + k])); Rt.push(need(dlo[y * w + w - 1 - k])); }
+    for (let k = 0; k < sx; k++) { L.push(need(dlo[y * w + k], -W / 2)); Rt.push(need(dlo[y * w + w - 1 - k], W / 2)); }
   for (let x = 0; x < w; x++)
-    for (let k = 0; k < sy; k++) { T.push(need(dlo[k * w + x])); B.push(need(dlo[(h - 1 - k) * w + x])); }
+    for (let k = 0; k < sy; k++) { T.push(need(dlo[k * w + x], -H / 2)); B.push(need(dlo[(h - 1 - k) * w + x], H / 2)); }
   const needed = { left: p95(L), right: p95(Rt), top: p95(T), bottom: p95(B) };
   const cap = Math.max(8, Math.round(P.borderMaxFrac * W));
   const bx0 = Math.max(8, Math.round(P.borderFrac * W)), by0 = Math.max(8, Math.round(P.borderFrac * H));
-  const size = (n, base) => Math.max(base, Math.min(Math.max(cap, base), Math.ceil(1.1 * n) + 2));
+  const size = (n, base, k = 1) => Math.max(base, Math.round(k * Math.min(Math.max(cap, base), Math.ceil(1.1 * n) + 2)));
+  const sides = (k) => [size(needed.left, bx0, k), size(needed.right, bx0, k), size(needed.top, by0, k), size(needed.bottom, by0, k)];
+  const area = ([l, r, t, b]) => (W + l + r) * (H + t + b);
+  let sd = sides(1);
+  const budget = (P.borderAreaMax ?? Infinity) * W * W;
+  if (area(sd) > budget) {
+    let lo = 0, hi = 1;
+    for (let it = 0; it < 20; it++) { const m = (lo + hi) / 2; if (area(sides(m)) > budget) hi = m; else lo = m; }
+    sd = sides(lo);
+  }
   return {
-    left: size(needed.left, bx0), right: size(needed.right, bx0),
-    top: size(needed.top, by0), bottom: size(needed.bottom, by0),
+    left: sd[0], right: sd[1], top: sd[2], bottom: sd[3],
     needed: Object.fromEntries(Object.entries(needed).map(([k, v]) => [k, Math.round(v)])),
   };
 }
