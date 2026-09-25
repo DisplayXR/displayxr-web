@@ -2885,3 +2885,92 @@ test('./splat: setVideo on the deferred stub waits for ready; controls:page and 
   assert.match(src, /setVideo: page \? pageOnly\('setVideo'\)/);
   assert.match(src, /setVideo\(\) is implemented on the PlayCanvas backend only/);
 });
+
+// ── the declared camera rig on the wall (gallery regression, #36) ───────────────────────────
+//
+// On the wall the runtime renders a camera-rig asset from the rig the adapter DECLARES, so the
+// declaration is the oracle. The gallery shipped a wall whose core predated view rigs: every
+// setViewRig was dropped by `handle?.setViewRig?.()` without a word and a metric photo scene
+// wove on the 0.24 m display-rig shorthand. These pin the declaration for a camera-rig asset
+// with the gallery's zoom + reveal options, and the loud failure on a handle that cannot take it.
+
+async function wallRig(t, handleHasRig) {
+  installDom();
+  let T = 1000;
+  t.mock.method(performance, 'now', () => T);
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  pc.RenderView = class { setView() {} setViewport() {} };
+  Object.assign(pc, { LAYERID_WORLD: 0, FILTER_LINEAR: 1 });
+  pc.GraphNode = class { constructor(n) { this.name = n; } setLocalScale() {} };
+  pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); };
+  const pushed = [];
+  const layerRigs = [];
+  let frameCb = null;
+  const wall = {
+    supported: true,
+    addScene: (cv, f) => {
+      frameCb = f;
+      const h = { exclude() {}, unexclude() {}, remove() {} };
+      if (handleHasRig) h.setViewRig = (r) => pushed.push(JSON.parse(JSON.stringify(r)));
+      return h;
+    },
+  };
+  const canvas = makeCanvas(320, 180);
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, canvas, 'a.sog', {
+    playcanvas: pc, rig: 'auto', orbit: true, idleSpin: 0, flipY: true, focusInput: false,
+    zoom: { min: 1, max: 2, relax: true }, reveal: 'assemble',
+  }, []);
+  const P = [1.5, 0, 0, 0, 0, 2.666, 0, 0, 0, 0, -1.0001, -1, 0, 0, -0.02, 0];
+  const layer = {
+    setViewRig: (r) => layerRigs.push(r),
+    getViewport: (vw) => ({ x: vw.eye === 'left' ? 0 : 320, y: 0, width: 320, height: 180 }),
+  };
+  const frame = () => {
+    T += 16.7;
+    canvas.width = 640;
+    canvas.height = 180;
+    frameCb(['left', 'right'].map((eye, i) => ({
+      eye, projectionMatrix: Float32Array.from(P), transform: { matrix: Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, i ? 0.032 : -0.032, 0, 0.6, 1]) },
+    })), layer);
+  };
+  return { out, pushed, layerRigs, frame };
+}
+
+// CAM_BLOCK: fy 900 over a 720-px-tall frame, focus 2.5 m straight ahead of the capture camera.
+const CAM_BLOCK_RIG = {
+  type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 },
+  ipdFactor: 1, parallaxFactor: 1, convergenceDiopters: 1 / 2.5, verticalFov: 2 * Math.atan(360 / 900), metersToVirtual: 1,
+};
+const assertRig = (got, what) => {
+  assert.ok(got, `${what}: nothing declared`);
+  for (const [k, v] of Object.entries(CAM_BLOCK_RIG)) {
+    if (typeof v === 'number') near(got[k], v, 1e-9, `${what} ${k}`);
+    else assert.deepEqual(got[k], v, `${what} ${k}`);
+  }
+};
+
+test('camera-rig asset with zoom {1,2,relax} + the assemble reveal: the declared rig is the capture camera, at rest and after the reveal', async (t) => {
+  const { out, pushed, frame } = await wallRig(t, true);
+  frame();
+  assertRig(pushed.at(-1), 'first frame');
+  assert.equal(out.viewer._fitScale, 1, 'a camera rig is never fitted');
+  assert.equal(out.viewer._zoom, 1, 'zoom rests at 1×');
+  for (let i = 0; i < 240; i++) frame(); // 4 s: the reveal is long over
+  assertRig(pushed.at(-1), 'after the reveal');
+  nearArr(Array.from(out.viewer.rigMatrix()), I16, 1e-12, 'no residual content transform');
+  out.remove();
+});
+
+test('a scene handle without setViewRig (a core that predates view rigs): the camera rig is dropped LOUDLY, once, and nothing throws', async (t) => {
+  const warns = [];
+  t.mock.method(console, 'warn', (...a) => warns.push(a));
+  const { out, frame } = await wallRig(t, false);
+  frame();
+  for (let i = 0; i < 30; i++) frame();
+  const dropped = warns.filter((a) => /predates view rigs/.test(String(a[0])));
+  assert.equal(dropped.length, 1, 'warned exactly once');
+  assert.equal(dropped[0][1]?.type, 'camera', 'the warning carries the rig that was dropped');
+  out.remove();
+});

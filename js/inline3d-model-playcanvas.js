@@ -38,7 +38,7 @@
 //       └── eye camera, N RenderViews, TONEMAP_NEUTRAL, no sky layer
 
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
-import { resolveControls, normalizeCameraPose, now, MAX_DT_S } from './inline3d-splat-shared.js';
+import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig } from './inline3d-splat-shared.js';
 import {
   NEUTRAL_STUDIO,
   neutralStudioRadiance,
@@ -551,7 +551,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
         if (dm > 0) d = dm / (ax.scale || 1);
       }
       out.viewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: d ?? 2, comfortDepth: ctl.comfortDepth }, out.viewRig || {});
-      handle?.setViewRig?.(out.viewRig);
+      declareViewRig(handle, out.viewRig);
     };
     if (typeof opts.onBeforeFrame === 'function') {
       const cb = opts.onBeforeFrame;

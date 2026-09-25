@@ -5,6 +5,29 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `./model`). No API change and no pixel change on a core that
+has view rigs.
+
+### Fixed
+
+- **A view rig the wall cannot take is no longer dropped silently** (#36).
+  - Every scene backend (`./splat` Spark and PlayCanvas, `./model` PlayCanvas) declared its rig
+    with `handle?.setViewRig?.(rig)`. On a handle from a core that predates view rigs, that call
+    does nothing.
+  - A page that vendors an older `inline3d.js` and hands that wall to `./splat` therefore had its
+    CAMERA rig thrown away. The wall wove the metric photo scene on the `addScene` display-rig
+    shorthand (`virtualDisplayHeight` 0.24): way off in convergence and scale in 3D, correct in 2D.
+    That is how the gallery's Spatial View wall regressed; the rig this SDK declared was the same
+    from 1.8.0 to 1.19.2.
+  - Now it logs one `console.warn` per page ("the view rig was dropped: your inline3d core
+    predates view rigs …") carrying the dropped rig.
+  - The Spark path used `handle?.setViewRig(…)` without the second `?.`, so it would have THROWN
+    there. It now takes the same warning path.
+  - Regression tests pin the declared rig for a camera-rig asset with `zoom {1, 2, relax}` and the
+    `assemble` reveal, at rest and after the reveal, on the fake engine.
+
 ## 1.19.2 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change and no pixel
