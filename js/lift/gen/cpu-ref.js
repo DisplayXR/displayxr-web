@@ -62,9 +62,11 @@ export function hiddenRef(d, E, W, H, { pad = [0, 0], inner = [W, H], K, band, t
       const probe = (ex, ey, ch, k) => {
         const s = E[4 * (ey * W + ex) + ch];
         const de = d[ey * W + ex];
-        return s > 0 && k <= s * band && c > de + 0.5 * tau ? de : null;
+        return s > 0 && k <= Math.max(s, c - de) * band && c > de + 0.5 * tau ? de : null;
       };
-      for (let k = 1; k <= K; k++) {
+      for (let j = 1; ; j++) {
+        const k = j <= 32 ? j : 32 + 2 * (j - 32); // the GPU pass's stride (./passes/hidden)
+        if (k > K || j > 256) break;
         let de;
         if (x + k <= hi[0] && (de = probe(x + k, y, 0, k)) !== null) { o.set([1, 0, k, de], i); break; }
         if (x - k >= lo[0] && (de = probe(x - k, y, 1, k)) !== null) { o.set([0, 1, k, de], i); break; }

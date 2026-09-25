@@ -50,6 +50,8 @@ const logit = (a) => Math.log(a / (1 - a));
  * @param {Uint8Array|Uint8ClampedArray} p.rgbPad  PW×PH×4 sRGB  layer 0 colour
  * @param {Float32Array} p.out1   PW×PH×4 (r, g, b, d̂₁ | ≤NO_LAYER) layer 1, the full-res band
  * @param {Float32Array} [p.outB] PW×PH×4 same encoding: layer 1's backplate, emitted at half res
+ * @param {number} [p.quarterPx=Infinity] outpaint border farther than this outside the frame (px)
+ *        is emitted at QUARTER resolution (one splat per 4×4 px)
  * @param {number} [p.sigmaPx=0.65]  σ of a splat in its pixel's footprint
  * @param {boolean} [p.orient=true] surfels on the local tangent plane (see SURFEL SHAPE); false =
  *                                   frontoparallel disks with a slope-derived z-thickness
@@ -64,6 +66,7 @@ export function emitLiftSplats(p) {
     W, H, PW, PH, bx, by, f, invFar, invNear, out0, rgbPad, out1, outB = null,
     sigmaPx = 0.65, thin = 0.15, slopeGain = 0.5, maxAniso = 8, maxAnisoEdge = maxAniso, minAlpha = 0.02, pivotRegion = 0.2, orient = true,
     emitLayers = 3, // DEV: bit 0 = layer 0, bit 1 = layer 1
+    quarterPx = Infinity,
   } = p;
   const cx = W / 2, cy = H / 2;
   const zOf = (d) => 1 / (invFar + d * (invNear - invFar));
@@ -84,7 +87,7 @@ export function emitLiftSplats(p) {
   // BACKPLATE: the hidden layer beyond the band, at half resolution — one splat per 2×2 cell that
   // holds any backplate texel, at the mean of those texels (depth, colour), twice the footprint.
   const CW = PW >> 1, CH = PH >> 1;
-  let zB = null, cB = null, nB = 0;
+  let zB = null, cB = null, qB = null, nB = 0;
   if (outB && emitLayers & 2) {
     zB = new Float32Array(CW * CH).fill(NaN);
     cB = new Float32Array(CW * CH * 3);
@@ -102,6 +105,31 @@ export function emitLiftSplats(p) {
         cB[3 * c] = r / n; cB[3 * c + 1] = g / n; cB[3 * c + 2] = b / n;
         nB++;
       }
+    // The outer outpaint border (a wide one, sized for a near subject against a far background) at
+    // QUARTER resolution: each 2×2 group of cells whose centre lies more than quarterPx outside the
+    // frame merges into its even cell (qB = 1), twice the footprint again. It is smooth fill that
+    // only the largest orbit reaches, and at half resolution it cost ~0.2 M splats on a portrait.
+    if (quarterPx < Infinity) {
+      qB = new Uint8Array(CW * CH);
+      for (let cv = 0; cv + 1 < CH; cv += 2)
+        for (let cu = 0; cu + 1 < CW; cu += 2) {
+          const x = 2 * cu + 2, y = 2 * cv + 2; // group centre, padded px
+          const ox = Math.max(bx - x, x - (bx + W), 0), oy = Math.max(by - y, y - (by + H), 0);
+          if (Math.max(ox, oy) <= quarterPx) continue;
+          let n = 0, z = 0, r = 0, g = 0, b = 0;
+          for (let j = 0; j < 2; j++)
+            for (let k = 0; k < 2; k++) {
+              const c = (cv + j) * CW + cu + k;
+              if (!(zB[c] > 0)) continue;
+              n++; z += zB[c]; r += cB[3 * c]; g += cB[3 * c + 1]; b += cB[3 * c + 2];
+              zB[c] = NaN; nB--;
+            }
+          if (!n) continue;
+          const c = cv * CW + cu;
+          zB[c] = z / n; cB[3 * c] = r / n; cB[3 * c + 1] = g / n; cB[3 * c + 2] = b / n;
+          qB[c] = 1; nB++;
+        }
+    }
   }
 
   const count = n0 + n1 + nB;
@@ -218,10 +246,12 @@ export function emitLiftSplats(p) {
         const c = cv * CW + cu;
         const z = zB[c];
         if (!(z > 0)) continue;
-        const pix = (2 * z) / f;
-        const dzu = tangent(zB, c, 1, cu > 0, cu < CW - 1, pix);
-        const dzv = tangent(zB, c, CW, cv > 0, cv < CH - 1, pix);
-        const uu = 2 * cu + 1 - bx, vv = 2 * cv + 1 - by; // cell centre, in frame pixels
+        const qd = qB && qB[c] ? 2 : 1; // quarter-res group: 2 cells a side
+        const pix = (2 * qd * z) / f;
+        // neighbours one group away (a missing one falls back to the other side, see tangent)
+        const dzu = tangent(zB, c, qd, cu >= qd, cu < CW - qd, pix);
+        const dzv = tangent(zB, c, qd * CW, cv >= qd, cv < CH - qd, pix);
+        const uu = 2 * cu + qd - bx, vv = 2 * cv + qd - by; // cell / group centre, in frame pixels
         emit(((uu - cx) * z) / f, ((vv - cy) * z) / f, z, dzu, dzv, pix,
           clamp01(cB[3 * c]), clamp01(cB[3 * c + 1]), clamp01(cB[3 * c + 2]), 0.995);
       }

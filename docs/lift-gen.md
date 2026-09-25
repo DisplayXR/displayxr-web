@@ -75,11 +75,11 @@ The shape is Apple SHARP's: two image-aligned layers.
   - the **band** — full resolution, under each foreground silhouette, as wide as the background
     can slide out at the maximum orbit (15°), capped at **5 % of the width**; its colour comes
     from the inpainting net when one is supplied;
-  - the **backplate** — the same hidden surface continued out to **25 % of the width** at
-    **half resolution** with push-pull colour, so reveals wider than the band show smooth
-    background instead of black;
+  - the **backplate** — the same hidden surface continued at **half resolution** out to the widest
+    reveal the depth range allows, 1.1 · f·zp·tanθ·(1/zNear − 1/zFar) px (never under 25 %, at most
+    45 % of the width), so reveals wider than the band show background instead of black;
   - an **outpainted border** round the frame, **sized per side to the orbit** (below): the first
-    4 % at full resolution, the rest at half resolution. It sits at the depth of the frame pixel it
+    4 % at full resolution, then half resolution, and beyond 12 % quarter resolution. It sits at the depth of the frame pixel it
     continues (replicated), so it travels with that content, and its colour is the frame mirrored
     across its edge, fading into the push-pull colour.
 
@@ -98,12 +98,14 @@ packing run in a **module Worker** (`ply-writer.js`, transferable buffers).
 
 All rasters are on the **padded** domain (frame + the outpaint border, per side).
 
-0. **Border sizing** (CPU, low-res; `outpaintBorders`). The explore camera is an off-axis window
-   camera — the window is the photo's frustum cut at the pivot zp, the eye moves on a cone of
-   half-angle θ (the orbit cap) about the pivot, i.e. laterally by zp·tanθ — so a point at depth z
-   lands f·tanθ·|1 − zp/z| px from where the photo has it. Per side: the 95th percentile of that over
-   the edge strip, +10 %, clamped to [4 %, 12 % of W]. zp = min(central median, convergence) — the
-   same rule as `meta.pivotZ`, computed up front.
+0. **Border sizing** (CPU, low-res; `outpaintBorders`). The explore orbit turns the scene by up to
+   θ about the pivot (0, 0, zp) and views it through the photo's fixed window. Each frame-edge point
+   (offset u_e from the centre, depth z) is turned by ±θ and projected; the border must cover how far
+   it moves **inward**. (The small-angle f·tanθ·|1 − zp/z| misses the foreshortening of the edge
+   itself: 290 px where the render moves 330 on a portrait against a far street.) Per side: the 95th
+   percentile over the edge strip, +10 %, clamped to [4 %, 35 % of W], then all sides shrunk in
+   proportion if the padded raster would exceed **2.1 · W²** (every pass, the readback and the emit
+   scale with it). zp = min(central median, convergence) — the same rule as `meta.pivotZ`.
 
 1. **Normalise** (CPU, low-res): percentiles → d̂ ∈ [0,1]; the pivot seed is the median of the
    central box.
@@ -115,14 +117,20 @@ All rasters are on the **padded** domain (frame + the outpaint border, per side)
 4. **Edges** (`edges`): far-side pixels of every discontinuity (a neighbour 1–2 px away nearer by
    more than τ = 0.04), with the direction the foreground lies in.
 5. **Hidden mask** (`hidden`): a directional dilation *into the foreground* by
-   `w = f · zp · tan15° · Δ(1/z)` px, as a gather over the four axes. Split by background side for
+   `w = f · zp · tan15° · Δ(1/z)` px, as a gather over the four axes (1 px steps to 32 px, then 2 px).
+   Δ is the larger of the edge's own step and the pixel's (d − d_bg): a subject whose rim is soft in
+   depth (hair, a rounded shoulder) is still far in front of the background inside it. Split by background side for
    the directional inpainting net: `maskRight` (background on the hole's right), `maskLeft`.
    Run twice: capped at 5 % (the band) and at 25 % (the backplate).
 6. **Erode** (`erode`): separable min-filter of d̂, radius band + 2. A pixel nearer than its eroded
    value by more than τ is foreground-near-an-edge and may not seed the background.
 7. **Far side** (`farside`, `farblur`). For every pixel, a walk along the four axes (1 px steps to
-   32 px, then 2 px — an edge band is ≥ 2 px wide on its far side) out to 45 % of the frame for the
-   first far-side edge whose foreground faces back toward it and whose background it is nearer than.
+   32 px, then 2 px — an edge band is ≥ 2 px wide on its far side) out to 45 % of the frame over the
+   far-side edges whose foreground faces back toward it and whose background it is nearer than, and
+   takes, of those whose **reveal reaches it** ((d − d_bg)·f·zp·tanθ·Δ(1/z) ≥ distance), the one with
+   the **farthest** background (none reaches: the farthest found). Taking the first edge stopped at
+   internal edges (a sleeve over the torso) and gave layer 1 their near depth deep inside a big
+   subject; it stayed under the subject while the street slid out, and the reveal opened black.
    That gives (a) whether the pixel is **foreground at all** — the whole object, not just the rim
    the band covers; (b) layer 1's **depth**: the found background disparities, those nearer than
    their median by > τ rejected, the rest weighted 1/dist² with the horizontal axes ×4 (yaw
@@ -168,6 +176,17 @@ onnxruntime-web WebGPU) add **1.3–1.5 s**.
 
 PLY size is 68 B/splat — ~60 MB at medium. A viewer that keeps it should convert (SOG/SPZ).
 
+**Coverage fix (2026-09-25, `tamarra2k.jpg`, a portrait at ~0.9 m against a street to ~30 m,
+MoGe-3 medium).** Black at ±15° was two things, both generator-side, neither a splat budget (there
+is none — every layer-1 texel is emitted): (a) the frame edge, where the border needed ~315 px
+against a 123 px cap; (b) behind the subject, where layer 1 existed but at the depth of the first
+internal edge, so it never slid out. Black pixels at −15°/0°/+15°: 18.0/0/20.2 % → 2.6/0/1.9 %.
+Office and the synthetic clip unchanged or better; Big Sur Road's frame edge improves (its near
+road still needs ~890 px). Warm `generateLift` (medians of interleaved runs): tamarra 407 → 461 ms
+(+13 %, 1.06 → 1.13 M splats), Big Sur Road 489 → 517 ms (+6 %), office 341 → 342 ms.
+Trade-off: one hidden surface per pixel, now the far one — the thin gap an internal edge opens at
+orbit shows the far background, not the surface just behind the edge.
+
 ## Known artefacts (renders at −10°, 0°, +10° after the quality pass, 2026-09-25)
 
 - **Fixed:** object-shaped ghosts behind foreground (a translucent second sphere / chair back /
@@ -184,8 +203,8 @@ PLY size is 68 B/splat — ~60 MB at medium. A viewer that keeps it should conve
 - **Residual: dark sliver down a soft depth ramp** (rock → sea): no step ⇒ no edge ⇒ no hidden layer;
   the 24-footprint surfel cap narrows it (8 left a wide black crack) but does not close it.
 - **Frame edge past the cap.** Metric depth with near ground at a frame edge can need far more than
-  12 % of W (Big Sur Road: ~890 px at 15° against a 28 m pivot); black remains there. Raising the cap
-  costs raster area (readback + emit) roughly linearly. Where the border's replicated depth changes
+  the 35 % cap / 2.1·W² area budget (Big Sur Road: ~890 px at 15° against a 28 m pivot); black
+  remains there. Raster area costs readback + emit roughly linearly. Where the border's replicated depth changes
   between rows (a mountain against the sky at the frame edge) it shows as a hard-edged slab.
 - **Inpainting net on wide masks.** With the new fill it no longer duplicates whole objects, but it
   still hallucinates texture that meets the fill at visible seams (a ragged streak under the Big Sur

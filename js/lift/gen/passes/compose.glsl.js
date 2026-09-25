@@ -55,7 +55,10 @@ void main() {
       qm = clamp(qm, ivec2(0), uInner - 1);
       vec3 cm = texelFetch(uRGB, qm + uPad, 0).rgb;
       float t = max(float(out2.x) / float(max(uBorderW.x, 1)), float(out2.y) / float(max(uBorderW.y, 1)));
-      c = mix(cm, c, 0.7 * smoothstep(0.0, 1.0, t));
+      // only mirror the surface the border continues: a wide border reaches past the edge content
+      // into a near subject (a portrait by the frame edge), whose reflection read as a ghost of it
+      float sameSurf = 1.0 - smoothstep(uTau, 2.0 * uTau, abs(texelFetch(uD, qm + uPad, 0).r - d0));
+      c = mix(c, mix(cm, c, 0.7 * smoothstep(0.0, 1.0, t)), sameSurf);
     }
     float d1 = max(d0, -0.2);
     o = vec4(c, far ? -1000.0 : d1);

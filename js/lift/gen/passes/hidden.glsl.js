@@ -4,9 +4,15 @@
 // For a camera that orbits by θ about a pivot at depth zp, the background behind an edge slides
 // relative to the foreground by  w = f · zp · tanθ · |1/z_bg − 1/z_fg|  pixels. uBand is
 // f·zp·tanθ·(invNear − invFar), i.e. pixels per unit of normalised disparity step, so an edge
-// of step Δ opens a band of Δ·uBand px (clamped to uK, 5 % of the width).
+// of step Δ opens a band of Δ·uBand px (clamped to uK, 5 % of the width). Δ is the LARGER of the
+// edge's own step and this pixel's (d − d_bg): a subject whose rim is soft in depth (hair, a
+// rounded shoulder) is still that far in front of the background inside, and an internal gap there
+// (a fold opening at orbit) exposes layer 1 as far as the pixel's own step carries it — without it
+// the interior behind a hair rim had no hidden layer and those gaps showed black.
 //
-// This is a GATHER: each pixel searches the four axis directions, up to uK px, for the nearest
+// This is a GATHER: each pixel searches the four axis directions, up to uK px (1 px steps to 32 px,
+// then 2 px, to 480 px — a far-side edge band is ≥ 2 px wide, see ./edges — so the wide backplate mask, sized
+// to the real reveal of a near subject against a far background, stays affordable), for the nearest
 // far-side edge pixel whose band reaches it. It is in the band only if it is itself nearer than
 // that edge's background by > uTau/2 (i.e. it is foreground that can slide away).
 //
@@ -40,33 +46,34 @@ void main() {
   float d = texelFetch(uD, p, 0).r;
   o = vec4(0.0);
   for (int k = 1; k <= 256; k++) {
-    if (k > uK) break;
-    float fk = float(k);
+    int dist = k <= 32 ? k : 32 + 2 * (k - 32);
+    if (dist > uK) break;
+    float fk = float(dist);
     bool found = false;
     // edge to the RIGHT whose foreground is on its LEFT (ΔL): we are in that foreground's rim
-    ivec2 e = p + ivec2(k, 0);
+    ivec2 e = p + ivec2(dist, 0);
     if (e.x <= hi.x) {
       float s = texelFetch(uE, e, 0).r;
       float de = texelFetch(uD, e, 0).r;
-      if (s > 0.0 && fk <= s * uBand && d > de + 0.5 * uTau) { o = vec4(1.0, 0.0, fk, de); found = true; }
+      if (s > 0.0 && fk <= max(s, d - de) * uBand && d > de + 0.5 * uTau) { o = vec4(1.0, 0.0, fk, de); found = true; }
     }
-    e = p - ivec2(k, 0);
+    e = p - ivec2(dist, 0);
     if (!found && e.x >= lo.x) {
       float s = texelFetch(uE, e, 0).g;
       float de = texelFetch(uD, e, 0).r;
-      if (s > 0.0 && fk <= s * uBand && d > de + 0.5 * uTau) { o = vec4(0.0, 1.0, fk, de); found = true; }
+      if (s > 0.0 && fk <= max(s, d - de) * uBand && d > de + 0.5 * uTau) { o = vec4(0.0, 1.0, fk, de); found = true; }
     }
-    e = p + ivec2(0, k);
+    e = p + ivec2(0, dist);
     if (!found && e.y <= hi.y) {
       float s = texelFetch(uE, e, 0).b;
       float de = texelFetch(uD, e, 0).r;
-      if (s > 0.0 && fk <= s * uBand && d > de + 0.5 * uTau) { o = vec4(1.0, 0.0, fk, de); found = true; }
+      if (s > 0.0 && fk <= max(s, d - de) * uBand && d > de + 0.5 * uTau) { o = vec4(1.0, 0.0, fk, de); found = true; }
     }
-    e = p - ivec2(0, k);
+    e = p - ivec2(0, dist);
     if (!found && e.y >= lo.y) {
       float s = texelFetch(uE, e, 0).a;
       float de = texelFetch(uD, e, 0).r;
-      if (s > 0.0 && fk <= s * uBand && d > de + 0.5 * uTau) { o = vec4(1.0, 0.0, fk, de); found = true; }
+      if (s > 0.0 && fk <= max(s, d - de) * uBand && d > de + 0.5 * uTau) { o = vec4(1.0, 0.0, fk, de); found = true; }
     }
     if (found) break;
   }
