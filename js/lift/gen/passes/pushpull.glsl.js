@@ -1,10 +1,12 @@
-// Push-pull scattered-data fill (Gortler et al. 1996) — the hidden layer's background DEPTH, and
-// its colour when no inpainting net is supplied.
+// Push-pull scattered-data fill (Gortler et al. 1996) — the hidden layer's fallback depth and
+// colour (where ./farside found no background), and the outpaint border's far colour.
 //
-// Seeds are pixels that are provably background: inside the frame, outside M, and not nearer
-// than their eroded disparity by more than uTau (so foreground near an edge never seeds). The
-// fill therefore extends the background under the foreground rim, and past the frame edge into
-// the outpaint border, as a smooth (harmonic-like) continuation.
+// Seeds are pixels that are provably background: inside the frame, outside M, not nearer than
+// their eroded disparity by more than uTau, and (uSeedEx) not foreground in uFX (./farside:
+// nearer than a background found along an axis — the whole foreground object, not just the rim M
+// covers). Without uFX a foreground object wider than its band seeded the fill with its own
+// interior, and the fill blended it into the hole. The fill extends the background under the
+// foreground rim, and past the frame edge, as a smooth (harmonic-like) continuation.
 //
 // Every level is two RGBA32F targets:  A = (r, g, b, w)   B = (d, w, 0, 0)
 
@@ -14,6 +16,8 @@ uniform sampler2D uD;
 uniform sampler2D uEro;
 uniform sampler2D uRGB;
 uniform sampler2D uM;
+uniform sampler2D uFX;
+uniform bool uSeedEx;
 uniform ivec2 uPad;
 uniform ivec2 uInner;
 uniform float uTau;
@@ -24,9 +28,10 @@ void main() {
   ivec2 q = p - uPad;
   bool inner = all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, uInner));
   vec4 m = texelFetch(uM, p, 0);
+  vec4 fx = texelFetch(uFX, p, 0);
   float d = texelFetch(uD, p, 0).r;
   float ero = texelFetch(uEro, p, 0).r;
-  float w = (inner && m.r + m.g < 0.5 && d <= ero + uTau) ? 1.0 : 0.0;
+  float w = (inner && m.r + m.g < 0.5 && !(uSeedEx && fx.r > 0.5) && d <= ero + uTau) ? 1.0 : 0.0;
   oA = vec4(texelFetch(uRGB, p, 0).rgb, w);
   oB = vec4(d, w, 0.0, 0.0);
 }

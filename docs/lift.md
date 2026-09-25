@@ -220,18 +220,27 @@ download + hash from localhost; with a warm cache (a returning visitor, or the D
 native store) the first pause is ≈ 1.1 s load + 1.5 s depth + 0.6 s ≈ 3 s.
 
 `quality: 'high'` at dpr 2: live depth 147 ms/frame (518×294), pause → explore 9.7 s / 3.7 s, 1.2 M
-splats, explore still 60 fps in the mono fallback. With `inpaint: 'light-inpaint-v1'` add ~1.0 s to
+splats, explore still 60 fps in the mono fallback. With `inpaint: 'light-inpaint-v1'` add 1.0–1.5 s to
 every lift.
 
 ## Known issues
 
-- **Ghosts of thin foreground at background depth.** The hidden layer's colour is seeded from pixels
-  that are foreground but farther than the erosion radius from an edge (lamp arms, chair backs), so
-  a faint copy appears behind them under the orbit. The inpainting net makes it worse on wide bands
-  (it reproduces the foreground), hence `inpaint: 'none'` by default. Generator-side fix: erode by
-  the backplate radius, not the band radius, before push-pull.
-- **Frame edges.** At ±10° the frame edge of near content (or of the background, with the nearer
-  pivot) swings into view as black; the 4 % outpaint border is too small for it.
+- **Hidden-layer residue (after the quality pass, 2026-09-25).** The object-shaped ghosts behind
+  foreground (chair back, mountain ridge, the synthetic spheres) are gone: the hidden layer now takes
+  its depth and colour from the background found *past* each silhouette (lift-gen `farside`), and
+  whole foreground objects no longer seed its fill. What remains: a faint (~3/255) crescent where the
+  band meets the wall on flat synthetic backgrounds; a 1-px outline where the photo itself has a glow
+  round an object (the background-side mixed pixels are opaque layer-0); horizontal streaks of floor
+  texture under objects that stand on it; a thin dark sliver where the depth map fades an object into
+  its background with no step (no edge ⇒ no hidden layer). See docs/lift-gen.md.
+- **Inpainting net: still off.** Re-tested after the fix on office / Big Sur Road / Shore Rocks: the
+  whole-object duplicates are gone with the net too, but it adds 1.3–1.5 s per lift and on wide masks
+  still leaves textured seams (a ragged dark streak under the Big Sur ridge, faint lamp/desk remnants in
+  the office) where the net-free fill is clean. `inpaint: 'none'` stays the default.
+- **Frame edges.** The outpaint border is now sized per side to what a 15° orbit can reveal there
+  (mirrored continuation of the frame), so office / rocks / spheres show no black strip at ±10°. It is
+  capped at 12 % of the width: a metric-depth landscape with near ground at the bottom (Big Sur Road:
+  ~890 px needed against a 28 m pivot) still shows black at the corners and bottom.
 - **First pause latency** is dominated by creating the 715 MB MoGe-3 session (~4.5 s).
   `prefetch: true` moves it to just after live starts, at the price of held live depth meanwhile.
 - **Spark**: disposing the explore renderer surfaces an unhandled `Worker terminate` / `No target`

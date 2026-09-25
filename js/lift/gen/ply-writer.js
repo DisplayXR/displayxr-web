@@ -62,7 +62,8 @@ const logit = (a) => Math.log(a / (1 - a));
 export function emitLiftSplats(p) {
   const {
     W, H, PW, PH, bx, by, f, invFar, invNear, out0, rgbPad, out1, outB = null,
-    sigmaPx = 0.65, thin = 0.15, slopeGain = 0.5, maxAniso = 8, minAlpha = 0.02, pivotRegion = 0.2, orient = true,
+    sigmaPx = 0.65, thin = 0.15, slopeGain = 0.5, maxAniso = 8, maxAnisoEdge = maxAniso, minAlpha = 0.02, pivotRegion = 0.2, orient = true,
+    emitLayers = 3, // DEV: bit 0 = layer 0, bit 1 = layer 1
   } = p;
   const cx = W / 2, cy = H / 2;
   const zOf = (d) => 1 / (invFar + d * (invNear - invFar));
@@ -77,13 +78,14 @@ export function emitLiftSplats(p) {
     if (d > NO_LAYER) { z1[i] = zOf(d); n1++; } else z1[i] = NaN;
   }
   let n0 = 0;
-  for (let i = 0; i < W * H; i++) if (out0[4 * i + 1] >= minAlpha) n0++;
+  if (emitLayers & 1) for (let i = 0; i < W * H; i++) if (out0[4 * i + 1] >= minAlpha) n0++;
+  if (!(emitLayers & 2)) { n1 = 0; z1.fill(NaN); }
 
   // BACKPLATE: the hidden layer beyond the band, at half resolution — one splat per 2×2 cell that
   // holds any backplate texel, at the mean of those texels (depth, colour), twice the footprint.
   const CW = PW >> 1, CH = PH >> 1;
   let zB = null, cB = null, nB = 0;
-  if (outB) {
+  if (outB && emitLayers & 2) {
     zB = new Float32Array(CW * CH).fill(NaN);
     cB = new Float32Array(CW * CH * 3);
     for (let cv = 0; cv < CH; cv++)
@@ -138,13 +140,13 @@ export function emitLiftSplats(p) {
   const q = new Float64Array(4);
   const tu = new Float64Array(3), tv = new Float64Array(3);
   /** The one-sided, capped depth step to the neighbour along `stride` (NaN/≤0 = no neighbour). */
-  const tangent = (z, i, stride, hasPrev, hasNext, pix) => {
+  const tangent = (z, i, stride, hasPrev, hasNext, pix, aniso = maxAniso) => {
     const c = z[i];
     const zp = hasPrev ? z[i - stride] : NaN, zn = hasNext ? z[i + stride] : NaN;
     const a = zp > 0 ? c - zp : NaN;
     const b = zn > 0 ? zn - c : NaN;
     let dz = a !== a ? (b !== b ? 0 : b) : b !== b ? a : Math.abs(a) < Math.abs(b) ? a : b;
-    const cap = maxAniso * pix;
+    const cap = aniso * pix;
     if (dz > cap) dz = cap; else if (dz < -cap) dz = -cap;
     return dz;
   };
@@ -175,14 +177,23 @@ export function emitLiftSplats(p) {
     for (let u = 0; u < W; u++) {
       const i = v * W + u;
       const alpha = out0[4 * i + 1];
-      if (alpha < minAlpha) continue;
+      if (alpha < minAlpha || !(emitLayers & 1)) continue;
       const z = z0[i];
       const pix = z / f;
-      const dzu = tangent(z0, i, 1, u > 0, u < W - 1, pix);
-      const dzv = tangent(z0, i, W, v > 0, v < H - 1, pix);
-      const pi = ((v + by) * PW + (u + bx)) * 4;
-      emit(((u + 0.5 - cx) * z) / f, ((v + 0.5 - cy) * z) / f, z, dzu, dzv, pix,
-        rgbPad[pi] / 255, rgbPad[pi + 1] / 255, rgbPad[pi + 2] / 255, alpha);
+      // out0 = (d̂, α, packed un-mixed RGB | −1, silhouette flag) — see passes/matte.glsl.js
+      const sil = out0[4 * i + 3] > 0.5;
+      const an = sil ? maxAnisoEdge : maxAniso;
+      const dzu = tangent(z0, i, 1, u > 0, u < W - 1, pix, an);
+      const dzv = tangent(z0, i, W, v > 0, v < H - 1, pix, an);
+      const pk = out0[4 * i + 2];
+      let r, g, b;
+      if (sil && pk >= 0) {
+        r = Math.floor(pk / 65536) / 255; g = (Math.floor(pk / 256) % 256) / 255; b = (pk % 256) / 255;
+      } else {
+        const pi = ((v + by) * PW + (u + bx)) * 4;
+        r = rgbPad[pi] / 255; g = rgbPad[pi + 1] / 255; b = rgbPad[pi + 2] / 255;
+      }
+      emit(((u + 0.5 - cx) * z) / f, ((v + 0.5 - cy) * z) / f, z, dzu, dzv, pix, r, g, b, alpha);
     }
   }
   // ── layer 1: the hidden background, only where it exists ──

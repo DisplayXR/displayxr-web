@@ -16,8 +16,8 @@
 //
 // The shape is Apple SHARP's: LAYER 0 is the visible surface, one Gaussian per output pixel;
 // LAYER 1 is the hidden background — present only in a band under each foreground silhouette,
-// as wide as the background can be revealed at the maximum orbit angle, plus a 4 % outpainted
-// border — so an orbit of ±15° uncovers background instead of holes.
+// as wide as the background can be revealed at the maximum orbit angle, plus an outpainted border
+// sized per side to the same orbit — so an orbit of ±15° uncovers background instead of holes.
 //
 // Image processing runs as WebGL2 fragment passes (./gl.js, ./passes/*); Gaussian emission and
 // PLY packing run in a module Worker (./ply-writer.js). The generator never touches a depth or
@@ -32,6 +32,8 @@ import hiddenFS from './passes/hidden.glsl.js';
 import * as pushpull from './passes/pushpull.glsl.js';
 import matteFS from './passes/matte.glsl.js';
 import composeFS from './passes/compose.glsl.js';
+import farsideFS from './passes/farside.glsl.js';
+import farblurFS from './passes/farblur.glsl.js';
 import { emitLiftSplats, NO_LAYER } from './ply-writer.js';
 
 /** Output width caps per quality (the raster is never upscaled beyond the source). */
@@ -58,8 +60,14 @@ export const LIFT_DEFAULTS = Object.freeze({
   /** backplate cap: the hidden layer continues, at HALF resolution and with push-pull colour,
    *  out to this fraction of the width (0 disables the backplate) */
   backplateFrac: 0.25,
-  /** outpaint border, fraction of each dimension */
+  /** outpaint border: the full-resolution part, fraction of each dimension ... */
   borderFrac: 0.04,
+  /** ... and its cap, fraction of the WIDTH (px on every side). Each side is sized to what the
+   *  orbit can reveal there (outpaintBorders); beyond borderFrac it is emitted at half resolution */
+  borderMaxFrac: 0.12,
+  /** border colour: 'mirror' = the frame reflected across its edge, fading into the push-pull
+   *  colour with distance; 'pushpull' = the harmonic continuation only (the old behaviour) */
+  borderColour: 'mirror',
   /** edge threshold, normalised disparity */
   tau: 0.04,
   /** snap threshold over a 7×7 window */
@@ -71,8 +79,28 @@ export const LIFT_DEFAULTS = Object.freeze({
   sigmaPx: 0.65,
   thin: 0.15,
   slopeGain: 0.5,
-  maxAniso: 8,
+  maxAniso: 24,
+  /** cap on the same, in footprints, for a silhouette pixel (its steep one-sided slope is the
+   *  object's limb; stretched 8 footprints deep it swung out as a soft fringe at the orbit) */
+  maxAnisoEdge: 1.5,
+  /** matte window radius, px: pixels with a background neighbour this close get a ramp */
+  matteRadius: 1,
   orient: true,
+  /** the far-side gather's reach, fraction of the larger dimension (capped at 480 px): pixels
+   *  nearer than a background found within it never seed the fill (seedExclude) */
+  farReachFrac: 0.45,
+  seedExclude: true,
+  /** layer 1's depth: 'farside' = the median background disparity found on the four axes;
+   *  'pushpull' = the harmonic fill (the old behaviour) */
+  hiddenDepth: 'farside',
+  /** layer 1's colour without a net: 'farside' = the background just past the edges that bound the
+   *  hole (./passes/farside), 'pushpull' = the harmonic fill (the old behaviour) */
+  hiddenColour: 'farside',
+  /** smoothing of the far-side fill: blur radius = gain × distance to the edge, capped (px) */
+  farBlurGain: 0.5,
+  /** weight of the horizontal axes vs the vertical ones in the far-side fill (yaw dominates) */
+  farHWeight: 4,
+  farBlurMaxPx: 24,
   /** pivot = median layer-0 depth of the central box of this half-size */
   pivotRegion: 0.2,
 });
@@ -120,15 +148,35 @@ export async function generateLift(opts) {
   };
   progress('start', 0);
 
-  // ── 0. rasters ────────────────────────────────────────────────────────────────────────────
+  // ── 0. sizes + disparity normalisation (CPU; low-res) ─────────────────────────────────────
   const src = rgb instanceof ImageData ? await createImageBitmap(rgb) : rgb;
   const Ws = src.width, Hs = src.height;
   const W = Math.min(Ws, q.maxWidth);
   const H = Math.max(2, Math.round((Hs * W) / Ws));
-  const bx = Math.max(8, Math.round(P.borderFrac * W));
-  const by = Math.max(8, Math.round(P.borderFrac * H));
-  const PW = W + 2 * bx, PH = H + 2 * by;
   const f = (depth.intrinsics?.focalPx > 0 ? depth.intrinsics.focalPx : P.focalFactor * Ws) * (W / Ws);
+  const { dlo, invFar, invNear, pivotLo } = normaliseDisparity(depth, space, P);
+  const tanT = Math.tan((P.maxOrbitDeg * Math.PI) / 180);
+
+  // Pivot = min(convergence, subject) — the gallery's Spatial View rule (integration). `subject` is
+  // the median layer-0 depth of the central box (the worker's r.pivotZ, A4). `convergence` is the
+  // depth at the MEAN normalised disparity of the central 60 % — the plane that balances crossed
+  // and uncrossed disparity. On a frame whose centre is mostly far background (a sky or a wall
+  // between near objects), the median alone lands on the background and the whole foreground
+  // swings under the orbit; the min keeps the zero-parallax plane among the content. Computed up
+  // front (the low-res median stands in for the subject) because the border is sized from it.
+  let convSum = 0, convN = 0;
+  for (let y = Math.floor(depth.h * 0.2); y < Math.ceil(depth.h * 0.8); y++)
+    for (let x = Math.floor(depth.w * 0.2); x < Math.ceil(depth.w * 0.8); x++) { convSum += dlo[y * depth.w + x]; convN++; }
+  const convergenceZ = 1 / (invFar + (convN ? convSum / convN : 0.5) * (invNear - invFar));
+  const zPivotLo = 1 / (invFar + pivotLo * (invNear - invFar));
+
+  // OUTPAINT BORDER, per side, sized to the orbit (see outpaintBorders). The first borderFrac of it
+  // is full resolution (layer 1's band encoding); the rest is emitted at half resolution.
+  const bd = outpaintBorders({ dlo, w: depth.w, h: depth.h, invFar, invNear, zp: Math.min(zPivotLo, convergenceZ), f, W, H, tanT, P });
+  const bx0 = Math.max(8, Math.round(P.borderFrac * W));
+  const by0 = Math.max(8, Math.round(P.borderFrac * H));
+  const bxL = bd.left, bxR = bd.right, byT = bd.top, byB = bd.bottom;
+  const PW = W + bxL + bxR, PH = H + byT + byB;
 
   const canvas = typeof OffscreenCanvas === 'function'
     ? new OffscreenCanvas(PW, PH)
@@ -136,18 +184,14 @@ export async function generateLift(opts) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(src, bx, by, W, H);
+  ctx.drawImage(src, bxL, byT, W, H);
   if (src !== rgb) src.close?.();
   const rgbPad = new Uint8Array(ctx.getImageData(0, 0, PW, PH).data.buffer);
-
-  // ── 1. disparity normalisation (CPU; low-res) ────────────────────────────────────────────
-  const { dlo, invFar, invNear, pivotLo } = normaliseDisparity(depth, space, P);
   mark('prep');
   progress('prep', 0.05);
 
-  // pivot + band width. w_px = f · zp · tanθ · Δ(1/z) and Δ(1/z) = Δd̂ · (invNear − invFar).
-  const zPivotLo = 1 / (invFar + pivotLo * (invNear - invFar));
-  const band = f * zPivotLo * Math.tan((P.maxOrbitDeg * Math.PI) / 180) * (invNear - invFar);
+  // band width. w_px = f · zp · tanθ · Δ(1/z) and Δ(1/z) = Δd̂ · (invNear − invFar).
+  const band = f * zPivotLo * tanT * (invNear - invFar);
   const K = Math.max(2, Math.min(256, Math.ceil(P.maxBandFrac * W)));
   const R = Math.min(256, K + 2);
   const Kb = Math.max(K, Math.min(256, Math.ceil(P.backplateFrac * W)));
@@ -162,7 +206,7 @@ export async function generateLift(opts) {
     const tDlo = g.texture(depth.w, depth.h, 'r32f', dlo);
     const tD0 = g.texture(PW, PH, 'r32f');
     const tD = g.texture(PW, PH, 'r32f');
-    const pad = [bx, by], inner = [W, H];
+    const pad = [bxL, byT], inner = [W, H];
     g.pass('upsample', upsampleFS, tD0, { uDlo: tDlo, uRGB: tRGB, uPad: pad, uInner: inner, uSigmaS: P.jbuSigmaS, uSigmaR: P.jbuSigmaR });
     g.pass('snap', snapFS, tD, { uD: tD0, uStep: P.snapStep });
     mark('upsample', g);
@@ -176,6 +220,18 @@ export async function generateLift(opts) {
     // so a big foreground never seeds the background it hides.
     const tMb = Kb > K ? g.texture(PW, PH, 'rgba32f') : tM;
     if (Kb > K) g.pass('hidden', hiddenFS, tMb, { uD: tD, uE: tE, uPad: pad, uInner: inner, uK: Kb, uBand: band, uTau: P.tau });
+    // FX (farside): per pixel, the background it hides on each axis, out to farReach — whether it
+    // is foreground at all (seed exclusion) and the median far-side disparity (layer 1's depth).
+    const farReach = Math.min(480, Math.round(P.farReachFrac * Math.max(W, H)));
+    const tFX = g.texture(PW, PH, 'rgba32f');
+    const tFC = g.texture(PW, PH, 'rgba32f');
+    g.pass('farside', farsideFS, [tFX, tFC], { uD: tD, uE: tE, uRGB: tRGB, uPad: pad, uInner: inner, uReach: farReach, uHWeight: P.farHWeight, uTau: P.tau });
+    let tFXs = tFX, tFCs = tFC;
+    if (P.farBlurGain > 0) {
+      tFXs = g.texture(PW, PH, 'rgba32f');
+      tFCs = g.texture(PW, PH, 'rgba32f');
+      g.pass('farblur', farblurFS, [tFXs, tFCs], { uFX: tFX, uFC: tFC, uGain: P.farBlurGain, uMaxR: P.farBlurMaxPx, uTau: P.tau });
+    }
     mark('mask', g);
     progress('mask', 0.25);
 
@@ -189,7 +245,7 @@ export async function generateLift(opts) {
     const levels = [];
     let lw = PW, lh = PH;
     levels.push({ A: g.texture(lw, lh, 'rgba32f'), B: g.texture(lw, lh, 'rgba32f'), w: lw, h: lh });
-    g.pass('pp-init', pushpull.init, [levels[0].A, levels[0].B], { uD: tD, uEro: tEro, uRGB: tRGB, uM: tMb, uPad: pad, uInner: inner, uTau: P.tau });
+    g.pass('pp-init', pushpull.init, [levels[0].A, levels[0].B], { uD: tD, uEro: tEro, uRGB: tRGB, uM: tMb, uFX: tFX, uSeedEx: !!P.seedExclude, uPad: pad, uInner: inner, uTau: P.tau });
     while (lw > 1 || lh > 1) {
       lw = Math.max(1, Math.ceil(lw / 2));
       lh = Math.max(1, Math.ceil(lh / 2));
@@ -212,11 +268,11 @@ export async function generateLift(opts) {
     const tOut0 = g.texture(PW, PH, 'rgba32f');
     const tOut1 = g.texture(PW, PH, 'rgba32f');
     const tOutB = g.texture(PW, PH, 'rgba32f');
-    g.pass('matte', matteFS, tOut0, { uD: tD, uRGB: tRGB, uPad: pad, uInner: inner, uTau: P.tau });
-    g.pass('compose', composeFS, [tOut1, tOutB], { uD: tD, uM: tM, uMb: tMb, uFA: FA, uFB: FB, uTau: P.tau });
+    g.pass('matte', matteFS, tOut0, { uD: tD, uRGB: tRGB, uPad: pad, uInner: inner, uTau: P.tau, uR: P.matteRadius });
+    g.pass('compose', composeFS, [tOut1, tOutB], { uD: tD, uM: tM, uMb: tMb, uFA: FA, uFB: FB, uFX: tFXs, uFC: tFCs, uFarDepth: P.hiddenDepth === 'farside', uFarColour: P.hiddenColour === 'farside', uRGB: tRGB, uPad: pad, uInner: inner, uBase: [bx0, by0], uBorderW: [Math.max(bxL, bxR), Math.max(byT, byB)], uMirror: P.borderColour === 'mirror', uTau: P.tau });
     mark('matte', g);
 
-    out0 = g.read(tOut0, bx, by, W, H);
+    out0 = g.read(tOut0, bxL, byT, W, H);
     out1 = g.read(tOut1);
     outB = Kb > K ? g.read(tOutB) : null;
     if (inpainter || debug) maskTex = g.read(tM);
@@ -258,8 +314,9 @@ export async function generateLift(opts) {
 
   // ── 4. Gaussians + PLY (Worker) ──────────────────────────────────────────────────────────
   const job = {
-    W, H, PW, PH, bx, by, f, invFar, invNear, out0, rgbPad, out1, outB,
-    sigmaPx: P.sigmaPx, thin: P.thin, slopeGain: P.slopeGain, maxAniso: P.maxAniso, pivotRegion: P.pivotRegion, orient: P.orient,
+    W, H, PW, PH, bx: bxL, by: byT, f, invFar, invNear, out0, rgbPad, out1, outB,
+    sigmaPx: P.sigmaPx, thin: P.thin, slopeGain: P.slopeGain, maxAniso: P.maxAniso, maxAnisoEdge: P.maxAnisoEdge, pivotRegion: P.pivotRegion, orient: P.orient,
+    emitLayers: P.emitLayers ?? 3,
   };
   // the debug views need the rasters after the worker has taken them
   const keep = debug ? { out0: out0.slice(), out1: out1.slice(), outB: outB && outB.slice(), rgbPad: rgbPad.slice() } : null;
@@ -267,16 +324,6 @@ export async function generateLift(opts) {
   mark('emit');
   progress('done', 1);
 
-  // Pivot = min(convergence, subject) — the gallery's Spatial View rule (integration). `subject` is
-  // the median layer-0 depth of the central box (r.pivotZ, A4). `convergence` is the depth at the
-  // MEAN normalised disparity of the central 60 % — the plane that balances crossed and uncrossed
-  // disparity. On a frame whose centre is mostly far background (a sky or a wall between near
-  // objects), the median alone lands on the background and the whole foreground swings under the
-  // orbit; the min keeps the zero-parallax plane among the content.
-  let convSum = 0, convN = 0;
-  for (let y = Math.floor(depth.h * 0.2); y < Math.ceil(depth.h * 0.8); y++)
-    for (let x = Math.floor(depth.w * 0.2); x < Math.ceil(depth.w * 0.8); x++) { convSum += dlo[y * depth.w + x]; convN++; }
-  const convergenceZ = 1 / (invFar + (convN ? convSum / convN : 0.5) * (invNear - invFar));
   const pivotZ = Math.min(r.pivotZ, convergenceZ);
 
   const meta = {
@@ -297,7 +344,8 @@ export async function generateLift(opts) {
     convention: 'opencv',
     /** the same, under the name explore.js (rigFromMeta) reads */
     axes: 'opencv',
-    border: { x: bx, y: by },
+    /** the outpaint border actually built, px per side (x/y = left/top, the raster's offset) */
+    border: { x: bxL, y: byT, left: bxL, right: bxR, top: byT, bottom: byB, needed: bd.needed },
     depthRange: { near: 1 / invNear, far: 1 / invFar },
     bandPxPerDisparity: band,
     maxBandPx: K,
@@ -307,6 +355,39 @@ export async function generateLift(opts) {
   };
   if (debug) meta.debug = { ...keep, ...dbg, mask: maskTex, PW, PH };
   return { ply: r.ply, meta };
+}
+
+/**
+ * How far past each frame edge the orbit can look, px at the output raster.
+ *
+ * The explore camera is an off-axis window camera: the window (the photo's frustum cut at the
+ * pivot depth zp) is fixed and the eye moves on a cone of half-angle θ about the pivot, i.e.
+ * laterally by e = zp·tanθ. A point at depth z then lands on the window displaced by
+ * f·e·(1/zp − 1/z) px, so the screen edge sees f·tanθ·|1 − zp/z| px past the photo's edge at that
+ * depth. The border is built at the depth of the content it continues (the edge pixel's, replicated),
+ * so it travels with that content and must be exactly that wide. Per side: the 95th percentile over
+ * the edge strip (1.5 % of the low-res width/height), + 10 %, clamped to [borderFrac, borderMaxFrac·W].
+ * Near content at a frame edge needs a lot (0.7 m against a 1.5 m pivot at 15°: ~0.3·f) — the cap
+ * bounds the cost, and past it the orbit still shows black.
+ */
+export function outpaintBorders({ dlo, w, h, invFar, invNear, zp, f, W, H, tanT, P = LIFT_DEFAULTS }) {
+  const need = (d) => f * tanT * Math.abs(1 - zp * (invFar + d * (invNear - invFar)));
+  const p95 = (a) => { a.sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * 0.95))] : 0; };
+  const sx = Math.max(1, Math.round(0.015 * w)), sy = Math.max(1, Math.round(0.015 * h));
+  const L = [], Rt = [], T = [], B = [];
+  for (let y = 0; y < h; y++)
+    for (let k = 0; k < sx; k++) { L.push(need(dlo[y * w + k])); Rt.push(need(dlo[y * w + w - 1 - k])); }
+  for (let x = 0; x < w; x++)
+    for (let k = 0; k < sy; k++) { T.push(need(dlo[k * w + x])); B.push(need(dlo[(h - 1 - k) * w + x])); }
+  const needed = { left: p95(L), right: p95(Rt), top: p95(T), bottom: p95(B) };
+  const cap = Math.max(8, Math.round(P.borderMaxFrac * W));
+  const bx0 = Math.max(8, Math.round(P.borderFrac * W)), by0 = Math.max(8, Math.round(P.borderFrac * H));
+  const size = (n, base) => Math.max(base, Math.min(Math.max(cap, base), Math.ceil(1.1 * n) + 2));
+  return {
+    left: size(needed.left, bx0), right: size(needed.right, bx0),
+    top: size(needed.top, by0), bottom: size(needed.bottom, by0),
+    needed: Object.fromEntries(Object.entries(needed).map(([k, v]) => [k, Math.round(v)])),
+  };
 }
 
 /**

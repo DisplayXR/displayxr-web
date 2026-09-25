@@ -37,7 +37,8 @@
     (<code>resolveMediaAt</code>). Backend: <b id="backend">…</b>.
     Query: <code>providers=real|stub</code>, <code>models=</code> (model tree base URL, default <code>/_scratch/models</code>),
     <code>ort=</code> (onnxruntime-web dist URL, default <code>/_scratch/ort/</code> else jsDelivr),
-    <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>.</p>
+    <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>,
+    <code>params={…}</code> (lift-gen overrides, JSON).</p>
 
   <figure>
     <video id="vid" muted loop playsinline controls></video>
@@ -102,6 +103,7 @@ const opts = {
   ...(q.get('exploreDpr') ? { exploreMaxDpr: +q.get('exploreDpr') } : {}),
   ...(q.get('maxAngle') ? { orbit: { maxAngleDeg: +q.get('maxAngle') } } : {}),
   ...(q.get('inpaint') === '1' ? { providers: { inpaint: 'light-inpaint-v1' } } : {}),
+  ...(q.get('params') ? { genParams: JSON.parse(q.get('params')) } : {}),
 };
 
 const logEl = document.getElementById('log');
