@@ -123,7 +123,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\""
+    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\"",
+    "build:lift-builtin": "node tools/lift-builtin/build.mjs"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

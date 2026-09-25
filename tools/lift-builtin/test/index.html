@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- The server substitutes a strict CSP (no workers, no data:/blob: fetch) or an open one. -->
+<meta http-equiv="Content-Security-Policy" content="%CSP%">
+<title>lift built-in test</title>
+<style>
+  body { margin: 0; padding: 16px; background: #1b1d22; color: #ccc; font: 13px system-ui; }
+  .row { display: flex; gap: 16px; align-items: flex-start; }
+  video, img { width: 640px; height: auto; display: block; }
+</style>
+<!-- 1. the harness: records the page's globals, then sets the TEST-ONLY scheme map -->
+<script src="/harness.js"></script>
+<!-- 2. "injection": the browser runs `__dxrLiftNative = true;` + the bundle in the lift world -->
+<script src="/bundle/displayxr-lift-builtin.js"></script>
+<!-- 3. load-time mark -->
+<script src="/after.js"></script>
+</head>
+<body>
+<div class="row">
+  <video id="v" src="/media/video.mp4" muted loop autoplay playsinline></video>
+  <img id="i" src="/media/photo.jpg" alt="">
+</div>
+<p id="log"></p>
+</body>
+</html>
