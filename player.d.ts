@@ -64,6 +64,16 @@ export interface PlayerOptions {
    * showing 3D at that moment, and a badge that says otherwise is worse than no badge.
    */
   badge3d?: boolean | string;
+  /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */
+  title?: string;
+  /** −10 s / +10 s buttons beside play. Default true (hidden on tiles narrower than 420 px). J / L work either way. */
+  skipButtons?: boolean;
+  /**
+   * A fullscreen button (and the F key). The canvas's CONTAINER goes fullscreen, so the transport
+   * comes with it and the tile letterboxes on black. Default true; absent where the browser has no
+   * Fullscreen API.
+   */
+  fullscreen?: boolean;
   /** Default: `'anonymous'` iff `src` is a cross-origin URL; unset (browser default) otherwise. */
   crossOrigin?: 'anonymous' | 'use-credentials';
   /** Per-eye buffer resolution in px. `'sbs'` + supported wall only — see {@link TileOptions}. */
@@ -153,6 +163,8 @@ export type PlayerEasing =
 /** Per-call {@link PlayerHandle.setSource} options; each overrides the player's own. */
 export interface PlayerSourceOptions {
   poster?: string;
+  /** Replace the now-playing line ('' clears it). */
+  title?: string;
   transition?: PlayerTransition;
   durationMs?: number;
   easing?: PlayerEasing;

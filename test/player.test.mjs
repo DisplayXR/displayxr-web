@@ -142,6 +142,8 @@ test('arrow keys seek +/-5s; J/L seek +/-10s', () => {
 test('M (either case) maps to mute', () => {
   assert.equal(mapKeyToAction('m'), 'mute');
   assert.equal(mapKeyToAction('M'), 'mute');
+  assert.equal(mapKeyToAction('f'), 'fullscreen');
+  assert.equal(mapKeyToAction('F'), 'fullscreen');
 });
 
 test('an unmapped key returns null — so the caller never calls preventDefault for it', () => {
@@ -297,4 +299,13 @@ test('normalizePlayerOptions resolves the construction transition', () => {
   assert.equal(normalizePlayerOptions({ fadeMs: 400 }).transition.type, 'crossfade');
   assert.equal(normalizePlayerOptions({}).transition.type, 'cut');
   assert.throws(() => normalizePlayerOptions({ transition: 'flip' }), /\.\/splat's/);
+});
+
+test('chrome options: title is page text or null, skip buttons and fullscreen default on', () => {
+  const d = normalizePlayerOptions();
+  assert.deepEqual([d.title, d.skipButtons, d.fullscreen], [null, true, true]);
+  assert.equal(normalizePlayerOptions({ title: 'Fly Me to the Moon' }).title, 'Fly Me to the Moon');
+  assert.equal(normalizePlayerOptions({ title: '' }).title, null);
+  assert.equal(normalizePlayerOptions({ skipButtons: false }).skipButtons, false);
+  assert.equal(normalizePlayerOptions({ fullscreen: false }).fullscreen, false);
 });

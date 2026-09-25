@@ -159,6 +159,14 @@ export function normalizePlayerOptions(opts = {}) {
     // infer it from `wall.supported`, because a supported wall whose tile is scrolled away, or
     // whose panel sits in a 2D mode, is not showing 3D at that moment and the badge would lie.
     badge3d: opts.badge3d === undefined ? false : opts.badge3d,
+    // A now-playing line over the top of the tile, fading with the transport. Page-supplied text
+    // (a catalogue knows the title; the file name is not one).
+    title: typeof opts.title === 'string' && opts.title ? opts.title : null,
+    // -10 s / +10 s buttons beside play (J / L on the keyboard either way).
+    skipButtons: opts.skipButtons === undefined ? true : !!opts.skipButtons,
+    // A fullscreen button (and F). The CONTAINER goes fullscreen, not the canvas, so the
+    // transport — its sibling overlays — comes along.
+    fullscreen: opts.fullscreen === undefined ? true : !!opts.fullscreen,
     crossOrigin: opts.crossOrigin,
     width: opts.width,
     height: opts.height,
@@ -210,6 +218,9 @@ export function mapKeyToAction(key) {
     case 'm':
     case 'M':
       return 'mute';
+    case 'f':
+    case 'F':
+      return 'fullscreen';
     default:
       return null;
   }
@@ -486,6 +497,24 @@ const PLAYER_CSS = `
 .dxr-player-clock b{font-weight:600;}
 .dxr-player-clock span{opacity:.62;}
 .dxr-player-spacer{flex:1 1 auto;}
+.dxr-player-skip{padding:5px;}
+
+/* ── now-playing line: a BOUNDED top band, its own partial overlay (constraint 1) ── */
+.dxr-player-title{position:absolute;left:0;right:0;top:0;z-index:2;box-sizing:border-box;
+  padding:12px 16px 30px;max-height:30%;overflow:hidden;color:var(--dxr-ink);pointer-events:none;
+  font:600 15px/1.3 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;letter-spacing:.1px;
+  white-space:nowrap;text-overflow:ellipsis;text-shadow:0 1px 3px rgba(0,0,0,.6);
+  background:linear-gradient(to bottom,rgba(8,9,12,.78) 0%,rgba(8,9,12,.5) 55%,rgba(8,9,12,0) 100%);
+  opacity:1;transform:translateY(0);transition:opacity .22s ease,transform .22s ease;
+  will-change:transform;}
+.dxr-player-title--hidden{opacity:0;transform:translateY(-8px);}
+
+/* Fullscreen: the host fills the screen, black; the canvas itself is sized to fit (in JS, at the
+   tile's own aspect) — never object-fit, because the weave reads the element's whole rect, so
+   letterboxing INSIDE the canvas would put each eye's content where the other eye is sampled. */
+.dxr-player-host:fullscreen{background:#000;display:flex;align-items:center;justify-content:center;}
+.dxr-player-host:fullscreen>canvas{flex:none;}
+
 .dxr-player-badge3d{font-size:10px;font-weight:700;letter-spacing:.9px;padding:3px 7px;
   border-radius:5px;border:1px solid rgba(255,255,255,.28);opacity:.82;flex:none;}
 
@@ -515,7 +544,7 @@ const PLAYER_CSS = `
 
 .dxr-player-host--idle{cursor:none;}
 @media (prefers-reduced-motion:reduce){
-  .dxr-player,.dxr-player-btn,.dxr-player-centre,.dxr-player-knob,.dxr-player-tip,
+  .dxr-player,.dxr-player-title,.dxr-player-btn,.dxr-player-centre,.dxr-player-knob,.dxr-player-tip,
   .dxr-player-volslider,.dxr-player-scrubwrap::before,.dxr-player-scrubwrap::after,
   .dxr-player-spin{transition:none!important;}
   .dxr-player-pip--on{animation-duration:.01ms;}
@@ -524,6 +553,8 @@ const PLAYER_CSS = `
 @media (max-width:420px){
   .dxr-player{padding:20px 8px 8px;}
   .dxr-player-clock{font-size:12px;}
+  .dxr-player-skip{display:none;}
+  .dxr-player-title{font-size:13px;padding:8px 10px 22px;}
   .dxr-player-vol:hover .dxr-player-volslider{width:44px;}
 }
 `;
@@ -570,6 +601,27 @@ const FWD_ICON = svg(
   '<path d="M12 5V2.6a.5.5 0 0 1 .82-.38l3.88 3.13a.5.5 0 0 1 0 .77l-3.88 3.13A.5.5 0 0 1 12 8.87V7a5 5 0 1 0 5 5 1 1 0 1 1 2 0 7 7 0 1 1-7-7Z"/>'
 );
 const BACK_ICON = REPLAY_ICON;
+const FS_ENTER_ICON = svg(
+  '<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+);
+const FS_EXIT_ICON = svg(
+  '<path d="M9 4v4a1 1 0 0 1-1 1H4M20 9h-4a1 1 0 0 1-1-1V4M15 20v-4a1 1 0 0 1 1-1h4M4 15h4a1 1 0 0 1 1 1v4" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+);
+// Skip icons carry their number INSIDE the arc (a text label laid over the replay glyph collides
+// with its arrowhead). An open arc, a small arrowhead at its end, the seconds in the middle.
+const skipIcon = (dir, n) =>
+  svg(
+    (dir < 0
+      ? '<path d="M12 4.5a7.5 7.5 0 1 1-7.1 5.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>' +
+        '<path d="M12 1.6v5.8L8.2 4.5Z"/>'
+      : '<path d="M12 4.5a7.5 7.5 0 1 0 7.1 5.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>' +
+        '<path d="M12 1.6v5.8l3.8-2.9Z"/>') +
+      `<text x="12" y="15.4" text-anchor="middle" font-size="7.2" font-weight="700" ` +
+      `font-family="system-ui,-apple-system,'Segoe UI',sans-serif">${n}</text>`
+  );
+const fsElement = () => (typeof document !== 'undefined' ? document.fullscreenElement : null);
 
 function volumeIcon(video) {
   if (video.muted || video.volume === 0) return MUTE_ICON;
@@ -620,7 +672,7 @@ function readBuffered(video) {
  * buffering spinner — each its own `data-inline3d-overlay`, each a PARTIAL region of the tile
  * (constraint 1 at the top of this section). Returns the bar element and a cleanup.
  */
-function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d }) {
+function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen }) {
   ensureStyle();
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.classList.add('dxr-player-host');
@@ -688,7 +740,18 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   const spacer = document.createElement('div');
   spacer.className = 'dxr-player-spacer';
 
-  row.append(playBtn, volGroup, clock, spacer);
+  function skipBtn(delta) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dxr-player-btn dxr-player-skip';
+    b.setAttribute('aria-label', delta < 0 ? `Back ${-delta} seconds` : `Forward ${delta} seconds`);
+    b.innerHTML = skipIcon(delta, Math.abs(delta));
+    b.addEventListener('click', () => skipBy(delta));
+    return b;
+  }
+  row.append(playBtn);
+  if (skipButtons) row.append(skipBtn(-10), skipBtn(10));
+  row.append(volGroup, clock, spacer);
   if (badge3d) {
     const badge = document.createElement('span');
     badge.className = 'dxr-player-badge3d';
@@ -697,7 +760,29 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     row.append(badge);
   }
 
+  let fsBtn = null;
+  const canFullscreen = fullscreen && typeof container.requestFullscreen === 'function';
+  if (canFullscreen) {
+    fsBtn = document.createElement('button');
+    fsBtn.type = 'button';
+    fsBtn.className = 'dxr-player-btn dxr-player-fs';
+    fsBtn.setAttribute('aria-label', 'Full screen');
+    fsBtn.innerHTML = FS_ENTER_ICON;
+    fsBtn.addEventListener('click', () => toggleFullscreen());
+    row.append(fsBtn);
+  }
+
   bar.append(scrubWrap, row);
+
+  // Always created (it is how setSource can add a title later); empty = hidden, no band drawn.
+  const titleEl = document.createElement('div');
+  titleEl.className = 'dxr-player-title';
+  titleEl.setAttribute('data-inline3d-overlay', '');
+  function setTitle(t) {
+    titleEl.textContent = t || '';
+    titleEl.style.display = t ? '' : 'none';
+  }
+  setTitle(title);
 
   // ── centre affordances ──
   const centre = document.createElement('button');
@@ -718,7 +803,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   spinner.setAttribute('aria-hidden', 'true');
 
   const anchor = canvas.nextSibling;
-  for (const el of [bar, centre, pip, spinner]) {
+  for (const el of [titleEl, bar, centre, pip, spinner]) {
     if (anchor) container.insertBefore(el, anchor);
     else container.appendChild(el);
   }
@@ -774,6 +859,45 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     if (video.paused || video.ended) video.play().catch(() => {});
     else video.pause();
   }
+  function skipBy(delta) {
+    const d = video.duration;
+    const t = (video.currentTime || 0) + delta;
+    video.currentTime = Math.max(0, Number.isFinite(d) ? Math.min(d, t) : t);
+    flashPip(delta < 0 ? BACK_ICON : FWD_ICON);
+  }
+  function toggleFullscreen() {
+    if (!canFullscreen) return;
+    if (fsElement() === container) document.exitFullscreen?.().catch(() => {});
+    else container.requestFullscreen().catch(() => {});
+  }
+  // The canvas's inline size before fullscreen, restored on the way out; and its aspect, kept.
+  let fsSaved = null;
+  function fitFullscreen() {
+    if (!fsSaved) return;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    const w = Math.min(W, H * fsSaved.aspect);
+    canvas.style.width = `${Math.round(w)}px`;
+    canvas.style.height = `${Math.round(w / fsSaved.aspect)}px`;
+  }
+  function syncFullscreen() {
+    if (!fsBtn) return;
+    const on = fsElement() === container;
+    if (on && !fsSaved) {
+      const r = canvas.getBoundingClientRect();
+      fsSaved = { width: canvas.style.width, height: canvas.style.height, aspect: r.height ? r.width / r.height : 16 / 9 };
+      fitFullscreen();
+      window.addEventListener('resize', fitFullscreen);
+    } else if (!on && fsSaved) {
+      window.removeEventListener('resize', fitFullscreen);
+      canvas.style.width = fsSaved.width;
+      canvas.style.height = fsSaved.height;
+      fsSaved = null;
+    }
+    fsBtn.innerHTML = on ? FS_EXIT_ICON : FS_ENTER_ICON;
+    fsBtn.setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
+  }
+  if (canFullscreen) document.addEventListener('fullscreenchange', syncFullscreen);
 
   playBtn.addEventListener('click', togglePlay);
   centre.addEventListener('click', togglePlay);
@@ -850,6 +974,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   let pointerInChrome = false;
   function show() {
     bar.classList.remove('dxr-player--hidden');
+    titleEl.classList.remove('dxr-player-title--hidden');
     container.classList.remove('dxr-player-host--idle');
     clearTimeout(hideTimer);
     if (!video.paused && !video.ended) arm();
@@ -859,6 +984,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     hideTimer = setTimeout(() => {
       if (scrubbing || pointerInChrome || video.paused || video.ended) return;
       bar.classList.add('dxr-player--hidden');
+      titleEl.classList.add('dxr-player-title--hidden');
       container.classList.add('dxr-player-host--idle');
     }, 3000);
   }
@@ -899,12 +1025,13 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
         flashPip(FWD_ICON);
         break;
       case 'seek-10':
-        video.currentTime = Math.max(0, video.currentTime - 10);
-        flashPip(BACK_ICON);
+        skipBy(-10);
         break;
       case 'seek+10':
-        video.currentTime = video.currentTime + 10;
-        flashPip(FWD_ICON);
+        skipBy(10);
+        break;
+      case 'fullscreen':
+        toggleFullscreen();
         break;
       case 'mute':
         video.muted = !video.muted;
@@ -921,6 +1048,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
 
   return {
     el: bar,
+    setTitle,
     /** Called by addPlayer on setSource() so the chrome resets with the new title. */
     resync() {
       scrubWrap.style.setProperty('--dxr-p', '0%');
@@ -939,9 +1067,12 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       container.removeEventListener('pointerenter', show);
       container.removeEventListener('focusin', show);
       container.removeEventListener('keydown', onKeydown);
+      if (canFullscreen) document.removeEventListener('fullscreenchange', syncFullscreen);
+      window.removeEventListener('resize', fitFullscreen);
+      if (fsElement() === container) document.exitFullscreen?.().catch(() => {});
       container.classList.remove('dxr-player-host', 'dxr-player-host--idle');
       container.style.removeProperty('--dxr-accent');
-      for (const el of [bar, centre, pip, spinner]) el.remove();
+      for (const el of [titleEl, bar, centre, pip, spinner]) el.remove();
     },
   };
 }
@@ -1278,16 +1409,21 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   let bar = null;
   let cleanupBar = null;
   let resyncBar = null;
+  let setBarTitle = null;
   if (o.controls === 'sdk') {
     if (container) {
       const built = buildTransportBar(container, canvas, video, {
         keyboard: o.keyboard,
         accent: o.accent,
         badge3d: o.badge3d,
+        title: o.title,
+        skipButtons: o.skipButtons,
+        fullscreen: o.fullscreen,
       });
       bar = built.el;
       cleanupBar = built.cleanup;
       resyncBar = built.resync;
+      setBarTitle = built.setTitle;
     } else {
       console.warn(
         '[inline3d/player] controls:"sdk" needs canvas.parentElement to attach the transport ' +
@@ -1356,6 +1492,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       if (dissolve && tr.type === 'crossfade' && dissolve.capture()) dissolve.arm(tr.durationMs, tr.ease);
       video.pause();
       if (sOpts.poster !== undefined) loadPoster(sOpts.poster);
+      if (sOpts.title !== undefined) setBarTitle?.(sOpts.title);
       const nextCross = resolveCrossOrigin(newSrc, o.crossOrigin);
       if (nextCross) video.crossOrigin = nextCross;
       video.src = resolveSrcUrl(newSrc);
