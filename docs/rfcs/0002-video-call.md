@@ -114,7 +114,7 @@ canvases (`docs/woven-canvas-rules.md`, rule 6).
 | USB stereo camera exposing one SBS device | label / aspect > 2.5 | **P0 verifies** |
 | 3D tablet front stereo pair (Android DXR Browser) | **browser patch** exposing it as ONE rectified SBS `MediaStream` + calibration (baseline, intrinsics) | approved; after P0 |
 | Any mono webcam | `getUserMedia` | works today |
-| Laptop eye-tracking cameras | deferred — likely exclusive to eye tracking | P0 checks |
+| Laptop eye-tracking cameras | **not available** — held exclusively by the eye tracker (`NotReadableError: Device in use`, P0 2026-09-25). Such laptops are **mono senders** (their HD webcam), lifted on the receiver | ruled out |
 
 ## 5. Mono→3D: the provider chain, not this module
 
@@ -149,8 +149,12 @@ contains vendor code or depth models.
 ## 7. Phases
 
 - **P0 — validate** (`samples/call-p0/`, throwaway): camera enumeration on real devices; SBS 2560×720
-  over WebRTC + `addVideo` weave in the DisplayXR Browser. Headless loopback verified 2026-09-25:
-  2560×720 VP9 30 fps both ways, `hello` exchanged. Device/panel results: pending.
+  over WebRTC + `addVideo` weave in the DisplayXR Browser. Verified 2026-09-25: headless loopback 2560×720 VP9 30 fps both ways; **DisplayXR Browser 154.0.8037.17 on
+  an SR panel**: `hello` exchanged, `route: woven-sbs`, inbound 2560×720 VP9 30 fps, 0 dropped, no quality
+  limitation, and the synthetic pair seen popping out of the panel. The SR laptop's tracking camera is
+  exclusive to the eye tracker. A `canvas.captureStream()` sender throttles to ~1 fps when its window is
+  occluded (matters for share-my-3D-scene, not for camera senders). Pending: L/R-unswapped confirmation,
+  eye tracking while the webcam is open, a real stereo camera, tablets.
 - **P1 — preview module:** mesh ≤4, `dxrSignaling` + TURN, invite links, SBS from USB stereo cams,
   convergence from `hello`/`hint`, mono flat, 2D-receiver fallback, SDK chrome, sample + tests.
 - **P2 — lift + tablets:** mono peers via `lift()` + priority; Android stereo-camera browser patch.
