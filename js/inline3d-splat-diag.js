@@ -28,6 +28,8 @@
 //   nooverlay — record + console + window.__dxrDiag, but no on-screen overlay.
 //   oldpick  — handle.pick() always runs the full scan over every centre (the 1.21.1 path), no
 //              pick index. Tests "the page's picks are what blocks the main thread".
+//   nolayerrig — handle.setLayerRig is recorded but never applied: every layer stays on the eye
+//              camera and the photo's camera rig (the pre-1.23 path, byte for byte).
 //
 // WHAT RUNS ON THE MAIN THREAD, per transition phase (the fifth cause: a stall at the swap's END
 // that is not the SDK's transition at all):
@@ -42,7 +44,7 @@
 //     after it (the page's continuation of `await setSource`).
 
 /** The switches `diag` / `?dxrdiag` understand, besides the plain on values. */
-export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick']);
+export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig']);
 const ON_TOKENS = new Set(['1', 'on', 'true', 'yes']);
 
 /**

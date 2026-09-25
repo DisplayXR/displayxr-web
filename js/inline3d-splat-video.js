@@ -303,3 +303,100 @@ export class VideoPlane {
     this.mesh.destroy?.();
   }
 }
+
+// ── handle.makeSbsMaterial(): per-eye stereo on ANY quad (docs/proposals/layer-display-rig.md) ──
+//
+// setVideo's eye pick, lifted out of the full-screen plane: the eye viewports sit side by side in
+// the buffer, so `gl_FragCoord.x >= split` is the right eye. The viewer publishes that split every
+// draw as a SCENE-WIDE uniform (EYE_SPLIT_UNIFORM, 1e9 in mono / the 2D tier / a 1-view mode), so a
+// material only has to declare it — the SDK never has to know which materials are stereo.
+// PlayCanvas's own `view_index` is set per RenderView on the single-camera path too, but it is 0
+// for every camera on the N-camera fallback path; the split is right on both.
+
+/** The scene-wide uniform the viewer sets every draw: first right-eye pixel column (1e9 = mono). */
+export const EYE_SPLIT_UNIFORM = 'dxr_eye_split';
+
+/**
+ * GLSL for a custom shader that wants the same pick: declare the uniform, call dxrEyeRegion() with
+ * the left and right regions ([s0, t0, ds, dt], t = image rows from the top).
+ */
+export const SBS_EYE_GLSL = `
+uniform float ${EYE_SPLIT_UNIFORM};
+vec4 dxrEyeRegion(vec4 left, vec4 right) { return gl_FragCoord.x >= ${EYE_SPLIT_UNIFORM} ? right : left; }`;
+
+const SBS_OPTION_KEYS = new Set(['format', 'opacity', 'flipY', 'depthTest', 'depthWrite', 'cull', 'name']);
+
+/** makeSbsMaterial's options, validated. */
+export function validateSbsOptions(texture, o = {}) {
+  if (!texture || typeof texture !== 'object') throw new TypeError('@displayxr/inline3d/splat: makeSbsMaterial(texture) — expected a pc.Texture.');
+  if (o === null || typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: makeSbsMaterial options must be an object.');
+  const unknown = Object.keys(o).filter((k) => !SBS_OPTION_KEYS.has(k));
+  if (unknown.length) throw new Error(`@displayxr/inline3d/splat: makeSbsMaterial — unknown option(s) ${unknown.join(', ')}.`);
+  const format = o.format === undefined ? 'sbs' : o.format;
+  if (!VIDEO_FORMATS.includes(format)) throw new Error(`@displayxr/inline3d/splat: makeSbsMaterial — format "${format}", expected ${VIDEO_FORMATS.join(' | ')}.`);
+  const opacity = o.opacity === undefined ? 1 : o.opacity;
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new Error(`@displayxr/inline3d/splat: makeSbsMaterial — bad opacity: ${o.opacity}.`);
+  return { format, opacity, flipY: o.flipY === true, depthTest: o.depthTest !== false, depthWrite: o.depthWrite !== false, cull: o.cull === true, name: o.name };
+}
+
+const SBS_VERT = `
+attribute vec3 vertex_position;
+attribute vec2 vertex_texCoord0;
+uniform mat4 matrix_model;
+uniform mat4 matrix_viewProjection;
+varying vec2 vUv;
+void main() {
+  vUv = vertex_texCoord0;
+  gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0);
+}`;
+const SBS_FRAG = `
+varying vec2 vUv;
+uniform sampler2D dxrSbsTex;
+uniform vec4 dxrSbsL;       // left eye's region: s0, t0, ds, dt (t = image rows, top = 0)
+uniform vec4 dxrSbsR;       // right eye's
+uniform vec2 dxrSbsTexel;   // half a texel, per axis
+uniform float dxrSbsOpacity;
+uniform float dxrSbsFlipY;  // 1: the texture's row 0 is the image's BOTTOM
+${SBS_EYE_GLSL}
+void main() {
+  vec4 r = dxrEyeRegion(dxrSbsL, dxrSbsR);
+  vec2 st = r.xy + vec2(vUv.x, 1.0 - vUv.y) * r.zw;
+  st = clamp(st, r.xy + dxrSbsTexel, r.xy + r.zw - dxrSbsTexel);
+  if (dxrSbsFlipY > 0.5) st.y = 1.0 - st.y;
+  gl_FragColor = vec4(texture2D(dxrSbsTex, st).rgb, dxrSbsOpacity);
+}`;
+
+/**
+ * An unlit material that shows the LEFT half of `texture` to left-eye views and the RIGHT half to
+ * right-eye views (or top/bottom, or the same picture: `format`), on whatever mesh it is put on.
+ * The mesh's geometry is untouched — put the quad at the screen plane and the clip's own disparity
+ * is the only depth. Mono: every fragment samples the left region at full resolution. The texture
+ * is the page's (a `<video>`'s frames uploaded by the page, an image); nothing is decoded here.
+ */
+export function makeSbsMaterial(pc, texture, o = {}) {
+  const opt = validateSbsOptions(texture, o);
+  const mat = new pc.ShaderMaterial({
+    uniqueName: 'inline3dSbsQuad',
+    attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 },
+    vertexGLSL: SBS_VERT,
+    fragmentGLSL: SBS_FRAG,
+  });
+  if (opt.name) mat.name = opt.name;
+  mat.cull = opt.cull ? pc.CULLFACE_BACK : pc.CULLFACE_NONE;
+  mat.depthTest = opt.depthTest;
+  mat.depthWrite = opt.depthWrite;
+  if (opt.opacity < 1 && pc.BlendState && pc.BLENDMODE_SRC_ALPHA !== undefined) {
+    mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_SRC_ALPHA, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA);
+  }
+  const r = eyeRegions(opt.format);
+  mat.setParameter('dxrSbsL', r.L);
+  mat.setParameter('dxrSbsR', r.R);
+  mat.setParameter('dxrSbsOpacity', opt.opacity);
+  mat.setParameter('dxrSbsFlipY', opt.flipY ? 1 : 0);
+  mat.setParameter('dxrSbsTex', texture);
+  const w = Math.max(1, texture.width || 1);
+  const h = Math.max(1, texture.height || 1);
+  mat.setParameter('dxrSbsTexel', [0.5 / w, 0.5 / h]);
+  mat.update();
+  return mat;
+}
