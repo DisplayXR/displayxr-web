@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — embeddable 3D video player</title>
+<style>
+  body{margin:0;font:16px/1.5 system-ui,sans-serif;background:#0b0b0f;color:#e8e8ee}
+  .wrap{max-width:820px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:1.5rem;margin:0 0 4px}
+  .lede{color:#9aa;margin:0 0 24px}
+  code{background:#1b1b24;padding:1px 6px;border-radius:5px;font-size:.9em}
+  .status{margin:18px 0;padding:8px 12px;border-radius:8px;background:#1b1b24;font-size:.9rem}
+  pre{background:#14141c;padding:14px 16px;border-radius:10px;overflow:auto;font-size:.85rem}
+  /* Give the player a size — it fills whatever box you put it in. */
+  #host{width:100%;max-width:720px;margin:8px 0 28px}
+  .two{display:flex;gap:16px;flex-wrap:wrap}
+  .two > *{flex:1 1 320px}
+</style>
+<!-- Run straight off GitHub Pages: map the package names to the repo's js/ files. -->
+<script type="importmap">
+{
+  "imports": {
+    "@displayxr/inline3d": "../../js/inline3d.js",
+    "@displayxr/inline3d/player": "../../js/inline3d-player.js"
+  }
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>Embeddable 3D video player — <code>@displayxr/inline3d/player</code></h1>
+  <p class="lede">A side-by-side 3D video with play/pause, loop, scrubber, mute and fullscreen.
+     Glasses-free 3D in the DisplayXR Browser; a normal 2D video (left eye) everywhere else.</p>
+
+  <div id="status" class="status">Detecting DisplayXR Browser…</div>
+
+  <!-- Way 1: JS factory (this one is wired up in app.js). -->
+  <h2>Factory API</h2>
+  <div id="host"></div>
+
+  <!-- Way 2: HTML custom element — zero JS. -->
+  <h2>Custom element (drop-in HTML)</h2>
+  <dxr-video-player src="../windows/assets/flymetothemoon_sbs.webm" loop
+                    style="display:block;width:100%;max-width:720px"></dxr-video-player>
+
+  <h2>Embed it in your page</h2>
+<pre>&lt;script type="module"&gt;
+  import '@displayxr/inline3d/player';         // defines &lt;dxr-video-player&gt;
+&lt;/script&gt;
+&lt;dxr-video-player src="movie_sbs.webm" loop autoplay&gt;&lt;/dxr-video-player&gt;
+
+// …or drive it from JS:
+import { createVideoPlayer } from '@displayxr/inline3d/player';
+const p = createVideoPlayer(document.getElementById('host'), {
+  src: 'movie_sbs.webm', loop: true, autoplay: false,
+});
+p.play(); p.pause(); p.setLoop(false); p.enterFullscreen();</pre>
+
+  <p class="lede">Source must be a <strong>side-by-side VP9/WebM</strong> (left eye = left half),
+     ~640×360 per eye. See <code>samples/video/README.md</code> for the ffmpeg recipe.</p>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
