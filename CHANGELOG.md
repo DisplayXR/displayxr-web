@@ -7,9 +7,29 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** only — a new subpath, `./player`, nothing else moves.
+Touches the **preview tier** (a new subpath, `./player`) and the **core** (`.`, frozen tier): new
+tracking-state API and an opt-in `untrackedFallback`. No pixel change for a page that does not opt
+in, and none on a browser without the tracking-state surface.
 
-### Added
+### Added — core
+
+- **Tracking state: `wall.trackingState` and `on('trackingstatechange', (state, ev) => …)`**, on
+  every tile handle too (`'tracking' | 'searching' | 'unknown'`), mirroring the browser's
+  `session.trackingState` (DisplayXR Browser patch 0195; browser-pvt#161). Read off the session at
+  construction and on every frame, emitted on change only, released to `'unknown'` when the
+  session ends. The unsupported shape carries `trackingState: 'unknown'`. A browser without the
+  surface (1.0.5 and earlier) reports `'unknown'`, silently. Pages use it for "step back into
+  view" hints. (API and tests from #35.)
+- **`createInline3D({ untrackedFallback: 'none' | 'mono' })`**, default `'none'`. `'mono'` eases
+  every image/video window to its left eye in both halves of its SBS buffer on `'searching'`, and
+  back on `'tracking'`, over the mode switch's duration; `'unknown'` leaves it where it is. No
+  buffer reallocation and no layer close, so there is no squeezed-pair flash. Scene windows are
+  never touched. It is for **MANUAL** eye-tracking displays, where the app handles tracking loss;
+  on **MANAGED** displays (the default, and Leia's) the vendor already goes 2D before it reports
+  `'searching'`, so leave it off. Docs: authoring guide § Knowing when nobody is tracked. RFC
+  0001 and the player header say where `untrackedFallback` lives again.
+
+### Added — player
 
 - **`addPlayer(wall, canvas, src, opts)` — a media player module (preview tier).** Built on
   `addVideo`: creates and owns a hidden `<video>`, and for `format:'sbs'` (default) hands it

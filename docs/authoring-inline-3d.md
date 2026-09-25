@@ -846,6 +846,96 @@ import { inline3DAvailable } from './js/inline3d.js';
 if (!inline3DAvailable()) showFlat2D();        // cheap, synchronous, no false-negative
 ```
 
+## Knowing when nobody is tracked
+
+A glasses-free display only shows 3D to a viewer it can **see**. The page can know whether it
+does, from the DisplayXR runtime (which may hand the decision to the vendor plug-in), through the
+browser's `session.trackingState` (DisplayXR Browser patch 0195):
+
+```js
+const wall = await createInline3D();
+console.log(wall.trackingState);                   // 'tracking' | 'searching' | 'unknown'
+if (wall.supported) {
+  wall.on('trackingstatechange', (state) => {      // the STATE is the first argument
+    stepBackHint.hidden = state !== 'searching';   // e.g. "step back into view"
+  });
+}
+```
+
+Every tile handle carries the same `trackingState` and `on('trackingstatechange')`.
+
+**`'searching'` means nobody is being tracked**: the runtime's derived `isTracking` is false. Two
+different situations produce it and a page cannot tell them apart, so do not word your UI as if
+you could:
+
+- the viewer is **outside the display's supported 3D zone** (walked away, leaned too far, turned
+  around), or
+- the display is in an **untracked or 2D mode**.
+
+It does **not** necessarily mean the tracker lost lock on a face that is still in front of the
+panel. Treat it as a cue for a gentle hint or for flat content, never as an error.
+
+**`'unknown'` means no opinion.** It is what every browser without the surface reports (DisplayXR
+Browser 1.0.5 and earlier), forever and silently, and what you get once the session ends. Render
+normally on `'unknown'`. Because of it you can subscribe unconditionally; there is nothing to
+probe or gate on.
+
+### Whose job the flat switch is
+
+The runtime's eye-tracking contract (`displayxr-runtime`:
+`docs/specs/vendor/eye-tracking-modes.md`) splits tracking loss by mode:
+
+- **MANAGED** (the default, and Leia's): **the vendor owns it.** It eases the eyes together during
+  a grace period, keeps reporting `'tracking'` meanwhile, and reports `'searching'` only once it
+  has already switched the display to 2D. Do **nothing** to the pixels: by the time you hear
+  `'searching'` the panel is already flat, and a flatten of your own would be a second transition.
+  Use the state for hints only.
+- **MANUAL**: **the app owns it.** The vendor does nothing, so an untracked viewer sees the woven
+  pair as a soft double image unless the page goes flat. That is what `untrackedFallback` is for.
+
+### Letting the SDK flatten the windows it owns (MANUAL displays)
+
+For `addImage` and `addVideo` the SDK owns the backing store, so it can do the flat switch:
+
+```js
+const wall = await createInline3D({ untrackedFallback: 'mono' });
+```
+
+On `'searching'` every image and video window **eases to its left eye in both halves** of its
+side-by-side buffer, and eases back to the pair on `'tracking'`, over the same duration as the
+eased 2D↔3D mode switch. `'unknown'` leaves it where it is. The default is `'none'`: nothing
+changes, which is right for MANAGED displays and for every page that does not ask.
+
+What it does and does not do:
+
+- **The buffer is never reallocated and the layer never closed.** The window keeps submitting a
+  valid side-by-side pair (both halves the left eye), so the weave keeps running and there is
+  no flash of a squeezed pair. Only what is drawn into the right half changes.
+- **Scene windows are never touched.** `addScene`, `addSplat` and `addModel` canvases are yours;
+  the SDK will not resize or paint into them.
+
+### The same thing for a scene (MANUAL displays)
+
+A scene renders its own pixels, so the switch is a call you make. `SceneViewer` already has the
+pair for it, the same two methods its `onLayerLost` wiring uses:
+
+```js
+import { SceneViewer } from '@displayxr/inline3d/viewer';
+
+const viewer = new SceneViewer(THREE, canvas, { virtualDisplayHeight: 0.18 });
+viewer.useEyeCamera(EyeCamera);
+wall.addScene(canvas, viewer.onFrame, { onLayerLost: viewer.onLayerLost });
+
+wall.on('trackingstatechange', (state) => {
+  if (state === 'searching') viewer.startMono();  // one centred camera
+  else viewer.stopMono();                         // back to the stereo pair
+});
+```
+
+`'unknown'` falls into the `else` on purpose: an old browser must keep rendering stereo. On a
+MANAGED display skip this; the runtime already eases the views together, and a scene renders
+from the views.
+
 ## Rounded corners
 
 CSS `border-radius` on a weaved canvas rounds the **packed SBS rectangle's** outer corners —

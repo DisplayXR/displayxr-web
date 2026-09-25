@@ -81,14 +81,19 @@ knows the third. `wall` may be `null`/unsupported the same way (renders flat 2D,
   bound to the canvas/chrome container, not `document`, so a page with several players only
   drives the one with focus. `opts.keyboard: false` to opt out (a page that owns its own remote
   mapping).
-- **Mono fallback** reuses the exact mechanism `untrackedFallback: 'mono'` already gives
-  `addVideo` (`docs/authoring-inline-3d.md:736-761`, `js/inline3d.js:2469-2496` — the buffer
-  collapses to 1:1 and paints the left eye alone at full res, "goes back to the pair when tracking
-  resumes"). `addPlayer` is `addVideo` underneath (see below), so `wall.trackingState ===
-  'searching'` and `createInline3D({untrackedFallback:'mono'})` apply with **zero new code** —
-  this is the one piece of §1 that isn't new work. Same rule for a 2D-panel mode: `'searching'`
-  is defined to cover *both* "viewer walked away" and "panel in a 2D mode"
-  (`docs/authoring-inline-3d.md:709-721`), so there is exactly one signal to watch, not two.
+- **Mono fallback on tracking loss is the core's, and opt-in: `untrackedFallback`.** The runtime
+  reports whether a viewer is tracked (it may hand that to the vendor plug-in), and the browser
+  passes it as `XRSession.trackingState` — `'tracking' | 'searching' | 'unknown'`, filled in on every
+  frame, with `trackingstatechange` on each change (DisplayXR Browser patch 0195). The SDK mirrors
+  it as `wall.trackingState` + `wall.on('trackingstatechange', (state, ev) => …)`, on every tile
+  handle too. Whose job the flat switch is depends on the eye-tracking mode
+  (`displayxr-runtime`: `docs/specs/vendor/eye-tracking-modes.md`): on a **MANAGED** display (the
+  default, and Leia's) the vendor eases the eyes together and reports `'searching'` only once the
+  display is already 2D, so the page does nothing to the pixels; on a **MANUAL** display the app
+  must, and `createInline3D({ untrackedFallback: 'mono' })` does it for image/video windows — eased
+  to the left eye in both halves of the SBS buffer on `'searching'`, back on `'tracking'`, no buffer
+  reallocation. Default `'none'`. `addPlayer` is `addVideo` underneath, so it inherits this with no
+  player code. A 2D-panel mode is the other flat case, handled by the mode-driven rig collapse.
 - **Composition with one-session-per-document.** `createInline3D` is already one session per page
   (`docs/authoring-motion-and-effects.md:287`, `docs/authoring-inline-3d.md:653-661` — many
   windows share one `wall`), so many `addPlayer()` calls on one page are many *windows* on the
@@ -205,7 +210,7 @@ RFC's `addPlayer` follows.
   than duplicating it)
 - format auto-detect (sidecar JSON → filename convention → assume SBS), `'tb'` re-pack
 - SDK transport chrome (`data-inline3d-overlay` bottom bar), keyboard input
-- mono fallback via existing `untrackedFallback`/`trackingState` (no new code, §1)
+- mono fallback on tracking loss via the core's opt-in `untrackedFallback: 'mono'` (no player code, §1)
 - one-active-player-per-group playback policy
 - `docs/rfcs` cross-linked from `docs/authoring-inline-3d.md`; new
   `js/inline3d-player.js` + `player.d.ts`, `package.json` `./player` export
