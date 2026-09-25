@@ -67,10 +67,11 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   `/player` is in this tier from its first release (not "promoted down" from somewhere less
   stable): it is `addVideo` plus a paint loop and a transport, so any change to `addVideo`'s
   buffer contract or to the transport's markup/CSS classes moves it too, and the v1 slice is
-  narrower than its own RFC (`docs/rfcs/0001-media-player.md`) — no `'tb'`/`'auto'` format
-  detection, no `opts.group` playback policy, no `opts.fit`/letterboxing. Widening any of those
-  is additive and does not by itself restart the promotion clock below; changing `format`'s or
-  `controls`'s existing meaning would.
+  narrower than its own RFC (`docs/rfcs/0001-media-player.md`) — no `'auto'` format detection
+  and no `opts.group` playback policy. It has since widened, additively: `format: 'tb'`,
+  `fit: 'contain' | 'cover'` and `band` letterboxing. Widening like that does not by itself
+  restart the promotion clock below; changing `format`'s, `fit`'s or `controls`'s existing meaning
+  would.
 
   `/model` is in this tier for the same reason as the other two, not a lesser one: it is a thin
   wrapper over the SAME `SceneViewer`, so anything that moves the viewer's framing moves meshes
