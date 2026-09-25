@@ -52,10 +52,12 @@ setStatus(
 // setSource() — and each swap a real crossfade from the outgoing frame. The entry point is a seek
 // once the new source's metadata lands: a `#t=` media fragment is NOT honoured on an in-place
 // swap in Chromium (measured: it plays from 0:00), so it cannot carry the chapter.
+// Labelled by time on purpose: this is one 24 s clip, and invented scene names would promise
+// content it does not have.
 const CHAPTERS = [
-  { label: 'Opening', t: 0 },
-  { label: 'Cockpit', t: 8 },
-  { label: 'Finale', t: 16 },
+  { label: '0:00', t: 0 },
+  { label: '0:08', t: 8 },
+  { label: '0:16', t: 16 },
 ];
 const chipsEl = document.getElementById('chapters');
 for (const [i, ch] of CHAPTERS.entries()) {
@@ -65,7 +67,7 @@ for (const [i, ch] of CHAPTERS.entries()) {
   b.setAttribute('aria-pressed', String(i === 0));
   b.addEventListener('click', () => {
     for (const other of chipsEl.children) other.setAttribute('aria-pressed', String(other === b));
-    sbsPlayer.setSource(SRC, { title: `Fly Me to the Moon — ${ch.label}` });
+    sbsPlayer.setSource(SRC, { title: `Fly Me to the Moon · from ${ch.label}` });
     sbsPlayer.video.addEventListener('loadedmetadata', () => sbsPlayer.seek(ch.t), { once: true });
     sbsPlayer.play().catch(() => {});
   });
