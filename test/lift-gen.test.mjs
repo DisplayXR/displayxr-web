@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { emitLiftSplats, parsePly, PLY_PROPS, SH_C0, NO_LAYER } from '../js/lift/gen/ply-writer.js';
 import { erodeRef, edgesRef, hiddenRef } from '../js/lift/gen/cpu-ref.js';
-import { normaliseDisparity, LIFT_DEFAULTS } from '../js/lift/gen/lift-gen.js';
+import { normaliseDisparity, revealAngles, LIFT_DEFAULTS } from '../js/lift/gen/lift-gen.js';
 
 // ── PLY ───────────────────────────────────────────────────────────────────────────────────
 
@@ -305,4 +305,26 @@ test('outpaintBorders: the inward move of the edge content under the orbit turn,
   assert.equal(flat.top, Math.max(Math.round(LIFT_DEFAULTS.borderFrac * H), Math.ceil(1.1 * flatNeed(H / 2)) + 2));
   const tiny = outpaintBorders({ dlo: new Float32Array(w * h).fill(0.5), w, h, invFar, invNear, zp: zf, f, W, H, tanT: Math.tan(0.02), P });
   assert.equal(tiny.top, Math.round(LIFT_DEFAULTS.borderFrac * H), 'base border floor');
+});
+
+test('revealAngles: the hidden layer is sized for the drag orbit PLUS the tracked head/eye excursion', () => {
+  const P = { ...LIFT_DEFAULTS, maxOrbitDeg: 15 };
+  const deg = (r) => (r * 180) / Math.PI;
+  // a portrait at 0.93 m: each eye is (5 cm + 31.5 mm) off the rest head, seen from the pivot
+  const r = revealAngles(0.93, P);
+  assert.ok(Math.abs(r.h - (15 + deg(Math.atan(0.0815 / 0.93)))) < 1e-9, `h ${r.h}`);
+  assert.ok(Math.abs(r.v - deg(Math.atan(0.1 / 0.93))) < 1e-9, `v ${r.v}`);
+  assert.ok(r.h > 19.5 && r.h < 20.5 && r.v > 6 && r.v < 6.3);
+  // U/D weight = tan h / tan v, clamped to [1, 4]
+  assert.ok(Math.abs(r.hWeight - Math.tan((r.h * Math.PI) / 180) / Math.tan((r.v * Math.PI) / 180)) < 1e-9);
+  assert.ok(r.hWeight > 3 && r.hWeight < 3.6, `hWeight ${r.hWeight}`);
+  // a near pivot is floored at the nominal viewing distance; a far metric pivot is explore's 2 m
+  assert.equal(revealAngles(0.3, P).D, 0.6);
+  assert.equal(revealAngles(28, P).D, 2);
+  assert.equal(revealAngles(28, P).hWeight, 4);
+  // explicit overrides win; no head excursion ⇒ no margin
+  assert.equal(revealAngles(0.93, { ...P, revealMarginDeg: 0 }).h, 15);
+  assert.ok(revealAngles(0.93, { ...P, viewerOffset: { x: 0, y: 0 }, viewerIpd: 0 }).h === 15);
+  // a taller viewer excursion lowers the horizontal preference
+  assert.ok(revealAngles(0.93, { ...P, viewerOffset: { y: 0.2 } }).hWeight < r.hWeight);
 });

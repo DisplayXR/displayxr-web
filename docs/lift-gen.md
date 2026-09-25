@@ -25,7 +25,7 @@ addSplat(wall, canvas, ply, {
 
 `meta`: `{ focalPx, pivotZ, w, h, layers: 2, splatCount, layerCounts: [layer0, layer1],
 hiddenBandCount, hiddenBackplateCount, bounds: {min, max}, intrinsics, convention: 'opencv',
-border: {x, y, left, right, top, bottom, needed}, depthRange: {near, far}, maxBandPx, backplatePx, inpainted, timings }`. `focalPx`,
+border: {x, y, left, right, top, bottom, needed}, depthRange: {near, far}, maxBandPx, backplatePx, reveal: {h, v, hWeight}, inpainted, timings }`. `focalPx`,
 `w`, `h` and `intrinsics` describe the **output** raster (the one the splats were built on) —
 render through that focal and the neutral view is the photo (the gallery's focal-agreement
 invariant).
@@ -82,6 +82,12 @@ The shape is Apple SHARP's: two image-aligned layers.
     4 % at full resolution, then half resolution, and beyond 12 % quarter resolution. It sits at the depth of the frame pixel it
     continues (replicated), so it travels with that content, and its colour is the frame mirrored
     across its edge, fading into the push-pull colour.
+  - **behind a foreground edge**, the border holds two surfaces, like the frame: where the frame pixel
+    it replicates is foreground over a background (a torso crossing the bottom of the frame), the
+    edge's hidden layer (far-side depth + colour, replicated) goes into the backplate slot behind the
+    continuation; on the top/bottom borders the continuation stops where its own parallax about the
+    pivot does, and the far layer carries on alone. (Side borders keep the continuation: yaw's edge
+    foreshortening sized them for it, and a farther surface there outran the border on the office.)
 
 PLY fields (17 × float32, little endian): `x y z nx ny nz(=0) f_dc_0..2 opacity scale_0..2
 rot_0..3` — SH degree 0 (`f_dc = (c − 0.5)/0.28209479`, sRGB), opacity as a logit, scales as
@@ -117,7 +123,8 @@ All rasters are on the **padded** domain (frame + the outpaint border, per side)
 4. **Edges** (`edges`): far-side pixels of every discontinuity (a neighbour 1–2 px away nearer by
    more than τ = 0.04), with the direction the foreground lies in.
 5. **Hidden mask** (`hidden`): a directional dilation *into the foreground* by
-   `w = f · zp · tan15° · Δ(1/z)` px, as a gather over the four axes (1 px steps to 32 px, then 2 px).
+   `w = f · zp · tanθh · Δ(1/z)` px — θh the **reveal budget**, the drag orbit plus the viewer's own
+   head/eye excursion (`revealAngles()`, *Panel follow-up* below; ≈ 20° on a portrait at 0.9 m), as a gather over the four axes (1 px steps to 32 px, then 2 px).
    Δ is the larger of the edge's own step and the pixel's (d − d_bg): a subject whose rim is soft in
    depth (hair, a rounded shoulder) is still far in front of the background inside it. Split by background side for
    the directional inpainting net: `maskRight` (background on the hole's right), `maskLeft`.
@@ -134,11 +141,15 @@ All rasters are on the **padded** domain (frame + the outpaint border, per side)
    That gives (a) whether the pixel is **foreground at all** — the whole object, not just the rim
    the band covers; (b) layer 1's **depth**: the found background disparities, those nearer than
    their median by > τ rejected, the rest weighted 1/dist² with the horizontal axes ×4 (yaw
-   dominates, and what a horizontal move uncovers is the background continued horizontally); (c)
+   dominates, and what a horizontal move uncovers is the background continued horizontally — the factor is now
+   derived from the rig, tan θh / tan θv, ≈ 3.4 on a portrait); (c)
    layer 1's **colour**: the per-channel median of the background 2, 5 and 9 px past each of those
    edges (clear of the mixed pixel and of any glow the photo has round the object), same weights.
-   `farblur` then smooths both with a radius of 0.5 × the distance to the edge (≤ 24 px): exact at the
-   silhouette, where the orbit first reveals it, a smooth membrane deeper in.
+   `farblur` then smooths both with a radius of 1 × the distance to the edge (≤ 48 px): exact at the
+   silhouette, where the orbit first reveals it, a smooth membrane deeper in. Colour only across the
+   same surface (|Δd̂| < τ); **depth across up to 0.15** — under a subject the axes switch column by
+   column between a far street, a nearer hedge and the hair, and each switch kept as a step inside
+   layer 1 opened as a thin vertical crack at the orbit.
 8. **Fill** (`pushpull`): push-pull (Gortler '96) of colour and d̂ from the seeds (inside the
    frame, outside the wide mask, not foreground-near-an-edge, **not foreground per `farside`**) —
    layer 1 where `farside` found nothing, and the border's far colour.
@@ -187,6 +198,46 @@ road still needs ~890 px). Warm `generateLift` (medians of interleaved runs): ta
 Trade-off: one hidden surface per pixel, now the far one — the thin gap an internal edge opens at
 orbit shows the far background, not the surface just behind the edge.
 
+**Panel follow-up (2026-09-25, pass 2).** The panel still showed "holes in the back, behind the
+subject, more uniform". Re-measured through the product path — `createExplore` fed the panel's
+tracked eye PAIR (DisplayXR Browser 1.0.2 dump, `test/lift-dibr-math.test.mjs`), its median rest
+head, drag ±15°, and head offsets — not a centred camera. Findings:
+
+- The rig's **constant** vertical offset (eyes ~0.45 tile heights above the tile centre, `P9 ≈ −0.9`)
+  **never reaches explore**: `createHeadTracker` subtracts its median rest pose, and explore builds
+  its own off-axis frusta from the eye positions (never the runtime's projection). The panel pair at
+  rest renders like the centred camera plus ±31.5 mm of stereo.
+- What the panel saw were **cracks inside layer 1**: its depth switched column by column (street /
+  hedge / hair) and each step opened a thin vertical tear at the orbit, in both eyes — "uniform".
+  Fixed by the depth-smoothing in `farblur` (above).
+- **Vertical** motion (pitch drag, head height) was the worst case per degree: the far background
+  under a subject that crosses the bottom/top of the frame had to come from a border that held only
+  the subject's continuation. Fixed by the two-surface border (above).
+- Stereo eyes + tracked head **add** to the drag: the band is now sized for `revealAngles()`.
+
+Black % of each view (`_scratch/coverage2/sheet.png`; "behind" = hole components not touching the
+viewport edge, "edge" = the frame-edge strips, which this pass does not address), before → after:
+
+| tamarra2k (portrait) | behind | edge |
+|---|---|---|
+| centred ±15° | 0.54 / 0.69 → **0.20 / 0.29** | 3.3 / 2.6 → 3.2 / 2.6 |
+| panel pair −15° R eye / +15° L eye | 0.48 / 0.80 → **0.16 / 0.42** | 6.5 / 5.7 → 6.4 / 5.6 |
+| +15° + head (+5, +10 cm), L eye | 1.32 → **0.43** | 2.1 → 1.1 |
+| pitch −10° / +10° (L eye) | 1.93 / 1.49 → **0.35 / 0.04** | 0.2 / 0.1 → 0 / 0 |
+| head −10 cm / +10 cm vertical (L eye) | 0.03 / 0.01 → 0.06 / 0.04 | 1.07 / 0.56 → **0.07 / 0.00** |
+
+Office, Big Sur Road and the synthetic clip: behind and edge equal or lower in every case (office
+behind 0.5–0.7 → 0.35–0.5 %; Big Sur Road's ridge reveal at +15° 0.74 → 0.39 %). Warm
+`generateLift`, medians of 7 interleaved runs, same frozen depth: tamarra 483 → 471 ms (1.13 → 1.14 M
+splats), office 337 → 362 ms (+7 %, 0.91 → 0.94 M), Big Sur Road 481 → 482 ms.
+
+Remaining: the **frame-edge strip** at ±15° (the border's area budget; worse on the eye that sits
+outward), the arm-over-torso gap that shows the far street, and short tears at the hair tips.
+
+`params.viewerOffset` (`{x, y, z}` m) / `viewerIpd` / `revealMarginDeg` / `farHWeight` override the
+rig assumptions; `lift()` passes them through `genParams` today, so the real rig's nominal excursion
+can be fed from there.
+
 ## Known artefacts (renders at −10°, 0°, +10° after the quality pass, 2026-09-25)
 
 - **Fixed:** object-shaped ghosts behind foreground (a translucent second sphere / chair back /
@@ -218,7 +269,7 @@ orbit shows the far background, not the surface just behind the edge.
 
 | file | what |
 |---|---|
-| `js/lift/gen/lift-gen.js` | `generateLift`, `LIFT_DEFAULTS`, `LIFT_QUALITY`, `normaliseDisparity` |
+| `js/lift/gen/lift-gen.js` | `generateLift`, `LIFT_DEFAULTS`, `LIFT_QUALITY`, `normaliseDisparity`, `revealAngles` |
 | `js/lift/gen/gl.js` | the WebGL2 pass runner |
 | `js/lift/gen/passes/*.glsl.js` | the fragment passes (GLSL as JS strings) |
 | `js/lift/gen/ply-writer.js` | surfel emission + PLY writer (module Worker), `parsePly` |
