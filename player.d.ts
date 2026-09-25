@@ -71,6 +71,13 @@ export interface PlayerOptions {
    * keep every glow inside the overlay's own box (a shadow outside it would be woven).
    */
   skin?: 'classic' | 'dock';
+  /**
+   * How an eye image meets a tile of a different aspect — the same names and meaning as `./splat`
+   * `setVideo`'s `fit`. `'contain'`: the whole eye image, transparent bars where the aspects
+   * differ (the page shows through). `'cover'`: the tile is full and the overflow is cut. Unset:
+   * stretched to the tile (the 1.x behaviour). On the woven path it costs one extra draw per frame.
+   */
+  fit?: 'contain' | 'cover';
   /** Transport scale — `'s'` (0.84×), `'m'` (default), `'l'` (1.28×). Icons, fonts and hit targets scale together. */
   size?: 's' | 'm' | 'l';
   /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */

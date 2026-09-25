@@ -48,6 +48,8 @@
 const VALID_FORMATS = new Set(['sbs', 'mono']);
 const VALID_SKINS = new Set(['classic', 'dock']);
 const VALID_SIZES = new Set(['s', 'm', 'l']);
+// ./splat setVideo's `fit` values, same names and meaning (inline3d-splat-video.js VIDEO_FITS).
+const VALID_FITS = new Set(['contain', 'cover']);
 // What each size multiplies the transport by. Applied with CSS `zoom` on each overlay's CONTENT
 // (never the overlay boxes' own positioning), so every icon, font and hit target scales together.
 /**
@@ -170,6 +172,11 @@ export function normalizePlayerOptions(opts = {}) {
     skin: pickEnum(opts.skin, VALID_SKINS, 'classic', 'skin'),
     // Transport scale: 's' | 'm' | 'l' (see PLAYER_SIZE_SCALE).
     size: pickEnum(typeof opts.size === 'string' ? opts.size.toLowerCase() : opts.size, VALID_SIZES, 'm', 'size'),
+    // How an eye image meets a tile of a different aspect — ./splat setVideo's vocabulary.
+    // 'contain': the whole eye image, transparent bars where the aspects differ (the page shows
+    // through). 'cover': the tile is full and the overflow is cut. Unset (null): stretched to the
+    // tile, the 1.x behaviour, so a page that never asks keeps its pixels.
+    fit: opts.fit === undefined || opts.fit === null ? null : pickEnum(opts.fit, VALID_FITS, null, 'fit'),
     poster: opts.poster || null,
     autoplay: !!opts.autoplay,
     muted: opts.muted === undefined ? true : !!opts.muted,
@@ -201,6 +208,36 @@ export function normalizePlayerOptions(opts = {}) {
     feather: opts.feather,
     observe: opts.observe,
   };
+}
+
+/**
+ * The source and destination rects that fit a `sw`×`sh` image into a `dw`×`dh` box. Pure.
+ * `'contain'` letterboxes the destination (the whole source shows); `'cover'` crops the source
+ * (the whole box fills); anything else stretches. Returns `{ sx, sy, sw, sh, dx, dy, dw, dh }`
+ * in the same order `drawImage`'s 9-argument form takes them.
+ * @param {number} sw @param {number} sh @param {number} dw @param {number} dh
+ * @param {'contain'|'cover'|null} fit
+ */
+export function fitRect(sw, sh, dw, dh, fit) {
+  const full = { sx: 0, sy: 0, sw, sh, dx: 0, dy: 0, dw, dh };
+  if (!(sw > 0 && sh > 0 && dw > 0 && dh > 0) || (fit !== 'contain' && fit !== 'cover')) return full;
+  const sa = sw / sh;
+  const da = dw / dh;
+  if (Math.abs(sa - da) < 1e-6) return full;
+  if (fit === 'contain') {
+    if (sa > da) {
+      const h = dw / sa;
+      return { sx: 0, sy: 0, sw, sh, dx: 0, dy: (dh - h) / 2, dw, dh: h };
+    }
+    const w = dh * sa;
+    return { sx: 0, sy: 0, sw, sh, dx: (dw - w) / 2, dy: 0, dw: w, dh };
+  }
+  if (sa > da) {
+    const w = sh * da;
+    return { sx: (sw - w) / 2, sy: 0, sw: w, sh, dx: 0, dy: 0, dw, dh };
+  }
+  const h = sw / da;
+  return { sx: 0, sy: (sh - h) / 2, sw, sh: h, dx: 0, dy: 0, dw, dh };
 }
 
 /**
@@ -325,7 +362,7 @@ function startPosterPoll(canvas, getPoster, isVideoReady) {
  * `requestVideoFrameCallback` where available, falling back to an every-frame `drawImage` loop
  * where it is not.
  */
-function attachFlatPaint(canvas, video, { mode, getPoster, dissolve }) {
+function attachFlatPaint(canvas, video, { mode, getPoster, dissolve, fit = null }) {
   const ctx = canvas.getContext('2d');
   let stopped = false;
   let rafId = 0;
@@ -361,8 +398,11 @@ function attachFlatPaint(canvas, video, { mode, getPoster, dissolve }) {
       const vw = src.videoWidth || src.width;
       const vh = src.videoHeight || src.height;
       ctx.clearRect(0, 0, w, h);
-      if (mode === 'sbs-fallback') ctx.drawImage(src, 0, 0, vw / 2, vh, 0, 0, w, h);
-      else ctx.drawImage(src, 0, 0, vw, vh, 0, 0, w, h);
+      // One eye (the left half) for an SBS source shown flat, the whole frame for genuinely flat
+      // content — then fitted into the canvas the way `fit` asks.
+      const ew = mode === 'sbs-fallback' ? vw / 2 : vw;
+      const r = fitRect(ew, vh, w, h, fit);
+      ctx.drawImage(src, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
       return;
     }
     const poster = getPoster();
@@ -1360,7 +1400,49 @@ function createDissolve(video) {
  * to rAF while a dissolve is running — a ramp has to advance on frames the video does not
  * produce, which is precisely the case when the incoming title has not started decoding yet.
  */
-function driveMixer(video, dissolve) {
+/**
+ * The woven path's `fit`. The SDK stretches whatever source it is handed onto the tile's SBS
+ * buffer, so fitting has to happen one step earlier: this owns a canvas laid out as an SBS pair
+ * whose per-eye aspect is the TILE's, and fits each eye of the upstream source (the <video>, or
+ * the crossfade mixer) into its half. The SDK's stretch of that canvas is then an identity in
+ * aspect. It answers `readyState` like the mixer does, which is what makes a canvas a valid
+ * `addVideo` source. Opt-in: only created when `fit` is set.
+ *
+ * @param {() => (HTMLVideoElement|HTMLCanvasElement)} upstream
+ * @param {HTMLCanvasElement} tile  the woven canvas, for its CSS aspect
+ * @param {'contain'|'cover'} fit
+ */
+function createFitter(upstream, tile, fit) {
+  const el = document.createElement('canvas');
+  const ctx = el.getContext('2d');
+  el.readyState = 0;
+  return {
+    el,
+    active: false,
+    paint() {
+      const src = upstream();
+      const vw = src.videoWidth || src.width;
+      const vh = src.videoHeight || src.height;
+      if ((src.readyState || 0) < 2 || !vw || !vh) return; // keep the last fitted frame
+      const tw = tile.clientWidth || tile.width || 16;
+      const th = tile.clientHeight || tile.height || 9;
+      const eyeH = vh;
+      const eyeW = Math.max(1, Math.round(eyeH * (tw / th)));
+      if (el.width !== eyeW * 2) el.width = eyeW * 2;
+      if (el.height !== eyeH) el.height = eyeH;
+      ctx.clearRect(0, 0, el.width, el.height);
+      const half = vw / 2;
+      const r = fitRect(half, vh, eyeW, eyeH, fit);
+      ctx.drawImage(src, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh); // left eye
+      ctx.drawImage(src, half + r.sx, r.sy, r.sw, r.sh, eyeW + r.dx, r.dy, r.dw, r.dh); // right eye
+      el.readyState = 4;
+    },
+  };
+}
+
+/** Drive one or more source stages (the crossfade mixer, the fitter) in order, per video frame. */
+function driveMixer(video, stages) {
+  const list = Array.isArray(stages) ? stages : [stages];
   let stopped = false;
   let rafId = 0;
   let rvfcId = 0;
@@ -1369,9 +1451,10 @@ function driveMixer(video, dissolve) {
 
   function tick() {
     if (stopped) return;
-    dissolve.paint(nowMs());
+    const now = nowMs();
+    for (const st of list) st.paint(now);
     const canUseRvfc =
-      !dissolve.active &&
+      !list.some((st) => st.active) &&
       video.readyState >= 2 &&
       typeof video.requestVideoFrameCallback === 'function';
     if (canUseRvfc) rvfcId = video.requestVideoFrameCallback(tick);
@@ -1419,6 +1502,8 @@ function driveMixer(video, dissolve) {
  *        dissolve section; `./splat`'s other transitions are refused by name.
  * @param {number} [opts.durationMs=600]  the crossfade's length.
  * @param {string|function} [opts.easing='easeInOutSine']  a `./splat` easing name or `(x) => y`.
+ * @param {'contain'|'cover'} [opts.fit]  ./splat setVideo's fit: 'contain' letterboxes each eye
+ *        (transparent bars), 'cover' fills the tile and crops. Unset: stretched to the tile.
  * @param {number} [opts.fadeMs]  LEGACY alias (1.10): `> 0` = `transition:'crossfade'` of that length.
  * @param {'anonymous'|'use-credentials'} [opts.crossOrigin]  default: `'anonymous'` iff `src` is
  *        a cross-origin URL, unset otherwise.
@@ -1494,6 +1579,8 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   // Opt-in: no fade asked for at construction => no mixer, and the woven path stays the
   // byte-identical `addVideo(canvas, video)` it is today. See the dissolve section above.
   const dissolve = o.transition.type === 'crossfade' ? createDissolve(video) : null;
+  // The woven path's fit stage sits after the mixer (it fits whatever the mixer composed).
+  const fitter = wantWeave && o.fit ? createFitter(() => (dissolve ? dissolve.el : video), canvas, o.fit) : null;
 
   function paintPosterNow() {
     if (!posterImg) return;
@@ -1502,14 +1589,14 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   }
 
   if (wantWeave) {
-    innerHandle = wall.addVideo(canvas, dissolve ? dissolve.el : video, {
+    innerHandle = wall.addVideo(canvas, fitter ? fitter.el : dissolve ? dissolve.el : video, {
       width: o.width,
       height: o.height,
       cornerRadius: o.cornerRadius,
       feather: o.feather,
       ...(o.observe ? { observe: o.observe } : {}),
     });
-    if (dissolve) mixerLoop = driveMixer(video, dissolve);
+    if (dissolve || fitter) mixerLoop = driveMixer(video, [dissolve, fitter].filter(Boolean));
     posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
   } else {
     // The flat loop paints the mixer itself rather than running a second loop beside it.
@@ -1517,6 +1604,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       mode: o.format === 'mono' ? 'mono' : 'sbs-fallback',
       getPoster: () => posterImg,
       dissolve,
+      fit: o.fit,
     });
   }
 

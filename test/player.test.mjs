@@ -19,6 +19,7 @@ import {
   PLAYER_SIZE_SCALE,
   PLAYER_ACCENTS,
   resolveAccent,
+  fitRect,
 } from '../js/inline3d-player.js';
 
 // ── normalizePlayerOptions ──────────────────────────────────────────────────────────────────
@@ -345,4 +346,33 @@ test('accent: named presets resolve to their colour, anything else passes throug
   assert.equal(resolveAccent('#123456'), '#123456');
   assert.equal(resolveAccent('rebeccapurple'), 'rebeccapurple');
   for (const c of Object.values(PLAYER_ACCENTS)) assert.match(c, /^#[0-9a-f]{6}$/);
+});
+
+test('fit: unset stretches (the 1.x pixels), contain/cover accepted, anything else falls back to unset', () => {
+  assert.equal(normalizePlayerOptions().fit, null);
+  assert.equal(normalizePlayerOptions({ fit: 'contain' }).fit, 'contain');
+  assert.equal(normalizePlayerOptions({ fit: 'cover' }).fit, 'cover');
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(normalizePlayerOptions({ fit: 'fill' }).fit, null);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test('fitRect: contain letterboxes the destination, cover crops the source, same aspect is a no-op', () => {
+  // A 2.39:1 eye into a 16:9 box.
+  const c = fitRect(2390, 1000, 1600, 900, 'contain');
+  assert.deepEqual([c.sx, c.sy, c.sw, c.sh], [0, 0, 2390, 1000], 'contain keeps the whole source');
+  assert.equal(c.dw, 1600);
+  assert.ok(Math.abs(c.dh - 1600 / 2.39) < 1e-6 && Math.abs(c.dy - (900 - c.dh) / 2) < 1e-6, 'bars top and bottom');
+  const v = fitRect(2390, 1000, 1600, 900, 'cover');
+  assert.deepEqual([v.dx, v.dy, v.dw, v.dh], [0, 0, 1600, 900], 'cover fills the box');
+  assert.ok(Math.abs(v.sw - 1000 * (16 / 9)) < 1e-6 && Math.abs(v.sx - (2390 - v.sw) / 2) < 1e-6, 'cropped at the sides');
+  // A tall source into a wide box: contain pillarboxes.
+  const p = fitRect(900, 1600, 1600, 900, 'contain');
+  assert.ok(p.dx > 0 && p.dy === 0 && Math.abs(p.dh - 900) < 1e-6);
+  assert.deepEqual(fitRect(1600, 900, 800, 450, 'cover'), { sx: 0, sy: 0, sw: 1600, sh: 900, dx: 0, dy: 0, dw: 800, dh: 450 });
+  assert.deepEqual(fitRect(2390, 1000, 1600, 900, null), { sx: 0, sy: 0, sw: 2390, sh: 1000, dx: 0, dy: 0, dw: 1600, dh: 900 }, 'unset stretches');
 });

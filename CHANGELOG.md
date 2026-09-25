@@ -51,6 +51,10 @@ Touches the **preview tier** only — a new subpath, `./player`, nothing else mo
   H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
   working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
   shares `./splat` `setVideo`'s option names (`format`, later `fit`).
+- **`fit: 'contain' | 'cover'`** — `./splat` `setVideo`'s names and meaning: contain letterboxes each
+  eye (transparent bars), cover fills the tile and crops. Unset keeps the stretch-to-tile pixels.
+  On the woven path a small per-eye fit canvas sits after the crossfade mixer (one extra draw per
+  frame, only when set); the flat paths fit directly. `fitRect()` is exported and tested.
 - **Named accents** — `accent: 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' |
   'ice'` (or any CSS colour), exported as `PLAYER_ACCENTS`. Each is light enough for the dock's dark
   play glyph. The sample shows them as swatches.
