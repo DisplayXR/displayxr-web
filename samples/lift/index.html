@@ -20,12 +20,10 @@
   pre#log{font:12px/1.45 ui-monospace,Menlo,monospace;max-height:220px;overflow:auto;background:#8881;padding:10px;border-radius:8px}
   code{background:#8882;padding:1px 5px;border-radius:4px}
 </style>
-<!-- The explore renderer needs the SDK's optional peers three + Spark (same as addSplat). -->
+<!-- The explore renderer needs the SDK's optional peer playcanvas (same as addSplat engine:'playcanvas'). -->
 <script type="importmap">
 { "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
-  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs"
 } }
 </script>
 </head>
@@ -38,7 +36,8 @@
     Query: <code>providers=real|stub</code>, <code>models=</code> (model tree base URL, default <code>/_scratch/models</code>),
     <code>ort=</code> (onnxruntime-web dist URL, default <code>/_scratch/ort/</code> else jsDelivr),
     <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>,
-    <code>params={…}</code> (lift-gen overrides, JSON).</p>
+    <code>params={…}</code> (lift-gen overrides, JSON), <code>explore={…}</code> (explore view: <code>comfort</code>,
+    <code>pivotTargetM</code>, <code>eyes</code>).</p>
 
   <figure>
     <video id="vid" muted loop playsinline controls></video>
@@ -107,6 +106,8 @@ const opts = {
   ...(q.get('inpaint') === '1' ? { providers: { inpaint: 'light-inpaint-v1' } } : {}),
   ...(q.get('params') ? { genParams: JSON.parse(q.get('params')) } : {}),
   ...(q.get('lookAround') ? { live: { lookAround: +q.get('lookAround') } } : {}),
+  // explore view A/B: explore={"comfort":"off"} | {"pivotTargetM":2.5} | {"eyes":"tracked"}
+  ...(q.get('explore') ? { explore: JSON.parse(q.get('explore')) } : {}),
 };
 
 const logEl = document.getElementById('log');

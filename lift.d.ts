@@ -32,7 +32,7 @@ export type LiftQuality = 'low' | 'medium' | 'high';
 export interface LiftOptions {
   /** `auto`: live while playing, lift on pause/end. `live`: never lifts by itself. `explore`: lift once the models are in. Default `auto`. */
   mode?: 'auto' | 'live' | 'explore';
-  /** Live-DIBR depth strength multiplier. Default 1. */
+  /** Depth strength multiplier: live DIBR, and the explore scene's depth about its pivot. Default 1. */
   depth?: number;
   /** Zero-disparity plane for live DIBR: normalised disparity 0..1, or `auto` (default). */
   convergence?: 'auto' | number;
@@ -69,6 +69,14 @@ export interface LiftOptions {
   prefetch?: boolean;
   /** Cap on devicePixelRatio for the canvas while explore is up. Default 1 on a woven (SBS) store unless quality is `high`, else uncapped. */
   exploreMaxDpr?: number;
+  /**
+   * The explore view. `comfort` `auto` (default) scales a METRIC lift about the camera so its pivot
+   * lands at `pivotTargetM` (default 2.0 m) when it is more than 25 % off (the neutral image is
+   * unchanged; parallax scales by pivot/target); `always` / `off` for A/B. `eyes` `nominal`
+   * (default) normalises the runtime's eye separation to 63 mm; `tracked` takes the eye positions
+   * as metres.
+   */
+  explore?: { pivotTargetM?: number; comfort?: 'auto' | 'always' | 'off'; eyes?: 'nominal' | 'tracked' };
 }
 
 export interface LiftProgress {
@@ -95,6 +103,8 @@ export interface LiftStats {
   pauseToExploreMs: number;
   /** Gaussians in the last lift. */
   splats: number;
+  /** The explore comfort scale applied about the camera (1 = none). */
+  exploreScale: number;
 }
 
 export interface LiftHandle {
@@ -117,8 +127,25 @@ export interface LiftHandle {
   resume(): void;
   /** Explore: turn the lifted scene to (yaw, pitch) degrees, clamped to the orbit cap. */
   setOrbit(yaw: number, pitch?: number): void;
+  /** Depth strength: live DIBR and, in explore, the lifted scene's depth about its pivot. */
   setDepth(x: number): void;
   setConvergence(x: 'auto' | number): void;
+  /**
+   * The last lifted scene as a `.sog` (SOG v2, lossless webp planes) carrying the DisplayXR camera
+   * block v2 (rig `camera`, the lift's intrinsics, focus = the pivot), built in the page. Rejects
+   * before the first lift. `camera` is merged onto the block.
+   */
+  exportSog(opts?: { camera?: Record<string, unknown>; onProgress?: (p: number) => void }): Promise<Blob>;
+  /** exportSog() saved as a file (`<media name>-3d.sog` by default). Resolves false if nothing was saved. */
+  downloadSog(filename?: string): Promise<boolean>;
+  /** True once a scene has been lifted. */
+  readonly canExport: boolean;
+  /**
+   * The canvas as the next frame draws it (the whole backing store — both eyes side by side when
+   * woven), as a PNG, read back in the same task as the draw. For evidence captures: the canvas has
+   * `preserveDrawingBuffer: false`, so a page screenshot between frames can show it empty.
+   */
+  capture(): Promise<Blob>;
   /** Unmount; the element is exactly as it was. */
   remove(): void;
 }

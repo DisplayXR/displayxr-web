@@ -132,6 +132,11 @@ const MONO_VIEW = Object.freeze({
  * @param {AbortSignal} [opts.signal]  aborting it removes the lift.
  * @param {'real'|'stub'} [opts.backend='real']  'stub' = js/lift/stubs/* (no models; dev/demo).
  * @param {object} [opts.genParams]  DEV: overrides for lift-gen's LIFT_DEFAULTS (docs/lift-gen.md).
+ * @param {{pivotTargetM?:number, comfort?:'auto'|'always'|'off', eyes?:'nominal'|'tracked'}} [opts.explore]
+ *        the explore view (docs/lift-explore.md § Comfort): a METRIC lift whose pivot is more than
+ *        25 % off `pivotTargetM` (default 2.0 m) is scaled about the camera to land there
+ *        (`comfort:'auto'`, default; 'off' for A/B); `eyes:'tracked'` takes the runtime's eye
+ *        positions as metres instead of normalising their separation to 63 mm (default 'nominal').
  * @returns {Promise<LiftHandle>}
  */
 export async function lift(element, opts = {}) {
@@ -163,6 +168,11 @@ export async function lift(element, opts = {}) {
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',
     genParams: opts.genParams && typeof opts.genParams === 'object' ? opts.genParams : null,
+    explore: {
+      pivotTargetM: Number.isFinite(opts.explore?.pivotTargetM) && opts.explore.pivotTargetM > 0 ? opts.explore.pivotTargetM : 2.0,
+      comfort: ['auto', 'always', 'off'].includes(opts.explore?.comfort) ? opts.explore.comfort : 'auto',
+      eyes: opts.explore?.eyes === 'tracked' ? 'tracked' : 'nominal',
+    },
   };
 
 
@@ -202,6 +212,11 @@ export async function lift(element, opts = {}) {
   let stillLoading = null;
   let explore = null;
   let pendingExplore = null;
+  // The generator's output behind the explore scene — { ply, meta } — kept for exportSog(). The
+  // pending one becomes current on enterExplore; the current one survives a resume (it is still
+  // the last lifted scene) until the next lift replaces it or the handle is removed.
+  let pendingLifted = null;
+  let lifted = null;
   let fadeInUntil = 0;
   let fadeOutUntil = 0;
   let abort = null; // current freeze/lift
@@ -240,6 +255,8 @@ export async function lift(element, opts = {}) {
     exploreLoadMs: 0,
     pauseToExploreMs: 0,
     splats: 0,
+    // explore's comfort normalisation: the uniform scale applied about the camera (1 = none)
+    exploreScale: 1,
   };
   let fpsFrames = 0;
   let fpsT0 = 0;
@@ -341,6 +358,34 @@ export async function lift(element, opts = {}) {
     if (showExplore) explore.render(session ? ctx : { views: null, layer, session });
     if (fadingOut && now >= fadeOutUntil) {
       disposeExplore();
+    }
+    if (captureWaiters.length) flushCapture();
+  }
+
+  // ── capture: the canvas as drawn, read back in the SAME task as the draw ──────────────────
+  // The context has preserveDrawingBuffer:false (the woven canvas's zero-copy path wants it off),
+  // so a screenshot taken between frames — CDP Page.captureScreenshot on the win box — can see
+  // an empty canvas. handle.capture() resolves with the next frame's pixels instead.
+  const captureWaiters = [];
+  function flushCapture() {
+    const waiters = captureWaiters.splice(0);
+    try {
+      const gl = dibr && dibr.gl;
+      if (!gl) throw new Error('no GL context yet');
+      const w = canvas.width, h = canvas.height;
+      const px = new Uint8Array(w * h * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const c2 = document.createElement('canvas');
+      c2.width = w;
+      c2.height = h;
+      const ctx = c2.getContext('2d');
+      const img = ctx.createImageData(w, h);
+      for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+      ctx.putImageData(img, 0, 0);
+      c2.toBlob((b) => waiters.forEach((x) => (b ? x.resolve(b) : x.reject(new Error('toBlob failed')))), 'image/png');
+    } catch (error) {
+      waiters.forEach((x) => x.reject(error));
     }
   }
 
@@ -595,11 +640,17 @@ export async function lift(element, opts = {}) {
         axes: meta.axes || meta.convention || undefined,
         clearAlpha: 1, // opaque: never let the page's flat media ghost through the lifted scene
         orbit: o.orbit,
+        depthGain: params.depth, // the page's depth strength carries into explore (setDepth)
+        space: frozen.depth && frozen.depth.space,
+        comfort: { mode: o.explore.comfort, target: o.explore.pivotTargetM },
+        eyes: o.explore.eyes,
       });
+      stats.exploreScale = +(ex.sceneScale || 1).toFixed(4);
       stats.exploreLoadMs = Math.round(performance.now() - tEx);
       stats.pauseToExploreMs = Math.round(performance.now() - freezeT0);
       if (isStale(gen)) return ex.dispose();
       pendingExplore = ex;
+      pendingLifted = { ply: res.ply, meta, sceneScale: ex.sceneScale || 1 };
       machine.send('lifted', { gen });
     } catch (error) {
       if (!isStale(gen)) machine.send('lift-failed', { gen, error });
@@ -659,6 +710,8 @@ export async function lift(element, opts = {}) {
         if (explore) disposeExplore();
         explore = pendingExplore;
         pendingExplore = null;
+        if (pendingLifted) lifted = pendingLifted;
+        pendingLifted = null;
         explore.fadeIn(FADE_MS);
         fadeInUntil = performance.now() + FADE_MS;
         placement.setInteractive(true);
@@ -678,6 +731,7 @@ export async function lift(element, opts = {}) {
           pendingExplore.dispose();
           pendingExplore = null;
         }
+        pendingLifted = null;
         break;
       case 'resetProvider':
         liveGen++;
@@ -770,6 +824,7 @@ export async function lift(element, opts = {}) {
       }
     }
     pendingExplore = explore = dibr = videoProv = stillProv = null;
+    lifted = pendingLifted = null;
     if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
     frozen = null;
     if (chip) chip.dispose();
@@ -784,6 +839,7 @@ export async function lift(element, opts = {}) {
       onExplore: () => handle.explore(),
       onResume: () => handle.resume(),
       onExit: () => handle.remove(),
+      onDownload: () => handle.downloadSog(),
     });
   }
   syncBacking(true);
@@ -810,7 +866,7 @@ export async function lift(element, opts = {}) {
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
     /** Diagnostics only (not API): the live renderers. */
-    _internals: () => ({ explore, dibr, videoProv, stillProv, frozen }),
+    _internals: () => ({ explore, dibr, videoProv, stillProv, frozen, lifted }),
     get stats() {
       return { ...stats, state: machine.state };
     },
@@ -836,19 +892,74 @@ export async function lift(element, opts = {}) {
     setOrbit(yaw, pitch = 0) {
       if (explore && typeof explore.setTarget === 'function') explore.setTarget(+yaw || 0, +pitch || 0);
     },
+    /** Depth strength: live DIBR's multiplier, and in explore the lifted scene's depth about its
+     *  pivot plane (explore setDepthGain: the pivot stays on the glass, only disparity scales). */
     setDepth(x) {
       if (!Number.isFinite(x)) return;
       params.depth = x;
       if (dibr) dibr.setParams(params);
+      if (explore && typeof explore.setDepthGain === 'function') explore.setDepthGain(x);
     },
     setConvergence(x) {
       params.convergence = x === 'auto' || Number.isFinite(x) ? x : 'auto';
       if (dibr) dibr.setParams(params);
     },
+    /**
+     * The lifted scene as a `.sog` (SOG v2, lossless webp planes) with the DisplayXR camera block
+     * v2 — the gallery / addSplat / the gauss demo open it on the photo's own camera rig at the
+     * lift's convergence (docs/lift.md § Download SOG). Rejects when nothing has been lifted yet.
+     * `opts.camera` is merged onto the camera block (e.g. `{ focus: { point, source: 'manual' } }`).
+     */
+    async exportSog(opts = {}) {
+      if (!lifted) throw new Error('[inline3d/lift] exportSog: nothing lifted yet (explore first)');
+      const { exportSog } = await import('./sog-export.js');
+      // The file stays METRIC (the lift as generated). When explore applied its comfort scale k,
+      // the block says so the way a camera rig expresses it — eye separation and head motion in
+      // world units per real metre, ipd_factor = parallax_factor = 1/k — so a viewer that honours
+      // the block opens it with the stereo the explore view had.
+      const k = lifted.sceneScale || 1;
+      const camera = k !== 1 ? { dxr: { ipd_factor: 1 / k, parallax_factor: 1 / k }, ...(opts.camera || {}) } : opts.camera;
+      return exportSog({ ply: lifted.ply, meta: lifted.meta, camera, onProgress: opts.onProgress });
+    },
+    /** exportSog() + save it as a file (`<element name>-3d.sog` unless `filename` is given). */
+    async downloadSog(filename) {
+      if (!lifted || sogBusy) return false;
+      sogBusy = true;
+      if (chip) chip.setBusy('download', true);
+      try {
+        const blob = await handle.exportSog();
+        saveBlob(blob, filename || sogFileName(el));
+        return true;
+      } catch (error) {
+        emit('error', { error, fatal: false, phase: 'export' });
+        return false;
+      } finally {
+        sogBusy = false;
+        if (chip) chip.setBusy('download', false);
+      }
+    },
+    /** True once a scene has been lifted (exportSog() / downloadSog() have something to save). */
+    get canExport() {
+      return !!lifted;
+    },
     remove() {
       machine.send('remove');
     },
   };
+  let sogBusy = false;
+  handle.capture = () =>
+    new Promise((resolve, reject) => {
+      if (disposed) return reject(new Error('[inline3d/lift] capture: removed'));
+      const w = { resolve, reject };
+      captureWaiters.push(w);
+      setTimeout(() => {
+        const i = captureWaiters.indexOf(w);
+        if (i >= 0) {
+          captureWaiters.splice(i, 1);
+          reject(new Error('[inline3d/lift] capture: no frame drawn within 2 s'));
+        }
+      }, 2000);
+    });
 
   machine.send('start');
   return handle;
@@ -869,6 +980,10 @@ export async function lift(element, opts = {}) {
  * @property {(yaw:number, pitch?:number) => void} setOrbit
  * @property {(x:number) => void} setDepth
  * @property {(x:'auto'|number) => void} setConvergence
+ * @property {(opts?:{camera?:object, onProgress?:(p:number)=>void}) => Promise<Blob>} exportSog
+ * @property {(filename?:string) => Promise<boolean>} downloadSog
+ * @property {boolean} canExport
+ * @property {() => Promise<Blob>} capture  the next drawn frame of the canvas (both eyes, as a PNG)
  * @property {() => void} remove
  */
 
@@ -879,4 +994,28 @@ function mediaError(el) {
   const hint = c === 4 ? ' — the browser cannot play this source (unsupported codec/container; the DisplayXR Browser has no H.264/HEVC, use VP9/AV1)' : '';
   const e = new Error(`media: ${codes[c] || 'error'}${el.error?.message ? ` (${el.error.message})` : ''}${hint}`);
   e.name = 'MediaError'; e.code = c; return e;
+}
+
+/** `<media file name or id>-3d.sog`, filesystem-safe. */
+function sogFileName(el) {
+  let base = '';
+  try {
+    const src = el.currentSrc || el.src || '';
+    if (src && !src.startsWith('blob:') && !src.startsWith('data:')) base = new URL(src, location.href).pathname.split('/').pop() || '';
+  } catch {
+    /* not a URL */
+  }
+  base = base.replace(/\.[a-z0-9]{2,5}$/i, '') || el.id || 'lift';
+  return base.replace(/[^\w.-]+/g, '_').slice(0, 80) + '-3d.sog';
+}
+
+/** Save a Blob as a file through a detached <a download> (no DOM insertion, no popup). */
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.rel = 'noopener';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }

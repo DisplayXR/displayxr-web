@@ -5,7 +5,7 @@
 // window's exclude() (a no-op on draw-order-occlusion browsers, where it is automatic).
 //
 // Shows: loading/converting progress, and the actions that apply to the current state —
-//   live → "Explore"   explore → "Resume" (videos) + "Exit"   error → "Exit"
+//   live → "Explore"   explore → "SOG" (download) + "Resume" (videos) + "Exit"   error → "Exit"
 // `ui: 'none'` never creates it; the page drives the handle itself.
 
 const CSS = `
@@ -22,6 +22,7 @@ button{all:unset;cursor:pointer;padding:4px 9px;border-radius:999px;background:r
 button:hover{background:rgba(255,255,255,.3)}
 button:focus-visible{outline:2px solid #7cb7ff;outline-offset:1px}
 button[hidden]{display:none}
+button[disabled]{opacity:.6;cursor:progress}
 `;
 
 const LABELS = {
@@ -38,7 +39,7 @@ const LABELS = {
 
 /**
  * @param {ShadowRoot} root
- * @param {{kind:'video'|'still', onExplore():void, onResume():void, onExit():void}} actions
+ * @param {{kind:'video'|'still', onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
  */
 export function createChip(root, actions) {
   const style = document.createElement('style');
@@ -64,16 +65,23 @@ export function createChip(root, actions) {
   const bExplore = mk('Explore', actions.onExplore);
   const bResume = mk('Resume', actions.onResume);
   const bExit = mk('Exit', actions.onExit);
-  chip.append(label, bExplore, bResume, bExit);
+  // "Download SOG": the lifted scene as a .sog with the camera block (lift.js downloadSog).
+  const bSog = mk('↓ SOG', () => actions.onDownload?.());
+  bSog.title = 'Download the 3D scene (.sog)';
+  chip.append(label, bExplore, bSog, bResume, bExit);
   root.append(style, chip);
 
   let state = 'idle';
   let progress = null;
+  let saving = false;
   const render = () => {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
     label.textContent = busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
     bExplore.hidden = state !== 'live';
+    bSog.hidden = state !== 'explore' || !actions.onDownload;
+    bSog.disabled = saving;
+    bSog.textContent = saving ? 'Saving…' : '↓ SOG';
     bResume.hidden = !(state === 'explore' && actions.kind === 'video');
     bExit.hidden = !(state === 'explore' || state === 'error' || state === 'live');
     chip.hidden = state === 'disposed';
@@ -84,6 +92,11 @@ export function createChip(root, actions) {
     setState(s) {
       state = s;
       if (!(s === 'loading' || s === 'freezing' || s === 'lifting')) progress = null;
+      render();
+    },
+    /** A long action in flight (only 'download' today): disables its button, relabels it. */
+    setBusy(what, on) {
+      if (what === 'download') saving = !!on;
       render();
     },
     setProgress(p) {
