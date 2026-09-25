@@ -188,7 +188,10 @@ async function tuneSender(pc) {
 }
 
 /* ------------------------------ Receiver ------------------------------- */
-let remoteFormat = null, weaveHandle = null, flatLoop = 0;
+// The remote <video> is DETACHED (never in the DOM), like samples/windows: an in-DOM video is a
+// second candidate the browser's join fallback could weave instead of the canvas.
+const remoteVideo = Object.assign(document.createElement('video'), { muted: true, playsInline: true, autoplay: true });
+let remoteFormat = null, weaveHandle = null, flatLoop = 0, routed = null;
 function onHello(msg) {
   if (msg?.type !== 'hello') return;
   report.hello = msg; remoteFormat = msg.format; log('hello', msg);
@@ -197,15 +200,19 @@ function onHello(msg) {
 }
 
 function showRemote(stream) {
-  const v = $('#remote');
+  const v = remoteVideo;
   v.srcObject = stream;
   v.play().catch(() => {});
   v.addEventListener('playing', route, { once: true });
 }
 
 function route() {
-  const v = $('#remote'), canvas = $('#remote-canvas');
+  const v = remoteVideo, canvas = $('#remote-canvas');
   if (!v.srcObject || !remoteFormat || v.readyState < 2) return;
+  // Register ONCE per (format): hello and 'playing' both call route(); a remove+re-add of the
+  // weave layer on the same canvas is a needless churn (and a suspect for the one-eye result).
+  if (routed === remoteFormat) return;
+  routed = remoteFormat;
   cancelAnimationFrame(flatLoop); weaveHandle?.remove(); weaveHandle = null;
   if (remoteFormat === 'sbs' && wall.supported) {
     weaveHandle = wall.addVideo(canvas, v); // full SBS, left eye in the left half
