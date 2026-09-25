@@ -32,6 +32,15 @@
     border:1px solid #ffffff2a;background:#ffffff0d;color:inherit}
   .chips button:hover{background:#ffffff1f}
   .chips button[aria-pressed="true"]{background:#4da3ff;border-color:#4da3ff;color:#06121f}
+  .devbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px;margin:0 0 26px;padding:12px 14px;
+    border-radius:12px;background:#ffffff0a;border:1px solid #ffffff14;font-size:13px}
+  .devbar .lbl{opacity:.65}
+  .devbar input[type=color]{width:34px;height:26px;padding:0;border:1px solid #ffffff2a;border-radius:6px;background:none;cursor:pointer}
+  .seg{display:inline-flex;border:1px solid #ffffff2a;border-radius:8px;overflow:hidden}
+  .seg button{font:600 12px/1 system-ui;padding:7px 11px;border:0;background:transparent;color:inherit;cursor:pointer}
+  .seg button+button{border-left:1px solid #ffffff2a}
+  .seg button[aria-pressed="true"]{background:#4da3ff;color:#06121f}
+  .devbar code{margin-left:auto;font-size:12px;opacity:.8}
   footer{margin-top:36px;font-size:13px;opacity:.6;line-height:1.6}
 </style>
 </head>
@@ -46,6 +55,15 @@
      else both render as ordinary 2D video.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <div class="devbar" role="group" aria-label="Transport appearance">
+    <span class="lbl">Accent</span><input type="color" id="accent" value="#4da3ff" aria-label="Accent colour">
+    <span class="lbl">Size</span>
+    <div class="seg" id="size"><button data-v="s">S</button><button data-v="m" aria-pressed="true">M</button><button data-v="l">L</button></div>
+    <span class="lbl">Skin</span>
+    <div class="seg" id="skin"><button data-v="dock" aria-pressed="true">Dock</button><button data-v="classic">Classic</button></div>
+    <code id="call">setAppearance({ accent: '#4da3ff', size: 'm', skin: 'dock' })</code>
+  </div>
 
   <div class="cols">
     <div>

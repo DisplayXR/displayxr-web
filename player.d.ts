@@ -70,6 +70,8 @@ export interface PlayerOptions {
    * keep every glow inside the overlay's own box (a shadow outside it would be woven).
    */
   skin?: 'classic' | 'dock';
+  /** Transport scale — `'s'` (0.84×), `'m'` (default), `'l'` (1.28×). Icons, fonts and hit targets scale together. */
+  size?: 's' | 'm' | 'l';
   /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */
   title?: string;
   /** −10 s / +10 s buttons beside play. Default true (hidden on tiles narrower than 420 px). J / L work either way. */
@@ -122,6 +124,12 @@ export interface PlayerHandle {
    * changes nothing, on an unknown transition or easing.
    */
   setSource(src: string | Blob, opts?: PlayerSourceOptions): void;
+
+  /**
+   * Re-skin the SDK transport live — any of `accent` (a CSS colour; `''` = the default), `size`,
+   * `skin`. Invalid values warn and are ignored; a no-op with `controls: 'none'`.
+   */
+  setAppearance(a: { accent?: string; size?: 's' | 'm' | 'l'; skin?: 'classic' | 'dock' }): void;
 
   /** Mark a 2D element painted over this window so the weave leaves it crisp — `'sbs'` + a
    * supported wall only; a no-op everywhere else (there is no weave to protect it from). */

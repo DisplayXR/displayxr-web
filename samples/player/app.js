@@ -71,3 +71,26 @@ for (const [i, ch] of CHAPTERS.entries()) {
   });
   chipsEl.append(b);
 }
+
+// Developer customisation, live: accent colour, size S/M/L and skin, through handle.setAppearance().
+// Both players take the same call; the line on the right is exactly what a page would write.
+const appearance = { accent: '#4da3ff', size: 'm', skin: new URLSearchParams(location.search).get('skin') || 'dock' };
+const callEl = document.getElementById('call');
+function applyAppearance(patch) {
+  Object.assign(appearance, patch);
+  sbsPlayer.setAppearance(patch);
+  monoPlayer.setAppearance(patch);
+  callEl.textContent = `setAppearance({ accent: '${appearance.accent}', size: '${appearance.size}', skin: '${appearance.skin}' })`;
+}
+document.getElementById('accent').addEventListener('input', (e) => applyAppearance({ accent: e.target.value }));
+for (const id of ['size', 'skin']) {
+  const seg = document.getElementById(id);
+  for (const b of seg.querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.v === appearance[id]));
+    b.addEventListener('click', () => {
+      for (const o of seg.querySelectorAll('button')) o.setAttribute('aria-pressed', String(o === b));
+      applyAppearance({ [id]: b.dataset.v });
+    });
+  }
+}
+applyAppearance({ skin: appearance.skin }); // the mono tile starts on the same skin

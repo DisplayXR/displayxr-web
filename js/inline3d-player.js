@@ -47,6 +47,10 @@
 
 const VALID_FORMATS = new Set(['sbs', 'mono']);
 const VALID_SKINS = new Set(['classic', 'dock']);
+const VALID_SIZES = new Set(['s', 'm', 'l']);
+// What each size multiplies the transport by. Applied with CSS `zoom` on each overlay's CONTENT
+// (never the overlay boxes' own positioning), so every icon, font and hit target scales together.
+export const PLAYER_SIZE_SCALE = Object.freeze({ s: 0.84, m: 1, l: 1.28 });
 const VALID_CONTROLS = new Set(['sdk', 'none']);
 
 function pickEnum(value, allowed, fallback, label) {
@@ -147,6 +151,8 @@ export function normalizePlayerOptions(opts = {}) {
     // The transport's look. 'classic': a full-width bottom band. 'dock': a floating rounded dock
     // with lit round buttons. Same controls, same overlay rules, CSS only.
     skin: pickEnum(opts.skin, VALID_SKINS, 'classic', 'skin'),
+    // Transport scale: 's' | 'm' | 'l' (see PLAYER_SIZE_SCALE).
+    size: pickEnum(typeof opts.size === 'string' ? opts.size.toLowerCase() : opts.size, VALID_SIZES, 'm', 'size'),
     poster: opts.poster || null,
     autoplay: !!opts.autoplay,
     muted: opts.muted === undefined ? true : !!opts.muted,
@@ -610,6 +616,25 @@ const PLAYER_CSS = `
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);}
 .dxr-player-host--dock .dxr-player-title--hidden{transform:translateY(-10px);}
 
+/* ── size: 's' | 'm' | 'l' — "zoom" on overlay CONTENT only ──────────────────────────────────────
+   The bar's row and scrub, and each centre affordance's glyph box, scale as a unit; the overlay
+   boxes keep their own anchoring (bottom band / centred), so nothing drifts off-centre. */
+.dxr-player-host{--dxr-z:1;}
+.dxr-player-host--size-s{--dxr-z:${PLAYER_SIZE_SCALE.s};}
+.dxr-player-host--size-l{--dxr-z:${PLAYER_SIZE_SCALE.l};}
+.dxr-player-row,.dxr-player-scrubwrap,.dxr-player-title{zoom:var(--dxr-z);}
+.dxr-player-centre,.dxr-player-pip,.dxr-player-spin{zoom:var(--dxr-z);}
+
+/* ── anti-aliased round edges ─────────────────────────────────────────────────────────────────
+   An overlay is re-composited on its own; there the rounded CLIP of a border-radius edge can come
+   out stair-stepped. So the round controls draw their edge themselves: a mask that feathers the
+   last ~1.5 px to transparent. The edge is then in the element's own pixels, AA however it is
+   composited. (A mask is not a backdrop effect — it depends on nothing behind the element.) */
+.dxr-player-host--dock .dxr-player-btn,.dxr-player-host--dock .dxr-player-centre,
+.dxr-player-centre,.dxr-player-pip,.dxr-player-knob{
+  -webkit-mask:radial-gradient(circle closest-side,#000 calc(100% - 1.6px),transparent 100%);
+  mask:radial-gradient(circle closest-side,#000 calc(100% - 1.6px),transparent 100%);}
+
 @media (prefers-reduced-motion:reduce){
   .dxr-player,.dxr-player-title,.dxr-player-btn,.dxr-player-centre,.dxr-player-knob,.dxr-player-tip,
   .dxr-player-volslider,.dxr-player-scrubwrap::before,.dxr-player-scrubwrap::after,
@@ -737,13 +762,22 @@ function readBuffered(video) {
  * buffering spinner — each its own `data-inline3d-overlay`, each a PARTIAL region of the tile
  * (constraint 1 at the top of this section). Returns the bar element and a cleanup.
  */
-function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin }) {
+function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin, size }) {
   ensureStyle();
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.classList.add('dxr-player-host');
-  if (skin === 'dock') container.classList.add('dxr-player-host--dock');
-  // One write, on the host: every overlay below inherits it.
-  if (accent) container.style.setProperty('--dxr-accent', accent);
+  /** Skin, size and accent are all host state — one class or one property, inherited by every overlay. */
+  function applyAppearance(a) {
+    if (a.skin !== undefined) container.classList.toggle('dxr-player-host--dock', a.skin === 'dock');
+    if (a.size !== undefined) {
+      for (const k of VALID_SIZES) container.classList.toggle(`dxr-player-host--size-${k}`, k === a.size && k !== 'm');
+    }
+    if (a.accent !== undefined) {
+      if (a.accent) container.style.setProperty('--dxr-accent', a.accent);
+      else container.style.removeProperty('--dxr-accent');
+    }
+  }
+  applyAppearance({ skin, size, accent: accent || undefined });
 
   const bar = document.createElement('div');
   bar.className = 'dxr-player';
@@ -1115,6 +1149,7 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   return {
     el: bar,
     setTitle,
+    applyAppearance,
     /** Called by addPlayer on setSource() so the chrome resets with the new title. */
     resync() {
       scrubWrap.style.setProperty('--dxr-p', '0%');
@@ -1136,7 +1171,8 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       if (canFullscreen) document.removeEventListener('fullscreenchange', syncFullscreen);
       window.removeEventListener('resize', fitFullscreen);
       if (fsElement() === container) document.exitFullscreen?.().catch(() => {});
-      container.classList.remove('dxr-player-host', 'dxr-player-host--idle', 'dxr-player-host--dock');
+      container.classList.remove('dxr-player-host', 'dxr-player-host--idle', 'dxr-player-host--dock',
+        'dxr-player-host--size-s', 'dxr-player-host--size-l');
       container.style.removeProperty('--dxr-accent');
       for (const el of [titleEl, bar, centre, pip, spinner]) el.remove();
     },
@@ -1476,6 +1512,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   let cleanupBar = null;
   let resyncBar = null;
   let setBarTitle = null;
+  let applyBarAppearance = null;
   if (o.controls === 'sdk') {
     if (container) {
       const built = buildTransportBar(container, canvas, video, {
@@ -1486,11 +1523,13 @@ export function addPlayer(wall, canvas, src, opts = {}) {
         skipButtons: o.skipButtons,
         fullscreen: o.fullscreen,
         skin: o.skin,
+        size: o.size,
       });
       bar = built.el;
       cleanupBar = built.cleanup;
       resyncBar = built.resync;
       setBarTitle = built.setTitle;
+      applyBarAppearance = built.applyAppearance;
     } else {
       console.warn(
         '[inline3d/player] controls:"sdk" needs canvas.parentElement to attach the transport ' +
@@ -1578,6 +1617,25 @@ export function addPlayer(wall, canvas, src, opts = {}) {
         posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2);
       }
       if (o.autoplay) video.play().catch(() => {});
+    },
+    /**
+     * Re-skin the SDK transport live: any of `accent` (a CSS colour; '' = the default),
+     * `size` ('s' | 'm' | 'l'), `skin` ('classic' | 'dock'). Invalid values warn and are ignored.
+     * A no-op with `controls: 'none'`.
+     */
+    setAppearance(a = {}) {
+      const next = {};
+      if (a.accent !== undefined) next.accent = typeof a.accent === 'string' ? a.accent : '';
+      if (a.size !== undefined) {
+        const v = typeof a.size === 'string' ? a.size.toLowerCase() : a.size;
+        if (VALID_SIZES.has(v)) next.size = o.size = v;
+        else console.warn(`[inline3d/player] invalid size "${a.size}" — ignored`);
+      }
+      if (a.skin !== undefined) {
+        if (VALID_SKINS.has(a.skin)) next.skin = o.skin = a.skin;
+        else console.warn(`[inline3d/player] invalid skin "${a.skin}" — ignored`);
+      }
+      applyBarAppearance?.(next);
     },
     exclude(el) {
       innerHandle?.exclude(el);
