@@ -131,6 +131,7 @@ const MONO_VIEW = Object.freeze({
  * @param {'builtin'|'none'} [opts.ui='builtin']
  * @param {AbortSignal} [opts.signal]  aborting it removes the lift.
  * @param {'real'|'stub'} [opts.backend='real']  'stub' = js/lift/stubs/* (no models; dev/demo).
+ * @param {object} [opts.genParams]  DEV: overrides for lift-gen's LIFT_DEFAULTS (docs/lift-gen.md).
  * @returns {Promise<LiftHandle>}
  */
 export async function lift(element, opts = {}) {
@@ -161,6 +162,7 @@ export async function lift(element, opts = {}) {
     providers: { video: 'vda-small', still: 'moge3', inpaint: 'none', ...(opts.providers || {}) },
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',
+    genParams: opts.genParams && typeof opts.genParams === 'object' ? opts.genParams : null,
   };
 
 
@@ -563,6 +565,8 @@ export async function lift(element, opts = {}) {
           depth: frozen.depth,
           inpainter,
           quality: o.quality,
+          // the hidden layer + outpaint border are sized for the orbit the explore view allows
+          params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
           signal,
           onProgress: (v) => progress('lift', v, 0.35, 0.65),
         });
@@ -571,6 +575,7 @@ export async function lift(element, opts = {}) {
       }
       stats.generateMs = Math.round(performance.now() - tGen);
       stats.splats = (res.meta && res.meta.splatCount) || 0;
+      stats.genTimings = (res.meta && res.meta.timings) || null;
       if (isStale(gen)) return;
       const tEx = performance.now();
       // Same canvas, same WebGL2 context: explore wraps live-DIBR's `gl` (never getContext itself).
@@ -797,7 +802,7 @@ export async function lift(element, opts = {}) {
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
     /** Diagnostics only (not API): the live renderers. */
-    _internals: () => ({ explore, dibr, videoProv, stillProv }),
+    _internals: () => ({ explore, dibr, videoProv, stillProv, frozen }),
     get stats() {
       return { ...stats, state: machine.state };
     },
