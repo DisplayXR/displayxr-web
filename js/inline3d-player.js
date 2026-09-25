@@ -204,6 +204,9 @@ export function normalizePlayerOptions(opts = {}) {
     // The playlist (RFC 0001 Addendum A4): titles, and what happens at a title's end and the list's.
     titles: normalizeTitles(opts.titles),
     loopList: !!opts.loopList,
+    // One decoding player per group: previews on a shelf share a group, and starting one pauses
+    // the rest, so only one video decodes at a time. Any string; unset = no group.
+    group: typeof opts.group === 'string' && opts.group ? opts.group : null,
     autoAdvance: !!opts.autoAdvance,
     fadeMs: typeof opts.fadeMs === 'number' && opts.fadeMs > 0 ? opts.fadeMs : 0,
     // The resolved setSource transition (see resolveTransition). `fadeMs` above stays for 1.10
@@ -1536,6 +1539,31 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   };
 }
 
+// ── groups: one decoding player at a time ─────────────────────────────────────────────────
+// A shelf of previews each playing muted and looped is N decoders at once — on a panel PC that is
+// the cost that shows. Players that share `opts.group` take turns: a `play` in the group pauses
+// every other member. Module-level because the group spans players, not one player.
+const playerGroups = new Map(); // group name -> Set of <video>
+function joinGroup(name, video) {
+  if (!name) return () => {};
+  let set = playerGroups.get(name);
+  if (!set) playerGroups.set(name, (set = new Set()));
+  set.add(video);
+  const onPlay = () => {
+    for (const other of set) if (other !== video && !other.paused) other.pause();
+  };
+  video.addEventListener('play', onPlay);
+  return () => {
+    video.removeEventListener('play', onPlay);
+    set.delete(video);
+    if (!set.size) playerGroups.delete(name);
+  };
+}
+/** How many players are in a group right now (for tests and diagnostics). */
+export function groupSize(name) {
+  return playerGroups.get(name)?.size || 0;
+}
+
 let notedNoMixer = false;
 function noteNoMixer() {
   if (notedNoMixer) return;
@@ -1806,6 +1834,7 @@ function driveMixer(video, stages) {
  *        this aspect (2.39, '2.39:1', '21/9') inside the tile; implies fit 'contain'.
  * @param {Array} [opts.titles]  a playlist: `[{ id, src, title?, poster? }, …]` (RFC 0001 A4).
  * @param {boolean} [opts.loopList=false]  `next()` past the last title wraps to the first.
+ * @param {string} [opts.group]  players sharing a group decode one at a time: a play pauses the others.
  * @param {boolean} [opts.autoAdvance=false]  a title that ends moves on to the next and plays it.
  * @param {'mono'|'sbs'|'tb'} [opts.posterFormat='mono']  a stereo poster still is painted eye by eye.
  * @param {'contain'|'cover'} [opts.fit]  ./splat setVideo's fit: 'contain' letterboxes each eye
@@ -1876,6 +1905,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     }
   }
 
+  const leaveGroup = joinGroup(o.group, video);
   video.addEventListener('play', () => emit('play'));
   video.addEventListener('pause', () => emit('pause'));
   video.addEventListener('ended', () => {
@@ -2166,6 +2196,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       innerHandle?.unexclude(el);
     },
     remove() {
+      leaveGroup();
       ownLoop?.stop();
       mixerLoop?.stop();
       posterPoll?.stop();

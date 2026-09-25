@@ -106,6 +106,11 @@ export interface PlayerOptions {
   loopList?: boolean;
   /** A title that ends moves on to the next one and plays it. Default false. */
   autoAdvance?: boolean;
+  /**
+   * Players sharing a group decode one at a time: starting one pauses every other player in the
+   * group. For a shelf of previews that each play muted and looped. Any string; unset = no group.
+   */
+  group?: string;
   /** Transport scale — `'s'` (0.84×), `'m'` (default), `'l'` (1.28×). Icons, fonts and hit targets scale together. */
   size?: 's' | 'm' | 'l';
   /** A now-playing line over the top of the tile, fading with the transport. `setSource(src, { title })` changes it. */
