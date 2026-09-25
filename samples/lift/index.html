@@ -93,7 +93,7 @@ if (backend === 'real' && !q.get('ort') && !(await reachable(ORT + 'ort.webgpu.m
 document.getElementById('backend').textContent = backend + (backend === 'real' ? ` (models ${MODELS}, ort ${ORT || 'jsDelivr'})` : '');
 const vid = document.getElementById('vid');
 // Default clip is the in-repo asset; the dev tree's pan.mp4 is opt-in via ?video= (setup-models.mjs does not fetch it).
-vid.src = q.get('video') || 'assets/synthetic-720p.mp4';
+vid.src = q.get('video') || 'assets/synthetic-720p.webm';  // VP9: the DisplayXR Browser ships no H.264/HEVC
 vid.addEventListener('error', () => log(`video: failed to load ${vid.currentSrc || vid.src} (MediaError code ${vid.error?.code}) — check the path is under the served repo root`));
 for (const id of ['img', 'cov']) document.getElementById(id).src = q.get('image') || 'assets/still.jpg';
 

@@ -253,3 +253,8 @@ Same contracts, no ML: a luminance + bottom-is-nearer ramp for depth, a one-pass
 a point-grid PLY generator (two layers, INRIA property layout), and a point-sprite explore renderer.
 In the mono 2D fallback the DIBR and explore stubs sway slowly so the page visibly shows the pipeline
 running. Use `backend: 'stub'`.
+
+
+## Media codecs
+
+The DisplayXR Browser is built without proprietary codecs: `<video>` sources must be VP9 or AV1 (WebM/MP4). An H.264/HEVC source never reaches `loadeddata`; `lift()` then fails fast with a `MediaError` (`code 4`, `MEDIA_ERR_SRC_NOT_SUPPORTED`) and an `error` event instead of staying in `loading`. YouTube serves VP9/AV1, so it is unaffected.

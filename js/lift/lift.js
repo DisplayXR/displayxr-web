@@ -440,7 +440,13 @@ export async function lift(element, opts = {}) {
       return el.decode ? el.decode().catch(() => {}) : Promise.resolve();
     }
     if (el.tagName === 'VIDEO' && el.readyState < 2) {
-      return new Promise((resolve) => el.addEventListener('loadeddata', () => resolve(), { once: true }));
+      if (el.error) return Promise.reject(mediaError(el));
+      return new Promise((resolve, reject) => {
+        el.addEventListener('loadeddata', () => resolve(), { once: true });
+        // A codec the browser lacks (e.g. H.264 in a build without proprietary codecs) never
+        // reaches loadeddata; fail instead of sitting in `loading` forever.
+        el.addEventListener('error', () => reject(mediaError(el)), { once: true });
+      });
     }
     return Promise.resolve();
   }
@@ -710,6 +716,7 @@ export async function lift(element, opts = {}) {
 
   // ── element + page events ─────────────────────────────────────────────────────────────
   const media = {
+    error: () => machine.send('fail', { error: mediaError(el) }),
     pause: () => machine.send('pause'),
     play: () => machine.send('play'),
     seeked: () => machine.send('seeked'),
@@ -863,3 +870,12 @@ export async function lift(element, opts = {}) {
  * @property {(x:'auto'|number) => void} setConvergence
  * @property {() => void} remove
  */
+
+/** Turn a media element's MediaError into a readable Error (codec-less builds are the common case). */
+function mediaError(el) {
+  const codes = { 1: 'MEDIA_ERR_ABORTED', 2: 'MEDIA_ERR_NETWORK', 3: 'MEDIA_ERR_DECODE', 4: 'MEDIA_ERR_SRC_NOT_SUPPORTED' };
+  const c = el.error?.code;
+  const hint = c === 4 ? ' — the browser cannot play this source (unsupported codec/container; the DisplayXR Browser has no H.264/HEVC, use VP9/AV1)' : '';
+  const e = new Error(`media: ${codes[c] || 'error'}${el.error?.message ? ` (${el.error.message})` : ''}${hint}`);
+  e.name = 'MediaError'; e.code = c; return e;
+}
