@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lift-gen GPU parity</title>
+<pre id="o"></pre>
+<script type="module">
+// GPU-vs-CPU parity for lift-gen's morphology passes (edges, directional hidden-band dilation,
+// separable erosion) on synthetic depth. The CPU references are pinned by test/lift-gen.test.mjs;
+// this checks the GLSL does the same thing. Run with test/lift-gen-gpu.run.mjs (headless Chrome).
+import { __runMorphologyPasses } from '../js/lift/gen/lift-gen.js';
+import { erodeRef, edgesRef, hiddenRef } from '../js/lift/gen/cpu-ref.js';
+
+const out = document.getElementById('o');
+const log = (s) => { console.log(s); out.textContent += s + '\n'; };
+let fails = 0;
+function cmp(name, a, b, tol = 1e-6) {
+  let bad = 0, first = -1;
+  for (let i = 0; i < a.length; i++) if (!(Math.abs(a[i] - b[i]) <= tol)) { if (first < 0) first = i; bad++; }
+  if (bad) { fails++; log(`FAIL ${name}: ${bad}/${a.length} differ, first @${first}: gpu ${a[first]} cpu ${b[first]}`); }
+  else log(`ok   ${name} (${a.length} values)`);
+}
+
+function scene(W, H, pad) {
+  // far background 0.1, a near square 0.9 with a nested mid-depth block 0.5, a gentle ramp floor,
+  // and a 1-px-wide near pole — every edge orientation, two step sizes, a slope that must NOT edge
+  const d = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let v = 0.1 + 0.002 * y;
+    if (x >= 30 && x < 70 && y >= 20 && y < 60) v = 0.9;
+    if (x >= 45 && x < 55 && y >= 35 && y < 45) v = 0.5;
+    if (x === 90 && y > 10) v = 0.8;
+    d[y * W + x] = v;
+  }
+  return d;
+}
+
+// band values are non-integer on purpose: k ≤ Δ·band at an exact tie is decided by float32 vs
+// float64 rounding, which is not a behaviour worth pinning.
+for (const [W, H, pad, K, band, R] of [[120, 80, [0, 0], 12, 10.3, 5], [128, 96, [6, 4], 20, 30.3, 22]]) {
+  const inner = [W - 2 * pad[0], H - 2 * pad[1]];
+  const d = scene(W, H, pad);
+  const tau = 0.04;
+  const gpu = __runMorphologyPasses({ d, W, H, pad, inner, tau, K, band, R });
+  const E = edgesRef(d, W, H, { pad, inner, tau });
+  cmp(`edges ${W}x${H}`, gpu.edges, E);
+  cmp(`hidden ${W}x${H} K=${K}`, gpu.hidden, hiddenRef(d, E, W, H, { pad, inner, K, band, tau }));
+  cmp(`erode ${W}x${H} R=${R}`, gpu.erode, erodeRef(d, W, H, R));
+}
+log(fails ? `RESULT FAIL (${fails})` : 'RESULT PASS');
+log('DONE');
+</script>
