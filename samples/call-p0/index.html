@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR — 3D call P0 probe</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
+  h1{font-size:24px;margin:0 0 4px}
+  h2{font-size:14px;opacity:.6;margin:28px 0 10px;text-transform:uppercase;letter-spacing:.04em}
+  .lede{opacity:.72;margin:0 0 12px;max-width:80ch}
+  button,select,input{font:inherit;color:inherit;background:#1d2029;border:1px solid #333845;border-radius:6px;padding:6px 10px}
+  button{cursor:pointer} button:hover{border-color:#5aa8ff}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+  pre{background:#16181f;border:1px solid #262a35;border-radius:8px;padding:10px;overflow:auto;max-height:340px;font-size:12px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+  /* Stages are VISUALLY BARE — anything drawn here would be woven with the tile. */
+  .stage{aspect-ratio:16/9}
+  .stage canvas,.stage video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
+  .cap{font-size:12px;opacity:.6;margin-top:4px}
+  #status{font-size:13px;padding:8px 12px;border-radius:8px;display:inline-block;background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+  #status.woven{background:#134e2a55;border-color:#24a05a55;color:#7ee2a4}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>3D call — P0 probe</h1>
+  <p class="lede">Throwaway diagnostic for the <code>@displayxr/inline3d/call</code> design. Part 1 lists
+    every camera and what resolution it will actually deliver (a stereo camera usually shows up as one
+    wide side-by-side device). Part 2 runs a peer-to-peer WebRTC call (PeerJS cloud signalling, P0 only)
+    and weaves the remote side-by-side stream with <code>addVideo</code>, logging what the encoder
+    really sends. Every result is logged as a greppable <code>[call-p0]</code> console line.</p>
+  <div id="status">Detecting DisplayXR Browser…</div>
+
+  <h2>1 · Camera probe</h2>
+  <div class="row"><button id="btn-probe">Probe cameras</button><span class="cap">asks for camera permission once, then opens each device at max resolution</span></div>
+  <pre id="probe-out">(not run)</pre>
+
+  <h2>2 · Call</h2>
+  <div class="row">
+    <label>Source <select id="src"></select></label>
+    <label>Send as <select id="fmt"><option value="auto">auto</option><option value="sbs">SBS</option><option value="mono">mono</option></select></label>
+    <label>Codec <select id="codec"><option>VP9</option><option>VP8</option><option>AV1</option><option>H264</option></select></label>
+    <label>Max kbps <input id="kbps" type="number" value="6000" style="width:6em"></label>
+    <button id="btn-start">Start camera + signalling</button>
+  </div>
+  <div class="row">My id: <code id="my-id">—</code>
+    <input id="peer-id" placeholder="peer id" autocomplete="off" spellcheck="false">
+    <button id="btn-call">Call</button>
+    <button id="btn-report">Copy report JSON</button>
+  </div>
+  <div class="tiles">
+    <div><div class="stage"><video id="local" muted playsinline autoplay></video></div><div class="cap" id="local-cap">local (raw, not woven)</div></div>
+    <div><div class="stage"><canvas id="remote-canvas"></canvas></div><div class="cap" id="remote-cap">remote (woven via addVideo when SBS)</div></div>
+  </div>
+  <h2>Stats</h2>
+  <pre id="stats-out">(no call)</pre>
+  <p class="cap">URL params: <code>?id=NAME</code> fixed peer id · <code>?call=NAME</code> auto-call ·
+    <code>?src=synthetic</code> · <code>?codec=VP9</code> · <code>?kbps=6000</code> · <code>?autostart=1</code> ·
+    <code>?probe=1</code> run the probe on load.</p>
+</div>
+
+<video id="remote" playsinline autoplay muted style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"></video>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">
+{ "imports": { "@displayxr/inline3d": "../../js/inline3d.js" } }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
