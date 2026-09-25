@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  parseManifest, createModelSource, sha256Hex, VERIFIED_HEADER, CACHE_NAME,
+  parseManifest, createModelSource, sha256Hex, stampKey, CACHE_NAME,
 } from '../js/lift/providers/models.js';
 
 const shipped = JSON.parse(readFileSync(new URL('../js/lift/models.json', import.meta.url), 'utf8'));
@@ -112,8 +112,9 @@ test('network download is verified, cached with a stamp, then served from cache 
   assert.deepEqual([...a.bytes], [...BYTES]);
   assert.equal(progress.at(-1).loaded, BYTES.byteLength);
   assert.equal(progress.at(-1).total, BYTES.byteLength);
-  const stored = caches.stores.get(CACHE_NAME).map.get('https://m/vda/med.onnx');
-  assert.equal(stored.headers.get(VERIFIED_HEADER), SHA);
+  const map = caches.stores.get(CACHE_NAME).map;
+  assert.ok(map.has('https://m/vda/med.onnx'));
+  assert.equal(await map.get(stampKey('https://m/vda/med.onnx')).clone().text(), SHA);
 
   const b = await src.get('v-med');
   assert.equal(b.source, 'cache');
@@ -130,7 +131,7 @@ test('a corrupted download is rejected and NOT cached', async () => {
   const caches = fakeCaches();
   const src = createModelSource({ baseUrl: 'https://m', manifest: manifest(), fetch, caches, native: false });
   await assert.rejects(src.getBytes('v-med'), (e) => e.code === 'EINTEGRITY' && /sha256 mismatch/.test(e.message));
-  assert.equal(caches.stores.get(CACHE_NAME).map.size, 0);
+  assert.equal(caches.stores.get(CACHE_NAME).map.size, 0, 'neither body nor stamp may survive');
 });
 
 test('a truncated download fails on size before hashing', async () => {
@@ -150,7 +151,7 @@ test('an unstamped / poisoned cache entry is re-verified: good bytes get stamped
 
   const a = await src.getBytes('v-med');
   assert.equal(a.source, 'cache');
-  assert.equal(c.map.get('https://m/vda/med.onnx').headers.get(VERIFIED_HEADER), SHA);
+  assert.equal(await c.map.get(stampKey('https://m/vda/med.onnx')).clone().text(), SHA);
 
   const b = await src.getBytes('v-low');
   assert.equal(b.source, 'network', 'poisoned entry must be refetched');

@@ -81,7 +81,8 @@ export function createOrtDepthProvider(opts) {
   const info = { model: null, width: 0, height: 0, preprocess: null, warmupMs: null, backend: 'webgpu' };
 
   async function createSession(name, { signal, onProgress }) {
-    const { bytes } = await modelSource.getBytes(name, { signal, onProgress });
+    const { bytes, source } = await modelSource.getBytes(name, { signal, onProgress });
+    info.source = source;
     if (signal && signal.aborted) throw signal.reason;
     const e = modelSource.entry(name);
     const so = { executionProviders: ['webgpu'], graphOptimizationLevel: 'all' };

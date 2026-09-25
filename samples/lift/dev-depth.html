@@ -154,7 +154,7 @@ async function runStill(ort, source) {
   for (const x of d.data) { if (Number.isNaN(x)) nan++; else { if (x < lo) lo = x; if (x > hi) hi = x; } }
   const res = { kind: 'still', model: p.info.model, w: d.w, h: d.h, space: d.space, pre: p.info.preprocess,
     focalPx: d.intrinsics ? +d.intrinsics.focalPx.toFixed(1) : null, fovXDeg: d.intrinsics ? +d.intrinsics.fovXDeg.toFixed(2) : null,
-    range: [+lo.toFixed(3), +hi.toFixed(3)], nan, loadMs: Math.round(loadMs),
+    range: [+lo.toFixed(3), +hi.toFixed(3)], nan, loadMs: Math.round(loadMs), from: p.info.source,
     firstMs: Math.round(runs[0]), medMs: runs.length > 1 ? Math.round(med(runs.slice(1))) : null };
   $('sstat').textContent = `still  ${res.model}\n  ${d.w}×${d.h}  ${d.space}\n  first ${res.firstMs} ms` +
     (res.medMs ? `, then ${res.medMs} ms` : '') + `\n  load ${res.loadMs} ms` + (res.focalPx ? `\n  focal ${res.focalPx} px (fovX ${res.fovXDeg}°)` : '');
@@ -201,7 +201,7 @@ try {
   log('ORT', ort.env.versions, 'providers', getRegistry().list());
   const source = createModelSource({ baseUrl: models });
   await source.ready();
-  if (mode === 'video' || mode === 'both') await runVideo(ort, source);
+  if (mode === 'video' || mode === 'both') await runVideo(ort, source); else $('vstat').textContent = 'video: skipped (mode=' + mode + ')';
   if (mode === 'inpaint') await runInpaint(ort, source);
   else if (mode !== 'video') await runStill(ort, source);
 } catch (e) {

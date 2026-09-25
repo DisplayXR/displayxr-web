@@ -94,9 +94,12 @@ then:
    `displayxr-lift:`, the model source fetches `displayxr-lift://models/<name>`. The browser has
    already verified the bytes it ships (Phase A). If the native store fails, the source falls back
    to the network.
-2. **Cache API.** Models are cached in `caches.open('dxr-lift-models')`, keyed by URL. A cached
-   entry carries an `x-dxr-lift-verified-sha256` stamp, so a warm load is not hashed again. An
-   entry without a stamp is verified once and then stamped; if it fails, it is evicted.
+2. **Cache API.** Models are cached in `caches.open('dxr-lift-models')`, keyed by URL. The body
+   is streamed into the cache with a `tee()` of the download. Chrome's `Cache.put` rejects a
+   ~700 MB in-memory `Response` with "Unexpected internal error" but accepts the same bytes
+   streamed. A separate small entry at `stampKey(url)` records the sha256 the bytes matched, so a
+   warm load is not hashed again. An entry without a stamp is verified once and then stamped; if
+   it fails, it is evicted.
 3. **Network.** The source fetches `baseUrl + '/' + path` and reports progress from
    `Content-Length`. It checks the size and then the sha256 (WebCrypto). Bytes that fail
    (`err.code === 'EINTEGRITY'`) are never cached.
@@ -129,12 +132,28 @@ loop.
 
 ## Measured (M1 Pro, Chrome 153 headless, `--use-angle=metal`, GPU idle, JSPI bundle)
 
-| path | preprocess | ms/frame (median of 40) | fps |
+Each row is a fresh browser, run only after the GPU was idle and no other headless Chrome was
+running. Figures are medians.
+
+| path | preprocess | per frame / image | fps |
 |---|---|---|---|
-| video 364×210 (`low`, and what `auto` picks here) | gpu | 79.5–81 | 12.3–12.6 |
-| video 364×210 | cpu | 83.3 | 12.0 |
-| video 518×294 (`medium`) | gpu | 148.4 | 6.7 |
-| video 518×294 | cpu | see CHANGELOG of this PR | |
+| video 364×210 (`low`, and what `auto` picks on this machine) | gpu | 79.5–81 ms | 12.3–12.6 |
+| video 364×210 | cpu | 83.3 ms | 12.0 |
+| video 518×294 (`medium`) | gpu | 148.4 ms | 6.7 |
+| video 518×294 | cpu | 153.7 ms | 6.5 |
+| still MoGe-3 770×434 (`auto`/`medium`) | gpu | 1.32 s (first call 1.4–1.9 s) | |
+| still MoGe-3 1022×574 (`high`) | gpu | 2.77 s | |
+| still DA3Mono-L 770×434 / 1022×574 | gpu | 1.21 s / 2.49 s | |
+| still DA2-Small 518×294 (`low`) | gpu | 66 ms | |
+| inpaint two-sided 960×540, 512×288 / 1024×576 tiles | – | 277 ms / 234 ms | |
+
+GPU preprocessing is 3–5 % faster than CPU and is the default. Video `auto` costs about 2.9 s of
+load time on this machine: it loads 518×294, runs the warm-up (80 ms/frame is over the limit),
+then loads 364×210. Model load for MoGe 770 (715 MB from localhost) takes 3.8–5.0 s cold,
+including the sha256, and 2.7 s warm from the Cache API.
+
+On the synthetic scene, whose true horizontal FOV is 60°, MoGe reports fovX 58.1° at 770×434 and
+60.5° at 1022×574.
 
 The temporal cache stays on the GPU (`preferredOutputLocation: { cache_out: 'gpu-buffer' }`) and
 is fed back every frame. Reading it back doubles the frame time.

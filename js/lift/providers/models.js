@@ -7,9 +7,9 @@
 //      the browser advertises it (`globalThis.__dxrLiftNative`, or the page itself is served from
 //      that scheme) — the browser ships/verifies the weights, so nothing is downloaded (Phase A);
 //   2. otherwise fetches `baseUrl + path`, streaming with progress (Content-Length), verifies the
-//      byte count and the sha256 from the manifest (WebCrypto), and stores the verified bytes in the
-//      Cache API (`caches.open('dxr-lift-models')`) with a "verified" stamp header, so a warm load
-//      is a cache hit with no re-hash;
+//      byte count and the sha256 from the manifest (WebCrypto), and streams the bytes into the
+//      Cache API (`caches.open('dxr-lift-models')`) plus a separate "verified" stamp entry
+//      (see stampKey), so a warm load is a cache hit with no re-hash;
 //   3. falls back to a plain verified fetch when the Cache API is unavailable (http:, opaque
 //      origins, private modes that throw).
 //
@@ -22,8 +22,13 @@
 export const MANIFEST_SCHEMA = 1;
 export const CACHE_NAME = 'dxr-lift-models';
 export const NATIVE_ORIGIN = 'displayxr-lift://models/';
-/** Response header recording that the cached bytes already passed sha256 verification. */
-export const VERIFIED_HEADER = 'x-dxr-lift-verified-sha256';
+/**
+ * Cache key of the "verified" stamp for a model URL: a tiny entry whose body is the sha256 the
+ * cached bytes matched. Kept separate from the body entry so the body can be streamed in.
+ */
+export function stampKey(u) {
+  return u + (u.includes('?') ? '&' : '?') + 'dxr-lift-verified-sha256';
+}
 
 const ROLES = new Set(['depth-video', 'depth-still', 'inpaint']);
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -220,12 +225,14 @@ export function createModelSource(o = {}) {
     }
 
     const u = url(name);
+    const sk = stampKey(u);
     const cache = await openCache();
     if (cache) {
       try {
         const hit = await cache.match(u);
         if (hit) {
-          const stamp = hit.headers.get(VERIFIED_HEADER);
+          const st = await cache.match(sk);
+          const stamp = st ? (await st.text()).trim() : '';
           const bytes = new Uint8Array(await hit.arrayBuffer());
           if (onProgress) onProgress({ name, loaded: bytes.byteLength, total: bytes.byteLength });
           if (stamp === file.sha256 && bytes.byteLength === file.size)
@@ -233,10 +240,11 @@ export function createModelSource(o = {}) {
           // stale or unstamped entry: re-verify once; drop it if it is not the manifest's bytes
           try {
             await checkBytes(bytes, file, name);
-            await cache.put(u, stampedResponse(bytes, file));
+            await cache.put(sk, new Response(file.sha256));
             return { bytes, size: bytes.byteLength, sha256: file.sha256, source: 'cache' };
           } catch {
             await cache.delete(u);
+            await cache.delete(sk);
           }
         }
       } catch (e) {
@@ -247,12 +255,35 @@ export function createModelSource(o = {}) {
     const r = await fetchImpl(u, { signal });
     if (!r.ok) throw new Error(`lift models: ${u} → HTTP ${r.status}`);
     const total = +(r.headers.get('content-length') || file.size);
-    const bytes = r.body
-      ? await readAll(r.body, { total, onProgress, signal, name })
-      : new Uint8Array(await r.arrayBuffer());
-    await checkBytes(bytes, file, name);
-    if (cache) {
-      try { await cache.put(u, stampedResponse(bytes, file)); } catch { /* quota: serve uncached */ }
+    // Cache by STREAMING the response body into the Cache API (tee), not by putting the assembled
+    // buffer: Chrome refuses a ~700 MB in-memory Response in Cache.put ("Unexpected internal
+    // error") but accepts the same bytes streamed. The verified stamp is a separate tiny entry,
+    // written only after the sha256 matches; a mismatch deletes the body entry.
+    let body = r.body;
+    /** @type {Promise<boolean> | null} */
+    let putP = null;
+    if (cache && body) {
+      const [toCache, toRead] = body.tee();
+      body = toRead;
+      putP = cache.put(u, new Response(toCache, {
+        headers: { 'content-type': 'application/octet-stream', 'content-length': String(file.size) },
+      })).then(() => true, (e) => {
+        console.warn(`lift models: not cached ${name} (${(file.size / 1e6).toFixed(0)} MB): ${e && e.name}: ${e && e.message}`);
+        return false;
+      });
+    }
+    let bytes;
+    try {
+      bytes = body
+        ? await readAll(body, { total, onProgress, signal, name })
+        : new Uint8Array(await r.arrayBuffer());
+      await checkBytes(bytes, file, name);
+    } catch (e) {
+      if (putP && await putP) { await cache.delete(u); await cache.delete(sk); }
+      throw e;
+    }
+    if (putP && await putP && verify) {
+      try { await cache.put(sk, new Response(file.sha256)); } catch { /* next load re-verifies */ }
     }
     return { bytes, size: bytes.byteLength, sha256: file.sha256, source: 'network' };
   }
@@ -261,16 +292,6 @@ export function createModelSource(o = {}) {
     const d = need().defaults[role];
     if (!d) return (need().models.find((m) => m.role === role) || {}).name;
     return typeof d === 'string' ? d : d[quality] || d.medium || Object.values(d)[0];
-  }
-
-  function stampedResponse(bytes, file) {
-    return new Response(bytes, {
-      headers: {
-        'content-type': 'application/octet-stream',
-        'content-length': String(bytes.byteLength),
-        [VERIFIED_HEADER]: verify ? file.sha256 : '',
-      },
-    });
   }
 
   return {
