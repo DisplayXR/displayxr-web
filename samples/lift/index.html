@@ -120,6 +120,7 @@ const log = (...a) => {
   console.log('[lift-sample]', line);
 };
 const handles = new Map();
+window.__liftHandles = handles; // dev hook: handle.capture() / handle.stats from DevTools or CDP
 
 async function doLift(id, el = document.getElementById(id)) {
   if (handles.has(id)) return handles.get(id);

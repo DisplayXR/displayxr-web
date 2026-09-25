@@ -309,3 +309,8 @@ Anything the lift draws over its own woven tile must use a **near-solid backgrou
 ## Live look-around
 
 `lift(el, { live: { lookAround: 0..1 } })` — with a real inline tile the source camera sits at the centroid of the current eye pair (stereo only, default `0`); `lookAround > 0` lets head motion produce transient parallax that re-centres over ~1 s. See `docs/lift-dibr.md`.
+
+
+## Dev serving
+
+Serve the repo root with `python3 samples/lift/serve.py [port]` (no-store cache headers, correct MIME for `.mjs`/`.wasm`/`.onnx`/`.webm`). Plain `python -m http.server` sends no cache headers, so Chrome can keep running stale SDK modules after a `git pull`.
