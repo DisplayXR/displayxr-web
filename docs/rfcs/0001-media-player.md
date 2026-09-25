@@ -240,3 +240,178 @@ routing through a scrub, degrades to mono left-eye on `trackingstatechange → '
 recovers on return, and — with three player tiles on one page — playing one pauses the other two
 in its group while all three keep their weave layers (scroll-visibility lazy lifecycle unaffected,
 only decode is grouped).
+
+
+---
+
+## Addendum A — Surface mode: the player on an existing splat handle
+
+*Status: proposal, for review before any code. 2026-09-25.*
+
+### Why
+
+The Show Spatial team will not use `addPlayer` as shipped, because it creates a second woven
+surface (`wall.addVideo`). Their app is one session and one woven canvas that is never torn down
+(woven-canvas rules 2 and 3), with video played on that canvas through the splat handle's
+`setVideo`. A full-screen player tile on top of it is the "two overlapping tiles" case. What
+would work for them is a **surface mode**: the player provides transport, controls and title
+picking, and draws through `setVideo` on the handle they already have, owning no canvas of its
+own. It also answers the "two video paths in the SDK" question from #71's review: there are two
+*surfaces*, and one player drives either.
+
+### A1. API shape: a separate entry point
+
+Two options:
+
+- **(a) An option on `addPlayer`:** `addPlayer(wall, canvas, src, { surface: handle })`.
+- **(b) A separate entry point:** `attachPlayer(handle, src, opts) → PlayerHandle`.
+
+**Recommendation: (b).** The two modes differ in ways an option would hide:
+
+| | `addPlayer` (owns a surface) | `attachPlayer` (borrows one) |
+|---|---|---|
+| Arguments | `wall`, `canvas` | the splat handle only |
+| Creates | a woven window (`wall.addVideo`) | nothing woven; it uses the handle's video slot |
+| Ends with | `remove()`: its window is gone | `detach()`: `setVideo(null)`, and the scene comes back as it was |
+| Tile options | `width`, `height`, `cornerRadius`, `feather`, `observe` | none (the handle's own tile) |
+
+Under (a), `canvas` and the tile options would be silently ignored in one mode, and `remove()`
+would mean two different things. Under (b), each entry point takes only what it uses. Both return
+the same `PlayerHandle` type, so a page's transport and voice code does not branch (A4). Inside
+the module, one player core sits on one of two *surface adapters*: a canvas adapter (`addVideo`,
+today's code) and a splat adapter (`setVideo`).
+
+```js
+import { attachPlayer } from '@displayxr/inline3d/player';
+
+const splat = await addSplat(wall, canvas, 'home.sog', { engine: 'playcanvas' });
+// … later, on the Watch screen:
+const player = attachPlayer(splat, titles[0].src, { format: 'sbs', fit: 'contain' });
+player.play();
+// … leaving Watch:
+await player.detach();          // setVideo(null): splat, pose, lens and rig exactly as they were
+```
+
+### A2. Who owns the `<video>`, and how `setVideo(null)` interacts with `setSource` and crossfades
+
+**The player owns the element.** It creates the `<video>`, as `addPlayer` does, and passes the
+*element* to `setVideo`. By `setVideo`'s contract an element you pass stays yours: the splat
+module never plays, pauses or releases it. So transport, events, preload and the decoder lifetime
+stay in one place, the player, in both modes.
+
+**Lifecycle on the handle:**
+
+1. `attachPlayer` → `handle.setVideo(videoEl, { format, fit, autoplay: false })`. The scene stays on
+   screen until the video's first frame, then switches in one task. The scene is the poster, so
+   there is no blank gap.
+2. `setSource(next)` → the player prepares a **second** `<video>` for `next` and calls
+   `handle.setVideo(secondEl, …)`. That swaps at the second element's first frame and keeps the
+   original pre-video state, so a later `setVideo(null)` still restores the scene. The player
+   then releases the first element. Two elements alternate, and the plane never shows an empty
+   element.
+3. `detach()` → `handle.setVideo(null)`: the splat, pose, lens and declared rig come back exactly,
+   and the player releases its element. `detach()` resolves when the restore has happened.
+4. The page's own `setSource` on the **splat** rejects while a video is on (`setVideo`'s rule), so
+   leaving Watch is `await player.detach()` first. The player never calls `setVideo(null)` except
+   in `detach()`.
+
+**If something else takes the slot:** a page (or a second player) calling `handle.setVideo(…)`
+while a player is attached supersedes it. The player sees its pending or current video replaced,
+stops driving the handle, and emits a `'detached'` event with `{ reason: 'superseded' }`; it never
+fights for the slot.
+
+**Crossfades:** `setVideo` takes a URL or an `HTMLVideoElement`, not a canvas, so the canvas
+player's crossfade (a mixer canvas standing in for the video) cannot be reused. Proposal:
+
+- **v1 of surface mode: `transition: 'cut'` only.** Because of step 2 the cut is already clean:
+  the swap happens at the next title's first frame, with no black between.
+  `transition: 'crossfade'` warns once and cuts.
+- **Follow-up, in `./splat`:** `setVideo(src, { transition: 'crossfade', durationMs, easing })`,
+  done on the GPU (the plane samples the outgoing and incoming textures for the duration). That
+  keeps one crossfade vocabulary across `setSource` for splats, the canvas player and the
+  surface player. It is a change to David's module, so it is listed here, not assumed.
+
+### A3. Excluding the controls from the weave when the player owns no canvas
+
+The controls (transport bar, title line, centre button, key pip, spinner) are page elements over
+the handle's woven canvas, the same as over the player's own canvas today. The only difference
+is where they are inserted:
+
+- **Placement:** as siblings of the handle's canvas, in its parent element, the same as the
+  canvas player does with its own canvas. The parent must be positioned; the player sets
+  `position: relative` only if it is `static`, as today. `opts.chromeContainer` can name another
+  element for apps whose canvas parent is not the right box.
+- **Browsers with draw-order occlusion:** nothing to do. The browser composites any 2D content
+  over the tile by draw order.
+- **Legacy browsers:** each overlay keeps `data-inline3d-overlay`, and the core's auto-scan finds it
+  under the woven canvas's parent. The player also calls `handle.exclude(el)` for each overlay
+  and `handle.unexclude(el)` on detach, so exclusion does not depend on the page's DOM nesting
+  either way.
+- **The chrome rules still apply:** partial regions only (no full-tile plate), no
+  `backdrop-filter`, and no glow outside a control's own box.
+- **Fullscreen defaults off in surface mode.** Fullscreening the handle's container would
+  fullscreen the whole app's canvas. `fullscreen: true` is still allowed for apps where that is
+  the intent.
+
+### A4. Playlist API parity between the two modes
+
+Show Spatial's voice commands must work against either mode, so the playlist layer sits **above**
+the surface adapter and is the same code for both:
+
+```ts
+interface PlayerTitle { id: string; src: PlayerSource; title?: string; poster?: string; format?: PlayerFormat }
+
+player.titles            // readonly PlayerTitle[]   (set with opts.titles or player.setTitles())
+player.current           // PlayerTitle | null
+player.play(id?)         // no argument: resume; an id: switch to that title and play it
+player.pause()
+player.toggle()
+player.next()            // wraps at the end only with opts.loopList
+player.back()            // restarts the current title if more than 3 s in, else the previous one
+player.on('ended' | 'titlechange' | 'play' | 'pause' | 'timeupdate' | 'error' | 'detached', fn)
+```
+
+- `'ended'` keeps #73's behaviour: it also fires once for a listener attached after the clip ended.
+- With `loop: false` a title ends, and the list does **not** auto-advance unless
+  `opts.autoAdvance: true`. That is the no-loop path they asked for.
+- Everything above behaves identically in both modes. The only mode-dependent behaviour is in
+  the table below.
+
+**Option parity:**
+
+| Option | `addPlayer` | `attachPlayer` |
+|---|---|---|
+| `format` (`'sbs' \| 'tb' \| 'mono'`) | yes | yes (passed to `setVideo`) |
+| `fit` (`'contain' \| 'cover'`) | yes | yes (passed to `setVideo`) |
+| `band` | yes | needs `setVideo` to take a band (follow-up in `./splat`); warns and ignores until then |
+| `transition: 'crossfade'` | yes | cut only, until `setVideo` crossfades (A2) |
+| `posterFormat` | yes | n/a: the scene is on screen until the first frame |
+| `skin`, `size`, `accent`, `title`, `skipButtons`, `keyboard` | yes | yes |
+| `fullscreen` | default on | default off |
+
+Controls that sit inside the letterbox bars need the plane's on-screen rect. For the splat
+adapter that means `setVideo`'s result exposing the rect of the plane it drew (a small addition to
+`./splat`), until which the bars layout falls back to the bottom of the tile.
+
+### A5. Asks of `./splat`
+
+None of these block surface mode v1. Each makes it match the canvas player more closely:
+
+1. `setVideo(…, { transition, durationMs, easing })`, a GPU crossfade (A2).
+2. `setVideo(…, { band })`, a letterbox slot of a target aspect (A4).
+3. The plane's on-screen rect on `setVideo`'s result, updated on resize, for controls in the bars (A4).
+
+### A6. Plan
+
+- Split the player into a core plus two surface adapters. No behaviour change for `addPlayer`;
+  existing tests stay green.
+- `attachPlayer` with the splat adapter: `format`, `fit`, cut transitions, controls, keyboard,
+  the playlist API, and `detach()`.
+- The playlist API lands first in the canvas player (next PR), then carries over unchanged.
+- **Acceptance on the panel:** in one app with a single persistent splat canvas, go to Watch
+  (attach), play, go next/back by API and by voice-command stand-in, detach, and confirm the scene
+  is restored exactly (pose, lens, rig). No second woven canvas is created at any point. Check
+  the controls stay crisp over the woven canvas on a legacy browser (exclusion) and with
+  draw-order occlusion.
+- **Open questions for David:** whether A5.1 (GPU crossfade in `setVideo`) is acceptable in
+  `./splat`, and whether `attachPlayer` should also accept a `model` handle later.
