@@ -23,8 +23,9 @@ in vec2 vUv;
 out vec4 outColor;
 
 uniform sampler2D uColor;   // source frame, UNPACK_FLIP_Y -> v=0 bottom
-uniform sampler2D uDisp;    // raw (dilated) disparity, row 0 = image TOP, R16F bilinear
-uniform vec2  uDispRes;     // depth texture size (px)
+uniform sampler2D uDisp;    // raw (dilated) disparity, row 0 = image TOP, R16F bilinear — the
+                            // depth-res map, or its joint-bilateral upsample at video res
+uniform vec2  uDispRes;     // DEPTH-GRID size (px): sizes the disocclusion probe either way
 uniform float uLo, uHi;     // percentile range of raw disparity -> n in [0,1]
 uniform float uConv;        // convergence, normalised n that lands on the glass
 uniform float uQScale;      // q per unit of (n - conv): budget * A / (kappa * D0) * gain
@@ -33,6 +34,7 @@ uniform float uAspect;      // A = window width / height
 uniform vec3  uEye;         // eye relative to window centre, in window heights
 uniform vec3  uCam;         // source camera (eye centroid), same frame
 uniform int   uSteps;       // coarse march steps
+uniform int   uDebug;       // 1 = output the normalised disparity at the source pixel (grey)
 
 // Map sample uv (source) -> relative parallax q at that pixel.
 float qAt(vec2 uvs) {
@@ -53,6 +55,11 @@ vec2 srcUv(vec2 pp, float q) {
 }
 
 void main() {
+  if (uDebug == 1) {
+    float d = texture(uDisp, vec2(vUv.x, 1.0 - vUv.y)).r;
+    outColor = vec4(vec3(clamp((d - uLo) / max(uHi - uLo, 1e-6), 0.0, 1.0)), 1.0);
+    return;
+  }
   vec2 pp = vec2((vUv.x - 0.5) * uAspect, vUv.y - 0.5);
   float qNear = uQScale * (1.0 - uConv);
   float qFar  = uQScale * (0.0 - uConv);

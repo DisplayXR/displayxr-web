@@ -82,12 +82,13 @@ test('DepthNormalizer: EMA decay 0.9 toward a new range, reset snaps', () => {
   near(nz.hi, 2.98, 2e-3, 'no stabilize = this frame');
 });
 
-test('auto-convergence on the synthetic scene = centre median', () => {
+test('auto-convergence on the synthetic scene = centre mean (default) / median (legacy)', () => {
   const d = depthMap(0, 364, 210);
-  const nz = new DepthNormalizer();
-  const s = nz.update(d, 364, 210);
+  const s = new DepthNormalizer().update(d, 364, 210);
   assert.ok(s.conv > 0 && s.conv < 1, String(s.conv));
-  near(s.conv, centreMedian(d, 364, 210, s.lo, s.hi), 1e-6);
+  near(s.conv, centreMean(d, 364, 210, s.lo, s.hi), 1e-6);
+  const m = new DepthNormalizer({ convMode: 'median' }).update(d, 364, 210);
+  near(m.conv, centreMedian(d, 364, 210, m.lo, m.hi), 1e-6);
 });
 
 test('viewEye inverts kooimaProjection (eye in window heights)', () => {
@@ -208,4 +209,71 @@ test('REGRESSION: pre-fix source camera on the tile axis shears the frame by E.y
     near(Math.abs(dy), Math.abs(e.y * qFar) * PANEL_VIEW_H, 0.5, 'shear = E.y*q');
     assert.ok(Math.abs(dy) > 15, `pre-fix vertical shift ${dy.toFixed(1)} px of 1125`);
   }
+});
+
+// ---- live-quality pass: edge-snap packing, convergence stability, scene cuts ----
+import { erodeMin, snapPack, snapRadii, centreMean, deadBand } from '../js/lift/live-dibr.js';
+import { thumbSad, SCENE_CUT_SAD } from '../js/lift/providers/depth-ort.js';
+
+test('erodeMin shrinks the foreground by r px; snapPack interleaves d/min/max', () => {
+  const w = 9, h = 9;
+  const d = new Float32Array(w * h);
+  for (let y = 2; y <= 6; y++) for (let x = 2; x <= 6; x++) d[y * w + x] = 1;   // 5×5 block
+  const e = erodeMin(d, w, h, 2);
+  assert.equal(e.reduce((a, b) => a + b, 0), 1);          // only the centre survives
+  assert.equal(e[4 * w + 4], 1);
+  const p = snapPack(d, w, h, 1);
+  assert.equal(p.length, w * h * 4);
+  assert.equal(p[4 * (2 * w + 2)], 1);        // r = d
+  assert.equal(p[4 * (2 * w + 2) + 1], 0);    // corner eroded away
+  assert.equal(p[4 * (1 * w + 1) + 2], 1);    // dilated outward
+  assert.equal(p[4 * (4 * w + 4) + 3], 1);
+});
+
+test('snapRadii scale with the depth width, radius capped at 12', () => {
+  assert.deepEqual(snapRadii({ snapCore: 4, snapRadius: 8 }, 364), { core: 4, radius: 8 });
+  assert.deepEqual(snapRadii({ snapCore: 4, snapRadius: 8 }, 518), { core: 6, radius: 11 });
+  assert.equal(snapRadii({ snapCore: 4, snapRadius: 20 }, 518).radius, 12);
+});
+
+test('centreMean is continuous where centreMedian flips (bimodal centre)', () => {
+  const w = 40, h = 20;
+  const mk = (cols) => { const d = new Float32Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) d[y * w + x] = x < cols ? 1 : 0; return d; };
+  // subject edge crossing the centre by two columns
+  const a = mk(19), b = mk(21);
+  const jumpMedian = Math.abs(centreMedian(a, w, h, 0, 1) - centreMedian(b, w, h, 0, 1));
+  const jumpMean = Math.abs(centreMean(a, w, h, 0, 1) - centreMean(b, w, h, 0, 1));
+  assert.ok(jumpMedian > 0.9, `median flips (${jumpMedian})`);
+  assert.ok(jumpMean < 0.1, `mean moves a little (${jumpMean})`);
+  near(centreMean(new Float32Array(w * h).fill(5), w, h, 0, 10), 0.5, 1e-6);
+});
+
+test('deadBand: backlash of ±band, NaN takes the value', () => {
+  assert.equal(deadBand(NaN, 0.4, 0.05), 0.4);
+  assert.equal(deadBand(0.5, 0.53, 0.05), 0.5);
+  near(deadBand(0.5, 0.6, 0.05), 0.55, 1e-12);
+  near(deadBand(0.5, 0.3, 0.05), 0.35, 1e-12);
+});
+
+test('DepthNormalizer: jitter inside the dead band never moves the convergence', () => {
+  const w = 20, h = 10;
+  const n = new DepthNormalizer({ ema: 0.9, convBand: 0.05 });
+  const base = new Float32Array(w * h);
+  for (let i = 0; i < base.length; i++) base[i] = (i % w) / (w - 1);
+  n.update(base, w, h);
+  const c0 = n.conv;
+  for (let k = 0; k < 20; k++) {
+    const j = Float32Array.from(base, (v, i) => (i === 0 || i === base.length - 1 ? v : v + 0.02 * Math.sin(k + i)));
+    n.update(j, w, h);
+  }
+  near(n.conv, c0, 0.01);
+  const old = new DepthNormalizer({ convMode: 'median', convBand: 0 });
+  assert.equal(old.convMode, 'median');
+});
+
+test('thumbSad: 0 for equal frames, 1 for black vs white; cut threshold in range', () => {
+  const a = new Uint8Array(64 * 36 * 4).fill(0), b = new Uint8Array(64 * 36 * 4).fill(255);
+  assert.equal(thumbSad(a, a), 0);
+  assert.equal(thumbSad(a, b), 1);
+  assert.ok(SCENE_CUT_SAD > 0.05 && SCENE_CUT_SAD < 0.3);
 });

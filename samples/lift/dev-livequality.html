@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live depth quality — dev</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #111; color: #ddd; font: 13px/1.4 system-ui, sans-serif; }
+  canvas { display: block; max-width: calc(100vw - 32px); height: auto; background: #000; }
+  pre { font: 12px/1.4 ui-monospace, monospace; color: #6cf; }
+</style>
+</head>
+<body>
+<h1 style="font-size:16px">Live DIBR depth quality — offline harness</h1>
+<p>Driven by <code>test/lift-livequality.run.mjs</code> (puppeteer): real VP9 clips through the real
+VDA-Small streaming provider at the live cadence, then live-DIBR SBS renders with the depth held
+for the live latency. <code>?clip=</code> video URL, <code>quality=low|medium</code>,
+<code>models=</code>, <code>ort=</code>. API on <code>window.__lq</code>.</p>
+<canvas id="c"></canvas>
+<pre id="out">loading…</pre>
+<script type="module">
+import { createDepthProvider, createModelSource, loadOrt } from '../../js/lift/providers/index.js';
+import { createLiveDibr, kooimaProjection, KAPPA, DepthNormalizer, dilateMax} from '../../js/lift/live-dibr.js';
+
+const q = new URLSearchParams(location.search);
+const models = q.get('models') || '/_scratch/models';
+const $ = (id) => document.getElementById(id);
+const out = $('out');
+const canvas = $('c');
+const video = document.createElement('video');
+video.muted = true; video.playsInline = true; video.crossOrigin = 'anonymous';
+
+const ort = await loadOrt({ baseUrl: q.get('ort') || '/_scratch/ort/' });
+const modelSource = createModelSource({ baseUrl: models });
+await modelSource.ready();
+
+// Whole clip as a blob URL: exact seeking without HTTP Range support.
+async function loadClip(url) {
+  const b = await (await fetch(url)).blob();
+  video.src = URL.createObjectURL(b);
+  await new Promise((r) => video.addEventListener('loadeddata', r, { once: true }));
+}
+// Always a real seek (a freshly loaded, never-seeked video has no frame WebGPU can import).
+const seek = (t) => new Promise((r) => {
+  video.addEventListener('seeked', () => r(), { once: true });
+  video.currentTime = Math.abs(video.currentTime - t) < 1e-4 ? t + 1e-3 : t;
+});
+
+let prov = null, dibr = null, gl = null, VW = 0, VH = 0;
+const depths = [];   // [{t, data, w, h, ms}]
+
+async function init({ clip, quality }) {
+  await loadClip(clip);
+  VW = video.videoWidth; VH = video.videoHeight;
+  if (prov) await prov.dispose();
+  prov = createDepthProvider({ kind: 'video', modelSource, ort, quality });
+  await prov.load();
+  canvas.width = 2 * VW; canvas.height = VH;
+  if (!dibr) { dibr = createLiveDibr({ canvas, contextAttributes: { preserveDrawingBuffer: true } }); gl = dibr.gl; }
+  dibr.setSource(video);
+  depths.length = 0;
+  return { VW, VH, duration: video.duration, info: { ...prov.info } };
+}
+
+/** Stream the provider at the live cadence: estimate at t0, t0+period, … (period = depth ms). */
+async function seq({ t0 = 0, period, n }) {
+  prov.reset();
+  depths.length = 0;
+  for (let k = 0; k < n; k++) {
+    const t = t0 + k * period / 1000;
+    if (t > video.duration - 0.05) break;
+    await seek(t);
+    const ts = performance.now();
+    const d = await prov.estimate({ source: video, t });
+    depths.push({ t, data: Float32Array.from(d.data), w: d.w, h: d.h, ms: performance.now() - ts, reset: !!d.reset && k > 0 });
+  }
+  const ms = depths.slice(3).map((d) => d.ms).sort((a, b) => a - b);
+  return { n: depths.length, medMs: ms[ms.length >> 1], w: depths[0].w, h: depths[0].h };
+}
+
+/** Normaliser trace over the sequence (what the shader's lo/hi/conv would do). */
+function trace({ ema = 0.9, dilate = 0, cut = true, convMode = 'mean', convBand = 0.05 } = {}) {
+  const norm = new DepthNormalizer({ ema, convMode, convBand });
+  const raw = new DepthNormalizer({ ema: 0, convMode, convBand: 0 });
+  const rows = [];
+  for (const d of depths) {
+    const dil = dilateMax(d.data, d.w, d.h, dilate);
+    const isCut = cut && d.reset;
+    const r = norm.update(dil, d.w, d.h, { stabilize: true, reset: isCut });
+    const q = raw.update(dil, d.w, d.h, { stabilize: false });
+    rows.push([+d.t.toFixed(3), r.lo, r.hi, r.conv, d.reset ? 1 : 0, q.lo, q.hi, q.conv]);
+  }
+  return rows;
+}
+
+function pairViews() {
+  const A = VW / VH, D0 = 2.5, off = KAPPA * D0 / 2;
+  return [-off, off].map((x, i) => ({
+    projectionMatrix: kooimaProjection({ x, y: 0, z: D0 }, A),
+    vp: { x: i * VW, y: 0, width: VW, height: VH },
+  }));
+}
+const layer = { getViewport: (v) => v.vp };
+
+/** Feed depths[0..k] through live-DIBR (normaliser state as it would be live), show the frame at
+ *  tDisplay, render the SBS pair (or the normalised depth with debug:1). Returns a PNG data URL. */
+async function render({ k, tDisplay, params = {}, debug = 0, feedFrom = 0, neutral = false }) {
+  dibr.setParams({ ...params, debug: 0 });
+  for (let i = feedFrom; i <= k; i++) {
+    const d = depths[i];
+    dibr.setDepth({ data: d.data, w: d.w, h: d.h, space: 'disparity', reset: i === feedFrom || d.reset });
+  }
+  await seek(tDisplay ?? depths[k].t);
+  dibr.setSource(video);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  dibr.setParams({ debug });
+  const views = pairViews();
+  if (neutral) {
+    const v = { projectionMatrix: kooimaProjection({ x: 0, y: 0, z: 2.5 }, VW / VH), vp: { x: 0, y: 0, width: VW, height: VH } };
+    dibr.render({ views: [v], layer });   // eye on the source camera = the source frame
+  } else if (debug) {
+    // debug draws the normalised disparity at the SOURCE pixel: one view is enough, same for both
+    dibr.render({ views: [views[0]], layer });
+  } else dibr.render({ views, layer });
+  dibr.setParams({ debug: 0 });
+  return { png: canvas.toDataURL('image/png'), stats: dibr.getStats() };
+}
+
+/** GPU cost per frame: 2 views at video res, with the frame re-uploaded each iteration
+ *  (so the upsample re-runs, as on every new video frame). Clears defeat Apple TBDR culling. */
+function bench({ params = {}, N = 200 }) {
+  dibr.setParams(params);
+  const views = pairViews();
+  const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+  for (let i = 0; i < 10; i++) { dibr.touchSource(); dibr.render({ views, layer }); }
+  sync();
+  const t0 = performance.now();
+  for (let i = 0; i < N; i++) {
+    gl.clearColor(i & 1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    dibr.touchSource();
+    dibr.render({ views, layer });
+  }
+  sync();
+  return (performance.now() - t0) / N;
+}
+
+/** Neutral view (eye on the source camera) must reproduce the frame exactly. */
+async function neutralMAE({ params = {} }) {
+  dibr.setParams(params);
+  const A = VW / VH;
+  const v = { projectionMatrix: kooimaProjection({ x: 0, y: 0, z: 2.5 }, A), vp: { x: 0, y: 0, width: VW, height: VH } };
+  dibr.setSource(video);
+  dibr.render({ views: [v], layer });
+  const px = new Uint8Array(VW * VH * 4);
+  gl.readPixels(0, 0, VW, VH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const c2 = new OffscreenCanvas(VW, VH).getContext('2d', { willReadFrequently: true });
+  c2.drawImage(video, 0, 0, VW, VH);
+  const ref = c2.getImageData(0, 0, VW, VH).data;
+  let s = 0, mx = 0;
+  for (let y = 0; y < VH; y++) for (let x = 0; x < VW; x++) {
+    const a = ((VH - 1 - y) * VW + x) * 4, b = (y * VW + x) * 4;
+    for (let c = 0; c < 3; c++) { const d = Math.abs(px[a + c] - ref[b + c]); s += d; if (d > mx) mx = d; }
+  }
+  return { mae: s / (VW * VH * 3), max: mx };
+}
+
+const dbg = gl0 => { const e = gl0.getExtension('WEBGL_debug_renderer_info'); return e ? gl0.getParameter(e.UNMASKED_RENDERER_WEBGL) : ''; };
+window.__lq = { init, seq, trace, render, bench, neutralMAE, depths, renderer: () => dbg(gl), video };
+out.textContent = 'ready';
+console.log('LQ READY');
+</script>
+</body>
+</html>
