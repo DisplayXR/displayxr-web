@@ -119,7 +119,7 @@ pip and a buffering spinner sit over the tile as their own small overlays. `opts
 CSS colour) re-skins all of it through the `--dxr-accent` custom property, and
 `opts.badge3d` (`true`, or your own short string) adds a pill to the control row.
 
-Three things about the chrome are the **overlay contract**, not taste, and they are the first
+Four things about the chrome are the **overlay contract**, not taste, and they are the first
 things to check if you restyle it:
 
 - the darkening behind the controls is a **bounded bottom band**, not the full-height gradient a
@@ -129,7 +129,28 @@ things to check if you restyle it:
 - there is **no `backdrop-filter`** anywhere in it — an element defined as a function of what is
   behind it has no isolated composited resource to hand the compositor, so it cannot be excluded
   at all. The near-solid `rgba(10,11,15,.92)` shell is the documented substitute;
-- promotion is `will-change: transform`, never a CSS `filter`.
+- promotion is `will-change: transform`, never a CSS `filter`;
+- **no glow or shadow outside a control's own box.** An overlay is excluded from the weave by its
+  rect, so anything it paints outside that rect (an outer `box-shadow`, a halo, a text shadow
+  that spills) is ordinary page content over the woven canvas and gets woven with it: a soft
+  double-imaged smudge around the control. Keep glows inset, or inside the overlay's padding —
+  both skins do.
+
+**Three media traps** that look like player bugs and are not:
+
+- **Codec.** The DisplayXR Browser ships no proprietary codecs: no H.264, no AAC. Serve
+  **VP9 (or AV1) video with Opus audio in WebM**. An MP4/H.264 source does not play at all
+  (`error` fires, the tile keeps its poster), so a copied MP4 sample simply fails. The sample's
+  clip is VP9 WebM for this reason (video only — it has no audio track).
+- **Non-square pixels.** A source whose container flags a pixel aspect ratio (e.g. a 3840×804
+  stream with a stretch flag) reports a different `videoWidth`/`videoHeight` in Chromium than the
+  coded size, and the SBS pair is split and scaled from the wrong dimensions, so it plays
+  squashed. Rewrap it with square pixels; the container change needs no re-encode (for WebM,
+  `ffmpeg -i in.webm -c copy -aspect W:H out.webm` with the coded W:H).
+- **Black picture, working sound.** An opaque page background painted **over** the woven canvas
+  (a full-bleed section, a later sibling with a background colour, a z-indexed wrapper) hides the
+  tile while the `<video>` keeps playing. Check that nothing opaque sits above the canvas before
+  suspecting the stream.
 
 `opts.badge3d` is deliberately **page-driven and off by default**: the module will not infer it
 from `wall.supported`, because a supported wall whose tile has scrolled away — or whose panel is
@@ -178,8 +199,14 @@ is `outgoing: 'frozen'`, the only value the player accepts. Its splat-side cavea
 outgoing photo "reads as tracking pausing" — does not carry over: a splat re-renders for every
 head pose, an SBS video frame's disparity is baked in whether it is frozen or playing.
 
-v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename format auto-detect, HLS, undock, or
-a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
+**Two video paths, one vocabulary.** The SDK also plays video through `./splat`'s
+`handle.setVideo(src, { format, fit, rig })` (a screen-locked plane where each eye samples its own
+half — docs/playcanvas-adapter.md §setVideo). `addPlayer` keeps the same option names —
+`format` today, `fit` when it lands — so a later player can drive either path with one options
+object. Its `format` takes `'sbs' | 'mono'`; `setVideo` also takes `'tb'`.
+
+v1 does not do `'tb'`/top-bottom re-pack, `fit` (cover/contain letterboxing), sidecar/filename
+format auto-detect, HLS, undock, or a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
 plan and why each is out of this slice.
 
 ### 3. Live scene (three.js / WebGL) — `addScene(canvas, onFrame, opts?)`
