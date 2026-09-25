@@ -222,7 +222,7 @@ export async function lift(element, opts = {}) {
   let dibrSource = null;
   let liveErrorWarned = false;
 
-  const params = { depth: o.depth, convergence: o.convergence, dilate: 0 };
+  const params = { depth: o.depth, convergence: o.convergence, dilate: 0, ...(o.live?.lookAround !== undefined ? { lookAround: +o.live.lookAround } : {}) };
   // Providers report progress in their own shapes: a number, {loaded,total} (model download) or
   // {stage,progress} (lift-gen). Normalise to 0..1.
   const frac = (v) => {

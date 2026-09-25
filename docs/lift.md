@@ -262,3 +262,8 @@ The DisplayXR Browser is built without proprietary codecs: `<video>` sources mus
 ## Chrome over the tile (chip, buttons, overlays)
 
 Anything the lift draws over its own woven tile must use a **near-solid background and no `backdrop-filter`** (the authoring guide's config C3). A frosted element over a tile makes the DisplayXR Browser send that tile raw — the panel shows side-by-side instead of 3D — until the element leaves the tile. This was hit on the first panel test with the builtin chip.
+
+
+## Live look-around
+
+`lift(el, { live: { lookAround: 0..1 } })` — with a real inline tile the source camera sits at the centroid of the current eye pair (stereo only, default `0`); `lookAround > 0` lets head motion produce transient parallax that re-centres over ~1 s. See `docs/lift-dibr.md`.

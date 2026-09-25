@@ -106,6 +106,7 @@ const opts = {
   ...(q.get('maxAngle') ? { orbit: { maxAngleDeg: +q.get('maxAngle') } } : {}),
   ...(q.get('inpaint') === '1' ? { providers: { inpaint: 'light-inpaint-v1' } } : {}),
   ...(q.get('params') ? { genParams: JSON.parse(q.get('params')) } : {}),
+  ...(q.get('lookAround') ? { live: { lookAround: +q.get('lookAround') } } : {}),
 };
 
 const logEl = document.getElementById('log');
