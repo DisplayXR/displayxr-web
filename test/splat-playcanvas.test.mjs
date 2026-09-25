@@ -1820,8 +1820,10 @@ test('the cloud passes yield between steps (source check: each in its own task; 
 // ── 13b. setSource: LIVE outgoing + prepareSource (./inline3d-splat-live.js) ─────────────────
 
 /** The fake engine plus what the live path touches: layers, targets, RenderViews, the director. */
-async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100 } = {}) {
+async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100, diag, withWall = false, queue } = {}) {
   installDom();
+  const diagOpt = diag; // the diag's console lines are muted
+  if (diagOpt !== undefined) t.mock.method(console, 'info', () => {});
   const clock = { T: 1000 };
   t.mock.method(performance, 'now', () => clock.T);
   const { pc, rec } = makeFakePc();
@@ -1836,9 +1838,26 @@ async function liveRig(t, { outgoing = 'live', transition = 'crossfade', duratio
   pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); };
   pc.Entity.prototype.getLocalPosition = () => ({ x: 0, y: 0, z: 0 });
   pc.Entity.prototype.getLocalRotation = () => ({ x: 0, y: 0, z: 0, w: 1 });
-  rec.queue = [fakeFlat(600, 0), fakeFlat(600, 5), fakeFlat(600, 9)];
+  rec.queue = queue || [fakeFlat(600, 0), fakeFlat(600, 5), fakeFlat(600, 9)];
   const out = {};
-  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0 }, []);
+  // withWall: a woven session stub — records every rig pushed and hands back the frame callback.
+  const wallRec = { rigs: [], excluded: [], onFrame: null };
+  const wall = withWall
+    ? {
+        supported: true,
+        addScene: (cv, onFrame) => {
+          wallRec.onFrame = onFrame;
+          return {
+            setViewRig: (r) => (wallRec.rigs.push(JSON.parse(JSON.stringify(r))), true),
+            exclude: (el) => wallRec.excluded.push(el),
+            unexclude() {},
+            remove() {},
+            firstWoven: Promise.resolve({ woven: true }),
+          };
+        },
+      }
+    : null;
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, idleSpin: 0, ...(diagOpt !== undefined ? { diag: diagOpt } : {}) }, []);
   const v = out.viewer;
   v.app.graphicsDevice.copyRenderTarget = () => true;
   const pushed = [];
@@ -1851,7 +1870,7 @@ async function liveRig(t, { outgoing = 'live', transition = 'crossfade', duratio
     v._drawMono();
   };
   const opts = { transition, durationMs, ...(outgoing ? { outgoing } : {}) };
-  return { pc, rec, out, v, clock, frame, pushed, camerasMap, opts };
+  return { pc, rec, out, v, clock, frame, pushed, camerasMap, opts, wallRec };
 }
 
 /** Make the director report a sorted manager for the live camera (what `ready` reads). */
@@ -2047,6 +2066,113 @@ test('a newer setSource supersedes a live window: it closes (camera off, old ass
   assert.equal(v._live.active, false);
   assert.equal(e1.enabled, false);
   await second;
+  out.remove();
+});
+
+// ── 13d. transition diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ────────────────
+
+/** Two eye views, head at x = hx, for the woven onFrame (fresh arrays each call, as a browser). */
+function eyeViews(hx, proj = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, -1, 0, 0, -0.2, 0]) {
+  return [-1, 1].map((sg) => {
+    const m = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, hx + sg * 0.032, 0, 0, 1];
+    return { eye: sg < 0 ? 'left' : 'right', projectionMatrix: Float32Array.from(proj), transform: { matrix: Float32Array.from(m) } };
+  });
+}
+const halfLayer = { getViewport: (vw) => ({ x: vw.eye === 'left' ? 0 : 160, y: 0, width: 160, height: 180 }) };
+
+test('diag: every woven frame is recorded — a bit-identical repeat is HELD, a moving head is not; the overlay is excluded from the weave', async (t) => {
+  const { out, v, wallRec } = await liveRig(t, { withWall: true, diag: true });
+  const d = globalThis.window.__dxrDiag.last;
+  assert.ok(d, 'window.__dxrDiag.last is this tile');
+  wallRec.onFrame(eyeViews(0), halfLayer);
+  wallRec.onFrame(eyeViews(0.001), halfLayer);
+  wallRec.onFrame(eyeViews(0.001), halfLayer); // the browser handed back the same views
+  wallRec.onFrame(eyeViews(0.001), halfLayer);
+  wallRec.onFrame(eyeViews(0.002), halfLayer);
+  const f = d.frames.slice(-5);
+  assert.deepEqual(f.map((x) => x.held), [false, false, true, true, false]);
+  near(f[1].delta, 0.001, 1e-6, 'eye move in world units');
+  near(f[1].rel, 0.001 / 0.064, 1e-4, 'in eye separations');
+  near(f[1].ipd, 0.064, 1e-6);
+  assert.equal(f[1].img, 'none');
+  assert.ok(typeof d.dump() === 'string' && JSON.parse(d.dump()).frames.length >= 5, 'dump() is JSON');
+  assert.ok(JSON.parse(globalThis.window.__dxrDiag.dump()).tiles.length >= 1);
+  out.remove();
+  assert.ok(!globalThis.window.__dxrDiag.tiles.includes(d), 'remove() unregisters the tile');
+});
+
+test('diag: a transition is summarised — phases, rig pushes with values, HELD run / frozen image / gap verdicts', async (t) => {
+  const LENS_B = { ...LENS, fx: 1400, fy: 1400 };
+  const cam = (lens, off) => ({ ...fakeFlat(600, off), gsplatData: { numSplats: 600, meta: { camera: { convention: 'opencv', intrinsics: lens } } } });
+  const { out, v, frame, wallRec, camerasMap, clock } = await liveRig(t, { withWall: true, diag: 'nooverlay', queue: [cam(LENS, 0), cam(LENS_B, 5)] });
+  const d = globalThis.window.__dxrDiag.last;
+  assert.equal(out.rig.type, 'camera');
+  const rigs0 = wallRec.rigs.length;
+  assert.ok(rigs0 >= 1, 'the first photo declared its camera rig');
+  const done = out.setSource('b.sog', { transition: 'crossfade', durationMs: 100 });
+  await settle(() => v._captureWaiters.length === 1);
+  wallRec.onFrame(eyeViews(0), halfLayer); // draws → _afterTick → capture
+  await settle(() => out.mesh.entity.gsplat.getParameter !== undefined && d.phase === 'window');
+  assert.ok(wallRec.rigs.length > rigs0, 'the incoming photo re-declared ITS rig at the swap');
+  const pushed = d.events.filter((e) => e.type === 'rig');
+  assert.ok(pushed.length >= 2 && pushed.at(-1).sinceCall >= 0, 'every push logged, timed from the call');
+  near(pushed.at(-1).rig.verticalFov, wallRec.rigs.at(-1).verticalFov, 1e-4, 'with its values');
+  assert.notEqual(pushed.at(-1).rig.verticalFov, pushed[0].rig.verticalFov, 'a DIFFERENT lens: the new photo’s rig');
+  // held frames, then the frozen bridge (cold: unsorted), then a big gap
+  clock.T += 16; wallRec.onFrame(eyeViews(0), halfLayer); // held (same as previous)
+  clock.T += 16; wallRec.onFrame(eyeViews(0), halfLayer); // held
+  clock.T += 16; wallRec.onFrame(eyeViews(0.003), halfLayer);
+  clock.T += 120; wallRec.onFrame(eyeViews(0.004), halfLayer); // a 120 ms gap
+  sortLive(v, camerasMap);
+  for (let i = 0; i < 12; i++) {
+    clock.T += 16;
+    wallRec.onFrame(eyeViews(0.004 + i * 0.001), halfLayer);
+  }
+  await done;
+  assert.equal(d.phase, 'settle');
+  clock.T += 1200;
+  wallRec.onFrame(eyeViews(0.02), halfLayer); // a second after settle: the summary closes
+  const s = d.transitions.at(-1);
+  assert.ok(s, 'summary written');
+  assert.deepEqual(s.phases.map((p) => p.phase), ['swap', 'window', 'settle']);
+  assert.equal(s.detail.transition, 'crossfade');
+  assert.ok(s.heldRunMax >= 2, 'the held run is counted');
+  assert.ok(s.frozenImageFrames >= 2, 'the cold bridge shows as frozen-image frames');
+  assert.ok(s.maxFrameGapMs >= 120, 'the gap');
+  assert.match(s.verdict, /TRACKING-HELD/);
+  assert.match(s.verdict, /IMAGE-FROZEN/);
+  assert.match(s.verdict, /MAIN-THREAD gap/);
+  assert.ok(s.marks.some((m) => m.name === 'outgoing' && /frozen bridge/.test(m.detail.mode)));
+  assert.ok(s.rigs.length >= 1, 'the rig pushes inside the window');
+  assert.ok(s.window.length >= 10, 'the frames kept for the frozen strip');
+  out.remove();
+});
+
+test("diag kill switches: 'norig' drops every rig re-declaration after the first setSource; 'frozen' forces the frozen outgoing; 'nowarm' skips the shader pre-warm", async (t) => {
+  const LENS_B = { ...LENS, fx: 1400, fy: 1400 };
+  const cam = (lens, off) => ({ ...fakeFlat(600, off), gsplatData: { numSplats: 600, meta: { camera: { convention: 'opencv', intrinsics: lens } } } });
+  const { out, v, wallRec } = await liveRig(t, { withWall: true, diag: 'norig,frozen,nowarm,nooverlay', queue: [cam(LENS, 0), cam(LENS_B, 5), cam(LENS, 9)] });
+  const d = globalThis.window.__dxrDiag.last;
+  assert.deepEqual([...d.switches].sort(), ['frozen', 'nooverlay', 'norig', 'nowarm']);
+  const rigs0 = wallRec.rigs.length;
+  const kept = JSON.stringify(wallRec.rigs.at(-1));
+  let shaders = 0;
+  const SM = v.pc.ShaderMaterial;
+  v.pc.ShaderMaterial = class extends SM { constructor(desc) { super(desc); if (!/Snapshot/.test(desc.uniqueName || '')) shaders++; } };
+  const prep = await out.prepareSource('b.sog', { transition: 'wavefront' });
+  assert.equal(shaders, 0, 'nowarm: no pre-warm material built');
+  const done = out.setSource(prep, { transition: 'crossfade', durationMs: 50 });
+  await settle(() => v._captureWaiters.length === 1);
+  assert.equal(v._live?.warming ?? false, false, "frozen: no live pre-sort");
+  wallRec.onFrame(eyeViews(0), halfLayer);
+  await settle(() => d.phase === 'window');
+  assert.equal(wallRec.rigs.length, rigs0, 'norig: nothing new reached the layer');
+  assert.equal(JSON.stringify(wallRec.rigs.at(-1)), kept, 'the first photo’s rig is still the declared one');
+  assert.ok(d.events.some((e) => e.type === 'rig-dropped'), 'the dropped re-declaration is logged');
+  assert.ok(!v._live?.active, "frozen: no live window (the 1.12.1 path)");
+  for (let i = 0; i < 10; i++) wallRec.onFrame(eyeViews(i * 0.001), halfLayer);
+  out.setSource('c.sog', { transition: 'cut' });
+  await done;
   out.remove();
 });
 

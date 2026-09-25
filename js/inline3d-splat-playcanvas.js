@@ -64,6 +64,7 @@ import {
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR } from './inline3d-splat-video.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag } from './inline3d-splat-diag.js';
 import {
   clamp,
   finite,
@@ -1406,6 +1407,11 @@ export class PlayCanvasSplatViewer {
     if (!s?.parts) return false;
     const fits = !!s.tex && s.w === this.canvas.width && s.h === this.canvas.height;
     const show = alpha > 0 && fits;
+    // What the overlay shows, for diagnostics (diagImageState): its weight on screen.
+    const st = (this._snapState ||= { alpha: 0, wipe: -2, over: false, live: false });
+    st.alpha = show ? Math.min(1, alpha) : 0;
+    st.wipe = wipe ? wipe.t : -2;
+    st.over = !!mix?.over;
     for (const p of s.parts) {
       p.mi.visible = show;
       if (show) {
@@ -1429,6 +1435,7 @@ export class PlayCanvasSplatViewer {
   setSnapshotSource(tex) {
     const s = this._snap;
     if (!s?.parts) return;
+    (this._snapState ||= { alpha: 0, wipe: -2, over: false, live: false }).live = !!tex;
     for (const p of s.parts) {
       p.mat.setParameter('dxrSnap', tex || s.tex);
       p.mat.update();
@@ -1487,6 +1494,18 @@ export class PlayCanvasSplatViewer {
   startLiveOutgoing(entity, oldFrame) {
     this._live ||= new LiveOutgoing(this);
     return this._live.start(entity, oldFrame) ? this._live : null;
+  }
+
+  /**
+   * Diagnostics: what the transition overlay puts on screen this frame — 'none', or the 'frozen'
+   * capture / the 'live' outgoing target with `w`, the share of the picture it covers (the wipe's
+   * uncommitted part times the lerp weight).
+   */
+  diagImageState() {
+    const st = this._snapState;
+    if (!st || !(st.alpha > 0)) return { overlay: 'none', w: 0 };
+    const left = st.wipe < -1 ? 1 : Math.min(1, Math.max(0, 1 - st.wipe));
+    return { overlay: st.live ? 'live' : 'frozen', w: st.alpha * left };
   }
 
   /** End the live window: overlay back on the frozen capture, camera off, target freed. */
@@ -2561,6 +2580,18 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   let handle = null;
   let unbindFocusInput = null;
+
+  // ── diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ──
+  const diagCfg = resolveDiag(opts.diag);
+  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: norig, frozen, nowarm, nooverlay.`);
+  const diag = diagCfg.on ? new DiagRecorder({ switches: diagCfg.switches }) : null;
+  /** norig: armed by the first setSource — from then on the declared rig is kept. */
+  let rigLockArmed = false;
+  if (diag) {
+    diag.imageState = () => viewer.diagImageState();
+    diag.observeLongTasks();
+    diag.log(`on — switches [${[...diag.switches].join(', ') || 'none'}]; dump: copy(__dxrDiag.dump())`);
+  }
   let removed = false;
   /** prepareSource: prepared handle → { loaded, state: 'ready' | 'used' | 'disposed', dispose }. */
   const preparedAssets = new WeakMap();
@@ -2675,6 +2706,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       fx = null;
       unbindFocusInput?.();
       viewer.onFocusChange = null;
+      diagLoop?.remove();
+      diag?.dispose();
       handle?.remove();
       viewer.dispose(); // app.destroy(): every entity — ours and any a page added — goes with it
     },
@@ -2749,7 +2782,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   const pageFocus = { d: Number.NaN, target: Number.NaN, fired: Number.NaN, source: null };
 
   if (wall && wall.supported) {
-    handle = wall.addScene(canvas, viewer.onFrame, {
+    const onFrame = diag
+      ? (views, layer) => {
+          const t = performance.now();
+          viewer.onFrame(views, layer);
+          diag.frame(views, t); // after the draw: the overlay state is what this frame showed
+        }
+      : viewer.onFrame;
+    handle = wall.addScene(canvas, onFrame, {
       // controls:'page' starts on a camera rig (attach, provisional FOV/convergence until the page
       // and the waterfall say otherwise); the display rig's height means nothing there.
       ...(pageMode
@@ -2761,6 +2801,26 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
   } else {
     viewer.startMono();
+  }
+  let diagLoop = null;
+  if (diag) {
+    // Every rig push, logged with its values; under `norig`, every push after the first
+    // setSource is DROPPED (the rig declared before it stays in force).
+    if (handle && typeof handle.setViewRig === 'function') {
+      const push = handle.setViewRig;
+      handle.setViewRig = (rig) => {
+        if (diag.has('norig') && rigLockArmed) {
+          diag.rig(rig, { dropped: true });
+          return false;
+        }
+        diag.rig(rig);
+        return push(rig);
+      };
+    }
+    diagLoop = startDiagLoop(diag, { overlay: !diag.has('nooverlay') && !!handle });
+    // 2D DOM over the woven canvas: out of the weave (a no-op where occlusion is automatic).
+    if (diagLoop?.el) handle?.exclude?.(diagLoop.el);
+    registerDiag(diag);
   }
   // Settle the stub's `firstWoven` (addSplatDeferred) with the core handle's own.
   if (typeof out._resolveFirstWoven === 'function') {
@@ -3709,8 +3769,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     await first.catch(() => null);
     if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
     const t0 = performance.now();
-    const loaded = await loadOne(pcModule, app, src, { background: true });
+    if (diag && diag.phase === 'idle') diag.setPhase('prepare');
+    let loaded;
+    try {
+      loaded = await loadOne(pcModule, app, src, { background: true });
+    } finally {
+      if (diag?.phase === 'prepare') diag.setPhase('idle');
+    }
     perfSpan('prepareSource', t0);
+    diag?.mark('prepared', { ms: Math.round(performance.now() - t0) });
     // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
     await prewarmTransition(warm); // null (no transition declared): the overlay only
     const entry = { loaded, state: 'ready', dispose: null };
@@ -3753,6 +3820,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * engine whose internals differ just compiles on the transition's first frame, as before.
    */
   async function prewarmTransition(plan) {
+    if (diag?.has('nowarm')) return;
     // The chunk variant the transition installs (particles, wavefront), and the overlay's two quads
     // (crossfade, wavefront and the particles all composite through them; created on the first
     // capture otherwise, and compiled on its draw: 30–180 ms on the first frames of the window).
@@ -3877,8 +3945,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
   async function setSourceNow(next, o = {}) {
     const plan = resolveSwap(o);
+    if (diag?.has('frozen')) plan.outgoing = 'frozen'; // kill switch: the 1.12.1 frozen outgoing
     const { resetPose = false } = o;
     const gen = ++sourceGen;
+    if (diag) {
+      rigLockArmed = true;
+      diag.setPhase('swap', { transition: plan.transition, outgoing: plan.outgoing || 'default', prepared: preparedAssets.has(next) });
+    }
     // A prepareSource() result: already fetched, decoded and uploaded — no load on this path.
     const prep = preparedAssets.get(next) || null;
     if (prep) {
@@ -3910,6 +3983,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // FRAME_SNAPSHOT: freeze the outgoing frame BEFORE anything of the new asset (or its rig) is
     // drawn. The overlay goes up in the same task, so no frame shows neither photo.
     const wantsSnapshot = transition === 'crossfade' || transition === 'wavefront' || !!particle;
+    const outgoingMode = plan.outgoing || (particle ? 'live' : defaultOutgoing(viewer.is3D));
     const snapped = wantsSnapshot ? await viewer.captureFrame() : false;
     if (removed || gen !== sourceGen) {
       app.assets.remove(loaded.asset);
@@ -3922,15 +3996,16 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // its camera has drawn a sorted frame. Its lens frame is read BEFORE adopt() switches the rig.
     // A particle transition's outgoing photo MOVES, so it is live in 2D too (where the engine has
     // the RenderView path); 'frozen' there = its snapshot fades out while the new one plays in.
-    const outgoingMode = plan.outgoing || (particle ? 'live' : defaultOutgoing(viewer.is3D));
     const live =
       snapped && outgoingMode === 'live' && viewer.canLiveOutgoing ? viewer.startLiveOutgoing(prev.entity, viewer.lensFrame()) : null;
+    diag?.mark('outgoing', { mode: live ? 'live (frozen bridge until sorted)' : snapped ? 'frozen' : 'none' });
     /** Each frame of the window: once the live camera is ready, the overlay samples it. */
     let liveShown = false;
     const pumpLive = () => {
       if (!live || liveShown || !live.active || !live.ready) return;
       viewer.setSnapshotSource(live.texture);
       liveShown = true;
+      diag?.mark('live-shown');
     };
 
     const release = (p) => {
@@ -3960,6 +4035,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       const kept = applyLoaded(loaded);
       current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
       if (resetPose && !pageMode) viewer.resetPose(); // the page owns the pose on controls:'page'
+      diag?.setPhase('window');
     };
 
     const entity = viewer.addSplatAsset(loaded.asset);
@@ -3971,6 +4047,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       if (finished) return;
       finished = true;
       for (const f of finishers) f();
+      if (gen === sourceGen) diag?.setPhase('settle');
       if (pendingSwap?.finish === finish) pendingSwap = null;
       settle();
     };

@@ -52,6 +52,7 @@
     "js/inline3d-splat-shared.js",
     "js/inline3d-splat-effects.js",
     "js/inline3d-splat-live.js",
+    "js/inline3d-splat-diag.js",
     "js/inline3d-splat-video.js",
     "js/inline3d-model.js",
     "js/inline3d-model-entry.js",
