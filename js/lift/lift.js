@@ -627,6 +627,14 @@ export async function lift(element, opts = {}) {
       }
       stats.generateMs = Math.round(performance.now() - tGen);
       stats.splats = (res.meta && res.meta.splatCount) || 0;
+      // Diagnostics for A/B against other lifters: the intrinsics the generator used (output-raster
+      // px, OpenCV convention), the pivot depth and the horizontal FOV they imply.
+      if (res.meta && res.meta.intrinsics) {
+        const it = res.meta.intrinsics;
+        stats.intrinsics = { ...it };
+        stats.pivotZ = res.meta.pivotZ;
+        if (it.fx && it.w) stats.fovXDeg = +(2 * Math.atan(it.w / (2 * it.fx)) * 180 / Math.PI).toFixed(2);
+      }
       stats.genTimings = (res.meta && res.meta.timings) || null;
       if (isStale(gen)) return;
       const tEx = performance.now();
