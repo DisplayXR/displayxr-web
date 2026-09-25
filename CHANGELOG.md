@@ -5,6 +5,32 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Minor: a new `setSource`
+option. No pixel change for any existing transition, and the default (`cut`) is unchanged.
+
+### Added
+
+- **Sequence transitions: one splat at a time** (#36). `setSource(next, { transition: 'reassemble' })`
+  disperses the current photo (`assemble` played backwards), releases it, loads the next one and
+  assembles it: 3000 ms, 45 % out, a 10 % empty beat, 45 % in. The general form
+  `transition: { type: 'sequence', out, in, durationMs?, beat?, easing? }` runs any two of
+  `assemble`, `dissolve-in`, `converge`, `shimmer`, `sweep`, `fade` (each draws nothing at its start,
+  which is what makes the swap invisible; `inflate` and `dissolve` are refused).
+  - No second camera, live-outgoing layer, overlay target or frozen capture: the eye camera renders
+    every frame with one asset in the scene, so the transition machinery cannot hold an image still
+    under a moving head. The fallback if a panel still pauses on the other transitions.
+  - One splat resident: the next file is only FETCHED during the out phase, and reaches the engine
+    after the old asset is destroyed and unloaded. `prepareSource(src, { transition: 'reassemble' })`
+    therefore only fetches and compiles (`numSplats` is `null`); `resident: true` opts back into the
+    full prepare. Measured peak: 1 asset, 1,179,648 gaussians, 58.8 MB of GPU textures, the still
+    photo's (a live `crossfade`: 2 assets, 131.6 MB).
+  - Latest wins: a newer sequence takes over from the amount on screen; any other call ends it as it
+    ends any transition. An HTTP error on the next file brings the current photo back and rejects.
+  - Both bodies are pre-warmed (by `prepareSource`, or before the out clock starts); `?dxrdiag`
+    records the sequence with its steps. See `docs/splat-effects.md` § Sequence transitions.
+
 ## 1.20.0 — 2026-09-24
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No pixel change at rest; the
