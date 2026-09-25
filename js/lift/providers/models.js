@@ -298,6 +298,39 @@ export function createModelSource(o = {}) {
     return { bytes, size: bytes.byteLength, sha256: file.sha256, source: 'network' };
   }
 
+  /**
+   * Is `name` obtainable WITHOUT downloading it? Cheap: the native store answers a HEAD (or, when
+   * it refuses HEAD, is taken as present if the browser advertises it), a verified Cache API stamp
+   * counts, else a HEAD on the download URL. Never reads a body. Resolves false on any error.
+   * Used by liftCapabilities() for `webFallback` (docs/lift.md § Vendor modules).
+   */
+  async function probe(name, { signal } = {}) {
+    try {
+      await ready();
+      const { file } = lookup(name);
+      if (useNative()) {
+        try {
+          const r = await fetchImpl(NATIVE_ORIGIN + encodeURIComponent(name), { method: 'HEAD', signal });
+          if (r.ok) return true;
+        } catch (e) {
+          if (signal && signal.aborted) throw e;
+        }
+      }
+      const u = url(name);
+      const cache = await openCache();
+      if (cache) {
+        try {
+          const st = await cache.match(stampKey(u));
+          if (st && (await st.text()).trim() === file.sha256) return true;
+        } catch { /* fall through */ }
+      }
+      const r = await fetchImpl(u, { method: 'HEAD', signal });
+      return !!r.ok;
+    } catch {
+      return false;
+    }
+  }
+
   function defaultFor(role, quality = 'medium') {
     const d = need().defaults[role];
     if (!d) return (need().models.find((m) => m.role === role) || {}).name;
@@ -335,6 +368,8 @@ export function createModelSource(o = {}) {
       return { stream: bytesStream(r.bytes), size: r.size, sha256: r.sha256, source: r.source };
     },
     getBytes,
+    /** Reachable without a download attempt? (HEAD / cache stamp; see probe above.) */
+    probe,
     /** Remove every cached model (e.g. a "free disk space" button). */
     async clear() {
       if (!cachesImpl || cacheName === null) return false;

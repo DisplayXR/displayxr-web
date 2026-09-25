@@ -20,11 +20,19 @@
 // worker, import() or a URL handed to ORT:
 //   displayxr-lift://models/<name>
 //
+// Vendor module (docs/lift.md § Vendor modules): convertAt first asks `liftCapabilities()`
+// (GET displayxr-lift://caps, cached per document). When the runtime's 2D→3D module is there, a
+// <video>/<img> is converted by the BROWSER in place — lift() only sets `dxr-lift="auto"` and mounts
+// the chip (Explore / Exit / ↓ SOG); no model and no ORT load until a pause, and then only if the
+// module's own depth/gaussians endpoints fail. Up to caps.maxStreams native conversions may run
+// side by side; a web (SDK-pipeline) lift is still exclusive (ORT sessions must not overlap).
+//
 // Test hook: `globalThis.__dxrLiftConfig = { schemeMap: { 'displayxr-lift://runtime/': 'http://…/runtime/',
 // 'displayxr-lift://models/': 'http://…/models/' }, workers: 'worker'|'main-thread' }` set BEFORE the
 // bundle runs rewrites those prefixes (tools/lift-builtin/test/). The browser never sets it.
 
 import { lift } from '../../js/lift/lift.js';
+import { liftCapabilities } from '../../js/lift/native.js';
 import { resolveMediaAt } from '../../js/lift/placement.js';
 import { createModelSource, parseManifest } from '../../js/lift/providers/models.js';
 import { loadOrt, ORT_VERSION } from '../../js/lift/providers/ort.js';
@@ -80,8 +88,9 @@ const MODELS = 'displayxr-lift://models/';
       return ort;
     }).catch((e) => { ortP = null; throw e; }));
 
-  /** element → handle. One lift per document at a time (see convertAt). */
+  /** element → handle. One WEB lift per document at a time; native ones up to caps.maxStreams. */
   const lifts = new Map();
+  let lastCaps = null;
   let chain = Promise.resolve();
 
   function toClient(x, y) {
@@ -121,21 +130,37 @@ const MODELS = 'displayxr-lift://models/';
     }
     if (el.tagName === 'VIDEO' && el.mediaKeys) return { ok: false, reason: 'encrypted-media' };
     if (el.tagName === 'IMG' && !(el.complete && el.naturalWidth > 0)) return { ok: false, reason: 'image-not-loaded' };
-    // ONE lift per document: ORT sessions must never be created concurrently (a second session
+
+    // The runtime's vendor module supersedes the SDK pipeline for <video>/<img>.
+    const caps = await liftCapabilities({ webFallback: false, ...(nativeFetch ? { fetch: nativeFetch } : {}) }).catch(() => ({ native: false }));
+    lastCaps = caps;
+    const native = !!caps.native && (el.tagName === 'VIDEO' || el.tagName === 'IMG');
+
+    // ONE web lift per document: ORT sessions must never be created concurrently (a second session
     // created while one runs kills the wasm instance — docs/lift.md), and the page has one inline-3D
-    // session anyway. Converting another element replaces the current lift.
-    for (const other of [...lifts.keys()]) removeHandle(other);
+    // session anyway. Converting another element replaces the current lift. Native conversions run
+    // no ORT while live, so up to caps.maxStreams of them coexist (oldest evicted first); a web lift
+    // still replaces everything, and a native one replaces any web lift.
+    const maxNative = Math.max(1, Number.isFinite(caps.maxStreams) && caps.maxStreams > 0 ? caps.maxStreams : 1);
+    for (const [other, oh] of [...lifts.entries()]) if (!native || !oh.native) removeHandle(other);
+    if (native) {
+      const keep = [...lifts.keys()];
+      while (keep.length >= maxNative) removeHandle(keep.shift());
+    }
 
     await probeWorkers(); // decides the gsplat sorter's + lift-gen's worker path before anything is created
     let ort;
-    try {
-      ort = await getOrt();
-    } catch (e) {
-      return { ok: false, reason: 'ort-load-failed: ' + ((e && e.message) || e) };
+    if (native) ort = getOrt; // lazy: loaded only if a native provider falls back on pause
+    else {
+      try {
+        ort = await getOrt();
+      } catch (e) {
+        return { ok: false, reason: 'ort-load-failed: ' + ((e && e.message) || e) };
+      }
     }
     let h;
     try {
-      h = await lift(el, { models: getModels(), ort, ui: 'builtin' });
+      h = await lift(el, { models: getModels(), ort, ui: 'builtin', native: native ? caps : false });
     } catch (e) {
       return { ok: false, reason: 'lift-failed: ' + ((e && e.message) || e) };
     }
@@ -146,7 +171,7 @@ const MODELS = 'displayxr-lift://models/';
     h.on('error', ({ error, fatal }) => {
       if (fatal) console.warn('[DisplayXR lift]', (error && error.message) || error);
     });
-    return { ok: true, action: 'lifted', element: el.tagName.toLowerCase(), workers: workerState.mode };
+    return { ok: true, action: 'lifted', element: el.tagName.toLowerCase(), workers: workerState.mode, mode: h.native ? 'native' : 'web' };
   }
 
   const api = {
@@ -170,7 +195,8 @@ const MODELS = 'displayxr-lift://models/';
         version: VERSION,
         ort: ORT_VERSION,
         workers: { ...workerState },
-        lifts: [...lifts.entries()].map(([el, h]) => ({ element: el.tagName.toLowerCase(), state: h.state, woven: !!h.woven, stats: { ...h.stats } })),
+        caps: lastCaps ? { ...lastCaps } : null,
+        lifts: [...lifts.entries()].map(([el, h]) => ({ element: el.tagName.toLowerCase(), state: h.state, woven: !!h.woven, native: !!h.native, stats: { ...h.stats } })),
       };
     },
   };

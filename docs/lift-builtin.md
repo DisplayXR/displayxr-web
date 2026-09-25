@@ -19,13 +19,24 @@ The source is in [`tools/lift-builtin/`](../tools/lift-builtin/).
 
 | member | |
 |---|---|
-| `convertAt(x, y, mediaType)` → `Promise<{ok, reason?, action?}>` | Resolves the media under the point with the SDK's `resolveMediaAt`, after mapping visual-viewport px to client px (`visualViewport.offsetLeft/Top`, `/ scale`) and preferring an element of `mediaType` (`'image'`\|`'video'`\|`'canvas'`). It **refuses** with a reason when there is no media at the point, the video has `mediaKeys` (EME), or the image is not loaded. **Toggle**: if the element is already lifted, the lift is removed (`action:'removed'`). **One lift per document**: converting a second element removes the first, because ORT sessions must never be created concurrently (docs/lift.md). Calls are serialised. The promise never rejects. |
+| `convertAt(x, y, mediaType)` → `Promise<{ok, reason?, action?, mode?}>` | Resolves the media under the point with the SDK's `resolveMediaAt`, after mapping visual-viewport px to client px (`visualViewport.offsetLeft/Top`, `/ scale`) and preferring an element of `mediaType` (`'image'`\|`'video'`\|`'canvas'`). It **refuses** with a reason when there is no media at the point, the video has `mediaKeys` (EME), or the image is not loaded. **Toggle**: if the element is already lifted, the lift is removed (`action:'removed'`). **One lift per document**: converting a second element removes the first, because ORT sessions must never be created concurrently (docs/lift.md). Calls are serialised. The promise never rejects. |
 | `cancelAll()` | Removes every lift and restores the elements. |
 | `status()` | Returns a plain-data snapshot for DevTools: version, ORT version, worker mode, and each lift's state and `stats`. It exposes no handles and no elements. |
 | `version` | `<SDK version>+<short commit>` (a `.dirty` suffix marks an uncommitted tree). |
 
-`lift(el, { models, ort, ui: 'builtin' })` does everything else: live 3D while a video plays, explore on
-pause or for a still, and the chip with *Explore / Resume / Exit*.
+`lift(el, { models, ort, ui: 'builtin', native })` does everything else: live 3D while a video plays,
+explore on pause or for a still, and the chip with *Explore / Resume / Exit*.
+
+**Vendor module first.** Each `convertAt` asks `liftCapabilities()` (`GET displayxr-lift://caps`,
+cached per document). When the runtime's 2D→3D module is there (`native`) and the pick is a
+`<video>`/`<img>`, the bundle does **not** load ORT or any model: `lift()` sets `dxr-lift="auto"`
+(+ strength/convergence/priority) on the element, the browser converts + weaves it in place, and the
+chip offers *Explore / Exit* (*↓ SOG* in explore). ORT (`getOrt`, passed as a lazy loader) and the
+still model load only on a pause, and only if the module's `lift/depth` fails; a module with
+`gaussians` supplies the explore scene too (docs/lift.md § Vendor modules). Native conversions do not
+use ORT while live, so up to `caps.maxStreams` of them coexist (oldest evicted); a web lift is still
+exclusive and replaces them. `convertAt` resolves `mode: 'native' | 'web'`; `status()` adds `caps`
+and each lift's `native`. Without the module (or for a `<canvas>`) nothing changes.
 
 ## Browser hosting
 
@@ -166,6 +177,9 @@ Measured on an M1 Pro with Chrome 154, same-origin media, models from localhost 
 Expected console noise:
 
 - `strict` mode: the probe's `worker-src` violation (by design).
+- The `displayxr-lift://caps` query fails in the harness (the scheme is not mapped) → `native: false`,
+  so the harness exercises the web path. Native mode is covered by `test/lift-native.run.mjs`
+  (re-run 2026-09-25 with the caps query in the bundle: strict + open PASS).
 - Nothing else: the Spark-era `new Function` probe and `Worker terminate` rejection are gone with Spark
   (re-run 2026-09-25 on the PlayCanvas bundle: `open` mode console empty; `strict` = the probe's violation only).
 

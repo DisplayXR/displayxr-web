@@ -64,6 +64,8 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 | `ui` | `'builtin'` | a small chip (progress %, Explore / **↓ SOG** / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. |
 | `signal` | — | `AbortSignal`; aborting removes the lift. |
 | `backend` | `'real'` | `'stub'` swaps in `js/lift/stubs/*` (same contracts, no ML) — development and demos only. |
+| `native` | `'auto'` | the browser's vendor 2D→3D module ([Vendor modules](#vendor-modules-native-mode)). `auto`: used for a `<video>`/`<img>` when `liftCapabilities()` says `native`; `false`: never; a caps object skips the query. |
+| `priority` | `'normal'` | native live: `dxr-lift-priority` (`high`/`normal`/`low`/`paused`). |
 
 Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRatio`/`overlay`),
 `woven` (true = inline-3D session, false = 2D fallback), `stats`, `on(type, cb) → off`, `off`,
@@ -71,7 +73,85 @@ Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRati
 `exportSog({camera?}) → Promise<Blob>`, `downloadSog(filename?) → Promise<boolean>`, `canExport`,
 `capture() → Promise<Blob>` (the next drawn frame as a PNG, read back in the same task as the draw —
 the canvas has `preserveDrawingBuffer: false`, so a page screenshot between frames can show it empty),
-`remove()`. `stats` adds `exploreScale` (the comfort scale applied). Types: [`lift.d.ts`](../lift.d.ts).
+`remove()`. `stats` adds `exploreScale` (the comfort scale applied), `mode` (`native`/`web`) and
+`provider` (the vendor module's name). Native mode adds `native`, `caps`, `setPriority(p)` and
+`priority`. Types: [`lift.d.ts`](../lift.d.ts).
+
+## Vendor modules (native mode)
+
+**The supersede rule.** When the runtime carries a vendor 2D→3D module (e.g. a DirectML/NPU
+converter) and the DisplayXR Browser exposes it, it **supersedes** the SDK's open default for
+everything it covers; anything it does not cover, or any error it returns, falls back to the open
+default. Concretely:
+
+| | module present (`native`) | fallback |
+|---|---|---|
+| live `<video>` / `<img>` | the **browser** converts + weaves the element **in place** (`dxr-lift="auto"`): no DIBR canvas, no video model, no ORT, no JS per frame | — (a `<canvas>` always takes the web path) |
+| paused-frame depth | `native` DepthProvider → `POST displayxr-lift://lift/depth` (registered at priority 100, stills only, so it wins over `'ort'` for any model name) | the ORT still model (MoGe-3), loaded **on first failure**, per frame; after a 404/501 for the rest of the session |
+| explore scene | `native-gaussians` LiftProvider → `POST displayxr-lift://lift/gaussians`, the default `providers.lift` when `modes` includes `gaussians` | the local generator on the frame's depth (a 404 sticks) |
+
+Everything else about pause → explore is as on the web path (freeze → depth → generator → PlayCanvas
+explore, ↓ SOG). The two POST endpoints and `caps` answer **only inside the browser's lift isolated
+world** (where the built-in runs); on any ordinary page the scheme does not resolve, `fetch` rejects,
+and that rejection is the feature detection.
+
+**`liftCapabilities({signal, refresh, webFallback, models, quality})`** — cheap, async, cached per
+document, callable before any lift (a 3D-calling element uses it to badge its peers):
+
+```js
+{ native: true, provider: 'neurd-directml', modes: ['depth','sbs','nview','gaussians'],
+  maxStreams: 2, approxMsPerConvert: 18, state: 'ready',          // as GET displayxr-lift://caps says
+  webFallback: { video: true, still: true, webgpu: true } }        // the open path, probed here
+```
+
+`native` is true only when the browser says so **and** `state !== 'unavailable'` (`activating`
+counts: the browser queues the conversion). `webFallback.webgpu` = a WebGPU adapter exists;
+`video`/`still` = that path's default depth model is reachable through the model source **without
+downloading it** (`ModelSource.probe`: a HEAD on the native store, a verified Cache API stamp, else a
+HEAD on the download URL). `webFallback: false` skips the probes. An aborted query is not cached.
+
+**What `lift()` does in native mode.** It mounts the placement host (hidden canvas + chip) but not
+into the inline-3D session; the element stays visible and gets the attributes below. Loading pulls in
+only the model/registry module — the generator, explore renderer and (only if a native provider
+falls back) onnxruntime load on the first pause. An `<img>` is **live** (browser-converted) until
+`explore()`; *Resume* goes back to live. Entering explore sets `dxr-lift="off"` (the SDK's canvas
+owns those pixels), hides the element and adds the canvas to the session; leaving it restores the
+element and `dxr-lift="auto"` at once, and the canvas fades out and leaves the session. A hidden tab
+holds `dxr-lift-priority="paused"`. `remove()` (and a fatal error) restores every attribute to its
+pre-lift value — including one the page set itself. `handle.setDepth/setConvergence/setPriority`
+update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
+
+**Attributes** (on the `<video>`/`<img>`; the browser reads them):
+
+| attribute | values | set from |
+|---|---|---|
+| `dxr-lift` | `auto` \| `off` | `auto` while live; `off` while explore owns the pixels |
+| `dxr-lift-convergence` | `auto` \| number | `convergence` / `setConvergence()` |
+| `dxr-lift-strength` | number (≥ 0) | `depth` / `setDepth()` |
+| `dxr-lift-priority` | `high` \| `normal` \| `low` \| `paused` | `priority` / `setPriority()`; `paused` while the tab is hidden |
+
+**Wire formats** the SDK accepts (the browser patch, N2, is the producer):
+
+- `POST displayxr-lift://lift/depth`, body = the frame as an image (JPEG, the frame's own size).
+  Answer either **binary** — `application/octet-stream`, body `w·h` little-endian float32 row-major,
+  headers `X-DXR-Depth-Width`, `X-DXR-Depth-Height`, `X-DXR-Depth-Semantics`, optional
+  `X-DXR-Depth-FocalPx` (in pixels of the `w×h` grid) — or **JSON** `{w, h, semantics, focalPx?, data}`
+  (`data` base64 float32 or a number array). `semantics`: `metric` (metres, 0 = invalid) or
+  `disparity` (relative inverse depth, bigger = nearer; aliases `inverse-depth`,
+  `relative-disparity`). Anything else is a `format` error → fallback.
+- `POST displayxr-lift://lift/gaussians`, same body. Answer a `.sog` (sniffed `PK\x03\x04`; its camera
+  block v2 is the rig) or a `.ply` (sniffed `ply\n`) **with** an `X-DXR-Lift-Meta` JSON header
+  (`{focalPx, w, h, pivotZ?}`, the generator's meta shape). 404/501 = not supported.
+- Errors are `NativeLiftError` with `code` `http | unsupported | format | encode | network | aborted`
+  and `fallback` (true for all but `aborted`).
+
+**The built-in** (docs/lift-builtin.md) asks `liftCapabilities()` first and, when native, only sets the
+attributes and mounts the chip — up to `caps.maxStreams` native conversions side by side.
+
+Browser harness (not `npm test`): `node test/lift-native.run.mjs` runs the real `lift()` on an `<img>`
+and a `<video>` with `displayxr-lift://` faked in `window.fetch` (2026-09-25, M1 Pro headless: image
+live → explore via native depth in 0.7–1.9 s, 0.33 M splats; no ORT/model fetched until a native
+depth POST failed).
 
 ## Download SOG (`js/lift/sog-export.js`)
 
@@ -176,6 +256,8 @@ These are fixed; each module is built against them independently.
 - `js/lift/gen/lift-gen.js`: `generateLift({rgb: ImageBitmap|HTMLCanvasElement, depth:{data,w,h,space,intrinsics}, inpainter?, quality, signal, onProgress}) → Promise<{ply: ArrayBuffer /*binary 3DGS PLY*/, meta:{focalPx, pivotZ, w, h, layers:2}}>`.
 - `js/lift/explore.js`: `createExplore({canvas, gl?, ply, meta, axes?, clearAlpha?, orbit:{maxAngleDeg, relax}, depthGain?, space?, comfort?, eyes?}) → Promise<{ render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), fadeOut(ms), setDepthGain(x), dispose() }>` (async: the PlayCanvas engine parses the PLY; on `gl` it adopts the DIBR's context).
 - `js/lift/sog-export.js`: `exportSog({ply|splats, meta, camera?}) → Promise<Blob>` (a `.sog` with the camera block v2; see *Download SOG*).
+- `js/lift/native.js`: `liftCapabilities()`, `createNativeDepthProvider(opts)` (a DepthProvider; extra opts `fetch`, `loadOrt`, `fallback`), `createNativeGaussiansLift()` (a LiftProvider: `{id:'native-gaussians', needsDepth:false, generateLift({rgb,signal,onProgress}) → {sog} | {ply, meta}}`), `ensureNativeProviders(caps)` — see *Vendor modules*.
+- `ModelSource.probe(name, {signal}) → Promise<boolean>`: reachable without a download (never rejects).
 - Inpainter (`js/lift/providers/inpaint-ort.js`): `createInpainter({modelSource, ort?, quality, model?}) → { load(), inpaintTwoSided(rgbChw, maskRight, maskLeft, W, H) }`.
 
 ### How lift.js uses them (the parts the contracts leave open)
