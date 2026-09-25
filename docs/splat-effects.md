@@ -39,8 +39,8 @@ right eye are identical, MAE 0.000, for every effect at every progress, in both 
 | `handle.setEffect(name, params \| null)` | A persistent effect (`grade`, `clip`, `custom`), or any timed effect held at `{ progress }` (0..1). Useful for scroll-driven looks and for tests. `null` removes it. |
 | `handle.stopEffect(name?, { finish })` | Removes the named effect, or all effects when no name is given. This restores the baseline exactly. With `finish: true` the effect jumps to its end state instead: an `in` effect is removed, an `out` effect holds its end state. |
 | `handle.effects()` | `[{ name, scope, stage, playing, waiting, progress }]`. |
-| `handle.setSource(src, { transition, durationMs, easing, reveal, fadeMs, resetPose, … })` | Swap the asset. See [Transitions between assets](#transitions-between-assets) and [Particle transitions](#particle-transitions). |
-| `handle.prepareSource(src, { transition, … })` | Load the next asset in the background; with a particle `transition`, also compile its shaders in the dwell. See [prepareSource](#preloading-the-next-photo-preparesource). |
+| `handle.setSource(src, { transition, durationMs, easing, reveal, fadeMs, resetPose, … })` | Swap the asset. See [Transitions between assets](#transitions-between-assets), [Particle transitions](#particle-transitions) and [Sequence transitions](#sequence-transitions-one-splat-at-a-time). |
+| `handle.prepareSource(src, { transition, … })` | Load the next asset in the background; with a particle `transition`, also compile its shaders in the dwell. With a sequence `transition`, only FETCH it (see [Sequence transitions](#sequence-transitions-one-splat-at-a-time)). See [prepareSource](#preloading-the-next-photo-preparesource). |
 
 Options that every timed effect takes:
 
@@ -187,6 +187,7 @@ await h.setSource(next, { transition: 'wavefront', durationMs: 1800, ridge: 0.02
 | `'wavefront'` | The photo-frame prototype's Wavefront Sweep. A soft front crosses the picture from left to right over normalised u. Each column commits from the old photo to the new one over `lt = clamp((t − u·(1 − band)) / band, 0, 1)` with a smoothstep, so u = 0 starts at t = 0 and u = 1 finishes at t = 1. **Image half:** the old photo's image (live in 3D, the frozen frame in 2D) gives way at the same viewport-relative u in every eye, a front on the zero-disparity plane. **Depth half:** a RIDGE rides the front on the new photo, `sin(π·lt) × ridge` world units toward the eyes. Each splat moves along its own ray, with its scale scaled by the same λ, so it keeps its place and size in the picture and only comes forward. The ridge is capped so its extra disparity never exceeds `ridgeMaxDisparity` of the eye view's width: `Δ ≤ cap · 2·tan(fovX/2) · d² / eyeSeparation`. u is the splat's angle in the transition's fixed camera frame (x/z; for a photo, its grid column), so it depends on world position only. The ridge runs at render time, and each photo is drawn only on its own side of the front (see [Wavefront: one draw's worth](#wavefront-one-draws-worth)). With no frame to wipe from (a hidden tab), it falls back to the one-pass crossfade over the same duration. | 2000 ms, `easeInOutSine`, `band` 0.18, `ridge` 0.03 (m on a metric photo), `ridgeMaxDisparity` 0.004 |
 
 | `'swarm'`, `'burst'`, `'shimmer-cross'`, `'dust'` | Particle transitions: the old photo plays a particle reveal backwards while the new one plays it forwards, both live. See [Particle transitions](#particle-transitions). | 2600–2800 ms, linear shared clock (each particle eases) |
+| `'reassemble'`, `{ type: 'sequence', out, in }` | Sequence transitions: ONE photo at a time. The old photo plays a reveal backwards until nothing of it is drawn, is released, and the new one plays a reveal forwards. No second camera, no overlay, no capture. See [Sequence transitions](#sequence-transitions-one-splat-at-a-time). | 3000 ms: 45 % out, a 10 % empty beat, 45 % in |
 
 `reveal` (with `cut` or `crossfade`) plays an entity-scope reveal on the INCOMING asset while the
 old one fades. For example, `{ reveal: 'sweep', fadeMs: 500 }` fades the old frame out over
@@ -378,7 +379,9 @@ unused. A prepared result from another handle is refused.
 
 **Memory:** a prepared asset is fully resident alongside the current one until it is used. That is
 +22.5 MB of GPU textures per 1.18M-gaussian SOG (58.8 → 81.3 MB, back to 58.8 on `dispose()`), plus the engine's centre array (1.18M × 3 float32 ≈ 14 MB of JS heap). During a live transition that follows, both photos
-are drawn (see above). Prepare one slide ahead, not a playlist.
+are drawn (see above). Prepare one slide ahead, not a playlist. A sequence transition
+(`prepareSource(src, { transition: 'reassemble' })`) is the exception: its prepare only fetches the
+bytes, so one splat stays resident (see [Sequence transitions](#sequence-transitions-one-splat-at-a-time)).
 
 **What preloading does not move:** the new asset's first drawn frame still builds its work buffer
 and first sort (the transition's first frame); the fade clock starts on the second tick for that
@@ -510,6 +513,156 @@ eyes (§Gates).
 - `outgoing: 'frozen'`, or an engine without the RenderView path: the old photo cannot move, so
   its frozen frame fades out over the outgoing span while the new photo plays its side.
 - Particle transitions default to `outgoing: 'live'` in 2D too, because the old photo moves.
+
+## Sequence transitions: one splat at a time
+
+```js
+let next = await h.prepareSource(url, { transition: 'reassemble' }); // dwell: FETCH only + compile
+// … 6 s later …
+await h.setSource(next, { transition: 'reassemble' });               // 3000 ms
+await h.setSource(url, { transition: { type: 'sequence', out: 'sweep', in: 'converge' } });
+```
+
+The old photo plays a reveal BACKWARDS until nothing of it is drawn. Then it is released, the next
+photo is loaded and placed, and that one plays a reveal FORWARDS. `'reassemble'` is the named one:
+the photo disperses into a swarm (`assemble` backwards) and the next one assembles out of one.
+
+**Why.** Every other animated transition keeps the OLD photo alive next to the new one: a second
+camera with its own RenderViews, its own layer and gsplat manager, a render target and the overlay
+quads that composite the two (see [Live or frozen outgoing](#live-or-frozen-outgoing)), with a
+frozen capture as the fallback. A sequence has none of it. The eye camera renders every frame, with
+one asset in the scene, the way it renders a still photo, so nothing in the transition can hold an
+image still while the head moves. It is the fallback if a tracked panel still shows a pause with
+the others, and an effect on its own.
+
+**Options.**
+
+| | |
+|---|---|
+| `transition: 'reassemble'` | `assemble` out, `assemble` in, 3000 ms, `linear` shared clock (each particle eases), `beat` 0.1 |
+| `transition: { type: 'sequence', out, in, durationMs?, beat?, easing? }` | any two of `assemble`, `dissolve-in`, `converge`, `shimmer`, `sweep`, `fade`. Its own keys read like setSource's; setSource's win. Defaults 3000 ms, `linear`, `beat` 0.1 |
+| `beat` (0..0.9) | the share of `durationMs` that is empty between the two. Out and in get `(1 − beat) / 2` each: 45 / 10 / 45 by default |
+| `outgoingFx`, `incomingFx` | option overrides per side, as for the particle transitions |
+| `order`, `stagger`, `jitter`, `maxDisparity`, `dotSize`, `noiseScale`, `origin` | shared by both sides when they are particle reveals (`sweep` and `fade` take only `origin`) |
+
+Refused at the call: `reveal` (the sequence is its own reveal), `outgoing` (there is no outgoing
+image), `order: 'layers'`, and any side that would still draw something at its start. That last
+rule is what makes the swap invisible: the old photo is gone before the new one appears, and the
+new one appears from nothing. It is why `inflate` is not offered (its end state is a flat photo:
+that swap is `'flip'`), why `dissolve` is not (its sway has a depth component, see Comfort), and why
+the particle sides default to the particle transitions' tuned options: the `swarm` sides for
+`assemble` (`vanish` 0.45 out / 0.35 in, `density` 0.2), `dust` for `dissolve-in`, `burst` for
+`converge`, `shimmer-cross` for `shimmer`. `incomingFx: { vanish: 0 }` on `assemble` throws.
+
+**How.**
+
+1. **Out.** The current photo's reveal runs backwards as a TILE-scope body at render time (no
+   work-buffer rewrite, no re-sort), its values on the tile material. Its frame (eyes, focus,
+   framing) is taken at the start, under the photo's own rig. Meanwhile the next file's BYTES are
+   fetched (for a URL; a `prepareSource` result is already in hand).
+2. **Swap.** At amount 0 nothing of the photo is drawn. If the next file came back as an HTTP
+   error, the photo plays back in and `setSource` rejects: the current photo stays. Otherwise the
+   old asset is released and DESTROYED (entity, then its resource, a few frames later as every
+   release is). Only then is the next file given to the engine: decoded, uploaded, measured, and
+   placed. The rig waterfall runs and the rig is declared in the same task, with the in body at
+   amount 0, so its first frame draws nothing.
+3. **Beat.** The tile stays empty for at least `beat` of the clock, and for at least 3 frames of
+   the new photo (its work buffer and first sort build, and the new rig has been declared for 3
+   frames).
+4. **In.** Its frame is re-taken under the new rig, and the reveal runs forwards. At the end the
+   body is removed and the chunk deleted: the plain render, exactly.
+
+Both bodies are named `transition`, the particle transitions' name, so a `reassemble` compiles the
+same program as a `swarm`. Keys and paths read world positions only (both eyes agree), and the
+particle sides keep the `maxDisparity` comfort floor against their own home depth.
+
+**What "one splat resident" means.** At any moment at most ONE splat asset is loaded in the engine
+(its GPU textures and its centre array) and at most one splat entity is in the scene. During the
+out phase the next file exists only as bytes in JS memory (about 11 MB for a 1.18M-gaussian SOG).
+The next asset reaches the engine only after the old one's entity is destroyed and its resource
+unloaded.
+
+- `prepareSource(src, { transition: 'reassemble' })` therefore only FETCHES (and compiles the two
+  bodies). `prepared.numSplats` is `null` until the swap. The decode and upload run at the swap, in
+  the empty beat.
+- `prepareSource(src, { transition: 'reassemble', resident: true })` opts back into the full
+  prepare: the next asset is decoded and uploaded in the dwell (resident, not in the scene), so the
+  swap has no load. Two assets are resident during the dwell, as with any other `prepareSource`.
+- A plain `prepareSource(src)` result passed to a sequence is resident too, by the same rule.
+- An unprepared URL is fetched during the out phase. A URL the engine must resolve itself (a
+  Streamed SOG, an unbundled SOG's `meta.json`), or one whose `fetch` throws (CORS, an odd scheme),
+  is loaded by the engine at the swap instead.
+
+**Interruption: latest wins.**
+
+- A newer SEQUENCE takes over from the amount on screen, as soon as its two bodies are compiled
+  (at once when they already are; until then the older one keeps playing). Mid-out, it keeps
+  dispersing the same photo from where it is (no jump back); mid-in, it disperses the half-built
+  one. The older call resolves; mid-out, its fetch is aborted and its next file never reaches the
+  engine.
+- A newer call of any OTHER transition loads its asset as usual, then ends the sequence, as it ends
+  any transition in flight. Before the old photo is gone, the photo comes back whole for that
+  transition to start from (a pop). After it is gone, the tile is empty and the newer call lands as
+  a cut. An asset the older call was still loading is unloaded unseen.
+- Nothing is left behind: the body is removed, and the older call's asset is released or unloaded.
+  Unit tests pin each case on the fake engine (`test/splat-playcanvas.test.mjs` §13f).
+- `remove()` mid-sequence does not throw. As with the other transitions, the pending `setSource`
+  promise does not settle after `remove()`.
+
+**Failure.** An HTTP error on the next file is known before the old photo goes (it comes back, and
+`setSource` rejects). A file that fetches but does not DECODE fails after the old photo is gone:
+`setSource` rejects and the tile stays empty until the next `setSource`.
+
+**Diagnostics.** `?dxrdiag` records a sequence like any transition: `detail.transition` is
+`'reassemble(assemble>assemble)'` (or `'sequence(<out>><in>)'`), `outgoing` is `'none (one
+splat)'`, and the marks are `sequence`, `out-done`, `released`, `loaded`, `adopted` and `in-start`.
+There is no overlay, so the frozen-image count is 0 by construction. `viewer._transitionState` is
+`{ phase: 'out' | 'load' | 'beat' | 'in', raw }` and `viewer._transitionPath` is `'sequence'`.
+
+**Measured** (headless Chrome 153, ANGLE Metal, M1 Pro, real GPU; a fake 2-view wall, 2560×720;
+`ports_100_cam.sog` → `mg_tahoe_k100.sog` / `mg_family_k100.sog`, 1,179,648 gaussians each).
+**This Mac was very busy** during every run (load average 50–260, and other agents' headless
+Chromes on the same GPU), so the frame gaps below are pessimistic; compare the arms, not the ms.
+
+- **One splat resident.** A stepped-clock run sampled every frame: at most 1 splat asset loaded,
+  1 splat entity, 1 gsplat manager, 1,179,648 gaussians and 58.8 MB of GPU textures, which is the
+  still photo's. At the swap: 0 assets and 40.5 MB (the old one gone), then 1 asset placed hidden.
+  Six real-clock runs peaked the same. A live `crossfade` peaks at 2 assets, 2,359,296 gaussians
+  and 131.6 MB; `resident: true` at 2 assets and 81.3 MB (the prepared one, in the dwell).
+- **End state.** The last frame equals a plain `cut` to the same file: MAE 0.000, max 0, colour and
+  alpha, both eyes.
+- **Frames** (stepped clock, both eyes): out-mid, the empty swap, the new photo placed hidden
+  (black: its first frames draw nothing), in-mid, done. Kept local (the bench photo shows real
+  people). In mono, `reassemble` and the general form with `sweep`→`converge`, `converge`→`sweep`,
+  `dissolve-in`→`dissolve-in`, `shimmer`→`shimmer` and `fade`→`fade` each peak at 1 asset and
+  58.8 MB and end at MAE 0.000 against a `cut`. (`sweep`'s front is sized by the framing box, as
+  its reveal's is: on a SHARP photo, whose box reaches far behind the subject, the visible picture
+  goes in the last part of its span.)
+- **Diag** (real clock, `prepareSource(src, { transition })` in the dwell, head moving, 3 runs
+  per arm, 9 in all): frozen-image frames **0** and held frames **0** in every run. No shader was
+  created inside the window, the page's first sequence included (its bodies were compiled by the
+  prepare).
+- **Long tasks.** With the default fetch-only prepare, the next file's decode and upload run at
+  the swap: `released` → `loaded` took 270–600 ms, with one or two 50–110 ms main-thread tasks in
+  it (the engine's own SOG load; the SDK's passes there are 4–20 ms each). All but one of them
+  fell in the empty beat, when nothing is drawn; the other (72 ms) fell in an out phase, in the
+  busiest run. With `resident: true`, 0 long tasks in 3 of 3 runs (one 64 ms task at the swap in an
+  earlier batch, again while the new photo was placed hidden). A live `crossfade` in the same
+  conditions showed 0–1 long tasks (68 ms) and frame gaps of 69–90 ms.
+- **Timing.** From the call: out 1350 ms, then the empty stretch (`out-done` → `in-start`) 380–420
+  ms with `resident: true` and 380–770 ms fetch-only (the beat is at least 300 ms; the load
+  stretches it), then in 1350 ms: 3.1–3.9 s in all.
+
+**Not tested:**
+
+- On a tracked panel through the DisplayXR Browser's real weave, which is what the sequence is for.
+- Windows and Android GPUs.
+- Interruption on the real engine: each case is pinned on the fake engine only.
+- A Streamed SOG (loaded by the engine at the swap, so the empty stretch waits for it), `.ply`, and
+  `controls: 'page'`.
+- A resize or a 2D↔3D switch mid-sequence (nothing is captured, so nothing is invalidated; not run).
+- How the empty beat reads to a viewer on the panel, and whether 45 / 10 / 45 is the right split.
+
 
 ## Custom GLSL
 

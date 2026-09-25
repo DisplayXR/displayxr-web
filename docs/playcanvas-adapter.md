@@ -650,6 +650,15 @@ read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same wa
 `copy(__dxrDiag.dump())` from each. Costs: a few floats per frame and one 2D canvas repainted at
 10 Hz; nothing when off.
 
+**The structural A/B: `transition: 'reassemble'`.** A sequence transition has no second camera, no
+overlay and no capture: one photo at a time, drawn by the eye camera every frame
+([`splat-effects.md` § Sequence transitions](splat-effects.md#sequence-transitions-one-splat-at-a-time)).
+If the panel still shows a stop with it, the transition machinery is ruled out. The diag records it
+with `detail.transition` = `'reassemble(assemble>assemble)'` and the marks `sequence`, `out-done`,
+`released`, `loaded`, `adopted`, `in-start`; its frozen-image count is 0 by construction. The one
+main-thread cost left (the next file's decode and upload, and the engine's first frame of the new
+asset) lands between `released` and `in-start`, when nothing is drawn.
+
 ## `perf` on this engine
 
 | Spark knob | engine | note |
