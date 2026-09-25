@@ -623,8 +623,17 @@ export interface SplatSourceOptions {
    * (nothing moves: twinkling points out, twinkling points in) and `'dust'` (drifting dust out,
    * gathering dust in). 2.6–2.8 s, linear shared clock (each particle eases itself). The old
    * photo is live, in 2D too; a hidden tab gets the crossfade.
+   *
+   * The SEQUENCE transitions (docs/splat-effects.md §Sequence transitions): ONE photo at a time.
+   * `'reassemble'` disperses the current photo (`assemble` backwards), releases it, loads the next
+   * one and assembles it (3000 ms: 45 % out, a 10 % empty beat, 45 % in). The general form
+   * `{ type: 'sequence', out, in }` runs any two of `assemble`, `dissolve-in`, `converge`,
+   * `shimmer`, `sweep`, `fade`. No second camera, overlay or capture: the eye camera renders every
+   * frame.
    */
-  transition?: 'cut' | 'crossfade' | 'flip' | 'wavefront' | SplatParticleTransitionName;
+  transition?: 'cut' | 'crossfade' | 'flip' | 'wavefront' | SplatParticleTransitionName | 'reassemble' | SplatSequenceTransition;
+  /** Sequence transitions: the empty beat between out and in, a fraction of `durationMs`, 0..0.9 (default 0.1). */
+  beat?: number;
   durationMs?: number;
   easing?: SplatEasing;
   /** `cut`/`crossfade` only: reveal the INCOMING asset (entity scope) while the old one fades. */
@@ -656,9 +665,9 @@ export interface SplatSourceOptions {
   origin?: SplatEffectOrigin;
   /** Particle transitions: how much of the clock the two photos' spans share, 0..1 (0 = one after the other). */
   overlap?: number;
-  /** Particle transitions: option overrides for the OUTGOING photo's effect. */
+  /** Particle and sequence transitions: option overrides for the OUTGOING photo's effect. */
   outgoingFx?: SplatParticleOptions & Record<string, unknown>;
-  /** Particle transitions: option overrides for the INCOMING photo's effect. */
+  /** Particle and sequence transitions: option overrides for the INCOMING photo's effect. */
   incomingFx?: SplatParticleOptions & Record<string, unknown>;
 }
 
@@ -668,18 +677,45 @@ export interface SplatSourceOptions {
  * first transition of each kind in a page blocks its first frame on the link (tens of ms, hundreds
  * the first time a machine sees the variant). Validated like setSource's.
  */
-export type SplatPrepareOptions = SplatSourceOptions;
+export type SplatPrepareOptions = SplatSourceOptions & {
+  /**
+   * Sequence transitions only. Default false: the prepare only FETCHES the file's bytes, so one
+   * splat stays resident and the decode + upload run at the swap, in the empty beat. `true`: the
+   * full prepare (decoded and uploaded now, not in the scene) — no load at the swap, two assets
+   * resident during the dwell.
+   */
+  resident?: boolean;
+};
 
 /** setSource's particle transitions (docs/splat-effects.md §Particle transitions). */
 export type SplatParticleTransitionName = 'swarm' | 'burst' | 'shimmer-cross' | 'dust';
 
+/** The reveals a sequence transition can run (each draws nothing at its start). */
+export type SplatSequenceRevealName = 'assemble' | 'dissolve-in' | 'converge' | 'shimmer' | 'sweep' | 'fade';
+
+/**
+ * setSource's general SEQUENCE transition: `out` backwards on the current photo, the swap, `in`
+ * forwards on the next. `durationMs` / `beat` / `easing` here or at the top level of the options
+ * (the top level wins).
+ */
+export interface SplatSequenceTransition {
+  type: 'sequence';
+  out: SplatSequenceRevealName;
+  in: SplatSequenceRevealName;
+  durationMs?: number;
+  beat?: number;
+  easing?: SplatEasing;
+}
+
 /**
  * What `prepareSource()` resolves to: an opaque, single-use handle for `setSource`. The asset is
- * fully resident (GPU textures + the engine's centre array) until used or disposed.
+ * fully resident (GPU textures + the engine's centre array) until used or disposed — except for a
+ * sequence transition (`prepareSource(src, { transition: 'reassemble' })`), whose prepare only
+ * fetches the file's bytes: nothing reaches the engine until the swap.
  */
 export interface SplatPreparedSource {
-  /** The asset's own count (every splat of a flat source). */
-  readonly numSplats: number;
+  /** The asset's own count (every splat of a flat source); null for a fetch-only (sequence) prepare. */
+  readonly numSplats: number | null;
   /** `'ready'` until `setSource` uses it (`'used'`) or `dispose()` drops it (`'disposed'`). */
   readonly state: 'ready' | 'used' | 'disposed';
   /** Release the prepared asset (no-op once used or disposed). */

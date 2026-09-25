@@ -3188,3 +3188,307 @@ test('a scene handle without setViewRig (a core that predates view rigs): the ca
   assert.equal(dropped[0][1]?.type, 'camera', 'the warning carries the rig that was dropped');
   out.remove();
 });
+
+// ── 13f. setSource: SEQUENCE transitions ('reassemble', { type: 'sequence', out, in }) ───────
+
+test('sequence: validated before anything loads — reassemble = assemble out then in, 3000 ms, 45/10/45; the general form; refusals', async () => {
+  const { resolveSwap } = await import('../js/inline3d-splat-playcanvas.js');
+  const { PARTICLE_TRANSITIONS, sequenceSpans, emptyAtZero, resolveEffectOptions } = await import('../js/inline3d-splat-effects.js');
+  const p = resolveSwap({ transition: 'reassemble' });
+  assert.equal(p.transition, 'sequence');
+  assert.equal(p.durationMs, 3000);
+  assert.equal(p.easing, 'linear');
+  assert.equal(p.sequence.name, 'reassemble');
+  assert.equal(p.sequence.out.effect, 'assemble');
+  assert.equal(p.sequence.in.effect, 'assemble');
+  assert.deepEqual(p.sequence.out.opts, PARTICLE_TRANSITIONS.swarm.out.opts, "the swarm's tuned out side");
+  assert.deepEqual(p.sequence.in.opts, PARTICLE_TRANSITIONS.swarm.in.opts);
+  assert.equal(p.outgoing, null, 'no outgoing image');
+  const sp = sequenceSpans(p.sequence.beat);
+  near(sp.out, 0.45, 1e-12);
+  near(sp.beat, 0.1, 1e-12);
+  near(sp.in, 0.45, 1e-12);
+  // the general form; its own keys, setSource's winning; shared + per-side options
+  const g = resolveSwap({ transition: { type: 'sequence', out: 'sweep', in: 'converge', durationMs: 2000, beat: 0.2 }, maxDisparity: 0, incomingFx: { spin: 0.3 } });
+  assert.equal(g.sequence.name, 'sequence');
+  assert.equal(g.durationMs, 2000);
+  assert.equal(g.sequence.beat, 0.2);
+  assert.equal(g.sequence.out.effect, 'sweep');
+  assert.equal(g.sequence.out.opts.maxDisparity, undefined, 'particle options skip sweep');
+  assert.equal(g.sequence.in.opts.maxDisparity, 0);
+  assert.equal(g.sequence.in.opts.spin, 0.3);
+  assert.equal(resolveSwap({ transition: { type: 'sequence', out: 'fade', in: 'fade', durationMs: 900 }, durationMs: 1200 }).durationMs, 1200, "setSource's own key wins");
+  // every reveal a sequence runs draws NOTHING at amount 0 with its sequence options
+  for (const e of ['assemble', 'dissolve-in', 'converge', 'shimmer', 'sweep', 'fade']) {
+    const r = resolveSwap({ transition: { type: 'sequence', out: e, in: e } });
+    for (const side of [r.sequence.out, r.sequence.in]) assert.ok(emptyAtZero(e, resolveEffectOptions(e, { ...side.opts, scope: 'tile' }, 'set', { internal: true })), `${e} empty at 0`);
+  }
+  assert.throws(() => resolveSwap({ transition: { type: 'sequence', out: 'inflate', in: 'assemble' } }), /use transition 'flip'/);
+  assert.throws(() => resolveSwap({ transition: { type: 'sequence', out: 'dissolve', in: 'assemble' } }), /expected one of/, 'dissolve sways in depth');
+  assert.throws(() => resolveSwap({ transition: { type: 'sequence', out: 'assemble' } }), /sequence in 'undefined'/);
+  assert.throws(() => resolveSwap({ transition: { type: 'morph', out: 'fade', in: 'fade' } }), /type: 'sequence'/);
+  assert.throws(() => resolveSwap({ transition: 'reassemble', incomingFx: { vanish: 0 } }), /still draws at its start/, 'a visible start would pop');
+  assert.throws(() => resolveSwap({ transition: 'reassemble', order: 'layers' }), /reveal-only order/);
+  assert.throws(() => resolveSwap({ transition: 'reassemble', reveal: 'sweep' }), /its own reveal/);
+  assert.throws(() => resolveSwap({ transition: 'reassemble', outgoing: 'live' }), /no outgoing image/);
+  assert.throws(() => resolveSwap({ transition: 'reassemble', outgoing: 'moving' }), /expected 'live' or 'frozen'/);
+  assert.throws(() => resolveSwap({ transition: 'reassemble', beat: 1 }), /beat/);
+  assert.throws(() => resolveSwap({ transition: 'reassemble', stagger: 2 }), /stagger/);
+  assert.equal(resolveSwap({}).transition, 'cut', 'the default is unchanged');
+});
+
+/** The fake engine's resident splat assets: loaded (a resource) and not yet unloaded. */
+const residentOf = (rec, loadedAssets) => loadedAssets.filter((a) => a.resource && !a.unloaded).length;
+/** Wrap the fake engine's asset loader to keep every asset it loads. */
+function trackLoads(v) {
+  const loaded = [];
+  const load = v.app.assets.load;
+  v.app.assets.load = (a) => (loaded.push(a), load(a));
+  return loaded;
+}
+const tileAmount = (rec) => rec.tileParams.get('dxrFx_transition_amount');
+/** A frame, then let the adapter's async steps run (a sequence continues between frames). */
+const flushAsync = async () => {
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+test('reassemble: ONE splat at a time — out on the current photo, released and destroyed BEFORE the next loads, placed hidden, the rig adopted, then in; no live camera, no overlay; the end is the baseline', async (t) => {
+  const { rec, out, v, frame, clock } = await liveRig(t);
+  const loads = trackLoads(v);
+  loads.push(out.mesh.asset);
+  const e1 = out.mesh.entity;
+  const a1 = out.mesh.asset;
+  const rig1 = out.rig;
+  let goneAtLoad = null; // was the old asset destroyed + unloaded when the next one reached the engine?
+  const load0 = v.app.assets.load;
+  v.app.assets.load = (a) => {
+    if (goneAtLoad === null) goneAtLoad = !!e1.destroyed && !!a1.unloaded;
+    return load0(a);
+  };
+  const done = out.setSource('b.sog', { transition: 'reassemble', durationMs: 1000 });
+  await settle(() => /dxrFx_transition_center\(center\)/.test(rec.tileChunks.get('gsplatModifyVS') || ''));
+  assert.equal(tileAmount(rec), 1, 'the out side starts untouched');
+  assert.equal(v._transitionPath, 'sequence');
+  assert.equal(rec.tileParams.get('dxrFx_transition_van'), 0.45, "the swarm's out side");
+  assert.deepEqual(out.effects(), [], 'driven by setSource: not a page effect');
+  (frame(), await flushAsync()); // the out clock starts
+  (frame(16), await flushAsync());
+  clock.T += 225 - 16; // half of the 450 ms out span
+  (frame(), await flushAsync());
+  near(tileAmount(rec), 0.5, 1e-9, 'half dispersed');
+  assert.equal(e1.enabled, true);
+  assert.equal(loads.length, 1, 'the next file has not been given to the engine');
+  clock.T += 230;
+  (frame(), await flushAsync());
+  assert.equal(tileAmount(rec), 0, 'nothing of it drawn');
+  // released: disabled at once, destroyed a few frames later — and only THEN is the next one loaded
+  await settle(() => e1.enabled === false);
+  const peak = [];
+  for (let i = 0; i < 6 && !e1.destroyed; i++) {
+    (frame(16), await flushAsync());
+    peak.push(residentOf(rec, loads));
+  }
+  assert.ok(e1.destroyed, 'the old entity is destroyed');
+  assert.ok(rec.removed.includes(a1) && a1.unloaded, 'and its resource unloaded');
+  await settle(() => out.mesh && out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.equal(loads.length, 2);
+  assert.equal(goneAtLoad, true, 'the next file reached the engine only once the old one was destroyed and unloaded');
+  assert.equal(residentOf(rec, loads), 1, 'one splat resident');
+  assert.ok(Math.max(...peak) <= 1, 'never two');
+  assert.notEqual(out.rig, rig1, 'the rig waterfall ran for the new file at the swap');
+  assert.equal(tileAmount(rec), 0, 'placed with its effect at amount 0 in the same task: its first frame draws nothing');
+  assert.equal(rec.tileParams.get('dxrFx_transition_van'), 0.35, "the swarm's in side");
+  // the beat: 100 ms and 3 frames
+  (frame(16), await flushAsync());
+  (frame(16), await flushAsync());
+  assert.equal(tileAmount(rec), 0, 'still hidden in the beat');
+  (frame(100), await flushAsync());
+  (frame(1), await flushAsync()); // in starts
+  clock.T += 225;
+  (frame(), await flushAsync());
+  near(tileAmount(rec), 0.5, 1e-9, 'half assembled');
+  assert.ok(!v._live?.active, 'no live outgoing camera, ever');
+  assert.ok(!v._snap?.parts?.some((p) => p.mi.visible), 'no overlay');
+  clock.T += 300;
+  (frame(), await flushAsync());
+  await done;
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'chunk deleted: the engine default, exactly');
+  assert.equal(e2.enabled, true);
+  assert.equal(v._transitionState, null);
+  assert.deepEqual(out.effects(), []);
+  out.remove();
+});
+
+test('sequence interrupted by a newer sequence mid-out: it takes over from the amount on screen (no jump back), the older resolves, its next file is never loaded', async (t) => {
+  const { rec, out, v, frame, clock } = await liveRig(t);
+  const loads = trackLoads(v);
+  const e1 = out.mesh.entity;
+  const first = out.setSource('b.sog', { transition: 'reassemble', durationMs: 1000 });
+  await settle(() => tileAmount(rec) === 1);
+  (frame(), await flushAsync());
+  clock.T += 225;
+  (frame(), await flushAsync());
+  near(tileAmount(rec), 0.5, 1e-9);
+  const second = out.setSource('c.sog', { transition: 'reassemble', durationMs: 1000 });
+  await first; // latest wins: the older one ends
+  await settle(() => /dxrFx_transition_center/.test(rec.tileChunks.get('gsplatModifyVS') || '') && v._hooks.length > 0);
+  near(tileAmount(rec), 0.5, 1e-9, 'the newer one starts where the photo stands');
+  (frame(), await flushAsync());
+  clock.T += 112.5; // half of the remaining 225 ms (450 × 0.5)
+  (frame(), await flushAsync());
+  near(tileAmount(rec), 0.25, 1e-9, 'and disperses the rest');
+  clock.T += 120;
+  (frame(), await flushAsync());
+  await settle(() => e1.enabled === false);
+  for (let i = 0; i < 5; i++) (frame(16), await flushAsync());
+  await settle(() => out.mesh && out.mesh.entity !== e1);
+  assert.equal(loads.length, 1, "only the newer one's file was loaded");
+  for (let i = 0; i < 4; i++) (frame(40), await flushAsync());
+  clock.T += 500;
+  (frame(), await flushAsync());
+  await second;
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false);
+  assert.equal(out.mesh.entity.enabled, true);
+  out.remove();
+});
+
+test('sequence interrupted by a cut in the beat: the cut lands on an empty tile, no leftover body hides it, the half-shown photo is released', async (t) => {
+  const { rec, out, v, frame, clock } = await liveRig(t);
+  const loads = trackLoads(v);
+  const e1 = out.mesh.entity;
+  const seqDone = out.setSource('b.sog', { transition: 'reassemble', durationMs: 1000 });
+  await settle(() => tileAmount(rec) === 1);
+  (frame(), await flushAsync());
+  clock.T += 460;
+  (frame(), await flushAsync()); // out done
+  for (let i = 0; i < 6; i++) (frame(16), await flushAsync());
+  await settle(() => out.mesh && out.mesh.entity !== e1);
+  const e2 = out.mesh.entity;
+  assert.equal(tileAmount(rec), 0, 'b placed hidden, in its beat');
+  const cut = out.setSource('c.sog', { transition: 'cut' });
+  await cut;
+  await seqDone;
+  const e3 = out.mesh.entity;
+  assert.notEqual(e3, e2);
+  assert.equal(e2.enabled, false, 'the hidden photo is released');
+  assert.equal(e3.enabled, true);
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'no sequence body left to hide the cut');
+  for (let i = 0; i < 8; i++) (frame(40), await flushAsync());
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false, 'and the old sequence does not come back');
+  assert.equal(loads.length, 2);
+  out.remove();
+});
+
+test('sequence interrupted by a newer call while the tile is EMPTY (old released, next loading): the older one never places its asset', async (t) => {
+  const { rec, out, v, frame, clock } = await liveRig(t);
+  const loads = trackLoads(v);
+  const e1 = out.mesh.entity;
+  // hold the engine load of b: the tile is empty meanwhile
+  const load = v.app.assets.load;
+  let release = null;
+  v.app.assets.load = (a) => (loads.length === 0 ? (loads.push(a), (release = () => load(a))) : (loads.push(a), load(a)));
+  const seqDone = out.setSource('b.sog', { transition: 'reassemble', durationMs: 1000 });
+  await settle(() => tileAmount(rec) === 1);
+  (frame(), await flushAsync());
+  clock.T += 460;
+  (frame(), await flushAsync());
+  for (let i = 0; i < 6; i++) (frame(16), await flushAsync());
+  await settle(() => release !== null);
+  assert.equal(out.mesh, null, 'nothing on screen: current and mesh are cleared');
+  const next = out.setSource('c.sog', { transition: 'reassemble', durationMs: 1000 });
+  await seqDone; // taken over
+  release(); // b arrives late
+  await settle(() => out.mesh && out.mesh.entity !== e1);
+  const shown = out.mesh.entity;
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(loads[0].unloaded, true, 'the stale b is unloaded, never placed');
+  assert.equal(out.mesh.entity, shown);
+  for (let i = 0; i < 4; i++) (frame(40), await flushAsync());
+  clock.T += 500;
+  (frame(), await flushAsync());
+  await next;
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false);
+  out.remove();
+});
+
+test('sequence: an HTTP error on the next file is known before the current photo goes — it comes back, and setSource rejects', async (t) => {
+  const { rec, out, frame, clock } = await liveRig(t);
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: false, status: 404 }));
+  const e1 = out.mesh.entity;
+  const done = out.setSource('https://example.invalid/missing.sog', { transition: 'reassemble', durationMs: 1000 });
+  const failed = assert.rejects(done, /HTTP 404.*the current photo stays/);
+  await settle(() => tileAmount(rec) === 1);
+  (frame(), await flushAsync());
+  clock.T += 460;
+  (frame(), await flushAsync()); // out done
+  await new Promise((r) => setTimeout(r, 0));
+  (frame(), await flushAsync());
+  clock.T += 460;
+  (frame(), await flushAsync()); // back in
+  await failed;
+  assert.equal(out.mesh.entity, e1, 'the current photo stays');
+  assert.equal(e1.enabled, true);
+  assert.equal(rec.tileChunks.has('gsplatModifyVS'), false);
+  out.remove();
+});
+
+test('prepareSource(src, { transition: reassemble }) only FETCHES: nothing reaches the engine until the swap; remove() mid-sequence does not throw', async (t) => {
+  const { rec, out, v, frame, clock } = await liveRig(t);
+  const loads = trackLoads(v);
+  const prep = await out.prepareSource('b.sog', { transition: 'reassemble' });
+  assert.equal(prep.numSplats, null, 'fetch-only: not decoded yet');
+  assert.equal(loads.length, 0, 'no engine load, no GPU upload');
+  const done = out.setSource(prep, { transition: 'reassemble', durationMs: 1000 });
+  assert.equal(prep.state, 'used');
+  await settle(() => tileAmount(rec) === 1);
+  (frame(), await flushAsync());
+  clock.T += 460;
+  (frame(), await flushAsync());
+  for (let i = 0; i < 6; i++) (frame(16), await flushAsync());
+  await settle(() => loads.length === 1);
+  (frame(16), await flushAsync());
+  out.remove(); // mid-beat
+  assert.equal(done instanceof Promise, true);
+  // a fetch-only prepared result used with ANOTHER transition loads at the swap
+  const r2 = await liveRig(t);
+  await assert.rejects(r2.out.prepareSource('b.sog', { transition: 'reassemble', resident: 'yes' }), /resident must be a boolean/);
+  const loads2 = trackLoads(r2.v);
+  const res = await r2.out.prepareSource('b.sog', { transition: 'reassemble', resident: true });
+  assert.equal(loads2.length, 1, 'resident: true — the full prepare (decoded and uploaded now)');
+  assert.equal(typeof res.numSplats, 'number');
+  res.dispose();
+  const prep2 = await r2.out.prepareSource('b.sog', { transition: 'reassemble' });
+  const e1 = r2.out.mesh.entity;
+  await r2.out.setSource(prep2, { transition: 'cut' });
+  assert.notEqual(r2.out.mesh.entity, e1);
+  r2.out.remove();
+});
+
+test('diag records a sequence: its name, marks for each step, and no frozen image (there is no overlay)', async (t) => {
+  const { out, v, wallRec, clock } = await liveRig(t, { withWall: true, diag: 'nooverlay' });
+  const d = globalThis.window.__dxrDiag.last;
+  const done = out.setSource('b.sog', { transition: 'reassemble', durationMs: 600 });
+  let hx = 0;
+  const step = (dt = 16) => {
+    clock.T += dt;
+    wallRec.onFrame(eyeViews((hx += 0.001)), halfLayer);
+  };
+  await settle(() => d.phase === 'window');
+  for (let i = 0; i < 80; i++) {
+    step();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  await done;
+  for (let i = 0; i < 70; i++) step(); // a second after settle: the summary closes
+  const s = d.transitions.at(-1);
+  assert.equal(s.detail.transition, 'reassemble(assemble>assemble)');
+  assert.equal(s.detail.outgoing, 'none (one splat)');
+  const marks = s.marks.map((m) => m.name);
+  for (const m of ['sequence', 'out-done', 'released', 'loaded', 'adopted', 'in-start']) assert.ok(marks.includes(m), `mark ${m} in ${marks.join(',')}`);
+  assert.ok(marks.indexOf('released') < marks.indexOf('loaded'), 'released before the next is loaded');
+  assert.equal(s.frozenImageFrames, 0);
+  assert.equal(s.heldRunMax, 0);
+  assert.match(s.verdict, /CLEAN/, JSON.stringify(s));
+  out.remove();
+});
