@@ -1820,9 +1820,12 @@ test('the cloud passes yield between steps (source check: each in its own task; 
 // ── 13b. setSource: LIVE outgoing + prepareSource (./inline3d-splat-live.js) ─────────────────
 
 /** The fake engine plus what the live path touches: layers, targets, RenderViews, the director. */
-async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100, diag, withWall = false, queue } = {}) {
+async function liveRig(t, { outgoing = 'live', transition = 'crossfade', durationMs = 100, presort = false, diag, withWall = false, queue } = {}) {
   installDom();
-  const diagOpt = diag; // the diag's console lines are muted
+  // presort:false (the default here) = the 1.19.2 path these tests pin: `?dxrdiag=cold` skips the
+  // live pre-sort, so the frozen capture bridges until the fresh manager sorts. The pre-sort
+  // itself has its own tests (13c). The diag's console lines are muted.
+  const diagOpt = diag !== undefined ? diag : presort ? undefined : 'cold,nooverlay';
   if (diagOpt !== undefined) t.mock.method(console, 'info', () => {});
   const clock = { T: 1000 };
   t.mock.method(performance, 'now', () => clock.T);
@@ -2069,6 +2072,91 @@ test('a newer setSource supersedes a live window: it closes (camera off, old ass
   out.remove();
 });
 
+// ── 13c. the live outgoing PRE-SORT (the frozen bridge, removed) ────────────────────────────
+
+test('PRE-SORT: the live camera sorts the CURRENT asset before the swap; the overlay samples the live target from the swap frame on (no frozen bridge)', async (t) => {
+  const { out, v, frame, pushed, camerasMap, opts, rec, clock } = await liveRig(t, { presort: true });
+  const e1 = out.mesh.entity;
+  e1.gsplat.layers = [0]; // World, as the engine's default
+  const done = out.setSource('b.sog', opts);
+  await settle(() => v._live?.warming === true);
+  const live = v._live;
+  assert.equal(v._captureWaiters.length, 0, 'no capture yet: the swap waits for the pre-sort');
+  assert.equal(out.mesh.entity, e1, 'the current asset is still THE asset');
+  assert.deepEqual(e1.gsplat.layers, [0, pushed[0].id], 'on its own layer AND the live layer (the eye keeps drawing it)');
+  assert.equal(live.cam.enabled, true, 'the live camera renders it into its target already');
+  assert.equal(live.active, false, 'not a live window yet');
+  frame(10); // drawn once, but the fresh manager has not sorted
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(v._captureWaiters.length, 0, 'still waiting: unsorted');
+  assert.equal(live.views.length, 1, 'the live camera gets the eye views while warming');
+  sortLive(v, camerasMap);
+  frame(10); // the hook sees warmReady
+  await settle(() => v._captureWaiters.length === 1);
+  v._afterTick(); // the capture (kept as the fallback source)
+  await settle(() => out.mesh.entity !== e1);
+  assert.equal(live.active, true);
+  assert.equal(live.warmed, true, 'this window was pre-sorted');
+  assert.deepEqual(e1.gsplat.layers, [pushed[0].id], 'off World only: the live layer keeps its placement (and its sorted manager)');
+  const parts = rec.meshInstances.filter((mi) => /Snapshot/.test(mi.material.desc.uniqueName));
+  assert.equal(parts[1].material.params.get('dxrSnap'), live.tex, 'the overlay samples the LIVE target in the swap task itself');
+  assert.equal(v.diagImageState().overlay, 'live');
+  frame(0);
+  frame(0); // clock starts
+  clock.T += 50;
+  frame();
+  near(parts[1].material.params.get('dxrSnapAlpha'), 0.5, 1e-9, 'the same lerp');
+  clock.T += 60;
+  frame();
+  await done;
+  assert.equal(live.active, false);
+  assert.equal(live.warming, false);
+  assert.equal(e1.enabled, false, 'released at the end');
+  out.remove();
+});
+
+test('PRE-SORT dropped: cancelLiveWarm puts the asset back on only its own layers, camera off; a cut / frozen swap never warms', async (t) => {
+  const { out, v, pushed, opts } = await liveRig(t, { presort: true });
+  const e1 = out.mesh.entity;
+  e1.gsplat.layers = [0];
+  assert.equal(v.warmLiveOutgoing(e1), true);
+  assert.deepEqual(e1.gsplat.layers, [0, pushed[0].id]);
+  assert.equal(v.warmLiveOutgoing(e1), true, 'idempotent on the same asset');
+  v.cancelLiveWarm();
+  assert.deepEqual(e1.gsplat.layers, [0], 'back on World only');
+  assert.equal(v._live.cam.enabled, false);
+  assert.equal(v._live.rt, null, 'target freed');
+  // a frozen swap: no pre-sort, no live window
+  const done = out.setSource('b.sog', { ...opts, outgoing: 'frozen' });
+  await settle(() => v._captureWaiters.length === 1);
+  assert.equal(v._live.warming, false, 'frozen: nothing warmed');
+  v._afterTick();
+  await settle(() => out.mesh.entity !== e1);
+  out.setSource('c.sog', { transition: 'cut' }); // supersedes; the crossfade finishes
+  await done;
+  out.remove();
+});
+
+test('PRE-SORT times out (a hidden tab, a stalled sorter): the swap goes ahead on the frozen bridge', async (t) => {
+  const { out, v, frame, camerasMap, opts } = await liveRig(t, { presort: true });
+  const e1 = out.mesh.entity;
+  // No frames at all for the pre-sort: liveWarmed resolves false on its timeout.
+  const warmed = v.liveWarmed(5);
+  assert.equal(await warmed, false, 'nothing warming: false at once');
+  v.warmLiveOutgoing(e1);
+  assert.equal(await v.liveWarmed(5), false, 'no frame within the timeout: false');
+  v.cancelLiveWarm();
+  const done = out.setSource('b.sog', opts);
+  await settle(() => v._live?.warming === true);
+  out.setSource('c.sog', { transition: 'cut' }); // supersedes during the pre-sort
+  await done;
+  assert.equal(v._live.warming, false, 'the newer (cut) swap dropped the pre-sort');
+  assert.equal(v._live.active, false);
+  sortLive(v, camerasMap);
+  frame(10);
+  out.remove();
+});
+
 // ── 13d. transition diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ────────────────
 
 /** Two eye views, head at x = hx, for the woven onFrame (fresh arrays each call, as a browser). */
@@ -2104,7 +2192,7 @@ test('diag: every woven frame is recorded — a bit-identical repeat is HELD, a 
 test('diag: a transition is summarised — phases, rig pushes with values, HELD run / frozen image / gap verdicts', async (t) => {
   const LENS_B = { ...LENS, fx: 1400, fy: 1400 };
   const cam = (lens, off) => ({ ...fakeFlat(600, off), gsplatData: { numSplats: 600, meta: { camera: { convention: 'opencv', intrinsics: lens } } } });
-  const { out, v, frame, wallRec, camerasMap, clock } = await liveRig(t, { withWall: true, diag: 'nooverlay', queue: [cam(LENS, 0), cam(LENS_B, 5)] });
+  const { out, v, frame, wallRec, camerasMap, clock } = await liveRig(t, { withWall: true, diag: 'cold,nooverlay', queue: [cam(LENS, 0), cam(LENS_B, 5)] });
   const d = globalThis.window.__dxrDiag.last;
   assert.equal(out.rig.type, 'camera');
   const rigs0 = wallRec.rigs.length;
@@ -2142,7 +2230,7 @@ test('diag: a transition is summarised — phases, rig pushes with values, HELD 
   assert.match(s.verdict, /TRACKING-HELD/);
   assert.match(s.verdict, /IMAGE-FROZEN/);
   assert.match(s.verdict, /MAIN-THREAD gap/);
-  assert.ok(s.marks.some((m) => m.name === 'outgoing' && /frozen bridge/.test(m.detail.mode)));
+  assert.ok(s.marks.some((m) => m.name === 'outgoing' && /cold/.test(m.detail.mode)));
   assert.ok(s.rigs.length >= 1, 'the rig pushes inside the window');
   assert.ok(s.window.length >= 10, 'the frames kept for the frozen strip');
   out.remove();

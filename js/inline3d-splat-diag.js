@@ -23,10 +23,12 @@
 //              re-declaration is DROPPED (logged as dropped). Tests "the rig change freezes it".
 //   frozen   — force `outgoing: 'frozen'` (the 1.12.1 frozen outgoing photo) on every setSource.
 //   nowarm   — skip the transition shader pre-warm (prepareSource / setSource compile nothing).
+//   cold     — skip the live outgoing PRE-SORT (the 1.19.2 behaviour: the frozen capture bridges
+//              until a fresh manager has sorted).
 //   nooverlay — record + console + window.__dxrDiag, but no on-screen overlay.
 
 /** The switches `diag` / `?dxrdiag` understand, besides the plain on values. */
-export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'nooverlay']);
+export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay']);
 const ON_TOKENS = new Set(['1', 'on', 'true', 'yes']);
 
 /**
@@ -489,8 +491,8 @@ export function startDiagLoop(rec, { overlay = true, doc = typeof document !== '
   const head = doc.createElement('div');
   const cv = doc.createElement('canvas');
   cv.width = W;
-  cv.height = STRIP_H * 2 + 14;
-  cv.style.cssText = `display:block;width:${W}px;height:${STRIP_H * 2 + 14}px;margin:4px 0`;
+  cv.height = STRIP_H * 2 + 18;
+  cv.style.cssText = `display:block;width:${W}px;height:${STRIP_H * 2 + 18}px;margin:4px 0`;
   const foot = doc.createElement('div');
   el.append(head, cv, foot);
   doc.body.appendChild(el);
@@ -543,11 +545,13 @@ export function startDiagLoop(rec, { overlay = true, doc = typeof document !== '
       (last ? `\nframe dt ${last.dt} ms  held ${last.held ? 'YES' : 'no'}  img ${last.img}${last.img !== 'none' ? ' ' + last.imgW : ''}` : '');
     strip(rec.frames, 0, now - WINDOW_MS, now, rec.callAt);
     if (frozen && g) {
-      strip(frozen.window.map((f) => ({ ...f })), STRIP_H + 14, -PRE_MS, WINDOW_MS - PRE_MS, 0);
+      strip(frozen.window.map((f) => ({ ...f })), STRIP_H + 18, -PRE_MS, WINDOW_MS - PRE_MS, 0);
     }
     if (g) {
+      g.clearRect(0, STRIP_H, W, 18); // the label band: repainted, never accumulated
       g.fillStyle = '#e8e8e8';
-      g.fillText(frozen ? `last transition #${frozen.id} (frozen)` : 'last transition: none yet', 4, STRIP_H + 11);
+      g.font = '10px ui-monospace, monospace';
+      g.fillText(frozen ? `last transition #${frozen.id} (frozen)` : 'last transition: none yet', 4, STRIP_H + 13);
     }
     foot.textContent = frozen ? `#${frozen.id}: ${frozen.verdict}` : 'red = held poses · orange = frozen image · bar = frame interval';
   };
