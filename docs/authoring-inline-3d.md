@@ -202,10 +202,11 @@ head pose, an SBS video frame's disparity is baked in whether it is frozen or pl
 **Two video paths, one vocabulary.** The SDK also plays video through `./splat`'s
 `handle.setVideo(src, { format, fit, rig })` (a screen-locked plane where each eye samples its own
 half — docs/playcanvas-adapter.md §setVideo). `addPlayer` keeps the same option names —
-`format` today, `fit` when it lands — so a later player can drive either path with one options
-object. Its `format` takes `'sbs' | 'mono'`; `setVideo` also takes `'tb'`.
+`format` and `fit` (`'contain' | 'cover'`, same meaning) — so a later player can drive either path
+with one options object. Its `format` takes `'sbs' | 'mono'`; `setVideo` also takes `'tb'`. Unset,
+`fit` keeps the 1.x stretch-to-tile behaviour.
 
-v1 does not do `'tb'`/top-bottom re-pack, `fit` (cover/contain letterboxing), sidecar/filename
+v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename
 format auto-detect, HLS, undock, or a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
 plan and why each is out of this slice.
 
