@@ -34,6 +34,8 @@ import {
   capturePose,
   engineFormatFor,
   nearestCentreToRay,
+  buildPickIndex,
+  queryPickIndex,
   pickViewPath,
   attachPlayCanvasSplat,
   describeResource,
@@ -3539,4 +3541,66 @@ test('diag records a sequence: its name, marks for each step, and no frozen imag
   assert.equal(s.heldRunMax, 0);
   assert.match(s.verdict, /CLEAN/, JSON.stringify(s));
   out.remove();
+});
+
+test('pick index: the same point as the full scan, for every ray of the view (in-cone), and only cone hits', () => {
+  // a seeded cloud in front of an eye at (0.3, -0.2, 1) looking down -z, with haze and points behind
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+  const n = 60000;
+  const xyz = new Float32Array(n * 3);
+  const alpha8 = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    xyz[i * 3] = (rnd() - 0.5) * 3;
+    xyz[i * 3 + 1] = (rnd() - 0.5) * 2;
+    xyz[i * 3 + 2] = -rnd() * 4 + 1.5; // some behind the eye
+    alpha8[i] = rnd() < 0.1 ? 3 : 200; // 10% haze
+  }
+  // duplicates: a tie the full scan resolves to the first index
+  xyz.set([0.3, -0.2, -1], 0);
+  xyz.set([0.3, -0.2, -1], 3);
+  const eye = [0.3, -0.2, 1];
+  const f = [0, 0, -1];
+  const r = [1, 0, 0];
+  const up = [0, 1, 0];
+  const ix = buildPickIndex(xyz, n, alpha8, eye, f, r, up, 0.6, 0.45, 64);
+  assert.ok(ix && ix.size > 0 && ix.size < n, 'haze and centres behind the eye are not indexed');
+  let answered = 0;
+  let fellBack = 0;
+  for (let k = 0; k < 400; k++) {
+    // a pick ray: from its near-plane point (0.05 in front of the eye) along a direction in the frustum
+    const d = [(rnd() - 0.5) * 1.1, (rnd() - 0.5) * 0.8, -1];
+    if (k === 0) (d[0] = 0), (d[1] = 0);
+    const l = Math.hypot(...d);
+    const dir = d.map((x) => x / l);
+    const o = eye.map((e, i) => e + 0.05 * dir[i]);
+    const full = nearestCentreToRay(xyz, o, dir, undefined, alpha8);
+    const got = queryPickIndex(ix, xyz, o, dir);
+    if (got === undefined) {
+      // declined only when the cone is empty: the full scan's answer is then its by-angle fallback
+      if (full) {
+        const rv = full.map((x, i) => x - o[i]);
+        const t = rv[0] * dir[0] + rv[1] * dir[1] + rv[2] * dir[2];
+        const perp = Math.sqrt(Math.max(0, rv[0] ** 2 + rv[1] ** 2 + rv[2] ** 2 - t * t));
+        assert.ok(perp / t > 0.02, `ray ${k}: declined with a centre inside the cone`);
+      }
+      fellBack++;
+      continue;
+    }
+    answered++;
+    assert.deepEqual(got, full, `ray ${k}`);
+  }
+  assert.ok(answered > 250, `most rays answered from the index (${answered}, ${fellBack} fell back)`);
+  // a ray NOT through the eye: the index declines
+  assert.equal(queryPickIndex(ix, xyz, [0.5, 0, 1], [0, 0, -1]), undefined);
+  // wide-cone equivalence too (a bigger search square)
+  const o = eye.map((e, i) => e + 0.05 * [0, 0, -1][i]);
+  assert.deepEqual(queryPickIndex(ix, xyz, o, [0, 0, -1], 0.2), nearestCentreToRay(xyz, o, [0, 0, -1], 0.2, alpha8));
+});
+
+test('pick index: an empty cone declines (the full scan owns the nearest-by-angle fallback)', () => {
+  const xyz = new Float32Array([1, 0, -1, -1, 0, -1]);
+  const ix = buildPickIndex(xyz, 2, null, [0, 0, 1], [0, 0, -1], [1, 0, 0], [0, 1, 0], 1, 1, 16);
+  assert.equal(queryPickIndex(ix, xyz, [0, 0, 0.9], [0, 0, -1]), undefined);
+  assert.equal(buildPickIndex(new Float32Array([0, 0, 5]), 1, null, [0, 0, 1], [0, 0, -1], [1, 0, 0], [0, 1, 0], 1, 1), null, 'nothing in front');
 });

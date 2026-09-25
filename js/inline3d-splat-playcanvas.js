@@ -68,7 +68,7 @@ import {
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR } from './inline3d-splat-video.js';
-import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag } from './inline3d-splat-diag.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
   clamp,
   finite,
@@ -612,6 +612,136 @@ export function nearestCentreToRay(xyz, origin, dir, coneRad = PICK_CONE_RAD, al
     }
   }
   return bestInCone || bestAny;
+}
+
+/** Cells per side of a pick index (PICK_INDEX_GRID² cells over the view's direction square). */
+export const PICK_INDEX_GRID = 128;
+
+/**
+ * A pick INDEX over one centre set, for one eye position: every usable centre (opacity at or above
+ * RIG_MIN_OPACITY, in front of the eye) bucketed by its DIRECTION from the eye — its gnomonic
+ * coordinates (u, v) = ((p − eye)·right, (p − eye)·up) / ((p − eye)·fwd) on a PICK_INDEX_GRID² grid
+ * over [−U, U] × [−V, V] (centres outside land in the border cells). One pass over the set, about
+ * one full-scan pick's cost; every later pick from the same eye then reads only the few cells
+ * around its ray (queryPickIndex), not the whole set.
+ *
+ * Why (a photo slideshow app, on the panel): a page that picks in bursts — 24 rays to plan a
+ * companion's waypoints, then an 81-ray depth grid, on every photo swap — ran 105 full scans of a
+ * 1.18M-centre photo on the main thread, two long tasks of ~0.3 s and ~1 s right at the swap's
+ * end: no session frames, so the woven image stopped following the head.
+ *
+ * `f`, `r`, `up`: an orthonormal frame (any; the eye's own is the tightest). Returns null when
+ * nothing usable is in front of the eye.
+ */
+export function buildPickIndex(xyz, count, alpha8, eye, f, r, up, U, V, G = PICK_INDEX_GRID) {
+  const n = count;
+  const cells = G * G;
+  const su = G / (2 * U);
+  const sv = G / (2 * V);
+  const minA = Math.ceil(RIG_MIN_OPACITY * 255);
+  const cellOf = new Uint16Array(n); // G ≤ 255: cells < 65535, which marks "not indexed"
+  const start = new Uint32Array(cells + 1);
+  const [ex, ey, ez] = eye;
+  const [f0, f1, f2] = f;
+  const [r0, r1, r2] = r;
+  const [u0, u1, u2] = up;
+  let m = 0;
+  for (let i = 0; i < n; i++) {
+    if (alpha8 && alpha8[i] < minA) {
+      cellOf[i] = 65535;
+      continue;
+    }
+    const rx = xyz[i * 3] - ex;
+    const ry = xyz[i * 3 + 1] - ey;
+    const rz = xyz[i * 3 + 2] - ez;
+    const z = rx * f0 + ry * f1 + rz * f2;
+    if (!(z > 0)) {
+      cellOf[i] = 65535;
+      continue;
+    }
+    // z > 0 held, so every coordinate is finite (a NaN or ∞ one makes z NaN). Truncation, not
+    // floor: below the grid's edge both land in the border cell after the clamp.
+    const iz = 1 / z;
+    let cu = ((rx * r0 + ry * r1 + rz * r2) * iz + U) * su;
+    let cv = ((rx * u0 + ry * u1 + rz * u2) * iz + V) * sv;
+    cu = cu < 0 ? 0 : cu >= G ? G - 1 : cu | 0;
+    cv = cv < 0 ? 0 : cv >= G ? G - 1 : cv | 0;
+    const c = cv * G + cu;
+    cellOf[i] = c;
+    start[c + 1]++;
+    m++;
+  }
+  if (!m) return null;
+  for (let c = 0; c < cells; c++) start[c + 1] += start[c];
+  const order = new Uint32Array(m);
+  const cursor = start.slice(0, cells);
+  for (let i = 0; i < n; i++) {
+    const c = cellOf[i];
+    if (c !== 65535) order[cursor[c]++] = i;
+  }
+  return { eye: [ex, ey, ez], f: [f0, f1, f2], r: [r0, r1, r2], up: [u0, u1, u2], U, V, G, su, sv, start, order, size: m };
+}
+
+/**
+ * nearestCentreToRay's IN-CONE answer from a pick index: the same point, exactly (the same
+ * arithmetic on the same centres, ties to the lowest index as the full scan's first-wins), read
+ * from the cells the cone can reach. The ray must pass through the index's eye (any pick ray of
+ * that view does: it runs from its near-plane point through the eye). Returns the point, or
+ * undefined when the index cannot answer — no centre inside the cone (the full scan's
+ * nearest-by-angle fallback needs every centre), a ray not through the eye, or one too far off
+ * the index's axis — and the caller runs the full scan.
+ *
+ * Why the cells suffice: along a ray through the eye, t from the near-plane origin is t from the
+ * eye minus the near distance, so perp / t (the cone test) ≥ perp / t_eye = tan of the angle at
+ * the eye. A centre inside the cone is within atan(coneRad) of the ray AT THE EYE, and a cap of
+ * angular radius θ around a direction φ0 off the axis projects (gnomonic) inside a radius of
+ * tan(φ0 + θ) − tan(φ0) around the ray's own (u, v). The search square takes 1.25× that plus a
+ * cell.
+ */
+export function queryPickIndex(ix, xyz, origin, dir, coneRad = PICK_CONE_RAD) {
+  const { eye, f, r, up, U, V, G, su, sv, start, order } = ix;
+  // the ray must pass through the eye (a relative tolerance: numerical noise, not a design gap)
+  const ox = eye[0] - origin[0], oy = eye[1] - origin[1], oz = eye[2] - origin[2];
+  const along = ox * dir[0] + oy * dir[1] + oz * dir[2];
+  const off2 = ox * ox + oy * oy + oz * oz - along * along;
+  if (!(along < 0) || off2 > 1e-12 * (along * along) + 1e-18) return undefined; // the eye sits BEHIND the near-plane origin
+  const dz = dir[0] * f[0] + dir[1] * f[1] + dir[2] * f[2];
+  if (!(dz > 0)) return undefined;
+  const du = (dir[0] * r[0] + dir[1] * r[1] + dir[2] * r[2]) / dz;
+  const dv = (dir[0] * up[0] + dir[1] * up[1] + dir[2] * up[2]) / dz;
+  const rho = Math.hypot(du, dv);
+  const phi0 = Math.atan(rho);
+  const th = Math.atan(coneRad) * 1.05 + 1e-6;
+  if (phi0 + th >= 1.4) return undefined; // ~80°: the projection's stretch is no longer worth bounding
+  const R = (Math.tan(phi0 + th) - rho) * 1.25;
+  const clampCell = (x) => (x < 0 ? 0 : x >= G ? G - 1 : x);
+  const cu0 = clampCell(Math.floor((du - R + U) * su) - 1);
+  const cu1 = clampCell(Math.floor((du + R + U) * su) + 1);
+  const cv0 = clampCell(Math.floor((dv - R + V) * sv) - 1);
+  const cv1 = clampCell(Math.floor((dv + R + V) * sv) + 1);
+  if (!(cu0 <= cu1 && cv0 <= cv1)) return undefined;
+  let bestT = Infinity;
+  let bestI = -1;
+  for (let cv = cv0; cv <= cv1; cv++) {
+    const row = cv * G;
+    for (let k = start[row + cu0], k1 = start[row + cu1 + 1]; k < k1; k++) {
+      const i = order[k];
+      // nearestCentreToRay's own arithmetic, term for term
+      const rx = xyz[i * 3] - origin[0];
+      const ry = xyz[i * 3 + 1] - origin[1];
+      const rz = xyz[i * 3 + 2] - origin[2];
+      const t = rx * dir[0] + ry * dir[1] + rz * dir[2];
+      if (!(t > 0)) continue;
+      const perp = Math.sqrt(Math.max(0, rx * rx + ry * ry + rz * rz - t * t));
+      const angle = perp / t;
+      if (angle <= coneRad && (t < bestT || (t === bestT && i < bestI))) {
+        bestT = t;
+        bestI = i;
+      }
+    }
+  }
+  if (bestI < 0) return undefined;
+  return [xyz[bestI * 3], xyz[bestI * 3 + 1], xyz[bestI * 3 + 2]];
 }
 
 // ── the viewer: pose state + frame loop + the engine ────────────────────────────────────────
@@ -2695,13 +2825,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   // ── diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ──
   const diagCfg = resolveDiag(opts.diag);
-  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: norig, frozen, nowarm, cold, nooverlay.`);
+  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: ${DIAG_SWITCHES.join(', ')}.`);
   const diag = diagCfg.on ? new DiagRecorder({ switches: diagCfg.switches }) : null;
   /** norig: armed by the first setSource — from then on the declared rig is kept. */
   let rigLockArmed = false;
   if (diag) {
     diag.imageState = () => viewer.diagImageState();
     diag.observeLongTasks();
+    diag.observeLongFrames();
     diag.log(`on — switches [${[...diag.switches].join(', ') || 'none'}]; dump: copy(__dxrDiag.dump())`);
   }
   let removed = false;
@@ -3156,9 +3287,89 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return best;
     }
     const full = c.res?.centers;
-    if (full && full.length) return nearestCentreToRay(full, ray.o, ray.d, undefined, c.alpha8);
+    if (full && full.length) return pickFull(c, full, ray);
     // The engine released its centres: fall back to the strided set kept at load.
     return c.pickCentres ? nearestCentreToRay(c.pickCentres, ray.o, ray.d) : null;
+  }
+
+  /**
+   * The eye of the view on screen and an orthonormal frame at it, in MODEL space, plus the
+   * direction extent of its frustum (gnomonic, per axis): what a pick index is built for. Every
+   * pick ray of this view passes through `eye`. null when the view is not a plain perspective one.
+   */
+  function pickFrame() {
+    const v = viewer.currentView();
+    const invP = mat4Invert(v.proj);
+    if (!invP) return null;
+    const T = mat4Mul(viewer.rigMatrix(), v.pose);
+    const at = (x, y, z) => contentToModel(transformPoint(T, x, y, z));
+    const eye = at(0, 0, 0);
+    const sub = (p) => [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const norm = (a) => {
+      const l = Math.hypot(a[0], a[1], a[2]);
+      return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : null;
+    };
+    const f = norm(sub(at(0, 0, -1)));
+    if (!f) return null;
+    let r = sub(at(1, 0, 0));
+    const rf = dot(r, f);
+    r = norm([r[0] - rf * f[0], r[1] - rf * f[1], r[2] - rf * f[2]]);
+    if (!r) return null;
+    const up = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]];
+    let U = 0;
+    let V = 0;
+    for (const [x, y] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const d = sub(at(...transformPoint(invP, x, y, 1)));
+      const z = dot(d, f);
+      if (!(z > 0)) return null;
+      U = Math.max(U, Math.abs(dot(d, r) / z));
+      V = Math.max(V, Math.abs(dot(d, up) / z));
+    }
+    if (!(U > 0 && V > 0)) return null;
+    // a margin past the frustum: a pick at its edge reaches a little outside it
+    U = U * 1.1 + 0.02;
+    V = V * 1.1 + 0.02;
+    return { eye, f, r, up, U, V, key: [...eye, ...f, ...r, U, V].join(',') };
+  }
+
+  /**
+   * A pick over the full centre set. The first pick from an eye position is the plain full scan
+   * (a page picking once per frame pays what it always did); a SECOND pick from the same eye
+   * builds a pick index for it (buildPickIndex: about one scan) and every further pick from there
+   * reads a few cells — a burst of N picks costs ~2 scans, not N. Same answer as the full scan
+   * (queryPickIndex falls back to it when it cannot answer exactly). `?dxrdiag=oldpick`: always
+   * the full scan (the 1.21.1 path), for A/B.
+   */
+  function pickFull(c, full, ray) {
+    const t0 = diag ? performance.now() : 0;
+    let how = 'scan';
+    let hit;
+    if (!diag?.has('oldpick')) {
+      const fr = pickFrame();
+      if (fr) {
+        const same = (p) => p && p.key === fr.key && p.xyz === full && p.alpha8 === c.alpha8;
+        let ix = same(c.pickIx) ? c.pickIx.ix : null;
+        if (!ix && same(c.pickPrev)) {
+          const count = Math.floor(full.length / 3);
+          ix = buildPickIndex(full, count, c.alpha8, fr.eye, fr.f, fr.r, fr.up, fr.U, fr.V);
+          c.pickIx = ix ? { key: fr.key, xyz: full, alpha8: c.alpha8, ix } : null;
+          how = 'build';
+        }
+        c.pickPrev = { key: fr.key, xyz: full, alpha8: c.alpha8 };
+        if (ix) {
+          hit = queryPickIndex(ix, full, ray.o, ray.d);
+          if (hit !== undefined && how === 'scan') how = 'index';
+        }
+      }
+    }
+    if (hit === undefined) {
+      hit = nearestCentreToRay(full, ray.o, ray.d, undefined, c.alpha8);
+      if (how === 'build') how = 'build+scan';
+      else if (how === 'index') how = 'scan';
+    }
+    if (diag) diag.pick(performance.now() - t0, how);
+    return hit;
   }
 
   function bindFocusInput() {
@@ -3601,6 +3812,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
     if (!app || removed) return null;
     pcModule = pc;
+    // diag: count the GL calls that can block (compile, link, status queries, readbacks, syncs),
+    // from before the first asset's compile on
+    if (diag) diag.instrumentGl(app.graphicsDevice?.gl);
     /**
      * ADVANCED, not covered by the semver promise: the engine objects behind this window.
      * `app` is the tile's `pc.AppBase`; `root` the content root, in the splat's content space
@@ -4217,10 +4431,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const finish = () => {
       if (finished) return;
       finished = true;
+      const ts = performance.now();
       for (const f of finishers) f();
+      perfSpan('settle:teardown', ts);
       if (gen === sourceGen) diag?.setPhase('settle');
       if (pendingSwap?.finish === finish) pendingSwap = null;
       settle();
+      if (gen === sourceGen) diag?.settled(performance.now() - ts);
     };
     pendingSwap = { finish };
 
@@ -4429,12 +4646,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const finish = () => {
       if (finished) return;
       finished = true;
+      const ts = performance.now();
       for (const f of finishers) f();
+      perfSpan('settle:teardown', ts);
       for (const w of [...wakers]) w();
       wakers.clear();
       viewer._transitionState = null;
       if (gen === sourceGen) diag?.setPhase('settle');
       if (pendingSwap?.finish === finish) pendingSwap = null;
+      if (gen === sourceGen) diag?.settled(performance.now() - ts);
     };
     const ac = typeof AbortController === 'function' ? new AbortController() : null;
     finishers.push(() => ac?.abort());

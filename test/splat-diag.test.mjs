@@ -23,7 +23,7 @@ test('resolveDiag: the option wins over the URL; tokens are switches; off values
   const u = resolveDiag('norig,bogus', '');
   assert.equal(u.on, true);
   assert.deepEqual(u.unknown, ['bogus'], 'unknown tokens are reported, never thrown');
-  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay']);
+  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick']);
 });
 
 test('poseDelta: bit-identical views are HELD; any real move is not; delta in world units and in eye separations', () => {
@@ -123,4 +123,73 @@ test('verdict: thresholds', () => {
   assert.match(verdict({ ...base, heldRunMax: 2, heldRunMaxMs: 33 }), /^TRACKING-HELD 2 frames/);
   assert.match(verdict({ ...base, maxFrameGapMs: 51, longestTaskMs: 45 }), /^MAIN-THREAD gap 51 ms \(longest task 45 ms\)/);
   assert.match(verdict({ ...base, frozenImageFrames: 2, frozenImageMs: 33 }), /^IMAGE-FROZEN 2 frames/);
+});
+
+test('DiagRecorder: GL calls and picks are booked per phase; the verdict names them; the settle task tail', async () => {
+  let T = 0;
+  const lines = [];
+  const r = new DiagRecorder({ now: () => T, log: (m) => lines.push(m) });
+  r.setPhase('swap');
+  r.setPhase('window');
+  r.glCall('poll', 0.1);
+  r.frame(views(0), (T += 16));
+  r.setPhase('settle');
+  r.glCall('compile', 2);
+  r.glCall('link', 3);
+  r.glCall('linkQuery', 900); // a link resolving: an event of its own
+  assert.equal(r.events.filter((e) => e.type === 'gl').length, 1);
+  for (let i = 0; i < 24; i++) r.pick(10, 'scan');
+  r.settled(0.4);
+  // the burst + the settle probe close in a later task
+  for (let i = 0; i < 100 && !(r.events.some((e) => e.type === 'picks') && r.events.some((e) => e.name === 'settle-task-end')); i++) await new Promise((res) => setTimeout(res, 2));
+  const burst = r.events.find((e) => e.type === 'picks');
+  assert.deepEqual({ n: burst.n, ms: burst.ms, phase: burst.phase, how: burst.how }, { n: 24, ms: 240, phase: 'settle', how: { scan: 24 } });
+  assert.ok(lines.some((l) => l.startsWith('picks: 24 pick() calls in one task')));
+  assert.ok(r.events.some((e) => e.type === 'mark' && e.name === 'settle-sdk' && e.detail.ms === 0.4));
+  assert.ok(r.events.some((e) => e.type === 'mark' && e.name === 'settle-task-end'));
+  r.frame(views(0.001), (T += 1300)); // the stall, then the summary
+  const s = r.transitions[0];
+  assert.deepEqual(s.gl.window, { poll: { n: 1, ms: 0.1 } });
+  assert.deepEqual(s.gl.settle, { compile: { n: 1, ms: 2 }, link: { n: 1, ms: 3 }, linkQuery: { n: 1, ms: 900 } });
+  assert.deepEqual(s.picks, { settle: { n: 24, ms: 240 } });
+  assert.match(s.verdict, /^MAIN-THREAD gap 1300 ms .* — GL compile\/link\/sync ×3 905 ms; pick\(\) ×24 240 ms/);
+});
+
+test('DiagRecorder: a long animation frame keeps its top scripts, file names only', () => {
+  const r = new DiagRecorder({ now: () => 0, log: () => {} });
+  const ev = r.longFrame({
+    startTime: 10,
+    duration: 1300,
+    blockingDuration: 1250,
+    scripts: [
+      { sourceURL: 'https://example.test/_next/static/chunks/app.js?v=1', sourceFunctionName: 'estimateDepth', invoker: 'FrameRequestCallback', duration: 1000 },
+      { sourceURL: 'https://cdn.test/inline3d-splat-playcanvas.js', sourceFunctionName: 'tick', invoker: 'FrameRequestCallback', duration: 12 },
+    ],
+  });
+  assert.equal(ev.d, 1300);
+  assert.deepEqual(ev.scripts[0], { src: 'app.js?v=1', fn: 'estimateDepth', inv: 'FrameRequestCallback', d: 1000 });
+  assert.equal(r.longFrame({ startTime: 0, duration: 20, scripts: [] }), null, 'short frames are not kept');
+});
+
+test('DiagRecorder.instrumentGl: wraps the context instance, books each call, dispose restores the prototype method', () => {
+  class Ctx {
+    compileShader() {
+      return 'c';
+    }
+    getProgramParameter(p, n) {
+      return n;
+    }
+  }
+  const gl = new Ctx();
+  const r = new DiagRecorder({ now: () => 0, log: () => {} });
+  r.instrumentGl(gl);
+  assert.equal(gl.compileShader(), 'c');
+  assert.equal(gl.getProgramParameter(null, 0x8b82), 0x8b82);
+  gl.getProgramParameter(null, 0x91b1);
+  assert.equal(r._glByPhase.idle.compile.n, 1);
+  assert.equal(r._glByPhase.idle.linkQuery.n, 1);
+  assert.equal(r._glByPhase.idle.poll.n, 1);
+  r.dispose();
+  assert.equal(Object.hasOwn(gl, 'compileShader'), false, 'the instance method is gone again');
+  assert.equal(gl.compileShader(), 'c');
 });

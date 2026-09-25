@@ -644,11 +644,48 @@ The diag reports it on the panel as `MAIN-THREAD gap`.
 | `nowarm` | skips the transition shader pre-warm (`prepareSource` / `setSource` compile nothing ahead) | a first-frame shader link |
 | `cold` | skips the live outgoing pre-sort (the 1.19.2 path: the frozen capture bridges until a fresh manager has sorted) | the frozen bridge |
 | `nooverlay` | records, logs and dumps, no overlay | the overlay's own cost |
+| `oldpick` | `handle.pick()` always runs the full scan over every centre, no pick index (the 1.21.1 path) | "the page's own picks block the main thread at the swap's end" |
 
 The recipe on the panel: run the Photos show with `?dxrdiag=1` for three or four transitions and
 read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same way; paste
 `copy(__dxrDiag.dump())` from each. Costs: a few floats per frame and one 2D canvas repainted at
 10 Hz; nothing when off.
+
+**What is on the main thread (1.21.2).** A stall at the swap's END (phase `settle`) is not
+necessarily the transition. The summary now also carries, per phase (`swap` / `window` /
+`settle` / …):
+
+| field | what | how |
+|---|---|---|
+| `gl` | every GL call that can block: `compile`, `link`, `linkQuery` (a `LINK_STATUS` query resolves the link), `programQuery`, `shaderQuery`, `poll` (`COMPLETION_STATUS_KHR`, non-blocking), `readPixels`, `readback` (`getBufferSubData`), `fence`, `wait` (`clientWaitSync`), `finish` — count and total ms | the tile's own context is wrapped while diag is on; a single call ≥ 8 ms is also an event (`type: 'gl'`) |
+| `picks` | `handle.pick()` calls: count and total ms; each task's burst is an event (`type: 'picks'`, with how each pick ran: `scan`, `build`, `index`) | the SDK times its own `pick` |
+| `afterSettleTaskMs` | how long the task that ran the SDK's settle kept running AFTER it: the page's continuation of `await setSource` in that same task (the SDK's own settle work is the `settle-sdk` mark) | a message posted from the settle |
+| `longFrames` | long animation frames (Chrome 123+) with their top three scripts: file, function, invoker, ms — the page's code or the SDK's, by name | `PerformanceObserver('long-animation-frame')` |
+
+The verdict names them: `MAIN-THREAD gap 1341 ms (longest task 348 ms) — pick() ×105 1290 ms; page
+code 340 ms in the settle task; top script estimatePivotDepth@page-….js 990 ms`. The SDK's settle
+teardown is also a User Timing measure, `inline3d:settle:teardown`, for a DevTools trace.
+
+**Found with it: the page's picks, not the SDK's settle.** A photo slideshow app on the panel
+(ANGLE on D3D11) showed, at EVERY swap's end, two back-to-back long tasks of ~250–415 ms and
+~950–1100 ms: 1.3–1.5 s with no session frame. Counting every blocking GL call through a whole
+`reassemble`, `crossfade` and `wavefront` (headless Chrome, ANGLE Metal, the call-counting
+harness): **zero** compile, link, status query, readback or sync from the call to 1.5 s after the
+settle, on 1.21.1 already — the transition programs are pre-warmed in the dwell, and the settle's
+return to the base program reuses the program compiled at page load. What does run there is the
+page: on every swap it plans its companion's waypoints with 24 `pick()` calls in the task that
+resolves `setSource`, then, two frames later, a 9×9 grid of 81 more. Each pick was an exact scan of
+all 1.18M centres (~7.5 ms on an M1): 24 → ~190 ms, 81 → ~630 ms — the panel's two tasks, at the
+panel's slower CPU, and the same ratio. Replaying just those picks after the swap reproduces the
+two long tasks headlessly on 1.21.1 with no GL call in them.
+
+1.21.2 gives the full-set pick a **pick index**: a second pick from the same eye position buckets
+every centre once by its direction from the eye (about two scans), and every further pick from
+there reads only the cells its cone can reach — the same point as the full scan, exactly (it
+declines, and the full scan runs, when the cone is empty). The same replay: 24 picks 33–44 ms, 81
+picks 31–35 ms, no long task, 0 GL calls at the settle (was 165–195 ms + 530–635 ms). A page that
+picks once per frame pays what it always did (the first pick from an eye is the plain scan).
+`?dxrdiag=oldpick` restores the full scan for an A/B.
 
 **The structural A/B: `transition: 'reassemble'`.** A sequence transition has no second camera, no
 overlay and no capture: one photo at a time, drawn by the eye camera every frame
