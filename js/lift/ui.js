@@ -11,9 +11,11 @@
 const CSS = `
 .chip{position:absolute;top:8px;right:8px;display:flex;gap:4px;align-items:center;
   font:600 12px/1 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;
-  background:rgba(20,20,24,.72);border-radius:999px;padding:4px 4px 4px 10px;
+  background:rgba(20,20,24,.92);border-radius:999px;padding:4px 4px 4px 10px;
   pointer-events:auto;user-select:none;-webkit-user-select:none;
-  box-shadow:0 1px 4px rgba(0,0,0,.35);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+  box-shadow:0 1px 4px rgba(0,0,0,.35)}
+/* No backdrop-filter: frosted chrome over a woven tile makes the DisplayXR Browser send the tile
+   RAW (SBS visible on the panel) — docs/authoring-inline-3d.md: near-solid background, no blur. */
 .chip[hidden]{display:none}
 .label{white-space:nowrap;padding-right:4px;font-variant-numeric:tabular-nums}
 button{all:unset;cursor:pointer;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.16)}
