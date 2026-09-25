@@ -2,7 +2,7 @@
 // (format:'mono'), both driven by the SDK transport. See docs/authoring-inline-3d.md#2b-player.
 
 import { createInline3D } from '@displayxr/inline3d';
-import { addPlayer } from '@displayxr/inline3d/player';
+import { addPlayer, PLAYER_ACCENTS } from '@displayxr/inline3d/player';
 
 // Reusing samples/windows/ own asset rather than duplicating a 5.5 MB file — see that sample's
 // app.js for why it's VP9/WebM (stock Chromium ships no proprietary H.264 decoder) and why it's
@@ -74,7 +74,7 @@ for (const [i, ch] of CHAPTERS.entries()) {
 
 // Developer customisation, live: accent colour, size S/M/L and skin, through handle.setAppearance().
 // Both players take the same call; the line on the right is exactly what a page would write.
-const appearance = { accent: '#4da3ff', size: 'm', skin: new URLSearchParams(location.search).get('skin') || 'dock' };
+const appearance = { accent: 'azure', size: 'm', skin: new URLSearchParams(location.search).get('skin') || 'dock' };
 const callEl = document.getElementById('call');
 function applyAppearance(patch) {
   Object.assign(appearance, patch);
@@ -82,7 +82,30 @@ function applyAppearance(patch) {
   monoPlayer.setAppearance(patch);
   callEl.textContent = `setAppearance({ accent: '${appearance.accent}', size: '${appearance.size}', skin: '${appearance.skin}' })`;
 }
-document.getElementById('accent').addEventListener('input', (e) => applyAppearance({ accent: e.target.value }));
+// Named presets as swatches; the colour input beside them takes any CSS colour.
+const swatchesEl = document.getElementById('swatches');
+function markSwatch(name) {
+  for (const b of swatchesEl.children) b.setAttribute('aria-pressed', String(b.dataset.v === name));
+}
+for (const [name, colour] of Object.entries(PLAYER_ACCENTS)) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.dataset.v = name;
+  b.title = name;
+  b.setAttribute('aria-label', `Accent: ${name}`);
+  b.style.setProperty('--c', colour);
+  b.addEventListener('click', () => {
+    markSwatch(name);
+    document.getElementById('accent').value = colour;
+    applyAppearance({ accent: name });
+  });
+  swatchesEl.append(b);
+}
+markSwatch(appearance.accent);
+document.getElementById('accent').addEventListener('input', (e) => {
+  markSwatch(null);
+  applyAppearance({ accent: e.target.value });
+});
 for (const id of ['size', 'skin']) {
   const seg = document.getElementById(id);
   for (const b of seg.querySelectorAll('button')) {

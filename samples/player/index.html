@@ -36,6 +36,11 @@
     border-radius:12px;background:#ffffff0a;border:1px solid #ffffff14;font-size:13px}
   .devbar .lbl{opacity:.65}
   .devbar input[type=color]{width:34px;height:26px;padding:0;border:1px solid #ffffff2a;border-radius:6px;background:none;cursor:pointer}
+  .swatches{display:inline-flex;gap:6px}
+  .swatches button{width:24px;height:24px;border-radius:50%;border:0;padding:0;cursor:pointer;
+    background:radial-gradient(circle at 34% 28%,color-mix(in srgb,var(--c) 55%,#fff),var(--c) 60%,color-mix(in srgb,var(--c) 70%,#000));
+    box-shadow:inset 0 0 0 1px #ffffff30}
+  .swatches button[aria-pressed="true"]{box-shadow:0 0 0 2px #0f1014,0 0 0 4px var(--c)}
   .seg{display:inline-flex;border:1px solid #ffffff2a;border-radius:8px;overflow:hidden}
   .seg button{font:600 12px/1 system-ui;padding:7px 11px;border:0;background:transparent;color:inherit;cursor:pointer}
   .seg button+button{border-left:1px solid #ffffff2a}
@@ -57,7 +62,9 @@
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
   <div class="devbar" role="group" aria-label="Transport appearance">
-    <span class="lbl">Accent</span><input type="color" id="accent" value="#4da3ff" aria-label="Accent colour">
+    <span class="lbl">Accent</span>
+    <div class="swatches" id="swatches" role="group" aria-label="Accent presets"></div>
+    <input type="color" id="accent" value="#4da3ff" aria-label="Custom accent colour" title="Any colour">
     <span class="lbl">Size</span>
     <div class="seg" id="size"><button data-v="s">S</button><button data-v="m" aria-pressed="true">M</button><button data-v="l">L</button></div>
     <span class="lbl">Skin</span>
