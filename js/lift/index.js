@@ -9,5 +9,6 @@
 // that lift() makes on first use. See docs/lift.md.
 export { lift, resolveMediaAt, resolveQuality, STATES } from './lift.js';
 export { getRegistry } from './providers/registry.js';
+export { liftCapabilities, LIFT_ATTRS, LIFT_PRIORITIES, createNativeDepthProvider, createNativeGaussiansLift, NativeLiftError } from './native.js';
 export { createModelSource } from './providers/models.js';
 export { loadOrt } from './providers/ort.js';

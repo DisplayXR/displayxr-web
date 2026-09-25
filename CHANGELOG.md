@@ -22,6 +22,13 @@ Adds a **preview-tier** subpath; nothing existing changes.
   the page's `baseUrl`, else the public content-addressed blob store; onnxruntime-web is imported at
   runtime. Types in `lift.d.ts`; guide in `docs/lift.md`.
 
+- **lift: vendor modules supersede the open default** — `liftCapabilities()` (cached per document:
+  `GET displayxr-lift://caps` inside the DisplayXR Browser's lift world, `native:false` anywhere else,
+  plus `webFallback` {webgpu, video, still}). With a native module a `<video>`/`<img>` is converted +
+  woven **in place by the browser** (`dxr-lift="auto"` + `dxr-lift-strength|convergence|priority`;
+  no DIBR, no model until pause); `handle.setPriority()`. On pause the depth comes from the module
+  (`native` DepthProvider, priority 100, ORT fallback) and, with `gaussians`, the scene too
+  (`native-gaussians` LiftProvider). The built-in uses it. docs/lift.md § Vendor modules.
 - **lift: the explore renderer is the PlayCanvas splat viewer** (was three + Spark). Same contract and
   camera model; it adopts the live DIBR's WebGL2 context (`WebglGraphicsDevice` `options.gl`, state
   handed over each frame), renders both eyes as `RenderView`s of one camera (one sort), and moves the

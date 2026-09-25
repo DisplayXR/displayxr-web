@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lift native-mode harness</title>
+<!-- Driven by test/lift-native.run.mjs (NOT part of npm test: needs a GPU browser). Fakes the
+     DisplayXR Browser's lift world by answering displayxr-lift:// in window.fetch, then runs the
+     REAL lift() on an <img> and a <video>. -->
+<script type="importmap">
+{ "imports": { "playcanvas": "/tools/lift-builtin/node_modules/playcanvas/build/playcanvas.mjs" } }
+</script>
+<style>body{margin:0;background:#222} img,video{display:block;width:640px;height:360px;margin:8px}</style>
+<img id="img">
+<video id="vid" muted playsinline loop src="/test/lift-dibr-clip.mp4"></video>
+<script type="module">
+const log = [];
+const net = { caps: 0, depth: 0, gaussians: 0, other: [] };
+let depthStatus = 200;
+const realFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+  const url = typeof input === 'string' ? input : input.url;
+  if (url.startsWith('displayxr-lift://')) {
+    if (url === 'displayxr-lift://caps') {
+      net.caps++;
+      return new Response(JSON.stringify({ native: true, provider: 'fake-npu', modes: ['depth', 'sbs'], maxStreams: 2, approxMsPerConvert: 12, state: 'ready' }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (url === 'displayxr-lift://lift/depth') {
+      net.depth++;
+      if (depthStatus !== 200) return new Response('x', { status: depthStatus });
+      const bmp = await createImageBitmap(init.body);
+      const w = 256, h = 144, d = new Float32Array(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const cx = x - w / 2, cy = y - h / 2;
+        d[y * w + x] = Math.hypot(cx / w, cy / h) < 0.2 ? 1.2 : 2.5 + 0.5 * (y / h); // a near disc on a wall
+      }
+      bmp.close();
+      return new Response(d.buffer, { headers: { 'content-type': 'application/octet-stream', 'x-dxr-depth-width': String(w), 'x-dxr-depth-height': String(h), 'x-dxr-depth-semantics': 'metric', 'x-dxr-depth-focalpx': '230' } });
+    }
+    if (url === 'displayxr-lift://lift/gaussians') { net.gaussians++; return new Response('no', { status: 404 }); }
+    throw new TypeError('Failed to fetch');
+  }
+  if (!url.startsWith(location.origin)) net.other.push(url);
+  return realFetch(input, init);
+};
+
+const c = document.createElement('canvas');
+c.width = 640; c.height = 360;
+const g = c.getContext('2d');
+const grd = g.createLinearGradient(0, 0, 640, 360);
+grd.addColorStop(0, '#3a6'); grd.addColorStop(1, '#236');
+g.fillStyle = grd; g.fillRect(0, 0, 640, 360);
+g.fillStyle = '#e84'; g.beginPath(); g.arc(320, 180, 70, 0, 7); g.fill();
+const img = document.getElementById('img');
+img.src = c.toDataURL('image/png');
+await img.decode();
+
+const { lift, liftCapabilities } = await import('/js/lift/index.js');
+const attrs = (el) => Object.fromEntries([...el.attributes].filter((a) => a.name.startsWith('dxr-lift')).map((a) => [a.name, a.value]));
+const waitState = (h, s, ms = 60000) => new Promise((res, rej) => {
+  if (h.state === s) return res();
+  const off = h.on('statechange', ({ state }) => { if (state === s) { off(); res(); } });
+  setTimeout(() => rej(new Error(`timeout waiting for ${s} (at ${h.state})`)), ms);
+});
+
+window.__run = async () => {
+  const out = {};
+  out.caps = await liftCapabilities({ webFallback: false });
+  // ── image ──
+  const h = await lift(img);
+  await waitState(h, 'live');
+  const I = h._internals();
+  out.img = {
+    state: h.state, native: h.native, mode: h.stats.mode, provider: h.stats.provider, attrs: attrs(img),
+    canvasVisibility: h.canvas.style.visibility, imgVisibility: img.style.visibility, dibr: !!I.dibr, stillProv: !!I.stillProv,
+  };
+  out.img.setPriority = h.setPriority('high');
+  out.img.setPriorityBad = h.setPriority('turbo');
+  h.setDepth(1.5); h.setConvergence(0.4);
+  out.img.attrs2 = attrs(img);
+  const t0 = performance.now();
+  h.explore();
+  await waitState(h, 'explore', 120000);
+  out.img.exploreMs = Math.round(performance.now() - t0);
+  out.img.explore = { attrs: attrs(img), canvasVisibility: h.canvas.style.visibility, imgVisibility: img.style.visibility, splats: h.stats.splats, stillDepthMs: h.stats.stillDepthMs, depthPosts: net.depth, stillProv: h._internals().stillProv?.id, stillSource: h._internals().stillProv?.info?.source };
+  await new Promise((r) => setTimeout(r, 500));
+  out.img.png = await h.capture().then((b) => new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); })).catch((e) => 'ERR ' + e.message);
+  h.resume();
+  await waitState(h, 'live');
+  await new Promise((r) => setTimeout(r, 600)); // fade out
+  out.img.back = { state: h.state, attrs: attrs(img), canvasVisibility: h.canvas.style.visibility, imgVisibility: img.style.visibility };
+  h.remove();
+  out.img.removed = { attrs: attrs(img), imgVisibility: img.style.visibility, hosts: document.querySelectorAll('[data-inline3d-lift]').length };
+
+  // ── video ──
+  const vid = document.getElementById('vid');
+  await vid.play().catch(() => {});
+  const hv = await lift(vid);
+  await waitState(hv, 'live');
+  const V = hv._internals();
+  out.vid = { state: hv.state, native: hv.native, attrs: attrs(vid), dibr: !!V.dibr, videoProv: !!V.videoProv, modelLoadMs: hv.stats.modelLoadMs };
+  depthStatus = 500; // the module's depth fails → the ORT still model is the fallback (not loaded here: no models)
+  vid.pause();
+  await new Promise((r) => setTimeout(r, 3000));
+  out.vid.afterPauseFail = { state: hv.state, depthPosts: net.depth, attrs: attrs(vid) };
+  hv.remove();
+  out.vid.removed = attrs(vid);
+  out.net = net;
+  out.log = log;
+  return out;
+};
+console.log('NATIVE READY');
+</script>

@@ -77,6 +77,15 @@ export interface LiftOptions {
    * as metres.
    */
   explore?: { pivotTargetM?: number; comfort?: 'auto' | 'always' | 'off'; eyes?: 'nominal' | 'tracked' };
+  /**
+   * The browser's vendor 2D→3D module (docs/lift.md § Vendor modules). `auto` (default): when
+   * {@link liftCapabilities} reports `native` and the element is a `<video>`/`<img>`, the BROWSER
+   * converts + weaves it in place (`dxr-lift="auto"`): no DIBR canvas, no model until a pause.
+   * `false`: never. A caps object skips the query. Ignored with `backend: 'stub'`.
+   */
+  native?: 'auto' | boolean | LiftCapabilities;
+  /** Native live: how eagerly the browser converts this element (`dxr-lift-priority`). Default `normal`. */
+  priority?: LiftPriority;
 }
 
 export interface LiftProgress {
@@ -105,6 +114,10 @@ export interface LiftStats {
   splats: number;
   /** The explore comfort scale applied about the camera (1 = none). */
   exploreScale: number;
+  /** `native`: the browser's vendor module converts live; `web`: the SDK's own pipeline. */
+  mode: 'native' | 'web';
+  /** The vendor module's name (native mode), else null. */
+  provider: string | null;
 }
 
 export interface LiftHandle {
@@ -115,6 +128,13 @@ export interface LiftHandle {
   readonly layout: 'standard' | 'picture' | 'aspectRatio' | 'overlay';
   /** True when rendering through the inline-3D session; false in the 2D fallback. */
   readonly woven: boolean;
+  /** True when the browser's vendor module converts this element (native live mode). */
+  readonly native: boolean;
+  /** The capabilities native mode was decided on (null when not queried, e.g. a `<canvas>`). */
+  readonly caps: LiftCapabilities | null;
+  /** Native live: `dxr-lift-priority`. Returns false for an unknown value; a no-op on the web path. */
+  setPriority(p: LiftPriority): boolean;
+  readonly priority: LiftPriority;
   /** Snapshot of timings. */
   readonly stats: LiftStats;
   on(type: 'statechange', cb: (d: { state: LiftState; from: LiftState; reason: string }) => void): () => void;
@@ -231,6 +251,8 @@ export interface ModelSource {
   entry(name: string): Record<string, any>;
   readonly manifest: Record<string, any> | null;
   resolveName(nameOrFamily: string | null | undefined, role: 'depth-video' | 'depth-still' | 'inpaint', quality?: 'auto' | LiftQuality): string;
+  /** Obtainable without a download? (native store HEAD, a verified cache stamp, else a HEAD on the URL.) Never rejects. */
+  probe?(name: string, o?: { signal?: AbortSignal }): Promise<boolean>;
   clear(): Promise<void>;
 }
 
@@ -258,3 +280,77 @@ export interface LoadOrtOptions {
 
 /** Import onnxruntime-web at runtime (never bundled). Memoised per URL. */
 export declare function loadOrt(o?: LoadOrtOptions): Promise<any>;
+
+// ── Vendor modules (native mode) ─────────────────────────────────────────────────────────────
+
+export type LiftPriority = 'high' | 'normal' | 'low' | 'paused';
+
+/** What {@link liftCapabilities} reports (docs/lift.md § Vendor modules). */
+export interface LiftCapabilities {
+  /** The browser's vendor 2D→3D module is reachable from this world and not `unavailable`: it supersedes the web path. */
+  native: boolean;
+  /** The module's name, e.g. `neurd-directml`. */
+  provider?: string;
+  modes?: Array<'depth' | 'sbs' | 'nview' | 'gaussians'>;
+  /** In-place conversions the module can run at once. */
+  maxStreams?: number;
+  approxMsPerConvert?: number;
+  state?: 'ready' | 'activating' | 'unavailable';
+  /** The open web path: a WebGPU adapter, and whether its default video / still depth model is reachable without a download attempt. */
+  webFallback: { video: boolean; still: boolean; webgpu: boolean };
+}
+
+/**
+ * What 2D→3D this document can do — cheap, async, cached per document; call it before any lift
+ * (e.g. to badge convertible media). `native` comes from `GET displayxr-lift://caps`, which only
+ * resolves inside the DisplayXR Browser's lift world; anywhere else the fetch rejects → `native: false`.
+ */
+export declare function liftCapabilities(o?: {
+  signal?: AbortSignal;
+  /** Re-ask (e.g. after `state: 'activating'`). */
+  refresh?: boolean;
+  /** false skips the model probes (webFallback all false). Default true. */
+  webFallback?: boolean;
+  /** The ModelSource to probe, as lift()'s `models`. Default `auto`. */
+  models?: 'auto' | string | ModelSource;
+  /** Still-model tier to probe. Default `medium`. */
+  quality?: LiftQuality;
+  timeoutMs?: number;
+}): Promise<LiftCapabilities>;
+
+/** The attributes the DisplayXR Browser reads on a `<video>`/`<img>` it converts in place. */
+export declare const LIFT_ATTRS: Readonly<{
+  lift: 'dxr-lift';
+  convergence: 'dxr-lift-convergence';
+  strength: 'dxr-lift-strength';
+  priority: 'dxr-lift-priority';
+}>;
+export declare const LIFT_PRIORITIES: ReadonlyArray<LiftPriority>;
+
+/** A native-module failure; `fallback` is true for everything but an abort. */
+export declare class NativeLiftError extends Error {
+  code: 'http' | 'unsupported' | 'format' | 'encode' | 'network' | 'aborted';
+  fallback: boolean;
+  status?: number;
+}
+
+/**
+ * The `native` DepthProvider (stills): `POST displayxr-lift://lift/depth`. Falls back per frame to
+ * the ORT still provider on any error (for the rest of the session after a 404/501). Registered at
+ * priority 100 by lift() when the module is present.
+ */
+export declare function createNativeDepthProvider(
+  o?: ProviderFactoryOptions & { fetch?: typeof fetch; loadOrt?: () => Promise<unknown>; fallback?: (o: ProviderFactoryOptions) => DepthProvider; provider?: string },
+): DepthProvider & { readonly info: Record<string, unknown> };
+
+/**
+ * The `native-gaussians` lift provider: `POST displayxr-lift://lift/gaussians` → `{ sog }` or
+ * `{ ply, meta }` (a `.ply` needs an `X-DXR-Lift-Meta` header). `needsDepth: false`.
+ */
+export declare function createNativeGaussiansLift(o?: { fetch?: typeof fetch; provider?: string }): {
+  readonly id: 'native-gaussians';
+  readonly needsDepth: false;
+  load(): Promise<void>;
+  generateLift(o: { rgb: ImageBitmap | HTMLCanvasElement | Blob; signal?: AbortSignal; onProgress?: (p: { stage: string; progress: number; elapsedS?: number }) => void }): Promise<{ sog?: Uint8Array; ply?: ArrayBuffer; meta: Record<string, unknown> }>;
+  dispose(): void;
+};

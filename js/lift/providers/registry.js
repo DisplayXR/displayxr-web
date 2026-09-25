@@ -33,6 +33,7 @@ function createPool(what) {
         priority: Number.isFinite(o.priority) ? o.priority : 0,
         kinds: o.kinds || ['video', 'still'],
         available: o.available,
+        optIn: !!o.optIn,
         seq: seq++,
       };
       entries.push(e);
@@ -47,7 +48,7 @@ function createPool(what) {
       }
       let best = null;
       for (const e of entries) {
-        if (!ok(e)) continue;
+        if (!ok(e) || e.optIn) continue; // opt-in entries are only ever picked by name
         if (!best || e.priority > best.priority || (e.priority === best.priority && e.seq > best.seq)) best = e;
       }
       return best && pick(best);
@@ -62,6 +63,7 @@ function createPool(what) {
 function createRegistry() {
   const depth = createPool('DepthProvider');
   const inpaint = createPool('Inpainter');
+  const liftPool = createPool('LiftProvider');
   return {
     /**
      * Register (or replace, by name) a depth provider factory. `factory(opts) → DepthProvider`
@@ -102,6 +104,37 @@ function createRegistry() {
       const e = reg ? { factory: reg.factory } : inpaint.resolve('inpaint', opts.provider);
       if (!e) throw new Error('lift: no inpainter registered');
       return e.factory(reg ? opts : { ...opts, model: name || opts.model });
+    },
+
+    /**
+     * Register (or replace) a LIFT provider — the stage that turns the frozen frame into a Gaussian
+     * scene (docs/lift.md § LiftProvider). `factory(opts) → { id, needsDepth, generateLift, … }`.
+     * `optIn: true` = never chosen by default, only by name (the remote SHARP demo provider).
+     * Without any registered (non-opt-in) provider lift uses its local generator.
+     * @param {string} name
+     * @param {Function} factory
+     * @param {{priority?:number, optIn?:boolean, available?:() => boolean}} [o]
+     */
+    registerLiftProvider: (name, factory, o = {}) => liftPool.register(name, factory, { ...o, kinds: ['lift'] }),
+
+    /**
+     * Instantiate a lift provider: by registered name, or (name null/'auto') the best non-opt-in
+     * one. Returns null when nothing applies ('local', or no registration) — the caller then uses
+     * the local generator. An unknown name throws.
+     */
+    getLiftProvider(name, opts = {}) {
+      if (name === 'local') return null;
+      if (name && name !== 'auto') {
+        const reg = liftPool.find(name);
+        if (!reg) throw new Error(`lift: no lift provider registered as ${JSON.stringify(name)}`);
+        return reg.factory(opts);
+      }
+      const e = liftPool.resolve('lift');
+      return e ? e.factory(opts) : null;
+    },
+
+    listLiftProviders() {
+      return liftPool.list();
     },
 
     /** Registered depth provider entry by name (diagnostics / A1 fallback path). */

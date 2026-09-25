@@ -30,6 +30,7 @@ import { createInline3D } from '../inline3d.js';
 import { createLiftMachine, STATES } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
 import { createChip } from './ui.js';
+import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority } from './native.js';
 
 export { resolveMediaAt, STATES };
 
@@ -56,11 +57,11 @@ const BACKENDS = {
   },
 };
 
-async function loadBackend(name) {
+async function loadBackend(name, parts = ['depth', 'models', 'dibr', 'gen', 'explore']) {
   const b = BACKENDS[name];
   if (!b) throw new TypeError(`lift: unknown backend '${name}' (expected 'real' or 'stub')`);
-  const [depth, models, dibr, gen, explore] = await Promise.all([b.depth(), b.models(), b.dibr(), b.gen(), b.explore()]);
-  return { depth, models, dibr, gen, explore };
+  const mods = await Promise.all(parts.map((k) => b[k]()));
+  return Object.fromEntries(parts.map((k, i) => [k, mods[i]]));
 }
 
 // ── the document's shared private manager ──────────────────────────────────────────────────
@@ -132,6 +133,12 @@ const MONO_VIEW = Object.freeze({
  * @param {AbortSignal} [opts.signal]  aborting it removes the lift.
  * @param {'real'|'stub'} [opts.backend='real']  'stub' = js/lift/stubs/* (no models; dev/demo).
  * @param {object} [opts.genParams]  DEV: overrides for lift-gen's LIFT_DEFAULTS (docs/lift-gen.md).
+ * @param {'auto'|boolean|object} [opts.native='auto']  the browser's vendor 2D→3D module
+ *        (docs/lift.md § Vendor modules). 'auto': use it when liftCapabilities() says `native` and
+ *        the element is a <video>/<img> — the browser then converts + weaves the element IN PLACE
+ *        (`dxr-lift="auto"`), no DIBR canvas, no model until pause. false: never. A caps object
+ *        (from liftCapabilities()) skips the query. Ignored with backend 'stub'.
+ * @param {'high'|'normal'|'low'|'paused'} [opts.priority='normal']  native live: `dxr-lift-priority`.
  * @param {{pivotTargetM?:number, comfort?:'auto'|'always'|'off', eyes?:'nominal'|'tracked'}} [opts.explore]
  *        the explore view (docs/lift-explore.md § Comfort): a METRIC lift whose pivot is more than
  *        2× off `pivotTargetM` (default 2.0 m; dead-band ±100 %, so photos with a pivot in ~1–4 m
@@ -169,6 +176,8 @@ export async function lift(element, opts = {}) {
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     backend: opts.backend || 'real',
     genParams: opts.genParams && typeof opts.genParams === 'object' ? opts.genParams : null,
+    native: opts.native === undefined ? 'auto' : opts.native,
+    priority: normalizePriority(opts.priority) || 'normal',
     explore: {
       pivotTargetM: Number.isFinite(opts.explore?.pivotTargetM) && opts.explore.pivotTargetM > 0 ? opts.explore.pivotTargetM : 2.0,
       comfort: ['auto', 'always', 'off'].includes(opts.explore?.comfort) ? opts.explore.comfort : 'auto',
@@ -176,6 +185,24 @@ export async function lift(element, opts = {}) {
     },
   };
 
+  // ── native (vendor) module: supersedes the web path for <video>/<img> (docs/lift.md § Vendor modules)
+  let caps = null;
+  if (o.backend === 'real' && o.native !== false && (el.tagName === 'VIDEO' || el.tagName === 'IMG')) {
+    if (o.native && typeof o.native === 'object') caps = o.native;
+    else if (o.native === true) caps = { native: true, state: 'ready', modes: [] };
+    else caps = await liftCapabilities({ signal: opts.signal, webFallback: false }).catch(() => null);
+  }
+  const native = !!(caps && caps.native);
+  // Native live: the BROWSER converts the element (an <img> too), so an image behaves like a
+  // paused video — live until explore() — and explore/resume toggles between the two.
+  const machineKind = native ? 'video' : kind;
+  const machineMode = native && kind === 'still' ? (o.mode === 'explore' ? 'explore' : 'live') : o.mode;
+  if (native && !o.providers.lift) {
+    const lp = defaultLiftProviderFor(caps, o.providers);
+    if (lp) o.providers.lift = lp; // native-gaussians over the local generator (a registered LiftProvider)
+  }
+  const nativeLive = native ? createNativeLiveAttrs(el, { depth: o.depth, convergence: o.convergence, priority: o.priority }) : null;
+  let nativeDetachPending = false;
 
   // ── listeners ─────────────────────────────────────────────────────────────────────────
   const listeners = new Map();
@@ -200,6 +227,12 @@ export async function lift(element, opts = {}) {
   if (o.exploreMaxDpr === null) o.exploreMaxDpr = wall && o.quality !== 'high' ? 1 : Infinity;
   const placement = mountCanvas(el);
   const canvas = placement.canvas;
+  if (native) {
+    // The browser weaves the element itself while live: keep it visible, the canvas hidden (and
+    // out of the inline-3D session) until explore needs it.
+    placement.setSourceHidden(false);
+    canvas.style.visibility = 'hidden';
+  }
   let chip = null;
 
   // ── runtime state ─────────────────────────────────────────────────────────────────────
@@ -258,6 +291,10 @@ export async function lift(element, opts = {}) {
     splats: 0,
     // explore's comfort normalisation: the uniform scale applied about the camera (1 = none)
     exploreScale: 1,
+    // 'native': the browser's vendor module converts live (and supplies depth/gaussians on pause);
+    // 'web': the SDK's own pipeline. `provider`: the module's name from caps (native only).
+    mode: native ? 'native' : 'web',
+    provider: (native && caps.provider) || null,
   };
   let fpsFrames = 0;
   let fpsT0 = 0;
@@ -269,8 +306,8 @@ export async function lift(element, opts = {}) {
   };
 
   const machine = createLiftMachine({
-    kind,
-    mode: o.mode,
+    kind: machineKind,
+    mode: machineMode,
     isPaused: () => kind === 'still' || el.paused || el.ended,
     onState: (from, to, why) => {
       if (chip) chip.setState(to);
@@ -335,13 +372,15 @@ export async function lift(element, opts = {}) {
     }
     syncBacking(false);
     const st = machine.state;
-    if (!dibr || st === STATES.IDLE || st === STATES.LOADING || st === STATES.SUSPENDED || st === STATES.ERROR) return;
-    const src = currentSource();
-    if (src !== dibrSource) {
-      dibr.setSource(src);
-      dibrSource = src;
+    if ((!dibr && !native) || st === STATES.IDLE || st === STATES.LOADING || st === STATES.SUSPENDED || st === STATES.ERROR) return;
+    if (dibr) {
+      const src = currentSource();
+      if (src !== dibrSource) {
+        dibr.setSource(src);
+        dibrSource = src;
+      }
+      if (kind === 'video' && st === STATES.LIVE && !suspended) maybeInfer(src);
     }
-    if (kind === 'video' && st === STATES.LIVE && !suspended) maybeInfer(src);
     const ctx = { views, layer, session };
     const now = performance.now();
     if (!fpsT0) fpsT0 = now;
@@ -352,7 +391,7 @@ export async function lift(element, opts = {}) {
     }
     const fadingOut = explore && fadeOutUntil > 0;
     const showExplore = explore && (st === STATES.EXPLORE || fadingOut);
-    if (!showExplore || now < fadeInUntil || fadingOut) dibr.render(ctx);
+    if (dibr && (!showExplore || now < fadeInUntil || fadingOut)) dibr.render(ctx);
     // The 2D fallback has no tracked eyes: explore's own flat path (one eye at the rest head, the
     // whole canvas) is `views: null` — handing it the single MONO_VIEW would read as the load-time
     // mono blip and replay nothing.
@@ -371,7 +410,9 @@ export async function lift(element, opts = {}) {
   function flushCapture() {
     const waiters = captureWaiters.splice(0);
     try {
-      const gl = dibr && dibr.gl;
+      // Native mode has no DIBR: explore's engine created the canvas's context, and getContext
+      // hands back that same one.
+      const gl = (dibr && dibr.gl) || (explore ? canvas.getContext('webgl2') : null);
       if (!gl) throw new Error('no GL context yet');
       const w = canvas.width, h = canvas.height;
       const px = new Uint8Array(w * h * 4);
@@ -415,6 +456,25 @@ export async function lift(element, opts = {}) {
       .catch(() => {});
   }
 
+  /** Put the canvas into the inline-3D session (or the 2D-fallback loop). Native mode does this only
+   *  while explore is up: in native live the element itself is the woven tile. */
+  function attachRenderer() {
+    if (sceneHandle || fallbackRaf || disposed) return;
+    if (wall) {
+      sceneHandle = wall.addScene(canvas, (views, layer) => frame(views, layer, wall.session), {
+        // The layer went away for good (session ended): keep the page working in 2D.
+        onLayerLost: () => startFallbackLoop(),
+      });
+      if (chip && sceneHandle.exclude) sceneHandle.exclude(chip.el);
+    } else startFallbackLoop();
+  }
+  function detachRenderer() {
+    if (fallbackRaf) cancelAnimationFrame(fallbackRaf);
+    fallbackRaf = 0;
+    if (sceneHandle) sceneHandle.remove();
+    sceneHandle = null;
+  }
+
   function startFallbackLoop() {
     if (fallbackRaf || disposed) return;
     const layer = { getViewport: () => ({ x: 0, y: 0, width: canvas.width, height: canvas.height }) };
@@ -431,7 +491,7 @@ export async function lift(element, opts = {}) {
   // ── providers ─────────────────────────────────────────────────────────────────────────
   function makeProvider(which, name) {
     const quality = which === 'video' && o.qualityAsked === 'auto' ? 'auto' : o.quality;
-    const popts = { kind: which, modelSource, ort, quality, model: name };
+    const popts = { kind: which, modelSource, ort, quality, model: name, loadOrt: ensureOrt };
     // registry.getDepthProvider(name, opts) returns an INSTANCE: `name` is a registered provider
     // ('ort', 'native', …) or a model family / manifest name handed to the best provider as `model`.
     if (registry && typeof registry.getDepthProvider === 'function') {
@@ -441,6 +501,16 @@ export async function lift(element, opts = {}) {
     return impl.depth.createDepthProvider(popts);
   }
 
+  /** onnxruntime, now or lazily: native mode loads it only if a native provider falls back. */
+  let ortLoader = null;
+  function ensureOrt() {
+    if (ort) return Promise.resolve(ort);
+    if (!ortLoader) return Promise.reject(new Error('lift: onnxruntime not configured'));
+    const p = ortLoader().then((x) => (ort = x));
+    p.catch(() => {});
+    return p;
+  }
+
   /** The inpainter, loaded lazily on the first lift; any failure → none (push-pull colour). */
   let inpainterP = null;
   function ensureInpainter(signal) {
@@ -448,6 +518,7 @@ export async function lift(element, opts = {}) {
     if (!name || name === 'none' || !registry || typeof registry.getInpainter !== 'function') return Promise.resolve(undefined);
     if (!inpainterP) {
       inpainterP = (async () => {
+        if (!ort && native) await ensureOrt();
         const ip = registry.getInpainter(name === 'iw3-light' ? 'light-inpaint-v1' : name, { modelSource, ort, quality: o.quality });
         if (ip && typeof ip.load === 'function') await ip.load({ signal });
         return ip || undefined;
@@ -500,7 +571,8 @@ export async function lift(element, opts = {}) {
   async function doLoad() {
     const signal = loadAbort.signal;
     try {
-      impl = await loadBackend(o.backend);
+      // Native live needs only the model/registry module; the rest loads on the first pause.
+      impl = await loadBackend(o.backend, native ? ['models'] : undefined);
       const M = impl.models;
       const tLoad = performance.now();
       modelSource =
@@ -509,17 +581,34 @@ export async function lift(element, opts = {}) {
           : typeof o.models === 'string'
             ? M.createModelSource({ baseUrl: o.models })
             : o.models;
-      try {
-        if (o.ort && typeof o.ort.InferenceSession === 'function') ort = o.ort; // a module
-        else if (typeof M.loadOrt === 'function') {
-          const ortOpts = typeof o.ort === 'string' ? { baseUrl: o.ort } : o.ort || {};
-          ort = await M.loadOrt(ortOpts);
-        } else ort = null;
-      } catch (e) {
-        ort = null; // a provider that needs it will fail its own load() with a better message
+      if (o.ort && typeof o.ort.InferenceSession === 'function') ort = o.ort; // a module
+      else if (typeof o.ort === 'function') ortLoader = o.ort; // a lazy loader: () => Promise<ort>
+      else if (typeof M.loadOrt === 'function') {
+        const ortOpts = typeof o.ort === 'string' ? { baseUrl: o.ort } : o.ort || {};
+        ortLoader = () => M.loadOrt(ortOpts);
+      }
+      // Native live runs no ORT until a native provider falls back (ensureOrt then).
+      if (!native && !ort && ortLoader) {
+        try {
+          await ensureOrt();
+        } catch (e) {
+          ort = null; // a provider that needs it will fail its own load() with a better message
+        }
       }
       registry = typeof M.getRegistry === 'function' ? M.getRegistry() : null;
       if (disposed) return;
+      if (native) {
+        // The vendor module supersedes the web path: register its providers (depth `native` at
+        // priority 100, `native-gaussians` when it lifts), load NO model, mount NO DIBR. The
+        // `dxr-lift` attributes go on at `startLive`.
+        if (registry) ensureNativeProviders(caps, { registry });
+        await mediaReady();
+        if (disposed) return;
+        stats.modelLoadMs = Math.round(performance.now() - tLoad);
+        syncBacking(true);
+        machine.send('loaded');
+        return;
+      }
       dibr = impl.dibr.createLiveDibr({ canvas });
       dibr.setParams(params);
       if (kind === 'video') {
@@ -565,6 +654,7 @@ export async function lift(element, opts = {}) {
     const signal = abort.signal;
     freezeT0 = performance.now();
     try {
+      if (native && !impl.explore) impl = { ...impl, ...(await loadBackend(o.backend, ['depth', 'gen', 'explore'])) };
       await mediaReady();
       if (isStale(gen)) return;
       const t = kind === 'video' ? el.currentTime : 0;
@@ -676,6 +766,12 @@ export async function lift(element, opts = {}) {
       }
     }
     explore = null;
+    if (native && nativeDetachPending) {
+      // Native: explore is gone and the browser converts the element again — leave the session.
+      nativeDetachPending = false;
+      detachRenderer();
+      canvas.style.visibility = 'hidden';
+    }
     if (!disposed) syncBacking(true); // live gets its full dpr back
   }
 
@@ -707,7 +803,8 @@ export async function lift(element, opts = {}) {
         doLoad();
         break;
       case 'startLive':
-        canvas.style.visibility = '';
+        if (native) nativeLive.apply(); // dxr-lift="auto": the browser converts + weaves in place
+        else canvas.style.visibility = '';
         break;
       case 'freeze':
         doFreeze(p.gen);
@@ -716,6 +813,14 @@ export async function lift(element, opts = {}) {
         doLift(p.gen);
         break;
       case 'enterExplore':
+        if (native) {
+          // Explore owns the pixels now: the browser stops converting, the canvas joins the session.
+          nativeDetachPending = false;
+          nativeLive.setOff(true);
+          placement.setSourceHidden(true);
+          canvas.style.visibility = '';
+          attachRenderer();
+        }
         if (explore) disposeExplore();
         explore = pendingExplore;
         pendingExplore = null;
@@ -728,6 +833,13 @@ export async function lift(element, opts = {}) {
         break;
       case 'exitExplore':
         placement.setInteractive(false);
+        if (native) {
+          // The element comes back converted by the browser at once; the canvas fades out over it
+          // and leaves the session when explore is disposed.
+          nativeDetachPending = true;
+          placement.setSourceHidden(false);
+          nativeLive.setOff(false);
+        }
         if (explore && p.crossfade && typeof explore.fadeOut === 'function') {
           explore.fadeOut(FADE_MS);
           fadeOutUntil = performance.now() + FADE_MS;
@@ -749,14 +861,18 @@ export async function lift(element, opts = {}) {
         break;
       case 'suspend':
         suspended = true;
+        if (nativeLive) nativeLive.hold('paused');
         break;
       case 'resume':
         suspended = false;
+        if (nativeLive) nativeLive.hold(null);
         break;
       case 'pauseMedia':
         if (kind === 'video') el.pause();
         break;
       case 'playMedia':
+        // Native <img>: "resume" = back to the browser's in-place conversion (no media to play).
+        if (native && kind === 'still') queueMicrotask(() => machine.send('play'));
         if (kind === 'video') {
           const r = el.play();
           if (r && r.catch) r.catch(() => {});
@@ -770,6 +886,7 @@ export async function lift(element, opts = {}) {
         canvas.style.visibility = 'hidden';
         placement.setInteractive(false);
         placement.setSourceHidden?.(false);
+        if (nativeLive) nativeLive.clear();
         emit('error', { error: p.error, fatal: true });
         break;
       case 'dispose':
@@ -820,10 +937,8 @@ export async function lift(element, opts = {}) {
     if (ro) ro.disconnect();
     if (mo) mo.disconnect();
     if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
-    if (fallbackRaf) cancelAnimationFrame(fallbackRaf);
-    fallbackRaf = 0;
-    if (sceneHandle) sceneHandle.remove();
-    sceneHandle = null;
+    detachRenderer();
+    if (nativeLive) nativeLive.clear();
     for (const x of [pendingExplore, explore, dibr, videoProv, stillProv]) {
       if (!x) continue;
       try {
@@ -844,7 +959,7 @@ export async function lift(element, opts = {}) {
   // ── wire up ───────────────────────────────────────────────────────────────────────────
   if (o.ui === 'builtin') {
     chip = createChip(placement.shadow, {
-      kind,
+      kind: machineKind,
       onExplore: () => handle.explore(),
       onResume: () => handle.resume(),
       onExit: () => handle.remove(),
@@ -852,13 +967,7 @@ export async function lift(element, opts = {}) {
     });
   }
   syncBacking(true);
-  if (wall) {
-    sceneHandle = wall.addScene(canvas, (views, layer) => frame(views, layer, wall.session), {
-      // The layer went away for good (session ended): keep the page working in 2D.
-      onLayerLost: () => startFallbackLoop(),
-    });
-    if (chip && sceneHandle.exclude) sceneHandle.exclude(chip.el);
-  } else startFallbackLoop();
+  if (!native) attachRenderer();
 
   /** @type {LiftHandle} */
   const handle = {
@@ -871,6 +980,10 @@ export async function lift(element, opts = {}) {
     layout: placement.layout,
     /** True when rendering through the inline-3D session, false in the 2D fallback. */
     woven: !!wall,
+    /** True when the browser's vendor module converts this element (docs/lift.md § Vendor modules). */
+    native,
+    /** The capabilities native mode was decided on (null when not queried). */
+    caps,
     /** Live timings: fps (frames drawn), modelLoadMs, liveDepthMs (last video estimate),
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
@@ -906,12 +1019,24 @@ export async function lift(element, opts = {}) {
     setDepth(x) {
       if (!Number.isFinite(x)) return;
       params.depth = x;
+      if (nativeLive) nativeLive.setStrength(x);
       if (dibr) dibr.setParams(params);
       if (explore && typeof explore.setDepthGain === 'function') explore.setDepthGain(x);
     },
     setConvergence(x) {
       params.convergence = x === 'auto' || Number.isFinite(x) ? x : 'auto';
       if (dibr) dibr.setParams(params);
+      if (nativeLive) nativeLive.setConvergence(params.convergence);
+    },
+    /** Native live: how eagerly the browser converts this element (`dxr-lift-priority`). Returns
+     *  false for an unknown value; a no-op (true) on the web path, which has one stream anyway. */
+    setPriority(p) {
+      if (!normalizePriority(p)) return false;
+      o.priority = p;
+      return nativeLive ? nativeLive.setPriority(p) : true;
+    },
+    get priority() {
+      return o.priority;
     },
     /**
      * The lifted scene as a `.sog` (SOG v2, lossless webp planes) with the DisplayXR camera block
@@ -981,6 +1106,9 @@ export async function lift(element, opts = {}) {
  * @property {HTMLCanvasElement} canvas
  * @property {string} layout
  * @property {boolean} woven
+ * @property {boolean} native  the browser's vendor module converts this element (docs/lift.md § Vendor modules)
+ * @property {object|null} caps
+ * @property {(p:'high'|'normal'|'low'|'paused') => boolean} setPriority
  * @property {object} stats
  * @property {(type:'statechange'|'progress'|'error', cb:(detail:any)=>void) => () => void} on
  * @property {(type:string, cb:Function) => void} off
