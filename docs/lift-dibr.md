@@ -142,6 +142,62 @@ state; first call ~8 ms JIT). At 12 fps that is ~2% of a core.
 | `steps` | 32 | coarse march steps (4–64) |
 | `lookAround` | 0 | 0 = source camera on the eye centroid (stereo only); >0 = transient head-motion parallax |
 | `loPct`/`hiPct`/`ema` | 0.02/0.98/0.9 | normalisation |
+| `convMode` / `convBand` | `'mean'` / 0.05 | auto-convergence statistic (Gaussian centre mean; `'median'` = ≤ 1.0.x) and its dead band |
+| `upsample` | true | joint-bilateral upsample of the depth to video res (long side ≤ `upsampleMax` 1280), guided by the frame |
+| `snap` / `snapCore` / `snapRadius` / `snapTau` | true / 4 / 8 / 0.12 | edge snap (px at 364 wide, scaled with the depth width; radius ≤ 12) |
+| `dilateHi` | 0 | max filter after the upsample, upsampled px |
+| `debug` | 0 | 1 = draw the normalised disparity |
+
+## Live-quality pass (2026-09-25): edge-aware upsample, edge snap, stable convergence
+
+Measured offline on three real VP9 clips (a football close-up, a webcam talking head, a 12 s film
+trailer segment with 7 cuts) through the real VDA-S streaming provider at the live cadence, with
+each depth map held for the live latency (display frame = depth frame + 1.5 × period).
+Harness: `samples/lift/dev-livequality.html` driven by `test/lift-livequality.run.mjs`.
+
+**What the depth actually gets wrong.** VDA-S silhouettes are FAT: the foreground edge sits
+3–5 depth px (≈ 10–15 px at 1280) outside the person even with zero latency, and the live latency
+adds the subject's motion on top. That band of background carried at foreground depth is the
+halo that rides with people; bilinear sampling of a 364×210 map adds a ramp on top.
+
+* **JBU pre-pass** (Kopf 4×4, sigma_s 1 depth px, sigma_r 0.1 RGB) into an R16F raster at video res,
+  once per new frame or depth: sharpens the ramp but can only move an edge ±1.5 depth px.
+* **Edge snap** in the same pass: within `snapCore` of a network edge (min-/max-filtered maps
+  disagree), re-decide the pixel by colour against the foreground CORE (still foreground after a
+  min filter of radius `snapCore`) and background CORE colour means (two-colour matte, 20 % prior
+  toward the network), Gaussian-weighted with a radial fade so nothing steps at texel lines. Falls
+  back to JBU where the two colours are too close or a core is missing. `snapCore` 3 speckles, 5
+  leaves a sliver ring; 4 hugs the head (see `_scratch` sheets).
+* **Convergence**: the centre MEDIAN flips between the modes of a bimodal centre (0.05 ↔ 0.9 on the
+  football clip) and the EMA turned that into a whole-scene depth sweep every 1–2 s. Gaussian centre
+  MEAN + a 0.05 dead band: mean |Δconv| per update 0.028 → 0.003 (football), 0.020 → 0.007
+  (trailer). A slower EMA (0.95/0.97) buys little more and slows cut recovery; `ema` stays 0.9.
+* **Scene cuts** (`depth-ort.js`, `sceneCut`): 64×36 thumbnail mean |ΔRGB| > 0.12 between depth
+  frames drops the VDA temporal cache before the frame and returns `reset:true` (the normaliser
+  resets). All 7 ffmpeg `scene>0.3` cuts of the trailer segment scored 0.13–0.24; in-shot p90
+  0.07–0.09 at 13 Hz. A luma histogram missed 4 of 7. Known: at medium's ~7 Hz the frame gap is
+  twice as long and fast motion trips it (8 false cuts on the football clip).
+
+Edge alignment (depth-gradient-weighted image gradient / mean image gradient; higher = depth
+edges on image edges), depth held for the latency:
+
+| clip | bilinear (before) | JBU | JBU + snap |
+|---|---|---|---|
+| football | 1.46 | 1.86 | **2.71** |
+| webcam | 6.68 | 9.48 | **10.35** |
+| trailer | 1.91 | 2.52 | **2.96** |
+
+GPU (M1 Pro, 2 views 1280×720 + frame upload, per new video frame): bilinear 1.00 ms, +JBU
+1.25 ms, +JBU+snap 1.83 ms (364×210) / 2.11–2.21 ms (518×294). Neutral view MAE stays 0.000003/255.
+
+**Tier.** With the snap, 518×294 at ~7 Hz scores at best equal to 364×210 at ~13 Hz (football
+2.59 vs 2.71, trailer 2.65 vs 2.96 lagged; equal on the static webcam), because its latency is
+double. `quality:'auto'` therefore keeps its 90 ms drop threshold (low on M1 Pro and the
+5070-class laptop); making auto prefer medium up to ~170 ms is NOT supported by these clips.
+**Latency is now the largest remaining error**: the same metric with zero latency is 3.60
+(football) / 3.50 (trailer) vs 2.71 / 2.96 lagged — delaying the displayed frame to match its
+depth (a GPU frame ring) is the next lever, not resolution. `dilate` stays 0 in `lift()`: the
+snap removes the halo that dilation would widen; `dilateHi` exists for experiments.
 
 ## Verification (`samples/lift/dev-dibr.html`)
 

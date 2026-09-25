@@ -16,6 +16,7 @@
 
 import VERT from './shaders/dibr.vert.glsl.js';
 import FRAG from './shaders/dibr.frag.glsl.js';
+import { UPSAMPLE_FRAG, MAX_FRAG, GUIDE_FRAG } from './shaders/dibr-upsample.frag.glsl.js';
 
 /** Nominal viewing geometry: IPD / viewing distance (63 mm at 0.6 m). Sets how much parallax a
  *  given disparity budget means for an eye at a given offset; it cancels for the nominal pair. */
@@ -31,7 +32,19 @@ export const DEFAULT_PARAMS = Object.freeze({
   loPct: 0.02,
   hiPct: 0.98,
   ema: 0.9, // decay: state = ema*state + (1-ema)*new
+  convMode: 'mean', // auto-convergence statistic: 'mean' (Gaussian centre) | 'median' (<= 1.0.x)
+  convBand: 0.05, // auto-convergence dead band (normalised disparity)
   steps: 32, // coarse ray-march steps
+  upsample: true, // joint-bilateral upsample of the depth to video res, guided by the frame
+  upsampleSigmaS: 1.0, // spatial sigma, depth px
+  upsampleSigmaR: 0.1, // range sigma, RGB 0..1
+  upsampleMax: 1280, // long side cap of the upsampled raster (px)
+  dilateHi: 0, // foreground max filter AFTER the upsample, upsampled-raster px (<= 8)
+  snap: true, // edge snap: re-decide depth-edge pixels by colour (needs upsample)
+  snapCore: 4, // core erosion, px at 364 wide (scaled with the depth width): the fat-edge margin
+  snapRadius: 8, // snap window radius, px at 364 wide (scaled, <= 12)
+  snapTau: 0.12, // min local depth range, fraction of the normalised range, to count as an edge
+  debug: 0, // 1 = draw the normalised disparity (grey) instead of the re-projection
   lookAround: 0, // 0 = source camera ON the eye centroid (stereo only); 1 = head motion parallax
   //                 against a slowly re-centring anchor (LOOK_AROUND_TAU_S). See sourceCamera().
 });
@@ -101,6 +114,38 @@ export function centreMedian(data, w, h, lo, hi, frac = 0.5) {
   return k % 2 ? a[(k - 1) >> 1] : 0.5 * (a[k / 2 - 1] + a[k / 2]);
 }
 
+/** Gaussian-weighted mean of normalised disparity (clamped 0..1), centred, sigma = `sigma` of
+ *  each axis. Continuous in the content, unlike a median of a bimodal centre. */
+export function centreMean(data, w, h, lo, hi, sigma = 0.25) {
+  const inv = 1 / Math.max(hi - lo, 1e-9);
+  const kx = 1 / (2 * (sigma * w) ** 2);
+  const ky = 1 / (2 * (sigma * h) ** 2);
+  const wx = new Float32Array(w);
+  for (let x = 0; x < w; x++) wx[x] = Math.exp(-((x + 0.5 - w / 2) ** 2) * kx);
+  let s = 0;
+  let sw = 0;
+  for (let y = 0; y < h; y++) {
+    const wy = Math.exp(-((y + 0.5 - h / 2) ** 2) * ky);
+    for (let x = 0; x < w; x++) {
+      const v = data[y * w + x];
+      const n = Number.isFinite(v) ? Math.min(1, Math.max(0, (v - lo) * inv)) : 0;
+      const g = wy * wx[x];
+      s += g * n;
+      sw += g;
+    }
+  }
+  return sw > 0 ? s / sw : 0.5;
+}
+
+/** Backlash / dead band: `held` follows `v` only by the amount `v` leaves ±band of it. NaN held
+ *  (no state) takes `v`. */
+export function deadBand(held, v, band) {
+  if (!Number.isFinite(held)) return v;
+  if (v > held + band) return v - band;
+  if (v < held - band) return v + band;
+  return held;
+}
+
 /** Separable max filter (foreground dilation). Radius in px; returns a new array. */
 export function dilateMax(data, w, h, r) {
   r = Math.max(0, Math.round(r));
@@ -129,6 +174,39 @@ export function dilateMax(data, w, h, r) {
   return out;
 }
 
+/** Separable min filter (foreground erosion). Radius in px; returns a new array. */
+export function erodeMin(data, w, h, r) {
+  const neg = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i++) neg[i] = -data[i];
+  const o = dilateMax(neg, w, h, r);
+  for (let i = 0; i < o.length; i++) o[i] = -o[i];
+  return o;
+}
+
+/** Interleave the snap's depth-res texture: r = disparity, g = min-filtered (foreground core),
+ *  b = max-filtered (background core), a = 1. `core` = filter radius in px. */
+export function snapPack(data, w, h, core) {
+  const mn = erodeMin(data, w, h, core);
+  const mx = dilateMax(data, w, h, core);
+  const o = new Float32Array(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    o[4 * i] = data[i];
+    o[4 * i + 1] = mn[i];
+    o[4 * i + 2] = mx[i];
+    o[4 * i + 3] = 1;
+  }
+  return o;
+}
+
+/** Depth-px radii at depth width `w`, from params given at the 364-wide tier. */
+export function snapRadii(params, w) {
+  const k = w / 364;
+  return {
+    core: Math.max(0, Math.round((params.snapCore ?? 3) * k)),
+    radius: Math.max(1, Math.min(12, Math.round((params.snapRadius ?? 5) * k))),
+  };
+}
+
 /** metric depth (m) -> disparity (1/m); disparity passes through. Non-positive depth -> 0. */
 export function toDisparity(data, space) {
   if (space !== 'metric') return data;
@@ -139,18 +217,32 @@ export function toDisparity(data, space) {
 
 /** EMA-smoothed depth statistics: percentile range + auto-convergence. */
 export class DepthNormalizer {
+  /**
+   * @param {object} [opts]
+   * @param {number} [opts.ema=0.9]  per-update decay of lo/hi/convergence
+   * @param {'mean'|'median'} [opts.convMode='mean']  centre statistic for auto-convergence.
+   *        'median' (≤ 1.0.x) FLIPS between the two modes of a bimodal centre (a person half
+   *        filling it): measured 0.05 ↔ 0.9 on a real clip, which the EMA turned into a
+   *        whole-scene depth sweep every second or two. 'mean' (Gaussian-weighted) moves smoothly.
+   * @param {number} [opts.convBand=0.05]  dead band: the convergence target only moves once the
+   *        centre statistic leaves ±convBand of it (backlash), so jitter never reaches the glass.
+   */
   constructor(opts = {}) {
     this.ema = opts.ema ?? 0.9;
     this.loPct = opts.loPct ?? 0.02;
     this.hiPct = opts.hiPct ?? 0.98;
+    this.convMode = opts.convMode ?? 'mean';
+    this.convBand = opts.convBand ?? 0.05;
     this.reset();
   }
   reset() {
     this.lo = NaN;
     this.hi = NaN;
     this.conv = NaN;
+    this.convHeld = NaN;
   }
-  /** Feed one (already dilated) disparity map. `stabilize:false` = take this frame's values. */
+  /** Feed one (already dilated) disparity map. `stabilize:false` = take this frame's values;
+   *  `reset:true` (scene cut) drops the state first. */
   update(data, w, h, { stabilize = true, reset = false } = {}) {
     if (reset) this.reset();
     const r = percentileRange(data, this.loPct, this.hiPct);
@@ -159,9 +251,12 @@ export class DepthNormalizer {
     const ema = (prev, v, on) => (on && Number.isFinite(prev) ? this.ema * prev + (1 - this.ema) * v : v);
     this.lo = ema(this.lo, r.lo, stabilize);
     this.hi = ema(this.hi, hi, stabilize);
-    // median in the SMOOTHED range, so convergence and range agree on what n means
-    const c = centreMedian(data, w, h, this.lo, this.hi, 0.5);
-    this.conv = ema(this.conv, c, stabilize);
+    // centre statistic in the SMOOTHED range, so convergence and range agree on what n means
+    const c = this.convMode === 'median'
+      ? centreMedian(data, w, h, this.lo, this.hi, 0.5)
+      : centreMean(data, w, h, this.lo, this.hi);
+    this.convHeld = stabilize ? deadBand(this.convHeld, c, this.convBand) : c;
+    this.conv = ema(this.conv, this.convHeld, stabilize);
     return { lo: this.lo, hi: this.hi, conv: this.conv };
   }
 }
@@ -308,20 +403,30 @@ export function createLiveDibr(opts = {}) {
     });
   if (!gl) throw new Error('[lift/dibr] WebGL2 unavailable');
 
-  const prog = gl.createProgram();
-  gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
-  gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-    throw new Error('[lift/dibr] link failed: ' + gl.getProgramInfoLog(prog));
-  }
-  const U = {};
-  for (const n of [
+  const link = (fs, names) => {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, VERT));
+    gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      throw new Error('[lift/dibr] link failed: ' + gl.getProgramInfoLog(p));
+    }
+    const u = {};
+    for (const n of names) u[n] = gl.getUniformLocation(p, n);
+    return [p, u];
+  };
+  const [prog, U] = link(FRAG, [
     'uColor', 'uDisp', 'uDispRes', 'uLo', 'uHi', 'uConv', 'uQScale', 'uTaper', 'uAspect',
-    'uEye', 'uCam', 'uSteps',
-  ]) {
-    U[n] = gl.getUniformLocation(prog, n);
-  }
+    'uEye', 'uCam', 'uSteps', 'uDebug',
+  ]);
+  // Upsample pre-pass needs a renderable R16F target (EXT_color_buffer_float or _half_float).
+  // Without one the main pass samples the depth-res map bilinearly, as before.
+  const canUpsample = !!(gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float'));
+  const [upProg, UU] = canUpsample
+    ? link(UPSAMPLE_FRAG, ['uDlo', 'uGuide', 'uColor', 'uOutRes', 'uSigmaS', 'uSigmaR', 'uSnap', 'uSnapR', 'uSnapTau'])
+    : [null, null];
+  const [guideProg, UG] = canUpsample ? link(GUIDE_FRAG, ['uColor', 'uOutRes']) : [null, null];
+  const [maxProg, UM] = canUpsample ? link(MAX_FRAG, ['uSrc', 'uDir', 'uRadius']) : [null, null];
   const vao = gl.createVertexArray();
 
   const mkTex = () => {
@@ -335,17 +440,31 @@ export function createLiveDibr(opts = {}) {
   };
   const colorTex = mkTex();
   const dispTex = mkTex();
+  // upsampled raster (upTex) + ping-pong for the separable max filter (upTmp)
+  const upTex = canUpsample ? mkTex() : null;
+  const upTmp = canUpsample ? mkTex() : null;
+  const upFbo = canUpsample ? gl.createFramebuffer() : null;
+  const guideTex = canUpsample ? mkTex() : null; // depth-res box-filtered frame (RGBA8)
+  const guideFbo = canUpsample ? gl.createFramebuffer() : null;
+  let guideW = 0;
+  let guideH = 0;
+  const tmpFbo = canUpsample ? gl.createFramebuffer() : null;
+  let upW = 0;
+  let upH = 0;
+  let upDirty = true; // depth, frame or upsample params changed since the last pre-pass
   // Placeholder: flat grey, flat disparity — renders the plain 2D frame until data arrives.
   gl.bindTexture(gl.TEXTURE_2D, colorTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
   gl.bindTexture(gl.TEXTURE_2D, dispTex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, 1, 1, 0, gl.RED, gl.FLOAT, new Float32Array([0]));
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 1, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array([0, 0, 0, 1]));
 
   const params = { ...DEFAULT_PARAMS };
   const norm = new DepthNormalizer(params);
   let source = null;
   let sourceDirty = false;
   let lastVideoTime = -1;
+  let srcW = 0;
+  let srcH = 0;
   let dispW = 1;
   let dispH = 1;
   let lastRaw = null; // {data,w,h} in disparity space, pre-dilation (so setParams({dilate}) can redo it)
@@ -358,6 +477,7 @@ export function createLiveDibr(opts = {}) {
     views: 0,
     uploadMs: 0,
     renderMs: 0,
+    upsamples: 0,
     depthCpuMs: 0,
     lo: 0,
     hi: 1,
@@ -371,23 +491,124 @@ export function createLiveDibr(opts = {}) {
     const { data, w, h } = lastRaw;
     const dil = dilateMax(data, w, h, params.dilate);
     norm.ema = params.ema;
+    norm.convMode = params.convMode;
+    norm.convBand = params.convBand;
     norm.update(dil, w, h, { stabilize: params.stabilize, reset });
+    // RGBA: r = disparity; g/b = the snap's foreground/background cores (min/max filtered)
+    const snapOn = params.snap && params.upsample && canUpsample;
+    const packed = snapOn ? snapPack(dil, w, h, snapRadii(params, w).core) : snapPack(dil, w, h, 0);
     gl.bindTexture(gl.TEXTURE_2D, dispTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     if (w !== dispW || h !== dispH) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.FLOAT, dil);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, packed);
       dispW = w;
       dispH = h;
     } else {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RED, gl.FLOAT, dil);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.FLOAT, packed);
     }
     stats.depthCpuMs = performance.now() - t0;
     stats.depthUpdates++;
+    upDirty = true;
+  }
+
+  /** Size of the upsampled raster: the source's size, long side capped at upsampleMax. */
+  function upSize() {
+    const w = srcW || dispW;
+    const h = srcH || dispH;
+    const k = Math.min(1, Math.max(1, params.upsampleMax | 0) / Math.max(w, h));
+    return [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))];
+  }
+
+  function fboFor(fbo, tex, w, h) {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.HALF_FLOAT, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  }
+
+  /** Joint-bilateral upsample (+ optional max filter) of dispTex into upTex. Leaves the default
+   *  framebuffer bound. Returns false when the pre-pass is unavailable. */
+  function runUpsample() {
+    if (!canUpsample) return false;
+    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING); // before fboFor() rebinds
+    const [w, h] = upSize();
+    if (w !== upW || h !== upH) {
+      fboFor(upFbo, upTex, w, h);
+      fboFor(tmpFbo, upTmp, w, h);
+      upW = w;
+      upH = h;
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DEPTH_TEST);
+    gl.bindVertexArray(vao);
+    // guide: the frame box-filtered to depth resolution
+    if (guideW !== dispW || guideH !== dispH) {
+      gl.bindTexture(gl.TEXTURE_2D, guideTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, dispW, dispH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, guideFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, guideTex, 0);
+      guideW = dispW;
+      guideH = dispH;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, guideFbo);
+    gl.viewport(0, 0, dispW, dispH);
+    gl.useProgram(guideProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, colorTex);
+    gl.uniform1i(UG.uColor, 0);
+    gl.uniform2f(UG.uOutRes, dispW, dispH);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.viewport(0, 0, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, upFbo);
+    gl.useProgram(upProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, dispTex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, colorTex);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, guideTex);
+    gl.uniform1i(UU.uDlo, 0);
+    gl.uniform1i(UU.uColor, 1);
+    gl.uniform1i(UU.uGuide, 2);
+    gl.uniform2f(UU.uOutRes, w, h);
+    gl.uniform1f(UU.uSigmaS, Math.max(0.1, +params.upsampleSigmaS || 1));
+    gl.uniform1f(UU.uSigmaR, Math.max(0.005, +params.upsampleSigmaR || 0.1));
+    const lo = Number.isFinite(norm.lo) ? norm.lo : 0;
+    const hi = Number.isFinite(norm.hi) ? norm.hi : 1;
+    gl.uniform1i(UU.uSnap, params.snap ? 1 : 0);
+    gl.uniform1i(UU.uSnapR, snapRadii(params, dispW).radius);
+    gl.uniform1f(UU.uSnapTau, Math.max(1e-6, (+params.snapTau || 0) * (hi - lo)));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0);
+    const r = Math.max(0, Math.min(8, Math.round(+params.dilateHi || 0)));
+    if (r > 0) {
+      gl.useProgram(maxProg);
+      gl.uniform1i(UM.uSrc, 0);
+      gl.uniform1i(UM.uRadius, r);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, tmpFbo);
+      gl.bindTexture(gl.TEXTURE_2D, upTex);
+      gl.uniform2i(UM.uDir, 1, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, upFbo);
+      gl.bindTexture(gl.TEXTURE_2D, upTmp);
+      gl.uniform2i(UM.uDir, 0, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    stats.upsamples++;
+    upDirty = false;
+    return true;
   }
 
   function uploadSource() {
     if (!source) return;
+    const a = /** @type {any} */ (source);
+    srcW = a.videoWidth || a.displayWidth || a.naturalWidth || a.width || 0;
+    srcH = a.videoHeight || a.displayHeight || a.naturalHeight || a.height || 0;
     const isVideo = typeof HTMLVideoElement !== 'undefined' && source instanceof HTMLVideoElement;
     if (isVideo) {
       if (source.readyState < 2) return;
@@ -405,6 +626,7 @@ export function createLiveDibr(opts = {}) {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     stats.uploadMs = performance.now() - t0;
     sourceDirty = false;
+    upDirty = true;
   }
 
   return {
@@ -427,8 +649,15 @@ export function createLiveDibr(opts = {}) {
     },
     setParams(p = {}) {
       const redilate = p.dilate !== undefined && p.dilate !== params.dilate;
+      let repack = false;
+      for (const k of ['upsample', 'upsampleSigmaS', 'upsampleSigmaR', 'upsampleMax', 'dilateHi', 'snap', 'snapCore', 'snapRadius', 'snapTau']) {
+        if (p[k] !== undefined && p[k] !== params[k]) {
+          upDirty = true;
+          if (k === 'snap' || k === 'snapCore' || k === 'upsample') repack = true;
+        }
+      }
       Object.assign(params, p);
-      if (redilate && lastRaw) processDepth(false);
+      if ((redilate || repack) && lastRaw) processDepth(false);
     },
     getParams: () => ({ ...params }),
     /**
@@ -466,6 +695,9 @@ export function createLiveDibr(opts = {}) {
           : Math.min(1, Math.max(0, +params.convergence));
       const lo = Number.isFinite(norm.lo) ? norm.lo : 0;
       const hi = Number.isFinite(norm.hi) ? norm.hi : 1;
+      // Edge-aware upsample: once per new frame or depth, before any view is drawn.
+      const up = params.upsample && canUpsample && !!lastRaw;
+      if (up && upDirty) runUpsample();
 
       gl.useProgram(prog);
       gl.bindVertexArray(vao);
@@ -475,7 +707,7 @@ export function createLiveDibr(opts = {}) {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, colorTex);
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, dispTex);
+      gl.bindTexture(gl.TEXTURE_2D, up ? upTex : dispTex);
       gl.uniform1i(U.uColor, 0);
       gl.uniform1i(U.uDisp, 1);
       gl.uniform2f(U.uDispRes, dispW, dispH);
@@ -485,6 +717,7 @@ export function createLiveDibr(opts = {}) {
       gl.uniform1f(U.uTaper, params.edgeTaper);
       gl.uniform3f(U.uCam, cam.x, cam.y, cam.z);
       gl.uniform1i(U.uSteps, Math.max(4, Math.min(64, params.steps | 0)));
+      gl.uniform1i(U.uDebug, params.debug | 0);
       let qs = 0;
       for (let i = 0; i < views.length; i++) {
         const vp = layer.getViewport(views[i]);
@@ -508,12 +741,24 @@ export function createLiveDibr(opts = {}) {
       stats.qScale = qs;
       stats.D0 = D0ema;
       stats.cam = cam;
+      stats.upsampled = up ? [upW, upH] : null;
       stats.renderMs = performance.now() - t0;
     },
     getStats: () => ({ ...stats }),
     dispose() {
       gl.deleteTexture(colorTex);
       gl.deleteTexture(dispTex);
+      if (canUpsample) {
+        gl.deleteTexture(upTex);
+        gl.deleteTexture(upTmp);
+        gl.deleteTexture(guideTex);
+        gl.deleteFramebuffer(guideFbo);
+        gl.deleteProgram(guideProg);
+        gl.deleteFramebuffer(upFbo);
+        gl.deleteFramebuffer(tmpFbo);
+        gl.deleteProgram(upProg);
+        gl.deleteProgram(maxProg);
+      }
       gl.deleteVertexArray(vao);
       gl.deleteProgram(prog);
       source = null;

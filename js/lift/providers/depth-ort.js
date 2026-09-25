@@ -29,6 +29,23 @@ import { mogePost, da3Post } from './still-post.js';
 
 export const AUTO_DROP_MS = 90;
 
+/** Scene-cut threshold: mean |ΔRGB| (0..1) between 64×36 thumbnails of consecutive DEPTH frames.
+ *  Measured at 13 Hz on real clips (docs/lift-dibr.md § Temporal): every ffmpeg `scene>0.3` cut of
+ *  a trailer segment scored 0.13–0.24; in-shot p90 was 0.07–0.09 (a luma histogram missed 4 of 7
+ *  cuts in same-palette jungle shots and fired on explosions). */
+export const SCENE_CUT_SAD = 0.12;
+export const THUMB_W = 64;
+export const THUMB_H = 36;
+
+/** Mean absolute RGB difference of two RGBA8 buffers of equal size, 0..1 (alpha ignored). */
+export function thumbSad(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    s += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+  }
+  return s / ((a.length / 4) * 3 * 255);
+}
+
 /**
  * Registry-dispatched factory (the public contract). Picks the highest-priority registered
  * provider for `opts.kind` (or `opts.provider` by name).
@@ -58,6 +75,9 @@ export function kindOfModel(model) {
  * @param {'low'|'medium'|'high'|'auto'} [opts.quality='auto']
  * @param {string} [opts.model]    manifest model name (overrides quality → model)
  * @param {'gpu'|'cpu'|'auto'} [opts.preprocess='auto']
+ * @param {boolean|number} [opts.sceneCut=true]  video: detect cuts (thumbnail SAD > SCENE_CUT_SAD,
+ *        or the given threshold); a cut drops the temporal cache BEFORE the frame runs and the
+ *        result carries `reset: true` (live-DIBR's setDepth resets its normaliser on it).
  */
 export function createOrtDepthProvider(opts) {
   const { modelSource } = opts;
@@ -77,8 +97,31 @@ export function createOrtDepthProvider(opts) {
   // video state
   let cache = null, zeroCache = null, lastT = null;
   let FIRST = null, NEXT = null;
+  // scene-cut state: last thumbnail
+  const cutThresh = opts.sceneCut === false ? 0 : typeof opts.sceneCut === 'number' ? opts.sceneCut : SCENE_CUT_SAD;
+  let thumbCtx = null, lastThumb = null;
 
-  const info = { model: null, width: 0, height: 0, preprocess: null, warmupMs: null, backend: 'webgpu' };
+  /** true when `source` starts a new shot (never on the first frame). */
+  function sceneCut(source) {
+    if (!(cutThresh > 0)) return false;
+    try {
+      if (!thumbCtx) {
+        const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(THUMB_W, THUMB_H)
+          : Object.assign(document.createElement('canvas'), { width: THUMB_W, height: THUMB_H });
+        thumbCtx = /** @type {any} */ (c).getContext('2d', { willReadFrequently: true });
+      }
+      thumbCtx.drawImage(source, 0, 0, THUMB_W, THUMB_H);
+      const px = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
+      const cut = !!lastThumb && thumbSad(px, lastThumb) > cutThresh;
+      lastThumb = px;
+      info.cuts += cut ? 1 : 0;
+      return cut;
+    } catch {
+      return false; // tainted / unsupported source: no detection
+    }
+  }
+
+  const info = { cuts: 0, model: null, width: 0, height: 0, preprocess: null, warmupMs: null, backend: 'webgpu' };
 
   async function createSession(name, { signal, onProgress }) {
     const { bytes, source } = await modelSource.getBytes(name, { signal, onProgress });
@@ -217,10 +260,12 @@ export function createOrtDepthProvider(opts) {
   async function estimateNow({ source, t }) {
     if (!session) throw new Error('lift depth: call load() first');
     if (kind === 'video') {
-      if (typeof t === 'number' && lastT !== null && (t < lastT || t - lastT > 1.0)) dropCache();
+      let reset = false;
+      if (typeof t === 'number' && lastT !== null && (t < lastT || t - lastT > 1.0)) { dropCache(); reset = true; }
       if (typeof t === 'number') lastT = t;
+      if (sceneCut(source)) { dropCache(); reset = true; }
       const data = await runVideo(imageTensor(source, io.width, io.height));
-      return { data, w: io.width, h: io.height, space: io.space || 'disparity' };
+      return { data, w: io.width, h: io.height, space: io.space || 'disparity', reset };
     }
     const [sw, sh] = sourceSize(source);
     const [W, H] = stillSize(sw, sh);
@@ -265,7 +310,7 @@ export function createOrtDepthProvider(opts) {
     },
     // Serialised behind any in-flight estimate: dropping the temporal cache mid-run disposed the
     // GPU buffer the running session was reading and nulled `cache` under runVideo (integration fix).
-    reset() { const p = queue.then(() => { dropCache(); lastT = null; }); queue = p.catch(() => {}); },
+    reset() { const p = queue.then(() => { dropCache(); lastT = null; lastThumb = null; }); queue = p.catch(() => {}); },
     async dispose() {
       disposed = true;
       await queue;
