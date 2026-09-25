@@ -2,9 +2,11 @@
 // into the SDK's per-view viewports: real head parallax from the runtime's tracked eyes, plus a
 // capped drag orbit that relaxes home on release.
 //
-// EXPERIMENTAL. The gallery's Spatial View (displayxr-gallery-pvt: src/lib/spatialView/camera.ts,
-// reveal.ts, the wall's camera rig in SpatialView.tsx) ported into the SDK as one module, on the
-// SDK's Spark path. See docs/lift-explore.md.
+// EXPERIMENTAL. The gallery's Spatial View camera model (displayxr-gallery-pvt:
+// src/lib/spatialView/camera.ts, reveal.ts, the wall's camera rig in SpatialView.tsx), rendered by
+// the PlayCanvas engine — the SDK's `addSplat(…, { engine: 'playcanvas' })` renderer, at engine
+// level (one AppBase, one gsplat component, one camera with N RenderViews). It replaced three +
+// Spark in 2026-09 ("the PlayCanvas viewer is much better"). See docs/lift-explore.md.
 //
 //   import { createInline3D } from '@displayxr/inline3d';
 //   import { createExplore } from './lift/explore.js';
@@ -18,15 +20,36 @@
 //
 // THE CANVAS IS THE CALLER'S (addScene's contract): size its backing store for the layer — SBS,
 // device px, `canvas.width = cssW·dpr·2` — and this module renders into `layer.getViewport(view)`.
-// It never touches canvas.width/height.
+// It never touches canvas.width/height (the engine runs RESOLUTION_FIXED and is never asked to
+// resize anything).
 //
-// Requires the SDK's optional peers `three` (>= 0.180) and `@sparkjsdev/spark` (2.x), exactly
-// like ./inline3d-splat.js. Spark parses the PLY in its own worker (wasm), so loading 1.2 M
-// splats does not block the page.
+// Requires the SDK's optional peer `playcanvas` (>= 2.22.3 < 3), exactly like
+// `addSplat(…, { engine: 'playcanvas' })` — reached through ../inline3d-playcanvas-engine.js (named
+// re-exports imported STATICALLY, so a bundler keeps only the members named below — a dynamic
+// import would keep the whole slice, WebGPU backend included). The pure half lives in ./orbit.js
+// and ./explore-gl.js and is unit-tested without the engine. The PLY is parsed by the engine's own
+// PLY parser from in-memory bytes (`file.contents`, no URL, no blob: — the lift world's CSP never sees
+// a fetch); the sort runs in the engine's blob worker (the built-in bundle swaps in an in-thread
+// twin when the page's CSP blocks workers — tools/lift-builtin/build.mjs).
 
-import * as THREE from 'three';
-import { SparkRenderer, SplatMesh, dyno } from '@sparkjsdev/spark';
-import { applySplatPerf, splatPerfMeshOptions } from '../inline3d-splat-perf.js';
+import {
+  WebglGraphicsDevice,
+  AppOptions,
+  AppBase,
+  CameraComponentSystem,
+  GSplatComponentSystem,
+  GSplatHandler,
+  ShaderChunks,
+  SHADERLANGUAGE_GLSL,
+  Asset,
+  Entity,
+  Color,
+  RenderView,
+  LAYERID_SKYBOX,
+  TONEMAP_NONE,
+} from '../inline3d-playcanvas-engine.js';
+import { playcanvasPerfSettings, patchPlayCanvasQuadExtent } from '../inline3d-splat-perf.js';
+import { LIFT_MODIFY_VS, patchGsplatFootprint, adoptGlState, releaseGlState } from './explore-gl.js';
 import {
   createOrbit,
   createClickTracker,
@@ -38,12 +61,22 @@ import {
   NEAR,
   FAR,
   ORBIT_MAX_DEG,
+  orbitRig,
+  rigApply,
+  perspectiveOffAxis,
+  translation,
+  comfortScale,
 } from './orbit.js';
 
 export * from './orbit.js';
+export * from './explore-gl.js';
 
-/** Sort at most this often (ms): one sort serves both eyes (see inline3d-splat.js). */
-const SORT_INTERVAL_MS = 16;
+/** The engine members this module uses (tests / diagnostics). */
+const pc = {
+  WebglGraphicsDevice, AppOptions, AppBase, CameraComponentSystem, GSplatComponentSystem, GSplatHandler,
+  ShaderChunks, SHADERLANGUAGE_GLSL, Asset, Entity, Color, RenderView, LAYERID_SKYBOX, TONEMAP_NONE,
+};
+
 /** Default reveal (inflate) duration, ms — the gallery's REVEAL_MS. */
 export const REVEAL_MS = 1400;
 /** Depth kept at the START of the reveal, about the pivot. Not 0: a perfectly flat cloud has no
@@ -51,126 +84,110 @@ export const REVEAL_MS = 1400;
 export const FLAT_RESIDUAL = 0.05;
 /** Effective splats per pixel on a lifted sheet, for the fade's coverage correction (measured on
  *  the dev harness's 1-gaussian-per-pixel, two-layer synthetic lift; see docs/lift-explore.md). */
-const FADE_OVERLAP = 5;
+export const FADE_OVERLAP = 5;
 /** Longest frame step the easing integrates, s (a backgrounded tab must not teleport). */
 const MAX_DT_S = 0.1;
+/** The engine release this module was built and measured against (the SDK's npm peer floor). */
+export const PLAYCANVAS_TESTED = '2.22.3';
 
 const easeOutCubic = (x) => 1 - (1 - x) ** 3;
 const DEG = Math.PI / 180;
 
-/**
- * Build the Spark half: a three.js renderer on the caller's canvas, a SparkRenderer, and the
- * mesh. Factored so the integrator can lift it next to addSplat's (they share the perf presets
- * and the sort-interval rule already; inline3d-splat.js is deliberately untouched here).
- */
-export async function createSplatRenderer({ canvas, gl = null, bytes, fileType = 'ply', perf = null, sortIntervalMs = SORT_INTERVAL_MS }) {
-  // A SHARED context (the lift canvas's one WebGL2 context, created by the live-DIBR renderer) is
-  // taken as-is: three wraps it and never calls getContext itself. Its attributes are the
-  // creator's (live-dibr: alpha, premultipliedAlpha, no antialias — the same as ours).
-  const renderer = gl
-    ? new THREE.WebGLRenderer({ canvas, context: gl })
-    : new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, premultipliedAlpha: true });
-  // MUST be 1: layer.getViewport() is in backing-store px and three multiplies by pixelRatio.
-  renderer.setPixelRatio(1);
-  renderer.autoClear = false;
-  renderer.setClearColor(0x000000, 0);
-  const scene = new THREE.Scene();
-  // autoUpdate OFF — the stereo fix. With it on, Spark runs its update (splat GENERATION + sort
-  // scheduling) from onBeforeRender on every render() call whose camera moved > 1 mm, and a
-  // stereo frame alternates two cameras ~63 mm apart, so all 1.2 M splats were regenerated TWICE
-  // per frame (measured: p95 frame 100-140 ms on 2 views vs a flat 60 fps mono). The caller drives
-  // one update per frame from the eyes' midpoint instead: one generate, one sort, both eyes.
-  const spark = new SparkRenderer({ renderer, minSortIntervalMs: sortIntervalMs, autoUpdate: false });
-  scene.add(spark);
-  const perfApplied = perf ? applySplatPerf(spark, perf) : null;
-  const mesh = new SplatMesh({
-    fileBytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
-    fileType,
-    ...splatPerfMeshOptions(perf),
-  });
-  await mesh.initialized;
-  return { renderer, scene, spark, mesh, perf: perfApplied };
-}
+let byteSeq = 0;
+let warnedFootprint = false;
 
 /**
- * One Spark update for this frame. Spark's PUBLIC update() forces a full splat regeneration on
- * every call (it passes autoUpdate:false, which disables the "nothing changed" skip) — at 1.2 M
- * splats that alone cost a mono frame 60 → ~25 fps. The private updateInternal with
- * autoUpdate:true is exactly what Spark's own onBeforeRender runs: regenerate only when the
- * viewpoint moved > 1 mm or a generator's version changed. Fall back to update() if a Spark
- * version renames it. Integrator: this is the one Spark-internal this module leans on.
- */
-function sparkUpdate(spark, scene, camera) {
-  const p =
-    typeof spark.updateInternal === 'function'
-      ? spark.updateInternal({ scene, camera, autoUpdate: true })
-      : spark.update({ scene, camera });
-  p?.catch?.((err) => console.warn('[lift/explore] spark update', err));
-}
-
-/**
- * The inflate reveal + depth gain, as one Spark objectModifier (a dyno graph, per splat on the
- * GPU, in the PLY's OBJECT space). The gallery's reveal.ts, generalised over the view-axis sign.
+ * Build the engine half on the caller's canvas: an AppBase (no XrManager, no input — the SDK owns
+ * input) on a WebGL2 device, the gsplat component with the lift's PLY, and one camera entity whose
+ * N RenderViews are the eyes (the engine's own WebXR stereo path driven without WebXR: one gsplat
+ * manager, one sort, one work buffer for every view).
  *
- * Every splat is slid along the ray from a centre of projection `o` so its depth along the view
- * axis becomes t' = D + (t − D)·s — the plane t = D (the pivot) stays put — and its scales are
- * multiplied by the same λ, so its footprint seen FROM `o` does not change. From `o` the
- * modifier is therefore invisible; from the two eyes either side of it, only the disparity
- * changes. s = FLAT_RESIDUAL → gain is the reveal ("the photo inflates into depth"); s = gain at
- * rest is setDepthGain (a non-metric lift's strength knob), for free.
- *
- * `o` is the viewer's head: in this rig the rest head IS the capture camera (the origin), so it
- * only moves by the head offset while a reveal plays (fed per frame, as the gallery wall does).
+ * With `gl` the device ADOPTS that context (`WebglGraphicsDevice` takes `options.gl`; it never
+ * calls getContext and its destroy() never loses the context — the live DIBR owns it).
  */
-function attachDepthModifier(mesh, { dPivot, fwd }) {
-  const s = dyno.dynoFloat(1, 'liftS'); // depth scale about the pivot
-  const origin = dyno.dynoVec3(new THREE.Vector3(0, 0, 0), 'liftO');
-  const originT = dyno.dynoFloat(0, 'liftOt'); // o's depth along the view axis
-  const plane = dyno.dynoConst('float', dPivot);
-  const sign = dyno.dynoConst('float', fwd);
-  const one = dyno.dynoConst('float', 1);
-  const eps = dyno.dynoConst('float', 1e-4);
-
-  mesh.objectModifier = dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
-    if (!gsplat) throw new Error('lift/explore: no gsplat input');
-    // Spark's own idiom: splitGsplat(g).outputs.<field> (NOT destructuring the dyno itself).
-    const parts = dyno.splitGsplat(gsplat).outputs;
-    const t = dyno.mul(parts.z, sign); // depth along the view axis, > 0 in front of the camera
-    const tFlat = dyno.add(plane, dyno.mul(dyno.sub(t, plane), s));
-    const dt = dyno.sub(t, originT);
-    const front = dyno.greaterThan(dt, eps);
-    // Splats at or behind `o` keep λ = 1: projecting them through `o` flings them to infinity.
-    const lambda = dyno.select(front, dyno.div(dyno.sub(tFlat, originT), dyno.max(dt, eps)), one);
-    const out = dyno.combineGsplat({
-      gsplat,
-      center: dyno.add(origin, dyno.mul(dyno.sub(parts.center, origin), lambda)),
-      scales: dyno.mul(parts.scales, lambda),
-    });
-    return { gsplat: out };
+export async function createPlayCanvasSplat({ canvas, gl = null, bytes, perf = null, preserveDrawingBuffer = false }) {
+  // WebGL2 only, constructed directly (createGraphicsDevice would drag the WebGPU backend into a
+  // bundle). With `gl` the device adopts it: WebglGraphicsDevice takes `options.gl` @ 2.22.3.
+  const device = new pc.WebglGraphicsDevice(canvas, {
+    ...(gl ? { gl } : {}),
+    alpha: true,
+    premultipliedAlpha: true,
+    antialias: false,
+    xrCompatible: false,
+    preserveDrawingBuffer: !!preserveDrawingBuffer,
   });
-  mesh.updateGenerator();
-  mesh.updateVersion();
+  const opts = new pc.AppOptions();
+  opts.graphicsDevice = device;
+  opts.componentSystems = [pc.CameraComponentSystem, pc.GSplatComponentSystem];
+  opts.resourceHandlers = [pc.GSplatHandler];
+  const app = new pc.AppBase(canvas);
+  app.init(opts);
+  // RESOLUTION_FIXED is AppBase's default: the engine never resizes the canvas (the caller does).
+  // No second rAF: render() drives app.tick().
+  app.requestAnimationFrame = () => {};
 
-  let lastS = 1;
+  const chunks = pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL);
+  const corner = patchGsplatFootprint(chunks.get('gsplatCornerVS'));
+  if (corner.ok) chunks.set('gsplatCornerVS', corner.src);
+  else if (!warnedFootprint) {
+    warnedFootprint = true;
+    console.warn(`[lift/explore] this playcanvas build lacks the gsplatCornerVS lines the footprint fix rewrites (tested ${PLAYCANVAS_TESTED}); rendering unpatched.`);
+  }
+  const perfApplied = playcanvasPerfSettings(perf ?? undefined);
+  if (perfApplied.quadExtent) {
+    const q = patchPlayCanvasQuadExtent(chunks.get('gsplatCommonVS'), perfApplied.quadExtent);
+    if (q.ok) chunks.set('gsplatCommonVS', q.src);
+  }
+  for (const [k, v] of Object.entries(perfApplied.settings || {})) app.scene.gsplat[k] = v;
+
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const url = `lift-${++byteSeq}.ply`;
+  // In-memory bytes through the engine's own loader: `contents` short-circuits the fetch.
+  const asset = new pc.Asset(url, 'gsplat', { url, filename: url, contents: new Response(u8) });
+  app.assets.add(asset);
+  await new Promise((resolve, reject) => {
+    asset.ready(resolve);
+    asset.once('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
+    app.assets.load(asset);
+  });
+
+  // EVERY entity gets its app explicitly (the default is the engine's global "current app").
+  const splat = new pc.Entity('lift-splat', app);
+  splat.addComponent('gsplat', { asset });
+  app.root.addChild(splat);
+  const rigNode = new pc.Entity('lift-rig', app);
+  app.root.addChild(rigNode);
+  const eye = new pc.Entity('lift-eye', app);
+  eye.addComponent('camera', {
+    clearColor: new pc.Color(0, 0, 0, 0),
+    clearColorBuffer: true,
+    clearDepthBuffer: true,
+    nearClip: NEAR,
+    farClip: FAR,
+    fov: 45,
+  });
+  if (Array.isArray(eye.camera.layers)) eye.camera.layers = eye.camera.layers.filter((id) => id !== pc.LAYERID_SKYBOX);
+  // Splat colours are display-referred already: no tone map (the SDK adapter's rule).
+  eye.camera.toneMapping = pc.TONEMAP_NONE;
+  rigNode.addChild(eye);
+
+  // The lift's own modifier on the tile material (reveal / depth gain / fade).
+  const mat = app.scene.gsplat.material;
+  mat.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', LIFT_MODIFY_VS);
+  mat.update();
+
+  app.start();
   return {
-    /** A uniform change does NOTHING until updateVersion() — Spark regenerates on version. */
-    set(sv, ox = 0, oy = 0, oz = 0) {
-      const ot = fwd * oz;
-      if (sv === lastS && origin.value.x === ox && origin.value.y === oy && originT.value === ot) return;
-      lastS = sv;
-      s.value = sv;
-      origin.value.set(ox, oy, oz);
-      originT.value = ot;
-      mesh.updateVersion();
-    },
-    dispose() {
-      mesh.objectModifier = undefined;
-      try {
-        mesh.updateGenerator();
-      } catch {
-        /* mesh already disposed */
-      }
-    },
+    pc,
+    app,
+    device,
+    asset,
+    splat,
+    rigNode,
+    eye,
+    material: mat,
+    perf: perfApplied.applied,
+    count: asset.resource?.numSplats ?? asset.resource?.gsplatData?.numSplats ?? 0,
   };
 }
 
@@ -178,10 +195,10 @@ function attachDepthModifier(mesh, { dPivot, fwd }) {
  * @param {object} o
  * @param {HTMLCanvasElement} o.canvas  the caller's canvas (its backing store is the caller's).
  * @param {WebGL2RenderingContext} [o.gl]  an EXISTING context on that canvas (one canvas, one
- *        context: the live-DIBR renderer owns it). Given → three wraps it, `resetState()` runs
- *        before every draw (the other renderer moved GL state behind three's cache), nothing is
- *        restored afterwards, the tile starts HIDDEN (drawing nothing, clearing nothing) until
- *        fadeIn(), and fades never clear — the other renderer's frame is underneath.
+ *        context: the live-DIBR renderer owns it). Given → the engine device adopts it, the GL
+ *        state is re-synced before every draw and handed back neutral after it, the tile starts
+ *        HIDDEN (drawing nothing, clearing nothing) until fadeIn(), and fades never clear — the
+ *        other renderer's frame is underneath.
  * @param {ArrayBuffer|Uint8Array} o.ply  a standard binary 3DGS PLY (x,y,z,nx,ny,nz,f_dc_0..2,
  *        opacity(logit),scale_0..2(log),rot_0..3), both layers in one file.
  * @param {{focalPx:number,pivotZ:number,w:number,h:number,layers?:number,axes?:string}} o.meta
@@ -193,10 +210,20 @@ function attachDepthModifier(mesh, { dPivot, fwd }) {
  * @param {number} [o.depthGain=1]
  * @param {boolean} [o.startFlat=false]  hold the scene flat (the photo) until fadeIn().
  * @param {boolean} [o.startHidden=!!o.gl]  draw nothing (and clear nothing) until fadeIn().
- * @param {number} [o.clearAlpha=0]  alpha of the clear (black unless `o.clearColor`); lift passes 1.
+ * @param {number} [o.clearAlpha=0]  alpha of the clear (black unless `o.clearColor` [r,g,b] 0..1).
  * @param {boolean} [o.clear=true]  clear the canvas before drawing (outside a shared-context
  *        fade). false = always composite over whatever is already in the buffer.
- * @param {'exact'|'balanced'|'aggressive'|object} [o.perf]  Spark overdraw presets.
+ * @param {'exact'|'balanced'|'aggressive'|object} [o.perf={antiAlias:true}]  the SDK's splat perf
+ *        presets (./inline3d-splat-perf.js playcanvasPerfSettings — the addSplat engine:'playcanvas'
+ *        mapping). The default turns the engine's splat anti-aliasing on: the lift's hidden-layer
+ *        splats are sub-pixel-thin where the band is stretched, and without it they draw as
+ *        horizontal streaks (MAE vs the Spark renderer 3.7 → 2.1 on the office lift).
+ * @param {{mode?:'auto'|'always'|'off', target?:number, tolerance?:number}} [o.comfort]  the
+ *        comfort normalisation (see comfortScale); `o.space` ('metric'|'disparity') is what 'auto'
+ *        keys on (lift.js passes the frozen frame's depth space).
+ * @param {'nominal'|'tracked'} [o.eyes='nominal']  'nominal': the runtime's eye separation is
+ *        normalised to 63 mm (the gallery rule — the web SDK knows no panel size); 'tracked': the
+ *        view positions are taken as metres (a display rig sized to the physical tile).
  * @param {(ev:PointerEvent)=>void} [o.onClick]  a press that moved < 6 px.
  * @param {(ex:object)=>void} [o.onReady]
  */
@@ -204,55 +231,53 @@ export async function createExplore(o) {
   const { canvas, ply, meta } = o;
   if (!canvas) throw new Error('lift/explore: canvas is required');
   if (!ply) throw new Error('lift/explore: ply bytes are required');
-  const rig = rigFromMeta(meta, o.axes);
+  // Comfort: scale the scene about the capture camera (see comfortScale). The rig is built from the
+  // SCALED pivot, and the splat entity carries the same scale, so every distance below is in the
+  // scaled scene (the window, the cone, the reveal's pivot plane).
+  const sceneScale = comfortScale(meta, { ...(o.comfort || {}), space: o.space });
+  const rig = rigFromMeta(sceneScale === 1 ? meta : { ...meta, pivotZ: meta.pivotZ * sceneScale }, o.axes);
   const orbitOpts = o.orbit || {};
   const maxDeg = orbitOpts.maxAngleDeg ?? ORBIT_MAX_DEG;
   const orbit = createOrbit({ maxAngleDeg: maxDeg, relax: orbitOpts.relax !== false, gain: orbitOpts.gain });
   const click = createClickTracker();
-  const head = createHeadTracker({ rest: o.restHead });
+  const head = createHeadTracker({ rest: o.restHead, metresPerUnit: o.eyes === 'tracked' ? 1 : 0 });
   const limit = o.clampHead === false ? Infinity : coneLimit(rig, maxDeg);
   const fit = o.fit || 'cover';
 
   const shared = !!o.gl;
-  const sr = await createSplatRenderer({ canvas, gl: o.gl || null, bytes: ply, perf: o.perf });
-  const { renderer, scene, mesh } = sr;
+  const eng = await createPlayCanvasSplat({ canvas, gl: o.gl || null, bytes: ply, perf: o.perf ?? { antiAlias: true } });
+  const { pc, app, device, splat, rigNode, eye, material } = eng;
+  if (shared) releaseGlState(o.gl); // device creation issued its own initial state
 
-  // scene ── orbit (at the focus point F, rotated) ── centering (−F) ── axes (PLY → scene) ── mesh
-  // so yaw/pitch turn the lift about F = (0, 0, −dPivot): the screen centre at the pivot plane,
-  // the same point head motion pivots about.
-  const F = new THREE.Vector3(0, 0, -rig.dPivot);
-  const orbitNode = new THREE.Group();
-  const centering = new THREE.Group();
-  const axesNode = new THREE.Group();
-  orbitNode.position.copy(F);
-  centering.position.copy(F).negate();
-  if (rig.axes.flip) axesNode.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
-  axesNode.add(mesh);
-  centering.add(axesNode);
-  orbitNode.add(centering);
-  scene.add(orbitNode);
+  // The PLY → capture-frame flip (OpenCV: +z forward, y down → 180° about X), on the splat entity:
+  // world is then the capture frame for every convention (camera at the origin, looking −z).
+  if (rig.axes.flip) splat.setLocalEulerAngles(180, 0, 0);
+  if (sceneScale !== 1) splat.setLocalScale(sceneScale, sceneScale, sceneScale);
 
-  const depth = attachDepthModifier(mesh, { dPivot: rig.dPivot, fwd: rig.axes.fwd });
+  // ── uniforms ──
+  const U = { s: NaN, ox: NaN, oy: NaN, oz: NaN, fade: NaN };
+  const oVec = new Float32Array(3);
+  material.setParameter('uLiftD', rig.dPivot);
+  const setUniforms = (s, ox, oy, oz, fadeMul) => {
+    if (s === U.s && ox === U.ox && oy === U.oy && oz === U.oz && fadeMul === U.fade) return;
+    U.s = s; U.ox = ox; U.oy = oy; U.oz = oz; U.fade = fadeMul;
+    oVec[0] = ox; oVec[1] = oy; oVec[2] = oz;
+    material.setParameter('uLiftS', s);
+    material.setParameter('uLiftO', oVec);
+    material.setParameter('uLiftD', rig.dPivot);
+    material.setParameter('uLiftFade', fadeMul);
+    material.update();
+  };
+
   let depthGain = Number.isFinite(o.depthGain) ? o.depthGain : 1;
   let reveal = o.startFlat ? { t0: Infinity, ms: REVEAL_MS } : null; // null = done
-  const setDepth = (p, headLocal) => {
-    const sv = FLAT_RESIDUAL + (depthGain - FLAT_RESIDUAL) * p;
-    if (headLocal) depth.set(sv, headLocal.x, headLocal.y, headLocal.z);
-    else depth.set(sv);
+  let depthS = 1;
+  let depthO = { x: 0, y: 0, z: 0 };
+  const setDepth = (p, originWorld) => {
+    depthS = FLAT_RESIDUAL + (depthGain - FLAT_RESIDUAL) * p;
+    depthO = originWorld || { x: 0, y: 0, z: 0 };
   };
   setDepth(reveal ? 0 : 1);
-
-  // One camera per view, reused. Identity rotation always: the frustum is off-axis.
-  const cams = [];
-  const camFor = (i) => (cams[i] ||= new THREE.PerspectiveCamera());
-  const placeCamera = (cam, e, vpAspect) => {
-    cam.position.set(e.x, e.y, e.z);
-    cam.quaternion.identity();
-    cam.updateMatrixWorld(true);
-    const f = frustumFor(rig, e, fitWindow(rig, vpAspect, fit));
-    cam.projectionMatrix.makePerspective(f.l, f.r, f.t, f.b, NEAR, FAR);
-    cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
-  };
 
   // Global opacity fade (fadeIn with opacity, fadeOut). `hidden` = draw nothing, clear nothing.
   // While a fade runs the frame is NOT cleared: in the shared-context crossfade the other
@@ -262,18 +287,19 @@ export async function createExplore(o) {
   // Opaque clear for an in-page lift: with the default transparent clear, pixels the splat sheet
   // does not fully cover (frame edges swung into view, sparse disocclusions) let the page's own
   // <img>/<video> — the flat picture — show through as a ghost double under the orbit.
-  if (Number.isFinite(o.clearAlpha)) renderer.setClearColor(o.clearColor ?? 0x000000, o.clearAlpha);
+  const cc = Array.isArray(o.clearColor) ? o.clearColor : [0, 0, 0];
+  eye.camera.clearColor = new pc.Color(cc[0] ?? 0, cc[1] ?? 0, cc[2] ?? 0, Number.isFinite(o.clearAlpha) ? o.clearAlpha : 0);
   let fade = null; // { from, to, t0, ms, resolve }
+  let fadeLevel = 1;
+  let fadeMul = 1;
   const setOpacity = (c) => {
-    // Spark folds mesh.opacity into its per-splat alpha and regenerates on change by itself. That
-    // is a per-SPLAT multiplier, not a layer alpha: an image-aligned lift is a dense sheet where
+    // A per-SPLAT multiplier, not a layer alpha: an image-aligned lift is a dense sheet where
     // ~FADE_OVERLAP splats cover each pixel, so coverage ≈ 1 − (1 − m)^k and a linear m reads as
     // ~45 % visible at m = 0.1. Invert that so the requested value is the perceived coverage.
     const cov = Math.min(1, Math.max(0, c));
     fadeLevel = cov;
-    mesh.opacity = cov >= 1 ? 1 : 1 - Math.pow(1 - cov, 1 / FADE_OVERLAP);
+    fadeMul = cov >= 1 ? 1 : 1 - Math.pow(1 - cov, 1 / FADE_OVERLAP);
   };
-  let fadeLevel = 1;
   setOpacity(hidden ? 0 : 1);
   const stepFade = (t) => {
     if (!fade) return;
@@ -290,59 +316,81 @@ export async function createExplore(o) {
   let lastT = 0;
   let disposed = false;
   let last = null; // { eyes, vps } — the last frame that drew, for replay
-  const tmp = new THREE.Vector3();
-  const stats = { frames: 0, renderMs: 0, lastRenderMs: 0 };
+  const stats = { frames: 0, renderMs: 0, lastRenderMs: 0, splats: eng.count, sceneScale };
+  let orbitNow = orbitRig(0, 0, rig.dPivot);
 
   const tick = () => {
     const t = performance.now();
     const dt = lastT ? Math.min((t - lastT) / 1000, MAX_DT_S) : 0;
     lastT = t;
     orbit.step(dt);
-    orbitNode.rotation.set(orbit.pitch * DEG, orbit.yaw * DEG, 0, 'YXZ');
-    orbitNode.updateMatrixWorld(true);
+    orbitNow = orbitRig(orbit.yaw, orbit.pitch, rig.dPivot);
     return t;
   };
 
   const updateReveal = (t, mid) => {
     if (!reveal) return;
     const x = Number.isFinite(reveal.t0) ? Math.min(1, Math.max(0, t - reveal.t0) / reveal.ms) : 0;
-    let local = null;
-    if (mid) {
-      // Centre of projection = the viewer's head, in the mesh's object space.
-      tmp.set(mid.x, mid.y, mid.z);
-      mesh.updateWorldMatrix(true, false);
-      mesh.worldToLocal(tmp);
-      local = tmp;
-    }
+    // Centre of projection = the viewer's head, in WORLD (= the capture frame): the head is in
+    // rig space, so through the orbit rig.
+    const originWorld = mid ? rigApply(orbitNow, mid) : null;
     if (x >= 1) {
       reveal = null;
       setDepth(1); // origin back to the capture camera; λ is 1 at s = gain from anywhere near it
-    } else setDepth(easeOutCubic(x), local);
+    } else setDepth(easeOutCubic(x), originWorld);
   };
 
-  const centreCam = new THREE.PerspectiveCamera();
+  // The eyes: N RenderViews on the one camera. Pose = the eye's translation in RIG space (identity
+  // rotation — the frustum is off-axis); the engine composes the rig node's world transform in.
+  const rvs = [];
+  const projs = [];
+  const poses = [];
+  let frustumKey = '';
   const draw = (eyes, vps) => {
     const t0 = performance.now();
-    // One Spark update per frame, from the midpoint of the eyes (see createSplatRenderer).
+    rigNode.setLocalPosition(orbitNow.position[0], orbitNow.position[1], orbitNow.position[2]);
+    rigNode.setLocalRotation(orbitNow.rotation[0], orbitNow.rotation[1], orbitNow.rotation[2], orbitNow.rotation[3]);
+    if (rvs.length !== eyes.length) {
+      rvs.length = 0;
+      for (let i = 0; i < eyes.length; i++) {
+        rvs.push(new pc.RenderView());
+        projs[i] ||= new Float32Array(16);
+        poses[i] ||= new Float32Array(16);
+      }
+      eye.camera.camera.xrViews = rvs.slice();
+    }
     let mx = 0, my = 0, mz = 0;
-    for (const e of eyes) { mx += e.x; my += e.y; mz += e.z; }
+    for (let i = 0; i < eyes.length; i++) {
+      const e = eyes[i];
+      const vp = vps[i];
+      const f = frustumFor(rig, e, fitWindow(rig, vp.width / vp.height, fit));
+      perspectiveOffAxis(f.l, f.r, f.t, f.b, NEAR, FAR, projs[i]);
+      translation(e.x, e.y, e.z, poses[i]);
+      rvs[i].setView(projs[i], poses[i]);
+      rvs[i].setViewport(vp.x, vp.y, vp.width, vp.height);
+      mx += e.x; my += e.y; mz += e.z;
+    }
+    // LOD and FOV compensation read camera.fov/near/far, which under xrViews come from the XR
+    // properties — the frustum the views actually have (the SDK adapter's rule).
+    const P = projs[0];
+    const fov = (2 * Math.atan(1 / P[5])) / DEG;
+    const aspectRatio = P[5] / P[0];
+    const key = `${fov.toFixed(3)}|${aspectRatio.toFixed(3)}`;
+    if (key !== frustumKey) {
+      frustumKey = key;
+      eye.camera.camera.setXrProperties({ fov, aspectRatio, nearClip: NEAR, farClip: FAR, horizontalFov: false });
+    }
+    // The camera NODE drives the sort (one sort, both eyes): park it at the eyes' midpoint.
     const n = Math.max(eyes.length, 1);
-    placeCamera(centreCam, { x: mx / n, y: my / n, z: mz / n }, vps[0].width / vps[0].height);
-    if (shared) renderer.resetState();
-    sparkUpdate(sr.spark, scene, centreCam);
+    eye.setLocalPosition(mx / n, my / n, mz / n);
+    eye.setLocalRotation(0, 0, 0, 1);
     // Clear only when this renderer owns the frame: never mid-fade on a shared context (the other
     // renderer's frame is underneath), never with clear:false.
-    if (clearFrames && !(shared && fade)) renderer.clear();
-    renderer.setScissorTest(true);
-    for (let i = 0; i < eyes.length; i++) {
-      const vp = vps[i];
-      renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
-      renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
-      const cam = camFor(i);
-      placeCamera(cam, eyes[i], vp.width / vp.height);
-      renderer.render(scene, cam);
-    }
-    renderer.setScissorTest(false);
+    eye.camera.clearColorBuffer = clearFrames && !(shared && fade);
+    setUniforms(depthS, depthO.x, depthO.y, depthO.z, fadeMul);
+    if (shared) adoptGlState(device);
+    app.tick(performance.now());
+    if (shared) releaseGlState(o.gl);
     const ms = performance.now() - t0;
     stats.frames++;
     stats.renderMs += ms;
@@ -351,11 +399,13 @@ export async function createExplore(o) {
 
   const ex = {
     rig,
+    /** The comfort normalisation applied (1 = none): the scene is scaled by this about the camera. */
+    sceneScale,
     orbit,
     head,
     stats,
-    /** Advanced: the three/Spark objects. */
-    engine: { renderer, scene, spark: sr.spark, mesh, THREE },
+    /** Advanced: the PlayCanvas objects (app, device, splat entity, rig node, eye camera). */
+    engine: { app, device, splat, rigNode, eye, material, pc },
 
     /**
      * Draw one frame. Call from the addScene callback with the runtime's views and layer.
@@ -483,14 +533,19 @@ export async function createExplore(o) {
       disposed = true;
       fade?.resolve();
       fade = null;
-      depth.dispose();
-      scene.remove(orbitNode);
-      mesh.dispose?.();
-      // addSplat's handle.remove() leaks the SparkRenderer — dispose it explicitly here.
-      sr.spark.dispose?.();
-      // On a shared context three's dispose() only frees ITS objects; the context stays alive
-      // for its owner (three calls loseContext only from forceContextLoss()).
-      renderer.dispose();
+      try {
+        eye.camera.camera.xrViews = null;
+      } catch {
+        /* engine without the XR view plumbing */
+      }
+      // app.destroy() destroys the device; WebglGraphicsDevice.destroy() never loses the context
+      // (checked @ 2.22.3), so the live DIBR keeps its context on the shared path.
+      try {
+        app.destroy();
+      } catch (err) {
+        console.warn('[lift/explore] app.destroy() threw', err);
+      }
+      if (shared) releaseGlState(o.gl);
     },
   };
   o.onReady?.(ex);

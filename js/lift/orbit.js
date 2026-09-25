@@ -233,7 +233,7 @@ export function createClickTracker(slopPx = CLICK_SLOP_PX) {
 
 /** Near/far, metres. FAR is huge on purpose: a lifted sky sits at the depth cap and some
  *  gaussians scatter beyond it; at FAR = 200 they dropped out as black holes on orbit (gallery
- *  f2df268). Spark sorts rather than depth-tests, so the near:far ratio costs nothing. */
+ *  f2df268). Splat renderers sort rather than depth-test, so the near:far ratio costs nothing. */
 export const NEAR = 0.02;
 export const FAR = 5000;
 
@@ -356,6 +356,10 @@ export function clampHead(limit, e) {
  */
 export function createHeadTracker(o = {}) {
   const ipd = o.ipd > 0 ? o.ipd : IPD_M;
+  // `metresPerUnit` (eyes:'tracked'): the runtime's positions are already metres (a display rig
+  // whose virtual display height is the tile's physical height) — use them as given, so a viewer
+  // with a 58 mm IPD gets 58 mm of stereo, instead of normalising the separation to `ipd`.
+  const fixedScale = o.metresPerUnit > 0 ? o.metresPerUnit : 0;
   const restSamples = Math.max(1, o.restSamples ?? 12);
   const restMode = o.rest === 'display' ? 'display' : 'median';
   const mids = [];
@@ -394,7 +398,8 @@ export function createHeadTracker(o = {}) {
       }
       const m = { x: mx / n, y: my / n, z: mz / n };
       if (!ref) {
-        if (n >= 2) {
+        if (fixedScale) metres = fixedScale;
+        else if (n >= 2) {
           const a = positions[0];
           const b = positions[n - 1];
           const sep = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) / (n - 1);
@@ -420,3 +425,113 @@ export function createHeadTracker(o = {}) {
     },
   };
 }
+
+// ── the PlayCanvas explore renderer's pure half (js/lift/explore.js) ──────────────────────────
+// Column-major matrices (the engine's and WebXR's layout); unit-tested in
+// test/lift-explore-pc.test.mjs without the engine.
+
+const DEG_ = Math.PI / 180;
+
+/** three's `Matrix4.makePerspective(left, right, top, bottom, near, far)`, element for element. */
+export function perspectiveOffAxis(l, r, t, b, near, far, out = new Float32Array(16)) {
+  out.fill(0);
+  out[0] = (2 * near) / (r - l);
+  out[5] = (2 * near) / (t - b);
+  out[8] = (r + l) / (r - l);
+  out[9] = (t + b) / (t - b);
+  out[10] = -(far + near) / (far - near);
+  out[11] = -1;
+  out[14] = (-2 * far * near) / (far - near);
+  return out;
+}
+
+/** A pure translation, column-major. */
+export function translation(x, y, z, out = new Float32Array(16)) {
+  out.fill(0);
+  out[0] = out[5] = out[10] = out[15] = 1;
+  out[12] = x;
+  out[13] = y;
+  out[14] = z;
+  return out;
+}
+
+/**
+ * The orbit as the CAMERA side sees it. The Spark renderer turned the CONTENT —
+ * `mesh ← T(F)·R·T(−F)`, R = Ry(yaw)·Rx(pitch) (three's 'YXZ'), F = (0, 0, −dPivot) — under fixed
+ * eyes. PlayCanvas re-bakes its work buffer whenever a splat entity moves, so here the content
+ * never moves and the eyes' PARENT carries the inverse, `T(F)·Rᵀ·T(−F)`: view × model is the same
+ * product either way (the SDK's PlayCanvas adapter does exactly this — "the subject does not
+ * move, the EYES do"). Returns the rig node's local transform as {position, rotation(xyzw)}.
+ */
+export function orbitRig(yawDeg, pitchDeg, dPivot) {
+  // Rᵀ = Rx(−pitch)·Ry(−yaw). Quaternion of Rx(a)·Ry(b) = qx(a)·qy(b).
+  const a = -pitchDeg * DEG_ * 0.5;
+  const b = -yawDeg * DEG_ * 0.5;
+  const sa = Math.sin(a), ca = Math.cos(a), sb = Math.sin(b), cb = Math.cos(b);
+  // qx = (sa, 0, 0, ca), qy = (0, sb, 0, cb); q = qx ⊗ qy
+  const q = [sa * cb, ca * sb, sa * sb, ca * cb];
+  // position = F − Rᵀ·F, F = (0, 0, −D)
+  const m = rotationOfQuat(q);
+  const F = [0, 0, -dPivot];
+  const RF = [m[8] * F[2], m[9] * F[2], m[10] * F[2]];
+  return { position: [F[0] - RF[0], F[1] - RF[1], F[2] - RF[2]], rotation: q };
+}
+
+/** Column-major 4×4 of a unit quaternion (xyzw), no translation. */
+export function rotationOfQuat([x, y, z, w], out = new Float64Array(16)) {
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2, yy = y * y2, yz = y * z2, zz = z * z2;
+  const wx = w * x2, wy = w * y2, wz = w * z2;
+  out[0] = 1 - (yy + zz); out[1] = xy + wz; out[2] = xz - wy; out[3] = 0;
+  out[4] = xy - wz; out[5] = 1 - (xx + zz); out[6] = yz + wx; out[7] = 0;
+  out[8] = xz + wy; out[9] = yz - wx; out[10] = 1 - (xx + yy); out[11] = 0;
+  out[12] = 0; out[13] = 0; out[14] = 0; out[15] = 1;
+  return out;
+}
+
+/** Apply a {position, rotation} rig to a point (rig-local → world). */
+export function rigApply(rig, p) {
+  const m = rotationOfQuat(rig.rotation);
+  return {
+    x: m[0] * p.x + m[4] * p.y + m[8] * p.z + rig.position[0],
+    y: m[1] * p.x + m[5] * p.y + m[9] * p.z + rig.position[1],
+    z: m[2] * p.x + m[6] * p.y + m[10] * p.z + rig.position[2],
+  };
+}
+
+/** The same λ in JS (tests; the shader above is the one that runs). */
+export function liftLambda(c, o, D, s) {
+  const t = -c.z;
+  const ot = -o.z;
+  const dt = t - ot;
+  if (dt <= 1e-4) return 1;
+  return (D + (t - D) * s - ot) / dt;
+}
+
+/** Comfort normalisation defaults: the viewing distance the pivot is brought to, and the relative
+ *  deviation below which a metric scene is left alone. */
+export const PIVOT_TARGET_M = 2.0;
+export const COMFORT_TOLERANCE = 0.25;
+
+/**
+ * The comfort scale for a lift: a UNIFORM scale of the scene about the capture camera (the origin)
+ * that brings the pivot to `target` metres. Scaling about the eye leaves the neutral image exactly
+ * unchanged (every splat slides along its own ray, its size with it); only parallax changes, by
+ * pivotZ / target — a metric scene converged 10 m away gets 5× the disparity it would have with
+ * eyes a real IPD apart (David, panel 2026-09-25: a paused CG video with MoGe-3 metric depth read
+ * "far too flat", while photos, pivot ~2–3 m, were "perfect").
+ *   mode 'auto'   (default) only METRIC scenes whose |pivot| is more than `tolerance` off target
+ *                 (a relative-disparity lift has no metric scale to be wrong about);
+ *   mode 'always' every scene; 'off' never (A/B).
+ * @returns {number} the scale (1 = untouched)
+ */
+export function comfortScale(meta, { mode = 'auto', target = PIVOT_TARGET_M, tolerance = COMFORT_TOLERANCE, space } = {}) {
+  if (mode === 'off' || mode === false) return 1;
+  const pz = Math.abs(+meta?.pivotZ);
+  if (!(pz > 0) || !(target > 0)) return 1;
+  const sp = space ?? meta?.space;
+  if (mode !== 'always' && sp !== 'metric') return 1;
+  if (mode !== 'always' && Math.abs(pz / target - 1) <= tolerance) return 1;
+  return target / pz;
+}
+

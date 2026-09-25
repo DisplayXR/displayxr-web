@@ -26,8 +26,9 @@
      (<code>?views=sbs</code>, default) or the flat path (<code>?views=mono</code>). Drag to orbit (±15°,
      relaxes on release). Query: <code>grid=0.5</code> (fraction of full res), <code>axes=opencv</code>,
      <code>fit=cover|contain</code>, <code>sync=1</code> (gl.finish per frame: GPU-bound timing),
-     <code>reveal=0</code>, <code>dpr=2</code> + <code>store=sbs</code> (size the backing store as the woven
-     layer would: double-width at device res).</p>
+     <code>reveal=0</code>, <code>rep=N</code> (N draws per frame: GPU throughput), <code>dpr=2</code> + <code>store=sbs</code> (size the backing store as the woven
+     layer would: double-width at device res), <code>ply=&lt;url&gt;&amp;meta=&lt;url&gt;</code> (a real lift's PLY +
+     meta JSON instead of the synthetic scene), <code>aspect=16/9</code>.</p>
   <canvas id="tile"></canvas>
   <div class="ctl">
     <label>yaw <input id="yaw" type="range" min="-15" max="15" step="0.5" value="0"><span id="yawv">0</span></label>
@@ -40,9 +41,7 @@
 </div>
 <script type="importmap">
 { "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
-  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs",
   "@displayxr/inline3d": "../../js/inline3d.js"
 } }
 </script>
@@ -53,6 +52,7 @@ import { createExplore } from '../../js/lift/explore.js';
 const q = new URLSearchParams(location.search);
 const hud = document.getElementById('hud');
 const canvas = document.getElementById('tile');
+if (q.get('aspect')) canvas.style.aspectRatio = q.get('aspect'); // ?aspect=16/9 (the tile's CSS aspect)
 const log = (s) => { hud.textContent = s; };
 
 // ── 1. Synthesise the test lift ─────────────────────────────────────────────────────────────
@@ -167,7 +167,17 @@ const W = 896, H = 672;                                      // 2 × 896·672 = 
 const grid = Math.min(1, Math.max(0.1, +(q.get('grid') || 1)));
 const axes = q.get('axes') || 'opengl';
 const tGen = performance.now();
-const lift = synthLift({ W, H, grid, axes });
+// ?ply=<url>&meta=<url>: a REAL lift instead of the synthetic one — the generator's PLY and its
+// meta JSON (e.g. saved from a lift() handle's _internals().lifted), for renderer A/B and perf.
+async function loadLift() {
+  const [ply, meta] = await Promise.all([
+    fetch(q.get('ply')).then((r) => r.arrayBuffer()),
+    fetch(q.get('meta')).then((r) => r.json()),
+  ]);
+  const count = +(/element vertex (\d+)/.exec(new TextDecoder().decode(new Uint8Array(ply, 0, 2048))) || [])[1] || 0;
+  return { ply, meta, count };
+}
+const lift = q.get('ply') ? await loadLift() : synthLift({ W, H, grid, axes });
 const genMs = performance.now() - tGen;
 
 const wall = await createInline3D({ lazy: false });
@@ -221,9 +231,11 @@ if (sharedGl) {
 const tLoad = performance.now();
 const ex = await createExplore({
   canvas, gl: sharedGl || undefined, ply: lift.ply, meta: lift.meta,
+  axes: lift.meta.axes || lift.meta.convention || undefined,
   orbit: { maxAngleDeg: 15, relax: true },
   fit: q.get('fit') || 'cover',
-  perf: q.get('perf') || undefined,                          // ?perf=exact|balanced|aggressive
+  // ?perf=exact|balanced|aggressive, or a JSON options object (?perf={"antiAlias":true})
+  perf: q.get('perf') ? (q.get('perf').startsWith('{') ? JSON.parse(q.get('perf')) : q.get('perf')) : undefined,
   startFlat: q.get('reveal') !== '0',
   onClick: (e) => console.info('[dev-explore] click', e.clientX, e.clientY),
 });
@@ -247,7 +259,7 @@ $('fade').onclick = () => ex.fadeIn(1400);
 $('fadeout').onclick = () => ex.fadeOut(600);
 
 // ── 3. Frame loop ───────────────────────────────────────────────────────────────────────────
-const gl = ex.engine.renderer.getContext();
+const gl = ex.engine.device.gl;
 const sync = q.get('sync') === '1';
 let frames = 0, last = 0, ema = 0, cpuEma = 0, t0Stats = performance.now();
 const dts = [], cpus = [];
@@ -270,10 +282,15 @@ function fakeViews() {
   } };
   return { views, layer };
 }
+// ?rep=N: draw N frames per animation frame — a GPU-throughput probe (the fps a vsync-capped
+// loop cannot show: per-frame cost ≈ frame time / N once the GPU is the bottleneck).
+const rep = Math.max(1, +(q.get('rep') || 1) | 0);
 function renderOnce(arg) {
   const t0 = performance.now();
-  underlay?.(arg.views, arg.layer);
-  ex.render(arg);
+  for (let k = 0; k < rep; k++) {
+    underlay?.(arg.views, arg.layer);
+    ex.render(arg);
+  }
   if (sync) gl.finish();
   account(performance.now() - t0);
 }
@@ -296,7 +313,7 @@ setInterval(() => {
       `yaw ${ex.orbit.yaw.toFixed(2)}° pitch ${ex.orbit.pitch.toFixed(2)}° · pivot ${ex.rig.dPivot.toFixed(2)} m`);
 }, 250);
 
-window.__explore = { ex, lift, stats: () => ({ splats: ex.engine.mesh.packedSplats?.numSplats, canvas: [canvas.width, canvas.height],
+window.__explore = { ex, lift, stats: () => ({ splats: ex.stats.splats, canvas: [canvas.width, canvas.height],
     frames, meanFrameMs: (performance.now() - t0Stats) / Math.max(frames, 1), p50FrameMs: pct(dts, 0.5), p95FrameMs: pct(dts, 0.95),
     p50RenderMs: pct(cpus, 0.5), p95RenderMs: pct(cpus, 0.95), genMs, loadMs, gpu, mode: viewsMode }),
   resetStats: () => { ema = 0; cpuEma = 0; frames = 0; last = 0; dts.length = 0; cpus.length = 0; t0Stats = performance.now(); } };
