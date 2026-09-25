@@ -94,9 +94,10 @@ test('liftLambda: identity at s = 1, pivot plane fixed, flat at s = 0 seen from 
 test('comfortScale: metric scenes off target are brought to it; everything else untouched', () => {
   assert.equal(PIVOT_TARGET_M, 2);
   assert.equal(comfortScale({ pivotZ: 10 }, { space: 'metric' }), 0.2);
-  assert.equal(comfortScale({ pivotZ: 1 }, { space: 'metric' }), 2);
-  assert.equal(comfortScale({ pivotZ: 2.4 }, { space: 'metric' }), 1); // within 25 %
-  assert.equal(comfortScale({ pivotZ: 2.6 }, { space: 'metric' }), 2 / 2.6);
+  assert.equal(comfortScale({ pivotZ: 1 }, { space: 'metric' }), 1); // inside the ±100 % dead-band
+  assert.equal(comfortScale({ pivotZ: 2.92 }, { space: 'metric' }), 1); // a typical photo: untouched
+  assert.equal(comfortScale({ pivotZ: 4 }, { space: 'metric' }), 1); // dead-band edge (2× target)
+  assert.equal(comfortScale({ pivotZ: 4.5 }, { space: 'metric' }), 2 / 4.5); // far scene: rescaled
   assert.equal(comfortScale({ pivotZ: 10 }, { space: 'disparity' }), 1);
   assert.equal(comfortScale({ pivotZ: 10 }, { space: 'metric', mode: 'off' }), 1);
   assert.equal(comfortScale({ pivotZ: 2.2 }, { space: 'disparity', mode: 'always' }), 2 / 2.2);

@@ -134,7 +134,8 @@ const MONO_VIEW = Object.freeze({
  * @param {object} [opts.genParams]  DEV: overrides for lift-gen's LIFT_DEFAULTS (docs/lift-gen.md).
  * @param {{pivotTargetM?:number, comfort?:'auto'|'always'|'off', eyes?:'nominal'|'tracked'}} [opts.explore]
  *        the explore view (docs/lift-explore.md § Comfort): a METRIC lift whose pivot is more than
- *        25 % off `pivotTargetM` (default 2.0 m) is scaled about the camera to land there
+ *        2× off `pivotTargetM` (default 2.0 m; dead-band ±100 %, so photos with a pivot in ~1–4 m
+ *        are left untouched and only far scenes — e.g. a paused CG video frame — are rescaled)
  *        (`comfort:'auto'`, default; 'off' for A/B); `eyes:'tracked'` takes the runtime's eye
  *        positions as metres instead of normalising their separation to 63 mm (default 'nominal').
  * @returns {Promise<LiftHandle>}

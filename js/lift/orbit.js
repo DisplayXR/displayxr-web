@@ -511,7 +511,7 @@ export function liftLambda(c, o, D, s) {
 /** Comfort normalisation defaults: the viewing distance the pivot is brought to, and the relative
  *  deviation below which a metric scene is left alone. */
 export const PIVOT_TARGET_M = 2.0;
-export const COMFORT_TOLERANCE = 0.25;
+export const COMFORT_TOLERANCE = 1.0;
 
 /**
  * The comfort scale for a lift: a UNIFORM scale of the scene about the capture camera (the origin)
