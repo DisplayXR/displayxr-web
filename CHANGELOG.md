@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased — proposed 1.22.0 (minor: a new experimental subpath)
+## Unreleased — proposed 1.25.0 (minor: a new experimental subpath)
 
 Adds a **preview-tier** subpath; nothing existing changes.
 
@@ -51,6 +51,65 @@ Adds a **preview-tier** subpath; nothing existing changes.
 - The Spark `createSplatRenderer` stereo fix (one update per frame from the eyes' midpoint) left with
   the Spark explore renderer. **`addSplat` (`./splat`, Spark engine) still has the stereo double
   regeneration**.
+
+## 1.24.0 — 2026-09-25
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change. Pixels change
+during a live transition between two camera-rig photos (they were wrong), and for the frames in
+which a newly declared rig has not yet reached the runtime's views.
+
+- **No camera jump at the start of a live transition.** Crossfade, wavefront and the particle
+  transitions keep the outgoing photo alive next to the incoming one. Between two photos with
+  camera rigs (SOG camera blocks: each its own convergence and vertical FOV), the outgoing photo
+  was drawn from eyes scaled by the two rigs' window ratio from the swap on, a jump in its
+  disparity and head parallax. For the frame(s) before the declaration reached the views, both
+  photos were drawn through the wrong rig. Each photo is now drawn through its own rig for the whole
+  window. The SDK reads off the views which declared rig they were located for, and remaps them
+  exactly (window onto window, eye onto eye; the runtime's projection verbatim, no Kooima) where
+  they are not the photo's own. `reassemble` was never affected. Headless: 102–208 px of
+  reference-point error → < 0.005 px, and the live outgoing image equals the frame before the swap
+  (MAE 0.000). Docs: `docs/playcanvas-adapter.md` § Each photo through its own rig.
+- **Kill switch `?dxrdiag=oldrig`** (the 1.23 behaviour). The diag's per-frame record gains
+  `rigAt` / `rigIn` / `rigOut`: the rig the views were located for, the rig the current photo was
+  drawn through (`+` = remapped), and how the live outgoing photo was drawn.
+- `tools/rig-swap-capture`: the headless harness behind the numbers.
+
+## 1.23.0 — 2026-09-25
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). New API; no pixel change for a
+page that does not call it.
+
+- **`handle.setLayerRig(layer, 'display' | 'camera', { viewerDistance?, gain? })`** (and
+  `addSplat(…, { displayRigLayers: [...] })`): draw chosen engine layers through the display rig —
+  round objects with physical pop-out — while the splat and the declared view rig stay on the
+  photo's camera rig. The display-rig views are the runtime's own views times an exact shear that
+  fixes the convergence plane (a contact point never moves); the runtime's projection matrices are
+  used verbatim — no Kooima (docs/proposals/layer-display-rig.md). Mono / 2D is byte-identical to
+  today. Kill switch `?dxrdiag=nolayerrig`. `handle.layerRigState()` reports what it did.
+- **`handle.makeSbsMaterial(texture, { format })`**: per-eye side-by-side (or top/bottom) sampling
+  on any quad — the left half to left views, the right half to right views, the left half in mono.
+  The eye split is a scene-wide uniform, `dxr_eye_split`, set every draw.
+
+## 1.22.0 — 2026-09-25
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). No API change; no pixel change.
+
+- **A burst of `pick()` calls no longer blocks the main thread.** Each pick scanned every centre of
+  the photo (~7.5 ms for 1.18M on an M1, more on a panel PC); a page that picks 24 then 81 times
+  right after `setSource` resolves (a photo slideshow app planning its companion's path) stalled
+  the main thread for ~1.3 s at every swap's end, so the woven image stopped following the head.
+  A second pick from the same eye position now builds a pick index (about two scans), and every
+  further pick from there reads a few cells: 105 picks went from ~820 ms to ~70 ms on an M1. The
+  answer is unchanged (the full scan's, exactly; the full scan still runs when the pick's cone is
+  empty). `?dxrdiag=oldpick` restores the full scan.
+- **`?dxrdiag` names what is on the main thread.** Per transition phase: every GL call that can
+  block (compile, link, status queries, readbacks, syncs; count and ms), `pick()` calls and their
+  per-task bursts, how long the settle's task kept running after the SDK resolved `setSource` (the
+  page's continuation), and long animation frames with their top scripts (file + function). The
+  verdict names them. The settle teardown is a User Timing measure, `inline3d:settle:teardown`.
+- **Measured: the SDK's settle does no GL work that can block.** Zero compile, link, status query,
+  readback or sync from the `setSource` call to 1.5 s after the settle, for `reassemble`,
+  `crossfade` and `wavefront` (docs/playcanvas-adapter.md § Diagnosing transition stalls).
 
 ## 1.21.1 — 2026-09-24
 

@@ -1,6 +1,6 @@
 {
   "name": "@displayxr/inline3d",
-  "version": "1.21.1",
+  "version": "1.24.0",
   "description": "Turn any HTML <canvas> into a glasses-free-3D window on a DisplayXR display, inside an ordinary web page. Dependency-free; progressive enhancement (falls back to plain 2D everywhere else).",
   "type": "module",
   "types": "./index.d.ts",
@@ -58,6 +58,8 @@
     "js/inline3d-splat-live.js",
     "js/inline3d-splat-diag.js",
     "js/inline3d-splat-video.js",
+    "js/inline3d-splat-layer-rig.js",
+    "js/inline3d-splat-rig-map.js",
     "js/inline3d-model.js",
     "js/inline3d-model-entry.js",
     "js/inline3d-model-playcanvas.js",

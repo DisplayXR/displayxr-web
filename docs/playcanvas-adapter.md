@@ -346,6 +346,102 @@ Upload cost and pacing were measured in a **visible** Chrome on the real clip (3
 | rAF interval | p50 8.3 ms, p95 9.2 ms, none over 25 ms |
 | video frames | **0 dropped** of 299; presented interval p50 33.3 ms |
 
+## `setLayerRig` — stage objects through the display rig, on a photo's camera rig
+
+A photo-lifted splat is on a **camera rig**, and so is everything the page draws with it. Objects a
+page adds on top of the photo (a product, a UI prop, a video frame) therefore read as flat as the
+photo does: the rig damps stereo and head parallax by `n/D` (the viewer's distance over the photo's
+convergence distance). `setLayerRig` draws chosen **engine layers** through the **display rig**
+instead — physical eyes against the physical screen — while the splat, and the rig declared to the
+runtime, stay on the photo's camera rig.
+
+```js
+const h = await addSplat(wall, canvas, photoUrl, { engine: 'playcanvas' });
+const { app } = h.engine;
+const stage = new pc.Layer({ name: 'Stage' });
+const comp = app.scene.layers;
+const wi = comp.getTransparentIndex(comp.getLayerById(pc.LAYERID_WORLD));
+comp.insertOpaque(stage, wi + 1);
+comp.insertTransparent(stage, wi + 2);
+h.engine.camera.camera.layers = [...h.engine.camera.camera.layers, stage.id];
+
+h.setLayerRig('Stage', 'display');          // or addSplat(…, { displayRigLayers: ['Stage'] })
+h.setLayerRig('Stage', 'camera');           // back to the photo's rig
+```
+
+**How.** The photo's camera rig *is* a portal: every view looks through one window on the
+convergence plane. The display rig looks through the same window from the eyes the runtime's own
+`ipdFactor`/`parallaxFactor` = 1 would give — the photo's eyes scaled by `k = D / (m·n)` about the
+declared camera position. Two portals through one window differ only by the eye, and the affine
+shear that fixes the window plane and moves one eye onto the other turns one picture into the
+other **exactly**. So the display-rig views are the runtime's views, right-multiplied by that shear;
+the runtime's projection matrices are used verbatim and no frustum is built (no Kooima; the
+derivation and the runtime-math proof are in
+[`docs/proposals/layer-display-rig.md`](proposals/layer-display-rig.md)).
+
+- **The convergence plane is fixed pointwise.** An object's contact point on it (z = 0 in the
+  photo's window frame) does not move, in any view, and has zero disparity in both rigs.
+- **Mono / the 2D tier / a 1-view mode: identical to today** (one view sits at the camera; the shear
+  is the identity). So is a display rig (`setRig('display')`, `setVideo`, an object splat): there
+  is nothing to round.
+- **Order is kept.** PlayCanvas renders camera by camera, so the tile's composition is split into
+  runs: the eye camera draws everything before the display layers, a display camera (priority 1)
+  draws them, and a post camera (priority 2) draws what came after them (UI: the edge feather and
+  the transition overlay). Same N `RenderView`s, same viewports.
+- **Depth.** The display camera clears depth (only depth) in 3D: the two camera spaces never share a
+  depth test. The splat writes none; the display layers depth-test among themselves.
+- **Rounding.** `viewerDistance` (m, default **0.6**, the browser's nominal) or an explicit `gain`,
+  for the whole tile (last call wins). The runtime knows the real nominal distance but the browser
+  does not expose it yet — a wrong value scales the objects' depth by `n_true/n`; it never moves the
+  contact plane or the 2D picture.
+- **Kill switch:** `?dxrdiag=nolayerrig` — requests are recorded, never applied.
+- Needs the engine's `RenderView` path (the default); on the N-camera fallback it warns once and
+  the layer stays on the photo rig.
+
+**Measured** (headless Chrome, ANGLE Metal, 2560×720 SBS buffer; a splat, a z = 0 contact marker,
+markers 0.5 world units in front of and behind the plane; the page plays the runtime with
+`dxr_camera3d_compute_view`, and the expectation is `dxr_display3d_compute_view` on the rig the
+runtime's own conversion says the photo IS, with factors 1 — an independent oracle):
+
+| | camera rig (today) | display rig |
+|---|---|---|
+| contact marker, L / R x (px) | 459.5 / 459.5 (expected 459.5 / 459.5) | 459.5 / 459.5 — **unmoved, zero disparity** |
+| marker in front, disparity | +8.0 px (expected +8.53) | **+28.0 px** (expected +28.44) |
+| marker behind, disparity | −5.0 px (expected −5.12) | **−17.0 px** (expected −17.07) |
+| off-centre, leaning head (10 cm closer) | | L/R 892.0 / 855.5 (expected 892.07 / 855.50) |
+| `gain: 1` vs no layer rig | | **byte-identical** frame |
+| mono, camera vs display | | **byte-identical** frame |
+| after a `setSource` crossfade / at zoom 1.4× | | contact unmoved, disparity unchanged |
+| per-frame cost (CPU + sync, median of 6×60 frames) | 2.65 ms | 2.51 ms — within noise; same draw count (12) |
+
+The measured positions are centroids of axis-aligned squares, so they sit on half pixels: every one
+is within 0.5 px of the oracle. The extra camera costs one depth clear and a camera's culling/sort
+over the display layers' meshes; nothing else is drawn twice.
+
+## `makeSbsMaterial` — a stereo side-by-side clip on any quad
+
+```js
+const tex = new pc.Texture(app.graphicsDevice, { width: 1920, height: 540, mipmaps: false });
+tex.setSource(videoEl);                              // the page's one <video>; upload new frames as usual
+const mat = h.makeSbsMaterial(tex, { format: 'sbs' }); // 'sbs' | 'tb' | 'mono'; opacity, flipY, depthTest, …
+previewEntity.render.meshInstances[0].material = mat;
+```
+
+Each eye samples its own half — the left half in left-eye views, the right half in right-eye views
+— exactly as `setVideo`'s full-screen plane does, on a quad of any size, anywhere, on either layer
+rig. Mono / the 2D tier / a 1-view mode: the left half. The quad's geometry is untouched: put it at
+the screen plane and the clip's disparity is the only depth. Nothing is decoded by the SDK.
+
+How the eye is known: the eye viewports sit side by side in the buffer, so the SDK publishes the
+first right-eye pixel column every draw as a **scene-wide uniform, `dxr_eye_split`** (`1e9` in
+mono), and the shader compares `gl_FragCoord.x` with it. A custom shader can do the same by
+declaring the uniform (`SBS_EYE_GLSL` in `js/inline3d-splat-video.js`); it must not set it per
+material. PlayCanvas's own `view_index` uniform is also set per view on the RenderView path, but it
+is 0 for every camera on the N-camera fallback, which is why the split is what the SDK uses.
+Measured in the same capture: a 64×32 blue|yellow texture on a quad at z = 0 shows **only blue**
+(5,184 px, 0 yellow) in the left view and **only yellow** in the right, on both layer rigs; mono
+shows only blue.
+
 ## `controls:'page'` — the page owns the camera
 
 For a game, or any page that already has a camera. The adapter stops being a viewer: no orbit,
@@ -556,6 +652,64 @@ the `wavefront` draws each photo only on its side of the front, and its ridge no
 the work buffer: about 1.4× a still photo in stereo instead of 2×. The `crossfade` still draws
 both. See [`splat-effects.md` § Wavefront: one draw's worth](splat-effects.md#wavefront-one-draws-worth).
 
+### Each photo through its own rig, during a live transition
+
+A panel report: in a photo slideshow app (each photo a SOG with a camera block, so each has its own
+**camera rig** — its own convergence and vertical FOV), every transition that keeps the old photo
+alive next to the new one (crossfade, wavefront, the particle transitions) showed a small camera
+change right before it started; `reassemble` (one splat at a time) did not. Having two splats
+loaded was not the cause. The rig was:
+
+- **The live outgoing photo was drawn through the wrong eyes.** Once the incoming photo's rig is
+  declared, the runtime's views are the incoming rig's. The live outgoing camera mapped them back
+  with a node chain `N = R_o·K_o·D_o·D_n⁻¹·K_n⁻¹`, `D = diag(c·t, c·t, c)`. That maps the incoming
+  window onto the outgoing window exactly, but it scales the eyes with it. A camera rig's eyes are
+  the viewer's eyes (times `metersToVirtual`) and do not scale with the window, so the outgoing
+  photo's disparity and head parallax were multiplied by `(c_o·t_o)/(c_n·t_n)` from the swap on,
+  for the whole window.
+- **A declaration reaches the views a frame (or more) later.** For those frames the chain
+  "corrected" views that were still the outgoing rig's, and the incoming photo was drawn through
+  them.
+
+`reassemble` hid both: its rig switch lands in its empty beat, with no second photo on screen.
+
+**The fix (1.24.0), exact:** `js/inline3d-splat-rig-map.js`. The SDK records every rig it declares
+(by value), reads off each frame's views which one they were located for, and draws each photo
+through its own rig: the incoming (current) photo through the last declared rig, the outgoing
+photo through the rig it had. A camera rig is a portal, one window on the convergence plane seen
+from each eye. The map from one camera rig's views to another's sends window onto window (in-plane
+scale `t_T·D_T / t_F·D_F`, the same in x and y since both windows have the canvas's aspect) and eye
+onto eye (the runtime's ipd/parallax factors and `metersToVirtual` inverted and re-applied). That
+maps every ray onto its counterpart, so `viewInv_T = A·viewInv_F` with the runtime's projection
+verbatim renders exactly the target rig's view. Only the depth rows move (near/far divided by the
+map's depth scale, as `clampProjectionDepth` does). No frustum, tangent or off-axis matrix is built.
+
+Which rig a view set belongs to is read from the views: under the right descriptor each view's
+frustum crosses the window plane exactly in the window. The views pin the window (pose,
+convergence, vertical FOV) but not the eye factors: rigs that differ only in `ipdFactor` /
+`parallaxFactor` / `metersToVirtual` tie, and then the rig declared when the views were pulled wins.
+Views that no declared camera rig explains (a display rig, a runtime clamp) are drawn as located,
+and the outgoing photo keeps the old chain. A display rig is never mapped: its eyes are absolute,
+which would need the nominal viewer distance the browser does not expose.
+
+Measured with `tools/rig-swap-capture` (headless Chrome, ANGLE Metal; the page plays the runtime's
+camera rig with a 1- or 2-frame rig-arrival lag; `ports` → `bakery`, convergence 1.68 → 0.41 m,
+vertical FOV 51.5° → 54.1°). Error is the reference points' screen position against where each
+photo's own rig puts them, per eye, over the whole run:
+
+| transition, lag | outgoing, 1.23.0 | outgoing, 1.24.0 | incoming, 1.23.0 | incoming, 1.24.0 | live target vs. frame before the swap, 1.23.0 → 1.24.0 |
+|---|---|---|---|---|---|
+| crossfade, 1 | 102.5 px (whole window) | < 0.005 px | 0 | < 0.005 px | MAE 24.1 → 0.000 (max 1 LSB) |
+| crossfade, 2 | 208.0 px (lag frame), then 102.5 | < 0.005 px | 113.5 px (lag frame) | < 0.005 px | MAE 43.6 → 0.000 (max 1 LSB) |
+| wavefront, 1 / 2 | 102.5 / 208.0 px | < 0.005 px | 0 / 113.5 px | < 0.005 px | → 0.000 (max 1 LSB) |
+| swarm, 1 / 2 | 102.5 / 208.0 px | < 0.005 px | 0 / 113.5 px | < 0.005 px | → 0.000 (max 1 LSB) |
+
+(Eyes off-centre and leaning; at the nominal viewer the 1.23.0 outgoing error is ±41 px of
+disparity at half the convergence distance, 94 px on the lag frame.) The end frame of every
+transition equals a cut's (MAE 0). This pair's windows differ 4.1×; a pair that differs less jumps
+proportionally less, which is why it read as "small" on the panel. Unit tests:
+`test/rig-map.test.mjs`, against an independent runtime oracle (every mutant of the map caught).
+
 ### Diagnosing transition stalls (`diag` / `?dxrdiag`) (#36)
 
 After 1.19.2 a woven panel still showed head tracking "stopping for a moment" at every Photos
@@ -573,6 +727,7 @@ or by adding `?dxrdiag=1` to the page URL (the option wins; `diag: false` turns 
 | `delta`, `rel`, `ipd` | the largest eye move (world units), the same in eye separations, the eye separation | how much the head moved; `rel` is comparable across rigs |
 | `img`, `imgW` | what the transition overlay shows: `none`, the `frozen` capture or the `live` outgoing target, and its share of the picture | a FROZEN IMAGE: poses move, but the picture on screen is a still |
 | `afterRig` | a `setViewRig` push in the last 3 frames | a pose jump there is the rig, not the head |
+| `rigAt` / `rigIn` / `rigOut` | the declared rig (tracker id) the views were located for (null: none matched); the rig the current photo was drawn through (`+`: remapped to it); how the live outgoing photo was drawn (`own`, `remapped`, `eye`, `chain`; null: none) | how many frames a declaration takes to reach the views (`rigAt` catching up with `rigIn`), and which photo was drawn through what |
 | `phase`, `sinceCall` | `prepare` / `swap` / `window` / `settle` / `idle`, and ms since the `setSource` call | where in the transition it happened |
 
 Also recorded: every `setViewRig` push with its values (a changed rig only: `controls:'page'`
@@ -644,11 +799,49 @@ The diag reports it on the panel as `MAIN-THREAD gap`.
 | `nowarm` | skips the transition shader pre-warm (`prepareSource` / `setSource` compile nothing ahead) | a first-frame shader link |
 | `cold` | skips the live outgoing pre-sort (the 1.19.2 path: the frozen capture bridges until a fresh manager has sorted) | the frozen bridge |
 | `nooverlay` | records, logs and dumps, no overlay | the overlay's own cost |
+| `oldpick` | `handle.pick()` always runs the full scan over every centre, no pick index (the 1.21.1 path) | "the page's own picks block the main thread at the swap's end" |
+| `oldrig` | no rig tracking: the views are drawn as the runtime located them, and a live outgoing photo goes back on the pre-1.24 node chain | "the outgoing photo jumps when the incoming photo's rig is declared" (§ Each photo through its own rig) |
 
 The recipe on the panel: run the Photos show with `?dxrdiag=1` for three or four transitions and
 read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same way; paste
 `copy(__dxrDiag.dump())` from each. Costs: a few floats per frame and one 2D canvas repainted at
 10 Hz; nothing when off.
+
+**What is on the main thread (1.21.2).** A stall at the swap's END (phase `settle`) is not
+necessarily the transition. The summary now also carries, per phase (`swap` / `window` /
+`settle` / …):
+
+| field | what | how |
+|---|---|---|
+| `gl` | every GL call that can block: `compile`, `link`, `linkQuery` (a `LINK_STATUS` query resolves the link), `programQuery`, `shaderQuery`, `poll` (`COMPLETION_STATUS_KHR`, non-blocking), `readPixels`, `readback` (`getBufferSubData`), `fence`, `wait` (`clientWaitSync`), `finish` — count and total ms | the tile's own context is wrapped while diag is on; a single call ≥ 8 ms is also an event (`type: 'gl'`) |
+| `picks` | `handle.pick()` calls: count and total ms; each task's burst is an event (`type: 'picks'`, with how each pick ran: `scan`, `build`, `index`) | the SDK times its own `pick` |
+| `afterSettleTaskMs` | how long the task that ran the SDK's settle kept running AFTER it: the page's continuation of `await setSource` in that same task (the SDK's own settle work is the `settle-sdk` mark) | a message posted from the settle |
+| `longFrames` | long animation frames (Chrome 123+) with their top three scripts: file, function, invoker, ms — the page's code or the SDK's, by name | `PerformanceObserver('long-animation-frame')` |
+
+The verdict names them: `MAIN-THREAD gap 1341 ms (longest task 348 ms) — pick() ×105 1290 ms; page
+code 340 ms in the settle task; top script estimatePivotDepth@page-….js 990 ms`. The SDK's settle
+teardown is also a User Timing measure, `inline3d:settle:teardown`, for a DevTools trace.
+
+**Found with it: the page's picks, not the SDK's settle.** A photo slideshow app on the panel
+(ANGLE on D3D11) showed, at EVERY swap's end, two back-to-back long tasks of ~250–415 ms and
+~950–1100 ms: 1.3–1.5 s with no session frame. Counting every blocking GL call through a whole
+`reassemble`, `crossfade` and `wavefront` (headless Chrome, ANGLE Metal, the call-counting
+harness): **zero** compile, link, status query, readback or sync from the call to 1.5 s after the
+settle, on 1.21.1 already — the transition programs are pre-warmed in the dwell, and the settle's
+return to the base program reuses the program compiled at page load. What does run there is the
+page: on every swap it plans its companion's waypoints with 24 `pick()` calls in the task that
+resolves `setSource`, then, two frames later, a 9×9 grid of 81 more. Each pick was an exact scan of
+all 1.18M centres (~7.5 ms on an M1): 24 → ~190 ms, 81 → ~630 ms — the panel's two tasks, at the
+panel's slower CPU, and the same ratio. Replaying just those picks after the swap reproduces the
+two long tasks headlessly on 1.21.1 with no GL call in them.
+
+1.21.2 gives the full-set pick a **pick index**: a second pick from the same eye position buckets
+every centre once by its direction from the eye (about two scans), and every further pick from
+there reads only the cells its cone can reach — the same point as the full scan, exactly (it
+declines, and the full scan runs, when the cone is empty). The same replay: 24 picks 33–44 ms, 81
+picks 31–35 ms, no long task, 0 GL calls at the settle (was 165–195 ms + 530–635 ms). A page that
+picks once per frame pays what it always did (the first pick from an eye is the plain scan).
+`?dxrdiag=oldpick` restores the full scan for an A/B.
 
 **The structural A/B: `transition: 'reassemble'`.** A sequence transition has no second camera, no
 overlay and no capture: one photo at a time, drawn by the eye camera every frame

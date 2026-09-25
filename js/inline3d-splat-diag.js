@@ -26,9 +26,34 @@
 //   cold     — skip the live outgoing PRE-SORT (the 1.19.2 behaviour: the frozen capture bridges
 //              until a fresh manager has sorted).
 //   nooverlay — record + console + window.__dxrDiag, but no on-screen overlay.
+//   oldpick  — handle.pick() always runs the full scan over every centre (the 1.21.1 path), no
+//              pick index. Tests "the page's picks are what blocks the main thread".
+//   nolayerrig — handle.setLayerRig is recorded but never applied: every layer stays on the eye
+//              camera and the photo's camera rig (the pre-1.23 path, byte for byte).
+//   oldrig   — no rig tracking (./inline3d-splat-rig-map.js): the views are drawn as the runtime
+//              located them, and a live outgoing photo goes back on the pre-1.24 node chain (which
+//              scales its disparity by the two rigs' window ratio at the swap). A/B for "the
+//              outgoing photo jumps when the incoming rig is declared".
+//
+// Per frame, `rigAt` / `rigIn` / `rigOut` say which declared rig the views were located for
+// (the tracker's id; null = none matched), which rig the current photo was drawn through
+// (`+` = remapped to it) and how the live outgoing photo was drawn ('own' = its rig as located,
+// 'remapped', 'eye', 'chain'; null = no live outgoing).
+//
+// WHAT RUNS ON THE MAIN THREAD, per transition phase (the fifth cause: a stall at the swap's END
+// that is not the SDK's transition at all):
+//   - GL calls that can block: shader compile / program link / program + shader status queries
+//     (a link resolves there), readPixels, getBufferSubData, fenceSync / clientWaitSync, finish —
+//     counted and timed, per phase, on the tile's own context (./inline3d-splat-diag.js wraps
+//     them while diag is on).
+//   - handle.pick() calls, counted and timed per phase and grouped into BURSTS (one task's worth).
+//   - long animation frames (where the browser has the API) with their top SCRIPTS — the source
+//     file and function that ran: the page's own code or the SDK's.
+//   - the settle itself: the SDK's settle work in ms, then how long the SAME task kept running
+//     after it (the page's continuation of `await setSource`).
 
 /** The switches `diag` / `?dxrdiag` understand, besides the plain on values. */
-export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay']);
+export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig']);
 const ON_TOKENS = new Set(['1', 'on', 'true', 'yes']);
 
 /**
@@ -175,10 +200,14 @@ export class DiagRecorder {
     this._frameNo = 0;
     this._open = null; // the transition being recorded
     this.imageState = null; // () => { overlay: 'none' | 'frozen' | 'live', w }
+    this.rigState = null; // () => { at, in, out } (see the header)
     this.longTasks = [];
     this._lto = null;
     this.rigLocked = null; // norig: the summary of the rig kept
     this._listeners = new Set();
+    this._lafo = null;
+    this._gl = null; // the wrapped context + its originals, for dispose()
+    this._burst = null; // the pick burst of the current task
   }
 
   has(sw) {
@@ -190,7 +219,7 @@ export class DiagRecorder {
     try {
       if (typeof PerformanceObserver !== 'function') return;
       this._lto = new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) this.longTask(e.startTime, e.duration);
+        for (const e of list.getEntries()) this.longTask(e.startTime, e.duration, e.attribution);
       });
       this._lto.observe({ type: 'longtask', buffered: false });
     } catch {
@@ -198,8 +227,141 @@ export class DiagRecorder {
     }
   }
 
-  longTask(start, duration) {
+  /**
+   * Observe long ANIMATION FRAMES (Chrome 123+): unlike a long task, each one names the scripts
+   * that ran in it — source file, function, what invoked it — so a stall is pinned on the page's
+   * code or the SDK's. Silently absent elsewhere.
+   */
+  observeLongFrames() {
+    try {
+      if (typeof PerformanceObserver !== 'function' || !PerformanceObserver.supportedEntryTypes?.includes?.('long-animation-frame')) return;
+      this._lafo = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) this.longFrame(e);
+      });
+      this._lafo.observe({ type: 'long-animation-frame', buffered: false });
+    } catch {
+      this._lafo = null;
+    }
+  }
+
+  /** One long animation frame: its span, its blocking time, and its top three scripts. */
+  longFrame(e) {
+    if (!e || !(e.duration >= 50)) return null;
+    const scripts = [...(e.scripts || [])]
+      .sort((a, b) => b.duration - a.duration)
+      .slice(0, 3)
+      .map((x) => ({
+        src: shortSrc(x.sourceURL),
+        fn: x.sourceFunctionName || '',
+        inv: String(x.invoker || x.invokerType || '').slice(0, 80),
+        d: round1(x.duration),
+      }));
+    return this._event('loaf', { s: round1(e.startTime), d: round1(e.duration), block: round1(e.blockingDuration ?? NaN), scripts }, e.startTime);
+  }
+
+  /**
+   * Count and time the GL calls that can block the main thread, on `gl` (the tile's own context:
+   * its own methods shadow the prototype's; dispose() removes them). Each call is booked to the
+   * phase it ran in (and to the open transition).
+   */
+  instrumentGl(gl) {
+    if (!gl || this._gl) return;
+    const LINK = 0x8b82;
+    const COMPLETION = 0x91b1;
+    const kinds = {
+      compileShader: 'compile',
+      linkProgram: 'link',
+      getProgramParameter: (a) => (a[1] === COMPLETION ? 'poll' : a[1] === LINK ? 'linkQuery' : 'programQuery'),
+      getShaderParameter: 'shaderQuery',
+      readPixels: 'readPixels',
+      getBufferSubData: 'readback',
+      fenceSync: 'fence',
+      clientWaitSync: 'wait',
+      finish: 'finish',
+    };
+    const saved = [];
+    for (const [name, kind] of Object.entries(kinds)) {
+      const orig = gl[name];
+      if (typeof orig !== 'function') continue;
+      const rec = this;
+      gl[name] = function (...a) {
+        const t = performance.now();
+        try {
+          return orig.apply(this, a);
+        } finally {
+          rec.glCall(typeof kind === 'function' ? kind(a) : kind, performance.now() - t, t);
+        }
+      };
+      saved.push(name);
+    }
+    this._gl = { gl, saved };
+  }
+
+  /** One GL call of `kind` that took `ms`, at `t` (instrumentGl's wrappers; tests call it directly). */
+  glCall(kind, ms, t = this.now()) {
+    const b = (this._glByPhase ||= {});
+    const p = (b[this.phase] ||= {});
+    const k = (p[kind] ||= { n: 0, ms: 0 });
+    k.n++;
+    k.ms += ms;
+    if (this._open) {
+      const op = (this._open.gl[this.phase] ||= {});
+      const ok = (op[kind] ||= { n: 0, ms: 0 });
+      ok.n++;
+      ok.ms += ms;
+    }
+    // a call that blocked noticeably is an event of its own
+    if (ms >= 8) this._event('gl', { kind, ms: round1(ms) }, t);
+  }
+
+  /**
+   * One handle.pick() that took `ms` (`how`: 'scan' the full scan, 'build' it built the pick
+   * index, 'index' it read the index, 'build+scan' both). Grouped into BURSTS: every pick until
+   * the task ends is one burst, logged as one event with its total.
+   */
+  pick(ms, how = 'scan') {
+    const t = this.now();
+    if (this._open) {
+      const p = (this._open.picks[this.phase] ||= { n: 0, ms: 0 });
+      p.n++;
+      p.ms += ms;
+    }
+    let b = this._burst;
+    if (!b) {
+      b = this._burst = { t, phase: this.phase, n: 0, ms: 0, how: {} };
+      const end = () => {
+        if (this._burst !== b) return;
+        this._burst = null;
+        this._event('picks', { phase: b.phase, n: b.n, ms: round1(b.ms), how: b.how }, b.t);
+        if (b.ms >= 50) this.log(`picks: ${b.n} pick() calls in one task, ${round1(b.ms)} ms (${JSON.stringify(b.how)}) in phase ${b.phase}`);
+      };
+      postTask(end);
+    }
+    b.n++;
+    b.ms += ms;
+    b.how[how] = (b.how[how] || 0) + 1;
+  }
+
+  /**
+   * The settle: `sdkMs` is the SDK's own settle work. Then the time until the task that ran it
+   * ended: what ran after the SDK resolved setSource — the page's continuation, in that same task.
+   */
+  settled(sdkMs) {
+    const t = this.now();
+    const o = this._open;
+    this.mark('settle-sdk', { ms: round1(sdkMs) });
+    postTask(() => {
+      const ms = this.now() - t;
+      if (o) o.afterSettleTaskMs = round1(ms);
+      this._event('mark', { name: 'settle-task-end', detail: { ms: round1(ms) } }, t + ms);
+      if (o && ms >= 50) this.log(`settle: the task kept running ${round1(ms)} ms after the SDK's settle (${round1(sdkMs)} ms) — the page's continuation of setSource`);
+    });
+  }
+
+  longTask(start, duration, attribution) {
     const lt = { s: round1(start), d: round1(duration) };
+    const a = attribution?.[0];
+    if (a && (a.containerType || a.containerName || a.containerSrc)) lt.attr = [a.containerType, a.containerName || a.containerSrc].filter(Boolean).join(':').slice(0, 80);
     this.longTasks.push(lt);
     if (this.longTasks.length > EVENT_CAP) this.longTasks.splice(0, this.longTasks.length - EVENT_CAP);
     this._event('longtask', lt, start);
@@ -221,6 +383,7 @@ export class DiagRecorder {
     this._lastFrameAt = t;
     this._frameNo++;
     const img = this.imageState ? safe(this.imageState) : null;
+    const rs = this.rigState ? safe(this.rigState) : null;
     const f = {
       n: this._frameNo,
       t: round1(t),
@@ -236,6 +399,9 @@ export class DiagRecorder {
       afterRig: this._frameNo - this._rigFrame <= 3,
       img: img ? img.overlay : 'none',
       imgW: img ? round4(img.w) : 0,
+      rigAt: rs ? rs.at : null,
+      rigIn: rs ? rs.in : null,
+      rigOut: rs ? rs.out : null,
     };
     this.frames.push(f);
     if (this.frames.length > FRAME_CAP) this.frames.splice(0, this.frames.length - FRAME_CAP);
@@ -309,6 +475,9 @@ export class DiagRecorder {
       firstFrameAt: NaN,
       lastFrameAt: NaN,
       window: [], // the frame records kept for the frozen overlay strip
+      gl: {}, // phase -> kind -> { n, ms }
+      picks: {}, // phase -> { n, ms }
+      afterSettleTaskMs: null,
     };
     // Frames already recorded in the lead-in (PRE_MS before the call) belong to it too.
     for (const f of this.frames) if (f.t >= t - PRE_MS) this._open.window.push(f);
@@ -371,6 +540,12 @@ export class DiagRecorder {
       heldRunMaxMs: o.heldRunMaxMs,
       frozenImageFrames: o.frozenImg,
       frozenImageMs: o.frozenImgMs,
+      gl: roundBuckets(o.gl),
+      picks: roundBuckets(o.picks),
+      afterSettleTaskMs: o.afterSettleTaskMs,
+      longFrames: this.events
+        .filter((e) => e.type === 'loaf' && e.s + e.d > o.callAt - PRE_MS && e.s < t)
+        .map((e) => ({ at: round1(e.s - o.callAt), d: e.d, block: e.block, scripts: e.scripts })),
     };
     s.verdict = verdict(s);
     s.window = o.window.map((f) => ({ ...f, t: round1(f.t - o.callAt) }));
@@ -420,6 +595,16 @@ export class DiagRecorder {
       /* already gone */
     }
     this._lto = null;
+    try {
+      this._lafo?.disconnect();
+    } catch {
+      /* already gone */
+    }
+    this._lafo = null;
+    if (this._gl) {
+      for (const name of this._gl.saved) delete this._gl.gl[name]; // the prototype's method again
+      this._gl = null;
+    }
     this._listeners.clear();
   }
 }
@@ -434,7 +619,74 @@ export function verdict(s) {
   if (s.heldRunMax >= 2) out.push(`TRACKING-HELD ${s.heldRunMax} frames (${s.heldRunMaxMs} ms) with frames still arriving`);
   if (s.maxFrameGapMs > 50) out.push(`MAIN-THREAD gap ${s.maxFrameGapMs} ms (longest task ${s.longestTaskMs} ms)`);
   if (s.frozenImageFrames >= 2) out.push(`IMAGE-FROZEN ${s.frozenImageFrames} frames (${s.frozenImageMs} ms) on the frozen capture`);
-  return out.length ? out.join(' + ') : 'CLEAN (no hold, no gap > 50 ms, no frozen image)';
+  if (!out.length) return 'CLEAN (no hold, no gap > 50 ms, no frozen image)';
+  // What was on the main thread: blocking GL calls, the page's picks, the settle task's tail.
+  const why = [];
+  const gl = sumBuckets(s.gl, ['compile', 'link', 'linkQuery', 'readPixels', 'readback', 'wait', 'finish']);
+  if (gl.n) why.push(`GL compile/link/sync ×${gl.n} ${gl.ms} ms`);
+  const pk = sumBuckets(s.picks);
+  if (pk.n) why.push(`pick() ×${pk.n} ${pk.ms} ms`);
+  if (s.afterSettleTaskMs >= 50) why.push(`page code ${s.afterSettleTaskMs} ms in the settle task`);
+  const top = (s.longFrames || []).flatMap((f) => f.scripts || []).sort((a, b) => b.d - a.d)[0];
+  if (top) why.push(`top script ${top.fn || '(anonymous)'}@${top.src} ${top.d} ms`);
+  return out.join(' + ') + (why.length ? ` — ${why.join('; ')}` : '');
+}
+
+/** { phase: { kind: { n, ms } } } or { phase: { n, ms } } → the same, ms rounded. */
+function roundBuckets(b) {
+  const out = {};
+  for (const [ph, v] of Object.entries(b || {})) {
+    if (v && typeof v.n === 'number') out[ph] = { n: v.n, ms: round1(v.ms) };
+    else {
+      out[ph] = {};
+      for (const [k, x] of Object.entries(v || {})) out[ph][k] = { n: x.n, ms: round1(x.ms) };
+    }
+  }
+  return out;
+}
+
+/** Total { n, ms } over every phase (and, for GL buckets, over `kinds`). */
+function sumBuckets(b, kinds = null) {
+  let n = 0;
+  let ms = 0;
+  for (const v of Object.values(b || {})) {
+    if (v && typeof v.n === 'number') {
+      n += v.n;
+      ms += v.ms;
+    } else {
+      for (const [k, x] of Object.entries(v || {})) {
+        if (kinds && !kinds.includes(k)) continue;
+        n += x.n;
+        ms += x.ms;
+      }
+    }
+  }
+  return { n, ms: round1(ms) };
+}
+
+/** Run `fn` in a NEW task (after the current one and its microtasks): MessageChannel, else a timeout. */
+function postTask(fn) {
+  try {
+    if (typeof MessageChannel === 'function') {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => {
+        ch.port1.close();
+        fn();
+      };
+      ch.port2.postMessage(0);
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  setTimeout(fn, 0);
+}
+
+/** A script URL, trimmed to its file name (plus a query, cut short). */
+function shortSrc(url) {
+  if (!url) return '';
+  const m = /([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(String(url));
+  return m ? m[1] + (m[2] ? m[2].slice(0, 20) : '') : String(url).slice(-60);
 }
 
 function defaultLog(msg) {

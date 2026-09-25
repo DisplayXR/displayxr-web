@@ -25,14 +25,29 @@
 //
 // THE RIG. The incoming asset's rig (camera rig: its capture pose, lens and convergence; display
 // rig: its fit and focus) is adopted at once, as in the frozen path, so the views the runtime
-// hands us after that are the INCOMING photo's. The outgoing camera is parented under a node
-// chain that maps them back to the OUTGOING photo's framing:
+// hands us — once the declaration has reached them, a frame or more later — are the INCOMING
+// photo's. The outgoing photo must keep being drawn through ITS OWN rig for the whole window.
+//
+// Two camera rigs (a photo slideshow: every photo a SOG with a camera block): the views are
+// remapped, per frame, from the rig they were LOCATED for to the outgoing photo's rig, by the
+// exact portal map of ./inline3d-splat-rig-map.js — window onto window, eye onto eye, the
+// runtime's projection verbatim — under the outgoing photo's rig node R_o. Before the
+// declaration arrives the located rig IS the outgoing one and the views pass through untouched.
+//
+// Otherwise (a display rig on either side, views no declared rig explains, the kill switch
+// `?dxrdiag=oldrig`): the pre-1.24 node chain, which maps the incoming views back to the outgoing
+// photo's framing:
 //     N = R_o · K_o · D_o · D_n⁻¹ · K_n⁻¹
 // with R the rig node (inverse pivot), K the mono/capture pose in rig space and
 // D = diag(c·t, c·t, c) (c = convergence distance, t = tan(vfov/2)). The eye poses (head
 // motion) pass through untouched; the outgoing photo keeps its own window and zero-disparity
 // plane. Two display-rig assets cancel to N = R_o (the old fit and focus); in controls:'page' the
-// page owns the camera and N is the rig node itself.
+// page owns the camera and N is the rig node itself. For two CAMERA rigs this chain is not exact:
+// it scales the eyes with the window, by (c_o·t_o)/(c_n·t_n) — the outgoing photo's disparity and
+// head parallax jumped by that factor at the swap (the "camera change right before the
+// transition" report) — and it assumed the views were already the incoming rig's.
+
+import { remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
 
 /** setSource's `outgoing` option. */
 export const OUTGOING_MODES = Object.freeze(['live', 'frozen']);
@@ -151,6 +166,12 @@ export class LiveOutgoing {
     /** PRE-SORT (warm): the current asset is ALSO on the live layer, before the swap. */
     this.warming = false;
     this._warmLayers = null;
+    /** The outgoing photo's own declared rig (a RigTracker entry), taken at start(). */
+    this.ownRig = null;
+    this._map = [];
+    this._node = new Float64Array(16);
+    /** What the last sync drew through: 'eye' (the eye's views), 'own' (the photo's rig, as located), 'remapped', 'chain'. */
+    this.path = null;
   }
 
   /** Engine support for this path: RenderViews on one camera, render targets, layers. */
@@ -299,6 +320,8 @@ export class LiveOutgoing {
       entity.gsplat.layers = [this.layer.id];
       this.entity = entity;
       this.oldFrame = oldFrame;
+      // Read BEFORE the incoming asset's rig is declared: the last declared rig is the outgoing's.
+      this.ownRig = v.rigTrack?.latest ?? null;
       if (!warmed) this.frames = 0;
       this.warming = false;
       this._warmLayers = null;
@@ -347,10 +370,11 @@ export class LiveOutgoing {
   }
 
   /**
-   * Per frame, before the engine tick: the eye's views on the outgoing camera (same proj, pose,
-   * viewport), the eye's node pose, and the rig chain.
+   * Per frame, before the engine tick: the views on the outgoing camera — through the outgoing
+   * photo's own rig (see the header) — the viewports, and the node chain. `rf` is the viewer's rig
+   * mapping for this frame (viewer._mapViews), or undefined.
    */
-  sync(entries, rect, frustum) {
+  sync(entries, rect, frustum, rf) {
     if (!this.active && !this.warming) return;
     const v = this.viewer;
     const pc = v.pc;
@@ -360,11 +384,50 @@ export class LiveOutgoing {
       for (let i = 0; i < entries.length; i++) rvs.push(new pc.RenderView());
       this.cam.camera.camera.xrViews = rvs.slice();
     }
+    // Which views: the pre-sort (and controls:'page', where both photos are the page camera's)
+    // draws what the eye draws; an active window draws the outgoing photo's own rig.
+    let mapped = null; // remapped views, or null = the entries as they are
+    let exact = false; // the rig map applies: no node chain
+    let nodeRig = null; // the portal the remapped views belong to (for the camera node)
+    const own = this.ownRig;
+    if (rf && v.rigTrack && (!this.active || v.pageCamera)) {
+      exact = true;
+      mapped = rf.remapped ? rf.entries : null;
+      nodeRig = rf.eye?.portal ?? null;
+      this.path = 'eye';
+    } else if (rf?.located && own?.portal && this.active && !v.pageCamera) {
+      if (rf.located === own || sameRig(rf.located.rig, own.rig)) {
+        exact = true;
+        this.path = 'own';
+      } else {
+        mapped = remapViews(entries, rf.located.portal, own.portal, this._map);
+        exact = !!mapped;
+        nodeRig = own.portal;
+        if (mapped) this.path = 'remapped';
+      }
+    }
+    if (!exact) this.path = 'chain';
     for (let i = 0; i < entries.length; i++) {
-      rvs[i].setView(entries[i].proj, entries[i].pose);
+      if (mapped) rvs[i].setView(mapped[i].proj, mapped[i].viewInv, mapped[i].view);
+      else rvs[i].setView(entries[i].proj, entries[i].pose);
       const [x, y, w, h] = rect(entries[i]);
       rvs[i].setViewport(x, y, w, h);
     }
+    // The wavefront's cull reads the views this camera really draws (viewer.cullViews).
+    if (mapped) {
+      const cull = (this._cull ||= []);
+      cull.length = mapped.length;
+      for (let i = 0; i < mapped.length; i++) {
+        const c = (cull[i] ||= {});
+        c.proj = mapped[i].proj;
+        c.pose = mapped[i].viewInv;
+        c.x = mapped[i].x;
+        c.y = mapped[i].y;
+        c.width = mapped[i].width;
+        c.height = mapped[i].height;
+      }
+      this.cam._dxrViews = cull;
+    } else this.cam._dxrViews = null;
     if (frustum) {
       const key = `${frustum.fov.toFixed(4)}|${frustum.aspectRatio.toFixed(4)}|${frustum.nearClip}|${frustum.farClip}`;
       if (key !== this._frustumKey) {
@@ -374,6 +437,20 @@ export class LiveOutgoing {
     }
     // The node chain (see the header). controls:'page': the page's camera, for both assets.
     const { n1, n2, n3 } = this.nodes;
+    if (exact) {
+      // The views are in rig space already: only the photo's rig node above them — the one the
+      // outgoing photo had at the swap (the pre-sort and controls:'page': the current one).
+      setTRS(n1, similarityTRS(this.active && !v.pageCamera && this.oldFrame ? this.oldFrame.rig : v.rigMatrix()));
+      n2.setLocalScale(1, 1, 1);
+      setTRS(n3, { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: 1 });
+      // The camera NODE (sort direction, LOD distance) on the first eye this camera draws from.
+      const pose = mapped && nodeRig ? nodePose(nodeRig, mapped[0].eye, this._node) : entries[0].pose;
+      const q = similarityTRS(pose).rotation;
+      this.cam.setLocalPosition(pose[12], pose[13], pose[14]);
+      this.cam.setLocalRotation(q[0], q[1], q[2], q[3]);
+      this.frames++;
+      return;
+    }
     if (v.pageCamera || !this.oldFrame) {
       const r = similarityTRS(v.rigMatrix());
       setTRS(n1, r);
@@ -401,6 +478,9 @@ export class LiveOutgoing {
     if (this.warming) return this.cancelWarm();
     this.entity = null;
     this.oldFrame = null;
+    this.ownRig = null;
+    this.path = null;
+    if (this.cam) this.cam._dxrViews = null;
     this.active = false;
     this.warmed = false;
     if (this.cam) this.cam.enabled = false;

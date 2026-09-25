@@ -67,8 +67,10 @@ import {
   sequenceSpans,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
-import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR } from './inline3d-splat-video.js';
-import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag } from './inline3d-splat-diag.js';
+import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
+import { LayerRigCameras, validateLayerRig } from './inline3d-splat-layer-rig.js';
+import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
   clamp,
   finite,
@@ -614,6 +616,136 @@ export function nearestCentreToRay(xyz, origin, dir, coneRad = PICK_CONE_RAD, al
   return bestInCone || bestAny;
 }
 
+/** Cells per side of a pick index (PICK_INDEX_GRID² cells over the view's direction square). */
+export const PICK_INDEX_GRID = 128;
+
+/**
+ * A pick INDEX over one centre set, for one eye position: every usable centre (opacity at or above
+ * RIG_MIN_OPACITY, in front of the eye) bucketed by its DIRECTION from the eye — its gnomonic
+ * coordinates (u, v) = ((p − eye)·right, (p − eye)·up) / ((p − eye)·fwd) on a PICK_INDEX_GRID² grid
+ * over [−U, U] × [−V, V] (centres outside land in the border cells). One pass over the set, about
+ * one full-scan pick's cost; every later pick from the same eye then reads only the few cells
+ * around its ray (queryPickIndex), not the whole set.
+ *
+ * Why (a photo slideshow app, on the panel): a page that picks in bursts — 24 rays to plan a
+ * companion's waypoints, then an 81-ray depth grid, on every photo swap — ran 105 full scans of a
+ * 1.18M-centre photo on the main thread, two long tasks of ~0.3 s and ~1 s right at the swap's
+ * end: no session frames, so the woven image stopped following the head.
+ *
+ * `f`, `r`, `up`: an orthonormal frame (any; the eye's own is the tightest). Returns null when
+ * nothing usable is in front of the eye.
+ */
+export function buildPickIndex(xyz, count, alpha8, eye, f, r, up, U, V, G = PICK_INDEX_GRID) {
+  const n = count;
+  const cells = G * G;
+  const su = G / (2 * U);
+  const sv = G / (2 * V);
+  const minA = Math.ceil(RIG_MIN_OPACITY * 255);
+  const cellOf = new Uint16Array(n); // G ≤ 255: cells < 65535, which marks "not indexed"
+  const start = new Uint32Array(cells + 1);
+  const [ex, ey, ez] = eye;
+  const [f0, f1, f2] = f;
+  const [r0, r1, r2] = r;
+  const [u0, u1, u2] = up;
+  let m = 0;
+  for (let i = 0; i < n; i++) {
+    if (alpha8 && alpha8[i] < minA) {
+      cellOf[i] = 65535;
+      continue;
+    }
+    const rx = xyz[i * 3] - ex;
+    const ry = xyz[i * 3 + 1] - ey;
+    const rz = xyz[i * 3 + 2] - ez;
+    const z = rx * f0 + ry * f1 + rz * f2;
+    if (!(z > 0)) {
+      cellOf[i] = 65535;
+      continue;
+    }
+    // z > 0 held, so every coordinate is finite (a NaN or ∞ one makes z NaN). Truncation, not
+    // floor: below the grid's edge both land in the border cell after the clamp.
+    const iz = 1 / z;
+    let cu = ((rx * r0 + ry * r1 + rz * r2) * iz + U) * su;
+    let cv = ((rx * u0 + ry * u1 + rz * u2) * iz + V) * sv;
+    cu = cu < 0 ? 0 : cu >= G ? G - 1 : cu | 0;
+    cv = cv < 0 ? 0 : cv >= G ? G - 1 : cv | 0;
+    const c = cv * G + cu;
+    cellOf[i] = c;
+    start[c + 1]++;
+    m++;
+  }
+  if (!m) return null;
+  for (let c = 0; c < cells; c++) start[c + 1] += start[c];
+  const order = new Uint32Array(m);
+  const cursor = start.slice(0, cells);
+  for (let i = 0; i < n; i++) {
+    const c = cellOf[i];
+    if (c !== 65535) order[cursor[c]++] = i;
+  }
+  return { eye: [ex, ey, ez], f: [f0, f1, f2], r: [r0, r1, r2], up: [u0, u1, u2], U, V, G, su, sv, start, order, size: m };
+}
+
+/**
+ * nearestCentreToRay's IN-CONE answer from a pick index: the same point, exactly (the same
+ * arithmetic on the same centres, ties to the lowest index as the full scan's first-wins), read
+ * from the cells the cone can reach. The ray must pass through the index's eye (any pick ray of
+ * that view does: it runs from its near-plane point through the eye). Returns the point, or
+ * undefined when the index cannot answer — no centre inside the cone (the full scan's
+ * nearest-by-angle fallback needs every centre), a ray not through the eye, or one too far off
+ * the index's axis — and the caller runs the full scan.
+ *
+ * Why the cells suffice: along a ray through the eye, t from the near-plane origin is t from the
+ * eye minus the near distance, so perp / t (the cone test) ≥ perp / t_eye = tan of the angle at
+ * the eye. A centre inside the cone is within atan(coneRad) of the ray AT THE EYE, and a cap of
+ * angular radius θ around a direction φ0 off the axis projects (gnomonic) inside a radius of
+ * tan(φ0 + θ) − tan(φ0) around the ray's own (u, v). The search square takes 1.25× that plus a
+ * cell.
+ */
+export function queryPickIndex(ix, xyz, origin, dir, coneRad = PICK_CONE_RAD) {
+  const { eye, f, r, up, U, V, G, su, sv, start, order } = ix;
+  // the ray must pass through the eye (a relative tolerance: numerical noise, not a design gap)
+  const ox = eye[0] - origin[0], oy = eye[1] - origin[1], oz = eye[2] - origin[2];
+  const along = ox * dir[0] + oy * dir[1] + oz * dir[2];
+  const off2 = ox * ox + oy * oy + oz * oz - along * along;
+  if (!(along < 0) || off2 > 1e-12 * (along * along) + 1e-18) return undefined; // the eye sits BEHIND the near-plane origin
+  const dz = dir[0] * f[0] + dir[1] * f[1] + dir[2] * f[2];
+  if (!(dz > 0)) return undefined;
+  const du = (dir[0] * r[0] + dir[1] * r[1] + dir[2] * r[2]) / dz;
+  const dv = (dir[0] * up[0] + dir[1] * up[1] + dir[2] * up[2]) / dz;
+  const rho = Math.hypot(du, dv);
+  const phi0 = Math.atan(rho);
+  const th = Math.atan(coneRad) * 1.05 + 1e-6;
+  if (phi0 + th >= 1.4) return undefined; // ~80°: the projection's stretch is no longer worth bounding
+  const R = (Math.tan(phi0 + th) - rho) * 1.25;
+  const clampCell = (x) => (x < 0 ? 0 : x >= G ? G - 1 : x);
+  const cu0 = clampCell(Math.floor((du - R + U) * su) - 1);
+  const cu1 = clampCell(Math.floor((du + R + U) * su) + 1);
+  const cv0 = clampCell(Math.floor((dv - R + V) * sv) - 1);
+  const cv1 = clampCell(Math.floor((dv + R + V) * sv) + 1);
+  if (!(cu0 <= cu1 && cv0 <= cv1)) return undefined;
+  let bestT = Infinity;
+  let bestI = -1;
+  for (let cv = cv0; cv <= cv1; cv++) {
+    const row = cv * G;
+    for (let k = start[row + cu0], k1 = start[row + cu1 + 1]; k < k1; k++) {
+      const i = order[k];
+      // nearestCentreToRay's own arithmetic, term for term
+      const rx = xyz[i * 3] - origin[0];
+      const ry = xyz[i * 3 + 1] - origin[1];
+      const rz = xyz[i * 3 + 2] - origin[2];
+      const t = rx * dir[0] + ry * dir[1] + rz * dir[2];
+      if (!(t > 0)) continue;
+      const perp = Math.sqrt(Math.max(0, rx * rx + ry * ry + rz * rz - t * t));
+      const angle = perp / t;
+      if (angle <= coneRad && (t < bestT || (t === bestT && i < bestI))) {
+        bestT = t;
+        bestI = i;
+      }
+    }
+  }
+  if (bestI < 0) return undefined;
+  return [xyz[bestI * 3], xyz[bestI * 3 + 1], xyz[bestI * 3 + 2]];
+}
+
 // ── the viewer: pose state + frame loop + the engine ────────────────────────────────────────
 
 /**
@@ -686,6 +818,23 @@ export class PlayCanvasSplatViewer {
     this.inputLocked = false;
     /** handle.setVideo's plane (./inline3d-splat-video.js) while a video is on, else null. */
     this._videoPlane = null;
+    /** handle.setLayerRig's per-rig cameras (./inline3d-splat-layer-rig.js), made on first use. */
+    this.layerRigs = null;
+    /** () => the view-rig descriptor currently declared to the runtime (or null). */
+    this.layerRigSource = null;
+    /** That descriptor as it stood when THIS frame's views were pulled (snapshotted in onFrame). */
+    this._rigSnap = null;
+    /**
+     * The rigs this tile declared and which one each frame's views were located for
+     * (./inline3d-splat-rig-map.js). Null = the kill switch (diag 'oldrig'): views drawn as
+     * located, the live outgoing on its pre-1.24 node chain.
+     */
+    this.rigTrack = null;
+    /** This frame's rig mapping: { located, eye, remapped, entries } (see _mapViews). */
+    this.rigFrame = null;
+    this._eyeMap = [];
+    this._rigAtPull = null;
+    this._eyeSplit = NaN;
     this.boxAspect = 1;
     this.featherPx = feather > 0 ? feather : 0;
     this.captureFit = captureFit;
@@ -995,6 +1144,11 @@ export class PlayCanvasSplatViewer {
   onFrame(views, layer) {
     if (this._disposed) return;
     if (this._mode !== '3d') this.stopMono();
+    // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
+    // and the tick below may declare a new one (a focus ease) for the NEXT locate.
+    if (this.layerRigs?.active) this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
+    // Same moment, for the rig map: the rig these views were most likely located for (a tie-break).
+    this._rigAtPull = this.rigTrack ? this.rigTrack.latest : null;
     // BEFORE the tick: a pose the page sets in here is the one this very frame renders.
     this._beforeFrame?.(views || null);
     this._tick();
@@ -1055,6 +1209,7 @@ export class PlayCanvasSplatViewer {
     this._live = null;
     this._videoPlane?.destroy();
     this._videoPlane = null;
+    this.layerRigs = null; // its cameras go with the app
     try {
       this.app?.destroy();
     } catch (err) {
@@ -1447,6 +1602,44 @@ export class PlayCanvasSplatViewer {
   }
 
   /**
+   * This frame's rig mapping (./inline3d-splat-rig-map.js): which declared rig the views were
+   * located for (`located`), which the current photo wants (`eye`, the last declared), and — only
+   * when those differ and both are camera rigs — the views remapped to `eye` (`entries`: proj,
+   * viewInv, view per view; `cull`: the same as { proj, pose } entries; `node`: the first eye's
+   * rigid pose). Otherwise `remapped` is false and the views are drawn exactly as located.
+   */
+  _mapViews(entries, prefer = null) {
+    const rt = this.rigTrack;
+    const rf = (this.rigFrame ||= { located: null, eye: null, remapped: false, entries: null, cull: [], node: new Float64Array(16) });
+    rf.remapped = false;
+    rf.located = rf.eye = null;
+    if (!rt || this._mode !== '3d' || entries.length < 2) return rf;
+    rf.located = rt.locate(entries, prefer);
+    rf.eye = rt.latest;
+    const L = rf.located;
+    const T = rf.eye;
+    if (!L || !T?.portal || L === T || sameRig(L.rig, T.rig)) return rf;
+    const r = remapViews(entries, L.portal, T.portal, this._eyeMap);
+    if (!r) return rf;
+    rf.remapped = true;
+    rf.entries = r;
+    rf.cull.length = r.length;
+    for (let i = 0; i < r.length; i++) {
+      const c = (rf.cull[i] ||= {});
+      c.proj = r[i].proj;
+      c.pose = r[i].viewInv;
+      c.x = r[i].x;
+      c.y = r[i].y;
+      c.width = r[i].width;
+      c.height = r[i].height;
+      c.node = null;
+    }
+    nodePose(T.portal, r[0].eye, rf.node);
+    rf.cull[0].node = rf.node; // a rigid pose for a camera NODE (the views are affine)
+    return rf;
+  }
+
+  /**
    * The mono/capture camera as a lens frame, for the live outgoing's rig chain
    * (./inline3d-splat-live.js): the rig node's matrix, the camera pose in rig space, the
    * convergence distance c (along the view axis to the focus, which the pivot puts at the orbit
@@ -1470,6 +1663,8 @@ export class PlayCanvasSplatViewer {
    */
   cullViews(cam, entries, rect, into = []) {
     const parent = cam?.parent?.getWorldTransform?.()?.data ?? null;
+    // A camera drawing remapped views (./inline3d-splat-rig-map.js) publishes them as _dxrViews.
+    if (cam?._dxrViews?.length === entries.length) entries = cam._dxrViews;
     into.length = entries.length;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -1483,7 +1678,8 @@ export class PlayCanvasSplatViewer {
       o.W[0] = C[3]; o.W[1] = C[7]; o.W[2] = C[11]; o.W[3] = C[15];
       o.K[0] = w * e.proj[0];
       o.K[1] = 1 / w;
-      o.K[2] = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+      // The view's largest column scale² (1 for a rigid view; a remapped view is affine).
+      o.K[2] = Math.max(V[0] * V[0] + V[1] * V[1] + V[2] * V[2], V[4] * V[4] + V[5] * V[5] + V[6] * V[6], V[8] * V[8] + V[9] * V[9] + V[10] * V[10]);
       o.K[3] = 0;
     }
     return into;
@@ -1715,12 +1911,18 @@ export class PlayCanvasSplatViewer {
         for (let i = 0; i < entries.length; i++) rvs.push(new pc.RenderView());
         this.eye.camera.camera.xrViews = rvs.slice();
       }
+      // The current photo through ITS rig (the last declared): the views are remapped only while
+      // they were located for another one (a declaration still in flight, ./inline3d-splat-rig-map.js).
+      const rf = this._mapViews(entries, cache ? cache.rigAt : null);
+      const eyeViews = rf.remapped ? rf.entries : null;
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
-        rvs[i].setView(e.proj, e.pose);
+        if (eyeViews) rvs[i].setView(eyeViews[i].proj, eyeViews[i].viewInv, eyeViews[i].view);
+        else rvs[i].setView(e.proj, e.pose);
         const [x, y, w, h] = rect(e);
         rvs[i].setViewport(x, y, w, h);
       }
+      this.eye._dxrViews = eyeViews ? rf.cull : null;
       // LOD and FOV-compensation read camera.fov/near/far, which under xrViews come from the
       // XR properties — the frustum the views actually have, as XrManager does it.
       const f = frustumFromProjection(entries[0].proj);
@@ -1731,11 +1933,16 @@ export class PlayCanvasSplatViewer {
       }
       // The camera NODE drives the sort direction and LOD distance; the views ignore it (they
       // compose the node's PARENT with their own pose). Park it on the first eye.
-      placeNode(this.eye, entries[0].pose);
-      // setSource's live outgoing: the same views on its own camera, into its own target.
-      if (this._live?.active || this._live?.warming) this._live.sync(entries, rect, f);
+      placeNode(this.eye, eyeViews ? rf.node : entries[0].pose);
+      // setSource's live outgoing: the same views on its own camera (through ITS photo's rig),
+      // into its own target.
+      if (this._live?.active || this._live?.warming) this._live.sync(entries, rect, f, rf);
       // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
       this.onBeforeRender?.(entries, rect);
+      // handle.setLayerRig: the display / post run cameras, on the same views (display: rounded).
+      if (this.layerRigs && this.layerRigs.sync()) {
+        this.layerRigs.frame(eyeViews ? rf.cull : entries, rect, f, eyeViews ? rf.eye.rig : rf.located ? rf.located.rig : cache ? cache.rig : null);
+      }
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
       const cams = this._views;
@@ -1769,6 +1976,12 @@ export class PlayCanvasSplatViewer {
       }
     }
     this._updateFeather(entries[0].width * sx, entries[0].height * sy);
+    // handle.makeSbsMaterial: the eye split, scene-wide (a material only declares the uniform).
+    const split = eyeSplit(entries, rect);
+    if (split !== this._eyeSplit) {
+      this._eyeSplit = split;
+      app.graphicsDevice?.scope?.resolve?.(EYE_SPLIT_UNIFORM)?.setValue(split);
+    }
     // handle.setVideo's plane: size, eye split, and a new frame's upload (./inline3d-splat-video.js).
     this._videoPlane?.beforeDraw(entries, rect);
     app.tick(now());
@@ -1787,6 +2000,8 @@ export class PlayCanvasSplatViewer {
     }
     g.bufW = el.width || 0;
     g.bufH = el.height || 0;
+    g.rig = this._rigSnap ? { ...this._rigSnap } : null; // a replay re-uses the rig of its views
+    g.rigAt = this._rigAtPull ?? null;
     for (let i = 0; i < views.length; i++) {
       const e = g.entries[i];
       const vp = vps[i];
@@ -2127,6 +2342,23 @@ export class PlayCanvasSplatViewer {
     if (this._mode === '3d' && this._lastGood) return this._lastGood.entries[0];
     return { proj: this.mono.proj, pose: this.mono.pose };
   }
+}
+
+/**
+ * A copy of the declared rig's frame fields (the SDK rewrites its camera-rig descriptor in place),
+ * or null. Only what the layer rig reads: kind, pose, convergence, metres-to-virtual.
+ */
+export function snapshotRig(rig, into = null) {
+  if (!rig || typeof rig !== 'object') return null;
+  const o = into || { position: {}, orientation: {} };
+  o.type = rig.type;
+  const p = rig.position || {};
+  const q = rig.orientation || {};
+  o.position = { x: p.x || 0, y: p.y || 0, z: p.z || 0 };
+  o.orientation = { x: q.x || 0, y: q.y || 0, z: q.z || 0, w: q.w === undefined ? 1 : q.w };
+  o.convergenceDiopters = rig.convergenceDiopters;
+  o.metersToVirtual = rig.metersToVirtual;
+  return o;
 }
 
 /** Put an engine node at a rigid display-space pose (position + rotation; no scale). */
@@ -2695,16 +2927,37 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   // ── diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ──
   const diagCfg = resolveDiag(opts.diag);
-  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: norig, frozen, nowarm, cold, nooverlay.`);
+  if (diagCfg.unknown.length) console.warn(`[inline3d/splat] diag: unknown switch(es) ${diagCfg.unknown.join(', ')} — known: ${DIAG_SWITCHES.join(', ')}.`);
   const diag = diagCfg.on ? new DiagRecorder({ switches: diagCfg.switches }) : null;
   /** norig: armed by the first setSource — from then on the declared rig is kept. */
   let rigLockArmed = false;
   if (diag) {
     diag.imageState = () => viewer.diagImageState();
+    diag.rigState = () => {
+      const rf = viewer.rigFrame;
+      if (!viewer.rigTrack || !rf) return null;
+      return {
+        at: rf.located ? rf.located.id : null,
+        in: rf.eye ? `${rf.eye.id}${rf.remapped ? '+' : ''}` : null,
+        out: viewer._live?.active ? viewer._live.path : null,
+      };
+    };
     diag.observeLongTasks();
+    diag.observeLongFrames();
     diag.log(`on — switches [${[...diag.switches].join(', ') || 'none'}]; dump: copy(__dxrDiag.dump())`);
   }
   let removed = false;
+  // handle.setLayerRig: the per-rig cameras and where they read the declared rig from.
+  // Kill switch `nolayerrig`: requests are recorded but every layer stays on the eye camera.
+  let warnedLayerRigPath = false;
+  function layerRigs() {
+    if (!viewer.layerRigs) {
+      viewer.layerRigs = new LayerRigCameras(viewer);
+      viewer.layerRigs.disabled = !!diag?.has('nolayerrig');
+      viewer.layerRigSource = () => out.viewRig || null;
+    }
+    return viewer.layerRigs;
+  }
   /** prepareSource: prepared handle → { loaded, state: 'ready' | 'used' | 'disposed', dispose }. */
   const preparedAssets = new WeakMap();
   const livePrepared = new Set();
@@ -2785,6 +3038,42 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     prepareSource,
     setRig,
     setVideo,
+    /**
+     * Draw a layer of this tile's engine through the DISPLAY rig (round, physical-depth stage
+     * objects) while the splat and the declared view rig stay on the photo's camera rig — or back
+     * on the camera rig ('camera'). No second full pass: one extra camera over the named layers,
+     * into the same target, in composition order. docs/playcanvas-adapter.md §setLayerRig and
+     * docs/proposals/layer-display-rig.md (the exact mapping, and why it is not Kooima).
+     * `viewerDistance` (m) / `gain` set the rounding for the whole tile (last call wins).
+     */
+    setLayerRig(layer, rig, o = {}) {
+      const r = validateLayerRig(layer, rig, o);
+      if (viewer._viewPath === 'cameras' && !warnedLayerRigPath) {
+        warnedLayerRigPath = true;
+        console.warn('[inline3d/splat] setLayerRig needs the engine RenderView path; on the N-camera fallback the layer stays on the photo rig.');
+      }
+      layerRigs().set(layer, r.rig, { viewerDistance: r.viewerDistance, gain: r.gain });
+      return out;
+    },
+    /** The layers on the display rig (as the page named them), and what the last frame did. */
+    layerRigState() {
+      const lr = viewer.layerRigs;
+      return {
+        display: lr ? [...lr.requests.keys()] : [],
+        disabled: !!lr?.disabled,
+        rounded: !!lr?.last.rounded,
+        gain: lr?.last.gain ?? null,
+      };
+    },
+    /**
+     * An unlit material showing the left half of `texture` to left-eye views and the right half to
+     * right-eye views (format 'sbs' | 'tb' | 'mono'), on any mesh — mono / 2D: the left half. Needs
+     * the engine (after `ready`). docs/playcanvas-adapter.md §makeSbsMaterial.
+     */
+    makeSbsMaterial(texture, o = {}) {
+      if (!viewer.app || !viewer.pc) throw new Error('@displayxr/inline3d/splat: makeSbsMaterial() needs the engine — call it after `await handle.ready`.');
+      return makeSbsMaterial(viewer.pc, texture, o);
+    },
     /**
      * Play a transition effect (inflate, deflate, sweep, dissolve, fade, pulse, custom) — see
      * docs/splat-effects.md. Validated now; runs once the first asset is on screen. Resolves
@@ -2893,6 +3182,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // toward `target` at the viewer's FOCUS_EASE unless snapped.
   const pageFocus = { d: Number.NaN, target: Number.NaN, fired: Number.NaN, source: null };
 
+  let initialViewRig = null; // the rig addScene is created with (controls:'page'), else the shorthand
   if (wall && wall.supported) {
     const onFrame = diag
       ? (views, layer) => {
@@ -2905,7 +3195,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       // controls:'page' starts on a camera rig (attach, provisional FOV/convergence until the page
       // and the waterfall say otherwise); the display rig's height means nothing there.
       ...(pageMode
-        ? { viewRig: pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth }) }
+        ? { viewRig: (initialViewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth })) }
         : { virtualDisplayHeight }),
       onLayerLost: viewer.onLayerLost,
       ...(observe ? { observe } : {}),
@@ -2913,6 +3203,20 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
   } else {
     viewer.startMono();
+  }
+  // Every rig this tile declares, by VALUE (./inline3d-splat-rig-map.js): which one a frame's
+  // views were located for is read off the views, so each photo can be drawn through its own rig
+  // while a declaration is in flight or while a live outgoing photo is still on screen.
+  // `?dxrdiag=oldrig` turns it off (views drawn as located; the live outgoing's node chain).
+  if (handle && typeof handle.setViewRig === 'function' && !diag?.has('oldrig')) {
+    const rt = (viewer.rigTrack = new RigTracker());
+    rt.note(initialViewRig || { type: 'display', virtualDisplayHeight });
+    const push = handle.setViewRig;
+    handle.setViewRig = (rig) => {
+      const r = push.call(handle, rig);
+      rt.note(rig);
+      return r;
+    };
   }
   let diagLoop = null;
   if (diag) {
@@ -2940,6 +3244,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     delete out._resolveFirstWoven;
   }
 
+  // addSplat's `displayRigLayers` sugar: [layer, …] or { layers: [...], viewerDistance, gain }.
+  if (opts.displayRigLayers !== undefined) {
+    const d = opts.displayRigLayers;
+    const list = Array.isArray(d) ? d : d && Array.isArray(d.layers) ? d.layers : null;
+    if (!list) throw new TypeError('@displayxr/inline3d/splat: displayRigLayers — expected an array of layers, or { layers, viewerDistance?, gain? }.');
+    const o = Array.isArray(d) ? {} : { ...(d.viewerDistance !== undefined ? { viewerDistance: d.viewerDistance } : {}), ...(d.gain !== undefined ? { gain: d.gain } : {}) };
+    for (const l of list) out.setLayerRig(l, 'display', o);
+  }
   // Replay what the page did before this module arrived — exclude() above all, which a product
   // page calls on the very next line after addSplat.
   for (const [name, args] of pending) {
@@ -3156,9 +3468,89 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return best;
     }
     const full = c.res?.centers;
-    if (full && full.length) return nearestCentreToRay(full, ray.o, ray.d, undefined, c.alpha8);
+    if (full && full.length) return pickFull(c, full, ray);
     // The engine released its centres: fall back to the strided set kept at load.
     return c.pickCentres ? nearestCentreToRay(c.pickCentres, ray.o, ray.d) : null;
+  }
+
+  /**
+   * The eye of the view on screen and an orthonormal frame at it, in MODEL space, plus the
+   * direction extent of its frustum (gnomonic, per axis): what a pick index is built for. Every
+   * pick ray of this view passes through `eye`. null when the view is not a plain perspective one.
+   */
+  function pickFrame() {
+    const v = viewer.currentView();
+    const invP = mat4Invert(v.proj);
+    if (!invP) return null;
+    const T = mat4Mul(viewer.rigMatrix(), v.pose);
+    const at = (x, y, z) => contentToModel(transformPoint(T, x, y, z));
+    const eye = at(0, 0, 0);
+    const sub = (p) => [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const norm = (a) => {
+      const l = Math.hypot(a[0], a[1], a[2]);
+      return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : null;
+    };
+    const f = norm(sub(at(0, 0, -1)));
+    if (!f) return null;
+    let r = sub(at(1, 0, 0));
+    const rf = dot(r, f);
+    r = norm([r[0] - rf * f[0], r[1] - rf * f[1], r[2] - rf * f[2]]);
+    if (!r) return null;
+    const up = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]];
+    let U = 0;
+    let V = 0;
+    for (const [x, y] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const d = sub(at(...transformPoint(invP, x, y, 1)));
+      const z = dot(d, f);
+      if (!(z > 0)) return null;
+      U = Math.max(U, Math.abs(dot(d, r) / z));
+      V = Math.max(V, Math.abs(dot(d, up) / z));
+    }
+    if (!(U > 0 && V > 0)) return null;
+    // a margin past the frustum: a pick at its edge reaches a little outside it
+    U = U * 1.1 + 0.02;
+    V = V * 1.1 + 0.02;
+    return { eye, f, r, up, U, V, key: [...eye, ...f, ...r, U, V].join(',') };
+  }
+
+  /**
+   * A pick over the full centre set. The first pick from an eye position is the plain full scan
+   * (a page picking once per frame pays what it always did); a SECOND pick from the same eye
+   * builds a pick index for it (buildPickIndex: about one scan) and every further pick from there
+   * reads a few cells — a burst of N picks costs ~2 scans, not N. Same answer as the full scan
+   * (queryPickIndex falls back to it when it cannot answer exactly). `?dxrdiag=oldpick`: always
+   * the full scan (the 1.21.1 path), for A/B.
+   */
+  function pickFull(c, full, ray) {
+    const t0 = diag ? performance.now() : 0;
+    let how = 'scan';
+    let hit;
+    if (!diag?.has('oldpick')) {
+      const fr = pickFrame();
+      if (fr) {
+        const same = (p) => p && p.key === fr.key && p.xyz === full && p.alpha8 === c.alpha8;
+        let ix = same(c.pickIx) ? c.pickIx.ix : null;
+        if (!ix && same(c.pickPrev)) {
+          const count = Math.floor(full.length / 3);
+          ix = buildPickIndex(full, count, c.alpha8, fr.eye, fr.f, fr.r, fr.up, fr.U, fr.V);
+          c.pickIx = ix ? { key: fr.key, xyz: full, alpha8: c.alpha8, ix } : null;
+          how = 'build';
+        }
+        c.pickPrev = { key: fr.key, xyz: full, alpha8: c.alpha8 };
+        if (ix) {
+          hit = queryPickIndex(ix, full, ray.o, ray.d);
+          if (hit !== undefined && how === 'scan') how = 'index';
+        }
+      }
+    }
+    if (hit === undefined) {
+      hit = nearestCentreToRay(full, ray.o, ray.d, undefined, c.alpha8);
+      if (how === 'build') how = 'build+scan';
+      else if (how === 'index') how = 'scan';
+    }
+    if (diag) diag.pick(performance.now() - t0, how);
+    return hit;
   }
 
   function bindFocusInput() {
@@ -3601,6 +3993,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
     if (!app || removed) return null;
     pcModule = pc;
+    // diag: count the GL calls that can block (compile, link, status queries, readbacks, syncs),
+    // from before the first asset's compile on
+    if (diag) diag.instrumentGl(app.graphicsDevice?.gl);
     /**
      * ADVANCED, not covered by the semver promise: the engine objects behind this window.
      * `app` is the tile's `pc.AppBase`; `root` the content root, in the splat's content space
@@ -4217,10 +4612,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const finish = () => {
       if (finished) return;
       finished = true;
+      const ts = performance.now();
       for (const f of finishers) f();
+      perfSpan('settle:teardown', ts);
       if (gen === sourceGen) diag?.setPhase('settle');
       if (pendingSwap?.finish === finish) pendingSwap = null;
       settle();
+      if (gen === sourceGen) diag?.settled(performance.now() - ts);
     };
     pendingSwap = { finish };
 
@@ -4429,12 +4827,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const finish = () => {
       if (finished) return;
       finished = true;
+      const ts = performance.now();
       for (const f of finishers) f();
+      perfSpan('settle:teardown', ts);
       for (const w of [...wakers]) w();
       wakers.clear();
       viewer._transitionState = null;
       if (gen === sourceGen) diag?.setPhase('settle');
       if (pendingSwap?.finish === finish) pendingSwap = null;
+      if (gen === sourceGen) diag?.settled(performance.now() - ts);
     };
     const ac = typeof AbortController === 'function' ? new AbortController() : null;
     finishers.push(() => ac?.abort());

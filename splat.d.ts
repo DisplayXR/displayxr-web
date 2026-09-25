@@ -178,6 +178,47 @@ export interface ResolvedRig {
   parallaxFactor: number;
 }
 
+/**
+ * `handle.setLayerRig` options — how ROUND the display-rig layers are, for the whole tile (last
+ * call wins). The rounding gain is k = D / (metersToVirtual · viewerDistance): the photo rig's
+ * convergence distance over the viewer's. docs/proposals/layer-display-rig.md.
+ */
+export interface SplatLayerRigOptions {
+  /** Nominal viewer distance in metres (default 0.6, the browser's own nominal). */
+  viewerDistance?: number;
+  /** An explicit gain k instead (1 = exactly the photo rig; larger = rounder). */
+  gain?: number;
+}
+
+/** `handle.layerRigState()`. */
+export interface SplatLayerRigState {
+  /** The layers on the display rig, as the page named them. */
+  display: Array<string | number>;
+  /** The `nolayerrig` kill switch is on (requests recorded, never applied). */
+  disabled: boolean;
+  /** The last drawn frame drew the display layers through rounded views (false in mono). */
+  rounded: boolean;
+  /** The gain the last frame used (null off a camera rig). */
+  gain: number | null;
+}
+
+/** `handle.makeSbsMaterial` options. */
+export interface SplatSbsMaterialOptions {
+  /** How the texture holds the two eyes. Default `'sbs'` (left half = left eye). */
+  format?: 'sbs' | 'tb' | 'mono';
+  /** 0–1; below 1 the material alpha-blends. Default 1. */
+  opacity?: number;
+  /** The texture's row 0 is the image's BOTTOM (flip the sampling). Default false. */
+  flipY?: boolean;
+  /** Default true. */
+  depthTest?: boolean;
+  /** Default true. */
+  depthWrite?: boolean;
+  /** Back-face culling. Default false (both faces). */
+  cull?: boolean;
+  name?: string;
+}
+
 /** `handle.setVideo` options. */
 export interface SplatVideoOptions {
   /** Stereo layout of the frame: `'sbs'` (default, left eye = left half), `'tb'` (left = top), `'mono'` (both eyes the whole frame). */
@@ -220,6 +261,11 @@ export interface SplatOptions {
    */
   engine?: 'spark' | 'playcanvas';
   /**
+   * `engine: 'playcanvas'` only. Sugar for `handle.setLayerRig(layer, 'display', opts)` on each
+   * layer (a name, an id or a `pc.Layer`), applied as soon as the engine boots.
+   */
+  displayRigLayers?: Array<string | number | { id: number }> | ({ layers: Array<string | number | { id: number }> } & SplatLayerRigOptions);
+  /**
    * `engine: 'playcanvas'` only: TRANSITION DIAGNOSTICS (#36). Off by default; `true` (or the page
    * URL's `?dxrdiag=1`) records every woven frame — its interval, whether its eye poses are
    * bit-identical to the previous frame's (a tracking HOLD), whether the transition overlay shows
@@ -231,11 +277,12 @@ export interface SplatOptions {
    * A string / array adds A/B kill switches (also accepted as `?dxrdiag=norig,frozen`): `'norig'`
    * keeps the rig declared before the first setSource (drops every re-declaration), `'frozen'`
    * forces `outgoing: 'frozen'`, `'nowarm'` skips the transition shader pre-warm, `'cold'` skips
-   * the live outgoing pre-sort, `'nooverlay'` records without the overlay. The option wins over the
+   * the live outgoing pre-sort, `'nooverlay'` records without the overlay, `'oldrig'` draws the
+   * views as located (no rig tracking; the live outgoing photo on the pre-1.24 chain). The option wins over the
    * URL; `false` turns it off even with `?dxrdiag` present. See docs/playcanvas-adapter.md
    * § Diagnosing transition stalls.
    */
-  diag?: boolean | string | ReadonlyArray<'norig' | 'frozen' | 'nowarm' | 'cold' | 'nooverlay' | '1'>;
+  diag?: boolean | string | ReadonlyArray<'norig' | 'frozen' | 'nowarm' | 'cold' | 'nooverlay' | 'oldpick' | 'nolayerrig' | 'oldrig' | '1'>;
   /**
    * `engine: 'playcanvas'` only: the WebGL context's `preserveDrawingBuffer` (default false) —
    * the knob for the weave's zero-copy read race on large canvases.
@@ -911,6 +958,27 @@ export interface SplatHandle {
   setVideo(src: string | HTMLVideoElement, opts?: SplatVideoOptions): Promise<SplatVideo>;
   setVideo(src: null): Promise<null>;
   /**
+   * `engine: 'playcanvas'` only (throws on Spark). Draw `layer` (a name, an id or a `pc.Layer` of
+   * `handle.engine.app`) through the DISPLAY rig — round, physical-depth stage objects — while the
+   * splat and the view rig declared to the runtime stay on the photo's camera rig; `'camera'` puts
+   * it back. One extra camera over the named layers, into the same target, in composition order;
+   * the photo's projection matrices are used verbatim and the views are right-multiplied by the
+   * shear that fixes the photo's convergence plane (so a z = 0 contact point never moves).
+   * Identity in mono / the 2D tier, on a display rig (`setRig('display')`, `setVideo`), and under
+   * `?dxrdiag=nolayerrig`. Callable before `ready`. docs/proposals/layer-display-rig.md.
+   */
+  setLayerRig(layer: string | number | { id: number }, rig: 'display' | 'camera', opts?: SplatLayerRigOptions): SplatHandle;
+  /** `engine: 'playcanvas'` only. What `setLayerRig` is doing. */
+  layerRigState(): SplatLayerRigState;
+  /**
+   * `engine: 'playcanvas'` only, after `ready`. An unlit `pc.ShaderMaterial` that shows the left
+   * half of `texture` to left-eye views and the right half to right-eye views (`format`), on any
+   * mesh — mono / the 2D tier / a 1-view mode: the left half. The eye is picked from the scene-wide
+   * uniform `dxr_eye_split` the SDK sets every draw (declare it in your own shader to do the same).
+   * Nothing is decoded: the page uploads its one `<video>` into `texture`.
+   */
+  makeSbsMaterial(texture: unknown, opts?: SplatSbsMaterialOptions): unknown;
+  /**
    * `engine: 'playcanvas'` only (throws on Spark). Play a transition/pulse/custom effect;
    * validated at the call, run once the first asset is on screen. Resolves `{ finished }` —
    * false when stopped or replaced. docs/splat-effects.md.
@@ -941,7 +1009,9 @@ export interface SplatHandle {
    * What is under a point on the canvas, in the splat's own space — the double-click's pick.
    * PlayCanvas: the nearest gaussian CENTRE to the ray over the FULL centre set (haze under 5 %
    * opacity skipped); on a Streamed SOG, over the chunks currently resident. Spark: its surface
-   * raycast, falling back to the nearest centre.
+   * raycast, falling back to the nearest centre. PlayCanvas: a BURST of picks from one view (the
+   * same frame) builds a pick index at the second one, so N picks cost about three full scans, not
+   * N; the answer is the full scan's, exactly.
    */
   pick(clientX: number, clientY: number): number[] | null;
   /**
