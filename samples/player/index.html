@@ -78,8 +78,8 @@
       <div class="stage"><canvas id="tile-sbs"></canvas></div>
       <div class="chips" id="chapters" role="group" aria-label="Chapters"></div>
       <p class="cap">The clip is a real side-by-side stereo encode — left half is left-eye
-         content, right half is right-eye content. Woven, it has depth. The chips call
-         <code>setSource()</code>, which crossfades from the outgoing frame
+         content, right half is right-eye content. Woven, it has depth. The chips re-enter this one clip at a
+         time via <code>setSource()</code>, which crossfades from the outgoing frame
          (<code>transition:'crossfade'</code>); <kbd>F</kbd> or the corner button goes full screen.</p>
     </div>
     <div>
