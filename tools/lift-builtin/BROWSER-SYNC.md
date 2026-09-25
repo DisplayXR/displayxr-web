@@ -45,16 +45,15 @@ so `installer/models.json` must be byte-identical to it. Today nothing checks th
 `kWorldCsp` is `script-src 'self' displayxr-lift: 'wasm-unsafe-eval'; object-src 'none'; connect-src
 displayxr-lift: https:`. What the bundle does under it:
 
-- **`data:` wasm.** Spark loads its wasm with `fetch('data:application/wasm…')`, which is not allowed by `connect-src`. The bundle answers
-  `data:` URLs locally (`tools/lift-builtin/workers.js` `dataFetch`), so nothing reaches the network stack.
+- **`data:` wasm.** Nothing to answer any more: the explore renderer is the PlayCanvas engine (plain-JS
+  sort worker, no wasm). Until 2026-09 Spark fetched `data:` wasm and the bundle answered it locally.
 - **Workers.** With no `worker-src`, the policy falls back to `script-src`, so `blob:` workers are blocked. The bundle probes
-  once (`probeWorkers`) and runs every worker it owns **on the main thread**: Spark's sort/decode
-  workers use their own code, compiled into the bundle, and lift-gen's PLY emit uses its in-thread path. This was measured
-  in `tools/lift-builtin/test` with `worker-src 'none'` (see docs/lift-builtin.md).
-- **`eval`.** Spark probes `new Function` once inside a try/catch and falls back. Expect one
-  `script-src eval` violation report per document in the lift world's console. It is harmless.
-- **Option.** Adding `worker-src blob:` would let the probe pick real workers, which keeps Spark's sort off the main thread
-  during orbit. This only matters on weak GPUs/CPUs, and it is unverified whether a `blob:` URL minted in an isolated
+  once (`probeWorkers`) and runs every worker it owns **on the main thread**: PlayCanvas's gsplat sort worker runs the
+  same function in-thread (passed in at build time, no eval), and lift-gen's PLY emit uses its in-thread path. This was
+  measured in `tools/lift-builtin/test` with `worker-src 'none'` (see docs/lift-builtin.md).
+- **`eval`.** Nothing in the bundle probes `eval` / `new Function` any more (that was Spark).
+- **Option.** Adding `worker-src blob:` would let the probe pick the real sort worker, which keeps the sort off the main
+  thread during orbit. This only matters on weak CPUs, and it is unverified whether a `blob:` URL minted in an isolated
   world may start a worker for the page's origin. Leave it off until measured on the panel.
 
 ## 4. Blocker outside this bundle: cross-origin media readback (0222 vs the SDK)

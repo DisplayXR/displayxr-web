@@ -7,14 +7,15 @@
 // Output (lift-sdk/, gitignored) — exactly the files displayxr-browser-pvt's
 // scripts/stage-lift-resources.sh stages into the pak (served as displayxr-lift://runtime/<file>):
 //   displayxr-lift-builtin.js           the IIFE: SDK lift core + providers + DIBR + generator +
-//                                       explore + three + Spark (+ .map, NOT staged)
+//                                       explore + the PlayCanvas engine slice it uses (+ .map, NOT staged)
 //   ort.jspi.min.mjs                    onnxruntime-web, pinned (ORT_VERSION in js/lift/providers/ort.js)
 //   ort-wasm-simd-threaded.jspi.mjs     its wasm glue (import()ed by the above)
 //   ort-wasm-simd-threaded.jspi.wasm    its wasm (fetched by the glue)
 //   MANIFEST.json                       file, size, sha256 + SDK version, commit, ORT version
 //
-// The SDK is dependency-free; the build-only deps (esbuild, three, Spark, onnxruntime-web) are
+// The SDK is dependency-free; the build-only deps (esbuild, playcanvas, onnxruntime-web) are
 // pinned in tools/lift-builtin/package.json and installed there on first run (`npm ci`).
+// (Until 2026-09 the explore renderer was three + Spark — 85 % of the bundle; see docs/lift-builtin.md.)
 
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,7 +33,7 @@ const MINIFY = !args.includes('--no-minify');
 
 // ── build-only deps ─────────────────────────────────────────────────────────────────────────
 const NM = path.join(HERE, 'node_modules');
-if (!fs.existsSync(path.join(NM, 'esbuild')) || !fs.existsSync(path.join(NM, '@sparkjsdev/spark'))) {
+if (!fs.existsSync(path.join(NM, 'esbuild')) || !fs.existsSync(path.join(NM, 'playcanvas'))) {
   console.log('[lift-builtin] installing pinned build deps (tools/lift-builtin/package.json)…');
   execSync(fs.existsSync(path.join(HERE, 'package-lock.json')) ? 'npm ci --no-audit --no-fund' : 'npm install --no-audit --no-fund', { cwd: HERE, stdio: 'inherit' });
 }
@@ -58,8 +59,12 @@ const ORT_VERSION = /ORT_VERSION = '([^']+)'/.exec(ortSrc)[1];
 if (have('onnxruntime-web') !== ORT_VERSION)
   throw new Error(`[lift-builtin] js/lift/providers/ort.js pins ORT ${ORT_VERSION} but tools/lift-builtin has ${have('onnxruntime-web')}`);
 
-// ── plugins: source transforms that make the SDK + Spark run as a classic script in the lift world
-const SPARK = path.join(NM, '@sparkjsdev/spark/dist/spark.module.js');
+// ── plugins: source transforms that make the SDK + PlayCanvas run as a classic script in the lift world
+// The engine's ES-module SOURCE tree (build/playcanvas/src), not its prebuilt bundle: esbuild then
+// tree-shakes it down to what js/inline3d-playcanvas-engine.js names.
+const PC_SRC = path.join(NM, 'playcanvas/build/playcanvas/src');
+const PC_SORTER = /[\\/]scene[\\/]gsplat-unified[\\/]gsplat-unified-sorter\.js$/;
+const PC_SORT_WORKER = /[\\/]scene[\\/]gsplat-unified[\\/]gsplat-unified-sort-worker\.js$/;
 const WORKERS = path.join(HERE, 'workers.js');
 const LIFTGEN = path.join(ROOT, 'js/lift/gen/lift-gen.js');
 const PLYWRITER = path.join(ROOT, 'js/lift/gen/ply-writer.js');
@@ -72,35 +77,40 @@ function mustReplace(src, from, to, what) {
   return src.split(from).join(to);
 }
 
-/** Spark: its two blob workers get an in-thread twin (compiled from the SAME worker source string),
- *  and every data: wasm fetch is answered locally (the lift world's connect-src has no data:). */
-function transformSpark(src) {
-  const re = /^const (jsContent(\$1)?) = ('(?:[^'\\]|\\.)*');$/gm;
-  let m;
-  const mains = [];
-  const found = [];
-  while ((m = re.exec(src))) found.push(m);
-  if (found.length !== 2) throw new Error(`[lift-builtin] expected 2 Spark worker sources, found ${found.length}`);
-  for (const f of found) {
-    // eslint-disable-next-line no-eval
-    let code = (0, eval)(f[3]); // build-time only: the literal's value (the worker's source)
-    code = code.replace(/\/\/# sourceMappingURL=.*$/m, '');
-    code = mustReplace(code, 'fetch(module_or_path)', '__dxrFetch(module_or_path)', 'spark worker wasm fetch');
-    const fn = `__dxrSparkWorkerMain${f[2] ? '1' : '0'}`;
-    // ONE copy of the worker (its ~2 MB of base64 wasm included): compiled as a function taking
-    // (self, fetch). The real worker's blob source is rebuilt from it at runtime with
-    // Function.prototype.toString (no eval); the in-thread twin calls it directly. The body only
-    // touches its parameters and true globals, so minification cannot break the toString copy.
-    mains.push(`function ${fn}(self, __dxrFetch) {\nconst postMessage = self.postMessage.bind(self), addEventListener = self.addEventListener.bind(self), removeEventListener = self.removeEventListener.bind(self);\n${code}\n}`);
-    src = mustReplace(src, f[0], `const ${f[1]} = "(" + ${fn}.toString() + ")(self, fetch);";`, 'spark worker source');
-    const wrapper = `function WorkerWrapper${f[2] ? '$1' : ''}(options) {`;
-    src = mustReplace(src, wrapper, `${wrapper}\n  if (!__dxrWorkersOk()) return __dxrMainThreadWorker((s) => ${fn}(s, __dxrDataFetch), options);`, 'spark WorkerWrapper');
-  }
-  src = mustReplace(src, 'module_or_path = fetch(module_or_path);', 'module_or_path = __dxrDataFetch(module_or_path);', 'spark main wasm fetch');
-  return (
-    `import { dataFetch as __dxrDataFetch, workersOk as __dxrWorkersOk, mainThreadWorker as __dxrMainThreadWorker } from ${rel(WORKERS)};\n` +
-    src + '\n' + mains.join('\n')
+/**
+ * PlayCanvas's gsplat SORT worker (the one worker the explore renderer runs). The engine builds it
+ * as a blob: worker from `(${UnifiedSortWorker.toString()})()` with the bin-weights class pasted
+ * in front BY NAME. Two changes:
+ *   1. the worker function takes its dependencies as PARAMETERS — `(self, GSplatSortBinWeights)` —
+ *      instead of reaching for free globals. Minification renames the function's reference to the
+ *      class, so the engine's by-name paste would be a ReferenceError inside a minified worker;
+ *      passed in, the names are the function's own.
+ *   2. where the probe said blob workers are blocked (the page's CSP), the same function runs
+ *      IN-THREAD behind workers.js mainThreadWorker() — no eval, no blob: URL.
+ */
+function transformPcSortWorker(src) {
+  src = mustReplace(src, 'function UnifiedSortWorker() {', 'function UnifiedSortWorker(__dxrSelf, GSplatSortBinWeights) {', 'pc sort worker signature');
+  return mustReplace(
+    src,
+    'const myself = typeof self !== "undefined" && self || require("node:worker_threads").parentPort;',
+    'const myself = __dxrSelf || self;',
+    'pc sort worker self',
   );
+}
+function transformPcSorter(src) {
+  src = mustReplace(
+    src,
+    '(${UnifiedSortWorker.toString()})()',
+    '(${UnifiedSortWorker.toString()})(self, GSplatSortBinWeights)',
+    'pc sorter worker call',
+  );
+  src = mustReplace(
+    src,
+    'this.worker = new Worker(URL.createObjectURL(new Blob([workerSource], {\n\t\t\t\ttype: "application/javascript"\n\t\t\t})));',
+    'this.worker = __dxrWorkersOk() ? new Worker(URL.createObjectURL(new Blob([workerSource], { type: "application/javascript" }))) : __dxrMainThreadWorker((s) => UnifiedSortWorker(s, GSplatSortBinWeights));',
+    'pc sorter worker creation',
+  );
+  return `import { workersOk as __dxrWorkersOk, mainThreadWorker as __dxrMainThreadWorker } from ${rel(WORKERS)};\n` + src;
 }
 
 /** lift-gen: the PLY emit worker becomes a blob worker from a pre-built IIFE of ply-writer.js, used
@@ -128,15 +138,19 @@ function transformModels(src) {
 const liftPlugin = {
   name: 'dxr-lift-builtin',
   setup(b) {
-    b.onLoad({ filter: /spark\.module\.js$/ }, async (a) => ({ contents: transformSpark(await fs.promises.readFile(a.path, 'utf8')), loader: 'js', resolveDir: path.dirname(a.path) }));
+    b.onLoad({ filter: PC_SORT_WORKER }, async (a) => ({ contents: transformPcSortWorker(await fs.promises.readFile(a.path, 'utf8')), loader: 'js', resolveDir: path.dirname(a.path) }));
+    b.onLoad({ filter: PC_SORTER }, async (a) => ({ contents: transformPcSorter(await fs.promises.readFile(a.path, 'utf8')), loader: 'js', resolveDir: path.dirname(a.path) }));
     b.onLoad({ filter: /[\\/]js[\\/]lift[\\/]gen[\\/]lift-gen\.js$/ }, async (a) => ({ contents: await transformLiftGen(await fs.promises.readFile(a.path, 'utf8')), loader: 'js', resolveDir: path.dirname(a.path) }));
     b.onLoad({ filter: /[\\/]js[\\/]lift[\\/]providers[\\/]models\.js$/ }, async (a) => ({ contents: transformModels(await fs.promises.readFile(a.path, 'utf8')), loader: 'js', resolveDir: path.dirname(a.path) }));
     // The dev-only stub backend is never used by the built-in: keep it out of the bundle.
     b.onResolve({ filter: /^\.\/stubs\// }, (a) => (a.importer.endsWith(path.join('lift', 'lift.js')) ? { path: a.path, namespace: 'dxr-stub' } : undefined));
     b.onLoad({ filter: /.*/, namespace: 'dxr-stub' }, () => ({ contents: "throw new Error('lift: the stub backend is not in the built-in bundle');", loader: 'js' }));
     // Bare peers resolve to the pinned build deps.
-    b.onResolve({ filter: /^three$/ }, () => ({ path: path.join(NM, 'three/build/three.module.js') }));
-    b.onResolve({ filter: /^@sparkjsdev\/spark$/ }, () => ({ path: SPARK }));
+    b.onResolve({ filter: /^playcanvas$/ }, () => ({ path: path.join(PC_SRC, 'index.js') }));
+    // The engine's Node branches (`platform.environment === 'node'`) require worker_threads; never
+    // taken in a browser. An empty module keeps the bundle free of a require().
+    b.onResolve({ filter: /^node:worker_threads$/ }, () => ({ path: 'worker_threads', namespace: 'dxr-empty' }));
+    b.onLoad({ filter: /.*/, namespace: 'dxr-empty' }, () => ({ contents: 'export default {};', loader: 'js' }));
   },
 };
 
@@ -155,7 +169,7 @@ const res = await esbuild.build({
   charset: 'utf8',
   outfile: path.join(OUT, 'displayxr-lift-builtin.js'),
   define: { __DXR_LIFT_VERSION__: JSON.stringify(version) },
-  banner: { js: `/* @displayxr/inline3d lift built-in ${version} — ORT ${ORT_VERSION}, three ${pinned.three}, Spark ${pinned['@sparkjsdev/spark']}. Generated by tools/lift-builtin/build.mjs; do not edit. */` },
+  banner: { js: `/* @displayxr/inline3d lift built-in ${version} — ORT ${ORT_VERSION}, PlayCanvas ${pinned.playcanvas}. Generated by tools/lift-builtin/build.mjs; do not edit. */` },
   plugins: [liftPlugin],
   metafile: true,
   logLevel: 'warning',
@@ -188,8 +202,7 @@ const manifest = {
   dirty,
   built: new Date().toISOString(),
   ort: { package: 'onnxruntime-web', version: ORT_VERSION, bundle: 'jspi' },
-  three: pinned.three,
-  spark: pinned['@sparkjsdev/spark'],
+  playcanvas: pinned.playcanvas,
   esbuild: pinned.esbuild,
   // The models manifest compiled into the bundle. The browser's installer/models.json (staged as
   // runtime/models.json, and what the native store serves by name) must be byte-identical.

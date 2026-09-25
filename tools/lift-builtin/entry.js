@@ -7,7 +7,7 @@
 //     __dxrLift.convertAt(x, y, 'image'|'video'|'canvas')   // x,y: visual-viewport CSS px
 //
 // It exposes exactly `globalThis.__dxrLift = { convertAt, cancelAll, status, version }` (frozen).
-// Everything else — the SDK, three, Spark — lives in this IIFE's closure. (The real isolation is
+// Everything else — the SDK, the PlayCanvas engine slice — lives in this IIFE's closure. (The real isolation is
 // Chromium's: isolated worlds share the DOM, never the JS heap, so page script cannot reach even
 // `__dxrLift`.)
 //
@@ -126,7 +126,7 @@ const MODELS = 'displayxr-lift://models/';
     // session anyway. Converting another element replaces the current lift.
     for (const other of [...lifts.keys()]) removeHandle(other);
 
-    await probeWorkers(); // decides Spark's + lift-gen's worker path before anything is created
+    await probeWorkers(); // decides the gsplat sorter's + lift-gen's worker path before anything is created
     let ort;
     try {
       ort = await getOrt();

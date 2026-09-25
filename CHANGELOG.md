@@ -22,12 +22,35 @@ Adds a **preview-tier** subpath; nothing existing changes.
   the page's `baseUrl`, else the public content-addressed blob store; onnxruntime-web is imported at
   runtime. Types in `lift.d.ts`; guide in `docs/lift.md`.
 
+- **lift: the explore renderer is the PlayCanvas splat viewer** (was three + Spark). Same contract and
+  camera model; it adopts the live DIBR's WebGL2 context (`WebglGraphicsDevice` `options.gl`, state
+  handed over each frame), renders both eyes as `RenderView`s of one camera (one sort), and moves the
+  orbit onto the eyes (the engine bakes splat placement). The peer is now `playcanvas` (≥ 2.22.3), not
+  `three` + `@sparkjsdev/spark`. Anti-aliasing on by default (hidden-layer streaks). Rendering ~1.5×
+  the headroom at dpr 1 and no regeneration stalls; PLY load ~0.3 s slower (main-thread parse).
+  docs/lift-explore.md.
+- **lift: Download SOG** — `handle.exportSog()` / `downloadSog()` and a **↓ SOG** chip button: the lifted
+  scene as a SOG v2 bundle built in the page (JS lossless WebP writer — `canvas.toBlob` premultiplies
+  alpha — and a stored zip), with the DisplayXR camera block v2 (`rig:'camera'`, the lift's
+  intrinsics, `focus.point = [0,0,pivotZ]`, `dxr` factors). Opens on the camera rig in the gallery,
+  `addSplat` (both engines) and PlayCanvas. docs/lift.md § Download SOG.
+- **lift: explore comfort + depth** — `lift(el, { explore: { comfort, pivotTargetM, eyes } })`: a
+  metric scene whose pivot is > 25 % off 2 m is scaled about the camera to land there (the paused-CG-
+  video "too flat" panel finding; `stats.exploreScale`); `setDepth()` now also drives the explore
+  depth; `eyes:'tracked'` uses the runtime's eye positions as metres. `handle.capture()` returns the
+  next drawn frame as a PNG (the canvas has `preserveDrawingBuffer:false`).
+- `js/inline3d-playcanvas-engine.js` also re-exports `WebglGraphicsDevice` (additive; lets the lift
+  bundle leave the WebGPU backend out).
+
 ### Notes
 
-- `createSplatRenderer` in `js/lift/explore.js` fixes Spark's stereo **double regeneration**
-  (`autoUpdate` off, one `updateInternal` per frame from the eyes' midpoint): 26–33 → 60 fps at
-  1.2 M splats, dpr 1, SBS. **`addSplat` (`./splat`, Spark engine) still has the bug** — port the fix
-  when `createSplatRenderer` is factored out (not done in this release).
+- The lift built-in bundle (`tools/lift-builtin`) drops from 5.4 MB / 1.9 MB gzip / 0.88 MB brotli to
+  1.38 MB / 391 KB / 306 KB (Spark was 85 % of it). Its build now rewrites PlayCanvas's gsplat sort
+  worker to take its dependencies as parameters (minification-safe) and to run in-thread under a
+  worker-blocking CSP.
+- The Spark `createSplatRenderer` stereo fix (one update per frame from the eyes' midpoint) left with
+  the Spark explore renderer. **`addSplat` (`./splat`, Spark engine) still has the stereo double
+  regeneration**.
 
 ## 1.21.1 — 2026-09-24
 

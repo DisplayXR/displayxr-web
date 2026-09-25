@@ -29,8 +29,9 @@ h.remove();    // unmounts; the element is exactly as it was
 addEventListener('click', (e) => { if (e.altKey) { const el = resolveMediaAt(e.clientX, e.clientY); el && lift(el); } });
 ```
 
-The explore renderer needs the SDK's optional peers `three` (≥ 0.180) and `@sparkjsdev/spark` (2.x),
-resolvable as bare specifiers (an import map or a bundler), exactly like `addSplat`. The models are
+The explore renderer needs the SDK's optional peer `playcanvas` (≥ 2.22.3 < 3), resolvable as a bare
+specifier (an import map or a bundler), exactly like `addSplat(…, { engine: 'playcanvas' })` — it is the
+PlayCanvas splat viewer (docs/lift-explore.md; it replaced three + Spark in 2026-09). The models are
 never bundled: see [Models](#models-and-onnx-runtime).
 
 Sample: [`samples/lift/`](../samples/lift/) — runs the real models when its model tree answers
@@ -49,7 +50,7 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 | option | default | |
 |---|---|---|
 | `mode` | `'auto'` | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. |
-| `depth` | `1` | depth strength multiplier (live DIBR). |
+| `depth` | `1` | depth strength multiplier: live DIBR, and in explore the lifted scene's depth about its pivot (`setDepth()` drives both). |
 | `convergence` | `'auto'` | zero-disparity depth; handed to live-DIBR as given. |
 | `quality` | `'auto'` | `low`/`medium`/`high`; `auto` picks `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, else `low` — **never `high`** (MoGe-3 1022×574 is 2.8 s vs 1.3 s, and a 1536-wide lift is ~1.2 M splats). The still model, generator and inpainter get the concrete tier; the video model keeps `auto` (its warm-up picks 364×210 vs 518×294 by measured frame time). |
 | `wall` | — | an existing `createInline3D()` manager to join. **Pass it if the page already has one** — one inline-3D session per document. |
@@ -59,14 +60,51 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 | `providers` | `{ video: 'vda-small', still: 'moge3', inpaint: 'none' }` | `still` also accepts `'da3'`, `'da2-small'`, a manifest name or a registered provider name. `inpaint: 'light-inpaint-v1'` enables the net (off by default: see *Known issues*). |
 | `prefetch` | `false` | load the still model as soon as live runs. Live depth is **held** while it compiles (see *One ORT session at a time*). |
 | `exploreMaxDpr` | 1 woven / ∞ flat | dpr cap on the canvas while explore is up. 1 on the woven SBS store unless `quality: 'high'`. |
-| `ui` | `'builtin'` | a small chip (progress %, Explore / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. |
+| `explore` | `{ comfort: 'auto', pivotTargetM: 2.0, eyes: 'nominal' }` | the explore view. `comfort: 'auto'` scales a **metric** lift about the camera so its pivot lands at `pivotTargetM` when it is > 25 % off (neutral image unchanged, parallax × pivot/target — the paused-CG-video "too flat" fix); `'always'` / `'off'` for A/B. `eyes: 'tracked'` takes the runtime's eye positions as metres instead of normalising their separation to 63 mm. docs/lift-explore.md § Comfort. |
+| `ui` | `'builtin'` | a small chip (progress %, Explore / **↓ SOG** / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. |
 | `signal` | — | `AbortSignal`; aborting removes the lift. |
 | `backend` | `'real'` | `'stub'` swaps in `js/lift/stubs/*` (same contracts, no ML) — development and demos only. |
 
 Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRatio`/`overlay`),
 `woven` (true = inline-3D session, false = 2D fallback), `stats`, `on(type, cb) → off`, `off`,
-`explore()`, `resume()`, `setOrbit(yaw, pitch)`, `setDepth(x)`, `setConvergence(x)`, `remove()`.
-Types: [`lift.d.ts`](../lift.d.ts).
+`explore()`, `resume()`, `setOrbit(yaw, pitch)`, `setDepth(x)`, `setConvergence(x)`,
+`exportSog({camera?}) → Promise<Blob>`, `downloadSog(filename?) → Promise<boolean>`, `canExport`,
+`capture() → Promise<Blob>` (the next drawn frame as a PNG, read back in the same task as the draw —
+the canvas has `preserveDrawingBuffer: false`, so a page screenshot between frames can show it empty),
+`remove()`. `stats` adds `exploreScale` (the comfort scale applied). Types: [`lift.d.ts`](../lift.d.ts).
+
+## Download SOG (`js/lift/sog-export.js`)
+
+After a conversion the chip shows **↓ SOG** (explore state); `handle.downloadSog()` does the same from
+the page, `handle.exportSog()` returns the Blob. The file is a PlayCanvas **SOG v2** bundle built
+entirely in the page — no Worker, no `canvas.toBlob`, no network — that the gallery, `addSplat` (both
+engines), the PlayCanvas engine and the native gauss demo open **on the photo's own camera rig**:
+
+- **Container** (what the engine's `SogBundleParser` / `GSplatSogData` read @ 2.22.3): a PKZip of
+  STORED entries — `meta.json`, `means_l.webp` / `means_u.webp` (16-bit positions, `n = sign·ln(|v|+1)`
+  over per-axis `mins/maxs`, low/high byte), `quats.webp` (smallest-three, `A = 252 + largest`),
+  `scales.webp` + `sh0.webp` (indices into 256-entry 1-D k-means codebooks over the log scales / the
+  f_dc; `sh0.A` = sigmoid(opacity)·255). Texels row-major, `width = ⌈√n/4⌉·4`, splats in the lift's
+  image scan order.
+- **Lossless WebP, written in JS** (`js/lift/webp-lossless.js`: VP8L, subtract-green + a left
+  predictor, Huffman literals, no LZ77). Not `canvas.toBlob('image/webp', 1)`: a 2D canvas stores
+  PREMULTIPLIED alpha, so `sh0`'s RGB (alpha = opacity) and `quats`' (alpha 252–255) cannot survive it
+  whatever the encoder does; libwebp's `dwebp` decodes every plane of a real export bit-exactly, and
+  `test/lift-sog-export.test.mjs` round-trips through a spec decoder.
+- **Camera block v2** in `meta.json`, right after `count` (the shape the gallery producer writes;
+  `sogCameraFromMeta` validates it):
+  `{convention:'opencv', rig:'camera', rest:{position:[0,0,0], rotation:[0,0,0,1]},
+  intrinsics:{fx, fy, cx, cy, width, height} (meta.intrinsics — the generator's output raster),
+  focus:{point:[0,0,pivotZ], subject_m, near_m, far_m, source:'convergence'},
+  dxr:{ipd_factor, parallax_factor}}` — `focus.point` = orbit centre = pivot = convergence (pivotZ =
+  min(convergence, subject), the gallery rule). No `stereo` key (one camera). The file stays metric;
+  when explore applied its comfort scale k the `dxr` factors are `1/k`, the camera rig's way of saying
+  "eyes this many world units per real metre", so a viewer honouring the block reopens it with the
+  stereo the explore view had. `exportSog({ camera: {...} })` merges overrides (e.g. a manual focus).
+- **Measured** (office photo, 904,821 splats, Chrome, M1 Pro): 760–920 ms to build, 8.0 MB (vs a 61.5 MB
+  PLY); max position error 48 µm, opacity ≤ 0.5/255, quaternion 1 − |q·q'| ≤ 3e-5. Reopened by
+  `samples/splat/?engine=playcanvas&url=…` and `?engine=spark`: rig `camera`, focus source `block`,
+  convergence 2.917 m, and the rest view is the photo.
 
 ## State machine (`js/lift/state.js`)
 
@@ -136,7 +174,8 @@ These are fixed; each module is built against them independently.
 - `js/lift/providers/models.js`: `createModelSource({baseUrl?, manifest?}) → { get(name) → Promise<{stream, size, sha256}>, url(name) }`, plus `loadOrt({baseUrl}) → ort` and `getRegistry()` with `registerDepthProvider(name, factory, {priority})`.
 - `js/lift/live-dibr.js`: `createLiveDibr({canvas /*WebGL2*/}) → { setSource(el|VideoFrame), setDepth({data,w,h,space}), setParams({depth, convergence, dilate}), render({views, layer, session}) /* draws every view into layer.getViewport(view), same convention as addScene callbacks */, dispose() }`.
 - `js/lift/gen/lift-gen.js`: `generateLift({rgb: ImageBitmap|HTMLCanvasElement, depth:{data,w,h,space,intrinsics}, inpainter?, quality, signal, onProgress}) → Promise<{ply: ArrayBuffer /*binary 3DGS PLY*/, meta:{focalPx, pivotZ, w, h, layers:2}}>`.
-- `js/lift/explore.js`: `createExplore({canvas, gl?, ply, meta, axes?, clearAlpha?, orbit:{maxAngleDeg, relax}}) → Promise<{ render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), fadeOut(ms), setDepthGain(x), dispose() }>` (async: Spark parses the PLY in a worker).
+- `js/lift/explore.js`: `createExplore({canvas, gl?, ply, meta, axes?, clearAlpha?, orbit:{maxAngleDeg, relax}, depthGain?, space?, comfort?, eyes?}) → Promise<{ render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), fadeOut(ms), setDepthGain(x), dispose() }>` (async: the PlayCanvas engine parses the PLY; on `gl` it adopts the DIBR's context).
+- `js/lift/sog-export.js`: `exportSog({ply|splats, meta, camera?}) → Promise<Blob>` (a `.sog` with the camera block v2; see *Download SOG*).
 - Inpainter (`js/lift/providers/inpaint-ort.js`): `createInpainter({modelSource, ort?, quality, model?}) → { load(), inpaintTwoSided(rgbChw, maskRight, maskLeft, W, H) }`.
 
 ### How lift.js uses them (the parts the contracts leave open)
@@ -243,9 +282,12 @@ every lift.
   ~890 px needed against a 28 m pivot) still shows black at the corners and bottom.
 - **First pause latency** is dominated by creating the 715 MB MoGe-3 session (~4.5 s).
   `prefetch: true` moves it to just after live starts, at the price of held live depth meanwhile.
-- **Spark**: disposing the explore renderer surfaces an unhandled `Worker terminate` / `No target`
-  rejection from Spark's worker pool (harmless). `addSplat` still has the stereo double-regeneration
-  that `createSplatRenderer` fixes (CHANGELOG).
+- **Explore load is ~0.3 s slower than on Spark** (the engine parses the PLY on the main thread:
+  `exploreLoadMs` ~520 ms vs ~220 ms for 0.9 M splats). Rendering is faster and stall-free
+  (docs/lift-explore.md § Performance).
+- **Comfort scaling applies to metric photos too.** MoGe-3 stills are metric, so a photo whose pivot is
+  more than 25 % from 2 m gets scaled (the office photo: 0.69, i.e. 1.46× the parallax it had). Needs a
+  panel check; `explore: { comfort: 'off' }` restores the previous view.
 
 ## Stubs (`js/lift/stubs/`)
 

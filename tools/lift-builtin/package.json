@@ -4,10 +4,9 @@
   "description": "Build-only dependencies for the DisplayXR Browser's built-in 'Convert to 3D' bundle (tools/lift-builtin/build.mjs). Pinned exactly; never published.",
   "type": "module",
   "devDependencies": {
-    "@sparkjsdev/spark": "2.1.0",
     "esbuild": "0.28.2",
     "onnxruntime-web": "1.31.0-dev.20260918-bc8e7ed75",
-    "puppeteer-core": "25.12.0",
-    "three": "0.180.0"
+    "playcanvas": "2.22.3",
+    "puppeteer-core": "25.12.0"
   }
 }

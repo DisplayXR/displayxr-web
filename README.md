@@ -167,7 +167,8 @@ const h = await lift(document.querySelector('video'), { models: 'https://my.cdn/
 
 Depth runs on onnxruntime-web (WebGPU), loaded at runtime and never bundled; the models (58 MB
 video, ~715 MB still) are fetched, sha256-verified and cached, or come from the DisplayXR Browser's
-own store. The explore view needs the optional peers `three` + `@sparkjsdev/spark`. Everything —
+own store. The explore view needs the optional peer `playcanvas` (the PlayCanvas splat viewer), and a
+lifted scene downloads as a `.sog` with its camera block (`handle.downloadSog()`). Everything —
 options, providers, the model manifest, measured timings and known issues — is in
 [`docs/lift.md`](docs/lift.md).
 
