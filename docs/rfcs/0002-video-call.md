@@ -153,8 +153,14 @@ contains vendor code or depth models.
   an SR panel**: `hello` exchanged, `route: woven-sbs`, inbound 2560×720 VP9 30 fps, 0 dropped, no quality
   limitation, and the synthetic pair seen popping out of the panel. The SR laptop's tracking camera is
   exclusive to the eye tracker. A `canvas.captureStream()` sender throttles to ~1 fps when its window is
-  occluded (matters for share-my-3D-scene, not for camera senders). Pending: L/R-unswapped confirmation,
-  eye tracking while the webcam is open, a real stereo camera, tablets.
+  occluded (matters for share-my-3D-scene, not for camera senders). **Cross-box (mac headless Chrome →
+  win DXR Browser, WAN):** 2560×720 VP9 30 fps, woven layer 16:9 after a sample CSS fix (never
+  `object-fit` a woven canvas). **Open:** that run showed ONE eye on the panel although the received
+  frame carried a correct pair and the browser logged `ID-MATCH FALLBACK` (stamped layer, no quad) —
+  suspects: the sample's in-DOM hidden `<video>` / double layer registration (fixed in 7ac084b), or a
+  browser rect/quad skew on a scrolled page; A/B pending. Also pending: eye tracking while the
+  webcam is open, a real stereo camera, tablets. Product note: a peer that leaves must surface a
+  "peer gone" state and auto-redial — the probe's tile just went black.
 - **P1 — preview module:** mesh ≤4, `dxrSignaling` + TURN, invite links, SBS from USB stereo cams,
   convergence from `hello`/`hint`, mono flat, 2D-receiver fallback, SDK chrome, sample + tests.
 - **P2 — lift + tablets:** mono peers via `lift()` + priority; Android stereo-camera browser patch.
