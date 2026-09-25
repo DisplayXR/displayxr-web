@@ -1,0 +1,684 @@
+// lift/lift.js — "Convert to 3D": lift any <video>, <img> or <canvas> on a page into 3D, in place.
+//
+//   const h = await lift(videoEl);            // live 3D while it plays, explorable 3D when paused
+//   h.on('statechange', ({ state }) => …);
+//   h.setDepth(1.3); h.explore(); h.resume(); h.remove();
+//
+// Two presentations, one canvas:
+//   LIVE     — per-frame monocular depth (a video depth provider) + depth-image-based rendering:
+//              every view is re-projected from the current frame. Cheap, always in sync.
+//   EXPLORE  — the paused/ended frame (or a still) is lifted ONCE into a small 3D Gaussian scene
+//              (still-depth provider → lift generator, with inpainting behind edges) and shown with a
+//              bounded orbit. Expensive, so it only runs when the media stops.
+// state.js decides which one is showing and when; this file wires it to the DOM, the providers and
+// the inline-3D session.
+//
+// ── The session ──────────────────────────────────────────────────────────────────────────────
+// One inline-3D session per document (inline3d.js warns on a second one: the element-rect channel
+// is a whole-widget setter). So: pass `wall` to join the page's existing manager; otherwise every
+// lift() in the document shares ONE private manager, closed when its last lift is removed. The
+// lifted canvas is an ordinary addScene() window. On a browser without inline-3D the same render
+// path runs off requestAnimationFrame with a single mono view and a full-canvas viewport — the 2D
+// fallback — so the page still gets the converted picture (the stubs wobble it so you can tell).
+//
+// ── Providers ────────────────────────────────────────────────────────────────────────────────
+// Depth / model source / live-DIBR / lift generator / explore renderer are separate modules with
+// fixed contracts (docs/lift.md). `backend: 'stub'` swaps in js/lift/stubs/* — same contracts,
+// no models — so the state machine and the sample run end-to-end without any ML.
+
+import { createInline3D } from '../inline3d.js';
+import { createLiftMachine, STATES } from './state.js';
+import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
+import { createChip } from './ui.js';
+
+export { resolveMediaAt, STATES };
+
+const FADE_MS = 350;
+const MAX_EYE_PX = 2048; // cap on one view's backing width
+
+// Literal import() calls (not a computed path) so bundlers can see and split them.
+const BACKENDS = {
+  real: {
+    depth: () => import('./providers/depth-ort.js'),
+    models: () => import('./providers/models.js'),
+    dibr: () => import('./live-dibr.js'),
+    gen: () => import('./gen/lift-gen.js'),
+    explore: () => import('./explore.js'),
+  },
+  stub: {
+    depth: () => import('./stubs/depth.js'),
+    models: () => import('./stubs/models.js'),
+    dibr: () => import('./stubs/live-dibr.js'),
+    gen: () => import('./stubs/lift-gen.js'),
+    explore: () => import('./stubs/explore.js'),
+  },
+};
+
+async function loadBackend(name) {
+  const b = BACKENDS[name];
+  if (!b) throw new TypeError(`lift: unknown backend '${name}' (expected 'real' or 'stub')`);
+  const [depth, models, dibr, gen, explore] = await Promise.all([b.depth(), b.models(), b.dibr(), b.gen(), b.explore()]);
+  return { depth, models, dibr, gen, explore };
+}
+
+// ── the document's shared private manager ──────────────────────────────────────────────────
+let shared = null; // { refs, promise }
+
+async function acquireWall(given) {
+  if (given) return { wall: given.supported === false ? null : given, release() {} };
+  if (!shared) {
+    shared = {
+      refs: 0,
+      promise: createInline3D({ lazy: true }).catch((error) => ({ supported: false, error })),
+    };
+  }
+  const mine = shared;
+  mine.refs++;
+  const w = await mine.promise;
+  let released = false;
+  return {
+    wall: w && w.supported ? w : null,
+    release() {
+      if (released) return;
+      released = true;
+      if (--mine.refs > 0) return;
+      if (shared === mine) shared = null;
+      if (w && w.supported) w.close();
+    },
+  };
+}
+
+/** 'auto' → a tier from what the device admits to. Providers get a concrete tier, never 'auto'. */
+export function resolveQuality(q, nav = typeof navigator !== 'undefined' ? navigator : {}) {
+  if (q === 'low' || q === 'medium' || q === 'high') return q;
+  const mem = nav.deviceMemory || 4;
+  const cores = nav.hardwareConcurrency || 4;
+  const mobile = /Android|iPhone|iPad|Mobile/i.test(nav.userAgent || '');
+  if (mobile) return mem >= 8 ? 'medium' : 'low';
+  if (mem >= 8 && cores >= 8) return 'high';
+  if (mem >= 4 && cores >= 4) return 'medium';
+  return 'low';
+}
+
+const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+/** The one view the 2D fallback renders: centred, no eye offset. */
+const MONO_VIEW = Object.freeze({
+  eye: 'none',
+  projectionMatrix: IDENTITY,
+  transform: { position: { x: 0, y: 0, z: 0, w: 1 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, matrix: IDENTITY },
+});
+
+/**
+ * Lift `element` into 3D in place.
+ *
+ * @param {HTMLVideoElement|HTMLImageElement|HTMLCanvasElement|Element} element  media, or any element
+ *        at/near media (resolved the same way resolveMediaAt resolves a click).
+ * @param {object} [opts]
+ * @param {'auto'|'live'|'explore'} [opts.mode='auto']
+ * @param {number} [opts.depth=1]  depth strength multiplier.
+ * @param {'auto'|number} [opts.convergence='auto']  zero-disparity depth; passed to live-DIBR as given.
+ * @param {'auto'|'low'|'medium'|'high'} [opts.quality='auto']
+ * @param {object} [opts.wall]  an existing createInline3D() manager to join.
+ * @param {{maxAngleDeg?:number, relax?:boolean}} [opts.orbit]
+ * @param {'auto'|object} [opts.models='auto']  a ModelSource, or 'auto' for the default one.
+ * @param {{video?:string, still?:string, inpaint?:string}} [opts.providers]
+ * @param {'builtin'|'none'} [opts.ui='builtin']
+ * @param {AbortSignal} [opts.signal]  aborting it removes the lift.
+ * @param {'real'|'stub'} [opts.backend='real']  'stub' = js/lift/stubs/* (no models; dev/demo).
+ * @returns {Promise<LiftHandle>}
+ */
+export async function lift(element, opts = {}) {
+  let el = element;
+  if (!el || el.nodeType !== 1) throw new TypeError('lift: expected an element');
+  if (!/^(VIDEO|IMG|CANVAS)$/.test(el.tagName)) {
+    el = findMediaInParentsAndSiblings(el);
+    if (!el) throw new TypeError('lift: no <video>, <img> or <canvas> at that element');
+  }
+  const kind = el.tagName === 'VIDEO' ? 'video' : 'still';
+  const o = {
+    mode: opts.mode || 'auto',
+    depth: Number.isFinite(opts.depth) ? opts.depth : 1,
+    convergence: opts.convergence ?? 'auto',
+    quality: resolveQuality(opts.quality || 'auto'),
+    orbit: { maxAngleDeg: 15, relax: true, ...(opts.orbit || {}) },
+    models: opts.models || 'auto',
+    providers: { video: 'vda-small', still: 'moge3', inpaint: 'iw3-light', ...(opts.providers || {}) },
+    ui: opts.ui === 'none' ? 'none' : 'builtin',
+    backend: opts.backend || 'real',
+  };
+
+  // ── listeners ─────────────────────────────────────────────────────────────────────────
+  const listeners = new Map();
+  const emit = (type, detail) => {
+    const set = listeners.get(type);
+    if (!set) return;
+    for (const cb of [...set]) {
+      try {
+        cb(detail);
+      } catch (e) {
+        console.error('[inline3d/lift] listener threw', e);
+      }
+    }
+  };
+
+  // ── placement + session ───────────────────────────────────────────────────────────────
+  const { wall, release } = await acquireWall(opts.wall);
+  const cols = wall ? 2 : 1; // SBS backing store while a session is live
+  const placement = mountCanvas(el);
+  const canvas = placement.canvas;
+  let chip = null;
+
+  // ── runtime state ─────────────────────────────────────────────────────────────────────
+  let impl = null;
+  let modelSource = null;
+  let ort = null;
+  let registry = null;
+  let dibr = null;
+  let videoProv = null;
+  let stillProv = null;
+  let stillLoading = null;
+  let explore = null;
+  let pendingExplore = null;
+  let fadeInUntil = 0;
+  let fadeOutUntil = 0;
+  let abort = null; // current freeze/lift
+  let loadAbort = new AbortController();
+  let frozen = null; // { bitmap, depth }
+  let liveGen = 0; // bumps on provider reset: stale live depth is dropped
+  let inferBusy = false;
+  let lastT = -1;
+  let suspended = false;
+  let disposed = false;
+  let sceneHandle = null;
+  let fallbackRaf = 0;
+  let lastDpr = 0;
+  let crop = null; // { canvas, ctx } when object-fit crops the media
+  let dibrSource = null;
+  let liveErrorWarned = false;
+
+  const params = { depth: o.depth, convergence: o.convergence, dilate: 0 };
+  const progress = (phase, value, base = 0, span = 1) => {
+    emit('progress', { phase, value });
+    if (chip) chip.setProgress(base + span * value);
+  };
+
+  const machine = createLiftMachine({
+    kind,
+    mode: o.mode,
+    isPaused: () => kind === 'still' || el.paused || el.ended,
+    onState: (from, to, why) => {
+      if (chip) chip.setState(to);
+      emit('statechange', { state: to, from, reason: why });
+    },
+    onEffect: (name, payload) => runEffect(name, payload || {}),
+  });
+
+  // ── sizing ────────────────────────────────────────────────────────────────────────────
+  function syncBacking(force) {
+    const changed = placement.update();
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    if (!changed && !force && dpr === lastDpr) return;
+    lastDpr = dpr;
+    const f = placement.fit;
+    let ew = Math.max(1, Math.round(f.dw * dpr));
+    let eh = Math.max(1, Math.round(f.dh * dpr));
+    if (ew > MAX_EYE_PX) {
+      eh = Math.round((eh * MAX_EYE_PX) / ew);
+      ew = MAX_EYE_PX;
+    }
+    if (canvas.width !== ew * cols) canvas.width = ew * cols;
+    if (canvas.height !== eh) canvas.height = eh;
+    // Crop when object-fit shows only part of the media (cover / none).
+    const { w, h } = mediaSize(el);
+    const partial = w > 0 && h > 0 && (f.sw < w - 0.5 || f.sh < h - 0.5 || f.sx > 0.5 || f.sy > 0.5);
+    if (partial) {
+      if (!crop) {
+        const c = document.createElement('canvas');
+        crop = { canvas: c, ctx: c.getContext('2d') };
+      }
+      crop.canvas.width = Math.max(1, Math.min(Math.round(f.sw), 1920));
+      crop.canvas.height = Math.max(1, Math.round((crop.canvas.width * f.sh) / Math.max(1, f.sw)));
+    } else crop = null;
+  }
+
+  /** What the providers and the DIBR read: the element, or a crop of its visible part. */
+  function currentSource() {
+    if (!crop) return el;
+    const f = placement.fit;
+    try {
+      crop.ctx.drawImage(el, f.sx, f.sy, f.sw, f.sh, 0, 0, crop.canvas.width, crop.canvas.height);
+    } catch {
+      /* no frame yet */
+    }
+    return crop.canvas;
+  }
+
+  // ── the frame ─────────────────────────────────────────────────────────────────────────
+  function frame(views, layer, session) {
+    if (disposed) return;
+    if (!el.isConnected) {
+      machine.send('disconnected');
+      return;
+    }
+    syncBacking(false);
+    const st = machine.state;
+    if (!dibr || st === STATES.IDLE || st === STATES.LOADING || st === STATES.SUSPENDED || st === STATES.ERROR) return;
+    const src = currentSource();
+    if (src !== dibrSource) {
+      dibr.setSource(src);
+      dibrSource = src;
+    }
+    if (kind === 'video' && st === STATES.LIVE && !suspended) maybeInfer(src);
+    const ctx = { views, layer, session };
+    const now = performance.now();
+    const fadingOut = explore && fadeOutUntil > 0;
+    const showExplore = explore && (st === STATES.EXPLORE || fadingOut);
+    if (!showExplore || now < fadeInUntil || fadingOut) dibr.render(ctx);
+    if (showExplore) explore.render(ctx);
+    if (fadingOut && now >= fadeOutUntil) {
+      disposeExplore();
+    }
+  }
+
+  function maybeInfer(src) {
+    if (inferBusy || !videoProv || el.readyState < 2) return;
+    if (el.currentTime === lastT) return;
+    lastT = el.currentTime;
+    inferBusy = true;
+    const g = liveGen;
+    Promise.resolve()
+      .then(() => videoProv.estimate({ source: src, t: el.currentTime }))
+      .then((d) => {
+        if (!disposed && g === liveGen && d) dibr.setDepth(d);
+      })
+      .catch((error) => {
+        if (!liveErrorWarned) {
+          liveErrorWarned = true;
+          emit('error', { error, fatal: false, phase: 'live' });
+        }
+      })
+      .finally(() => {
+        inferBusy = false;
+      });
+  }
+
+  function startFallbackLoop() {
+    if (fallbackRaf || disposed) return;
+    const layer = { getViewport: () => ({ x: 0, y: 0, width: canvas.width, height: canvas.height }) };
+    const views = [MONO_VIEW];
+    const tick = () => {
+      fallbackRaf = 0;
+      if (disposed) return;
+      frame(views, layer, null);
+      fallbackRaf = requestAnimationFrame(tick);
+    };
+    fallbackRaf = requestAnimationFrame(tick);
+  }
+
+  // ── providers ─────────────────────────────────────────────────────────────────────────
+  function makeProvider(which, name) {
+    const factory =
+      (registry && typeof registry.getDepthProvider === 'function' && registry.getDepthProvider(name)) ||
+      (registry && typeof registry.get === 'function' && registry.get(name)) ||
+      impl.depth.createDepthProvider;
+    // `model` is outside the frozen contract (A2 may pick the model from `kind` alone); harmless extra.
+    return factory({ kind: which, modelSource, ort, quality: o.quality, model: name });
+  }
+
+  function ensureStill(signal, base = 0, span = 1) {
+    if (stillProv) return Promise.resolve(stillProv);
+    if (!stillLoading) {
+      const p = makeProvider('still', o.providers.still);
+      stillLoading = Promise.resolve(p.load({ signal, onProgress: (v) => progress('models', v, base, span) })).then(
+        () => (stillProv = p),
+        (e) => {
+          stillLoading = null;
+          try {
+            p.dispose();
+          } catch {
+            /* ignore */
+          }
+          throw e;
+        }
+      );
+    }
+    return stillLoading;
+  }
+
+  function mediaReady() {
+    if (el.tagName === 'IMG') {
+      if (el.complete && el.naturalWidth > 0) return Promise.resolve();
+      return el.decode ? el.decode().catch(() => {}) : Promise.resolve();
+    }
+    if (el.tagName === 'VIDEO' && el.readyState < 2) {
+      return new Promise((resolve) => el.addEventListener('loadeddata', () => resolve(), { once: true }));
+    }
+    return Promise.resolve();
+  }
+
+  async function doLoad() {
+    const signal = loadAbort.signal;
+    try {
+      impl = await loadBackend(o.backend);
+      const M = impl.models;
+      modelSource = o.models === 'auto' ? M.createModelSource({}) : o.models;
+      try {
+        ort = typeof M.loadOrt === 'function' ? await M.loadOrt({}) : null;
+      } catch (e) {
+        ort = null; // a provider that needs it will fail its own load() with a better message
+      }
+      registry = typeof M.getRegistry === 'function' ? M.getRegistry() : null;
+      if (disposed) return;
+      dibr = impl.dibr.createLiveDibr({ canvas });
+      dibr.setParams(params);
+      if (kind === 'video') {
+        videoProv = makeProvider('video', o.providers.video);
+        await videoProv.load({ signal, onProgress: (v) => progress('models', v) });
+      } else {
+        await ensureStill(signal);
+      }
+      await mediaReady();
+      if (disposed) return;
+      syncBacking(true);
+      machine.send('loaded');
+    } catch (error) {
+      if (!disposed) machine.send('fail', { error });
+    }
+  }
+
+  const isStale = (gen) => disposed || gen !== machine.gen;
+
+  async function doFreeze(gen) {
+    abort = new AbortController();
+    const signal = abort.signal;
+    try {
+      await mediaReady();
+      if (isStale(gen)) return;
+      const t = kind === 'video' ? el.currentTime : 0;
+      const bitmap = await createImageBitmap(currentSource());
+      if (isStale(gen)) return bitmap.close && bitmap.close();
+      await ensureStill(signal, 0, 0.25);
+      if (isStale(gen)) return bitmap.close && bitmap.close();
+      progress('depth', 0, 0.25, 0.1);
+      const depth = await stillProv.estimate({ source: bitmap, t });
+      if (isStale(gen)) return bitmap.close && bitmap.close();
+      progress('depth', 1, 0.25, 0.1);
+      if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
+      frozen = { bitmap, depth };
+      // The frozen frame's better (still-model) depth also improves the live view shown meanwhile.
+      if (dibr) dibr.setDepth(depth);
+      machine.send('frozen', { gen });
+    } catch (error) {
+      if (!isStale(gen)) machine.send('lift-failed', { gen, error });
+    }
+  }
+
+  async function doLift(gen) {
+    const signal = abort ? abort.signal : undefined;
+    try {
+      const inpainter =
+        registry && typeof registry.getInpainter === 'function' ? registry.getInpainter(o.providers.inpaint) : undefined;
+      const res = await impl.gen.generateLift({
+        rgb: frozen.bitmap,
+        depth: frozen.depth,
+        inpainter,
+        quality: o.quality,
+        signal,
+        onProgress: (v) => progress('lift', v, 0.35, 0.65),
+      });
+      if (isStale(gen)) return;
+      const ex = impl.explore.createExplore({ canvas, ply: res.ply, meta: res.meta, orbit: o.orbit });
+      if (isStale(gen)) return ex.dispose();
+      pendingExplore = ex;
+      machine.send('lifted', { gen });
+    } catch (error) {
+      if (!isStale(gen)) machine.send('lift-failed', { gen, error });
+    }
+  }
+
+  function disposeExplore() {
+    fadeOutUntil = 0;
+    if (explore) {
+      try {
+        explore.dispose();
+      } catch {
+        /* ignore */
+      }
+    }
+    explore = null;
+  }
+
+  // ── pointer → explore ─────────────────────────────────────────────────────────────────
+  const onDown = (ev) => {
+    if (!explore || machine.state !== STATES.EXPLORE) return;
+    try {
+      canvas.setPointerCapture(ev.pointerId);
+    } catch {
+      /* ignore */
+    }
+    canvas.style.cursor = 'grabbing';
+    explore.onPointerDown(ev);
+  };
+  const onMove = (ev) => explore && machine.state === STATES.EXPLORE && explore.onPointerMove(ev);
+  const onUp = (ev) => {
+    canvas.style.cursor = machine.state === STATES.EXPLORE ? 'grab' : '';
+    if (explore) explore.onPointerUp(ev);
+  };
+  canvas.addEventListener('pointerdown', onDown);
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerup', onUp);
+  canvas.addEventListener('pointercancel', onUp);
+
+  // ── effects (the machine's side of the contract) ──────────────────────────────────────
+  function runEffect(name, p) {
+    switch (name) {
+      case 'load':
+        doLoad();
+        break;
+      case 'startLive':
+        canvas.style.visibility = '';
+        break;
+      case 'freeze':
+        doFreeze(p.gen);
+        break;
+      case 'lift':
+        doLift(p.gen);
+        break;
+      case 'enterExplore':
+        if (explore) disposeExplore();
+        explore = pendingExplore;
+        pendingExplore = null;
+        explore.fadeIn(FADE_MS);
+        fadeInUntil = performance.now() + FADE_MS;
+        placement.setInteractive(true);
+        break;
+      case 'exitExplore':
+        placement.setInteractive(false);
+        if (explore && p.crossfade && typeof explore.fadeOut === 'function') {
+          explore.fadeOut(FADE_MS);
+          fadeOutUntil = performance.now() + FADE_MS;
+        } else disposeExplore();
+        break;
+      case 'cancelLift':
+        if (abort) abort.abort();
+        abort = null;
+        if (pendingExplore) {
+          pendingExplore.dispose();
+          pendingExplore = null;
+        }
+        break;
+      case 'resetProvider':
+        liveGen++;
+        lastT = -1;
+        if (videoProv) videoProv.reset();
+        break;
+      case 'suspend':
+        suspended = true;
+        break;
+      case 'resume':
+        suspended = false;
+        break;
+      case 'pauseMedia':
+        if (kind === 'video') el.pause();
+        break;
+      case 'playMedia':
+        if (kind === 'video') {
+          const r = el.play();
+          if (r && r.catch) r.catch(() => {});
+        }
+        break;
+      case 'liftError':
+        emit('error', { error: p.error, fatal: false, phase: 'lift' });
+        break;
+      case 'fail':
+        // Leave the page's own element showing; keep the chip so the user can dismiss it.
+        canvas.style.visibility = 'hidden';
+        placement.setInteractive(false);
+        emit('error', { error: p.error, fatal: true });
+        break;
+      case 'dispose':
+        teardown();
+        break;
+    }
+  }
+
+  // ── element + page events ─────────────────────────────────────────────────────────────
+  const media = {
+    pause: () => machine.send('pause'),
+    play: () => machine.send('play'),
+    seeked: () => machine.send('seeked'),
+    ended: () => machine.send('ended'),
+    emptied: () => machine.send('emptied'),
+    loadstart: () => machine.send('emptied'),
+  };
+  if (kind === 'video') for (const [k, f] of Object.entries(media)) el.addEventListener(k, f);
+  const onVis = () => machine.send(document.visibilityState === 'hidden' ? 'hidden' : 'visible');
+  document.addEventListener('visibilitychange', onVis);
+  const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => syncBacking(false)) : null;
+  if (ro) ro.observe(el);
+  const onWinResize = () => syncBacking(false);
+  window.addEventListener('resize', onWinResize);
+  // Removal is caught per frame too, but a lazy window scrolled off screen gets no frames.
+  const mo =
+    typeof MutationObserver === 'function'
+      ? new MutationObserver(() => {
+          if (!el.isConnected) machine.send('disconnected');
+        })
+      : null;
+  if (mo) mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+  const onAbort = () => machine.send('remove');
+  if (opts.signal) {
+    if (opts.signal.aborted) queueMicrotask(onAbort);
+    else opts.signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  function teardown() {
+    if (disposed) return;
+    disposed = true;
+    loadAbort.abort();
+    if (abort) abort.abort();
+    if (kind === 'video') for (const [k, f] of Object.entries(media)) el.removeEventListener(k, f);
+    document.removeEventListener('visibilitychange', onVis);
+    window.removeEventListener('resize', onWinResize);
+    if (ro) ro.disconnect();
+    if (mo) mo.disconnect();
+    if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
+    if (fallbackRaf) cancelAnimationFrame(fallbackRaf);
+    fallbackRaf = 0;
+    if (sceneHandle) sceneHandle.remove();
+    sceneHandle = null;
+    for (const x of [pendingExplore, explore, dibr, videoProv, stillProv]) {
+      if (!x) continue;
+      try {
+        x.dispose();
+      } catch {
+        /* ignore */
+      }
+    }
+    pendingExplore = explore = dibr = videoProv = stillProv = null;
+    if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
+    frozen = null;
+    if (chip) chip.dispose();
+    placement.unmount();
+    release();
+  }
+
+  // ── wire up ───────────────────────────────────────────────────────────────────────────
+  if (o.ui === 'builtin') {
+    chip = createChip(placement.shadow, {
+      kind,
+      onExplore: () => handle.explore(),
+      onResume: () => handle.resume(),
+      onExit: () => handle.remove(),
+    });
+  }
+  syncBacking(true);
+  if (wall) {
+    sceneHandle = wall.addScene(canvas, (views, layer) => frame(views, layer, wall.session), {
+      // The layer went away for good (session ended): keep the page working in 2D.
+      onLayerLost: () => startFallbackLoop(),
+    });
+    if (chip && sceneHandle.exclude) sceneHandle.exclude(chip.el);
+  } else startFallbackLoop();
+
+  /** @type {LiftHandle} */
+  const handle = {
+    get state() {
+      return machine.state;
+    },
+    element: el,
+    canvas,
+    /** The layout mode placement chose: standard | picture | aspectRatio | overlay. */
+    layout: placement.layout,
+    /** True when rendering through the inline-3D session, false in the 2D fallback. */
+    woven: !!wall,
+    on(type, cb) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(cb);
+      return () => handle.off(type, cb);
+    },
+    off(type, cb) {
+      const s = listeners.get(type);
+      if (s) s.delete(cb);
+    },
+    /** Freeze the current frame and lift it (videos pause). No-op outside `live`. */
+    explore() {
+      machine.send('explore-request');
+    },
+    /** Back to live: plays a paused video (its `play` event crossfades explore → live). */
+    resume() {
+      machine.send('resume-request');
+    },
+    setDepth(x) {
+      if (!Number.isFinite(x)) return;
+      params.depth = x;
+      if (dibr) dibr.setParams(params);
+    },
+    setConvergence(x) {
+      params.convergence = x === 'auto' || Number.isFinite(x) ? x : 'auto';
+      if (dibr) dibr.setParams(params);
+    },
+    remove() {
+      machine.send('remove');
+    },
+  };
+
+  machine.send('start');
+  return handle;
+}
+
+/**
+ * @typedef {object} LiftHandle
+ * @property {string} state
+ * @property {Element} element
+ * @property {HTMLCanvasElement} canvas
+ * @property {string} layout
+ * @property {boolean} woven
+ * @property {(type:'statechange'|'progress'|'error', cb:(detail:any)=>void) => () => void} on
+ * @property {(type:string, cb:Function) => void} off
+ * @property {() => void} explore
+ * @property {() => void} resume
+ * @property {(x:number) => void} setDepth
+ * @property {(x:'auto'|number) => void} setConvergence
+ * @property {() => void} remove
+ */
