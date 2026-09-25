@@ -16,7 +16,7 @@
 //     re-layout. The canvas lives in a CLOSED shadow root, so page CSS cannot reach it and page
 //     scripts cannot find it by query.
 //
-// The element itself is never modified: unmount() removes the host and that is the whole restore.
+// The element is only touched via inline `visibility` (hidden while covered, see below); unmount() restores it and removes the host.
 
 const MIN_MEDIA_PX = 50;
 const MAX_ASPECT = 5;
@@ -297,6 +297,19 @@ export function mountCanvas(el) {
   }
 
   update();
+  // The source element is hidden (not display:none — it must keep decoding/laying out) while the
+  // tile covers it: the DisplayXR Browser's inline-3D join otherwise falls back to the exact-cover
+  // layer UNDER the canvas on frames where the canvas emits no quad and weaves the mono <video>
+  // frame as SBS (displayxr-browser-pvt#168). visibility:hidden keeps playback, rVFC and
+  // texImage2D uploads working.
+  const prevVisibility = el.style.visibility;
+  let sourceHidden = false;
+  function setSourceHidden(hide) {
+    if (hide === sourceHidden) return;
+    sourceHidden = hide;
+    el.style.visibility = hide ? 'hidden' : prevVisibility;
+  }
+  setSourceHidden(true);
   return {
     host,
     shadow,
@@ -308,7 +321,9 @@ export function mountCanvas(el) {
       canvas.style.pointerEvents = on ? 'auto' : 'none';
       canvas.style.cursor = on ? 'grab' : '';
     },
+    setSourceHidden,
     unmount() {
+      setSourceHidden(false);
       host.remove();
     },
   };

@@ -706,6 +706,7 @@ export async function lift(element, opts = {}) {
         // Leave the page's own element showing; keep the chip so the user can dismiss it.
         canvas.style.visibility = 'hidden';
         placement.setInteractive(false);
+        placement.setSourceHidden?.(false);
         emit('error', { error: p.error, fatal: true });
         break;
       case 'dispose':
