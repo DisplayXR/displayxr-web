@@ -272,12 +272,16 @@ test('#172 deadlock regression: an all-mono call lifts at once, then re-creates 
   const lifts = [];
   // Like the real lift(): its canvas becomes an addScene window on the wall it is given.
   const fakeLift = async (el, opts) => {
+    const framesAtLift = w.frames; // session frames seen when lift() was called
     const scene = opts.wall.addScene(el, () => {});
-    const h = { el, opts, removed: false, state: 'live', native: false, priorities: [], setPriority(p) { this.priorities.push(p); return true; }, setConvergence() {}, remove() { this.removed = true; scene.remove(); } };
+    const h = { el, opts, framesAtLift, removed: false, state: 'live', native: false, priorities: [], setPriority(p) { this.priorities.push(p); return true; }, setConvergence() {}, remove() { this.removed = true; scene.remove(); } };
     lifts.push(h);
     return h;
   };
-  const signaling = { async join(room, hooks) { return { id: hooks.id, peers: ['p1peer000'], send() {}, leave() {} }; } };
+  // The fake peer's id sorts ABOVE any real peer id ('~' > every base64url char), so this side is
+  // always the offerer and builds the connection (and its data channel) at once. With a random
+  // lower id this side would wait for an offer that never comes, and the hello would be lost.
+  const signaling = { async join(room, hooks) { return { id: hooks.id, peers: ['~~~~~~~~~~~'], send() {}, leave() {} }; } };
   const host = doc.body.appendChild(doc.createElement('div'));
   const call = await addCall(w.wall, host, {
     signaling, room: 'R'.repeat(22), ui: false, audio: false, selfView: false,
@@ -289,17 +293,21 @@ test('#172 deadlock regression: an all-mono call lifts at once, then re-creates 
     assert.equal(w.frames, 0, 'no layer yet → the session has not ticked');
     // The remote peer: a mono hello, and its video starts playing.
     const hello = makeHello({ format: 'mono', width: 640, height: 480 });
+    assert.ok(channels.length >= 1, 'the offerer built the data channel');
     for (const dc of channels) dc.onmessage && dc.onmessage({ data: JSON.stringify(hello) });
     const v = doc.created.filter((e) => e.tagName === 'VIDEO' && (e.listeners.playing || []).length).at(-1);
     assert.ok(v, 'the tile video exists');
     Object.assign(v, { readyState: 4, videoWidth: 640, videoHeight: 480 });
     v.fire('playing');
-    await sleep(5);
-    assert.equal(lifts.length >= 1, true, 'lifted AT ONCE, before the session ever ticked (the old gate never lifted here)');
+    // Poll (not a fixed sleep: the resolve → acquire chain is async and a loaded test runner is
+    // slow). What proves the fix is the frame count AT the first lift, not how fast it came.
+    for (let i = 0; i < 200 && !lifts.length; i++) await sleep(5);
+    assert.equal(lifts.length >= 1, true, 'lifted (the old weave-live gate never lifted here: no layer → no session frames)');
+    assert.equal(lifts[0].framesAtLift, 0, 'the first lift came BEFORE the session ever ticked');
     assert.equal(lifts[0].opts.mode, 'live');
     assert.equal(lifts[0].opts.wall, w.wall);
     // lift's scene is the only layer → the session starts ticking → 10 one-view frames → live.
-    for (let i = 0; i < 100 && lifts.length < 2; i++) await sleep(5);
+    for (let i = 0; i < 600 && lifts.length < 2; i++) await sleep(5); // generous: a loaded runner
     assert.ok(w.frames >= 10, `the session ticked (${w.frames} frames)`);
     assert.equal(lifts.length, 2, 'the pre-live lift was re-created exactly once');
     assert.equal(lifts[0].removed, true, 'the pre-live lift was released');
