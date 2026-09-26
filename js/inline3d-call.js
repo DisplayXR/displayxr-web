@@ -48,8 +48,10 @@
 //
 // MONO→3D (P2, RFC §5): a mono peer on a woven wall is handed to `lift()`
 // (`@displayxr/inline3d/lift`, loaded lazily — never a hard dependency; call/lift.js) with
-// `{ mode: 'live', wall }`, so lift's canvas is one more window on the call's own wall and goes
-// through the same #172 liveness gate (a tile is only ever routed `lifted` once `woven` is true).
+// `{ mode: 'live', wall }`, so lift's canvas is one more window on the call's own wall and follows
+// the same #172 rule as the SBS tiles: lift AT ONCE (in an all-mono call lift's window is the only
+// layer, and the inline session does not tick until a layer exists — waiting for live frames
+// would deadlock), then release + lift again ONCE when the weave session goes live.
 // DEVIATION from the detached-<video> rule, for lifted tiles only: lift() floats its canvas over
 // the ELEMENT's rect and (native provider) the browser converts that element in place, so a lifted
 // tile's <video> is mounted inside its stage. lift hides it (`visibility:hidden`, the #168 guard)
@@ -647,7 +649,8 @@ class Call {
       this.weaveLive = true;
       this.log('weave-live', { ms: Math.round(performance.now() - t0) });
       // Re-create only what was woven before the session was live (#172); flat tiles are untouched.
-      for (const t of this.tiles.values()) if (t.route === 'woven-sbs') t.reroute(true);
+      // A lifted tile is a woven window too (lift's addScene canvas): release + lift again.
+      for (const t of this.tiles.values()) if (t.route === 'woven-sbs' || t.route === 'lifted') t.reroute(true);
       if (this.self && this.self.route === 'woven-sbs') this.self.reroute(true);
       this._layout();
     };
