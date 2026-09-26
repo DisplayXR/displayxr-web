@@ -39,6 +39,31 @@ const FADE_MS = 350;
 const UI_AUTOHIDE_MS = 2500;
 const MAX_EYE_PX = 2048; // cap on one view's backing width
 
+/** Explore's default depth budget: the scene's fore-to-back disparity at the nominal eye pair, as a
+ *  fraction of the image width. 0.018 = what the native module's live SBS gives at strength 1
+ *  (tamarra 2000 px: 36 px fg-bg, panel A/B 2026-09-26), so a lift explored from a paused/still
+ *  element reads as deep as the live 3D it came from. Explore used to spread a relative lift over
+ *  0.7-3.0 m at f = 1.2 W, ~8 % of the width: 4-5x the live depth (David, panel: "the SOG has more
+ *  depth than the already-lifted pictures"). */
+export const EXPLORE_DEPTH_BUDGET = 0.018;
+const NOMINAL_IPD_M = 0.063;
+
+/**
+ * The gain that scales an explore scene's depth (about its pivot, explore setDepthGain) so its
+ * natural fore-to-back disparity at the nominal eye pair is at most `budget` x width. Only ever
+ * reduces (a flatter-than-budget lift is left alone); 1 when the budget is off or the meta lacks
+ * the intrinsics / depth range.
+ * @param {{intrinsics?:{fx:number,width:number}, depthRange?:{near:number,far:number}}} meta
+ * @param {number} budget  fraction of the width; 0 = off
+ */
+export function exploreBudgetGain(meta, budget) {
+  if (!(budget > 0)) return 1;
+  const it = meta && meta.intrinsics, dr = meta && meta.depthRange;
+  if (!it || !dr || !(it.fx > 0) || !(it.width > 0) || !(dr.near > 0) || !(dr.far > dr.near)) return 1;
+  const spread = (it.fx / it.width) * NOMINAL_IPD_M * (1 / dr.near - 1 / dr.far);
+  return spread > budget ? budget / spread : 1;
+}
+
 // Literal import() calls (not a computed path) so bundlers can see and split them.
 const BACKENDS = {
   real: {
@@ -196,6 +221,9 @@ export async function lift(element, opts = {}) {
       pivotTargetM: Number.isFinite(opts.explore?.pivotTargetM) && opts.explore.pivotTargetM > 0 ? opts.explore.pivotTargetM : 2.0,
       comfort: ['auto', 'always', 'off'].includes(opts.explore?.comfort) ? opts.explore.comfort : 'auto',
       eyes: opts.explore?.eyes === 'tracked' ? 'tracked' : 'nominal',
+      depthBudget: opts.explore?.depthBudget === 0 || opts.explore?.depthBudget === 'off'
+        ? 0
+        : Number.isFinite(opts.explore?.depthBudget) && opts.explore.depthBudget > 0 ? opts.explore.depthBudget : EXPLORE_DEPTH_BUDGET,
     },
   };
 
@@ -269,6 +297,7 @@ export async function lift(element, opts = {}) {
   let ort = null;
   let registry = null;
   let dibr = null;
+  let exploreGain = 1; // exploreBudgetGain of the current explore scene (1 = as generated)
   let videoProv = null;
   let stillProv = null;
   let stillLoading = null;
@@ -878,6 +907,8 @@ export async function lift(element, opts = {}) {
       // Same canvas, same WebGL2 context: explore wraps live-DIBR's `gl` (never getContext itself).
       // lift-gen writes the OpenCV camera frame (meta.convention); explore defaults to OpenGL.
       const meta = res.meta || {};
+      exploreGain = exploreBudgetGain(meta, o.explore.depthBudget);
+      stats.exploreDepthGain = +exploreGain.toFixed(4);
       const ex = await impl.explore.createExplore({
         canvas,
         gl: dibr && dibr.gl,
@@ -887,7 +918,9 @@ export async function lift(element, opts = {}) {
         axes: meta.axes || meta.convention || undefined,
         clearAlpha: 1, // opaque: never let the page's flat media ghost through the lifted scene
         orbit: o.orbit,
-        depthGain: params.depth, // the page's depth strength carries into explore (setDepth)
+        // the page's depth strength carries into explore (setDepth), times the budget gain that
+        // brings the scene's natural spread down to the live path's (exploreBudgetGain)
+        depthGain: params.depth * exploreGain,
         space: (frozen.depth && frozen.depth.space) || meta.space,
         comfort: { mode: o.explore.comfort, target: o.explore.pivotTargetM },
         eyes: o.explore.eyes,
@@ -1190,7 +1223,7 @@ export async function lift(element, opts = {}) {
       params.depth = x;
       if (nativeLive) nativeLive.setStrength(x);
       if (dibr) dibr.setParams(params);
-      if (explore && typeof explore.setDepthGain === 'function') explore.setDepthGain(x);
+      if (explore && typeof explore.setDepthGain === 'function') explore.setDepthGain(x * exploreGain);
     },
     setConvergence(x) {
       params.convergence = x === 'auto' || Number.isFinite(x) ? x : 'auto';
