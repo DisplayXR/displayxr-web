@@ -1,6 +1,6 @@
 # RFC 0002 — a 3D video-call module
 
-**Status:** draft; P0 done, P1 implemented (`feat/call-p1`, see §7). **Tier:** preview (like `/splat`, `/model`, `/player` — see
+**Status:** draft; P0 done, P1 implemented (`feat/call-p1`), P2a (mono→3D via `lift()`) implemented (`feat/call-p2-lift`, see §7). **Tier:** preview (like `/splat`, `/model`, `/player` — see
 `docs/sdk-stability.md`). **Author:** architecture pass, 2026-09-25. **Touches:** new
 `@displayxr/inline3d/call` subpath, a small open-source signalling server, one DisplayXR Browser
 patch (Android stereo camera). No change to core.
@@ -45,12 +45,13 @@ const call = await addCall(wall, container, {
   signaling: dxrSignaling(),          // default hosted server | dxrSignaling(url) | custom({...})
   iceServers: undefined,              // default: public STUN + DisplayXR's TURN; page may override
   camera: 'auto',                     // 'stereo' | 'mono' | a MediaStream the page supplies
-  mono3D: 'auto',                     // lift mono peers via lift(): 'auto' | 'off'
+  mono3D: 'auto',                     // lift mono peers via lift(): 'auto' | 'off' | your lift fn
+  maxLifted: 4,                       // concurrent lifted tiles (P2a)
   maxPeers: 4, layout: 'grid',        // | 'speaker'
   ui: true,                           // SDK chrome (lobby, invite, bar); false = headless
 });
 call.inviteLink();                    // https://…#room=… (also a QR code in the SDK UI)
-call.mute(on); call.setCamera(id|stream); call.setDepth(v); call.leave();
+call.mute(on); call.setCamera(id|stream); call.setDepth(v); call.setMono3D(on); call.leave();
 call.on('peer' | 'peerleft' | 'format' | 'quality' | 'speaker' | 'error', cb);
 ```
 
@@ -99,12 +100,18 @@ canvases (`docs/woven-canvas-rules.md`, rule 6).
 | Remote sends | Local display 3D | Local display 2D |
 |---|---|---|
 | `sbs` | woven SBS + **convergence shift** (below) | left eye, flat |
-| `mono` | `lift(video, {providers:{video:'auto'}})` | flat |
+| `mono` | `lift(video, {mode:'live', wall})` → route `lifted` (flat while lift is unavailable, loading, over budget or failed) | flat |
 
 - **Convergence (SBS):** a horizontal per-eye crop offset of `f_px · baseline / (2 · subjectZ)` from
   `hello` + `hint`, low-pass α≈0.2, so the remote face sits at the display plane. Tracking-loss easing
   reuses the player's `_trackBakedStereo`.
-- **One depth control for every tile:** the SBS crop offset, or `lift` convergence for lifted tiles.
+- **One depth control for every tile:** the SBS crop offset, or `lift` convergence for lifted tiles
+  (P2a mapping: depth 0 → `'auto'`; otherwise `0.5 + 0.5·depth`, lift's normalised disparity on the
+  glass — + pushes the picture back on both routes).
+- **Lifted tiles keep their `<video>` in the DOM** (P2a deviation from the detached-video rule):
+  `lift()` floats its canvas over the element's rect, and the native provider converts the element
+  in place. lift hides it (`visibility:hidden`) under its canvas on the web path; leaving the
+  lifted route detaches it again.
 - **Self view:** small, 3D when the local camera is stereo. **Mirroring trap:** mirroring an SBS frame
   also swaps the eyes — mirror each half AND swap halves. The wire is never mirrored.
 
@@ -133,6 +140,37 @@ Mono peers go through `lift()` (`@displayxr/inline3d/lift`), which picks a provi
 `liftCapabilities()` → `{native, provider, maxStreams, approxMsPerConvert, modes, webFallback}` lets
 the lobby badge each participant **3D / 2D→3D / 2D** before the call starts. This module never
 contains vendor code or depth models.
+
+**As built (P2a, `js/call/lift.js`):**
+
+- `mono3D: 'auto'` dynamically imports the lift module from **this copy of the SDK**
+  (`js/lift/index.js`, resolved relative to the module, the computed specifier keeping bundlers from
+  failing on a build without it). Lift is never a hard dependency: a failed import, a module without
+  `lift`, or `liftCapabilities()` reporting neither a native provider nor a WebGPU adapter resolves
+  to **flat** with one `console.info` line — no `error` event. `mono3D: liftFn` injects a `lift`
+  (bundled apps, tests, pre-merge demos); `'off'` / `false` = flat; `setMono3D(on)` switches at
+  runtime (off releases every lift). `liftOptions` passes page options through (`models`, `ort`,
+  `quality`, `providers`); the call owns `mode`/`wall`/`ui`/`convergence`/`priority`.
+- A mono peer on a woven wall → **one** `lift(video, {mode:'live', wall, ui:'none', convergence,
+  priority})` per peer, in the peer's own tile slot, registered once per (peer, format) and only once
+  the weave session is live (the #172 gate: routing to `lifted` needs `woven`). lift registers its own
+  `addScene` window on the **call's** wall. The flat tile keeps painting until lift reports `live`;
+  session loss releases every lift (tiles go flat) and recovery re-lifts on the new wall.
+- **Priority:** the active speaker's stream `high`, others `normal`, an offscreen (IntersectionObserver)
+  or camera-off tile `paused`. It goes through ONE adapter, `setLiftPriority(handle, level)`, which
+  forwards to lift's `handle.setPriority()` — in native mode lift maps it to the element's
+  `dxr-lift-priority`, which the browser maps to `xrSetLiftStreamPriorityDXR`; on the web path it is
+  a no-op (one stream per element). **This adapter is the hook for the native provider**: if its
+  surface changes, only this function changes. Not verified against a native provider yet (none
+  exists).
+- **Budget:** at most `maxLifted` (default 4) lifted tiles; further mono peers stay flat
+  (`mono3d: 'budget'`) and take a slot when one frees. On the web provider a frame-time watch warns
+  once (`console.warn` + a `quality` event with `id: null, lift: {degraded, frameMs, tiles}`) when
+  the page stays under ~20 fps for 3 s, and again on recovery (> ~28 fps).
+- **Badges:** `3D` (woven SBS), `2D→3D` (lifted; `2D→3D…` while lift loads), `2D` (flat). The lobby
+  hint uses `liftCapabilities()` when the module has it (native + provider name, or WebGPU web
+  fallback); otherwise it says 2D→3D is confirmed on the first mono participant and flips once a lift
+  goes live. `handle.mono3D` reports on/state/reason/native/provider/lifted.
 
 ## 6. UX
 
@@ -205,6 +243,20 @@ contains vendor code or depth models.
     `left`, `session`. (6) P1 lobby badges are per-tile after joining (3D/2D); the pre-join
     3D / 2D→3D / 2D list needs `liftCapabilities()` (P2).
 - **P2 — lift + tablets:** mono peers via `lift()` + priority; Android stereo-camera browser patch.
+  - **P2a — mono→3D** (`feat/call-p2-lift`, stacked on P1; `js/call/lift.js`):
+    - [x] `mono3D: 'auto' | 'off' | liftFn`, lazy import, silent flat fallback, `setMono3D()`,
+      `liftOptions`
+    - [x] routing table: `lifted` route, one lift per peer, #172 gate, session loss/recovery
+    - [x] priority from speaker/visibility through `setLiftPriority()` (native hook, no-op on web)
+    - [x] depth slider → lift convergence
+    - [x] badges `3D` / `2D→3D` / `2D`; lobby hint from `liftCapabilities()` or the first live lift
+    - [x] budget (`maxLifted`), web frame-time warning (`quality` event)
+    - [x] tests (fake lift) + headless e2e; smoke-tested against the real lift module on a live
+      WebRTC `<video>` (web provider: Video-Depth-Anything-Small on ORT WebGPU)
+    - [ ] a native provider (`XR_DXR_lift`): priority/convergence mapping unverified until it exists
+    - [ ] the default model source is not CORS-readable from arbitrary origins outside the DisplayXR
+      Browser; pages outside it need `liftOptions.models` (a self-hosted copy)
+  - **P2b — tablets:** Android stereo-camera browser patch.
 - **P3 — scale + extras:** SFU adapter, share-my-3D-scene (`canvas.captureStream`), face-centred crop.
 
 ## Open questions
