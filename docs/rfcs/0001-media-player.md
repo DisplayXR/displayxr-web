@@ -22,7 +22,7 @@ import { createInline3D } from '@displayxr/inline3d';
 import { addPlayer } from '@displayxr/inline3d/player';
 
 const wall = await createInline3D();
-const p = await addPlayer(wall, canvas, 'title-sbs.mp4', { poster: 'title-poster.jpg', loop: true });
+const p = await addPlayer(wall, canvas, 'title-sbs.webm', { poster: 'title-poster.jpg', loop: true });
 p.play(); p.on('ended', () => p.seek(0));
 ```
 
@@ -128,7 +128,7 @@ knows the third. `wall` may be `null`/unsupported the same way (renders flat 2D,
   current Chromium MV-HEVC status before committing a v2 date to it.**
 - **2D sources** play flat (`format:'2d'` above); a 2D→3D conversion path (on-the-fly monocular
   depth) is explicitly **out of scope** — a different, heavier pipeline than this module.
-- **Offline/kiosk:** bundled local files work today with zero new code (a `<video src="./local.mp4">`
+- **Offline/kiosk:** bundled local files work today with zero new code (a `<video src="./local.webm">`
   needs no network). Budget: SBS H.264 1080p (so 3840×1080 packed) at 8–12 Mbps ≈ **60–90 MB/min**
   (label: estimate, standard bitrate-to-size arithmetic, not measured on this codec/resolution
   combination in this repo).

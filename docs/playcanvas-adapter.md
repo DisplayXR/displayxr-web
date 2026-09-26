@@ -242,14 +242,15 @@ a fresh canvas after a navigation is exactly what shows the raw side-by-side fla
 own engine draws the video, in the tile's own frame:
 
 ```js
-const v = await handle.setVideo('movie_sbs.mp4', { format: 'sbs', fit: 'contain' });
+const v = await handle.setVideo('movie_sbs.webm', { format: 'sbs', fit: 'contain' });
 v.video.play();                      // the page owns transport: play / pause / currentTime / events
 // … back to the photo:
 await handle.setVideo(null);         // splat, pose, lens and declared rig exactly as they were
 ```
 
 `handle.setVideo(src, options?)`:
-- **`src`** is a URL or an `HTMLVideoElement`.
+- **`src`** is a URL or an `HTMLVideoElement`. Serve **VP9 (or AV1) + Opus in WebM**: the DisplayXR
+  Browser has no H.264/AAC, so an `.mp4` fails with `MEDIA_ERR_SRC_NOT_SUPPORTED`.
   - **A URL** gets an SDK-owned `<video>` (`crossOrigin: 'anonymous'`, `playsInline`). It autoplays
     unless `autoplay: false`. If the browser refuses sound without a user gesture, it plays
     **muted** (logged once); set `v.video.muted = false` on the next gesture. The SDK frees the
