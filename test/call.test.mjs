@@ -690,7 +690,7 @@ function fakeMedia(behaviour) {
 const busyErr = () => Object.assign(new Error('Device in use'), { name: 'NotReadableError' });
 
 test('capture: every camera held by another app → camera-busy (never a 0x0 track)', async () => {
-  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => busyErr()) }), (e) => e.code === 'camera-busy');
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => busyErr()) }), (e) => e.code === 'camera-busy' && e.skipped.length > 0 && e.skipped.every((x) => x.busy));
   // A device that opens but delivers 0x0 is not a camera.
   await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 0, h: 0 })) }), (e) => e.code === 'camera-busy' || e.code === 'no-camera');
   // Some other failure is not "busy".
