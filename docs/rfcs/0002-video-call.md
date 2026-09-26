@@ -161,7 +161,9 @@ contains vendor code or depth models.
   the old in-DOM-video build all feed the weaver one correct L|R pair (exact 900 dev-px shift, no
   ID-MATCH FALLBACK). Prime suspect is the browser's **post-reconnect** state: after a weave-session
   loss (`xrWeaveSubmitDXR` -17 instance-lost → recovery → reconnected, e.g. a service restart) the
-  weave input carried the whole SBS frame in EACH eye half until a page reload. Product requirement
+  weave input carried the whole SBS frame in EACH eye half until a page reload — seen ONCE (the
+  browser's very first weave submit lost), NOT reproduced in 6 deliberate restarts incl. the exact
+  first-weave race; live reconnects are fine and the square floats on the real SR panel. Product requirement
   regardless: a call outlives service restarts, so the module must survive a layer/session loss
   without a reload. Also pending: eye tracking while the
   webcam is open, a real stereo camera, tablets. Product note: a peer that leaves must surface a
