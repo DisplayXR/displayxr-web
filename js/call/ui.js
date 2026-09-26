@@ -40,7 +40,12 @@ const CSS = `
   background:var(--dxr-shell);border:1px solid rgba(255,255,255,.12);font-size:13px;}
 .dxr-call-banner a{color:var(--dxr-accent);font-weight:600;}
 /* ── grid: bare boxes, nothing that makes a render surface ── */
-.dxr-call-grid{display:grid;gap:10px;grid-template-columns:1fr;}
+.dxr-call-grid{display:grid;gap:10px;grid-template-columns:1fr;margin-inline:auto;width:100%;
+  /* Fit the tiles AND the footer (self view + bar) in one viewport: tiles are 16:9 per eye, so
+     the grid's width is capped by the height left after --dxr-call-reserve (the footer). */
+  --dxr-call-h:calc(100vh - var(--dxr-call-reserve,150px));max-width:calc(var(--dxr-call-h)*16/9);}
+.dxr-call-grid[data-n="2"]{max-width:calc(var(--dxr-call-h)*32/9);}
+.dxr-call-grid[data-layout="speaker"]:not([data-n="1"]){max-width:calc(var(--dxr-call-h)*4/3);}
 .dxr-call-grid[data-n="2"],.dxr-call-grid[data-n="3"]{grid-template-columns:1fr 1fr;}
 .dxr-call-grid[data-layout="speaker"]{grid-template-columns:repeat(3,1fr);}
 .dxr-call-grid[data-layout="speaker"] .dxr-call-tile--main{grid-column:1/-1;}
