@@ -43,10 +43,12 @@ import {
   base64url,
   looksSbs,
   CONVERGENCE_MAX_FRACTION,
+  createLiveGate,
 } from '../js/call/wire.js';
 import { videoCodecOrder } from '../js/call/sdp.js';
 import { isOfferer } from '../js/call/transport.js';
-import { stereoLabelHint } from '../js/call/capture.js';
+import { stereoLabelHint, openCamera, noCameraCode, isBusyError } from '../js/call/capture.js';
+import { peerjsCloud } from '../js/call/signaling.js';
 import { startDevServer } from '../signaling/dev-server.mjs';
 import { Room, mintTurnCredentials } from '../signaling/room.mjs';
 
@@ -631,4 +633,187 @@ test('QR: finder patterns in three corners; version grows with length; too long 
   assert.ok(finder(0, 0) && finder(q.size - 7, 0) && finder(0, q.size - 7));
   assert.ok(qrEncode('x'.repeat(200)).version > q.version);
   assert.throws(() => qrEncode('x'.repeat(400)), /too long/);
+});
+
+// ── panel-round fixes: liveness gate (#172), unreachable, camera-busy, PeerJS zombie slots ──────
+
+
+test('live gate: woven registration waits for 10 CONSECUTIVE stereo frames (#172)', () => {
+  const g = createLiveGate();
+  for (let i = 0; i < 9; i++) assert.equal(g.feed(2), false);
+  assert.equal(g.feed(1), false, 'a mono frame (runtime not locating eyes) resets the run');
+  for (let i = 0; i < 9; i++) assert.equal(g.feed(2), false);
+  assert.equal(g.feed(2), true);
+  assert.equal(g.live, true);
+  assert.equal(g.feed(0), true, 'once live, stays live');
+  const noPose = createLiveGate();
+  for (let i = 0; i < 29; i++) assert.equal(noPose.feed(null), false);
+  assert.equal(noPose.feed(null), true, 'no reference space: live after 30 frames');
+});
+
+test('transport: a peer with no connection for unreachableMs becomes UNREACHABLE (sticky), then recovers', async () => {
+  FakePC.all = [];
+  const sig = fakeSignaling({ existing: ['zz1'] });
+  const states = [];
+  const t = new MeshTransport({ signaling: sig, id: 'aa000000', maxPeers: 4, RTCPeerConnection: FakePC, unreachableMs: 40 });
+  await t.start({ room: 'r'.repeat(22), localStream: null, onPeerState: (id, s) => states.push(s) });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(states, ['connecting', 'unreachable']);
+  // Retries keep running underneath; a rebuild does not flip the state back to "connecting".
+  const rec = t.peers.get('zz1');
+  t._setState(rec, 'reconnecting');
+  assert.equal(rec.state, 'unreachable');
+  // A connection comes up → connected, flag cleared.
+  const pc = FakePC.all.at(-1);
+  pc.connectionState = 'connected';
+  pc.onconnectionstatechange();
+  assert.equal(states.at(-1), 'connected');
+  assert.equal(rec.unreachable, false);
+  t.stop();
+});
+
+function fakeMedia(behaviour) {
+  // behaviour(deviceId|undefined) -> {w,h} | Error
+  return {
+    async getUserMedia({ video }) {
+      const id = video && video.deviceId ? video.deviceId.exact : undefined;
+      const r = behaviour(id);
+      if (r instanceof Error) throw r;
+      const track = { kind: 'video', label: id || 'default', readyState: 'live', getSettings: () => ({ width: r.w, height: r.h, deviceId: id || 'cam0' }), stop() {} };
+      return { getVideoTracks: () => [track], getTracks: () => [track] };
+    },
+    async enumerateDevices() {
+      return [{ kind: 'videoinput', deviceId: 'cam0', label: 'Built-in' }, { kind: 'videoinput', deviceId: 'cam1', label: 'Tracker stereo' }];
+    },
+  };
+}
+const busyErr = () => Object.assign(new Error('Device in use'), { name: 'NotReadableError' });
+
+test('capture: every camera held by another app → camera-busy (never a 0x0 track)', async () => {
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => busyErr()) }), (e) => e.code === 'camera-busy');
+  // A device that opens but delivers 0x0 is not a camera.
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 0, h: 0 })) }), (e) => e.code === 'camera-busy' || e.code === 'no-camera');
+  // Some other failure is not "busy".
+  const denied = Object.assign(new Error('denied'), { name: 'NotAllowedError' });
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => denied) }), (e) => e.code === 'no-camera');
+  assert.equal(isBusyError(busyErr()), true);
+  assert.equal(noCameraCode([{ busy: true }, { busy: true }]), 'camera-busy');
+  assert.equal(noCameraCode([{ busy: true }, { busy: false }]), 'no-camera');
+  assert.equal(noCameraCode([]), 'no-camera');
+});
+
+test('capture: the default camera busy but another is a stereo pair → that pair, as sbs', async () => {
+  const md = fakeMedia((id) => (id === 'cam1' ? { w: 1280, h: 480 } : busyErr()));
+  const cam = await openCamera('auto', { mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.width, 1280);
+  assert.equal(cam.calibration.rectified, false);
+  assert.ok(cam.skipped.some((s) => s.busy));
+});
+
+/** An in-memory PeerJS broker: ids, data connections, zombie ids that never answer. */
+function fakeBroker() {
+  const peers = new Map(); // id -> FakePeer | 'zombie'
+  class Emitter {
+    constructor() {
+      this.h = {};
+    }
+    on(t, f) {
+      (this.h[t] ||= []).push(f);
+    }
+    off(t, f) {
+      this.h[t] = (this.h[t] || []).filter((x) => x !== f);
+    }
+    emit(t, ...a) {
+      for (const f of [...(this.h[t] || [])]) f(...a);
+    }
+  }
+  class Conn extends Emitter {
+    constructor(owner, peer) {
+      super();
+      this.owner = owner;
+      this.peer = peer;
+      this.open = false;
+      this.other = null;
+    }
+    send(m) {
+      if (this.open && this.other) setTimeout(() => this.other.emit('data', JSON.parse(JSON.stringify(m))), 1);
+    }
+    close() {
+      if (!this.open) return;
+      this.open = false;
+      this.emit('close');
+      if (this.other && this.other.open) this.other.close();
+    }
+  }
+  class FakePeer extends Emitter {
+    constructor(id) {
+      super();
+      this.id = id;
+      this.destroyed = false;
+      setTimeout(() => {
+        if (peers.has(id)) return this.emit('error', { type: 'unavailable-id' });
+        peers.set(id, this);
+        this.emit('open', id);
+      }, 1);
+    }
+    connect(id) {
+      const c = new Conn(this, id);
+      setTimeout(() => {
+        const target = peers.get(id);
+        if (!target) return this.emit('error', { type: 'peer-unavailable', message: `Could not connect to peer ${id}` });
+        if (target === 'zombie') return; // ICE never completes / holder gone: silence
+        const back = new Conn(target, this.id);
+        c.other = back;
+        back.other = c;
+        c.open = back.open = true;
+        target.emit('connection', back);
+        back.emit('open');
+        c.emit('open');
+      }, 1);
+      return c;
+    }
+    destroy() {
+      this.destroyed = true;
+      if (peers.get(this.id) === this) peers.delete(this.id);
+    }
+  }
+  return { Peer: FakePeer, peers };
+}
+
+test('peerjsCloud: a zombie slot does not count, is reported unreachable, and pagehide frees our slot', async () => {
+  const room = newRoomId();
+  const tag = (await roomKey(room)).slice(0, 24);
+  const broker = fakeBroker();
+  broker.peers.set(`dxrcall-${tag}-0`, 'zombie'); // a reloaded page's leftover
+  const listeners = {};
+  const prevAdd = globalThis.addEventListener;
+  const prevRemove = globalThis.removeEventListener;
+  globalThis.addEventListener = (t, f) => ((listeners[t] ||= []).push(f));
+  globalThis.removeEventListener = () => {};
+  try {
+    const fast = { Peer: broker.Peer, settleMs: 60, helloMs: 60, unreachableMs: 120, retryMs: 1000, heartbeatMs: 1000 };
+    const live = hooksRecorder('peerLIVE01');
+    const s1 = await peerjsCloud(fast).join(room, { ...live.hooks, maxPeers: 2 });
+    assert.equal(s1.slot, 1, 'slot 0 is taken by the zombie');
+    const me = hooksRecorder('peerME0002');
+    const ghosts = [];
+    const s2 = await peerjsCloud(fast).join(room, { ...me.hooks, maxPeers: 2, onPeerUnreachable: (g) => ghosts.push(g) });
+    // Room size 2 with a zombie + one live peer: still joinable (twice as many slots as people),
+    // and only the peer that said hi is counted.
+    assert.equal(s2.slot, 2);
+    assert.deepEqual(s2.peers, ['peerLIVE01']);
+    await new Promise((r) => setTimeout(r, 1300));
+    assert.deepEqual(ghosts, ['slot-0'], 'the silent slot is reported unreachable');
+    // pagehide destroys our Peer → the broker frees the slot immediately.
+    assert.ok(broker.peers.has(`dxrcall-${tag}-2`));
+    for (const f of listeners.pagehide || []) f();
+    assert.equal(broker.peers.has(`dxrcall-${tag}-2`), false);
+    s1.leave();
+    s2.leave();
+    await new Promise((r) => setTimeout(r, 250));
+  } finally {
+    globalThis.addEventListener = prevAdd;
+    globalThis.removeEventListener = prevRemove;
+  }
 });
