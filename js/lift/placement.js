@@ -239,8 +239,12 @@ export function mountCanvas(el) {
   hs.pointerEvents = 'none';
   hs.boxSizing = 'content-box';
   hs.contain = 'layout style';
+  // One above the element when it has an explicit z-index. When it has none (z-index:auto), the
+  // host stays auto too: it is inserted right after the element, so it still paints over it by
+  // tree order, and page content positioned after the element (a caption over the image) keeps
+  // painting over the host. A forced z-index:1 hid such captions for as long as the lift was up.
   const z = parseInt(getComputedStyle(el).zIndex, 10);
-  hs.zIndex = String(Number.isFinite(z) ? z + 1 : 1);
+  hs.zIndex = Number.isFinite(z) ? String(z + 1) : 'auto';
   const shadow = host.attachShadow({ mode: 'closed' });
   const style = document.createElement('style');
   style.textContent =
