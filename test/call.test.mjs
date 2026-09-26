@@ -46,7 +46,7 @@ import {
 } from '../js/call/wire.js';
 import { videoCodecOrder } from '../js/call/sdp.js';
 import { isOfferer } from '../js/call/transport.js';
-import { stereoLabelHint } from '../js/call/capture.js';
+import { stereoLabelHint, openCamera } from '../js/call/capture.js';
 import { startDevServer } from '../signaling/dev-server.mjs';
 import { Room, mintTurnCredentials } from '../signaling/room.mjs';
 
@@ -164,6 +164,48 @@ test('capture: aspect > 2.5 is a side-by-side pair (1280x480 is, 1280x720 is not
   assert.equal(looksSbs(0, 0), false);
   assert.equal(stereoLabelHint('USB Stereo Camera'), true);
   assert.equal(stereoLabelHint('FaceTime HD Camera'), false);
+});
+
+// A fake mediaDevices: each device either opens at a size or throws a named DOMException-like error.
+function fakeMediaDevices(devices) {
+  const fail = (name) => Object.assign(new Error(name === 'NotReadableError' ? 'Device in use' : 'Requested device not found'), { name });
+  const track = (d) => ({ label: d.label, getSettings: () => ({ width: d.width, height: d.height, deviceId: d.deviceId }), stop() {} });
+  return {
+    async getUserMedia({ video }) {
+      const d = video.deviceId ? devices.find((x) => x.deviceId === video.deviceId.exact) : devices[0];
+      if (!d) throw fail('NotFoundError');
+      if (d.busy) throw fail('NotReadableError');
+      const t = track(d);
+      return { getVideoTracks: () => [t], getTracks: () => [t] };
+    },
+    async enumerateDevices() {
+      return devices.map((d) => ({ kind: 'videoinput', deviceId: d.deviceId, label: d.label }));
+    },
+  };
+}
+
+test('capture: the only camera held by the eye tracker is camera-busy, not no-camera', async () => {
+  const md = fakeMediaDevices([{ deviceId: 'sr', label: 'SR Camera 15.0 (05c8:023b)', width: 1280, height: 480, busy: true }]);
+  await assert.rejects(openCamera('auto', { mediaDevices: md }), (err) => {
+    assert.equal(err.code, 'camera-busy');
+    assert.ok(err.skipped.length >= 1 && err.skipped.every((s) => s.error.startsWith('NotReadableError')));
+    return true;
+  });
+});
+
+test('capture: no camera at all stays no-camera', async () => {
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMediaDevices([]) }), { code: 'no-camera' });
+});
+
+test('capture: a busy stereo camera next to a free webcam falls back to mono, no error', async () => {
+  const md = fakeMediaDevices([
+    { deviceId: 'web', label: 'HD WebCam', width: 1280, height: 720 },
+    { deviceId: 'sr', label: 'SR Camera', width: 1280, height: 480, busy: true },
+  ]);
+  const cam = await openCamera('auto', { mediaDevices: md });
+  assert.equal(cam.format, 'mono');
+  assert.equal(cam.label, 'HD WebCam');
+  assert.equal(cam.skipped.length, 1);
 });
 
 // ── convergence ──────────────────────────────────────────────────────────────────────────────

@@ -229,9 +229,11 @@ class Call {
   async _openMedia(want, format) {
     const log = (t, x) => this.log(t, x);
     let cam = null;
+    let camError = null;
     try {
       cam = await openCamera(want, { format: format || this.o.format, calibration: this.o.calibration, log });
     } catch (err) {
+      camError = err;
       this.error(err.code || 'no-camera', `no camera: ${err.message}`, err);
     }
     if (cam && cam.format === 'sbs' && this.o.rectify) {
@@ -277,9 +279,12 @@ class Call {
       calibration: cam ? cam.calibration : {},
       owned: cam ? cam.owned : false,
       label: cam ? cam.label : '',
-      skipped: cam ? cam.skipped : [],
+      skipped: cam ? cam.skipped : camError?.skipped || [],
+      // Why there is no camera, when there is none: 'camera-busy' (held by another app — on an SR
+      // panel, the eye tracker) reads differently to the user than 'no-camera'.
+      camError: cam ? null : camError?.code || 'no-camera',
     };
-    this.log('camera', { format: this.local.format, width: this.local.width, height: this.local.height, label: this.local.label, skipped: this.local.skipped.length });
+    this.log('camera', { format: this.local.format, width: this.local.width, height: this.local.height, label: this.local.label, skipped: this.local.skipped.length, camError: this.local.camError });
     if (prev && prev.owned && prev.camStream && prev.camStream !== this.local.camStream) prev.camStream.getVideoTracks().forEach((t) => t.stop());
     this._refreshSelf();
     this._refreshLobby();
@@ -1163,7 +1168,8 @@ class SelfTile {
   update() {
     const l = this.call.local;
     const noCam = !l || !l.videoTrack;
-    this.plate.textContent = noCam ? 'No camera' : this.call.camOff ? 'Camera off' : '';
+    const noCamText = l && l.camError === 'camera-busy' ? 'Camera in use by another app' : 'No camera';
+    this.plate.textContent = noCam ? noCamText : this.call.camOff ? 'Camera off' : '';
     show(this.plate, noCam || this.call.camOff);
     this.reroute(false);
   }
