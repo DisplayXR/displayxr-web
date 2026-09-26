@@ -242,7 +242,7 @@ a fresh canvas after a navigation is exactly what shows the raw side-by-side fla
 own engine draws the video, in the tile's own frame:
 
 ```js
-const v = await handle.setVideo('movie_sbs.webm', { format: 'sbs', fit: 'contain' });
+const v = await handle.setVideo('movie_2x1.webm', { format: 'sbs', fit: 'contain' });
 v.video.play();                      // the page owns transport: play / pause / currentTime / events
 // … back to the photo:
 await handle.setVideo(null);         // splat, pose, lens and declared rig exactly as they were

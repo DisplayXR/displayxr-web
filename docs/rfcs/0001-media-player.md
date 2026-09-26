@@ -22,7 +22,7 @@ import { createInline3D } from '@displayxr/inline3d';
 import { addPlayer } from '@displayxr/inline3d/player';
 
 const wall = await createInline3D();
-const p = await addPlayer(wall, canvas, 'title-sbs.webm', { poster: 'title-poster.jpg', loop: true });
+const p = await addPlayer(wall, canvas, 'title_2x1.webm', { poster: 'title-poster.jpg', loop: true });
 p.play(); p.on('ended', () => p.seek(0));
 ```
 
