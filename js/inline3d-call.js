@@ -240,9 +240,11 @@ class Call {
   async _openMedia(want, format, { keepOnFail = false } = {}) {
     const log = (t, x) => this.log(t, x);
     let cam = null;
+    let camError = null;
     try {
       cam = await openCamera(want, { format: format || this.o.format, calibration: this.o.calibration, log });
     } catch (err) {
+      camError = err;
       // No camera is never fatal: the call goes on audio-only, the self view and every receiver
       // say why, and the user can retry (the tracker may let go) or pick another camera.
       const busy = err.code === 'camera-busy';
@@ -294,7 +296,9 @@ class Call {
       calibration: cam ? cam.calibration : {},
       owned: cam ? cam.owned : false,
       label: cam ? cam.label : '',
-      skipped: cam ? cam.skipped : [],
+      // Kept on the error path too: which cameras were held, and why, is the one clue a
+      // 'camera-busy' / 'no-camera' report carries.
+      skipped: cam ? cam.skipped : camError?.skipped || [],
     };
     this.log('camera', { format: this.local.format, width: this.local.width, height: this.local.height, label: this.local.label, skipped: this.local.skipped.length });
     if (prev && prev.owned && prev.camStream && prev.camStream !== this.local.camStream) prev.camStream.getVideoTracks().forEach((t) => t.stop());
