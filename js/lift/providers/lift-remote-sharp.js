@@ -33,6 +33,7 @@ import { readLiftSog } from '../sog-input.js';
 
 export const REMOTE_SHARP_DEFAULTS = Object.freeze({
   endpoint: '/api/sharp/predict',
+  warmIntervalMs: 5 * 60 * 1000, // pre-warm at most once per 5 min (the relay rate-limits it too)
   timeoutMs: 90000,
   mode: 'mono',
   maxSide: 1536,
@@ -256,6 +257,26 @@ export function createRemoteSharpLift(o = {}) {
   else if (auth && auth.kind !== 'bearer') throw new TypeError(`remote lift: unknown auth kind ${JSON.stringify(auth.kind)}`);
   let disposed = false;
 
+  // Pre-warm: the hosted worker scales to zero and takes ~40 s to start, so the first lift of a
+  // session paid the cold start on top of the ~8 s inference. `warm()` hits `<endpoint dir>/warm`
+  // (same auth as predict; the relay forwards a health call that starts a container) so the cold
+  // start overlaps with the user browsing. Fire-and-forget, throttled, never throws.
+  let lastWarm = 0;
+  async function warm() {
+    if (disposed) return false;
+    const t = now();
+    if (t - lastWarm < cfg.warmIntervalMs) return false;
+    lastWarm = t;
+    try {
+      const headers = await authHeaders(false);
+      const url = cfg.endpoint.replace(/\/[^/]*$/, '/warm');
+      const res = await fetchImpl(url, { method: 'GET', headers, credentials: 'same-origin', cache: 'no-store' });
+      return !!(res && res.ok);
+    } catch {
+      return false;
+    }
+  }
+
   async function authHeaders(force) {
     const h = {};
     if (auth && auth.kind === 'bearer' && auth.token) h.Authorization = `Bearer ${auth.token}`;
@@ -453,13 +474,20 @@ export function createRemoteSharpLift(o = {}) {
     needsDepth: false,
     endpoint: cfg.endpoint,
     load() {
+      // Warm the worker as soon as we can authenticate without a popup (bearer, no auth, or a
+      // cached Google token); the popup case warms right after signIn() instead.
+      if (!popupAuth || popupAuth.signedIn) void warm();
       return Promise.resolve();
     },
     generateLift,
     /** Popup sign-in now (auth kind 'google'); call it from a click so it is not popup-blocked. */
-    signIn() {
-      return popupAuth ? popupAuth.signIn() : Promise.resolve(null);
+    async signIn() {
+      const r = popupAuth ? await popupAuth.signIn() : null;
+      void warm();
+      return r;
     },
+    /** Start the hosted worker's container ahead of the first lift (throttled; never throws). */
+    warm,
     get signedIn() {
       return popupAuth ? popupAuth.signedIn : true;
     },
