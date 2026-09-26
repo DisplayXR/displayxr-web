@@ -5,6 +5,42 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** only (a new subpath, `./call`). No change to the core or to any other
+subpath.
+
+### Added — call (`@displayxr/inline3d/call`, P1 of RFC 0002)
+
+- **`addCall(wall, container, opts)`** — a 3D video call in any page. Full-mesh WebRTC, up to 4
+  participants (`maxPeers`, enforced on the client and the server), behind an internal `Transport`
+  seam so an SFU can replace the mesh later. VP9 > VP8 > AV1 (never H.264, which the DisplayXR
+  Browser does not have); senders hold resolution (`contentHint: 'detail'`,
+  `degradationPreference: 'maintain-resolution'`) with a `maxBitrate` that falls as the mesh grows.
+  A dropped pair walks ICE restart → rebuild with backoff; a peer that leaves shows "Left the call"
+  instead of a black tile.
+- **Stereo from any side-by-side camera**: `camera: 'auto'` picks a device delivering > 2.5:1
+  frames (a raw 1280x480 stereo camera works — nothing is upscaled) and skips a camera held by an
+  eye tracker instead of failing. The pair is sent raw with `rectified: false`; `opts.rectify` is
+  the seam for a calibrated step (P2).
+- **The receiver decides** (RFC §3): an SBS peer is woven with a convergence shift
+  (`f·B/(2Z)` from `hello` + `hint`, low-passed, clamped, plus the depth slider) on the DisplayXR
+  Browser and shown as its left eye elsewhere; a mono peer is flat (the `mono3D` hook is where
+  `lift()` lands in P2). Plain Chrome/Safari/Firefox participants are first-class. Built on
+  `wall.addImage` over a module-owned canvas, so the core still owns every woven buffer; a failed
+  layer is retried and an ended session re-opened without a reload.
+- **Signalling is pluggable** (`SignalingAdapter`): `dxrSignaling(url)` speaks the new
+  `dxr-signal/1` protocol, with a reference Cloudflare Worker + Durable Object (template, not
+  deployed; mints short-lived TURN credentials server-side) and a zero-dependency Node dev server
+  in `signaling/`. `peerjsCloud()` is a demo-only zero-setup path. Rooms are 128-bit random ids
+  carried in the invite link's `#room=` fragment, which never reaches a server.
+- **SDK chrome** (`ui: true`; `ui: false` for headless): lobby with a 3D self-preview, invite link
+  + QR code (a small built-in encoder, no dependency), bottom bar (mute, camera, depth, invite,
+  leave), per-tile `3D`/`2D` badge, a "View in 3D with DisplayXR Browser" banner on other browsers,
+  `grid` or `speaker` layout (active speaker from inbound audio levels). The mirrored stereo self
+  view mirrors each half AND swaps them; the sent stream is never mirrored.
+- Sample: [`samples/call/`](samples/call/). Types: `call.d.ts`.
+
 ## 1.25.0 — 2026-09-25
 
 Touches the **preview tier** (a new subpath, `./player`) and the **core** (`.`, frozen tier): new
