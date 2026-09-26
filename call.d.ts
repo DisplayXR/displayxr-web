@@ -78,7 +78,9 @@ export interface SignalingSession {
  * are `signaling/worker.mjs` (Cloudflare) and `node signaling/dev-server.mjs`. There is no hosted
  * default yet, so the URL is required.
  */
-export function dxrSignaling(url: string, opts?: { WebSocket?: any; pingMs?: number }): SignalingAdapter;
+/** The hosted DisplayXR signalling server (`dxrSignaling()` with no URL). */
+export const DXR_SIGNAL_DEFAULT: string;
+export function dxrSignaling(url?: string, opts?: { WebSocket?: any; pingMs?: number }): SignalingAdapter;
 
 /**
  * DEMO ONLY — the free public PeerJS broker. No uptime guarantee and not operated by DisplayXR.
@@ -101,8 +103,9 @@ export function peerjsCloud(opts?: {
 export type CallAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' | 'ice';
 
 export interface CallOptions {
-  /** Required: `dxrSignaling(url)`, `peerjsCloud()` (demo only), or your own adapter. */
-  signaling: SignalingAdapter;
+  /** Default `dxrSignaling()` (the hosted DisplayXR server). Or `dxrSignaling(url)` to self-host,
+   *  `peerjsCloud()` (demo only), or your own adapter. */
+  signaling?: SignalingAdapter;
   /**
    * `'auto'` (default): the room in this page's `#room=` fragment, else a new one on join. Or a
    * room id / invite link. Room ids are >= 96 random bits (generated ones: 128), base64url.

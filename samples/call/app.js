@@ -5,12 +5,12 @@ import { addCall, dxrSignaling, peerjsCloud } from '@displayxr/inline3d/call';
 
 const q = new URLSearchParams(location.search);
 
-// Signalling: your own dxr-signal/1 server, or (demo only) the public PeerJS broker. On localhost
-// the dev server is the default (`node signaling/dev-server.mjs`); elsewhere — e.g. the published
-// sample — the zero-setup PeerJS demo path.
-const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-const signal = q.get('signal') || (local ? 'ws://localhost:8787' : 'peerjs');
-const signaling = signal === 'peerjs' ? peerjsCloud() : dxrSignaling(signal);
+// Signalling: the hosted DisplayXR dxr-signal/1 server by default (it also hands out TURN, so
+// calls cross restrictive networks). `?signal=dev` = the local dev server
+// (`node signaling/dev-server.mjs`), `?signal=peerjs` = the public PeerJS broker (demo only),
+// `?signal=wss://…` = your own server.
+const signal = q.get('signal') || '';
+const signaling = signal === 'peerjs' ? peerjsCloud() : signal === 'dev' ? dxrSignaling('ws://localhost:8787') : signal ? dxrSignaling(signal) : dxrSignaling();
 
 const wall = await createInline3D({ untrackedFallback: q.get('untracked') === 'mono' ? 'mono' : 'none' });
 const status = document.getElementById('status');

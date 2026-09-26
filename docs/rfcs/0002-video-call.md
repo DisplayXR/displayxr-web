@@ -198,7 +198,7 @@ contains vendor code or depth models.
     module-painted intermediate canvas, not `addVideo` — `addVideo` draws the whole frame and the
     core's paint refuses a non-`<video>` source there; `addImage` documents a page-owned canvas as
     a source, so the core still owns the woven buffer and no core change was needed. (2)
-    `dxrSignaling()` has no hosted default yet — the URL is required (open question below). (3)
+    `dxrSignaling()` defaults to the hosted server `wss://dxr-signal.displayxr.workers.dev` (Cloudflare Worker + Durable Object, Cloudflare Realtime TURN minted per join, incl. TURN-over-TLS on 443; deployed 2026-09-26). (3)
     No `custom()` helper: any object with `join()` is an adapter. (4) The self view sits in a
     footer below the grid rather than over it, so no chrome ever covers a woven tile. (5) Extra
     handle surface beyond §1: `join()`, `cameraOff()`, `sendHint()`, events `state`, `joined`,

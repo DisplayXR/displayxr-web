@@ -44,12 +44,18 @@ export async function roomKey(room) {
  * @param {string} url
  * @param {{ WebSocket?: any, pingMs?: number }} [opts]
  */
-export function dxrSignaling(url, opts = {}) {
+/**
+ * The hosted DisplayXR `dxr-signal/1` server (a Cloudflare Worker running `signaling/worker.mjs`,
+ * config in `signaling/deploy/displayxr.toml`). It also mints short-lived TURN credentials per
+ * join. `dxrSignaling()` with no URL uses it; pass your own URL to self-host.
+ */
+export const DXR_SIGNAL_DEFAULT = 'wss://dxr-signal.displayxr.workers.dev';
+
+export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
   if (!url || typeof url !== 'string') {
     throw codedError(
       'no-signaling-url',
-      'dxrSignaling(url) needs your signalling server URL (there is no hosted default yet) — ' +
-        'run `node signaling/dev-server.mjs` for local work, or deploy signaling/worker.mjs.'
+      'dxrSignaling(url): url must be a ws:// or wss:// string (omit it for the hosted DisplayXR server)'
     );
   }
   const base = url.replace(/\/+$/, '');

@@ -570,7 +570,8 @@ test('dxr-signal/1: bad room ids and duplicate peer ids are rejected', async () 
 });
 
 test('dxrSignaling() without a URL explains itself', () => {
-  assert.throws(() => dxrSignaling(), (e) => e.code === 'no-signaling-url');
+  assert.equal(typeof dxrSignaling().join, 'function', 'no URL → the hosted default');
+  assert.throws(() => dxrSignaling(''), (e) => e.code === 'no-signaling-url');
 });
 
 test('Room: a join whose room does not match the connection key is refused', async () => {

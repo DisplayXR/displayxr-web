@@ -8,7 +8,7 @@
 //
 //   const wall = await createInline3D();
 //   const call = await addCall(wall, document.getElementById('call'), {
-//     signaling: dxrSignaling('wss://signal.example.com'),
+//     signaling: dxrSignaling(),            // hosted DisplayXR server; or dxrSignaling('wss://your.server')
 //   });
 //   call.on('peer', ({ id }) => console.log('joined', id));
 //
@@ -82,7 +82,8 @@ import { openCamera, openMic } from './call/capture.js';
 import { drawQr } from './call/qr.js';
 import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } from './call/ui.js';
 
-export { dxrSignaling, peerjsCloud, SIGNAL_PROTOCOL, roomKey } from './call/signaling.js';
+import { dxrSignaling } from './call/signaling.js';
+export { dxrSignaling, peerjsCloud, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
 export {
   WIRE_VERSION,
   CALL_SDK,
@@ -129,7 +130,8 @@ export function normalizeCallOptions(opts = {}) {
   }
   return {
     room,
-    signaling: opts.signaling || null,
+    // Default: the hosted DisplayXR signalling server (which also mints TURN credentials).
+    signaling: opts.signaling || dxrSignaling(),
     iceServers: Array.isArray(opts.iceServers) ? opts.iceServers : undefined,
     camera: opts.camera === undefined ? 'auto' : opts.camera,
     format: opts.format === 'sbs' ? 'sbs' : opts.format === 'mono' ? 'mono' : undefined,
@@ -166,7 +168,7 @@ export async function addCall(wall, container, opts = {}) {
   if (!container || typeof container.appendChild !== 'function') throw new TypeError('@displayxr/inline3d/call: addCall(wall, container, opts) needs a container element');
   const o = normalizeCallOptions(opts);
   if (!o.signaling || typeof o.signaling.join !== 'function') {
-    throw new TypeError('@displayxr/inline3d/call: opts.signaling is required — dxrSignaling(url), peerjsCloud() (demo only), or your own SignalingAdapter');
+    throw new TypeError('@displayxr/inline3d/call: opts.signaling must be a SignalingAdapter — dxrSignaling([url]), peerjsCloud() (demo only), or your own');
   }
   const call = new Call(wall, container, o);
   await call._init();
