@@ -577,6 +577,112 @@ export const COMFORT_TOLERANCE = 1.0;
  *   mode 'always' every scene; 'off' never (A/B).
  * @returns {number} the scale (1 = untouched)
  */
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// Depth budget — ONE parallax budget for live (the vendor module's SBS) and explore (the splat).
+//
+// The module's live SBS at strength 1 spends a calibrated disparity budget: the spread between the
+// nearest and farthest content, as a FRACTION OF THE FRAME WIDTH (it saturates above it). Explore
+// matches it: at strength s the splat scene's fg–bg parallax between the NOMINAL eye pair (±IPD/2
+// about the rest head, the capture camera) equals `budget × s` of the photo's width.
+//
+// Geometry (the explore rig — rigFromMeta / frustumFor / LIFT_MODIFY_VS): the photo window sits at
+// d = rig.dPivot with half-width d·(w/2)/fPx; a point at camera distance t is drawn at
+// t' = d + S·(t − d) (the depth gain S, applied along its ray, about the pivot plane); an eye at
+// x = e sees it on the window at e + (X − e)·d/t'. The right−left disparity is IPD·(1 − d/t'),
+// i.e. a fraction IPD·fPx·(1/d − 1/t')/w of the window. Across the scene's depth range
+// [near, far] (scene units: comfort scale k applied, t = k·z):
+//
+//     spread(S) = (IPD · fPx / w) · ( 1/t'(near) − 1/t'(far) ),   t'(z) = d + S·(k·z − d)
+//
+// and S is solved (bisection; spread is 0 at S = 0 and rises monotonically over the valid range)
+// so that spread(S) = budget × strength. The comfort scale k cancels out (it rescales both the
+// scene and the window), so the comfort dead-band stays as it is and never undoes the budget.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Default depth budget: fraction of the frame width of max |fg − bg| parallax at strength 1.
+ *  Panel A/B on build #9 (NeurD, native SBS at strength 1): ≈ 36 px foreground-to-background on a
+ *  2000-px-wide frame = 0.018, and the module saturates above it. A module that reports its own
+ *  (`caps.depthBudget`) wins. */
+export const DEPTH_BUDGET_DEFAULT = 0.018;
+
+/**
+ * Explore's fg–bg parallax (fraction of the photo width) at depth gain S. See the block above.
+ * @param {number} S
+ * @param {{near:number, far:number, d:number, k?:number, fPx:number, w:number, ipd?:number}} g
+ *        near/far: the scene's depth range in the lift's own metres (meta.depthRange); d: the
+ *        rig's pivot distance (scene units, comfort-scaled); k: the comfort scale.
+ */
+export function budgetSpread(S, g) {
+  const k = g.k > 0 ? g.k : 1;
+  const ipd = g.ipd > 0 ? g.ipd : IPD_M;
+  const tn = g.d + S * (k * g.near - g.d);
+  const tf = g.d + S * (k * g.far - g.d);
+  if (!(tn > 0) || !(tf > 0)) return NaN;
+  return ((ipd * g.fPx) / g.w) * (1 / tn - 1 / tf);
+}
+
+/**
+ * The depth gain S whose spread equals `target` (fraction of the photo width). Returns
+ * `{ gain, spread, capped }` — capped: the scene cannot reach the target (its depth range is too
+ * shallow for any gain that keeps the near end in front of the eye), so the best reachable gain.
+ * @param {number} target
+ * @param {Parameters<typeof budgetSpread>[1]} g
+ */
+export function depthGainForBudget(target, g) {
+  if (!(target > 0)) return { gain: 0, spread: 0, capped: false };
+  const k = g.k > 0 ? g.k : 1;
+  const an = k * g.near - g.d;
+  // keep the near end ≥ 5 % of the pivot distance in front of the eye; hard cap on the gain
+  let hi = 64;
+  if (an < 0) hi = Math.min(hi, (0.95 * g.d) / -an);
+  const f = (S) => budgetSpread(S, g);
+  // spread can turn over when the whole range is behind the pivot; walk to the maximum first
+  let best = hi;
+  if (!(f(hi) >= target)) {
+    let bs = 0;
+    let bv = -Infinity;
+    for (let i = 1; i <= 64; i++) {
+      const S = (hi * i) / 64;
+      const v = f(S);
+      if (v > bv) (bv = v), (bs = S);
+    }
+    if (!(bv >= target)) return { gain: bs, spread: bv, capped: true };
+    best = bs;
+  }
+  let lo = 0;
+  let up = best;
+  for (let i = 0; i < 60; i++) {
+    const m = (lo + up) / 2;
+    if (f(m) < target) lo = m;
+    else up = m;
+  }
+  return { gain: up, spread: f(up), capped: false };
+}
+
+/**
+ * A splat scene's depth range from its centres (xyz triples, the file's frame): the pLow / pHigh
+ * percentiles of the forward distance `fwd · z` — what a `.sog` input (remote SHARP, native
+ * gaussians) has instead of the generator's `meta.depthRange`. Non-positive distances are skipped.
+ * @param {Float32Array|number[]} centers  @param {number} [fwd=1]  the axes' forward sign on z.
+ * @returns {{near:number, far:number}|null}
+ */
+export function depthRangeFromCenters(centers, fwd = 1, pLow = 0.02, pHigh = 0.98) {
+  if (!centers || centers.length < 3) return null;
+  const n = Math.floor(centers.length / 3);
+  const step = Math.max(1, Math.floor(n / 200000));
+  const zs = [];
+  for (let i = 0; i < n; i += step) {
+    const z = fwd * centers[i * 3 + 2];
+    if (z > 0 && Number.isFinite(z)) zs.push(z);
+  }
+  if (zs.length < 2) return null;
+  zs.sort((a, b) => a - b);
+  const pct = (p) => zs[Math.min(zs.length - 1, Math.max(0, Math.round(p * (zs.length - 1))))];
+  const near = pct(pLow);
+  const far = pct(pHigh);
+  return far > near ? { near, far } : null;
+}
+
 export function comfortScale(meta, { mode = 'auto', target = PIVOT_TARGET_M, tolerance = COMFORT_TOLERANCE, space } = {}) {
   if (mode === 'off' || mode === false) return 1;
   const pz = Math.abs(+meta?.pivotZ);

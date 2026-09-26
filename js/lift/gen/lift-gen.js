@@ -35,6 +35,7 @@ import composeFS from './passes/compose.glsl.js';
 import farsideFS from './passes/farside.glsl.js';
 import farblurFS from './passes/farblur.glsl.js';
 import { emitLiftSplats, NO_LAYER } from './ply-writer.js';
+import { DEPTH_BUDGET_DEFAULT, IPD_M } from '../orbit.js';
 
 /** Output width caps per quality (the raster is never upscaled beyond the source). */
 export const LIFT_QUALITY = Object.freeze({
@@ -45,9 +46,15 @@ export const LIFT_QUALITY = Object.freeze({
 
 /** Defaults — every one is overridable through `generateLift(opts.params)`. */
 export const LIFT_DEFAULTS = Object.freeze({
-  /** relative disparity is mapped so the scene spans [zNear, zFar] metres */
+  /** relative disparity is mapped so the scene spans [zNear, zFar] metres — unless depthBudget: */
   zNear: 0.7,
   zFar: 3.0,
+  /** The depth budget (docs/lift.md § Depth budget): fraction of the photo width of fg–bg parallax
+   *  between the nominal eye pair at strength 1. For a RELATIVE-depth scene it sets the inverse-
+   *  depth range, invNear − invFar = depthBudget · W / (IPD · f), about the same pivot depth at the
+   *  same normalised position (budgetInvRange); metric scenes keep their own metres (explore solves
+   *  the gain). The value lives in ONE place: orbit.js DEPTH_BUDGET_DEFAULT. 0 / false = [zNear, zFar]. */
+  depthBudget: DEPTH_BUDGET_DEFAULT,
   /** percentiles the disparity is normalised on */
   pLow: 0.02,
   pHigh: 0.98,
@@ -191,7 +198,8 @@ export async function generateLift(opts) {
   const W = Math.min(Ws, q.maxWidth);
   const H = Math.max(2, Math.round((Hs * W) / Ws));
   const f = (depth.intrinsics?.focalPx > 0 ? depth.intrinsics.focalPx : P.focalFactor * Ws) * (W / Ws);
-  const { dlo, invFar, invNear, pivotLo } = normaliseDisparity(depth, space, P);
+  let { dlo, invFar, invNear, pivotLo } = normaliseDisparity(depth, space, P);
+  if (space !== 'metric' && P.depthBudget > 0) ({ invFar, invNear } = budgetInvRange({ invFar, invNear, pivotLo, budget: P.depthBudget, W, f }));
   const tanT = Math.tan((P.maxOrbitDeg * Math.PI) / 180);
 
   // Pivot = min(convergence, subject) — the gallery's Spatial View rule (integration). `subject` is
@@ -489,6 +497,22 @@ export function revealAngles(pivotZ, P = LIFT_DEFAULTS) {
  * Normalise disparity on its 2–98th percentiles and pick the inverse-depth mapping.
  * Relative disparity → 1/z ∈ [1/zFar, 1/zNear]; metric depth → its own 1/z range.
  */
+/**
+ * A relative-depth scene's inverse-depth range for a depth budget: the nominal eye pair (IPD apart,
+ * at the capture camera) sees the fg–bg spread IPD·f·(invNear − invFar)/W of the photo width, so
+ *     invNear − invFar = budget · W / (IPD · f)
+ * placed so the pivot seed keeps its depth AND its normalised position `pivotLo`
+ * (inv_p = invFar + pivotLo·(invNear − invFar) before and after). The far end stays ≥ 1/100 m.
+ */
+export function budgetInvRange({ invFar, invNear, pivotLo, budget, W, f, ipd = IPD_M }) {
+  const R = (budget * W) / (ipd * f);
+  if (!(R > 0)) return { invFar, invNear };
+  const invP = invFar + pivotLo * (invNear - invFar);
+  let far = invP - pivotLo * R;
+  if (far < 0.01) far = 0.01;
+  return { invFar: far, invNear: far + R };
+}
+
 export function normaliseDisparity(depth, space, P = LIFT_DEFAULTS) {
   const { w, h } = depth;
   const n = w * h;

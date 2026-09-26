@@ -30,6 +30,7 @@ import { createInline3D } from '../inline3d.js';
 import { createLiftMachine, STATES, resolveLiftMode } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
 import { createChip, shieldInput } from './ui.js';
+import { DEPTH_BUDGET_DEFAULT } from './orbit.js';
 import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority } from './native.js';
 
 export { resolveMediaAt, STATES };
@@ -146,6 +147,10 @@ const MONO_VIEW = Object.freeze({
  *        the element is a <video>/<img> — the browser then converts + weaves the element IN PLACE
  *        (`dxr-lift="auto"`), no DIBR canvas, no model until pause. false: never. A caps object
  *        (from liftCapabilities()) skips the query. Ignored with backend 'stub'.
+ * @param {number|false} [opts.depthBudget]  fraction of the frame width of fg–bg parallax between
+ *        the nominal eye pair at strength 1 — ONE budget for the module's live SBS and the explore
+ *        scene. Default: the module's (`caps.depthBudget`), else DEPTH_BUDGET_DEFAULT (0.018).
+ *        `depth` (strength) then scales that parallax linearly on both paths. false = no budget.
  * @param {boolean} [opts.ownLiftAttr=false]  native: the caller owns the element's `dxr-lift*`
  *        attributes — remove()/exit REMOVES them instead of restoring their pre-lift values (the
  *        browser's built-in: its menu pre-sets `dxr-lift="auto"`).
@@ -207,6 +212,17 @@ export async function lift(element, opts = {}) {
     else caps = await liftCapabilities({ signal: opts.signal, webFallback: false }).catch(() => null);
   }
   const native = !!(caps && caps.native);
+  // ONE depth budget for live and explore (docs/lift.md § Depth budget): the caller's, else the
+  // module's own (caps.depthBudget), else the panel-calibrated default. false/0 = none (explore
+  // shows the depth as lifted and strength is the raw gain, the pre-budget behaviour).
+  o.depthBudget =
+    opts.depthBudget === false || opts.depthBudget === 0
+      ? 0
+      : Number.isFinite(opts.depthBudget) && opts.depthBudget > 0
+        ? +opts.depthBudget
+        : caps && Number.isFinite(caps.depthBudget) && caps.depthBudget > 0
+          ? +caps.depthBudget
+          : DEPTH_BUDGET_DEFAULT;
   // Register the module's providers in the shared registry now (depth `native` at priority 100,
   // `native-gaussians` when it lifts), before any provider is resolved.
   if (native) ensureNativeProviders(caps);
@@ -332,6 +348,9 @@ export async function lift(element, opts = {}) {
     // 'web': the SDK's own pipeline. `provider`: the module's name from caps (native only).
     mode: native ? 'native' : 'web',
     provider: (native && caps.provider) || null,
+    // the depth budget in force (fraction of frame width at strength 1; null = none); explore's
+    // own solve is in _internals().explore.stats.depthBudget
+    depthBudget: o.depthBudget || null,
     // which stage produced the explore scene: 'local' or the provider id (e.g. 'remote-sharp')
     liftSource: 'local',
     // a lift provider's round trip (ms) and its own timings; why the last one fell back (or null)
@@ -810,7 +829,7 @@ export async function lift(element, opts = {}) {
             rgb: frozen.bitmap,
             depth: frozen.depth || undefined,
             quality: o.quality,
-            params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
+            params: { maxOrbitDeg: o.orbit.maxAngleDeg, depthBudget: o.depthBudget || 0, ...(o.genParams || {}) },
             signal,
             onProgress: providerProgress,
           });
@@ -853,7 +872,7 @@ export async function lift(element, opts = {}) {
             inpainter,
             quality: o.quality,
             // the hidden layer + outpaint border are sized for the orbit the explore view allows
-            params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
+            params: { maxOrbitDeg: o.orbit.maxAngleDeg, depthBudget: o.depthBudget || 0, ...(o.genParams || {}) },
             signal,
             onProgress: (v) => progress('lift', v, 0.35, 0.65),
           });
@@ -887,7 +906,8 @@ export async function lift(element, opts = {}) {
         axes: meta.axes || meta.convention || undefined,
         clearAlpha: 1, // opaque: never let the page's flat media ghost through the lifted scene
         orbit: o.orbit,
-        depthGain: params.depth, // the page's depth strength carries into explore (setDepth)
+        depthGain: params.depth, // the page's depth STRENGTH (linear in parallax with a budget)
+        depthBudget: o.depthBudget || false,
         space: (frozen.depth && frozen.depth.space) || meta.space,
         comfort: { mode: o.explore.comfort, target: o.explore.pivotTargetM },
         eyes: o.explore.eyes,

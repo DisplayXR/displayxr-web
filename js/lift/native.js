@@ -55,6 +55,8 @@ export function parseNativeCaps(json) {
   out.modes = Array.isArray(j.modes) ? j.modes.filter((m) => MODES.has(m)) : [];
   if (Number.isFinite(j.maxStreams) && j.maxStreams >= 0) out.maxStreams = Math.floor(j.maxStreams);
   if (Number.isFinite(j.approxMsPerConvert) && j.approxMsPerConvert >= 0) out.approxMsPerConvert = +j.approxMsPerConvert;
+  // the module's live disparity budget at strength 1 (fraction of the frame width), if it reports one
+  if (Number.isFinite(j.depthBudget) && j.depthBudget > 0 && j.depthBudget < 0.5) out.depthBudget = +j.depthBudget;
   return out;
 }
 

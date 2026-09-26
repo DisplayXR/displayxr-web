@@ -68,6 +68,9 @@ import {
   perspectiveOffAxis,
   translation,
   comfortScale,
+  depthGainForBudget,
+  depthRangeFromCenters,
+  IPD_M,
 } from './orbit.js';
 
 export * from './orbit.js';
@@ -245,7 +248,12 @@ export async function createPlayCanvasSplat({ canvas, gl = null, bytes, format =
  * @param {'cover'|'contain'|'stretch'} [o.fit='cover']  photo window vs the viewport aspect.
  * @param {'median'|'display'} [o.restHead='median']  see createHeadTracker.
  * @param {boolean} [o.clampHead=true]  keep the tracked head inside the orbit cone.
- * @param {number} [o.depthGain=1]
+ * @param {number} [o.depthGain=1]  the depth STRENGTH. With a depth budget it is linear in
+ *        parallax: the fg–bg spread between the nominal eye pair = depthBudget × strength (the gain
+ *        S about the pivot plane is solved for it, depthGainForBudget); without one it is S itself.
+ * @param {number|false} [o.depthBudget]  fraction of the photo width of fg–bg parallax at
+ *        strength 1 (lift.js passes the module's, else DEPTH_BUDGET_DEFAULT). false / omitted =
+ *        no budget (the depth as lifted, strength = S).
  * @param {boolean} [o.startFlat=false]  hold the scene flat (the photo) until fadeIn().
  * @param {boolean} [o.startHidden=!!o.gl]  draw nothing (and clear nothing) until fadeIn().
  * @param {number} [o.clearAlpha=0]  alpha of the clear (black unless `o.clearColor` [r,g,b] 0..1).
@@ -328,7 +336,35 @@ export async function createExplore(o) {
     material.update();
   };
 
-  let depthGain = Number.isFinite(o.depthGain) ? o.depthGain : 1;
+  // ── depth budget: strength → the gain S that makes the nominal-pair parallax spread equal
+  //    depthBudget × strength (orbit.js § Depth budget). The range: the generator's
+  //    meta.depthRange, else the splat centres (a .sog input), else no budget.
+  const budget = Number.isFinite(o.depthBudget) && o.depthBudget > 0 ? +o.depthBudget : 0;
+  let range = meta.depthRange && meta.depthRange.near > 0 && meta.depthRange.far > meta.depthRange.near ? meta.depthRange : null;
+  let rangeSource = range ? 'meta' : null;
+  if (!range && budget) {
+    try {
+      const res = eng.asset && eng.asset.resource;
+      range = depthRangeFromCenters(res && (res.centers || res.gsplatData?.getCenters?.()), rig.axes.fwd || 1);
+      if (range) rangeSource = 'centers';
+    } catch {
+      range = null;
+    }
+  }
+  const budgetGeo = range ? { near: range.near, far: range.far, d: rig.dPivot, k: sceneScale, fPx: rig.fPx, w: rig.w, ipd: IPD_M } : null;
+  const budgetStats = { budget: budget || null, rangeSource, strength: NaN, gain: NaN, spread: NaN, capped: false };
+  const gainFor = (strength) => {
+    const s = Math.max(0, +strength || 0);
+    let g = s;
+    if (budget && budgetGeo) {
+      const r = depthGainForBudget(budget * s, budgetGeo);
+      g = r.gain;
+      Object.assign(budgetStats, { spread: +r.spread.toFixed(5), capped: r.capped });
+    }
+    Object.assign(budgetStats, { strength: s, gain: +g.toFixed(4) });
+    return g;
+  };
+  let depthGain = gainFor(Number.isFinite(o.depthGain) ? o.depthGain : 1);
   let reveal = o.startFlat ? { t0: Infinity, ms: REVEAL_MS } : null; // null = done
   let depthS = 1;
   let depthO = { x: 0, y: 0, z: 0 };
@@ -375,7 +411,7 @@ export async function createExplore(o) {
   let lastT = 0;
   let disposed = false;
   let last = null; // { eyes, vps } — the last frame that drew, for replay
-  const stats = { frames: 0, renderMs: 0, lastRenderMs: 0, splats: eng.count, sceneScale, lastRelease: null };
+  const stats = { frames: 0, renderMs: 0, lastRenderMs: 0, splats: eng.count, sceneScale, lastRelease: null, depthBudget: budgetStats };
   let orbitNow = orbitRig(0, 0, rig.dPivot);
 
   const tick = () => {
@@ -583,10 +619,12 @@ export async function createExplore(o) {
       });
     },
 
-    /** Depth strength about the pivot plane: 1 = as lifted, 0 = flat, 2 = doubled. */
+    /** Depth STRENGTH: with a depth budget, linear in parallax (0.5 = half the budget's spread,
+     *  no regeneration — the gain about the pivot plane is re-solved); without one, the gain itself
+     *  (1 = as lifted, 0 = flat, 2 = doubled). */
     setDepthGain(x) {
       if (!Number.isFinite(x)) return;
-      depthGain = Math.max(0, x);
+      depthGain = gainFor(x);
       if (!reveal) setDepth(1);
     },
 
