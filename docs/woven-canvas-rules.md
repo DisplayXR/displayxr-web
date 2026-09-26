@@ -245,3 +245,41 @@ for exactly that reason). It cannot check the join. On a DisplayXR display:
 - **Reporting the join.** Only the browser knows when a canvas has been joined. Until it reports
   that, `handle.firstWoven` is a timer with a stable contract. The request, and the shape it
   asks for, is [`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
+
+## 5. Pitfalls from production (September 2026)
+
+Found on hardware in a production photo app after the rules above were written. Each one looked
+like a runtime or browser bug on the panel and turned out to be the page.
+
+- **No `backdrop-filter` on chrome that sits over the weave.** Rule 7 covers effects on the canvas
+  and its ancestors. A frosted bar or button placed *over* a woven tile is a different element, but
+  on a lenticular laptop panel it visibly disturbs the 3D image across that element's whole rect.
+  Use a plain translucent tint instead (a solid `rgba()` background). Keep an A/B switch for the
+  blurred variant if the design wants it back, and judge it on the panel, not on a 2D monitor.
+- **Nothing opaque above the woven canvas.** Stacking order still applies: an element with an
+  opaque background painted *above* the canvas hides it, and on a draw-order browser that is
+  exactly what you get. The classic case is a full-bleed video plane under a page `<main>` with
+  `background: #000`: the sound plays and the picture is black. Dark or blurred backdrops go
+  *under* the canvas, as their own element.
+- **Don't mount the woven canvas on 2D-only routes.** A route with no 3D content (an upload page, a
+  settings screen) should not host the stage at all. Where the woven canvas has to stay mounted
+  (one session, never remount: rules 1–3), request the 1-view mode for the flat screen instead:
+  `wall.setStereoEnabled(false)`, then `true` again before the next stereo content appears. The
+  1-view mode is real full-resolution 2D, not a flattened weave: the panel's 3D optics switch off,
+  nothing is woven, and DOM text is native-resolution. Confirm with
+  `wall.hardwareDisplayState === '2d'`. The SDK's eased mode switch ramps disparity out before the
+  panel flips and in only after it reports 3D. The mode is display-wide: every woven tile goes flat
+  while it is in force.
+- **Keep the frames after `setSource` resolves free of per-splat CPU work.** A slideshow ran 105
+  `pick()` calls (24 to plan an animation path, 81 for a diagnostic depth grid) right after every
+  swap. On the Windows panel that was a 1.3 s main-thread stall at the end of every transition,
+  which reads on a tracked panel as "head tracking stops": no frames, so the image cannot follow
+  the head. SDK 1.22.0 made pick bursts cheap (a pick index), but the rule stands: defer or spread
+  work after a swap, and gate diagnostics behind a flag. `?dxrdiag=1` names what is on the main
+  thread per transition phase (`picks`, `gl`, `afterSettleTaskMs`, `longFrames`), so check it
+  before blaming the SDK or the browser.
+- **Don't hold or blend rigs yourself around a transition.** Since SDK 1.24.0 each photo in a
+  two-splat transition is drawn through its own camera rig for the whole transition, including the
+  frame or two before the runtime delivers views for a newly declared rig. Declare each photo's rig
+  (or let the SOG camera block do it) and let `setSource` handle the swap: holding the old rig or
+  easing between the two moves one of the photos.
