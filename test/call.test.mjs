@@ -747,9 +747,10 @@ function fakeBroker() {
     }
   }
   class FakePeer extends Emitter {
-    constructor(id) {
+    constructor(id, options = {}) {
       super();
       this.id = id;
+      this.options = options;
       this.destroyed = false;
       setTimeout(() => {
         if (peers.has(id)) return this.emit('error', { type: 'unavailable-id' });
@@ -816,4 +817,23 @@ test('peerjsCloud: a zombie slot does not count, is reported unreachable, and pa
     globalThis.addEventListener = prevAdd;
     globalThis.removeEventListener = prevRemove;
   }
+});
+
+test('peerjsCloud: hands the media transport the same TURN relays PeerJS uses (STUN filtered out)', async () => {
+  const room = newRoomId();
+  const broker = fakeBroker();
+  const config = { iceServers: [
+    { urls: 'stun:stun.example.org:19302' },
+    { urls: ['turn:eu-0.relay.example:3478', 'turn:us-0.relay.example:3478'], username: 'u', credential: 'c' },
+  ] };
+  const fast = { Peer: broker.Peer, peerOptions: { config }, settleMs: 20, helloMs: 20, unreachableMs: 1000, retryMs: 1000, heartbeatMs: 1000 };
+  const s = await peerjsCloud(fast).join(room, { ...hooksRecorder('peerTURN01').hooks, maxPeers: 2 });
+  assert.deepEqual(s.iceServers, [config.iceServers[1]]);
+  s.leave();
+  // No relay configured → no iceServers (the transport keeps its STUN default).
+  const s2 = await peerjsCloud({ ...fast, peerOptions: { config: { iceServers: [config.iceServers[0]] } } })
+    .join(newRoomId(), { ...hooksRecorder('peerTURN02').hooks, maxPeers: 2 });
+  assert.equal(s2.iceServers, undefined);
+  s2.leave();
+  await new Promise((r) => setTimeout(r, 250));
 });
