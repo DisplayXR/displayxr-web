@@ -14,6 +14,7 @@
 
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { Room, DEFAULT_ROOM_CAP, MAX_MESSAGE_BYTES, mintTurnCredentials } from './room.mjs';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -216,7 +217,8 @@ function frame(op, payload) {
 }
 
 // CLI
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL: a Windows argv path (C:\…) never string-matches file:///C:/…
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const arg = (name, dflt) => {
     const i = process.argv.indexOf(`--${name}`);
     return i > 0 ? process.argv[i + 1] : dflt;
