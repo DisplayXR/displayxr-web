@@ -5,6 +5,17 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; nothing changes
+for a page that does not call it.
+
+- **`handle.setRenderScale(s)`** changes the per-eye buffer scale (the `renderScale` option) live,
+  in (0, 4], and resizes the backing store on the next animation frame; **`handle.renderScale`**
+  reads it back. For an app whose screens differ: full resolution where the splat is hidden and
+  only stage quads draw, a lower scale where a large splat is on screen. Replaces poking the
+  viewer's internal field.
+
 ## 1.25.0 — 2026-09-25
 
 Touches the **preview tier** (a new subpath, `./player`) and the **core** (`.`, frozen tier): new
