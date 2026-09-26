@@ -25,6 +25,22 @@ const MONO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 }, frame
 const PROBE_CONSTRAINTS = { width: { ideal: 3840 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
 export const AUDIO_CONSTRAINTS = Object.freeze({ echoCancellation: true, noiseSuppression: true, autoGainControl: true });
 
+/** Errors that mean "the device exists but another process holds it" (an eye tracker, say). */
+export function isBusyError(err) {
+  return !!err && (err.name === 'NotReadableError' || err.name === 'TrackStartError' || /in use|busy/i.test(err.message || ''));
+}
+
+/**
+ * Why no camera could be opened, from the per-device failures. `'camera-busy'` when every device
+ * that exists is held by another process — on a 3D laptop/monitor whose only camera is the eye
+ * tracker's, that is the normal case while tracking, and the call should go audio-only and say so
+ * rather than fail or send an empty picture. Pure.
+ * @param {Array<{error: string, busy?: boolean}>} skipped
+ */
+export function noCameraCode(skipped) {
+  return skipped.length && skipped.every((s) => s.busy) ? 'camera-busy' : 'no-camera';
+}
+
 /** A label that names a stereo camera, tried first when probing. Pure. */
 export function stereoLabelHint(label) {
   return /stereo|\b3d\b|\bsbs\b|dual/i.test(label || '');
@@ -60,8 +76,17 @@ export async function openCamera(want = 'auto', o = {}) {
   const open = async (constraints) => {
     const s = await md.getUserMedia({ video: constraints, audio: false });
     const t = s.getVideoTracks()[0];
-    const st = t.getSettings();
-    return { stream: s, track: t, width: st.width || 0, height: st.height || 0, deviceId: st.deviceId || null, label: t.label || '' };
+    const st = t ? t.getSettings() : {};
+    // Never hand back a 0x0 track: some engines open a device that then delivers nothing.
+    if (!t || t.readyState === 'ended' || !(st.width > 0) || !(st.height > 0)) {
+      s.getTracks().forEach((x) => x.stop());
+      throw Object.assign(new Error('the camera opened but delivers no picture (0x0)'), { name: 'NotReadableError' });
+    }
+    return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '' };
+  };
+  const skip = (label, err) => {
+    skipped.push({ label, error: `${err.name}: ${err.message}`, busy: isBusyError(err) });
+    log('camera-skip', { label, error: err.name });
   };
   const stop = (r) => r && r.stream.getTracks().forEach((t) => t.stop());
   const result = (r, format) => ({
@@ -71,7 +96,13 @@ export async function openCamera(want = 'auto', o = {}) {
 
   // An explicit device id.
   if (typeof want === 'string' && !['auto', 'stereo', 'mono'].includes(want)) {
-    const r = await open({ deviceId: { exact: want }, ...PROBE_CONSTRAINTS });
+    let r;
+    try {
+      r = await open({ deviceId: { exact: want }, ...PROBE_CONSTRAINTS });
+    } catch (err) {
+      skip(want, err);
+      throw Object.assign(new Error(`camera unavailable: ${err.message}`), { code: noCameraCode(skipped), skipped });
+    }
     if (looksSbs(r.width, r.height)) return result(r, 'sbs');
     stop(r);
     return result(await open({ deviceId: { exact: want }, ...MONO_CONSTRAINTS }), 'mono');
@@ -82,8 +113,7 @@ export async function openCamera(want = 'auto', o = {}) {
   try {
     mono = await open(MONO_CONSTRAINTS);
   } catch (err) {
-    skipped.push({ label: 'default', error: `${err.name}: ${err.message}` });
-    log('camera-skip', { label: 'default', error: err.name });
+    skip('default', err);
   }
   if (want === 'mono' && mono) return result(mono, 'mono');
   if (mono && looksSbs(mono.width, mono.height)) return result(mono, 'sbs'); // the default IS the pair
@@ -96,14 +126,14 @@ export async function openCamera(want = 'auto', o = {}) {
   }
   devices.sort((a, b) => Number(stereoLabelHint(b.label)) - Number(stereoLabelHint(a.label)));
   for (const d of devices) {
-    if (mono && d.deviceId && d.deviceId === mono.deviceId) continue;
+    if (!d.deviceId) continue; // no permission yet: an anonymous entry cannot be opened by id
+    if (mono && d.deviceId === mono.deviceId) continue;
     let r = null;
     try {
       r = await open({ deviceId: { exact: d.deviceId }, ...PROBE_CONSTRAINTS });
     } catch (err) {
       // NotReadableError = held by another process (e.g. an eye tracker). Skip, never fail.
-      skipped.push({ label: d.label, error: `${err.name}: ${err.message}` });
-      log('camera-skip', { label: d.label, error: err.name });
+      skip(d.label, err);
       continue;
     }
     if (looksSbs(r.width, r.height)) {
@@ -117,7 +147,11 @@ export async function openCamera(want = 'auto', o = {}) {
     if (want === 'stereo') log('camera-no-stereo', { fallback: mono.label });
     return result(mono, 'mono');
   }
-  throw Object.assign(new Error('no camera could be opened'), { code: 'no-camera', skipped });
+  const code = noCameraCode(skipped);
+  throw Object.assign(
+    new Error(code === 'camera-busy' ? 'every camera is in use by another app (e.g. eye tracking)' : 'no camera could be opened'),
+    { code, skipped }
+  );
 }
 
 /** The microphone, with echo cancellation and noise suppression. Null if unavailable/denied. */
