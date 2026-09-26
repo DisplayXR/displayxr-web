@@ -200,27 +200,35 @@ export function rateGate(hz) {
  * | remote sends | local wall woven      | local wall 2D / absent |
  * |--------------|-----------------------|------------------------|
  * | `sbs`        | `woven-sbs`           | `flat-left`            |
- * | `mono`       | `mono3d` hook → `flat`| `flat`                 |
+ * | `mono`       | `lifted` (or `flat`)  | `flat`                 |
  * | no hello     | treated as `mono`     | `flat`                 |
  *
- * `mono3d` is the P2 lift() seam: `mono3D: 'auto'` asks for it, and in P1 it always resolves to
- * `flat` (reported as `{ route: 'flat', mono3d: 'unavailable' }`).
+ * A mono peer on a woven wall is `lifted` — one lift() stream per peer (call/lift.js) — when the
+ * `mono3D` option is on, a lift function resolved (`lift: true`) and a lift slot is free. Otherwise
+ * it is `flat`, and `mono3d` says why: `'off'` (the page turned it off), `'unavailable'` (no lift
+ * module, no provider, or it is still loading), `'budget'` (every lift slot is taken), or
+ * `'failed'` (lift() failed for this tile).
  *
- * @param {{ format?: string|null, woven: boolean, mono3D?: 'auto'|'off', lift?: boolean }} p
- * @returns {{ route: 'woven-sbs'|'flat-left'|'flat', mono3d?: 'unavailable'|'off'|'lifted' }}
+ * @param {{ format?: string|null, woven: boolean, mono3D?: 'auto'|'off'|Function, lift?: boolean, overBudget?: boolean, failed?: boolean }} p
+ * @returns {{ route: 'woven-sbs'|'flat-left'|'flat'|'lifted', mono3d?: 'unavailable'|'off'|'lifted'|'budget'|'failed' }}
  */
-export function routeFor({ format, woven, mono3D = 'auto', lift = false }) {
+export function routeFor({ format, woven, mono3D = 'auto', lift = false, overBudget = false, failed = false }) {
   const fmt = format === 'sbs' ? 'sbs' : 'mono';
   if (fmt === 'sbs') return { route: woven ? 'woven-sbs' : 'flat-left' };
   if (!woven) return { route: 'flat' };
-  if (mono3D === 'off') return { route: 'flat', mono3d: 'off' };
-  // P2: lift() lands here. Until then the hook resolves to flat, and says so.
-  return lift ? { route: 'lifted', mono3d: 'lifted' } : { route: 'flat', mono3d: 'unavailable' };
+  if (mono3D === 'off' || mono3D === false) return { route: 'flat', mono3d: 'off' };
+  if (!lift) return { route: 'flat', mono3d: 'unavailable' };
+  if (failed) return { route: 'flat', mono3d: 'failed' };
+  if (overBudget) return { route: 'flat', mono3d: 'budget' };
+  return { route: 'lifted', mono3d: 'lifted' };
 }
 
-/** The badge a tile shows for a route: '3D' only when this side is actually weaving it. */
+/**
+ * The badge a tile shows for a route, from THIS side's point of view: `3D` for a woven stereo
+ * pair, `2D→3D` for a mono peer this side lifts, `2D` for anything shown flat.
+ */
 export function badgeFor(route) {
-  return route === 'woven-sbs' || route === 'lifted' ? '3D' : '2D';
+  return route === 'woven-sbs' ? '3D' : route === 'lifted' ? '2D→3D' : '2D';
 }
 
 // ── convergence (RFC §3) ───────────────────────────────────────────────────────────────────
