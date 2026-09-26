@@ -86,6 +86,51 @@ window.__run = async () => {
   out.img.explore = { attrs: attrs(img), canvasVisibility: h.canvas.style.visibility, imgVisibility: img.style.visibility, splats: h.stats.splats, stillDepthMs: h.stats.stillDepthMs, depthPosts: net.depth, stillProv: h._internals().stillProv?.id, stillSource: h._internals().stillProv?.info?.source };
   await new Promise((r) => setTimeout(r, 500));
   out.img.png = await h.capture().then((b) => new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); })).catch((e) => 'ERR ' + e.message);
+  // orbit relax: yaw must start heading home on the release frame (no hold). Per-rAF samples.
+  {
+    const ex = h._internals().explore;
+    const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const r = h.canvas.getBoundingClientRect();
+    const ev = (type, dx, extra = {}) => new PointerEvent(type, { clientX: r.left + r.width / 2 + dx, clientY: r.top + r.height / 2, bubbles: true, composed: true, cancelable: true, pointerId: 7, isPrimary: true, pointerType: 'mouse', buttons: 1, ...extra });
+    h.canvas.dispatchEvent(ev('pointerdown', 0));
+    for (let i = 1; i <= 10; i++) { h.canvas.dispatchEvent(ev('pointermove', i * 25)); await raf(); }
+    for (let i = 0; i < 30; i++) await raf(); // hold still: yaw settles on the drag target
+    const held = { yaw: ex.orbit.yaw, target: ex.orbit.targetYaw, mode: ex.orbit.mode };
+    const tUp = performance.now();
+    h.canvas.dispatchEvent(ev('pointerup', 250, { buttons: 0 }));
+    const atUp = { yaw: ex.orbit.yaw, target: ex.orbit.targetYaw, mode: ex.orbit.mode };
+    const after = [];
+    for (let i = 0; i < 8; i++) { await raf(); after.push({ dtMs: Math.round(performance.now() - tUp), yaw: +ex.orbit.yaw.toFixed(3), frames: ex.stats.frames }); }
+    out.img.relax = { held, atUp, after };
+    // the same with REAL (CDP) mouse input: sample (t, yaw, mode) every rAF across the release
+    if (window.__mouse) {
+      await raf(); for (let i = 0; i < 90; i++) await raf(); // settle home first
+      const samples = [];
+      let sampling = true;
+      const t0 = performance.now();
+      const loop = () => { samples.push([Math.round(performance.now() - t0), +ex.orbit.yaw.toFixed(3), ex.orbit.mode]); if (sampling) requestAnimationFrame(loop); };
+      requestAnimationFrame(loop);
+      let tUpDispatch = 0, tUpSeen = 0;
+      const seenUp = () => { tUpSeen = Math.round(performance.now() - t0); };
+      h.canvas.addEventListener('pointerup', seenUp, { once: true });
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      await window.__mouse([['move', cx, cy], ['down'], ['move', cx + 200, cy, 12], ['wait', 500]]);
+      tUpDispatch = Math.round(performance.now() - t0);
+      await window.__mouse([['up']]);
+      await new Promise((res) => setTimeout(res, 400));
+      sampling = false;
+      const iRest = samples.findIndex((s) => s[2] === 'rest');
+      const afterUp = samples.filter((s) => s[0] >= tUpDispatch).slice(0, 6);
+      const upIdx = samples.findIndex((s) => s[0] >= tUpDispatch);
+      const yawAtUp = upIdx > 0 ? samples[upIdx - 1][1] : null;
+      out.img.relaxReal = {
+        tUpDispatch, tUpSeen, peakYaw: Math.max(...samples.map((s) => s[1])), yawAtUp, afterUp,
+        // PASS: the yaw is below its release value within the first 2 rAFs after the (trusted) mouseup
+        decreasingWithin2Rafs: yawAtUp !== null && samples.slice(upIdx, upIdx + 2).some((s) => s[1] < yawAtUp),
+        lastRelease: ex.stats.lastRelease,
+      };
+    }
+  }
   fakeSog = await h.exportSog().then((b) => b.arrayBuffer()).catch(() => null);
   h.resume();
   await waitState(h, 'live');

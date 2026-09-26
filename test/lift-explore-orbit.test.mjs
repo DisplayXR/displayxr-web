@@ -264,3 +264,84 @@ test("head tracker rest:'display' — lateral rest is the display centre, not th
   near(mid.x, 0.1, 1e-9);
   near(mid.z, 0, 1e-9);
 });
+
+// ── the release frame: the relax starts ON the release event (no hold) ───────────────────────
+import { createOrbitGesture } from '../js/lift/orbit.js';
+import { shieldInput } from '../js/lift/ui.js';
+
+/** A mock canvas: a real EventTarget with the explore input shield on it, wired like lift.js
+ *  (pointerdown/move/up/cancel + lostpointercapture → the gesture). */
+function mockCanvas(orbit) {
+  const canvas = new EventTarget();
+  const releases = [];
+  const g = createOrbitGesture({ orbit, onRelease: (via) => releases.push(via) });
+  shieldInput(canvas); // registered BEFORE our handlers: stopPropagation must not stop them
+  canvas.addEventListener('pointerdown', (ev) => g.down(ev));
+  canvas.addEventListener('pointermove', (ev) => g.move(ev, { width: 400, height: 300 }));
+  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(t, (ev) => g.up(ev));
+  const fire = (type, x, extra = {}) => {
+    const ev = new Event(type, { cancelable: true });
+    Object.assign(ev, { clientX: x, clientY: 100, pointerId: 1, pointerType: 'mouse', buttons: type === 'pointermove' ? 1 : 0, ...extra });
+    canvas.dispatchEvent(ev);
+    return ev;
+  };
+  return { canvas, fire, releases };
+}
+
+function dragOut(orbit, fire) {
+  fire('pointerdown', 100);
+  for (let x = 110; x <= 200; x += 10) fire('pointermove', x);
+  for (let i = 0; i < 60; i++) orbit.step(1 / 60); // held: the pose settles on the drag target
+  assert.equal(orbit.mode, 'drag');
+  assert.ok(orbit.yaw > 5, `dragged out (${orbit.yaw})`);
+}
+
+test('release frame: pointerup (shield active) calls release() synchronously; the next step already heads home', () => {
+  const orbit = createOrbit({ maxAngleDeg: 15 });
+  let released = 0;
+  const realRelease = orbit.release;
+  orbit.release = () => (released++, realRelease());
+  const { fire, releases } = mockCanvas(orbit);
+  dragOut(orbit, fire);
+  const yawAtUp = orbit.yaw;
+  const up = fire('pointerup', 200);
+  // observed right after dispatchEvent returned: no timer, no frame in between
+  assert.equal(released, 1, 'release() ran inside the pointerup dispatch');
+  assert.equal(orbit.mode, 'rest');
+  assert.equal(orbit.targetYaw, 0);
+  assert.deepEqual(releases, ['pointerup']);
+  assert.equal(up.defaultPrevented, true, 'the shield still swallowed it for the page');
+  orbit.step(1 / 60); // the very first frame after release
+  assert.ok(orbit.yaw < yawAtUp, `first frame moves home (${yawAtUp} → ${orbit.yaw})`);
+  fire('lostpointercapture', 200); // the implicit capture release afterwards is a no-op
+  assert.equal(released, 1);
+});
+
+test('release frame: lostpointercapture or a buttonless mouse move ends a drag whose pointerup never arrived', () => {
+  for (const [how, go] of [
+    ['lostpointercapture', (fire) => fire('lostpointercapture', 200)],
+    ['buttonless-move', (fire) => fire('pointermove', 210, { buttons: 0 })],
+  ]) {
+    const orbit = createOrbit({ maxAngleDeg: 15 });
+    const { fire, releases } = mockCanvas(orbit);
+    dragOut(orbit, fire);
+    go(fire);
+    assert.equal(orbit.mode, 'rest', how);
+    assert.deepEqual(releases, [how]);
+    fire('pointerup', 210); // a late up is a no-op
+    assert.deepEqual(releases, [how]);
+  }
+});
+
+test('release frame: a press without a drag is a click, not a release; another pointer id is ignored', () => {
+  const orbit = createOrbit({ maxAngleDeg: 15 });
+  const { fire, releases } = mockCanvas(orbit);
+  fire('pointerdown', 100);
+  fire('pointerup', 102);
+  assert.deepEqual(releases, []);
+  dragOut(orbit, fire);
+  fire('pointerup', 200, { pointerId: 9 }); // someone else's finger
+  assert.equal(orbit.mode, 'drag');
+  fire('pointerup', 200);
+  assert.equal(orbit.mode, 'rest');
+});

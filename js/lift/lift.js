@@ -937,6 +937,7 @@ export async function lift(element, opts = {}) {
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
   canvas.addEventListener('pointercancel', onUp);
+  canvas.addEventListener('lostpointercapture', onUp); // capture lost before the up: relax now
   // Explore input stays OURS: the drag's pointerup and the click after it must never reach the
   // page's player (YouTube toggles play on click → an orbit drag unpaused the video). The canvas
   // only takes pointer input while interactive (explore), so this is always-on.

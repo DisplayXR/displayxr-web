@@ -216,6 +216,58 @@ export function createClickTracker(slopPx = CLICK_SLOP_PX) {
   };
 }
 
+/**
+ * The explore drag, as pointer handlers (DOM-free: they only read event fields). TILT-AND-RELAX
+ * like every other orbit in the project: the relax starts on the RELEASE event itself — `up()`
+ * calls orbit.release() synchronously, no timer, no frame gate — and the ease then runs from the
+ * next frame's step(). Any of these ends the drag, whichever arrives first (the rest are no-ops):
+ *   pointerup / pointercancel, lostpointercapture (capture taken away before the up arrives),
+ *   and a mouse `pointermove` with no button held (the up was delivered elsewhere / lost).
+ * Without those fallbacks a lost up held the scene at the dragged pose until the next input.
+ * @param {{orbit:ReturnType<typeof createOrbit>, click?:ReturnType<typeof createClickTracker>,
+ *          onClick?:(ev:any)=>void, onRelease?:(via:string)=>void}} o  onRelease: diagnostics —
+ *          which event ended the drag ('pointerup' | 'pointercancel' | 'lostpointercapture' |
+ *          'buttonless-move').
+ */
+export function createOrbitGesture(o) {
+  const orbit = o.orbit;
+  const click = o.click || createClickTracker();
+  let pid = null;
+  const g = {
+    get active() {
+      return click.active;
+    },
+    /** @returns {boolean} true when this ended a drag (the relax has started). */
+    up(ev) {
+      if (ev && pid !== null && ev.pointerId !== undefined && ev.pointerId !== pid) return false;
+      const kind = click.up();
+      pid = null;
+      if (kind === 'drag') {
+        orbit.release();
+        o.onRelease?.((ev && ev.type) || 'release');
+        return true;
+      }
+      if (kind === 'click' && ev && ev.type === 'pointerup') o.onClick?.(ev);
+      return false;
+    },
+    down(ev) {
+      pid = ev.pointerId ?? null;
+      click.down(ev.clientX, ev.clientY);
+    },
+    /** @param {{width:number,height:number}} box  the canvas box (drag = fraction of it). */
+    move(ev, box) {
+      if (!click.active) return;
+      if (pid !== null && ev.pointerId !== undefined && ev.pointerId !== pid) return;
+      // A mouse moving with no button down: the up never reached us — end the drag now.
+      if (ev.pointerType === 'mouse' && ev.buttons === 0) return void g.up({ type: 'buttonless-move', pointerId: pid });
+      if (!click.move(ev.clientX, ev.clientY)) return; // still inside the click slop
+      const p = click.origin();
+      orbit.drag((ev.clientX - p.x) / Math.max(box?.width || 1, 1), (ev.clientY - p.y) / Math.max(box?.height || 1, 1));
+    },
+  };
+  return g;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // Camera model — the gallery's Spatial View CAMERA RIG (camera.ts `rigFromAsset` / `frustumFor`
 // / `clampEye` + the wall's `?rig=camera` branch in SpatialView.tsx), pure and three-free.

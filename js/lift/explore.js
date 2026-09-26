@@ -54,7 +54,7 @@ import { LIFT_MODIFY_VS, patchGsplatFootprint, adoptGlState, releaseGlState, syn
 import { readLiftSog } from './sog-input.js';
 import {
   createOrbit,
-  createClickTracker,
+  createOrbitGesture,
   createHeadTracker,
   rigFromMeta,
   fitWindow,
@@ -284,7 +284,15 @@ export async function createExplore(o) {
   const orbitOpts = o.orbit || {};
   const maxDeg = orbitOpts.maxAngleDeg ?? ORBIT_MAX_DEG;
   const orbit = createOrbit({ maxAngleDeg: maxDeg, relax: orbitOpts.relax !== false, gain: orbitOpts.gain });
-  const click = createClickTracker();
+  // stats.lastRelease: which event ended the last drag and how long until the next frame stepped
+  // the relax (panel diagnostics: a hold shows up as a large firstFrameMs or a late `via`).
+  const gesture = createOrbitGesture({
+    orbit,
+    onClick: (ev) => o.onClick?.(ev),
+    onRelease: (via) => {
+      stats.lastRelease = { via, at: performance.now(), firstFrameMs: null };
+    },
+  });
   const head = createHeadTracker({ rest: o.restHead, metresPerUnit: o.eyes === 'tracked' ? 1 : 0 });
   const limit = o.clampHead === false ? Infinity : coneLimit(rig, maxDeg);
   const fit = o.fit || 'cover';
@@ -367,7 +375,7 @@ export async function createExplore(o) {
   let lastT = 0;
   let disposed = false;
   let last = null; // { eyes, vps } — the last frame that drew, for replay
-  const stats = { frames: 0, renderMs: 0, lastRenderMs: 0, splats: eng.count, sceneScale };
+  const stats = { frames: 0, renderMs: 0, lastRenderMs: 0, splats: eng.count, sceneScale, lastRelease: null };
   let orbitNow = orbitRig(0, 0, rig.dPivot);
 
   const tick = () => {
@@ -375,6 +383,8 @@ export async function createExplore(o) {
     const dt = lastT ? Math.min((t - lastT) / 1000, MAX_DT_S) : 0;
     lastT = t;
     orbit.step(dt);
+    const lr = stats.lastRelease;
+    if (lr && lr.firstFrameMs === null) lr.firstFrameMs = Math.round(t - lr.at);
     orbitNow = orbitRig(orbit.yaw, orbit.pitch, rig.dPivot);
     return t;
   };
@@ -498,7 +508,7 @@ export async function createExplore(o) {
     },
 
     onPointerDown(ev) {
-      click.down(ev.clientX, ev.clientY);
+      gesture.down(ev);
       try {
         (ev.currentTarget || canvas).setPointerCapture?.(ev.pointerId);
       } catch {
@@ -506,21 +516,20 @@ export async function createExplore(o) {
       }
     },
     onPointerMove(ev) {
-      if (!click.active) return;
-      if (!click.move(ev.clientX, ev.clientY)) return; // still inside the click slop
-      const box = (ev.currentTarget || canvas).getBoundingClientRect();
-      const p = click.origin();
-      orbit.drag((ev.clientX - p.x) / Math.max(box.width, 1), (ev.clientY - p.y) / Math.max(box.height, 1));
+      if (!gesture.active) return;
+      gesture.move(ev, (ev.currentTarget || canvas).getBoundingClientRect());
     },
+    /** pointerup / pointercancel / lostpointercapture: the relax starts HERE, synchronously. */
     onPointerUp(ev) {
-      const kind = click.up();
-      try {
-        (ev.currentTarget || canvas).releasePointerCapture?.(ev.pointerId);
-      } catch {
-        /* not captured */
+      // Release first: the orbit is heading home before anything else runs.
+      gesture.up(ev);
+      if (ev.type !== 'lostpointercapture') {
+        try {
+          (ev.currentTarget || canvas).releasePointerCapture?.(ev.pointerId);
+        } catch {
+          /* not captured */
+        }
       }
-      if (kind === 'drag') orbit.release();
-      else if (kind === 'click' && ev.type !== 'pointercancel') o.onClick?.(ev);
     },
 
     /** Page-driven orbit, degrees (clamped to the cap); becomes the pose a release relaxes to. */

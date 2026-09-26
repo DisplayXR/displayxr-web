@@ -39,6 +39,16 @@ try {
   page.on('console', (m) => console.log('[page]', m.text().slice(0, 300)));
   page.on('pageerror', (e) => console.log('[pageerror]', e.message));
   const ready = new Promise((r) => page.on('console', (m) => m.text() === 'NATIVE READY' && r()));
+  // Real (CDP) mouse input for the orbit-relax check: trusted pointer events, capture, the click.
+  await page.exposeFunction('__mouse', async (cmds) => {
+    for (const [op, x, y, steps] of cmds) {
+      if (op === 'move') await page.mouse.move(x, y, { steps: steps || 1 });
+      else if (op === 'down') await page.mouse.down();
+      else if (op === 'up') await page.mouse.up();
+      else if (op === 'wait') await new Promise((r) => setTimeout(r, x));
+    }
+    return true;
+  });
   await page.goto(`http://127.0.0.1:${port}/test/lift-native.html`);
   await Promise.race([ready, new Promise((_, j) => setTimeout(() => j(new Error('page not ready')), 60000))]);
   const out = await page.evaluate(() => window.__run());
