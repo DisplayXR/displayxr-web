@@ -21,7 +21,7 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
   large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, `zoom` (§Zoom bounds and relax), and `captureFit` (both backends).
 - **Extra handle members:** `setSource(src, { fadeMs, resetPose, transition, reveal })` (it throws
-  on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
+  on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `setViewOffset` (§View offset), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
   `setEffect`, `stopEffect`, `effects()` ([`splat-effects.md`](splat-effects.md)).
 - **Third-party notices:** the engine is MIT; shader code adapted from it (the footprint fix, the
   quad-extent cap, the dissolve effect) is listed in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
@@ -906,6 +906,22 @@ splats. So every `perf` value except `false` starts from 0. **`perf: false` is t
 engine defaults, untouched. `splatBudget` is a no-op on a flat `.sog`: 1,179,648 of 1,179,648
 drawn at a 600k budget. It only acts on a Streamed SOG, where it defaults to **600k per tile**
 (both eyes included) instead of the engine's 1M; `perf: false` keeps the 1M (§Streamed SOG).
+
+## View offset (2D tilt parallax)
+
+`handle.setViewOffset({ x, y })` moves the **mono** camera's eye in its own plane, a head-parallax
+analogue for a flat screen that has no tracked eyes (a phone's tilt). The offset is normalised and
+clamped to the unit disc; at |offset| = 1 the eye has moved `c · tan(orbitMaxDeg)`, where `c` is the
+focus's distance along the view axis, so the line of sight to the focus swings by the drag orbit's
+cone (15° by default). The projection is shifted off-axis by `−e · near / c`, which pins the focus
+plane: the focus keeps its screen position while nearer content moves against the eye and farther
+content with it. The camera never turns (`offsetMonoView`).
+
+It moves the eye and the orbit turns the scene, so the two compose and neither undoes the other's
+easing. It is a snap like `setPose`: ease it in the page, and gate it on the page's own drag if a
+held drag should win. `pick()` and the effects' eye frame use the offset camera. In woven 3D it is
+a no-op for the pixels (the head tracker owns the eyes; the value is kept and applies again if the
+tile falls back to 2D), and it is ignored on `controls: 'page'`. `handle.viewOffset` reads it back.
 
 ## Zoom bounds and relax
 

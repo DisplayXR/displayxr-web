@@ -5,6 +5,20 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; nothing changes
+for a page that does not call it.
+
+- **`handle.setViewOffset({x, y})`** moves the 2D tier's mono EYE in its own plane, off-axis with
+  the focus plane pinned — a head-parallax analogue for a flat screen with no tracked eyes (a
+  phone's tilt). Normalised and clamped to the unit disc; |offset| = 1 swings the line of sight to
+  the focus by `orbitMaxDeg` (15°), the drag orbit's cone. It moves the eye, not the scene, so it
+  composes with the orbit instead of fighting its relax. A snap (ease it in the page); `null`
+  resets. Mono only: a no-op for the pixels in woven 3D, where the head tracker owns the eyes, and
+  ignored on `controls: 'page'`. **`handle.viewOffset`** reads it back. `pick()` and the effects'
+  eye frame follow the offset camera.
+
 ## 1.25.1 — 2026-09-25
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; nothing changes

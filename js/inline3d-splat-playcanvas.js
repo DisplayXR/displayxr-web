@@ -453,6 +453,40 @@ export function pageViewAxis(M) {
 }
 
 /**
+ * handle.setViewOffset — the mono camera moved IN ITS OWN PLANE, off-axis, with the focus plane
+ * pinned. A head-parallax analogue for the 2D tier (a phone's tilt), where there are no tracked
+ * eyes: the eye slides sideways/up, the window through the focus plane stays where it was, so the
+ * focus stays put on screen while nearer content moves against the farther. Not a rotation — the
+ * orbit (setPose / the drag) turns the SCENE about the focus; this moves the EYE, and the two
+ * compose.
+ *
+ *   e = (ox, oy) · c · tan(maxDeg)          camera-plane displacement, display units
+ *   pose' = pose · T(e.x, e.y, 0)
+ *   P'[8] = P[8] − P[0]·e.x / c,  P'[9] = P[9] − P[5]·e.y / c    (the window shifted by −e·n/c)
+ *
+ * `c` is the focus's distance along the camera's view axis, so |offset| = 1 swings the line of
+ * sight to the focus by `maxDeg` — the same comfort cone as the drag orbit (orbitMaxDeg, 15°).
+ * Being an ANGLE it is scale-free: zoom scales the scene about the focus, and c does not move.
+ * Writes into outPose/outProj and returns true; false (outputs untouched) when the offset is zero
+ * or the focus is not in front of the camera — the caller then draws the unshifted camera.
+ */
+export function offsetMonoView(pose, proj, ox, oy, c, maxDeg, outPose, outProj) {
+  if ((!ox && !oy) || !(c > 1e-6) || !Number.isFinite(c)) return false;
+  const k = c * Math.tan(maxDeg * DEG);
+  const ex = ox * k;
+  const ey = oy * k;
+  outPose.set(pose);
+  // pose · T(e): translate along the camera's own x/y axes (columns 0 and 1).
+  outPose[12] = pose[12] + pose[0] * ex + pose[4] * ey;
+  outPose[13] = pose[13] + pose[1] * ex + pose[5] * ey;
+  outPose[14] = pose[14] + pose[2] * ex + pose[6] * ey;
+  outProj.set(proj);
+  outProj[8] = proj[8] - (proj[0] * ex) / c;
+  outProj[9] = proj[9] - (proj[5] * ey) / c;
+  return true;
+}
+
+/**
  * The attach-pattern camera rig for controls:'page' — the auto-3D shim's buildRig, field for
  * field: identity pose, the page's vertical FOV, convergence d, metersToVirtual = depth · d / 0.5
  * (so comfort = ipd × m2v × (1/d) × 0.5 = depth by construction).
@@ -874,6 +908,10 @@ export class PlayCanvasSplatViewer {
     this._orbitCentre = { x: 0, y: 0, z: 0 };
     this._focusRecentres = true;
     this._focusSettled = true;
+    // handle.setViewOffset: normalised camera-plane eye offset, mono only (offsetMonoView).
+    this._viewOffset = [0, 0];
+    this._offPose = new Float64Array(16);
+    this._offProj = new Float64Array(16);
     this.onFocusChange = null;
     this.onTick = null;
     /** controls:'page' — `(views|null) => void`, run once per frame before anything else. */
@@ -1867,12 +1905,40 @@ export class PlayCanvasSplatViewer {
     } else perspectiveFov(this.mono.fov, aspect, this.mono.near, this.mono.far, this.mono.proj);
   }
 
+  /**
+   * handle.setViewOffset — a normalised eye offset in the mono camera's plane (see offsetMonoView),
+   * clamped to the unit disc. Mono only: in woven 3D the head tracker owns the eyes and this is
+   * stored but not drawn; on controls:'page' the page owns the camera and it is ignored. A snap,
+   * like setPose, so the page eases it (and the frame loop draws it next frame).
+   */
+  setViewOffset(x, y) {
+    const r = Math.hypot(x, y);
+    const k = r > 1 ? 1 / r : 1;
+    this._viewOffset[0] = x * k;
+    this._viewOffset[1] = y * k;
+  }
+
+  /** The mono camera as drawn: the offset one when setViewOffset is engaged, else mono itself. */
+  _monoView() {
+    const m = this.mono;
+    const [ox, oy] = this._viewOffset;
+    if (this.pageCamera || (!ox && !oy)) return { proj: m.proj, pose: m.pose };
+    const o = this._orbitCentre;
+    const p = m.pose;
+    // The focus's distance along the view axis (−z): the pivot puts it at the orbit centre.
+    const c = -((o.x - p[12]) * p[8] + (o.y - p[13]) * p[9] + (o.z + this._depthOffset - p[14]) * p[10]);
+    return offsetMonoView(p, m.proj, ox, oy, c, this.orbitMaxDeg, this._offPose, this._offProj)
+      ? { proj: this._offProj, pose: this._offPose }
+      : { proj: m.proj, pose: m.pose };
+  }
+
   _drawMono() {
     const c = this.canvas;
     this._monoEntry ||= [{ proj: this.mono.proj, pose: this.mono.pose, x: 0, y: 0, width: 0, height: 0 }];
     const e = this._monoEntry[0];
-    e.proj = this.mono.proj;
-    e.pose = this.mono.pose;
+    const v = this._monoView();
+    e.proj = v.proj;
+    e.pose = v.pose;
     e.width = c.width;
     e.height = c.height;
     this._drawEntries(this._monoEntry, null);
@@ -2135,7 +2201,7 @@ export class PlayCanvasSplatViewer {
    */
   eyeFrame() {
     const R = this.rigMatrix();
-    const es = this._mode === '3d' && this._lastGood ? this._lastGood.entries : [{ pose: this.mono.pose, proj: this.mono.proj }];
+    const es = this._mode === '3d' && this._lastGood ? this._lastGood.entries : [this._monoView()];
     const o = [0, 0, 0];
     for (const e of es) {
       const M = mat4Mul(R, e.pose);
@@ -2352,7 +2418,7 @@ export class PlayCanvasSplatViewer {
   /** The camera currently on screen: [proj, pose] of the first eye in 3D, the mono camera else. */
   currentView() {
     if (this._mode === '3d' && this._lastGood) return this._lastGood.entries[0];
-    return { proj: this.mono.proj, pose: this.mono.pose };
+    return this._monoView();
   }
 }
 
@@ -2984,6 +3050,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // The current per-eye buffer scale (the `renderScale` option, or the last setRenderScale). A
   // real accessor: Object.assign below would copy a getter's value once.
   Object.defineProperty(out, 'renderScale', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+  // The current eye offset (after the unit-disc clamp), a fresh object per read.
+  Object.defineProperty(out, 'viewOffset', {
+    get: () => ({ x: viewer._viewOffset[0], y: viewer._viewOffset[1] }),
+    enumerable: true,
+    configurable: true,
+  });
   Object.assign(out, {
     backend: 'playcanvas',
     engine: null, // { app, root, camera } once the engine has booted — see below
@@ -3081,6 +3153,23 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         viewer.renderScale = s;
         viewer._scheduleResize();
       }
+      return out;
+    },
+    /**
+     * The 2D tier's eye offset: `{x, y}` normalised in the mono camera's plane (+x right, +y up),
+     * clamped to the unit disc; |offset| = 1 swings the line of sight to the focus by orbitMaxDeg
+     * (15°), off-axis so the focus plane stays put — a head-parallax analogue (a phone's tilt)
+     * where there are no tracked eyes. Composes with the orbit. A snap: ease it in the page.
+     * `null` = {0, 0}. Mono only — a no-op for the pixels in woven 3D (the head tracker owns the
+     * eyes; the value is kept for a later fall back to 2D) and on controls:'page'.
+     */
+    setViewOffset(o) {
+      const x = o == null ? 0 : o.x ?? 0;
+      const y = o == null ? 0 : o.y ?? 0;
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new TypeError('@displayxr/inline3d/splat: setViewOffset takes {x, y} finite numbers (or null).');
+      }
+      viewer.setViewOffset(x, y);
       return out;
     },
     /** Change the layer rig's tile-wide options live (no layer change): merge, `null` clears. */
