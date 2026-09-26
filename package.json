@@ -36,6 +36,10 @@
       "types": "./player.d.ts",
       "import": "./js/inline3d-player.js"
     },
+    "./call": {
+      "types": "./call.d.ts",
+      "import": "./js/inline3d-call.js"
+    },
     "./undock": {
       "types": "./index.d.ts",
       "import": "./js/inline3d-undock.js"
@@ -66,12 +70,15 @@
     "js/inline3d-pc-look.js",
     "js/inline3d-playcanvas-engine.js",
     "js/inline3d-player.js",
+    "js/inline3d-call.js",
+    "js/call/",
     "index.d.ts",
     "three.d.ts",
     "viewer.d.ts",
     "splat.d.ts",
     "model.d.ts",
     "player.d.ts",
+    "call.d.ts",
     "CHANGELOG.md",
     "README.md",
     "LICENSE",
