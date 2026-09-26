@@ -94,6 +94,30 @@ window.__run = async () => {
   h.remove();
   out.img.removed = { attrs: attrs(img), imgVisibility: img.style.visibility, hosts: document.querySelectorAll('[data-inline3d-lift]').length };
 
+  // ── the chip auto-hides in native mode (the lift crop would weave it) ──
+  {
+    const hc = await lift(img, { ui: { autoHideMs: 300 } });
+    await waitState(hc, 'live');
+    const chip = hc._internals().chip;
+    const r = img.getBoundingClientRect();
+    out.chip = { atMount: chip.visible };
+    await new Promise((res) => setTimeout(res, 700));
+    out.chip.afterQuiet = chip.visible;
+    out.chip.opacityHidden = getComputedStyle(chip.el).opacity;
+    out.chip.visibilityHidden = getComputedStyle(chip.el).visibility;
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true }));
+    out.chip.afterMoveInside = chip.visible;
+    await new Promise((res) => setTimeout(res, 700));
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: r.right + 50, clientY: r.bottom + 50, bubbles: true }));
+    out.chip.afterMoveOutside = chip.visible;
+    hc.remove();
+    const hd = await lift(img); // default: native → 2500 ms
+    await waitState(hd, 'live');
+    out.chip.defaultNativeVisibleAt0 = hd._internals().chip.visible;
+    out.chip.defaultNativeClass = hd._internals().chip.el.className;
+    hd.remove();
+  }
+
   // ── image, module WITH gaussians: the explore scene comes from POST lift/gaussians ──
   {
     const hg = await lift(img, { native: { ...out.caps, modes: ['depth', 'sbs', 'gaussians'] } });

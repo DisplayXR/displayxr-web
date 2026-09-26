@@ -71,8 +71,17 @@ export interface LiftOptions {
   remote?: RemoteSharpLiftOptions;
   /** Alias of `remote`. */
   remoteSharp?: RemoteSharpLiftOptions;
-  /** `builtin` (default): a small chip with progress and Explore / Resume / Exit. `none`: drive the handle yourself. */
-  ui?: 'builtin' | 'none';
+  /**
+   * `builtin` (default): a small chip with progress and Explore / Resume / Exit. `none`: drive the
+   * handle yourself. An object is the builtin chip with options:
+   * - `autoHideMs` — fade the chip out after this many ms without pointer activity over the element
+   *   or the chip (a move/press shows it again; keyboard focus on a chip button pins it; progress
+   *   and provider notes re-show it briefly). `0` disables. Default **2500 in native mode**, 0
+   *   (always visible) otherwise. Why: the DisplayXR Browser's native lift crops the element's
+   *   whole on-screen rect and weaves the conversion back into it, so a chip inside that rect is
+   *   converted and woven like the video (docs/lift.md § Chrome over the tile).
+   */
+  ui?: 'builtin' | 'none' | { autoHideMs?: number };
   /** Aborting removes the lift. */
   signal?: AbortSignal;
   /** `stub` swaps in js/lift/stubs/* (same contracts, no ML) — development and demos only. Default `real`. */

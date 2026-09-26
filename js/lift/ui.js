@@ -7,6 +7,12 @@
 // Shows: loading/converting progress, and the actions that apply to the current state —
 //   live → "Explore"   explore → "SOG" (download) + "Resume" (videos) + "Exit"   error → "Exit"
 // `ui: 'none'` never creates it; the page drives the handle itself.
+//
+// Auto-hide (`autoHideMs`, lift.js defaults it ON in native mode only): the DisplayXR Browser's
+// native lift crops the element's whole on-screen rect out of the page raster and weaves the
+// vendor's conversion back into it, so a chip INSIDE that rect is converted and woven like video
+// content. Until the browser splits planes for lift rects, the chip fades out after `autoHideMs`
+// without pointer activity over the element (or the chip) and comes back on the next move/press.
 
 const CSS = `
 .chip{position:absolute;top:8px;right:8px;display:flex;gap:4px;align-items:center;
@@ -17,6 +23,9 @@ const CSS = `
 /* No backdrop-filter: frosted chrome over a woven tile makes the DisplayXR Browser send the tile
    RAW (SBS visible on the panel) — docs/authoring-inline-3d.md: near-solid background, no blur. */
 .chip[hidden]{display:none}
+.chip{transition:opacity .15s ease,visibility 0s linear 0s}
+.chip.autohidden{opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .15s ease,visibility 0s linear .15s}
 .label{white-space:nowrap;padding-right:4px;font-variant-numeric:tabular-nums}
 button{all:unset;cursor:pointer;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.16)}
 button:hover{background:rgba(255,255,255,.3)}
@@ -38,10 +47,69 @@ const LABELS = {
 };
 
 /**
+ * The auto-hide timer, DOM-free (unit-tested): `poke()` shows and restarts the countdown, `hold(on)`
+ * pins it visible (keyboard focus inside the chip), `onChange(visible)` fires on every flip.
+ * `ms <= 0` disables it (always visible).
+ * @param {{ms:number, onChange:(visible:boolean)=>void, setTimer?:Function, clearTimer?:Function}} o
+ */
+export function createAutoHide(o) {
+  const ms = Number.isFinite(o.ms) ? o.ms : 0;
+  const setTimer = o.setTimer || ((fn, t) => setTimeout(fn, t));
+  const clearTimer = o.clearTimer || ((id) => clearTimeout(id));
+  let visible = true;
+  let held = false;
+  let timer = null;
+  const set = (v) => {
+    if (v === visible) return;
+    visible = v;
+    o.onChange(v);
+  };
+  const stop = () => {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  };
+  const arm = () => {
+    stop();
+    if (ms > 0 && !held) {
+      timer = setTimer(() => {
+        timer = null;
+        if (!held) set(false);
+      }, ms);
+    }
+  };
+  return {
+    get enabled() {
+      return ms > 0;
+    },
+    get visible() {
+      return visible;
+    },
+    /** Activity (pointer over the element, a note, progress): show now, hide `ms` later. */
+    poke() {
+      set(true);
+      arm();
+    },
+    /** Pin visible (true) — e.g. a chip button has keyboard focus — or release the pin (false). */
+    hold(on) {
+      held = !!on;
+      set(true);
+      if (held) stop();
+      else arm();
+    },
+    dispose() {
+      stop();
+    },
+  };
+}
+
+/**
  * @param {ShadowRoot} root
  * @param {{kind:'video'|'still', onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
+ * @param {{autoHideMs?:number, activityRect?:() => DOMRect|{left:number,top:number,right:number,bottom:number}|null}} [opts]
+ *        autoHideMs > 0: fade out after that long without pointer activity inside `activityRect()`
+ *        (the lifted element's rect) or over the chip.
  */
-export function createChip(root, actions) {
+export function createChip(root, actions, opts = {}) {
   const style = document.createElement('style');
   style.textContent = CSS;
   const chip = document.createElement('div');
@@ -88,12 +156,67 @@ export function createChip(root, actions) {
     chip.hidden = state === 'disposed';
   };
   render();
+
+  // ── auto-hide ──────────────────────────────────────────────────────────────────────────
+  const auto = createAutoHide({ ms: opts.autoHideMs || 0, onChange: (v) => chip.classList.toggle('autohidden', !v) });
+  let offActivity = () => {};
+  if (auto.enabled) {
+    // Document-level capture: the element may sit under a player's own overlay, and the chip's
+    // buttons stop propagation. A rect test decides whether the pointer is "over the element".
+    const inside = (ev) => {
+      const r = opts.activityRect ? opts.activityRect() : null;
+      if (!r) return false;
+      return ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
+    };
+    // (A closed shadow root hides the chip from composedPath() at document level, so the chip
+    // gets its own capture listeners — its buttons stop propagation of pointerdown.)
+    const onDocPointer = (ev) => {
+      if (inside(ev)) auto.poke();
+    };
+    const onChipPointer = () => auto.poke();
+    // KEYBOARD focus pins it (a mouse click also focuses the button — that must not pin it).
+    const onFocusIn = (ev) => {
+      let kb = false;
+      try {
+        kb = ev.target.matches(':focus-visible');
+      } catch {
+        kb = true; // no :focus-visible support: err on the side of staying visible
+      }
+      if (kb) auto.hold(true);
+    };
+    const onFocusOut = (ev) => auto.hold(!!(ev.relatedTarget && chip.contains(ev.relatedTarget)));
+    const doc = root.ownerDocument || document;
+    const cap = { capture: true, passive: true };
+    doc.addEventListener('pointermove', onDocPointer, cap);
+    doc.addEventListener('pointerdown', onDocPointer, cap);
+    chip.addEventListener('pointermove', onChipPointer, cap);
+    chip.addEventListener('pointerdown', onChipPointer, cap);
+    chip.addEventListener('focusin', onFocusIn);
+    chip.addEventListener('focusout', onFocusOut);
+    offActivity = () => {
+      doc.removeEventListener('pointermove', onDocPointer, cap);
+      doc.removeEventListener('pointerdown', onDocPointer, cap);
+      chip.removeEventListener('pointermove', onChipPointer, cap);
+      chip.removeEventListener('pointerdown', onChipPointer, cap);
+      chip.removeEventListener('focusin', onFocusIn);
+      chip.removeEventListener('focusout', onFocusOut);
+      auto.dispose();
+    };
+    auto.poke(); // visible at mount, hides after the first quiet period
+  }
+
   return {
     el: chip,
+    /** Auto-hide: currently shown (always true when auto-hide is off). */
+    get visible() {
+      return auto.visible;
+    },
     setState(s) {
+      const changed = s !== state;
       state = s;
       if (!(s === 'loading' || s === 'freezing' || s === 'lifting')) progress = note = null;
       render();
+      if (changed && auto.enabled) auto.poke(); // a new state is feedback: show it briefly
     },
     /** A long action in flight (only 'download' today): disables its button, relabels it. */
     setBusy(what, on) {
@@ -104,12 +227,15 @@ export function createChip(root, actions) {
     setNote(text) {
       note = text ? String(text) : null;
       render();
+      if (note && auto.enabled) auto.poke(); // user feedback: re-show briefly, then the timer applies
     },
     setProgress(p) {
       progress = p == null ? null : Math.max(0, Math.min(1, p));
       render();
+      if (progress != null && auto.enabled) auto.poke();
     },
     dispose() {
+      offActivity();
       chip.remove();
       style.remove();
     },

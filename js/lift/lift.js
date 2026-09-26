@@ -35,6 +35,8 @@ import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, default
 export { resolveMediaAt, STATES };
 
 const FADE_MS = 350;
+/** Native mode: the builtin chip hides after this long without pointer activity (`ui.autoHideMs`). */
+const UI_AUTOHIDE_MS = 2500;
 const MAX_EYE_PX = 2048; // cap on one view's backing width
 
 // Literal import() calls (not a computed path) so bundlers can see and split them.
@@ -181,6 +183,8 @@ export async function lift(element, opts = {}) {
     // `remoteSharp` is an alias (the gallery relay's docs use it)
     remote: [opts.remote, opts.remoteSharp].find((x) => x && typeof x === 'object') || {},
     ui: opts.ui === 'none' ? 'none' : 'builtin',
+    // `ui: { autoHideMs }` — the builtin chip with options. null = the mode's default (see below).
+    uiAutoHideMs: opts.ui && typeof opts.ui === 'object' && Number.isFinite(opts.ui.autoHideMs) ? Math.max(0, opts.ui.autoHideMs) : null,
     backend: opts.backend || 'real',
     genParams: opts.genParams && typeof opts.genParams === 'object' ? opts.genParams : null,
     native: opts.native === undefined ? 'auto' : opts.native,
@@ -1077,13 +1081,22 @@ export async function lift(element, opts = {}) {
 
   // ── wire up ───────────────────────────────────────────────────────────────────────────
   if (o.ui === 'builtin') {
-    chip = createChip(placement.shadow, {
-      kind: machineKind,
-      onExplore: () => handle.explore(),
-      onResume: () => handle.resume(),
-      onExit: () => handle.remove(),
-      onDownload: () => handle.downloadSog(),
-    });
+    // Native mode: the browser crops the element's whole on-screen rect and weaves its conversion
+    // back into it, so the chip (inside that rect) gets converted + woven like the video. It
+    // auto-hides by default there until the browser splits planes for lift rects; the web path
+    // (the SDK renders + weaves its own canvas, chip excluded) keeps it always visible.
+    const autoHideMs = o.uiAutoHideMs ?? (native ? UI_AUTOHIDE_MS : 0);
+    chip = createChip(
+      placement.shadow,
+      {
+        kind: machineKind,
+        onExplore: () => handle.explore(),
+        onResume: () => handle.resume(),
+        onExit: () => handle.remove(),
+        onDownload: () => handle.downloadSog(),
+      },
+      { autoHideMs, activityRect: () => (el.isConnected ? el.getBoundingClientRect() : null) },
+    );
   }
   syncBacking(true);
   if (!native) attachRenderer();
@@ -1107,7 +1120,7 @@ export async function lift(element, opts = {}) {
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
     /** Diagnostics only (not API): the live renderers. */
-    _internals: () => ({ explore, dibr, videoProv, stillProv, liftProv, frozen, lifted }),
+    _internals: () => ({ explore, dibr, videoProv, stillProv, liftProv, frozen, lifted, chip }),
     get stats() {
       return { ...stats, state: machine.state };
     },

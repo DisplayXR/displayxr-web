@@ -62,7 +62,7 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 | `prefetch` | `false` | load the still model as soon as live runs. Live depth is **held** while it compiles (see *One ORT session at a time*). |
 | `exploreMaxDpr` | 1 woven / ∞ flat | dpr cap on the canvas while explore is up. 1 on the woven SBS store unless `quality: 'high'`. |
 | `explore` | `{ comfort: 'auto', pivotTargetM: 2.0, eyes: 'nominal' }` | the explore view. `comfort: 'auto'` scales a **metric** lift about the camera so its pivot lands at `pivotTargetM` when it is > 25 % off (neutral image unchanged, parallax × pivot/target — the paused-CG-video "too flat" fix); `'always'` / `'off'` for A/B. `eyes: 'tracked'` takes the runtime's eye positions as metres instead of normalising their separation to 63 mm. docs/lift-explore.md § Comfort. |
-| `ui` | `'builtin'` | a small chip (progress %, Explore / **↓ SOG** / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. |
+| `ui` | `'builtin'` | a small chip (progress %, Explore / **↓ SOG** / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. `{ autoHideMs }` = the builtin chip with options: it fades out after that many ms without pointer activity over the element (**default 2500 in native mode**, 0 = always visible on the web path; see *Chrome over the tile*). |
 | `signal` | — | `AbortSignal`; aborting removes the lift. |
 | `backend` | `'real'` | `'stub'` swaps in `js/lift/stubs/*` (same contracts, no ML) — development and demos only. |
 | `native` | `'auto'` | the browser's vendor 2D→3D module ([Vendor modules](#vendor-modules-native-mode)). `auto`: used for a `<video>`/`<img>` when `liftCapabilities()` says `native`; `false`: never; a caps object skips the query. |
@@ -388,6 +388,8 @@ The DisplayXR Browser is built without proprietary codecs: `<video>` sources mus
 ## Chrome over the tile (chip, buttons, overlays)
 
 Anything the lift draws over its own woven tile must use a **near-solid background and no `backdrop-filter`** (the authoring guide's config C3). A frosted element over a tile makes the DisplayXR Browser send that tile raw — the panel shows side-by-side instead of 3D — until the element leaves the tile. This was hit on the first panel test with the builtin chip.
+
+**Native mode: the chip is inside the lift crop, so it gets woven.** In native mode the browser — not the SDK — converts the element: it crops the element's whole on-screen rect out of the page raster, converts it and weaves the vendor's SBS result back into the same rect. Every pixel inside that rect is treated as video content, so the builtin chip (top-right corner, inside the rect) is converted and woven with it — seen on the panel. Until the browser splits planes for lift rects, the chip **auto-hides in native mode** (`ui: { autoHideMs }`, default 2500 ms): it fades out (~150 ms, then `visibility:hidden`, so it never intercepts the pointer while hidden) after that long without a `pointermove`/`pointerdown` over the element or the chip; any move or press over them shows it again and restarts the timer; keyboard focus on a chip button keeps it up; progress and provider notes (*Lifting with SHARP… 7s*) and state changes re-show it briefly. The web path is unchanged (the SDK weaves its own canvas and `exclude()`s the chip), so its default is 0 — always visible. A page with its own UI can pass `ui: 'none'`.
 
 
 ## Live look-around
