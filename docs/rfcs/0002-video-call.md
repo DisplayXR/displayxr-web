@@ -1,6 +1,6 @@
 # RFC 0002 — a 3D video-call module
 
-**Status:** draft, P0 in progress. **Tier:** preview (like `/splat`, `/model`, `/player` — see
+**Status:** draft; P0 done, P1 implemented (`feat/call-p1`, see §7). **Tier:** preview (like `/splat`, `/model`, `/player` — see
 `docs/sdk-stability.md`). **Author:** architecture pass, 2026-09-25. **Touches:** new
 `@displayxr/inline3d/call` subpath, a small open-source signalling server, one DisplayXR Browser
 patch (Android stereo camera). No change to core.
@@ -77,8 +77,9 @@ call owns a *variable* number of tiles, so it creates and owns the per-participa
 
 ### Wire format
 
-- **Video:** `sbs` = full-width L\|R (left eye left), each eye ≥960 wide; or `mono`. No depth or
-  4-view on the wire.
+- **Video:** `sbs` = full-width L\|R (left eye left), at whatever per-eye width the camera
+  delivers (a real raw stereo camera is 640 per eye; ≥960 is a preference, not a requirement, and
+  nothing is upscaled); or `mono`. No depth or 4-view on the wire.
 - **Data channel, reliable, per peer:**
   - `hello` on open: `{v, format:'sbs'|'mono', width, height, baselineMm?, hfovDeg?, rectified,
     sdk}` — the out-of-band 3D flag.
@@ -111,10 +112,11 @@ canvases (`docs/woven-canvas-rules.md`, rule 6).
 
 | Source | How | Status |
 |---|---|---|
-| USB stereo camera exposing one SBS device | label / aspect > 2.5 | **P0 verifies** |
+| USB stereo camera exposing one SBS device | aspect > 2.5 (label as a probe-order hint) | **P1.** Field data (2026-09-25): a vendor's stereo camera enumerates as ONE device, 1280x480 @30 = 640x480 per eye, a real L\|R pair — but **grayscale and unrectified** (visible vertical misalignment). Sent raw with `rectified: false`; receivers apply only the convergence shift |
+| Rectification of a raw pair | needs the camera's calibration (intrinsics/extrinsics keyed by the ACTIVE device's serial), from a plug-in-provided `MediaStream` or rectify-in-JS fed by the runtime | **P2.** P1 ships the seam: `addCall({ rectify })` → a rectified stream, and the hello then says `rectified: true` |
 | 3D tablet front stereo pair (Android DXR Browser) | **browser patch** exposing it as ONE rectified SBS `MediaStream` + calibration (baseline, intrinsics) | approved; after P0 |
 | Any mono webcam | `getUserMedia` | works today |
-| Laptop eye-tracking cameras | **not available** — held exclusively by the eye tracker (`NotReadableError: Device in use`, P0 2026-09-25). Such laptops are **mono senders** (their HD webcam), lifted on the receiver | ruled out |
+| Laptop eye-tracking cameras | **not available on every laptop class** — on some it is held exclusively by the eye tracker (`NotReadableError: Device in use`, P0 and field data 2026-09-25); on others the same kind of camera enumerates as a stereo device (row 1). `camera: 'auto'` skips a busy device silently; such laptops are **mono senders** (their HD webcam), lifted on the receiver | skipped gracefully (P1) |
 
 ## 5. Mono→3D: the provider chain, not this module
 
@@ -170,8 +172,38 @@ contains vendor code or depth models.
   without a reload. Also pending: eye tracking while the
   webcam is open, a real stereo camera, tablets. Product note: a peer that leaves must surface a
   "peer gone" state and auto-redial — the probe's tile just went black.
-- **P1 — preview module:** mesh ≤4, `dxrSignaling` + TURN, invite links, SBS from USB stereo cams,
-  convergence from `hello`/`hint`, mono flat, 2D-receiver fallback, SDK chrome, sample + tests.
+- **P1 — preview module** (`feat/call-p1`, `js/inline3d-call.js` + `js/call/`, `signaling/`,
+  `samples/call/`, `test/call.test.mjs`):
+  - [x] mesh ≤4 behind a `Transport` seam; `maxPeers` enforced by client and server; VP9 > VP8 > AV1
+    (`setCodecPreferences`, SDP munge fallback); `contentHint='detail'`,
+    `maintain-resolution`, `maxBitrate` per mesh size; audio with EC/NS and mute
+  - [x] `SignalingAdapter`; `dxrSignaling(url)` + the `dxr-signal/1` protocol
+    (`signaling/README.md`); Cloudflare Worker + Durable Object template with server-minted TURN
+    credentials (not deployed); zero-dep Node dev server; `peerjsCloud()` demo adapter
+  - [x] invite links: 128-bit room ids in the `#room=` fragment; only a SHA-256 of the room is in
+    any URL the signalling server sees
+  - [x] SBS from USB stereo cams (`camera:'auto'`, aspect > 2.5, busy devices skipped), raw with
+    `rectified:false` + a `rectify` hook for P2
+  - [x] convergence from `hello`/`hint` (α 0.2, clamped ±12% of the eye width) + depth slider;
+    `hint` is accepted (≤5 Hz) but P1 senders send none, so it is 0 unless a page calls
+    `sendHint()`
+  - [x] mono flat (`mono3D` hook in place, resolves to flat), 2D-receiver fallback (left eye)
+  - [x] layer/session loss: a failed layer is retried with backoff; an ended session is re-opened
+    and every tile re-registered, no reload
+  - [x] peer lifecycle: Connecting / Reconnecting / Left-the-call plates, ICE restart → rebuild
+    with backoff, rejoin via the link
+  - [x] SDK chrome (lobby, 3D self-preview, invite link + QR, bar, badges, banner, grid/speaker),
+    sample, tests
+  - **Deviations:** (1) the woven SBS tile is `wall.addImage(tile, convCanvas)` over a
+    module-painted intermediate canvas, not `addVideo` — `addVideo` draws the whole frame and the
+    core's paint refuses a non-`<video>` source there; `addImage` documents a page-owned canvas as
+    a source, so the core still owns the woven buffer and no core change was needed. (2)
+    `dxrSignaling()` has no hosted default yet — the URL is required (open question below). (3)
+    No `custom()` helper: any object with `join()` is an adapter. (4) The self view sits in a
+    footer below the grid rather than over it, so no chrome ever covers a woven tile. (5) Extra
+    handle surface beyond §1: `join()`, `cameraOff()`, `sendHint()`, events `state`, `joined`,
+    `left`, `session`. (6) P1 lobby badges are per-tile after joining (3D/2D); the pre-join
+    3D / 2D→3D / 2D list needs `liftCapabilities()` (P2).
 - **P2 — lift + tablets:** mono peers via `lift()` + priority; Android stereo-camera browser patch.
 - **P3 — scale + extras:** SFU adapter, share-my-3D-scene (`canvas.captureStream`), face-centred crop.
 
