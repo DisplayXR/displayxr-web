@@ -39,6 +39,14 @@ subpath.
   leave), per-tile `3D`/`2D` badge, a "View in 3D with DisplayXR Browser" banner on other browsers,
   `grid` or `speaker` layout (active speaker from inbound audio levels). The mirrored stereo self
   view mirrors each half AND swaps them; the sent stream is never mirrored.
+- **Hardened after the first panel run**: woven tiles (self view included) register only once the
+  session delivers stereo frames, working around a browser bug where a tile registered before the
+  weave session is live is fed the whole side-by-side frame per eye (displayxr-browser-pvt#172). A
+  participant with no connection after ~10 s shows "Can't reach this participant — the network
+  needs a relay (TURN)" and emits `error` `unreachable` while retries continue. A camera held by
+  another app (e.g. eye tracking) gives `error` `camera-busy` and an audio-only join with
+  `retryCamera()`, and no 0x0 video track is ever sent. `peerjsCloud()` no longer counts stale
+  slots toward a full room and frees its slot on `pagehide`.
 - Sample: [`samples/call/`](samples/call/). Types: `call.d.ts`.
 
 ## 1.27.0 — 2026-09-26

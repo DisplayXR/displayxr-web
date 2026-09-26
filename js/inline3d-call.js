@@ -75,6 +75,7 @@ import {
   eyeOutputSize,
   mirrorSwapOps,
   backoffMs,
+  createLiveGate,
 } from './call/wire.js';
 import { MeshTransport, clampMaxPeers } from './call/transport.js';
 import { openCamera, openMic } from './call/capture.js';
@@ -95,6 +96,7 @@ export {
   badgeFor,
   CALL_ACCENTS,
 };
+export { createLiveGate } from './call/wire.js';
 export { convergenceShiftPx, lowPass, clampShift, eyeCropRect, mirrorSwapOps, mirrorSwapPixels, maxBitrateKbps } from './call/wire.js';
 export { preferVideoCodecs, sortCodecCapabilities, VIDEO_CODEC_ORDER } from './call/sdp.js';
 export { MeshTransport, clampMaxPeers } from './call/transport.js';
@@ -107,6 +109,10 @@ const STATS_TICK_MS = 500;
 const SPEAKING_LEVEL = 0.02;
 const LAYER_RETRIES = 4;
 const DEFAULT_BROWSER_URL = 'https://github.com/DisplayXR/displayxr-browser';
+export const PLATE_TEXT = Object.freeze({
+  unreachable: "Can't reach this participant — the network needs a relay (TURN)",
+  cameraBusy: 'Camera busy — in use by another app (e.g. eye tracking)',
+});
 
 /**
  * Apply defaults and validate. Pure (no DOM, no network) — see test/call.test.mjs.
@@ -172,6 +178,8 @@ class Call {
     this.container = container;
     this.wall = wall || null;
     this.wallLive = !!(wall && wall.supported);
+    this.weaveLive = false; // see createLiveGate / #172: no woven registration before this
+    this.camStatus = 'pending'; // 'ok' | 'busy' | 'none' | 'pending'
     this.id = newPeerId();
     this.room = o.room === 'auto' ? parseInviteLink(globalThis.location) : o.room;
     this.state = 'idle'; // idle | lobby | joining | in-call | full | left
@@ -191,7 +199,7 @@ class Call {
   }
 
   get woven() {
-    return !!(this.wall && this.wall.supported && this.wallLive);
+    return !!(this.wall && this.wall.supported && this.wallLive && this.weaveLive);
   }
 
   log(tag, obj = {}) {
@@ -226,14 +234,20 @@ class Call {
     else this._setState('lobby');
   }
 
-  async _openMedia(want, format) {
+  async _openMedia(want, format, { keepOnFail = false } = {}) {
     const log = (t, x) => this.log(t, x);
     let cam = null;
     try {
       cam = await openCamera(want, { format: format || this.o.format, calibration: this.o.calibration, log });
     } catch (err) {
-      this.error(err.code || 'no-camera', `no camera: ${err.message}`, err);
+      // No camera is never fatal: the call goes on audio-only, the self view and every receiver
+      // say why, and the user can retry (the tracker may let go) or pick another camera.
+      const busy = err.code === 'camera-busy';
+      this.error(busy ? 'camera-busy' : err.code || 'no-camera', busy ? `${PLATE_TEXT.cameraBusy}. Joining audio-only.` : `no camera: ${err.message}. Joining audio-only.`, err);
+      if (keepOnFail && this.local && this.local.videoTrack) return this.local; // keep the working one
+      this.camStatus = busy ? 'busy' : 'none';
     }
+    if (cam) this.camStatus = 'ok';
     if (cam && cam.format === 'sbs' && this.o.rectify) {
       // P2 seam: a calibrated rectification step (plug-in or runtime supplied). Its output is a
       // rectified SBS stream; the hello then says so.
@@ -299,7 +313,9 @@ class Call {
   }
 
   stateMsg() {
-    return { type: 'state', muted: this.muted, cameraOff: this.camOff, speaking: !!this._selfSpeaking };
+    // An audio-only participant (busy / no camera) reads as camera-off: receivers show a plate,
+    // never a black or 0x0 tile.
+    return { type: 'state', muted: this.muted, cameraOff: this.camOff || !this.local?.videoTrack, speaking: !!this._selfSpeaking };
   }
 
   // ── joining ──────────────────────────────────────────────────────────────────────────────
@@ -341,6 +357,7 @@ class Call {
           this.emit('state', { id, state: st });
         },
         onRefused: (id) => this.log('refused-peer', { id }),
+        onGhost: (gid, on) => this._onGhost(gid, on),
         onSignalingState: (st, err) => {
           this.log('signaling', { state: st });
           if (st === 'closed' && err) this.error(err.code || 'signaling-closed', err.message, err);
@@ -372,6 +389,26 @@ class Call {
     this.tiles.set(id, tile);
     this._layout();
     this.emit('peer', { id });
+  }
+
+  /**
+   * A participant the signalling layer knows exists but cannot reach at all (no id to connect to
+   * yet — see peerjsCloud). Shown as a tile in the 'unreachable' state so the page never claims
+   * you are alone; removed when the adapter reaches it (or finds the slot free).
+   */
+  _onGhost(gid, on) {
+    const t = this.tiles.get(gid);
+    if (on && !t) {
+      const tile = new Tile(this, gid);
+      tile.ghost = true;
+      this.tiles.set(gid, tile);
+      tile.setConn('unreachable');
+      this._layout();
+    } else if (!on && t && t.ghost) {
+      t.destroy();
+      this.tiles.delete(gid);
+      this._layout();
+    }
   }
 
   _onPeerLeft(id, reason) {
@@ -440,14 +477,20 @@ class Call {
 
   async setCamera(idOrStream, { format } = {}) {
     const before = this.local?.format;
-    const l = await this._openMedia(idOrStream, format);
+    const l = await this._openMedia(idOrStream, format, { keepOnFail: true });
     if (this.transport) {
       await this.transport.replaceTrack('video', l.videoTrack, l.stream);
       await this.transport.setSendFormat(l.format);
       this.transport.broadcast(this.hello());
+      this.transport.broadcast(this.stateMsg());
     }
     if (before !== l.format) this.log('send-format', { format: l.format });
     return { format: l.format, width: l.width, height: l.height, label: l.label };
+  }
+
+  /** Try the configured camera again (e.g. after the eye tracker released it). */
+  retryCamera() {
+    return this.setCamera(this.o.camera, { format: this.o.format });
   }
 
   sendHint(subjectZmm) {
@@ -496,6 +539,54 @@ class Call {
     };
     hook.onEnd = () => this._sessionEnded(hook);
     w.session.addEventListener('end', hook.onEnd);
+    this._watchLive(w);
+  }
+
+  /**
+   * displayxr-browser-pvt#172: register woven tiles only once the weave session is LIVE. Until
+   * then every tile (and the self view) routes flat; the first live frame run flips `weaveLive`
+   * and each tile registers exactly once. Uses the session's own frames, read through the frozen
+   * `wall.session` / `wall.refSpace` fields — no core change.
+   */
+  _watchLive(w) {
+    this.weaveLive = false;
+    const session = w.session;
+    if (!session || typeof session.requestAnimationFrame !== 'function') {
+      this.weaveLive = true; // nothing to wait on
+      return;
+    }
+    const gate = createLiveGate();
+    const t0 = performance.now();
+    const onFrame = (_t, f) => {
+      if (w !== this.wall || !this.wallLive || this.state === 'left') return;
+      let n = null;
+      if (w.refSpace) {
+        try {
+          const pose = f.getViewerPose(w.refSpace);
+          n = pose && pose.views ? pose.views.length : 0;
+        } catch {
+          n = 0;
+        }
+      }
+      if (!gate.feed(n)) {
+        try {
+          session.requestAnimationFrame(onFrame);
+        } catch {
+          /* session ending: _sessionEnded handles it */
+        }
+        return;
+      }
+      this.weaveLive = true;
+      this.log('weave-live', { ms: Math.round(performance.now() - t0) });
+      for (const t of this.tiles.values()) t.reroute(false);
+      this.self?.reroute(false);
+      this._layout();
+    };
+    try {
+      session.requestAnimationFrame(onFrame);
+    } catch {
+      this.weaveLive = true;
+    }
   }
 
   _unhookWall() {
@@ -513,6 +604,7 @@ class Call {
   _sessionEnded(hook) {
     if (this._wallHook !== hook) return;
     this.wallLive = false;
+    this.weaveLive = false;
     this.log('session-ended', { byPage: hook.pageClosed });
     for (const t of this.tiles.values()) t.onWallLost();
     this.self?.onWallLost();
@@ -682,7 +774,7 @@ class Call {
     const ui = this.ui;
     const ib = (label, icon, onclick, extra = '') => el('button', { class: `dxr-call-ib ${extra}`, type: 'button', 'aria-label': label, title: label, html: icon, onclick });
     ui.mic = ib('Mute microphone', ICONS.mic, () => this.mute());
-    ui.cam = ib('Turn camera off', ICONS.cam, () => this.cameraOff());
+    ui.cam = ib('Turn camera off', ICONS.cam, () => (this.local?.videoTrack ? this.cameraOff() : this.retryCamera().catch(() => {})));
     ui.depth = el('input', { type: 'range', min: '-1', max: '1', step: '0.05', value: '0', 'aria-label': 'Depth' });
     ui.depth.addEventListener('input', () => this.setDepth(+ui.depth.value));
     ui.depth.addEventListener('dblclick', () => this.setDepth(0));
@@ -700,9 +792,10 @@ class Call {
     ui.mic.innerHTML = this.muted ? ICONS.micOff : ICONS.mic;
     ui.mic.setAttribute('aria-pressed', String(this.muted));
     ui.mic.title = this.muted ? 'Unmute microphone' : 'Mute microphone';
-    ui.cam.innerHTML = this.camOff ? ICONS.camOff : ICONS.cam;
-    ui.cam.setAttribute('aria-pressed', String(this.camOff));
-    ui.cam.title = this.camOff ? 'Turn camera on' : 'Turn camera off';
+    const noCam = !this.local?.videoTrack;
+    ui.cam.innerHTML = this.camOff || noCam ? ICONS.camOff : ICONS.cam;
+    ui.cam.setAttribute('aria-pressed', String(this.camOff || noCam));
+    ui.cam.title = noCam ? (this.camStatus === 'busy' ? `${PLATE_TEXT.cameraBusy} — click to retry` : 'No camera — click to retry') : this.camOff ? 'Turn camera on' : 'Turn camera off';
   }
 
   _refreshSelf() {
@@ -766,7 +859,7 @@ class Call {
       const joining = !!this.room;
       const title =
         this.state === 'full' ? 'This call is full' : this.state === 'left' ? 'You left the call' : joining ? 'Join the 3D call' : 'Start a 3D call';
-      const kind = !l || !l.videoTrack ? 'no camera' : l.format === 'sbs' ? `sending 3D (side-by-side, ${l.width}×${l.height})` : `sending 2D (${l.width}×${l.height})`;
+      const kind = this.camStatus === 'busy' ? 'busy (joining audio-only)' : !l || !l.videoTrack ? 'none (joining audio-only)' : l.format === 'sbs' ? `sending 3D (side-by-side, ${l.width}×${l.height})` : `sending 2D (${l.width}×${l.height})`;
       const text =
         this.state === 'full'
           ? `It already has ${this.o.maxPeers} participants.`
@@ -780,7 +873,9 @@ class Call {
       const sel = el('select', { class: 'dxr-call-select', 'aria-label': 'Camera' });
       this._fillCameras(sel);
       sel.addEventListener('change', () => this.setCamera(sel.value).catch((e) => this.error('camera-failed', e.message, e)));
-      p.append(el('h3', { text: title }), el('p', { text }), el('div', { class: 'dxr-call-row' }, [this.state === 'full' ? null : go, sel]));
+      const retry = !l || !l.videoTrack ? el('button', { class: 'dxr-call-btn', type: 'button', text: 'Retry camera' }) : null;
+      retry?.addEventListener('click', () => this.retryCamera().catch(() => {}));
+      p.append(el('h3', { text: title }), el('p', { text }), el('div', { class: 'dxr-call-row' }, [this.state === 'full' ? null : go, retry, sel]));
     } else if (this.state === 'in-call' && n === 0) {
       show(p, true);
       this._renderInvite(p, 'Waiting for others', 'Share this link (or scan the code). Anyone who opens it joins — keep it private.');
@@ -835,6 +930,10 @@ class Call {
       get speaker() {
         return call.speakerId;
       },
+      /** 'ok' | 'busy' (held by another app, e.g. eye tracking) | 'none' | 'pending'. */
+      get camera() {
+        return call.camStatus;
+      },
       /** Read-only snapshot of the remote participants. */
       get peers() {
         return Object.freeze([...call.tiles.values()].map((t) => t.info()));
@@ -845,6 +944,7 @@ class Call {
       cameraOff: (on) => call.cameraOff(on),
       setCamera: (idOrStream, o) => call.setCamera(idOrStream, o),
       setDepth: (v) => call.setDepth(v),
+      retryCamera: () => call.retryCamera(),
       sendHint: (z) => call.sendHint(z),
       leave: () => call.leave(),
       on(type, cb) {
@@ -1008,6 +1108,9 @@ class Tile {
   }
 
   setConn(st) {
+    if (st === 'unreachable' && this.conn !== 'unreachable') {
+      this.call.error('unreachable', `${PLATE_TEXT.unreachable}. Still retrying in the background.`, Object.assign(new Error('unreachable'), { peer: this.id }));
+    }
     this.conn = st;
     if (st === 'connected' && this.leaveTimer) {
       clearTimeout(this.leaveTimer);
@@ -1020,7 +1123,9 @@ class Tile {
     const t =
       this.conn === 'left'
         ? 'Left the call'
-        : this.conn === 'reconnecting'
+        : this.conn === 'unreachable'
+          ? PLATE_TEXT.unreachable
+          : this.conn === 'reconnecting'
           ? 'Reconnecting…'
           : this.conn !== 'connected'
             ? 'Connecting…'
@@ -1163,7 +1268,7 @@ class SelfTile {
   update() {
     const l = this.call.local;
     const noCam = !l || !l.videoTrack;
-    this.plate.textContent = noCam ? 'No camera' : this.call.camOff ? 'Camera off' : '';
+    this.plate.textContent = noCam ? (this.call.camStatus === 'busy' ? PLATE_TEXT.cameraBusy : this.call.camStatus === 'pending' ? '' : 'No camera') : this.call.camOff ? 'Camera off' : '';
     show(this.plate, noCam || this.call.camOff);
     this.reroute(false);
   }
