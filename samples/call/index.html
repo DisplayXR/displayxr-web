@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>call — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:1100px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#5aa8ff}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.72;margin:0 0 22px;max-width:74ch}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+  .status{font:13px/1.5 system-ui;padding:8px 12px;border-radius:8px;margin:0 0 20px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+  /* The call container stays visually bare: it is an ancestor of every woven tile, so no
+     border-radius, shadow, filter or opacity here (docs/woven-canvas-rules.md, rule 7). The
+     module draws its own chrome around the tiles. */
+  #call{margin:0 0 28px}
+  footer{margin-top:36px;font-size:13px;opacity:.6;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>call</h1>
+  <p class="sub">A 3D video call in one <code>addCall()</code>: start a call, share the invite link
+     (or its QR code), and everyone with a 3D display sees the others in 3D — peer-to-peer, up to
+     four people. A stereo camera (one wide side-by-side device) is picked up automatically and sent
+     as a real stereo pair; any other webcam is sent as 2D. On any other browser the call is an
+     ordinary 2D call.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <div id="call"></div>
+
+  <footer>
+    URL params: <code>?signal=ws://localhost:8787</code> your <code>dxr-signal/1</code> server
+    (<code>node signaling/dev-server.mjs</code>; the default on localhost) ·
+    <code>?signal=peerjs</code> the free public PeerJS broker (<b>demo only</b>; the default elsewhere) ·
+    <code>?camera=synthetic</code> a generated side-by-side test pair instead of a camera ·
+    <code>?camera=mono</code> · <code>?layout=speaker</code> · <code>?accent=violet</code> ·
+    <code>?untracked=mono</code> ease tiles flat while nobody is tracked · <code>?debug</code> logs.
+    The room travels in the link's <code>#room=</code> fragment, which the browser never sends to
+    any server. Built on <code>js/inline3d-call.js</code>, preview tier — see
+    <a href="../../docs/sdk-stability.md">sdk-stability.md</a> and
+    <a href="../../docs/rfcs/0002-video-call.md">RFC 0002</a>.
+    Get the <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>.
+  </footer>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/call": "../../js/inline3d-call.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
