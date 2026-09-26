@@ -391,9 +391,13 @@ derivation and the runtime-math proof are in
   the transition overlay). Same N `RenderView`s, same viewports.
 - **Depth.** The display camera clears depth (only depth) in 3D: the two camera spaces never share a
   depth test. The splat writes none; the display layers depth-test among themselves.
-- **Rounding.** `viewerDistance` (m, default **0.6**, the browser's nominal) or an explicit `gain`.
-  The runtime knows the real nominal distance but the browser does not expose it yet — a wrong value
-  scales the objects' depth by `n_true/n`; it never moves the contact plane or the 2D picture.
+- **Rounding.** `viewerDistance` (m) or an explicit `gain`. The default n is the **browser's**
+  `XRDisplayInfo.nominalViewerPosition.z` — the runtime's nominal viewer distance for this panel,
+  asked once per tile from the frame's layer — where the browser reports it (DisplayXR Browser
+  patch 0221), else **0.6 m**. Passing `viewerDistance` pins it; `layerRigState().viewerDistanceSource`
+  says which one is in use (`'page'` | `'browser'` | `'default'`). A wrong n (e.g. the 0.6 m fallback
+  on a panel whose nominal distance differs) scales the objects' depth by `n_true/n`; it never moves
+  the contact plane or the 2D picture.
 - **Which plane lands on the glass.** By default the photo's **convergence plane** (distance `D`
   from the photo's camera — `planeM` / `photoConvergenceM` in `layerRigState()`): an object whose
   contact point is on it sits on the glass, in both rigs. A stage built around another depth (its
@@ -417,14 +421,15 @@ derivation and the runtime-math proof are in
   add it to); a layer that **another** camera draws (the page's own, a reflection pass) is left
   alone and named in `reason`.
 - **Never silent.** `layerRigState()` → `{ path: 'renderviews' | 'ncamera' | 'mono', engaged,
-  reason, viewerDistance, gain, planeM, photoConvergenceM, planeOffset, located, display, disabled }`
+  reason, viewerDistance, viewerDistanceSource, gain, planeM, photoConvergenceM, planeOffset, located,
+  display, disabled }`
   — `engaged` is true only when the display-rig views were applied on the last drawn frame, and
   `reason` says why not (a layer not in the composition, a layer another camera draws, mono, a
   display rig, gain 1). The same line is WARNed on the first 3D frame and on every change, e.g.
 
   ```
   [inline3d/splat] setLayerRig: path=renderviews engaged=true layers=[StageObjects, StageAfterSplat]
-    viewerDistance=0.60m gain=4.000 planeM=2.400 photoConvergenceM=2.400 planeOffset=0.000m located=true reason=-
+    viewerDistance=0.60m(default) gain=4.000 planeM=2.400 photoConvergenceM=2.400 planeOffset=0.000m located=true reason=-
   ```
 - **Kill switch:** `?dxrdiag=nolayerrig` — requests are recorded, never applied.
 

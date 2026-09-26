@@ -16,8 +16,10 @@
 //       view_round_i = view_photo_i · M_i,     proj_round_i = proj_photo_i
 //
 // k = D / (m·n): D the declared convergence (world units), m the declared metersToVirtual, n the
-// nominal viewer distance in metres — the one quantity the browser does not expose (see the
-// design note §5). Everything here is PLAIN ARITHMETIC on arrays, unit-testable without a GPU.
+// nominal viewer distance in metres. n comes from the page's `viewerDistance` if it passed one,
+// else from the browser (XRDisplayInfo.nominalViewerPosition.z, DisplayXR Browser 0221+), else
+// 0.6 m (design note §5, (c)1). Everything here is PLAIN ARITHMETIC on arrays, unit-testable
+// without a GPU.
 
 import { invertAffine } from './inline3d-splat-rig-map.js';
 
@@ -26,6 +28,32 @@ export const LAYER_RIGS = Object.freeze(['display', 'camera']);
 
 /** Nominal viewer distance (m) when neither the page nor the platform says: the browser's own. */
 export const DEFAULT_VIEWER_DISTANCE_M = 0.6;
+
+/** How many times a tile asks the layer for its display info before giving up (rejections only). */
+const MAX_DISPLAY_INFO_ASKS = 3;
+
+/**
+ * The runtime's nominal viewer DISTANCE n (m) from an XRDisplayInfo, or null when the browser does
+ * not report one. It is the position's **z** — the distance out of the glass along the display
+ * normal — not its length: the runtime's camera rig reads only `nominal_viewer->z`
+ * (displayxr-common dxr_view_math.c, `eye_local.z = m2v·(eye.z − nominal_z)`), and z is what
+ * D/n undoes. A browser without the field, a null info, or a z that is not finite and > 0 → null.
+ */
+export function nominalViewerDistanceFromInfo(info) {
+  const z = info && info.nominalViewerPosition ? info.nominalViewerPosition.z : undefined;
+  return typeof z === 'number' && Number.isFinite(z) && z > 0 ? z : null;
+}
+
+/**
+ * The n the layer rig uses, and where it came from: the page's `viewerDistance` wins ('page'),
+ * then the browser's nominal viewer ('browser'), then DEFAULT_VIEWER_DISTANCE_M ('default').
+ * @returns {{ value: number, source: 'page'|'browser'|'default' }}
+ */
+export function resolveViewerDistance(pageViewerDistance, browserViewerDistance) {
+  if (pageViewerDistance !== null && pageViewerDistance !== undefined) return { value: pageViewerDistance, source: 'page' };
+  if (browserViewerDistance !== null && browserViewerDistance !== undefined) return { value: browserViewerDistance, source: 'browser' };
+  return { value: DEFAULT_VIEWER_DISTANCE_M, source: 'default' };
+}
 
 /** A round eye may not reach the window plane: h(E') is floored at this fraction of D. */
 const MIN_EYE_HEIGHT_FRAC = 1e-3;
@@ -45,7 +73,8 @@ export const LAYER_RIG_OPTION_KEYS = Object.freeze(['viewerDistance', 'gain', 'p
 /**
  * setLayerRig / setLayerRigOptions options, validated (throws at the call). Only the keys given
  * are returned: they MERGE into the tile's options. `null` clears a key (back to its default).
- *   viewerDistance  m, > 0     the nominal viewer distance n (default 0.6)
+ *   viewerDistance  m, > 0     the nominal viewer distance n (default: the browser's
+ *                              XRDisplayInfo.nominalViewerPosition.z, else 0.6)
  *   gain            > 0        an explicit rounding gain k instead of D/(m·n)
  *   planeOffset     m, finite  moves the stage TOWARD the viewer by this much on the panel (display
  *                              space): the plane that lands on the glass moves back by offset·D/n
@@ -330,6 +359,11 @@ export class LayerRigCameras {
     this.layers = new Map();
     /** The tile's options: merged across setLayerRig / setLayerRigOptions calls. */
     this.opts = { viewerDistance: null, gain: null, planeOffset: null, planeDistance: null };
+    /** n as the browser reports it (XRDisplayInfo.nominalViewerPosition.z), once known; else null. */
+    this.browserViewerDistance = null;
+    this._infoAsks = 0;
+    this._infoPending = false;
+    this._infoSettled = false;
     this.disabled = false; // the kill switch (diag 'nolayerrig')
     this.cams = { display: [], post: [] };
     this.moved = { display: [], post: [] };
@@ -367,6 +401,41 @@ export class LayerRigCameras {
   /** Merge options (validated by the caller): a key given replaces, `null` clears. */
   setOptions(o = {}) {
     for (const [k, v] of Object.entries(o)) this.opts[k] = v;
+  }
+
+  /** The n this tile uses right now, and its source ('page' | 'browser' | 'default'). */
+  viewerDistance() {
+    return resolveViewerDistance(this.opts.viewerDistance, this.browserViewerDistance);
+  }
+
+  /**
+   * Called with the frame's XRDisplayLayer: ask it ONCE for the display info and keep the
+   * browser's nominal viewer distance. Asynchronous — frames drawn before it resolves use the
+   * page's value or 0.6 m, and the state's `viewerDistanceSource` says which. A browser without
+   * getDisplayInfo (or without the field) leaves the default in place; a REJECTED ask (e.g. no live
+   * layer yet) is retried on later frames, up to MAX_DISPLAY_INFO_ASKS times.
+   */
+  noteLayer(layer) {
+    if (this._infoSettled || this._infoPending || this._infoAsks >= MAX_DISPLAY_INFO_ASKS) return;
+    if (!layer || typeof layer.getDisplayInfo !== 'function') return;
+    this._infoAsks++;
+    this._infoPending = true;
+    let p;
+    try {
+      p = Promise.resolve(layer.getDisplayInfo());
+    } catch (e) {
+      p = Promise.reject(e);
+    }
+    return p.then(
+      (info) => {
+        this._infoPending = false;
+        this._infoSettled = true;
+        this.browserViewerDistance = nominalViewerDistanceFromInfo(info);
+      },
+      () => {
+        this._infoPending = false;
+      }
+    );
   }
 
   /** The eye camera entities of the current view path. */
@@ -494,8 +563,9 @@ export class LayerRigCameras {
     L.residual = residual;
     const hasRun = this.sync();
     const frame = cameraRigFrame(rig);
-    const k = frame ? layerRigGain(frame, this.opts) : null;
-    const plane = frame ? layerRigPlane(frame, this.opts) : null;
+    const opts = { ...this.opts, viewerDistance: this.viewerDistance().value };
+    const k = frame ? layerRigGain(frame, opts) : null;
+    const plane = frame ? layerRigPlane(frame, opts) : null;
     L.gain = k;
     L.planeM = plane;
     L.photoConvergenceM = frame ? frame.D : null;
@@ -606,6 +676,7 @@ export class LayerRigCameras {
   /** The public state (handle.layerRigState). */
   state() {
     const L = this.last;
+    const n = this.viewerDistance();
     return {
       display: [...this.requests.keys()],
       disabled: this.disabled,
@@ -613,7 +684,8 @@ export class LayerRigCameras {
       engaged: !!L.engaged,
       rounded: !!L.engaged,
       reason: this.disabled ? 'kill switch (?dxrdiag=nolayerrig)' : L.reason,
-      viewerDistance: this.opts.viewerDistance ?? DEFAULT_VIEWER_DISTANCE_M,
+      viewerDistance: n.value,
+      viewerDistanceSource: n.source,
       gain: L.gain,
       planeM: L.planeM,
       photoConvergenceM: L.photoConvergenceM ?? null,
@@ -634,7 +706,7 @@ export function layerRigLine(st) {
   const n = (x, d = 3) => (x === null || x === undefined ? '-' : Number(x).toFixed(d));
   return (
     `path=${st.path ?? '-'} engaged=${st.engaged} layers=[${st.display.join(', ')}] ` +
-    `viewerDistance=${n(st.viewerDistance, 2)}m gain=${n(st.gain)} planeM=${n(st.planeM)} ` +
+    `viewerDistance=${n(st.viewerDistance, 2)}m(${st.viewerDistanceSource ?? '-'}) gain=${n(st.gain)} planeM=${n(st.planeM)} ` +
     `photoConvergenceM=${n(st.photoConvergenceM)} planeOffset=${n(st.planeOffset)}m ` +
     `located=${st.located === null || st.located === undefined ? '-' : st.located} reason=${st.reason ?? '-'}`
   );

@@ -1184,7 +1184,11 @@ export class PlayCanvasSplatViewer {
     if (this._mode !== '3d') this.stopMono();
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
     // and the tick below may declare a new one (a focus ease) for the NEXT locate.
-    if (this.layerRigs?.active) this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
+    if (this.layerRigs?.active) {
+      this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
+      // n for the layer rig: the browser's nominal viewer, asked once (async; no-op after).
+      this.layerRigs.noteLayer(layer);
+    }
     // Same moment, for the rig map: the rig these views were most likely located for (a tie-break).
     this._rigAtPull = this.rigTrack ? this.rigTrack.latest : null;
     // BEFORE the tick: a pose the page sets in here is the one this very frame renders.
@@ -3186,7 +3190,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     layerRigState() {
       const lr = viewer.layerRigs;
       if (lr) return lr.state();
-      return { display: [], disabled: false, path: null, engaged: false, rounded: false, reason: 'no layer on the display rig', viewerDistance: DEFAULT_VIEWER_DISTANCE_M, gain: null, planeM: null, photoConvergenceM: null, planeOffset: 0, located: null };
+      return { display: [], disabled: false, path: null, engaged: false, rounded: false, reason: 'no layer on the display rig', viewerDistance: DEFAULT_VIEWER_DISTANCE_M, viewerDistanceSource: 'default', gain: null, planeM: null, photoConvergenceM: null, planeOffset: 0, located: null };
     },
     /**
      * An unlit material showing the left half of `texture` to left-eye views and the right half to
