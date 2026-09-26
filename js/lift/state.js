@@ -2,7 +2,7 @@
 //
 //   idle ─start─▶ loading ─loaded─▶ live ⇄ freezing ─frozen─▶ lifting ─lifted─▶ explore
 //                    │                ▲        │                  │                │
-//                    │                └─play───┴──────────────────┴────────play────┘
+//                    │                └─play / resume (same tick, in-flight work abandoned)─┘
 //                    └─fail─▶ error        (any live-ish state) ─hidden─▶ suspended ─visible─▶ (back)
 //   (any state) ─remove / disconnected─▶ disposed
 //
@@ -98,9 +98,16 @@ export function createLiftMachine(o) {
   };
   const backToLive = (why, { reset = false } = {}) => {
     if (IN_FLIGHT.has(state)) cancelInFlight();
-    if (state === S.EXPLORE) effect('exitExplore', { crossfade: why === 'play' });
+    if (state === S.EXPLORE) effect('exitExplore', { crossfade: why === 'play' || why === 'resume' });
     if (reset) effect('resetProvider');
     go(S.LIVE, why);
+  };
+  // Play must never wait on explore work (pause → explore is only acceptable if play is instant):
+  // a resume goes live IN THIS TICK — the in-flight freeze/lift is abandoned (gen bump + abort),
+  // not awaited — and only then asks the media to play (its `play` event then lands in LIVE).
+  const resumeNow = () => {
+    backToLive('resume');
+    if (kind === 'video') effect('playMedia');
   };
   const afterLoaded = () => {
     if (kind === 'still' || mode === 'explore') return startFreeze('loaded');
@@ -228,6 +235,7 @@ export function createLiftMachine(o) {
             return true;
           }
           if (ev === 'play') return backToLive('play'), true;
+          if (ev === 'resume-request') return resumeNow(), true;
           if (ev === 'emptied') return backToLive('emptied', { reset: true }), true;
           if (ev === 'seeked') {
             if (isPaused()) {
@@ -240,10 +248,7 @@ export function createLiftMachine(o) {
 
         case S.EXPLORE:
           if (ev === 'play') return backToLive('play'), true;
-          if (ev === 'resume-request') {
-            if (kind === 'video') effect('playMedia'); // the element's `play` event does the transition
-            return true;
-          }
+          if (ev === 'resume-request') return resumeNow(), true;
           if (ev === 'emptied') return backToLive('emptied', { reset: true }), true;
           if (ev === 'seeked') {
             if (isPaused()) {

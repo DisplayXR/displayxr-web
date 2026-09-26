@@ -139,6 +139,19 @@ window.__run = async () => {
   await waitState(hv, 'live');
   const V = hv._internals();
   out.vid = { state: hv.state, native: hv.native, attrs: attrs(vid), dibr: !!V.dibr, videoProv: !!V.videoProv, modelLoadMs: hv.stats.modelLoadMs };
+  // play must never wait on explore work: resume mid-lift → live + dxr-lift="auto" in the same tick
+  {
+    const errs = [];
+    const offErr = hv.on('error', (e) => errs.push(String(e.error && e.error.message)));
+    hv.explore();
+    await new Promise((r) => setTimeout(r, 30));
+    const during = hv.state;
+    hv.resume();
+    out.vid.resumeMidLift = { during, syncState: hv.state, syncAttrs: attrs(vid) };
+    await new Promise((r) => setTimeout(r, 2500)); // let the abandoned work settle
+    out.vid.resumeMidLift.after = { state: hv.state, attrs: attrs(vid), paused: vid.paused, errors: errs };
+    offErr();
+  }
   depthStatus = 500; // the module's depth fails → the ORT still model is the fallback (not loaded here: no models)
   vid.pause();
   await new Promise((r) => setTimeout(r, 3000));

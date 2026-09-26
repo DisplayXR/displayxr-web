@@ -387,3 +387,17 @@ test('sog: helpers — log map, texture size, crc32, PLY parse, camera overrides
   assert.equal(cam.focus.subject_m, 2.4); // merged, not replaced
   assert.throws(() => liftCameraBlock({ ...META, convention: 'opengl', axes: undefined }), /OpenCV-only/);
 });
+
+test('sog: an aborted signal stops the export at its next yield (AbortError)', async () => {
+  const { ply } = makePly(1000);
+  const pre = new AbortController();
+  pre.abort();
+  await assert.rejects(buildSog({ ply, meta: META, signal: pre.signal }), { name: 'AbortError' });
+  const mid = new AbortController();
+  let seen = 0;
+  await assert.rejects(
+    buildSog({ ply, meta: META, signal: mid.signal, onProgress: (p) => { seen = p; if (p >= 0.1) mid.abort(); } }),
+    { name: 'AbortError' },
+  );
+  assert.ok(seen < 1, 'never finished');
+});

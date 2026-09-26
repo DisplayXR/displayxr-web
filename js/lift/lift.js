@@ -272,6 +272,11 @@ export async function lift(element, opts = {}) {
   let fadeInUntil = 0;
   let fadeOutUntil = 0;
   let abort = null; // current freeze/lift
+  let sogAbort = null; // a downloadSog() export in flight
+  const cancelSogExport = () => {
+    if (sogAbort) sogAbort.abort();
+    sogAbort = null;
+  };
   let loadAbort = new AbortController();
   let frozen = null; // { bitmap, depth }
   let liveGen = 0; // bumps on provider reset: stale live depth is dropped
@@ -710,6 +715,13 @@ export async function lift(element, opts = {}) {
   }
 
   const isStale = (gen) => disposed || gen !== machine.gen;
+  // A result of abandoned explore work (play/resume/seek/hide bumped the generation meanwhile):
+  // dropped silently — no error event, no state change — with a debug line for diagnostics.
+  const dropped = (gen, what) => {
+    if (!isStale(gen)) return false;
+    if (!disposed) console.debug(`[inline3d/lift] dropped a late ${what} from abandoned gen ${gen} (now ${machine.gen})`);
+    return true;
+  };
 
   async function doFreeze(gen) {
     abort = new AbortController();
@@ -721,7 +733,7 @@ export async function lift(element, opts = {}) {
       if (isStale(gen)) return;
       const t = kind === 'video' ? el.currentTime : 0;
       const bitmap = await createImageBitmap(currentSource());
-      if (isStale(gen)) return bitmap.close && bitmap.close();
+      if (dropped(gen, 'frame')) return bitmap.close && bitmap.close();
       // A lift provider that needs no local depth (remote SHARP) skips the still model here; the
       // depth is computed in doLift only if that provider fails and the lift falls back.
       let depth = null;
@@ -733,7 +745,7 @@ export async function lift(element, opts = {}) {
       frozen = { bitmap, depth, t };
       machine.send('frozen', { gen });
     } catch (error) {
-      if (!isStale(gen)) machine.send('lift-failed', { gen, error });
+      if (!dropped(gen, 'freeze error')) machine.send('lift-failed', { gen, error });
     }
   }
 
@@ -752,12 +764,12 @@ export async function lift(element, opts = {}) {
       if (isStale(gen)) return null;
       progress('depth', 0, 0.25, 0.1);
       const tDepth = performance.now();
-      depth = await stillProv.estimate({ source: bitmap, t });
+      depth = await stillProv.estimate({ source: bitmap, t, signal });
       stats.stillDepthMs = Math.round(performance.now() - tDepth);
     } finally {
       ortBusy--;
     }
-    if (isStale(gen)) return null;
+    if (dropped(gen, 'still depth')) return null;
     progress('depth', 1, 0.25, 0.1);
     // Depth comes back at MODEL resolution (e.g. 770×434) and MoGe's focalPx is in that grid;
     // lift-gen wants focalPx in pixels of the RGB it is given (it rescales to its own raster).
@@ -847,7 +859,7 @@ export async function lift(element, opts = {}) {
         if (it.fx && it.w) stats.fovXDeg = +(2 * Math.atan(it.w / (2 * it.fx)) * 180 / Math.PI).toFixed(2);
       }
       stats.genTimings = (res.meta && res.meta.timings) || null;
-      if (isStale(gen)) return;
+      if (dropped(gen, 'generator result')) return;
       const tEx = performance.now();
       // Same canvas, same WebGL2 context: explore wraps live-DIBR's `gl` (never getContext itself).
       // lift-gen writes the OpenCV camera frame (meta.convention); explore defaults to OpenGL.
@@ -869,12 +881,12 @@ export async function lift(element, opts = {}) {
       stats.exploreScale = +(ex.sceneScale || 1).toFixed(4);
       stats.exploreLoadMs = Math.round(performance.now() - tEx);
       stats.pauseToExploreMs = Math.round(performance.now() - freezeT0);
-      if (isStale(gen)) return ex.dispose();
+      if (dropped(gen, 'explore scene')) return ex.dispose();
       pendingExplore = ex;
       pendingLifted = { ply: res.ply || null, sog: res.sog || null, meta: ex.meta || meta, sceneScale: ex.sceneScale || 1, source };
       machine.send('lifted', { gen });
     } catch (error) {
-      if (!isStale(gen)) machine.send('lift-failed', { gen, error });
+      if (!dropped(gen, 'lift error')) machine.send('lift-failed', { gen, error });
     }
   }
 
@@ -955,6 +967,7 @@ export async function lift(element, opts = {}) {
         syncBacking(true); // explore may cap the backing store at dpr 1
         break;
       case 'exitExplore':
+        cancelSogExport(); // a .sog export in flight must not hold up (or jank) the return to live
         placement.setInteractive(false);
         if (native) {
           // The element comes back converted by the browser at once; the canvas fades out over it
@@ -969,6 +982,8 @@ export async function lift(element, opts = {}) {
         } else disposeExplore();
         break;
       case 'cancelLift':
+        // Abandon, never await: the generation bump already made every late result stale (dropped());
+        // the abort just stops the fetches / worker / ORT waits early.
         if (abort) abort.abort();
         abort = null;
         if (pendingExplore) {
@@ -994,11 +1009,13 @@ export async function lift(element, opts = {}) {
         if (kind === 'video') el.pause();
         break;
       case 'playMedia':
-        // Native <img>: "resume" = back to the browser's in-place conversion (no media to play).
-        if (native && kind === 'still') queueMicrotask(() => machine.send('play'));
+        // The machine is already LIVE (resume never waits on explore work). A native <img> has no
+        // media to play: live = the browser's in-place conversion, already restored.
         if (kind === 'video') {
           const r = el.play();
-          if (r && r.catch) r.catch(() => {});
+          // Refused (autoplay policy, no source): the element is still paused, so let auto mode
+          // treat it as a pause again rather than sit "live" on a paused frame.
+          if (r && r.catch) r.catch(() => el.paused && machine.send('pause'));
         }
         break;
       case 'liftError':
@@ -1023,6 +1040,7 @@ export async function lift(element, opts = {}) {
     error: () => machine.send('fail', { error: mediaError(el) }),
     pause: () => machine.send('pause'),
     play: () => machine.send('play'),
+    playing: () => machine.send('play'),
     seeked: () => machine.send('seeked'),
     ended: () => machine.send('ended'),
     emptied: () => machine.send('emptied'),
@@ -1054,6 +1072,7 @@ export async function lift(element, opts = {}) {
     disposed = true;
     loadAbort.abort();
     if (abort) abort.abort();
+    cancelSogExport();
     if (kind === 'video') for (const [k, f] of Object.entries(media)) el.removeEventListener(k, f);
     document.removeEventListener('visibilitychange', onVis);
     window.removeEventListener('resize', onWinResize);
@@ -1137,7 +1156,7 @@ export async function lift(element, opts = {}) {
     explore() {
       machine.send('explore-request');
     },
-    /** Back to live: plays a paused video (its `play` event crossfades explore → live). */
+    /** Back to live NOW (from explore or mid-lift; in-flight work abandoned), then play a paused video. */
     resume() {
       machine.send('resume-request');
     },
@@ -1191,21 +1210,25 @@ export async function lift(element, opts = {}) {
       // the block opens it with the stereo the explore view had.
       const k = lifted.sceneScale || 1;
       const camera = k !== 1 ? { dxr: { ipd_factor: 1 / k, parallax_factor: 1 / k }, ...(opts.camera || {}) } : opts.camera;
-      return exportSog({ ply: lifted.ply, meta: lifted.meta, camera, onProgress: opts.onProgress });
+      return exportSog({ ply: lifted.ply, meta: lifted.meta, camera, onProgress: opts.onProgress, signal: opts.signal });
     },
     /** exportSog() + save it as a file (`<element name>-3d.sog` unless `filename` is given). */
     async downloadSog(filename) {
       if (!lifted || sogBusy) return false;
       sogBusy = true;
       if (chip) chip.setBusy('download', true);
+      // Leaving explore (play / resume) aborts it: the encode yields between planes and stops there.
+      const ctl = (sogAbort = new AbortController());
       try {
-        const blob = await handle.exportSog();
+        const blob = await handle.exportSog({ signal: ctl.signal });
+        if (ctl.signal.aborted) return false;
         saveBlob(blob, filename || sogFileName(el));
         return true;
       } catch (error) {
-        emit('error', { error, fatal: false, phase: 'export' });
+        if (!ctl.signal.aborted) emit('error', { error, fatal: false, phase: 'export' });
         return false;
       } finally {
+        if (sogAbort === ctl) sogAbort = null;
         sogBusy = false;
         if (chip) chip.setBusy('download', false);
       }

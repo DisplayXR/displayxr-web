@@ -360,12 +360,20 @@ export function zipStored(entries) {
  * @param {object} o.meta  the lift meta (focalPx, pivotZ, w, h, subjectZ, depthRange, intrinsics…)
  * @param {object|false} [o.camera]  overrides merged onto the camera block; `false` omits it.
  * @param {(p:number)=>void} [o.onProgress]
+ * @param {AbortSignal} [o.signal]  checked at every yield: an abort rejects with an AbortError
+ *        (lift.js aborts a download when explore is left — play must not wait on the encode).
  * @returns {Promise<{bytes:Uint8Array, meta:object, width:number, height:number}>}
  */
 export async function buildSog(o) {
   const s = o.splats || parseGaussianPly(o.ply);
   const n = s.count;
   const prog = (p) => o.onProgress?.(p);
+  const checkAbort = () => {
+    if (o.signal && o.signal.aborted) {
+      throw typeof DOMException === 'function' ? new DOMException('sog export aborted', 'AbortError') : new Error('aborted');
+    }
+  };
+  checkAbort();
   const { width, height } = sogTextureSize(n);
   const texels = width * height;
 
@@ -394,6 +402,7 @@ export async function buildSog(o) {
   }
   prog(0.1);
   await yieldTask();
+  checkAbort();
 
   // quats
   const quats = new Uint8Array(texels * 4);
@@ -405,6 +414,7 @@ export async function buildSog(o) {
   const sh0Cb = codebook256(s.fdc);
   prog(0.25);
   await yieldTask();
+  checkAbort();
   const scales = new Uint8Array(texels * 4);
   const sh0 = new Uint8Array(texels * 4);
   for (let i = 0; i < n; i++) {
@@ -418,6 +428,7 @@ export async function buildSog(o) {
   }
   prog(0.35);
   await yieldTask();
+  checkAbort();
 
   const planes = [
     ['means_l.webp', meansL],
@@ -431,6 +442,7 @@ export async function buildSog(o) {
     files.push({ name: planes[k][0], data: encodeWebpLossless(planes[k][1], width, height) });
     prog(0.35 + (0.6 * (k + 1)) / planes.length);
     await yieldTask();
+    checkAbort();
   }
 
   const meta = {

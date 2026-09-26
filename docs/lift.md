@@ -22,7 +22,7 @@ h.setDepth(1.4);
 h.stats;       // { state, fps, modelLoadMs, liveDepthMs, stillDepthMs, generateMs, exploreLoadMs, pauseToExploreMs, splats }
 h.setOrbit(8); // explore: turn the lifted scene (degrees, clamped to the orbit cap)
 h.explore();   // freeze + lift now (pauses a playing video)
-h.resume();    // back to live (plays the video; its `play` event crossfades explore → live)
+h.resume();    // back to live at once (abandons any in-flight lift, crossfades explore out, plays the video)
 h.remove();    // unmounts; the element is exactly as it was
 
 // "Convert whatever is under the pointer":
@@ -210,6 +210,15 @@ engines), the PlayCanvas engine and the native gauss demo open **on the photo's 
 - **Generation counter.** Every freeze gets a new `gen`; `frozen` / `lifted` / `lift-failed` carrying
   an older gen are dropped. A provider that ignores its `AbortSignal` still cannot land a stale view.
 - `play` in explore **crossfades** back to live (uses the explore renderer's `fadeOut` if it has one).
+- **Play never waits on explore work.** `play` / `playing` on the `<video>`, or *Resume* / `resume()`,
+  while freezing, lifting or in explore goes `live` **in the same tick**, native `dxr-lift` attributes
+  restored in that tick: the in-flight work — still-depth fetch (native `lift/depth` included), the
+  lift provider (remote SHARP fetch), the local generator (its worker is terminated), a `.sog`
+  export (stops at its next yield) — is abandoned through its `AbortSignal` and the generation bump,
+  never awaited. A result that arrives later belongs to an abandoned generation and is dropped
+  silently (a `console.debug` line, no `error` event, no state change). *Resume* goes live first and
+  plays the media second; if the browser refuses `play()` the paused video is treated as a new pause.
+  Pause → explore is only acceptable because the way back is instant.
 - `seeked` while playing → `provider.reset()` (temporal models must not blend across a cut).
 - `ended` → explore the last frame immediately.
 - `emptied` / `loadstart` (src swap) → reset, stay live.

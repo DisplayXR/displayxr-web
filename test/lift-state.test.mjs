@@ -235,7 +235,7 @@ test('explore-request on a playing video pauses it and freezes', () => {
   assert.equal(r.pendingTimers(), 0);
 });
 
-test('resume-request in explore plays the media; the play event does the transition', () => {
+test('resume-request in explore goes live at once, then plays the media', () => {
   const r = rig();
   toLive(r);
   r.env.paused = true;
@@ -243,8 +243,116 @@ test('resume-request in explore plays the media; the play event does the transit
   completeLift(r);
   r.clear();
   r.m.send('resume-request');
+  assert.equal(r.m.state, STATES.LIVE, 'live in the same tick, not after the element plays');
+  assert.deepEqual(r.effects, [{ name: 'exitExplore', crossfade: true }, { name: 'playMedia' }]);
+  assert.deepEqual(r.states, ['explore>live:resume']);
+  r.env.paused = false;
+  r.clear();
+  r.m.send('play'); // the element's own play event then lands in LIVE: nothing more to do
+  assert.equal(r.m.state, STATES.LIVE);
+  assert.deepEqual(r.effects, []);
+});
+
+// ── play never waits on explore work ───────────────────────────────────────────────────────
+// Wired the way lift.js wires it: the `lift` effect starts an async generator whose result is sent
+// back with the generation it was started for. The generator is a deferred the test resolves.
+function genRig() {
+  const r = rig();
+  const jobs = [];
+  const m = createLiftMachine({
+    kind: 'video',
+    mode: 'auto',
+    isPaused: () => r.env.paused,
+    setTimer: (fn) => (fn(), 1), // debounce fires at once
+    clearTimer: () => {},
+    onEffect: (name, p = {}) => {
+      r.effects.push({ name, ...p });
+      if (name === 'freeze') queueMicrotask(() => m.send('frozen', { gen: p.gen }));
+      if (name === 'lift') {
+        let resolve;
+        const promise = new Promise((res) => (resolve = res));
+        const job = { gen: p.gen, resolve, settled: false, accepted: null };
+        job.done = promise.then(() => {
+          job.settled = true;
+          job.accepted = m.send('lifted', { gen: job.gen });
+        });
+        jobs.push(job);
+      }
+    },
+    onState: (from, to, why) => r.states.push(`${from}>${to}:${why}`),
+  });
+  return { ...r, m, jobs };
+}
+
+test('play during explore work returns to live synchronously, before the generator settles', async () => {
+  const r = genRig();
+  r.m.send('start');
+  r.m.send('loaded');
+  r.env.paused = true;
+  r.m.send('pause'); // → freezing
+  await Promise.resolve(); // frozen → lifting, generator started
+  assert.equal(r.m.state, STATES.LIFTING);
+  assert.equal(r.jobs.length, 1);
+  r.clear();
+  r.env.paused = false;
+  r.m.send('play');
+  // observed synchronously: no microtask has run, the generator has not settled
+  assert.equal(r.m.state, STATES.LIVE);
+  assert.equal(r.jobs[0].settled, false, 'the transition did not wait on the generator');
+  assert.deepEqual(r.names(), ['cancelLift']);
+  assert.deepEqual(r.states, ['lifting>live:play']);
+  // the same from explore itself (the scene is up, a new lift not needed)
+  r.env.paused = true;
+  r.m.send('pause');
+  await Promise.resolve();
+  r.jobs[1].resolve();
+  await r.jobs[1].done;
   assert.equal(r.m.state, STATES.EXPLORE);
-  assert.deepEqual(r.names(), ['playMedia']);
+  r.clear();
+  r.env.paused = false;
+  r.m.send('play');
+  assert.equal(r.m.state, STATES.LIVE);
+  assert.deepEqual(r.effects, [{ name: 'exitExplore', crossfade: true }]);
+});
+
+test('resume-request mid-lift goes live synchronously, abandons the lift, then plays', async () => {
+  const r = genRig();
+  r.m.send('start');
+  r.m.send('loaded');
+  r.env.paused = true;
+  r.m.send('explore-request');
+  assert.equal(r.m.state, STATES.FREEZING);
+  r.clear();
+  r.m.send('resume-request'); // the chip's Resume / handle.resume() while converting
+  assert.equal(r.m.state, STATES.LIVE);
+  assert.deepEqual(r.names(), ['cancelLift', 'playMedia']);
+  await Promise.resolve(); // the stale `frozen` from the abandoned freeze lands now
+  assert.equal(r.m.state, STATES.LIVE, 'a late frozen from the abandoned gen is ignored');
+  assert.equal(r.jobs.length, 0, 'no lift was started for it');
+});
+
+test('a generator result arriving after the cancel is ignored', async () => {
+  const r = genRig();
+  r.m.send('start');
+  r.m.send('loaded');
+  r.env.paused = true;
+  r.m.send('pause');
+  await Promise.resolve();
+  const job = r.jobs[0];
+  r.env.paused = false;
+  r.m.send('play');
+  const genAfter = r.m.gen;
+  assert.notEqual(job.gen, genAfter, 'the cancel bumped the generation');
+  r.clear();
+  job.resolve({ ply: new Uint8Array(4) }); // the generator finishes anyway
+  await job.done;
+  assert.equal(job.accepted, false, 'lifted from the abandoned gen is rejected');
+  assert.equal(r.m.state, STATES.LIVE);
+  assert.deepEqual(r.effects, [], 'no enterExplore, no liftError, nothing');
+  assert.deepEqual(r.states, []);
+  // and a late failure is just as silent
+  assert.equal(r.m.send('lift-failed', { gen: job.gen, error: new Error('late') }), false);
+  assert.deepEqual(r.effects, []);
 });
 
 test('mode live: pause and ended never lift; explore() still does', () => {

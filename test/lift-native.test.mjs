@@ -185,7 +185,6 @@ function nativeHarness(tag, { mode = 'auto' } = {}) {
       if (name === 'suspend') attrs.hold('paused');
       if (name === 'resume') attrs.hold(null);
       if (name === 'dispose') attrs.clear();
-      if (name === 'playMedia' && kind === 'still') queueMicrotask(() => m.send('play'));
     },
   });
   return { el, m, effects, setPaused: (p) => (paused = p) };
@@ -204,9 +203,8 @@ test('native state machine: <img> is live (browser-converted) until explore(); r
   assert.equal(m.state, STATES.EXPLORE);
   assert.equal(el.getAttribute('dxr-lift'), 'off');
   m.send('resume-request');
-  await new Promise((r) => queueMicrotask(r));
-  assert.equal(m.state, STATES.LIVE);
-  assert.equal(el.getAttribute('dxr-lift'), 'auto');
+  assert.equal(m.state, STATES.LIVE, 'resume is synchronous');
+  assert.equal(el.getAttribute('dxr-lift'), 'auto', 'the browser converts again in the same tick');
   // a failed lift on an image is NOT fatal in native mode: it goes back to the browser's live view
   m.send('explore-request');
   m.send('lift-failed', { gen: m.gen, error: new Error('x') });
@@ -236,6 +234,34 @@ test('native state machine: <video> pause → explore, hidden → priority pause
   m.send('play');
   assert.equal(m.state, STATES.LIVE);
   assert.equal(el.getAttribute('dxr-lift'), 'auto');
+});
+
+test('native: play while the explore work is in flight → live + dxr-lift="auto" in the same tick', () => {
+  const { el, m, effects, setPaused } = nativeHarness('VIDEO');
+  m.send('start');
+  m.send('loaded');
+  setPaused(true);
+  m.send('pause'); // → freezing (the lift/depth fetch would be in flight)
+  const gen = m.gen;
+  m.send('frozen', { gen }); // → lifting (the generator / gaussians POST in flight)
+  assert.equal(m.state, STATES.LIFTING);
+  setPaused(false);
+  m.send('play');
+  assert.equal(m.state, STATES.LIVE);
+  assert.equal(el.getAttribute('dxr-lift'), 'auto');
+  assert.ok(effects.includes('cancelLift'));
+  assert.equal(m.send('lifted', { gen }), false, 'the abandoned lift cannot land explore');
+  assert.equal(el.getAttribute('dxr-lift'), 'auto');
+  // Resume from explore: dxr-lift back to auto before the video's play event arrives
+  setPaused(true);
+  m.send('pause');
+  m.send('frozen', { gen: m.gen });
+  m.send('lifted', { gen: m.gen });
+  assert.equal(el.getAttribute('dxr-lift'), 'off');
+  m.send('resume-request');
+  assert.equal(m.state, STATES.LIVE);
+  assert.equal(el.getAttribute('dxr-lift'), 'auto');
+  assert.equal(effects.at(-1), 'playMedia', 'the media is asked to play after the transition');
 });
 
 // ── the native depth provider ─────────────────────────────────────────────────────────────

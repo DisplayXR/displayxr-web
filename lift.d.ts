@@ -180,7 +180,9 @@ export interface LiftHandle {
   off(type: string, cb: (...a: any[]) => void): void;
   /** Freeze the current frame and lift it (a video pauses). No-op outside `live`. */
   explore(): void;
-  /** Back to live: plays a paused video (its `play` event crossfades explore → live). */
+  /** Back to live, at once: from explore OR mid-lift (freezing/lifting) the handle goes `live` in the
+   *  same tick — in-flight explore work (depth fetch, generator, remote lift, .sog export) is abandoned,
+   *  never awaited, and its late results are dropped — then a paused video is played. */
   resume(): void;
   /** Explore: turn the lifted scene to (yaw, pitch) degrees, clamped to the orbit cap. */
   setOrbit(yaw: number, pitch?: number): void;
@@ -193,7 +195,7 @@ export interface LiftHandle {
    * before the first lift. `camera` is merged onto the block. After a REMOTE lift the worker's
    * original `.sog` bytes are returned as they came (its own camera block; `camera` is ignored).
    */
-  exportSog(opts?: { camera?: Record<string, unknown>; onProgress?: (p: number) => void }): Promise<Blob>;
+  exportSog(opts?: { camera?: Record<string, unknown>; onProgress?: (p: number) => void; signal?: AbortSignal }): Promise<Blob>;
   /** exportSog() saved as a file (`<media name>-3d.sog` by default). Resolves false if nothing was saved. */
   downloadSog(filename?: string): Promise<boolean>;
   /** True once a scene has been lifted. */
