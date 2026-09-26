@@ -603,3 +603,23 @@ test('handle: addSplat displayRigLayers sugar, and the nolayerrig kill switch', 
   b.remove();
   assert.throws(() => attachPlayCanvasSplat({}, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, displayRigLayers: 'Stage' }, []), /displayRigLayers/);
 });
+
+test('handle: setRenderScale changes the buffer scale live, schedules one resize, validates, and chains', () => {
+  installDom();
+  const pc = { createGraphicsDevice: () => new Promise(() => {}) };
+  const out = {};
+  attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, renderScale: 0.6 }, []);
+  assert.equal(out.renderScale, 0.6);
+  let resizes = 0;
+  const orig = out.viewer._scheduleResize.bind(out.viewer);
+  out.viewer._scheduleResize = () => { resizes++; orig(); };
+  assert.equal(out.setRenderScale(1), out);
+  assert.equal(out.renderScale, 1, 'the accessor is live, not a copy');
+  assert.equal(out.viewer.renderScale, 1);
+  assert.equal(resizes, 1);
+  out.setRenderScale(1);
+  assert.equal(resizes, 1, 'no resize when nothing changed');
+  for (const bad of [0, -1, 5, NaN, '1', null]) assert.throws(() => out.setRenderScale(bad), RangeError);
+  assert.equal(out.renderScale, 1);
+  out.remove();
+});

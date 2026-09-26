@@ -2981,6 +2981,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let cancelPendingVideo = null;
   let warnedAutoplayMuted = false;
 
+  // The current per-eye buffer scale (the `renderScale` option, or the last setRenderScale). A
+  // real accessor: Object.assign below would copy a getter's value once.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.renderScale, enumerable: true, configurable: true });
   Object.assign(out, {
     backend: 'playcanvas',
     engine: null, // { app, root, camera } once the engine has booted — see below
@@ -3063,6 +3066,21 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     setLayerRig(layer, rig, o = {}) {
       const r = validateLayerRig(layer, rig, o);
       layerRigs().set(layer, r.rig, r.opts);
+      return out;
+    },
+    /**
+     * Change the per-eye buffer scale live (the `renderScale` option): e.g. full resolution on a
+     * screen that hides the splat and draws only stage quads, 0.6 elsewhere. The backing store is
+     * resized on the next animation frame (never mid-frame). Returns the handle.
+     */
+    setRenderScale(s) {
+      if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0 || s > 4) {
+        throw new RangeError('@displayxr/inline3d/splat: setRenderScale takes a number in (0, 4].');
+      }
+      if (viewer.renderScale !== s) {
+        viewer.renderScale = s;
+        viewer._scheduleResize();
+      }
       return out;
     },
     /** Change the layer rig's tile-wide options live (no layer change): merge, `null` clears. */

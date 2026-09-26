@@ -994,6 +994,14 @@ export interface SplatHandle {
    * `?dxrdiag=nolayerrig`. Callable before `ready`. docs/proposals/layer-display-rig.md.
    */
   setLayerRig(layer: string | number | { id: number }, rig: 'display' | 'camera', opts?: SplatLayerRigOptions): SplatHandle;
+  /**
+   * `engine: 'playcanvas'` only. Change the per-eye buffer scale live (the `renderScale` option),
+   * in (0, 4]; the backing store is resized on the next animation frame. Throws a RangeError
+   * otherwise.
+   */
+  setRenderScale(scale: number): SplatHandle;
+  /** `engine: 'playcanvas'` only. The current per-eye buffer scale. */
+  readonly renderScale: number;
   /** `engine: 'playcanvas'` only. Change the layer rig's tile-wide options live (merge; `null` clears). */
   setLayerRigOptions(opts: SplatLayerRigOptions): SplatHandle;
   /**
