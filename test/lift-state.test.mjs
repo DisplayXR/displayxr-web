@@ -235,7 +235,7 @@ test('explore-request on a playing video pauses it and freezes', () => {
   assert.equal(r.pendingTimers(), 0);
 });
 
-test('resume-request in explore goes live at once, then plays the media', () => {
+test('resume-request in explore goes live at once on the PAUSED frame — it never plays the media', () => {
   const r = rig();
   toLive(r);
   r.env.paused = true;
@@ -243,12 +243,15 @@ test('resume-request in explore goes live at once, then plays the media', () => 
   completeLift(r);
   r.clear();
   r.m.send('resume-request');
-  assert.equal(r.m.state, STATES.LIVE, 'live in the same tick, not after the element plays');
-  assert.deepEqual(r.effects, [{ name: 'exitExplore', crossfade: true }, { name: 'playMedia' }]);
+  assert.equal(r.m.state, STATES.LIVE, 'live in the same tick');
+  assert.deepEqual(r.effects, [{ name: 'exitExplore', crossfade: true }], 'no playMedia: the video stays paused');
   assert.deepEqual(r.states, ['explore>live:resume']);
+  // the paused video stays live: no re-lift on its own
+  assert.equal(r.pendingTimers(), 0);
+  // (c) an explicit play afterwards (the page's controls / handle.play()) lands in LIVE
   r.env.paused = false;
   r.clear();
-  r.m.send('play'); // the element's own play event then lands in LIVE: nothing more to do
+  r.m.send('play');
   assert.equal(r.m.state, STATES.LIVE);
   assert.deepEqual(r.effects, []);
 });
@@ -315,7 +318,7 @@ test('play during explore work returns to live synchronously, before the generat
   assert.deepEqual(r.effects, [{ name: 'exitExplore', crossfade: true }]);
 });
 
-test('resume-request mid-lift goes live synchronously, abandons the lift, then plays', async () => {
+test('resume-request mid-lift goes live synchronously and abandons the lift, without playing', async () => {
   const r = genRig();
   r.m.send('start');
   r.m.send('loaded');
@@ -325,7 +328,7 @@ test('resume-request mid-lift goes live synchronously, abandons the lift, then p
   r.clear();
   r.m.send('resume-request'); // the chip's Resume / handle.resume() while converting
   assert.equal(r.m.state, STATES.LIVE);
-  assert.deepEqual(r.names(), ['cancelLift', 'playMedia']);
+  assert.deepEqual(r.names(), ['cancelLift']);
   await Promise.resolve(); // the stale `frozen` from the abandoned freeze lands now
   assert.equal(r.m.state, STATES.LIVE, 'a late frozen from the abandoned gen is ignored');
   assert.equal(r.jobs.length, 0, 'no lift was started for it');

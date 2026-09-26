@@ -46,6 +46,39 @@ const LABELS = {
   disposed: '',
 };
 
+/** Every input a drag/click on our own overlay produces — incl. the synthetic `click` after a drag,
+ *  the compat mouse events and touch. Not `contextmenu` (the browser's Convert-to-3D menu lives
+ *  there) and not `wheel` (page scroll). */
+export const SHIELDED_EVENTS = Object.freeze([
+  'pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+  'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'auxclick',
+  'touchstart', 'touchmove', 'touchend', 'touchcancel',
+]);
+
+/**
+ * Keep input on our overlay (the explore canvas, the chip) away from the PAGE: a player under it
+ * (YouTube toggles play on click) must never see the drag's pointerup / the click after it — an
+ * orbit drag used to unpause the video on release. stopPropagation + preventDefault, bubble phase
+ * on the target, so our own listeners on the same node still run. `isActive()` gates it (default
+ * always). Returns an `off()`.
+ * @param {EventTarget} target
+ * @param {{isActive?:() => boolean, preventDefault?:boolean}} [o]
+ */
+export function shieldInput(target, o = {}) {
+  const isActive = o.isActive || (() => true);
+  const prevent = o.preventDefault !== false;
+  const onEv = (ev) => {
+    if (!isActive()) return;
+    ev.stopPropagation();
+    if (prevent && ev.cancelable) ev.preventDefault();
+  };
+  const opt = { passive: false }; // touchstart/move must be cancelable
+  for (const t of SHIELDED_EVENTS) target.addEventListener(t, onEv, opt);
+  return () => {
+    for (const t of SHIELDED_EVENTS) target.removeEventListener(t, onEv, opt);
+  };
+}
+
 /**
  * The auto-hide timer, DOM-free (unit-tested): `poke()` shows and restarts the countdown, `hold(on)`
  * pins it visible (keyboard focus inside the chip), `onChange(visible)` fires on every flip.
@@ -138,6 +171,8 @@ export function createChip(root, actions, opts = {}) {
   bSog.title = 'Download the 3D scene (.sog)';
   chip.append(label, bExplore, bSog, bResume, bExit);
   root.append(style, chip);
+  // A click anywhere on the chip (its label too) must not reach a player under it.
+  const offShield = shieldInput(chip, { preventDefault: false });
 
   let state = 'idle';
   let progress = null;
@@ -236,6 +271,7 @@ export function createChip(root, actions, opts = {}) {
     },
     dispose() {
       offActivity();
+      offShield();
       chip.remove();
       style.remove();
     },

@@ -121,13 +121,11 @@ export function createLiftMachine(o) {
     if (reset) effect('resetProvider');
     go(S.LIVE, why);
   };
-  // Play must never wait on explore work (pause → explore is only acceptable if play is instant):
-  // a resume goes live IN THIS TICK — the in-flight freeze/lift is abandoned (gen bump + abort),
-  // not awaited — and only then asks the media to play (its `play` event then lands in LIVE).
-  const resumeNow = () => {
-    backToLive('resume');
-    if (kind === 'video') effect('playMedia');
-  };
+  // Resume = leave explore (or an in-flight lift) for the live view of the PAUSED frame, IN THIS
+  // TICK — the in-flight freeze/lift is abandoned (gen bump + abort), not awaited. It never plays
+  // the media: playback starts only on an explicit play (the page's controls, handle.play()), whose
+  // `play` event lands in LIVE (or, from explore, takes the same instant path).
+  const resumeNow = () => backToLive('resume');
   const afterLoaded = () => {
     if (kind === 'still' || mode === 'explore') return startFreeze('loaded');
     go(S.LIVE, 'loaded');

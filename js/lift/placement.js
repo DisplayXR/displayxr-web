@@ -320,6 +320,7 @@ export function mountCanvas(el) {
     setInteractive(on) {
       canvas.style.pointerEvents = on ? 'auto' : 'none';
       canvas.style.cursor = on ? 'grab' : '';
+      canvas.style.touchAction = on ? 'none' : ''; // a touch drag orbits, it does not scroll the page
     },
     setSourceHidden,
     unmount() {

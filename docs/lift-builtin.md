@@ -25,7 +25,9 @@ The source is in [`tools/lift-builtin/`](../tools/lift-builtin/).
 | `version` | `<SDK version>+<short commit>` (a `.dirty` suffix marks an uncommitted tree). |
 
 `lift(el, { models, ort, ui: 'builtin', native })` does everything else: live 3D while a video plays,
-explore on pause or for a still, and the chip with *Explore / Resume / Exit*. It passes **no `mode`**,
+explore on pause or for a still, and the chip with *Explore / Resume / Exit* (*Resume* goes back to
+the paused frame, never plays — the page's own player controls do that; a drag in explore never
+reaches the player). It passes **no `mode`**,
 so it takes the SDK default: in native mode that is `live` — a paused video stays woven 3D by the
 vendor module and nothing is lifted until the chip's *Explore*.
 

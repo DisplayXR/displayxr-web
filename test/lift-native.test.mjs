@@ -261,7 +261,32 @@ test('native: play while the explore work is in flight → live + dxr-lift="auto
   m.send('resume-request');
   assert.equal(m.state, STATES.LIVE);
   assert.equal(el.getAttribute('dxr-lift'), 'auto');
-  assert.equal(effects.at(-1), 'playMedia', 'the media is asked to play after the transition');
+  assert.ok(!effects.includes('playMedia'), 'Resume returns to the paused frame, it never plays');
+});
+
+test('native Resume from explore: live on the PAUSED frame, dxr-lift="auto", no play; a later play stays live', () => {
+  const { el, m, effects, setPaused } = nativeHarness('VIDEO');
+  m.send('start');
+  m.send('loaded');
+  setPaused(true);
+  m.send('pause');
+  m.send('explore-request'); // chip Explore
+  m.send('frozen', { gen: m.gen });
+  m.send('lifted', { gen: m.gen });
+  assert.equal(m.state, STATES.EXPLORE);
+  assert.equal(el.getAttribute('dxr-lift'), 'off');
+  m.send('resume-request'); // chip Resume
+  assert.equal(m.state, STATES.LIVE);
+  assert.equal(el.getAttribute('dxr-lift'), 'auto', 'the browser converts the paused frame again');
+  assert.ok(!effects.includes('playMedia'));
+  const n = effects.length;
+  m.send('pause-settled'); // a stray settle: native default mode never re-lifts the paused frame
+  assert.equal(m.state, STATES.LIVE);
+  setPaused(false);
+  m.send('play'); // the page's own controls
+  assert.equal(m.state, STATES.LIVE);
+  assert.equal(el.getAttribute('dxr-lift'), 'auto');
+  assert.deepEqual(effects.slice(n), []);
 });
 
 test('native default mode is live: a paused <video> stays live — no freeze, no lift, no depth fetch', () => {

@@ -76,3 +76,53 @@ test('chip auto-hide: dispose stops a pending hide', () => {
   assert.equal(timers.size, 0);
   assert.equal(a.visible, true);
 });
+
+// ── the input shield: explore drags / clicks must never reach the page's player ───────────────
+import { shieldInput, SHIELDED_EVENTS } from '../js/lift/ui.js';
+
+function fakeTarget() {
+  const ls = new Map();
+  return {
+    ls,
+    addEventListener: (t, f, o) => ls.set(t, { f, o }),
+    removeEventListener: (t) => ls.delete(t),
+  };
+}
+function fakeEvent(type, cancelable = true) {
+  return { type, cancelable, stopped: false, prevented: false, stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; } };
+}
+
+test('input shield: pointer/mouse/click/touch on the explore overlay stop propagating and are prevented', () => {
+  const t = fakeTarget();
+  const off = shieldInput(t);
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'mousedown', 'mouseup', 'dblclick', 'touchstart', 'touchmove', 'touchend']) {
+    assert.ok(t.ls.has(type), `${type} shielded`);
+    const e = fakeEvent(type);
+    t.ls.get(type).f(e);
+    assert.equal(e.stopped, true, `${type} does not reach the player`);
+    assert.equal(e.prevented, true, `${type} default prevented`);
+  }
+  assert.equal(t.ls.get('touchstart').o.passive, false, 'touch listeners can preventDefault');
+  assert.ok(!SHIELDED_EVENTS.includes('contextmenu'), "the browser's Convert-to-3D menu still opens");
+  assert.ok(!SHIELDED_EVENTS.includes('wheel'), 'page scroll untouched');
+  off();
+  assert.equal(t.ls.size, 0);
+});
+
+test('input shield: the chip variant stops propagation only; isActive gates it', () => {
+  const t = fakeTarget();
+  shieldInput(t, { preventDefault: false });
+  const e = fakeEvent('click');
+  t.ls.get('click').f(e);
+  assert.equal(e.stopped, true);
+  assert.equal(e.prevented, false, 'button clicks / focus keep their default');
+  let on = false;
+  const t2 = fakeTarget();
+  shieldInput(t2, { isActive: () => on });
+  const e2 = fakeEvent('click');
+  t2.ls.get('click').f(e2);
+  assert.equal(e2.stopped, false);
+  on = true;
+  t2.ls.get('click').f(e2);
+  assert.equal(e2.stopped, true);
+});

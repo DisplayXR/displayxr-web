@@ -193,6 +193,36 @@ window.__run = async () => {
     out.vid.pauseNoLift = { mode: 'default', state: hv.state, depthPostsOnPause: net.depth - d0, attrs: attrs(vid) };
     await vid.play().catch(() => {});
   }
+  // explore input never reaches the player; Resume → the PAUSED frame; only an explicit play plays
+  {
+    const X = (out.vid.exploreInput = {});
+    hv.explore();
+    await waitState(hv, 'explore', 120000);
+    let playCalls = 0;
+    const realPlay = vid.play.bind(vid);
+    vid.play = () => { playCalls++; return realPlay(); };
+    const seen = [];
+    const spy = (e) => seen.push(e.type);
+    const kinds = ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mouseup', 'click'];
+    for (const k of kinds) { vid.parentElement.addEventListener(k, spy); document.addEventListener(k, spy); }
+    const r = hv.canvas.getBoundingClientRect();
+    const at = (dx) => ({ clientX: r.left + r.width / 2 + dx, clientY: r.top + r.height / 2, bubbles: true, composed: true, cancelable: true, pointerId: 1, isPrimary: true, pointerType: 'mouse', buttons: 1 });
+    hv.canvas.dispatchEvent(new PointerEvent('pointerdown', at(0)));
+    for (let i = 1; i <= 5; i++) hv.canvas.dispatchEvent(new PointerEvent('pointermove', at(i * 20)));
+    hv.canvas.dispatchEvent(new PointerEvent('pointerup', { ...at(100), buttons: 0 }));
+    hv.canvas.dispatchEvent(new MouseEvent('click', at(100))); // the synthetic click after a drag
+    await new Promise((res) => setTimeout(res, 300));
+    X.afterDrag = { state: hv.state, paused: vid.paused, playCalls, reachedPage: seen.slice() };
+    for (const k of kinds) { vid.parentElement.removeEventListener(k, spy); document.removeEventListener(k, spy); }
+    hv.resume(); // chip Resume
+    X.afterResume = { state: hv.state, paused: vid.paused, playCalls, attrs: attrs(vid) };
+    await new Promise((res) => setTimeout(res, 500));
+    X.afterResumeSettled = { state: hv.state, paused: vid.paused, playCalls };
+    await hv.play(); // explicit play
+    await new Promise((res) => setTimeout(res, 300));
+    X.afterPlay = { state: hv.state, paused: vid.paused, playCalls };
+    vid.play = realPlay;
+  }
   depthStatus = 500; // the module's depth fails → the ORT still model is the fallback (not loaded here: no models)
   hv.explore(); // explicit: the only thing that lifts in native mode
   await new Promise((r) => setTimeout(r, 3000));

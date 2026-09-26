@@ -195,10 +195,14 @@ export interface LiftHandle {
   off(type: string, cb: (...a: any[]) => void): void;
   /** Freeze the current frame and lift it (a video pauses). No-op outside `live`. */
   explore(): void;
-  /** Back to live, at once: from explore OR mid-lift (freezing/lifting) the handle goes `live` in the
-   *  same tick — in-flight explore work (depth fetch, generator, remote lift, .sog export) is abandoned,
-   *  never awaited, and its late results are dropped — then a paused video is played. */
+  /** Leave explore (or an in-flight lift) for the live view of the PAUSED frame, in the same tick —
+   *  native: `dxr-lift="auto"` again; in-flight explore work (depth fetch, generator, remote lift,
+   *  .sog export) is abandoned, never awaited, and its late results are dropped. It never plays the
+   *  video: playback starts only on an explicit play (the page's controls, or {@link play}). */
   resume(): void;
+  /** Start playback of a `<video>` (an explicit play; resolves false if refused, or for an image).
+   *  Its `play` event returns to live — from explore too, instantly. */
+  play(): Promise<boolean>;
   /** Explore: turn the lifted scene to (yaw, pitch) degrees, clamped to the orbit cap. */
   setOrbit(yaw: number, pitch?: number): void;
   /** Depth strength: live DIBR and, in explore, the lifted scene's depth about its pivot. */

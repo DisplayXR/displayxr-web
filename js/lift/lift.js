@@ -29,7 +29,7 @@
 import { createInline3D } from '../inline3d.js';
 import { createLiftMachine, STATES, resolveLiftMode } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
-import { createChip } from './ui.js';
+import { createChip, shieldInput } from './ui.js';
 import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority } from './native.js';
 
 export { resolveMediaAt, STATES };
@@ -937,6 +937,10 @@ export async function lift(element, opts = {}) {
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
   canvas.addEventListener('pointercancel', onUp);
+  // Explore input stays OURS: the drag's pointerup and the click after it must never reach the
+  // page's player (YouTube toggles play on click → an orbit drag unpaused the video). The canvas
+  // only takes pointer input while interactive (explore), so this is always-on.
+  const offShield = shieldInput(canvas);
 
   // ── effects (the machine's side of the contract) ──────────────────────────────────────
   function runEffect(name, p) {
@@ -1016,16 +1020,6 @@ export async function lift(element, opts = {}) {
       case 'pauseMedia':
         if (kind === 'video') el.pause();
         break;
-      case 'playMedia':
-        // The machine is already LIVE (resume never waits on explore work). A native <img> has no
-        // media to play: live = the browser's in-place conversion, already restored.
-        if (kind === 'video') {
-          const r = el.play();
-          // Refused (autoplay policy, no source): the element is still paused, so let auto mode
-          // treat it as a pause again rather than sit "live" on a paused frame.
-          if (r && r.catch) r.catch(() => el.paused && machine.send('pause'));
-        }
-        break;
       case 'liftError':
         emit('error', { error: p.error, fatal: false, phase: 'lift' });
         break;
@@ -1078,6 +1072,7 @@ export async function lift(element, opts = {}) {
   function teardown() {
     if (disposed) return;
     disposed = true;
+    offShield();
     loadAbort.abort();
     if (abort) abort.abort();
     cancelSogExport();
@@ -1164,9 +1159,17 @@ export async function lift(element, opts = {}) {
     explore() {
       machine.send('explore-request');
     },
-    /** Back to live NOW (from explore or mid-lift; in-flight work abandoned), then play a paused video. */
+    /** Leave explore (or an in-flight lift) NOW for the live view of the PAUSED frame — native:
+     *  `dxr-lift="auto"` again. In-flight work is abandoned. Never plays the video (see play()). */
     resume() {
       machine.send('resume-request');
+    },
+    /** Start playback of a <video> (an explicit play). Its `play` event returns to live — from
+     *  explore too, instantly. No-op for images. */
+    play() {
+      if (kind !== 'video') return Promise.resolve(false);
+      const r = el.play();
+      return r && r.then ? r.then(() => true, () => false) : Promise.resolve(true);
     },
     /** Explore: turn the lifted scene to (yaw, pitch) degrees, clamped to orbit.maxAngleDeg; with
      *  `relax` a drag release springs back to this pose. No-op outside explore. */

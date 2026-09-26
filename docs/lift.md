@@ -22,7 +22,8 @@ h.setDepth(1.4);
 h.stats;       // { state, fps, modelLoadMs, liveDepthMs, stillDepthMs, generateMs, exploreLoadMs, pauseToExploreMs, splats }
 h.setOrbit(8); // explore: turn the lifted scene (degrees, clamped to the orbit cap)
 h.explore();   // freeze + lift now (pauses a playing video)
-h.resume();    // back to live at once (abandons any in-flight lift, crossfades explore out, plays the video)
+h.resume();    // back to the live view of the PAUSED frame at once (abandons any in-flight lift; never plays)
+h.play();      // explicit playback (the page's own controls do the same); its `play` event → live
 h.remove();    // unmounts; the element is exactly as it was
 
 // "Convert whatever is under the pointer":
@@ -70,7 +71,7 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 
 Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRatio`/`overlay`),
 `woven` (true = inline-3D session, false = 2D fallback), `stats`, `on(type, cb) → off`, `off`,
-`explore()`, `resume()`, `setOrbit(yaw, pitch)`, `setDepth(x)`, `setConvergence(x)`,
+`explore()`, `resume()`, `play()`, `setOrbit(yaw, pitch)`, `setDepth(x)`, `setConvergence(x)`,
 `exportSog({camera?}) → Promise<Blob>`, `downloadSog(filename?) → Promise<boolean>`, `canExport`,
 `capture() → Promise<Blob>` (the next drawn frame as a PNG, read back in the same task as the draw —
 the canvas has `preserveDrawingBuffer: false`, so a page screenshot between frames can show it empty),
@@ -221,9 +222,19 @@ engines), the PlayCanvas engine and the native gauss demo open **on the photo's 
   lift provider (remote SHARP fetch), the local generator (its worker is terminated), a `.sog`
   export (stops at its next yield) — is abandoned through its `AbortSignal` and the generation bump,
   never awaited. A result that arrives later belongs to an abandoned generation and is dropped
-  silently (a `console.debug` line, no `error` event, no state change). *Resume* goes live first and
-  plays the media second; if the browser refuses `play()` the paused video is treated as a new pause.
-  Pause → explore is only acceptable because the way back is instant.
+  silently (a `console.debug` line, no `error` event, no state change). Pause → explore is only
+  acceptable because the way back is instant.
+- **Resume returns to the PAUSED frame; only an explicit play plays.** *Resume* / `resume()` leaves
+  explore for the live view of the paused frame (native: `dxr-lift="auto"`, the browser weaves the
+  paused frame) and **never calls `play()`**. Playback starts only on an explicit play — the page's
+  player controls or keyboard, or `handle.play()` — and its `play` event returns to live as above
+  (from explore too: a play the page starts while exploring is treated as explicit).
+- **Explore input stays ours.** The explore canvas swallows every pointer / mouse / click / touch
+  event it gets (`stopPropagation` + `preventDefault`, incl. the synthetic `click` after a drag), and
+  the chip stops propagation of its own; a player under the element (YouTube toggles play on click)
+  never sees them — an orbit drag used to unpause the video on release. `contextmenu` (the browser's
+  Convert-to-3D menu) and `wheel` (page scroll) are not swallowed. The canvas takes `touch-action:none`
+  while interactive, so a touch drag orbits instead of scrolling.
 - `seeked` while playing → `provider.reset()` (temporal models must not blend across a cut).
 - `ended` → explore the last frame immediately.
 - `emptied` / `loadstart` (src swap) → reset, stay live.
