@@ -10,6 +10,26 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 Touches the **preview tier** only (a new subpath, `./call`). No change to the core or to any other
 subpath.
 
+### Added — call: mono→3D through `lift()` (P2a of RFC 0002)
+
+- **Mono participants are lifted to 3D** on a 3D display: a mono peer on a woven wall is handed to
+  `lift()` (`@displayxr/inline3d/lift`) with `{ mode: 'live', wall }` — one lifted tile per peer,
+  in its own slot, registered only once the weave session is live. `mono3D: 'auto'` (default) loads
+  the lift module lazily and falls back to flat, with one log line, when it is missing or there is
+  neither a native 2D→3D provider nor WebGPU; `'off'` keeps mono peers flat; a function injects your
+  own `lift`. `setMono3D(on)` switches at runtime; `liftOptions` passes `models` / `ort` /
+  `quality` through; `maxLifted` (default 4) caps concurrent lifts.
+- **One depth control**: the depth slider is lift's convergence on lifted tiles (0 = `'auto'`) and
+  the crop shift on stereo tiles.
+- **Priority**: the active speaker's lifted stream is `high`, the others `normal`, offscreen or
+  camera-off tiles `paused`, through `setLiftPriority()` — the hook for the native provider's
+  per-stream priority (a no-op on the web path).
+- **Badges** `3D` / `2D→3D` / `2D`; the lobby says what a mono participant will look like
+  (`liftCapabilities()` when available); `handle.mono3D` reports the state. On the web provider a
+  sustained frame-rate drop emits a `quality` event with `lift: { degraded, frameMs, tiles }`.
+- **Changed:** `badgeFor('lifted')` is now `'2D→3D'` (was `'3D'`); `routeFor()` takes
+  `overBudget` / `failed` and reports `mono3d: 'budget' | 'failed'`.
+
 ### Added — call (`@displayxr/inline3d/call`, P1 of RFC 0002)
 
 - **`addCall(wall, container, opts)`** — a 3D video call in any page. Full-mesh WebRTC, up to 4
