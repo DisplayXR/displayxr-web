@@ -21,7 +21,7 @@ import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +37,7 @@ if (!fs.existsSync(path.join(NM, 'esbuild')) || !fs.existsSync(path.join(NM, 'pl
   console.log('[lift-builtin] installing pinned build deps (tools/lift-builtin/package.json)…');
   execSync(fs.existsSync(path.join(HERE, 'package-lock.json')) ? 'npm ci --no-audit --no-fund' : 'npm install --no-audit --no-fund', { cwd: HERE, stdio: 'inherit' });
 }
-const esbuild = (await import(path.join(NM, 'esbuild/lib/main.js'))).default;
+const esbuild = (await import(pathToFileURL(path.join(NM, 'esbuild/lib/main.js')).href)).default;
 const pkgOf = (p) => JSON.parse(fs.readFileSync(path.join(p, 'package.json'), 'utf8'));
 const buildPkg = pkgOf(HERE);
 const pinned = buildPkg.devDependencies;
