@@ -157,8 +157,13 @@ contains vendor code or depth models.
   win DXR Browser, WAN):** 2560×720 VP9 30 fps, woven layer 16:9 after a sample CSS fix (never
   `object-fit` a woven canvas). **Open:** that run showed ONE eye on the panel although the received
   frame carried a correct pair and the browser logged `ID-MATCH FALLBACK` (stamped layer, no quad) —
-  suspects: the sample's in-DOM hidden `<video>` / double layer registration (fixed in 7ac084b), or a
-  browser rect/quad skew on a scrolled page; A/B pending. Also pending: eye tracking while the
+  **Round 2 (8K panel, DPR 3, weave-dump oracle):** sample and scroll CLEARED — scrollY 0 / 300 and
+  the old in-DOM-video build all feed the weaver one correct L|R pair (exact 900 dev-px shift, no
+  ID-MATCH FALLBACK). Prime suspect is the browser's **post-reconnect** state: after a weave-session
+  loss (`xrWeaveSubmitDXR` -17 instance-lost → recovery → reconnected, e.g. a service restart) the
+  weave input carried the whole SBS frame in EACH eye half until a page reload. Product requirement
+  regardless: a call outlives service restarts, so the module must survive a layer/session loss
+  without a reload. Also pending: eye tracking while the
   webcam is open, a real stereo camera, tablets. Product note: a peer that leaves must surface a
   "peer gone" state and auto-redial — the probe's tile just went black.
 - **P1 — preview module:** mesh ≤4, `dxrSignaling` + TURN, invite links, SBS from USB stereo cams,
