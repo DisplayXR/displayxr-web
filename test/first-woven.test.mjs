@@ -305,3 +305,125 @@ test('no inline-3D session: createInline3D says unsupported and there is nothing
   assert.equal(wall.supported, false);
   assert.equal(typeof wall.addScene, 'undefined', 'the fallback path has no windows, so no signal');
 });
+
+// ── handle.rewoven(): firstWoven again, counted from the call (fullscreen / a layout resize) ──
+
+test('rewoven: before the first join it IS firstWoven', async () => {
+  clock = 0;
+  installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  assert.equal(h.rewoven(), h.firstWoven);
+  wall.close();
+});
+
+test('rewoven: after the join, a stereo frame AND the hold, measured from the call', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  env.runFrame(2);
+  clock = 1200;
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+
+  clock = 5000;
+  const p = h.rewoven();
+  assert.equal(await peek(p), 'pending');
+  clock = 5000 + 1199;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'the hold restarts at the call, not at the first join');
+  clock = 5000 + 1200;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: false, reason: 'hold-elapsed', ms: 1200 });
+  wall.close();
+});
+
+test('rewoven: the hold needs a stereo frame after the call — mono frames do not count', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {}, { firstWovenHoldMs: 0 });
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  const p = h.rewoven();
+  await quiet(() => env.runFrame(1));
+  assert.equal(await peek(p), 'pending');
+  env.runFrame(2);
+  assert.equal((await peek(p)).woven, true);
+  wall.close();
+});
+
+test('rewoven: a second call while pending returns the same promise, restarted', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  const p = h.rewoven();
+  clock = 150;
+  assert.equal(h.rewoven(), p);
+  clock = 200;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'restarted at 150: 50 ms is short of the hold');
+  clock = 250;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: false, reason: 'hold-elapsed', ms: 150 });
+  wall.close();
+});
+
+test('rewoven: a real box change while pending restarts the hold', async () => {
+  clock = 0;
+  const env = installEnv();
+  let roCb = null;
+  globalThis.ResizeObserver = class {
+    constructor(cb) {
+      roCb = cb;
+    }
+    observe() {}
+    disconnect() {}
+  };
+  try {
+    const wall = await newWall();
+    const canvas = makeCanvas(400, 200);
+    const h = wall.addImage(canvas, 'sbs.png', { firstWovenHoldMs: 100 });
+    env.images[0].onload();
+    await flush();
+    env.runFrame(2);
+    clock = 100;
+    env.runFrame(2);
+    assert.equal((await peek(h.firstWoven)).woven, true);
+    assert.ok(roCb, 'a live SDK-owned buffer is size-watched');
+
+    const p = h.rewoven();
+    clock = 150;
+    canvas.clientWidth = 800; // fullscreen: the box actually moved
+    canvas.clientHeight = 400;
+    roCb();
+    clock = 210;
+    env.runFrame(2);
+    assert.equal(await peek(p), 'pending', 'restarted at the box change (150), not the call (100)');
+    clock = 250;
+    env.runFrame(2);
+    assert.equal((await peek(p)).woven, true);
+    wall.close();
+  } finally {
+    globalThis.ResizeObserver = undefined;
+  }
+});
+
+test('rewoven: released woven:false when the window goes away, and after a no-weave result', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {}, { firstWovenHoldMs: 0 });
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  const p = h.rewoven();
+  h.remove();
+  assert.equal((await peek(p)).reason, 'removed');
+  assert.equal((await peek(h.rewoven())).reason, 'removed', 'a window that will not weave answers at once');
+  wall.close();
+});
