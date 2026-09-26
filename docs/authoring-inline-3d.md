@@ -76,7 +76,7 @@ redraws the current video frame into the SBS buffer every frame while the window
 Same `opts` as `addImage`.
 
 ```js
-const v = document.querySelector('video#movie');   // a normal SBS 3D .mp4, muted+loop+play()
+const v = document.querySelector('video#movie');   // a normal SBS 3D .webm (VP9, not H.264), muted+loop+play()
 wall.addVideo(document.getElementById('screen'), v);
 ```
 
