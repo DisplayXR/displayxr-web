@@ -32,10 +32,12 @@ export type LiftQuality = 'low' | 'medium' | 'high';
 export interface LiftOptions {
   /**
    * `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still
-   * does). `explore`: lift once the models are in. Default `auto` on the web path; **`live` in native
-   * mode** (the browser keeps the paused frame woven 3D, so lifting on pause is wasted work — the
-   * splat is built only on an explicit Explore). The default flips; a mode you pass is honoured
-   * (native `auto` on a video lifts on pause again; on an `<img>` it is `live`).
+   * does). `explore`: lift once the models are in. Default `auto` on the web path. Native mode:
+   * a **video** defaults to **`live`** (the browser keeps the paused frame woven 3D, so lifting on
+   * pause is wasted work — the splat is built only on an explicit Explore); a **picture** defaults to
+   * **`explore`** (straight to the splat view, no native live conversion of the still; chip = ↓ SOG
+   * + Exit). A mode you pass is honoured (native `auto` on a video lifts on pause again; `live` on a
+   * picture keeps the browser's in-place conversion; `auto` on a picture = `explore`).
    */
   mode?: 'auto' | 'live' | 'explore';
   /** Depth strength multiplier: live DIBR, and the explore scene's depth about its pivot. Default 1. */

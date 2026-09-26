@@ -27,6 +27,8 @@ const CSS = `
 .chip.autohidden{opacity:0;visibility:hidden;pointer-events:none;
   transition:opacity .15s ease,visibility 0s linear .15s}
 .label{white-space:nowrap;padding-right:4px;font-variant-numeric:tabular-nums}
+.label[hidden]{display:none}
+.chip:has(.label[hidden]){padding-left:4px}
 button{all:unset;cursor:pointer;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.16)}
 button:hover{background:rgba(255,255,255,.3)}
 button:focus-visible{outline:2px solid #7cb7ff;outline-offset:1px}
@@ -136,6 +138,28 @@ export function createAutoHide(o) {
 }
 
 /**
+ * What the chip shows for a state — pure (unit-tested).
+ *   video: live → "3D" + Explore + Exit; explore → ↓ SOG + Resume + Exit.
+ *   still (a picture — it converts straight to explore): ↓ SOG + Exit only; no Explore / Resume and
+ *     no "3D" label; the label appears only while busy (progress / provider note) or on error.
+ *     Exit is offered while it converts too.
+ * @param {string} state
+ * @param {{kind:'video'|'still', canDownload?:boolean}} o
+ * @returns {{label:boolean, explore:boolean, sog:boolean, resume:boolean, exit:boolean}}
+ */
+export function chipLayout(state, o) {
+  const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
+  const still = o.kind === 'still';
+  return {
+    label: still ? busy || state === 'error' : true,
+    explore: !still && state === 'live',
+    sog: state === 'explore' && !!o.canDownload,
+    resume: !still && state === 'explore',
+    exit: still ? state !== 'disposed' && state !== 'idle' : state === 'explore' || state === 'error' || state === 'live',
+  };
+}
+
+/**
  * @param {ShadowRoot} root
  * @param {{kind:'video'|'still', onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
  * @param {{autoHideMs?:number, activityRect?:() => DOMRect|{left:number,top:number,right:number,bottom:number}|null}} [opts]
@@ -182,12 +206,14 @@ export function createChip(root, actions, opts = {}) {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
     label.textContent = busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
-    bExplore.hidden = state !== 'live';
-    bSog.hidden = state !== 'explore' || !actions.onDownload;
+    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload });
+    label.hidden = !L.label;
+    bExplore.hidden = !L.explore;
+    bSog.hidden = !L.sog;
     bSog.disabled = saving;
     bSog.textContent = saving ? 'Saving…' : '↓ SOG';
-    bResume.hidden = !(state === 'explore' && actions.kind === 'video');
-    bExit.hidden = !(state === 'explore' || state === 'error' || state === 'live');
+    bResume.hidden = !L.resume;
+    bExit.hidden = !L.exit;
     chip.hidden = state === 'disposed';
   };
   render();

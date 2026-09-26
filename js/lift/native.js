@@ -253,6 +253,10 @@ export function createNativeLiveAttrs(el, o = {}) {
       off = !!on;
       write();
     },
+    /** Remove every dxr-lift* attribute now, whatever set it (a still that never goes live). */
+    drop() {
+      for (const n of names) el.removeAttribute(n);
+    },
     /** Restore every attribute to its pre-lift value (ownLiftAttr: remove them all). Idempotent. */
     clear() {
       if (!applied) {

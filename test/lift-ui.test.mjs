@@ -126,3 +126,27 @@ test('input shield: the chip variant stops propagation only; isActive gates it',
   t2.ls.get('click').f(e2);
   assert.equal(e2.stopped, true);
 });
+
+import { chipLayout } from '../js/lift/ui.js';
+
+const on = (L) => Object.entries(L).filter(([k, v]) => v && k !== 'label').map(([k]) => k).sort();
+
+test('chip: a picture shows exactly ↓ SOG + Exit in explore — no Explore / Resume / "3D" label', () => {
+  const L = chipLayout('explore', { kind: 'still', canDownload: true });
+  assert.deepEqual(on(L), ['exit', 'sog']);
+  assert.equal(L.label, false, 'no "3D" label');
+  // while it converts: the progress/note line + Exit
+  for (const s of ['loading', 'freezing', 'lifting']) {
+    const B = chipLayout(s, { kind: 'still', canDownload: true });
+    assert.deepEqual(on(B), ['exit'], s);
+    assert.equal(B.label, true, `${s}: progress line`);
+  }
+  assert.deepEqual(on(chipLayout('error', { kind: 'still', canDownload: true })), ['exit']);
+});
+
+test('chip: a video keeps the vetted layout (live: Explore + Exit; explore: ↓ SOG + Resume + Exit)', () => {
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true })), ['exit', 'explore']);
+  assert.deepEqual(on(chipLayout('explore', { kind: 'video', canDownload: true })), ['exit', 'resume', 'sog']);
+  assert.deepEqual(on(chipLayout('lifting', { kind: 'video', canDownload: true })), []);
+  assert.equal(chipLayout('live', { kind: 'video' }).label, true);
+});

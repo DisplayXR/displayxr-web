@@ -50,7 +50,7 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 
 | option | default | |
 |---|---|---|
-| `mode` | `'auto'` (**native default: `'live'`**) | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. In native mode the default flips to `live` for videos and images: the vendor module keeps the paused frame woven 3D, so a pause never builds a splat (no depth fetch, no generator, no `.sog`) — only Explore does. Native ignores nothing you state: an explicit `mode: 'auto'` on a video lifts on pause as before (an `<img>` has no pause, so it is `live`), `'explore'` lifts at once. |
+| `mode` | `'auto'` (**native default: `'live'` for a video, `'explore'` for a picture**) | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. Native **video**: the default is `live` — the vendor module keeps the paused frame woven 3D, so a pause never builds a splat (no depth fetch, no generator, no `.sog`); only Explore does. Native **picture** (`<img>`): the default is `explore` — straight to the splat view, never a native live conversion of the still (no `dxr-lift` attribute, no stream). Native ignores nothing you state: an explicit `'auto'` on a video lifts on pause as before; an explicit `'live'` on a picture keeps the browser's in-place conversion (Explore / Resume toggle); `'auto'` on a picture = `'explore'`. The web path is unchanged (a still lifts at once there anyway). |
 | `depth` | `1` | depth strength multiplier: live DIBR, and in explore the lifted scene's depth about its pivot (`setDepth()` drives both). |
 | `convergence` | `'auto'` | zero-disparity depth; handed to live-DIBR as given. |
 | `quality` | `'auto'` | `low`/`medium`/`high`; `auto` picks `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, else `low` — **never `high`** (MoGe-3 1022×574 is 2.8 s vs 1.3 s, and a 1536-wide lift is ~1.2 M splats). The still model, generator and inpainter get the concrete tier; the video model keeps `auto` (its warm-up picks 364×210 vs 518×294 by measured frame time). |
@@ -115,9 +115,15 @@ HEAD on the download URL). `webFallback: false` skips the probes. An aborted que
 **What `lift()` does in native mode.** It mounts the placement host (hidden canvas + chip) but not
 into the inline-3D session; the element stays visible and gets the attributes below. Loading pulls in
 only the model/registry module — the generator, explore renderer and (only if a native provider
-falls back) onnxruntime load on the first explore. A `<video>` **and** an `<img>` are **live**
-(browser-converted) until `explore()` — the default mode is `live` in native mode, so a paused video
-stays woven 3D by the vendor module and nothing is lifted until *Explore*; *Resume* goes back to live. Entering explore sets `dxr-lift="off"` (the SDK's canvas
+falls back) onnxruntime load on the first explore. A `<video>` is **live** (browser-converted)
+until `explore()` — the default mode is `live` for a native video, so a paused video stays woven 3D
+by the vendor module and nothing is lifted until *Explore*; *Resume* goes back to the paused frame.
+A **picture** goes **straight to explore**: `loading → freezing → lifting → explore`, no live phase,
+no `dxr-lift*` attribute written — the frame's depth (`lift/depth`) / gaussians (`lift/gaussians`)
+are fetched for the explore scene without any live stream. With `ownLiftAttr` a `dxr-lift` the
+browser's menu pre-set is removed at once. Its chip is **↓ SOG + Exit** only (no Explore / Resume,
+no "3D" label; the label shows only while converting or on error); a lift failure is an `error`
+(there is no live view to fall back to), and `resume()` does not apply. Entering explore sets `dxr-lift="off"` (the SDK's canvas
 owns those pixels), hides the element and adds the canvas to the session; leaving it restores the
 element and `dxr-lift="auto"` at once, and the canvas fades out and leaves the session. A hidden tab
 holds `dxr-lift-priority="paused"`. `remove()` (and a fatal error) restores every attribute to its

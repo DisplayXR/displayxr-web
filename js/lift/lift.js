@@ -210,11 +210,13 @@ export async function lift(element, opts = {}) {
   // Register the module's providers in the shared registry now (depth `native` at priority 100,
   // `native-gaussians` when it lifts), before any provider is resolved.
   if (native) ensureNativeProviders(caps);
-  // Native live: the BROWSER converts the element (an <img> too), so an image behaves like a
-  // paused video — live until explore() — and explore/resume toggles between the two.
-  const machineKind = native ? 'video' : kind;
-  // Native defaults to 'live' (pause never auto-lifts; explore is explicit) — resolveLiftMode.
+  // Native defaults (resolveLiftMode): a VIDEO is 'live' (pause never auto-lifts; explore is
+  // explicit); a PICTURE goes straight to explore — no native live conversion of a still.
   const machineMode = resolveLiftMode({ native, kind, mode: opts.mode });
+  // Only a native still the caller explicitly keeps 'live' behaves like a paused video (the
+  // browser converts it in place; explore/resume toggle). Otherwise a still is a still.
+  const machineKind = native && kind === 'still' && machineMode === 'live' ? 'video' : kind;
+  const nativeStillExplore = native && kind === 'still' && machineMode === 'explore';
   if (native && !o.providers.lift) {
     const lp = defaultLiftProviderFor(caps, o.providers);
     if (lp) o.providers.lift = lp; // native-gaussians over the local generator (a registered LiftProvider)
@@ -224,6 +226,10 @@ export async function lift(element, opts = {}) {
   const nativeLive = native
     ? createNativeLiveAttrs(el, { depth: o.depth, convergence: o.convergence, priority: o.priority, ownLiftAttr: !!opts.ownLiftAttr })
     : null;
+  // A picture never gets a native live stream. The browser's menu pre-sets dxr-lift="auto" before
+  // lift() runs; when we own the attributes, take it away NOW so the browser stops (or never
+  // starts) converting the still — the explore view is all it gets. (A page-set value is left.)
+  if (nativeStillExplore && opts.ownLiftAttr) nativeLive.drop();
   let nativeDetachPending = false;
 
   // ── listeners ─────────────────────────────────────────────────────────────────────────

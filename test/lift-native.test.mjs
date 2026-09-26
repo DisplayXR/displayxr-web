@@ -165,15 +165,19 @@ test('native attrs: apply sets dxr-lift + options; setters map; clear restores e
  * `startLive` applies the attributes, `enterExplore` turns the browser's conversion off,
  * `exitExplore` turns it back on, `suspend` holds priority 'paused', `dispose` clears.
  */
-function nativeHarness(tag, { mode } = {}) {
-  const el = fakeEl();
-  const attrs = createNativeLiveAttrs(el, { depth: 1, priority: 'normal' });
+function nativeHarness(tag, { mode, preset = {}, ownLiftAttr = false } = {}) {
+  const el = fakeEl(preset);
+  const attrs = createNativeLiveAttrs(el, { depth: 1, priority: 'normal', ownLiftAttr });
   const effects = [];
   let paused = tag === 'IMG';
   const kind = tag === 'VIDEO' ? 'video' : 'still';
+  // exactly what lift.js runs: resolveLiftMode, a still is a still unless explicitly 'live'
+  const machineMode = resolveLiftMode({ native: true, kind, mode });
+  const machineKind = kind === 'still' && machineMode === 'live' ? 'video' : kind;
+  if (kind === 'still' && machineMode === 'explore' && ownLiftAttr) attrs.drop();
   const m = createLiftMachine({
-    kind: 'video',
-    mode: resolveLiftMode({ native: true, kind, mode }), // exactly what lift.js runs
+    kind: machineKind,
+    mode: machineMode,
     isPaused: () => kind === 'still' || paused,
     setTimer: (fn) => (fn(), 1),
     clearTimer: () => {},
@@ -190,8 +194,8 @@ function nativeHarness(tag, { mode } = {}) {
   return { el, m, effects, setPaused: (p) => (paused = p) };
 }
 
-test('native state machine: <img> is live (browser-converted) until explore(); resume goes back', async () => {
-  const { el, m, effects } = nativeHarness('IMG');
+test('native state machine: <img> with an EXPLICIT mode:\'live\' is browser-converted until explore(); resume goes back', async () => {
+  const { el, m, effects } = nativeHarness('IMG', { mode: 'live' });
   m.send('start');
   m.send('loaded');
   assert.equal(m.state, STATES.LIVE, 'an image is LIVE in native mode, not lifted at once');
@@ -320,6 +324,39 @@ test('native default mode: explore() still lifts the paused frame', () => {
   assert.equal(el.getAttribute('dxr-lift'), 'off');
 });
 
+test('native <img> (default): straight to explore — no live phase, no dxr-lift ever set; the menu\'s pre-set "auto" is dropped', () => {
+  const { el, m, effects } = nativeHarness('IMG', { preset: { 'dxr-lift': 'auto' }, ownLiftAttr: true });
+  assert.equal(el.hasAttribute('dxr-lift'), false, 'the browser menu\'s pre-set is taken away at once');
+  const seen = [];
+  const set = el.setAttribute;
+  el.setAttribute = (n, v) => (seen.push([n, v]), set(n, v));
+  const states = [];
+  m.send('start');
+  states.push(m.state);
+  m.send('loaded');
+  states.push(m.state);
+  assert.equal(m.state, STATES.FREEZING, 'loaded → freezing: no live phase');
+  m.send('frozen', { gen: m.gen });
+  m.send('lifted', { gen: m.gen });
+  assert.equal(m.state, STATES.EXPLORE);
+  assert.deepEqual(states, ['loading', 'freezing']);
+  assert.ok(!effects.includes('startLive'), 'no native live stream');
+  assert.deepEqual(seen, [], 'no dxr-lift* attribute written, ever');
+  // Resume does not apply to a picture; Exit removes it
+  assert.equal(m.send('resume-request'), false);
+  assert.equal(m.state, STATES.EXPLORE);
+  m.send('remove');
+  assert.equal(el.a.size, 0);
+});
+
+test('native <img> lift failure is an error (nothing live to fall back to)', () => {
+  const { m } = nativeHarness('IMG', { ownLiftAttr: true });
+  m.send('start');
+  m.send('loaded');
+  m.send('lift-failed', { gen: m.gen, error: new Error('x') });
+  assert.equal(m.state, STATES.ERROR);
+});
+
 test('resolveLiftMode: native defaults to live, stated modes are honoured; the web path is unchanged', () => {
   // web path
   assert.equal(resolveLiftMode({ native: false, kind: 'video' }), 'auto');
@@ -328,13 +365,14 @@ test('resolveLiftMode: native defaults to live, stated modes are honoured; the w
   assert.equal(resolveLiftMode({ native: false, kind: 'video', mode: 'explore' }), 'explore');
   // native: the default flips to live for videos AND stills
   assert.equal(resolveLiftMode({ native: true, kind: 'video' }), 'live');
-  assert.equal(resolveLiftMode({ native: true, kind: 'still' }), 'live');
+  assert.equal(resolveLiftMode({ native: true, kind: 'still' }), 'explore', 'a picture goes straight to explore');
   assert.equal(resolveLiftMode({ native: true, kind: 'video', mode: 'bogus' }), 'live');
   // …but what the caller states is honoured
   assert.equal(resolveLiftMode({ native: true, kind: 'video', mode: 'auto' }), 'auto');
   assert.equal(resolveLiftMode({ native: true, kind: 'video', mode: 'explore' }), 'explore');
   assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'explore' }), 'explore');
-  assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'auto' }), 'live', 'an <img> has no pause');
+  assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'auto' }), 'explore', "'auto' on a still lifts at once");
+  assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'live' }), 'live', 'an explicit live is honoured');
 });
 
 test('native attrs ownLiftAttr: a pre-set dxr-lift="auto" (the browser menu) is REMOVED on clear, with the rest', () => {

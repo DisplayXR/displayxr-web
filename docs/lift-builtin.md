@@ -28,8 +28,13 @@ The source is in [`tools/lift-builtin/`](../tools/lift-builtin/).
 explore on pause or for a still, and the chip with *Explore / Resume / Exit* (*Resume* goes back to
 the paused frame, never plays — the page's own player controls do that; a drag in explore never
 reaches the player). It passes **no `mode`**,
-so it takes the SDK default: in native mode that is `live` — a paused video stays woven 3D by the
-vendor module and nothing is lifted until the chip's *Explore*.
+so it takes the SDK default: in native mode a **video** is `live` — a paused video stays woven 3D by
+the vendor module and nothing is lifted until the chip's *Explore* — and a **picture** goes
+**straight to explore** (the Gaussian view, chip = *↓ SOG / Exit* only, no live stream and no
+`dxr-lift` attribute: the one the menu pre-set is removed at once, since native lifts pass
+`ownLiftAttr`). Browser-side note: `lift_trigger.cc` pre-sets `dxr-lift="auto"` for images too,
+so a stream may start for the instant before the bundle removes it — not pre-setting it for
+`<img>` would avoid even that.
 
 **Vendor module first.** Each `convertAt` asks `liftCapabilities()` (`GET displayxr-lift://caps`,
 cached per document). When the runtime's 2D→3D module is there (`native`) and the pick is a

@@ -38,20 +38,22 @@ const HIDEABLE = new Set([S.LOADING, S.LIVE, S.FREEZING, S.LIFTING, S.EXPLORE]);
 /**
  * The machine mode lift() runs, from what the caller asked (`mode`, undefined = not stated).
  *   web path:  the caller's mode, default 'auto' (live while playing, lift on pause/end).
- *   native:    default 'live' for videos AND stills — the browser's vendor module keeps the paused
- *              frame woven 3D, so lifting on pause is wasted work (depth fetch, generator) that got
- *              in the way; the splat is built only on an explicit explore(). Anything the caller
- *              STATES is honoured: 'explore' (lift at once), and 'auto' for a video (lift on pause).
- *              A still has no pause, so an explicit 'auto' on a native <img> is 'live'.
+ *   native VIDEO: default 'live' — the browser's vendor module keeps the paused frame woven 3D, so
+ *              lifting on pause is wasted work (depth fetch, generator) that got in the way; the
+ *              splat is built only on an explicit explore(). A stated 'auto' / 'explore' is honoured.
+ *   native STILL (a picture): default 'explore' — straight to the splat view, never a native live
+ *              conversion of the still. A stated 'live' is honoured; a stated 'auto' is 'explore'
+ *              (what 'auto' means for a still on the web path: lift at once).
  * @param {{native:boolean, kind:'video'|'still', mode?:string}} o
  * @returns {'auto'|'live'|'explore'}
  */
 export function resolveLiftMode({ native, kind, mode }) {
   const m = mode === 'auto' || mode === 'live' || mode === 'explore' ? mode : undefined;
   if (!native) return m || 'auto';
-  if (m === 'explore') return 'explore';
-  if (m === 'auto' && kind === 'video') return 'auto';
-  return 'live';
+  // A picture converts straight to explore (the splat view): no native live conversion of a still.
+  // Only an explicit 'live' keeps the browser's in-place conversion for it.
+  if (kind === 'still') return m === 'live' ? 'live' : 'explore';
+  return m || 'live';
 }
 
 /**
@@ -125,7 +127,12 @@ export function createLiftMachine(o) {
   // TICK — the in-flight freeze/lift is abandoned (gen bump + abort), not awaited. It never plays
   // the media: playback starts only on an explicit play (the page's controls, handle.play()), whose
   // `play` event lands in LIVE (or, from explore, takes the same instant path).
-  const resumeNow = () => backToLive('resume');
+  // A still (a picture) has no live view to return to: Resume does not apply (Exit removes it).
+  const resumeNow = () => {
+    if (kind === 'still') return false;
+    backToLive('resume');
+    return true;
+  };
   const afterLoaded = () => {
     if (kind === 'still' || mode === 'explore') return startFreeze('loaded');
     go(S.LIVE, 'loaded');
@@ -253,7 +260,7 @@ export function createLiftMachine(o) {
             return true;
           }
           if (ev === 'play') return backToLive('play'), true;
-          if (ev === 'resume-request') return resumeNow(), true;
+          if (ev === 'resume-request') return resumeNow();
           if (ev === 'emptied') return backToLive('emptied', { reset: true }), true;
           if (ev === 'seeked') {
             if (isPaused()) {
@@ -266,7 +273,7 @@ export function createLiftMachine(o) {
 
         case S.EXPLORE:
           if (ev === 'play') return backToLive('play'), true;
-          if (ev === 'resume-request') return resumeNow(), true;
+          if (ev === 'resume-request') return resumeNow();
           if (ev === 'emptied') return backToLive('emptied', { reset: true }), true;
           if (ev === 'seeked') {
             if (isPaused()) {
