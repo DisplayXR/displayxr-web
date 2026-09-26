@@ -14,7 +14,7 @@ subpath.
 
 - **Mono participants are lifted to 3D** on a 3D display: a mono peer on a woven wall is handed to
   `lift()` (`@displayxr/inline3d/lift`) with `{ mode: 'live', wall }` — one lifted tile per peer,
-  in its own slot, registered only once the weave session is live. `mono3D: 'auto'` (default) loads
+  in its own slot, lifted at once and re-created once when the weave session goes live (#172). `mono3D: 'auto'` (default) loads
   the lift module lazily and falls back to flat, with one log line, when it is missing or there is
   neither a native 2D→3D provider nor WebGPU; `'off'` keeps mono peers flat; a function injects your
   own `lift`. `setMono3D(on)` switches at runtime; `liftOptions` passes `models` / `ort` /

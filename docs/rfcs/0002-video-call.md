@@ -152,8 +152,10 @@ contains vendor code or depth models.
   runtime (off releases every lift). `liftOptions` passes page options through (`models`, `ort`,
   `quality`, `providers`); the call owns `mode`/`wall`/`ui`/`convergence`/`priority`.
 - A mono peer on a woven wall → **one** `lift(video, {mode:'live', wall, ui:'none', convergence,
-  priority})` per peer, in the peer's own tile slot, registered once per (peer, format) and only once
-  the weave session is live (the #172 gate: routing to `lifted` needs `woven`). lift registers its own
+  priority})` per peer, in the peer's own tile slot, registered once per (peer, format), AT ONCE —
+  in an all-mono call lift's window is the only layer and the inline session does not tick without
+  one, so waiting for weave-live would deadlock — and released + lifted again ONCE when the weave
+  session goes live (the #172 re-create, same as woven SBS tiles). lift registers its own
   `addScene` window on the **call's** wall. The flat tile keeps painting until lift reports `live`;
   session loss releases every lift (tiles go flat) and recovery re-lifts on the new wall.
 - **Priority:** the active speaker's stream `high`, others `normal`, an offscreen (IntersectionObserver)
@@ -246,7 +248,7 @@ contains vendor code or depth models.
   - **P2a — mono→3D** (`feat/call-p2-lift`, stacked on P1; `js/call/lift.js`):
     - [x] `mono3D: 'auto' | 'off' | liftFn`, lazy import, silent flat fallback, `setMono3D()`,
       `liftOptions`
-    - [x] routing table: `lifted` route, one lift per peer, #172 gate, session loss/recovery
+    - [x] routing table: `lifted` route, one lift per peer, lift at once + #172 re-create on weave-live, session loss/recovery
     - [x] priority from speaker/visibility through `setLiftPriority()` (native hook, no-op on web)
     - [x] depth slider → lift convergence
     - [x] badges `3D` / `2D→3D` / `2D`; lobby hint from `liftCapabilities()` or the first live lift
