@@ -8,7 +8,8 @@
 // Two field facts shape the probing:
 //  - On some laptops the stereo camera is held EXCLUSIVELY by the eye tracker, so opening it
 //    fails with NotReadableError ("Device in use"). That device is skipped silently — a call must
-//    never fail because an optional camera is busy.
+//    never fail because an optional camera is busy. When it is the ONLY camera (an SR panel whose
+//    one camera is the tracker's), the error is `camera-busy`, not `no-camera`.
 //  - Labels are empty until one getUserMedia has succeeded, so the default camera is opened first
 //    (which is also the fallback), then the others are probed one at a time.
 //
@@ -116,6 +117,11 @@ export async function openCamera(want = 'auto', o = {}) {
   if (mono) {
     if (want === 'stereo') log('camera-no-stereo', { fallback: mono.label });
     return result(mono, 'mono');
+  }
+  // Every camera there was is HELD by another process: say so. On an SR panel the only camera is
+  // often the eye tracker's, and "no camera" sends the user looking for a missing device.
+  if (skipped.length && skipped.every((s) => s.error.startsWith('NotReadableError'))) {
+    throw Object.assign(new Error('the camera is in use by another app (on a 3D display, usually the eye tracker)'), { code: 'camera-busy', skipped });
   }
   throw Object.assign(new Error('no camera could be opened'), { code: 'no-camera', skipped });
 }
