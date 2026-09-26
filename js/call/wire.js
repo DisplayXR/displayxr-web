@@ -355,6 +355,43 @@ export function mirrorSwapPixels(px, W, H) {
   return out;
 }
 
+// ── weave liveness (displayxr-browser-pvt#172) ─────────────────────────────────────────────
+
+/**
+ * Is the inline-3D session actually LIVE — delivering stereo frames — yet?
+ *
+ * Browser bug displayxr-browser-pvt#172: a woven canvas registered BEFORE the browser's weave
+ * session is live gets the whole side-by-side frame in EACH eye (L|R|L|R, flat) until a reload.
+ * A call's self view is created at page load, exactly the case. The core exposes no "weave is
+ * live" signal, so the module watches the session's own frames (the frozen `wall.session` /
+ * `wall.refSpace` fields) and registers woven tiles only once `need` CONSECUTIVE frames have
+ * located two or more views — the runtime is up and locating eyes. A session with no reference
+ * space (views never readable) counts as live after `needNoPose` frames. Pure: feed it view counts.
+ *
+ * @param {{need?: number, needNoPose?: number}} [o]
+ */
+export function createLiveGate({ need = 10, needNoPose = 30 } = {}) {
+  let run = 0;
+  let frames = 0;
+  let live = false;
+  return {
+    /** @param {number|null} viewCount  views located this frame; null = no reference space */
+    feed(viewCount) {
+      if (live) return true;
+      frames++;
+      if (viewCount === null) live = frames >= needNoPose;
+      else {
+        run = viewCount >= 2 ? run + 1 : 0;
+        live = run >= need;
+      }
+      return live;
+    },
+    get live() {
+      return live;
+    },
+  };
+}
+
 // ── sending ────────────────────────────────────────────────────────────────────────────────
 
 /**

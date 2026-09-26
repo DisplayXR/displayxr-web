@@ -12,7 +12,11 @@ export type CallFormat = 'sbs' | 'mono';
 export type CallRoute = 'woven-sbs' | 'flat-left' | 'flat' | 'lifted';
 
 /** A remote participant's connection state as the tile shows it. */
-export type PeerState = 'new' | 'connecting' | 'connected' | 'reconnecting' | 'left';
+/**
+ * `'unreachable'`: known to exist but no connection for ~10 s — usually a network that needs a
+ * relay (TURN). Sticky until it connects; retries continue in the background.
+ */
+export type PeerState = 'new' | 'connecting' | 'connected' | 'reconnecting' | 'unreachable' | 'left';
 
 /** The out-of-band 3D flag, sent on the data channel when it opens. A peer that sends none is mono. */
 export interface CallHello {
@@ -53,6 +57,9 @@ export interface SignalingHooks {
   /** An opaque offer / answer / ICE blob relayed from `from`. */
   onSignal?(from: string, data: unknown): void;
   onDisconnect?(err?: Error): void;
+  /** A participant known to exist that signalling itself cannot reach (shown as an unreachable tile). */
+  onPeerUnreachable?(ghostId: string): void;
+  onPeerReachable?(ghostId: string): void;
   onReconnect?(peerIds: string[]): void;
 }
 export interface SignalingSession {
@@ -77,7 +84,19 @@ export function dxrSignaling(url: string, opts?: { WebSocket?: any; pingMs?: num
  * DEMO ONLY — the free public PeerJS broker. No uptime guarantee and not operated by DisplayXR.
  * `Peer` defaults to `globalThis.Peer`, else the ESM build is imported from jsDelivr.
  */
-export function peerjsCloud(opts?: { Peer?: any; peerOptions?: object; url?: string }): SignalingAdapter;
+export function peerjsCloud(opts?: {
+  Peer?: any;
+  peerOptions?: object;
+  url?: string;
+  /** Upper bound on the join-time wait for slots to say hello (ms, default 5000). */
+  helloMs?: number;
+  /** A taken slot silent this long is reported unreachable (ms, default 10000). */
+  unreachableMs?: number;
+  /** Background re-dial interval for silent slots (ms, default 10000). */
+  retryMs?: number;
+  heartbeatMs?: number;
+  settleMs?: number;
+}): SignalingAdapter;
 
 export type CallAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' | 'ice';
 
@@ -167,6 +186,7 @@ export interface CallEvents {
   format: { id: string; format: CallFormat; route: CallRoute; mono3d: 'unavailable' | 'off' | 'lifted' | null; hello: CallHello | null };
   quality: { id: string } & CallQuality;
   speaker: { id: string | null };
+  /** Codes include `'camera-busy'`, `'no-camera'`, `'unreachable'` (error.peer = the tile id), `'room-full'`, `'session-ended'`. */
   error: { code: string; message: string; error: Error | null };
   state: { id: string; state: PeerState };
   joined: { room: string; id: string };
@@ -183,6 +203,8 @@ export interface CallHandle {
   readonly muted: boolean;
   readonly depth: number;
   readonly speaker: string | null;
+  /** `'busy'` = held by another app (e.g. eye tracking): the call runs audio-only until `retryCamera()`. */
+  readonly camera: 'ok' | 'busy' | 'none' | 'pending';
   /** Read-only snapshot of the remote participants. */
   readonly peers: ReadonlyArray<CallPeer>;
   join(): Promise<CallHandle>;
@@ -194,6 +216,8 @@ export interface CallHandle {
   setCamera(idOrStream: string | MediaStream, opts?: { format?: CallFormat }): Promise<{ format: CallFormat; width: number; height: number; label: string }>;
   /** Depth offset for every stereo tile, [-1, 1] (± 5% of the eye width), added to the automatic convergence. */
   setDepth(v: number | null): number;
+  /** Try the configured camera again (e.g. after the eye tracker released it). Keeps the current one on failure. */
+  retryCamera(): Promise<{ format: CallFormat; width: number; height: number; label: string }>;
   /** Send `hint {subjectZmm}` (rate-limited to 5 Hz) if the page can estimate the face distance. */
   sendHint(subjectZmm: number): boolean;
   leave(): void;
@@ -229,6 +253,8 @@ export function roomKey(room: string): Promise<string>;
 export const SIGNAL_PROTOCOL: string;
 export const WIRE_VERSION: number;
 export const CALL_SDK: string;
+export const PLATE_TEXT: Readonly<{ unreachable: string; cameraBusy: string }>;
+export function createLiveGate(o?: { need?: number; needNoPose?: number }): { feed(viewCount: number | null): boolean; readonly live: boolean };
 export const CALL_ACCENTS: Readonly<Record<CallAccent, string>>;
 export class MeshTransport {
   constructor(o: { signaling: SignalingAdapter; id: string; maxPeers?: number; iceServers?: RTCIceServer[]; RTCPeerConnection?: any; log?: (tag: string, obj: object) => void });
