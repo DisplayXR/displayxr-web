@@ -260,6 +260,37 @@ v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename
 format auto-detect, HLS, undock, or a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
 plan and why each is out of this slice.
 
+#### On an app's one persistent canvas: `attachPlayer(splat, src, opts)`
+
+`addPlayer` owns its canvas, which makes it a second woven surface. An app that keeps one woven
+canvas for its whole life (woven-canvas [rules 2 and 3](woven-canvas-rules.md#3-prefer-one-persistent-canvas-for-the-whole-app))
+uses **surface mode** instead: the same transport, playlist and events, drawn through the
+PlayCanvas splat handle's own `setVideo`, with no canvas, layer or session of its own
+(RFC 0001 Addendum A).
+
+```js
+import { attachPlayer } from '@displayxr/inline3d/player';
+
+const splat = addSplat(wall, canvas, 'home.sog', { engine: 'playcanvas' });
+// the Watch screen:
+const player = attachPlayer(splat, null, { titles, format: 'sbs', fit: 'contain', autoplay: true });
+player.next();                 // the same playlist API as addPlayer
+// leaving Watch:
+await player.detach();         // setVideo(null): the splat, pose, lens and rig as they were
+```
+
+- **The scene is the poster.** It stays on screen until the first frame; a source swap cuts at the
+  next title's first frame, with no black between (the player alternates two `<video>` elements so
+  the plane never shows one that is loading).
+- **The controls** go beside the handle's canvas, in its parent (or `opts.chromeContainer`), and
+  are excluded on the handle as well as carrying `data-inline3d-overlay`.
+- **Differences from `addPlayer`:** `fullscreen` defaults to off (it would fullscreen the whole
+  app's canvas); `transition: 'crossfade'` cuts, with a warning, until `./splat`'s `setVideo`
+  crossfades; `band`, `poster`, `posterFormat` and the tile options are ignored, with a warning.
+- **If something else takes the slot** (another `setVideo`, or `setVideo(null)`), the player stops
+  and emits `'detached'` with `{ reason: 'superseded' | 'released' }`. It never fights for it.
+- The handle's own `setSource` rejects while a video is on, so `await player.detach()` first.
+
 ### 3. Live scene (three.js / WebGL) — `addScene(canvas, onFrame, opts?)`
 
 You own the canvas and its context; the SDK creates the weave layer and calls `onFrame(views,

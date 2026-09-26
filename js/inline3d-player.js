@@ -1504,6 +1504,8 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
 
   return {
     el: bar,
+    /** Every overlay this bar put over the canvas (surface mode excludes each on the handle). */
+    overlays: [titleEl, bar, centre, pip, spinner],
     setTitle,
     applyAppearance,
     /** Called by addPlayer on setSource() so the chrome resets with the new title. */
@@ -2255,5 +2257,309 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     }
   }
 
+  return handle;
+}
+
+// ── attachPlayer: the player on an existing splat handle (surface mode) ───────────────────────
+//
+// RFC 0001 Addendum A. The same core as addPlayer, on a surface that owns NO canvas: it borrows
+// the handle's video slot (`handle.setVideo`, ./splat engine:'playcanvas'). One persistent woven
+// canvas, never a second one (woven-canvas rules 2 and 3).
+//
+// TWO ELEMENTS, ALTERNATING (A2). A source swap makes a new <video> and hands it to setVideo,
+// which keeps the plane on the old element until the new one's first frame — so the plane never
+// shows an element that is loading. (Swapping `src` in place on one element would: while it
+// reloads its videoWidth is 0, and the plane re-sizes and re-textures to nothing.) The old
+// element is paused at once and released only after the swap has landed.
+//
+// THE TRANSPORT BINDS TO A PROXY, not to either element: it answers for, and forwards the media
+// events of, whichever element is current. So buildTransportBar, joinGroup and the core are the
+// same code as addPlayer's, unaware that the element underneath changes.
+
+/** The media events the proxy forwards from the current element (all the player listens for). */
+const PROXY_EVENTS = [
+  'play', 'pause', 'playing', 'ended', 'timeupdate', 'durationchange', 'loadedmetadata', 'loadeddata',
+  'canplay', 'progress', 'seeking', 'seeked', 'waiting', 'volumechange', 'error',
+];
+
+/**
+ * A stand-in <video> for the transport: every read, write and call goes to the current element,
+ * and the current element's media events are re-dispatched from here. `use(el)` switches
+ * elements; events from an element that is no longer current are dropped. Exported for tests.
+ */
+export function createVideoProxy() {
+  const et = new EventTarget();
+  let el = null;
+  // Bound per element, so an event from an element that is no longer current is dropped even
+  // if it was queued before the switch.
+  const forwarders = new Map();
+  const rw = (k) => ({
+    get: () => (el ? el[k] : undefined),
+    set: (v) => {
+      if (el) el[k] = v;
+    },
+    enumerable: true,
+  });
+  const ro = (k, dflt) => ({ get: () => (el ? el[k] : dflt), enumerable: true });
+  const proxy = {
+    /** The element the proxy answers for now. */
+    get element() {
+      return el;
+    },
+    use(next) {
+      if (next === el) return;
+      if (el) {
+        const f = forwarders.get(el);
+        for (const t of PROXY_EVENTS) el.removeEventListener(t, f);
+        forwarders.delete(el);
+      }
+      el = next || null;
+      if (el) {
+        const mine = el;
+        const f = (e) => {
+          if (mine === el) et.dispatchEvent(new Event(e.type));
+        };
+        forwarders.set(el, f);
+        for (const t of PROXY_EVENTS) el.addEventListener(t, f);
+      }
+    },
+    addEventListener: (t, fn, o) => et.addEventListener(t, fn, o),
+    removeEventListener: (t, fn, o) => et.removeEventListener(t, fn, o),
+    play: () => (el ? el.play() : Promise.resolve()),
+    pause: () => el?.pause(),
+    load: () => el?.load(),
+    removeAttribute: (n) => el?.removeAttribute(n),
+    requestVideoFrameCallback: (cb) => el?.requestVideoFrameCallback?.(cb),
+    cancelVideoFrameCallback: (h) => el?.cancelVideoFrameCallback?.(h),
+  };
+  Object.defineProperties(proxy, {
+    currentTime: rw('currentTime'),
+    volume: rw('volume'),
+    muted: rw('muted'),
+    loop: rw('loop'),
+    src: rw('src'),
+    crossOrigin: rw('crossOrigin'),
+    preload: rw('preload'),
+    playsInline: rw('playsInline'),
+    paused: ro('paused', true),
+    ended: ro('ended', false),
+    duration: ro('duration', NaN),
+    readyState: ro('readyState', 0),
+    videoWidth: ro('videoWidth', 0),
+    videoHeight: ro('videoHeight', 0),
+    error: ro('error', null),
+    buffered: ro('buffered', undefined),
+  });
+  return proxy;
+}
+
+let warnedSurfaceCrossfade = false;
+let warnedSurfaceIgnored = false;
+/** Options that mean something only on a surface the player owns (A1, A4's parity table). */
+const SURFACE_IGNORED = ['band', 'poster', 'posterFormat', 'width', 'height', 'cornerRadius', 'feather', 'observe'];
+
+/**
+ * Play titles on an EXISTING splat handle's video slot, with the same transport, playlist and
+ * events as addPlayer — and no canvas of its own (RFC 0001 Addendum A).
+ *
+ * @param {object} splat  an `addSplat(…, { engine: 'playcanvas' })` handle (anything with
+ *        `setVideo`; `canvas`, `videoElement` and `exclude` are used when present).
+ * @param {string|Blob|Array} src  as addPlayer; or omit it and pass `opts.titles`.
+ * @param {object} [opts]  addPlayer's options, except: `fullscreen` defaults to false (it would
+ *        fullscreen the whole app's canvas); `transition: 'crossfade'` cuts (warns once) until
+ *        `./splat` setVideo crossfades; `band`, `poster`, `posterFormat` and the tile options are
+ *        ignored (warns once) — the scene is the poster. `format` ('sbs' | 'tb' | 'mono') and `fit`
+ *        ('contain' default | 'cover') go to setVideo.
+ * @param {Element} [opts.chromeContainer]  where the controls go. Default: the canvas's parent.
+ * @returns {object} a PlayerHandle (player.d.ts) plus `detach()` and the `'detached'` event.
+ */
+export function attachPlayer(splat, src, opts = {}) {
+  if (!splat || typeof splat.setVideo !== 'function') {
+    throw new TypeError(
+      "@displayxr/inline3d/player: attachPlayer(handle, …) needs an addSplat(…, { engine: 'playcanvas' }) handle (one with setVideo)."
+    );
+  }
+  const given = opts || {};
+  const o = normalizePlayerOptions({ ...given, fullscreen: given.fullscreen === undefined ? false : given.fullscreen });
+  const ignored = SURFACE_IGNORED.filter((k) => given[k] !== undefined && given[k] !== null);
+  if (ignored.length && !warnedSurfaceIgnored) {
+    warnedSurfaceIgnored = true;
+    console.warn(`[inline3d/player] attachPlayer ignores ${ignored.join(', ')} (the handle's own tile; the scene is the poster).`);
+  }
+  let titles = o.titles;
+  let currentIdx = -1;
+  if ((src === undefined || src === null) && titles.length) {
+    currentIdx = 0;
+    src = titles[0].src;
+    if (!o.title && titles[0].title) o.title = titles[0].title;
+  } else if (titles.length) {
+    currentIdx = titles.findIndex((t) => t.src === src);
+  }
+  const canvas = splat.canvas || null;
+  const container = given.chromeContainer || (canvas && canvas.parentElement) || null;
+  const setVideoOpts = { format: o.format, fit: o.fit || 'contain', autoplay: false };
+
+  function makeElement(s, like) {
+    const v = document.createElement('video');
+    v.playsInline = true;
+    v.preload = 'auto'; // setVideo swaps at the first frame, so the frame must come without play()
+    v.muted = like ? like.muted : o.muted;
+    v.loop = like ? like.loop : o.loop;
+    if (like) v.volume = like.volume;
+    const picked = pickSource(s);
+    const cross = resolveCrossOrigin(picked, o.crossOrigin);
+    if (cross) v.crossOrigin = cross;
+    v.src = resolveSrcUrl(picked);
+    return v;
+  }
+  function releaseElement(v) {
+    try {
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  const proxy = createVideoProxy();
+  let shown = null; // the element the plane shows (setVideo resolved for it)
+  let pending = null; // ours, handed to setVideo, before its first frame
+  let seq = 0;
+  let state = 'attached'; // 'attached' | 'detached'
+  const retired = new Set(); // paused, kept until the swap that replaces them lands
+
+  function show(el) {
+    const mine = ++seq;
+    pending = el;
+    let p;
+    try {
+      p = splat.setVideo(el, setVideoOpts);
+    } catch (err) {
+      pending = null;
+      queueMicrotask(() => emit('error', err));
+      return;
+    }
+    Promise.resolve(p).then(
+      () => {
+        if (mine !== seq || state !== 'attached') return;
+        pending = null;
+        shown = el;
+        for (const r of retired) if (r !== el) releaseElement(r);
+        retired.clear();
+      },
+      (err) => {
+        if (mine !== seq || state !== 'attached') return; // our own newer call, or detach()
+        pending = null;
+        if (err && err.name === 'AbortError') lost('superseded');
+        else emit('error', err);
+      }
+    );
+  }
+
+  // Nothing reports another setVideo taking the slot once ours is on, so look: twice a second and
+  // on the transport's own events. Only while ours is on and no swap of ours is in flight.
+  function checkSlot() {
+    if (state !== 'attached' || !shown || pending || !('videoElement' in splat)) return;
+    const now = splat.videoElement;
+    if (now !== shown) lost(now ? 'superseded' : 'released');
+  }
+  const slotTimer = setInterval(checkSlot, 500);
+
+  const ui = {};
+  let overlays = [];
+  const { handle, emit } = createPlayerCore(o, proxy, { titles, currentIdx }, {
+    setSource(newSrc, sOpts, tr) {
+      if (state !== 'attached') return;
+      if (tr.type === 'crossfade' && !warnedSurfaceCrossfade) {
+        warnedSurfaceCrossfade = true;
+        console.warn('[inline3d/player] attachPlayer cuts: a crossfade needs ./splat setVideo to crossfade (RFC 0001 A5.1).');
+      }
+      if (sOpts.title !== undefined) ui.setTitle?.(sOpts.title);
+      const prev = proxy.element;
+      const next = makeElement(newSrc, prev);
+      if (prev) {
+        prev.pause();
+        retired.add(prev);
+      }
+      proxy.use(next);
+      ui.resync?.();
+      show(next);
+      if (o.autoplay) next.play().catch(() => {});
+    },
+    exclude: (el) => splat.exclude?.(el),
+    unexclude: (el) => splat.unexclude?.(el),
+    teardown() {
+      clearInterval(slotTimer);
+      for (const el of overlays) splat.unexclude?.(el);
+    },
+    afterControls() {
+      // Give the slot back only if it is still ours (shown, or ours pending): never clear a video
+      // someone else put there.
+      const now = 'videoElement' in splat ? splat.videoElement : shown;
+      const ours = state === 'attached' && (pending || (shown && now === shown));
+      state = 'detached';
+      if (ours) splat.setVideo(null);
+    },
+    release() {
+      for (const r of retired) releaseElement(r);
+      retired.clear();
+      const cur = proxy.element;
+      for (const v of new Set([shown, pending, cur])) if (v) releaseElement(v);
+      proxy.use(null);
+      shown = pending = null;
+    },
+  }, ui);
+
+  /** The slot went to someone else: stop driving the handle, say so once, tear down our side. */
+  function lost(reason) {
+    if (state !== 'attached') return;
+    state = 'detached';
+    emit('detached', { reason });
+    handle.remove();
+  }
+  for (const t of ['play', 'pause', 'timeupdate']) proxy.addEventListener(t, checkSlot);
+
+  if (o.controls === 'sdk') {
+    if (container && canvas) {
+      const built = buildTransportBar(container, canvas, proxy, {
+        keyboard: o.keyboard,
+        accent: o.accent,
+        badge3d: o.badge3d,
+        title: o.title,
+        skipButtons: o.skipButtons,
+        fullscreen: o.fullscreen,
+        skin: o.skin,
+        size: o.size,
+        band: null,
+        onBack: () => handle.back(),
+      });
+      ui.el = built.el;
+      ui.cleanup = built.cleanup;
+      ui.resync = built.resync;
+      ui.setTitle = built.setTitle;
+      ui.applyAppearance = built.applyAppearance;
+      // Legacy browsers: the core's overlay scan finds these under the canvas's parent; exclude
+      // them on the handle too, so it does not depend on where the page nested its canvas (A3).
+      overlays = built.overlays || [];
+      for (const el of overlays) splat.exclude?.(el);
+    } else {
+      console.warn(
+        "[inline3d/player] attachPlayer: controls:'sdk' needs the handle's canvas in a container " +
+          '(or opts.chromeContainer) — skipping SDK chrome.'
+      );
+    }
+  }
+
+  const first = makeElement(src, null);
+  proxy.use(first);
+  show(first);
+  if (o.autoplay) first.play().catch(() => {});
+
+  /** Give the slot back (setVideo(null): the scene, pose, lens and rig as they were) and tear down. */
+  handle.detach = () => {
+    handle.remove();
+    return Promise.resolve();
+  };
   return handle;
 }

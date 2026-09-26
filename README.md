@@ -199,7 +199,8 @@ js/
   inline3d-splat-live.js        setSource's live outgoing photo: its own camera, layer and target (PlayCanvas)
                       from what the asset declares (you serve the decoder files — see the guide)
   inline3d-player.js  preview: addPlayer() — a media player window built on addVideo (stereo
-                      paint, display modes and the fallback are inherited) + an SDK transport bar
+                      paint, display modes and the fallback are inherited) + an SDK transport bar;
+                      attachPlayer() — the same player on a PlayCanvas splat handle's setVideo
 docs/
   authoring-inline-3d.md   the authoring guide
   authoring-motion-and-effects.md
