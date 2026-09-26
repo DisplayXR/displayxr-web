@@ -391,13 +391,42 @@ derivation and the runtime-math proof are in
   the transition overlay). Same N `RenderView`s, same viewports.
 - **Depth.** The display camera clears depth (only depth) in 3D: the two camera spaces never share a
   depth test. The splat writes none; the display layers depth-test among themselves.
-- **Rounding.** `viewerDistance` (m, default **0.6**, the browser's nominal) or an explicit `gain`,
-  for the whole tile (last call wins). The runtime knows the real nominal distance but the browser
-  does not expose it yet — a wrong value scales the objects' depth by `n_true/n`; it never moves the
-  contact plane or the 2D picture.
+- **Rounding.** `viewerDistance` (m, default **0.6**, the browser's nominal) or an explicit `gain`.
+  The runtime knows the real nominal distance but the browser does not expose it yet — a wrong value
+  scales the objects' depth by `n_true/n`; it never moves the contact plane or the 2D picture.
+- **Which plane lands on the glass.** By default the photo's **convergence plane** (distance `D`
+  from the photo's camera — `planeM` / `photoConvergenceM` in `layerRigState()`): an object whose
+  contact point is on it sits on the glass, in both rigs. A stage built around another depth (its
+  "z = 0" is not the convergence plane) reads as **recessed** (or popped) under the photo rig
+  already, and the display rig multiplies that by the gain. Move it:
+  - `planeOffset` — metres **on the panel**, + = toward the viewer: the stage comes forward by that
+    much; the plane on the glass moves back to `D·(1 + planeOffset / viewerDistance)`.
+  - `planeDistance` — the plane on the glass directly, as a distance from the photo's camera in
+    world units (wins over `planeOffset`). A page that knows its contact point's depth passes it.
+
+  Exact, still no Kooima: the round views get one more factor, the uniform scale about the photo's
+  camera that sends that plane onto the photo's window — every ray from the camera maps onto
+  itself, so the 2D picture at the nominal viewpoint does not move; only which depth has zero
+  disparity does (proof: docs/proposals/layer-display-rig.md §Plane offset).
+- **Options merge**, tile-wide, across `setLayerRig` and **`handle.setLayerRigOptions(opts)`** (live,
+  no layer change): a key given replaces it, `null` clears it.
+- **Both view paths.** The engine's `RenderView` path (the default: one display camera with N
+  RenderViews) and the N-camera fallback (one display camera per view, at that view's rect, the
+  shear carried in its projection). Measured identical below. A display layer that **no camera**
+  draws is drawn by the display camera (on the N-camera path there is no `handle.engine.camera` to
+  add it to); a layer that **another** camera draws (the page's own, a reflection pass) is left
+  alone and named in `reason`.
+- **Never silent.** `layerRigState()` → `{ path: 'renderviews' | 'ncamera' | 'mono', engaged,
+  reason, viewerDistance, gain, planeM, photoConvergenceM, planeOffset, located, display, disabled }`
+  — `engaged` is true only when the display-rig views were applied on the last drawn frame, and
+  `reason` says why not (a layer not in the composition, a layer another camera draws, mono, a
+  display rig, gain 1). The same line is WARNed on the first 3D frame and on every change, e.g.
+
+  ```
+  [inline3d/splat] setLayerRig: path=renderviews engaged=true layers=[StageObjects, StageAfterSplat]
+    viewerDistance=0.60m gain=4.000 planeM=2.400 photoConvergenceM=2.400 planeOffset=0.000m located=true reason=-
+  ```
 - **Kill switch:** `?dxrdiag=nolayerrig` — requests are recorded, never applied.
-- Needs the engine's `RenderView` path (the default); on the N-camera fallback it warns once and
-  the layer stays on the photo rig.
 
 **Measured** (headless Chrome, ANGLE Metal, 2560×720 SBS buffer; a splat, a z = 0 contact marker,
 markers 0.5 world units in front of and behind the plane; the page plays the runtime with
@@ -414,6 +443,13 @@ runtime's own conversion says the photo IS, with factors 1 — an independent or
 | mono, camera vs display | | **byte-identical** frame |
 | after a `setSource` crossfade / at zoom 1.4× | | contact unmoved, disparity unchanged |
 | per-frame cost (CPU + sync, median of 6×60 frames) | 2.65 ms | 2.51 ms — within noise; same draw count (12) |
+
+The N-camera path (`playcanvasViewPath: 'cameras'`) and `controls: 'page'` (stage under
+`handle.engine.root` in world space) give the same numbers — all four combinations were run
+(`tools/layer-rig-capture/run.mjs … '?path=cameras&controls=page'`). With `planeOffset` = 0.15 m
+(plane on the glass 0.5 world units behind the convergence plane): the marker there goes to **0.0 px**
+disparity (expected 0.00), the old contact marker to +22 px (expected +21.33), the front marker to
++56 px (expected +56.89).
 
 The measured positions are centroids of axis-aligned squares, so they sit on half pixels: every one
 is within 0.5 px of the oracle. The extra camera costs one depth clear and a camera's culling/sort

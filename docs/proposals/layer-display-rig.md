@@ -164,3 +164,39 @@ uniform is also set per view on the RenderView path, but is 0 for every camera o
 fallback, which is why it is not used. The quad's geometry stays where the app put it (z = 0);
 the clip's disparity lives in the frame. The SDK decodes nothing — the app's one `<video>` feeds
 one texture.
+
+## Addendum (after 1.24): the panel report, both view paths, the plane offset
+
+**Report.** On the panel the layers looked flat, "as if rendered by the splat camera", and
+recessed. 1.23 could not engage for three reasons, all silent or nearly so. First, a layer the
+tile's eye camera does not draw: a page's own camera, or no camera at all. Second, the N-camera
+fallback path, which gave one console warning at the call. Third, a declared rig that is not a
+camera rig. `layerRigState()` reported `rounded:false` for all of these and in mono alike.
+Now `layerRigState()` reports `path`, `engaged` and `reason`, and WARNs them on the first 3D frame.
+
+**Which path the browser takes.** `pickViewPath(pc)` alone decides it: the RenderView path whenever
+the engine module exports `RenderView` and `Camera.prototype` has `xrViews` (PlayCanvas ≥ 2.x; the
+SDK's own `inline3d-playcanvas-engine.js` exports both), unless the page forces
+`playcanvasViewPath: 'cameras'`. It depends on neither the view count nor the transition / live
+outgoing paths (the live outgoing *requires* the RenderView path). The 1.23 harness used the same
+engine module, so it took the same path. What it did not exercise was a layer drawn by a camera
+other than the eye camera, and the N-camera path. Both are now covered, and the harness runs all
+of path × controls. On the N-camera path `handle.engine.camera` is null, so a page that adds its
+layer with `handle.engine.camera.camera.layers = …` would throw there. A page that got past that
+line is on the RenderView path.
+
+**1.24's rig map.** The layer camera gets the views the photo is drawn with. When the rig map
+remaps them (a declaration in flight), it gets them together with the rig they were remapped *to*.
+Otherwise it gets the rig they were *located for* (read off the views), with the SDK's snapshot as
+the fallback (`located` in the state says which). So the layer rig always uses the frame's source
+rig, never a rig the views were not built for.
+
+**Plane offset.** Given a plane at distance D′ from the photo camera N0 that should land on the
+glass, let S be the uniform scale about N0 by σ = D/D′. S maps the window at D′ onto the photo's
+window at D, and it maps every ray from N0 onto itself.
+Then `view_round = view_photo · M_i · S` is exactly the display rig through the window at D′,
+with factors 1: portal(W_D′, E″) = portal(W_D, S(E″)) ∘ S, and S(E″) = N0 + k(E − N0) is the
+original round eye, so M_i is unchanged. At the nominal eye both S and M_i leave the picture where
+it was, so the 2D image does not move. `planeOffset` (panel metres toward the viewer) maps to
+D′ = D(1 + planeOffset/n), because near the plane the round rig maps world depth to panel depth at n/D.
+Unit test: max NDC error < 1e-9 against the oracle display rig at D′.

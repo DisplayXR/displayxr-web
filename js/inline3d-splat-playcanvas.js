@@ -68,7 +68,7 @@ import {
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
-import { LayerRigCameras, validateLayerRig } from './inline3d-splat-layer-rig.js';
+import { LayerRigCameras, validateLayerRig, validateLayerRigOptions, DEFAULT_VIEWER_DISTANCE_M } from './inline3d-splat-layer-rig.js';
 import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
 import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
@@ -1940,8 +1940,11 @@ export class PlayCanvasSplatViewer {
       // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
       this.onBeforeRender?.(entries, rect);
       // handle.setLayerRig: the display / post run cameras, on the same views (display: rounded).
-      if (this.layerRigs && this.layerRigs.sync()) {
-        this.layerRigs.frame(eyeViews ? rf.cull : entries, rect, f, eyeViews ? rf.eye.rig : rf.located ? rf.located.rig : cache ? cache.rig : null);
+      if (this.layerRigs) {
+        this.layerRigs.frame(eyeViews ? rf.cull : entries, rect, f, eyeViews ? rf.eye.rig : rf.located ? rf.located.rig : cache ? cache.rig : null, {
+          located: this.rigTrack && entries.length > 1 ? !!rf.located : null,
+          residual: this.rigTrack?.lastResidual ?? null,
+        });
       }
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
@@ -1973,6 +1976,15 @@ export class PlayCanvasSplatViewer {
         const [x, y, w, h] = rect(e);
         cam.camera.rect = new pc.Vec4(x / W, y / H, w / W, h / H);
         placeNode(cam, e.pose);
+      }
+      // handle.setLayerRig on the N-camera path: N display / post cameras mirroring these, the
+      // views as located (this path draws the photo through them too — no remap here).
+      if (this.layerRigs) {
+        const rf = this._mapViews(entries, cache ? cache.rigAt : null);
+        this.layerRigs.frame(entries, rect, null, rf.located ? rf.located.rig : cache ? cache.rig : null, {
+          located: this.rigTrack && entries.length > 1 ? !!rf.located : null,
+          residual: this.rigTrack?.lastResidual ?? null,
+        });
       }
     }
     this._updateFeather(entries[0].width * sx, entries[0].height * sy);
@@ -2949,7 +2961,6 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let removed = false;
   // handle.setLayerRig: the per-rig cameras and where they read the declared rig from.
   // Kill switch `nolayerrig`: requests are recorded but every layer stays on the eye camera.
-  let warnedLayerRigPath = false;
   function layerRigs() {
     if (!viewer.layerRigs) {
       viewer.layerRigs = new LayerRigCameras(viewer);
@@ -3044,26 +3055,31 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
      * on the camera rig ('camera'). No second full pass: one extra camera over the named layers,
      * into the same target, in composition order. docs/playcanvas-adapter.md §setLayerRig and
      * docs/proposals/layer-display-rig.md (the exact mapping, and why it is not Kooima).
-     * `viewerDistance` (m) / `gain` set the rounding for the whole tile (last call wins).
+     * Options (`viewerDistance`, `gain`, `planeOffset`, `planeDistance`) are tile-wide and MERGE
+     * (a key given replaces; `null` clears) — see setLayerRigOptions.
+     * Works on both view paths (RenderViews and the N-camera fallback); layerRigState() says
+     * whether it engaged and, if not, why.
      */
     setLayerRig(layer, rig, o = {}) {
       const r = validateLayerRig(layer, rig, o);
-      if (viewer._viewPath === 'cameras' && !warnedLayerRigPath) {
-        warnedLayerRigPath = true;
-        console.warn('[inline3d/splat] setLayerRig needs the engine RenderView path; on the N-camera fallback the layer stays on the photo rig.');
-      }
-      layerRigs().set(layer, r.rig, { viewerDistance: r.viewerDistance, gain: r.gain });
+      layerRigs().set(layer, r.rig, r.opts);
       return out;
     },
-    /** The layers on the display rig (as the page named them), and what the last frame did. */
+    /** Change the layer rig's tile-wide options live (no layer change): merge, `null` clears. */
+    setLayerRigOptions(o = {}) {
+      layerRigs().setOptions(validateLayerRigOptions(o, 'setLayerRigOptions'));
+      return out;
+    },
+    /**
+     * What setLayerRig is doing: `path` ('renderviews' | 'ncamera' | 'mono') and `engaged` (the
+     * display-rig views were applied on the last drawn frame), `reason` when not, and the numbers
+     * (`viewerDistance`, `gain`, `planeM` — the plane that lands on the glass, as a distance from
+     * the photo's camera — `photoConvergenceM`, `planeOffset`, `located`).
+     */
     layerRigState() {
       const lr = viewer.layerRigs;
-      return {
-        display: lr ? [...lr.requests.keys()] : [],
-        disabled: !!lr?.disabled,
-        rounded: !!lr?.last.rounded,
-        gain: lr?.last.gain ?? null,
-      };
+      if (lr) return lr.state();
+      return { display: [], disabled: false, path: null, engaged: false, rounded: false, reason: 'no layer on the display rig', viewerDistance: DEFAULT_VIEWER_DISTANCE_M, gain: null, planeM: null, photoConvergenceM: null, planeOffset: 0, located: null };
     },
     /**
      * An unlit material showing the left half of `texture` to left-eye views and the right half to
@@ -3248,8 +3264,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   if (opts.displayRigLayers !== undefined) {
     const d = opts.displayRigLayers;
     const list = Array.isArray(d) ? d : d && Array.isArray(d.layers) ? d.layers : null;
-    if (!list) throw new TypeError('@displayxr/inline3d/splat: displayRigLayers — expected an array of layers, or { layers, viewerDistance?, gain? }.');
-    const o = Array.isArray(d) ? {} : { ...(d.viewerDistance !== undefined ? { viewerDistance: d.viewerDistance } : {}), ...(d.gain !== undefined ? { gain: d.gain } : {}) };
+    if (!list) throw new TypeError('@displayxr/inline3d/splat: displayRigLayers — expected an array of layers, or { layers, viewerDistance?, gain?, planeOffset?, planeDistance? }.');
+    const o = Array.isArray(d) ? {} : Object.fromEntries(Object.entries(d).filter(([k]) => k !== 'layers'));
     for (const l of list) out.setLayerRig(l, 'display', o);
   }
   // Replay what the page did before this module arrived — exclude() above all, which a product
