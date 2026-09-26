@@ -152,8 +152,16 @@ window.__run = async () => {
     out.vid.resumeMidLift.after = { state: hv.state, attrs: attrs(vid), paused: vid.paused, errors: errs };
     offErr();
   }
+  // native default mode is 'live': a pause never lifts (no depth POST, stays live, still converted)
+  {
+    const d0 = net.depth;
+    vid.pause();
+    await new Promise((r) => setTimeout(r, 1500));
+    out.vid.pauseNoLift = { mode: 'default', state: hv.state, depthPostsOnPause: net.depth - d0, attrs: attrs(vid) };
+    await vid.play().catch(() => {});
+  }
   depthStatus = 500; // the module's depth fails → the ORT still model is the fallback (not loaded here: no models)
-  vid.pause();
+  hv.explore(); // explicit: the only thing that lifts in native mode
   await new Promise((r) => setTimeout(r, 3000));
   out.vid.afterPauseFail = { state: hv.state, depthPosts: net.depth, attrs: attrs(vid) };
   hv.remove();

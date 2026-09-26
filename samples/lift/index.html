@@ -37,6 +37,7 @@
     (<code>resolveMediaAt</code>). Backend: <b id="backend">…</b>.
     Query: <code>providers=real|stub</code>, <code>models=</code> (model tree base URL, default <code>/_scratch/models</code>),
     <code>ort=</code> (onnxruntime-web dist URL, default <code>/_scratch/ort/</code> else jsDelivr),
+    <code>mode=auto|live|explore</code> (default: the SDK's — <code>live</code> in native mode, <code>auto</code> otherwise),
     <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>,
     <code>params={…}</code> (lift-gen overrides, JSON), <code>explore={…}</code> (explore view: <code>comfort</code>,
     <code>pivotTargetM</code>, <code>eyes</code>).
@@ -124,7 +125,8 @@ if (LIFT === 'remote-sharp') {
 
 const opts = {
   backend,
-  mode: 'auto',
+  // undefined = the SDK default: native → 'live' (pause never lifts; Explore does), web → 'auto'.
+  mode: new URLSearchParams(location.search).get('mode') || undefined,
   quality: q.get('quality') || 'auto',
   ...(backend === 'real' ? { models: MODELS, ort: ORT } : {}),
   ...(q.get('exploreDpr') ? { exploreMaxDpr: +q.get('exploreDpr') } : {}),

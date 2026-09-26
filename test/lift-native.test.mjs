@@ -22,7 +22,7 @@ import {
   NATIVE_DEPTH_URL,
   NATIVE_GAUSSIANS_URL,
 } from '../js/lift/native.js';
-import { createLiftMachine, STATES } from '../js/lift/state.js';
+import { createLiftMachine, STATES, resolveLiftMode } from '../js/lift/state.js';
 import { getRegistry } from '../js/lift/providers/registry.js';
 
 const CAPS = { native: true, provider: 'neurd-directml', modes: ['depth', 'sbs', 'nview', 'gaussians'], maxStreams: 2, approxMsPerConvert: 18, state: 'ready' };
@@ -165,7 +165,7 @@ test('native attrs: apply sets dxr-lift + options; setters map; clear restores e
  * `startLive` applies the attributes, `enterExplore` turns the browser's conversion off,
  * `exitExplore` turns it back on, `suspend` holds priority 'paused', `dispose` clears.
  */
-function nativeHarness(tag, { mode = 'auto' } = {}) {
+function nativeHarness(tag, { mode } = {}) {
   const el = fakeEl();
   const attrs = createNativeLiveAttrs(el, { depth: 1, priority: 'normal' });
   const effects = [];
@@ -173,7 +173,7 @@ function nativeHarness(tag, { mode = 'auto' } = {}) {
   const kind = tag === 'VIDEO' ? 'video' : 'still';
   const m = createLiftMachine({
     kind: 'video',
-    mode: kind === 'still' ? (mode === 'explore' ? 'explore' : 'live') : mode,
+    mode: resolveLiftMode({ native: true, kind, mode }), // exactly what lift.js runs
     isPaused: () => kind === 'still' || paused,
     setTimer: (fn) => (fn(), 1),
     clearTimer: () => {},
@@ -215,8 +215,8 @@ test('native state machine: <img> is live (browser-converted) until explore(); r
   assert.ok(effects.includes('dispose'));
 });
 
-test('native state machine: <video> pause → explore, hidden → priority paused, play → live', () => {
-  const { el, m, setPaused } = nativeHarness('VIDEO');
+test('native state machine: <video> with an EXPLICIT mode:\'auto\' keeps the old behaviour: pause → explore, hidden → priority paused, play → live', () => {
+  const { el, m, setPaused } = nativeHarness('VIDEO', { mode: 'auto' });
   m.send('start');
   m.send('loaded');
   assert.equal(el.getAttribute('dxr-lift'), 'auto');
@@ -237,7 +237,7 @@ test('native state machine: <video> pause → explore, hidden → priority pause
 });
 
 test('native: play while the explore work is in flight → live + dxr-lift="auto" in the same tick', () => {
-  const { el, m, effects, setPaused } = nativeHarness('VIDEO');
+  const { el, m, effects, setPaused } = nativeHarness('VIDEO', { mode: 'auto' });
   m.send('start');
   m.send('loaded');
   setPaused(true);
@@ -262,6 +262,54 @@ test('native: play while the explore work is in flight → live + dxr-lift="auto
   assert.equal(m.state, STATES.LIVE);
   assert.equal(el.getAttribute('dxr-lift'), 'auto');
   assert.equal(effects.at(-1), 'playMedia', 'the media is asked to play after the transition');
+});
+
+test('native default mode is live: a paused <video> stays live — no freeze, no lift, no depth fetch', () => {
+  const { el, m, effects, setPaused } = nativeHarness('VIDEO'); // no mode stated
+  assert.equal(m.mode, 'live');
+  m.send('start');
+  m.send('loaded');
+  setPaused(true);
+  m.send('pause'); // the harness fires the debounce at once
+  m.send('pause-settled');
+  m.send('ended');
+  assert.equal(m.state, STATES.LIVE);
+  assert.equal(el.getAttribute('dxr-lift'), 'auto', 'the vendor module keeps weaving the paused frame');
+  // freeze is what starts the depth fetch (doFreeze → stillDepthFor → POST lift/depth) and the lift
+  for (const e of ['freeze', 'lift', 'enterExplore', 'pauseMedia']) assert.ok(!effects.includes(e), `no ${e}`);
+});
+
+test('native default mode: explore() still lifts the paused frame', () => {
+  const { el, m, effects, setPaused } = nativeHarness('VIDEO');
+  m.send('start');
+  m.send('loaded');
+  setPaused(true);
+  m.send('pause');
+  assert.equal(m.state, STATES.LIVE);
+  m.send('explore-request'); // chip Explore / handle.explore()
+  assert.equal(m.state, STATES.FREEZING);
+  assert.ok(effects.includes('freeze'));
+  m.send('frozen', { gen: m.gen });
+  m.send('lifted', { gen: m.gen });
+  assert.equal(m.state, STATES.EXPLORE);
+  assert.equal(el.getAttribute('dxr-lift'), 'off');
+});
+
+test('resolveLiftMode: native defaults to live, stated modes are honoured; the web path is unchanged', () => {
+  // web path
+  assert.equal(resolveLiftMode({ native: false, kind: 'video' }), 'auto');
+  assert.equal(resolveLiftMode({ native: false, kind: 'still' }), 'auto');
+  assert.equal(resolveLiftMode({ native: false, kind: 'video', mode: 'live' }), 'live');
+  assert.equal(resolveLiftMode({ native: false, kind: 'video', mode: 'explore' }), 'explore');
+  // native: the default flips to live for videos AND stills
+  assert.equal(resolveLiftMode({ native: true, kind: 'video' }), 'live');
+  assert.equal(resolveLiftMode({ native: true, kind: 'still' }), 'live');
+  assert.equal(resolveLiftMode({ native: true, kind: 'video', mode: 'bogus' }), 'live');
+  // …but what the caller states is honoured
+  assert.equal(resolveLiftMode({ native: true, kind: 'video', mode: 'auto' }), 'auto');
+  assert.equal(resolveLiftMode({ native: true, kind: 'video', mode: 'explore' }), 'explore');
+  assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'explore' }), 'explore');
+  assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'auto' }), 'live', 'an <img> has no pause');
 });
 
 // ── the native depth provider ─────────────────────────────────────────────────────────────

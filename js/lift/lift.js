@@ -27,7 +27,7 @@
 // no models — so the state machine and the sample run end-to-end without any ML.
 
 import { createInline3D } from '../inline3d.js';
-import { createLiftMachine, STATES } from './state.js';
+import { createLiftMachine, STATES, resolveLiftMode } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
 import { createChip } from './ui.js';
 import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority } from './native.js';
@@ -123,7 +123,8 @@ const MONO_VIEW = Object.freeze({
  * @param {HTMLVideoElement|HTMLImageElement|HTMLCanvasElement|Element} element  media, or any element
  *        at/near media (resolved the same way resolveMediaAt resolves a click).
  * @param {object} [opts]
- * @param {'auto'|'live'|'explore'} [opts.mode='auto']
+ * @param {'auto'|'live'|'explore'} [opts.mode]  default 'auto' on the web path, 'live' in NATIVE mode
+ *        (pause never auto-lifts there; explore() is explicit). A stated mode is honoured (resolveLiftMode).
  * @param {number} [opts.depth=1]  depth strength multiplier.
  * @param {'auto'|number} [opts.convergence='auto']  zero-disparity depth; passed to live-DIBR as given.
  * @param {'auto'|'low'|'medium'|'high'} [opts.quality='auto']
@@ -163,7 +164,6 @@ export async function lift(element, opts = {}) {
   }
   const kind = el.tagName === 'VIDEO' ? 'video' : 'still';
   const o = {
-    mode: opts.mode || 'auto',
     depth: Number.isFinite(opts.depth) ? opts.depth : 1,
     convergence: opts.convergence ?? 'auto',
     quality: resolveQuality(opts.quality || 'auto'),
@@ -210,7 +210,8 @@ export async function lift(element, opts = {}) {
   // Native live: the BROWSER converts the element (an <img> too), so an image behaves like a
   // paused video — live until explore() — and explore/resume toggles between the two.
   const machineKind = native ? 'video' : kind;
-  const machineMode = native && kind === 'still' ? (o.mode === 'explore' ? 'explore' : 'live') : o.mode;
+  // Native defaults to 'live' (pause never auto-lifts; explore is explicit) — resolveLiftMode.
+  const machineMode = resolveLiftMode({ native, kind, mode: opts.mode });
   if (native && !o.providers.lift) {
     const lp = defaultLiftProviderFor(caps, o.providers);
     if (lp) o.providers.lift = lp; // native-gaussians over the local generator (a registered LiftProvider)

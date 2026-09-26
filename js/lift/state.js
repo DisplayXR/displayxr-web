@@ -36,6 +36,25 @@ const MEDIA_EVENTS = new Set(['pause', 'pause-settled', 'play', 'seeked', 'ended
 const HIDEABLE = new Set([S.LOADING, S.LIVE, S.FREEZING, S.LIFTING, S.EXPLORE]);
 
 /**
+ * The machine mode lift() runs, from what the caller asked (`mode`, undefined = not stated).
+ *   web path:  the caller's mode, default 'auto' (live while playing, lift on pause/end).
+ *   native:    default 'live' for videos AND stills — the browser's vendor module keeps the paused
+ *              frame woven 3D, so lifting on pause is wasted work (depth fetch, generator) that got
+ *              in the way; the splat is built only on an explicit explore(). Anything the caller
+ *              STATES is honoured: 'explore' (lift at once), and 'auto' for a video (lift on pause).
+ *              A still has no pause, so an explicit 'auto' on a native <img> is 'live'.
+ * @param {{native:boolean, kind:'video'|'still', mode?:string}} o
+ * @returns {'auto'|'live'|'explore'}
+ */
+export function resolveLiftMode({ native, kind, mode }) {
+  const m = mode === 'auto' || mode === 'live' || mode === 'explore' ? mode : undefined;
+  if (!native) return m || 'auto';
+  if (m === 'explore') return 'explore';
+  if (m === 'auto' && kind === 'video') return 'auto';
+  return 'live';
+}
+
+/**
  * @param {object} o
  * @param {'video'|'still'} o.kind   `still` = <img>/<canvas>: no live phase, straight to a lift.
  * @param {'auto'|'live'|'explore'} [o.mode='auto']
@@ -184,7 +203,8 @@ export function createLiftMachine(o) {
             return true;
           }
           if (ev === 'pause-settled') {
-            if (isPaused()) startFreeze('pause');
+            // only auto mode lifts on pause (a stray settle must not lift a `live` — e.g. native — lift)
+            if (mode === 'auto' && isPaused()) startFreeze('pause');
             return true;
           }
           if (ev === 'play') {

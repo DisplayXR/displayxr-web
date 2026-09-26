@@ -25,14 +25,16 @@ The source is in [`tools/lift-builtin/`](../tools/lift-builtin/).
 | `version` | `<SDK version>+<short commit>` (a `.dirty` suffix marks an uncommitted tree). |
 
 `lift(el, { models, ort, ui: 'builtin', native })` does everything else: live 3D while a video plays,
-explore on pause or for a still, and the chip with *Explore / Resume / Exit*.
+explore on pause or for a still, and the chip with *Explore / Resume / Exit*. It passes **no `mode`**,
+so it takes the SDK default: in native mode that is `live` — a paused video stays woven 3D by the
+vendor module and nothing is lifted until the chip's *Explore*.
 
 **Vendor module first.** Each `convertAt` asks `liftCapabilities()` (`GET displayxr-lift://caps`,
 cached per document). When the runtime's 2D→3D module is there (`native`) and the pick is a
 `<video>`/`<img>`, the bundle does **not** load ORT or any model: `lift()` sets `dxr-lift="auto"`
 (+ strength/convergence/priority) on the element, the browser converts + weaves it in place, and the
 chip offers *Explore / Exit* (*↓ SOG* in explore). ORT (`getOrt`, passed as a lazy loader) and the
-still model load only on a pause, and only if the module's `lift/depth` fails; a module with
+still model load only on an Explore, and only if the module's `lift/depth` fails; a module with
 `gaussians` supplies the explore scene too (docs/lift.md § Vendor modules). Native conversions do not
 use ORT while live, so up to `caps.maxStreams` of them coexist (oldest evicted); a web lift is still
 exclusive and replaces them. `convertAt` resolves `mode: 'native' | 'web'`; `status()` adds `caps`

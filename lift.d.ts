@@ -30,7 +30,13 @@ export declare const STATES: Readonly<{
 export type LiftQuality = 'low' | 'medium' | 'high';
 
 export interface LiftOptions {
-  /** `auto`: live while playing, lift on pause/end. `live`: never lifts by itself. `explore`: lift once the models are in. Default `auto`. */
+  /**
+   * `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still
+   * does). `explore`: lift once the models are in. Default `auto` on the web path; **`live` in native
+   * mode** (the browser keeps the paused frame woven 3D, so lifting on pause is wasted work — the
+   * splat is built only on an explicit Explore). The default flips; a mode you pass is honoured
+   * (native `auto` on a video lifts on pause again; on an `<img>` it is `live`).
+   */
   mode?: 'auto' | 'live' | 'explore';
   /** Depth strength multiplier: live DIBR, and the explore scene's depth about its pivot. Default 1. */
   depth?: number;

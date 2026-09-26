@@ -49,7 +49,7 @@ open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/offic
 
 | option | default | |
 |---|---|---|
-| `mode` | `'auto'` | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. |
+| `mode` | `'auto'` (**native default: `'live'`**) | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. In native mode the default flips to `live` for videos and images: the vendor module keeps the paused frame woven 3D, so a pause never builds a splat (no depth fetch, no generator, no `.sog`) — only Explore does. Native ignores nothing you state: an explicit `mode: 'auto'` on a video lifts on pause as before (an `<img>` has no pause, so it is `live`), `'explore'` lifts at once. |
 | `depth` | `1` | depth strength multiplier: live DIBR, and in explore the lifted scene's depth about its pivot (`setDepth()` drives both). |
 | `convergence` | `'auto'` | zero-disparity depth; handed to live-DIBR as given. |
 | `quality` | `'auto'` | `low`/`medium`/`high`; `auto` picks `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, else `low` — **never `high`** (MoGe-3 1022×574 is 2.8 s vs 1.3 s, and a 1536-wide lift is ~1.2 M splats). The still model, generator and inpainter get the concrete tier; the video model keeps `auto` (its warm-up picks 364×210 vs 518×294 by measured frame time). |
@@ -114,8 +114,9 @@ HEAD on the download URL). `webFallback: false` skips the probes. An aborted que
 **What `lift()` does in native mode.** It mounts the placement host (hidden canvas + chip) but not
 into the inline-3D session; the element stays visible and gets the attributes below. Loading pulls in
 only the model/registry module — the generator, explore renderer and (only if a native provider
-falls back) onnxruntime load on the first pause. An `<img>` is **live** (browser-converted) until
-`explore()`; *Resume* goes back to live. Entering explore sets `dxr-lift="off"` (the SDK's canvas
+falls back) onnxruntime load on the first explore. A `<video>` **and** an `<img>` are **live**
+(browser-converted) until `explore()` — the default mode is `live` in native mode, so a paused video
+stays woven 3D by the vendor module and nothing is lifted until *Explore*; *Resume* goes back to live. Entering explore sets `dxr-lift="off"` (the SDK's canvas
 owns those pixels), hides the element and adds the canvas to the session; leaving it restores the
 element and `dxr-lift="auto"` at once, and the canvas fades out and leaves the session. A hidden tab
 holds `dxr-lift-priority="paused"`. `remove()` (and a fatal error) restores every attribute to its
