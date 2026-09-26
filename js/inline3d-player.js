@@ -227,6 +227,10 @@ export function normalizePlayerOptions(opts = {}) {
     // A fullscreen button (and F). The CONTAINER goes fullscreen, not the canvas, so the
     // transport — its sibling overlays — comes along.
     fullscreen: opts.fullscreen === undefined ? true : !!opts.fullscreen,
+    // Cover the canvas across a fullscreen change until handle.rewoven() (woven-canvas rule 11).
+    // Opt-in: on the Leia panel (2026-09-26, 0195 test build, blind A/B) fullscreen showed no raw
+    // side-by-side pair either way, and the cover added ~1.2 s with no picture.
+    fullscreenCover: !!opts.fullscreenCover,
     crossOrigin: opts.crossOrigin,
     width: opts.width,
     height: opts.height,
@@ -771,6 +775,7 @@ const PLAYER_CSS = `
    letterboxing INSIDE the canvas would put each eye's content where the other eye is sampled. */
 .dxr-player-host:fullscreen{background:#000;display:flex;align-items:center;justify-content:center;}
 .dxr-player-host:fullscreen>canvas{flex:none;}
+.dxr-player-fscover{position:absolute;inset:0;background:#000;pointer-events:none;}
 
 .dxr-player-badge3d{font-size:10px;font-weight:700;letter-spacing:.9px;padding:3px 7px;
   border-radius:5px;border:1px solid rgba(255,255,255,.28);opacity:.82;flex:none;}
@@ -999,6 +1004,16 @@ const BACK_TRACK_ICON = svg(
   '<rect x="5" y="5.5" width="2.4" height="13" rx="1"/>' +
     '<path d="M19 6.3v11.4a.8.8 0 0 1-1.25.66L9.9 12.66a.8.8 0 0 1 0-1.32l7.85-5.7A.8.8 0 0 1 19 6.3Z"/>'
 );
+/** `?dxrdiag=a,b` on the page URL names a kill switch for an A/B on the panel. */
+function diagSwitch(name) {
+  try {
+    const q = new URLSearchParams(globalThis.location?.search || '');
+    return q.getAll('dxrdiag').some((v) => v.split(',').includes(name));
+  } catch {
+    return false;
+  }
+}
+
 const fsElement = () => (typeof document !== 'undefined' ? document.fullscreenElement : null);
 
 function volumeIcon(video) {
@@ -1050,7 +1065,7 @@ function readBuffered(video) {
  * buffering spinner — each its own `data-inline3d-overlay`, each a PARTIAL region of the tile
  * (constraint 1 at the top of this section). Returns the bar element and a cleanup.
  */
-function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin, size, band = null, onBack = null }) {
+function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin, size, band = null, onBack = null, rewoven = null, fullscreenCover = false }) {
   ensureStyle();
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.classList.add('dxr-player-host');
@@ -1336,9 +1351,33 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
     canvas.style.width = `${Math.round(w)}px`;
     canvas.style.height = `${Math.round(w / fsSaved.aspect)}px`;
   }
+  // Entering or leaving fullscreen moves the canvas's rect, and the browser re-registers a moved
+  // rect with the same identity gap as a fresh canvas (woven-canvas rule 11): until the join lands
+  // it shows the page's own raster, the squeezed SBS pair. So cover the canvas across the change,
+  // hard cut, and release on handle.rewoven(). Inserted straight after the canvas, so every
+  // later sibling (the controls) still paints above it. Only with `fullscreenCover: true`.
+  // `?dxrdiag=nofscover` turns it off anyway, for an A/B.
+  let fsCover = null;
+  let fsCoverToken = 0;
+  function coverUntilRewoven() {
+    const p = rewoven && fullscreenCover ? rewoven() : null;
+    if (!p || diagSwitch('nofscover')) return; // flat path: nothing is woven, nothing to hide
+    const token = ++fsCoverToken;
+    if (!fsCover) {
+      fsCover = document.createElement('div');
+      fsCover.className = 'dxr-player-fscover';
+      canvas.after(fsCover);
+    }
+    p.then(() => {
+      if (token !== fsCoverToken || !fsCover) return;
+      fsCover.remove();
+      fsCover = null;
+    });
+  }
   function syncFullscreen() {
     if (!fsBtn) return;
     const on = fsElement() === container;
+    if (on !== !!fsSaved) coverUntilRewoven();
     if (on && !fsSaved) {
       const r = canvas.getBoundingClientRect();
       fsSaved = { width: canvas.style.width, height: canvas.style.height, aspect: r.height ? r.width / r.height : 16 / 9 };
@@ -1535,6 +1574,9 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       container.style.removeProperty('--dxr-bar-bottom');
       container.style.removeProperty('--dxr-accent');
       for (const el of [titleEl, bar, centre, pip, spinner]) el.remove();
+      fsCoverToken++;
+      fsCover?.remove();
+      fsCover = null;
     },
   };
 }
@@ -2011,6 +2053,8 @@ export function addPlayer(wall, canvas, src, opts = {}) {
         size: o.size,
         band: o.band,
         onBack: () => handle.back(),
+        rewoven: innerHandle && typeof innerHandle.rewoven === 'function' ? () => innerHandle.rewoven() : null,
+        fullscreenCover: o.fullscreenCover,
       });
       bar = built.el;
       cleanupBar = built.cleanup;

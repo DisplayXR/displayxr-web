@@ -378,6 +378,13 @@ export interface TileHandle {
   readonly firstWoven: Promise<FirstWovenResult>;
   /** Callback form of {@link TileHandle.firstWoven}: called once, asynchronously. Returns an unsubscribe. */
   onFirstWoven(cb: (result: FirstWovenResult) => void): () => void;
+  /**
+   * {@link TileHandle.firstWoven}, measured from NOW. Cover an already-woven canvas across a rect
+   * change (fullscreen, a layout resize), then release on this. A real box change while pending
+   * restarts the hold; a second call while pending returns the same promise, restarted. Before the
+   * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
+   */
+  rewoven(): Promise<FirstWovenResult>;
 }
 
 /** An open inline-3D session you add weaved windows to. Returned by {@link createInline3D}. */

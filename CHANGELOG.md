@@ -5,6 +5,22 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **core** (additive) and `./player`.
+
+- **`handle.rewoven()`** — `firstWoven`, measured from the call, for a canvas that is already woven
+  but whose rect is about to change (fullscreen, a layout resize). Same `{ woven, confirmed,
+  reason, ms }` shape, never rejects; a real box change while pending restarts the hold; before
+  the first join it is `firstWoven`. Woven-canvas rule 11.
+- **Player: `fullscreenCover`** (opt-in, default false). Entering or leaving fullscreen puts an
+  opaque cover over the canvas (on top, hard cut, below the controls) until `rewoven()` settles.
+  Off by default because a blind A/B on the Leia panel showed no raw side-by-side pair without it
+  and ~1.2 s of no picture with it; the flash that did show is browser-wide (rule 11).
+- **Docs:** woven-canvas rules 9–11 (black goes under the canvas — previously only in the
+  authoring guide; no `backdrop-filter` over the weave; a resize is a fresh-canvas moment). The
+  authoring guide's short list now matches, 1–11.
+
 ## 1.27.0 — 2026-09-26
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only) and adds one optional field
