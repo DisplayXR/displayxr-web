@@ -1025,6 +1025,13 @@ export interface SplatHandle {
   /** The per-eye buffer scale as requested (the option, or the last `setRenderScale`). Both engines. */
   readonly renderScaleRequested: number;
   /**
+   * `engine: 'playcanvas'` only. The `<video>` `setVideo`'s plane is showing now, or null (none, or
+   * one still waiting for its first frame). Read-only; no event reports it changing.
+   */
+  readonly videoElement?: HTMLVideoElement | null;
+  /** `engine: 'playcanvas'` only. The tile's canvas (page chrome sits beside it). */
+  readonly canvas?: HTMLCanvasElement;
+  /**
    * `engine: 'playcanvas'` only. The 2D tier's EYE offset — a head-parallax analogue for a flat
    * screen with no tracked eyes (e.g. a phone's tilt). `{x, y}` is normalised in the mono camera's
    * plane (+x right, +y up) and clamped to the unit disc; |offset| = 1 moves the eye far enough to
