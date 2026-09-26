@@ -103,6 +103,16 @@ export interface XRDisplayInfo {
   displayPixelHeight: number;
   recommendedViewScaleX: number;
   recommendedViewScaleY: number;
+  /**
+   * The runtime's NOMINAL viewer position, metres, in display space: origin at the panel
+   * centre, +x right, +y up, +z out of the glass toward the viewer (w = 1). A constant of the
+   * panel — where the runtime seats the viewer when nobody is tracked, and the distance its
+   * camera rig is calibrated to (`z` is that rig's n) — NOT the live eye position.
+   *
+   * Absent on browsers that predate it (DisplayXR Browser patch 0221) and when the runtime
+   * reports nothing usable, so read it as `info.nominalViewerPosition?.z ?? fallback`.
+   */
+  nominalViewerPosition?: DOMPointReadOnly;
 }
 
 /**

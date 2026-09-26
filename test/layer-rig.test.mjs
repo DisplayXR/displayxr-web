@@ -21,6 +21,9 @@ import {
   layerRigPlane,
   LayerRigCameras,
   DEFAULT_VIEWER_DISTANCE_M,
+  nominalViewerDistanceFromInfo,
+  resolveViewerDistance,
+  layerRigLine,
 } from '../js/inline3d-splat-layer-rig.js';
 import { snapshotRig, attachPlayCanvasSplat } from '../js/inline3d-splat-playcanvas.js';
 import { installDom, makeCanvas } from './stubs.mjs';
@@ -406,7 +409,7 @@ test('LayerRigCameras (renderviews): stage → display camera (priority 1), UI/I
   near(st.planeM, 2.4, 1e-12, 'the photo convergence plane lands on the glass');
   assert.equal(st.located, true);
   assert.equal(warns.length, 1, 'one WARN on the first 3D frame');
-  assert.match(warns[0], /path=renderviews engaged=true layers=\[Stage\] viewerDistance=0\.60m gain=4\.000 planeM=2\.400/);
+  assert.match(warns[0], /path=renderviews engaged=true layers=\[Stage\] viewerDistance=0\.60m\(page\) gain=4\.000 planeM=2\.400/);
   lr.frame(entries, rect, { fov: 50 }, PHOTO, { located: true });
   assert.equal(warns.length, 1, 'no repeat while nothing changes');
 });
@@ -535,6 +538,128 @@ test('options merge across calls; setOptions changes the plane live', (t) => {
   lr.setOptions({ planeDistance: null, planeOffset: null });
   lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
   near(lr.state().planeM, 2.4, 1e-12, 'cleared');
+});
+
+// ── n from the browser: XRDisplayInfo.nominalViewerPosition ─────────────────────────────────
+
+const pt = (x, y, z) => ({ x, y, z, w: 1 }); // DOMPointReadOnly's shape
+const infoWith = (p) => ({ displayWidthMeters: 0.34, displayHeightMeters: 0.19, nominalViewerPosition: p });
+/** A fake XRDisplayLayer whose getDisplayInfo resolves `info` (or runs `impl`), counting calls. */
+function fakeLayer(info, impl) {
+  const layer = { calls: 0, getDisplayInfo() { this.calls++; return impl ? impl() : Promise.resolve(info); } };
+  return layer;
+}
+
+test('nominalViewerDistanceFromInfo: the position\'s z (what the camera rig reads), never its length; absent/unusable → null', () => {
+  assert.equal(nominalViewerDistanceFromInfo(infoWith(pt(0, 0, 0.45))), 0.45);
+  assert.equal(nominalViewerDistanceFromInfo(infoWith(pt(0.1, 0.2, 0.5))), 0.5, 'z, not hypot(0.1, 0.2, 0.5)');
+  for (const bad of [null, undefined, {}, infoWith(undefined), infoWith(null), infoWith(pt(0, 0, 0)), infoWith(pt(0, 0, -0.5)), infoWith(pt(0, 0, NaN)), infoWith(pt(0, 0, Infinity)), infoWith({ x: 0, y: 0 })]) {
+    assert.equal(nominalViewerDistanceFromInfo(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('resolveViewerDistance: page option > browser > 0.6 m default, with the source named', () => {
+  assert.deepEqual(resolveViewerDistance(null, null), { value: DEFAULT_VIEWER_DISTANCE_M, source: 'default' });
+  assert.deepEqual(resolveViewerDistance(undefined, 0.45), { value: 0.45, source: 'browser' });
+  assert.deepEqual(resolveViewerDistance(0.7, 0.45), { value: 0.7, source: 'page' });
+  assert.deepEqual(resolveViewerDistance(0.7, null), { value: 0.7, source: 'page' });
+});
+
+test('LayerRigCameras: the browser\'s nominal viewer drives the gain and the plane; a page viewerDistance wins; null falls back to it', async (t) => {
+  quiet(t);
+  const { v } = fakeViewer();
+  const lr = new LayerRigCameras(v);
+  lr.set('Stage', 'display', { planeOffset: 0.03 });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().viewerDistanceSource, 'default', 'before the browser answered');
+  near(lr.state().gain, 2.4 / DEFAULT_VIEWER_DISTANCE_M, 1e-12, 'k = D/0.6');
+
+  const layer = fakeLayer(infoWith(pt(0, 0, 0.45)));
+  await lr.noteLayer(layer);
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  let st = lr.state();
+  assert.equal(st.viewerDistance, 0.45);
+  assert.equal(st.viewerDistanceSource, 'browser');
+  near(st.gain, 2.4 / 0.45, 1e-12, 'k = D/n_browser');
+  near(st.planeM, 2.4 * (1 + 0.03 / 0.45), 1e-12, 'planeM = D(1 + offset/n_browser)');
+  assert.match(layerRigLine(st), /viewerDistance=0\.45m\(browser\)/);
+
+  lr.setOptions({ viewerDistance: 0.7 });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  st = lr.state();
+  assert.equal(st.viewerDistanceSource, 'page');
+  near(st.gain, 2.4 / 0.7, 1e-12, 'the page pins n');
+
+  lr.setOptions({ viewerDistance: null });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().viewerDistanceSource, 'browser', 'clearing the page value goes back to the browser, not 0.6');
+
+  lr.noteLayer(layer);
+  lr.noteLayer(layer);
+  assert.equal(layer.calls, 1, 'asked once per tile');
+});
+
+test('LayerRigCameras.noteLayer: no API, no field, a null info → the 0.6 m default; a rejection is retried a bounded number of times', async (t) => {
+  quiet(t);
+  const mk = () => {
+    const lr = new LayerRigCameras(fakeViewer().v);
+    lr.set('Stage', 'display');
+    return lr;
+  };
+  let lr = mk();
+  lr.noteLayer({}); // an older browser: no getDisplayInfo
+  lr.noteLayer(null);
+  assert.equal(lr.state().viewerDistanceSource, 'default');
+
+  for (const info of [null, { displayWidthMeters: 0.34 }, infoWith(pt(0, 0, 0))]) {
+    lr = mk();
+    const layer = fakeLayer(info);
+    await lr.noteLayer(layer);
+    await lr.noteLayer(layer);
+    assert.equal(layer.calls, 1, 'a resolved answer (even "none") settles it');
+    assert.equal(lr.state().viewerDistanceSource, 'default', JSON.stringify(info));
+    assert.equal(lr.state().viewerDistance, DEFAULT_VIEWER_DISTANCE_M);
+  }
+
+  lr = mk();
+  const rejecting = fakeLayer(null, () => Promise.reject(new Error('no live layer')));
+  for (let i = 0; i < 6; i++) await lr.noteLayer(rejecting);
+  assert.equal(rejecting.calls, 3, 'retried, but not forever');
+  assert.equal(lr.state().viewerDistanceSource, 'default');
+
+  lr = mk();
+  const throwing = fakeLayer(null, () => { throw new Error('sync throw'); });
+  await lr.noteLayer(throwing); // must not throw out of the frame callback
+  assert.equal(lr.state().viewerDistanceSource, 'default');
+
+  lr = mk();
+  let calls = 0;
+  const late = fakeLayer(null, () => (++calls === 1 ? Promise.reject(new Error('not yet')) : Promise.resolve(infoWith(pt(0, 0, 0.5)))));
+  await lr.noteLayer(late);
+  await lr.noteLayer(late);
+  assert.equal(lr.state().viewerDistanceSource, 'browser', 'a later ask can still land');
+  assert.equal(lr.state().viewerDistance, 0.5);
+});
+
+test('handle: onFrame hands the XRDisplayLayer to the layer rig (only once a layer is on the display rig), and layerRigState reports the source', async (t) => {
+  installDom();
+  quiet(t);
+  const pc = { createGraphicsDevice: () => new Promise(() => {}) }; // never boots
+  const out = {};
+  attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc }, []);
+  assert.equal(out.layerRigState().viewerDistanceSource, 'default', 'no layer rig yet');
+  const layer = fakeLayer(infoWith(pt(0, 0, 0.42)));
+  out.viewer.onFrame(null, layer);
+  assert.equal(layer.calls, 0, 'nothing on the display rig: nothing asked');
+  out.setLayerRig('Stage', 'display');
+  out.viewer.onFrame(null, layer);
+  assert.equal(layer.calls, 1);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(out.layerRigState().viewerDistance, 0.42);
+  assert.equal(out.layerRigState().viewerDistanceSource, 'browser');
+  out.setLayerRigOptions({ viewerDistance: 0.6 });
+  assert.equal(out.layerRigState().viewerDistanceSource, 'page');
+  out.remove();
 });
 
 // ── makeSbsMaterial ─────────────────────────────────────────────────────────────────────────

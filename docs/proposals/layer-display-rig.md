@@ -113,7 +113,10 @@ absolute eye z, which is not exposed. Not chosen.
 
 1. **Expose the nominal viewer** in `XRDisplayInfo` (`nominalViewerDistanceMeters`, or the full
    `nominalViewerPosition`) — one field from `XrDisplayInfoDXR` that the browser already reads. It
-   turns the §5 default into a runtime-provided value.
+   turns the §5 default into a runtime-provided value. **In progress:** the browser exposes
+   `XRDisplayInfo.nominalViewerPosition` (DOMPointReadOnly, display space; patch 0221, Windows +
+   Android), and the SDK's default n is its **z** (the camera rig reads only `nominal_viewer->z`),
+   falling back to 0.6 m; `layerRigState().viewerDistanceSource` names the source.
 2. **Secondary rig per layer**: `XRDisplayLayer.setViewRig(rig, { secondary })` → the runtime
    computes both view sets from the **same eye sample** (a second `XrViewRig…` chained on the one
    locate, a second `XrView[]` on `XrViewState::next`), surfaced as `XRView.secondary` or

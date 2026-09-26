@@ -5,6 +5,25 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only) and adds one optional field
+to the core `XRDisplayInfo` type. A page on a browser that does not report the new field sees no
+change.
+
+- **`setLayerRig`'s default `viewerDistance` now comes from the browser.** Where
+  `XRDisplayInfo.nominalViewerPosition` is reported (DisplayXR Browser patch 0221, Windows and
+  Android), the layer rig's n is its **z** — the runtime's nominal viewer distance for the panel,
+  the value its camera rig is calibrated to — instead of the fixed 0.6 m. The tile asks the frame's
+  `XRDisplayLayer.getDisplayInfo()` once, asynchronously; frames drawn before it answers use 0.6 m.
+  A page's `viewerDistance` still wins, and clearing it (`null`) falls back to the browser's value,
+  then 0.6 m. **Pixels move** on a panel whose nominal distance is not 0.6 m: display-rig objects'
+  pop-out scales by 0.6/n (that was the bug); the contact plane and the 2D picture do not move.
+- **`layerRigState().viewerDistanceSource`** — `'page'` | `'browser'` | `'default'` — says where
+  `viewerDistance` came from, and the WARN line prints it: `viewerDistance=0.45m(browser)`.
+- **Types:** `XRDisplayInfo.nominalViewerPosition?: DOMPointReadOnly` (metres, display space, +z
+  out of the glass; absent when unreported), `SplatLayerRigState.viewerDistanceSource`.
+
 ## 1.26.0 — 2026-09-25
 
 Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; nothing changes

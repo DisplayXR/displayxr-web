@@ -185,7 +185,11 @@ export interface ResolvedRig {
  * viewer's. docs/proposals/layer-display-rig.md.
  */
 export interface SplatLayerRigOptions {
-  /** Nominal viewer distance in metres (default 0.6, the browser's own nominal). */
+  /**
+   * Nominal viewer distance n in metres. Default: the browser's
+   * `XRDisplayInfo.nominalViewerPosition.z` where it reports one, else 0.6. Passing it pins n
+   * (see {@link SplatLayerRigState.viewerDistanceSource}).
+   */
   viewerDistance?: number | null;
   /** An explicit gain k instead (1 = exactly the photo rig; larger = rounder). */
   gain?: number | null;
@@ -216,7 +220,14 @@ export interface SplatLayerRigState {
   rounded: boolean;
   /** Why not engaged (or what is wrong with some layers while engaged); null when all is well. */
   reason: string | null;
+  /** The n in use (metres). */
   viewerDistance: number;
+  /**
+   * Where `viewerDistance` came from: the page's option, the browser's reported nominal viewer
+   * (`XRDisplayInfo.nominalViewerPosition.z`, asked once per tile, asynchronously — early frames
+   * may read 'default' before it lands), or the 0.6 m fallback.
+   */
+  viewerDistanceSource: 'page' | 'browser' | 'default';
   /** The gain the last frame used (null off a camera rig). */
   gain: number | null;
   /** The plane that lands on the glass, as a distance from the photo's camera (world units). */
