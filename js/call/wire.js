@@ -381,7 +381,9 @@ export function createLiveGate({ need = 10, needNoPose = 30 } = {}) {
       frames++;
       if (viewCount === null) live = frames >= needNoPose;
       else {
-        run = viewCount >= 2 ? run + 1 : 0;
+        // >= 1, not >= 2: the browser's inline session reports ONE view on the viewer pose
+        // (per-eye views live on each layer), verified on a real panel.
+        run = viewCount >= 1 ? run + 1 : 0;
         live = run >= need;
       }
       return live;

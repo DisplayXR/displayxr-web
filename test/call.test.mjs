@@ -638,14 +638,19 @@ test('QR: finder patterns in three corners; version grows with length; too long 
 // ── panel-round fixes: liveness gate (#172), unreachable, camera-busy, PeerJS zombie slots ──────
 
 
-test('live gate: woven registration waits for 10 CONSECUTIVE stereo frames (#172)', () => {
+test('live gate: live after 10 CONSECUTIVE frames with a located pose (#172)', () => {
+  // The browser's inline session reports ONE view on the viewer pose (per-eye views are per
+  // layer) — a >=2 requirement never went live on a real panel.
   const g = createLiveGate();
-  for (let i = 0; i < 9; i++) assert.equal(g.feed(2), false);
-  assert.equal(g.feed(1), false, 'a mono frame (runtime not locating eyes) resets the run');
-  for (let i = 0; i < 9; i++) assert.equal(g.feed(2), false);
-  assert.equal(g.feed(2), true);
+  for (let i = 0; i < 9; i++) assert.equal(g.feed(1), false);
+  assert.equal(g.feed(0), false, 'a frame with no located view resets the run');
+  for (let i = 0; i < 9; i++) assert.equal(g.feed(1), false);
+  assert.equal(g.feed(1), true);
   assert.equal(g.live, true);
   assert.equal(g.feed(0), true, 'once live, stays live');
+  const stereo = createLiveGate();
+  for (let i = 0; i < 9; i++) assert.equal(stereo.feed(2), false);
+  assert.equal(stereo.feed(2), true, 'two views count too');
   const noPose = createLiveGate();
   for (let i = 0; i < 29; i++) assert.equal(noPose.feed(null), false);
   assert.equal(noPose.feed(null), true, 'no reference space: live after 30 frames');
