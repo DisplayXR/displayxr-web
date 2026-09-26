@@ -9,7 +9,7 @@
 //   import { addPlayer } from '@displayxr/inline3d/player';
 //
 //   const wall = await createInline3D();
-//   const p = addPlayer(wall, canvas, 'title-sbs.webm', { poster: 'title-poster.jpg' });
+//   const p = addPlayer(wall, canvas, 'title_2x1.webm', { poster: 'title-poster.jpg' });
 //   p.on('ready', () => p.play());
 //
 // Built ON `wall.addVideo()`: for `format:'sbs'` on a supported wall, this module creates and

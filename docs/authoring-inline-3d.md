@@ -47,14 +47,14 @@ hands you.
   import { createInline3D } from './js/inline3d.js';
   const wall = await createInline3D({ lazy: false });
   if (wall.supported) {
-    wall.addImage(document.getElementById('pic'), 'photos/cat_sbs.jpg');
+    wall.addImage(document.getElementById('pic'), 'photos/cat_2x1.jpg');
   }
   // else: the <canvas> stays blank on non-DisplayXR browsers — put a 2D <img> fallback
   // behind it, or draw the left half yourself.
 </script>
 ```
 
-`cat_sbs.jpg` is a normal side-by-side stereo image (left view | right view). That's it —
+`cat_2x1.jpg` is a normal side-by-side stereo image (left view | right view). That's it —
 no per-eye code, no WebXR boilerplate.
 
 ## The three content types
@@ -95,7 +95,7 @@ inherited, not re-implemented.
 ```js
 import { addPlayer } from '@displayxr/inline3d/player';
 
-const p = addPlayer(wall, canvas, 'title-sbs.webm', { poster: 'title-poster.jpg', loop: true });
+const p = addPlayer(wall, canvas, 'title_2x1.webm', { poster: 'title-poster.jpg', loop: true });
 p.on('ready', () => p.play());
 p.on('ended', () => p.seek(0));
 ```
@@ -204,8 +204,8 @@ head pose, an SBS video frame's disparity is baked in whether it is frozen or pl
 ```js
 const player = addPlayer(wall, canvas, null, {
   titles: [
-    { id: 'moon', src: 'moon_sbs.webm', title: 'Fly Me to the Moon', poster: 'moon.png' },
-    { id: 'reef', src: 'reef_sbs.webm', title: 'Reef' },
+    { id: 'moon', src: 'moon_2x1.webm', title: 'Fly Me to the Moon', poster: 'moon.png' },
+    { id: 'reef', src: 'reef_2x1.webm', title: 'Reef' },
   ],
   autoAdvance: true,           // a title that ends plays the next one
 });
