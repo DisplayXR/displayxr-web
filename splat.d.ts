@@ -1002,6 +1002,21 @@ export interface SplatHandle {
   setRenderScale(scale: number): SplatHandle;
   /** `engine: 'playcanvas'` only. The current per-eye buffer scale. */
   readonly renderScale: number;
+  /**
+   * `engine: 'playcanvas'` only. The 2D tier's EYE offset — a head-parallax analogue for a flat
+   * screen with no tracked eyes (e.g. a phone's tilt). `{x, y}` is normalised in the mono camera's
+   * plane (+x right, +y up) and clamped to the unit disc; |offset| = 1 moves the eye far enough to
+   * swing its line of sight to the focus by `orbitMaxDeg` (15° by default), the drag orbit's comfort
+   * cone. Off-axis: the focus plane stays put on screen while nearer content moves against the
+   * farther. It moves the eye, not the scene, so it composes with the orbit (`setPose`, the drag)
+   * rather than fighting it. A snap, like `setPose` — ease it in the page. `null` resets to
+   * `{0, 0}`. Mono only: in woven 3D the head tracker owns the eyes, so the value is kept (it applies
+   * again if the tile falls back to 2D) but draws nothing; ignored on `controls: 'page'`. Throws a
+   * TypeError on a non-finite component.
+   */
+  setViewOffset(offset: { x?: number; y?: number } | null): SplatHandle;
+  /** `engine: 'playcanvas'` only. The current eye offset (after the unit-disc clamp). */
+  readonly viewOffset: { x: number; y: number };
   /** `engine: 'playcanvas'` only. Change the layer rig's tile-wide options live (merge; `null` clears). */
   setLayerRigOptions(opts: SplatLayerRigOptions): SplatHandle;
   /**
