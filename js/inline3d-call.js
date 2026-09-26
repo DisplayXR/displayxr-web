@@ -24,7 +24,8 @@
 //
 //   sbs  on a woven wall   → woven, with a CONVERGENCE SHIFT
 //   sbs  on a 2D wall      → the left eye, flat
-//   mono                   → flat (the `mono3D` hook, which P2's lift() will fill)
+//   mono on a woven wall   → LIFTED: one lift() stream per peer (`mono3D`, P2 — see below)
+//   mono on a 2D wall      → flat
 //
 // The convergence shift is a per-eye horizontal CROP OFFSET, `f_px·baseline/(2·subjectZ)`, from
 // the sender's `hello` + `hint`, low-passed. `wall.addVideo()` draws the whole video frame and
@@ -44,6 +45,18 @@
 // TRACKING LOSS is the core's: with `createInline3D({ untrackedFallback: 'mono' })` every image
 // window — these tiles included — eases to its left eye while nobody is tracked, exactly as the
 // player's SBS path does. Nothing here asks for it.
+//
+// MONO→3D (P2, RFC §5): a mono peer on a woven wall is handed to `lift()`
+// (`@displayxr/inline3d/lift`, loaded lazily — never a hard dependency; call/lift.js) with
+// `{ mode: 'live', wall }`, so lift's canvas is one more window on the call's own wall and goes
+// through the same #172 liveness gate (a tile is only ever routed `lifted` once `woven` is true).
+// DEVIATION from the detached-<video> rule, for lifted tiles only: lift() floats its canvas over
+// the ELEMENT's rect and (native provider) the browser converts that element in place, so a lifted
+// tile's <video> is mounted inside its stage. lift hides it (`visibility:hidden`, the #168 guard)
+// while its own canvas covers it on the web path; the browser weaves it itself on the native one.
+// Leaving the lifted route detaches it again. Priority follows the active speaker (high) and
+// visibility (paused), the depth slider drives lift's convergence, and at most `maxLifted`
+// streams run at once.
 //
 // SESSION LOSS: a call must outlive a service restart. A layer that fails to build is retried
 // with backoff (flat in between); a session that ENDS without the page closing the wall is
@@ -81,6 +94,7 @@ import { MeshTransport, clampMaxPeers } from './call/transport.js';
 import { openCamera, openMic } from './call/capture.js';
 import { drawQr } from './call/qr.js';
 import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } from './call/ui.js';
+import { normalizeMono3D, resolveLift, createLiftPool, createFrameWatch } from './call/lift.js';
 
 import { dxrSignaling } from './call/signaling.js';
 export { dxrSignaling, peerjsCloud, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
@@ -102,6 +116,17 @@ export { convergenceShiftPx, lowPass, clampShift, eyeCropRect, mirrorSwapOps, mi
 export { preferVideoCodecs, sortCodecCapabilities, VIDEO_CODEC_ORDER } from './call/sdp.js';
 export { MeshTransport, clampMaxPeers } from './call/transport.js';
 export { qrEncode } from './call/qr.js';
+export {
+  normalizeMono3D,
+  resolveLift,
+  createLiftPool,
+  createFrameWatch,
+  liftConvergenceFor,
+  liftPriorityFor,
+  setLiftPriority,
+  defaultLiftSpecifier,
+  LIFT_PRIORITY,
+} from './call/lift.js';
 
 const TAG = '[inline3d/call]';
 const HELLO_WAIT_MS = 2000;
@@ -109,6 +134,7 @@ const LEFT_TILE_MS = 2500;
 const STATS_TICK_MS = 500;
 const SPEAKING_LEVEL = 0.02;
 const LAYER_RETRIES = 4;
+const LIFT_RETRIES = 2;
 const DEFAULT_BROWSER_URL = 'https://github.com/DisplayXR/displayxr-browser';
 export const PLATE_TEXT = Object.freeze({
   unreachable: "Can't reach this participant — the network needs a relay (TURN)",
@@ -138,8 +164,13 @@ export function normalizeCallOptions(opts = {}) {
     calibration: opts.calibration && typeof opts.calibration === 'object' ? { ...opts.calibration } : {},
     rectify: typeof opts.rectify === 'function' ? opts.rectify : null,
     audio: opts.audio === undefined ? true : !!opts.audio,
-    mono3D: opts.mono3D === 'off' ? 'off' : 'auto',
+    mono3D: normalizeMono3D(opts.mono3D),
     maxPeers: clampMaxPeers(opts.maxPeers === undefined ? DEFAULT_MAX_PEERS : opts.maxPeers),
+    // Extra lift() options for lifted tiles (models, ort, quality, providers). The call's own
+    // keys (mode, wall, ui, convergence, priority) always win.
+    liftOptions: opts.liftOptions && typeof opts.liftOptions === 'object' ? { ...opts.liftOptions } : null,
+    // Concurrent lifted tiles. Default = maxPeers (4): every mono peer can be lifted.
+    maxLifted: Number.isFinite(+opts.maxLifted) && opts.maxLifted !== null ? Math.max(0, Math.min(DEFAULT_MAX_PEERS, Math.floor(+opts.maxLifted))) : DEFAULT_MAX_PEERS,
     layout: opts.layout === 'speaker' ? 'speaker' : 'grid',
     ui,
     autoJoin: opts.autoJoin === undefined ? !ui : !!opts.autoJoin,
@@ -197,6 +228,15 @@ class Call {
     this._raf = 0;
     this._statsTimer = 0;
     this._hintGate = rateGate(HINT_MAX_HZ);
+    // mono→3D (call/lift.js): the option, whether it is on right now (setMono3D), the resolved
+    // lift (null until resolved), the pool of lifted streams, and the web-provider frame watch.
+    this.mono3D = o.mono3D;
+    this.mono3DOn = o.mono3D !== 'off';
+    this.liftApi = null;
+    this.liftPool = null;
+    this._liftP = null;
+    this.liftProven = false;
+    this._frameWatch = createFrameWatch();
     this.handle = this._makeHandle();
     if (this.wallLive) this._hookWall(this.wall);
   }
@@ -234,6 +274,9 @@ class Call {
 
   async _init() {
     this._buildDom();
+    // The lobby's pre-call hint wants to know what a mono peer will look like; nothing to lift on
+    // a 2D wall (mono peers are flat there by the table).
+    if (this.wallLive) this._ensureLift();
     await this._openMedia(this.o.camera);
     this._startLoop();
     if (this.o.autoJoin) await this.join();
@@ -492,6 +535,7 @@ class Call {
     const n = v === null || v === undefined || !Number.isFinite(+v) ? 0 : Math.max(-1, Math.min(1, +v));
     this.depth = n;
     for (const t of this.tiles.values()) t.conv.depth = n;
+    this.liftPool?.setDepth(n); // the same control is lift's convergence on lifted tiles
     if (this.ui?.depth && +this.ui.depth.value !== n) this.ui.depth.value = String(n);
     return n;
   }
@@ -529,6 +573,7 @@ class Call {
     this.transport = null;
     for (const t of this.tiles.values()) t.destroy();
     this.tiles.clear();
+    this.liftPool?.releaseAll();
     clearInterval(this._statsTimer);
     this._setSpeaker(null);
     if (this.local) {
@@ -665,12 +710,111 @@ class Call {
   // ── paint loop + stats ─────────────────────────────────────────────────────────────────
 
   _startLoop() {
-    const tick = () => {
+    let last = 0;
+    const tick = (now) => {
       this._raf = requestAnimationFrame(tick);
       this.self?.paint();
       for (const t of this.tiles.values()) t.paint();
+      if (last && this.liftPool && this.liftPool.anyWeb) this._watchFrames(now - last);
+      last = now;
     };
     this._raf = requestAnimationFrame(tick);
+  }
+
+  /**
+   * Budget: lifted tiles on the WEB provider run in this page's frame budget. When frames degrade
+   * (~< 20 fps for 3 s) say so once — a log line and a `quality` event with `lift` — so the page
+   * can drop to fewer lifts or call `setMono3D(false)`. The native provider runs in the service.
+   */
+  _watchFrames(dt) {
+    const ev = this._frameWatch.feed(dt);
+    if (!ev) return;
+    const detail = { degraded: ev === 'degraded', frameMs: Math.round(this._frameWatch.frameMs * 10) / 10, tiles: this.liftPool.size };
+    this.log('lift-frame-time', detail);
+    if (ev === 'degraded') console.warn(`${TAG} lifted tiles are slowing the page (~${Math.round(1000 / detail.frameMs)} fps with ${detail.tiles} lifted) — setMono3D(false) shows mono peers flat`);
+    this.emit('quality', { id: null, in: null, out: null, lift: detail });
+  }
+
+  // ── mono→3D ────────────────────────────────────────────────────────────────────────────
+
+  /** Resolve `mono3D` to a lift function once (lazily); reroute the mono tiles when it lands. */
+  _ensureLift() {
+    if (!this.mono3DOn) return Promise.resolve(null);
+    if (!this._liftP) {
+      const log = (t, x) => this.log(t, x);
+      const lo = this.o.liftOptions;
+      // liftCapabilities probes the same model source the lifts will use.
+      const capsOpts = { webFallback: true, ...(lo && lo.models ? { models: lo.models } : {}) };
+      this._liftP = resolveLift(this.mono3D, { log, capsOpts }).then((r) => {
+        this.liftApi = r;
+        if (r.lift) {
+          this.liftPool = createLiftPool({ lift: r.lift, max: this.o.maxLifted, log, options: this.o.liftOptions });
+          this.liftPool.setDepth(this.depth);
+          this.liftPool.setSpeaker(this.speakerId);
+          if (!r.caps && r.capabilities) {
+            Promise.resolve()
+              .then(() => r.capabilities(capsOpts))
+              .then((c) => {
+                r.caps = c || null;
+                this._refreshLobby();
+              })
+              .catch(() => {});
+          }
+        } else if (r.reason !== 'off') {
+          console.info(`${TAG} mono→3D unavailable (${r.reason}) — mono participants are shown flat`);
+        }
+        this._rerouteMono();
+        this._refreshLobby();
+        return r;
+      });
+    }
+    return this._liftP;
+  }
+
+  /** Re-run the routing table for every mono tile (lift resolved, a slot freed, setMono3D). */
+  _rerouteMono() {
+    for (const t of this.tiles.values()) if (t.format && t.format !== 'sbs') t.reroute(false);
+  }
+
+  setMono3D(on) {
+    const want = on === undefined ? !this.mono3DOn : !!on;
+    if (want === this.mono3DOn) return want;
+    this.mono3DOn = want;
+    if (want && this.mono3D === 'off') this.mono3D = 'auto';
+    this._frameWatch.reset();
+    this.log('mono3d', { on: want });
+    this._rerouteMono(); // off: every lift is released, the tiles go flat
+    if (want && this.wallLive) this._ensureLift();
+    this._refreshLobby();
+    return want;
+  }
+
+  /** What the lobby says a mono participant will look like here. */
+  _liftHint() {
+    if (!this.wallLive) return '';
+    if (!this.mono3DOn) return 'Mono cameras: 2D (2D→3D is off).';
+    const r = this.liftApi;
+    if (!r) return 'Mono cameras: checking 2D→3D…';
+    if (!r.lift) return 'Mono cameras: 2D (no 2D→3D provider here).';
+    const c = r.caps;
+    if (c && c.native) return `Mono cameras: 2D→3D (native${c.provider ? `, ${c.provider}` : ''}).`;
+    if (c && c.webFallback && c.webFallback.webgpu) return 'Mono cameras: 2D→3D (in this page, WebGPU).';
+    return this.liftProven ? 'Mono cameras: 2D→3D.' : 'Mono cameras: 2D→3D (confirmed on the first mono participant).';
+  }
+
+  _mono3DInfo() {
+    const r = this.liftApi;
+    const c = r && r.caps;
+    return Object.freeze({
+      on: this.mono3DOn,
+      state: !this.mono3DOn ? 'off' : !r ? (this._liftP ? 'loading' : 'idle') : r.lift ? 'ready' : 'unavailable',
+      reason: r ? r.reason : null,
+      native: c ? !!c.native : null,
+      provider: (c && c.provider) || null,
+      lifted: this.liftPool ? this.liftPool.size : 0,
+      max: this.o.maxLifted,
+      proven: this.liftProven,
+    });
   }
 
   _startStats() {
@@ -757,6 +901,7 @@ class Call {
     if (id === this.speakerId) return;
     this.speakerId = id;
     this._challengeTicks = 0;
+    this.liftPool?.setSpeaker(id); // the active speaker's lifted stream is converted every round
     this.emit('speaker', { id });
     if (this.o.layout === 'speaker') this._layout();
   }
@@ -909,7 +1054,7 @@ class Call {
       const text =
         this.state === 'full'
           ? `It already has ${this.o.maxPeers} participants.`
-          : `Check your framing below. Camera: ${l?.label || 'default'} — ${kind}.`;
+          : `Check your framing below. Camera: ${l?.label || 'default'} — ${kind}.${this._liftHint() ? ` ${this._liftHint()}` : ''}`;
       const go = el('button', {
         class: 'dxr-call-btn dxr-call-btn--primary',
         type: 'button',
@@ -980,6 +1125,10 @@ class Call {
       get camera() {
         return call.camStatus;
       },
+      /** mono→3D: on/off, whether a lift provider resolved, native or web, and how many are lifted. */
+      get mono3D() {
+        return call._mono3DInfo();
+      },
       /** Read-only snapshot of the remote participants. */
       get peers() {
         return Object.freeze([...call.tiles.values()].map((t) => t.info()));
@@ -992,6 +1141,7 @@ class Call {
       setDepth: (v) => call.setDepth(v),
       retryCamera: () => call.retryCamera(),
       sendHint: (z) => call.sendHint(z),
+      setMono3D: (on) => call.setMono3D(on),
       leave: () => call.leave(),
       on(type, cb) {
         if (typeof cb !== 'function') throw new TypeError(`${TAG} on() takes a function`);
@@ -1070,6 +1220,14 @@ class Tile {
     this.hintGate = rateGate(HINT_MAX_HZ);
     this.layerFails = 0;
     this.forceFlat = false;
+    // lifted route (mono→3D): the lift handle once it lands, whether it is showing (live), and a
+    // per-tile failure latch with bounded retries.
+    this.lifted = false;
+    this.liftHandle = null;
+    this.liftLive = false;
+    this.liftFailed = false;
+    this.liftFails = 0;
+    this.visible = true;
     this.video = Object.assign(document.createElement('video'), { muted: true, playsInline: true, autoplay: true });
     this.audio = Object.assign(document.createElement('audio'), { autoplay: true });
     this.video.addEventListener('playing', () => this._maybeRoute());
@@ -1102,6 +1260,14 @@ class Tile {
       hello: this.hello,
       quality: this.quality,
       convergencePx: this.conv.current,
+      lift: this.lifted
+        ? Object.freeze({
+            live: this.liftLive,
+            native: !!(this.liftHandle && this.liftHandle.native),
+            priority: this.call.liftPool ? this.call.liftPool.priority(this.id) : null,
+            state: this.liftHandle ? this.liftHandle.state || null : 'pending',
+          })
+        : null,
     });
   }
 
@@ -1145,6 +1311,7 @@ class Tile {
     this.remote = st;
     this._renderBadge();
     this._renderPlate();
+    this._updateVisible();
   }
 
   setSpeaking(on) {
@@ -1184,7 +1351,10 @@ class Tile {
 
   _renderBadge() {
     const b = badgeFor(this.route);
-    this.badge.replaceChildren(el('b', { text: this.route ? b : '…' }));
+    // A lifted tile whose lift is still loading reads "2D→3D…" (it is painted flat meanwhile).
+    const text = !this.route ? '…' : this.route === 'lifted' && !this.liftLive ? `${b}…` : b;
+    this.badge.replaceChildren(el('b', { text }));
+    this.badge.dataset.route = this.route || '';
     if (this.remote.muted) this.badge.insertAdjacentHTML('beforeend', ICONS.mutedSmall);
   }
 
@@ -1196,13 +1366,27 @@ class Tile {
 
   reroute(force) {
     const call = this.call;
-    const r = this.forceFlat && this.format === 'sbs' ? { route: 'flat-left' } : routeFor({ format: this.format, woven: call.woven, mono3D: call.o.mono3D });
+    const pool = call.liftPool;
+    const r =
+      this.forceFlat && this.format === 'sbs'
+        ? { route: 'flat-left' }
+        : routeFor({
+            format: this.format,
+            woven: call.woven,
+            mono3D: call.mono3DOn ? 'auto' : 'off',
+            lift: !!pool,
+            overBudget: pool ? !pool.canAcquire(this.id) : false,
+            failed: this.liftFailed,
+          });
+    // First mono peer on a woven wall and lift not asked for yet (e.g. setMono3D(true) later).
+    if (this.format !== 'sbs' && call.woven && call.mono3DOn && !call._liftP) call._ensureLift();
     const key = `${r.route}|${this.format}`;
     if (!force && key === this.routedKey) return;
     this.routedKey = key;
     this._unregister();
     this.route = r.route;
     if (r.route === 'woven-sbs') this._registerWoven();
+    else if (r.route === 'lifted') this._registerLifted();
     call.log('route', { peer: this.id, route: r.route, format: this.format, mono3d: r.mono3d || null });
     call.emit('format', { id: this.id, format: this.format, route: r.route, mono3d: r.mono3d || null, hello: this.hello });
     this._renderBadge();
@@ -1221,6 +1405,90 @@ class Tile {
       call.log('first-woven', { peer: this.id, woven: res.woven, reason: res.reason, ms: Math.round(res.ms) });
       if (!res.woven && res.reason === 'layer-failed') this._layerFailed();
     });
+  }
+
+  /**
+   * The lifted route: lift(video, { mode: 'live', wall }) through the call's pool. The video is
+   * mounted in the stage (lift() overlays the element's rect; see the header), the flat canvas
+   * keeps painting until lift reports `live`, then hides so lift's canvas (web) or the browser's
+   * in-place conversion of the video (native) is what shows.
+   */
+  _registerLifted() {
+    const call = this.call;
+    const pool = call.liftPool;
+    this.lifted = true;
+    this.liftLive = false;
+    this.video.classList.add('dxr-call-liftsrc');
+    this.canvas.classList.add('dxr-call-liftflat');
+    if (this.video.parentNode !== this.stage) this.stage.insertBefore(this.video, this.stage.firstChild);
+    this._observeVisible();
+    pool.acquire(this.id, this.video, { wall: call.wall, visible: this.visible, onError: (err) => this._liftError(err) }).then((h) => {
+      if (!h || !this.lifted || pool.handle(this.id) !== h) return;
+      this.liftHandle = h;
+      const onState = (st) => {
+        if (st === 'live') this._liftShowing(true);
+        else if (st === 'error' || st === 'disposed') this._liftShowing(false);
+      };
+      this._liftOff = [
+        h.on?.('statechange', (d) => onState(d && d.state)),
+        h.on?.('error', (d) => {
+          if (d && d.fatal) this._liftError(d.error);
+        }),
+      ];
+      // Until lift is live its canvas has nothing to draw: keep it hidden and the flat tile up.
+      if (h.state === 'live') this._liftShowing(true);
+      else if (h.canvas && h.canvas.style) h.canvas.style.visibility = 'hidden';
+      call.log('lifted', { peer: this.id, native: !!h.native, woven: !!h.woven, state: h.state || null, provider: (h.stats && h.stats.provider) || null });
+    });
+  }
+
+  _liftShowing(on) {
+    if (on === this.liftLive) return;
+    this.liftLive = on;
+    const h = this.liftHandle;
+    if (on) {
+      if (h && h.canvas && h.canvas.style && !h.native) h.canvas.style.visibility = '';
+      this.canvas.style.visibility = 'hidden';
+      this.liftFails = 0;
+      if (!this.call.liftProven) {
+        this.call.liftProven = true;
+        this.call._refreshLobby();
+      }
+    } else this.canvas.style.visibility = '';
+    this.call.log('lift-live', { peer: this.id, live: on });
+    this._renderBadge();
+  }
+
+  /** lift() failed (or its handle hit a fatal error): flat now, retried with backoff a couple of times. */
+  _liftError(err) {
+    if (!this.lifted) return;
+    this.call.log('lift-error', { peer: this.id, message: String((err && err.message) || err).slice(0, 200) });
+    this.liftFailed = true;
+    this.reroute(true);
+    if (this.liftFails++ >= LIFT_RETRIES) return;
+    clearTimeout(this.liftTimer);
+    this.liftTimer = setTimeout(() => {
+      this.liftFailed = false;
+      this.reroute(false);
+    }, backoffMs(this.liftFails - 1, { baseMs: 3000, maxMs: 30000 }));
+  }
+
+  /** Offscreen (or camera-off) lifted tiles are PAUSED — the provider keeps their last frame. */
+  _observeVisible() {
+    if (this._io || typeof IntersectionObserver !== 'function') return;
+    this._io = new IntersectionObserver((entries) => {
+      const e = entries[entries.length - 1];
+      this._onscreen = !!(e && e.isIntersecting);
+      this._updateVisible();
+    });
+    this._io.observe(this.stage);
+  }
+
+  _updateVisible() {
+    const v = this._onscreen !== false && !this.remote.cameraOff;
+    if (v === this.visible) return;
+    this.visible = v;
+    this.call.liftPool?.setVisible(this.id, v);
   }
 
   _layerFailed() {
@@ -1245,6 +1513,30 @@ class Tile {
 
   _unregister() {
     show(this.cover, false);
+    if (this.lifted) {
+      this.lifted = false;
+      for (const off of this._liftOff || []) if (typeof off === 'function') off();
+      this._liftOff = null;
+      this.call.liftPool?.release(this.id);
+      // A lift slot just freed: a mono tile held flat by the budget may take it (after this
+      // tile's own reroute / removal has settled).
+      queueMicrotask(() => this.call.state !== 'left' && this.call._rerouteMono());
+      this.liftHandle = null;
+      this.liftLive = false;
+      this.canvas.style.visibility = '';
+      this.canvas.classList.remove('dxr-call-liftflat');
+      if (this._io) {
+        this._io.disconnect();
+        this._io = null;
+      }
+      // Back to a DETACHED video. Removing a playing media element from the document pauses it
+      // (a queued microtask), so play it again after that.
+      if (this.video.parentNode) {
+        this.video.remove();
+        this.video.classList.remove('dxr-call-liftsrc');
+        setTimeout(() => this.video.srcObject && this.video.play().catch(() => {}), 0);
+      }
+    }
     if (this.handle) {
       try {
         this.handle.remove();
@@ -1258,7 +1550,9 @@ class Tile {
   paint() {
     if (!this.route) return;
     if (this.route === 'woven-sbs') this._paintConv();
-    else paintFlat(this.canvas, this.video, { eyeHalf: this.route === 'flat-left' ? 0 : null });
+    else if (this.route === 'lifted') {
+      if (!this.liftLive) paintFlat(this.canvas, this.video); // flat until lift is showing
+    } else paintFlat(this.canvas, this.video, { eyeHalf: this.route === 'flat-left' ? 0 : null });
   }
 
   /** The convergence-shifted pair, into the canvas the wall repaints the tile from. */
@@ -1287,6 +1581,7 @@ class Tile {
     clearTimeout(this.helloTimer);
     clearTimeout(this.layerTimer);
     clearTimeout(this.leaveTimer);
+    clearTimeout(this.liftTimer);
     this._unregister();
     this.video.srcObject = null;
     this.audio.srcObject = null;
