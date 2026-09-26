@@ -160,7 +160,10 @@ const MODELS = 'displayxr-lift://models/';
     }
     let h;
     try {
-      h = await lift(el, { models: getModels(), ort, ui: 'builtin', native: native ? caps : false });
+      // ownLiftAttr: the built-in owns the element's lift state by definition — the browser's menu
+      // (lift_trigger.cc) sets dxr-lift="auto" BEFORE this runs, and restoring that on Exit /
+      // toggle-off left the element converting with no handle (a second Convert double-converted).
+      h = await lift(el, { models: getModels(), ort, ui: 'builtin', native: native ? caps : false, ...(native ? { ownLiftAttr: true } : {}) });
     } catch (e) {
       return { ok: false, reason: 'lift-failed: ' + ((e && e.message) || e) };
     }

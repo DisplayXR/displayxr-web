@@ -118,6 +118,39 @@ window.__run = async () => {
     hd.remove();
   }
 
+  // ── ownLiftAttr: the browser's menu pre-sets dxr-lift="auto" before lift() ──
+  {
+    out.own = {};
+    img.setAttribute('dxr-lift', 'auto');
+    const ho = await lift(img, { ownLiftAttr: true });
+    await waitState(ho, 'live');
+    ho.remove();
+    out.own.withOption = attrs(img); // expect {}
+    img.setAttribute('dxr-lift', 'auto');
+    const hp = await lift(img);
+    await waitState(hp, 'live');
+    hp.remove();
+    out.own.without = attrs(img); // expect { 'dxr-lift': 'auto' } (page-owned, restored)
+    img.removeAttribute('dxr-lift');
+    // the built-in bundle (npm run build:lift-builtin → /lift-sdk/), as the browser injects it
+    if (await realFetch('/lift-sdk/displayxr-lift-builtin.js', { method: 'HEAD' }).then((r) => r.ok, () => false)) {
+      await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = '/lift-sdk/displayxr-lift-builtin.js'; sc.onload = res; sc.onerror = rej; document.head.append(sc); });
+      const B = globalThis.__dxrLift;
+      const r = img.getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      img.setAttribute('dxr-lift', 'auto'); // what lift_trigger.cc does before convertAt
+      out.own.builtinLift = await B.convertAt(x, y, 'image');
+      out.own.builtinLiveAttrs = attrs(img);
+      out.own.builtinToggle = await B.convertAt(x, y, 'image'); // toggle-off
+      out.own.builtinAfterToggle = attrs(img); // expect {}
+      img.setAttribute('dxr-lift', 'auto');
+      await B.convertAt(x, y, 'image');
+      B.cancelAll();
+      out.own.builtinAfterCancelAll = attrs(img); // expect {}
+      out.own.builtinLifts = B.status().lifts.length;
+    } else out.own.builtin = 'SKIPPED: run npm run build:lift-builtin first';
+  }
+
   // ── image, module WITH gaussians: the explore scene comes from POST lift/gaussians ──
   {
     const hg = await lift(img, { native: { ...out.caps, modes: ['depth', 'sbs', 'gaussians'] } });

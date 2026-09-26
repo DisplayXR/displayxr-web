@@ -33,7 +33,11 @@ vendor module and nothing is lifted until the chip's *Explore*.
 cached per document). When the runtime's 2D→3D module is there (`native`) and the pick is a
 `<video>`/`<img>`, the bundle does **not** load ORT or any model: `lift()` sets `dxr-lift="auto"`
 (+ strength/convergence/priority) on the element, the browser converts + weaves it in place, and the
-chip offers *Explore / Exit* (*↓ SOG* in explore). ORT (`getOrt`, passed as a lazy loader) and the
+chip offers *Explore / Exit* (*↓ SOG* in explore). Native lifts pass **`ownLiftAttr: true`**: the
+built-in owns the element's lift state (the browser's menu has already set `dxr-lift="auto"` when
+`lift()` runs), so the chip's *Exit*, a toggle-off `convertAt` and `cancelAll()` — all of which end
+in `handle.remove()` — **remove** every `dxr-lift*` attribute instead of restoring the menu's
+"auto" (which kept the element converting with no handle, and a second Convert double-converted). ORT (`getOrt`, passed as a lazy loader) and the
 still model load only on an Explore, and only if the module's `lift/depth` fails; a module with
 `gaussians` supplies the explore scene too (docs/lift.md § Vendor modules). Native conversions do not
 use ORT while live, so up to `caps.maxStreams` of them coexist (oldest evicted); a web lift is still

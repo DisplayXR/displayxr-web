@@ -120,7 +120,11 @@ stays woven 3D by the vendor module and nothing is lifted until *Explore*; *Resu
 owns those pixels), hides the element and adds the canvas to the session; leaving it restores the
 element and `dxr-lift="auto"` at once, and the canvas fades out and leaves the session. A hidden tab
 holds `dxr-lift-priority="paused"`. `remove()` (and a fatal error) restores every attribute to its
-pre-lift value — including one the page set itself. `handle.setDepth/setConvergence/setPriority`
+pre-lift value — including one the page set itself — unless `ownLiftAttr: true`: then the caller
+owns the element's lift state and every `dxr-lift*` attribute is **removed** on exit, whatever was
+there before `lift()`. The browser's built-in passes it: its context menu (`lift_trigger.cc`) sets
+`dxr-lift="auto"` before `lift()` runs, and restoring that "auto" on Exit / toggle-off left the
+element converting with no handle — a second *Convert to 3D* then double-converted. `handle.setDepth/setConvergence/setPriority`
 update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
 
 **Attributes** (on the `<video>`/`<img>`; the browser reads them):

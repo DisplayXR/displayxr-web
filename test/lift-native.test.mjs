@@ -312,6 +312,36 @@ test('resolveLiftMode: native defaults to live, stated modes are honoured; the w
   assert.equal(resolveLiftMode({ native: true, kind: 'still', mode: 'auto' }), 'live', 'an <img> has no pause');
 });
 
+test('native attrs ownLiftAttr: a pre-set dxr-lift="auto" (the browser menu) is REMOVED on clear, with the rest', () => {
+  const el = fakeEl({ [LIFT_ATTRS.lift]: 'auto', [LIFT_ATTRS.priority]: 'high', 'data-x': '1' });
+  const n = createNativeLiveAttrs(el, { depth: 1, ownLiftAttr: true });
+  n.apply();
+  n.setConvergence(0.4);
+  n.setOff(true); // explore
+  n.clear(); // remove() / chip Exit / toggle-off
+  for (const name of Object.values(LIFT_ATTRS)) assert.equal(el.hasAttribute(name), false, `${name} gone`);
+  assert.equal(el.getAttribute('data-x'), '1', 'other attributes untouched');
+  // removed before it ever applied (e.g. Exit while loading): the menu's pre-set still goes
+  const el2 = fakeEl({ [LIFT_ATTRS.lift]: 'auto' });
+  createNativeLiveAttrs(el2, { ownLiftAttr: true }).clear();
+  assert.equal(el2.hasAttribute(LIFT_ATTRS.lift), false);
+});
+
+test('native attrs without ownLiftAttr: a page-owned dxr-lift survives (old restore behaviour)', () => {
+  const el = fakeEl({ [LIFT_ATTRS.lift]: 'auto', [LIFT_ATTRS.strength]: '0.7' });
+  const n = createNativeLiveAttrs(el, { depth: 1.5 });
+  n.apply();
+  n.setOff(true);
+  assert.equal(el.getAttribute(LIFT_ATTRS.lift), 'off');
+  n.clear();
+  assert.equal(el.getAttribute(LIFT_ATTRS.lift), 'auto', 'restored');
+  assert.equal(el.getAttribute(LIFT_ATTRS.strength), '0.7');
+  assert.equal(el.hasAttribute(LIFT_ATTRS.priority), false);
+  const el2 = fakeEl({ [LIFT_ATTRS.lift]: 'auto' });
+  createNativeLiveAttrs(el2).clear(); // never applied, not owned: untouched
+  assert.equal(el2.getAttribute(LIFT_ATTRS.lift), 'auto');
+});
+
 // ── the native depth provider ─────────────────────────────────────────────────────────────
 
 const frame = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' }); // encodeFrame passes Blobs through

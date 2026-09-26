@@ -183,14 +183,19 @@ const fmt = (x) => String(+(+x).toFixed(4));
  * The element side of native live mode: sets / updates / restores the `dxr-lift*` attributes.
  * Pure DOM attribute work (setAttribute / getAttribute / removeAttribute), so it runs against a fake
  * element under `node --test`. `clear()` puts every attribute back EXACTLY as it was before
- * (including a value the page set itself).
+ * (including a value the page set itself) — unless `ownLiftAttr`: then the caller OWNS the
+ * element's lift state, the pre-lift values are recorded as absent and `clear()` REMOVES every
+ * `dxr-lift*` attribute. The browser's built-in needs that: its context menu sets
+ * `dxr-lift="auto"` before lift() runs, and restoring that "auto" on exit left the element
+ * converting with no handle (a second Convert then double-converted).
  *
  * @param {Element} el
- * @param {{depth?:number, convergence?:'auto'|number, priority?:string}} [o]
+ * @param {{depth?:number, convergence?:'auto'|number, priority?:string, ownLiftAttr?:boolean}} [o]
  */
 export function createNativeLiveAttrs(el, o = {}) {
   const names = Object.values(LIFT_ATTRS);
-  const prev = new Map(names.map((n) => [n, el.hasAttribute(n) ? el.getAttribute(n) : null]));
+  let own = !!o.ownLiftAttr;
+  const prev = new Map(names.map((n) => [n, !own && el.hasAttribute(n) ? el.getAttribute(n) : null]));
   const st = {
     lift: 'auto',
     strength: Number.isFinite(o.depth) ? o.depth : 1,
@@ -248,9 +253,16 @@ export function createNativeLiveAttrs(el, o = {}) {
       off = !!on;
       write();
     },
-    /** Restore every attribute to its pre-lift value. Idempotent. */
+    /** Restore every attribute to its pre-lift value (ownLiftAttr: remove them all). Idempotent. */
     clear() {
-      if (!applied) return;
+      if (!applied) {
+        // Never applied (e.g. removed while loading) but owned: the menu's pre-set attrs still go.
+        if (own) {
+          own = false; // once
+          for (const n of names) el.removeAttribute(n);
+        }
+        return;
+      }
       applied = false;
       for (const [n, v] of prev) {
         if (v === null) el.removeAttribute(n);

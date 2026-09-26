@@ -146,6 +146,9 @@ const MONO_VIEW = Object.freeze({
  *        the element is a <video>/<img> — the browser then converts + weaves the element IN PLACE
  *        (`dxr-lift="auto"`), no DIBR canvas, no model until pause. false: never. A caps object
  *        (from liftCapabilities()) skips the query. Ignored with backend 'stub'.
+ * @param {boolean} [opts.ownLiftAttr=false]  native: the caller owns the element's `dxr-lift*`
+ *        attributes — remove()/exit REMOVES them instead of restoring their pre-lift values (the
+ *        browser's built-in: its menu pre-sets `dxr-lift="auto"`).
  * @param {'high'|'normal'|'low'|'paused'} [opts.priority='normal']  native live: `dxr-lift-priority`.
  * @param {{pivotTargetM?:number, comfort?:'auto'|'always'|'off', eyes?:'nominal'|'tracked'}} [opts.explore]
  *        the explore view (docs/lift-explore.md § Comfort): a METRIC lift whose pivot is more than
@@ -216,7 +219,11 @@ export async function lift(element, opts = {}) {
     const lp = defaultLiftProviderFor(caps, o.providers);
     if (lp) o.providers.lift = lp; // native-gaussians over the local generator (a registered LiftProvider)
   }
-  const nativeLive = native ? createNativeLiveAttrs(el, { depth: o.depth, convergence: o.convergence, priority: o.priority }) : null;
+  // ownLiftAttr: the caller (the browser's built-in) owns the element's dxr-lift* state, so exit
+  // REMOVES them rather than restoring a value its own menu pre-set (see createNativeLiveAttrs).
+  const nativeLive = native
+    ? createNativeLiveAttrs(el, { depth: o.depth, convergence: o.convergence, priority: o.priority, ownLiftAttr: !!opts.ownLiftAttr })
+    : null;
   let nativeDetachPending = false;
 
   // ── listeners ─────────────────────────────────────────────────────────────────────────

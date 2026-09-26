@@ -116,6 +116,15 @@ export interface LiftOptions {
   native?: 'auto' | boolean | LiftCapabilities;
   /** Native live: how eagerly the browser converts this element (`dxr-lift-priority`). Default `normal`. */
   priority?: LiftPriority;
+  /**
+   * Native: the caller OWNS the element's `dxr-lift*` attributes (`dxr-lift`, `-strength`,
+   * `-convergence`, `-priority`). `remove()` / chip Exit / a fatal error then REMOVE them instead of
+   * restoring their pre-lift values. Default `false` (restore: a page's own attribute survives).
+   * The browser's built-in Convert-to-3D passes `true`: its context menu sets `dxr-lift="auto"`
+   * before `lift()` runs, and restoring that on exit left the element converting with no handle, so
+   * a second Convert double-converted.
+   */
+  ownLiftAttr?: boolean;
 }
 
 export interface LiftProgress {
