@@ -7,7 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **core** (additive) and `./player`.
+Touches the **core** (additive: `handle.rewoven()`) and the **preview tier** (`./player`, `./splat`
+`engine: 'playcanvas'`). Additive; no change for a page that does not call the new API.
 
 - **`handle.rewoven()`** — `firstWoven`, measured from the call, for a canvas that is already woven
   but whose rect is about to change (fullscreen, a layout resize). Same `{ woven, confirmed,
@@ -22,6 +23,17 @@ Touches the **core** (additive) and `./player`.
 - **Docs:** woven-canvas rules 9–11 (black goes under the canvas — previously only in the
   authoring guide; no `backdrop-filter` over the weave; a resize is a fresh-canvas moment). The
   authoring guide's short list now matches, 1–11.
+- **`attachPlayer(splat, src, opts)`** — surface mode (RFC 0001 Addendum A): the player's
+  transport, playlist and events on an existing PlayCanvas splat handle's `setVideo`, with no
+  canvas of its own. `detach()` gives the slot back (`setVideo(null)`: scene, pose, lens and rig
+  as they were); `'detached'` `{ reason: 'superseded' | 'released' }` when something else takes or
+  empties the slot. Cut transitions only for now; `fullscreen` defaults off. Panel-checked on one
+  persistent canvas: attach, next/back, detach, scene state identical after.
+- **`addPlayer` refactor:** one player core on a surface adapter. No behaviour change.
+- **`./splat`:** read-only `handle.videoElement` (the `<video>` the plane shows, or null) and
+  `handle.canvas`.
+- **Types:** `attachPlayer`, `AttachPlayerOptions`, `AttachedPlayerHandle`, `PlayerDetachedEvent`,
+  `'detached'` in `PlayerEvent`; `SplatHandle.videoElement` / `.canvas`.
 
 ## 1.28.0 — 2026-09-27
 
