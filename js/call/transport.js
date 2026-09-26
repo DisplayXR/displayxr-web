@@ -37,6 +37,13 @@ const DISCONNECTED_GRACE_MS = 4000;
 const ICE_RESTART_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 20000;
 const ANSWERER_WAIT_MS = 8000;
+/**
+ * A peer known to exist (signalling presence) with no working connection for this long is
+ * UNREACHABLE: almost always a network that needs a relay (TURN) — ICE sits in 'checking' or
+ * fails on every attempt. The state is sticky until a connection comes up; the recovery ladder
+ * keeps retrying underneath it the whole time.
+ */
+export const UNREACHABLE_MS = 10000;
 
 /**
  * Clamp the requested room size to what a full mesh can carry.
@@ -62,7 +69,8 @@ export class MeshTransport {
    * @param {any} [o.RTCPeerConnection]  injectable for tests
    * @param {(tag: string, obj: object) => void} [o.log]
    */
-  constructor({ signaling, id, maxPeers, iceServers, RTCPeerConnection: PC, log } = {}) {
+  constructor({ signaling, id, maxPeers, iceServers, RTCPeerConnection: PC, log, unreachableMs } = {}) {
+    this.unreachableMs = unreachableMs > 0 ? unreachableMs : UNREACHABLE_MS;
     this.signaling = signaling;
     this.id = id;
     this.maxPeers = clampMaxPeers(maxPeers);
@@ -85,10 +93,10 @@ export class MeshTransport {
     return this.peers.size;
   }
 
-  async start({ room, localStream, sendFormat, onPeer, onPeerLeft, onStream, onMessage, onPeerState, onRefused, onSignalingState }) {
+  async start({ room, localStream, sendFormat, onPeer, onPeerLeft, onStream, onMessage, onPeerState, onRefused, onSignalingState, onGhost }) {
     this.localStream = localStream;
     this.sendFormat = sendFormat || 'mono';
-    this.cb = { onPeer, onPeerLeft, onStream, onMessage, onPeerState, onRefused, onSignalingState };
+    this.cb = { onPeer, onPeerLeft, onStream, onMessage, onPeerState, onRefused, onSignalingState, onGhost };
     // Hooks can fire before join() resolves (the PeerJS adapter discovers peers while joining);
     // queue them so every one runs against a fully-initialised transport.
     const later = (fn) => (...a) => (this.ready ? fn(...a) : this._pending.push(() => fn(...a)));
@@ -99,6 +107,11 @@ export class MeshTransport {
       onPeerLeft: later((pid) => this._onPeerLeftSignaling(pid)),
       onSignal: later((from, data) => this._onSignal(from, data)),
       onDisconnect: (err) => onSignalingState?.(err ? 'closed' : 'reconnecting', err),
+      // A participant the signalling layer knows EXISTS but cannot even exchange signalling with
+      // (the PeerJS adapter: a taken slot whose data connection never opens). No connection can be
+      // attempted, so it is reported as a ghost the UI can show as unreachable.
+      onPeerUnreachable: later((gid) => onGhost?.(gid, true)),
+      onPeerReachable: later((gid) => onGhost?.(gid, false)),
       onReconnect: later((ids) => {
         onSignalingState?.('connected');
         for (const pid of ids) this._onPeerJoined(pid);
@@ -171,8 +184,11 @@ export class MeshTransport {
       pendingCandidates: [],
       timers: new Set(),
       waitTimer: null,
+      unreachable: false,
+      unreachTimer: null,
     };
     this.peers.set(pid, rec);
+    this._armUnreachable(rec);
     return rec;
   }
 
@@ -382,6 +398,7 @@ export class MeshTransport {
   _drop(rec, reason) {
     if (this.peers.get(rec.id) !== rec) return;
     this._clearTimers(rec);
+    clearTimeout(rec.unreachTimer);
     clearTimeout(rec.waitTimer);
     this._closePc(rec);
     this.peers.delete(rec.id);
@@ -423,7 +440,28 @@ export class MeshTransport {
     rec.timers.clear();
   }
 
+  /** Start the unreachable clock (idempotent); a connection clears it (see _setState). */
+  _armUnreachable(rec) {
+    if (rec.unreachTimer || rec.unreachable) return;
+    rec.unreachTimer = setTimeout(() => {
+      rec.unreachTimer = null;
+      if (this.stopped || this.peers.get(rec.id) !== rec || rec.state === 'connected') return;
+      rec.unreachable = true;
+      this.log('unreachable', { peer: rec.id, afterMs: this.unreachableMs, pc: rec.pc ? rec.pc.iceConnectionState : null });
+      this._setState(rec, 'unreachable');
+    }, this.unreachableMs);
+  }
+
   _setState(rec, state) {
+    if (state === 'connected') {
+      clearTimeout(rec.unreachTimer);
+      rec.unreachTimer = null;
+      rec.unreachable = false;
+    } else if (state === 'connecting' || state === 'reconnecting') {
+      // Sticky: retries continue underneath, but the page keeps being told the truth.
+      if (rec.unreachable) state = 'unreachable';
+      else this._armUnreachable(rec);
+    }
     if (rec.state === state) return;
     rec.state = state;
     this.cb.onPeerState?.(rec.id, state);
@@ -527,6 +565,7 @@ export class MeshTransport {
     for (const rec of this.peers.values()) {
       this._clearTimers(rec);
       clearTimeout(rec.waitTimer);
+      clearTimeout(rec.unreachTimer);
       this._signal(rec, { kind: 'bye' });
       this._closePc(rec);
     }
