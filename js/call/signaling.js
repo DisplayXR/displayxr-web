@@ -363,9 +363,15 @@ export function peerjsCloud(opts = {}) {
       // count (the transport enforces the room size on this list); late ones arrive through
       // onPeerJoined like any other join.
       await new Promise((r) => setTimeout(r, Math.min(T.settle, T.hello)));
+      // Hand the media connections the same relays PeerJS itself uses (its public TURN, or a
+      // page's `peerOptions.config`), so a demo call crosses the NATs a bare-PeerJS app crosses.
+      // Demo-grade: shared, no uptime guarantee — production TURN comes from dxrSignaling().
+      const relays = (peer.options?.config?.iceServers || []).filter((s) =>
+        [].concat(s.urls || s.url || []).some((u) => /^turns?:/.test(u)));
       return {
         id: hooks.id,
         peers: [...byId.keys()],
+        iceServers: relays.length ? relays : undefined,
         slot: mySlot,
         send: (to, data) => {
           const rec = byId.get(to);

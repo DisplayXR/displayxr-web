@@ -118,7 +118,7 @@ export class MeshTransport {
       }),
     });
     if (!this.pageIce && this.session.iceServers && this.session.iceServers.length) {
-      // Short-lived TURN from the server, plus public STUN.
+      // Relays from the signalling adapter (short-lived TURN from dxr-signal, or PeerJS's own), plus public STUN.
       this.iceServers = [...DEFAULT_ICE_SERVERS, ...this.session.iceServers];
     }
     // The client enforces the cap too: a server that allows more than this page asked for does
