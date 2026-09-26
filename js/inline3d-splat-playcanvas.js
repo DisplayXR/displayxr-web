@@ -3125,6 +3125,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // copy a getter's value once.
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+  // setVideo's current element: the <video> the plane is SHOWING (not one still waiting for its first
+  // frame), else null. Read-only. A player attached to this handle (./player attachPlayer) reads it
+  // to notice another setVideo taking the slot, which no event reports.
+  Object.defineProperty(out, 'videoElement', { get: () => (vid && vid.on ? vid.el : null), enumerable: true, configurable: true });
+  // The tile's canvas, for page chrome that sits beside it (attachPlayer's controls are its siblings).
+  Object.defineProperty(out, 'canvas', { value: canvas, enumerable: true, configurable: true });
   // The current eye offset (after the unit-disc clamp), a fresh object per read.
   Object.defineProperty(out, 'viewOffset', {
     get: () => ({ x: viewer._viewOffset[0], y: viewer._viewOffset[1] }),
