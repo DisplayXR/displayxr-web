@@ -148,6 +148,7 @@ export function normalizeCallOptions(opts = {}) {
     updateUrl: opts.updateUrl === undefined ? ui : !!opts.updateUrl,
     browserUrl: typeof opts.browserUrl === 'string' ? opts.browserUrl : DEFAULT_BROWSER_URL,
     recoverSession: opts.recoverSession === undefined ? true : !!opts.recoverSession,
+    scrollIntoView: opts.scrollIntoView === undefined ? true : !!opts.scrollIntoView,
     wallOptions: opts.wallOptions && typeof opts.wallOptions === 'object' ? opts.wallOptions : {},
     log: typeof opts.log === 'function' ? opts.log : opts.debug ? (tag, obj) => console.log(`${TAG} ${tag} ${JSON.stringify(obj)}`) : null,
   };
@@ -382,6 +383,17 @@ class Call {
       throw err;
     }
     this._setState('in-call');
+    // The grid is sized so the whole call block fits ONE viewport, but only if it starts at the
+    // top: a tile below the fold is withheld from the weave (browser#167), so its layer goes
+    // live late. Bring the block into view once, on join.
+    if (this.o.ui && this.o.scrollIntoView) {
+      try {
+        this.container.scrollIntoView?.({ block: 'start', behavior: 'instant' });
+        this._fitGrid();
+      } catch {
+        /* ignore */
+      }
+    }
     this._startStats();
     this._pagehide = () => this.leave();
     globalThis.addEventListener?.('pagehide', this._pagehide);
@@ -749,6 +761,27 @@ class Call {
 
   // ── chrome ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Size the grid so the whole call block (banner, tiles, self view, bar) fits the viewport from
+   * where the block actually sits: `--dxr-call-fit` = viewport height − the block's visible top −
+   * everything in the block that is not the grid. The CSS falls back to `100vh − reserve` when
+   * this has not run. A tile below the fold is withheld from the weave (browser#167).
+   */
+  _fitGrid() {
+    const ui = this.ui;
+    if (!ui || !this.o.ui || typeof globalThis.innerHeight !== 'number') return;
+    const host = this.container.getBoundingClientRect?.();
+    const grid = ui.grid.getBoundingClientRect?.();
+    if (!host || !grid || !grid.height) return;
+    const fit = Math.max(160, Math.floor(globalThis.innerHeight - Math.max(0, host.top) - (host.height - grid.height) - 8));
+    const prev = parseFloat(this.container.style.getPropertyValue('--dxr-call-fit')) || 0;
+    if (Math.abs(fit - prev) > 2) this.container.style.setProperty('--dxr-call-fit', `${fit}px`);
+    if (!this._fitHooked) {
+      this._fitHooked = true;
+      globalThis.addEventListener?.('resize', () => this._fitGrid());
+    }
+  }
+
   _setState(s) {
     this.state = s;
     this.log('state', { state: s });
@@ -861,6 +894,7 @@ class Call {
     for (const [id, t] of this.tiles) t.el.classList.toggle('dxr-call-tile--main', id === main);
     if (!this.o.ui) return;
     this._refreshBar();
+    queueMicrotask(() => this._fitGrid());
     const p = ui.panel;
     if (lobby) {
       show(p, true);

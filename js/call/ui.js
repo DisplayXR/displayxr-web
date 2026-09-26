@@ -43,7 +43,7 @@ const CSS = `
 .dxr-call-grid{display:grid;gap:10px;grid-template-columns:1fr;margin-inline:auto;width:100%;
   /* Fit the tiles AND the footer (self view + bar) in one viewport: tiles are 16:9 per eye, so
      the grid's width is capped by the height left after --dxr-call-reserve (the footer). */
-  --dxr-call-h:calc(100vh - var(--dxr-call-reserve,150px));max-width:calc(var(--dxr-call-h)*16/9);}
+  --dxr-call-h:var(--dxr-call-fit,calc(100vh - var(--dxr-call-reserve,150px)));max-width:calc(var(--dxr-call-h)*16/9);}
 .dxr-call-grid[data-n="2"]{max-width:calc(var(--dxr-call-h)*32/9);}
 .dxr-call-grid[data-layout="speaker"]:not([data-n="1"]){max-width:calc(var(--dxr-call-h)*4/3);}
 .dxr-call-grid[data-n="2"],.dxr-call-grid[data-n="3"]{grid-template-columns:1fr 1fr;}

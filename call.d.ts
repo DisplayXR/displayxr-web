@@ -154,6 +154,9 @@ export interface CallOptions {
   browserUrl?: string;
   /** Re-open the inline-3D session if it ends without the page closing it. Default true. */
   recoverSession?: boolean;
+  /** Scroll the call block to the top of the viewport once, on join, so every tile (and the self
+   *  view) is on screen and woven. Default true (only with `ui`). */
+  scrollIntoView?: boolean;
   /** `createInline3D()` options used for that re-open. */
   wallOptions?: object;
   debug?: boolean;
