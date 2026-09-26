@@ -179,15 +179,27 @@ export interface ResolvedRig {
 }
 
 /**
- * `handle.setLayerRig` options — how ROUND the display-rig layers are, for the whole tile (last
- * call wins). The rounding gain is k = D / (metersToVirtual · viewerDistance): the photo rig's
- * convergence distance over the viewer's. docs/proposals/layer-display-rig.md.
+ * `handle.setLayerRig` / `handle.setLayerRigOptions` options — tile-wide; they MERGE across calls
+ * (a key given replaces, `null` clears it back to its default). The rounding gain is
+ * k = D / (metersToVirtual · viewerDistance): the photo rig's convergence distance over the
+ * viewer's. docs/proposals/layer-display-rig.md.
  */
 export interface SplatLayerRigOptions {
   /** Nominal viewer distance in metres (default 0.6, the browser's own nominal). */
-  viewerDistance?: number;
+  viewerDistance?: number | null;
   /** An explicit gain k instead (1 = exactly the photo rig; larger = rounder). */
-  gain?: number;
+  gain?: number | null;
+  /**
+   * Metres ON THE PANEL (display space), + = toward the viewer: moves the display-rig stage
+   * forward by this much. The plane that lands on the glass moves back from the photo's
+   * convergence plane by planeOffset·D/viewerDistance (world units). Default 0.
+   */
+  planeOffset?: number | null;
+  /**
+   * The plane that lands on the glass, as a distance from the photo's camera in world units
+   * (wins over planeOffset). Default: the photo's convergence distance D.
+   */
+  planeDistance?: number | null;
 }
 
 /** `handle.layerRigState()`. */
@@ -196,10 +208,24 @@ export interface SplatLayerRigState {
   display: Array<string | number>;
   /** The `nolayerrig` kill switch is on (requests recorded, never applied). */
   disabled: boolean;
-  /** The last drawn frame drew the display layers through rounded views (false in mono). */
+  /** The view path of the last drawn frame: RenderViews, the N-camera fallback, or one view. */
+  path: 'renderviews' | 'ncamera' | 'mono' | null;
+  /** The display-rig views were actually applied on the last drawn frame. */
+  engaged: boolean;
+  /** Same as `engaged` (the 1.23 name). */
   rounded: boolean;
+  /** Why not engaged (or what is wrong with some layers while engaged); null when all is well. */
+  reason: string | null;
+  viewerDistance: number;
   /** The gain the last frame used (null off a camera rig). */
   gain: number | null;
+  /** The plane that lands on the glass, as a distance from the photo's camera (world units). */
+  planeM: number | null;
+  /** The photo rig's convergence distance D (world units). */
+  photoConvergenceM: number | null;
+  planeOffset: number;
+  /** The views were verified (read off the views) as located for the rig used; null if unknown. */
+  located: boolean | null;
 }
 
 /** `handle.makeSbsMaterial` options. */
@@ -968,7 +994,12 @@ export interface SplatHandle {
    * `?dxrdiag=nolayerrig`. Callable before `ready`. docs/proposals/layer-display-rig.md.
    */
   setLayerRig(layer: string | number | { id: number }, rig: 'display' | 'camera', opts?: SplatLayerRigOptions): SplatHandle;
-  /** `engine: 'playcanvas'` only. What `setLayerRig` is doing. */
+  /** `engine: 'playcanvas'` only. Change the layer rig's tile-wide options live (merge; `null` clears). */
+  setLayerRigOptions(opts: SplatLayerRigOptions): SplatHandle;
+  /**
+   * `engine: 'playcanvas'` only. What `setLayerRig` is doing — engaged or not, on which view path,
+   * and why not. The same line is WARNed on the first 3D frame and on every change.
+   */
   layerRigState(): SplatLayerRigState;
   /**
    * `engine: 'playcanvas'` only, after `ready`. An unlit `pc.ShaderMaterial` that shows the left

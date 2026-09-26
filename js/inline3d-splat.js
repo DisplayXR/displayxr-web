@@ -385,6 +385,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
     setLayerRig() {
       throw new Error("@displayxr/inline3d/splat: setLayerRig() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
     },
+    setLayerRigOptions() {
+      throw new Error("@displayxr/inline3d/splat: setLayerRigOptions() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
+    },
     /** Not on this backend: per-eye SBS materials are a PlayCanvas-backend feature. */
     makeSbsMaterial() {
       throw new Error("@displayxr/inline3d/splat: makeSbsMaterial() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
@@ -773,7 +776,11 @@ function addSplatDeferred(wall, canvas, src, opts) {
       pending.push(['setLayerRig', args]);
       return out;
     },
-    layerRigState: () => ({ display: [], disabled: false, rounded: false, gain: null }),
+    setLayerRigOptions: (...args) => {
+      pending.push(['setLayerRigOptions', args]);
+      return out;
+    },
+    layerRigState: () => ({ display: [], disabled: false, path: null, engaged: false, rounded: false, reason: 'the PlayCanvas adapter has not loaded yet', viewerDistance: 0.6, gain: null, planeM: null, photoConvergenceM: null, planeOffset: 0, located: null }),
     makeSbsMaterial: () => {
       throw new Error('@displayxr/inline3d/splat: makeSbsMaterial() needs the engine — call it after `await handle.ready`.');
     },

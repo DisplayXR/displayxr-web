@@ -11,6 +11,26 @@ Touches the **preview tier** (a new subpath, `./player`) and the **core** (`.`, 
 tracking-state API and an opt-in `untrackedFallback`. No pixel change for a page that does not opt
 in, and none on a browser without the tracking-state surface.
 
+### Fixed — `./splat` (`engine: 'playcanvas'`), `setLayerRig`
+
+Reported on the panel: layers set to the display rig still looked flat, with no way to tell why. 1.23
+could fail silently; now it cannot:
+
+- **Works on both view paths.** The N-camera fallback (one camera per view) used to leave the layer
+  on the photo rig with a single warning at the call. It now gets one display camera per view, the
+  shear carried in its projection, and measures identical to the RenderView path.
+- **`layerRigState()` says what happened**: `path` ('renderviews' | 'ncamera' | 'mono'), `engaged`
+  (the display-rig views were applied on the last frame), `reason` when not (e.g. a layer drawn by
+  another camera, a layer not in the composition), `viewerDistance`, `gain`, `planeM`,
+  `photoConvergenceM`, `planeOffset`, `located`. The same line is WARNed on the first 3D frame and on
+  every change.
+- A display layer that no camera draws is now drawn by the display camera. A layer another camera
+  draws is named, not taken.
+- **`planeOffset` / `planeDistance`** choose which stage plane lands on the glass (a stage whose
+  "z = 0" is not the photo's convergence plane read as recessed). The change is exact, and the 2D
+  picture does not move. **`handle.setLayerRigOptions(opts)`** changes these options live, and
+  options now merge across calls (`null` clears a key).
+
 ### Added — core
 
 - **Tracking state: `wall.trackingState` and `on('trackingstatechange', (state, ev) => …)`**, on

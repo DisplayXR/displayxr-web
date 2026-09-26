@@ -4,6 +4,9 @@
 import * as pc from 'playcanvas';
 import { attachPlayCanvasSplat } from '../../js/inline3d-splat-playcanvas.js';
 
+const Q = new URLSearchParams(location.search);
+const VIEW_PATH = Q.get('path') || 'renderview'; // 'renderview' | 'cameras' (the N-camera fallback)
+const PAGE = Q.get('controls') === 'page';
 const N = 0.6; // nominal viewer distance (m) — the runtime's; also what we pass as viewerDistance
 const IPD = 0.064;
 const CSS_W = 1280, CSS_H = 720;
@@ -106,15 +109,26 @@ window.__R = R;
 const log = (...a) => R.log.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
 
 async function main() {
-  const ready = attachPlayCanvasSplat(out, wall, canvas, '../../samples/splat/assets/butterfly.sog', {
-    playcanvas: pc, rig: 'camera', convergence: 2,
-    intrinsics: { fx: 800, fy: 800, cx: 640, cy: 360, width: 1280, height: 720 },
-    focusInput: false, orbit: false, idleSpin: 0, preserveDrawingBuffer: true,
-  }, []);
+  const warns = (R.warns = []);
+  const cw = console.warn.bind(console);
+  console.warn = (...a) => { if (String(a[0]).includes('setLayerRig')) warns.push(String(a[0])); cw(...a); };
+  const ready = attachPlayCanvasSplat(out, wall, canvas, '../../samples/splat/assets/butterfly.sog', PAGE
+    ? { playcanvas: pc, controls: 'page', preserveDrawingBuffer: true, playcanvasViewPath: VIEW_PATH }
+    : {
+        playcanvas: pc, rig: 'camera', convergence: 2,
+        intrinsics: { fx: 800, fy: 800, cx: 640, cy: 360, width: 1280, height: 720 },
+        focusInput: false, orbit: false, idleSpin: 0, preserveDrawingBuffer: true, playcanvasViewPath: VIEW_PATH,
+      }, []);
+  if (PAGE) {
+    // the page's camera: 1 m up, looking down −z, 45° vertical, converged at 2 m (world units)
+    const M = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.3, 1, 0.5, 1]);
+    out.setCameraPose(M, { verticalFovDeg: 45, near: 0.05, far: 500, convergence: 2 });
+  }
   requestAnimationFrame(loop);
   await ready;
   for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(r));
   log('declared', declared);
+  R.path = VIEW_PATH; R.page = PAGE;
   const app = out.engine.app;
   const gl = app.graphicsDevice.gl;
   const rigNode = out.viewer.rigNode;
@@ -125,7 +139,11 @@ async function main() {
   const wi = comp.getTransparentIndex(comp.getLayerById(pc.LAYERID_WORLD));
   comp.insertOpaque(stage, wi + 1);
   comp.insertTransparent(stage, wi + 2);
-  out.engine.camera.camera.layers = [...out.engine.camera.camera.layers, stage.id];
+  // RenderView path: the app's way (the eye camera draws it). N-camera path: there is no
+  // handle.engine.camera — the layer is on no camera, and setLayerRig adopts it.
+  if (out.engine.camera) out.engine.camera.camera.layers = [...out.engine.camera.camera.layers, stage.id];
+  // (the baseline "camera rig" frames need it drawn by the photo's cameras on this path too)
+  else for (const c of out.viewer._views) c.camera.layers = [...c.camera.layers, stage.id];
   log('composition', comp.layerList.map((l) => l.name));
 
   const rig = JSON.parse(JSON.stringify(declared));
@@ -149,10 +167,20 @@ async function main() {
   };
   const addMesh = (name, mesh, mat, p, s) => {
     const node = new pc.GraphNode(name);
-    rigNode.addChild(node);
-    node.setLocalPosition(p[0], p[1], p[2]);
-    node.setLocalRotation(q[0], q[1], q[2], q[3]);
-    node.setLocalScale(s[0], s[1], s[2]);
+    if (PAGE) {
+      // world pose = rig node's world transform · local (the app keeps its stage in world space)
+      const L = new pc.Mat4().setTRS(new pc.Vec3(p[0], p[1], p[2]), new pc.Quat(q[0], q[1], q[2], q[3]), new pc.Vec3(s[0], s[1], s[2]));
+      const Wm = new pc.Mat4().mul2(rigNode.getWorldTransform(), L);
+      out.engine.root.addChild(node);
+      node.setPosition(Wm.getTranslation());
+      node.setRotation(new pc.Quat().setFromMat4(Wm));
+      node.setLocalScale(Wm.getScale());
+    } else {
+      rigNode.addChild(node);
+      node.setLocalPosition(p[0], p[1], p[2]);
+      node.setLocalRotation(q[0], q[1], q[2], q[3]);
+      node.setLocalScale(s[0], s[1], s[2]);
+    }
     const mi = new pc.MeshInstance(mesh, mat, node);
     mi.cull = false;
     stage.addMeshInstances([mi]);
@@ -230,8 +258,9 @@ async function main() {
     return res;
   }
   // expected eye-local pixel x of a rig-space point, per eye, through photo views or the round rig
-  const expectPx = (X, which, ew, h) => EYES.map((e) => {
-    const v = which === 'camera' ? cameraView(e, rig) : displayView(e, roundRig(rig));
+  const ew0 = canvas.width / 2;
+  const expectPx = (X, which, ew, h, plane = null) => EYES.map((e) => {
+    const v = which === 'camera' ? cameraView(e, rig) : displayView(e, roundRig(plane ? { ...rig, convergenceDiopters: 1 / plane } : rig));
     const [nx, ny] = ndc(v.proj, invRigid(v.pose), X);
     return { x: (nx * 0.5 + 0.5) * ew - 0.5, y: (ny * 0.5 + 0.5) * h - 0.5 };
   });
@@ -265,11 +294,19 @@ async function main() {
   v = settle();
   const B = grab();
   R.disp3d = { m: measure(B, v), hash: hash(B), png: png(B), state: out.layerRigState() };
+  // plane offset: move the stage toward the viewer so the GREEN marker (0.5 behind) lands on the glass
+  const offset = (0.5 * N) / D; // planeOffset (m on the panel) whose D′ = D + 0.5
+  out.setLayerRigOptions({ planeOffset: offset });
+  v = settle();
+  const P = grab();
+  R.plane = { offset, m: measure(P, v), state: out.layerRigState(), expectBehind: expectPx(pBehind, 'display', ew0, P.h, D + 0.5), expectContact: expectPx(pContact, 'display', ew0, P.h, D + 0.5), expectPop: expectPx(pPop, 'display', ew0, P.h, D + 0.5) };
+  out.setLayerRigOptions({ planeOffset: null });
+  settle();
   // gain 1: the display run with the photo's own views must be pixel-identical to today
   out.setLayerRig('Stage', 'display', { gain: 1 });
   v = settle();
   R.gain1 = { hash: hash(grab()), state: out.layerRigState() };
-  out.setLayerRig('Stage', 'display', { viewerDistance: N });
+  out.setLayerRig('Stage', 'display', { gain: null, viewerDistance: N }); // options merge: clear the gain
   settle();
 
   const ew = A.w / 2;
@@ -301,11 +338,13 @@ async function main() {
   R.cost = { offMs: med(cost.off), onMs: med(cost.on), off: cost.off, on: cost.on, drawCallsOff: dOff.drawCalls, drawCallsOn: dOn.drawCalls };
 
   // ── zoom: the photo's rig is untouched by a zoom (it is the pivot), so the stage keeps its place ──
-  out.setPose({ zoom: 1.4 });
-  v = settle(4);
-  R.zoom = { m: measure(grab(), v), state: out.layerRigState() };
-  out.setPose({ zoom: 1 });
-  settle(4);
+  if (!PAGE) {
+    out.setPose({ zoom: 1.4 });
+    v = settle(4);
+    R.zoom = { m: measure(grab(), v), state: out.layerRigState() };
+    out.setPose({ zoom: 1 });
+    settle(4);
+  }
 
   // ── a setSource crossfade with the display rig on: runs to the end, stage still exact after ──
   running = true;
