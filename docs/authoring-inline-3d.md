@@ -1320,6 +1320,10 @@ short:
    wrapper or later sibling with an opaque background painted over the canvas hides the tile while
    its content keeps running (for video: sound, no picture). If you want black around a tile, put
    it on an element behind the canvas.
+10. **No `backdrop-filter` on controls drawn over the weave.** A blur reads the interlaced pixels
+    and disturbs the 3D image across the element's whole box. Use a plain tint.
+11. **A resize is a fresh-canvas moment.** Fullscreen or a layout change moves the rect through
+    the same identity gap as a new canvas. Cover across it and release on `handle.rewoven()`.
 
 ```js
 const handle = wall.addScene(canvas, onFrame);
@@ -1332,6 +1336,10 @@ poster.remove();                                         // cut, never fade
 Until a browser reports joins, `firstWoven` holds for the measured worst case
 (`firstWovenHoldMs`, default 1200) and `confirmed` is `false`. When a browser does report joins,
 it will settle on the report with no change to your page.
+
+`handle.rewoven()` asks the same question again, measured from the call, for a canvas that is
+already woven but whose rect is about to change (rule 11). Same result shape; a box change while
+it is pending restarts the hold.
 
 The reasoning for each rule, the SDK call that satisfies it, and a hardware checklist that reads
 the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in

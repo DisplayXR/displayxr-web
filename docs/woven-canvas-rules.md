@@ -183,6 +183,53 @@ with a warning rather than destroy the tile. Hide an overlay with `display: none
 `opacity: 0`. The declaration costs nothing on a draw-order browser, so one page works on both
 generations.
 
+### 9. Nothing with a background sits above the woven canvas; black goes under it
+
+A section, wrapper or later sibling with an opaque background, painted over the canvas, hides the
+tile while its content keeps running (for a video: sound, no picture). To put black around a
+tile, give it to an element **behind** the canvas. A cover you mean to hide the tile with (rule 5,
+rule 11) is the one deliberate exception, and it comes off on a signal.
+
+### 10. No `backdrop-filter` on anything drawn over the weave
+
+Rule 7 covers the canvas and its ancestors. This one covers the **siblings on top of it**: a
+control bar, a caption, a badge, a menu. `backdrop-filter` is defined as a function of what is
+behind the element, and behind it is the interlaced weave. A blur reads the interlaced pixels
+and smears them, and the 3D image is disturbed across the element's **whole box**, not only
+where the element is opaque (seen on the panel, 24 September). Use a plain translucent tint
+(`background: rgba(0, 0, 0, 0.55)`) instead. The SDK's own player chrome follows this rule.
+
+### 11. Treat a resize as a fresh-canvas moment
+
+Moving or resizing a woven canvas's rect re-registers it with the compositor, and the moved rect
+goes through the same **0.4–1.2 s** identity gap as a new canvas (§1): until the join lands, the
+screen shows the page's own raster, which is the squeezed side-by-side pair. Entering or leaving
+fullscreen, a responsive reflow that changes the tile's size, and a layout that swaps a small
+tile for a large one all do this. Cover the canvas across the change exactly as in rule 5 (on
+top, hard cut), and release on **`handle.rewoven()`**:
+
+```js
+cover.hidden = false;                 // before the rect changes
+await el.requestFullscreen();
+await handle.rewoven();               // a stereo frame on the moved rect, plus the hold
+cover.hidden = true;                  // cut, never fade
+```
+
+`rewoven()` is `firstWoven` measured from the call, with the same result shape. A real box change
+while it is pending restarts the hold, so a resize that settles over several frames is covered
+until the last one. Before the first join it is `firstWoven` itself. The SDK's player
+(`addPlayer`) does this for its own fullscreen button with `fullscreenCover: true`.
+
+**Measured on the Leia panel (26 September, browser test build with patch 0195, blind A/B, one
+observer):** entering and leaving the player's fullscreen showed **no** raw side-by-side pair,
+with or without the cover. Without it, leaving fullscreen showed the picture at once and then a
+flash of the **whole browser viewport** about a second later. With it, the picture was hidden for
+~1.2 s and the flash was still there. The flash is browser-side and wider than any tile, so no
+page cover can hide it. That is why the player's cover is opt-in. Keep the rule for a page whose
+resize does show the pair.
+
+A scroll is not a resize. The canvas keeps its size and its identity, and nothing needs covering.
+
 ### Two rules that keep a joined canvas joined
 
 - **Redraw every frame.** A canvas that is not redrawn can drop out of the frame the compositor

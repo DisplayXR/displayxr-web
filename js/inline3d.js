@@ -1175,6 +1175,17 @@ class Inline3D {
           live = false;
         };
       },
+      /**
+       * {@link firstWoven}, measured from NOW: resolves once this canvas, as it is at the call,
+       * has drawn a stereo frame and then held for `firstWovenHoldMs`. For a canvas that is
+       * already woven but whose rect is about to change (fullscreen, a layout resize): the
+       * browser re-registers the moved rect and the same identity gap as a fresh canvas
+       * applies, so cover the canvas across the change and release on this. A real box change
+       * while it is pending restarts the hold; calling it again while pending returns the same
+       * promise, restarted. Before the first join it IS `firstWoven`; on a window that will not
+       * weave it resolves that `woven: false` result. Same shape, never rejects.
+       */
+      rewoven: () => this._rewoven(win),
     };
   }
 
@@ -1953,6 +1964,10 @@ class Inline3D {
       fwRegAt: nowMs(),
       fwLayerAt: null,
       fwStereo: false,
+      // handle.rewoven(): null, or the pending { promise, resolve, calledAt, at, stereo } —
+      // firstWoven's two halves again, counted from the call (and from each later box change).
+      rw: null,
+      rwGone: null, // the reason this window will never weave again, once one arrived
     };
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
@@ -2047,6 +2062,7 @@ class Inline3D {
       win.fwLayerAt = nowMs();
       win.fwStereo = false;
     }
+    this._restartRewoven(win);
     win.layerLostSent = false; // a live layer again: a future loss is worth reporting again
     // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
     // mode is the DISPLAY's, it survives a tile scrolling away, and this SDK never requests it
@@ -2399,6 +2415,7 @@ class Inline3D {
       if (!win.layer || !win.ownsBuffer) return;
       const { w, h } = this._eyeSize(win);
       if (w === win.eyeW && h === win.eyeH) return; // observer fired, geometry didn't move
+      this._restartRewoven(win);
       this._sizeBuffer(win, /*sbs*/ true);
       this._paint(win, null); // repaint NOW: setting canvas.width cleared the buffer
     };
@@ -2656,7 +2673,10 @@ class Inline3D {
             win.onFrame(views, win.layer, f);
             // A stereo frame the page drew without throwing. A short view list is the load
             // fallback (a mono frame), which is not what a poster is waiting for.
-            if (views.length >= 2) win.fwStereo = true;
+            if (views.length >= 2) {
+              win.fwStereo = true;
+              if (win.rw) win.rw.stereo = true;
+            }
           } catch (err) {
             if (!win.frameThrewWarned) {
               win.frameThrewWarned = true;
@@ -2679,6 +2699,7 @@ class Inline3D {
         // video has never had a frame) the tile holds nothing worth revealing yet.
         if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : !!win.img)) {
           win.fwStereo = true;
+          if (win.rw) win.rw.stereo = true;
         }
       }
       this._tickFirstWoven(win);
@@ -2696,6 +2717,8 @@ class Inline3D {
    * which knows nothing about whether the compositor has matched this canvas yet.
    */
   _tickFirstWoven(win) {
+    const rw = win.rw;
+    if (rw && rw.stereo && nowMs() - rw.at >= win.fwHoldMs) this._settleRewoven(win, true, 'hold-elapsed');
     if (win.fwResult || !win.fwStereo || win.fwLayerAt === null) return;
     if (nowMs() - win.fwLayerAt < win.fwHoldMs) return;
     this._settleFirstWoven(win, true, 'hold-elapsed');
@@ -2703,10 +2726,48 @@ class Inline3D {
 
   /** One-shot: the first call wins, later ones are ignored. */
   _settleFirstWoven(win, woven, reason) {
+    // Every "will not weave" path lands here, so a pending rewoven() is released with it, and a
+    // later one answers at once (firstWoven may have settled woven:true long before).
+    if (!woven) {
+      if (!win.rwGone) win.rwGone = reason;
+      this._settleRewoven(win, false, reason);
+    }
     if (win.fwResult) return;
     win.fwResult = Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - win.fwRegAt) });
     win.fwResolve(win.fwResult);
     win.fwResolve = null;
+  }
+
+  /** handle.rewoven(): see the handle's doc comment. */
+  _rewoven(win) {
+    if (!win.fwResult) return win.fwPromise; // still on the first join: the same question
+    if (!win.fwResult.woven) return Promise.resolve(win.fwResult);
+    if (win.rwGone) return Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: win.rwGone, ms: 0 }));
+    if (win.rw) {
+      this._restartRewoven(win);
+      return win.rw.promise;
+    }
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    const t = nowMs();
+    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false };
+    return promise;
+  }
+
+  /** The canvas moved again (a box change, a new layer): the hold starts over from here. */
+  _restartRewoven(win) {
+    if (!win.rw) return;
+    win.rw.at = nowMs();
+    win.rw.stereo = false;
+  }
+
+  _settleRewoven(win, woven, reason) {
+    const rw = win.rw;
+    if (!rw) return;
+    win.rw = null;
+    rw.resolve(Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - rw.calledAt) }));
   }
 
   // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────

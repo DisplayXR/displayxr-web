@@ -123,6 +123,12 @@ export interface PlayerOptions {
    * Fullscreen API.
    */
   fullscreen?: boolean;
+  /**
+   * Cover the canvas with black across a fullscreen change until `handle.rewoven()` settles
+   * (woven-canvas rule 11). Default false: on the Leia panel fullscreen showed no raw side-by-side
+   * pair without it, and the cover costs ~1.2 s with no picture.
+   */
+  fullscreenCover?: boolean;
   /** Default: `'anonymous'` iff `src` is a cross-origin URL; unset (browser default) otherwise. */
   crossOrigin?: 'anonymous' | 'use-credentials';
   /** Per-eye buffer resolution in px. `'sbs'` + supported wall only — see {@link TileOptions}. */

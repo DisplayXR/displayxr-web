@@ -207,8 +207,8 @@ docs/
                            that is not the API
   porting-three-js-apps.md porting an existing three.js app (WebXR or plain) to inline 3D —
                            the WebXR→inline-3d mapping table and the whole render loop
-  woven-canvas-rules.md    never show a raw side-by-side frame: the join, the eight rules,
-                           handle.firstWoven, reading the browser's `withheld` log line
+  woven-canvas-rules.md    never show a raw side-by-side frame: the join, the rules,
+                           handle.firstWoven / rewoven(), reading the browser's `withheld` log line
   proposals/               browser-side asks the SDK is waiting on
 ```
 
