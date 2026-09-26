@@ -199,7 +199,10 @@ class Call {
   }
 
   get woven() {
-    return !!(this.wall && this.wall.supported && this.wallLive && this.weaveLive);
+    // NOT gated on weaveLive: the inline session does not tick until a layer exists, so waiting
+    // for live frames before the first registration deadlocks (seen on a real panel). Tiles
+    // register at once; _watchLive re-registers them once when the session goes live (#172).
+    return !!(this.wall && this.wall.supported && this.wallLive);
   }
 
   log(tag, obj = {}) {
@@ -543,10 +546,12 @@ class Call {
   }
 
   /**
-   * displayxr-browser-pvt#172: register woven tiles only once the weave session is LIVE. Until
-   * then every tile (and the self view) routes flat; the first live frame run flips `weaveLive`
-   * and each tile registers exactly once. Uses the session's own frames, read through the frozen
-   * `wall.session` / `wall.refSpace` fields — no core change.
+   * displayxr-browser-pvt#172: a woven layer registered BEFORE the weave session is live can be
+   * fed the whole SBS frame per eye (L|R|L|R, flat) until it is re-created. Tiles register
+   * immediately (the session only starts ticking once a layer exists — gating the first
+   * registration on live frames deadlocks), and when the first run of live stereo frames lands,
+   * every woven tile registered before it is re-created ONCE. Uses the session's own frames, read
+   * through the frozen `wall.session` / `wall.refSpace` fields — no core change.
    */
   _watchLive(w) {
     this.weaveLive = false;
@@ -578,8 +583,9 @@ class Call {
       }
       this.weaveLive = true;
       this.log('weave-live', { ms: Math.round(performance.now() - t0) });
-      for (const t of this.tiles.values()) t.reroute(false);
-      this.self?.reroute(false);
+      // Re-create only what was woven before the session was live (#172); flat tiles are untouched.
+      for (const t of this.tiles.values()) if (t.route === 'woven-sbs') t.reroute(true);
+      if (this.self && this.self.route === 'woven-sbs') this.self.reroute(true);
       this._layout();
     };
     try {
