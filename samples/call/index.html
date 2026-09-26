@@ -28,8 +28,8 @@
   <p class="sub">A 3D video call in one <code>addCall()</code>: start a call, share the invite link
      (or its QR code), and everyone with a 3D display sees the others in 3D — peer-to-peer, up to
      four people. A stereo camera (one wide side-by-side device) is picked up automatically and sent
-     as a real stereo pair; any other webcam is sent as 2D. On any other browser the call is an
-     ordinary 2D call.</p>
+     as a real stereo pair; any other webcam is sent as 2D and lifted to 3D on the receiving 3D
+     display. On any other browser the call is an ordinary 2D call.</p>
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
@@ -41,7 +41,12 @@
     <code>?signal=peerjs</code> the free public PeerJS broker (<b>demo only</b>; the default elsewhere) ·
     <code>?camera=synthetic</code> a generated side-by-side test pair instead of a camera ·
     <code>?camera=mono</code> · <code>?layout=speaker</code> · <code>?accent=violet</code> ·
-    <code>?untracked=mono</code> ease tiles flat while nobody is tracked · <code>?debug</code> logs.
+    <code>?untracked=mono</code> ease tiles flat while nobody is tracked ·
+    <code>?lift=0</code> show 2D participants flat instead of lifting them ·
+    <code>?models=https://…</code> where the lift depth model is served from · <code>?debug</code> logs.
+    <b>2D→3D needs the lift module</b> (<code>@displayxr/inline3d/lift</code>, <code>js/lift/</code>):
+    without it — or without a native 2D→3D provider or WebGPU — 2D participants are simply shown
+    in 2D (tile badge <code>2D</code>; <code>2D→3D</code> when lifted, <code>3D</code> for a stereo camera).
     The room travels in the link's <code>#room=</code> fragment, which the browser never sends to
     any server. Built on <code>js/inline3d-call.js</code>, preview tier — see
     <a href="../../docs/sdk-stability.md">sdk-stability.md</a> and
@@ -53,7 +58,8 @@
 <script type="importmap">
 { "imports": {
   "@displayxr/inline3d": "../../js/inline3d.js",
-  "@displayxr/inline3d/call": "../../js/inline3d-call.js"
+  "@displayxr/inline3d/call": "../../js/inline3d-call.js",
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs"
 } }
 </script>
 <script type="module" src="./app.js"></script>

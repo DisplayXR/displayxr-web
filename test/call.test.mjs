@@ -31,6 +31,14 @@ import {
   qrEncode,
   dxrSignaling,
   roomKey,
+  resolveLift,
+  createLiftPool,
+  createFrameWatch,
+  liftConvergenceFor,
+  liftPriorityFor,
+  setLiftPriority,
+  defaultLiftSpecifier,
+  LIFT_PRIORITY,
 } from '../js/inline3d-call.js';
 import {
   focalPx,
@@ -103,21 +111,29 @@ test('setCodecPreferences order: VP9, VP8, AV1, then the rest in browser order',
 
 // ── hello and the routing table ──────────────────────────────────────────────────────────────
 
-test('routing table (RFC §3): sbs woven / flat-left, mono flat, mono3D hook resolves flat in P1', () => {
+test('routing table (RFC §3): sbs woven / flat-left; mono lifted on a woven wall, flat otherwise', () => {
   assert.deepEqual(routeFor({ format: 'sbs', woven: true }), { route: 'woven-sbs' });
   assert.deepEqual(routeFor({ format: 'sbs', woven: false }), { route: 'flat-left' });
   assert.deepEqual(routeFor({ format: 'mono', woven: false }), { route: 'flat' });
   assert.deepEqual(routeFor({ format: 'mono', woven: true }), { route: 'flat', mono3d: 'unavailable' });
   assert.deepEqual(routeFor({ format: 'mono', woven: true, mono3D: 'off' }), { route: 'flat', mono3d: 'off' });
-  // P2 seam: lift() available.
+  // P2: lift() resolved → lifted, on a woven wall only.
   assert.deepEqual(routeFor({ format: 'mono', woven: true, lift: true }), { route: 'lifted', mono3d: 'lifted' });
+  assert.deepEqual(routeFor({ format: 'mono', woven: false, lift: true }), { route: 'flat' });
+  assert.deepEqual(routeFor({ format: 'mono', woven: true, lift: true, mono3D: 'off' }), { route: 'flat', mono3d: 'off' });
+  assert.deepEqual(routeFor({ format: 'mono', woven: true, lift: true, overBudget: true }), { route: 'flat', mono3d: 'budget' });
+  assert.deepEqual(routeFor({ format: 'mono', woven: true, lift: true, failed: true }), { route: 'flat', mono3d: 'failed' });
+  // an injected lift function counts as "on"
+  assert.deepEqual(routeFor({ format: 'mono', woven: true, lift: true, mono3D: () => null }), { route: 'lifted', mono3d: 'lifted' });
+  // SBS never goes through lift, whatever lift says.
+  assert.deepEqual(routeFor({ format: 'sbs', woven: true, lift: true }), { route: 'woven-sbs' });
   // A peer that never said hello — or said something else — is mono.
   for (const format of [null, undefined, 'tb', 'SBS', 42]) assert.equal(routeFor({ format, woven: true }).route, 'flat');
 });
 
-test('badge says 3D only where this side is weaving', () => {
+test('badges: 3D (woven SBS) / 2D→3D (lifted) / 2D (flat)', () => {
   assert.equal(badgeFor('woven-sbs'), '3D');
-  assert.equal(badgeFor('lifted'), '3D');
+  assert.equal(badgeFor('lifted'), '2D→3D');
   for (const r of ['flat', 'flat-left', null]) assert.equal(badgeFor(r), '2D');
 });
 
@@ -326,6 +342,15 @@ test('normalizeCallOptions: defaults, a link as room, clamped maxPeers', () => {
   assert.equal(o.ui, true);
   assert.equal(o.autoJoin, false);
   assert.equal(o.mono3D, 'auto');
+  assert.equal(o.maxLifted, 4);
+  assert.equal(normalizeCallOptions({ mono3D: 'off' }).mono3D, 'off');
+  assert.equal(normalizeCallOptions({ mono3D: false }).mono3D, 'off');
+  const fn = async () => ({});
+  assert.equal(normalizeCallOptions({ mono3D: fn }).mono3D, fn);
+  assert.equal(normalizeCallOptions({ mono3D: 'yes' }).mono3D, 'auto');
+  assert.equal(normalizeCallOptions({ maxLifted: 2 }).maxLifted, 2);
+  assert.equal(normalizeCallOptions({ maxLifted: 9 }).maxLifted, 4);
+  assert.equal(normalizeCallOptions({ maxLifted: -1 }).maxLifted, 0);
   assert.equal(o.camera, 'auto');
   assert.equal(o.tileAspect, 16 / 9);
   assert.equal(normalizeCallOptions({ ui: false }).autoJoin, true);
@@ -842,4 +867,254 @@ test('peerjsCloud: hands the media transport the same TURN relays PeerJS uses (S
   assert.equal(s2.iceServers, undefined);
   s2.leave();
   await new Promise((r) => setTimeout(r, 250));
+});
+
+// ── mono→3D through lift() (P2a, call/lift.js) ───────────────────────────────────────────────
+
+/** A fake lift(): records every call and hands back a handle recording what it was told. */
+function fakeLift({ native = false, reject = false, state = 'live', delayMs = 0 } = {}) {
+  const calls = [];
+  const fn = async (element, opts) => {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    if (reject) throw new Error('lift boom');
+    const h = {
+      element,
+      opts,
+      native,
+      state,
+      removed: false,
+      priorities: [],
+      convergences: [],
+      setPriority(p) {
+        this.priorities.push(p);
+        return true;
+      },
+      setConvergence(c) {
+        this.convergences.push(c);
+      },
+      remove() {
+        this.removed = true;
+      },
+    };
+    calls.push(h);
+    return h;
+  };
+  fn.calls = calls;
+  return fn;
+}
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+test('resolveLift: off / injected / module / every failure resolves flat, never throws', async () => {
+  const logs = [];
+  const log = (t, o) => logs.push([t, o]);
+  assert.equal((await resolveLift('off', { log })).lift, null);
+  assert.equal((await resolveLift(false)).reason, 'off');
+  const inj = fakeLift();
+  const r1 = await resolveLift(inj);
+  assert.equal(r1.lift, inj);
+  assert.equal(r1.source, 'injected');
+  // 'auto': the import fails (lift not installed / not in this build) → flat, one log line.
+  const r2 = await resolveLift('auto', { importer: () => Promise.reject(new Error('Cannot find module')), log });
+  assert.equal(r2.lift, null);
+  assert.equal(r2.reason, 'import-failed');
+  assert.deepEqual(logs.at(-1)[0], 'lift-unavailable');
+  // a module without lift()
+  assert.equal((await resolveLift('auto', { importer: async () => ({}) })).reason, 'no-lift-export');
+  // module present, capabilities: no native, no WebGPU → flat
+  const noGpu = { lift: inj, liftCapabilities: async () => ({ native: false, webFallback: { webgpu: false, video: false, still: false } }) };
+  assert.equal((await resolveLift('auto', { importer: async () => noGpu })).reason, 'no-provider');
+  // native provider → ready, caps kept for the lobby
+  const nat = { lift: inj, liftCapabilities: async () => ({ native: true, provider: 'vendor-x', maxStreams: 4, webFallback: { webgpu: false } }) };
+  const r3 = await resolveLift('auto', { importer: async () => nat });
+  assert.equal(r3.lift, inj);
+  assert.equal(r3.caps.provider, 'vendor-x');
+  // WebGPU web fallback only → ready
+  const web = { lift: inj, liftCapabilities: async () => ({ native: false, webFallback: { webgpu: true } }) };
+  assert.equal((await resolveLift('auto', { importer: async () => web })).lift, inj);
+  // capabilities throw → treated as unknown, not fatal
+  const caps404 = { lift: inj, liftCapabilities: async () => { throw new Error('x'); } };
+  assert.equal((await resolveLift('auto', { importer: async () => caps404 })).lift, inj);
+  // no liftCapabilities: navigator.gpu decides
+  assert.equal((await resolveLift('auto', { importer: async () => ({ lift: inj }), nav: {} })).reason, 'no-webgpu');
+  assert.equal((await resolveLift('auto', { importer: async () => ({ lift: inj }), nav: { gpu: {} } })).lift, inj);
+});
+
+test('defaultLiftSpecifier resolves the ./lift subpath next to js/call/', () => {
+  assert.equal(defaultLiftSpecifier('https://cdn.example/pkg/js/call/lift.js'), 'https://cdn.example/pkg/js/lift/index.js');
+});
+
+test('depth → convergence: 0 is auto, ±1 spans lift convergence 0..1, same direction as SBS (+ = back)', () => {
+  assert.equal(liftConvergenceFor(0), 'auto');
+  assert.equal(liftConvergenceFor(0.01), 'auto');
+  assert.equal(liftConvergenceFor(null), 'auto');
+  assert.equal(liftConvergenceFor(NaN), 'auto');
+  assert.equal(liftConvergenceFor(1), 1);
+  assert.equal(liftConvergenceFor(-1), 0);
+  assert.equal(liftConvergenceFor(0.5), 0.75);
+  assert.equal(liftConvergenceFor(-0.5), 0.25);
+  assert.equal(liftConvergenceFor(7), 1);
+  // monotonic: a larger depth never brings the picture forward
+  let prev = -Infinity;
+  for (let d = 0.05; d <= 1; d += 0.05) {
+    const c = liftConvergenceFor(d);
+    assert.ok(c >= prev);
+    prev = c;
+  }
+});
+
+test('liftPriorityFor + setLiftPriority (the native-provider hook): forwards, or no-ops safely', () => {
+  assert.equal(liftPriorityFor({ id: 'a', speakerId: 'a' }), 'high');
+  assert.equal(liftPriorityFor({ id: 'a', speakerId: 'b' }), 'normal');
+  assert.equal(liftPriorityFor({ id: 'a', speakerId: null }), 'normal');
+  assert.equal(liftPriorityFor({ id: 'a', speakerId: 'a', visible: false }), 'paused');
+  assert.deepEqual(LIFT_PRIORITY, { speaker: 'high', other: 'normal', hidden: 'paused' });
+  const seen = [];
+  assert.equal(setLiftPriority({ setPriority: (p) => (seen.push(p), true) }, 'high'), true);
+  assert.deepEqual(seen, ['high']);
+  assert.equal(setLiftPriority({}, 'high'), false); // no setPriority (older lift / injected): no-op
+  assert.equal(setLiftPriority(null, 'high'), false);
+  assert.equal(setLiftPriority({ setPriority: () => { throw new Error('x'); } }, 'low'), false);
+  assert.equal(setLiftPriority({ setPriority: () => true }, 'urgent'), false);
+});
+
+test('lift pool: lift(video, {mode:"live", wall, ...}) once per peer; slots capped; release removes', async () => {
+  const lift = fakeLift();
+  const pool = createLiftPool({ lift, max: 2 });
+  const wall = { supported: true };
+  const v1 = { tag: 'v1' };
+  const [h1, again] = await Promise.all([pool.acquire('p1', v1, { wall }), pool.acquire('p1', v1, { wall })]);
+  assert.equal(lift.calls.length, 1, 'one lift per peer');
+  assert.equal(h1, again);
+  assert.equal(h1.element, v1);
+  assert.equal(h1.opts.mode, 'live');
+  assert.equal(h1.opts.wall, wall);
+  assert.equal(h1.opts.ui, 'none');
+  assert.equal(h1.opts.convergence, 'auto');
+  assert.equal(h1.opts.priority, 'normal');
+  await pool.acquire('p2', {}, { wall });
+  assert.equal(pool.size, 2);
+  assert.equal(pool.canAcquire('p3'), false);
+  assert.equal(pool.canAcquire('p1'), true);
+  assert.equal(await pool.acquire('p3', {}, { wall }), null, 'over budget → no lift');
+  assert.equal(lift.calls.length, 2);
+  pool.release('p1');
+  assert.equal(h1.removed, true);
+  assert.equal(pool.canAcquire('p3'), true);
+  pool.releaseAll();
+  assert.equal(pool.size, 0);
+});
+
+test('lift pool: page liftOptions pass through, but the call owns mode/wall/ui/convergence/priority', async () => {
+  const lift = fakeLift();
+  const wall = { supported: true };
+  const pool = createLiftPool({ lift, options: { models: 'https://cdn.example/m', quality: 'low', mode: 'explore', wall: 'nope', ui: 'builtin', priority: 'low' } });
+  const h = await pool.acquire('p', {}, { wall });
+  assert.equal(h.opts.models, 'https://cdn.example/m');
+  assert.equal(h.opts.quality, 'low');
+  assert.equal(h.opts.mode, 'live');
+  assert.equal(h.opts.wall, wall);
+  assert.equal(h.opts.ui, 'none');
+  assert.equal(h.opts.priority, 'normal');
+  assert.equal((await createLiftPool({ lift }).acquire('q', {}, {})).opts.quality, 'auto');
+});
+
+test('lift pool: a release while lift() is pending removes the late handle; a rejection frees the slot', async () => {
+  const slow = fakeLift({ delayMs: 20 });
+  const pool = createLiftPool({ lift: slow, max: 4 });
+  const p = pool.acquire('p1', {}, {});
+  pool.release('p1');
+  assert.equal(await p, null);
+  assert.equal(slow.calls[0].removed, true);
+  assert.equal(pool.size, 0);
+  const bad = fakeLift({ reject: true });
+  const pool2 = createLiftPool({ lift: bad, max: 1 });
+  let err = null;
+  assert.equal(await pool2.acquire('p1', {}, { onError: (e) => (err = e) }), null);
+  assert.match(String(err), /lift boom/);
+  assert.equal(pool2.size, 0);
+  assert.equal(pool2.canAcquire('p2'), true);
+});
+
+test('lift pool: priority follows the active speaker; hidden tiles pause; transitions only on change', async () => {
+  const lift = fakeLift();
+  const pool = createLiftPool({ lift, max: 4 });
+  const a = await pool.acquire('a', {}, {});
+  const b = await pool.acquire('b', {}, {});
+  const c = await pool.acquire('c', {}, { visible: false });
+  assert.equal(c.opts.priority, 'paused', 'an offscreen tile starts paused');
+  const last = (h) => h.priorities.at(-1);
+  pool.setSpeaker('a');
+  assert.equal(last(a), 'high');
+  assert.equal(last(b), 'normal');
+  assert.equal(pool.priority('a'), 'high');
+  pool.setSpeaker('b');
+  assert.equal(last(a), 'normal');
+  assert.equal(last(b), 'high');
+  const nA = a.priorities.length;
+  pool.setSpeaker('b'); // no change → no call
+  assert.equal(a.priorities.length, nA);
+  pool.setVisible('b', false);
+  assert.equal(last(b), 'paused', 'the speaker scrolled off → paused');
+  pool.setVisible('b', true);
+  assert.equal(last(b), 'high');
+  pool.setVisible('c', true);
+  assert.equal(last(c), 'normal');
+  pool.setSpeaker(null);
+  assert.equal(last(b), 'normal');
+  // a lift landing AFTER the speaker changed gets the current priority
+  const slow = fakeLift({ delayMs: 10 });
+  const pool2 = createLiftPool({ lift: slow, max: 4 });
+  const pend = pool2.acquire('x', {}, {});
+  pool2.setSpeaker('x');
+  const hx = await pend;
+  assert.equal(hx.opts.priority, 'normal');
+  assert.equal(last(hx), 'high');
+});
+
+test('lift pool: the call depth control drives every lifted convergence', async () => {
+  const lift = fakeLift();
+  const pool = createLiftPool({ lift, max: 4 });
+  pool.setDepth(0.5);
+  const a = await pool.acquire('a', {}, {});
+  assert.equal(a.opts.convergence, 0.75, 'a new lift starts at the current depth');
+  const b = await pool.acquire('b', {}, {});
+  assert.equal(pool.setDepth(-1), 0);
+  assert.equal(a.convergences.at(-1), 0);
+  assert.equal(b.convergences.at(-1), 0);
+  pool.setDepth(0);
+  assert.equal(a.convergences.at(-1), 'auto');
+  assert.equal(pool.anyWeb, true);
+  const nat = createLiftPool({ lift: fakeLift({ native: true }) });
+  await nat.acquire('n', {}, {});
+  assert.equal(nat.anyWeb, false, 'the native provider runs off the page frame budget');
+});
+
+test('frame watch: warns once after 3 s under ~20 fps, recovers above ~28 fps, ignores tab switches', () => {
+  const w = createFrameWatch();
+  let ev = null;
+  for (let i = 0; i < 300 && !ev; i++) ev = w.feed(16.7);
+  assert.equal(ev, null);
+  const events = [];
+  for (let i = 0; i < 100; i++) {
+    const e = w.feed(80);
+    if (e) events.push(e);
+  }
+  assert.deepEqual(events, ['degraded'], 'once, not per frame');
+  assert.equal(w.degraded, true);
+  assert.equal(w.feed(5000), null, 'a 5 s gap is a tab switch, not a frame');
+  const back = [];
+  for (let i = 0; i < 200; i++) {
+    const e = w.feed(16.7);
+    if (e) back.push(e);
+  }
+  assert.deepEqual(back, ['recovered']);
+  // a short hitch (< 3 s) is not a degradation
+  const w2 = createFrameWatch();
+  for (let i = 0; i < 60; i++) w2.feed(16.7);
+  const hitch = [];
+  for (let i = 0; i < 20; i++) {
+    const e = w2.feed(100);
+    if (e) hitch.push(e);
+  }
+  assert.deepEqual(hitch, []);
 });

@@ -53,6 +53,10 @@ const CSS = `
 .dxr-call-tile{position:relative;min-width:0;}
 .dxr-call-stage{position:relative;background:#000;}
 .dxr-call-stage>canvas{display:block;width:100%;height:100%;}
+/* a LIFTED tile: its <video> is mounted in the stage for lift() (which floats its canvas over the
+   element's rect, z-index 1); the flat canvas sits above it until lift is live, then hides. */
+.dxr-call-stage>video.dxr-call-liftsrc{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;}
+.dxr-call-stage>canvas.dxr-call-liftflat{position:relative;z-index:1;}
 .dxr-call-talk{height:3px;margin-top:4px;background:transparent;}
 .dxr-call-tile--speaking .dxr-call-talk{background:var(--dxr-accent);}
 /* ── partial overlays on a tile ── */
