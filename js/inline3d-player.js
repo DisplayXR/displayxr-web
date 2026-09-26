@@ -1504,6 +1504,8 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
 
   return {
     el: bar,
+    /** Every overlay this bar put over the canvas (surface mode excludes each on the handle). */
+    overlays: [titleEl, bar, centre, pip, spinner],
     setTitle,
     applyAppearance,
     /** Called by addPlayer on setSource() so the chrome resets with the new title. */
@@ -1800,78 +1802,27 @@ function driveMixer(video, stages) {
   };
 }
 
-// ── addPlayer ────────────────────────────────────────────────────────────────────────────────
+// ── the player core: events, playlist, transport — the same code for every surface ────────────
+//
+// RFC 0001 Addendum A: one player core on one of two SURFACE ADAPTERS. `addPlayer` draws through
+// a woven window of its own (`wall.addVideo`); `attachPlayer` borrows an existing splat handle's
+// video slot (`handle.setVideo`). What differs between them is only how a source reaches the
+// pixels, so that is all a surface supplies:
+//
+//   setSource(src, sOpts, tr)  load `src` (already resolved to a transition `tr`) and show it
+//   onError()                  the element errored (the canvas surface repaints its poster)
+//   exclude(el) / unexclude(el) keep a page element out of the weave
+//   teardown()                 stop the surface's loops (before the controls come down)
+//   afterControls()            release the woven surface (after the controls came down)
+//   release()                  free the decoder(s); absent = the core frees `video` itself
+//
+// `video` is whatever the transport binds to: the <video> itself, or (surface mode) a proxy that
+// always answers for the element currently in use. `ui` is filled in by the caller once the SDK
+// transport exists (setTitle, resync, applyAppearance, cleanup); every use of it is optional.
 
-/**
- * Load a media title into an inline-3D window with real transport, in one call. Safe with an
- * unsupported/absent `wall` — it renders flat 2D instead (see the module doc comment), so pages
- * need no branch.
- *
- * @param {object|null|undefined} wall  the manager from `createInline3D()`, or null/unsupported.
- * @param {HTMLCanvasElement} canvas  a 2D canvas ALREADY inside a container element — the SDK
- *        transport is a sibling of the canvas, inside `canvas.parentElement` (required for
- *        `controls:'sdk'`, and for the box the transport is anchored to).
- * @param {string|Blob|Array} src  the video URL (or a Blob/File), or candidates best-first for
- *        pickSource() — `[{ src, type: 'video/webm; codecs="vp9, opus"' }, …]`.
- * @param {object} [opts]
- * @param {'sbs'|'mono'} [opts.format='sbs']  `'sbs'` is a real stereo pair, woven via
- *        `wall.addVideo()`. `'mono'` is genuinely flat content, painted full-frame — see the
- *        module doc comment for why this is NOT the same code path as an unsupported browser.
- * @param {string} [opts.poster]  painted before the first frame, and again on `error`.
- * @param {boolean} [opts.autoplay=false]
- * @param {boolean} [opts.muted=true]  autoplay needs this; unmute from the transport or `M`.
- * @param {boolean} [opts.loop=false]
- * @param {'sdk'|'none'} [opts.controls='sdk']  `'none'` leaves chrome to the page (handle +
- *        events + its own `data-inline3d-overlay` elements).
- * @param {boolean} [opts.keyboard=true]  Space/K play-pause, ←/→ ±5s, J/L ±10s, M mute — bound
- *        to the canvas/its controls, not `document`, so multiple players don't fight.
- * @param {'cut'|'crossfade'} [opts.transition='cut']  what setSource() does by default.
- *        `'crossfade'` creates the mixer (one extra full-frame draw per painted frame) — see the
- *        dissolve section; `./splat`'s other transitions are refused by name.
- * @param {number} [opts.durationMs=600]  the crossfade's length.
- * @param {string|function} [opts.easing='easeInOutSine']  a `./splat` easing name or `(x) => y`.
- * @param {number|string} [opts.band]  a letterbox slot: fit the picture into a centred band of
- *        this aspect (2.39, '2.39:1', '21/9') inside the tile; implies fit 'contain'.
- * @param {Array} [opts.titles]  a playlist: `[{ id, src, title?, poster? }, …]` (RFC 0001 A4).
- * @param {boolean} [opts.loopList=false]  `next()` past the last title wraps to the first.
- * @param {string} [opts.group]  players sharing a group decode one at a time: a play pauses the others.
- * @param {boolean} [opts.autoAdvance=false]  a title that ends moves on to the next and plays it.
- * @param {'mono'|'sbs'|'tb'} [opts.posterFormat='mono']  a stereo poster still is painted eye by eye.
- * @param {'contain'|'cover'} [opts.fit]  ./splat setVideo's fit: 'contain' letterboxes each eye
- *        (transparent bars), 'cover' fills the tile and crops. Unset: stretched to the tile.
- * @param {number} [opts.fadeMs]  LEGACY alias (1.10): `> 0` = `transition:'crossfade'` of that length.
- * @param {'anonymous'|'use-credentials'} [opts.crossOrigin]  default: `'anonymous'` iff `src` is
- *        a cross-origin URL, unset otherwise.
- * @param {number} [opts.width] [opts.height] [opts.cornerRadius] [opts.feather]  forwarded to
- *        `wall.addVideo()` on the `'sbs'` + supported-wall path only (TileOptions).
- * @param {Element} [opts.observe]  forwarded to `wall.addVideo()` (lazy visibility gate).
- * @returns {object} a PlayerHandle — see player.d.ts.
- */
-export function addPlayer(wall, canvas, src, opts = {}) {
-  const o = normalizePlayerOptions(opts);
-  // The playlist. With `titles` and no `src`, the first title is loaded; with both, `src` is loaded
-  // and becomes the current title if it is one of the list's (by identity or URL).
-  let titles = o.titles;
-  let currentIdx = -1;
-  if ((src === undefined || src === null) && titles.length) {
-    currentIdx = 0;
-    src = titles[0].src;
-    if (!o.title && titles[0].title) o.title = titles[0].title;
-    if (!o.poster && titles[0].poster) o.poster = titles[0].poster;
-  } else if (titles.length) {
-    currentIdx = titles.findIndex((t) => t.src === src);
-  }
-  const container = canvas.parentElement;
-
-  const video = document.createElement('video');
-  video.playsInline = true;
-  video.preload = 'metadata';
-  video.muted = o.muted;
-  video.loop = o.loop;
-  src = pickSource(src);
-  const cross = resolveCrossOrigin(src, o.crossOrigin);
-  if (cross) video.crossOrigin = cross;
-
+function createPlayerCore(o, video, init, surface, ui) {
+  let titles = init.titles;
+  let currentIdx = init.currentIdx;
   const listeners = new Map();
   function on(event, fn) {
     if (!listeners.has(event)) listeners.set(event, new Set());
@@ -1921,109 +1872,8 @@ export function addPlayer(wall, canvas, src, opts = {}) {
   video.addEventListener('loadedmetadata', () => emit('ready'));
   video.addEventListener('error', () => {
     emit('error', video.error);
-    paintPosterNow();
+    surface.onError?.();
   });
-
-  let posterImg = null;
-  function loadPoster(url) {
-    if (!url) {
-      posterImg = null;
-      return;
-    }
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
-      posterImg = img;
-      paintPosterNow();
-    };
-    img.onerror = () => {
-      posterImg = null;
-    };
-    img.src = url;
-  }
-
-  const wantWeave = (o.format === 'sbs' || o.format === 'tb') && !!(wall && wall.supported);
-  const look = { fit: o.fit, band: o.band, posterFormat: o.posterFormat };
-  let innerHandle = null;
-  let ownLoop = null;
-  let posterPoll = null;
-  let mixerLoop = null;
-  // Opt-in: no fade asked for at construction => no mixer, and the woven path stays the
-  // byte-identical `addVideo(canvas, video)` it is today. See the dissolve section above.
-  const dissolve = o.transition.type === 'crossfade' ? createDissolve(video) : null;
-  // The woven path's fit stage sits after the mixer (it fits whatever the mixer composed).
-  // It is also what repacks a top/bottom source into the SBS pair the SDK weaves, and what lays a
-  // band slot out — so it exists for any of fit, band or 'tb'.
-  const fitter =
-    wantWeave && (o.fit || o.band || o.format === 'tb')
-      ? createFitter(() => (dissolve ? dissolve.el : video), canvas, o.fit, o.format, o.band)
-      : null;
-
-  function paintPosterNow() {
-    if (!posterImg) return;
-    if (wantWeave) paintPosterSBS(canvas, posterImg, look);
-    else ownLoop?.forceRepaint();
-  }
-
-  if (wantWeave) {
-    innerHandle = wall.addVideo(canvas, fitter ? fitter.el : dissolve ? dissolve.el : video, {
-      width: o.width,
-      height: o.height,
-      cornerRadius: o.cornerRadius,
-      feather: o.feather,
-      ...(o.observe ? { observe: o.observe } : {}),
-    });
-    if (dissolve || fitter) mixerLoop = driveMixer(video, [dissolve, fitter].filter(Boolean));
-    posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2, look);
-  } else {
-    // The flat loop paints the mixer itself rather than running a second loop beside it.
-    ownLoop = attachFlatPaint(canvas, video, {
-      mode: o.format === 'mono' ? 'mono' : 'sbs-fallback',
-      layout: o.format === 'tb' ? 'tb' : 'sbs',
-      getPoster: () => posterImg,
-      dissolve,
-      fit: o.fit,
-      band: o.band,
-      posterFormat: o.posterFormat,
-    });
-  }
-
-  loadPoster(o.poster);
-  video.src = resolveSrcUrl(src);
-  video.load();
-  if (o.autoplay) video.play().catch(() => {});
-
-  let bar = null;
-  let cleanupBar = null;
-  let resyncBar = null;
-  let setBarTitle = null;
-  let applyBarAppearance = null;
-  if (o.controls === 'sdk') {
-    if (container) {
-      const built = buildTransportBar(container, canvas, video, {
-        keyboard: o.keyboard,
-        accent: o.accent,
-        badge3d: o.badge3d,
-        title: o.title,
-        skipButtons: o.skipButtons,
-        fullscreen: o.fullscreen,
-        skin: o.skin,
-        size: o.size,
-        band: o.band,
-        onBack: () => handle.back(),
-      });
-      bar = built.el;
-      cleanupBar = built.cleanup;
-      resyncBar = built.resync;
-      setBarTitle = built.setTitle;
-      applyBarAppearance = built.applyAppearance;
-    } else {
-      console.warn(
-        '[inline3d/player] controls:"sdk" needs canvas.parentElement to attach the transport ' +
-          '(the overlay must be a sibling of the canvas) — skipping SDK chrome for this player.'
-      );
-    }
-  }
 
   function findTitle(id) {
     if (typeof id === 'number') return Number.isInteger(id) && id >= 0 && id < titles.length ? id : -1;
@@ -2144,31 +1994,7 @@ export function addPlayer(wall, canvas, src, opts = {}) {
       }
       // Resolve (and validate) BEFORE touching anything: a refused option leaves the player as it was.
       const tr = resolveTransition(sOpts, o.transition);
-      if (tr.type === 'crossfade' && !dissolve) noteNoMixer();
-      // Snapshot BEFORE the src is repointed — once `load()` runs, the old frame is gone.
-      if (dissolve && tr.type === 'crossfade' && dissolve.capture()) dissolve.arm(tr.durationMs, tr.ease);
-      video.pause();
-      if (sOpts.poster !== undefined) loadPoster(sOpts.poster);
-      if (sOpts.title !== undefined) setBarTitle?.(sOpts.title);
-      newSrc = pickSource(newSrc);
-      const nextCross = resolveCrossOrigin(newSrc, o.crossOrigin);
-      if (nextCross) video.crossOrigin = nextCross;
-      video.src = resolveSrcUrl(newSrc);
-      video.load();
-      // The chrome is bound to this same <video>, so its listeners survive the swap — but the
-      // values they last rendered belong to the OLD title (a 24 s duration, a full scrub bar).
-      // Nothing re-fires them until the new metadata lands, so reset them now rather than show
-      // the previous title's numbers over the new one's first frames.
-      resyncBar?.();
-      // The poster is the right thing on screen again until the new source has a frame — but
-      // NOT when a dissolve is running: the mixer is holding the outgoing title's last frame
-      // there on purpose, and painting the poster over it is the hard cut this option exists
-      // to remove.
-      posterPoll?.stop();
-      if (wantWeave && !dissolve?.active) {
-        posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2, look);
-      }
-      if (o.autoplay) video.play().catch(() => {});
+      surface.setSource(newSrc, sOpts, tr);
     },
     /**
      * Re-skin the SDK transport live: any of `accent` (a CSS colour; '' = the default),
@@ -2187,33 +2013,553 @@ export function addPlayer(wall, canvas, src, opts = {}) {
         if (VALID_SKINS.has(a.skin)) next.skin = o.skin = a.skin;
         else console.warn(`[inline3d/player] invalid skin "${a.skin}" — ignored`);
       }
-      applyBarAppearance?.(next);
+      ui.applyAppearance?.(next);
     },
     exclude(el) {
-      innerHandle?.exclude(el);
+      surface.exclude?.(el);
     },
     unexclude(el) {
-      innerHandle?.unexclude(el);
+      surface.unexclude?.(el);
     },
     remove() {
       leaveGroup();
-      ownLoop?.stop();
-      mixerLoop?.stop();
-      posterPoll?.stop();
-      cleanupBar?.();
-      innerHandle?.remove();
-      try {
-        video.pause();
-      } catch {
-        /* ignore */
+      surface.teardown?.();
+      ui.cleanup?.();
+      surface.afterControls?.();
+      if (surface.release) surface.release();
+      else {
+        try {
+          video.pause();
+        } catch {
+          /* ignore */
+        }
+        video.removeAttribute('src');
+        video.load();
       }
-      video.removeAttribute('src');
-      video.load();
       listeners.clear();
     },
     on,
     off,
   };
 
+  return { handle, emit };
+}
+
+// ── addPlayer ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Load a media title into an inline-3D window with real transport, in one call. Safe with an
+ * unsupported/absent `wall` — it renders flat 2D instead (see the module doc comment), so pages
+ * need no branch.
+ *
+ * @param {object|null|undefined} wall  the manager from `createInline3D()`, or null/unsupported.
+ * @param {HTMLCanvasElement} canvas  a 2D canvas ALREADY inside a container element — the SDK
+ *        transport is a sibling of the canvas, inside `canvas.parentElement` (required for
+ *        `controls:'sdk'`, and for the box the transport is anchored to).
+ * @param {string|Blob|Array} src  the video URL (or a Blob/File), or candidates best-first for
+ *        pickSource() — `[{ src, type: 'video/webm; codecs="vp9, opus"' }, …]`.
+ * @param {object} [opts]
+ * @param {'sbs'|'mono'} [opts.format='sbs']  `'sbs'` is a real stereo pair, woven via
+ *        `wall.addVideo()`. `'mono'` is genuinely flat content, painted full-frame — see the
+ *        module doc comment for why this is NOT the same code path as an unsupported browser.
+ * @param {string} [opts.poster]  painted before the first frame, and again on `error`.
+ * @param {boolean} [opts.autoplay=false]
+ * @param {boolean} [opts.muted=true]  autoplay needs this; unmute from the transport or `M`.
+ * @param {boolean} [opts.loop=false]
+ * @param {'sdk'|'none'} [opts.controls='sdk']  `'none'` leaves chrome to the page (handle +
+ *        events + its own `data-inline3d-overlay` elements).
+ * @param {boolean} [opts.keyboard=true]  Space/K play-pause, ←/→ ±5s, J/L ±10s, M mute — bound
+ *        to the canvas/its controls, not `document`, so multiple players don't fight.
+ * @param {'cut'|'crossfade'} [opts.transition='cut']  what setSource() does by default.
+ *        `'crossfade'` creates the mixer (one extra full-frame draw per painted frame) — see the
+ *        dissolve section; `./splat`'s other transitions are refused by name.
+ * @param {number} [opts.durationMs=600]  the crossfade's length.
+ * @param {string|function} [opts.easing='easeInOutSine']  a `./splat` easing name or `(x) => y`.
+ * @param {number|string} [opts.band]  a letterbox slot: fit the picture into a centred band of
+ *        this aspect (2.39, '2.39:1', '21/9') inside the tile; implies fit 'contain'.
+ * @param {Array} [opts.titles]  a playlist: `[{ id, src, title?, poster? }, …]` (RFC 0001 A4).
+ * @param {boolean} [opts.loopList=false]  `next()` past the last title wraps to the first.
+ * @param {string} [opts.group]  players sharing a group decode one at a time: a play pauses the others.
+ * @param {boolean} [opts.autoAdvance=false]  a title that ends moves on to the next and plays it.
+ * @param {'mono'|'sbs'|'tb'} [opts.posterFormat='mono']  a stereo poster still is painted eye by eye.
+ * @param {'contain'|'cover'} [opts.fit]  ./splat setVideo's fit: 'contain' letterboxes each eye
+ *        (transparent bars), 'cover' fills the tile and crops. Unset: stretched to the tile.
+ * @param {number} [opts.fadeMs]  LEGACY alias (1.10): `> 0` = `transition:'crossfade'` of that length.
+ * @param {'anonymous'|'use-credentials'} [opts.crossOrigin]  default: `'anonymous'` iff `src` is
+ *        a cross-origin URL, unset otherwise.
+ * @param {number} [opts.width] [opts.height] [opts.cornerRadius] [opts.feather]  forwarded to
+ *        `wall.addVideo()` on the `'sbs'` + supported-wall path only (TileOptions).
+ * @param {Element} [opts.observe]  forwarded to `wall.addVideo()` (lazy visibility gate).
+ * @returns {object} a PlayerHandle — see player.d.ts.
+ */
+export function addPlayer(wall, canvas, src, opts = {}) {
+  const o = normalizePlayerOptions(opts);
+  // The playlist. With `titles` and no `src`, the first title is loaded; with both, `src` is loaded
+  // and becomes the current title if it is one of the list's (by identity or URL).
+  let titles = o.titles;
+  let currentIdx = -1;
+  if ((src === undefined || src === null) && titles.length) {
+    currentIdx = 0;
+    src = titles[0].src;
+    if (!o.title && titles[0].title) o.title = titles[0].title;
+    if (!o.poster && titles[0].poster) o.poster = titles[0].poster;
+  } else if (titles.length) {
+    currentIdx = titles.findIndex((t) => t.src === src);
+  }
+  const container = canvas.parentElement;
+
+  const video = document.createElement('video');
+  video.playsInline = true;
+  video.preload = 'metadata';
+  video.muted = o.muted;
+  video.loop = o.loop;
+  src = pickSource(src);
+  const cross = resolveCrossOrigin(src, o.crossOrigin);
+  if (cross) video.crossOrigin = cross;
+
+  // The SDK transport's hooks, filled in once it is built below (the core reads them lazily).
+  const ui = {};
+  const { handle } = createPlayerCore(o, video, { titles, currentIdx }, {
+    onError: () => paintPosterNow(),
+    setSource: canvasSetSource,
+    exclude: (el) => innerHandle?.exclude(el),
+    unexclude: (el) => innerHandle?.unexclude(el),
+    teardown() {
+      ownLoop?.stop();
+      mixerLoop?.stop();
+      posterPoll?.stop();
+    },
+    afterControls: () => innerHandle?.remove(),
+  }, ui);
+
+  /** The canvas surface's half of setSource (the core has already resolved `tr`). */
+  function canvasSetSource(newSrc, sOpts, tr) {
+    if (tr.type === 'crossfade' && !dissolve) noteNoMixer();
+    // Snapshot BEFORE the src is repointed — once `load()` runs, the old frame is gone.
+    if (dissolve && tr.type === 'crossfade' && dissolve.capture()) dissolve.arm(tr.durationMs, tr.ease);
+    video.pause();
+    if (sOpts.poster !== undefined) loadPoster(sOpts.poster);
+    if (sOpts.title !== undefined) ui.setTitle?.(sOpts.title);
+    newSrc = pickSource(newSrc);
+    const nextCross = resolveCrossOrigin(newSrc, o.crossOrigin);
+    if (nextCross) video.crossOrigin = nextCross;
+    video.src = resolveSrcUrl(newSrc);
+    video.load();
+    // The chrome is bound to this same <video>, so its listeners survive the swap — but the
+    // values they last rendered belong to the OLD title (a 24 s duration, a full scrub bar).
+    // Nothing re-fires them until the new metadata lands, so reset them now rather than show
+    // the previous title's numbers over the new one's first frames.
+    ui.resync?.();
+    // The poster is the right thing on screen again until the new source has a frame — but
+    // NOT when a dissolve is running: the mixer is holding the outgoing title's last frame
+    // there on purpose, and painting the poster over it is the hard cut this option exists
+    // to remove.
+    posterPoll?.stop();
+    if (wantWeave && !dissolve?.active) {
+      posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2, look);
+    }
+    if (o.autoplay) video.play().catch(() => {});
+  }
+
+  let posterImg = null;
+  function loadPoster(url) {
+    if (!url) {
+      posterImg = null;
+      return;
+    }
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      posterImg = img;
+      paintPosterNow();
+    };
+    img.onerror = () => {
+      posterImg = null;
+    };
+    img.src = url;
+  }
+
+  const wantWeave = (o.format === 'sbs' || o.format === 'tb') && !!(wall && wall.supported);
+  const look = { fit: o.fit, band: o.band, posterFormat: o.posterFormat };
+  let innerHandle = null;
+  let ownLoop = null;
+  let posterPoll = null;
+  let mixerLoop = null;
+  // Opt-in: no fade asked for at construction => no mixer, and the woven path stays the
+  // byte-identical `addVideo(canvas, video)` it is today. See the dissolve section above.
+  const dissolve = o.transition.type === 'crossfade' ? createDissolve(video) : null;
+  // The woven path's fit stage sits after the mixer (it fits whatever the mixer composed).
+  // It is also what repacks a top/bottom source into the SBS pair the SDK weaves, and what lays a
+  // band slot out — so it exists for any of fit, band or 'tb'.
+  const fitter =
+    wantWeave && (o.fit || o.band || o.format === 'tb')
+      ? createFitter(() => (dissolve ? dissolve.el : video), canvas, o.fit, o.format, o.band)
+      : null;
+
+  function paintPosterNow() {
+    if (!posterImg) return;
+    if (wantWeave) paintPosterSBS(canvas, posterImg, look);
+    else ownLoop?.forceRepaint();
+  }
+
+  if (wantWeave) {
+    innerHandle = wall.addVideo(canvas, fitter ? fitter.el : dissolve ? dissolve.el : video, {
+      width: o.width,
+      height: o.height,
+      cornerRadius: o.cornerRadius,
+      feather: o.feather,
+      ...(o.observe ? { observe: o.observe } : {}),
+    });
+    if (dissolve || fitter) mixerLoop = driveMixer(video, [dissolve, fitter].filter(Boolean));
+    posterPoll = startPosterPoll(canvas, () => posterImg, () => video.readyState >= 2, look);
+  } else {
+    // The flat loop paints the mixer itself rather than running a second loop beside it.
+    ownLoop = attachFlatPaint(canvas, video, {
+      mode: o.format === 'mono' ? 'mono' : 'sbs-fallback',
+      layout: o.format === 'tb' ? 'tb' : 'sbs',
+      getPoster: () => posterImg,
+      dissolve,
+      fit: o.fit,
+      band: o.band,
+      posterFormat: o.posterFormat,
+    });
+  }
+
+  loadPoster(o.poster);
+  video.src = resolveSrcUrl(src);
+  video.load();
+  if (o.autoplay) video.play().catch(() => {});
+
+  if (o.controls === 'sdk') {
+    if (container) {
+      const built = buildTransportBar(container, canvas, video, {
+        keyboard: o.keyboard,
+        accent: o.accent,
+        badge3d: o.badge3d,
+        title: o.title,
+        skipButtons: o.skipButtons,
+        fullscreen: o.fullscreen,
+        skin: o.skin,
+        size: o.size,
+        band: o.band,
+        onBack: () => handle.back(),
+      });
+      ui.el = built.el;
+      ui.cleanup = built.cleanup;
+      ui.resync = built.resync;
+      ui.setTitle = built.setTitle;
+      ui.applyAppearance = built.applyAppearance;
+    } else {
+      console.warn(
+        '[inline3d/player] controls:"sdk" needs canvas.parentElement to attach the transport ' +
+          '(the overlay must be a sibling of the canvas) — skipping SDK chrome for this player.'
+      );
+    }
+  }
+
+  return handle;
+}
+
+// ── attachPlayer: the player on an existing splat handle (surface mode) ───────────────────────
+//
+// RFC 0001 Addendum A. The same core as addPlayer, on a surface that owns NO canvas: it borrows
+// the handle's video slot (`handle.setVideo`, ./splat engine:'playcanvas'). One persistent woven
+// canvas, never a second one (woven-canvas rules 2 and 3).
+//
+// TWO ELEMENTS, ALTERNATING (A2). A source swap makes a new <video> and hands it to setVideo,
+// which keeps the plane on the old element until the new one's first frame — so the plane never
+// shows an element that is loading. (Swapping `src` in place on one element would: while it
+// reloads its videoWidth is 0, and the plane re-sizes and re-textures to nothing.) The old
+// element is paused at once and released only after the swap has landed.
+//
+// THE TRANSPORT BINDS TO A PROXY, not to either element: it answers for, and forwards the media
+// events of, whichever element is current. So buildTransportBar, joinGroup and the core are the
+// same code as addPlayer's, unaware that the element underneath changes.
+
+/** The media events the proxy forwards from the current element (all the player listens for). */
+const PROXY_EVENTS = [
+  'play', 'pause', 'playing', 'ended', 'timeupdate', 'durationchange', 'loadedmetadata', 'loadeddata',
+  'canplay', 'progress', 'seeking', 'seeked', 'waiting', 'volumechange', 'error',
+];
+
+/**
+ * A stand-in <video> for the transport: every read, write and call goes to the current element,
+ * and the current element's media events are re-dispatched from here. `use(el)` switches
+ * elements; events from an element that is no longer current are dropped. Exported for tests.
+ */
+export function createVideoProxy() {
+  const et = new EventTarget();
+  let el = null;
+  // Bound per element, so an event from an element that is no longer current is dropped even
+  // if it was queued before the switch.
+  const forwarders = new Map();
+  const rw = (k) => ({
+    get: () => (el ? el[k] : undefined),
+    set: (v) => {
+      if (el) el[k] = v;
+    },
+    enumerable: true,
+  });
+  const ro = (k, dflt) => ({ get: () => (el ? el[k] : dflt), enumerable: true });
+  const proxy = {
+    /** The element the proxy answers for now. */
+    get element() {
+      return el;
+    },
+    use(next) {
+      if (next === el) return;
+      if (el) {
+        const f = forwarders.get(el);
+        for (const t of PROXY_EVENTS) el.removeEventListener(t, f);
+        forwarders.delete(el);
+      }
+      el = next || null;
+      if (el) {
+        const mine = el;
+        const f = (e) => {
+          if (mine === el) et.dispatchEvent(new Event(e.type));
+        };
+        forwarders.set(el, f);
+        for (const t of PROXY_EVENTS) el.addEventListener(t, f);
+      }
+    },
+    addEventListener: (t, fn, o) => et.addEventListener(t, fn, o),
+    removeEventListener: (t, fn, o) => et.removeEventListener(t, fn, o),
+    play: () => (el ? el.play() : Promise.resolve()),
+    pause: () => el?.pause(),
+    load: () => el?.load(),
+    removeAttribute: (n) => el?.removeAttribute(n),
+    requestVideoFrameCallback: (cb) => el?.requestVideoFrameCallback?.(cb),
+    cancelVideoFrameCallback: (h) => el?.cancelVideoFrameCallback?.(h),
+  };
+  Object.defineProperties(proxy, {
+    currentTime: rw('currentTime'),
+    volume: rw('volume'),
+    muted: rw('muted'),
+    loop: rw('loop'),
+    src: rw('src'),
+    crossOrigin: rw('crossOrigin'),
+    preload: rw('preload'),
+    playsInline: rw('playsInline'),
+    paused: ro('paused', true),
+    ended: ro('ended', false),
+    duration: ro('duration', NaN),
+    readyState: ro('readyState', 0),
+    videoWidth: ro('videoWidth', 0),
+    videoHeight: ro('videoHeight', 0),
+    error: ro('error', null),
+    buffered: ro('buffered', undefined),
+  });
+  return proxy;
+}
+
+let warnedSurfaceCrossfade = false;
+let warnedSurfaceIgnored = false;
+/** Options that mean something only on a surface the player owns (A1, A4's parity table). */
+const SURFACE_IGNORED = ['band', 'poster', 'posterFormat', 'width', 'height', 'cornerRadius', 'feather', 'observe'];
+
+/**
+ * Play titles on an EXISTING splat handle's video slot, with the same transport, playlist and
+ * events as addPlayer — and no canvas of its own (RFC 0001 Addendum A).
+ *
+ * @param {object} splat  an `addSplat(…, { engine: 'playcanvas' })` handle (anything with
+ *        `setVideo`; `canvas`, `videoElement` and `exclude` are used when present).
+ * @param {string|Blob|Array} src  as addPlayer; or omit it and pass `opts.titles`.
+ * @param {object} [opts]  addPlayer's options, except: `fullscreen` defaults to false (it would
+ *        fullscreen the whole app's canvas); `transition: 'crossfade'` cuts (warns once) until
+ *        `./splat` setVideo crossfades; `band`, `poster`, `posterFormat` and the tile options are
+ *        ignored (warns once) — the scene is the poster. `format` ('sbs' | 'tb' | 'mono') and `fit`
+ *        ('contain' default | 'cover') go to setVideo.
+ * @param {Element} [opts.chromeContainer]  where the controls go. Default: the canvas's parent.
+ * @returns {object} a PlayerHandle (player.d.ts) plus `detach()` and the `'detached'` event.
+ */
+export function attachPlayer(splat, src, opts = {}) {
+  if (!splat || typeof splat.setVideo !== 'function') {
+    throw new TypeError(
+      "@displayxr/inline3d/player: attachPlayer(handle, …) needs an addSplat(…, { engine: 'playcanvas' }) handle (one with setVideo)."
+    );
+  }
+  const given = opts || {};
+  const o = normalizePlayerOptions({ ...given, fullscreen: given.fullscreen === undefined ? false : given.fullscreen });
+  const ignored = SURFACE_IGNORED.filter((k) => given[k] !== undefined && given[k] !== null);
+  if (ignored.length && !warnedSurfaceIgnored) {
+    warnedSurfaceIgnored = true;
+    console.warn(`[inline3d/player] attachPlayer ignores ${ignored.join(', ')} (the handle's own tile; the scene is the poster).`);
+  }
+  let titles = o.titles;
+  let currentIdx = -1;
+  if ((src === undefined || src === null) && titles.length) {
+    currentIdx = 0;
+    src = titles[0].src;
+    if (!o.title && titles[0].title) o.title = titles[0].title;
+  } else if (titles.length) {
+    currentIdx = titles.findIndex((t) => t.src === src);
+  }
+  const canvas = splat.canvas || null;
+  const container = given.chromeContainer || (canvas && canvas.parentElement) || null;
+  const setVideoOpts = { format: o.format, fit: o.fit || 'contain', autoplay: false };
+
+  function makeElement(s, like) {
+    const v = document.createElement('video');
+    v.playsInline = true;
+    v.preload = 'auto'; // setVideo swaps at the first frame, so the frame must come without play()
+    v.muted = like ? like.muted : o.muted;
+    v.loop = like ? like.loop : o.loop;
+    if (like) v.volume = like.volume;
+    const picked = pickSource(s);
+    const cross = resolveCrossOrigin(picked, o.crossOrigin);
+    if (cross) v.crossOrigin = cross;
+    v.src = resolveSrcUrl(picked);
+    return v;
+  }
+  function releaseElement(v) {
+    try {
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  const proxy = createVideoProxy();
+  let shown = null; // the element the plane shows (setVideo resolved for it)
+  let pending = null; // ours, handed to setVideo, before its first frame
+  let seq = 0;
+  let state = 'attached'; // 'attached' | 'detached'
+  const retired = new Set(); // paused, kept until the swap that replaces them lands
+
+  function show(el) {
+    const mine = ++seq;
+    pending = el;
+    let p;
+    try {
+      p = splat.setVideo(el, setVideoOpts);
+    } catch (err) {
+      pending = null;
+      queueMicrotask(() => emit('error', err));
+      return;
+    }
+    Promise.resolve(p).then(
+      () => {
+        if (mine !== seq || state !== 'attached') return;
+        pending = null;
+        shown = el;
+        for (const r of retired) if (r !== el) releaseElement(r);
+        retired.clear();
+      },
+      (err) => {
+        if (mine !== seq || state !== 'attached') return; // our own newer call, or detach()
+        pending = null;
+        if (err && err.name === 'AbortError') lost('superseded');
+        else emit('error', err);
+      }
+    );
+  }
+
+  // Nothing reports another setVideo taking the slot once ours is on, so look: twice a second and
+  // on the transport's own events. Only while ours is on and no swap of ours is in flight.
+  function checkSlot() {
+    if (state !== 'attached' || !shown || pending || !('videoElement' in splat)) return;
+    const now = splat.videoElement;
+    if (now !== shown) lost(now ? 'superseded' : 'released');
+  }
+  const slotTimer = setInterval(checkSlot, 500);
+
+  const ui = {};
+  let overlays = [];
+  const { handle, emit } = createPlayerCore(o, proxy, { titles, currentIdx }, {
+    setSource(newSrc, sOpts, tr) {
+      if (state !== 'attached') return;
+      if (tr.type === 'crossfade' && !warnedSurfaceCrossfade) {
+        warnedSurfaceCrossfade = true;
+        console.warn('[inline3d/player] attachPlayer cuts: a crossfade needs ./splat setVideo to crossfade (RFC 0001 A5.1).');
+      }
+      if (sOpts.title !== undefined) ui.setTitle?.(sOpts.title);
+      const prev = proxy.element;
+      const next = makeElement(newSrc, prev);
+      if (prev) {
+        prev.pause();
+        retired.add(prev);
+      }
+      proxy.use(next);
+      ui.resync?.();
+      show(next);
+      if (o.autoplay) next.play().catch(() => {});
+    },
+    exclude: (el) => splat.exclude?.(el),
+    unexclude: (el) => splat.unexclude?.(el),
+    teardown() {
+      clearInterval(slotTimer);
+      for (const el of overlays) splat.unexclude?.(el);
+    },
+    afterControls() {
+      // Give the slot back only if it is still ours (shown, or ours pending): never clear a video
+      // someone else put there.
+      const now = 'videoElement' in splat ? splat.videoElement : shown;
+      const ours = state === 'attached' && (pending || (shown && now === shown));
+      state = 'detached';
+      if (ours) splat.setVideo(null);
+    },
+    release() {
+      for (const r of retired) releaseElement(r);
+      retired.clear();
+      const cur = proxy.element;
+      for (const v of new Set([shown, pending, cur])) if (v) releaseElement(v);
+      proxy.use(null);
+      shown = pending = null;
+    },
+  }, ui);
+
+  /** The slot went to someone else: stop driving the handle, say so once, tear down our side. */
+  function lost(reason) {
+    if (state !== 'attached') return;
+    state = 'detached';
+    emit('detached', { reason });
+    handle.remove();
+  }
+  for (const t of ['play', 'pause', 'timeupdate']) proxy.addEventListener(t, checkSlot);
+
+  if (o.controls === 'sdk') {
+    if (container && canvas) {
+      const built = buildTransportBar(container, canvas, proxy, {
+        keyboard: o.keyboard,
+        accent: o.accent,
+        badge3d: o.badge3d,
+        title: o.title,
+        skipButtons: o.skipButtons,
+        fullscreen: o.fullscreen,
+        skin: o.skin,
+        size: o.size,
+        band: null,
+        onBack: () => handle.back(),
+      });
+      ui.el = built.el;
+      ui.cleanup = built.cleanup;
+      ui.resync = built.resync;
+      ui.setTitle = built.setTitle;
+      ui.applyAppearance = built.applyAppearance;
+      // Legacy browsers: the core's overlay scan finds these under the canvas's parent; exclude
+      // them on the handle too, so it does not depend on where the page nested its canvas (A3).
+      overlays = built.overlays || [];
+      for (const el of overlays) splat.exclude?.(el);
+    } else {
+      console.warn(
+        "[inline3d/player] attachPlayer: controls:'sdk' needs the handle's canvas in a container " +
+          '(or opts.chromeContainer) — skipping SDK chrome.'
+      );
+    }
+  }
+
+  const first = makeElement(src, null);
+  proxy.use(first);
+  show(first);
+  if (o.autoplay) first.play().catch(() => {});
+
+  /** Give the slot back (setVideo(null): the scene, pose, lens and rig as they were) and tear down. */
+  handle.detach = () => {
+    handle.remove();
+    return Promise.resolve();
+  };
   return handle;
 }

@@ -246,7 +246,13 @@ only decode is grouped).
 
 ## Addendum A — Surface mode: the player on an existing splat handle
 
-*Status: proposal, for review before any code. 2026-09-25.*
+*Status: design agreed (#74). v1 implemented 2026-09-26: the core/surface split, `attachPlayer` on
+the splat adapter with cut transitions, and the panel acceptance (one persistent canvas; attach,
+play, next/back, detach; scene state identical after). Two small additions to `./splat` came with
+it: read-only `handle.videoElement` (A2's supersede needs it: nothing reports another `setVideo`
+once ours is on) and `handle.canvas` (A3's placement). `'detached'` also has a second reason,
+`'released'`, for a slot emptied by someone else's `setVideo(null)`. Not yet checked: the controls
+on a legacy (pre-occlusion) browser. A5.1–A5.3 follow.*
 
 ### Why
 

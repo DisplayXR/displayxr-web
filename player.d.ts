@@ -135,7 +135,7 @@ export interface PlayerOptions {
   observe?: Element;
 }
 
-export type PlayerEvent = 'play' | 'pause' | 'ended' | 'timeupdate' | 'ready' | 'error' | 'titlechange';
+export type PlayerEvent = 'play' | 'pause' | 'ended' | 'timeupdate' | 'ready' | 'error' | 'titlechange' | 'detached';
 
 /** One playlist entry (RFC 0001 Addendum A4). */
 export interface PlayerTitle {
@@ -223,6 +223,44 @@ export function addPlayer(
   src: PlayerSource | null,
   opts?: PlayerOptions,
 ): PlayerHandle;
+
+/** {@link attachPlayer}'s options: the player's, plus where its controls go. */
+export interface AttachPlayerOptions extends PlayerOptions {
+  /** Where the SDK controls go. Default: the handle's canvas's parent element. */
+  chromeContainer?: Element;
+}
+
+/** `'detached'`'s payload: something else took (`'superseded'`) or emptied (`'released'`) the slot. */
+export interface PlayerDetachedEvent {
+  reason: 'superseded' | 'released';
+}
+
+/** What {@link attachPlayer} returns: a {@link PlayerHandle} that can give its slot back. */
+export interface AttachedPlayerHandle extends PlayerHandle {
+  /**
+   * Give the slot back: `setVideo(null)`, so the splat, pose, lens and declared rig are exactly as
+   * they were, then tear down the controls and release the elements. Resolves once restored. Leave
+   * a Watch screen with `await player.detach()` before the handle's own `setSource`.
+   */
+  detach(): Promise<void>;
+}
+
+/**
+ * PREVIEW. Surface mode (RFC 0001 Addendum A): the same transport, playlist and events as
+ * {@link addPlayer}, drawn through an EXISTING `addSplat(…, { engine: 'playcanvas' })` handle's
+ * `setVideo` — no canvas, layer or session of its own. The scene stays on screen until the first
+ * frame (it is the poster); a source swap cuts at the next title's first frame. Differences from
+ * `addPlayer`: `fullscreen` defaults to false; `transition: 'crossfade'` cuts (warns once) until
+ * `./splat` setVideo crossfades; `band`, `poster`, `posterFormat` and the tile options are ignored
+ * (warns once). If another `setVideo` takes the slot, the player stops and emits `'detached'`
+ * ({@link PlayerDetachedEvent}); it never fights for it.
+ */
+export function attachPlayer(
+  splat: { setVideo: (...args: any[]) => Promise<unknown>; canvas?: HTMLCanvasElement; videoElement?: HTMLVideoElement | null },
+  /** `null` with `opts.titles` loads the first title. */
+  src: PlayerSource | null,
+  opts?: AttachPlayerOptions,
+): AttachedPlayerHandle;
 
 /** The `setSource()` transitions a video can mean. */
 export type PlayerTransition = 'cut' | 'crossfade';

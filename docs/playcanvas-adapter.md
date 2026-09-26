@@ -311,15 +311,19 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 - Only the splat is hidden. Entities the page hung under `handle.engine.root` stay as they are,
   and a page hides its own.
 
-**Transport chrome is the page's.** The player module RFC ([`docs/rfcs/0001-media-player.md` on
-`feat/player`](https://github.com/DisplayXR/displayxr-web/blob/feat/player/docs/rfcs/0001-media-player.md))
-has a partial-region transport bar (`data-inline3d-overlay`). It is internal to that unmerged
-module (`buildTransportBar` is not exported) and bound to `addPlayer`'s own canvas, so it is not
-reused here. The integration point is `v.video`: the same `HTMLMediaElement` vocabulary
-(`play/pause/currentTime/duration/ended`, `timeupdate`/`ended` events) the RFC's handle uses. If
-the bar ever becomes an export taking `(container, video)`, it applies to `setVideo` unchanged. As
+**Transport chrome: `attachPlayer`, or the page's own.** `./player`'s `attachPlayer(handle, src,
+opts)` puts the SDK transport, a playlist and the player's events on this slot, with no second
+canvas ([authoring guide §2b](authoring-inline-3d.md#on-an-apps-one-persistent-canvas-attachplayersplat-src-opts),
+RFC 0001 Addendum A). A page that draws its own chrome drives `v.video` directly, the same
+`HTMLMediaElement` vocabulary. Either way, as
 [rule 8](woven-canvas-rules.md#8-chrome-over-a-woven-canvas-is-a-partial-region) requires, keep the
 chrome a partial region of the tile.
+
+**Two read-only properties** exist for code that sits beside the slot:
+- `handle.videoElement` is the `<video>` the plane is showing now, or `null` (none, or one still
+  waiting for its first frame). No event reports it changing; `attachPlayer` reads it to notice
+  another `setVideo` taking the slot.
+- `handle.canvas` is the tile's canvas, for chrome placed as its sibling.
 
 **Gates** (Chrome 153, real GPU (Metal/ANGLE, M1 Pro), a 1280×720 CSS tile at DPR 1, on the
 camera-rig photo `ports_100_cam.sog`). The pixel gates are headless, with fake stereo: two
