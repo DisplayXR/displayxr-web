@@ -23,9 +23,28 @@ So the three files are ordinary scripts. Chrome runs them in order in the page's
 
 | file | owns |
 |---|---|
-| `core.js` | everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page asks for `inline-3d` / `immersive-vr` / `immersive-ar` itself, and the per-origin config and kill switch. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand. **Sizing:** the side-by-side (SBS) rule (`eyeScale` 0.5, capped at 3072) and the `canvas.width` virtualisation helper. **Rig builder:** `{type:'camera', verticalFov, convergenceDiopters = 1/d, metersToVirtual = depth·d/0.5, ipd/parallax 1}`, pushed every frame. **Convergence estimator,** as an interface (below). **Cover:** a still of the last mono frame, held for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5). **Other:** the HUD, hotkeys, `window.__dxrAuto3D`. |
+| `core.js` | everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page asks for `inline-3d` / `immersive-vr` / `immersive-ar` itself, and the per-origin config and kill switch. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand. **Sizing:** the side-by-side (SBS) rule (`eyeScale` 0.5, capped at 3072) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Cover:** a still of the last mono frame, held for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5). **Turn-off order:** mono frame first, layer released after it is committed (below). **Other:** the HUD, hotkeys, `window.__dxrAuto3D`. |
 | `three-adapter.js` | the three.js prototype's own code, unchanged in behaviour. Detection through `__THREE_DEVTOOLS__`, per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
 | `playcanvas-adapter.js` | detects the app, drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
+
+**Convergence: the page's target first.** When the page says what it is looking at, that is the
+convergence distance: the depth, along the camera's axis, of
+
+- three.js: the point of the camera's last `lookAt()`. OrbitControls, MapControls and
+  TrackballControls all end `update()` with `this.object.lookAt(this.target)`, so this is their
+  `.target`; `Object3D.prototype.lookAt` is wrapped when the first Scene is announced (before the
+  page builds its camera and controls). The controls object itself is not reachable (its canvas
+  listeners are bound functions), except from a `window.controls` / `orbitControls` /
+  `cameraControls` global whose `.object` is the page camera;
+- PlayCanvas: `pivotPoint` of an `orbit-camera.js` script, or `focusPoint` of the engine's
+  `CameraControls` script, on the camera entity; otherwise the camera entity's last `lookAt()`
+  (`GraphNode.prototype.lookAt`, wrapped from `app.root`).
+
+It is used only while the camera is still looking at it (within a quarter of the half-FOV of the
+axis) and it is in `[2·near, 0.9·far]`; a stale `lookAt` falls back to the estimator. The target is
+followed every frame, eased by 0.25 per frame. The HUD and `state().renderers[].convergenceSource`
+say which one is in use: `target`, `estimator`, or `manual` once `Ctrl+Alt+0` / `9` has scaled it
+(`convergenceVia` names the target's origin, e.g. `camera.lookAt`).
 
 **The convergence interface.** `core.estimateSubjectDistance(sampler)` takes
 `{ cameraPose, viewMatrix?, verticalFov, tanHalfFov?, aspect, near, far, forEachBounds(cb) }`. The
@@ -36,9 +55,36 @@ stands among them, the result is the apparent-size-weighted median depth. The va
 `[2·near, 0.9·far]` and eased by 0.25 every 30 frames.
 
 **The adapter contract** (hooks the core calls on `st.ad`) is written out at the top of `core.js`:
-`unqualified`, `hasCamera`, `depthRange`, `rigFov`, `sampler`, `beforeActive` / `afterActive`,
-`firstDraw`, `redraw`, `restore`, `flipIdle`, `describe`. A third engine means one new file that
-implements those hooks.
+`unqualified`, `hasCamera`, `depthRange`, `rigFov`, `sampler`, `target`, `beforeActive` /
+`afterActive`, `firstDraw`, `redraw`, `restore`, `flipIdle`, `wake`, `describe`. A third engine
+means one new file that implements those hooks.
+
+**Turning off: mono first, release after.** A live canvas that goes back to 2D while it stays on
+screen (`Ctrl+Alt+3`, a camera switch, no eyes) does it in this order:
+
+1. the store goes back to its mono size and a mono frame is drawn, **with the layer still bound**
+   (three.js: the page's last frame, replayed mono in the same task; PlayCanvas: the engine's next
+   tick, reported from `postrender`);
+2. the layer is closed and the session ended on the **second** animation frame after that frame
+   was drawn, i.e. once it has been committed (at most `releaseMaxMs` 500 ms later, for a page that
+   stopped drawing).
+
+The reverse order (release, then draw) was what v0.2.0 did. `layer.close()` reaches the browser on
+its own channel, not with the next commit, so the browser can stop weaving while the last
+*committed* frame is still the side-by-side pair: shown unwoven, that is the raw-pair flash
+([woven-canvas rules](../../docs/woven-canvas-rules.md) §1). The first panel run logged one
+`inline-3D withheld ids=[no-identity@…]` 8 ms after a three.js turn-off, which is this window. With
+the new order the frames around the switch are either the woven pair or the page's own mono pixels:
+in the one frame where a mono store sits under a still-bound layer, its resource has changed, so the
+browser cannot join it and shows the page's pixels (mono) rather than weave it. A join-window cover
+still up at turn-off stays until the release. Leaving for good (the page asked for inline-3D /
+WebXR itself, the canvas or document is going away) still releases at once: the page needs the
+session back.
+
+**Re-enabling a page that draws on demand.** `Ctrl+Alt+3` back on asks each adapter for one frame
+(`wake`): three.js replays the page's last mono frame through the wrapped renderer, PlayCanvas sets
+`app.renderNextFrame`. Without it a render-on-demand page (three.js `webgl_geometry_teapot`,
+supersplat-viewer with `autoRender = false`) stayed 2D until the next input.
 
 ## What each adapter converts, and where it stands down
 
@@ -61,8 +107,9 @@ implements those hooks.
 
 1. **`window.pc`**, a UMD / editor build: `pc.app`, `pc.AppBase.getApplication()`. The global is
    watched with an accessor, so the moment the engine script assigns it is seen.
-2. **`window.app`**, when it is an AppBase: supersplat-viewer with `exposeGlobals`, and many
-   demos. Polled every 500 ms for 20 s.
+2. **`window.app`**, when it is an AppBase: many demos. Polled every 500 ms for 20 s.
+   supersplat-viewer no longer uses this route: 1.35.2 does not set `window.app`, with or without
+   `exposeGlobals`. It is found through route 3 (verified on the panel, 2026-09-26).
 3. **ESM bundles with no global.** The first statement of the AppBase constructor is
    `AppBase._applications[canvas.id] = this`, a plain-object store keyed by the canvas id. The
    adapter watches canvas `id` reads (the `Element.prototype.id` getter, for canvases only) and
@@ -145,7 +192,8 @@ Pages to start with:
 | `https://threejs.org/examples/webgl_shadowmap.html` | three.js: a reversed-depth renderer |
 | the PlayCanvas engine examples browser (`playcanvas.github.io`), a mesh example | PlayCanvas: meshes. The examples browser runs each example in an iframe; the script runs in all frames |
 | the same, a gaussian-splatting example | PlayCanvas: gsplat (footprint fix) |
-| a supersplat-viewer page with `&webgl` | PlayCanvas: `window.app` detection. Without `&webgl` the viewer picks WebGPU and stays 2D |
+| a supersplat-viewer page with `&webgl` | PlayCanvas: an ESM app found through the canvas-id trap (route 3), `autoRender = false`. Without `&webgl` the viewer picks WebGPU and stays 2D. A standalone copy of the viewer (its built `index.html` served locally) needs the scene's `settings.json` next to it (`./settings.json`); without it the viewer never starts |
+| the PlayCanvas engine examples, `loaders/glb` | PlayCanvas: the camera alternates perspective / orthographic every 2 s (3D, then 2D; see below) |
 
 ### Hardware verification checklist (for the tester)
 
@@ -162,20 +210,63 @@ Pages to start with:
    hides; `no-identity` after the cover drops means `holdMs` is too short on that box;
    `cross-pass:mono` means an ancestor CSS effect (rule 7); `no-quad` means the canvas is not
    drawing. The line is throttled (the first three, then one in 300), so a missing line proves
-   nothing on its own.
+   nothing on its own. Do the same at **turn-off** (`Ctrl+Alt+3`): the console logs `layer released
+   N ms after the stand (mono frame drawn first)`, and no raw pair may show between the stand and
+   the release.
 4. **Comfort.** Try `Ctrl+Alt+=` / `-` (depth) and `Ctrl+Alt+0` / `9` (convergence farther /
-   nearer), and write down the values that felt right, per page.
+   nearer), and write down the values that felt right, per page. Note which convergence source the
+   HUD shows (`target` / `estimator` / `manual`). On an object-centric page (a product, a model on
+   a turntable) try `Ctrl+Alt+P` (display rig) and say which rig reads better.
 5. **Stand-down.** Open an SDK sample (for example `samples/splat/`): the HUD must read
    `standing down (the page requested 'inline-3d')`. Press `Ctrl+Alt+3` on a converted page: back
-   to 2D at once, the page intact.
+   to 2D at once, the page intact. Press it again, without touching the page: 3D again within a
+   second or so, including on render-on-demand pages (`webgl_geometry_teapot`, supersplat-viewer).
 6. **Frame rate.** Every converted draw runs twice. Note the page's fps before and after.
 
 ## Controls
 
-`Ctrl+Alt+…`: **3** turns it on or off for this site (remembered per origin) · **=** / **-**
-depth · **0** / **9** convergence farther / nearer · **8** reset · **D** HUD. The HUD shows the
-depth, the convergence distance, and counts of stereo / flat / replayed frames. When a page is left
-2D for a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
+`Ctrl+Alt+…`: **3** turns it on or off for this site · **P** camera rig / display rig · **=** /
+**-** depth · **0** / **9** convergence farther / nearer · **8** reset depth and convergence · **D**
+HUD. Everything but 8 is remembered per origin. The HUD shows the rig, the depth, the convergence
+distance and its source, and counts of stereo / flat / replayed frames. When a page is left 2D for
+a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
+
+### Rigs: camera by default, display on Ctrl+Alt+P
+
+- **Camera rig (default).** `{type:'camera', verticalFov, convergenceDiopters = 1/d,
+  metersToVirtual = depth·d/0.5, ipd/parallax 1}`, attached to the page camera (identity pose).
+  It keeps the author's FOV and framing; comfort = ipd × m2v × diopters × 0.5 = `depth`.
+- **Display rig (`Ctrl+Alt+P`).** For object-centric scenes, like the P key in the legacy WebXR
+  apps. `{type:'display', position (0, 0, −d), identity orientation, virtualDisplayHeight =
+  2·d·tan(vfov/2), ipdFactor = depth, parallax 1, perspective 1}`, in the page camera's space. The
+  canvas becomes a portal on the convergence plane, square to the page camera and exactly as tall
+  as the page camera's view there, so what the author framed at the subject is what the portal
+  shows, sitting on the glass. The runtime puts the eyes at the viewer's real distance (m2v = portal
+  height / physical canvas height), so the FOV becomes the display's own and the stereo is
+  scale-invariant. A display rig's comfort number is its `ipdFactor`, so `depth` keeps one meaning
+  on both rigs. The far plane is pushed out by however far behind the page camera the runtime put
+  the eyes. Declared, never computed: no Kooima in the page.
+
+`depth` defaults to 0.30 (`DEFAULT_DEPTH`, one line at the top of `core.js`). On the panel it read
+"a little timid"; the new default is still to be chosen.
+
+### Cameras that switch projection (PlayCanvas `loaders/glb`)
+
+The adapter goes 3D on the perspective camera and 2D on the orthographic one, and the 1.2 s cover
+eats most of each 2 s 3D phase. Skipping the cover on the way back to perspective would need the
+browser's join to survive the orthographic phase, and it does not: going 2D **ends the session and
+closes the layer**. In the browser, ending an inline-3D session clears the document's weave rects
+and retracts its 3D demand (browser-pvt patch 0058), so the panel itself drops to 2D after its
+300 ms debounce, and the per-target weave state of a canvas that stops appearing is pruned after
+30 frames (~0.5 s, patch 0061). The element's identity token does survive (it is derived from the
+DOM node, patch 0060), but everything keyed to the live session is gone, so each perspective phase
+is a fresh session and a fresh layer, and it keeps the full cover. The harness pins this (case
+`b-flip`).
+
+The alternative is a product decision, not a timing fix: keep the session and the layer through
+the orthographic phase and draw it flat into both halves (what the three.js adapter already does
+for ortho passes). The join then survives and the way back to 3D needs no cover, but the
+orthographic phase becomes a flat woven picture (the panel stays in 3D) instead of true 2D.
 
 `window.__dxrAuto3D.state()` reports every canvas seen, which engine drew it, what was converted,
 and why the rest were not. `window.__dxrAuto3D.probe()` asks the live layer for `getDisplayInfo()`
@@ -205,13 +296,27 @@ node run.mjs                     # every case; `node run.mjs a a-legacy` for one
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |
-| `b-kill` | the same, then `Ctrl+Alt+3` while live | back to 2D, `xrViews` released, the canvas shows one mono view |
+| `a-kill` / `b-kill` | three.js keyframes / PlayCanvas meshes, both frozen (render on demand): `Ctrl+Alt+3` while live, then again | back to 2D (PlayCanvas: `xrViews` released), the canvas shows one mono view; **no raw pair after `close()`** in the commit model (below); on again, **3D again within 4 s** with the page not drawing |
+| `a-target` | `pages/three-orbit.html`: real `OrbitControls`, target 5 units away, scene centre 8 | convergence 5 ± 5 %, source `target` on the HUD and in `state()` |
+| `b-target` | `pages/pc-orbit.html`: the engine's `CameraControls`, `focusPoint` 5 units away | the same |
+| `a-display` | three.js keyframes, `Ctrl+Alt+P`, then again | a display rig declared (portal at −d, height 2·d·tan(fov/2), `ipdFactor` = depth), on the HUD, in `state().rigMode`, saved for the site; back to the camera rig |
+| `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
 | `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so |
 
+**The commit model** (`window.__fakeXRTrackCommits`, cases `a-kill`, `b-kill`, `b-flip`). After
+every frame's rAF callbacks (in a ResizeObserver callback, which runs after them and before paint)
+the fake takes a 128×72 copy of the bound canvas: the frame this document commits. `close()` is
+modelled as reaching the browser at once, so the frame committed before it, and the next few, are
+what the browser shows unwoven; none may be a side-by-side pair unless the cover is up. It is a
+model of the browser, not the browser: it catches an ordering that closes before the mono frame is
+committed, and says nothing about the real compositor's timing.
+
 The harness proves the plumbing: detection, sizing, the per-eye matrices, counters, rig numbers,
-the convergence estimate, and parity. It cannot prove the weave, the join timing, or comfort.
-Those need the display (checklist above).
+the convergence estimate and its source, the turn-off ordering, and parity. It cannot prove the
+weave, the join timing, or comfort. Those need the display (checklist above).
+
+On Windows the harness uses the installed Chrome (`CHROME=` to override) with ANGLE D3D11.
 
 ## Why a renderer shim, not the alternatives
 
@@ -235,8 +340,14 @@ DisplayXR Browser 154.0.8037.17 on an SR display, `webgl_animation_keyframes` co
 That was a first look. Depth comfort, flicker at the switch and frame rate have not been assessed
 yet.
 
-**Headless, v0.2.0 (this split), M1 Pro, ANGLE Metal:** every case in the table above passes. The
-three.js path renders byte-identical frames before and after the split.
+**On the display (2026-09-26, v0.2.0, Windows Leia panel):** both engines convert at 60 fps and
+read well. The findings of that run are what v0.3.0 fixes: re-enabling a render-on-demand page, the
+turn-off ordering, `deps.mjs` on Windows, the supersplat-viewer detection route; plus the display
+rig and the target-first convergence.
+
+**Headless, v0.3.0, M1 Pro, ANGLE Metal:** every case in the table above passes. The
+three.js path renders byte-identical frames before and after the split (case `a`, with the target
+source off so the comparison is about the machinery).
 
 **Not verified: needs the display and a human.** That the weave shows 3D for either engine, with
 real runtime views. The cover timing against the real join. Whether `depth` 0.3 and the automatic

@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary three.js page with OrbitControls (the real addon from three@0.180.0),
+     whose target is NOT the centre of the scene: every mesh is symmetric about (0, 1, 0), which is
+     where the estimator converges (8 units away), but the controls orbit (0, 1, 3), 5 units in
+     front of the camera. The page's explicit target wins: expected convergence 5, source 'target'.
+     Render-on-demand, as orbit pages usually are: it draws on the controls' 'change' event and for
+     its first 60 frames, then stops. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three orbit target (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from '/deps/three/OrbitControls.js';
+window.__expectedConvergence = 5;
+window.__expectedConvergenceSource = 'target';
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 1, 8);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(3, 6, 4);
+scene.add(sun);
+const mk = (geo, color, x, y, z) => { const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.4 })); m.position.set(x, y, z); scene.add(m); return m; };
+mk(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), 0xff7a2f, 0, 1, 0);
+const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+mk(box, 0x2fb4ff, 1.8, 1, 0); mk(box, 0x2fb4ff, -1.8, 1, 0);
+const ball = new THREE.SphereGeometry(0.35, 32, 16);
+mk(ball, 0x9dff4a, 0, 1, 1.8); mk(ball, 0x9dff4a, 0, 1, -1.8);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 3);
+controls.update(); // camera.lookAt(target): the camera now looks at (0, 1, 3)
+const render = () => renderer.render(scene, camera);
+controls.addEventListener('change', render);
+let n = 0;
+function frame() {
+  if (n >= 60) { window.__frozen = true; return; }
+  requestAnimationFrame(frame);
+  n++; render();
+}
+requestAnimationFrame(frame);
+</script>
+</body></html>
