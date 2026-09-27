@@ -67,13 +67,22 @@ const call = await addCall(wall, document.getElementById('call'), {
   layout: q.get('layout') === 'speaker' ? 'speaker' : 'grid',
   accent: q.get('accent') || undefined,
   autoJoin: q.get('autojoin') === '1',
+  // Mono participants are lifted to 3D through @displayxr/inline3d/lift when this copy of the SDK
+  // has it (and a native provider or WebGPU is there); otherwise they stay 2D. ?lift=0 turns it
+  // off; ?models=<base url> serves the depth model from your own host.
+  mono3D: q.get('lift') === '0' ? 'off' : 'auto',
+  liftOptions: q.get('models') ? { models: q.get('models') } : undefined,
   // The invite carries only what a joiner needs (the signalling server), never this page's own
   // test switches — a guest opening a `?camera=synthetic` host's link should use their camera.
   inviteBase: location.origin + location.pathname + (q.get('signal') ? `?signal=${encodeURIComponent(q.get('signal'))}` : ''),
   debug: q.has('debug'),
 });
 
-for (const ev of ['peer', 'peerleft', 'format', 'speaker', 'error', 'joined', 'left', 'session']) {
+for (const ev of ['peer', 'peerleft', 'format', 'speaker', 'error', 'joined', 'left', 'session', 'quality']) {
+  if (ev === 'quality') {
+    call.on(ev, (p) => p.lift && console.log(`[call-sample] lift frame time ${JSON.stringify(p.lift)}`));
+    continue;
+  }
   call.on(ev, (p) => console.log(`[call-sample] ${ev} ${JSON.stringify(p)}`));
 }
 
