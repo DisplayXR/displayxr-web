@@ -10,3 +10,6 @@ Thumbs.db
 
 # local test artifacts, never committed
 _scratch/
+
+# Wrangler local state (signaling/ deploys)
+.wrangler/

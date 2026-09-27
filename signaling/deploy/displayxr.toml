@@ -1,0 +1,27 @@
+# The HOSTED DisplayXR dxr-signal/1 server — what `dxrSignaling()` with no URL connects to:
+#   wss://dxr-signal.displayxr.workers.dev
+# Deploy from the repo root:   npx wrangler deploy --config signaling/deploy/displayxr.toml
+# Self-hosting? Use ../wrangler.toml (the template) with your own account instead.
+#
+# The TURN API token is a Worker SECRET, never in this file:
+#   npx wrangler secret put TURN_KEY_API_TOKEN --config signaling/deploy/displayxr.toml
+# Health: GET https://dxr-signal.displayxr.workers.dev/  →  {"ok":true,"protocol":"dxr-signal/1","turn":true}
+
+name = "dxr-signal"
+main = "../worker.mjs"
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "CallRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CallRoom"]
+
+[vars]
+MAX_PEERS = "4"
+ALLOWED_ORIGINS = ""
+# Cloudflare Realtime TURN app "dxr-signal" (key id — not a secret).
+TURN_KEY_ID = "0cb7455446b49d3b3baa466e7273999a"
+TURN_TTL = "3600"

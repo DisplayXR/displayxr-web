@@ -56,8 +56,8 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
 
 ## Explicitly NOT covered (may change without a major bump)
 
-- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/model` and `/player`.**
-  `SceneViewer`, `boundsFromPositions`, `addSplat`, `addModel`, `addPlayer`, and every option
+- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/model`, `/player` and `/call`.**
+  `SceneViewer`, `boundsFromPositions`, `addSplat`, `addModel`, `addPlayer`, `addCall`, and every option
   they take are **experimental** and may change in any release. They are shipped inside the 1.x
   package rather than as a separate one so there is a single version to install and a single CI
   to keep green — but they are new, they wrap a fast-moving renderer, and freezing their surface
@@ -72,6 +72,15 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   `fit: 'contain' | 'cover'` and `band` letterboxing. Widening like that does not by itself
   restart the promotion clock below; changing `format`'s, `fit`'s or `controls`'s existing meaning
   would.
+
+  `/call` (`addCall`, `dxrSignaling`, `peerjsCloud`, the `SignalingAdapter` seam) is in this
+  tier from its first release (P1 of `docs/rfcs/0002-video-call.md`). Three things are expected to
+  move: the **`dxr-signal/1` protocol** and its reference servers (`signaling/`, no hosted default
+  yet — `dxrSignaling(url)` needs a URL), the **`hello` wire message** (P2 adds calibration for
+  rectified tablet pairs; a new optional field, `v` bumps only for an incompatible change), and
+  **mono tiles**, which are flat in P1 and gain `lift()` in P2 through the existing `mono3D` hook.
+  The chrome's markup and CSS classes (`dxr-call-*`) are not an API. `peerjsCloud()` is a demo
+  convenience on a broker DisplayXR does not run, and will stay one.
 
   `/model` is in this tier for the same reason as the other two, not a lesser one: it is a thin
   wrapper over the SAME `SceneViewer`, so anything that moves the viewer's framing moves meshes
