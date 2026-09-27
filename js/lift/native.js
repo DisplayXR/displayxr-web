@@ -524,6 +524,10 @@ export function createNativeGaussiansLift(opts = {}) {
         if (!meta || !(meta.focalPx > 0) || !(meta.w > 0) || !(meta.h > 0))
           throw new NativeLiftError('native gaussians: a .ply needs an X-DXR-Lift-Meta header with focalPx/w/h', 'format');
         if (!(meta.pivotZ > 0)) meta.pivotZ = 2;
+        // "The generator's meta shape": the generator's PLY is OpenCV (camera at the origin looking
+        // +z, y down). A header that names no convention means that — NOT explore's own 'opengl'
+        // default, under which a +z scene sits behind the camera and explore draws solid black.
+        if (!meta.axes && !meta.convention) meta.axes = 'opencv';
         return { ply: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength), meta: { ...meta, timings: { nativeMs: ms } } };
       }
       throw new NativeLiftError('native gaussians: response is neither a .sog nor a .ply', 'format');

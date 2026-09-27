@@ -154,7 +154,12 @@ update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
   `relative-disparity`). Anything else is a `format` error → fallback.
 - `POST displayxr-lift://lift/gaussians`, same body. Answer a `.sog` (sniffed `PK\x03\x04`; its camera
   block v2 is the rig) or a `.ply` (sniffed `ply\n`) **with** an `X-DXR-Lift-Meta` JSON header
-  (`{focalPx, w, h, pivotZ?}`, the generator's meta shape). 404/501 = not supported.
+  (`{focalPx, w, h, pivotZ?, axes?}`, the generator's meta shape). The PLY is in the generator's
+  frame: **OpenCV** — camera at the origin looking **+z**, **y down**, each splat at its pixel's
+  unprojection `X = (u − w/2)·Z/focalPx`, `Y = (v − h/2)·Z/focalPx`, `Z` = its depth in metres;
+  `pivotZ` (default 2) the depth that sits on the glass. A header without `axes`/`convention` is
+  read as `axes: 'opencv'` (`'opengl'` = looking −z, y up, if the module says so). A scene at
+  `z ≤ 0` is behind/at the camera and draws nothing. 404/501 = not supported.
 - Errors are `NativeLiftError` with `code` `http | unsupported | format | encode | network | aborted`
   and `fallback` (true for all but `aborted`).
 

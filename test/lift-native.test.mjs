@@ -522,6 +522,27 @@ test('native gaussians: .sog passes through, .ply needs X-DXR-Lift-Meta, 404 sti
   assert.equal(calls.length, n, 'not asked again after a 404');
 });
 
+test('native gaussians: a .ply whose meta names no convention is OpenCV (the generator\'s shape) — not explore\'s opengl default', async () => {
+  // NP02J: the runtime's sim fake answered a +z PLY with {focalPx,w,h} only; under the opengl
+  // default the scene sat behind the camera and explore drew solid black.
+  const ply = new TextEncoder().encode('ply\nformat binary_little_endian 1.0\n');
+  let meta = { focalPx: 554.25, w: 640, h: 360 };
+  const g = createNativeGaussiansLift({ fetch: browserFetch({ [NATIVE_GAUSSIANS_URL]: () => new Response(ply, { headers: { 'x-dxr-lift-meta': JSON.stringify(meta) } }) }) });
+  let res = await g.generateLift({ rgb: frame });
+  assert.equal(res.meta.axes, 'opencv');
+  assert.equal(res.meta.pivotZ, 2);
+  const { rigFromMeta } = await import('../js/lift/orbit.js');
+  assert.equal(rigFromMeta(res.meta).axes.fwd, 1, 'the rig looks down +z, where the splats are');
+  // a module that states its convention is taken at its word
+  meta = { focalPx: 554.25, w: 640, h: 360, axes: 'opengl' };
+  res = await g.generateLift({ rgb: frame });
+  assert.equal(res.meta.axes, 'opengl');
+  meta = { focalPx: 554.25, w: 640, h: 360, convention: 'opengl' };
+  res = await g.generateLift({ rgb: frame });
+  assert.equal(res.meta.axes, undefined);
+  assert.equal(res.meta.convention, 'opengl');
+});
+
 test('gaussians provider selection: native-gaussians is the default only when the module lifts', () => {
   assert.equal(defaultLiftProviderFor(CAPS), 'native-gaussians');
   assert.equal(defaultLiftProviderFor({ ...CAPS, modes: ['depth', 'sbs'] }), null);
