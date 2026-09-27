@@ -82,7 +82,11 @@ export async function openCamera(want = 'auto', o = {}) {
       s.getTracks().forEach((x) => x.stop());
       throw Object.assign(new Error('the camera opened but delivers no picture (0x0)'), { name: 'NotReadableError' });
     }
-    return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '' };
+    // The DisplayXR Browser's "3D Camera (DisplayXR)" (the runtime's stereo camera, e.g. an SR
+    // eye-tracking camera shared without stealing it) describes itself on the opened track:
+    // `displayxrStereo: {layout, rectified, baselineMm, horizontalFovDeg}`.
+    const stereo = st.displayxrStereo && st.displayxrStereo.layout === 'side-by-side' ? st.displayxrStereo : null;
+    return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '', stereo };
   };
   const skip = (label, err) => {
     skipped.push({ label, error: `${err.name}: ${err.message}`, busy: isBusyError(err) });
@@ -91,7 +95,18 @@ export async function openCamera(want = 'auto', o = {}) {
   const stop = (r) => r && r.stream.getTracks().forEach((t) => t.stop());
   const result = (r, format) => ({
     stream: r.stream, format, width: r.width, height: r.height, deviceId: r.deviceId, label: r.label, owned: true, skipped,
-    calibration: { rectified: false, ...cal },
+    calibration: {
+      rectified: false,
+      // A runtime stereo camera's own description, where the page gave none.
+      ...(format === 'sbs' && r.stereo
+        ? {
+            rectified: !!r.stereo.rectified,
+            ...(r.stereo.baselineMm > 0 ? { baselineMm: r.stereo.baselineMm } : {}),
+            ...(r.stereo.horizontalFovDeg > 0 ? { hfovDeg: r.stereo.horizontalFovDeg } : {}),
+          }
+        : {}),
+      ...cal,
+    },
   });
 
   // An explicit device id.

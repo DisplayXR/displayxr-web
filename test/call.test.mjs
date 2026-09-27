@@ -710,7 +710,7 @@ function fakeMedia(behaviour) {
       const id = video && video.deviceId ? video.deviceId.exact : undefined;
       const r = behaviour(id);
       if (r instanceof Error) throw r;
-      const track = { kind: 'video', label: id || 'default', readyState: 'live', getSettings: () => ({ width: r.w, height: r.h, deviceId: id || 'cam0' }), stop() {} };
+      const track = { kind: 'video', label: id || 'default', readyState: 'live', getSettings: () => ({ width: r.w, height: r.h, deviceId: id || 'cam0', ...(r.stereo ? { displayxrStereo: r.stereo } : {}) }), stop() {} };
       return { getVideoTracks: () => [track], getTracks: () => [track] };
     },
     async enumerateDevices() {
@@ -731,6 +731,19 @@ test('capture: every camera held by another app → camera-busy (never a 0x0 tra
   assert.equal(noCameraCode([{ busy: true }, { busy: true }]), 'camera-busy');
   assert.equal(noCameraCode([{ busy: true }, { busy: false }]), 'no-camera');
   assert.equal(noCameraCode([]), 'no-camera');
+});
+
+test('capture: a runtime 3D camera (displayxrStereo) fills rectified + baseline + FOV; a page calibration wins', async () => {
+  const stereo = { layout: 'side-by-side', rectified: true, baselineMm: 120, horizontalFovDeg: 64 };
+  const cam = await openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 1280, h: 480, stereo })) });
+  assert.equal(cam.format, 'sbs');
+  assert.deepEqual(cam.calibration, { rectified: true, baselineMm: 120, hfovDeg: 64 });
+  const own = await openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 1280, h: 480, stereo })), calibration: { baselineMm: 63 } });
+  assert.equal(own.calibration.baselineMm, 63);
+  assert.equal(own.calibration.rectified, true);
+  // An ordinary wide webcam (no displayxrStereo) stays unrectified.
+  const plain = await openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 2560, h: 720 })) });
+  assert.equal(plain.calibration.rectified, false);
 });
 
 test('capture: the default camera busy but another is a stereo pair → that pair, as sbs', async () => {
