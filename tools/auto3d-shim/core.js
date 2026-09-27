@@ -48,7 +48,8 @@
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
-    releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
+    releaseMaxMs: 500,
+    rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     hud: true,
@@ -244,6 +245,7 @@
   function flip(st) {
     const ad = st.ad;
     st.armed = null;
+    dropCover(st);
     makeCover(st);            // the mono frame just drawn, over the canvas, until the join (rule 5)
     ad.beforeActive(st);
     st.active = true; st.pending = false;
@@ -265,6 +267,8 @@
     }
     st.layerAt = now();
     st.displayOk = null;
+    st.rampK = cfg.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
+    if (!st.cover && st.rampK < 1) startRamp(st, 1);
     if (st.layer && !cfg.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
     if (cfg.noLayer) {
       // TEST ONLY: no layer means no session frames, so seed the fake eyes here and lift the cover
@@ -341,7 +345,15 @@
     st.releasing = null;
     closeLayer(st);
     unpromote(st);
-    dropCover(st);
+    if (st.cover && st.cover.out) {
+      // Held until layer.close() has landed AND the canvas has re-rastered as a plain 2D layer at its
+      // mono size (the resize clears it; a cover dropped before that shows a blank, white frame).
+      const c = st.cover, t0 = now(); let n = 0;
+      st.cover = null;
+      const tick = () => { if (++n >= 6 && now() - t0 >= 150) c.el.remove(); else requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    }
+    else dropCover(st);
     if (owner === st) owner = null;
     info(`layer released ${Math.round(now() - rel.at)} ms after the stand (${rel.drawn ? 'mono frame drawn first' : 'no mono frame: timed out'})`);
     if (st.wakeOnRelease) { st.wakeOnRelease = false; wake(st); }
@@ -354,7 +366,14 @@
   function setEnabled(on) {
     cfg.enabled = !!on;
     info('auto-3D', cfg.enabled ? 'ON' : 'OFF', 'for', location.origin);
-    if (!cfg.enabled && owner) stand(owner, 'turned off for this site', { staged: true });
+    if (!cfg.enabled && owner) {
+      const st = owner;
+      // Fade to flat first (both eyes on the page camera), THEN swap to the mono canvas: the swap
+      // is then between two identical pictures instead of a visible jump.
+      if (st.active && !st.cover && !st.releasing && cfg.rampMs > 0) startRamp(st, 0, () => { if (!cfg.enabled && owner === st) stand(st, 'turned off for this site', { staged: true }); });
+      else stand(st, 'turned off for this site', { staged: true });
+    }
+    if (cfg.enabled && owner && owner.active && owner.ramp && owner.ramp.to === 0) startRamp(owner, 1); // turned back on mid-fade: fade back up
     if (cfg.enabled) {
       // A render-on-demand page draws nothing until input, so nothing would ever reach
       // considerActivation: ask each adapter for one frame (finding 1 of the first panel run).
@@ -437,12 +456,23 @@
       // The page's explicit target is cheap and followed every frame; the estimator walks the scene,
       // so it runs every 30 frames, as before.
       if (!estimateConvergence(st, false, true) && st.stats.xrFrames % 30 === 0) estimateConvergence(st, false);
+      tickRamp(st, t);
       // Pushed every frame and before any draw: a rig drives the NEXT locate.
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
     // Redraw every frame (woven-canvas rules): the adapter replays the page's last frame when the
     // page drew nothing since the last session frame.
     ad.redraw(st);
+    if (st.outCoverDue) {
+      // Turn-off, depth already faded to flat: cover the canvas with one eye of the frame just drawn
+      // (flat, so it IS the mono picture), then swap to the mono canvas and release the layer under it.
+      // Without it, the one frame of mono canvas under a still-bound layer is woven as a pair.
+      const done = st.outCoverDue; st.outCoverDue = null;
+      makeCover(st, true);
+      const el = st.cover && st.cover.el;
+      const go = () => requestAnimationFrame(() => requestAnimationFrame(done));
+      if (el && typeof el.decode === 'function') el.decode().then(go, go); else go();
+    }
     tickCover(st, t);
     if (st.stats.xrFrames % 20 === 0) hud();
   }
@@ -457,6 +487,26 @@
   // The rig pushed every frame. Both are DECLARED, never computed: the runtime owns the off-axis
   // math and hands back render-ready views (attach pattern: the rig lives in the page camera's
   // space, so eye world = page camera world × view.transform on either rig).
+  // ------------------------------------------------------------ the depth fade
+  // rampK scales the rig's ipd and parallax factors: 0 = both eyes on the page camera (a flat,
+  // mono-identical picture), 1 = the configured depth. Smoothstep over cfg.rampMs.
+  const rampK = (st) => (st.rampK === undefined ? 1 : st.rampK);
+  function startRamp(st, to, done) {
+    const r = (st.ramp = { from: rampK(st), to, t0: now(), done: done || null, held: 0 });
+    // A page whose session frames stop must still finish a turn-off.
+    if (done) setTimeout(() => { if (st.ramp === r || st.outCoverDue === done) { st.ramp = null; st.outCoverDue = null; st.rampK = to; done(); } }, cfg.rampMs + 1000);
+  }
+  function tickRamp(st, t) {
+    const r = st.ramp;
+    if (!r) return;
+    const u = cfg.rampMs > 0 ? clamp((t - r.t0) / cfg.rampMs, 0, 1) : 1;
+    st.rampK = r.from + (r.to - r.from) * u * u * (3 - 2 * u);
+    if (u < 1) return;
+    // At the target: a rig drives the NEXT locate, so let two frames with it reach the screen first.
+    if (r.done && ++r.held < 3) return;
+    st.ramp = null;
+    if (r.done) st.outCoverDue = r.done; // the out-cover is made after this frame's draw, in the drawing task
+  }
   function buildRig(st, verticalFov) {
     if (!st.rigs) {
       st.rigs = {
@@ -478,8 +528,9 @@
       r.position.x = r.position.y = 0; r.position.z = -d;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
       r.virtualDisplayHeight = 2 * d * Math.tan(verticalFov / 2);
-      r.ipdFactor = clamp(cfg.depth, 0, 1);
-      r.parallaxFactor = 1;
+      const k = rampK(st);
+      r.ipdFactor = clamp(cfg.depth, 0, 1) * k;
+      r.parallaxFactor = k;
       r.perspectiveFactor = 1;
       st.rig = r;
       return r;
@@ -495,8 +546,10 @@
     // 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
     // comfort = ipd × m2v × diopters × 0.5 = cfg.depth by construction.
     rig.metersToVirtual = (cfg.depth * d) / 0.5;
-    rig.ipdFactor = 1;
-    rig.parallaxFactor = 1;
+    // Scaled by the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture.
+    const k = rampK(st);
+    rig.ipdFactor = k;
+    rig.parallaxFactor = k;
     st.rig = rig;
     return rig;
   }
@@ -635,7 +688,7 @@
   // measured on a weave-less instance, drawImage() from a canvas that has an XRDisplayLayer bound
   // returns an empty image, so a live feed would blank the cover. It sits in the canvas's own
   // stacking context (next sibling, same z-index), so page chrome drawn over the canvas stays over it.
-  function makeCover(st) {
+  function makeCover(st, eyeOnly) {
     try {
       const cv = st.canvas, cs = getComputedStyle(cv);
       const c = document.createElement('canvas');
@@ -649,7 +702,20 @@
         position: fixed ? 'fixed' : 'absolute', left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px',
         zIndex: cs.zIndex, pointerEvents: 'none', margin: '0', padding: '0', border: '0', background: coverBackground(cv),
       });
-      c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); // the mono frame drawn in this same task
+      if (eyeOnly && st.R) c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height); // left eye of a flat pair
+      else c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); // the mono frame drawn in this same task
+      if (cfg.coverImg !== false) {
+        // An <img>, not a <canvas> (panel run 2026-09-27): a canvas congruent with the tile is woven with
+        // it (weave dumps showed the mono cover as the SBS input = David's 'big double image' at go-live).
+        // An <img> stays plain 2D over the tile. cfg.coverImg = false restores the canvas cover.
+        const img = document.createElement('img');
+        img.setAttribute('data-dxr-auto3d-cover', ''); img.alt = '';
+        img.src = c.toDataURL('image/png');
+        img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
+        if (cv.parentNode) cv.parentNode.insertBefore(img, cv.nextSibling); else (document.body || document.documentElement).appendChild(img);
+        st.cover = { el: img, fixed, out: !!eyeOnly };
+        return;
+      }
       if (cv.parentNode) cv.parentNode.insertBefore(c, cv.nextSibling);
       else (document.body || document.documentElement).appendChild(c);
       st.cover = { el: c, fixed };
@@ -658,9 +724,10 @@
   function tickCover(st, t) {
     const cv = st.cover;
     if (!cv) return;
-    if (t - st.layerAt >= cfg.holdMs && st.stats.stereo > 0) {
-      dropCover(st); // a hard cut, never a fade
+    if (!cv.out && t - st.layerAt >= cfg.holdMs && st.stats.stereo > 0) {
+      dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${cfg.holdMs} ms)`);
+      if (st.rampK < 1) startRamp(st, 1);
       return;
     }
     if (cv.fixed) {
