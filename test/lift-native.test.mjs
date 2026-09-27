@@ -18,6 +18,7 @@ import {
   ensureNativeProviders,
   defaultLiftProviderFor,
   sniffSplatFormat,
+  plyLiftMeta,
   NATIVE_CAPS_URL,
   NATIVE_DEPTH_URL,
   NATIVE_GAUSSIANS_URL,
@@ -541,6 +542,26 @@ test('native gaussians: a .ply whose meta names no convention is OpenCV (the gen
   res = await g.generateLift({ rgb: frame });
   assert.equal(res.meta.axes, undefined);
   assert.equal(res.meta.convention, 'opengl');
+});
+
+test('native gaussians: the PLY\'s own `comment dxr-lift-meta` fills what the HTTP header leaves out (header wins)', async () => {
+  const plyWith = (json) => new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\ncomment dxr-lift-meta ${json}\nelement vertex 0\nend_header\n`);
+  assert.deepEqual(plyLiftMeta(plyWith('{"focalPx":1662.769,"w":1920,"h":1080,"pivotZ":1.8,"axes":"opencv"}')), { focalPx: 1662.769, w: 1920, h: 1080, pivotZ: 1.8, axes: 'opencv' });
+  assert.equal(plyLiftMeta(plyWith('{nope')), null);
+  assert.equal(plyLiftMeta(new TextEncoder().encode('ply\nend_header\n')), null);
+  const body = plyWith('{"focalPx":1662.769,"w":1920,"h":1080,"pivotZ":1.8,"axes":"opencv"}');
+  let hdr = { focalPx: 1662.769, w: 1920, h: 1080 }; // what the browser forwards today
+  const g = createNativeGaussiansLift({ fetch: browserFetch({ [NATIVE_GAUSSIANS_URL]: () => new Response(body, hdr ? { headers: { 'x-dxr-lift-meta': JSON.stringify(hdr) } } : {}) }) });
+  let res = await g.generateLift({ rgb: frame });
+  assert.equal(res.meta.pivotZ, 1.8, 'pivotZ from the PLY comment, not the default 2');
+  assert.equal(res.meta.axes, 'opencv');
+  hdr = { focalPx: 1662.769, w: 1920, h: 1080, pivotZ: 2.2 };
+  res = await g.generateLift({ rgb: frame });
+  assert.equal(res.meta.pivotZ, 2.2, 'the HTTP header wins');
+  hdr = null; // no header at all: the comment alone is enough
+  res = await g.generateLift({ rgb: frame });
+  assert.equal(res.meta.focalPx, 1662.769);
+  assert.equal(res.meta.pivotZ, 1.8);
 });
 
 test('gaussians provider selection: native-gaussians is the default only when the module lifts', () => {

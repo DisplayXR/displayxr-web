@@ -483,10 +483,33 @@ export function sniffSplatFormat(u8) {
 }
 
 /**
+ * `comment dxr-lift-meta {json}` from a PLY header (ASCII, before `end_header`), or null.
+ * @param {Uint8Array} u8
+ * @returns {object|null}
+ */
+export function plyLiftMeta(u8) {
+  if (!u8 || u8.length < 4) return null;
+  const n = Math.min(u8.length, 8192);
+  let head = '';
+  for (let i = 0; i < n; i++) head += String.fromCharCode(u8[i]);
+  const end = head.indexOf('end_header');
+  if (end < 0) return null;
+  const m = /^comment dxr-lift-meta (\{.*\})\s*$/m.exec(head.slice(0, end));
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[1]);
+    return j && typeof j === 'object' && !Array.isArray(j) ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The `native-gaussians` LiftProvider (the remote-sharp contract, docs/lift.md § Provider
  * interfaces): `{ id, needsDepth:false, generateLift({rgb, signal, onProgress}) → {sog} | {ply, meta} }`.
  * A `.sog` carries its own camera block v2 (explore reads the rig off it); a `.ply` must come with
- * an `X-DXR-Lift-Meta` JSON header ({focalPx, pivotZ, w, h, …} — the generator's meta shape), else
+ * an `X-DXR-Lift-Meta` JSON header ({focalPx, pivotZ, w, h, …} — the generator's meta shape) and/or
+ * a `comment dxr-lift-meta {…}` line in its own header (the HTTP header wins field by field), else
  * it is a `format` error. Every error but an abort has `fallback: true` → lift.js lifts locally.
  */
 export function createNativeGaussiansLift(opts = {}) {
@@ -521,6 +544,11 @@ export function createNativeGaussiansLift(opts = {}) {
         } catch {
           meta = null;
         }
+        // The PLY can carry the same meta itself (`comment dxr-lift-meta {...}` in its header —
+        // the runtime's sim fake does): it fills whatever the HTTP header leaves out (the header
+        // wins), and stands in for a missing header.
+        const inPly = plyLiftMeta(u8);
+        if (inPly) meta = { ...inPly, ...(meta && typeof meta === 'object' ? meta : {}) };
         if (!meta || !(meta.focalPx > 0) || !(meta.w > 0) || !(meta.h > 0))
           throw new NativeLiftError('native gaussians: a .ply needs an X-DXR-Lift-Meta header with focalPx/w/h', 'format');
         if (!(meta.pivotZ > 0)) meta.pivotZ = 2;

@@ -157,7 +157,9 @@ update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
   (`{focalPx, w, h, pivotZ?, axes?}`, the generator's meta shape). The PLY is in the generator's
   frame: **OpenCV** — camera at the origin looking **+z**, **y down**, each splat at its pixel's
   unprojection `X = (u − w/2)·Z/focalPx`, `Y = (v − h/2)·Z/focalPx`, `Z` = its depth in metres;
-  `pivotZ` (default 2) the depth that sits on the glass. A header without `axes`/`convention` is
+  `pivotZ` (default 2) the depth that sits on the glass. The same JSON may ride in the PLY itself as
+  a `comment dxr-lift-meta {…}` header line: it fills whatever the HTTP header leaves out (the HTTP
+  header wins field by field) and is enough on its own. A header without `axes`/`convention` is
   read as `axes: 'opencv'` (`'opengl'` = looking −z, y up, if the module says so). A scene at
   `z ≤ 0` is behind/at the camera and draws nothing. 404/501 = not supported.
 - Errors are `NativeLiftError` with `code` `http | unsupported | format | encode | network | aborted`
