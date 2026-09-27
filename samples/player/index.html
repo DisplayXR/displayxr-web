@@ -93,9 +93,11 @@
   </div>
 
   <footer>
-    Asset: <code>../windows/assets/flymetothemoon_sbs.webm</code> (already checked in for
-    <a href="../windows/">samples/windows/</a> — reused here rather than duplicated; see that
-    sample's <code>app.js</code> for the size/codec reasoning). Built on
+    Assets: <code>../windows/assets/flymetothemoon_2x1.mp4</code> (H.264 + AAC, with sound;
+    DisplayXR Browser 1.0.6+) and, for browsers without H.264, the silent
+    <code>flymetothemoon_sbs.webm</code> that <a href="../windows/">samples/windows/</a> ships.
+    The player picks the first one this browser can play; both start muted, so unmute from the
+    controls. Built on
     <a href="../../docs/authoring-inline-3d.md#2b-player--addplayercanvas-src-opts">the player
     module</a> (<code>js/inline3d-player.js</code>), preview tier — see
     <a href="../../docs/sdk-stability.md">sdk-stability.md</a>.
