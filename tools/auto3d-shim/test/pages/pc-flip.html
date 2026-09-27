@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- TEST PAGE — PlayCanvas loaders/glb in miniature: one camera that alternates between a
+     perspective and an orthographic projection every PHASE_MS, rendering continuously. The shim
+     must go 3D on each perspective phase and 2D on each orthographic one. window.__phase says which
+     phase is on screen and since when. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas persp/ortho flip (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="application-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const PHASE_MS = 2000;
+const canvas = document.getElementById('application-canvas');
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov: 40, orthoHeight: 3, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+camera.lookAt(0, 1, 0);
+app.root.addChild(camera);
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.5 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+const mat = new pc.StandardMaterial(); mat.diffuse = new pc.Color(1, 0.48, 0.18); mat.update();
+const e = new pc.Entity('torus'); e.addComponent('render', { type: 'torus', material: mat }); e.setLocalPosition(0, 1, 0); app.root.addChild(e);
+window.__phase = { ortho: false, since: 0, flips: 0 };
+setInterval(() => {
+  const ortho = !window.__phase.ortho;
+  camera.camera.projection = ortho ? pc.PROJECTION_ORTHOGRAPHIC : pc.PROJECTION_PERSPECTIVE;
+  window.__phase = { ortho, since: performance.now(), flips: window.__phase.flips + 1 };
+}, PHASE_MS);
+app.on('update', (dt) => e.rotateLocal(0, 60 * dt, 0));
+app.start();
+</script>
+</body></html>

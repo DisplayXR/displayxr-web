@@ -22,7 +22,10 @@ const shimDir = join(here, '..');
 const repo = join(here, '..', '..', '..');
 const LEGACY_COMMIT = '84b14f7';
 const SOG_DIR = process.env.SOG_DIR || join(homedir(), 'Documents/GitHub/displayxr-gallery-pvt/public/bench');
-const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const WIN = process.platform === 'win32';
+const CHROME = process.env.CHROME || (WIN ? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+  : process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/google-chrome');
+const ANGLE = WIN ? 'd3d11' : process.platform === 'darwin' ? 'metal' : 'vulkan';
 const W = 1280, H = 720;
 
 // ------------------------------------------------------------ static server
@@ -53,12 +56,20 @@ const LEGACY = [execFileSync('git', ['-C', repo, 'show', `${LEGACY_COMMIT}:tools
 const FAKE = readFileSync(join(here, 'fake-xr.js'), 'utf8');
 const hasSog = existsSync(join(SOG_DIR, 'ports_25.sog'));
 const P = '/tools/auto3d-shim/test/pages/';
+// cfg.convTarget false on 'a': the page's setup-time camera.lookAt(0, 1, 0) is the same point the
+// estimator finds, but its distance is exact rather than estimated, and parity with the pre-split
+// script (which had no target) is about the machinery, not the new source. a-target covers it.
 const CASES = [
-  { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+  { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
   { id: 'a-legacy', name: 'three.js keyframes, pre-split content.js', url: P + 'three-keyframes.html', shim: LEGACY, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', parityOf: 'a' },
   { id: 'a-off', name: 'three.js keyframes, site switched off', url: P + 'three-keyframes.html', shim: NEW, cfg: { enabled: false }, expect: 'idle', ready: 'window.__frozen' },
   { id: 'b', name: 'PlayCanvas meshes (ESM, no globals)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
-  { id: 'b-kill', name: 'PlayCanvas meshes, Ctrl+Alt+3 while live (stand-down)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true },
+  { id: 'a-kill', name: 'three.js keyframes, Ctrl+Alt+3 off while live, then on again (render-on-demand)', url: P + 'three-keyframes.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
+  { id: 'b-kill', name: 'PlayCanvas meshes, Ctrl+Alt+3 off while live, then on again (autoRender false)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
+  { id: 'a-target', name: 'three.js OrbitControls target off the scene centre', url: P + 'three-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+  { id: 'b-target', name: 'PlayCanvas CameraControls focusPoint off the scene centre', url: P + 'pc-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+  { id: 'a-display', name: 'three.js keyframes, Ctrl+Alt+P: display rig and back', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', displayAfter: true },
+  { id: 'b-flip', name: 'PlayCanvas camera alternating perspective / orthographic every 2 s', url: P + 'pc-flip.html', shim: NEW, expect: 'flip', commits: true },
   { id: 'c', name: 'PlayCanvas gsplat ports_25.sog', url: P + 'pc-gsplat.html', shim: NEW, expect: 'convert', fovDeg: 50, ready: 'window.__splatReady', minFrames: 700, skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
   { id: 'd', name: 'SDK samples/splat (must stand down)', url: '/samples/splat/index.html?engine=playcanvas&url=/bench/ports_25.sog', shim: NEW, expect: 'standdown', skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
 ];
@@ -93,20 +104,35 @@ async function runCase(browser, base, c) {
   const log = [];
   page.on('console', (m) => log.push(`[${m.type()}] ${m.text().slice(0, 240)}`));
   page.on('pageerror', (e) => log.push(`[pageerror] ${String(e.message || e).slice(0, 240)}`));
-  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify(c.cfg || {})};`);
+  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify(c.cfg || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
   await page.evaluateOnNewDocument(FAKE);
   for (const s of c.shim) await page.evaluateOnNewDocument(s);
   const t0 = Date.now();
   await page.goto(base + c.url, { waitUntil: 'load', timeout: 60000 });
   const convertReady = `(() => { const s = window.__dxrAuto3D && window.__dxrAuto3D.state(); const r = s && s.renderers.find((x) => x.active);
     return !!(r && r.stats.twoView > ${c.minFrames || 90} && (${c.ready || 'true'})); })()`;
+  if (c.expect === 'flip') {
+    // Sample the shim and the page's phase every 100 ms across four phases.
+    const samples = [];
+    const tEnd = Date.now() + 9000;
+    while (Date.now() < tEnd) {
+      samples.push(await page.evaluate(() => {
+        const s = window.__dxrAuto3D.state(), r = s.renderers[0];
+        return { t: performance.now(), phase: { ...window.__phase }, active: !!(r && r.active), releasing: !!(r && r.releasing), sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length };
+      }));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const fake = await page.evaluate(() => ({ layers: window.__fakeXR.layers, closes: window.__fakeXR.closes }));
+    await ctx.close();
+    return { c, ok: true, ms: Date.now() - t0, samples, fake, log, state: null };
+  }
   const settle = c.expect === 'convert' ? convertReady : `(${c.ready || 'true'}) && performance.now() > 6000`;
   let ok = true;
   try { await page.waitForFunction(settle, { timeout: 60000, polling: 200 }); } catch { ok = false; }
   if (c.expect !== 'convert') await new Promise((r) => setTimeout(r, 1500));
   const state = await page.evaluate(() => (window.__dxrAuto3D ? window.__dxrAuto3D.state() : null));
   const hud = await page.evaluate(() => (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null);
-  const fake = await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length, lastRig: window.__fakeXR.lastRig, frames: window.__fakeXR.frames, expected: window.__expectedConvergence ?? null }));
+  const fake = await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length, lastRig: window.__fakeXR.lastRig, frames: window.__fakeXR.frames, expected: window.__expectedConvergence ?? null, expectedSource: window.__expectedConvergenceSource ?? null }));
   let pixels = null;
   if (c.expect === 'convert' && ok) {
     // Read the canvas between frames (the pages use preserveDrawingBuffer), twice, one frame apart.
@@ -124,12 +150,24 @@ async function runCase(browser, base, c) {
     const g2 = await grab();
     pixels = { w: g1.w, h: g1.h, px: Buffer.from(g1.b64, 'base64'), px2: Buffer.from(g2.b64, 'base64'), png: g1.png };
   }
+  const hotkey = async (code) => {
+    await page.keyboard.down('Control'); await page.keyboard.down('Alt'); await page.keyboard.press(code);
+    await page.keyboard.up('Alt'); await page.keyboard.up('Control');
+  };
+  let display = null;
+  if (c.displayAfter && ok) {
+    await hotkey('KeyP');
+    await new Promise((r) => setTimeout(r, 600));
+    display = await page.evaluate(() => ({ rig: window.__fakeXR.lastRig, state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, stored: localStorage.getItem('dxrAuto3D') }));
+    await hotkey('KeyP');
+    await new Promise((r) => setTimeout(r, 400));
+    display.back = await page.evaluate(() => ({ rig: window.__fakeXR.lastRig, rigMode: window.__dxrAuto3D.state().rigMode }));
+  }
   let after = null;
   if (c.killAfter && ok) {
-    await page.keyboard.down('Control'); await page.keyboard.down('Alt'); await page.keyboard.press('Digit3');
-    await page.keyboard.up('Alt'); await page.keyboard.up('Control');
+    await hotkey('Digit3');
     await new Promise((r) => setTimeout(r, 1000));
-    after = await page.evaluate(() => ({ state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null }));
+    after = await page.evaluate(() => ({ state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, closes: window.__fakeXR.closes, sessions: window.__fakeXR.sessions.length }));
     // A page that renders on demand is asked for one repaint by the restore; read what is on the canvas now.
     const g = await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
       const src = document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
@@ -138,9 +176,52 @@ async function runCase(browser, base, c) {
       res({ w: c2.width, h: c2.height, b64: btoa(s) });
     }, 0))));
     after.px = Buffer.from(g.b64, 'base64'); after.w = g.w; after.h = g.h;
+    // Finding 1: on again. The page draws nothing any more (frozen: render on demand).
+    const t1 = Date.now();
+    await hotkey('Digit3');
+    let again = true;
+    try {
+      await page.waitForFunction(() => { const r = window.__dxrAuto3D.state().renderers.find((x) => x.active); return !!(r && r.stats.twoView > 10); }, { timeout: 4000, polling: 50 });
+    } catch { again = false; }
+    after.reenable = { again, ms: Date.now() - t1, ...(await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, frozen: !!window.__frozen, pageFrames: window.__pageFrames ?? null }))) };
   }
   await ctx.close();
-  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after };
+  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display };
+}
+
+// Is a small (128x72) committed frame a side-by-side pair? The fake's skew shifts the right half
+// by 0.1 × eye width (6.4 px here) against the left, so a pair has a small residual between
+// left(x) and right(x + 6..7), measured on CONTENT pixels only (a mostly empty frame matches itself
+// anywhere). What counts as small is calibrated per page and per close: the pair baseline is the
+// best frame committed while the layer was open (`before`, which ends with the frames around the
+// switch), the mono baseline the last frame committed after close() (mono on every ordering).
+const snapPx = (f) => Buffer.from(f.px, 'base64');
+function pairResidual(px, w = 128, h = 72) {
+  const eyeW = w / 2, bg = lum(px, 0);
+  let best = Infinity;
+  for (const s of [6, 7]) {
+    let e = 0, n = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < eyeW - s; x++) {
+      const l = lum(px, (y * w + x) * 4), r = lum(px, (y * w + eyeW + x + s) * 4);
+      if (Math.abs(l - bg) < 12 && Math.abs(r - bg) < 12) continue;
+      e += Math.abs(l - r); n++;
+    }
+    if (n >= 40) best = Math.min(best, e / n);
+  }
+  return best;
+}
+// Finding 2: after close(), the browser shows the last committed frame unwoven. Neither it nor the
+// next few may be a raw pair (unless the cover hides the canvas).
+function rawPairAtClose(close) {
+  const frames = [close.committed, ...close.after].filter(Boolean);
+  const pairBase = Math.min(...close.before.map((f) => pairResidual(snapPx(f))));
+  const last = close.after[close.after.length - 1];
+  const monoBase = last ? pairResidual(snapPx(last)) : NaN;
+  // A mono frame with too little content to match anywhere (Infinity) is certainly not a pair.
+  const cut = isFinite(monoBase) ? (pairBase + monoBase) / 2 : pairBase * 1.5 + 0.5;
+  const res = frames.map((f) => pairResidual(snapPx(f)));
+  const bad = res.map((e, i) => ({ i, e, covered: frames[i].covered })).filter((f) => f.e < cut && !f.covered);
+  return { frames: frames.length, bad, pairBase, monoBase, discriminates: pairBase < 0.7 * monoBase || !isFinite(monoBase), atClose: res[0] };
 }
 
 // ------------------------------------------------------------ assertions
@@ -148,6 +229,7 @@ function check(r, results) {
   const { c, state, fake, pixels } = r;
   const A = [];
   const t = (name, pass, detail) => A.push({ name, pass: !!pass, detail });
+  if (c.expect === 'flip') return checkFlip(r, t, A);
   if (c.expect === 'idle') {
     t('no session requested', fake.sessions === 0, `sessions=${fake.sessions}`);
     t('nothing converted', state && state.renderers.every((x) => !x.active), `renderers=${state && state.renderers.length}`);
@@ -178,7 +260,11 @@ function check(r, results) {
     Math.abs(rig.metersToVirtual - (0.3 * d) / 0.5) < 1e-3 * d && rig.ipdFactor === 1 && rig.parallaxFactor === 1;
   t('rig pushed: camera, page fov, 1/d, 0.3·d/0.5, ipd/parallax 1', rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
   const exp = fake.expected;
-  t('convergence ≈ known subject distance (±5 %)', exp && Math.abs(d - exp) / exp < 0.05, `estimated ${d.toFixed(3)}, expected ${exp && exp.toFixed(3)}`);
+  t('convergence ≈ known subject distance (±5 %)', exp && Math.abs(d - exp) / exp < 0.05, `estimated ${d.toFixed(3)}, expected ${exp && exp.toFixed(3)}, source ${R.convergenceSource}${R.convergenceVia ? ' (' + R.convergenceVia + ')' : ''}`);
+  if (fake.expectedSource) {
+    t(`convergence source = '${fake.expectedSource}', on the HUD and in state()`, R.convergenceSource === fake.expectedSource && (r.hud || '').includes(`(${fake.expectedSource})`),
+      `state ${R.convergenceSource} via ${R.convergenceVia}; hud "${r.hud}"`);
+  }
   if (R.engine === 'PlayCanvas') {
     t('PlayCanvas app detected', !!R.detection, `via ${R.detection}; RenderView ${R.renderView}; device ${R.device}; footprint patched ${R.footprint.patched}/${R.footprint.seen}`);
     if (c.id === 'c') t('gsplat footprint shader patched', R.footprint.patched > 0, `${R.footprint.patched} shader(s)`);
@@ -195,26 +281,66 @@ function check(r, results) {
   }
   if (c.killAfter) {
     const a = r.after, S = a && a.state.renderers[0];
-    t('Ctrl+Alt+3: back to 2D, xrViews released', a && !a.state.enabled && S && !S.active && S.camera === null, `enabled=${a && a.state.enabled} active=${S && S.active} camera=${S && S.camera} hud="${a && a.hud}"`);
+    t('Ctrl+Alt+3: back to 2D' + (R.engine === 'PlayCanvas' ? ', xrViews released' : ''), a && !a.state.enabled && S && !S.active && !S.releasing && (R.engine !== 'PlayCanvas' || S.camera === null),
+      `enabled=${a && a.state.enabled} active=${S && S.active} releasing=${S && S.releasing} camera=${S && S.camera} hud="${a && a.hud}"`);
     if (a) {
       const sh2 = bestShift(a.px, a.w, a.h, a.w / 2);
       t('after stand-down the canvas is one mono view (no SBS pair)', sh2.e > 2, `store ${a.w}x${a.h}; best half-to-half match residual ${sh2.e.toFixed(2)} (an SBS pair matches at ~0)`);
+      const cl = a.closes && a.closes[0];
+      const rp = cl ? rawPairAtClose(cl) : null;
+      t('turn-off: no raw side-by-side frame once the layer is closed (commit model)', rp && rp.frames >= 3 && rp.discriminates && rp.bad.length === 0,
+        rp ? `${rp.frames} committed frames from close(); pair residual: at close ${rp.atClose.toFixed(2)}, pair baseline ${rp.pairBase.toFixed(2)}, mono baseline ${rp.monoBase.toFixed(2)}; raw pairs at frames [${rp.bad.map((b) => b.i).join(', ')}]` : 'layer never closed');
+      const re = a.reenable;
+      t('Ctrl+Alt+3 again on a page that no longer draws: 3D again within 4 s', re && re.again && re.frozen, re ? `${re.again ? 're-converted' : 'still 2D'} after ${re.ms} ms; sessions ${re.sessions}; page frozen ${re.frozen} at ${re.pageFrames} frames` : 'n/a');
     }
+  }
+  if (c.displayAfter) {
+    const D = r.display, g = D && D.rig, S = D && D.state.renderers.find((x) => x.active);
+    const dd = S ? S.convergence : NaN, fov = (c.fovDeg * Math.PI) / 180;
+    const want = 2 * dd * Math.tan(fov / 2);
+    t('Ctrl+Alt+P: display rig declared (portal on the convergence plane, framed by the page FOV, ipdFactor = depth)',
+      g && g.type === 'display' && Math.abs(g.position.z + dd) < 1e-3 * dd && g.position.x === 0 && g.position.y === 0 && g.orientation.w === 1 &&
+      Math.abs(g.virtualDisplayHeight - want) < 1e-3 * want && Math.abs(g.ipdFactor - 0.3) < 1e-9 && g.parallaxFactor === 1 && g.perspectiveFactor === 1 && !('verticalFov' in g),
+      g ? `type=${g.type} pos=(${g.position.x},${g.position.y},${g.position.z.toFixed(3)}) vdh=${g.virtualDisplayHeight?.toFixed(4)} (want ${want.toFixed(4)}) ipd=${g.ipdFactor} parallax=${g.parallaxFactor} persp=${g.perspectiveFactor}` : 'no rig');
+    t('display rig on the HUD, in state() and remembered for the site', D && D.state.rigMode === 'display' && /display rig/.test(D.hud || '') && JSON.parse(D.stored || '{}').rig === 'display',
+      `rigMode=${D && D.state.rigMode} hud="${D && D.hud}" stored=${D && D.stored}`);
+    t('Ctrl+Alt+P again: back to the camera rig', D && D.back.rig && D.back.rig.type === 'camera' && D.back.rigMode === 'camera', `type=${D && D.back.rig && D.back.rig.type} rigMode=${D && D.back.rigMode}`);
   }
   t('frame stable across two reads', diffCount(pixels.px, pixels.px2) === 0, `${diffCount(pixels.px, pixels.px2)} bytes differ`);
   return A;
 }
 
+// Finding 5: loaders/glb. The session and the layer are released on every orthographic phase (the
+// panel goes back to 2D), so the browser's join is NOT kept across the flip, and every perspective
+// phase is a fresh layer that gets the full join-window cover. Pinned here, deliberately: see the
+// README, "Cameras that switch projection".
+function checkFlip(r, t, A) {
+  const S = r.samples;
+  const orthoLate = S.filter((s) => s.phase.ortho && s.t - s.phase.since > 700);
+  const perspPhases = new Set(S.filter((s) => !s.phase.ortho && s.active).map((s) => s.phase.flips));
+  t('orthographic phases are 2D (no live layer)', orthoLate.length > 5 && orthoLate.every((s) => !s.active && !s.releasing), `${orthoLate.length} samples > 700 ms into an ortho phase, active in ${orthoLate.filter((s) => s.active).length}`);
+  t('every perspective phase goes 3D', perspPhases.size >= 3, `3D seen in perspective phases ${[...perspPhases].join(', ')}`);
+  const L = r.fake.layers;
+  t('each perspective phase is a fresh session + layer (released on ortho)', L.length >= 3 && L.slice(0, -1).every((l) => l.closedAt !== null), `layers ${L.length}, closed ${L.filter((l) => l.closedAt !== null).length}`);
+  t('so each fresh layer gets the full join-window cover', L.length >= 2 && L.every((l) => l.coverAtCreate), `cover up at layer creation: ${L.map((l) => l.coverAtCreate).join(', ')}`);
+  const rps = r.fake.closes.map(rawPairAtClose);
+  t('camera switch: no raw side-by-side frame once each layer is closed (commit model)', rps.length >= 2 && rps.every((x) => x.discriminates && x.bad.length === 0),
+    rps.map((x) => `at close ${x.atClose.toFixed(2)} (pair ${x.pairBase.toFixed(2)}, mono ${x.monoBase.toFixed(2)}), raw pairs [${x.bad.map((b) => b.i).join(', ')}]`).join(' | '));
+  t('console names the reason', r.log.some((l) => /back to 2D: the camera is orthographic/.test(l)), '');
+  return A;
+}
+
 // ------------------------------------------------------------ main
 const only = process.argv.slice(2);
-const running = execFileSync('sh', ['-c', 'ps aux | grep -- --headless=new | grep -v grep || true'], { encoding: 'utf8' }).trim();
+let running = '';
+if (!WIN) { try { running = execFileSync('sh', ['-c', 'ps aux | grep -- --headless=new | grep -v grep || true'], { encoding: 'utf8' }).trim(); } catch { /* no ps */ } }
 if (running) console.warn('WARNING: another headless Chrome is running — GPU contention can skew timings:\n' + running.split('\n').slice(0, 3).join('\n'));
 const srv = await serve();
 const base = `http://127.0.0.1:${srv.address().port}`;
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: 'new',
-  args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1'],
+  args: [`--use-angle=${ANGLE}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1'],
 });
 const results = [];
 let failed = 0;

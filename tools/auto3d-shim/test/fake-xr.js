@@ -9,12 +9,49 @@
 //     skew of s moves every pixel by s NDC whatever its depth, so the right half must equal the left
 //     half shifted right by s × eyeWidth px (64 px for s = 0.1 on a 640 px eye).
 //   window.XRDisplayLayer — setViewRig / getDisplayInfo / getRenderingModes / close, recording.
+//
+// Commit model (window.__fakeXRTrackCommits = true): what the browser would PRESENT. Every frame,
+// after all rAF callbacks (a ResizeObserver callback, which runs after them and before paint), a
+// small copy of the bound canvas is taken: that is the frame this document commits. The browser
+// weaves a bound canvas; layer.close() stops the weave AT ONCE (it reaches the browser on its own
+// channel, not with the next commit), so from that moment the last committed frame is on screen
+// unwoven until the next commit lands. The harness then asserts that neither the frame committed
+// before close() nor the next few is a side-by-side pair (unless the cover hides the canvas).
 // Everything the harness asserts on is on window.__fakeXR.
 (() => {
   const SKEW = 0.1;
   const CANVAS_W = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
   const CANVAS_H = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
-  const H = (window.__fakeXR = { skew: SKEW, sessions: [], layers: [], rigPushes: 0, lastRig: null, frames: 0, renderStates: [] });
+  const H = (window.__fakeXR = { skew: SKEW, sessions: [], sessionObjs: [], layers: [], rigPushes: 0, lastRig: null, frames: 0, renderStates: [], closes: [], committed: null, history: [], watch: null });
+  const coverUp = () => { const c = document.querySelector('[data-dxr-auto3d-cover]'); return !!(c && c.offsetWidth > 0 && c.offsetHeight > 0); };
+
+  // ------------------------------------------------------------ commit model (see header)
+  const SW = 128, SH = 72;
+  function snap(c) {
+    const w = CANVAS_W.get.call(c), h = CANVAS_H.get.call(c);
+    const t = document.createElement('canvas'); t.width = SW; t.height = SH;
+    const g = t.getContext('2d', { willReadFrequently: true });
+    g.drawImage(c, 0, 0, SW, SH);
+    const d = g.getImageData(0, 0, SW, SH).data;
+    let b = ''; for (let i = 0; i < d.length; i += 8192) b += String.fromCharCode.apply(null, d.subarray(i, i + 8192));
+    return { at: performance.now(), w, h, covered: coverUp(), px: btoa(b) };
+  }
+  if (window.__fakeXRTrackCommits) {
+    const probe = document.createElement('div');
+    Object.assign(probe.style, { position: 'fixed', left: '-10px', top: '0', width: '1px', height: '1px', pointerEvents: 'none' });
+    const ro = new ResizeObserver(() => {
+      const c = H.watch;
+      if (!c) return;
+      let s = null;
+      try { s = snap(c); } catch (e) { return; }
+      H.committed = s;
+      H.history.push(s); if (H.history.length > 12) H.history.shift();
+      for (const cl of H.closes) if (cl.after.length < 8) cl.after.push(s);
+    });
+    const tick = () => { probe.style.width = probe.style.width === '1px' ? '2px' : '1px'; requestAnimationFrame(tick); };
+    const start = () => { document.documentElement.appendChild(probe); ro.observe(probe); requestAnimationFrame(tick); };
+    if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
 
   function proj(vfov, aspect, n, f, skew) {
     const t = 1 / Math.tan(vfov / 2), o = new Float32Array(16);
@@ -28,13 +65,22 @@
       this.session = session; this.canvas = canvas; this.closed = false;
       this.rig = opts && opts.viewRig ? JSON.parse(JSON.stringify(opts.viewRig)) : null;
       session._layer = this;
-      H.layers.push({ canvas: canvas.id || canvas.tagName, opts: JSON.parse(JSON.stringify(opts || {})) });
+      H.watch = canvas;
+      H.layers.push({ canvas: canvas.id || canvas.tagName, opts: JSON.parse(JSON.stringify(opts || {})), at: performance.now(), coverAtCreate: coverUp(), closedAt: null });
+      this._rec = H.layers[H.layers.length - 1];
       if (this.rig) H.lastRig = this.rig;
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }
     getDisplayInfo() { return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 }); }
     getRenderingModes() { return Promise.resolve([{ name: 'fake-stereo', viewCount: 2 }]); }
-    close() { this.closed = true; }
+    close() {
+      if (this.closed) return;
+      this.closed = true;
+      this._rec.closedAt = performance.now();
+      // The frame last committed is what the browser now shows unwoven (commit model).
+      // `before`: the frames committed while the layer was open (the pair baseline for the harness).
+      H.closes.push({ at: performance.now(), committed: H.committed, before: H.history.slice(), after: [] });
+    }
   }
   window.XRDisplayLayer = FakeLayer;
 
@@ -76,6 +122,7 @@
       if (mode !== 'inline-3d') return Promise.reject(new DOMException(`fake: ${mode} not supported`, 'NotSupportedError'));
       const s = new FakeSession(mode);
       H.sessions.push({ mode, at: performance.now() });
+      H.sessionObjs.push(s);
       return Promise.resolve(s);
     },
   });

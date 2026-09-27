@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary ESM PlayCanvas page (no globals) whose camera is driven by the engine's
+     own CameraControls script (scripts/esm/camera-controls.mjs from playcanvas@2.22.3), focused on
+     (0, 1, 3): 5 units in front of the camera. The meshes are symmetric about (0, 1, 0), 8 units
+     away, which is where the estimator would converge. Expected convergence 5, source 'target'. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas CameraControls target (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="application-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+import { CameraControls } from '/deps/playcanvas/camera-controls.mjs';
+const canvas = document.getElementById('application-canvas');
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+window.__expectedConvergence = 5;
+window.__expectedConvergenceSource = 'target';
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov: 40, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+app.root.addChild(camera);
+camera.addComponent('script');
+camera.script.create(CameraControls, { properties: { focusPoint: new pc.Vec3(0, 1, 3), enableFly: false } });
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.5 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+app.scene.ambientLight = new pc.Color(0.35, 0.35, 0.4);
+const mat = (r, g, b) => { const m = new pc.StandardMaterial(); m.diffuse = new pc.Color(r, g, b); m.update(); return m; };
+const prim = (type, m, x, y, z, s) => { const e = new pc.Entity(type); e.addComponent('render', { type, material: m }); e.setLocalPosition(x, y, z); e.setLocalScale(s, s, s); app.root.addChild(e); };
+prim('torus', mat(1, 0.48, 0.18), 0, 1, 0, 1.1);
+prim('box', mat(0.18, 0.7, 1), 1.8, 1, 0, 0.6); prim('box', mat(0.18, 0.7, 1), -1.8, 1, 0, 0.6);
+prim('sphere', mat(0.62, 1, 0.29), 0, 1, 1.8, 0.7); prim('sphere', mat(0.62, 1, 0.29), 0, 1, -1.8, 0.7);
+let n = 0;
+app.on('update', () => { if (n >= 60) { window.__frozen = true; return; } n++; });
+app.start();
+</script>
+</body></html>

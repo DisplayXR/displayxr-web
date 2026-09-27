@@ -65,6 +65,13 @@ place:
 Nothing in the adapters depends on this. The weave-slot probe (`getDisplayInfo()` null → back to
 2D, browser#162) stays as it is.
 
+The same signal would tighten the way out. Going back to 2D, the core draws the mono frame first
+and closes the layer two animation frames later, once that frame has been committed, because
+`close()` reaches the browser on its own channel and could otherwise stop the weave while the last
+committed frame is still the side-by-side pair (the README's "Turning off"). The two frames are an
+ordering guess, like the 1.2 s hold. A close that takes effect with the next commit, or a
+`wovenState` that reports `'withheld'` for the mono frame, would make it exact.
+
 ## What stays browser-owned
 
 - **The join.** When the compositor has matched the canvas, and the `withheld` verdict. The shim
