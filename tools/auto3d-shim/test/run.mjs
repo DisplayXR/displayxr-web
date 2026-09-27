@@ -105,6 +105,7 @@ async function runCase(browser, base, c) {
   try { await page.waitForFunction(settle, { timeout: 60000, polling: 200 }); } catch { ok = false; }
   if (c.expect !== 'convert') await new Promise((r) => setTimeout(r, 1500));
   const state = await page.evaluate(() => (window.__dxrAuto3D ? window.__dxrAuto3D.state() : null));
+  const hud = await page.evaluate(() => (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null);
   const fake = await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length, lastRig: window.__fakeXR.lastRig, frames: window.__fakeXR.frames, expected: window.__expectedConvergence ?? null }));
   let pixels = null;
   if (c.expect === 'convert' && ok) {
@@ -139,7 +140,7 @@ async function runCase(browser, base, c) {
     after.px = Buffer.from(g.b64, 'base64'); after.w = g.w; after.h = g.h;
   }
   await ctx.close();
-  return { c, ok, ms: Date.now() - t0, state, fake, pixels, log, after };
+  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after };
 }
 
 // ------------------------------------------------------------ assertions
@@ -157,6 +158,7 @@ function check(r, results) {
     t('page owns inline-3d: shim stood down', state && /inline-3d/.test(state.foreign || ''), `foreign=${state && state.foreign}`);
     t('shim opened no session of its own', fake.sessions === 1, `sessions=${fake.sessions} (the SDK's)`);
     t('nothing converted by the shim', state && state.renderers.every((x) => !x.active && !x.pending), `renderers=${state && state.renderers.map((x) => x.engine).join(',')}`);
+    t('HUD says it stood down', /standing down \(the page requested 'inline-3d'\)/.test(r.hud || ''), `hud="${r.hud}"`);
     return A;
   }
   t('converted within 60 s', r.ok, `${r.ms} ms`);

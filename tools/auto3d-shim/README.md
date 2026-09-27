@@ -207,7 +207,7 @@ node run.mjs                     # every case; `node run.mjs a a-legacy` for one
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |
 | `b-kill` | the same, then `Ctrl+Alt+3` while live | back to 2D, `xrViews` released, the canvas shows one mono view |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
-| `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted |
+| `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so |
 
 The harness proves the plumbing: detection, sizing, the per-eye matrices, counters, rig numbers,
 the convergence estimate, and parity. It cannot prove the weave, the join timing, or comfort.
