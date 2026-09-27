@@ -40,12 +40,13 @@ const UI_AUTOHIDE_MS = 2500;
 const MAX_EYE_PX = 2048; // cap on one view's backing width
 
 /** Explore's default depth budget: the scene's fore-to-back disparity at the nominal eye pair, as a
- *  fraction of the image width. 0.018 = what the native module's live SBS gives at strength 1
- *  (tamarra 2000 px: 36 px fg-bg, panel A/B 2026-09-26), so a lift explored from a paused/still
- *  element reads as deep as the live 3D it came from. Explore used to spread a relative lift over
+ *  fraction of the image width. 0.036 = what the native module's live SBS gives at strength 1:
+ *  36 px fg-bg on tamarra 2000 px at NeurD gain 1 (panel A/B 2026-09-26), doubled when the
+ *  plug-in's default DepthGain became 2 (David, panel: gain 1 "weak", 2 "I like this as
+ *  default"). A lift explored from a paused/still element then reads as deep as the live 3D. Explore used to spread a relative lift over
  *  0.7-3.0 m at f = 1.2 W, ~8 % of the width: 4-5x the live depth (David, panel: "the SOG has more
  *  depth than the already-lifted pictures"). */
-export const EXPLORE_DEPTH_BUDGET = 0.018;
+export const EXPLORE_DEPTH_BUDGET = 0.036;
 const NOMINAL_IPD_M = 0.063;
 
 /**
