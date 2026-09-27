@@ -10,6 +10,7 @@ import {
   createDisparityTrack,
   lumaFromRgba,
   createFocusTracker,
+  downsampleLuma,
 } from '../js/call/disparity.js';
 import { createConvergence, clampShift, convergenceShiftPx } from '../js/call/wire.js';
 
@@ -205,4 +206,38 @@ test('focus tracker: re-runs the full search after fullEveryMs', () => {
   assert.equal(tr.measure(f.img, f.W, H, 0).method, 'mode');
   assert.equal(tr.measure(f.img, f.W, H, 500).method, 'track');
   assert.equal(tr.measure(f.img, f.W, H, 1500).method, 'mode');
+});
+
+test('a periodic background (a checkerboard) does not alias the subject to a far-off disparity', () => {
+  const E = 240;
+  const H = 135;
+  // A 30-px-period checker at the plane (it matches every 30 px) + a textured square 20 px in front.
+  const checker = (x, y) => ((Math.floor(x / 15) + Math.floor(y / 15)) % 2 ? 70 : 150);
+  const { img, W } = sbs(E, H, [
+    { d: 0, tex: checker },
+    { d: 20, tex: texture(9), inside: rect(90, 35, 150, 95) },
+  ]);
+  const m = measureFocusDisparity(img, W, H);
+  assert.ok(m, 'measured');
+  assert.ok(Math.abs(m.d - 20) <= 1, `d=${m.d} (aliased)`);
+});
+
+test('downsampleLuma: box average of a strided plane, even output width', () => {
+  // 7x4 plane at offset 3 with stride 9 (padding), factor 2 → 2x2 (width 3 floored to even 2).
+  const src = new Uint8Array(3 + 9 * 4).fill(0);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 7; x++) src[3 + y * 9 + x] = y < 2 ? 100 : x < 2 ? 40 : 200;
+  const { img, w, h } = downsampleLuma(src, 3, 9, 7, 4, 2);
+  assert.equal(w, 2);
+  assert.equal(h, 2);
+  assert.deepEqual([...img], [100, 100, 40, 200]);
+});
+
+test('downsampleLuma: larger factors average a 2x2 sample per cell', () => {
+  // 12x6 plane, factor 6 → 2x1; left cell 60 everywhere, right cell 180 → exact averages.
+  const src = new Uint8Array(12 * 6);
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 12; x++) src[y * 12 + x] = x < 6 ? 60 : 180;
+  const { img, w, h } = downsampleLuma(src, 0, 12, 12, 6, 6);
+  assert.equal(w, 2);
+  assert.equal(h, 1);
+  assert.deepEqual([...img], [60, 180]);
 });

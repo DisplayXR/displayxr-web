@@ -236,6 +236,8 @@ export interface CallPeer {
   readonly quality: CallQuality | null;
   /** The per-eye convergence shift currently painted, source px. */
   readonly convergencePx: number;
+  /** Auto-convergence: measured disparity (source px; null until a lock), mean ms per measurement, last method. */
+  readonly autoConverge: { disparityPx: number | null; ms: number | null; readMs: number | null; method: 'mode' | 'focus' | 'track' | null; via: 'videoframe' | 'canvas' | null };
   /** A lifted tile: whether lift is showing yet, native or web, and its current priority. */
   readonly lift: { readonly live: boolean; readonly native: boolean; readonly priority: LiftStreamPriority | null; readonly state: string | null } | null;
 }

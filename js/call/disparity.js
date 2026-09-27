@@ -20,6 +20,9 @@ const MIN_TEXTURE = 6;
 /** A block match must reach this normalised cross-correlation to count. */
 export const MIN_NCC = 0.8;
 
+/** ...and beat its best rival peak (>= 3 px away) by this much, or it is ambiguous (periodic). */
+export const UNIQUENESS = 0.08;
+
 /**
  * Normalised cross-correlation of a `bw`×`bh` block of the left eye at (lx, ly) against the right
  * eye at (rx, ry). `img` is the whole SBS image, `W` its full width, `E` the per-eye width.
@@ -68,19 +71,21 @@ function blockStats(img, W, x0, y0, bw, bh) {
  * front of the display plane), searched over [dMin, dMax] and ±dy rows. Sub-pixel by a parabola.
  * @returns {{d:number, dy:number, c:number}|null}
  */
-export function matchBlock(img, W, H, x0, y0, bw, bh, { dMin, dMax, dyMax = 2 } = {}) {
+export function matchBlock(img, W, H, x0, y0, bw, bh, { dMin, dMax, dyMax = 2, uniq } = {}) {
   const E = W / 2;
   const { mean, std } = blockStats(img, W, x0, y0, bw, bh);
   if (std < MIN_TEXTURE) return null;
   let best = -2;
   let bd = 0;
   let bdy = 0;
+  const perD = new Map(); // best NCC seen at each disparity (any row), for the uniqueness test
   const scan = (d0, d1, dStep, y0s, y1s) => {
     for (let dy = y0s; dy <= y1s; dy++) {
       const ry = y0 + dy;
       if (ry < 0 || ry + bh > H) continue;
       for (let d = d0; d <= d1; d += dStep) {
         const c = ncc(img, W, E, x0, y0, x0 - d, ry, bw, bh, mean, std);
+        if (c > (perD.get(d) ?? -2)) perD.set(d, c);
         if (c > best) {
           best = c;
           bd = d;
@@ -99,6 +104,30 @@ export function matchBlock(img, W, H, x0, y0, bw, bh, { dMin, dMax, dyMax = 2 } 
     scan(Math.max(dMin, cd - 2), Math.min(dMax, cd + 2), 1, Math.max(-dyMax, cy - 1), Math.min(dyMax, cy + 1));
   }
   if (best < -1) return null;
+  // Uniqueness: a repeating texture (a checkerboard, a striped shirt, blinds) matches equally well
+  // one period away. Reject the block unless its best peak clearly beats every peak >= 3 px away.
+  // The coarse scan samples every 2nd disparity, so a rival peak between two samples is under-read
+  // while the winner has been refined to its top; refine each rival local maximum at +-1 as well, or
+  // an exactly periodic pattern slips through by a hair.
+  let second = -2;
+  const peakAt = (d) => {
+    let v = -2;
+    for (let dy = -dyMax; dy <= dyMax; dy++) {
+      const ry = y0 + dy;
+      if (ry < 0 || ry + bh > H) continue;
+      for (let k = d - 1; k <= d + 1; k++) v = Math.max(v, ncc(img, W, E, x0, y0, x0 - k, ry, bw, bh, mean, std));
+    }
+    return v;
+  };
+  for (const [d, c] of perD) {
+    if (Math.abs(d - bd) < 3 || c <= second) continue;
+    const isLocalMax = c >= (perD.get(d - 2) ?? -2) && c >= (perD.get(d + 2) ?? -2);
+    const v = isLocalMax && c > 0 ? peakAt(d) : c;
+    if (v > second) second = v;
+  }
+  // Only for WIDE searches: in a narrow (tracking/refine) window a smooth face legitimately scores
+  // high a few px off its peak, and a window anchored on a known disparity cannot alias anyway.
+  if (dMax - dMin > 12 && second > -2 && best - second < (uniq ?? UNIQUENESS)) return null;
   // Sub-pixel along d at the best row.
   const cm = ncc(img, W, E, x0, y0, x0 - (bd - 1), y0 + bdy, bw, bh, mean, std);
   const cp = ncc(img, W, E, x0, y0, x0 - (bd + 1), y0 + bdy, bw, bh, mean, std);
@@ -125,7 +154,7 @@ export function blockDisparities(img, W, H, o = {}) {
   const out = [];
   for (let y = y0; y <= y1; y += step) {
     for (let x = x0; x <= x1; x += step) {
-      const m = matchBlock(img, W, H, x, y, b, b, { dMin, dMax, dyMax: o.dyMax ?? 2 });
+      const m = matchBlock(img, W, H, x, y, b, b, { dMin, dMax, dyMax: o.dyMax ?? 2, uniq: o.uniq });
       if (m && m.c >= (o.minNcc ?? MIN_NCC)) out.push({ x, y, ...m });
     }
   }
@@ -302,8 +331,9 @@ function findInLeft(img, W, H, tpl, w, h, x0, y0, rx, ry) {
  * (the head moved) and matches it to the right eye in a ±`dWin` disparity window. The full search
  * re-runs every `fullEveryMs`, or as soon as tracking loses the template.
  */
-export function createFocusTracker({ fullEveryMs = 2000, dWin = 4, rx = 12, ry = 8, minTrackNcc = 0.75 } = {}) {
+export function createFocusTracker({ fullEveryMs = 2000, dWin = 4, rx = 12, ry = 8, minTrackNcc = 0.75, jump = 8 } = {}) {
   let st = null; // { x, y, d, tpl, w, h, at }
+  let pending = null; // a re-search result that disagreed with a healthy track, awaiting confirmation
   const t = {
     /** @returns {{d:number,x:number,y:number,c:number,method:'mode'|'focus'|'track',blocks:number}|null} */
     measure(img, W, H, now, o = {}) {
@@ -311,17 +341,32 @@ export function createFocusTracker({ fullEveryMs = 2000, dWin = 4, rx = 12, ry =
       const b = o.block || Math.max(8, Math.round(E / 20));
       const w = Math.round(b * 3);
       const h = Math.round(b * 1.5);
-      if (st && now - st.at < fullEveryMs && st.w === w && st.h === h) {
+      // Track first, whenever there is something to track.
+      let tracked = null;
+      if (st && st.w === w && st.h === h) {
         const f = findInLeft(img, W, H, st.tpl, w, h, st.x, st.y, rx, ry);
         if (f.c >= minTrackNcc) {
           const m = matchBlock(img, W, H, f.x, f.y, w, h, { dMin: Math.floor(st.d) - dWin, dMax: Math.ceil(st.d) + dWin, dyMax: 2 });
-          if (m && m.c >= MIN_NCC) {
-            st = { ...st, x: f.x, y: f.y, d: m.d, tpl: copyPatch(img, W, f.x, f.y, w, h) };
-            return { d: m.d, x: f.x + w / 2, y: f.y + h / 2, c: m.c, method: 'track', blocks: 0 };
-          }
+          if (m && m.c >= MIN_NCC) tracked = { m, f };
         }
       }
+      const accept = ({ m, f }) => {
+        st = { ...st, x: f.x, y: f.y, d: m.d, tpl: copyPatch(img, W, f.x, f.y, w, h) };
+        return { d: m.d, x: f.x + w / 2, y: f.y + h / 2, c: m.c, method: 'track', blocks: 0 };
+      };
+      if (tracked && now - st.at < fullEveryMs) return accept(tracked);
       const m = measureFocusDisparity(img, W, H, o);
+      if (tracked && (!m || Math.abs(m.d - tracked.m.d) > jump)) {
+        // A periodic re-search that disagrees with a HEALTHY track is not trusted on its own (a
+        // repeating background can alias one period away): switch only when the next re-search
+        // confirms it (a new, nearer person really did step in).
+        const confirmed = m && pending && Math.abs(pending.d - m.d) <= 3;
+        pending = m && !confirmed ? { d: m.d } : null;
+        if (!confirmed) {
+          st.at = now;
+          return accept(tracked);
+        }
+      } else pending = null;
       if (!m) {
         st = null;
         return null;
@@ -333,7 +378,55 @@ export function createFocusTracker({ fullEveryMs = 2000, dWin = 4, rx = 12, ry =
     },
     reset() {
       st = null;
+      pending = null;
     },
   };
   return t;
+}
+
+/**
+ * Downsample a luma plane by an integer `factor` (the Y plane of a decoded frame, read straight from
+ * WebCodecs: no RGBA conversion, no canvas). Averaging, not single-point sampling, so sensor noise
+ * does not become false texture: the full box for factors <= 2, a 2x2 sample per cell above.
+ * @param {Uint8Array} src  the plane
+ * @param {number} offset  byte offset of the plane in `src`
+ * @param {number} stride  bytes per source row
+ * @returns {{img: Uint8Array, w: number, h: number}}
+ */
+export function downsampleLuma(src, offset, stride, srcW, srcH, factor) {
+  const f = Math.max(1, factor | 0);
+  let w = Math.floor(srcW / f);
+  w -= w & 1; // even, so the SBS halves split cleanly
+  const h = Math.floor(srcH / f);
+  const out = new Uint8Array(w * h);
+  if (f <= 2) {
+    // Small factors: the full box.
+    const n = f * f;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let sum = 0;
+        for (let dy = 0; dy < f; dy++) {
+          const o = offset + (y * f + dy) * stride + x * f;
+          for (let dx = 0; dx < f; dx++) sum += src[o + dx];
+        }
+        out[y * w + x] = (sum / n) | 0;
+      }
+    }
+    return { img: out, w, h };
+  }
+  // Larger factors: a 2x2 sample at the quarter points of each cell. Enough averaging to keep sensor
+  // and codec noise from reading as texture, at ~1/9 of the full box's cost for f = 6 (the full box
+  // over a 2560x720 luma plane was ~8 ms of JS per measurement).
+  const a = f >> 2;
+  const c = (3 * f) >> 2;
+  for (let y = 0; y < h; y++) {
+    const r0 = offset + (y * f + a) * stride;
+    const r1 = offset + (y * f + c) * stride;
+    for (let x = 0; x < w; x++) {
+      const x0 = x * f + a;
+      const x1 = x * f + c;
+      out[y * w + x] = (src[r0 + x0] + src[r0 + x1] + src[r1 + x0] + src[r1 + x1]) >> 2;
+    }
+  }
+  return { img: out, w, h };
 }

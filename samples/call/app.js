@@ -41,8 +41,15 @@ function syntheticSbs() {
         g.fillStyle = ((xx + yy) / 80) % 2 ? '#2a3350' : '#1a2036';
         g.fillRect(ox + xx, yy, 80, 80);
       }
-      g.fillStyle = '#3b82f6';
-      g.fillRect(ox + x - 120 + (eye === 0 ? D : -D), H / 2 - 120, 240, 240);
+      // The square is TEXTURED (fixed pseudo-random blue cells) so it reads like a subject with
+      // detail: auto-convergence (call/disparity.js) matches texture; a flat colour has none inside
+      // its edges, and a regular checker would alias (it matches one period away).
+      const sx = ox + x - 120 + (eye === 0 ? D : -D);
+      for (let yy = 0; yy < 240; yy += 16) for (let xx = 0; xx < 240; xx += 16) {
+        const h = ((xx * 73856093) ^ (yy * 19349663)) >>> 0;
+        g.fillStyle = ['#1d4ed8', '#3b82f6', '#60a5fa', '#93c5fd'][(h >>> 7) & 3];
+        g.fillRect(sx + xx, H / 2 - 120 + yy, 16, 16);
+      }
       g.fillStyle = '#fff';
       g.font = '600 48px system-ui';
       g.fillText(eye === 0 ? 'L' : 'R', ox + 30, 70);
