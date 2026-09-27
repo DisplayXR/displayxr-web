@@ -47,9 +47,49 @@
     !!a && typeof a === 'object' && typeof a.tick === 'function' && typeof a.on === 'function' &&
     typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
 
+  // ------------------------------------------------------------ convergence target: lookAt
+  // GraphNode.prototype.lookAt, wrapped once, records the world point per entity (the core uses it
+  // only while the camera still looks at it). Reached from app.root: an app found by the
+  // constructor trap has no root yet, so the root assignment a few statements later is caught with
+  // a one-shot accessor on the instance — early enough for a page's setup-time camera.lookAt().
+  const lookAts = new WeakMap(); // entity -> { x, y, z }
+  const hookedProtos = new WeakSet();
+  function hookLookAt(node) {
+    let p = node && Object.getPrototypeOf(node);
+    while (p && !Object.prototype.hasOwnProperty.call(p, 'lookAt')) p = Object.getPrototypeOf(p);
+    if (!p || hookedProtos.has(p) || typeof p.lookAt !== 'function') return;
+    hookedProtos.add(p);
+    const orig = p.lookAt;
+    try {
+      p.lookAt = function (x, y, z) {
+        const v = x && typeof x === 'object' ? x : null;
+        const t = v ? { x: v.x, y: v.y, z: v.z } : { x, y, z };
+        if (isFinite(t.x) && isFinite(t.y) && isFinite(t.z)) lookAts.set(this, t);
+        return orig.apply(this, arguments);
+      };
+    } catch (e) { warnOnce('pc-lookat', 'could not watch entity.lookAt — convergence falls back to the estimator', e); }
+  }
+  function hookRoot(app) {
+    if (app.root) { hookLookAt(app.root); return; }
+    try {
+      Object.defineProperty(app, 'root', {
+        configurable: true, enumerable: true,
+        get() { return undefined; },
+        set(v) {
+          Object.defineProperty(app, 'root', { value: v, writable: true, enumerable: true, configurable: true });
+          if (v) hookLookAt(v);
+        },
+      });
+    } catch (e) { /* the engine's own field: fine, lookAt calls before the first frame are missed */ }
+  }
+  // Orbit scripts on the camera entity: orbit-camera.js (`pivotPoint`) and the engine's ESM
+  // CameraControls (`focusPoint`). Only those two names, read only on the camera's own scripts.
+  const TARGET_FIELDS = [['pivotPoint', 'orbit-camera pivotPoint'], ['focusPoint', 'CameraControls focusPoint']];
+
   function consider(app, how) {
     if (!isApp(app) || apps.has(app)) return;
     apps.set(app, null);
+    hookRoot(app);
     via.set(app, how);
     core.meta.playcanvas.detected.push(how);
     info('PlayCanvas app found via', how);
@@ -260,8 +300,28 @@
       st.cam = null; st.views = null; st.frustumKey = '';
       if (wasLive) {
         try { if (realW(st.canvas) !== st.L.w || realH(st.canvas) !== st.L.h) st.setRes(st.L.w, st.L.h); } catch (e) { /* ignore */ }
-        st.app.renderNextFrame = true;
+        st.app.renderNextFrame = true; // the mono frame: drawn on the engine's next tick, reported from postrender
       }
+      return false;
+    },
+    wake(st) { st.app.renderNextFrame = true; }, // re-enabled: one frame, whose postrender considers activation
+    target(st) {
+      const e = st.cam && st.cam.entity;
+      if (!e) return null;
+      const list = e.script && (e.script.scripts || e.script._scripts);
+      if (Array.isArray(list)) {
+        for (const sc of list) {
+          if (!sc || sc.enabled === false) continue;
+          for (const [f, via] of TARGET_FIELDS) {
+            if (!(f in sc)) continue;
+            let p = null;
+            try { p = sc[f]; } catch (err) { p = null; }
+            if (p && isFinite(p.x) && isFinite(p.y) && isFinite(p.z)) return { x: p.x, y: p.y, z: p.z, via };
+          }
+        }
+      }
+      const l = lookAts.get(e);
+      return l ? { x: l.x, y: l.y, z: l.z, via: 'entity.lookAt' } : null;
     },
     flipIdle(st) { st.app.renderNextFrame = true; }, // flips on the postrender of that frame
     describe: (st) => ({
@@ -283,6 +343,7 @@
     if (!st) return;
     st.frame.drew = true;
     if (st.active) return;
+    if (st.releasing) { core.monoDrawn(st); return; } // the mono frame after a staged stand-down
     if (st.armed) {
       const pick = pickCamera(app);
       if (!pick.cam) { core.stand(st, pick.why); if (pick.flat) flatWhy(st, pick.why); return; }
@@ -298,7 +359,7 @@
     const pick = pickCamera(app);
     if (pick.cam !== st.cam) {
       const why = pick.cam ? 'the page switched cameras' : pick.why;
-      core.stand(st, why);
+      core.stand(st, why, { staged: true }); // this frame now renders mono; the layer goes after it
       if (pick.flat) flatWhy(st, pick.why);
       st.nextTry = core.now() + 1000;
       return;

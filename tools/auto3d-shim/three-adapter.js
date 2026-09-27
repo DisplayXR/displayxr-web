@@ -42,7 +42,8 @@
   let devtools = window.__THREE_DEVTOOLS__ || null;
   const onObserve = (e) => {
     const o = e && e.detail;
-    if (!o || o.isScene) return;
+    if (!o) return;
+    if (o.isScene) { hookLookAt(o); return; }
     if (o.isWebGPURenderer) { warnOnce('webgpu', 'WebGPURenderer seen — not converted by this prototype, left 2D'); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
@@ -65,6 +66,37 @@
       set: (v) => { devtools = v; attachHook(v); },
     });
   } catch (e) { window.__THREE_DEVTOOLS__ = devtools; }
+
+  // ------------------------------------------------------------ convergence target: camera.lookAt
+  // OrbitControls / MapControls / TrackballControls all end their update() in
+  // `this.object.lookAt(this.target)`, and a page that aims its camera once calls lookAt too. The
+  // controls' handlers are bound functions, so the controls instance itself is not reachable from
+  // the canvas; the lookAt call is. Object3D.prototype.lookAt is wrapped the first time a Scene is
+  // announced (a Scene is built before the camera and its controls on every page seen), recording
+  // the world point per CAMERA. Nothing else is touched, and the call goes through unchanged. The
+  // core only uses the point while the camera still looks at it.
+  const lookAts = new WeakMap(); // camera -> { x, y, z } (world), the last lookAt
+  const hookedProtos = new WeakSet();
+  function hookLookAt(obj) {
+    let p = Object.getPrototypeOf(obj);
+    while (p && !Object.prototype.hasOwnProperty.call(p, 'lookAt')) p = Object.getPrototypeOf(p);
+    if (!p || hookedProtos.has(p) || typeof p.lookAt !== 'function') return;
+    hookedProtos.add(p);
+    const orig = p.lookAt;
+    try {
+      p.lookAt = function (x, y, z) {
+        if (this && this.isCamera) {
+          const v = x && typeof x === 'object' ? x : null;
+          const t = v ? { x: v.x, y: v.y, z: v.z } : { x, y, z };
+          if (isFinite(t.x) && isFinite(t.y) && isFinite(t.z)) lookAts.set(this, t);
+        }
+        return orig.apply(this, arguments);
+      };
+    } catch (e) { warnOnce('lookat', 'could not watch camera.lookAt — convergence falls back to the estimator', e); }
+  }
+  // Globals some pages keep their controls in. Conservative: only an object whose .object IS the
+  // page camera and whose .target is a Vector3.
+  const CONTROL_GLOBALS = ['controls', 'orbitControls', 'cameraControls'];
 
   // ------------------------------------------------------------ the adapter hooks the core calls
   const ad = {
@@ -107,6 +139,15 @@
       if (camera.parent === null) camera.updateMatrixWorld();
     },
     firstDraw(st) {
+      if (st.idleOps) {
+        // Flipped from idle (flipIdle): repaint the page's whole last frame (HUD passes included),
+        // not just the scene, and keep it as the frame the session replays.
+        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], isMainPerspective(st, op[2])]));
+        st.idleOps = null;
+        replay(st, ops);
+        st.lastOps = ops;
+        return;
+      }
       renderFlat(st, st.lastScene, st.mainCam); // repaint NOW: the resize just cleared the store
       st.lastOps = [['render', st.lastScene, st.mainCam, true]];
     },
@@ -117,7 +158,8 @@
       st.frame = { drew: false, ops: [] };
     },
     restore(st, wasLive) {
-      st.lastOps = null; st.frame = { drew: false, ops: [] };
+      const last = st.lastOps;
+      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
       core.unvirtualizeCanvas(st);
       if (wasLive) {
         try {
@@ -126,16 +168,48 @@
           st.call('setViewport', ...st.L.vp);
           st.call('setScissor', ...st.L.sc);
           st.call('setScissorTest', st.L.scTest);
-          if (st.lastMono) st.call('render', st.lastMono.scene, st.lastMono.camera); // the resize cleared it
+          // The resize cleared the store: redraw the page's last frame, mono, in this same task, so
+          // the store holds a mono picture before the core releases the layer. It is also the frame
+          // a later re-enable replays (wake).
+          const mono = last && last.length ? last.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2]]))
+            : st.lastMono ? [['render', st.lastMono.scene, st.lastMono.camera]] : null;
+          if (mono) { monoReplay(st, mono); st.monoOps = mono; }
         } catch (e) { /* the page's next frame repaints */ }
       }
+      return true; // drawn now (or cleared by the resize): never the side-by-side pair
     },
     flipIdle(st) {
       if (st.armed && st.lastMono) {
         const { scene, camera } = st.lastMono;
-        st.call('render', scene, camera);
+        const ops = st.monoOps && st.monoOps.length ? st.monoOps : [['render', scene, camera]];
+        monoReplay(st, ops); // the page's whole last frame: the cover is taken from it
+        st.idleOps = ops;
         flip(st, scene, camera);
       }
+    },
+    // Re-enabled on a page that draws on demand: replay its last mono frame through the wrapped
+    // renderer, which is the page's own draw as far as activation is concerned.
+    wake(st) {
+      const ops = st.monoOps;
+      if (!ops || !ops.length || st.active) return;
+      const r = st.r;
+      const prevRT = st.call('getRenderTarget');
+      if (prevRT !== null) st.call('setRenderTarget', null);
+      try {
+        for (const op of ops) { if (op[0] === 'clear') r.clear(op[1], op[2], op[3]); else r.render(op[1], op[2]); }
+      } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
+    },
+    target(st) {
+      const cam = st.mainCam;
+      if (!cam) return null;
+      for (const k of CONTROL_GLOBALS) {
+        try {
+          const c = window[k];
+          if (c && c.object === cam && c.target && c.target.isVector3) return { x: c.target.x, y: c.target.y, z: c.target.z, via: `window.${k}.target` };
+        } catch (e) { /* ignore */ }
+      }
+      const l = lookAts.get(cam);
+      return l ? { x: l.x, y: l.y, z: l.z, via: 'camera.lookAt' } : null;
     },
     describe: (st) => ({ page: { w: st.L.w, h: st.L.h, pr: st.L.pr, canvasWidthSeenByPage: st.canvas.width } }),
   };
@@ -152,6 +226,7 @@
       eyes: null, eyesFor: null, m4: null,
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
       frame: { drew: false, ops: [] }, lastOps: null,
+      monoOps: null, monoCur: null, monoOpen: false, idleOps: null, // the page's last MONO frame (draws before / between conversions)
     });
     states.set(r, st);
     wrap(st);
@@ -244,7 +319,8 @@
     });
     W('getScissorTest', () => (st.active ? st.L.scTest : st.call('getScissorTest')));
     W('clear', (color, depth, stencil) => {
-      if (!top() || !st.active || st.call('getRenderTarget') !== null) return st.call('clear', color, depth, stencil);
+      if (!top() || st.call('getRenderTarget') !== null) return st.call('clear', color, depth, stencil);
+      if (!st.active) { recordMono(st, ['clear', color, depth, stencil]); return st.call('clear', color, depth, stencil); }
       st.frame.drew = true;
       st.frame.ops.push(['clear', color, depth, stencil]);
       forEyes(st, () => st.call('clear', color, depth, stencil));
@@ -257,9 +333,11 @@
       if (!st.active) {
         const out = st.call('render', scene, camera);
         if (toScreen && !xrLive) {
+          recordMono(st, ['render', scene, camera]);
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
           if (persp) {
             st.lastMono = { scene, camera }; st.sawPersp = true;
+            hookLookAt(camera); // fallback for a page that built no Scene before its camera (rare)
             // Flip / qualify only on the scene draw itself — never on an ortho background, HUD or
             // post quad drawn in the same frame (the throttle would otherwise keep landing on it).
             if (st.armed) flip(st, scene, camera);
@@ -286,6 +364,24 @@
   function flip(st, scene, camera) {
     st.mainCam = camera; st.lastScene = scene;
     core.flip(st);
+  }
+  // The page's screen draws while NOT converted, one list per task (a page draws its frame in one
+  // callback). The last complete list is the mono frame wake / flipIdle replay.
+  function recordMono(st, op) {
+    if (!st.monoOpen) {
+      st.monoOpen = true;
+      const cur = (st.monoCur = []);
+      queueMicrotask(() => { st.monoOpen = false; if (cur.length && cur.length <= 32) st.monoOps = cur; });
+    }
+    st.monoCur.push(op);
+  }
+  // Draw ops as the page drew them: mono, through the originals, to the screen.
+  function monoReplay(st, ops) {
+    const prevRT = st.call('getRenderTarget');
+    if (prevRT !== null) st.call('setRenderTarget', null);
+    try {
+      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else st.call('render', op[1], op[2]); }
+    } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
   }
 
   // ------------------------------------------------------------ sizing
