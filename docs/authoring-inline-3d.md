@@ -138,10 +138,14 @@ things to check if you restyle it:
 
 **Three media traps** that look like player bugs and are not:
 
-- **Codec.** The DisplayXR Browser ships no proprietary codecs: no H.264, no AAC. Serve
-  **VP9 (or AV1) video with Opus audio in WebM**. An MP4/H.264 source does not play at all
-  (`error` fires, the tile keeps its poster), so a copied MP4 sample simply fails. The sample's
-  clip is VP9 WebM for this reason (video only — it has no audio track).
+- **Codec.** From **DisplayXR Browser 1.0.6**, MP4 plays: H.264 video with AAC (LC or HE-AAC)
+  audio, decoded by the operating system (the GPU and Media Foundation on Windows, MediaCodec on
+  Android); the browser ships no codec of its own. **VP9 (or AV1) with Opus in WebM** stays the
+  safe default and should be listed first when you have both: it also plays in DisplayXR Browser
+  1.0.5 and earlier and in stock Chromium builds, where an MP4 fails outright (`error` fires, the
+  tile keeps its poster), and on a machine with no hardware H.264 decode (a VM, remote desktop, a
+  blocklisted GPU), where `canPlayType` still answers "probably" but the MP4 then fails to decode.
+  The sample's clip is VP9 WebM (video only — it has no audio track).
 - **Non-square pixels.** A source whose container flags a pixel aspect ratio (e.g. a 3840×804
   stream with a stretch flag) reports a different `videoWidth`/`videoHeight` in Chromium than the
   coded size, and the SBS pair is split and scaled from the wrong dimensions, so it plays
@@ -1341,8 +1345,12 @@ the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
 
 What decides whether a clip plays at all, and whether it stays smooth, is mostly the server:
 
-- **Codec.** The DisplayXR Browser has **no H.264 and no AAC**. Serve VP9 (or AV1) video with Opus
-  audio in WebM, and list alternatives best first with full `canPlayType` strings —
+- **Codec.** DisplayXR Browser **1.0.6 and later** plays H.264 + AAC in MP4 through the operating
+  system's decoders; 1.0.5 and earlier, and stock Chromium builds, do not. Serve VP9 (or AV1) video
+  with Opus audio in WebM as the first choice — it plays everywhere, including on machines with no
+  hardware H.264 decode, where `canPlayType` still says "probably" for H.264 and the MP4 then fails —
+  and add an MP4 as an alternative if you have one. List alternatives best first with full
+  `canPlayType` strings —
   `addPlayer`'s `src` takes `[{ src, type: 'video/webm; codecs="vp9, opus"' }, …]` and plays the
   first this browser supports (`pickSource()`). A codec-less `'video/mp4'` still answers "maybe",
   which is why the codecs parameter matters.

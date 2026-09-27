@@ -249,8 +249,10 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 ```
 
 `handle.setVideo(src, options?)`:
-- **`src`** is a URL or an `HTMLVideoElement`. Serve **VP9 (or AV1) + Opus in WebM**: the DisplayXR
-  Browser has no H.264/AAC, so an `.mp4` fails with `MEDIA_ERR_SRC_NOT_SUPPORTED`.
+- **`src`** is a URL or an `HTMLVideoElement`. Prefer **VP9 (or AV1) + Opus in WebM**. DisplayXR
+  Browser 1.0.6+ also plays H.264/AAC `.mp4` through the OS decoders, but 1.0.5 and earlier (and
+  stock Chromium) fail it with `MEDIA_ERR_SRC_NOT_SUPPORTED`, as does a machine with no hardware
+  H.264 decode.
   - **A URL** gets an SDK-owned `<video>` (`crossOrigin: 'anonymous'`, `playsInline`). It autoplays
     unless `autoplay: false`. If the browser refuses sound without a user gesture, it plays
     **muted** (logged once); set `v.video.muted = false` on the next gesture. The SDK frees the

@@ -346,7 +346,8 @@ function drawFittedEye(ctx, src, srcW, srcH, layout, eye, dx, dy, dw, dh, fit, b
  * Pick the first source this browser can play, from candidates listed BEST FIRST. Each candidate
  * is a URL string, or `{ src, type }` where `type` is a full `canPlayType` string — e.g.
  * `'video/webm; codecs="vp9, opus"'`. Codec-less types answer 'maybe' for anything in the
- * container, which is why the full string matters: the DisplayXR Browser has no H.264 / AAC, and
+ * container, which is why the full string matters: only DisplayXR Browser 1.0.6+ plays H.264 /
+ * AAC (through the OS decoders, and not on a machine without hardware H.264 decode), and
  * `'video/mp4'` alone still says 'maybe'. A 'probably' wins over an earlier 'maybe'. A candidate
  * without a type is taken as-is if nothing typed was 'probably'. Warns and returns the first when
  * nothing is playable, so the `error` event (and the poster) still happens the usual way.
@@ -382,7 +383,7 @@ export function pickSource(candidates, canPlayType) {
   if (maybe) return maybe.src;
   console.warn(
     '[inline3d/player] none of the candidate sources is playable here — trying the first. The ' +
-      'DisplayXR Browser plays VP9/AV1 + Opus in WebM, not H.264/AAC.',
+      'VP9/AV1 + Opus in WebM plays everywhere; H.264/AAC MP4 needs DisplayXR Browser 1.0.6+.',
     list.map((c) => c.type || '(untyped)')
   );
   return list[0].src;
