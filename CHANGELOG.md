@@ -7,8 +7,19 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** only (a new subpath, `./call`). No change to the core or to any other
-subpath.
+Touches the **preview tier** (a new subpath, `./call`) and one **core** fix: image/video backing
+buffers are capped at the source's resolution.
+
+### Fixed — core: image/video buffers capped at the source's per-eye resolution
+
+- An image or video window's backing buffer was sized box x devicePixelRatio per eye regardless of
+  the source, so a large tile over a small clip re-drew many times the clip's pixels every frame.
+  Measured on an NP02J tablet (DisplayXR Browser 1.0.6), the player sample's 90vw tile got a
+  4608x1296 buffer for a 640x360-per-eye clip: 25 fps, 47 of 97 video frames dropped. The buffer
+  is now capped at the source's per-eye size (box aspect kept, only ever shrinks), which on the same
+  page gives 1280x360, 58 fps, 0 dropped. The compositor scales the layer to the box either way, so
+  the picture is the same. An explicit `{width, height}` is never capped; `cornerRadius` / `feather`
+  keep their on-screen size; the buffer re-derives when a new title has a different size.
 
 ### Added — call: mono→3D through `lift()` (P2a of RFC 0002)
 
