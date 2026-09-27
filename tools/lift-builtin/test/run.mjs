@@ -5,7 +5,8 @@
 //
 // Per CSP mode: load the page (bundle via <script> = the injection), check the API surface and
 // the globals it leaks, then  video: convertAt → live → pause → explore → cancelAll;
-// image: convertAt → explore → convertAt again (toggle → removed). PNGs + a JSON report go to --out
+// image: convertAt → explore → chip Exit (clears the browser menu's dxr-lift-menu marker) →
+// convertAt → convertAt again (toggle → removed). PNGs + a JSON report go to --out
 // (default: tools/lift-builtin/test/_out, gitignored with the rest of _out). Exits 1 on any failure.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -109,8 +110,11 @@ try {
     await sleep(2500);
     step({ step: 'pause → explore', ok: !w.timeout && w.st.lifts[0]?.state === 'explore', ms: Date.now() - t, status: w.st, png: await shot('2-video-explore'), pngOrbit: await dragShot('#v', '2b-video-explore-orbit') });
 
+    // The browser menu's "Back to 2D" marker (browser 0243) must go with the lift.
+    await page.evaluate(() => document.querySelector('#v').setAttribute('dxr-lift-menu', ''));
     await page.evaluate(() => __dxrLift.cancelAll());
     await sleep(500);
+    step({ step: 'cancelAll clears dxr-lift-menu', ok: !(await page.evaluate(() => document.querySelector('#v').hasAttribute('dxr-lift-menu'))) });
     const afterCancel = await page.evaluate(() => ({ lifts: __dxrLift.status().lifts.length, hosts: document.querySelectorAll('#v ~ *:not(img)').length, videoVisible: getComputedStyle(document.querySelector('#v')).visibility }));
     step({ step: 'cancelAll', ok: afterCancel.lifts === 0, afterCancel, png: await shot('3-after-cancel') });
 
@@ -122,6 +126,30 @@ try {
     await sleep(2500);
     step({ step: 'image convertAt → explore', result: res, ok: res.ok && !w.timeout && w.st.lifts[0]?.state === 'explore', ms: Date.now() - t, status: w.st, png: await shot('4-image-explore'), pngOrbit: await dragShot('#i', '4b-image-explore-orbit') });
 
+    // ── the chip's Exit (closed shadow root: reached through CDP's pierce) clears the menu marker ──
+    await page.evaluate(() => document.querySelector('#i').setAttribute('dxr-lift-menu', ''));
+    const exitBox = await (async () => {
+      const cdp = await page.createCDPSession();
+      const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true });
+      const find = (n) => {
+        if (n.nodeName === 'BUTTON' && (n.children || []).some((c) => c.nodeType === 3 && c.nodeValue === 'Exit')) return n;
+        for (const c of [...(n.children || []), ...(n.shadowRoots || [])]) { const f = find(c); if (f) return f; }
+        return null;
+      };
+      const btn = find(root);
+      if (!btn) return null;
+      try { const { model } = await cdp.send('DOM.getBoxModel', { backendNodeId: btn.backendNodeId }); const q = model.content; return [(q[0] + q[4]) / 2, (q[1] + q[5]) / 2]; } catch { return null; }
+    })();
+    if (exitBox) {
+      await page.mouse.click(exitBox[0], exitBox[1]);
+      await sleep(800);
+    }
+    const afterExit = await page.evaluate(() => ({ lifts: __dxrLift.status().lifts.length, marker: document.querySelector('#i').hasAttribute('dxr-lift-menu') }));
+    step({ step: 'chip Exit → disposed, dxr-lift-menu cleared', ok: !!exitBox && afterExit.lifts === 0 && !afterExit.marker, exitFound: !!exitBox, afterExit });
+
+    // Re-lift, then the toggle: convertAt again → removed.
+    res = await page.evaluate((a, b) => __dxrLift.convertAt(a, b, 'image'), x, y);
+    step({ step: 'image convertAt after Exit → lifted', result: res, ok: res.ok && res.action === 'lifted' });
     res = await page.evaluate((a, b) => __dxrLift.convertAt(a, b, 'image'), x, y);
     await sleep(500);
     const n = await page.evaluate(() => __dxrLift.status().lifts.length);

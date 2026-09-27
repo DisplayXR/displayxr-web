@@ -101,6 +101,9 @@ const MODELS = 'displayxr-lift://models/';
   }
 
   const TAGS = { image: 'IMG', video: 'VIDEO', canvas: 'CANVAS' };
+  // Set by the browser's context menu on an element it converted (browser patch 0243); a label
+  // hint for "Back to 2D". The lift world owns it, so the built-in clears it on disposal.
+  const MENU_MARKER = 'dxr-lift-menu';
 
   function pick(x, y, mediaType) {
     const want = TAGS[mediaType];
@@ -169,7 +172,14 @@ const MODELS = 'displayxr-lift://models/';
     }
     lifts.set(el, h);
     h.on('statechange', ({ state }) => {
-      if (state === 'disposed' && lifts.get(el) === h) lifts.delete(el);
+      if (state !== 'disposed') return;
+      if (lifts.get(el) === h) lifts.delete(el);
+      // The browser's menu (lift_trigger.cc, browser patch 0243) marks an element it left lifted
+      // with `dxr-lift-menu` so its next context menu reads "Back to 2D". A conversion ended HERE
+      // -- the chip's Exit, cancelAll, eviction by another lift -- must clear it, or that menu
+      // keeps offering "Back to 2D" for an element that is plain 2D. Only when no newer handle
+      // owns the element (a re-lift in the same tick keeps its marker).
+      if (!lifts.has(el)) el.removeAttribute(MENU_MARKER);
     });
     h.on('error', ({ error, fatal }) => {
       if (fatal) console.warn('[DisplayXR lift]', (error && error.message) || error);
