@@ -157,6 +157,13 @@
       else if (st.lastOps) replay(st, st.lastOps);
       st.frame = { drew: false, ops: [] };
     },
+    // The out-cover's pixels: the left eye of the pair just drawn, read back from the GL context —
+    // drawImage() of the layer-bound canvas is empty. Taken by takeCover() below, not by the core.
+    coverAfterDraw: true,
+    readEye(st, target) {
+      const gl = st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null;
+      return core.readGlEye(gl, st, target);
+    },
     restore(st, wasLive) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
@@ -354,7 +361,9 @@
       st.frame.drew = true;
       const stereo = isMainPerspective(st, camera);
       st.frame.ops.push(['render', scene, camera, stereo]);
-      return stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
+      const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
+      if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
+      return out;
     });
     W('dispose', (...a) => {
       if (st.active || st.pending || st.armed) core.stand(st, 'the page disposed the renderer');
@@ -514,6 +523,7 @@
   function replay(st, ops) {
     const prevRT = st.call('getRenderTarget');
     if (prevRT !== null) st.call('setRenderTarget', null);
+    let drew = false;
     try {
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
@@ -521,12 +531,19 @@
         else renderFlat(st, op[1], op[2]);
       }
       st.stats.replays++;
+      drew = true;
     } catch (e) {
       warnOnce('replay', 'replaying the last frame threw; idle frames will not be redrawn', e);
       st.lastOps = null;
     } finally {
       if (prevRT !== null) st.call('setRenderTarget', prevRT);
     }
+    if (drew) takeCover(st); // the whole replayed frame, HUD passes included
+  }
+  // The out-cover is read right after a screen draw, in the SAME task: the drawing buffer is not
+  // preserved, and the XR session frame is a different task from the page's own rAF draw.
+  function takeCover(st) {
+    if (st.outCoverDue) core.takeOutCover(st); // clears outCoverDue: at most once per frame
   }
   function repaintNow(st) {
     const ops = st.frame.ops.length ? st.frame.ops : st.lastOps;
