@@ -2340,13 +2340,48 @@ class Inline3D {
     win.autoExcluded.clear();
   }
 
-  /** The per-eye buffer size this window should have right now (explicit, or box × dpr). */
+  /**
+   * The per-eye buffer size this window should have right now: explicit, or box × dpr — capped
+   * at the SOURCE's own per-eye resolution for image and video windows.
+   *
+   * WHY THE CAP (measured, NP02J tablet, DisplayXR Browser 1.0.6): the player sample's 90vw
+   * tile at dpr 2 asked for a 4608×1296 backing store for a 640×360-per-eye clip — 13× the
+   * source's pixels, re-drawn every frame. The page fell to 25 fps and dropped 47 of 97 video
+   * frames; the same clip in a 45vw tile (2304×648) ran at 57 fps with 0 dropped. Drawing a
+   * source into a buffer larger than itself adds no detail: the compositor scales the layer to
+   * the box either way, so upscaling here only spends GPU fill-rate. The cap keeps the BOX
+   * aspect (the eyes stay correctly shaped) and only shrinks, never grows past box × dpr.
+   * An explicit {width, height} is the page's call and is never capped. `win.bufScale` records
+   * the shrink so buffer-px decoration (cornerRadius, feather) keeps its on-screen size.
+   */
   _eyeSize(win) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    return {
-      w: win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr),
-      h: win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr),
-    };
+    let w = win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr);
+    let h = win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr);
+    let scale = 1;
+    const eye = !win.reqW && !win.reqH && this._sourceEyeSize(win);
+    if (eye) {
+      // The smallest buffer that still holds every source pixel along the axis that fills the box.
+      const s = Math.max(eye.w / w, eye.h / h);
+      if (s < 1) {
+        scale = s;
+        w = Math.max(1, Math.round(w * s));
+        h = Math.max(1, Math.round(h * s));
+      }
+    }
+    win.bufScale = scale;
+    return { w, h };
+  }
+
+  /** One eye of an image/video window's source (an SBS pair: left eye = left half), or null. */
+  _sourceEyeSize(win) {
+    if (win.kind !== 'video' && win.kind !== 'image') return null;
+    const src = win.kind === 'video' ? win.video : win.img;
+    if (!src) return null;
+    const sw = src.videoWidth || src.naturalWidth || src.width;
+    const sh = src.videoHeight || src.naturalHeight || src.height;
+    if (!(sw > 1) || !(sh > 0)) return null;
+    return { w: sw / 2, h: sh };
   }
 
   _sizeBuffer(win, sbs) {
@@ -2473,10 +2508,25 @@ class Inline3D {
     const srcW = src.videoWidth || src.naturalWidth || src.width;
     const srcH = src.videoHeight || src.naturalHeight || src.height;
     if (!srcW || !srcH) return;
+    // The buffer is capped at the source's per-eye resolution (_eyeSize), and a source's size is
+    // only known once it has decoded — or changes on a new title. Re-derive on a change; the
+    // resize clears the buffer, and the paint right below refills it.
+    const srcKey = srcW + 'x' + srcH;
+    if (win.srcKey !== srcKey) {
+      win.srcKey = srcKey;
+      if (win.ownsBuffer && !(win.reqW && win.reqH)) {
+        const { w, h } = this._eyeSize(win);
+        if (w !== win.eyeW || h !== win.eyeH) this._sizeBuffer(win, win.sbs);
+      }
+    }
+    // cornerRadius / feather are buffer px at the UNCAPPED size; keep their on-screen size.
+    const k = win.bufScale || 1;
+    const radius = win.cornerRadius * k;
+    const feather = win.feather * k;
     ctx.clearRect(0, 0, c.width, c.height);
     if (!win.sbs) {
       // Flat fallback: left eye only, stretched to the square buffer.
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, c.width, c.height, win.cornerRadius, win.feather);
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, c.width, c.height, radius, feather);
       return;
     }
     const halfDst = c.width / 2;
@@ -2487,16 +2537,16 @@ class Inline3D {
     // as a squeezed pair). See _trackBakedStereo.
     const stereo = Math.min(this._stereoFactor, this._bakedStereo);
     if (stereo < 1) {
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, win.cornerRadius, win.feather); // L
-      drawEyeBlend(ctx, src, srcW / 2, srcH, halfDst, c.height, stereo, win.cornerRadius, win.feather); // L+R
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, radius, feather); // L
+      drawEyeBlend(ctx, src, srcW / 2, srcH, halfDst, c.height, stereo, radius, feather); // L+R
       return;
     }
     // A single stretched draw maps SBS source → SBS buffer (left→left, right→right); the
     // per-eye path is only needed to bake decoration (rounded corners / edge feather), which
     // MUST be applied to each eye separately — see drawEye/featherEye.
-    if (win.cornerRadius > 0 || win.feather > 0) {
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, win.cornerRadius, win.feather); // L
-      drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, win.cornerRadius, win.feather); // R
+    if (radius > 0 || feather > 0) {
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, radius, feather); // L
+      drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, radius, feather); // R
     } else {
       ctx.drawImage(src, 0, 0, srcW, srcH, 0, 0, c.width, c.height);
     }
