@@ -522,7 +522,7 @@
   function dropCover(st) { if (st.cover) { st.cover.el.remove(); st.cover = null; } }
 
   // ------------------------------------------------------------ HUD + hotkeys
-  let hudEl = null, hudUntil = 0;
+  let hudEl = null, hudUntil = 0, hudPending = false;
   // A canvas the adapter can see but will not convert for a structural reason (post-effects,
   // several cameras, WebGPU) — shown on the HUD so a tester knows why the page is flat.
   const flatNote = () => {
@@ -534,8 +534,10 @@
     const st = owner;
     const busy = st && (st.active || st.pending || st.armed);
     const flat = !busy && !foreign && cfg.enabled ? flatNote() : null;
-    if (!cfg.hud || !(busy || flat || now() < hudUntil)) { if (hudEl) { hudEl.remove(); hudEl = null; } return; }
-    if (!document.body) return;
+    // A stand-down stays on the HUD like a flat reason does: the tester has to see that the page,
+    // not the shim, owns inline-3D (it was only drawn inside a hotkey flash before).
+    if (!cfg.hud || !(busy || flat || foreign || now() < hudUntil)) { if (hudEl) { hudEl.remove(); hudEl = null; } return; }
+    if (!document.body) { if (!hudPending) { hudPending = true; document.addEventListener('DOMContentLoaded', () => { hudPending = false; hud(); }, { once: true }); } return; }
     if (!hudEl) {
       hudEl = document.createElement('div');
       hudEl.setAttribute('data-dxr-auto3d-hud', '');
