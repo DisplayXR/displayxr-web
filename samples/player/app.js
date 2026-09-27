@@ -4,10 +4,17 @@
 import { createInline3D } from '@displayxr/inline3d';
 import { addPlayer, PLAYER_ACCENTS } from '@displayxr/inline3d/player';
 
-// Reusing samples/windows/ own asset rather than duplicating a 5.5 MB file — see that sample's
-// app.js for why it's VP9/WebM (stock Chromium ships no proprietary H.264 decoder) and why it's
-// 640x360/eye (a 3D display's recommended render scale throws the rest away after the interlace).
-const SRC = '../windows/assets/flymetothemoon_sbs.webm';
+// The same trailer twice, best first, picked by the player's own codec check (pickSource):
+//   1. H.264 + AAC MP4 WITH SOUND (3.4 MB). The DisplayXR Browser plays it from 1.0.6, which
+//      decodes H.264/AAC through the operating system (browser-pvt#169).
+//   2. The silent VP9 WebM samples/windows/ ships, for browsers without H.264 (DisplayXR Browser
+//      1.0.5 and earlier, stock Chromium builds).
+// Both are 640x360 per eye: a 3D display's render scale throws the rest away after the interlace.
+// Both players start muted (autoplay policy); unmute from the transport.
+const SRC = [
+  { src: '../windows/assets/flymetothemoon_2x1.mp4', type: 'video/mp4; codecs="avc1.640028, mp4a.40.2"' },
+  { src: '../windows/assets/flymetothemoon_sbs.webm', type: 'video/webm; codecs="vp9"' },
+];
 const POSTER = undefined; // no poster asset shipped with this sample; the first frame paints itself.
 
 function setStatus(mode, text) {
