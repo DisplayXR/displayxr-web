@@ -273,18 +273,24 @@ export function createConvergence() {
   const s = {
     hello: null,
     subjectZmm: null,
+    // Auto-convergence (call/disparity.js): the MEASURED disparity of the point between the remote
+    // person's eyes, in source eye pixels (left x − right x). When set it wins over the hint: it is
+    // read off the frames, so it needs no calibration and cannot disagree with them.
+    measuredPx: null,
     depth: 0, // setDepth(), [-1, 1]
     current: 0,
     target(eyeWidthPx) {
       const auto =
-        s.hello && s.subjectZmm
-          ? convergenceShiftPx({
-              eyeWidthPx,
-              hfovDeg: s.hello.hfovDeg,
-              baselineMm: s.hello.baselineMm,
-              subjectZmm: s.subjectZmm,
-            })
-          : 0;
+        s.measuredPx !== null
+          ? s.measuredPx / 2 // half the disparity comes off each eye: the eyes land at zero parallax
+          : s.hello && s.subjectZmm
+            ? convergenceShiftPx({
+                eyeWidthPx,
+                hfovDeg: s.hello.hfovDeg,
+                baselineMm: s.hello.baselineMm,
+                subjectZmm: s.subjectZmm,
+              })
+            : 0;
       return clampShift(auto + s.depth * DEPTH_RANGE_FRACTION * eyeWidthPx, eyeWidthPx);
     },
     step(eyeWidthPx) {

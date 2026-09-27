@@ -164,6 +164,13 @@ export interface CallOptions {
   /** Microphone (echo cancellation + noise suppression). Default true. */
   audio?: boolean;
   /**
+   * Auto-convergence (default true): measure the disparity of the point between each SBS peer's
+   * eyes on the received frames and shift the two eyes by half of it each, so the remote person sits
+   * at the display plane. No calibration needed. The depth slider stays an offset on top; a peer's
+   * `hint` is used only while no measurement has succeeded. Lifted (mono) tiles are unaffected.
+   */
+  autoConverge?: boolean;
+  /**
    * Lift mono peers to 3D on a 3D display (RFC §5). `'auto'` (default): import
    * `@displayxr/inline3d/lift` lazily from this copy of the SDK, and use it when it reports a
    * native provider or a WebGPU web fallback — otherwise mono peers stay flat (one log line, no
@@ -351,6 +358,13 @@ export interface CallLiftPool {
 export function createLiftPool(o: { lift: CallLiftFunction; max?: number; log?: (tag: string, o: object) => void; options?: Record<string, unknown> }): CallLiftPool;
 export function convergenceShiftPx(p: { eyeWidthPx: number; hfovDeg?: number | null; baselineMm?: number | null; subjectZmm?: number | null }): number;
 export function lowPass(prev: number, target: number, alpha?: number): number;
+/** The disparity (left x − right x, input px) of the point between the eyes in a grayscale SBS frame. */
+export function measureFocusDisparity(
+  img: ArrayLike<number>,
+  W: number,
+  H: number,
+  o?: { focus?: { x: number; y: number }; block?: number; dMin?: number; dMax?: number; dyMax?: number; minNcc?: number },
+): { d: number; x: number; y: number; c: number; method: 'focus' | 'mode'; blocks: number } | null;
 export function clampShift(px: number, eyeWidthPx: number, maxFraction?: number): number;
 export function eyeCropRect(eyeW: number, eyeH: number, aspect: number, shift: number, eye: 0 | 1): { sx: number; sy: number; sw: number; sh: number };
 export function mirrorSwapOps(W: number, H: number): Array<{ src: 'L' | 'R'; sx: number; sw: number; sy: number; sh: number; dx: number; dw: number; mirror: true }>;

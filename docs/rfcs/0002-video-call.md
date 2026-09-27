@@ -102,9 +102,16 @@ canvases (`docs/woven-canvas-rules.md`, rule 6).
 | `sbs` | woven SBS + **convergence shift** (below) | left eye, flat |
 | `mono` | `lift(video, {mode:'live', wall})` → route `lifted` (flat while lift is unavailable, loading, over budget or failed) | flat |
 
-- **Convergence (SBS):** a horizontal per-eye crop offset of `f_px · baseline / (2 · subjectZ)` from
-  `hello` + `hint`, low-pass α≈0.2, so the remote face sits at the display plane. Tracking-loss easing
-  reuses the player's `_trackBakedStereo`.
+- **Convergence (SBS):** a horizontal per-eye crop offset, low-pass α≈0.2, so the remote face sits at
+  the display plane. **Measured, not predicted** (`autoConverge`, default on): the receiver reads the
+  disparity `d` of the point **between the remote person's eyes** off the decoded SBS frames and shifts
+  each eye by `d/2` in opposite directions. No focal length, baseline or distance, so it works for any
+  SBS sender, calibrated or not. The focus is one point, not "both eyes", so it stays valid when the
+  head turns. Subject = the nearest strong disparity mode; the eye line comes from the top of that blob
+  (a face detector may pass the point instead). After a lock it tracks a small template frame to frame
+  (~1 ms at 5 Hz on a 240-px-per-eye copy); the full search (~5-7 ms) re-runs every 2 s or when the
+  track is lost. `call/disparity.js`. The sender's `hint` (`f_px · baseline / (2 · subjectZ)`) is used
+  only until a measurement succeeds. Tracking-loss easing reuses the player's `_trackBakedStereo`.
 - **One depth control for every tile:** the SBS crop offset, or `lift` convergence for lifted tiles
   (P2a mapping: depth 0 → `'auto'`; otherwise `0.5 + 0.5·depth`, lift's normalised disparity on the
   glass — + pushes the picture back on both routes).

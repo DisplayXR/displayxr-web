@@ -99,6 +99,7 @@ import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } fro
 import { normalizeMono3D, resolveLift, createLiftPool, createFrameWatch } from './call/lift.js';
 
 import { dxrSignaling } from './call/signaling.js';
+import { lumaFromRgba, createDisparityTrack, createFocusTracker } from './call/disparity.js';
 export { dxrSignaling, peerjsCloud, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
 export {
   WIRE_VERSION,
@@ -114,6 +115,7 @@ export {
   CALL_ACCENTS,
 };
 export { createLiveGate } from './call/wire.js';
+export { measureFocusDisparity } from './call/disparity.js';
 export { convergenceShiftPx, lowPass, clampShift, eyeCropRect, mirrorSwapOps, mirrorSwapPixels, maxBitrateKbps } from './call/wire.js';
 export { preferVideoCodecs, sortCodecCapabilities, VIDEO_CODEC_ORDER } from './call/sdp.js';
 export { MeshTransport, clampMaxPeers } from './call/transport.js';
@@ -137,6 +139,10 @@ const STATS_TICK_MS = 500;
 const SPEAKING_LEVEL = 0.02;
 const LAYER_RETRIES = 4;
 const LIFT_RETRIES = 2;
+// Auto-convergence sampling: ~5 Hz on a copy whose eye is at most this wide (enough for sub-pixel
+// disparity on a face; small enough to stay a few ms per measurement).
+const AUTO_CONV_INTERVAL_MS = 200;
+const AUTO_CONV_EYE_WIDTH = 240;
 const DEFAULT_BROWSER_URL = 'https://github.com/DisplayXR/displayxr-browser';
 export const PLATE_TEXT = Object.freeze({
   unreachable: "Can't reach this participant — the network needs a relay (TURN)",
@@ -166,6 +172,10 @@ export function normalizeCallOptions(opts = {}) {
     calibration: opts.calibration && typeof opts.calibration === 'object' ? { ...opts.calibration } : {},
     rectify: typeof opts.rectify === 'function' ? opts.rectify : null,
     audio: opts.audio === undefined ? true : !!opts.audio,
+    // Auto-convergence (call/disparity.js): measure the disparity of the point between each SBS
+    // peer's eyes and shift the eyes so it sits at the display plane. The depth slider stays an
+    // offset on top. Off = the pair as sent (plus any `hint`).
+    autoConverge: opts.autoConverge === undefined ? true : !!opts.autoConverge,
     mono3D: normalizeMono3D(opts.mono3D),
     maxPeers: clampMaxPeers(opts.maxPeers === undefined ? DEFAULT_MAX_PEERS : opts.maxPeers),
     // Extra lift() options for lifted tiles (models, ort, quality, providers). The call's own
@@ -1219,6 +1229,11 @@ class Tile {
     this.speaking = false;
     this.quality = null;
     this.conv = createConvergence();
+    this.autoTrack = createDisparityTrack();
+    this.autoFocus = createFocusTracker();
+    this.autoAt = 0;
+    this.autoCanvas = null;
+    this.autoLocked = false;
     this.conv.depth = call.depth;
     this.hintGate = rateGate(HINT_MAX_HZ);
     this.layerFails = 0;
@@ -1278,6 +1293,7 @@ class Tile {
     if (this.video.srcObject !== stream) {
       this.video.srcObject = stream;
       this.audio.srcObject = stream;
+      this._resetAutoConverge(); // a new stream may be a new camera: measure afresh
     }
     this.video.play().catch(() => {});
     this.audio.play().catch(() => {});
@@ -1572,12 +1588,62 @@ class Tile {
       c.width = 2 * outW;
       c.height = outH;
     }
+    if (this.call.o.autoConverge) this._sampleDisparity(v, W, H);
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
     for (const eye of [0, 1]) {
       const r = eyeCropRect(eyeW, H, A, shift, eye);
       g.drawImage(v, eye * eyeW + r.sx, r.sy, r.sw, r.sh, eye * outW, 0, outW, outH);
     }
+  }
+
+  /**
+   * Auto-convergence: a few times a second, measure the disparity of the point between the remote
+   * person's eyes on a small grayscale copy of the SOURCE frame (before our shift, so there is no
+   * feedback loop) and hand it to the convergence state, which halves it per eye and low-passes it.
+   * A failed measurement holds the last good value.
+   */
+  _sampleDisparity(v, W, H) {
+    const now = performance.now();
+    if (now - this.autoAt < AUTO_CONV_INTERVAL_MS) return;
+    this.autoAt = now;
+    const s = Math.min(1, AUTO_CONV_EYE_WIDTH / (W / 2));
+    const w = Math.max(2, Math.round((W * s) / 2) * 2);
+    const h = Math.max(2, Math.round(H * s));
+    if (!this.autoCanvas) this.autoCanvas = document.createElement('canvas');
+    const c = this.autoCanvas;
+    if (c.width !== w || c.height !== h) {
+      c.width = w;
+      c.height = h;
+    }
+    const g = c.getContext('2d', { willReadFrequently: true });
+    let m = null;
+    try {
+      g.drawImage(v, 0, 0, w, h);
+      m = this.autoFocus.measure(lumaFromRgba(g.getImageData(0, 0, w, h).data, w * h), w, h, now);
+    } catch {
+      m = null; // a frame that cannot be read (tainted, not decoded yet): skip it
+    }
+    const d = this.autoTrack.push(m ? m.d / s : null);
+    this.conv.measuredPx = d;
+    if (m && !this.autoLocked) {
+      this.autoLocked = true;
+      this.call.log('auto-converge', {
+        peer: this.id,
+        disparityPx: Math.round(d * 10) / 10,
+        at: { x: Math.round(m.x / s), y: Math.round(m.y / s) },
+        ncc: Math.round(m.c * 100) / 100,
+        method: m.method,
+        ms: Math.round(performance.now() - now),
+      });
+    }
+  }
+
+  _resetAutoConverge() {
+    this.autoTrack.reset();
+    this.autoFocus.reset();
+    this.conv.measuredPx = null;
+    this.autoLocked = false;
   }
 
   destroy() {

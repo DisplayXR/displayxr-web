@@ -10,6 +10,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 Touches the **preview tier** (a new subpath, `./call`) and one **core** fix: image/video backing
 buffers are capped at the source's resolution.
 
+### Added — call: auto-convergence on the point between the remote person's eyes
+
+- SBS tiles now converge by MEASUREMENT: the receiver finds the disparity of the point between the
+  remote person's eyes in the decoded frames and shifts each eye by half of it, so that person sits at
+  the display plane. No calibration, works for any SBS sender. Tracks a small template after the first
+  lock (~1 ms per measurement at 5 Hz). `autoConverge: false` restores the pair as sent; the depth
+  slider stays an offset on top; lifted (mono) tiles are untouched. `measureFocusDisparity` is
+  exported for pages that want to reuse it.
+
 ### Fixed — core: image/video buffers capped at the source's per-eye resolution
 
 - An image or video window's backing buffer was sized box x devicePixelRatio per eye regardless of
