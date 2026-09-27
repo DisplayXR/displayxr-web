@@ -10,6 +10,17 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 Touches the **preview tier** only (a new subpath, `./call`). No change to the core or to any other
 subpath.
 
+### Docs — MP4 (H.264/AAC) plays in DisplayXR Browser 1.0.6+
+
+- The codec guidance no longer says the DisplayXR Browser cannot play H.264/AAC. From **1.0.6** it
+  plays MP4 through the operating system's decoders (Windows GPU + Media Foundation, Android
+  MediaCodec). VP9/AV1 + Opus in WebM stays the recommended first source: it also plays in 1.0.5 and
+  earlier, stock Chromium, and on machines with no hardware H.264 decode (where `canPlayType` still
+  answers "probably" for H.264). Updated in the authoring guide (media traps, hosting video), the
+  PlayCanvas adapter's `setVideo`, and `pickSource`'s doc comment and fallback log text (text only,
+  no behaviour change). WebRTC calls are unaffected: the browser still ships no H.264 for WebRTC,
+  so `./call` keeps preferring VP9.
+
 ### Added — call: mono→3D through `lift()` (P2a of RFC 0002)
 
 - **Mono participants are lifted to 3D** on a 3D display: a mono peer on a woven wall is handed to

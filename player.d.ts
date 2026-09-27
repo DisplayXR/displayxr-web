@@ -267,7 +267,8 @@ export type PlayerAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' |
 
 /**
  * Pick the first source this browser can play from candidates listed best first; each is a URL, or
- * `{ src, type }` with a FULL `canPlayType` string (`'video/webm; codecs="vp9, opus"'`). The
- * DisplayXR Browser has no H.264/AAC, and a codec-less `'video/mp4'` still answers 'maybe'.
+ * `{ src, type }` with a FULL `canPlayType` string (`'video/webm; codecs="vp9, opus"'`). Only
+ * DisplayXR Browser 1.0.6+ plays H.264/AAC (via the OS decoders), and a codec-less `'video/mp4'`
+ * still answers 'maybe' — so list a VP9 WebM first when you have one.
  */
 export function pickSource(candidates: PlayerSource, canPlayType?: (type: string) => string): string | Blob | undefined;
