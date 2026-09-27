@@ -165,9 +165,41 @@ async function runCase(browser, base, c) {
   }
   let after = null;
   if (c.killAfter && ok) {
+    // The out-cover lives only briefly: record the first one inserted, from inside the page.
+    await page.evaluate(() => {
+      window.__outCover = null;
+      const mo = new MutationObserver((recs) => {
+        for (const r of recs) for (const n of r.addedNodes) {
+          if (!window.__outCover && n.nodeType === 1 && n.matches('img[data-dxr-auto3d-cover]')) {
+            window.__outCover = { srcLen: n.src.length, naturalWidth: n.naturalWidth, naturalHeight: n.naturalHeight, src: n.src };
+            mo.disconnect();
+          }
+        }
+      });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    });
     await hotkey('Digit3');
     await new Promise((r) => setTimeout(r, 1000));
-    after = await page.evaluate(() => ({ state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, closes: window.__fakeXR.closes, sessions: window.__fakeXR.sessions.length }));
+    after = await page.evaluate(() => ({ state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, closes: window.__fakeXR.closes, sessions: window.__fakeXR.sessions.length, outCover: window.__outCover }));
+    // Compare the out-cover, downsampled, with the mono canvas after the stand-down (same flat picture,
+    // right way up): a blank or flipped cover differs from it by far more than resampling noise.
+    if (after.outCover) {
+      after.outCover.cmp = await page.evaluate(async () => {
+        const oc = window.__outCover, w = 128, h = 72;
+        const img = new Image(); img.src = oc.src; await img.decode();
+        const px = (src) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(src, 0, 0, w, h); return g.getImageData(0, 0, w, h).data; };
+        const a = px(img), b = px(document.querySelector('canvas:not([data-dxr-auto3d-cover])'));
+        const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        let e = 0, ef = 0, m = 0, m2 = 0;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4, j = ((h - 1 - y) * w + x) * 4, l = lum(a, i);
+          e += Math.abs(l - lum(b, i)); ef += Math.abs(l - lum(b, j)); m += l; m2 += l * l;
+        }
+        const n = w * h; m /= n;
+        return { mae: e / n, maeFlipped: ef / n, std: Math.sqrt(Math.max(0, m2 / n - m * m)) };
+      });
+      delete after.outCover.src;
+    }
     // A page that renders on demand is asked for one repaint by the restore; read what is on the canvas now.
     const g = await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
       const src = document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
@@ -290,6 +322,17 @@ function check(r, results) {
       const rp = cl ? rawPairAtClose(cl) : null;
       t('turn-off: no raw side-by-side frame once the layer is closed (commit model)', rp && rp.frames >= 3 && rp.discriminates && rp.bad.length === 0,
         rp ? `${rp.frames} committed frames from close(); pair residual: at close ${rp.atClose.toFixed(2)}, pair baseline ${rp.pairBase.toFixed(2)}, mono baseline ${rp.monoBase.toFixed(2)}; raw pairs at frames [${rp.bad.map((b) => b.i).join(', ')}]` : 'layer never closed');
+      // The session here is FAKE, so drawImage() of the canvas would not be empty in this harness
+      // (on the panel it is: the canvas has an XRDisplayLayer bound). This mostly guards the
+      // readPixels path from regressing to a blank cover; an empty eye PNG is ~10-130 KB.
+      const oc = a.outCover;
+      // A size floor alone is page-dependent (these test scenes compress to 60-170 KB even when real),
+      // so it is ORed with a content check: textured (std) and matching the mono canvas right way up.
+      const k = oc && oc.cmp;
+      const real = oc && (oc.srcLen > 200000 || (k && k.std > 4 && k.mae < 12 && 3 * k.mae < k.maeFlipped));
+      t('out-cover holds a real picture (not the empty drawImage of a layer-bound canvas)', real,
+        oc ? `data URL ${oc.srcLen} chars, ${oc.naturalWidth}x${oc.naturalHeight}` + (k ? `; vs mono canvas MAE ${k.mae.toFixed(2)} (flipped ${k.maeFlipped.toFixed(2)}), luma std ${k.std.toFixed(1)}` : '')
+          : 'no out-cover <img> was inserted');
       const re = a.reenable;
       t('Ctrl+Alt+3 again on a page that no longer draws: 3D again within 4 s', re && re.again && re.frozen, re ? `${re.again ? 're-converted' : 'still 2D'} after ${re.ms} ms; sessions ${re.sessions}; page frozen ${re.frozen} at ${re.pageFrames} frames` : 'n/a');
     }

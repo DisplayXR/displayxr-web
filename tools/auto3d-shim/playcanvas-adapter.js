@@ -305,6 +305,11 @@
       return false;
     },
     wake(st) { st.app.renderNextFrame = true; }, // re-enabled: one frame, whose postrender considers activation
+    // redraw() only ASKS for a frame; the engine draws it on its own tick. So the out-cover is taken
+    // from postrender (onPostRender -> core.takeOutCover), right after that draw, not by the core
+    // after redraw() — the drawing buffer is not preserved past the task that drew it.
+    coverAfterDraw: true,
+    readEye: (st, target) => core.readGlEye(st.dev && st.dev.gl, st, target),
     target(st) {
       const e = st.cam && st.cam.entity;
       if (!e) return null;
@@ -342,7 +347,7 @@
     const st = stateFor(app);
     if (!st) return;
     st.frame.drew = true;
-    if (st.active) return;
+    if (st.active) { if (st.outCoverDue) core.takeOutCover(st); return; } // the flat pair was just drawn
     if (st.releasing) { core.monoDrawn(st); return; } // the mono frame after a staged stand-down
     if (st.armed) {
       const pick = pickCamera(app);

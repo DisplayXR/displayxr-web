@@ -350,7 +350,7 @@
       // mono size (the resize clears it; a cover dropped before that shows a blank, white frame).
       const c = st.cover, t0 = now(); let n = 0;
       st.cover = null;
-      const tick = () => { if (++n >= 6 && now() - t0 >= 150) c.el.remove(); else requestAnimationFrame(tick); };
+      const tick = () => { if (++n >= 6 && now() - t0 >= (cfg.outHoldMs || 150)) c.el.remove(); else requestAnimationFrame(tick); }; // outHoldMs: diagnostics only (a long hold shows what the cover holds)
       requestAnimationFrame(tick);
     }
     else dropCover(st);
@@ -463,18 +463,36 @@
     // Redraw every frame (woven-canvas rules): the adapter replays the page's last frame when the
     // page drew nothing since the last session frame.
     ad.redraw(st);
-    if (st.outCoverDue) {
-      // Turn-off, depth already faded to flat: cover the canvas with one eye of the frame just drawn
-      // (flat, so it IS the mono picture), then swap to the mono canvas and release the layer under it.
-      // Without it, the one frame of mono canvas under a still-bound layer is woven as a pair.
-      const done = st.outCoverDue; st.outCoverDue = null;
-      makeCover(st, true);
-      const el = st.cover && st.cover.el;
-      const go = () => requestAnimationFrame(() => requestAnimationFrame(done));
-      if (el && typeof el.decode === 'function') el.decode().then(go, go); else go();
-    }
+    // The out-cover must be read in the task that drew the flat pair (preserveDrawingBuffer false):
+    // three.js draws inside redraw() above (or the page drew in this same animation frame); an
+    // adapter whose engine draws later, on its own tick (PlayCanvas), sets coverAfterDraw and calls
+    // takeOutCover from its post-draw hook instead.
+    if (st.outCoverDue && !ad.coverAfterDraw) takeOutCover(st);
     tickCover(st, t);
     if (st.stats.xrFrames % 20 === 0) hud();
+  }
+
+  function takeOutCover(st) {
+    // Turn-off, depth already faded to flat: cover the canvas with one eye of the frame just drawn
+    // (flat, so it IS the mono picture), then swap to the mono canvas and release the layer under it.
+    // Without it, the one frame of mono canvas under a still-bound layer is woven as a pair.
+    const done = st.outCoverDue;
+    if (!done) return;
+    st.outCoverDue = null;
+    makeCover(st, true);
+    const el = st.cover && st.cover.el;
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(done));
+    if (!el || el.isConnected) go(); // no cover, or the canvas cover (already painted in this task)
+    else {
+      // The <img> goes in only once decoded: inserted earlier, its box paints its CSS background
+      // for the frame(s) before the image lands (a blank/white flash at 3D->2D on the panel).
+      const place = () => {
+        if (!st.canvas.isConnected) { done(); return; }
+        try { if (st.cover && st.cover.el === el) insertCover(st.canvas, el); } catch (e) {} // not if released meanwhile; done() always follows
+        go();
+      };
+      if (typeof el.decode === 'function') el.decode().then(place, place); else place();
+    }
   }
 
   // ------------------------------------------------------------ the rig
@@ -702,7 +720,16 @@
         position: fixed ? 'fixed' : 'absolute', left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px',
         zIndex: cs.zIndex, pointerEvents: 'none', margin: '0', padding: '0', border: '0', background: coverBackground(cv),
       });
-      if (eyeOnly && st.R) c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height); // left eye of a flat pair
+      if (eyeOnly && st.R) {
+        // Left eye of the flat pair. drawImage() of the layer-bound canvas is EMPTY on the panel
+        // (above), so the adapter reads it back from the page's GL context (readPixels) instead.
+        let got = false;
+        try { got = !!(st.ad.readEye && st.ad.readEye(st, c)); } catch (e) { got = false; }
+        if (!got) {
+          warnOnce('outcover', 'could not read the flat frame back from WebGL — the 3D->2D cover may be blank');
+          c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
+        }
+      }
       else c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); // the mono frame drawn in this same task
       if (cfg.coverImg !== false) {
         // An <img>, not a <canvas> (panel run 2026-09-27): a canvas congruent with the tile is woven with
@@ -710,16 +737,65 @@
         // An <img> stays plain 2D over the tile. cfg.coverImg = false restores the canvas cover.
         const img = document.createElement('img');
         img.setAttribute('data-dxr-auto3d-cover', ''); img.alt = '';
+        // 'sync' keeps cc from checker-imaging it: a large image is otherwise skipped on its first
+        // raster, and the box paints only its background for a frame (the page-colour flash at 3D->2D).
+        if (eyeOnly) img.decoding = 'sync';
         img.src = c.toDataURL('image/png');
         img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
-        if (cv.parentNode) cv.parentNode.insertBefore(img, cv.nextSibling); else (document.body || document.documentElement).appendChild(img);
+        if (!eyeOnly) insertCover(cv, img); // the out-cover is inserted by its caller, once decoded
         st.cover = { el: img, fixed, out: !!eyeOnly };
         return;
       }
-      if (cv.parentNode) cv.parentNode.insertBefore(c, cv.nextSibling);
-      else (document.body || document.documentElement).appendChild(c);
+      insertCover(cv, c);
       st.cover = { el: c, fixed };
     } catch (e) { st.cover = null; }
+  }
+  function insertCover(cv, el) {
+    if (cv.parentNode) cv.parentNode.insertBefore(el, cv.nextSibling);
+    else (document.body || document.documentElement).appendChild(el);
+  }
+  // Copies the LEFT eye (store rect 0,0,eyeW,eyeH) of the default framebuffer's CURRENT contents into
+  // the 2D canvas `target`, scaled to it, forced opaque. Must run in the task that drew it (the pages'
+  // preserveDrawingBuffer is false). Leaves every GL binding / pack parameter it touches as it found it.
+  // false = could not (no context, lost, readPixels threw, or the read came back all zero).
+  function readGlEye(gl, st, target) {
+    if (!gl || !st.R || typeof gl.readPixels !== 'function' || (gl.isContextLost && gl.isContextLost())) return false;
+    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
+    const w = Math.min(st.R.eyeW, bw), h = Math.min(st.R.eyeH, bh);
+    if (!(w > 0 && h > 0)) return false;
+    const gl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    const px = new Uint8Array(w * h * 4);
+    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING); // WebGL2: the DRAW binding
+    const rfb = gl2 ? gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) : null;
+    const pack = gl.getParameter(gl.PACK_ALIGNMENT);
+    const pbo = gl2 ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
+    const p2 = gl2 ? [gl.PACK_ROW_LENGTH, gl.PACK_SKIP_PIXELS, gl.PACK_SKIP_ROWS].map((k) => [k, gl.getParameter(k)]) : [];
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
+      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      for (const [k, v] of p2) if (v) gl.pixelStorei(k, 0);
+      // GL origin is bottom-left: the store's top rows (canvas y 0..h) are GL rows bh-h..bh.
+      gl.readPixels(0, bh - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    } catch (e) { return false; } finally {
+      for (const [k, v] of p2) if (v) gl.pixelStorei(k, v);
+      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, pack);
+      if (gl2) { gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, rfb); }
+      else gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    }
+    let any = 0;
+    for (let i = 0; i < px.length; i += 4) { any |= px[i] | px[i + 1] | px[i + 2] | px[i + 3]; px[i + 3] = 255; }
+    if (!any) return false; // an all-zero read is a cleared buffer, not a picture
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    tmp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), w, h), 0, 0);
+    const g = target.getContext('2d');
+    g.save();
+    g.translate(0, target.height); g.scale(1, -1); // flip: the read is bottom-up
+    g.drawImage(tmp, 0, 0, w, h, 0, 0, target.width, target.height);
+    g.restore();
+    return true;
   }
   function tickCover(st, t) {
     const cv = st.cover;
@@ -847,7 +923,7 @@
     newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, yieldTo, hud,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
-    makeCover, dropCover,
+    makeCover, dropCover, takeOutCover, readGlEye,
   };
   Object.defineProperty(window, KEY, { value: Object.freeze(core), configurable: false, enumerable: false, writable: false });
   info(`core armed (v${VERSION})`, cfg.enabled ? '' : '(OFF for this site)');
