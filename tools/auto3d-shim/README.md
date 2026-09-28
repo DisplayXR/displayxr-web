@@ -82,7 +82,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | file | owns |
 |---|---|
 | `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes incl. the parse-time canvas observer), the page's `<meta>` opt-out (`S.optedOut()`), `S.settle(canvas)` (a canvas went live: the PlayCanvas search stops unless another canvas has a WebGL context) and `S.disarm()` (the core stands down for good: every trap and poll off, for good), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found). On a page with no engine the core is never parsed. |
-| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (each eye = the element's CSS size × `min(devicePixelRatio, maxEyeDpr)`, whatever store the page keeps; capped at 3072 wide and by the GL limits; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
+| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (the SBS store = the element's full device size, each eye half of it, whatever store the page keeps; each axis capped on its own: 3072 wide, and the GL limits; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
 | `guard.js` | `dxrGuard(core)`: the frame-rate guard (see [The guard](#the-frame-rate-guard-the-gl-clamp-reduced-motion)). Hooks: `draw` (the page's 2D rate, from the top of `considerActivation`; also the re-measure after a trip with no baseline), `onFlip`, `tick`, `tripped` (`statusOf` → `'guard'`), `measuring` (`statusOf` → `'converting'`) |
 | `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (see [The chip](#the-3d-chip)). Uses only `ctl` and `S.intrinsics`; the core calls `frame(st)` per session frame and exposes it as `core.chip` (`__dxrAuto3D.chip()` in dev). While the site is off the core still qualifies a **candidate** canvas (`considerCandidate`) so offer mode has something to offer 3D on |
 | `dev.js` | `dxrDev(core, ctl)`, only when `cfg.dev`: the HUD, the Ctrl+Alt hotkeys, `window.__dxrAuto3D` (`state()`, `probe()`, `set()`) |
@@ -300,7 +300,7 @@ reached from live instances. The engine's `XrManager` is never touched.
 records what the page asked for and applies the SBS size instead. `canvas.width` is **not**
 virtualised on PlayCanvas: the engine reads it internally (`device.width`, the back-buffer resize
 check, `resizeCanvas`'s own compare), so it has to report the real store. Since v0.5.2 the eye is
-sized from the element's device pixels, so the SBS store is up to twice the mono store (3072 cap):
+sized from the element's device pixels, so the SBS store is the element's device size (3072 cap), larger than the mono store on a page that renders below device resolution:
 page code that reads `canvas.width` directly sees the SBS width while converted (the engine's own
 getters are what PlayCanvas apps use).
 
@@ -447,18 +447,18 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
   (v0.5.2):** no window starts within `guardWarmupMs` (4 s) of the cover drop, so a page that is
   still loading its assets is not judged by its load (Spark hello-world / streaming-lod tripped at
   25-39 fps 4-5 s after go-live on the panel, then run at a steady 60 / ~44). Trip: under
-  `guardFps` (40) over `guardMs` (2 s) **and**, when there is a baseline, under 0.8 × baseline (a
+  `guardFps` (**24**; 40 before v0.5.2) over `guardMs` (2 s) **and**, when there is a baseline, under **0.6** × baseline (0.8 before; David, 2026-09-28: heavy splat worlds run 25-44 fps in 3D on the panel and look great) (a
   page that already runs at 30 fps in 2D is not the conversion's fault).
   **Retry once (v0.5.2).** On ANY first trip in a document: the ordinary turn-off (fade, out-cover,
-  staged stand), then a wait of `guardRetryMs` (6 s; report `'converting'`, chip amber), then ONE
+  staged stand), then a wait (report `'converting'`, chip amber): at least `guardRetryMs` (6 s), then until the page's own 2D rate has been steady for `guardSteadyMs` (2 s: four 500 ms buckets within 1.3× of each other; a page that draws almost nothing counts as steady), at most `guardRetryMaxMs` (30 s). Panel, Marble / streaming-lod: a fixed 6 s retry landed while the world was still streaming and tripped again at 20.0 fps against a 2D rate of 25.4. Then ONE
   retry whatever the page's 2D rate meanwhile. v0.5.1 retried only when the page was slow in 2D too,
   which blocked the Spark pages (58 fps in 2D: their slow phase was the load, not the conversion).
   The page's 2D draws during the wait are the retry's baseline, so the second trip is judged with
-  the 0.8 × baseline rule when there are enough of them. A second trip blocks for the rest of the
+  the 0.6 × baseline rule when there are enough of them. A second trip blocks for the rest of the
   document: report `'guard'`, nothing saved.
 - **GL clamp.** The SBS store fits the zero-copy width cap (3072) **and** the context's own limits
   (`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`, read once per canvas): a 2×-wide
-  store is over those on many Android GPUs. One scale for both axes, so the eye keeps its aspect.
+  store is over those on many Android GPUs. Each axis is capped on its own (v0.5.2).
 - **Reduced motion.** Under `prefers-reduced-motion: reduce` the depth fade is 1 ms, never 0:
   `rampMs` 0 skips the turn-off's out-cover and the raw side-by-side flash comes back (risk R5).
   Followed live (`change` listener).
@@ -478,10 +478,13 @@ dev build only.
 | Key | Default | Meaning |
 |---|---|---|
 | `guardWarmupMs` | 4000 | no frame-rate-guard window starts within this long after the cover drop |
-| `guardRetryMs` | 6000 | after a first guard trip, wait this long, then retry once |
+| `guardFps` | 24 | the guard's absolute floor (and 0.6 × the page's 2D rate when it has one) |
+| `guardRetryMs` | 6000 | after a first guard trip, wait at least this long before the one retry ... |
+| `guardSteadyMs` | 2000 | ... and until the page's 2D rate has been steady this long ... |
+| `guardRetryMaxMs` | 30000 | ... or this long at the latest |
 | `eyesOffMs` | 1000 | the chip's dot goes amber only after this long without two-view frames |
 | `eyesOnMs` | 300 | ... and back to green after this long with them |
-| `eyeScale` | 1 | per-eye width / the element's device width (0.5 before v0.5.2, of the page's store) |
+| `eyeScale` | 0.5 | per-eye width / the element's device width (before v0.5.2: of the page's store) |
 | `maxEyeDpr` | 3 | the device-pixel ratio the eye is sized at, at most |
 | `maxSbsWidth` | 3072 | the SBS store's width cap (browser-pvt#24), then the GL limits |
 | `coverMaxMs` | 5000 | the join cover's longest hold; also the "no display" threshold |
@@ -489,9 +492,12 @@ dev build only.
 **Eye size (v0.5.2).** `eyeW = round(cssW × min(devicePixelRatio, maxEyeDpr) × eyeScale)`,
 `eyeH = round(cssH × min(devicePixelRatio, maxEyeDpr))`, from the canvas's layout box, regardless of
 the page's own store (Spark hello-world keeps a 1038-px store on a 1038-px CSS canvas on a 2.5×
-panel: its eyes were 519 px wide, "a little low res"; a three.js page at
-`setPixelRatio(devicePixelRatio)` got 1298). Then one scale for both axes down to `maxSbsWidth` / 2
-and the GL limits. The page keeps reading its own mono store, and `restore()` puts it back. A canvas
+panel: its eyes were 519×703, "a little low res"; now 1298×1758, the same as a three.js page at
+`setPixelRatio(2.5)`). The SBS store is the element's full device size: two eyes side by side at
+half width each. Each axis is then capped on its own, the width to `maxSbsWidth` / 2 per eye and
+the GL limits, the height to the GL limits: the eye's aspect is not kept (it is squeezed
+horizontally by design, the weave un-squeezes), so a width cap never costs height (a joint scale
+cost ~40 % of the pixels on the panel). The page keeps reading its own mono store, and `restore()` puts it back. A canvas
 with no CSS size (laid out at its store size) gets its current used width / height pinned inline
 while converted (the same box), and unpinned after.
 
@@ -642,13 +648,14 @@ running), so the rig is always sampled at the configured depth.
 | `s-three-settle` | three.js keyframes, product | once live, no PlayCanvas search timer (poll / sweep) pending 1 s after go-live, none created in the next 3 s, id trap off |
 | `s-three-extra-gl` | three.js keyframes + a second WebGL canvas | the search goes on after go-live (another canvas has WebGL); the page then asks for `immersive-vr` → stand-down for good → `S.disarm()`: no timer, the extra canvas's id trap off |
 | `s-dev-plain` | the dev bundle on the plain page | the core is not loaded (no `__dxrAuto3D`, no HUD) |
-| `g-trip` | PlayCanvas orbit, `frameCostMs` 40 in the fake session rAF, no 2D baseline | the guard trips, waits `guardRetryMs` (report `converting`), retries ONCE with the wait's 2D rate as baseline, trips again → blocks; two sessions, still two 5 s later, report `guard`, no raw pair at either close (commit model), the out-cover holds a picture |
+| `g-trip` | PlayCanvas orbit, `frameCostMs` 60 in the fake session rAF, no 2D baseline | the guard trips, waits `guardRetryMs` (report `converting`), retries ONCE with the wait's 2D rate as baseline, trips again → blocks; two sessions, still two 5 s later, report `guard`, no raw pair at either close (commit model), the out-cover holds a picture |
 | `g-retry` | PlayCanvas orbit, the page's own rAF burns 60 ms from the start (no baseline) | first trip → ONE retry, whose baseline is the ~16 fps drawn during the wait → **live**, two sessions, no `guard` report |
-| `g-loading` | PlayCanvas orbit, the page burns 40 ms a frame for 5 s after go-live, then runs clean | ends **live**, no `guard` report (the warm-up) |
+| `g-loading` | PlayCanvas orbit, the page burns 60 ms a frame for 5 s after go-live, then runs clean | ends **live**, no `guard` report (the warm-up) |
 | `g-loading-long` | the same, 8 s of burn | first trip during the load, 2D fast meanwhile, ONE retry anyway → **live** (v0.5.1 blocked here) |
-| `g-30fps` | the page's own rAF burns 60 ms a frame (~16 fps in 2D and 3D; 60 ms keeps the conversion's cost well inside the 0.8 × baseline margin on a noisy headless box) | the guard does **not** trip |
+| `g-steady` | the page alternates 80 / 40 ms burns every 700 ms for 15 s after go-live (still streaming) | the retry waits past `guardRetryMs` until the 2D rate is steady (after 16.2 s), names it, and ends **live** |
+| `g-30fps` | the page's own rAF burns 60 ms a frame (~16 fps in 2D and 3D; below `guardFps` 24, never below 0.6 × baseline) | the guard does **not** trip |
 | `g-clamp-three` / `g-clamp-pc` | `glLimit` 512 | eye ≤ 512 with the aspect kept, the skew shift still ≈ 0.1 × eye width |
-| `a-dpr2` | `three-keyframes.html?pr=1&w=600&h=400` on a DPR 2 viewport (`deviceScaleFactor` 2) | eye 1200×800 (2 × CSS), SBS 2400×800, skew shift 120 px; the page reads 600×400 at pixel ratio 1; its store is 600×400 again after the turn-off |
+| `a-dpr2` | `three-keyframes.html?pr=1&w=600&h=400` on a DPR 2 viewport (`deviceScaleFactor` 2) | eye 600×800 (half the device width, the full device height), SBS 1200×800, skew shift 60 px; the page reads 600×400 at pixel ratio 1; its store is 600×400 again after the turn-off |
 | `g-reduced` | `prefers-reduced-motion: reduce` | `rampMs` 1, and the turn-off still takes the out-cover |
 | `g-shadow` / `g-shadow-ctl` | `pages/pc-shadow.html`, display rig, eyes pulled far back | with the offset the ground patch in each eye tile is shadowed (~20 levels darker) and `shadowDistance` is restored after; with it off (control) the eyes lose the shadow |
 | `chip-place` / `chip-fallback` / `chip-none` | three.js keyframes; `pages/three-corner-ui.html` (fixed UI in one or all corners) | top layer, top-right inset 8, ≤ 64×28, no render-surface CSS, hit test hits the host; bottom-right when top-right is taken; none when all four are |
@@ -696,7 +703,7 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
 
 ## Verified, and what is not
 
-**Headless, v0.5.2 (P0.2), Windows, ANGLE D3D11:** 57 cases (52 + `g-loading`, `g-loading-long`,
+**Headless, v0.5.2 (P0.2), Windows, ANGLE D3D11:** 58 cases (52 + `g-loading`, `g-loading-long`, `g-steady`,
 `chip-no-display`, `chip-amber-debounce`, `a-dpr2`); `a` pins `eyeScale` 0.5 to stay
 byte-identical with `a-legacy`.
 
