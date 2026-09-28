@@ -775,13 +775,17 @@ function dxrThree(core) {
   }
 
   // ------------------------------------------------------------ convergence: the scene's bounds
-  // Bounding spheres of what the camera's layers can see (meshes, points, lines, sprites), in world
-  // space, for core.estimateSubjectDistance.
+  // Bounding spheres of what the camera's layers can see (meshes, points, lines, sprites, Spark
+  // splats), in world space, for core.estimateSubjectDistance.
   function forEachBounds(scene, cam, cb) {
     let more = true;
     scene.traverseVisible((o) => {
-      if (!more || !(o.isMesh || o.isPoints || o.isLine || o.isSprite)) return;
+      if (!more) return;
+      const splat = isSplatMesh(o);
+      if (!splat && !(o.isMesh || o.isPoints || o.isLine || o.isSprite)) return;
       if (cam.layers && o.layers && typeof cam.layers.test === 'function' && !cam.layers.test(o.layers)) return;
+      if (splat) { more = splatBounds(o, cam, cb); return; }
+      if (isSparkRenderer(o)) return; // Spark's draw quad, not scene content
       let bs = o.boundingSphere || null;
       const g = o.geometry;
       if (!bs && g) {
@@ -790,12 +794,102 @@ function dxrThree(core) {
       }
       if (!bs || !(bs.radius >= 0) || !isFinite(bs.radius)) return;
       const m = o.matrixWorld.elements, c = bs.center;
-      const wx = m[0] * c.x + m[4] * c.y + m[8] * c.z + m[12];
-      const wy = m[1] * c.x + m[5] * c.y + m[9] * c.z + m[13];
-      const wz = m[2] * c.x + m[6] * c.y + m[10] * c.z + m[14];
-      const s = Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
-      more = cb(wx, wy, wz, bs.radius * s) !== false;
+      more = cb(xfX(m, c.x, c.y, c.z), xfY(m, c.x, c.y, c.z), xfZ(m, c.x, c.y, c.z), bs.radius * maxScale(m)) !== false;
     });
+  }
+  const xfX = (m, x, y, z) => m[0] * x + m[4] * y + m[8] * z + m[12];
+  const xfY = (m, x, y, z) => m[1] * x + m[5] * y + m[9] * z + m[13];
+  const xfZ = (m, x, y, z) => m[2] * x + m[6] * y + m[10] * z + m[14];
+  const maxScale = (m) => Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
+
+  // Spark splats (@sparkjsdev/spark 2.x). A SplatMesh is a THREE.Object3D, not a Mesh: no geometry,
+  // no bounds, so the walk above never saw it (Spark pages without a lookAt fell back to the
+  // default distance). Its splats live in an object-local store (`.splats`: PackedSplats /
+  // ExtSplats / PagedSplats) behind getNumSplats() and getSplat(i) (packed, ext: decodes one) or
+  // forEachSplat(cb) (every store, a paged LoD world included: decodes them all). Spark's own
+  // SplatMesh.getBoundingBox() walks every splat on every call, so the shim takes a sample of
+  // <= SPLAT_SAMPLES centres (+ each splat's largest scale) once per splat count and caches it per
+  // mesh; matrixWorld is applied per call, so a moved or scaled mesh needs no resample. A paged world
+  // that is still streaming changes its count every few frames: it is resampled at most every
+  // SPLAT_RESAMPLE_MS, and never more often than 20 x the last sample's cost (<= 5 % of the time).
+  //
+  // Seen from outside, a splat mesh is ONE sphere (centroid of the centres, 98th-percentile radius:
+  // a capture's stray floaters do not inflate it), as PlayCanvas's gsplat AABB is: the camera
+  // converges on the middle of the subject. A sphere that holds the camera (a World Labs / Marble
+  // room) is no subject, and the core would drop it, so from inside the mesh is fed as its sampled
+  // splats in front of the camera (<= SPLAT_POINTS, each a sphere of its own scale), flagged `among`:
+  // the core then takes their apparent-size-weighted median depth, the depth of what fills most of
+  // the view (never the centroid shortcut, whose r^2 weighting lets a few large, far, dim splats of
+  // the room's walls outvote the thing in front of the camera).
+  const SPLAT_SAMPLES = 50000, SPLAT_POINTS = 1500, SPLAT_RESAMPLE_MS = 1000;
+  const splatCache = new WeakMap(); // SplatMesh -> { src, n, at, cost, pts: Float32Array [x y z r]*, k, cx, cy, cz, r }
+  const isSplatMesh = (o) => !!o && !o.isMesh && typeof o.forEachSplat === 'function' && typeof o.getBoundingBox === 'function' && 'numSplats' in o;
+  const isSparkRenderer = (o) => typeof o.updateInternal === 'function' && 'orderingTexture' in o;
+  function splatCount(o, src) {
+    try {
+      const n = src && typeof src.getNumSplats === 'function' ? src.getNumSplats() : src && src.numSplats !== undefined ? src.numSplats : o.numSplats;
+      return n > 0 && isFinite(n) ? n : 0;
+    } catch (e) { return 0; }
+  }
+  function splatSample(o) {
+    const src = o.splats || o.packedSplats || o.extSplats || null, n = splatCount(o, src);
+    const c = splatCache.get(o);
+    if (!n) return null; // not loaded yet
+    if (c && c.src === src && c.n === n) return c.k ? c : null;
+    const now = performance.now();
+    if (c && c.src === src && now - c.at < Math.max(SPLAT_RESAMPLE_MS, 20 * c.cost)) return c.k ? c : null;
+    const step = Math.max(1, Math.ceil(n / SPLAT_SAMPLES));
+    const pts = new Float32Array(Math.ceil(n / step) * 4);
+    let k = 0;
+    const take = (ctr, sc) => {
+      if (k >= pts.length || !ctr || !isFinite(ctr.x) || !isFinite(ctr.y) || !isFinite(ctr.z)) return;
+      const r = sc ? Math.max(sc.x, sc.y, sc.z) : 0;
+      pts[k] = ctr.x; pts[k + 1] = ctr.y; pts[k + 2] = ctr.z; pts[k + 3] = r > 0 && isFinite(r) ? r : 1e-4;
+      k += 4;
+    };
+    const walk = () => o.forEachSplat((i, ctr, sc) => { if (i % step === 0) take(ctr, sc); });
+    try {
+      if (src && typeof src.getSplat === 'function') for (let i = 0; i < n; i += step) { const s = src.getSplat(i); take(s.center, s.scales); }
+      else walk();
+    } catch (e) {
+      k = 0;
+      try { walk(); } catch (e2) { warnOnce('spark-bounds', 'could not read Spark splat centres: convergence falls back', e2); k = 0; }
+    }
+    const e = { src, n, at: now, cost: performance.now() - now, pts, k: k / 4, cx: 0, cy: 0, cz: 0, r: 0 };
+    splatCache.set(o, e);
+    if (!e.k) return null;
+    for (let i = 0; i < k; i += 4) { e.cx += pts[i]; e.cy += pts[i + 1]; e.cz += pts[i + 2]; }
+    e.cx /= e.k; e.cy /= e.k; e.cz /= e.k;
+    const d = new Float32Array(e.k);
+    for (let i = 0, j = 0; i < k; i += 4, j++) d[j] = Math.hypot(pts[i] - e.cx, pts[i + 1] - e.cy, pts[i + 2] - e.cz) + pts[i + 3];
+    d.sort();
+    e.r = d[Math.min(e.k - 1, Math.floor(e.k * 0.98))];
+    return e;
+  }
+  function splatBounds(o, cam, cb) {
+    const S = splatSample(o);
+    if (!S) return true;
+    const m = o.matrixWorld.elements, sc = maxScale(m), cw = cam.matrixWorld.elements;
+    const wx = xfX(m, S.cx, S.cy, S.cz), wy = xfY(m, S.cx, S.cy, S.cz), wz = xfZ(m, S.cx, S.cy, S.cz), wr = S.r * sc;
+    if (Math.hypot(wx - cw[12], wy - cw[13], wz - cw[14]) > wr) return cb(wx, wy, wz, wr) !== false;
+    // Inside: the sampled splats ahead of the camera and roughly in view, thinned to SPLAT_POINTS.
+    const vm = cam.matrixWorldInverse.elements, p = S.pts;
+    const tanV = Math.tan(((cam.fov || 50) * Math.PI) / 360) / (cam.zoom || 1), tanH = tanV * (cam.aspect || 1), near = cam.near || 0;
+    const ahead = [];
+    for (let i = 0; i < S.k * 4; i += 4) {
+      const x = xfX(m, p[i], p[i + 1], p[i + 2]), y = xfY(m, p[i], p[i + 1], p[i + 2]), z = xfZ(m, p[i], p[i + 1], p[i + 2]);
+      const vz = -(vm[2] * x + vm[6] * y + vm[10] * z + vm[14]);
+      if (!(vz > near)) continue;
+      const vx = vm[0] * x + vm[4] * y + vm[8] * z + vm[12], vy = vm[1] * x + vm[5] * y + vm[9] * z + vm[13];
+      if (Math.abs(vx) > vz * tanH * 1.2 || Math.abs(vy) > vz * tanV * 1.2) continue;
+      ahead.push(i);
+    }
+    const step = Math.max(1, ahead.length / SPLAT_POINTS);
+    for (let j = 0; j < ahead.length; j += step) {
+      const i = ahead[Math.floor(j)];
+      if (cb(xfX(m, p[i], p[i + 1], p[i + 2]), xfY(m, p[i], p[i + 1], p[i + 2]), xfZ(m, p[i], p[i + 1], p[i + 2]), p[i + 3] * sc, true) === false) return false;
+    }
+    return true;
   }
 
   info(`three.js adapter armed (core v${core.VERSION})`);

@@ -10,6 +10,11 @@
 //
 // Page: pages/three-spark.html (procedural splats, lookAt the lattice centre: convergence 5,
 // 'target'). The page's instrumentation is window.__spark (see the page's header).
+//
+// Convergence without a target (?at=, ?room=): a SplatMesh is a THREE.Object3D with no geometry
+// bounds; the three adapter samples its splat centres (three-adapter.js, splatBounds). From outside:
+// one sphere, converge on its centre (as PlayCanvas's gsplat AABB). From inside (a room-scale world):
+// the apparent-size-weighted median depth of the splats in view.
 
 // Over one second of live frames: Spark updates per stereo frame, regenerations, sorts, and the
 // viewpoint of the latest sort vs the camera Spark was last updated with.
@@ -57,6 +62,16 @@ export default function cases({ P, NEW }) {
         t(`right half = left half shifted ≈ ${want.toFixed(1)} px (skew minus parallax)`, sh.zeroErr > 1 && Math.abs(sh.s - want) <= 2, `best shift ${sh.s} px (residual ${sh.e.toFixed(2)})`);
         t('frame stable across two reads (no sort flicker between frames)', h.diffCount(r.pixels.px, r.pixels.px2) === 0, `${h.diffCount(r.pixels.px, r.pixels.px2)} bytes differ`);
         sparkChecks(r, t);
+      } },
+    // No lookAt, the lattice 7 units ahead: the estimator finds the SplatMesh's centre (before the
+    // splat bounds it saw nothing and fell back to 5.00).
+    { id: 'spark-est', name: 'Spark splats, no lookAt: estimator converges on the SplatMesh centre (7)', url: P + 'three-spark.html?at=7', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
+    // No lookAt, the camera inside the splat mesh (lattice at 8 + a 15-unit shell around the camera):
+    // the mesh's sphere holds the camera, so its in-view splats go to the core's median rule.
+    { id: 'spark-room', name: 'Spark splats, camera inside the mesh: apparent-size-weighted median depth (8)', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+      alsoCheck(r, t, h, R) {
+        const d = R && R.convergence;
+        t('inside the mesh: finite, in front of the room shell (not the 15-unit shell, not the near plane, not the 5.00 default)', isFinite(d) && d > 1 && d < 12 && Math.abs(d - 5) > 0.5, `convergence ${d}`);
       } },
     // Render on demand: the page stops drawing 30 frames after the splats are sorted; the shim's
     // replay keeps both eyes drawn (Spark's onBeforeRender runs in every replayed eye render).
