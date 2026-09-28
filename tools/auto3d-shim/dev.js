@@ -108,8 +108,8 @@ function dxrDev(core, ctl) {
       };
       return { layer: true, displayInfo: await ask('getDisplayInfo'), renderingModes: await ask('getRenderingModes') };
     },
-    // The chip, for the harness (the chip lands with its own slice).
-    chip: () => null,
+    // The chip, for the harness: { root (its closed shadow root), host, state, corner, menu, rect, menuRect }.
+    chip: () => (core.chip && core.chip.inspect ? core.chip.inspect() : null),
   };
   return { hud };
 }

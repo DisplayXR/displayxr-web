@@ -109,6 +109,7 @@ function dxrCore(cfg, cap, S) {
   const tracked = [];           // WeakRef<state>, for state() and the HUD
   let owner = null;             // the one canvas converted (or converting) — one inline-3D session per document
   let lastTarget = null;        // the last canvas we converted: the chip keeps pointing at it after release
+  let candidate = null;         // while OFF (offer / block in dev): a canvas that would convert — the chip's target
   let foreign = null;           // why we stood down for good in this document (the page owns inline-3D / XR)
   const engines = [];           // adapter names, for the HUD / console
 
@@ -197,7 +198,8 @@ function dxrCore(cfg, cap, S) {
 
   // ------------------------------------------------------------ activation
   function considerActivation(st) {
-    if (!on() || foreign || owner) return;
+    if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
+    if (foreign || owner) return;
     const t = now();
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
@@ -207,6 +209,16 @@ function dxrCore(cfg, cap, S) {
       return;
     }
     activate(st);
+  }
+  // While OFF nothing converts, but the chip still needs a canvas to offer 3D on (offer mode, and
+  // the 'off' pill in dev): the same qualification, throttled the same way, on its own clock.
+  function considerCandidate(st) {
+    const t = now();
+    if (t < (st.candAt || 0)) return;
+    st.candAt = t + 500;
+    const ok = !st.ad.unqualified(st);
+    const next = ok ? st : candidate === st ? null : candidate;
+    if (next !== candidate) { candidate = next; notify(); }
   }
   // Where the canvas is: in the document, big enough, on screen.
   function canvasPlacement(c) {
@@ -499,6 +511,7 @@ function dxrCore(cfg, cap, S) {
     if (st.outCoverDue && !ad.coverAfterDraw) takeOutCover(st);
     tickCover(st, t);
     guard.tick(st, t);
+    chip.frame(st);
     if (st.stats.xrFrames % 20 === 0) notify();
   }
 
@@ -872,11 +885,16 @@ function dxrCore(cfg, cap, S) {
     return { status: 'idle' };
   }
   function status() {
-    const s = statusOf(), t = lastTarget;
+    const s = statusOf(), t = lastTarget || candidate;
     return {
       state: s.status, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
       convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews),
+      // For the chip (read-only facts; it never touches the state): the site switch, the cover over
+      // the target (in- or out-cover) and when the layer came up (it keys its live moment off
+      // layerAt + holdMs, risk R6: the cover may stay up with nobody seated), the depth fade.
+      enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
+      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp),
     };
   }
   let lastReport = '';
@@ -948,6 +966,7 @@ function dxrCore(cfg, cap, S) {
   };
   const guard = dxrGuard(core);
   chip = dxrChip(ctl, S);
+  core.chip = chip; // dev.js: __dxrAuto3D.chip()
   dev = cfg.dev ? dxrDev(core, ctl) : null;
   const en = cfg.engines || {};
   const three = en.three === false ? null : dxrThree(core);
