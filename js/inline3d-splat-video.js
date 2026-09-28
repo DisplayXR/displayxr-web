@@ -127,7 +127,9 @@ export function resolveVideoTransition(o = {}) {
   const durationMs = o.durationMs === undefined ? VIDEO_CROSSFADE_MS : o.durationMs;
   if (!Number.isFinite(durationMs) || durationMs < 0) throw new RangeError(`@displayxr/inline3d/splat: setVideo durationMs must be ≥ 0, got ${o.durationMs}.`);
   const easing = o.easing === undefined ? VIDEO_CROSSFADE_EASING : o.easing;
-  if (typeof easing !== 'function' && !EASINGS[easing]) throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
+  if (typeof easing !== 'function' && !(typeof easing === 'string' && Object.prototype.hasOwnProperty.call(EASINGS, easing))) {
+    throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
+  }
   return { type, durationMs, easing };
 }
 
@@ -317,6 +319,9 @@ export class VideoPlane {
   /**
    * Hand the current quad, as it is, to the ghost that fades out over it, and build a fresh one for
    * the incoming video. The ghost's texture is never uploaded again, so its <video> may go.
+   * (One exception, accepted: a WebGL context loss mid-fade re-uploads every texture on restore,
+   * and the ghost's element may have been released by then — the ghost is blank for what is left
+   * of the fade, under a second.)
    */
   _startFade({ durationMs, easing }) {
     this._dropGhost();
@@ -332,16 +337,22 @@ export class VideoPlane {
     // the ghost would silently be an opaque quad with depth test off.)
     mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_SRC_ALPHA, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
       pc.BLENDEQUATION_ADD, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA);
-    mat.depthTest = false; // the same plane as the incoming quad: drawn over it, never z-fighting it
+    // The same plane as the incoming quad: drawn over it, never z-fighting it. The cost: for the
+    // fade's length the ghost also paints over opaque page geometry IN FRONT of the screen plane
+    // (a makeSbsMaterial quad, handle.engine content), which the incoming quad sits behind.
+    mat.depthTest = false;
     mat.depthWrite = false;
     mat.setParameter('dxrVidAlpha', 1);
     mat.update();
     const ease = typeof easing === 'function' ? easing : EASINGS[easing] || EASINGS.linear;
     // S4: its size as a fraction of the window, so a refit (a new virtualDisplayHeight) or a resize
     // during the fade keeps the outgoing picture where it was on screen instead of jumping.
-    const ps = this._planeSize;
-    const frac = ps ? { w: ps.w / ps.W, h: ps.h / ps.H } : null;
-    this.ghost = { mat, node: this.node, mi: this.mi, tex: this.tex, durationMs, ease, t0: null, frac };
+    // S4 / review R4: the ghost keeps its OWN geometry (eye aspect, fit, band) and is re-sized every
+    // tick against the current window, so a refit (a new virtualDisplayHeight) or a resize mid-fade
+    // keeps the outgoing picture where it was, without stretching it.
+    const ov = this.video;
+    const geom = { a: eyeAspect(this.format, ov.videoWidth, ov.videoHeight), fit: this.fit, band: this.band };
+    this.ghost = { mat, node: this.node, mi: this.mi, tex: this.tex, durationMs, ease, t0: null, geom };
     this.tex = null;
     this._texSource = null;
     this.video = null;
@@ -353,6 +364,7 @@ export class VideoPlane {
     if (!g) return;
     this.ghost = null;
     this.layer?.removeMeshInstances?.([g.mi]);
+    g.mi.destroy?.(); // its reference on the shared mesh
     g.node.parent?.removeChild?.(g.node);
     g.tex?.destroy?.();
     g.mat.destroy?.();
@@ -366,12 +378,21 @@ export class VideoPlane {
     if (g.t0 === null) g.t0 = now; // the clock starts on the incoming video's first drawn frame
     const x = g.durationMs > 0 ? Math.min(1, Math.max(0, (now - g.t0) / g.durationMs)) : 1;
     if (x >= 1) return this._dropGhost();
-    if (g.frac) {
-      const W = this.vH * this.viewer.boxAspect;
-      g.node.setLocalScale(g.frac.w * W, g.frac.h * this.vH, 1);
+    const s = videoPlaneSize({ boxAspect: this.viewer.boxAspect, eyeAspect: g.geom.a, vH: this.vH, fit: g.geom.fit, band: g.geom.band });
+    g.node.setLocalScale(s.w, s.h, 1);
+    // Review R2: a page easing may overshoot (easeOutBack) or throw. Clamp it (a negative
+    // ONE_MINUS_SRC_ALPHA would wreck the colours and the buffer's opacity), and a throw ends the
+    // fade instead of aborting every frame's draw until it would have finished.
+    let e;
+    try {
+      e = g.ease(x);
+    } catch (err) {
+      console.error('[inline3d/splat] setVideo easing threw; ending the crossfade:', err);
+      return this._dropGhost();
     }
+    const alpha = Number.isFinite(e) ? 1 - Math.min(1, Math.max(0, e)) : 0;
     g.mat.setParameter('dxrVidSplit', split);
-    g.mat.setParameter('dxrVidAlpha', 1 - g.ease(x));
+    g.mat.setParameter('dxrVidAlpha', alpha);
   }
 
   /** True while a crossfade is running. */
@@ -386,7 +407,9 @@ export class VideoPlane {
    */
   setSource(video, { format, fit, vH, band = null }, fade = null) {
     const newElement = video !== this.video;
-    const fading = !!(fade && fade.durationMs > 0 && this.video && this.tex && newElement);
+    // Review R1: only a video that has been DRAWN can be a ghost (it has a size, crop and a bound
+    // texture). Two swaps before the next frame make the middle one a cut, never a blank quad.
+    const fading = !!(fade && fade.durationMs > 0 && this.video && this.tex && this._planeSize && newElement);
     if (fading) this._startFade(fade);
     else if (newElement) this._dropGhost(); // S1: a cut ends any fade still running
     if (newElement) {
@@ -538,6 +561,7 @@ export class VideoPlane {
     for (const cb of [...this._rectListeners]) {
       // Off the draw: a page callback that throws or lays out must not stall the frame.
       queueMicrotask(() => {
+        if (!this._rectListeners.has(cb)) return; // unsubscribed (or its video replaced) since
         try {
           cb(r);
         } catch (err) {

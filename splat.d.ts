@@ -289,7 +289,7 @@ export interface SplatVideoOptions {
    * `./player`'s `band`, on the plane. `fit: 'cover'` fills the band and crops the eye image about
    * its centre.
    */
-  band?: number | string;
+  band?: number | string | null;
 }
 
 /** What `handle.setVideo(src)` resolves to. */
