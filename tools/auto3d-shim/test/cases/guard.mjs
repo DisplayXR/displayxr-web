@@ -136,7 +136,7 @@ export default function cases({ P, NEW }) {
 
   return [
     {
-      id: 'g-trip', name: 'frame-rate guard: conversion costs 40 ms a frame -> back to 2D, no retry, report guard',
+      id: 'g-trip', name: 'frame-rate guard: conversion costs 40 ms a frame, no 2D baseline -> back to 2D, re-measure 2D (fast) -> blocked, no retry, report guard',
       url: P + 'pc-orbit.html', shim: NEW, fake: { frameCostMs: 40 }, commits: true,
       async run(page, h) {
         await page.evaluate(watchOutCover);
@@ -159,6 +159,11 @@ export default function cases({ P, NEW }) {
         t('no retry: still ONE session and ONE layer 5 s later, while the page keeps drawing', O.sessions === 1 && O.layers === 1 && r.at.sessions === 1, `sessions ${r.at.sessions} -> ${O.sessions}, layers ${O.layers}`);
         const lines = r.log.filter((l) => /back to 2D: frame-rate guard/.test(l));
         t('one console line names it', lines.length === 1, lines[0] || `${lines.length} lines`);
+        // P0.1: this page goes live on its first qualifying draw, so the trip has no baseline: the guard
+        // stands down, measures the page's own 2D rate (report converting), finds it fast -> blocks.
+        const st = O.reports.map((x) => x.status), iLive = st.indexOf('live'), iGuard = st.indexOf('guard');
+        t('no baseline -> re-measured 2D first (live -> converting -> guard), then blocked because 2D is fast', /no 2D baseline/.test(lines[0] || '') && iLive >= 0 && st.slice(iLive, iGuard).includes('converting') &&
+          /where the page runs at \d+(\.\d)? fps in 2D/.test(O.reports[iGuard] ? O.reports[iGuard].reason : ''), `${st.join(' -> ')}; ${O.reports[iGuard] ? O.reports[iGuard].reason : ''}`);
         t('nothing saved', O.stored === null, `stored ${O.stored}`);
         const rp = O.closes[0] ? h.rawPairAtClose(O.closes[0]) : null;
         t('no raw side-by-side frame once the layer is closed (commit model)', rp && rp.frames >= 3 && rp.discriminates && rp.bad.length === 0,
@@ -182,6 +187,30 @@ export default function cases({ P, NEW }) {
         if (!O) return;
         t('3D really runs below guardFps (the absolute test alone would trip)', r.fps < 40, `${r.fps.toFixed(1)} session fps`);
         t('no guard trip: still live, one session, no guard report', S && O.sessions === 1 && !O.reports.some((x) => x.status === 'guard'), `sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+      },
+    },
+    {
+      // P0.1 fix 1. The page's own loop burns 30 ms (a 30 fps page in 2D and in 3D alike) and it goes
+      // live on its first qualifying draw, so the first trip has no baseline and is void.
+      id: 'g-retry', name: 'frame-rate guard, no baseline: a page that runs at 30 fps in 2D anyway -> re-measure, ONE retry with that baseline -> stays live',
+      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 0), ...NEW],
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 30000, polling: 100 });
+        await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
+        const fps = await fpsOver(page, 4500); // arm (1 s) + a full window (2 s) + margin: a second trip would land here
+        await h.sleep(500);
+        return { fps, out: await page.evaluate(readOut) };
+      },
+      check(r, t) {
+        const O = r.out, S = O && O.state.renderers.find((x) => x.active);
+        t('first trip had no 2D baseline, and the re-measure found a slow page (void trip, one retry)', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*no 2D baseline/.test(l)) && r.log.some((l) => /runs at \d+(\.\d)? fps in 2D too .* retrying once/.test(l)),
+          r.error || r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
+        if (!O) return;
+        t('3D still runs below guardFps (the no-baseline rule alone would trip again)', r.fps < 40, `${r.fps.toFixed(1)} session fps`);
+        t('LIVE after the retry: two sessions, the second still open, no guard report', !!S && O.sessions === 2 && O.layers === 2 && O.closes.length === 1 && !O.reports.some((x) => x.status === 'guard'),
+          `active ${!!S}, sessions ${O.sessions}, layers ${O.layers}, closes ${O.closes.length}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+        const st = O.reports.map((x) => x.status);
+        t("reports: live -> converting (re-measure) -> ... -> live", st[st.length - 1] === 'live' && st.filter((x) => x === 'live').length === 2 && st.slice(st.indexOf('live')).includes('converting'), st.join(' -> '));
       },
     },
     clampCase('g-clamp-three', 'GL size clamp (glLimit 512): three.js keyframes', 'three-keyframes.html', { convTarget: false }),
