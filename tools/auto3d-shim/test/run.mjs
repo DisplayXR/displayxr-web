@@ -113,6 +113,7 @@ async function runCase(browser, base, c) {
   if (c.seed) await page.evaluateOnNewDocument(`if (!sessionStorage.getItem('dxrSeeded')) { sessionStorage.setItem('dxrSeeded', '1'); localStorage.setItem('dxrAuto3D', ${JSON.stringify(JSON.stringify(c.seed))}); }`);
   await page.evaluateOnNewDocument(FAKE);
   for (const s of c.shim) await page.evaluateOnNewDocument(s);
+  if (c.before) await c.before(page); // e.g. page.emulateMediaFeatures, before the first script runs
   const t0 = Date.now();
   await page.goto(base + c.url, { waitUntil: 'load', timeout: 60000 });
   // Settled = converted, enough 2-view frames, the page's own ready flag, AND the go-live depth fade
@@ -163,6 +164,7 @@ async function runCase(browser, base, c) {
   const state = await page.evaluate(() => (window.__dxrAuto3D ? window.__dxrAuto3D.state() : null));
   const hud = await page.evaluate(() => (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null);
   const stall = await page.evaluate(() => window.__stall || null);
+  const probe = c.probe ? await page.evaluate(c.probe) : null; // a case's extra read, right after settling
   const fake = await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length, lastRig: window.__fakeXR.lastRig, frames: window.__fakeXR.frames, expected: window.__expectedConvergence ?? null, expectedSource: window.__expectedConvergenceSource ?? null }));
   let pixels = null;
   if (c.expect === 'convert' && ok) {
@@ -269,7 +271,7 @@ async function runCase(browser, base, c) {
     after.reenable = { again, ms: Date.now() - t1, ...(await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, frozen: !!window.__frozen, pageFrames: window.__pageFrames ?? null }))) };
   }
   await ctx.close();
-  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, stall: stall || { from: NaN, ms: 0 } };
+  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, probe, stall: stall || { from: NaN, ms: 0 } };
 }
 
 // Is a small (128x72) committed frame a side-by-side pair? The fake's skew shifts the right half
@@ -446,6 +448,7 @@ function check(r, results) {
       `stored ${D && D.again.stored}; after reload ${JSON.stringify(rl)}`);
   }
   t('frame stable across two reads', diffCount(pixels.px, pixels.px2) === 0, `${diffCount(pixels.px, pixels.px2)} bytes differ`);
+  if (c.alsoCheck) c.alsoCheck(r, t, HELPERS, R); // a case's own assertions ON TOP of the generic ones
   return A;
 }
 
@@ -469,7 +472,9 @@ function checkFlip(r, t, A) {
   return A;
 }
 
-// What a case's own run() / check() may use.
+// What a case's own run() / check() / alsoCheck() may use. Case hooks: before(page) runs before
+// page.goto; probe (a page function) is evaluated right after settling (r.probe); alsoCheck(r, t, h, R)
+// adds assertions after the generic 'convert' ones (R = the active renderer).
 const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae, diffCount, bestShift, pairResidual, rawPairAtClose, W, H };
 
 // ------------------------------------------------------------ main
