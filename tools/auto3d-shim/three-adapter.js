@@ -3,11 +3,11 @@
 // The three.js half of the original auto-3D prototype (content.js v0.1.0, PR #47), unchanged in
 // behaviour; the session / layer / rig / cover machinery lives in core.js. A part of the core bundle
 // (build.mjs): `function dxrThree(core)`, called by dxrCore with its internal API. Returns the
-// devtools listeners { observe, register } (the sentinel will own the hook itself).
+// devtools listeners { observe, register }; the sentinel owns the hook and forwards to them.
 //
 // How it finds three.js on a bundled / minified page: three (r105+) announces every WebGLRenderer
 // and Scene it constructs to a global `__THREE_DEVTOOLS__` EventTarget ('observe'), if one exists.
-// This script defines it before any page script runs, so every renderer reaches it. render(),
+// The sentinel defines it before any page script runs, so every renderer reaches it. render(),
 // setSize() & co. are instance properties, so they are wrapped per instance.
 //
 // What a converted renderer does:
@@ -34,8 +34,9 @@ function dxrThree(core) {
   let revision = null;
   Object.defineProperty(core.meta, 'revision', { enumerable: true, get: () => revision });
 
-  // ------------------------------------------------------------ the three.js devtools hook
-  let devtools = window.__THREE_DEVTOOLS__ || null;
+  // ------------------------------------------------------------ the three.js devtools listeners
+  // The sentinel owns `__THREE_DEVTOOLS__` and forwards every 'observe' / 'register' event here,
+  // starting with the one that made it load the core.
   const onObserve = (e) => {
     const o = e && e.detail;
     if (!o) return;
@@ -44,24 +45,6 @@ function dxrThree(core) {
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
   const onRegister = (e) => { if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
-  const hooked = new WeakSet();
-  const attachHook = (t) => {
-    if (!t || typeof t.addEventListener !== 'function' || hooked.has(t)) return;
-    hooked.add(t);
-    t.addEventListener('observe', onObserve);
-    t.addEventListener('register', onRegister);
-  };
-  if (!devtools) devtools = new EventTarget();
-  attachHook(devtools);
-  try {
-    // An accessor, so the real three.js devtools extension can still install its own object and we
-    // keep listening on whatever is there.
-    Object.defineProperty(window, '__THREE_DEVTOOLS__', {
-      configurable: true, enumerable: false,
-      get: () => devtools,
-      set: (v) => { devtools = v; attachHook(v); },
-    });
-  } catch (e) { window.__THREE_DEVTOOLS__ = devtools; }
 
   // ------------------------------------------------------------ convergence target: camera.lookAt
   // OrbitControls / MapControls / TrackballControls all end their update() in
