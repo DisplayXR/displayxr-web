@@ -114,8 +114,10 @@ function dxrPlayCanvas(core) {
   // RESOLUTION_AUTO call it, every frame when the store differs from the element). While converted
   // it records what the page asked for and applies the SBS size instead. canvas.width itself is NOT
   // virtualised here: the engine reads it internally (device.width, the back-buffer resize check,
-  // resizeCanvas's own compare), so it must report the real store. With the default eyeScale 0.5 the
-  // SBS store IS the mono size until the 3072 cap, so a page reading canvas.width sees no change.
+  // resizeCanvas's own compare), so it must report the real store. Since P0.2 the eye is sized from the
+  // element's device pixels (core realSizeFor), so the SBS store is up to 2 × the mono store (3072
+  // cap): page code that reads canvas.width directly sees the SBS width while converted. The engine's
+  // own getters (device.width / clientRect) are what PlayCanvas apps use, and they see the store.
   function wrapDevice(st) {
     const dev = st.dev;
     const orig = dev.setResolution;

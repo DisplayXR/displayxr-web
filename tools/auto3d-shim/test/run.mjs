@@ -84,7 +84,8 @@ function diffCount(a, b) { let n = 0; for (let i = 0; i < a.length; i++) if (a[i
 // The horizontal shift s that best maps the left half onto the right half: right(x + s) ≈ left(x).
 function bestShift(px, w, h, eyeW) {
   let best = { s: 0, e: Infinity }, zero = 0;
-  for (let s = -120; s <= 120; s++) {
+  const S = Math.max(120, Math.ceil(0.15 * eyeW)); // the fake's skew shifts 0.1 x eyeW: search past it
+  for (let s = -S; s <= S; s++) {
     let e = 0, n = 0;
     for (let y = 0; y < h; y += 2) {
       for (let x = Math.max(0, -s); x < Math.min(eyeW, eyeW - s); x += 2) {
