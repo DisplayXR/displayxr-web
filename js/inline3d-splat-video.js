@@ -26,11 +26,26 @@
 // per-frame allocation on our side. RGBA8, sampled and written UNCHANGED — the same encoded sRGB
 // values a 2D canvas drawImage() of the frame puts in the buffer (addVideo's paint), so the woven
 // video and the flat one are the same pixels.
+//
+// CROSSFADE (transition: 'crossfade', A5.1 of RFC 0001). A video -> video swap can dissolve on the
+// GPU instead of cutting. At the swap the plane's current quad is handed off, as it is, to a GHOST:
+// its texture is frozen (no more uploads, so the outgoing <video> can be released at once), and its
+// material turns blended, drawn after the incoming quad, fading 1 -> 0 over `durationMs`. The
+// incoming video goes onto a fresh quad underneath, opaque from its first frame. So each quad keeps
+// its own size, format and fit, and a swap between two aspects fades bar-for-bar. Only between two
+// videos: entering from the splat and setVideo(null) stay cuts. A swap while a fade is still
+// running drops the old ghost (a small pop) and fades from the video then on screen.
+import { EASINGS } from './inline3d-splat-effects.js';
 
 /** handle.setVideo's formats, fits and rigs. */
 export const VIDEO_FORMATS = Object.freeze(['sbs', 'tb', 'mono']);
 export const VIDEO_FITS = Object.freeze(['contain', 'cover']);
-const VIDEO_OPTION_KEYS = new Set(['format', 'fit', 'rig', 'virtualDisplayHeight', 'loop', 'muted', 'autoplay']);
+const VIDEO_OPTION_KEYS = new Set(['format', 'fit', 'rig', 'virtualDisplayHeight', 'loop', 'muted', 'autoplay', 'transition', 'durationMs', 'easing', 'outgoing']);
+/** setVideo's transitions: the player's vocabulary (./player), not setSource's gaussian ones. */
+export const VIDEO_TRANSITIONS = Object.freeze(['cut', 'crossfade']);
+/** The player's defaults (DEFAULT_CROSSFADE_MS / easeInOutSine), so both surfaces fade alike. */
+export const VIDEO_CROSSFADE_MS = 600;
+const VIDEO_CROSSFADE_EASING = 'easeInOutSine';
 let warnedVideoKeys = false;
 
 export const PAGE_VIDEO_ERROR =
@@ -41,7 +56,8 @@ export const PAGE_VIDEO_ERROR =
  * setVideo's arguments, validated and resolved (throws at the call, before anything runs).
  * `src` null/undefined is the exit call and is not validated here.
  * @returns {{ src: string|HTMLVideoElement, format: 'sbs'|'tb'|'mono', fit: 'contain'|'cover',
- *            vH: number|undefined, loop?: boolean, muted?: boolean, autoplay?: boolean }}
+ *            vH: number|undefined, loop?: boolean, muted?: boolean, autoplay?: boolean,
+ *            transition: { type: 'cut'|'crossfade', durationMs: number, easing: string|Function } }}
  */
 export function validateSetVideo(src, o = {}, pageMode = false) {
   if (pageMode) throw new Error(PAGE_VIDEO_ERROR);
@@ -70,7 +86,27 @@ export function validateSetVideo(src, o = {}, pageMode = false) {
     if (!Number.isFinite(vH) || !(vH > 0)) throw new Error(`@displayxr/inline3d/splat: setVideo — bad virtualDisplayHeight: ${o.virtualDisplayHeight}.`);
   }
   const bool = (k) => (o[k] === undefined ? undefined : !!o[k]);
-  return { src, format, fit, vH, loop: bool('loop'), muted: bool('muted'), autoplay: bool('autoplay') };
+  return { src, format, fit, vH, loop: bool('loop'), muted: bool('muted'), autoplay: bool('autoplay'), transition: resolveVideoTransition(o) };
+}
+
+/** setVideo's transition options: `{ type, durationMs, easing }`. Throws on a page bug. */
+export function resolveVideoTransition(o = {}) {
+  const type = o.transition === undefined ? 'cut' : o.transition;
+  if (!VIDEO_TRANSITIONS.includes(type)) {
+    const name = typeof type === 'string' ? type : type && typeof type === 'object' ? type.type || 'object' : String(type);
+    throw new Error(
+      `@displayxr/inline3d/splat: setVideo transition '${name}' — expected ${VIDEO_TRANSITIONS.join(' | ')}. ` +
+        "setSource's other transitions move a 3D photo's gaussians; a video frame has none.",
+    );
+  }
+  if (o.outgoing !== undefined && o.outgoing !== 'frozen') {
+    throw new Error(`@displayxr/inline3d/splat: setVideo outgoing '${o.outgoing}' — a video crossfade dissolves from the outgoing video's last frame ('frozen').`);
+  }
+  const durationMs = o.durationMs === undefined ? VIDEO_CROSSFADE_MS : o.durationMs;
+  if (!Number.isFinite(durationMs) || durationMs < 0) throw new RangeError(`@displayxr/inline3d/splat: setVideo durationMs must be ≥ 0, got ${o.durationMs}.`);
+  const easing = o.easing === undefined ? VIDEO_CROSSFADE_EASING : o.easing;
+  if (typeof easing !== 'function' && !EASINGS[easing]) throw new Error(`@displayxr/inline3d/splat: unknown easing '${easing}'.`);
+  return { type, durationMs, easing };
 }
 
 /**
@@ -132,11 +168,12 @@ uniform vec4 dxrVidL;      // left eye's region: s0, t0, ds, dt (t = image rows,
 uniform vec4 dxrVidR;      // right eye's
 uniform vec2 dxrVidTexel;  // half a texel, per axis
 uniform float dxrVidSplit; // first right-eye pixel column in the buffer (1e9 = mono)
+uniform float dxrVidAlpha; // 1, except on a crossfade's outgoing ghost
 void main() {
   vec4 r = gl_FragCoord.x >= dxrVidSplit ? dxrVidR : dxrVidL;
   vec2 st = r.xy + vec2(vUv.x, 1.0 - vUv.y) * r.zw;
   st = clamp(st, r.xy + dxrVidTexel, r.xy + r.zw - dxrVidTexel);
-  gl_FragColor = vec4(texture2D(dxrVid, st).rgb, 1.0);
+  gl_FragColor = vec4(texture2D(dxrVid, st).rgb, dxrVidAlpha);
 }`;
 
 /**
@@ -154,25 +191,11 @@ export class VideoPlane {
     mesh.setIndices([0, 1, 2, 0, 2, 3]);
     mesh.update();
     this.mesh = mesh;
-    const mat = new pc.ShaderMaterial({
-      uniqueName: 'inline3dVideoPlane',
-      attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 },
-      vertexGLSL: VERT,
-      fragmentGLSL: FRAG,
-    });
-    mat.cull = pc.CULLFACE_NONE;
-    mat.setParameter('dxrVidSplit', 1e9);
-    mat.update();
-    this.mat = mat;
-    // Under the rig node: fixed relative to the eyes (see the header).
-    this.node = new pc.GraphNode('inline3d-video');
-    viewer.rigNode.addChild(this.node);
-    const mi = new pc.MeshInstance(mesh, mat, this.node);
-    mi.cull = false;
-    mi.visible = false;
-    this.mi = mi;
     this.layer = viewer.app.scene.layers.getLayerById(pc.LAYERID_WORLD ?? 0);
-    this.layer.addMeshInstances([mi]);
+    this._split = NaN;
+    this._build();
+    /** A crossfade's outgoing quad: { mat, node, mi, tex, durationMs, ease, t0 }, or null. */
+    this.ghost = null;
 
     this.video = null;
     this.tex = null;
@@ -183,15 +206,97 @@ export class VideoPlane {
     this._lastT = -1;
     this._rvfc = 0;
     this._sizeKey = '';
-    this._split = NaN;
     this._onSeeked = () => (this._dirty = true);
     /** Upload accounting (handle.setVideo(...).stats()). */
     this.uploads = 0;
     this.frames = 0;
   }
 
-  /** Play `video` on the quad (a new element, format or fit). The element must have a frame. */
-  setSource(video, { format, fit, vH }) {
+  /** The quad this plane draws the current video on: material, node (under the rig), instance. */
+  _build() {
+    const pc = this.pc;
+    const mat = new pc.ShaderMaterial({
+      uniqueName: 'inline3dVideoPlane',
+      attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 },
+      vertexGLSL: VERT,
+      fragmentGLSL: FRAG,
+    });
+    mat.cull = pc.CULLFACE_NONE;
+    mat.setParameter('dxrVidSplit', Number.isFinite(this._split) ? this._split : 1e9);
+    mat.setParameter('dxrVidAlpha', 1);
+    mat.update();
+    this.mat = mat;
+    // Under the rig node: fixed relative to the eyes (see the header).
+    this.node = new pc.GraphNode('inline3d-video');
+    this.viewer.rigNode.addChild(this.node);
+    const mi = new pc.MeshInstance(this.mesh, mat, this.node);
+    mi.cull = false;
+    mi.visible = false;
+    this.mi = mi;
+    this.layer.addMeshInstances([mi]);
+  }
+
+  /**
+   * Hand the current quad, as it is, to the ghost that fades out over it, and build a fresh one for
+   * the incoming video. The ghost's texture is never uploaded again, so its <video> may go.
+   */
+  _startFade({ durationMs, easing }) {
+    this._dropGhost();
+    this._unwatch();
+    const pc = this.pc;
+    const mat = this.mat;
+    // Colour: over. Alpha: ONE / ONE_MINUS_SRC_ALPHA, so the buffer stays opaque where the incoming
+    // quad is (1·a + 1·(1−a) = 1) and fades to the page where only the ghost is (its bars differ):
+    // plain SRC_ALPHA on alpha too would leave a² + (1−a) < 1 mid-fade, and the page would show
+    // through the picture.
+    if (pc.BlendState) {
+      mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_SRC_ALPHA, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+        pc.BLENDEQUATION_ADD, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA);
+    }
+    mat.depthTest = false; // the same plane as the incoming quad: drawn over it, never z-fighting it
+    mat.depthWrite = false;
+    mat.setParameter('dxrVidAlpha', 1);
+    mat.update();
+    const ease = typeof easing === 'function' ? easing : EASINGS[easing] || EASINGS.linear;
+    this.ghost = { mat, node: this.node, mi: this.mi, tex: this.tex, durationMs, ease, t0: null };
+    this.tex = null;
+    this.video = null;
+    this._build();
+  }
+
+  _dropGhost() {
+    const g = this.ghost;
+    if (!g) return;
+    this.ghost = null;
+    this.layer?.removeMeshInstances?.([g.mi]);
+    g.node.parent?.removeChild?.(g.node);
+    g.tex?.destroy?.();
+    g.mat.destroy?.();
+  }
+
+  /** One engine tick of the fade: the ghost's opacity and eye split; gone at the end. */
+  _tickGhost(split) {
+    const g = this.ghost;
+    if (!g) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (g.t0 === null) g.t0 = now; // the clock starts on the incoming video's first drawn frame
+    const x = g.durationMs > 0 ? Math.min(1, Math.max(0, (now - g.t0) / g.durationMs)) : 1;
+    if (x >= 1) return this._dropGhost();
+    g.mat.setParameter('dxrVidSplit', split);
+    g.mat.setParameter('dxrVidAlpha', 1 - g.ease(x));
+  }
+
+  /** True while a crossfade is running. */
+  get fading() {
+    return !!this.ghost;
+  }
+
+  /**
+   * Play `video` on the quad (a new element, format or fit). The element must have a frame.
+   * `fade` ({ durationMs, easing }): dissolve from the video now on the quad instead of cutting.
+   */
+  setSource(video, { format, fit, vH }, fade = null) {
+    if (fade && fade.durationMs > 0 && this.video && this.tex && video !== this.video) this._startFade(fade);
     this.format = format;
     this.fit = fit;
     this.vH = vH;
@@ -268,6 +373,7 @@ export class VideoPlane {
       this._split = split;
       this.mat.setParameter('dxrVidSplit', split);
     }
+    this._tickGhost(split);
     const boxAspect = this.viewer.boxAspect;
     const key = `${boxAspect}|${v.videoWidth}x${v.videoHeight}|${this.format}|${this.fit}|${this.vH}`;
     if (key !== this._sizeKey) {
@@ -289,10 +395,12 @@ export class VideoPlane {
   }
 
   hide() {
+    this._dropGhost();
     this.mi.visible = false;
   }
 
   destroy() {
+    this._dropGhost();
     this._unwatch();
     this.video = null;
     this.layer?.removeMeshInstances?.([this.mi]);

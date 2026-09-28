@@ -320,18 +320,27 @@ test('playlist: next() goes through a new element and emits titlechange; back() 
   await player.detach();
 });
 
-test("crossfade cuts with a warning; band / poster / tile options are ignored with a warning", async () => {
+test("crossfade goes to setVideo as its GPU crossfade (durationMs, easing); a cut passes none; band / poster are ignored with a warning", async () => {
   const splat = makeSplat();
   let player;
   const w1 = await quiet(() => {
-    player = attachPlayer(splat, 'a.webm', { controls: 'none', band: 2.39, poster: 'p.jpg', transition: 'crossfade' });
+    player = attachPlayer(splat, 'a.webm', { controls: 'none', band: 2.39, poster: 'p.jpg', transition: 'crossfade', durationMs: 450 });
   });
   assert.ok(w1.some((w) => w.includes('ignores') && w.includes('band') && w.includes('poster')));
+  assert.equal(splat.calls[0].o.transition, undefined, 'the first title enters from the scene: no transition asked');
   splat.firstFrame();
   await flush();
   const w2 = await quiet(() => player.setSource('b.webm'));
-  assert.ok(w2.some((w) => w.includes('cuts')));
-  assert.equal(splat.calls.length, 2, 'still a clean swap through setVideo');
+  assert.equal(w2.length, 0, 'no warning: the crossfade is real now');
+  const o = splat.calls[1].o;
+  assert.equal(o.transition, 'crossfade');
+  assert.equal(o.durationMs, 450);
+  assert.equal(typeof o.easing, 'function');
+  assert.equal(o.format, 'sbs');
+  splat.firstFrame();
+  await flush();
+  player.setSource('c.webm', { transition: 'cut' });
+  assert.equal(splat.calls[2].o.transition, undefined, 'a per-call cut passes no transition');
   await player.detach();
 });
 

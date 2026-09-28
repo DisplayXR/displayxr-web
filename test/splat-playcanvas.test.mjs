@@ -2913,7 +2913,7 @@ async function videoRig({ camera = true, stereo = false, opts = {} } = {}) {
     setView(p, v) { this.proj = Float64Array.from(p); this.pose = Float64Array.from(v); }
     setViewport(...a) { this.vp = a; }
   };
-  Object.assign(pc, { LAYERID_WORLD: 0, FILTER_LINEAR: 1, ADDRESS_CLAMP_TO_EDGE: 1, PIXELFORMAT_RGBA8: 7 });
+  Object.assign(pc, { LAYERID_WORLD: 0, FILTER_LINEAR: 1, ADDRESS_CLAMP_TO_EDGE: 1, PIXELFORMAT_RGBA8: 7, BLENDMODE_ONE: 'ONE', BLENDMODE_ONE_MINUS_SRC_ALPHA: 'ONE_MINUS_SRC_ALPHA' });
   pc.GraphNode = class { constructor(name) { this.name = name; } setLocalScale(x, y, z) { this.scale = [x, y, z]; } };
   pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); c.parent = null; };
   const removedMI = [];
@@ -3086,6 +3086,85 @@ test('setVideo upload gating: a new frame (rVFC) uploads once; no new frame, no 
   frame();
   assert.equal(t2.uploads, u1 + 1, 'clock moved');
   await out.setVideo(null);
+  out.remove();
+});
+
+test('setVideo transition options: cut by default; crossfade 600 ms easeInOutSine; splat-only names, outgoing:live, bad duration and easing throw', async () => {
+  const { validateSetVideo, resolveVideoTransition } = await import('../js/inline3d-splat-video.js');
+  const el = fakeVideo();
+  assert.deepEqual(validateSetVideo(el).transition, { type: 'cut', durationMs: 600, easing: 'easeInOutSine' });
+  assert.deepEqual(resolveVideoTransition({ transition: 'crossfade', durationMs: 250, easing: 'linear' }), { type: 'crossfade', durationMs: 250, easing: 'linear' });
+  const f = (x) => x;
+  assert.equal(resolveVideoTransition({ transition: 'crossfade', easing: f }).easing, f);
+  assert.throws(() => resolveVideoTransition({ transition: 'flip' }), /transition 'flip'.*a video frame has none/);
+  assert.throws(() => resolveVideoTransition({ transition: { type: 'sequence' } }), /transition 'sequence'/);
+  assert.throws(() => resolveVideoTransition({ outgoing: 'live' }), /outgoing 'live'/);
+  assert.throws(() => resolveVideoTransition({ durationMs: -1 }), /durationMs must be/);
+  assert.throws(() => resolveVideoTransition({ easing: 'bounce' }), /unknown easing 'bounce'/);
+});
+
+test('setVideo crossfade: video -> video fades a FROZEN ghost over the incoming quad, then drops it; from the splat it is a cut', async () => {
+  const realPerf = globalThis.performance;
+  let t = 1000;
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => t }, configurable: true, writable: true });
+  try {
+    const { out, rec, textures, removedMI, frame } = await videoRig();
+    const planes = () => rec.meshInstances.filter((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane' && !removedMI.includes(mi));
+    const a = fakeVideo();
+    const ha = await out.setVideo(a, { transition: 'crossfade' });
+    assert.equal(ha.transition, 'cut', 'entering from the splat is a cut');
+    frame();
+    assert.equal(planes().length, 1);
+    const texA = textures.at(-1);
+    const b = fakeVideo({ w: 1920, h: 540 });
+    const hb = await out.setVideo(b, { transition: 'crossfade', durationMs: 400, easing: 'linear' });
+    assert.equal(hb.transition, 'crossfade');
+    const [ghost, cur] = planes();
+    assert.equal(planes().length, 2, 'the ghost and the incoming quad');
+    assert.equal(ghost.material.params.get('dxrVid'), texA, 'the ghost keeps the outgoing texture');
+    assert.ok(ghost.material.blendState, 'the ghost blends');
+    assert.equal(ghost.material.blendState.args[5], 'ONE', 'alpha channel: ONE, so the buffer stays opaque under the incoming quad');
+    assert.equal(ghost.material.depthTest, false);
+    assert.equal(cur.material.blendState, undefined, 'the incoming quad is opaque');
+    assert.equal(cur.material.params.get('dxrVidAlpha'), 1);
+    assert.equal(a.pendingRvfc(), 0, 'the outgoing element is unwatched');
+    const ua = texA.uploads;
+    frame(); // the fade's clock starts here
+    assert.equal(ghost.material.params.get('dxrVidAlpha'), 1);
+    t += 100;
+    a.present();
+    frame();
+    assert.equal(ghost.material.params.get('dxrVidAlpha'), 0.75, 'linear: 1 - 100/400');
+    assert.equal(texA.uploads, ua, 'the ghost is frozen: never uploaded again');
+    t += 300;
+    frame();
+    assert.equal(planes().length, 1, 'gone at the end of the fade');
+    assert.ok(removedMI.includes(ghost));
+    assert.equal(texA.destroyed, true);
+    // A cut (the default) between two videos: no ghost.
+    await out.setVideo(fakeVideo());
+    assert.equal(planes().length, 1);
+    await out.setVideo(null);
+    assert.equal(planes().length, 0);
+    out.remove();
+  } finally {
+    Object.defineProperty(globalThis, 'performance', { value: realPerf, configurable: true, writable: true });
+  }
+});
+
+test('setVideo crossfade: a swap during a fade drops the old ghost and fades from the video on screen; setVideo(null) mid-fade drops everything', async () => {
+  const { out, rec, removedMI, frame } = await videoRig();
+  const planes = () => rec.meshInstances.filter((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane' && !removedMI.includes(mi));
+  await out.setVideo(fakeVideo(), {});
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 10000 });
+  frame();
+  const [g1] = planes();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 10000 });
+  assert.equal(planes().length, 2, 'one ghost at a time');
+  assert.ok(removedMI.includes(g1), 'the first ghost is dropped');
+  await out.setVideo(null);
+  assert.equal(planes().length, 0);
   out.remove();
 });
 

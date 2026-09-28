@@ -2405,7 +2405,6 @@ export function createVideoProxy() {
   return proxy;
 }
 
-let warnedSurfaceCrossfade = false;
 let warnedSurfaceIgnored = false;
 /** Options that mean something only on a surface the player owns (A1, A4's parity table). */
 const SURFACE_IGNORED = ['band', 'poster', 'posterFormat', 'width', 'height', 'cornerRadius', 'feather', 'observe'];
@@ -2484,12 +2483,14 @@ export function attachPlayer(splat, src, opts = {}) {
   let state = 'attached'; // 'attached' | 'detached'
   const retired = new Set(); // paused, kept until the swap that replaces them lands
 
-  function show(el) {
+  /** `tr`: the core's resolved transition; a crossfade is ./splat setVideo's GPU dissolve (A5.1). */
+  function show(el, tr = null) {
     const mine = ++seq;
     pending = el;
     let p;
     try {
-      p = splat.setVideo(el, setVideoOpts);
+      const fade = tr && tr.type === 'crossfade' && tr.durationMs > 0;
+      p = splat.setVideo(el, fade ? { ...setVideoOpts, transition: 'crossfade', durationMs: tr.durationMs, easing: tr.ease } : setVideoOpts);
     } catch (err) {
       pending = null;
       queueMicrotask(() => emit('error', err));
@@ -2527,16 +2528,12 @@ export function attachPlayer(splat, src, opts = {}) {
   const { handle, emit } = createPlayerCore(o, proxy, { titles, currentIdx }, {
     setSource(newSrc, sOpts, tr) {
       if (state !== 'attached') return;
-      if (tr.type === 'crossfade' && !warnedSurfaceCrossfade) {
-        warnedSurfaceCrossfade = true;
-        console.warn('[inline3d/player] attachPlayer cuts: a crossfade needs ./splat setVideo to crossfade (RFC 0001 A5.1).');
-      }
       if (sOpts.title !== undefined) ui.setTitle?.(sOpts.title);
       const prev = proxy.element;
       const next = makeElement(newSrc, prev);
       // Hand it to setVideo FIRST: it throws while a splat setSource is in flight, and then the
       // transport must stay on the element the plane is still showing.
-      if (!show(next)) {
+      if (!show(next, tr)) {
         releaseElement(next);
         return;
       }
