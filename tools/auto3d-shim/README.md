@@ -117,7 +117,16 @@ when `cb` returns `false`. The rule is the prototype's: a sphere that contains t
 subject. If the camera is outside the rest, the result is the distance to their centre. If it
 stands among them, the result is the apparent-size-weighted median depth. `among = true` marks an
 item as a piece of a volume that holds the camera (a room-scale splat world fed as its splats in
-view): the median rule then applies whatever the centroid test says. The value is clamped to
+view): the room rule then applies whatever the centroid test says — not the median but the
+`T.convRoomPercentile` (default **0.7**) percentile of the apparent-size-weighted depths, i.e. the
+space the camera looks INTO, not the nearest surface. Why: apparent-size weighting lets the floor /
+wall just ahead dominate, so the weighted median lands on it (a Marble world on the panel converged
+at 1.62 with the room beyond, "disparity is huge"). With `metersToVirtual ∝ d` (`buildRig`), content
+at depth `z` sits at `depth × (1 − d/z)` IPD of disparity: behind the glass it is capped at `depth`
+whatever `d` is, so a near `d` packs the whole room into the far band, while a farther `d` spreads it
+across the band and costs only crossed disparity `depth × (d/z − 1)` on the nearer share. The key is
+dev-overridable (`window.__dxrAuto3DTestCfg = { convRoomPercentile: 0.6 }` on a dev build; 0.5 = the
+old median rule). The value is clamped to
 `[2·near, 0.9·far]` and eased by 0.25 every 30 frames.
 
 **The adapter contract** (hooks the core calls on `st.ad`) is written out at the top of `core.js`:
@@ -247,8 +256,8 @@ and applies `matrixWorld` per call. From **outside**, the mesh is one sphere (ce
 centres, 98th-percentile radius so a capture's floaters do not inflate it) and the camera converges
 on its middle, as PlayCanvas's gsplat AABB does. From **inside** (a World Labs / Marble room, whose
 sphere holds the camera and would be dropped), the mesh is fed as its <= 1500 sampled splats in view,
-each a sphere of its own scale, flagged `among`: the result is their apparent-size-weighted median
-depth, the depth of what fills most of the view. The `SparkRenderer` (an instanced quad) is skipped.
+each a sphere of its own scale, flagged `among`: the result is the 70th percentile (`T.convRoomPercentile`) of their
+apparent-size-weighted depths: the glass sits inside the room, not on the floor in front of it. The `SparkRenderer` (an instanced quad) is skipped.
 The target (`camera.lookAt`, `OrbitControls`) still wins when there is one.
 
 **Post-processing chains (three.js).** Each eye needs its own copy of the whole chain, so the
@@ -637,7 +646,8 @@ running), so the rig is always sampled at the configured depth.
 | `spark-eyes` | the same page, the fake's eyes 0.04 apart (`eyeX` 0.02) | skew shift minus the eyes' parallax (≈ 56 px), stable frame, the same Spark assertions (fail without the one-frame-per-pair change) |
 | `spark-idle` | `three-spark.html?freeze=30`: stops drawing once sorted | as `spark`, with every frame a replay |
 | `spark-est` | `three-spark.html?at=7`: no `lookAt`, the lattice 7 units ahead | as `a`, convergence 7 ± 5 % from the `estimator` (the SplatMesh's sampled centres; 5.00, the default, before) |
-| `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera) | as `a`, convergence 8 ± 5 % from the `estimator` (median rule; the r²-weighted centroid gave 10.4) |
+| `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera) | as `a`, convergence 8.6 ± 5 % from the `estimator` (room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
+| `spark-room-p50` | the same page, cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the old median rule: the tuning key is live) |
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |

@@ -64,6 +64,7 @@ function dxrCore(cfg, cap, S) {
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
+    convRoomPercentile: 0.7, // camera INSIDE a volume (a room-scale splat world): converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance)
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
@@ -813,8 +814,20 @@ function dxrCore(cfg, cap, S) {
     items.sort((a, b) => a.z - b.z);
     let tot = 0;
     for (const it of items) { it.k = Math.min(1, (it.r / it.z) ** 2); tot += it.k; }
+    // Inside a volume (a room): converge on the space the camera looks INTO, not the nearest big
+    // surface. Apparent-size weighting makes the floor / wall just ahead dominate the weight, so the
+    // weighted median lands on it (Marble world, panel 2026-09-28: 1.62 with the room beyond). With
+    // metersToVirtual ∝ d (buildRig), content at depth z sits at depth × (1 − d/z) IPD of disparity:
+    // everything behind the glass is capped at `depth` whatever d is, so a near d packs the whole
+    // room into the far band (z = 3d already reads 2/3 of the maximum) — "disparity is huge". A
+    // farther d spreads the room across the band and costs only crossed disparity on the nearer
+    // share, depth × (d/z − 1). So converge at a HIGH percentile p of the weighted depths
+    // (T.convRoomPercentile): the glass sits inside the room, the nearer p of what is seen comes
+    // forward of it (the floor at the frame's edge), the rest spreads behind it. Outside a volume
+    // (a subject seen among other meshes) the median stands.
+    const q = among ? clamp(+T.convRoomPercentile || 0.5, 0.05, 0.95) : 0.5;
     let acc = 0;
-    for (const it of items) { acc += it.k; if (acc >= tot * 0.5) return it.z; }
+    for (const it of items) { acc += it.k; if (acc >= tot * q) return it.z; }
     return items[items.length - 1].z;
   }
   // TEST ONLY (T.fakeViews): a parallel-axis pair with sheared frusta converging at the rig's

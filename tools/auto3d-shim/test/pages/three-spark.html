@@ -12,8 +12,11 @@
      ?room=1: no lookAt, and the camera stands INSIDE the splat mesh: the same lattice centred 8
      units ahead plus a sparse shell of large splats on a 15-unit sphere around the camera (a
      room-scale world, as a World Labs / Marble scene is). The mesh's bounding sphere holds the
-     camera, so the estimator takes the apparent-size-weighted median depth of the splats in view:
-     the lattice fills most of the view, so expected convergence 8, source 'estimator'.
+     camera, so the estimator takes the T.convRoomPercentile (default 0.7) percentile of the
+     apparent-size-weighted depths of the splats in view: the lattice (5 layers, 7.3..8.7) fills most
+     of the view, so the glass lands toward its back, expected convergence 8.6 (measured 8.63; the old
+     weighted-median rule gave 8.06), source 'estimator'. &p=0.5 (with cfg convRoomPercentile 0.5,
+     case spark-room-p50): the median rule, expected 8.
      ?freeze=N: N drawn frames after the splats are ready (sorted), the page stops drawing (render on demand: the shim replays).
      Instrumentation (window.__spark, read by cases/spark.mjs): every SparkRenderer.updateInternal
      call (Spark's per-frame generate + sort driver, run from its onBeforeRender), whether it
@@ -34,7 +37,7 @@ const Q = new URLSearchParams(location.search);
 const FREEZE = +(Q.get('freeze') || 0);
 const ROOM = Q.has('room'), AT = ROOM ? 8 : +(Q.get('at') || 0);
 const DEPTH = AT || 5; // the lattice centre, along -z from the camera
-window.__expectedConvergence = DEPTH;
+window.__expectedConvergence = ROOM ? (Q.get('p') === '0.5' ? 8 : 8.6) : DEPTH;
 window.__expectedConvergenceSource = AT ? 'estimator' : 'target';
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
