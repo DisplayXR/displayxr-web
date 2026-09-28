@@ -3420,6 +3420,103 @@ test('#107: in stereo the ghost gets the same eye split as the incoming quad, ev
   out.remove();
 });
 
+// ── our own review of #107 (R1, R2, R4, R5, R7, R8) ─────────────────────────────────────────
+
+test('#107 R1: two crossfades before a frame is drawn: the undrawn middle video is a cut, never a sizeless ghost', async () => {
+  const { out, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  const hb = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  assert.equal(hb.transition, 'crossfade', 'A was drawn: a real fade');
+  const hc = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 }); // B never drawn
+  assert.equal(hc.transition, 'cut', 'B was never drawn: no ghost from it');
+  assert.equal(out.viewer._videoPlane.ghost, null);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 R2: an easing that overshoots is clamped; one that throws ends the fade instead of breaking the draw', async () => {
+  const realPerf = globalThis.performance;
+  let t = 1000;
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => t }, configurable: true, writable: true });
+  const realErr = console.error;
+  const errs = [];
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    const { out, frame } = await videoRig();
+    await out.setVideo(fakeVideo());
+    frame();
+    await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 100, easing: (x) => (x < 0.5 ? -0.5 : 1.7) });
+    frame();
+    t += 10;
+    frame();
+    const g = out.viewer._videoPlane.ghost;
+    assert.equal(g.mat.params.get('dxrVidAlpha'), 1, 'undershoot clamped: alpha stays at most 1');
+    t += 60;
+    frame();
+    assert.equal(g.mat.params.get('dxrVidAlpha'), 0, 'overshoot clamped: alpha at least 0');
+    await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 100000, easing: () => { throw new Error('boom'); } });
+    frame();
+    t += 10;
+    assert.doesNotThrow(() => frame(), 'the draw survives');
+    assert.equal(out.viewer._videoPlane.ghost, null, 'the fade ended');
+    assert.ok(errs.some((e) => e.includes('easing threw')));
+    await out.setVideo(null);
+    out.remove();
+  } finally {
+    console.error = realErr;
+    Object.defineProperty(globalThis, 'performance', { value: realPerf, configurable: true, writable: true });
+  }
+});
+
+test('#107 R4: a canvas resize mid-fade re-fits the ghost from its own aspect (no stretch)', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  await out.setVideo(fakeVideo({ w: 3840, h: 1080 })); // 16:9 eye
+  frame();
+  await out.setVideo(fakeVideo({ w: 1920, h: 1080 }), { transition: 'crossfade', durationMs: 60000 }); // 8:9 eye
+  frame();
+  canvas.setBox(640, 180); // much wider box
+  v._updateMonoProjection();
+  frame();
+  const s = v._videoPlane.ghost.node.scale;
+  near(s[0] / s[1], 16 / 9, 1e-9, "the ghost keeps the OUTGOING picture's 16:9");
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 R5 + R7: the ghost mesh instance is destroyed with it; inherited names are not easings', async () => {
+  const { resolveVideoTransition } = await import('../js/inline3d-splat-video.js');
+  assert.throws(() => resolveVideoTransition({ easing: 'constructor' }), /unknown easing 'constructor'/);
+  assert.throws(() => resolveVideoTransition({ easing: 'toString' }), /unknown easing/);
+  const { out, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  const mi = out.viewer._videoPlane.ghost.mi;
+  let destroyed = false;
+  mi.destroy = () => { destroyed = true; };
+  await out.setVideo(fakeVideo()); // a cut drops it
+  assert.equal(destroyed, true);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 R8: a listener removed after a change was queued is not called', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  const h = await out.setVideo(fakeVideo());
+  frame();
+  let n = 0;
+  const off = h.onRectChange(() => n++);
+  canvas.setBox(640, 180);
+  v._updateMonoProjection();
+  frame(); // queues the notification
+  off(); // ...and unsubscribes before it runs
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(n, 0);
+  await out.setVideo(null);
+  out.remove();
+});
+
 test('setVideo guards: throws during an in-flight setSource; setSource / setRig refuse while a video is on; prepareSource is allowed; controls:page throws', async () => {
   const { out } = await videoRig();
   const swap = out.setSource('b.sog');
