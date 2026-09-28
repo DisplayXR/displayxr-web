@@ -1,8 +1,9 @@
 // DisplayXR auto-3D — three.js adapter. PROTOTYPE, not a product.
 //
 // The three.js half of the original auto-3D prototype (content.js v0.1.0, PR #47), unchanged in
-// behaviour; the session / layer / rig / cover / HUD machinery now lives in core.js, which must be
-// loaded first (manifest.json lists core.js → three-adapter.js → playcanvas-adapter.js).
+// behaviour; the session / layer / rig / cover machinery lives in core.js. A part of the core bundle
+// (build.mjs): `function dxrThree(core)`, called by dxrCore with its internal API. Returns the
+// devtools listeners { observe, register } (the sentinel will own the hook itself).
 //
 // How it finds three.js on a bundled / minified page: three (r105+) announces every WebGLRenderer
 // and Scene it constructs to a global `__THREE_DEVTOOLS__` EventTarget ('observe'), if one exists.
@@ -23,14 +24,9 @@
 //     looks around.
 // It stands down when a renderer presents through renderer.xr (and, via the core, for SDK / WebXR
 // pages). WebGPURenderer is left 2D.
-(() => {
-  'use strict';
-  const core = window[Symbol.for('dxr.auto3d.core')];
-  if (!core || core.meta.threeAdapter) return; // core inert (not the DisplayXR Browser) or already loaded
-  core.meta.threeAdapter = true;
+function dxrThree(core) {
   core.registerEngine('three.js');
   const { info, warnOnce, desc, realW, realH } = core;
-  const cfg = () => core.cfg;
   // A duck-typed Vector2 for three's getSize(target), which only calls target.set().
   const vec2 = () => ({ x: 0, y: 0, set(x, y) { this.x = x; this.y = y; return this; } });
 
@@ -160,10 +156,8 @@
     // The out-cover's pixels: the left eye of the pair just drawn, read back from the GL context —
     // drawImage() of the layer-bound canvas is empty. Taken by takeCover() below, not by the core.
     coverAfterDraw: true,
-    readEye(st, target) {
-      const gl = st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null;
-      return core.readGlEye(gl, st, target);
-    },
+    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
+    gl: (st) => (st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null),
     restore(st, wasLive) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
@@ -577,4 +571,5 @@
   }
 
   info(`three.js adapter armed (core v${core.VERSION})`);
-})();
+  return { observe: onObserve, register: onRegister };
+}
