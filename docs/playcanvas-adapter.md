@@ -267,7 +267,8 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
   against the picture, with it. The callback runs as a microtask right after the draw, inside the
   same frame (before paint): controls move in step, but a callback that reads layout forces layout
   in that frame. `rect` is measured with `getBoundingClientRect`, so under a CSS-transformed
-  ancestor it is in the transformed (on-screen) px (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
+  ancestor it is in the transformed (on-screen) px. `transition` says what the swap did: `'crossfade'`
+  or `'cut'`. The switch happens in one task at that point: the splat is hidden, the display rig is
   declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
   that fails to load rejects, and the splat stays on screen. A call superseded before its first
   frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and
@@ -289,7 +290,7 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 | `autoplay` | `true` for a URL, `false` for an element | |
 | `transition` | `'cut'` | `'crossfade'`: a GPU dissolve from the video already on the plane (see below). From the splat, and on `setVideo(null)`, always a cut. `./splat`'s gaussian transitions (`flip`, `wavefront`, particles) throw: a video frame has no gaussians. |
 | `durationMs` | `600` | The crossfade's length (the player's default). `0` is a cut. |
-| `easing` | `'easeInOutSine'` | A named easing (`EASINGS`) or `(x) => y` on [0, 1]. |
+| `easing` | `'easeInOutSine'` | A named easing (`SplatEasing` in `splat.d.ts`: `linear`, `easeInOutSine`, `easeInOutCubic`, …) or `(x) => y` on [0, 1]. |
 | `outgoing` | `'frozen'` | Only `'frozen'`: the outgoing video dissolves from its last frame. |
 | `band` | none | A letterbox slot: the picture is fitted into a centred band of this aspect (`2.39` or `'2.39:1'`) inside the element, the rest left clear, as `./player`'s `band`. `'contain'` in the band is a smaller quad; `'cover'` makes the quad the band and crops each eye about its centre in texture space (the band's edges are inside the window, so the window cannot cut the overflow). |
 
@@ -299,7 +300,8 @@ its own), and it is drawn blended over a fresh quad carrying the incoming video,
 from 1 to 0 over `durationMs` from the incoming video's first drawn frame. Each quad keeps its own
 format, fit and size, so a swap between two aspects fades bar for bar; the buffer stays opaque
 under the incoming picture throughout. A `setVideo` while a fade is running drops the old ghost
-and fades from the video then on screen. The promise resolves at the swap, not at the end of the
+and fades from the video then on screen, if that video has been drawn; one that has not drawn a
+frame yet (two swaps before the next frame) makes it a cut, and `transition` says `'cut'`. The promise resolves at the swap, not at the end of the
 fade. Cost: one extra full-plane textured draw for the length of the fade, and one texture
 allocation (plus its first upload) for the incoming video at the swap.
 

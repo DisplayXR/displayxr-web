@@ -279,8 +279,8 @@ export interface SplatVideoOptions {
   transition?: 'cut' | 'crossfade';
   /** Crossfade length. Default 600 (the player's). 0 = a cut. */
   durationMs?: number;
-  /** A named easing (`./splat`'s `EASINGS`) or `(x) => y` on [0, 1]. Default `'easeInOutSine'`. */
-  easing?: string | ((x: number) => number);
+  /** A named easing ({@link SplatEasing}) or `(x) => y` on [0, 1]. Default `'easeInOutSine'`. */
+  easing?: SplatEasing | ((x: number) => number);
   /** Only `'frozen'`: the outgoing video dissolves from its last frame. */
   outgoing?: 'frozen';
   /**

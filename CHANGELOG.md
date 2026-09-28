@@ -18,7 +18,9 @@ Touches the **core** (additive: `handle.rewoven()`) and the **preview tier** (`.
   centred letterbox slot (`cover` fills the band and crops each eye about its centre). The result
   gains `transition`, `band`, `rect` (the picture in CSS px, canvas-relative, clipped) and
   `onRectChange(cb)`. `attachPlayer` now crossfades and takes `band` (controls in the bars) through
-  these instead of cutting / ignoring them.
+  these instead of cutting / ignoring them. **Behaviour change for `attachPlayer(…, { skin: 'call' })`:**
+  that skin defaults `band` to 2.39, which surface mode used to ignore; the video now plays in a
+  2.39 letterbox. Pass `band: null` to keep the full tile.
 - **`handle.rewoven()`** — `firstWoven`, measured from the call, for a canvas that is already woven
   but whose rect is about to change (fullscreen, a layout resize). Same `{ woven, confirmed,
   reason, ms }` shape, never rejects; a change of the canvas's CSS size or devicePixelRatio while
