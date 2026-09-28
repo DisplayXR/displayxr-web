@@ -27,8 +27,10 @@
 //   - never over page UI: a corner is used only when elementsFromPoint (the snapshotted built-in) at
 //     the box's four corners + centre, skipping our host, first hits the canvas (or its cover).
 //
-// Lifecycle (view): hidden | offer (outlined; click -> on) | live (green dot; amber while no views,
-// ramping, or the frame-rate guard waits to retry; expanded for 3 s from its first appearance) | off (outlined; expanded 5 s after a turn-off).
+// Lifecycle (view): hidden | offer (outlined; click -> on) | live (green dot; amber after 1 s without
+// 2-view frames (debounced in the core: eyesOffMs / eyesOnMs), while ramping, or while the frame-rate
+// guard waits to retry; expanded for 3 s from its first appearance) | nodisplay (outlined, tooltip
+// "3D display not available to this window"; click opens the menu) | off (outlined; expanded 5 s after a turn-off).
 // The live moment keys off the cover drop OR layerAt + holdMs, whichever comes first (risk R6: with
 // nobody seated the cover can stay up indefinitely).
 function dxrChip(ctl, S) {
@@ -38,6 +40,7 @@ function dxrChip(ctl, S) {
   const INSET = 8;
   const PILL_W = 38, CARET_W = 22;            // + 2 px border = 40 collapsed, 62 expanded (<= 64)
   const H_FINE = 24, H_COARSE = 44;           // + border, inside 28 / 44
+  const NO_DISPLAY = '3D display not available to this window';
   const LIVE_EXPAND_MS = 3000, OFF_EXPAND_MS = 5000, FS_IDLE_MS = 3000, IDLE_TICK_MS = 500, HIT_EVERY = 30;
   const mq = (q) => { try { return matchMedia(q); } catch (e) { return { matches: false, addEventListener() {} }; } };
   const coarseMq = mq('(pointer: coarse)');
@@ -209,6 +212,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
       e.preventDefault();
       if (view === 'live') ctl.setEnabled(false);
       else if (view === 'off' || view === 'offer') ctl.setEnabled(true);
+      else if (view === 'nodisplay') openMenu(); // nothing to switch on here: the menu still offers "3D on this site"
     });
     caret.addEventListener('click', (e) => { const drag = down && down.moved; down = null; if (!drag) toggleMenu(); });
     pill.addEventListener('contextmenu', (e) => { e.preventDefault(); openMenu(); });
@@ -308,6 +312,8 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     // The frame-rate guard stood down after a first trip and will retry once (P0.2): still "3D on this
     // site", amber until the retry is live again.
     if (st.retrying) return st.enabled ? 'live' : 'off';
+    // Live but no display for this window (a second browser instance, or no display behind the layer).
+    if (st.state === 'flat' && st.reason === 'no-display') return st.enabled ? 'nodisplay' : 'off';
     // 'converting' + waiting: live on the layer, but no stereo frame yet (nobody tracked): amber pill.
     if (st.state === 'live' || st.waiting) {
       if (!st.enabled) return 'off'; // turning off: fading out / staged under the out-cover
@@ -332,7 +338,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     }
     if (next !== 'hidden' && !build()) return;
     observe(next !== 'hidden' ? st.canvas : null);
-    idle(next === 'offer' || next === 'off' || !!st.retrying); // no session loop: poll the placement
+    idle(next === 'offer' || next === 'off' || next === 'nodisplay' || !!st.retrying); // no session loop (or not one we can count on): poll the placement
     if (menuOpen) syncMenu();
     render();
     place();
@@ -353,9 +359,11 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     const on = view === 'live';
     wrap.classList.toggle('outline', !on);
     wrap.classList.toggle('exp', menuOpen || hovering || now() < expandedUntil);
-    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.haveViews && !s.ramping && !s.retrying ? 'g' : 'a'));
+    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.tracking && !s.ramping && !s.retrying ? 'g' : 'a'));
     setA(pill, 'aria-pressed', String(on));
-    setA(pill, 'aria-label', on ? '3D view: on. Turn off for this site' : view === 'offer' ? '3D view available. Turn on for this site' : '3D view: off. Turn on for this site');
+    const nd = view === 'nodisplay';
+    setA(pill, 'aria-label', nd ? NO_DISPLAY : on ? '3D view: on. Turn off for this site' : view === 'offer' ? '3D view available. Turn on for this site' : '3D view: off. Turn on for this site');
+    if (nd) setA(wrap, 'title', NO_DISPLAY); else if (wrap.hasAttribute('title')) wrap.removeAttribute('title');
   }
 
   // ------------------------------------------------------------ placement + hit test

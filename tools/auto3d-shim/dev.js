@@ -36,7 +36,7 @@ function dxrDev(core, ctl) {
       const s = st.stats;
       text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * site.convScale).toPrecision(3)} (${convSource(st)})` +
         ` · 3D ${s.stereo} · flat ${s.flat} · replay ${s.replays}` +
-        (st.haveViews ? '' : ' · waiting for eyes');
+        (st.nd ? ' · no 3D display for this window' : st.haveViews ? (st.eyesOn ? '' : ' · eyes lost') : ' · waiting for eyes');
     } else if (busy) text = 'DXR auto-3D: converting…';
     else if (foreign) text = `DXR auto-3D: standing down (${foreign})`;
     else if (flat) text = `DXR auto-3D: 2D (${flat.engine}) — ${flat.flatReason}`;
@@ -87,7 +87,7 @@ function dxrDev(core, ctl) {
           page: d.page,
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
-          active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews,
+          active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
           convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing,
           rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,

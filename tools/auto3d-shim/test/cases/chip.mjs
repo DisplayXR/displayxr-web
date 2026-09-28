@@ -25,6 +25,7 @@ function chipInfo() {
     out.expanded = wrap.classList.contains('exp');
     out.outline = wrap.classList.contains('outline');
     out.dot = c.root.querySelector('.dot').className;
+    out.title = wrap.getAttribute('title');
     out.pill = { role: pill.getAttribute('role') || pill.tagName.toLowerCase(), tabindex: pill.getAttribute('tabindex'), pressed: pill.getAttribute('aria-pressed'),
       label: pill.getAttribute('aria-label'), haspopup: pill.getAttribute('aria-haspopup') };
     out.menuRole = menu.getAttribute('role');
@@ -41,7 +42,7 @@ function chipInfo() {
 }
 const host = () => {
   const H = window.__dxrFakeHost;
-  return H ? { saves: H.saves.slice(), reports: H.reports.map((r) => r.status) } : null;
+  return H ? { saves: H.saves.slice(), reports: H.reports.map((r) => r.status), last: H.reports[H.reports.length - 1] } : null;
 };
 const liveChip = () => { const c = window.__dxrAuto3D && window.__dxrAuto3D.chip(); return !!(c && c.state === 'live' && c.rect); };
 const chipIn = (state) => `(() => { const c = window.__dxrAuto3D && window.__dxrAuto3D.chip(); return !!(c && c.state === '${state}' && c.rect); })()`;
@@ -373,8 +374,9 @@ export default function cases({ P, productShim }) {
       },
     },
     {
-      // P0.1 fix 4 (R6): a display behind the layer (getDisplayInfo answers) but nobody tracked, ever.
-      id: 'chip-cover-max', name: 'cover max hold: displayOk but never two views -> cover gone at ~coverMaxMs (5 s), chip amber, report converting (never live)',
+      // P0.2 fix 2: a session that never delivers two views (a second browser instance whose session got
+      // XR_ERROR_LIMIT_REACHED stays mono) is "no display for this window" once coverMaxMs has passed.
+      id: 'chip-cover-max', name: 'cover max hold: displayOk but never two views -> cover gone at ~coverMaxMs (5 s); chip OUTLINE "no display", report { flat, no-display } (never live)',
       url: P + 'three-corner-ui.html', shim: allowDev, fake: { viewsAfterMs: 1e9 },
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.layers.length === 1, W8);
@@ -382,20 +384,77 @@ export default function cases({ P, productShim }) {
         const mid = await page.evaluate(() => ({ cover: !!document.querySelector('[data-dxr-auto3d-cover]'), t: performance.now() - window.__fakeXR.layers[0].at }));
         await page.waitForFunction(() => !document.querySelector('[data-dxr-auto3d-cover]'), { timeout: 9000, polling: 25 });
         const gone = await page.evaluate(() => performance.now() - window.__fakeXR.layers[0].at);
-        await page.waitForFunction(liveChip, W8);
+        await page.waitForFunction(chipIn('nodisplay'), W8);
         await h.sleep(1500);
         const A = await page.evaluate(chipInfo);
-        const S = await page.evaluate(() => { const s = window.__dxrAuto3D.state(); const r = s.renderers.find((x) => x.active); return { active: !!r, rampK: r && r.rampK, stereo: r && r.stats.stereo, open: window.__fakeXR.layers[0].closedAt === null }; });
+        const S = await page.evaluate(() => { const s = window.__dxrAuto3D.state(); const r = s.renderers.find((x) => x.active); return { active: !!r, rampK: r && r.rampK, stereo: r && r.stats.stereo, noDisplay: r && r.noDisplay, open: window.__fakeXR.layers[0].closedAt === null }; });
         return { mid, gone, A, S, H: await page.evaluate(host) };
       },
       check(r, t) {
         t('cover still up 2.5 s in (past the 1.2 s hold: no stereo frame yet)', r.ok && r.mid && r.mid.cover, r.error || JSON.stringify(r.mid));
         if (!r.S) return;
         t('cover gone at ~5 s (4.9-5.6 s after the layer)', r.gone >= 4900 && r.gone <= 5600, `${Math.round(r.gone)} ms`);
-        t('still converted, layer open, flat (rampK 0, no stereo frame)', r.S.active && r.S.open && r.S.rampK === 0 && r.S.stereo === 0, JSON.stringify(r.S));
-        t('chip shown, amber dot', r.A && r.A.state === 'live' && !!r.A.rect && r.A.dot === 'dot a', JSON.stringify(r.A && { state: r.A.state, rect: !!r.A.rect, dot: r.A.dot }));
-        t("reports: last is 'converting', never 'live'", r.H && r.H.reports[r.H.reports.length - 1] === 'converting' && !r.H.reports.includes('live'), r.H && r.H.reports.join(' -> '));
-        t('the console says why', r.log.some((l) => /cover released at its 5000 ms maximum/.test(l)), '');
+        t('still converted, layer open, flat (rampK 0, no stereo frame): the stand-down rule is unchanged', r.S.active && r.S.open && r.S.rampK === 0 && r.S.stereo === 0 && r.S.noDisplay, JSON.stringify(r.S));
+        t('chip: OUTLINE pill, hollow dot, tooltip "3D display not available to this window"', r.A && r.A.state === 'nodisplay' && !!r.A.rect && r.A.outline === true && r.A.dot === 'dot o' && r.A.title === '3D display not available to this window' && r.A.pill.label === r.A.title,
+          JSON.stringify(r.A && { state: r.A.state, rect: !!r.A.rect, outline: r.A.outline, dot: r.A.dot, title: r.A.title, label: r.A.pill && r.A.pill.label }));
+        t("reports: last is { flat, no-display }, never 'live'", r.H && r.H.last && r.H.last.status === 'flat' && r.H.last.reason === 'no-display' && !r.H.reports.includes('live'), r.H && `${r.H.reports.join(' -> ')}; last ${JSON.stringify(r.H.last)}`);
+        t('the console says why', r.log.some((l) => /cover released at its 5000 ms maximum/.test(l)) && r.log.some((l) => /3D display not available to this window/.test(l)), '');
+      },
+    },
+    {
+      // P0.2 fix 2, the other trigger: the layer's display API says there is no display (displayOk false).
+      // The stand-down is immediate (nothing is woven), and the chip still tells the user why.
+      id: 'chip-no-display', name: 'no display behind the layer (displayOk false): back to 2D at once; chip OUTLINE "no display" with tooltip, report { flat, no-display }',
+      url: P + 'three-corner-ui.html', shim: allowDev, fake: { noDisplay: true, viewsAfterMs: 1e9 },
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.layers.length === 1 && window.__fakeXR.layers[0].closedAt !== null, W8);
+        const closedAfter = await page.evaluate(() => window.__fakeXR.layers[0].closedAt - window.__fakeXR.layers[0].at);
+        await page.waitForFunction(chipIn('nodisplay'), W8);
+        await h.sleep(800);
+        const A = await page.evaluate(chipInfo);
+        await page.mouse.click(...(await pillXY(page)));
+        await h.sleep(300);
+        const M = await page.evaluate(chipInfo);
+        return { closedAfter, A, M, H: await page.evaluate(host) };
+      },
+      check(r, t) {
+        t('the layer closed once the display probe answered "none" (~1.5 s)', r.ok && r.closedAfter > 1000 && r.closedAfter < 3500, r.error || `${Math.round(r.closedAfter)} ms`);
+        if (!r.A) return;
+        t('chip: OUTLINE pill, hollow dot, tooltip "3D display not available to this window"', r.A.state === 'nodisplay' && !!r.A.rect && r.A.outline === true && r.A.dot === 'dot o' && r.A.title === '3D display not available to this window',
+          JSON.stringify({ state: r.A.state, rect: !!r.A.rect, outline: r.A.outline, dot: r.A.dot, title: r.A.title }));
+        t("reports: last is { flat, no-display }, never 'live'", r.H && r.H.last && r.H.last.status === 'flat' && r.H.last.reason === 'no-display' && !r.H.reports.includes('live'), r.H && `${r.H.reports.join(' -> ')}; last ${JSON.stringify(r.H.last)}`);
+        t('a click on the pill opens the menu (nothing to switch on), saves nothing', r.M && r.M.menu === true && r.H.saves.length === 0, `menu ${r.M && r.M.menu}, saves ${JSON.stringify(r.H && r.H.saves)}`);
+      },
+    },
+    {
+      // P0.2 fix 3: eye tracking flips isTracking 0/1 every few seconds; the dot is debounced (amber only
+      // after 1 s continuously without two-view frames, green after 300 ms with them).
+      id: 'chip-amber-debounce', name: 'chip dot: two views on/off every 500 ms keeps it GREEN; views gone for good -> amber after ~1 s (guard off: timing only)',
+      url: P + 'three-corner-ui.html', shim: productShim({ decision: 'allow', dev: true, test: { guardFps: 0 } }), fake: { flipViewsMs: 500, viewsStopAfterMs: 6500 },
+      async run(page, h) {
+        await page.waitForFunction(liveChip, W8);
+        // Record the dot every 25 ms from inside the page, times relative to the layer.
+        await page.evaluate(() => {
+          window.__dots = [];
+          const at = window.__fakeXR.layers[0].at;
+          window.__dotTimer = setInterval(() => { const c = window.__dxrAuto3D.chip(); window.__dots.push({ t: performance.now() - at, dot: c.root.querySelector('.dot').className, state: c.state }); }, 25);
+        });
+        await page.waitForFunction(() => performance.now() - window.__fakeXR.layers[0].at > 9500, { timeout: 15000, polling: 100 });
+        const D = await page.evaluate(() => { clearInterval(window.__dotTimer); return { dots: window.__dots, noView: window.__fakeXR.noViewFrames || 0 }; });
+        return { D, H: await page.evaluate(host) };
+      },
+      check(r, t) {
+        const d = r.D && r.D.dots;
+        t('recorded', r.ok && d && d.length > 100, r.error || `${d && d.length} samples`);
+        if (!d) return;
+        t('the fake really alternated (frames without views)', r.D.noView > 30, `${r.D.noView} frames without views`);
+        const flip = d.filter((x) => x.t >= 2500 && x.t < 7400);
+        const bad = flip.filter((x) => x.dot !== 'dot g' || x.state !== 'live');
+        t('2.5-7.4 s (views flipping every 500 ms, the last 2-view run ends at 6.5 s): the dot stays GREEN', flip.length > 50 && bad.length === 0, `${flip.length} samples, ${bad.length} not green` + (bad[0] ? ` (first at ${Math.round(bad[0].t)} ms: ${bad[0].state} ${bad[0].dot})` : ''));
+        const amber = d.find((x) => x.t >= 6500 && x.dot === 'dot a');
+        t('views gone from 6.5 s: amber after >= 1 s (debounced), within 1.6 s', amber && amber.t >= 7450 && amber.t <= 8100, amber ? `amber at ${Math.round(amber.t)} ms (views stopped at 6500)` : 'never amber');
+        const tail = d.filter((x) => x.t >= 8300);
+        t('stays amber and live (views were seen: not "no display")', tail.length > 5 && tail.every((x) => x.dot === 'dot a' && x.state === 'live'), `${tail.length} samples; ${JSON.stringify(tail[tail.length - 1])}`);
       },
     },
   ];
