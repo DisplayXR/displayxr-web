@@ -30,26 +30,30 @@
   if (typeof window.XRDisplayLayer !== 'function' || !navigator.xr) return; // not the DisplayXR Browser: inert
 
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
 
-  // The default comfort number (ipd × m2v × diopters × N; runtime rule <= 1). On the panel it reads
-  // "a little timid" (first hardware run, 2026-09-26); the new value is David's call, and it lives
-  // on this one line. The runtime's qwerty rig sits at 0.25.
-  const DEFAULT_DEPTH = 0.3;
+  // The default depth PER RIG (David's call, 2026-09-27). One number per rig, one meaning: the
+  // comfort number, i.e. the disparity of content at infinity in units of the viewer's IPD.
+  //   camera rig: ipd × m2v × diopters × 0.5 — 0.3 (the runtime's qwerty rig sits at 0.25).
+  //   display rig: ipdFactor (= parallaxFactor) — 1.0, the physically true portal (natural IPD,
+  //     full head parallax). The runtime's display-rig contract is [0, 1] (XR_DXR_view_rig.h), so
+  //     1.0 is also the ceiling: there is no headroom above it on either rig.
+  const DEFAULT_DEPTH = { camera: 0.3, display: 1.0 };
+  const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
 
   // ------------------------------------------------------------ config (per origin)
   const DEFAULTS = {
     v: 1,
     enabled: true,      // auto-convert qualifying canvases on this origin
-    depth: DEFAULT_DEPTH, // comfort number ipd×m2v×diopters×0.5 (runtime rule: <= 1), both rigs
+    depths: { ...DEFAULT_DEPTH }, // per rig, remembered per site; the ACTIVE rig's is what Ctrl+Alt+= / - move
     rig: 'camera',      // 'camera' (default: keeps the author's FOV) | 'display' (object-centric scenes), Ctrl+Alt+P
     convScale: 1,       // multiplier on the auto convergence distance
     eyeScale: 0.5,      // per-eye width / element device width: a 2-view lenticular resolves about half anyway (porting pitfall 26)
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
-    releaseMaxMs: 500,
-    rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D  // turn-off: release the layer this long after the stand at the latest, mono frame or not
+    releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
+    rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     hud: true,
@@ -61,12 +65,20 @@
     let stored = {};
     try { stored = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) { /* opaque origin */ }
     const base = stored.v === DEFAULTS.v ? { ...DEFAULTS, ...stored } : { ...DEFAULTS };
+    // Per-rig depth (v0.4). A v0.3 site stored ONE depth, applied to both rigs; it was tuned on the
+    // camera rig (the only rig then worth tuning), so it carries over to the camera rig only.
+    const sd = stored.v === DEFAULTS.v ? stored.depths : null;
+    base.depths = { ...DEFAULT_DEPTH, ...(sd && typeof sd === 'object' ? sd : {}) };
+    if (!sd && stored.v === DEFAULTS.v && typeof stored.depth === 'number') base.depths.camera = stored.depth;
+    delete base.depth;
+    for (const k of Object.keys(DEFAULT_DEPTH)) if (!(base.depths[k] > 0)) base.depths[k] = DEFAULT_DEPTH[k];
     const test = window.__dxrAuto3DTestCfg; // harness override, never persisted
-    return test && typeof test === 'object' ? { ...base, ...test } : base;
+    if (!test || typeof test !== 'object') return base;
+    return { ...base, ...test, depths: { ...base.depths, ...(test.depths || {}) } };
   }
   function saveCfg() {
     try {
-      const keep = { v: cfg.v, enabled: cfg.enabled, depth: cfg.depth, convScale: cfg.convScale, rig: cfg.rig, hud: cfg.hud };
+      const keep = { v: cfg.v, enabled: cfg.enabled, depths: { ...cfg.depths }, convScale: cfg.convScale, rig: cfg.rig, hud: cfg.hud };
       localStorage.setItem(LS_KEY, JSON.stringify(keep));
     } catch (e) { /* opaque origin */ }
   }
@@ -136,6 +148,8 @@
   //   target()                 -> the page's explicit convergence target in world space
   //                               ({ x, y, z, via }) or null (controls .target, an orbit script, lookAt)
   //   describe()               -> { page, real } for state()
+  // and calls core.drew(st) after every draw / replay on the live SBS store (the first one starts
+  // the no-views timer).
   function newState(engine, canvas, ad) {
     const st = {
       engine, canvas, ad,
@@ -266,6 +280,7 @@
       return;
     }
     st.layerAt = now();
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
     st.displayOk = null;
     st.rampK = cfg.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
     if (!st.cover && st.rampK < 1) startRamp(st, 1);
@@ -285,7 +300,7 @@
     session.requestAnimationFrame(loop);
     ad.firstDraw(st);
     info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
-      `convergence ${st.conv.d.toPrecision(3)} units (${convSource(st)}${st.conv.via ? ': ' + st.conv.via : ''}), depth ${cfg.depth}`);
+      `convergence ${st.conv.d.toPrecision(3)} units (${convSource(st)}${st.conv.via ? ': ' + st.conv.via : ''}), depth ${depthOf()}`);
     hud();
   }
   // Back to 2D. Two orders:
@@ -337,6 +352,8 @@
     if (st.layer) { try { st.layer.close(); } catch (e) { /* ignore */ } st.layer = null; }
     if (st.session) { const s = st.session; st.session = null; try { s.end().catch(() => {}); } catch (e) { /* ignore */ } }
   }
+  // The adapter drew (or replayed) a frame on the live SBS store: starts the no-views timer once.
+  function drew(st) { if (st.active && !st.drawnAt) st.drawnAt = now(); }
   // The adapter's mono frame after a staged stand has been drawn (PlayCanvas draws it on its next tick).
   function monoDrawn(st) { if (st.releasing) st.releasing.drawn = true; }
   function release(st) {
@@ -441,7 +458,11 @@
       st.stats.shortView++;
       if (cfg.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; }
     }
-    if (!st.haveViews && st.displayOk !== true && t - st.layerAt > cfg.noViewsMs) {
+    // Timed from the first draw on the SBS store, not from the layer: a render-on-demand page (or
+    // one busy loading) may not draw for a while after activation, and a runtime has nothing to
+    // locate eyes for until the tile has content. No draw yet = no timeout (the join-window cover,
+    // which only drops after a stereo frame, keeps the page's own mono picture up meanwhile).
+    if (!st.haveViews && st.displayOk !== true && st.drawnAt && t - st.drawnAt > cfg.noViewsMs) {
       stand(st, `no 2-view frame within ${cfg.noViewsMs} ms (nobody tracked, or this browser instance has no weave slot — browser#162)`, { staged: true });
       st.nextTry = st.tries < 3 ? t + 15000 : Infinity;
       return;
@@ -497,6 +518,9 @@
 
   // ------------------------------------------------------------ the rig
   const rigMode = () => (cfg.rig === 'display' ? 'display' : 'camera');
+  // The ACTIVE rig's depth: the one the HUD shows and Ctrl+Alt+= / - move.
+  const depthOf = (mode) => clamp(cfg.depths[mode || rigMode()] || DEFAULT_DEPTH[mode || rigMode()], DEPTH_MIN, DEPTH_MAX);
+  function setDepth(v) { cfg.depths = { ...cfg.depths, [rigMode()]: clamp(v, DEPTH_MIN, DEPTH_MAX) }; }
   const convSource = (st) => (cfg.convScale !== 1 ? 'manual' : st.conv.src);
   function depthRangeFor(st) {
     const dr = st.ad.depthRange(st);
@@ -542,13 +566,17 @@
       // the FOV becomes the display's own and depth is scale-invariant (a figurine and an airliner
       // get the same stereo). Comfort: a display rig's comfort number is its ipdFactor (content at
       // infinity is ipdFactor × IPD of disparity), so `depth` keeps one meaning on both rigs.
+      // ONE joint control, as on the camera rig (where metersToVirtual scales the eye separation AND
+      // the head motion together): ipdFactor = parallaxFactor = depth. Depth 1 is the true portal;
+      // less flattens the stereo and damps the look-around by the same factor.
       const r = st.rigs.display;
       r.position.x = r.position.y = 0; r.position.z = -d;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
       r.virtualDisplayHeight = 2 * d * Math.tan(verticalFov / 2);
       const k = rampK(st);
-      r.ipdFactor = clamp(cfg.depth, 0, 1) * k;
-      r.parallaxFactor = k;
+      const dep = depthOf('display');
+      r.ipdFactor = dep * k;
+      r.parallaxFactor = dep * k;
       r.perspectiveFactor = 1;
       st.rig = r;
       return r;
@@ -562,8 +590,8 @@
     rig.convergenceDiopters = 1 / d;
     // metersToVirtual grows with the convergence distance: the depth budget is then the same for a
     // 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
-    // comfort = ipd × m2v × diopters × 0.5 = cfg.depth by construction.
-    rig.metersToVirtual = (cfg.depth * d) / 0.5;
+    // comfort = ipd × m2v × diopters × 0.5 = the camera rig's depth by construction.
+    rig.metersToVirtual = (depthOf('camera') * d) / 0.5;
     // Scaled by the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture.
     const k = rampK(st);
     rig.ipdFactor = k;
@@ -680,7 +708,7 @@
   function fakeViews(st) {
     const p = st.ad.fakeViewParams(st);
     const d = Math.max(1e-6, (st.conv.d || 1) * cfg.convScale);
-    const b = (0.063 * cfg.depth * d) / 0.5;
+    const b = (0.063 * depthOf('camera') * d) / 0.5;
     const nr = p.near, fr = p.far, t = p.t, a = p.aspect;
     for (let i = 0; i < 2; i++) {
       const ex = (i === 0 ? -0.5 : 0.5) * b;
@@ -843,7 +871,7 @@
     if (!cfg.enabled) text = 'DXR auto-3D: OFF for this site  (Ctrl+Alt+3)';
     else if (st && st.active) {
       const s = st.stats;
-      text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${cfg.depth.toFixed(2)} · conv ${(st.conv.d * cfg.convScale).toPrecision(3)} (${convSource(st)})` +
+      text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * cfg.convScale).toPrecision(3)} (${convSource(st)})` +
         ` · 3D ${s.stereo} · flat ${s.flat} · replay ${s.replays}` +
         (st.haveViews ? '' : ' · waiting for eyes');
     } else if (busy) text = 'DXR auto-3D: converting…';
@@ -858,11 +886,11 @@
     switch (e.code) {
       case 'Digit3': setEnabled(!cfg.enabled); break;
       case 'KeyP': cfg.rig = rigMode() === 'camera' ? 'display' : 'camera'; info(`${cfg.rig} rig for`, location.origin); break;
-      case 'Equal': cfg.depth = clamp(cfg.depth * 1.25, 0.02, 1); break;
-      case 'Minus': cfg.depth = clamp(cfg.depth / 1.25, 0.02, 1); break;
+      case 'Equal': setDepth(depthOf() * 1.25); break; // the ACTIVE rig's depth (joint ipd + parallax on both rigs)
+      case 'Minus': setDepth(depthOf() / 1.25); break;
       case 'Digit0': cfg.convScale = clamp(cfg.convScale * 1.15, 0.05, 20); break;
       case 'Digit9': cfg.convScale = clamp(cfg.convScale / 1.15, 0.05, 20); break;
-      case 'Digit8': cfg.depth = DEFAULTS.depth; cfg.convScale = DEFAULTS.convScale; break;
+      case 'Digit8': setDepth(DEFAULT_DEPTH[rigMode()]); cfg.convScale = DEFAULTS.convScale; break; // the active rig's default
       case 'KeyD': cfg.hud = !cfg.hud; break;
       default: hit = false;
     }
@@ -875,7 +903,7 @@
   window.__dxrAuto3D = {
     version: VERSION,
     get cfg() { return cfg; },
-    set(k, v) { if (k === 'enabled') setEnabled(v); else cfg[k] = v; saveCfg(); hud(true); },
+    set(k, v) { if (k === 'enabled') setEnabled(v); else if (k === 'depth') setDepth(+v); else cfg[k] = v; saveCfg(); hud(true); }, // 'depth' = the active rig's
     state() {
       const renderers = [];
       for (const w of tracked) {
@@ -893,11 +921,12 @@
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews,
           convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing,
+          rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
           why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
           ...(d.extra || {}),
         });
       }
-      return { version: VERSION, engines: engines.slice(), ...meta, enabled: cfg.enabled, foreign, rigSupported: HAS_RIG, rigMode: rigMode(), depth: cfg.depth, renderers };
+      return { version: VERSION, engines: engines.slice(), ...meta, enabled: cfg.enabled, foreign, rigSupported: HAS_RIG, rigMode: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') }, renderers };
     },
     // What the live layer's display API answers (diagnostics only).
     async probe() {
@@ -920,7 +949,7 @@
     meta,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, yieldTo, hud,
+    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, hud,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,

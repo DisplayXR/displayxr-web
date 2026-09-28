@@ -503,6 +503,7 @@
       st.call('setScissorTest', false);
     }
     st.stats.stereo++;
+    core.drew(st);
   }
   function renderFlat(st, scene, camera) {
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
@@ -517,6 +518,7 @@
       st.call('setScissorTest', false);
     }
     st.stats.flat++;
+    core.drew(st);
   }
   // Redraw the page's last screen draws (render-on-demand pages, or a resize that just cleared the
   // store). Stereo draws re-run with THIS frame's eyes, so an idle page still looks around.

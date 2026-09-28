@@ -47,6 +47,21 @@ prim('torus', mat(1, 0.48, 0.18), 0, 0, 0, 1.1);
 prim('box', mat(0.18, 0.7, 1), 1.8, 0, 0, 0.6); prim('box', mat(0.18, 0.7, 1), -1.8, 0, 0, 0.6);
 prim('sphere', mat(0.62, 1, 0.29), 0, 0, 1.8, 0.7); prim('sphere', mat(0.62, 1, 0.29), 0, 0, -1.8, 0.7);
 
+// ?stallMs=N: once the first (fake) XRDisplayLayer exists, the page draws NOTHING for N ms — a
+// render-on-demand page busy loading (the engine ticks, app.render() does not run). Tests that the
+// shim's no-views timer starts at the first draw after activation, not at the layer.
+const stallMs = +new URLSearchParams(location.search).get('stallMs') || 0;
+let stallFrom = 0;
+if (stallMs) {
+  const render = app.render.bind(app);
+  app.render = () => {
+    const L = window.__fakeXR && window.__fakeXR.layers[0];
+    if (L && !stallFrom) { stallFrom = performance.now(); window.__stall = { from: stallFrom, ms: stallMs }; }
+    if (stallFrom && performance.now() - stallFrom < stallMs) return;
+    if (stallFrom && window.__stall && !window.__stall.firstDrawAt) window.__stall.firstDrawAt = performance.now();
+    render();
+  };
+}
 let n = 0;
 app.on('update', () => {
   if (n >= 60) { app.autoRender = false; window.__frozen = true; return; } // render-on-demand from here
