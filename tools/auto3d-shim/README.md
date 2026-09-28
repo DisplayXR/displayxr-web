@@ -201,6 +201,25 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | a chain whose scene pass uses `setViewOffset` (TAA / SSAA jitter) | **2D** (the seed is not recognised) |
 | `WebGPURenderer`, r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
 | a second renderer in the same document | 2D (one converted canvas per document) |
+| Spark Gaussian splats (`@sparkjsdev/spark` 2.x, World Labs worlds) | **3D** (below) |
+
+**Spark (World Labs' splat renderer).** Spark draws inside the page's own
+`renderer.render(scene, camera)`: a `SparkRenderer` is a `THREE.Mesh` in the scene, and its
+`onBeforeRender` regenerates the splat accumulator for the camera it is given and starts an async
+sort (GPU readback + worker), **once per renderer frame** (`renderer.info.render.frame`). Its splat
+shader reads the camera's `projectionMatrix` as is, so the eyes' off-axis frusta (and reversed-Z)
+pass straight through; its pixel sizes come from `getDrawingBufferSize()`, which the adapter answers
+with the page's mono size = the eye size. The one change it needed is engine-generic: **the two eye
+renders of a pair are one renderer frame** (the adapter restores `info.render.frame` between the
+eyes), as a three WebXR frame is. Counted per eye, Spark regenerated and re-sorted twice per frame
+and its single sort order ping-ponged between the eyes' viewpoints (case `spark-eyes` measures 2
+updates, 1 regenerate and 1 sort per frame on a static scene without it; 1, 0 and 0 with it). Both
+eyes now share one sort, made from the left eye's viewpoint, which is what Spark does for its own
+WebXR (one sort for both views). Exact per-eye order would need a second `SparkRenderer` for the
+right eye (`SparkRenderer.sparkOverride` during that eye), at twice the generate + sort cost: not
+done. The convergence **estimator** does not see splats (a `SplatMesh` is not a mesh with bounds;
+the `SparkRenderer` is an instanced quad at its own position): Spark pages converge through the
+target (`camera.lookAt`, `OrbitControls`) or the estimator's default distance.
 
 **Post-processing chains (three.js).** Each eye needs its own copy of the whole chain, so the
 adapter duplicates every chain draw at the moment the page makes it:
@@ -507,18 +526,21 @@ would and records `loadCore` calls, `cap.save` and `cap.report` on `window.__dxr
 ```bash
 cd tools/auto3d-shim/test
 npm install                      # puppeteer-core only
-node deps.mjs                    # three@0.180.0 + playcanvas@2.22.3 into .deps/ (npm pack; local overrides below)
+node deps.mjs                    # three@0.180.0 + playcanvas@2.22.3 + @sparkjsdev/spark@2.2.0 into .deps/ (npm pack; local overrides below)
 node run.mjs                     # every case; `node run.mjs a a-legacy` for one; KEEP=1 writes out/<case>.png
 ```
 
 **Engines, and a box with no registry access.** `deps.mjs` fails loudly (non-zero exit, the file
 and the override to use) instead of leaving a page that never converts, and `run.mjs` checks the
-same five files and the Chrome binary before it starts (exit 2), and fails a case at once, naming
+same seven files and the Chrome binary before it starts (exit 2), and fails a case at once, naming
 the file, if a page gets a 404 for anything under `/deps/`. Every file can come from a local copy:
 `THREE_BUILD_DIR` (`three.module.js` + `three.core.js`), `PLAYCANVAS_MJS`, and for the addons
 `THREE_ORBIT_CONTROLS` / `PLAYCANVAS_CAMERA_CONTROLS`, or found next to the first two when they point
 into an npm package layout (`<THREE_BUILD_DIR>/../examples/jsm/controls/OrbitControls.js`,
-`<PLAYCANVAS_MJS>/../../scripts/esm/camera-controls.mjs`). With all four set, nothing is fetched.
+`<PLAYCANVAS_MJS>/../../scripts/esm/camera-controls.mjs`). The Spark page also needs
+`SPARK_DIST` (a dir holding `spark.module.js`; default `npm pack @sparkjsdev/spark@2.2.0`) and
+three's `postprocessing/Pass.js` (`THREE_PASS_JS`, or next to `THREE_BUILD_DIR` in an npm layout).
+With all of them set, nothing is fetched.
 
 A converting case settles only once the go-live depth fade has finished (`rampK` exactly 1, no ramp
 running), so the rig is always sampled at the configured depth.
@@ -526,6 +548,9 @@ running), so the rig is always sampled at the configured depth.
 | case | page | asserts |
 |---|---|---|
 | `a` | `pages/three-keyframes.html`: keyframe turntable, shadowed floor, flat HUD pass; freezes after 60 frames (replay from then on) | SBS = 2 × eye, the page still sees its mono `canvas.width`, halves differ, 64 px shift, stereo > 0, no flat scene frame after the eyes arrive, rig fields, convergence 8 ± 5 % |
+| `spark` | `pages/three-spark.html`: Spark 2.2.0, a procedural `SplatMesh` (~3k splats), `setAnimationLoop`, `lookAt` the lattice 5 units ahead | as `a`, plus: ONE Spark update per stereo frame, no regenerate / re-sort once settled, the last sort made for the camera of the last update |
+| `spark-eyes` | the same page, the fake's eyes 0.04 apart (`eyeX` 0.02) | skew shift minus the eyes' parallax (≈ 56 px), stable frame, the same Spark assertions (fail without the one-frame-per-pair change) |
+| `spark-idle` | `three-spark.html?freeze=30`: stops drawing once sorted | as `spark`, with every frame a replay |
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |
@@ -592,7 +617,10 @@ On Windows the harness uses the installed Chrome (`CHROME=` to override) with AN
 
 **Headless, v0.5.0 (the sentinel, guard and chip slices integrated), Windows, ANGLE D3D11:** all 42
 cases pass (19 earlier + 7 sentinel + 7 guard + 9 chip), `a` / `a-legacy` still byte-identical;
-`node build.mjs --check` clean.
+`node build.mjs --check` clean. **+ Spark (3 cases, `spark*`)**: pass with the one-frame-per-pair
+change and the 42 still green; `spark-eyes` fails without the change. Not yet on the panel: a Spark
+page (`https://sparkjs.dev/examples/hello-world/index.html`; World Labs Marble worlds in
+`https://sparkjs.dev/examples/streaming-lod/index.html`, streamed `.rad` LoD).
 
 **Not yet on the panel (v0.5.0), and open:**
 

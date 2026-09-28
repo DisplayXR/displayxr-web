@@ -3,11 +3,14 @@
 // unless a local copy is named.
 //   THREE_BUILD_DIR=<dir with three.module.js + three.core.js>   (default: npm pack three@0.180.0)
 //   PLAYCANVAS_MJS=<path to build/playcanvas.mjs>                 (default: npm pack playcanvas@2.22.3)
+//   SPARK_DIST=<dir with spark.module.js>                         (default: npm pack @sparkjsdev/spark@2.2.0)
 // The addons the pages use (three's OrbitControls, PlayCanvas's CameraControls script) come from the
 // same npm versions, unless a local copy is found or named — so a box with no registry access (the
 // Windows panel box) can run the whole harness from local files:
 //   THREE_ORBIT_CONTROLS=<path to OrbitControls.js>        (else <THREE_BUILD_DIR>/../examples/jsm/controls/OrbitControls.js if it exists)
 //   PLAYCANVAS_CAMERA_CONTROLS=<path to camera-controls.mjs> (else <PLAYCANVAS_MJS>/../../scripts/esm/camera-controls.mjs if it exists)
+//   THREE_PASS_JS=<path to postprocessing/Pass.js>          (else <THREE_BUILD_DIR>/../examples/jsm/postprocessing/Pass.js if it exists;
+//                                                            Spark imports its FullScreenQuad)
 // Every step fails LOUDLY (non-zero exit, names the file and the override to use): a missing engine
 // otherwise shows up much later as a page that never converts. run.mjs checks the same files first.
 //
@@ -24,10 +27,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, '.deps');
 const THREE = 'three@0.180.0';
 const PLAYCANVAS = 'playcanvas@2.22.3';
+const SPARK = '@sparkjsdev/spark@2.2.0'; // World Labs' splat renderer for three (peer: three >= 0.180)
 const WIN = process.platform === 'win32';
 
 // The files the pages import, by .deps path (run.mjs's preflight checks the same list).
-const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs'];
+const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js'];
 
 function die(msg) {
   console.error(`\ndeps: FAILED — ${msg}\n`);
@@ -70,10 +74,12 @@ function ensure(dir, file, local, env, spec) {
 }
 const env = (k) => (process.env[k] ? resolve(process.env[k]) : null);
 const derived = (base, rel) => { if (!base) return null; const p = resolve(base, rel); return existsSync(p) ? p : null; };
-const threeDir = env('THREE_BUILD_DIR'), pcMjs = env('PLAYCANVAS_MJS');
+const threeDir = env('THREE_BUILD_DIR'), pcMjs = env('PLAYCANVAS_MJS'), sparkDir = env('SPARK_DIST');
 ensure('three', 'build/three.module.js', threeDir && join(threeDir, 'three.module.js'), 'THREE_BUILD_DIR', THREE);
 ensure('three', 'build/three.core.js', threeDir && join(threeDir, 'three.core.js'), 'THREE_BUILD_DIR', THREE);
 ensure('three', 'examples/jsm/controls/OrbitControls.js', env('THREE_ORBIT_CONTROLS') || derived(threeDir, '../examples/jsm/controls/OrbitControls.js'), 'THREE_ORBIT_CONTROLS', THREE);
+ensure('three', 'examples/jsm/postprocessing/Pass.js', env('THREE_PASS_JS') || derived(threeDir, '../examples/jsm/postprocessing/Pass.js'), 'THREE_PASS_JS', THREE);
+ensure('spark', 'dist/spark.module.js', sparkDir && join(sparkDir, 'spark.module.js'), 'SPARK_DIST', SPARK);
 ensure('playcanvas', 'build/playcanvas.mjs', pcMjs, 'PLAYCANVAS_MJS', PLAYCANVAS);
 ensure('playcanvas', 'scripts/esm/camera-controls.mjs', env('PLAYCANVAS_CAMERA_CONTROLS') || derived(pcMjs && dirname(pcMjs), '../scripts/esm/camera-controls.mjs'), 'PLAYCANVAS_CAMERA_CONTROLS', PLAYCANVAS);
 for (const f of DEP_FILES) if (!existsSync(join(out, f))) die(`.deps/${f} is still missing after resolution`);
