@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.5.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.0'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.1'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -14,6 +14,7 @@ function dxrCore(cfg, cap, S) {
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
+    coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
@@ -72,7 +73,7 @@ function dxrCore(cfg, cap, S) {
 
   const xrRequest = S.xrRequest;
   function yieldTo(reason) {
-    if (!foreign) { foreign = reason; info('standing down for this document:', reason); }
+    if (!foreign) { foreign = reason; info('standing down for this document:', reason); standDownForGood(); }
     if (owner) stand(owner, reason);
     notify();
   }
@@ -133,10 +134,10 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
     if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
-    if (foreign || owner || guard.tripped) return;
+    if (foreign || owner || guard.tripped || guard.measuring) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
-    if (S.optedOut()) { notify(); return; } // <meta name="displayxr-auto3d" content="off">
+    if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
@@ -217,6 +218,7 @@ function dxrCore(cfg, cap, S) {
       return;
     }
     st.layerAt = now();
+    st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
     guard.onFlip(st);
     st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
     st.displayOk = null;
@@ -235,6 +237,7 @@ function dxrCore(cfg, cap, S) {
     };
     session.requestAnimationFrame(loop);
     ad.firstDraw(st);
+    try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
     info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
       `convergence ${st.conv.d.toPrecision(3)} units (${convSource(st)}${st.conv.via ? ': ' + st.conv.via : ''}), depth ${depthOf()}`);
     notify();
@@ -353,7 +356,7 @@ function dxrCore(cfg, cap, S) {
   function onSessionFrame(st, frame) {
     const ad = st.ad;
     st.stats.xrFrames++;
-    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)');
+    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) { standDownForGood(); turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)'); }
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
@@ -652,11 +655,20 @@ function dxrCore(cfg, cap, S) {
   }
   function tickCover(st, t) {
     const cv = st.cover;
-    if (!cv) return;
+    if (!cv) {
+      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp) startRamp(st, 1); }
+      return;
+    }
     if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
       if (st.rampK < 1) startRamp(st, 1);
+      return;
+    }
+    if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
+      dropCover(st);
+      st.coverForced = true;
+      info(`cover released at its ${T.coverMaxMs} ms maximum with no 2-view frame yet (nobody tracked?): flat until the eyes arrive`);
       return;
     }
     if (cv.fixed) {
@@ -675,6 +687,8 @@ function dxrCore(cfg, cap, S) {
     if (foreign) return { status: 'standdown', reason: foreign };
     if (S.optedOut()) return { status: 'optout' };
     if (guard.tripped) return { status: 'guard', reason: guard.tripped };
+    if (guard.measuring) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.measuring };
+    if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
@@ -685,7 +699,7 @@ function dxrCore(cfg, cap, S) {
   function status() {
     const s = statusOf(), t = lastTarget || candidate;
     return {
-      state: s.status, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
+      state: s.status, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
       convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews),
       enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
@@ -700,7 +714,7 @@ function dxrCore(cfg, cap, S) {
     const key = `${s.status}|${s.engine || ''}|${s.reason || ''}`;
     if (key !== lastReport) {
       lastReport = key;
-      try { cap.report(s); } catch (e) { warnOnce('report', 'could not report the status', e); }
+      try { cap.report(s.waiting ? { status: s.status, engine: s.engine } : s); } catch (e) { warnOnce('report', 'could not report the status', e); }
     }
     if (chip) chip.update(status());
     if (dev) dev.hud();
@@ -735,6 +749,13 @@ function dxrCore(cfg, cap, S) {
     onChange(cb) { listeners.push(cb); return () => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1); }; },
   });
 
+  let retired = false;
+  function standDownForGood() {
+    if (retired) return;
+    retired = true;
+    try { S.disarm(); } catch (e) { /* ignore */ }
+  }
+
   window.addEventListener('pagehide', () => { if (owner) stand(owner, 'pagehide'); });
 
   const meta = {}; // per-engine facts adapters publish (three.js revision, PlayCanvas detection path, …)
@@ -747,7 +768,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save,
+    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
@@ -770,33 +791,48 @@ function dxrCore(cfg, cap, S) {
 function dxrGuard(core) {
   const T = core.T;
   const RING = 60, MAX_DT = 250, MIN_BASE = 20, ARM_MS = 1000;
+  const REMEASURE_MS = 2000, MIN_REMEASURE = 5; // intervals the re-measure needs to be a rate at all
   const g = new WeakMap(); // st -> { ring[], base, readyAt, last, dts[], sum }
   const of = (st) => { let s = g.get(st); if (!s) g.set(st, (s = { ring: [], base: 0, readyAt: 0, last: 0, dts: [], sum: 0 })); return s; };
   const resetWindow = (s) => { s.readyAt = 0; s.last = 0; s.dts.length = 0; s.sum = 0; };
-  const api = { tripped: null };
+  const api = { tripped: null, measuring: null };
+  let retried = false; // the one retry this document gets
+  let M = null;        // the re-measure: { st, t0, timer }
 
   document.addEventListener('visibilitychange', () => {
     for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
+    if (M) M.t0 = 0;
   });
+
+  const rateOf = (ring) => {
+    let n = 0, sum = 0;
+    for (let i = 1; i < ring.length; i++) { const dt = ring[i] - ring[i - 1]; if (dt > 0 && dt <= MAX_DT) { n++; sum += dt; } }
+    return { n, fps: n ? (1000 * n) / sum : 0 };
+  };
 
   api.draw = (st, t) => {
     if (st.active) return;
-    const r = of(st).ring;
+    const s = of(st), r = s.ring;
+    const mine = !!M && M.st === st;
+    if (mine) {
+      if (st.releasing || document.hidden) return; // the staged stand is still drawing its mono frame
+      if (!M.t0) { M.t0 = t; r.length = 0; }
+    }
     r.push(t);
     if (r.length > RING) r.shift();
+    if (mine && t - M.t0 >= REMEASURE_MS) decide();
   };
 
   api.onFlip = (st) => {
     const s = of(st);
-    let n = 0, sum = 0;
-    for (let i = 1; i < s.ring.length; i++) { const dt = s.ring[i] - s.ring[i - 1]; if (dt > 0 && dt <= MAX_DT) { n++; sum += dt; } }
-    s.base = n >= MIN_BASE ? (1000 * n) / sum : 0;
+    const r = rateOf(s.ring);
+    s.base = r.n >= MIN_BASE ? r.fps : 0;
     s.ring.length = 0;
     resetWindow(s);
   };
 
   api.tick = (st, t) => {
-    if (api.tripped) return;
+    if (api.tripped || M) return;
     const s = of(st);
     const settled = st.active && !st.cover && !st.ramp && !st.releasing && !st.offTok && core.rampK(st) === 1;
     if (!settled || document.hidden) { resetWindow(s); return; }
@@ -813,11 +849,47 @@ function dxrGuard(core) {
     while (s.dts.length && s.sum - s.dts[0] >= T.guardMs) s.sum -= s.dts.shift();
   };
 
+  const in3D = (fps) => `frame-rate guard: ${fps.toFixed(1)} fps in 3D over ${(T.guardMs / 1000).toFixed(1)} s`;
   function trip(st, fps, base) {
-    api.tripped = `frame-rate guard: ${fps.toFixed(1)} fps in 3D over ${(T.guardMs / 1000).toFixed(1)} s` +
-      (base ? ` (2D ran at ${base.toFixed(1)})` : ' (no 2D baseline)') + ' — 2D for the rest of this page';
-    for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
+    if (!base && !retried) {
+      const why = `${in3D(fps)} (no 2D baseline) — measuring the page's own 2D rate`;
+      api.measuring = why;
+      M = { st, t0: 0, timer: 0 };
+      of(st).ring.length = 0;
+      for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
+      M.timer = setTimeout(decide, T.rampMs + T.releaseMaxMs + REMEASURE_MS + 1500);
+      core.turnOff(st, why); // logs the one "back to 2D: …" line
+      core.notify();
+      return;
+    }
+    block(in3D(fps) + (base ? ` (2D ran at ${base.toFixed(1)})` : ' (no 2D baseline)') + (retried ? ', after one retry' : '') + ' — 2D for the rest of this page');
     core.turnOff(st, api.tripped); // logs the one "back to 2D: …" line
+    core.notify();
+  }
+  function block(why) {
+    api.tripped = why;
+    api.measuring = null;
+    for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
+    core.standDownForGood();
+  }
+  function decide() {
+    if (!M) return;
+    const { st, timer } = M;
+    M = null;
+    clearTimeout(timer);
+    const r = rateOf(of(st).ring);
+    if (r.n >= MIN_REMEASURE && r.fps < T.guardFps) {
+      retried = true;
+      api.measuring = null;
+      core.info(`frame-rate guard: the page runs at ${r.fps.toFixed(1)} fps in 2D too — not the conversion's cost; retrying once with that baseline`);
+      for (const w of core.tracked) { const o = w.deref(); if (o) { o.nextTry = 0; o.tries = 0; } }
+      core.notify();
+      return;
+    }
+    block(r.n >= MIN_REMEASURE
+      ? `frame-rate guard: 3D ran below ${T.guardFps} fps where the page runs at ${r.fps.toFixed(1)} fps in 2D — 2D for the rest of this page`
+      : `frame-rate guard: 3D ran below ${T.guardFps} fps and the page draws too little in 2D to compare (${r.n} intervals in ${(REMEASURE_MS / 1000).toFixed(1)} s) — 2D for the rest of this page`);
+    core.info(api.tripped);
     core.notify();
   }
 
@@ -907,10 +979,12 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
 </div>
 <div class="sr" aria-live="polite"></div>`;
 
+  let wired = false; // the document / window listeners: once per document, whatever the host
   function build() {
     if (host) return true;
     const de = doc.documentElement;
     if (!de || typeof I.attachShadow !== 'function') return false;
+    els = {};
     host = doc.createElement('div');
     host.setAttribute('data-dxr-auto3d-chip', '');
     host.setAttribute('popover', 'manual');
@@ -932,10 +1006,25 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     wireMenu();
     de.appendChild(host);
     show();
-    for (const [t2, o] of [['scroll', true], ['resize', false]]) window.addEventListener(t2, schedule, { capture: o, passive: true });
-    doc.addEventListener('fullscreenchange', onFullscreen);
-    doc.addEventListener('pointerdown', (e) => { if (menuOpen && !e.composedPath().includes(host)) closeMenu(false); }, true);
+    if (!wired) {
+      wired = true;
+      for (const [t2, o] of [['scroll', true], ['resize', false]]) window.addEventListener(t2, schedule, { capture: o, passive: true });
+      doc.addEventListener('fullscreenchange', onFullscreen);
+      doc.addEventListener('pointerdown', (e) => { if (menuOpen && host && !e.composedPath().includes(host)) closeMenu(false); }, true);
+    }
     return true;
+  }
+  function rebuild() {
+    if (!host) return;
+    if (menuOpen) closeMenu(false);
+    const old = host;
+    host = null; root = null;
+    try { old.remove(); } catch (e) { /* ignore */ }
+    if (!build()) return;
+    if (announced) live.textContent = '3D view on';
+    rectKey = '';
+    render();
+    place();
   }
   function show() {
     try {
@@ -1066,7 +1155,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
 
   function viewOf(st) {
     if (!st || !st.canvas) return 'hidden';
-    if (st.state === 'live') {
+    if (st.state === 'live' || st.waiting) {
       if (!st.enabled) return 'off'; // turning off: fading out / staged under the out-cover
       if (st.coverUp && !(st.layerAt && now() >= st.layerAt + st.holdMs)) return 'hidden'; // R6
       return 'live';
@@ -1179,9 +1268,17 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     clearTimeout(fsIdleTimer);
     fsIdleTimer = setTimeout(() => { if (fsOurs()) { fsIdle = true; render(); } }, FS_IDLE_MS);
   }
+  let fsHost = false; // the host was rebuilt for a fullscreen element over our canvas
   function onFullscreen() {
-    if (fsOurs()) { window.addEventListener('pointermove', onPointerActivity, { capture: true, passive: true }); onPointerActivity(); }
-    else { window.removeEventListener('pointermove', onPointerActivity, true); clearTimeout(fsIdleTimer); if (fsIdle) { fsIdle = false; render(); } }
+    if (fsOurs()) {
+      window.addEventListener('pointermove', onPointerActivity, { capture: true, passive: true });
+      onPointerActivity();
+      rebuild(); // after the fullscreen element: fresh on top
+      fsHost = true;
+    } else {
+      window.removeEventListener('pointermove', onPointerActivity, true); clearTimeout(fsIdleTimer); if (fsIdle) { fsIdle = false; render(); }
+      if (fsHost) { fsHost = false; rebuild(); } // the reverse: a fresh host for the page without fullscreen
+    }
     schedule();
   }
 

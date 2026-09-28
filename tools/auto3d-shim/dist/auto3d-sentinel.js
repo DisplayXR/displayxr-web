@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -15,6 +15,7 @@ function dxrSentinel(cfg, cap) {
   const getAttr = Element.prototype.getAttribute;
   const micro = queueMicrotask;
   const sTimeout = setTimeout, cTimeout = clearTimeout;
+  const MO = typeof MutationObserver === 'function' ? MutationObserver : null;
   const perfNow = performance.now.bind(performance);
   const info = (...a) => console.info(TAG, ...a);
 
@@ -123,11 +124,13 @@ function dxrSentinel(cfg, cap) {
     typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
   const nsOf = (pc) => (pc && typeof pc === 'object' && (pc.AppBase || pc.Application) ? pc : null);
   let pcFound = false;
+  let retired = false;  // S.disarm(): nothing is armed again in this document
   function foundPC(app, how, ns) {
     if (pcFound) return;
     pcFound = true;
     disarmCanvases(); // the id traps have done their job
     stopPoll();
+    unobserve();
     let g = null;
     try { g = window.pc; } catch (e) { /* ignore */ }
     const c = signal('PlayCanvas');
@@ -161,7 +164,7 @@ function dxrSentinel(cfg, cap) {
     micro(() => removeKeyTrap(key));
   }
   function arm(c) {
-    if (done || pcFound || armed.has(c) || !ID || !ID.get || !ID.set) return;
+    if (done || pcFound || retired || armed.has(c) || !ID || !ID.get || !ID.set) return;
     try {
       defProp(c, 'id', {
         configurable: true, enumerable: false,
@@ -210,8 +213,8 @@ function dxrSentinel(cfg, cap) {
     try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
   }
   function startPoll() {
-    if (polling) return;
-    polling = true;
+    if (polling || retired) return;
+    polling = true; polls = 0;
     micro(lookGlobals);
     document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
     window.addEventListener('load', lookGlobals, { once: true });
@@ -230,6 +233,29 @@ function dxrSentinel(cfg, cap) {
       'global is not visible (an engine-side announce hook would fix it).');
   }
   function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
+
+  let mo = null, canvasList = null;
+  const moSeen = new WeakSet(); // arm each canvas at most once from here (a '2d' canvas stays unarmed)
+  function onMutations() {
+    if (done || pcFound || retired || (loaded && perfNow() > moDeadline)) { unobserve(); return; }
+    const l = canvasList;
+    for (let i = 0; i < l.length; i++) { const c = l[i]; if (!moSeen.has(c)) { moSeen.add(c); arm(c); } }
+  }
+  let moDeadline = Infinity;
+  function observe() {
+    if (mo || !MO || done || pcFound || retired) return;
+    try { canvasList = apply(byTag, document, ['canvas']); mo = new MO(onMutations); mo.observe(document, { childList: true, subtree: true }); } catch (e) { mo = null; }
+  }
+  function unobserve() { if (mo) { try { mo.disconnect(); } catch (e) { /* ignore */ } mo = null; canvasList = null; } }
+
+  let settledOn = null;
+  function settle(canvas) {
+    settledOn = canvas;
+    for (const c of glCanvases) if (c !== canvas) return;
+    disarmCanvases(); stopPoll(); unobserve();
+    polling = false; // a WebGL context on another canvas later starts the search again
+  }
+  const glCanvases = [];
   const descCanvas = (c) => {
     if (!c) return 'canvas';
     let id = '';
@@ -237,7 +263,7 @@ function dxrSentinel(cfg, cap) {
     return 'canvas' + (id ? '#' + id : '');
   };
 
-  const disarm = () => { disarmCanvases(); stopPoll(); for (const k of [...keyTraps]) removeKeyTrap(k); };
+  const disarm = () => { retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); };
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;
@@ -249,6 +275,7 @@ function dxrSentinel(cfg, cap) {
       if (WEBGL[type] !== 1 || seenGL.has(c)) return;
       seenGL.add(c);
       if (!glCanvas) glCanvas = c;
+      if (c !== settledOn) glCanvases.push(c);
       signal(null); // the first engine / WebGL signal: the page's opt-out
       if (done) return;
       arm(c);
@@ -274,6 +301,7 @@ function dxrSentinel(cfg, cap) {
       if (!loaded && s === 'complete') {
         loaded = true;
         const t = perfNow() + 10000;
+        moDeadline = t;
         for (const c of armed.keys()) armed.set(c, t);
         scheduleSweep();
       }
@@ -281,6 +309,8 @@ function dxrSentinel(cfg, cap) {
       if (loaded) document.removeEventListener('readystatechange', onReady);
     };
     let armedDom = false;
+    if (loaded) moDeadline = perfNow() + 10000; // injected into an already-loaded document
+    observe();
     if (document.readyState === 'loading') document.addEventListener('readystatechange', onReady);
     else onReady();
   }
@@ -292,7 +322,8 @@ function dxrSentinel(cfg, cap) {
     foreign: () => foreign,       // why the page owns XR in this document, or null
     onForeign(cb) { foreignCbs.push(cb); },
     optedOut,                     // <meta name="displayxr-auto3d" content="off"> (sticky once seen)
-    disarm,                       // take every trap off (the core never needs it today)
+    disarm,                       // take every trap off, for good (the core: standing down for this document)
+    settle,                       // a canvas went live: stop the PlayCanvas search unless another canvas has WebGL
   });
 }
 return dxrSentinel(cfg, cap);
