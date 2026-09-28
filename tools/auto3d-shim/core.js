@@ -63,6 +63,7 @@ function dxrCore(cfg, cap, S) {
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
     guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
     guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
+    glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
@@ -167,12 +168,25 @@ function dxrCore(cfg, cap, S) {
   }
 
   // ------------------------------------------------------------ sizing
-  // L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas: pixels, pr 1).
-  function realSizeFor(L) {
+  // st.L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas:
+  // pixels, pr 1). The SBS store fits the zero-copy width cap AND the context's own limits (a 2×
+  // wide store is over MAX_TEXTURE_SIZE / MAX_VIEWPORT_DIMS on many Android GPUs); one scale for
+  // both axes, so the eye keeps its aspect.
+  function realSizeFor(st) {
+    const L = st.L;
     let eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale));
     let eyeH = Math.max(2, Math.round(L.h * L.pr));
-    if (2 * eyeW > T.maxSbsWidth) {
-      const s = T.maxSbsWidth / (2 * eyeW);
+    if (st.glLim === undefined) {
+      const gl = st.ad.gl(st);
+      if (gl) {
+        let v = Infinity;
+        try { const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS); v = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]); } catch (e) { v = Infinity; }
+        st.glLim = v > 0 ? v : Infinity; // cached per canvas: a context's limits do not change
+      }
+    }
+    const lim = T.glLimit > 0 ? T.glLimit : st.glLim || Infinity;
+    const s = Math.min(1, Math.min(T.maxSbsWidth, lim) / (2 * eyeW), lim / eyeH);
+    if (s < 1) {
       eyeW = Math.max(2, Math.floor(eyeW * s));
       eyeH = Math.max(2, Math.floor(eyeH * s));
     }

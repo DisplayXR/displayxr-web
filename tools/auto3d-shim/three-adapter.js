@@ -390,7 +390,7 @@ function dxrThree(core) {
   // ------------------------------------------------------------ sizing
   // Returns true when the backing store actually changed (and was therefore cleared).
   function applyRealSize(st) {
-    const R = core.realSizeFor(st.L);
+    const R = core.realSizeFor(st);
     st.R = R;
     const pr1 = st.call('getPixelRatio') === 1;
     // A no-op setSize still writes canvas.width, which reallocates and CLEARS the buffer (porting pitfall 18).
