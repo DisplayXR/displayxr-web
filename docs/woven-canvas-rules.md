@@ -201,9 +201,10 @@ where the element is opaque (seen on the panel, 24 September). Use a plain trans
 
 ### 11. Treat a resize as a fresh-canvas moment
 
-Moving or resizing a woven canvas's rect re-registers it with the compositor, and the moved rect
-goes through the same **0.4–1.2 s** identity gap as a new canvas (§1): until the join lands, the
-screen shows the page's own raster, which is the squeezed side-by-side pair. Entering or leaving
+Resizing a woven canvas's rect re-registers it with the compositor, and the new rect can go
+through the same **0.4–1.2 s** identity gap as a new canvas (§1): until the join lands, the
+screen may show the page's own raster, which is the squeezed side-by-side pair (the panel A/B
+below did not see one, so treat the cover as insurance, not a certainty). Entering or leaving
 fullscreen, a responsive reflow that changes the tile's size, and a layout that swaps a small
 tile for a large one all do this. Cover the canvas across the change exactly as in rule 5 (on
 top, hard cut), and release on **`handle.rewoven()`**:
@@ -215,9 +216,12 @@ await handle.rewoven();               // a stereo frame on the moved rect, plus 
 cover.hidden = true;                  // cut, never fade
 ```
 
-`rewoven()` is `firstWoven` measured from the call, with the same result shape. A real box change
-while it is pending restarts the hold, so a resize that settles over several frames is covered
-until the last one. Before the first join it is `firstWoven` itself. The SDK's player
+`rewoven()` is `firstWoven` measured from the call, with the same result shape. A change of the
+canvas's CSS size or devicePixelRatio while it is pending restarts the hold (checked every frame,
+for every window kind), so a resize that settles over several frames is covered until the last
+one. A scroll or layout shift that moves the tile without resizing it is deliberately not
+detected. So that a size that never stops animating cannot hold the cover up for good, it settles
+anyway (`reason: 'hold-capped'`) four holds after the call. Before the first join it is `firstWoven` itself. The SDK's player
 (`addPlayer`) does this for its own fullscreen button with `fullscreenCover: true`.
 
 **Measured on the Leia panel (26 September, browser test build with patch 0195, blind A/B, one

@@ -18,7 +18,10 @@ The **exported** surface of the package entry points:
     means "safe to reveal the canvas". *When* it settles is deliberately not frozen: today it is a
     worst-case hold (`confirmed: false`), and it moves to the browser's own join report
     (`confirmed: true`, earlier) when a browser provides one. That is a timing change, not a
-    contract change ([proposal](proposals/layer-joined-signal.md)).
+    contract change ([proposal](proposals/layer-joined-signal.md)). `rewoven()` is the same
+    contract measured from the call: it settles once, never rejects, same shape; a change of the
+    canvas's CSS size or dpr while pending restarts it, and it settles `'hold-capped'` after at most
+    four holds. The hold length and the cap are timing, not contract.
   - `inline3DAvailable()`, `inline3dOverlaySupported()`, `inline3dOcclusionByDrawOrder()`,
     `inline3dViewRigSupported()`
   - the **`XRViewRigInit` descriptor**: the two `type`s and the meaning, units and ranges of every

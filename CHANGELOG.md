@@ -11,8 +11,10 @@ Touches the **core** (additive) and `./player`.
 
 - **`handle.rewoven()`** — `firstWoven`, measured from the call, for a canvas that is already woven
   but whose rect is about to change (fullscreen, a layout resize). Same `{ woven, confirmed,
-  reason, ms }` shape, never rejects; a real box change while pending restarts the hold; before
-  the first join it is `firstWoven`. Woven-canvas rule 11.
+  reason, ms }` shape, never rejects; a change of the canvas's CSS size or devicePixelRatio while
+  pending restarts the hold (checked every frame, every window kind), and it settles anyway with
+  the new reason `'hold-capped'` four holds after the call if the size never stops changing;
+  before the first join it is `firstWoven`. Woven-canvas rule 11.
 - **Player: `fullscreenCover`** (opt-in, default false). Entering or leaving fullscreen puts an
   opaque cover over the canvas (on top, hard cut, below the controls) until `rewoven()` settles.
   Off by default because a blind A/B on the Leia panel showed no raw side-by-side pair without it
