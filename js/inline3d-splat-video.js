@@ -284,6 +284,9 @@ export class VideoPlane {
     this._rectPlane = null;
     this._texSource = null;
     this._eyeA = 0; // the current video's eye aspect, as last sized (the ghost's geometry)
+    this._drawn = false; // sized + cropped for the current setSource's options (review N-B)
+    this._texW = 0;
+    this._texH = 0;
     /** How many times the rect was recomputed (a test hook for the no-per-frame-allocation promise). */
     this.rectComputes = 0;
     /** Upload accounting (handle.setVideo(...).stats()). */
@@ -410,7 +413,7 @@ export class VideoPlane {
     const newElement = video !== this.video;
     // Review R1: only a video that has been DRAWN can be a ghost (it has a size, crop and a bound
     // texture). Two swaps before the next frame make the middle one a cut, never a blank quad.
-    const fading = !!(fade && fade.durationMs > 0 && this.video && this.tex && this._planeSize && newElement);
+    const fading = !!(fade && fade.durationMs > 0 && this.video && this.tex && this._drawn && newElement);
     if (fading) this._startFade(fade);
     else if (newElement) this._dropGhost(); // S1: a cut ends any fade still running
     if (newElement) {
@@ -438,6 +441,7 @@ export class VideoPlane {
     this._dirty = true;
     this.mat.update();
     this.mi.visible = true;
+    this._drawn = false; // the quad's regions/size for these options arrive with the next draw
     return fading;
   }
 
@@ -467,7 +471,10 @@ export class VideoPlane {
     const v = this.video;
     const w = v.videoWidth || 0;
     const h = v.videoHeight || 0;
-    if (this.tex && this.tex.width === w && this.tex.height === h) {
+    // Our own record of the size the texture was made for: the real engine re-derives tex.width at
+    // upload from `video.width || videoWidth`, and `video.width` is the HTML attribute, so a
+    // <video width="640"> playing 1920 wide would never match and every swap would re-make it.
+    if (this.tex && this._texW === w && this._texH === h) {
       // B1: same size, but maybe a different element (a cut between two same-size titles): the
       // texture must be re-pointed, or it keeps sampling the old video.
       if (this._texSource !== v) {
@@ -480,6 +487,8 @@ export class VideoPlane {
       return;
     }
     this.tex?.destroy?.();
+    this._texW = w;
+    this._texH = h;
     this.tex = new pc.Texture(this.viewer.app.graphicsDevice, {
       name: 'inline3d-video',
       width: Math.max(1, w),
@@ -519,6 +528,7 @@ export class VideoPlane {
       this._ensureTexture();
       const a = eyeAspect(this.format, v.videoWidth, v.videoHeight);
       this._eyeA = a;
+      this._drawn = true; // sized and cropped for the current options: it can be a ghost now
       const s = videoPlaneSize({ boxAspect, eyeAspect: a, vH: this.vH, fit: this.fit, band: this.band });
       this.node.setLocalScale(s.w, s.h, 1);
       this._planeSize = { w: s.w, h: s.h, W: this.vH * boxAspect, H: this.vH };
@@ -542,8 +552,11 @@ export class VideoPlane {
 
   /** `cb(rect)` on every change of the on-screen rect; returns an unsubscribe. */
   onRect(cb) {
-    this._rectListeners.add(cb);
-    return () => this._rectListeners.delete(cb);
+    // One entry per SUBSCRIPTION, not per function: the same `place` subscribed on two results (or
+    // twice) must not share an entry, or the first unsubscribe would silently remove both.
+    const sub = { cb };
+    this._rectListeners.add(sub);
+    return () => this._rectListeners.delete(sub);
   }
 
   /** The quad in CSS px of the canvas box, per frame; listeners hear only a change. */
@@ -561,24 +574,19 @@ export class VideoPlane {
     if (key === this._rectKey) return;
     this._rectKey = key;
     this.rect = r;
-    for (const cb of [...this._rectListeners]) {
+    for (const sub of [...this._rectListeners]) {
       // A microtask: after this draw, still inside the same rAF task (before paint), so controls
       // move in the same frame and a throw is isolated. A callback that READS layout still forces
       // layout inside the frame.
       queueMicrotask(() => {
-        if (!this._rectListeners.has(cb)) return; // unsubscribed (or its video replaced) since
+        if (!this._rectListeners.has(sub)) return; // unsubscribed (or its video replaced) since
         try {
-          cb(r);
+          sub.cb(r);
         } catch (err) {
           console.error('[inline3d/splat] onRectChange callback threw:', err);
         }
       });
     }
-  }
-
-  hide() {
-    this._dropGhost();
-    this.mi.visible = false;
   }
 
   destroy() {

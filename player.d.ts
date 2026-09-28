@@ -91,7 +91,7 @@ export interface PlayerOptions {
    * tile (e.g. `2.39` or `'2.39:1'` for a scope band in a 16:9 tile); the rest stays clear.
    * Implies `fit: 'contain'` unless `fit` says otherwise.
    */
-  band?: number | string;
+  band?: number | string | null;
   /**
    * What the poster image is: `'mono'` (one image for both eyes, the default), or a stereo still
    * laid out like the video (`'sbs'` / `'tb'`), painted eye by eye so it is 3D before the first frame.

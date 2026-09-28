@@ -192,7 +192,8 @@ export function normalizePlayerOptions(opts = {}) {
     // A letterboxed "band" slot: the picture is fitted into a centred band of this aspect inside
     // the tile (e.g. 2.39 for a scope band in a 16:9 tile), and the rest of the tile is left
     // clear. Implies fit 'contain' unless `fit` says otherwise. A number or 'W:H' / 'W/H'.
-    band: parseAspect(opts.band) ?? (opts.skin === 'call' ? CALL_DEFAULT_BAND : null),
+    // `band: null` is an explicit "no band" (it turns off the 'call' skin's default); undefined takes the default.
+    band: opts.band === null ? null : parseAspect(opts.band) ?? (opts.skin === 'call' ? CALL_DEFAULT_BAND : null),
     // What the poster image IS: 'mono' (one image, both eyes — the 1.x behaviour), or a stereo
     // still laid out like the video ('sbs' / 'tb'), painted eye by eye.
     posterFormat: pickEnum(opts.posterFormat, VALID_POSTER_FORMATS, 'mono', 'posterFormat'),

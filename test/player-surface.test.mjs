@@ -345,6 +345,17 @@ test("crossfade goes to setVideo as its GPU crossfade (durationMs, easing); a cu
   await player.detach();
 });
 
+test("the 'call' skin's default 2.39 band reaches setVideo; band: null turns it off", async () => {
+  const s1 = makeSplat();
+  const p1 = attachPlayer(s1, 'a.webm', { controls: 'none', skin: 'call' });
+  assert.equal(s1.calls[0].o.band, 2.39);
+  await p1.detach();
+  const s2 = makeSplat();
+  const p2 = attachPlayer(s2, 'a.webm', { controls: 'none', skin: 'call', band: null });
+  assert.equal(s2.calls[0].o.band, undefined, 'no band');
+  await p2.detach();
+});
+
 test('attachPlayer refuses anything without setVideo, by name', () => {
   assert.throws(() => attachPlayer({}, 'a.webm'), /needs an addSplat/);
   assert.throws(() => attachPlayer(null, 'a.webm'), /needs an addSplat/);

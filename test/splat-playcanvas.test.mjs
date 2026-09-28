@@ -2905,7 +2905,8 @@ async function videoRig({ camera = true, stereo = false, opts = {} } = {}) {
   const textures = [];
   pc.Texture = class {
     constructor(d, o) { this.o = o; this.width = o.width; this.height = o.height; this.uploads = 0; textures.push(this); }
-    setSource(s) { this.src = s; this.uploads++; }
+    // As PlayCanvas 2.22.3: the upload takes the size from `video.width || videoWidth` (the HTML attribute first).
+    setSource(s) { this.src = s; this.uploads++; if (s) { this.width = s.width || s.videoWidth || this.width; this.height = s.height || s.videoHeight || this.height; } }
     upload() { this.uploads++; }
     destroy() { this.destroyed = true; }
   };
@@ -3538,6 +3539,61 @@ test('#107 re-review: a URL-sourced crossfade keeps the ghost at the OUTGOING as
   } finally {
     delete globalThis.document;
   }
+  out.remove();
+});
+
+// ── deep review of #107 (S-A, N-A, N-B) ──────────────────────────────────────────────────────
+
+test('#107 S-A: the same callback on two results keeps its own subscription; unsubscribe is idempotent', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  const h1 = await out.setVideo(fakeVideo());
+  frame();
+  const place = () => calls++;
+  let calls = 0;
+  const u1 = h1.onRectChange(place);
+  const h2 = await out.setVideo(fakeVideo()); // the swap unsubscribes u1
+  frame();
+  const u2 = h2.onRectChange(place); // the SAME function, on the new result
+  u1(); // a page cleaning up the old title late: must not remove the new subscription
+  u1();
+  canvas.setBox(640, 180);
+  v._updateMonoProjection();
+  frame();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(calls, 1, 'the new subscription still hears the resize');
+  u2();
+  u2();
+  assert.equal(v._videoPlane._rectListeners.size, 0);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N-A: a <video width="640"> playing 1920 wide keeps one texture across a same-size swap (the rebind path)', async () => {
+  const { out, frame, textures } = await videoRig();
+  const a = Object.assign(fakeVideo({ w: 3840, h: 1080 }), { width: 640, height: 180 }); // the HTML attributes
+  const b = Object.assign(fakeVideo({ w: 3840, h: 1080 }), { width: 640, height: 180 });
+  await out.setVideo(a);
+  frame();
+  const n = textures.length;
+  const tex = textures.at(-1);
+  await out.setVideo(b); // same size: must re-point, not re-make
+  frame();
+  assert.equal(textures.length, n, 'no new texture');
+  assert.equal(tex.src, b);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N-B: an option change on the same element, then a crossfade before the next frame, is a cut (the quad was never drawn that way)', async () => {
+  const { out, frame } = await videoRig();
+  const a = fakeVideo();
+  await out.setVideo(a, { format: 'sbs' });
+  frame();
+  await out.setVideo(a, { format: 'tb' }); // same element, new layout: not drawn yet
+  const h = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  assert.equal(h.transition, 'cut');
+  assert.equal(out.viewer._videoPlane.ghost, null);
+  await out.setVideo(null);
   out.remove();
 });
 

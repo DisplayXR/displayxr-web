@@ -4493,6 +4493,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             if (vid !== state) return () => {};
             // S2: never outlives this video — every subscription is dropped at the swap that
             // replaces it (and with the plane on setVideo(null)).
+            // Each subscription is its own entry on the plane, so calling this twice is harmless.
             const off = plane.onRect(cb);
             const unsubscribe = () => {
               off();
