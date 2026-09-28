@@ -306,7 +306,7 @@ export interface SplatVideo {
    * another `setVideo` replaced this one. Place controls against the picture with it.
    */
   readonly rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null;
-  /** `cb(rect)` whenever the rect changes (a resize, a new size, a band); asynchronous, off the draw. Returns an unsubscribe. */
+  /** `cb(rect)` whenever the rect changes (a resize, a new size, a band): a microtask right after the draw, same frame, before paint. Returns an unsubscribe. */
   onRectChange(cb: (rect: { x: number; y: number; width: number; height: number }) => void): () => void;
   /** What the swap did: `'crossfade'` only when it replaced a video on screen and asked to. Resolved at the swap, before the fade ends. */
   readonly transition: 'cut' | 'crossfade';

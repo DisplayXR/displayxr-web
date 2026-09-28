@@ -2884,7 +2884,7 @@ function fakeVideo({ w = 3840, h = 1080, ready = 4, rvfc = true } = {}) {
     emit(t) { for (const f of [...(ls.get(t) || [])]) f(); },
     play() { this.paused = false; this.plays++; return Promise.resolve(); },
     pause() { this.paused = true; },
-    load() { this.loads++; },
+    load() { this.loads++; if (!this.src) { this.videoWidth = 0; this.videoHeight = 0; this.readyState = 0; } }, // as a real <video>: load() with no src drops to HAVE_NOTHING
     removeAttribute(k) { if (k === 'src') this.src = ''; },
   };
   if (rvfc) {
@@ -3514,6 +3514,30 @@ test('#107 R8: a listener removed after a change was queued is not called', asyn
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(n, 0);
   await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 re-review: a URL-sourced crossfade keeps the ghost at the OUTGOING aspect although setVideo released that element', async () => {
+  const { out, frame, v } = await videoRig();
+  const made = [];
+  globalThis.document = { createElement: (t) => (assert.equal(t, 'video'), made.push(fakeVideo({ w: made.length ? 3840 : 2880, h: 1080, ready: 4 })), made.at(-1)) };
+  try {
+    await out.setVideo('c_4x3_sbs.mp4'); // eye 1440x1080 = 4:3, in a 16:9 window: pillarboxed
+    frame();
+    const out4x3 = [...v._videoPlane.node.scale];
+    await out.setVideo('a_16x9_sbs.mp4', { transition: 'crossfade', durationMs: 60000 }); // the SDK releases C here
+    assert.equal(made[0].src, '', 'C was released (load() zeroed it)');
+    assert.equal(made[0].videoWidth, 0);
+    frame();
+    const g = v._videoPlane.ghost;
+    assert.ok(g, 'fading');
+    near(g.node.scale[0] / g.node.scale[1], 4 / 3, 1e-9, 'the ghost stays 4:3 (pillarboxed), not stretched to the window');
+    near(g.node.scale[0], out4x3[0], 1e-9);
+    near(g.node.scale[1], out4x3[1], 1e-9);
+    await out.setVideo(null);
+  } finally {
+    delete globalThis.document;
+  }
   out.remove();
 });
 

@@ -264,7 +264,10 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
   screen, in CSS px from the canvas's top-left and clipped to it (`null` before the first drawn
   frame and once replaced); `onRectChange(cb)` hears every change (resize, new size, band) off the
   draw and returns an unsubscribe. The bars are the canvas minus `rect`: place controls in them, or
-  against the picture, with it (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
+  against the picture, with it. The callback runs as a microtask right after the draw, inside the
+  same frame (before paint): controls move in step, but a callback that reads layout forces layout
+  in that frame. `rect` is measured with `getBoundingClientRect`, so under a CSS-transformed
+  ancestor it is in the transformed (on-screen) px (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
   declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
   that fails to load rejects, and the splat stays on screen. A call superseded before its first
   frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and
@@ -297,7 +300,8 @@ from 1 to 0 over `durationMs` from the incoming video's first drawn frame. Each 
 format, fit and size, so a swap between two aspects fades bar for bar; the buffer stays opaque
 under the incoming picture throughout. A `setVideo` while a fade is running drops the old ghost
 and fades from the video then on screen. The promise resolves at the swap, not at the end of the
-fade. Cost: one extra full-plane textured draw for the length of the fade, no extra upload.
+fade. Cost: one extra full-plane textured draw for the length of the fade, and one texture
+allocation (plus its first upload) for the incoming video at the swap.
 
 **How it is drawn.**
 - **The plane.** One quad is parented under the **rig node**, the eye camera's parent, at display

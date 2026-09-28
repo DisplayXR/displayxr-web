@@ -2417,10 +2417,11 @@ const SURFACE_IGNORED = ['poster', 'posterFormat', 'width', 'height', 'cornerRad
  *        `setVideo`; `canvas`, `videoElement` and `exclude` are used when present).
  * @param {string|Blob|Array} src  as addPlayer; or omit it and pass `opts.titles`.
  * @param {object} [opts]  addPlayer's options, except: `fullscreen` defaults to false (it would
- *        fullscreen the whole app's canvas); `transition: 'crossfade'` cuts (warns once) until
- *        `./splat` setVideo crossfades; `band`, `poster`, `posterFormat` and the tile options are
- *        ignored (warns once) — the scene is the poster. `format` ('sbs' | 'tb' | 'mono') and `fit`
- *        ('contain' default | 'cover') go to setVideo.
+ *        fullscreen the whole app's canvas); `transition: 'crossfade'` is ./splat setVideo's GPU
+ *        crossfade (same durationMs / easing); `band` is setVideo's letterbox slot (controls in the
+ *        bars); `poster`, `posterFormat` and the tile options are ignored (warns once) — the scene
+ *        is the poster. `format` ('sbs' | 'tb' | 'mono') and `fit` ('contain' default | 'cover')
+ *        go to setVideo.
  * @param {Element} [opts.chromeContainer]  where the controls go. Default: the canvas's parent.
  * @returns {object} a PlayerHandle (player.d.ts) plus `detach()` and the `'detached'` event.
  */
