@@ -16,7 +16,7 @@
 function dxrDevHost(loadCore) {
   const LS_KEY = 'dxrAuto3D';
   const V = 1;
-  const DEFAULT_DEPTH = { camera: 0.3, display: 1.0 };
+  const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   let dev = true;
   try { dev = localStorage.getItem('dxrAuto3DDev') !== '0'; } catch (e) { /* opaque origin */ }
   const rawTest = window.__dxrAuto3DTestCfg; // harness override, never persisted by itself

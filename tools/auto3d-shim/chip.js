@@ -101,7 +101,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
 <div class="menu" role="menu" aria-label="3D view settings" popover="manual">
   <button role="menuitemcheckbox" tabindex="-1" data-k="site" aria-checked="false">3D on this site<span class="sw"></span></button>
   <div class="sep" role="separator"></div>
-  <div class="row" role="group" aria-label="Depth"><span>Depth</span><input type="range" tabindex="-1" min="0.02" max="1" step="0.01" aria-label="Depth" data-k="depth"><output>0.30</output></div>
+  <div class="row" role="group" aria-label="Depth"><span>Depth</span><input type="range" tabindex="-1" min="0.02" max="1" step="0.01" aria-label="Depth" data-k="depth"><output>0.50</output></div>
   <div role="group" aria-label="Style" data-g="style">
     <div class="head" aria-hidden="true">Style</div>
     <button role="menuitemradio" tabindex="-1" data-k="camera" aria-checked="false">Scene camera</button>

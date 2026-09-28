@@ -295,7 +295,7 @@ export default function cases({ P, productShim }) {
         f.push(await at());
         for (const k of ['ArrowDown', 'ArrowDown', 'End', 'Home', 'ArrowUp']) { await page.keyboard.press(k); f.push(await at()); }
         const M = await page.evaluate(chipInfo);
-        // The depth slider: Right on it changes the live depth (0.30 -> 0.31) and saves it.
+        // The depth slider: Right on it changes the live depth (0.50 -> 0.51) and saves it.
         await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown');
         await page.keyboard.press('ArrowRight');
         await h.sleep(100);
@@ -313,7 +313,7 @@ export default function cases({ P, productShim }) {
         t('focus walk: site -> depth -> camera, End -> once, Home -> site, Up wraps -> once', r.f && r.f.join(',') === 'site,depth,camera,once,site,once', r.f && r.f.join(','));
         t('menu opens inside the tile, 8 px inset', M && M.menuRect && M.menuRect.left >= M.canvas.left + 8 && M.menuRect.left + M.menuRect.width <= M.canvas.right - 8 && M.menuRect.top >= M.canvas.top + 8 && M.menuRect.top + M.menuRect.height <= M.canvas.bottom - 8,
           JSON.stringify(M && M.menuRect));
-        t('depth slider: ArrowRight 0.30 -> 0.31, saved', Math.abs(r.depth - 0.31) < 1e-9 && r.H.saves.some((s) => s.depths && Math.abs(s.depths.camera - 0.31) < 1e-9), `depth ${r.depth}, saves ${JSON.stringify(r.H && r.H.saves)}`);
+        t('depth slider: ArrowRight 0.50 -> 0.51, saved', Math.abs(r.depth - 0.51) < 1e-9 && r.H.saves.some((s) => s.depths && Math.abs(s.depths.camera - 0.51) < 1e-9), `depth ${r.depth}, saves ${JSON.stringify(r.H && r.H.saves)}`);
         t('Escape closes the menu and returns focus to the pill', E && E.menu === false && E.focus === 'pill', `menu ${E && E.menu}, focus ${E && E.focus}`);
         t('no menu key reached the page\'s document keydown listener', r.keys === 0, `keys ${r.keys}`);
       },
