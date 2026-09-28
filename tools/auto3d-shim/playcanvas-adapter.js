@@ -1,7 +1,7 @@
 // DisplayXR auto-3D — PlayCanvas adapter. PROTOTYPE, not a product.
 //
-// Loaded after core.js (manifest.json: core.js → three-adapter.js → playcanvas-adapter.js), in the
-// page's MAIN world at document_start. Turns an existing PlayCanvas (engine 2.x, WebGL2) page into
+// A part of the core bundle (build.mjs): `function dxrPlayCanvas(core)`, called by dxrCore with its
+// internal API; returns { consider } (the sentinel will own detection). Turns an existing PlayCanvas (engine 2.x, WebGL2) page into
 // a woven inline-3D window with no change to the page and WITHOUT the engine's XrManager: the
 // page's own camera renders both eyes through the engine's RenderView path — the same recipe
 // @displayxr/inline3d's PlayCanvas splat backend uses (js/inline3d-splat-playcanvas.js):
@@ -27,14 +27,9 @@
 // rendering to the canvas (a UI camera, picture-in-picture), post effects / CameraFrame (frame
 // passes) on the camera, an orthographic camera, an app presenting WebXR through app.xr, and —
 // via the core — SDK / WebXR pages.
-(() => {
-  'use strict';
-  const core = window[Symbol.for('dxr.auto3d.core')];
-  if (!core || core.meta.playcanvasAdapter) return;
-  core.meta.playcanvasAdapter = true;
+function dxrPlayCanvas(core) {
   core.registerEngine('PlayCanvas');
   const { info, warnOnce, desc, realW, realH } = core;
-  const cfg = () => core.cfg;
   const DEG = Math.PI / 180;
 
   const apps = new WeakMap(); // app -> state; null before the device exists, false when not convertible
@@ -128,7 +123,7 @@
   window.addEventListener('load', lookGlobals);
 
   // 3. ESM bundles: the constructor's `_applications[canvas.id] = this`.
-  const ID = Object.getOwnPropertyDescriptor(Element.prototype, 'id');
+  const ID = core.intrinsics.elementId; // snapshotted by the sentinel
   const traps = new Set();
   function removeTrap(key) {
     if (!traps.has(key)) return;
@@ -157,7 +152,7 @@
         configurable: true, enumerable: ID.enumerable, set: ID.set,
         get() {
           const v = ID.get.call(this);
-          if (this instanceof HTMLCanvasElement && cfg().enabled && !core.foreign) trapKey(v);
+          if (this instanceof HTMLCanvasElement && core.on() && !core.foreign) trapKey(v);
           return v;
         },
       });
@@ -309,7 +304,8 @@
     // from postrender (onPostRender -> core.takeOutCover), right after that draw, not by the core
     // after redraw() — the drawing buffer is not preserved past the task that drew it.
     coverAfterDraw: true,
-    readEye: (st, target) => core.readGlEye(st.dev && st.dev.gl, st, target),
+    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
+    gl: (st) => (st.dev && st.dev.gl) || null,
     target(st) {
       const e = st.cam && st.cam.entity;
       if (!e) return null;
@@ -338,7 +334,7 @@
     }),
   };
   function flatWhy(st, why) {
-    if (st.flatReason !== why) { st.flatReason = why; info('PlayCanvas canvas stays 2D:', why); core.hud(); }
+    if (st.flatReason !== why) { st.flatReason = why; info('PlayCanvas canvas stays 2D:', why); core.notify(); }
     return why;
   }
 
@@ -540,4 +536,5 @@
   }
 
   info(`PlayCanvas adapter armed (core v${core.VERSION})`);
-})();
+  return { consider };
+}

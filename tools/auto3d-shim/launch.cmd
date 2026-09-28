@@ -2,6 +2,8 @@
 REM Launch the installed DisplayXR Browser with the auto-3D prototype loaded, in its OWN profile.
 REM CLOSE every other DisplayXR Browser window first: a second instance gets no weave slot and
 REM renders 2D forever (displayxr-browser#162). Run NON-elevated.
+REM --disable-auto-3d keeps the browser's own auto-3D injector out, so this dev extension is the only
+REM one on the page (the first injector would win anyway: window[Symbol.for('dxr.auto3d')]).
 REM Usage: launch.cmd [url]
 setlocal
 set "EXT=%~dp0"
@@ -13,6 +15,7 @@ start "" "C:\Program Files\DisplayXR\Browser\chrome.exe" ^
   --load-extension="%EXT%" ^
   --user-data-dir="%PROFILE%" ^
   --no-first-run --no-default-browser-check ^
+  --disable-auto-3d ^
   --disable-features=CalculateNativeWinOcclusion ^
   --enable-logging --log-file="%TEMP%\dxr_auto3d_chrome.log" --v=1 ^
   "%URL%"
