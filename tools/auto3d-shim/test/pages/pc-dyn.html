@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- TEST PAGE — PlayCanvas (2.x, ESM) on a canvas CREATED BY SCRIPT, with no globals (no window.pc,
+     no window.app). The AppBase constructor reads canvas.id before it creates the WebGL context,
+     and this canvas did not exist at readystatechange -> 'interactive', so the sentinel's id trap
+     cannot see it (plan risk R1). Expected today: stays 2D, the page keeps working, and the
+     sentinel says why in one console line once its globals search ends (~20 s). -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas dynamic canvas (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<script type="module">
+import * as pc from 'playcanvas';
+const canvas = document.createElement('canvas');
+canvas.id = 'dyn-canvas';
+document.body.appendChild(canvas);
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov: 40, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+camera.lookAt(0, 1, 0);
+app.root.addChild(camera);
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.5 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+const box = new pc.Entity('box');
+box.addComponent('render', { type: 'box' });
+box.setPosition(0, 1, 0);
+app.root.addChild(box);
+let n = 0;
+app.on('update', () => { n++; box.setLocalEulerAngles(0, n * 2, 0); window.__pageFrames = n; });
+app.start();
+</script>
+</body></html>

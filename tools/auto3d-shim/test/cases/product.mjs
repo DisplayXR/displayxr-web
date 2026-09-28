@@ -37,8 +37,8 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
-      // A USER block outside dev: the sentinel stays detect-only and never loads the core. (Its
-      // one { status: 'off', engine } report needs the sentinel's own detection: next slice.)
+      // A USER block outside dev: the sentinel stays detect-only and never loads the core; once it
+      // detects the engine it reports { status: 'off', engine } once (the browser's re-enable offer).
       id: 'p-block', name: 'product mode, the user blocked the site: the core is never loaded, no session',
       url: P + 'three-keyframes.html', shim: productShim({ decision: 'block' }),
       async run(page, h) {
@@ -50,7 +50,7 @@ export default function cases({ P, NEW, productShim }) {
         const X = r.P, H = X && X.host;
         t('cap.loadCore() never called', r.ok && H && H.loadCore === 0, r.error || `loadCore ${H && H.loadCore}`);
         t('no session, no layer', X && X.fake.sessions === 0 && X.fake.layers === 0, JSON.stringify(X && X.fake));
-        t('reports: at most one, and only { status: off }', H && H.reports.length <= 1 && H.reports.every((x) => x.status === 'off'), JSON.stringify(H && H.reports));
+        t('exactly one report: { status: off, engine: three.js }', H && H.reports.length === 1 && H.reports[0].status === 'off' && H.reports[0].engine === 'three.js', JSON.stringify(H && H.reports));
       },
     },
     {
