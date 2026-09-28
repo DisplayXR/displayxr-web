@@ -257,7 +257,7 @@ export interface AttachedPlayerHandle extends PlayerHandle {
  * `setVideo` — no canvas, layer or session of its own. The scene stays on screen until the first
  * frame (it is the poster); a source swap lands at the next title's first frame, as a cut or, with
  * `transition: 'crossfade'`, `./splat` setVideo's GPU crossfade. Differences from `addPlayer`:
- * `fullscreen` defaults to false; `band`, `poster`, `posterFormat` and the tile options are ignored
+ * `fullscreen` defaults to false; `band` goes to setVideo's letterbox slot; `poster`, `posterFormat` and the tile options are ignored
  * (warns once). If another `setVideo` takes the slot, the player stops and emits `'detached'`
  * ({@link PlayerDetachedEvent}); it never fights for it.
  */

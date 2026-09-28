@@ -35,12 +35,19 @@
 // its own size, format and fit, and a swap between two aspects fades bar-for-bar. Only between two
 // videos: entering from the splat and setVideo(null) stay cuts. A swap while a fade is still
 // running drops the old ghost (a small pop) and fades from the video then on screen.
+//
+// BAND (A5.2). `band: 2.39` (or '2.39:1') narrows the window to a centred letterbox slot of that
+// aspect before fitting, exactly as ./player's `band` narrows its tile: the rest of the element
+// stays clear. 'contain' in the band is a smaller quad. 'cover' in the band cannot lean on the
+// window's frustum edges to cut the overflow (the band is inside the window), so the quad is the
+// band exactly and the overflow is cropped in TEXTURE space instead: each eye's region is narrowed
+// about its centre. Without a band nothing changes.
 import { EASINGS } from './inline3d-splat-effects.js';
 
 /** handle.setVideo's formats, fits and rigs. */
 export const VIDEO_FORMATS = Object.freeze(['sbs', 'tb', 'mono']);
 export const VIDEO_FITS = Object.freeze(['contain', 'cover']);
-const VIDEO_OPTION_KEYS = new Set(['format', 'fit', 'rig', 'virtualDisplayHeight', 'loop', 'muted', 'autoplay', 'transition', 'durationMs', 'easing', 'outgoing']);
+const VIDEO_OPTION_KEYS = new Set(['format', 'fit', 'rig', 'virtualDisplayHeight', 'loop', 'muted', 'autoplay', 'transition', 'durationMs', 'easing', 'outgoing', 'band']);
 /** setVideo's transitions: the player's vocabulary (./player), not setSource's gaussian ones. */
 export const VIDEO_TRANSITIONS = Object.freeze(['cut', 'crossfade']);
 /** The player's defaults (DEFAULT_CROSSFADE_MS / easeInOutSine), so both surfaces fade alike. */
@@ -57,7 +64,8 @@ export const PAGE_VIDEO_ERROR =
  * `src` null/undefined is the exit call and is not validated here.
  * @returns {{ src: string|HTMLVideoElement, format: 'sbs'|'tb'|'mono', fit: 'contain'|'cover',
  *            vH: number|undefined, loop?: boolean, muted?: boolean, autoplay?: boolean,
- *            transition: { type: 'cut'|'crossfade', durationMs: number, easing: string|Function } }}
+ *            transition: { type: 'cut'|'crossfade', durationMs: number, easing: string|Function },
+ *            band: number|null }}
  */
 export function validateSetVideo(src, o = {}, pageMode = false) {
   if (pageMode) throw new Error(PAGE_VIDEO_ERROR);
@@ -86,7 +94,21 @@ export function validateSetVideo(src, o = {}, pageMode = false) {
     if (!Number.isFinite(vH) || !(vH > 0)) throw new Error(`@displayxr/inline3d/splat: setVideo — bad virtualDisplayHeight: ${o.virtualDisplayHeight}.`);
   }
   const bool = (k) => (o[k] === undefined ? undefined : !!o[k]);
-  return { src, format, fit, vH, loop: bool('loop'), muted: bool('muted'), autoplay: bool('autoplay'), transition: resolveVideoTransition(o) };
+  let band = null;
+  if (o.band !== undefined && o.band !== null) {
+    band = parseBandAspect(o.band);
+    if (band === null) throw new Error(`@displayxr/inline3d/splat: setVideo — bad band: ${JSON.stringify(o.band)} (a number > 0, or 'W:H').`);
+  }
+  return { src, format, fit, vH, loop: bool('loop'), muted: bool('muted'), autoplay: bool('autoplay'), transition: resolveVideoTransition(o), band };
+}
+
+/** A band aspect: a number > 0, or 'W:H' / 'W/H' / 'WxH' / a numeric string. Null if unusable. */
+export function parseBandAspect(a) {
+  if (typeof a === 'number') return Number.isFinite(a) && a > 0 ? a : null;
+  if (typeof a !== 'string') return null;
+  const m = a.trim().match(/^(\d+(?:\.\d+)?)\s*[:/x]\s*(\d+(?:\.\d+)?)$/i);
+  const v = m ? Number(m[1]) / Number(m[2]) : Number(a);
+  return Number.isFinite(v) && v > 0 ? v : null;
 }
 
 /** setVideo's transition options: `{ type, durationMs, easing }`. Throws on a page bug. */
@@ -132,13 +154,42 @@ export function eyeAspect(format, w, h) {
  * the window contained ('contain': all of the frame, bars where the aspects differ) or covered
  * ('cover': the window full, the overflow cut by the window's own frustum edges).
  */
-export function videoPlaneSize({ boxAspect, eyeAspect: a, vH, fit = 'contain' }) {
+export function videoPlaneSize({ boxAspect, eyeAspect: a, vH, fit = 'contain', band = null }) {
   const W = vH * boxAspect;
   const H = vH;
   if (!(a > 0) || !(boxAspect > 0)) return { w: W, h: H };
+  if (band > 0) {
+    const b = videoBandSlot(W, H, band);
+    const ba = b.w / b.h;
+    // 'cover': the quad IS the band, and the overflow is cut in texture space (videoCrop).
+    if (fit === 'cover') return { w: b.w, h: b.h };
+    return a >= ba ? { w: b.w, h: b.w / a } : { w: b.h * a, h: b.h };
+  }
   const wider = a >= boxAspect;
   if ((fit === 'contain') === wider) return { w: W, h: W / a };
   return { w: H * a, h: H };
+}
+
+/** The centred band slot of aspect `band` inside a W × H window (./player's bandBox, sizes only). */
+export function videoBandSlot(W, H, band) {
+  if (!(band > 0) || !(W > 0 && H > 0)) return { w: W, h: H };
+  return band >= W / H ? { w: W, h: W / band } : { w: H * band, h: H };
+}
+
+/**
+ * The fraction of each eye's region the quad shows, [fx, fy], centred: [1, 1] except 'cover' in a
+ * band, where the quad is the band and the overflow is cropped in texture space.
+ */
+export function videoCrop({ boxAspect, eyeAspect: a, fit, band }) {
+  if (fit !== 'cover' || !(band > 0) || !(a > 0) || !(boxAspect > 0)) return [1, 1];
+  const b = videoBandSlot(boxAspect, 1, band);
+  const ba = b.w / b.h;
+  return a >= ba ? [ba / a, 1] : [1, a / ba];
+}
+
+/** An eye region [s0, t0, ds, dt] narrowed about its centre to [fx, fy] of itself. */
+export function cropRegion(r, [fx, fy]) {
+  return [r[0] + (r[2] * (1 - fx)) / 2, r[1] + (r[3] * (1 - fy)) / 2, r[2] * fx, r[3] * fy];
 }
 
 /**
@@ -201,6 +252,7 @@ export class VideoPlane {
     this.tex = null;
     this.format = 'sbs';
     this.fit = 'contain';
+    this.band = null;
     this.vH = viewer.vH;
     this._dirty = false;
     this._lastT = -1;
@@ -295,11 +347,12 @@ export class VideoPlane {
    * Play `video` on the quad (a new element, format or fit). The element must have a frame.
    * `fade` ({ durationMs, easing }): dissolve from the video now on the quad instead of cutting.
    */
-  setSource(video, { format, fit, vH }, fade = null) {
+  setSource(video, { format, fit, vH, band = null }, fade = null) {
     if (fade && fade.durationMs > 0 && this.video && this.tex && video !== this.video) this._startFade(fade);
     this.format = format;
     this.fit = fit;
     this.vH = vH;
+    this.band = band;
     const r = eyeRegions(format);
     this.mat.setParameter('dxrVidL', r.L);
     this.mat.setParameter('dxrVidR', r.R);
@@ -375,12 +428,17 @@ export class VideoPlane {
     }
     this._tickGhost(split);
     const boxAspect = this.viewer.boxAspect;
-    const key = `${boxAspect}|${v.videoWidth}x${v.videoHeight}|${this.format}|${this.fit}|${this.vH}`;
+    const key = `${boxAspect}|${v.videoWidth}x${v.videoHeight}|${this.format}|${this.fit}|${this.vH}|${this.band}`;
     if (key !== this._sizeKey) {
       this._sizeKey = key;
       this._ensureTexture();
-      const s = videoPlaneSize({ boxAspect, eyeAspect: eyeAspect(this.format, v.videoWidth, v.videoHeight), vH: this.vH, fit: this.fit });
+      const a = eyeAspect(this.format, v.videoWidth, v.videoHeight);
+      const s = videoPlaneSize({ boxAspect, eyeAspect: a, vH: this.vH, fit: this.fit, band: this.band });
       this.node.setLocalScale(s.w, s.h, 1);
+      const crop = videoCrop({ boxAspect, eyeAspect: a, fit: this.fit, band: this.band });
+      const r = eyeRegions(this.format);
+      this.mat.setParameter('dxrVidL', cropRegion(r.L, crop));
+      this.mat.setParameter('dxrVidR', cropRegion(r.R, crop));
     }
     // A new frame: rVFC said so, a seek landed, or (no rVFC) the clock moved.
     const t = v.currentTime;

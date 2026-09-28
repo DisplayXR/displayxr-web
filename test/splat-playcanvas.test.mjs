@@ -3168,6 +3168,56 @@ test('setVideo crossfade: a swap during a fade drops the old ghost and fades fro
   out.remove();
 });
 
+test('setVideo band (A5.2): parse, the slot, contain = a smaller quad, cover = the band with a centred texture crop', async () => {
+  const { validateSetVideo, parseBandAspect, videoBandSlot, videoPlaneSize, videoCrop, cropRegion } = await import('../js/inline3d-splat-video.js');
+  const el = fakeVideo();
+  assert.equal(validateSetVideo(el).band, null);
+  near(validateSetVideo(el, { band: '2.39:1' }).band, 2.39, 1e-12);
+  assert.equal(validateSetVideo(el, { band: 2 }).band, 2);
+  near(parseBandAspect('21/9'), 21 / 9, 1e-12);
+  assert.equal(parseBandAspect('wide'), null);
+  assert.throws(() => validateSetVideo(el, { band: 0 }), /bad band/);
+  assert.throws(() => validateSetVideo(el, { band: 'wide' }), /bad band/);
+  // A 2.39 band in a 16:9 window (vH 0.3): full width, bars top and bottom.
+  const W = 0.3 * 16 / 9;
+  const b = videoBandSlot(W, 0.3, 2.39);
+  near(b.w, W, 1e-12); near(b.h, W / 2.39, 1e-12);
+  // contain, a 16:9 eye in the 2.39 band: pillarboxed inside the band.
+  const c = videoPlaneSize({ boxAspect: 16 / 9, eyeAspect: 16 / 9, vH: 0.3, fit: 'contain', band: 2.39 });
+  near(c.h, b.h, 1e-12); near(c.w, b.h * 16 / 9, 1e-12);
+  assert.deepEqual(videoCrop({ boxAspect: 16 / 9, eyeAspect: 16 / 9, fit: 'contain', band: 2.39 }), [1, 1]);
+  // cover: the quad is the band, and the eye is cropped vertically to 16:9 -> 2.39.
+  const k = videoPlaneSize({ boxAspect: 16 / 9, eyeAspect: 16 / 9, vH: 0.3, fit: 'cover', band: 2.39 });
+  near(k.w, b.w, 1e-12); near(k.h, b.h, 1e-12);
+  const [fx, fy] = videoCrop({ boxAspect: 16 / 9, eyeAspect: 16 / 9, fit: 'cover', band: 2.39 });
+  near(fx, 1, 1e-12); near(fy, (16 / 9) / 2.39, 1e-12);
+  const r = cropRegion([0.5, 0, 0.5, 1], [0.5, 0.8]);
+  near(r[0], 0.625, 1e-12); near(r[1], 0.1, 1e-12); near(r[2], 0.25, 1e-12); near(r[3], 0.8, 1e-12);
+  // No band: exactly the old sizes.
+  assert.deepEqual(videoPlaneSize({ boxAspect: 4 / 3, eyeAspect: 2, vH: 0.3, fit: 'contain' }), videoPlaneSize({ boxAspect: 4 / 3, eyeAspect: 2, vH: 0.3, fit: 'contain', band: null }));
+});
+
+test('setVideo band on the plane: the quad takes the band, cover crops each eye about its centre, the result reports it', async () => {
+  const { out, rec, frame, v } = await videoRig();
+  const h = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }), { band: 2.39, fit: 'cover' });
+  assert.equal(h.band, 2.39);
+  frame();
+  const mi = plane(rec);
+  const W = v.vH * v.boxAspect;
+  const bandH = Math.min(v.vH, W / 2.39);
+  near(mi.node.scale[1], bandH, 1e-9);
+  const L = mi.material.params.get('dxrVidL');
+  const eyeA = 16 / 9;
+  const ba = Math.min(2.39, v.boxAspect) === 2.39 ? 2.39 : v.boxAspect;
+  if (eyeA < ba) {
+    near(L[3], eyeA / ba, 1e-9, 'rows cropped');
+    near(L[1], (1 - eyeA / ba) / 2, 1e-9, 'about the centre');
+  }
+  near(L[0], 0, 1e-12);
+  await out.setVideo(null);
+  out.remove();
+});
+
 test('setVideo guards: throws during an in-flight setSource; setSource / setRig refuse while a video is on; prepareSource is allowed; controls:page throws', async () => {
   const { out } = await videoRig();
   const swap = out.setSource('b.sog');

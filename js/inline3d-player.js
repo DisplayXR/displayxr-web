@@ -2407,7 +2407,7 @@ export function createVideoProxy() {
 
 let warnedSurfaceIgnored = false;
 /** Options that mean something only on a surface the player owns (A1, A4's parity table). */
-const SURFACE_IGNORED = ['band', 'poster', 'posterFormat', 'width', 'height', 'cornerRadius', 'feather', 'observe'];
+const SURFACE_IGNORED = ['poster', 'posterFormat', 'width', 'height', 'cornerRadius', 'feather', 'observe'];
 
 /**
  * Play titles on an EXISTING splat handle's video slot, with the same transport, playlist and
@@ -2451,7 +2451,9 @@ export function attachPlayer(splat, src, opts = {}) {
   }
   const canvas = splat.canvas || null;
   const container = given.chromeContainer || (canvas && canvas.parentElement) || null;
-  const setVideoOpts = { format: o.format, fit: o.fit || 'contain', autoplay: false };
+  // `band` is ./splat setVideo's letterbox slot (A5.2): the plane's window is the canvas box, so the
+  // bar's controls-in-bars layout (band below) lands on the same bars.
+  const setVideoOpts = { format: o.format, fit: o.fit || 'contain', autoplay: false, ...(o.band ? { band: o.band } : {}) };
 
   function makeElement(s, like) {
     const v = document.createElement('video');
@@ -2613,7 +2615,7 @@ export function attachPlayer(splat, src, opts = {}) {
         fullscreen: o.fullscreen,
         skin: o.skin,
         size: o.size,
-        band: null,
+        band: o.band,
         onBack: () => handle.back(),
       });
       ui.el = built.el;

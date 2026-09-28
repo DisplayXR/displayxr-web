@@ -290,8 +290,9 @@ await player.detach();         // setVideo(null): the splat, pose, lens and rig 
   are excluded on the handle as well as carrying `data-inline3d-overlay`.
 - **Differences from `addPlayer`:** `fullscreen` defaults to off (it would fullscreen the whole
   app's canvas); `transition: 'crossfade'` is `./splat` `setVideo`'s GPU crossfade (the same
-  `durationMs` / `easing`); `band`, `poster`, `posterFormat` and the tile options are ignored, with
-  a warning.
+  `durationMs` / `easing`); `band` is `setVideo`'s letterbox slot, and the controls sit in its bars
+  as on the canvas player; `poster`, `posterFormat` and the tile options are ignored, with a
+  warning.
 - **If something else takes the slot** (another `setVideo`, or `setVideo(null)`), the player stops
   and emits `'detached'` with `{ reason: 'superseded' | 'released' }`. It never fights for it.
 - The handle's own `setSource` rejects while a video is on, so `await player.detach()` first.

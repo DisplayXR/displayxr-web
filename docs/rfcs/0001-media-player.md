@@ -389,7 +389,7 @@ player.on('ended' | 'titlechange' | 'play' | 'pause' | 'timeupdate' | 'error' | 
 |---|---|---|
 | `format` (`'sbs' \| 'tb' \| 'mono'`) | yes | yes (passed to `setVideo`) |
 | `fit` (`'contain' \| 'cover'`) | yes | yes (passed to `setVideo`) |
-| `band` | yes | needs `setVideo` to take a band (follow-up in `./splat`); warns and ignores until then |
+| `band` | yes | yes: `./splat` `setVideo`'s `band` (A5.2) |
 | `transition: 'crossfade'` | yes | yes: `./splat` `setVideo`'s GPU crossfade (A5.1) |
 | `posterFormat` | yes | n/a: the scene is on screen until the first frame |
 | `skin`, `size`, `accent`, `title`, `skipButtons`, `keyboard` | yes | yes |
@@ -406,7 +406,9 @@ None of these block surface mode v1. Each makes it match the canvas player more 
 1. `setVideo(…, { transition, durationMs, easing })`, a GPU crossfade (A2). **Done** (#105): the
    outgoing quad is frozen and drawn blended over the incoming one; `attachPlayer` passes its
    crossfade through.
-2. `setVideo(…, { band })`, a letterbox slot of a target aspect (A4).
+2. `setVideo(…, { band })`, a letterbox slot of a target aspect (A4). **Done** (#105): contain is a
+   smaller quad, cover is the band with a centred texture crop; `attachPlayer` passes `band` and
+   lays its controls in the bars.
 3. The plane's on-screen rect on `setVideo`'s result, updated on resize, for controls in the bars (A4).
 
 ### A6. Plan

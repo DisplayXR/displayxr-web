@@ -283,6 +283,13 @@ export interface SplatVideoOptions {
   easing?: string | ((x: number) => number);
   /** Only `'frozen'`: the outgoing video dissolves from its last frame. */
   outgoing?: 'frozen';
+  /**
+   * A letterbox slot: the picture is fitted into a centred band of this aspect inside the tile
+   * (`2.39` or `'2.39:1'` for a scope band in a 16:9 tile), the rest of the element left clear —
+   * `./player`'s `band`, on the plane. `fit: 'cover'` fills the band and crops the eye image about
+   * its centre.
+   */
+  band?: number | string;
 }
 
 /** What `handle.setVideo(src)` resolves to. */
@@ -291,6 +298,8 @@ export interface SplatVideo {
   readonly video: HTMLVideoElement;
   readonly format: 'sbs' | 'tb' | 'mono';
   readonly fit: 'contain' | 'cover';
+  /** The band's aspect, or null. */
+  readonly band: number | null;
   /** What the swap did: `'crossfade'` only when it replaced a video on screen and asked to. Resolved at the swap, before the fade ends. */
   readonly transition: 'cut' | 'crossfade';
   /** `handle.setVideo(null)`, or a no-op if another setVideo has replaced this one. */
