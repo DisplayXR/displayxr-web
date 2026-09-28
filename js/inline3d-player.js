@@ -1361,8 +1361,9 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   let fsCover = null;
   let fsCoverToken = 0;
   function coverUntilRewoven() {
-    const p = rewoven && fullscreenCover ? rewoven() : null;
-    if (!p || diagSwitch('nofscover')) return; // flat path: nothing is woven, nothing to hide
+    if (!rewoven || !fullscreenCover || diagSwitch('nofscover')) return;
+    const p = rewoven();
+    if (!p) return; // flat path: nothing is woven, nothing to hide
     const token = ++fsCoverToken;
     if (!fsCover) {
       fsCover = document.createElement('div');

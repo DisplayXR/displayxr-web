@@ -641,7 +641,10 @@ function chromeTextPlates(root) {
   return plates;
 }
 
-/** The CSS box + dpr a window's canvas occupies: what a re-join of the weave keys on. */
+/** A pending rewoven() settles anyway ('hold-capped') after this many holds from the call. */
+const REWOVEN_MAX_HOLDS = 4;
+
+/** The CSS size + dpr of a window's canvas: what a pending rewoven() restarts on. */
 function boxKeyOf(canvas) {
   const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
   return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}`;
@@ -1190,8 +1193,11 @@ class Inline3D {
        * has drawn a stereo frame and then held for `firstWovenHoldMs`. For a canvas that is
        * already woven but whose rect is about to change (fullscreen, a layout resize): the
        * browser re-registers the moved rect and the same identity gap as a fresh canvas
-       * applies, so cover the canvas across the change and release on this. A real box change
-       * while it is pending restarts the hold; calling it again while pending returns the same
+       * applies, so cover the canvas across the change and release on this. A change of the
+       * canvas's CSS size or devicePixelRatio while it is pending restarts the hold (checked every
+       * frame, for every window kind; a move without a resize is not detected), and it settles
+       * anyway with `reason: 'hold-capped'` four holds after the call, so a size that never stops
+       * animating cannot keep a cover up. Calling it again while pending returns the same
        * promise, restarted. Before the first join it IS `firstWoven`; on a window that will not
        * weave it resolves that `woven: false` result. Same shape, never rejects.
        */
@@ -1974,7 +1980,7 @@ class Inline3D {
       fwRegAt: nowMs(),
       fwLayerAt: null,
       fwStereo: false,
-      // handle.rewoven(): null, or the pending { promise, resolve, calledAt, at, stereo } —
+      // handle.rewoven(): null, or the pending { promise, resolve, calledAt, at, stereo, box } —
       // firstWoven's two halves again, counted from the call (and from each later box change).
       rw: null,
       rwGone: null, // the reason this window will never weave again, once one arrived
@@ -2468,7 +2474,6 @@ class Inline3D {
 
   _sizeBuffer(win, sbs) {
     const { w: boxW, h: boxH } = this._eyeSize(win, sbs);
-    win.boxKey = boxKeyOf(win.canvas);
     win.eyeW = boxW;
     win.eyeH = boxH;
     win.canvas.width = sbs ? boxW * 2 : boxW; // SBS = two eye tiles wide
@@ -2518,11 +2523,7 @@ class Inline3D {
       // The on-screen box and the buffer are separate questions since the source cap (#88): a
       // box that moves (fullscreen) re-joins the weave at a new rect even when a capped buffer
       // stays the same size, so a pending rewoven() restarts on the BOX, not on the buffer.
-      const box = boxKeyOf(win.canvas);
-      if (box !== win.boxKey) {
-        win.boxKey = box;
-        this._restartRewoven(win);
-      }
+      this._noteRewovenBox(win);
       const { w, h } = this._eyeSize(win);
       if (w === win.eyeW && h === win.eyeH) return; // observer fired, the buffer didn't move
       this._sizeBuffer(win, /*sbs*/ true);
@@ -2842,8 +2843,20 @@ class Inline3D {
    * which knows nothing about whether the compositor has matched this canvas yet.
    */
   _tickFirstWoven(win) {
-    const rw = win.rw;
-    if (rw && rw.stereo && nowMs() - rw.at >= win.fwHoldMs) this._settleRewoven(win, true, 'hold-elapsed');
+    if (win.rw) {
+      // Every frame, for every window kind: the ResizeObserver only watches SDK-sized buffers, and
+      // no observer sees a dpr-only change.
+      this._noteRewovenBox(win);
+      const rw = win.rw;
+      const t = nowMs();
+      if (rw.stereo && t - rw.at >= win.fwHoldMs) this._settleRewoven(win, true, 'hold-elapsed');
+      // A box that never stops changing (a long CSS transition on width) would restart the hold
+      // forever and leave a cover up for good: once it has restarted, give up waiting
+      // REWOVEN_MAX_HOLDS holds after the call.
+      else if (rw.at > rw.calledAt && t - rw.calledAt >= REWOVEN_MAX_HOLDS * win.fwHoldMs) {
+        this._settleRewoven(win, true, 'hold-capped');
+      }
+    }
     if (win.fwResult || !win.fwStereo || win.fwLayerAt === null) return;
     if (nowMs() - win.fwLayerAt < win.fwHoldMs) return;
     this._settleFirstWoven(win, true, 'hold-elapsed');
@@ -2877,8 +2890,18 @@ class Inline3D {
       resolve = r;
     });
     const t = nowMs();
-    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false };
+    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false, box: boxKeyOf(win.canvas) };
     return promise;
+  }
+
+  /** A pending rewoven() restarts when the canvas's CSS size or dpr differs from the last look. */
+  _noteRewovenBox(win) {
+    const rw = win.rw;
+    if (!rw) return;
+    const box = boxKeyOf(win.canvas);
+    if (box === rw.box) return;
+    rw.box = box;
+    this._restartRewoven(win);
   }
 
   /** The canvas moved again (a box change, a new layer): the hold starts over from here. */

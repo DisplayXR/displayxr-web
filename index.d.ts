@@ -31,6 +31,8 @@ export interface TileOptions {
  *
  * - `woven: true, reason: 'hold-elapsed'` — a stereo frame is on a layer that has existed for
  *   `firstWovenHoldMs`. Drop the poster covering the canvas.
+ * - `woven: true, reason: 'hold-capped'` — `rewoven()` only: the canvas kept resizing, so it
+ *   stopped waiting four holds after the call. Drop the cover; the rect may still be settling.
  * - `woven: false` — the window will not weave (`'layer-failed'`, `'session-ended'`,
  *   `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat (image/video) or
  *   its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
@@ -42,7 +44,7 @@ export interface FirstWovenResult {
    * that, so the result is the SDK's worst-case hold rather than a report.
    */
   readonly confirmed: boolean;
-  readonly reason: 'hold-elapsed' | 'layer-failed' | 'session-ended' | 'removed' | 'unsupported';
+  readonly reason: 'hold-elapsed' | 'hold-capped' | 'layer-failed' | 'session-ended' | 'removed' | 'unsupported';
   /** Milliseconds from the add*() call to settling. */
   readonly ms: number;
 }
@@ -386,8 +388,11 @@ export interface TileHandle {
   onFirstWoven(cb: (result: FirstWovenResult) => void): () => void;
   /**
    * {@link TileHandle.firstWoven}, measured from NOW. Cover an already-woven canvas across a rect
-   * change (fullscreen, a layout resize), then release on this. A real box change while pending
-   * restarts the hold; a second call while pending returns the same promise, restarted. Before the
+   * change (fullscreen, a layout resize), then release on this. A change of the canvas's CSS size
+   * or devicePixelRatio while pending restarts the hold (checked every frame, any window kind; a
+   * move without a resize is not detected). It settles anyway, `woven: true, reason:
+   * 'hold-capped'`, four holds after the call, so a size that never stops animating cannot hold a
+   * cover up for good. A second call while pending returns the same promise, restarted. Before the
    * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
    */
   rewoven(): Promise<FirstWovenResult>;

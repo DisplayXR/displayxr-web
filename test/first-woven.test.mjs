@@ -414,6 +414,107 @@ test('rewoven: a real box change while pending restarts the hold', async () => {
   }
 });
 
+test('rewoven: an addScene canvas (no ResizeObserver) restarts on a resize, seen per frame', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const canvas = makeCanvas(400, 200);
+  const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  const p = h.rewoven();
+  clock = 150;
+  canvas.clientWidth = 800;
+  canvas.clientHeight = 400;
+  env.runFrame(2); // the frame sees the new box: restart at 150
+  clock = 240;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'restarted at 150, not settled at 200');
+  clock = 250;
+  env.runFrame(2);
+  assert.equal((await peek(p)).reason, 'hold-elapsed');
+  wall.close();
+});
+
+test('rewoven: a devicePixelRatio-only change restarts the hold', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(400, 200), () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  const p = h.rewoven();
+  clock = 150;
+  globalThis.window.devicePixelRatio = 2; // a zoom / a move to another monitor: same CSS box
+  env.runFrame(2);
+  clock = 240;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending');
+  clock = 250;
+  env.runFrame(2);
+  assert.equal((await peek(p)).woven, true);
+  wall.close();
+});
+
+test('rewoven: a ResizeObserver fire with an unchanged box does not restart the hold', async () => {
+  clock = 0;
+  const env = installEnv();
+  let roCb = null;
+  globalThis.ResizeObserver = class {
+    constructor(cb) {
+      roCb = cb;
+    }
+    observe() {}
+    disconnect() {}
+  };
+  try {
+    const wall = await newWall();
+    const canvas = makeCanvas(400, 200);
+    const h = wall.addImage(canvas, 'sbs.png', { firstWovenHoldMs: 100 });
+    env.images[0].onload();
+    await flush();
+    env.runFrame(2);
+    clock = 100;
+    env.runFrame(2);
+    assert.equal((await peek(h.firstWoven)).woven, true);
+    const p = h.rewoven();
+    clock = 150;
+    roCb(); // fired, but nothing moved
+    clock = 200;
+    env.runFrame(2);
+    assert.equal((await peek(p)).reason, 'hold-elapsed', 'held from the call (100), not the fire (150)');
+    wall.close();
+  } finally {
+    globalThis.ResizeObserver = undefined;
+  }
+});
+
+test("rewoven: a box that never stops changing settles 'hold-capped' four holds after the call", async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const canvas = makeCanvas(400, 200);
+  const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  const p = h.rewoven(); // called at 100
+  for (let t = 110; t < 500; t += 10) {
+    clock = t;
+    canvas.clientWidth += 1; // an endless width transition
+    env.runFrame(2);
+  }
+  assert.equal(await peek(p), 'pending');
+  clock = 500;
+  canvas.clientWidth += 1;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: false, reason: 'hold-capped', ms: 400 });
+  wall.close();
+});
+
 test('rewoven: released woven:false when the window goes away, and after a no-weave result', async () => {
   clock = 0;
   const env = installEnv();
