@@ -1,16 +1,17 @@
-// DisplayXR auto-3D 0.5.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.1'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.2'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
   const CONV_SCALE_MIN = 0.05, CONV_SCALE_MAX = 20;
 
   const TUNING = {
-    eyeScale: 0.5,      // per-eye width / element device width: a 2-view lenticular resolves about half anyway (porting pitfall 26)
+    eyeScale: 1,        // per-eye width / element DEVICE width (P0.2: was 0.5 of the page's store — a 1x page on a 2.5x panel got 519-px eyes)
+    maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
@@ -19,9 +20,13 @@ function dxrCore(cfg, cap, S) {
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
+    eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
+    eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
     guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
     guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
+    guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
+    guardRetryMs: 6000,  // ... the first trip stands down, then retries once after this long, whatever the 2D rate
     glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
   };
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
@@ -87,6 +92,7 @@ function dxrCore(cfg, cap, S) {
       haveViews: false, near: NaN, far: NaN, R: null,
       conv: { d: 0, src: 'estimator', via: null }, cover: null, savedStyle: null, displayOk: null,
       releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null,
+      lastTwoAt: 0, noDisplay: false, nd: false, eyesOn: false, twoRun: 0, shortRun: 0,
       stats: { calls: 0, stereo: 0, flat: 0, flatAfterEyes: 0, replays: 0, resizes: 0, xrFrames: 0, twoView: 0, shortView: 0 },
     };
     tracked.push(new WeakRef(st));
@@ -94,9 +100,12 @@ function dxrCore(cfg, cap, S) {
   }
 
   function realSizeFor(st) {
-    const L = st.L;
-    let eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale));
-    let eyeH = Math.max(2, Math.round(L.h * L.pr));
+    const L = st.L, c = st.canvas;
+    const cw = c.clientWidth, ch = c.clientHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, T.maxEyeDpr);
+    let eyeW, eyeH;
+    if (cw > 0 && ch > 0) { eyeW = Math.max(2, Math.round(cw * dpr * T.eyeScale)); eyeH = Math.max(2, Math.round(ch * dpr)); }
+    else { eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale)); eyeH = Math.max(2, Math.round(L.h * L.pr)); }
     if (st.glLim === undefined) {
       const gl = st.ad.gl(st);
       if (gl) {
@@ -134,7 +143,7 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
     if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
-    if (foreign || owner || guard.tripped || guard.measuring) return;
+    if (foreign || owner || guard.tripped || guard.retrying) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
     if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
@@ -217,11 +226,12 @@ function dxrCore(cfg, cap, S) {
       st.nextTry = Infinity;
       return;
     }
-    st.layerAt = now();
+    st.layerAt = now(); st.coverDropAt = 0;
     st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
     guard.onFlip(st);
     st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
     st.displayOk = null;
+    st.lastTwoAt = 0; st.noDisplay = false; st.nd = false; st.eyesOn = false; st.twoRun = 0; st.shortRun = 0;
     st.rampK = T.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
     if (!st.cover && st.rampK < 1) startRamp(st, 1);
     if (st.layer && !T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
@@ -337,19 +347,27 @@ function dxrCore(cfg, cap, S) {
     }
     if (st.layer !== layer) return;
     st.displayOk = false;
+    st.noDisplay = true; // the chip's outline "no display" pill, report { flat, no-display }
     stand(st, 'no display behind the layer (getDisplayInfo() null, no rendering modes) — is another DisplayXR Browser holding it? (browser#162)');
     st.nextTry = now() + 30000;
   }
   function promote(st) {
-    const s = st.canvas.style;
-    st.savedStyle = { willChange: s.willChange, transform: s.transform };
+    const c = st.canvas, s = c.style, cs = getComputedStyle(c);
+    st.savedStyle = { willChange: s.willChange, transform: s.transform, pin: null };
     s.willChange = 'transform';
-    if (getComputedStyle(st.canvas).transform === 'none') s.transform = 'translateZ(0)';
+    if (cs.transform === 'none') s.transform = 'translateZ(0)';
+    const isAuto = (p) => { try { const v = c.computedStyleMap().get(p); return !!v && String(v) === 'auto'; } catch (e) { return false; } };
+    const pin = {};
+    if (!s.width && isAuto('width')) pin.width = s.width = cs.width;
+    if (!s.height && isAuto('height')) pin.height = s.height = cs.height;
+    if (pin.width || pin.height) st.savedStyle.pin = pin;
   }
   function unpromote(st) {
     if (!st.savedStyle) return;
-    st.canvas.style.willChange = st.savedStyle.willChange;
-    st.canvas.style.transform = st.savedStyle.transform;
+    const s = st.canvas.style, sv = st.savedStyle;
+    s.willChange = sv.willChange;
+    s.transform = sv.transform;
+    if (sv.pin) for (const k of ['width', 'height']) if (sv.pin[k] && s[k] === sv.pin[k]) s[k] = ''; // unless the page set its own since
     st.savedStyle = null;
   }
 
@@ -361,15 +379,19 @@ function dxrCore(cfg, cap, S) {
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
     const t = now();
+    let two = false;
     if (views && views.length >= 2) {
+      two = true;
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
       st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14]));
     } else {
       st.stats.shortView++;
-      if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; }
+      if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
     }
+    trackEyes(st, t, two);
     if (!st.haveViews && st.displayOk !== true && st.drawnAt && t - st.drawnAt > T.noViewsMs) {
+      st.noDisplay = !st.lastTwoAt; // never a 2-view frame in this activation: most likely no weave slot
       stand(st, `no 2-view frame within ${T.noViewsMs} ms (nobody tracked, or this browser instance has no weave slot — browser#162)`, { staged: true });
       st.nextTry = st.tries < 3 ? t + 15000 : Infinity;
       return;
@@ -390,6 +412,24 @@ function dxrCore(cfg, cap, S) {
     guard.tick(st, t);
     chip.frame(st);
     if (st.stats.xrFrames % 20 === 0) notify();
+  }
+
+  function trackEyes(st, t, two) {
+    if (two) {
+      st.lastTwoAt = t; st.shortRun = 0;
+      if (!st.twoRun) st.twoRun = t;
+      if (!st.eyesOn && t - st.twoRun >= T.eyesOnMs) st.eyesOn = true;
+    } else {
+      st.twoRun = 0;
+      if (!st.shortRun) st.shortRun = t;
+      if (st.eyesOn && t - st.shortRun >= T.eyesOffMs) st.eyesOn = false;
+    }
+    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && t - st.layerAt > T.coverMaxMs));
+    if (nd !== st.nd) {
+      st.nd = nd;
+      if (nd) info(`no 2-view frame in the ${T.coverMaxMs} ms since the layer: 3D display not available to this window (another browser instance holding it?) — flat until one arrives`);
+      notify();
+    }
   }
 
   function takeOutCover(st) {
@@ -661,12 +701,14 @@ function dxrCore(cfg, cap, S) {
     }
     if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
+      st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
       if (st.rampK < 1) startRamp(st, 1);
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
       dropCover(st);
+      st.coverDropAt = t;
       st.coverForced = true;
       info(`cover released at its ${T.coverMaxMs} ms maximum with no 2-view frame yet (nobody tracked?): flat until the eyes arrive`);
       return;
@@ -687,11 +729,13 @@ function dxrCore(cfg, cap, S) {
     if (foreign) return { status: 'standdown', reason: foreign };
     if (S.optedOut()) return { status: 'optout' };
     if (guard.tripped) return { status: 'guard', reason: guard.tripped };
-    if (guard.measuring) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.measuring };
+    if (guard.retrying) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.retrying };
+    if (st && st.active && st.nd) return { status: 'flat', engine: st.engine, reason: 'no-display' };
     if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
+    if (!st && lastTarget && lastTarget.noDisplay) return { status: 'flat', engine: lastTarget.engine, reason: 'no-display' };
     const flat = flatNote();
     if (flat) return { status: 'flat', engine: flat.engine, reason: flat.flatReason };
     return { status: 'idle' };
@@ -699,11 +743,11 @@ function dxrCore(cfg, cap, S) {
   function status() {
     const s = statusOf(), t = lastTarget || candidate;
     return {
-      state: s.status, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
+      state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
-      convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews),
+      convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
-      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp),
+      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp), retrying: !!guard.retrying,
     };
   }
   let lastReport = '';
@@ -768,7 +812,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood,
+    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
@@ -791,17 +835,15 @@ function dxrCore(cfg, cap, S) {
 function dxrGuard(core) {
   const T = core.T;
   const RING = 60, MAX_DT = 250, MIN_BASE = 20, ARM_MS = 1000;
-  const REMEASURE_MS = 2000, MIN_REMEASURE = 5; // intervals the re-measure needs to be a rate at all
   const g = new WeakMap(); // st -> { ring[], base, readyAt, last, dts[], sum }
   const of = (st) => { let s = g.get(st); if (!s) g.set(st, (s = { ring: [], base: 0, readyAt: 0, last: 0, dts: [], sum: 0 })); return s; };
   const resetWindow = (s) => { s.readyAt = 0; s.last = 0; s.dts.length = 0; s.sum = 0; };
-  const api = { tripped: null, measuring: null };
+  const api = { tripped: null, retrying: null };
   let retried = false; // the one retry this document gets
-  let M = null;        // the re-measure: { st, t0, timer }
+  let retryTimer = 0;
 
   document.addEventListener('visibilitychange', () => {
     for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
-    if (M) M.t0 = 0;
   });
 
   const rateOf = (ring) => {
@@ -811,16 +853,10 @@ function dxrGuard(core) {
   };
 
   api.draw = (st, t) => {
-    if (st.active) return;
-    const s = of(st), r = s.ring;
-    const mine = !!M && M.st === st;
-    if (mine) {
-      if (st.releasing || document.hidden) return; // the staged stand is still drawing its mono frame
-      if (!M.t0) { M.t0 = t; r.length = 0; }
-    }
+    if (st.active || st.releasing) return; // the staged stand's mono frame is not a page draw
+    const r = of(st).ring;
     r.push(t);
     if (r.length > RING) r.shift();
-    if (mine && t - M.t0 >= REMEASURE_MS) decide();
   };
 
   api.onFlip = (st) => {
@@ -832,14 +868,15 @@ function dxrGuard(core) {
   };
 
   api.tick = (st, t) => {
-    if (api.tripped || M) return;
+    if (api.tripped || api.retrying) return;
     const s = of(st);
     const settled = st.active && !st.cover && !st.ramp && !st.releasing && !st.offTok && core.rampK(st) === 1;
     if (!settled || document.hidden) { resetWindow(s); return; }
     if (!s.readyAt) s.readyAt = t;
     const prev = s.last;
     s.last = t;
-    if (t - s.readyAt < ARM_MS || !prev) return;
+    const warm = (st.coverDropAt || st.layerAt || 0) + T.guardWarmupMs;
+    if (t - s.readyAt < ARM_MS || t < warm || !prev) return;
     const dt = t - prev;
     if (!(dt > 0) || dt > MAX_DT) return; // a hitch (GC, tab switch, debugger) is not a rate
     s.dts.push(dt); s.sum += dt;
@@ -849,48 +886,39 @@ function dxrGuard(core) {
     while (s.dts.length && s.sum - s.dts[0] >= T.guardMs) s.sum -= s.dts.shift();
   };
 
-  const in3D = (fps) => `frame-rate guard: ${fps.toFixed(1)} fps in 3D over ${(T.guardMs / 1000).toFixed(1)} s`;
+  const in3D = (fps, base) => `frame-rate guard: ${fps.toFixed(1)} fps in 3D over ${(T.guardMs / 1000).toFixed(1)} s` +
+    (base ? ` (2D ran at ${base.toFixed(1)})` : ' (no 2D baseline)');
+  const hold = (v) => { for (const w of core.tracked) { const o = w.deref(); if (o) { o.nextTry = v; if (!v) o.tries = 0; } } };
   function trip(st, fps, base) {
-    if (!base && !retried) {
-      const why = `${in3D(fps)} (no 2D baseline) — measuring the page's own 2D rate`;
-      api.measuring = why;
-      M = { st, t0: 0, timer: 0 };
-      of(st).ring.length = 0;
-      for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
-      M.timer = setTimeout(decide, T.rampMs + T.releaseMaxMs + REMEASURE_MS + 1500);
+    if (!retried) {
+      retried = true;
+      const why = `${in3D(fps, base)} — retrying once in ${(T.guardRetryMs / 1000).toFixed(1)} s (the page may still have been loading)`;
+      api.retrying = why;
+      hold(Infinity);
+      retryTimer = setTimeout(retry, T.guardRetryMs);
       core.turnOff(st, why); // logs the one "back to 2D: …" line
       core.notify();
       return;
     }
-    block(in3D(fps) + (base ? ` (2D ran at ${base.toFixed(1)})` : ' (no 2D baseline)') + (retried ? ', after one retry' : '') + ' — 2D for the rest of this page');
+    block(`${in3D(fps, base)}, after one retry — 2D for the rest of this page`);
     core.turnOff(st, api.tripped); // logs the one "back to 2D: …" line
+    core.notify();
+  }
+  function retry() {
+    retryTimer = 0;
+    if (!api.retrying || api.tripped) return;
+    api.retrying = null;
+    core.info('frame-rate guard: retrying once');
+    hold(0);
+    for (const w of core.tracked) { const o = w.deref(); if (o) core.wake(o); }
     core.notify();
   }
   function block(why) {
     api.tripped = why;
-    api.measuring = null;
-    for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
+    api.retrying = null;
+    clearTimeout(retryTimer); retryTimer = 0;
+    hold(Infinity);
     core.standDownForGood();
-  }
-  function decide() {
-    if (!M) return;
-    const { st, timer } = M;
-    M = null;
-    clearTimeout(timer);
-    const r = rateOf(of(st).ring);
-    if (r.n >= MIN_REMEASURE && r.fps < T.guardFps) {
-      retried = true;
-      api.measuring = null;
-      core.info(`frame-rate guard: the page runs at ${r.fps.toFixed(1)} fps in 2D too — not the conversion's cost; retrying once with that baseline`);
-      for (const w of core.tracked) { const o = w.deref(); if (o) { o.nextTry = 0; o.tries = 0; } }
-      core.notify();
-      return;
-    }
-    block(r.n >= MIN_REMEASURE
-      ? `frame-rate guard: 3D ran below ${T.guardFps} fps where the page runs at ${r.fps.toFixed(1)} fps in 2D — 2D for the rest of this page`
-      : `frame-rate guard: 3D ran below ${T.guardFps} fps and the page draws too little in 2D to compare (${r.n} intervals in ${(REMEASURE_MS / 1000).toFixed(1)} s) — 2D for the rest of this page`);
-    core.info(api.tripped);
-    core.notify();
   }
 
   return api;
@@ -902,6 +930,7 @@ function dxrChip(ctl, S) {
   const INSET = 8;
   const PILL_W = 38, CARET_W = 22;            // + 2 px border = 40 collapsed, 62 expanded (<= 64)
   const H_FINE = 24, H_COARSE = 44;           // + border, inside 28 / 44
+  const NO_DISPLAY = '3D display not available to this window';
   const LIVE_EXPAND_MS = 3000, OFF_EXPAND_MS = 5000, FS_IDLE_MS = 3000, IDLE_TICK_MS = 500, HIT_EVERY = 30;
   const mq = (q) => { try { return matchMedia(q); } catch (e) { return { matches: false, addEventListener() {} }; } };
   const coarseMq = mq('(pointer: coarse)');
@@ -1063,6 +1092,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
       e.preventDefault();
       if (view === 'live') ctl.setEnabled(false);
       else if (view === 'off' || view === 'offer') ctl.setEnabled(true);
+      else if (view === 'nodisplay') openMenu(); // nothing to switch on here: the menu still offers "3D on this site"
     });
     caret.addEventListener('click', (e) => { const drag = down && down.moved; down = null; if (!drag) toggleMenu(); });
     pill.addEventListener('contextmenu', (e) => { e.preventDefault(); openMenu(); });
@@ -1155,6 +1185,8 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
 
   function viewOf(st) {
     if (!st || !st.canvas) return 'hidden';
+    if (st.retrying) return st.enabled ? 'live' : 'off';
+    if (st.state === 'flat' && st.reason === 'no-display') return st.enabled ? 'nodisplay' : 'off';
     if (st.state === 'live' || st.waiting) {
       if (!st.enabled) return 'off'; // turning off: fading out / staged under the out-cover
       if (st.coverUp && !(st.layerAt && now() >= st.layerAt + st.holdMs)) return 'hidden'; // R6
@@ -1178,7 +1210,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     }
     if (next !== 'hidden' && !build()) return;
     observe(next !== 'hidden' ? st.canvas : null);
-    idle(next === 'offer' || next === 'off'); // no session loop: poll the placement
+    idle(next === 'offer' || next === 'off' || next === 'nodisplay' || !!st.retrying); // no session loop (or not one we can count on): poll the placement
     if (menuOpen) syncMenu();
     render();
     place();
@@ -1198,9 +1230,11 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     const on = view === 'live';
     wrap.classList.toggle('outline', !on);
     wrap.classList.toggle('exp', menuOpen || hovering || now() < expandedUntil);
-    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.haveViews && !s.ramping ? 'g' : 'a'));
+    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.tracking && !s.ramping && !s.retrying ? 'g' : 'a'));
     setA(pill, 'aria-pressed', String(on));
-    setA(pill, 'aria-label', on ? '3D view: on. Turn off for this site' : view === 'offer' ? '3D view available. Turn on for this site' : '3D view: off. Turn on for this site');
+    const nd = view === 'nodisplay';
+    setA(pill, 'aria-label', nd ? NO_DISPLAY : on ? '3D view: on. Turn off for this site' : view === 'offer' ? '3D view available. Turn on for this site' : '3D view: off. Turn on for this site');
+    if (nd) setA(wrap, 'title', NO_DISPLAY); else if (wrap.hasAttribute('title')) wrap.removeAttribute('title');
   }
 
   const boxH = () => (coarseMq.matches ? H_COARSE : H_FINE) + 2;
@@ -1326,7 +1360,7 @@ function dxrDev(core, ctl) {
       const s = st.stats;
       text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * site.convScale).toPrecision(3)} (${convSource(st)})` +
         ` · 3D ${s.stereo} · flat ${s.flat} · replay ${s.replays}` +
-        (st.haveViews ? '' : ' · waiting for eyes');
+        (st.nd ? ' · no 3D display for this window' : st.haveViews ? (st.eyesOn ? '' : ' · eyes lost') : ' · waiting for eyes');
     } else if (busy) text = 'DXR auto-3D: converting…';
     else if (foreign) text = `DXR auto-3D: standing down (${foreign})`;
     else if (flat) text = `DXR auto-3D: 2D (${flat.engine}) — ${flat.flatReason}`;
@@ -1376,7 +1410,7 @@ function dxrDev(core, ctl) {
           page: d.page,
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
-          active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews,
+          active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
           convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing,
           rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
