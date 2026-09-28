@@ -227,7 +227,7 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
     if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
-    if (foreign || owner || guard.tripped) return;
+    if (foreign || owner || guard.tripped || guard.measuring) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
     if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
@@ -907,6 +907,7 @@ function dxrCore(cfg, cap, S) {
     if (foreign) return { status: 'standdown', reason: foreign };
     if (S.optedOut()) return { status: 'optout' };
     if (guard.tripped) return { status: 'guard', reason: guard.tripped };
+    if (guard.measuring) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.measuring };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
