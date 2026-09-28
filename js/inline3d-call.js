@@ -99,6 +99,7 @@ import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } fro
 import { normalizeMono3D, resolveLift, createLiftPool, createFrameWatch } from './call/lift.js';
 
 import { dxrSignaling } from './call/signaling.js';
+import { lumaFromRgba, createDisparityTrack, createFocusTracker, downsampleLuma } from './call/disparity.js';
 export { dxrSignaling, peerjsCloud, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
 export {
   WIRE_VERSION,
@@ -114,6 +115,7 @@ export {
   CALL_ACCENTS,
 };
 export { createLiveGate } from './call/wire.js';
+export { measureFocusDisparity } from './call/disparity.js';
 export { convergenceShiftPx, lowPass, clampShift, eyeCropRect, mirrorSwapOps, mirrorSwapPixels, maxBitrateKbps } from './call/wire.js';
 export { preferVideoCodecs, sortCodecCapabilities, VIDEO_CODEC_ORDER } from './call/sdp.js';
 export { MeshTransport, clampMaxPeers } from './call/transport.js';
@@ -137,6 +139,12 @@ const STATS_TICK_MS = 500;
 const SPEAKING_LEVEL = 0.02;
 const LAYER_RETRIES = 4;
 const LIFT_RETRIES = 2;
+// Auto-convergence sampling: ~5 Hz on a copy whose eye is at most this wide (enough for sub-pixel
+// disparity on a face; small enough to stay a few ms per measurement).
+const AUTO_CONV_INTERVAL_MS = 200;
+const AUTO_CONV_EYE_WIDTH = 240;
+// WebCodecs pixel formats whose plane 0 is luma (Y): read directly, no colour conversion.
+const Y_PLANE_FORMATS = new Set(['I420', 'I420A', 'I422', 'I444', 'NV12']);
 const DEFAULT_BROWSER_URL = 'https://github.com/DisplayXR/displayxr-browser';
 export const PLATE_TEXT = Object.freeze({
   unreachable: "Can't reach this participant — the network needs a relay (TURN)",
@@ -166,6 +174,10 @@ export function normalizeCallOptions(opts = {}) {
     calibration: opts.calibration && typeof opts.calibration === 'object' ? { ...opts.calibration } : {},
     rectify: typeof opts.rectify === 'function' ? opts.rectify : null,
     audio: opts.audio === undefined ? true : !!opts.audio,
+    // Auto-convergence (call/disparity.js): measure the disparity of the point between each SBS
+    // peer's eyes and shift the eyes so it sits at the display plane. The depth slider stays an
+    // offset on top. Off = the pair as sent (plus any `hint`).
+    autoConverge: opts.autoConverge === undefined ? true : !!opts.autoConverge,
     mono3D: normalizeMono3D(opts.mono3D),
     maxPeers: clampMaxPeers(opts.maxPeers === undefined ? DEFAULT_MAX_PEERS : opts.maxPeers),
     // Extra lift() options for lifted tiles (models, ort, quality, providers). The call's own
@@ -1219,6 +1231,17 @@ class Tile {
     this.speaking = false;
     this.quality = null;
     this.conv = createConvergence();
+    this.autoTrack = createDisparityTrack();
+    this.autoFocus = createFocusTracker();
+    this.autoAt = 0;
+    this.autoCanvas = null;
+    this.autoLocked = false;
+    this.autoStats = { n: 0, ms: 0, readMs: 0, method: null, via: null };
+    this.autoPending = false;
+    // Bumped on every stream change and on destroy(): an async copyTo() that resolves after either
+    // belongs to a stream this tile no longer shows, and is dropped (review of #92).
+    this.autoGen = 0;
+    this.destroyed = false;
     this.conv.depth = call.depth;
     this.hintGate = rateGate(HINT_MAX_HZ);
     this.layerFails = 0;
@@ -1263,6 +1286,15 @@ class Tile {
       hello: this.hello,
       quality: this.quality,
       convergencePx: this.conv.current,
+      // Auto-convergence: the measured disparity (source px, null until a lock) and the mean cost of
+      // one measurement including the frame readback.
+      autoConverge: {
+        disparityPx: this.conv.measuredPx,
+        ms: this.autoStats.n ? this.autoStats.ms / this.autoStats.n : null,
+        readMs: this.autoStats.n ? this.autoStats.readMs / this.autoStats.n : null,
+        method: this.autoStats.method,
+        via: this.autoStats.via,
+      },
       lift: this.lifted
         ? Object.freeze({
             live: this.liftLive,
@@ -1278,6 +1310,7 @@ class Tile {
     if (this.video.srcObject !== stream) {
       this.video.srcObject = stream;
       this.audio.srcObject = stream;
+      this._resetAutoConverge(); // a new stream may be a new camera: measure afresh
     }
     this.video.play().catch(() => {});
     this.audio.play().catch(() => {});
@@ -1572,6 +1605,7 @@ class Tile {
       c.width = 2 * outW;
       c.height = outH;
     }
+    if (this.call.o.autoConverge) this._sampleDisparity(v, W, H);
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
     for (const eye of [0, 1]) {
@@ -1580,7 +1614,114 @@ class Tile {
     }
   }
 
+  /**
+   * Auto-convergence: a few times a second, measure the disparity of the point between the remote
+   * person's eyes on a small grayscale copy of the SOURCE frame (before our shift, so there is no
+   * feedback loop) and hand it to the convergence state, which halves it per eye and low-passes it.
+   * A failed measurement holds the last good value.
+   */
+  _sampleDisparity(v, W, H) {
+    const now = performance.now();
+    if (this.autoPending || now - this.autoAt < AUTO_CONV_INTERVAL_MS) return;
+    this.autoAt = now;
+    // Preferred: WebCodecs. `new VideoFrame(video)` + an ASYNC copyTo() of the decoded frame, reading
+    // the luma (Y) plane directly: no synchronous GPU->CPU canvas readback on the paint path (that
+    // readback, not the matching, was ~25 ms of a ~30 ms measurement).
+    if (typeof VideoFrame === 'function') {
+      let frame = null;
+      try {
+        frame = new VideoFrame(v);
+      } catch {
+        frame = null;
+      }
+      if (frame && Y_PLANE_FORMATS.has(frame.format)) {
+        this.autoPending = true;
+        const gen = this.autoGen;
+        const fw = frame.visibleRect ? frame.visibleRect.width : frame.displayWidth;
+        const fh = frame.visibleRect ? frame.visibleRect.height : frame.displayHeight;
+        const buf = new Uint8Array(frame.allocationSize());
+        frame
+          .copyTo(buf)
+          .then((layout) => {
+            if (gen !== this.autoGen) return; // the stream changed or the tile is gone: stale frame
+            const t0 = performance.now();
+            const f = Math.max(1, Math.ceil(fw / 2 / AUTO_CONV_EYE_WIDTH));
+            const ds = downsampleLuma(buf, layout[0].offset, layout[0].stride, fw, fh, f);
+            this._applyMeasurement(ds.img, ds.w, ds.h, ds.w / fw, now, performance.now() - t0, 'videoframe');
+          })
+          .catch(() => {
+            if (gen === this.autoGen) this._applyMeasurement(null, 0, 0, 1, now, 0, 'videoframe');
+          })
+          .finally(() => {
+            frame.close();
+            this.autoPending = false;
+          });
+        return;
+      }
+      if (frame) frame.close();
+    }
+    // Fallback: a small canvas + getImageData (synchronous readback).
+    const s = Math.min(1, AUTO_CONV_EYE_WIDTH / (W / 2));
+    const w = Math.max(2, Math.round((W * s) / 2) * 2);
+    const h = Math.max(2, Math.round(H * s));
+    if (!this.autoCanvas) this.autoCanvas = document.createElement('canvas');
+    const c = this.autoCanvas;
+    if (c.width !== w || c.height !== h) {
+      c.width = w;
+      c.height = h;
+    }
+    const g = c.getContext('2d', { willReadFrequently: true });
+    let img = null;
+    try {
+      g.drawImage(v, 0, 0, w, h);
+      img = lumaFromRgba(g.getImageData(0, 0, w, h).data, w * h);
+    } catch {
+      img = null; // a frame that cannot be read (tainted, not decoded yet): skip it
+    }
+    this._applyMeasurement(img, w, h, w / W, now, performance.now() - now, 'canvas');
+  }
+
+  /**
+   * Measure one grabbed frame and hand the disparity to the convergence state (which halves it per
+   * eye and low-passes it). A failed measurement holds the last good value. `readMs` = main-thread
+   * time spent getting the pixels.
+   */
+  _applyMeasurement(img, w, h, s, at, readMs, via) {
+    if (this.destroyed) return;
+    const t = performance.now();
+    const m = img ? this.autoFocus.measure(img, w, h, at) : null;
+    const d = this.autoTrack.push(m ? m.d / s : null);
+    this.conv.measuredPx = d;
+    this.autoStats.n++;
+    this.autoStats.readMs += readMs;
+    this.autoStats.ms += readMs + (performance.now() - t);
+    this.autoStats.method = m ? m.method : null;
+    this.autoStats.via = via;
+    if (m && !this.autoLocked) {
+      this.autoLocked = true;
+      this.call.log('auto-converge', {
+        peer: this.id,
+        disparityPx: Math.round(d * 10) / 10,
+        at: { x: Math.round(m.x / s), y: Math.round(m.y / s) },
+        ncc: Math.round(m.c * 100) / 100,
+        method: m.method,
+        via,
+        ms: Math.round(readMs + (performance.now() - t)),
+      });
+    }
+  }
+
+  _resetAutoConverge() {
+    this.autoGen++;
+    this.autoTrack.reset();
+    this.autoFocus.reset();
+    this.conv.measuredPx = null;
+    this.autoLocked = false;
+  }
+
   destroy() {
+    this.destroyed = true;
+    this.autoGen++;
     clearTimeout(this.helloTimer);
     clearTimeout(this.layerTimer);
     clearTimeout(this.leaveTimer);
