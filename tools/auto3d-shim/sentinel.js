@@ -26,15 +26,26 @@
 //                   accessor slows every element's id read, risk R2), armed (a) on every <canvas>
 //                   in the DOM at readystatechange → 'interactive' — before deferred / module
 //                   scripts run, and `new Application(canvas)` reads the id BEFORE it creates the
-//                   context (risk R1) — and (b) on a canvas's first webgl / webgl2 /
-//                   experimental-webgl getContext(). The first WebGL context also starts the
+//                   context (risk R1) — (b) on every <canvas> ADDED to the document, parser- or
+//                   script-inserted, through one MutationObserver (childList + subtree on the
+//                   document) from document start until an app is found / the traps come off / the
+//                   first mutation after load + 10 s (it disconnects itself: no timer), and (c) on
+//                   a canvas's first webgl / webgl2 / experimental-webgl getContext(). The first
+//                   WebGL context also starts the
 //                   globals search: `window.pc.app`, `pc.AppBase.getApplication()`, `window.app`,
 //                   in the next microtask, at DOMContentLoaded / load, then every 500 ms, 40 times
 //                   (once per document). There is NO `window.pc` accessor ('pc' in window stays
 //                   false). A canvas trap is removed once an app is found, on a '2d' context, or
 //                   10 s after load. The core loads only when an app is actually found.
-//     Not seen (PlayCanvas): a canvas created by script (after 'interactive') with no global —
-//     its id is read before its context exists. The sentinel says so, once, in the console.
+//     Not seen (PlayCanvas): a canvas created by script with no global AND handed to
+//     `new Application()` in the SAME task that inserted it (or before inserting it) — the
+//     observer's callback is a microtask, so the id is read before the trap exists, and before the
+//     context does. The sentinel says so, once, in the console. A canvas inserted in one task and
+//     used in a later one (the launcher pattern: create, insert, await config / scripts, then
+//     `new Application`) is armed by the observer and found.
+//   - once a canvas goes live (any engine), the core calls S.settle(canvas): the PlayCanvas search
+//     (poll, id traps, observer) stops, unless a DIFFERENT canvas has a WebGL context, and restarts if
+//     one gets one later. S.disarm() (the core standing down for good) takes everything off for good.
 //   - the page's opt-out, `<meta name="displayxr-auto3d" content="off">` (S.optedOut()): checked on
 //     the first WebGL context and again when an engine is found; opted out = the core is never
 //     loaded, the traps come off, one { status: 'optout' } report, one console line. Once the core
@@ -57,8 +68,9 @@
 //   4. an own, non-enumerable `id` accessor on armed <canvas> elements (none on a page without
 //      canvases), plus, for the rest of a task in which an armed canvas's id was read, a one-shot
 //      non-enumerable setter for that key on Object.prototype;
-//   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange',
-//   no other window key, no prototype descriptor anywhere else.
+//   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange' and
+//   the one MutationObserver on the document (not page-visible), no other window key, no prototype
+//   descriptor anywhere else.
 function dxrSentinel(cfg, cap) {
   const TAG = '[dxr-auto3d]';
   const MARK = Symbol.for('dxr.auto3d');
@@ -75,6 +87,7 @@ function dxrSentinel(cfg, cap) {
   const getAttr = Element.prototype.getAttribute;
   const micro = queueMicrotask;
   const sTimeout = setTimeout, cTimeout = clearTimeout;
+  const MO = typeof MutationObserver === 'function' ? MutationObserver : null;
   const perfNow = performance.now.bind(performance);
   const info = (...a) => console.info(TAG, ...a);
 
@@ -198,11 +211,13 @@ function dxrSentinel(cfg, cap) {
     typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
   const nsOf = (pc) => (pc && typeof pc === 'object' && (pc.AppBase || pc.Application) ? pc : null);
   let pcFound = false;
+  let retired = false;  // S.disarm(): nothing is armed again in this document
   function foundPC(app, how, ns) {
     if (pcFound) return;
     pcFound = true;
     disarmCanvases(); // the id traps have done their job
     stopPoll();
+    unobserve();
     let g = null;
     try { g = window.pc; } catch (e) { /* ignore */ }
     const c = signal('PlayCanvas');
@@ -237,7 +252,7 @@ function dxrSentinel(cfg, cap) {
     micro(() => removeKeyTrap(key));
   }
   function arm(c) {
-    if (done || pcFound || armed.has(c) || !ID || !ID.get || !ID.set) return;
+    if (done || pcFound || retired || armed.has(c) || !ID || !ID.get || !ID.set) return;
     try {
       defProp(c, 'id', {
         configurable: true, enumerable: false,
@@ -287,8 +302,8 @@ function dxrSentinel(cfg, cap) {
     try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
   }
   function startPoll() {
-    if (polling) return;
-    polling = true;
+    if (polling || retired) return;
+    polling = true; polls = 0;
     micro(lookGlobals);
     document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
     window.addEventListener('load', lookGlobals, { once: true });
@@ -308,6 +323,36 @@ function dxrSentinel(cfg, cap) {
       'global is not visible (an engine-side announce hook would fix it).');
   }
   function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
+
+  // The parse-time observer (R1 (b) above). Cheap on purpose: the callback never walks the mutation
+  // records (2,000 parser-inserted nodes cost ~0.5 ms to visit from JS); it reads ONE live
+  // `document.getElementsByTagName('canvas')` collection, which the engine keeps cached, and arms any
+  // canvas it has not seen yet. No timer: past its deadline (load + 10 s) the next mutation
+  // disconnects it.
+  let mo = null, canvasList = null;
+  const moSeen = new WeakSet(); // arm each canvas at most once from here (a '2d' canvas stays unarmed)
+  function onMutations() {
+    if (done || pcFound || retired || (loaded && perfNow() > moDeadline)) { unobserve(); return; }
+    const l = canvasList;
+    for (let i = 0; i < l.length; i++) { const c = l[i]; if (!moSeen.has(c)) { moSeen.add(c); arm(c); } }
+  }
+  let moDeadline = Infinity;
+  function observe() {
+    if (mo || !MO || done || pcFound || retired) return;
+    try { canvasList = apply(byTag, document, ['canvas']); mo = new MO(onMutations); mo.observe(document, { childList: true, subtree: true }); } catch (e) { mo = null; }
+  }
+  function unobserve() { if (mo) { try { mo.disconnect(); } catch (e) { /* ignore */ } mo = null; canvasList = null; } }
+
+  // A canvas went live (S.settle): the PlayCanvas search has found what this document converts,
+  // unless another canvas has a WebGL context (an app we have not found may still be there).
+  let settledOn = null;
+  function settle(canvas) {
+    settledOn = canvas;
+    for (const c of glCanvases) if (c !== canvas) return;
+    disarmCanvases(); stopPoll(); unobserve();
+    polling = false; // a WebGL context on another canvas later starts the search again
+  }
+  const glCanvases = [];
   const descCanvas = (c) => {
     if (!c) return 'canvas';
     let id = '';
@@ -315,7 +360,7 @@ function dxrSentinel(cfg, cap) {
     return 'canvas' + (id ? '#' + id : '');
   };
 
-  const disarm = () => { disarmCanvases(); stopPoll(); for (const k of [...keyTraps]) removeKeyTrap(k); };
+  const disarm = () => { retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); };
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;
@@ -327,6 +372,7 @@ function dxrSentinel(cfg, cap) {
       if (WEBGL[type] !== 1 || seenGL.has(c)) return;
       seenGL.add(c);
       if (!glCanvas) glCanvas = c;
+      if (c !== settledOn) glCanvases.push(c);
       signal(null); // the first engine / WebGL signal: the page's opt-out
       if (done) return;
       arm(c);
@@ -353,6 +399,7 @@ function dxrSentinel(cfg, cap) {
       if (!loaded && s === 'complete') {
         loaded = true;
         const t = perfNow() + 10000;
+        moDeadline = t;
         for (const c of armed.keys()) armed.set(c, t);
         scheduleSweep();
       }
@@ -360,6 +407,8 @@ function dxrSentinel(cfg, cap) {
       if (loaded) document.removeEventListener('readystatechange', onReady);
     };
     let armedDom = false;
+    if (loaded) moDeadline = perfNow() + 10000; // injected into an already-loaded document
+    observe();
     if (document.readyState === 'loading') document.addEventListener('readystatechange', onReady);
     else onReady();
   }
@@ -371,6 +420,7 @@ function dxrSentinel(cfg, cap) {
     foreign: () => foreign,       // why the page owns XR in this document, or null
     onForeign(cb) { foreignCbs.push(cb); },
     optedOut,                     // <meta name="displayxr-auto3d" content="off"> (sticky once seen)
-    disarm,                       // take every trap off (the core never needs it today)
+    disarm,                       // take every trap off, for good (the core: standing down for this document)
+    settle,                       // a canvas went live: stop the PlayCanvas search unless another canvas has WebGL
   });
 }
