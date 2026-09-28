@@ -720,13 +720,18 @@ function dxrThree(core) {
     const face = st.call('getActiveCubeFace'), level = st.call('getActiveMipmapLevel');
     const sw = seed ? null : taintedSwaps(st, scene); // read before the left draw: the same textures
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st); // the eye pair is one renderer frame here too (see eyeFrame)
+    let fr = null;
     try {
+      fr = eyeFrame(fi, 0, fr);
       st.call('render', scene, stereo ? aimEye(st, camera, eyes, 0, rev) : camera);
       swapIn(sw);
       st.call('setRenderTarget', tw, face, level);
       if (sm) sm.autoUpdate = false; // shadow maps are view-independent: rendered by the left draw
+      fr = eyeFrame(fi, 1, fr);
       st.call('render', scene, stereo ? aimEye(st, camera, eyes, 1, rev) : camera);
     } finally {
+      endFrame(fi, fr);
       swapOut(sw);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setRenderTarget', rt, face, level);
@@ -744,14 +749,19 @@ function dxrThree(core) {
   function renderPostScreen(st, scene, camera) {
     const sw = taintedSwaps(st, scene);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st);
+    let fr = null;
     try {
+      fr = eyeFrame(fi, 0, fr);
       setEyeViewport(st, 0);
       st.call('render', scene, camera);
       setEyeViewport(st, 1);
       swapIn(sw);
       if (sm) sm.autoUpdate = false;
+      fr = eyeFrame(fi, 1, fr);
       st.call('render', scene, camera);
     } finally {
+      endFrame(fi, fr);
       swapOut(sw);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
