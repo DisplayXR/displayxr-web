@@ -641,6 +641,12 @@ function chromeTextPlates(root) {
   return plates;
 }
 
+/** The CSS box + dpr a window's canvas occupies: what a re-join of the weave keys on. */
+function boxKeyOf(canvas) {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}`;
+}
+
 class Inline3D {
   constructor(
     session,
@@ -2462,6 +2468,7 @@ class Inline3D {
 
   _sizeBuffer(win, sbs) {
     const { w: boxW, h: boxH } = this._eyeSize(win, sbs);
+    win.boxKey = boxKeyOf(win.canvas);
     win.eyeW = boxW;
     win.eyeH = boxH;
     win.canvas.width = sbs ? boxW * 2 : boxW; // SBS = two eye tiles wide
@@ -2508,9 +2515,16 @@ class Inline3D {
       if (!win.resizePending) return;
       win.resizePending = false;
       if (!win.layer || !win.ownsBuffer) return;
+      // The on-screen box and the buffer are separate questions since the source cap (#88): a
+      // box that moves (fullscreen) re-joins the weave at a new rect even when a capped buffer
+      // stays the same size, so a pending rewoven() restarts on the BOX, not on the buffer.
+      const box = boxKeyOf(win.canvas);
+      if (box !== win.boxKey) {
+        win.boxKey = box;
+        this._restartRewoven(win);
+      }
       const { w, h } = this._eyeSize(win);
-      if (w === win.eyeW && h === win.eyeH) return; // observer fired, geometry didn't move
-      this._restartRewoven(win);
+      if (w === win.eyeW && h === win.eyeH) return; // observer fired, the buffer didn't move
       this._sizeBuffer(win, /*sbs*/ true);
       this._paint(win, null); // repaint NOW: setting canvas.width cleared the buffer
     };
