@@ -1915,7 +1915,9 @@ export class PlayCanvasSplatViewer {
     const box = this.canvas.getBoundingClientRect();
     const aspect = box.height > 0 ? box.width / box.height : 1;
     this.boxAspect = aspect; // setVideo's plane reads it per frame (no layout read in the draw)
-    this.boxCss = { w: box.width || 0, h: box.height || 0 }; // and this, for its on-screen rect
+    // and this, for its on-screen rect: a NEW object only when the size changed (the plane's rect
+    // check compares identity, so an unchanged frame allocates nothing).
+    if (!this.boxCss || this.boxCss.w !== (box.width || 0) || this.boxCss.h !== (box.height || 0)) this.boxCss = { w: box.width || 0, h: box.height || 0 };
     if (this.mono.capture) {
       captureProjection(this.mono.capture, aspect, this.mono.near, this.mono.far, this.mono.proj, this.captureFit);
       if (this.captureFit !== 'height') {
@@ -4441,7 +4443,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     if (owned ? r.autoplay !== false : r.autoplay === true) autoplay(el);
     // The guard state is taken NOW (setSource / setRig refuse from this call on), the pixels change
     // on the first frame the video has.
-    const state = { seq, el, owned, format: r.format, fit: r.fit, band: r.band, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true };
+    const state = { seq, el, owned, format: r.format, fit: r.fit, band: r.band, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true, rectOffs: new Set() };
     if (!prev || !prev.on) vid = state; // a pending one it supersedes is cancelled above
     return first
       .catch(() => null)
@@ -4453,6 +4455,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           // Another video on screen: keep ITS snapshot (the pre-video state), swap the source.
           state.saved = live.saved;
           state.on = true;
+          // S2: the plane outlives this swap; the replaced video's rect subscriptions go with it.
+          for (const off of live.rectOffs) off();
+          live.rectOffs.clear();
           if (live.owned && live.el !== el) releaseOwned(live.el);
           if (state.vH !== live.vH) {
             viewer.vH = state.vH;
@@ -4466,7 +4471,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         // A crossfade only dissolves between two videos: from the splat (entry) it is a cut.
         const fade = live && r.transition.type === 'crossfade' && r.transition.durationMs > 0 ? r.transition : null;
         viewer._videoPlane ||= new VideoPlane(viewer);
-        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH, band: state.band }, fade);
+        const faded = viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH, band: state.band }, fade);
         const plane = viewer._videoPlane;
         return Object.freeze({
           video: el,
@@ -4485,12 +4490,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           /** Called with the new rect whenever it changes (resize, band, a new size). Returns an unsubscribe. */
           onRectChange(cb) {
             if (typeof cb !== 'function') throw new TypeError('@displayxr/inline3d/splat: onRectChange(cb) — expected a function.');
-            return plane.onRect((r) => {
-              if (vid === state) cb(r);
-            });
+            if (vid !== state) return () => {};
+            // S2: never outlives this video — every subscription is dropped at the swap that
+            // replaces it (and with the plane on setVideo(null)).
+            const off = plane.onRect(cb);
+            const unsubscribe = () => {
+              off();
+              state.rectOffs.delete(unsubscribe);
+            };
+            state.rectOffs.add(unsubscribe);
+            return unsubscribe;
           },
-          /** What this swap did: 'crossfade' only when it replaced a video on screen, else 'cut'. */
-          transition: fade ? 'crossfade' : 'cut',
+          /** What this swap did: 'crossfade' only when a fade actually started, else 'cut'. */
+          transition: faded ? 'crossfade' : 'cut',
           /** Exit (setVideo(null)) — a no-op once another setVideo replaced this one. */
           remove: () => (vid === state ? setVideo(null) : Promise.resolve(null)),
           /** Upload accounting: frames drawn with the plane up, and texture uploads (new frames). */

@@ -280,6 +280,11 @@ export class VideoPlane {
     this._rectKey = '';
     this._planeSize = null;
     this._rectListeners = new Set();
+    this._rectBox = null;
+    this._rectPlane = null;
+    this._texSource = null;
+    /** How many times the rect was recomputed (a test hook for the no-per-frame-allocation promise). */
+    this.rectComputes = 0;
     /** Upload accounting (handle.setVideo(...).stats()). */
     this.uploads = 0;
     this.frames = 0;
@@ -322,17 +327,23 @@ export class VideoPlane {
     // quad is (1·a + 1·(1−a) = 1) and fades to the page where only the ghost is (its bars differ):
     // plain SRC_ALPHA on alpha too would leave a² + (1−a) < 1 mid-fade, and the page would show
     // through the picture.
-    if (pc.BlendState) {
-      mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_SRC_ALPHA, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
-        pc.BLENDEQUATION_ADD, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA);
-    }
+    // (The factors are straight-alpha colour + ONE on alpha: a premultiplied result into the
+    // premultipliedAlpha canvas. No guard: the 2.22.3 floor always has BlendState, and without it
+    // the ghost would silently be an opaque quad with depth test off.)
+    mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_SRC_ALPHA, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+      pc.BLENDEQUATION_ADD, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE_MINUS_SRC_ALPHA);
     mat.depthTest = false; // the same plane as the incoming quad: drawn over it, never z-fighting it
     mat.depthWrite = false;
     mat.setParameter('dxrVidAlpha', 1);
     mat.update();
     const ease = typeof easing === 'function' ? easing : EASINGS[easing] || EASINGS.linear;
-    this.ghost = { mat, node: this.node, mi: this.mi, tex: this.tex, durationMs, ease, t0: null };
+    // S4: its size as a fraction of the window, so a refit (a new virtualDisplayHeight) or a resize
+    // during the fade keeps the outgoing picture where it was on screen instead of jumping.
+    const ps = this._planeSize;
+    const frac = ps ? { w: ps.w / ps.W, h: ps.h / ps.H } : null;
+    this.ghost = { mat, node: this.node, mi: this.mi, tex: this.tex, durationMs, ease, t0: null, frac };
     this.tex = null;
+    this._texSource = null;
     this.video = null;
     this._build();
   }
@@ -355,6 +366,10 @@ export class VideoPlane {
     if (g.t0 === null) g.t0 = now; // the clock starts on the incoming video's first drawn frame
     const x = g.durationMs > 0 ? Math.min(1, Math.max(0, (now - g.t0) / g.durationMs)) : 1;
     if (x >= 1) return this._dropGhost();
+    if (g.frac) {
+      const W = this.vH * this.viewer.boxAspect;
+      g.node.setLocalScale(g.frac.w * W, g.frac.h * this.vH, 1);
+    }
     g.mat.setParameter('dxrVidSplit', split);
     g.mat.setParameter('dxrVidAlpha', 1 - g.ease(x));
   }
@@ -367,9 +382,20 @@ export class VideoPlane {
   /**
    * Play `video` on the quad (a new element, format or fit). The element must have a frame.
    * `fade` ({ durationMs, easing }): dissolve from the video now on the quad instead of cutting.
+   * Returns true when a crossfade actually started.
    */
   setSource(video, { format, fit, vH, band = null }, fade = null) {
-    if (fade && fade.durationMs > 0 && this.video && this.tex && video !== this.video) this._startFade(fade);
+    const newElement = video !== this.video;
+    const fading = !!(fade && fade.durationMs > 0 && this.video && this.tex && newElement);
+    if (fading) this._startFade(fade);
+    else if (newElement) this._dropGhost(); // S1: a cut ends any fade still running
+    if (newElement) {
+      // S3: the new video has no on-screen rect until its first drawn frame.
+      this.rect = null;
+      this._rectKey = '';
+      this._planeSize = null;
+      this._rectBox = null;
+    }
     this.format = format;
     this.fit = fit;
     this.vH = vH;
@@ -387,6 +413,7 @@ export class VideoPlane {
     this._dirty = true;
     this.mat.update();
     this.mi.visible = true;
+    return fading;
   }
 
   _watch() {
@@ -415,7 +442,18 @@ export class VideoPlane {
     const v = this.video;
     const w = v.videoWidth || 0;
     const h = v.videoHeight || 0;
-    if (this.tex && this.tex.width === w && this.tex.height === h) return;
+    if (this.tex && this.tex.width === w && this.tex.height === h) {
+      // B1: same size, but maybe a different element (a cut between two same-size titles): the
+      // texture must be re-pointed, or it keeps sampling the old video.
+      if (this._texSource !== v) {
+        this.tex.setSource?.(v);
+        this._texSource = v;
+        this._lastT = v.currentTime;
+        this._dirty = false;
+        this.uploads++;
+      }
+      return;
+    }
     this.tex?.destroy?.();
     this.tex = new pc.Texture(this.viewer.app.graphicsDevice, {
       name: 'inline3d-video',
@@ -430,6 +468,7 @@ export class VideoPlane {
       addressV: pc.ADDRESS_CLAMP_TO_EDGE,
     });
     this.tex.setSource?.(v);
+    this._texSource = v;
     this.mat.setParameter('dxrVid', this.tex);
     this.mat.setParameter('dxrVidTexel', [0.5 / Math.max(1, w), 0.5 / Math.max(1, h)]);
     this._lastT = v.currentTime;
@@ -486,6 +525,11 @@ export class VideoPlane {
     const box = this.viewer.boxCss;
     const s = this._planeSize;
     if (!box || !s || !(box.w > 0) || !(box.h > 0)) return;
+    // N3: nothing moved, nothing allocated (the viewer replaces boxCss only when it re-measures).
+    if (box === this._rectBox && s === this._rectPlane) return;
+    this._rectBox = box;
+    this._rectPlane = s;
+    this.rectComputes++;
     const r = videoScreenRect(s, box.w, box.h);
     const key = `${r.x}|${r.y}|${r.width}|${r.height}`;
     if (key === this._rectKey) return;
