@@ -71,6 +71,13 @@ function dxrCore(cfg, cap, S) {
   if (cfg.dev && cfg.test && typeof cfg.test === 'object') {
     for (const k of Object.keys(cfg.test)) if (!SITE_KEYS.includes(k)) T[k] = cfg.test[k];
   }
+  // prefers-reduced-motion: no depth fade, but 1 ms, never 0 — rampMs 0 skips the turn-off's
+  // out-cover (turnOff), and the raw side-by-side flash comes back (risk R5).
+  const RAMP_MS = T.rampMs;
+  const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+  const applyMotion = () => { T.rampMs = reducedMotion && reducedMotion.matches ? 1 : RAMP_MS; };
+  applyMotion();
+  if (reducedMotion && reducedMotion.addEventListener) reducedMotion.addEventListener('change', applyMotion);
 
   // ------------------------------------------------------------ the site (this document's copy)
   // What the host decided for this site, and what the user changes here. Written back through
