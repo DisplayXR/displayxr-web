@@ -1,13 +1,76 @@
 // DisplayXR auto-3D — frame-rate guard. PROTOTYPE, not a product.
 //
-// `function dxrGuard(core)`, a part of the core bundle (build.mjs). STUB: the guard itself (2D
-// baseline from considerActivation, sampling in the session frame, trip -> core.turnOff) is a later
-// slice. The core already calls it where the real one hooks in:
-//   onFlip(st)    the layer was just created (flip)
-//   tick(st, t)   once per session frame, after the cover tick
+// `function dxrGuard(core)`, a part of the core bundle (build.mjs). A page that cannot afford the
+// conversion (two eye draws, the replay, the weave) goes back to 2D for the rest of the document
+// instead of stuttering in 3D. Hooks the core calls:
+//   draw(st, t)   every page draw while NOT converted (the top of considerActivation): the 2D baseline
+//   onFlip(st)    the layer was just created: freeze the baseline, reset the window
+//   tick(st, t)   once per session frame, after the cover tick: sample, maybe trip
+//   tripped       null, or why the guard stood this document down (statusOf -> 'guard')
+//
+// Baseline: the page's own 2D rate, from the last 60 draws before the flip. Only intervals of at most
+// 250 ms count, and at least 20 of them are needed: a render-on-demand page (draws on input) has no
+// baseline. Sampling: session-frame intervals, from 1 s after the fade-in finished (rampK 1, no ramp,
+// no cover); intervals over 250 ms and hidden-page time are excluded, and a visibilitychange starts
+// over. Trip: the mean rate over the last T.guardMs is below T.guardFps AND, when there is a
+// baseline, below 0.8 × baseline (a page that runs at 30 fps in 2D is not the conversion's fault).
+// On a trip: core.turnOff (fade to flat -> out-cover -> staged stand), no retry in this document,
+// report 'guard', nothing saved.
 function dxrGuard(core) {
-  return {
-    onFlip(st) {},
-    tick(st, t) {},
+  const T = core.T;
+  const RING = 60, MAX_DT = 250, MIN_BASE = 20, ARM_MS = 1000;
+  const g = new WeakMap(); // st -> { ring[], base, readyAt, last, dts[], sum }
+  const of = (st) => { let s = g.get(st); if (!s) g.set(st, (s = { ring: [], base: 0, readyAt: 0, last: 0, dts: [], sum: 0 })); return s; };
+  const resetWindow = (s) => { s.readyAt = 0; s.last = 0; s.dts.length = 0; s.sum = 0; };
+  const api = { tripped: null };
+
+  // A hidden page runs no frames (or throttled ones): whatever was measured around it is not the
+  // conversion's cost. Start over, 2D ring included.
+  document.addEventListener('visibilitychange', () => {
+    for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
+  });
+
+  api.draw = (st, t) => {
+    if (st.active) return;
+    const r = of(st).ring;
+    r.push(t);
+    if (r.length > RING) r.shift();
   };
+
+  api.onFlip = (st) => {
+    const s = of(st);
+    let n = 0, sum = 0;
+    for (let i = 1; i < s.ring.length; i++) { const dt = s.ring[i] - s.ring[i - 1]; if (dt > 0 && dt <= MAX_DT) { n++; sum += dt; } }
+    s.base = n >= MIN_BASE ? (1000 * n) / sum : 0;
+    s.ring.length = 0;
+    resetWindow(s);
+  };
+
+  api.tick = (st, t) => {
+    if (api.tripped) return;
+    const s = of(st);
+    const settled = st.active && !st.cover && !st.ramp && !st.releasing && !st.offTok && core.rampK(st) === 1;
+    if (!settled || document.hidden) { resetWindow(s); return; }
+    if (!s.readyAt) s.readyAt = t;
+    const prev = s.last;
+    s.last = t;
+    if (t - s.readyAt < ARM_MS || !prev) return;
+    const dt = t - prev;
+    if (!(dt > 0) || dt > MAX_DT) return; // a hitch (GC, tab switch, debugger) is not a rate
+    s.dts.push(dt); s.sum += dt;
+    if (s.sum < T.guardMs) return;
+    const fps = (1000 * s.dts.length) / s.sum;
+    if (fps < T.guardFps && (!s.base || fps < 0.8 * s.base)) { trip(st, fps, s.base); return; }
+    while (s.dts.length && s.sum - s.dts[0] >= T.guardMs) s.sum -= s.dts.shift();
+  };
+
+  function trip(st, fps, base) {
+    api.tripped = `frame-rate guard: ${fps.toFixed(1)} fps in 3D over ${(T.guardMs / 1000).toFixed(1)} s` +
+      (base ? ` (2D ran at ${base.toFixed(1)})` : ' (no 2D baseline)') + ' — 2D for the rest of this page';
+    for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
+    core.turnOff(st, api.tripped); // logs the one "back to 2D: …" line
+    core.notify();
+  }
+
+  return api;
 }
