@@ -252,6 +252,49 @@ test("the slot emptied by someone else reads 'released'", async () => {
   assert.deepEqual(got, ['released']);
 });
 
+test('a foreign setVideo superseding OUR pending swap keeps the on-screen element alive until the slot moves on', async () => {
+  const splat = makeSplat();
+  const got = [];
+  const player = attachPlayer(splat, 'a.webm', { controls: 'none' });
+  player.on('detached', (e) => got.push(e.reason));
+  splat.firstFrame();
+  await flush();
+  const a = splat.calls[0].el;
+  player.setSource('b.webm'); // B pending, A still on the plane
+  const x = new FakeVideo();
+  splat.setVideo(x, {}); // someone else: cancels B, but ./splat keeps showing A until X's frame
+  await flush();
+  assert.deepEqual(got, ['superseded']);
+  assert.equal(splat.videoElement, a);
+  assert.equal(a.released, false, 'A is still on the plane: freeing it would blank it');
+  assert.equal(splat.calls[1].el.released, true, 'the cancelled B is freed');
+  splat.firstFrame(); // X lands
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(a.released, true, 'handed back once the slot moved on');
+});
+
+test('setSource while setVideo throws: the transport stays on the element the plane shows', async () => {
+  const splat = makeSplat();
+  const errors = [];
+  const player = attachPlayer(splat, 'a.webm', { controls: 'none' });
+  player.on('error', (e) => errors.push(e));
+  splat.firstFrame();
+  await flush();
+  const a = splat.calls[0].el;
+  const real = splat.setVideo;
+  splat.setVideo = () => {
+    throw new Error('setVideo() while a setSource is in flight');
+  };
+  player.setSource('b.webm');
+  splat.setVideo = real;
+  await flush();
+  assert.equal(errors.length, 1);
+  assert.equal(player.video.element, a, 'still driving the shown element');
+  assert.equal(a.released, false);
+  assert.equal(created[created.length - 1].released, true, 'the refused element is freed');
+  player.remove();
+});
+
 test('playlist: next() goes through a new element and emits titlechange; back() restarts past 3 s', async () => {
   const splat = makeSplat();
   const titles = [

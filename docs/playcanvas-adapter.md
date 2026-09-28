@@ -325,7 +325,7 @@ chrome a partial region of the tile.
 - `handle.videoElement` is the `<video>` the plane is showing now, or `null` (none, or one still
   waiting for its first frame). No event reports it changing; `attachPlayer` reads it to notice
   another `setVideo` taking the slot.
-- `handle.canvas` is the tile's canvas, for chrome placed as its sibling.
+- `handle.canvas` is the tile's canvas, for chrome placed as its sibling. After `remove()` it still points at the (now dead) element.
 
 **Gates** (Chrome 153, real GPU (Metal/ANGLE, M1 Pro), a 1280×720 CSS tile at DPR 1, on the
 camera-rig photo `ports_100_cam.sog`). The pixel gates are headless, with fake stereo: two

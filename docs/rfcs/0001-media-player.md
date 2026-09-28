@@ -290,7 +290,7 @@ today's code) and a splat adapter (`setVideo`).
 ```js
 import { attachPlayer } from '@displayxr/inline3d/player';
 
-const splat = await addSplat(wall, canvas, 'home.sog', { engine: 'playcanvas' });
+const splat = addSplat(wall, canvas, 'home.sog', { engine: 'playcanvas' });
 // … later, on the Watch screen:
 const player = attachPlayer(splat, titles[0].src, { format: 'sbs', fit: 'contain' });
 player.play();
