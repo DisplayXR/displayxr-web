@@ -291,6 +291,7 @@ function dxrPlayCanvas(core) {
       st.app.renderNextFrame = true;
     },
     restore(st, wasLive) {
+      restoreShadows(st);
       if (st.cam && st.cam.camera) { try { st.cam.camera.xrViews = null; } catch (e) { /* ignore */ } }
       st.cam = null; st.views = null; st.frustumKey = '';
       if (wasLive) {
@@ -451,6 +452,51 @@ function dxrPlayCanvas(core) {
     const f = frustumFromProjection(P0);
     const key = `${f.fov.toFixed(4)}|${f.aspectRatio.toFixed(4)}|${f.nearClip}|${f.farClip}`;
     if (key !== st.frustumKey) { st.frustumKey = key; st.cam.camera.setXrProperties({ ...f, horizontalFov: false }); }
+    offsetShadows(st);
+  }
+
+  // ------------------------------------------------------------ shadow distance
+  // The engine fades a light's shadow out where the view depth passes light.shadowDistance, and
+  // measures that depth from the EYE. A display rig puts the eyes well behind the page camera (the
+  // viewer's distance; ~9 m on the gaussian-splatting sample), so a ground the page framed inside
+  // its shadowDistance is past it for both eyes: the shadow shows in 2D, not in 3D (panel,
+  // 2026-09-27). Every shadow-casting light gets the page's own distance + the mean eye pull-back Δ
+  // while converted; the page's value is kept per light and put back by restore(). Written only on a
+  // change of more than 1 cm (the frustumKey pattern). Lights are re-listed every 30 frames, so a
+  // light the page adds while converted is picked up. A value the page writes meanwhile becomes the
+  // new original. core.T.pcShadowOffset === false turns it off (harness A/B only).
+  const shadowOrig = new WeakMap(); // light component -> { orig, wrote }
+  function offsetShadows(st) {
+    if (core.T.pcShadowOffset === false) return;
+    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) : 0;
+    if (!st.shadowLights || ++st.shadowScan >= 30) {
+      st.shadowScan = 0;
+      try { st.shadowLights = st.app.root.findComponents('light'); } catch (e) { st.shadowLights = []; }
+      if (!st.shadowTouched) st.shadowTouched = new Set();
+    }
+    for (const lc of st.shadowLights) {
+      if (!lc || !lc.castShadows) continue;
+      let rec = shadowOrig.get(lc);
+      const cur = lc.shadowDistance;
+      if (!rec) {
+        if (!(d > 0.01)) continue; // nothing to offset: leave the light untouched
+        shadowOrig.set(lc, (rec = { orig: cur, wrote: NaN }));
+        st.shadowTouched.add(lc);
+      } else if (cur !== rec.wrote) rec.orig = cur; // the page set its own value since our last write
+      const want = rec.orig + d;
+      if (Math.abs(want - cur) > 0.01) { lc.shadowDistance = want; rec.wrote = lc.shadowDistance; }
+    }
+  }
+  function restoreShadows(st) {
+    if (!st.shadowTouched) return;
+    for (const lc of st.shadowTouched) {
+      const rec = shadowOrig.get(lc);
+      if (!rec) continue;
+      // Unless the page wrote its own value after ours (then that one stands).
+      try { if (lc.shadowDistance === rec.wrote || rec.wrote !== rec.wrote) lc.shadowDistance = rec.orig; } catch (e) { /* ignore */ }
+      shadowOrig.delete(lc);
+    }
+    st.shadowTouched = null; st.shadowLights = null;
   }
 
   // ------------------------------------------------------------ convergence: the scene's bounds
