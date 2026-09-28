@@ -8,7 +8,8 @@ export default function cases({ P, NEW, LEGACY, hasSog, SOG_DIR }) {
   // estimator finds, but its distance is exact rather than estimated, and parity with the pre-split
   // script (which had no target) is about the machinery, not the new source. a-target covers it.
   return [
-    { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+    // eyeScale 0.5: the pre-0.5.2 half-width eye, so this frame stays byte-comparable with the pre-split script (a-legacy).
+    { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false, eyeScale: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
     // The pre-split script defaults to depth 0.3; parity is about the machinery, not the default, so it
     // is given today's camera-rig default (0.5, 2026-09-28) through its own test config.
     { id: 'a-legacy', name: 'three.js keyframes, pre-split content.js', url: P + 'three-keyframes.html', shim: LEGACY, cfg: { depth: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', parityOf: 'a' },

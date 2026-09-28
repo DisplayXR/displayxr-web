@@ -55,7 +55,8 @@ function dxrCore(cfg, cap, S) {
   // Not per site. Overridable only by the harness, through cfg.test, and only in a dev build
   // (risk R8: fakeViews / noLayer / coverImg / outHoldMs are page-controllable otherwise).
   const TUNING = {
-    eyeScale: 0.5,      // per-eye width / element device width: a 2-view lenticular resolves about half anyway (porting pitfall 26)
+    eyeScale: 1,        // per-eye width / element DEVICE width (P0.2: was 0.5 of the page's store — a 1x page on a 2.5x panel got 519-px eyes)
+    maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
@@ -186,13 +187,21 @@ function dxrCore(cfg, cap, S) {
 
   // ------------------------------------------------------------ sizing
   // st.L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas:
-  // pixels, pr 1). The SBS store fits the zero-copy width cap AND the context's own limits (a 2×
-  // wide store is over MAX_TEXTURE_SIZE / MAX_VIEWPORT_DIMS on many Android GPUs); one scale for
-  // both axes, so the eye keeps its aspect.
+  // pixels, pr 1). The eye is sized from the ELEMENT's device pixels, whatever store the page keeps
+  // (P0.2: Spark's hello-world renders at pixel ratio 1 on a 2.5× panel, a 1038-px store, so a
+  // store-sized eye was 519 px — "a little low res"): eyeW = CSS width × min(devicePixelRatio,
+  // maxEyeDpr) × eyeScale, eyeH = CSS height × the same ratio. The page keeps seeing its own mono
+  // store (the adapters virtualise it; restore() puts it back). With no layout box (not rendered),
+  // the page's store stands in. The SBS store then fits the zero-copy width cap AND the context's own
+  // limits (a 2× wide store is over MAX_TEXTURE_SIZE / MAX_VIEWPORT_DIMS on many Android GPUs); one
+  // scale for both axes, so the eye keeps its aspect.
   function realSizeFor(st) {
-    const L = st.L;
-    let eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale));
-    let eyeH = Math.max(2, Math.round(L.h * L.pr));
+    const L = st.L, c = st.canvas;
+    const cw = c.clientWidth, ch = c.clientHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, T.maxEyeDpr);
+    let eyeW, eyeH;
+    if (cw > 0 && ch > 0) { eyeW = Math.max(2, Math.round(cw * dpr * T.eyeScale)); eyeH = Math.max(2, Math.round(ch * dpr)); }
+    else { eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale)); eyeH = Math.max(2, Math.round(L.h * L.pr)); }
     if (st.glLim === undefined) {
       const gl = st.ad.gl(st);
       if (gl) {
@@ -485,15 +494,25 @@ function dxrCore(cfg, cap, S) {
   }
   function promote(st) {
     // The SDK's compositing hint (inline3d.js _register): a distinct quad the weave can track.
-    const s = st.canvas.style;
-    st.savedStyle = { willChange: s.willChange, transform: s.transform };
+    const c = st.canvas, s = c.style, cs = getComputedStyle(c);
+    st.savedStyle = { willChange: s.willChange, transform: s.transform, pin: null };
     s.willChange = 'transform';
-    if (getComputedStyle(st.canvas).transform === 'none') s.transform = 'translateZ(0)';
+    if (cs.transform === 'none') s.transform = 'translateZ(0)';
+    // A canvas with no CSS size is laid out at its STORE size: the SBS store (2 × the device-pixel eye)
+    // would grow it on the page, and the next realSizeFor would read that. Pin its current used size
+    // (the same box: no layout change) while converted; unpromote() takes the pin back out.
+    const isAuto = (p) => { try { const v = c.computedStyleMap().get(p); return !!v && String(v) === 'auto'; } catch (e) { return false; } };
+    const pin = {};
+    if (!s.width && isAuto('width')) pin.width = s.width = cs.width;
+    if (!s.height && isAuto('height')) pin.height = s.height = cs.height;
+    if (pin.width || pin.height) st.savedStyle.pin = pin;
   }
   function unpromote(st) {
     if (!st.savedStyle) return;
-    st.canvas.style.willChange = st.savedStyle.willChange;
-    st.canvas.style.transform = st.savedStyle.transform;
+    const s = st.canvas.style, sv = st.savedStyle;
+    s.willChange = sv.willChange;
+    s.transform = sv.transform;
+    if (sv.pin) for (const k of ['width', 'height']) if (sv.pin[k] && s[k] === sv.pin[k]) s[k] = ''; // unless the page set its own since
     st.savedStyle = null;
   }
 

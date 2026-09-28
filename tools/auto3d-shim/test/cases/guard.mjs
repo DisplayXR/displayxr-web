@@ -139,7 +139,7 @@ export default function cases({ P, NEW }) {
   const clampCase = (id, name, url, extra) => ({
     id, name, url: P + url, shim: NEW, cfg: { glLimit: 512, ...(extra || {}) }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
     alsoCheck(r, t, h, R) {
-      const [ew, eh] = R.eye, want = 640 / 720; // the unclamped eye at 1280x720, eyeScale 0.5
+      const [ew, eh] = R.eye, want = 1280 / 720; // the unclamped eye: the 1280x720 CSS canvas at DPR 1
       t('glLimit 512: SBS store and eye within 512, eye aspect kept', 2 * ew <= 512 && eh <= 512 && Math.abs(ew / eh - want) < 0.01 && R.real[0] === 2 * ew && R.real[1] === eh,
         `store ${R.real.join('x')}, eye ${ew}x${eh} (aspect ${(ew / eh).toFixed(4)}, want ${want.toFixed(4)})`);
     },

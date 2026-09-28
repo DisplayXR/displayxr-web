@@ -62,13 +62,18 @@ async function itemXY(page, k) {
 // ------------------------------------------------------------ the no-layout-change snapshot
 // Every page element (outside our host and the cover) with its attributes and FULL computed style.
 // Allowlisted (risk R7): the canvas's inline will-change / transform (promote()) and their
-// computed values; the cover is excluded as an element.
+// computed values, and its width / height store attributes + intrinsic aspect-ratio (the SBS store,
+// P0.2); the cover is excluded as an element.
 function snapshot() {
   const skip = (e) => e.hasAttribute('data-dxr-auto3d-chip') || e.hasAttribute('data-dxr-auto3d-cover');
   const out = [];
   const walk = (e, path) => {
     if (skip(e)) return;
     const attrs = [...e.attributes].map((a) => {
+      // The converted canvas's STORE is the side-by-side pair (2 x the device-pixel eye, P0.2): its
+      // width / height attributes (and the intrinsic aspect-ratio they imply) change by design; its
+      // BOX must not, and the box is compared below.
+      if (e.tagName === 'CANVAS' && (a.name === 'width' || a.name === 'height')) return `${a.name}=(store)`;
       if (e.tagName === 'CANVAS' && a.name === 'style') {
         return 'style=' + a.value.split(';').map((x) => x.trim()).filter((x) => x && !/^(will-change|transform)\s*:/.test(x)).join(';');
       }
@@ -77,7 +82,7 @@ function snapshot() {
     const cs = getComputedStyle(e), st = {};
     for (let i = 0; i < cs.length; i++) {
       const k = cs[i];
-      if (e.tagName === 'CANVAS' && (k === 'will-change' || k === 'transform')) continue;
+      if (e.tagName === 'CANVAS' && (k === 'will-change' || k === 'transform' || k === 'aspect-ratio')) continue;
       st[k] = cs.getPropertyValue(k);
     }
     const r = e.getBoundingClientRect();
