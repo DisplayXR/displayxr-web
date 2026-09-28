@@ -1,9 +1,13 @@
 <!doctype html>
 <!-- TEST PAGE — PlayCanvas (2.x, ESM) on a canvas CREATED BY SCRIPT, with no globals (no window.pc,
      no window.app). The AppBase constructor reads canvas.id before it creates the WebGL context,
-     and this canvas did not exist at readystatechange -> 'interactive', so the sentinel's id trap
-     cannot see it (plan risk R1). Expected today: stays 2D, the page keeps working, and the
-     sentinel says why in one console line once its globals search ends (~20 s). -->
+     and this canvas did not exist at readystatechange -> 'interactive' (plan risk R1).
+       default   the canvas is inserted and handed to `new Application` in the SAME task: the
+                 sentinel's MutationObserver (a microtask) arms it only after the id was read, so it
+                 stays 2D; the page keeps working and the sentinel says why once its globals search
+                 ends (~20 s).
+       ?defer=1  the launcher pattern: create + insert, then `new Application` in a LATER task (after
+                 a macrotask, as after loading a config): the observer armed it -> 3D. -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas dynamic canvas (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
 <script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
@@ -13,6 +17,7 @@ import * as pc from 'playcanvas';
 const canvas = document.createElement('canvas');
 canvas.id = 'dyn-canvas';
 document.body.appendChild(canvas);
+if (new URLSearchParams(location.search).has('defer')) await new Promise((r) => setTimeout(r, 50));
 const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
 app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
 app.setCanvasResolution(pc.RESOLUTION_AUTO);

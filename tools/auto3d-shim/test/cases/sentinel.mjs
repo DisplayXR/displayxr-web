@@ -16,14 +16,23 @@ const PROBE = `(() => {
   const snap = (o) => { const m = new Map(); for (const k of Reflect.ownKeys(o)) m.set(k, Object.getOwnPropertyDescriptor(o, k)); return m; };
   const before = {}; for (const n of Object.keys(protos)) before[n] = snap(protos[n]);
   const same = (a, b) => !!a && !!b && a.get === b.get && a.set === b.set && a.value === b.value && a.enumerable === b.enumerable && a.configurable === b.configurable && a.writable === b.writable;
-  const pending = new Map(); let created = 0;
+  const pending = new Map(); let created = 0; const made = [];
+  // The sentinel's parse-time MutationObserver, timed: every callback's own run time (R1's cost).
+  const MO0 = window.MutationObserver; const mo = { ms: 0, calls: 0, recs: 0, nodes: 0 };
+  window.MutationObserver = function MutationObserver(cb) {
+    return new MO0(function (recs, o) {
+      const t0 = performance.now();
+      try { return cb.call(this, recs, o); } finally { mo.ms += performance.now() - t0; mo.calls++; mo.recs += recs.length; for (const r of recs) mo.nodes += r.addedNodes.length; }
+    });
+  };
+  window.MutationObserver.prototype = MO0.prototype;
   const sT = setTimeout, sI = setInterval, cT = clearTimeout, cI = clearInterval;
   const where = () => (new Error().stack || '').split('\\n').slice(2, 5).map((s) => s.trim()).join(' < ');
   window.setTimeout = function (fn, ms, ...a) {
     const id = sT(function () { pending.delete(id); if (typeof fn === 'function') return fn.apply(this, a); }, ms);
-    pending.set(id, 'timeout ' + ms + ' ms: ' + where()); created++; return id;
+    const w = 'timeout ' + ms + ' ms: ' + where(); pending.set(id, w); made.push({ t: performance.now(), w }); created++; return id;
   };
-  window.setInterval = function (fn, ms, ...a) { const id = sI(fn, ms, ...a); pending.set(id, 'interval ' + ms + ' ms: ' + where()); created++; return id; };
+  window.setInterval = function (fn, ms, ...a) { const id = sI(fn, ms, ...a); const w = 'interval ' + ms + ' ms: ' + where(); pending.set(id, w); made.push({ t: performance.now(), w }); created++; return id; };
   window.clearTimeout = function (id) { pending.delete(id); return cT(id); };
   window.clearInterval = function (id) { pending.delete(id); return cI(id); };
   Object.defineProperty(window, '__dxrProbe', { value: {
@@ -37,6 +46,9 @@ const PROBE = `(() => {
       const k0 = new Set(keys0);
       return { protoChanges, newKeys: Object.getOwnPropertyNames(window).filter((k) => !k0.has(k)), pending: [...pending.values()], created, pcInWindow: 'pc' in window };
     },
+    pending: () => [...pending.values()],
+    made: (since) => made.filter((m) => m.t >= since).map((m) => m.w),
+    mo: () => ({ ...mo }),
   } });
 })();`;
 
@@ -51,6 +63,8 @@ const hostRead = () => {
   };
 };
 const rep = (H) => (H ? H.reports.map((x) => x.status + (x.engine ? ':' + x.engine : '')).join(' -> ') || '(none)' : 'no host');
+// A timer the sentinel's PlayCanvas search owns (the probe records the caller's function names).
+const SEARCH = (x) => /\b(poll|startPoll|scheduleSweep|sweep)\b/.test(x);
 const median = (a) => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 
 // div.id reads over the page's 2,000 elements: the best of 9 runs of 1,000 passes.
@@ -79,7 +93,7 @@ export default function cases({ P, NEW, productShim }) {
         for (let i = 0; i < 5; i++) {
           if (i) await page.reload({ waitUntil: 'load' });
           await h.sleep(300);
-          out.loads.push(await page.evaluate(() => ({ ...(() => { const H = window.__dxrFakeHost; return { sentinelMs: H.sentinelMs, loadCore: H.loadCore, reports: H.reports.length }; })() })));
+          out.loads.push(await page.evaluate(() => ({ ...(() => { const H = window.__dxrFakeHost; return { sentinelMs: H.sentinelMs, loadCore: H.loadCore, reports: H.reports.length, mo: window.__dxrProbe.mo() }; })() })));
         }
         await h.sleep(1200); // anything the sentinel scheduled at load would still be pending here
         out.probe = await page.evaluate(() => window.__dxrProbe.diff());
@@ -117,6 +131,10 @@ export default function cases({ P, NEW, productShim }) {
         t('the only new window key is __THREE_DEVTOOLS__ (besides the harness\'s __dxrFakeHost / __dxrProbe)', keys.length === 1 && keys[0] === '__THREE_DEVTOOLS__', D.newKeys.join(', '));
         const ms = L.map((x) => x.sentinelMs);
         t('sentinel eval + run < 0.5 ms (median of 5 loads)', median(ms) < 0.5, `median ${median(ms).toFixed(3)} ms; runs ${ms.map((x) => x.toFixed(3)).join(', ')}`);
+        // R1's parse-time observer: what it costs the page while its 2,000 elements go in.
+        const mo = L.map((x) => x.mo);
+        t('parse-time canvas observer: callbacks < 0.5 ms in total per load (median of 5), and it did observe the 2,000 elements', median(mo.map((x) => x.ms)) < 0.5 && mo.every((x) => x.nodes >= 2000),
+          `median ${median(mo.map((x) => x.ms)).toFixed(3)} ms; per load ${mo.map((x) => `${x.ms.toFixed(3)} ms / ${x.calls} calls / ${x.recs} records / ${x.nodes} nodes`).join('; ')}`);
         const B = r.bench, dev = B.ratio - 1;
         t('div.id read cost within ±5 % of a control page', Math.abs(dev) <= 0.05, `${(dev * 100).toFixed(1)} % (median of 10 shim/control pairs, fresh tabs, order alternating, each the best of 9 runs × 2M reads: shim ${B.shim.toFixed(2)} ms, control ${B.control.toFixed(2)} ms; shim ${B.shimRuns.map((x) => x.toFixed(2)).join('/')}, control ${B.controlRuns.map((x) => x.toFixed(2)).join('/')})`);
         t('no canvas, so no id trap anywhere', X.canvasOwnId === null, String(X.canvasOwnId));
@@ -196,7 +214,7 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
-      id: 's-pc-dyn', name: 'PlayCanvas on a script-created canvas, no globals (R1 gap): the page keeps working; the sentinel says why it stays 2D',
+      id: 's-pc-dyn', name: 'PlayCanvas on a script-created canvas used in the SAME task that inserted it, no globals (R1, still a gap): the page keeps working; the sentinel says why it stays 2D',
       url: P + 'pc-dyn.html', shim: productShim({ decision: 'allow' }), timeoutMs: 40000,
       async run(page, h) {
         await page.waitForFunction('window.__pageFrames > 60', { timeout: 30000, polling: 100 });
@@ -215,6 +233,23 @@ export default function cases({ P, NEW, productShim }) {
         const l = lines(r, /no supported engine found/);
         t('3D, or one console line saying why not', live || l.length === 1, l.join(' | ') || '(no line)');
         t('the canvas id trap expired (load + 10 s)', X && X.canvasOwnId === false, String(X && X.canvasOwnId));
+      },
+    },
+    {
+      id: 's-pc-dyn-defer', name: 'PlayCanvas on a script-created canvas, inserted then used in a LATER task, no globals (R1): the parse-time observer arms it -> 3D',
+      url: P + 'pc-dyn.html?defer=1', shim: [PROBE, ...productShim({ decision: 'allow' })],
+      async run(page, h) {
+        await page.waitForFunction(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((x) => x.status === 'live')); }, { timeout: 20000, polling: 100 });
+        const t1 = await page.evaluate(() => performance.now());
+        await h.sleep(1000);
+        return { X: await page.evaluate(hostRead), pending: await page.evaluate(() => window.__dxrProbe.pending()), made: await page.evaluate((t) => window.__dxrProbe.made(t), t1) };
+      },
+      check(r, t) {
+        const X = r.X, H = X && X.host;
+        t('found and converted: loadCore once, report live, one session', r.ok && H && H.loadCore === 1 && H.reports.some((x) => x.status === 'live') && X.fake.sessions === 1, r.error || `reports ${rep(H)}, loadCore ${H && H.loadCore}, sessions ${X && X.fake.sessions}`);
+        t('through the canvas-id trap (armed by the observer: the id is read before the context exists)', r.log.some((x) => /canvas-id trap/.test(x)), lines(r, /converting|live on/).join(' | '));
+        t('the id trap is off once the app is found', X && X.canvasOwnId === false, String(X && X.canvasOwnId));
+        t('no sentinel timer pending, none created, 1 s after go-live', !r.pending.some(SEARCH) && !r.made.some(SEARCH), `pending: ${r.pending.join(' | ') || '(none)'}; created since: ${r.made.join(' | ') || '(none)'}`);
       },
     },
     {
