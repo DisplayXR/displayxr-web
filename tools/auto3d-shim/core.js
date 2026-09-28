@@ -778,7 +778,9 @@ function dxrCore(cfg, cap, S) {
   //   viewMatrix?,   its inverse, if the engine already has one (else inverted here)
   //   verticalFov,   radians, zoom included          tanHalfFov?  tan(verticalFov/2), if the engine has it
   //   aspect, near, far,
-  //   forEachBounds(cb)  calls cb(wx, wy, wz, worldRadius) per drawable in view layers; stop when cb returns false
+  //   forEachBounds(cb)  calls cb(wx, wy, wz, worldRadius, among?) per drawable in view layers; stop when cb returns false.
+  //                      among = true: the item is a piece of a volume that holds the camera (a room-scale splat
+  //                      world fed as its splats in view): the camera stands among the items, so the median rule applies
   // }
   function estimateSubjectDistance(s) {
     const cw = s.cameraPose;
@@ -787,11 +789,12 @@ function dxrCore(cfg, cap, S) {
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2), aspect = s.aspect || 1;
     const near = s.near;
     const items = [];
-    let n = 0;
-    s.forEachBounds((wx, wy, wz, wr) => {
+    let n = 0, among = false;
+    s.forEachBounds((wx, wy, wz, wr, inVolume) => {
       if (n >= 4000) return false;
       n++;
       if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) return true;
+      if (inVolume) among = true;
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
@@ -806,7 +809,7 @@ function dxrCore(cfg, cap, S) {
     cx /= ws; cy /= ws; cz /= ws;
     let R = 0;
     for (const it of items) R = Math.max(R, Math.hypot(it.x - cx, it.y - cy, it.w - cz) + it.r);
-    if (Math.hypot(cx - px, cy - py, cz - pz) > R) return -(vm[2] * cx + vm[6] * cy + vm[10] * cz + vm[14]);
+    if (!among && Math.hypot(cx - px, cy - py, cz - pz) > R) return -(vm[2] * cx + vm[6] * cy + vm[10] * cz + vm[14]);
     items.sort((a, b) => a.z - b.z);
     let tot = 0;
     for (const it of items) { it.k = Math.min(1, (it.r / it.z) ** 2); tot += it.k; }
