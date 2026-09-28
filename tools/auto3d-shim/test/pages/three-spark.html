@@ -1,0 +1,99 @@
+<!doctype html>
+<!-- TEST PAGE — a Spark (World Labs' Gaussian-splat renderer for three.js, @sparkjsdev/spark 2.x)
+     page written like Spark's own examples (sparkjs.dev/examples/hello-world): a SparkRenderer added
+     to the scene, a SplatMesh, and the page's own renderer.render(scene, camera) from
+     renderer.setAnimationLoop. It knows nothing about DisplayXR. The splats are built procedurally
+     (SplatMesh constructSplats, a seeded 3D lattice of coloured Gaussians, ~3k splats) — no asset.
+     The camera sits at the origin and aims at the lattice's centre, 5 units ahead, with lookAt:
+     expected convergence 5, source 'target'.
+     ?freeze=N: N drawn frames after the splats are ready (sorted), the page stops drawing (render on demand: the shim replays).
+     Instrumentation (window.__spark, read by cases/spark.mjs): every SparkRenderer.updateInternal
+     call (Spark's per-frame generate + sort driver, run from its onBeforeRender), whether it
+     regenerated the splat accumulator, and every sort (readbackDepth) with the viewpoint it sorted
+     for. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three + Spark splats (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": {
+  "three": "/deps/three/three.module.js",
+  "three/addons/postprocessing/Pass.js": "/deps/three/Pass.js",
+  "@sparkjsdev/spark": "/deps/spark/spark.module.js"
+} }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+const FREEZE = +(new URLSearchParams(location.search).get('freeze') || 0);
+window.__expectedConvergence = 5;
+window.__expectedConvergenceSource = 'target';
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 0, 0);
+camera.lookAt(0, 0, -5);
+
+const spark = new SparkRenderer({ renderer });
+scene.add(spark);
+
+// A seeded lattice: 15 x 9 x 5 cells (x, y, depth) around (0, 0, -5), each cell a few jittered
+// Gaussians of one random colour, so both halves carry texture everywhere (the shift is measurable).
+let seed = 1234567;
+const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const splats = new SplatMesh({
+  constructSplats: (s) => {
+    const c = new THREE.Vector3(), sc = new THREE.Vector3(), q = new THREE.Quaternion(), col = new THREE.Color();
+    for (let iz = 0; iz < 5; iz++) for (let iy = 0; iy < 9; iy++) for (let ix = 0; ix < 15; ix++) {
+      col.setHSL(rnd(), 0.75, 0.35 + 0.35 * rnd());
+      const k = 4 + Math.floor(rnd() * 4);
+      for (let j = 0; j < k; j++) {
+        c.set((ix - 7) * 0.32 + (rnd() - 0.5) * 0.2, (iy - 4) * 0.3 + (rnd() - 0.5) * 0.2, -5 + (iz - 2) * 0.35 + (rnd() - 0.5) * 0.2);
+        sc.set(0.03 + 0.05 * rnd(), 0.03 + 0.05 * rnd(), 0.03 + 0.05 * rnd());
+        q.set(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize();
+        s.pushSplat(c, sc, q, 0.6 + 0.4 * rnd(), col);
+      }
+    }
+  },
+});
+scene.add(splats);
+
+// ------------------------------------------------------------ instrumentation (test only)
+const S = (window.__spark = { updates: [], gens: 0, sorts: [], frames: 0 });
+const origUpdate = spark.updateInternal;
+spark.updateInternal = function (args) {
+  const before = this.current;
+  const p = args.camera.getWorldPosition(new THREE.Vector3());
+  const out = origUpdate.call(this, args); // generate() runs synchronously, before its first await
+  const gen = this.current !== before;
+  if (gen) S.gens++;
+  S.updates.push({ t: performance.now(), frame: renderer.info.render.frame, x: p.x, y: p.y, z: p.z, gen });
+  if (S.updates.length > 2000) S.updates.splice(0, 1000);
+  return out;
+};
+const origReadback = spark.readbackDepth;
+spark.readbackDepth = function (a) {
+  const v = a.current.viewOrigin;
+  S.sorts.push({ t: performance.now(), x: v.x, y: v.y, z: v.z });
+  if (S.sorts.length > 2000) S.sorts.splice(0, 1000);
+  return origReadback.call(this, a);
+};
+splats.initialized.then(() => { S.initialized = true; });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+let n = 0, readyN = 0;
+renderer.setAnimationLoop(() => {
+  if (FREEZE && readyN >= FREEZE) { renderer.setAnimationLoop(null); window.__frozen = true; return; }
+  if (window.__splatReady) readyN++;
+  renderer.render(scene, camera);
+  n++; S.frames = n; window.__pageFrames = n;
+  // Ready once the splats are in and Spark has sorted at least once (its ordering texture exists).
+  if (S.initialized && spark.orderingTexture && spark.activeSplats > 0 && !window.__splatReady) window.__splatReady = true;
+});
+</script>
+</body></html>

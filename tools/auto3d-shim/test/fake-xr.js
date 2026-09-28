@@ -28,6 +28,9 @@
 //                     exists and is open — the cost of converting (the frame-rate guard's case).
 //   eyeZ: Z           both eye poses carry a +Z translation (camera looks down −Z: the eyes sit Z
 //                     BEHIND the page camera, as a display rig puts them at the viewer's distance).
+//   eyeX: X           the left eye pose sits −X, the right +X along the camera's x axis (a real
+//                     inter-eye baseline: two distinct viewpoints, for view-dependent engines such as
+//                     a splat sorter). Adds depth-dependent parallax on top of the skew.
 (() => {
   const SKEW = 0.1;
   const OPTS = window.__fakeXROpts || {};
@@ -70,6 +73,7 @@
     return o;
   }
   const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, +OPTS.eyeZ || 0, 1]);
+  const eyeMatrix = (i) => { const m = IDENTITY.slice(); m[12] = (i ? 1 : -1) * (+OPTS.eyeX || 0); return m; };
 
   class FakeLayer {
     constructor(session, canvas, opts) {
@@ -127,7 +131,7 @@
       const views = [+SKEW, -SKEW].map((s, i) => ({
         eye: i ? 'right' : 'left',
         projectionMatrix: proj(vfov, aspect, n, f, s),
-        transform: { matrix: IDENTITY.slice() },
+        transform: { matrix: eyeMatrix(i) },
       }));
       return { session: this, getViewerPose: () => ({ views }) };
     }
