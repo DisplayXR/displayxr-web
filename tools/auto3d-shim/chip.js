@@ -116,10 +116,12 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
 </div>
 <div class="sr" aria-live="polite"></div>`;
 
+  let wired = false; // the document / window listeners: once per document, whatever the host
   function build() {
     if (host) return true;
     const de = doc.documentElement;
     if (!de || typeof I.attachShadow !== 'function') return false;
+    els = {};
     host = doc.createElement('div');
     host.setAttribute('data-dxr-auto3d-chip', '');
     host.setAttribute('popover', 'manual');
@@ -141,10 +143,30 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     wireMenu();
     de.appendChild(host);
     show();
-    for (const [t2, o] of [['scroll', true], ['resize', false]]) window.addEventListener(t2, schedule, { capture: o, passive: true });
-    doc.addEventListener('fullscreenchange', onFullscreen);
-    doc.addEventListener('pointerdown', (e) => { if (menuOpen && !e.composedPath().includes(host)) closeMenu(false); }, true);
+    if (!wired) {
+      wired = true;
+      for (const [t2, o] of [['scroll', true], ['resize', false]]) window.addEventListener(t2, schedule, { capture: o, passive: true });
+      doc.addEventListener('fullscreenchange', onFullscreen);
+      doc.addEventListener('pointerdown', (e) => { if (menuOpen && host && !e.composedPath().includes(host)) closeMenu(false); }, true);
+    }
     return true;
+  }
+  // A FRESH host (P0.1): the top layer paints in insertion order, and an element that enters it after
+  // our host (a fullscreen element) paints over it. The one-show rule forbids re-showing (or toggling)
+  // the same host, so the old one is torn down and a new one is built and shown once: it is then the
+  // last top-layer entry, above the fullscreen element. Used on entering fullscreen over our canvas
+  // and on leaving it. The live announcement is not repeated; an open menu is closed.
+  function rebuild() {
+    if (!host) return;
+    if (menuOpen) closeMenu(false);
+    const old = host;
+    host = null; root = null;
+    try { old.remove(); } catch (e) { /* ignore */ }
+    if (!build()) return;
+    if (announced) live.textContent = '3D view on';
+    rectKey = '';
+    render();
+    place();
   }
   // The ONE show (and a re-show only if the page removed the host: it is then out of the top layer).
   function show() {
@@ -393,9 +415,11 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     else if (!onoff && idleTimer) { clearInterval(idleTimer); idleTimer = 0; }
   }
 
-  // ------------------------------------------------------------ fullscreen: hide after 3 s idle
-  // NOTE: a fullscreen element enters the top layer AFTER our host, so it paints over the chip; the
-  // hit test then hides it anyway. Kept for a browser that lifts the chip (open point, see report).
+  // ------------------------------------------------------------ fullscreen: a fresh host, hide after 3 s idle
+  // A fullscreen element enters the top layer AFTER our host and would paint over it: when the
+  // fullscreen element is (or contains) the converted canvas, the host is rebuilt so that it is the
+  // newer top-layer entry (rebuild(), above), and again on leaving fullscreen. In fullscreen the pill
+  // hides after 3 s without pointer movement, and comes back on the next move.
   const fsOurs = () => { const f = doc.fullscreenElement; return !!(f && s && s.canvas && (f === s.canvas || f.contains(s.canvas))); };
   function onPointerActivity() {
     if (!fsOurs()) return;
@@ -403,9 +427,17 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     clearTimeout(fsIdleTimer);
     fsIdleTimer = setTimeout(() => { if (fsOurs()) { fsIdle = true; render(); } }, FS_IDLE_MS);
   }
+  let fsHost = false; // the host was rebuilt for a fullscreen element over our canvas
   function onFullscreen() {
-    if (fsOurs()) { window.addEventListener('pointermove', onPointerActivity, { capture: true, passive: true }); onPointerActivity(); }
-    else { window.removeEventListener('pointermove', onPointerActivity, true); clearTimeout(fsIdleTimer); if (fsIdle) { fsIdle = false; render(); } }
+    if (fsOurs()) {
+      window.addEventListener('pointermove', onPointerActivity, { capture: true, passive: true });
+      onPointerActivity();
+      rebuild(); // after the fullscreen element: fresh on top
+      fsHost = true;
+    } else {
+      window.removeEventListener('pointermove', onPointerActivity, true); clearTimeout(fsIdleTimer); if (fsIdle) { fsIdle = false; render(); }
+      if (fsHost) { fsHost = false; rebuild(); } // the reverse: a fresh host for the page without fullscreen
+    }
     schedule();
   }
 
