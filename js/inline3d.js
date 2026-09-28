@@ -35,6 +35,10 @@ export { undock, undockAvailable, undockUrl, tileScreenRect };
 // The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
 // `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
 // the same ORDER — as the native apps and the demos. See _requestRenderingModeEased.
+// The device-limit clamp on a backing store (MAX_TEXTURE_SIZE & co.), shared with ./viewer,
+// ./splat and ./model. Dependency-free.
+import { probeBufferLimits, clampEyeBuffer, clampWarning, bufferScale, mismatchWarning } from './inline3d-buffer-limit.js';
+
 import {
   ModeSwitch,
   MODE_SWITCH_DEFAULT_DURATION_MS,
@@ -2351,10 +2355,16 @@ class Inline3D {
    * source into a buffer larger than itself adds no detail: the compositor scales the layer to
    * the box either way, so upscaling here only spends GPU fill-rate. The cap keeps the BOX
    * aspect (the eyes stay correctly shaped) and only shrinks, never grows past box × dpr.
-   * An explicit {width, height} is the page's call and is never capped. `win.bufScale` records
-   * the shrink so buffer-px decoration (cornerRadius, feather) keeps its on-screen size.
+   * An explicit {width, height} is the page's call and is never capped by the source.
+   *
+   * THEN THE DEVICE LIMIT, on every window including an explicit size: the whole store (2 × eye
+   * wide in SBS) must fit min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), or
+   * the weave cannot take it as one texture. An Android 3D tablet (Adreno 740) reports 4096 where
+   * desktops report 16384. Both axes shrink by one factor (./inline3d-buffer-limit.js), warned
+   * once per window. `win.bufScale` records the total shrink so buffer-px decoration
+   * (cornerRadius, feather) keeps its on-screen size.
    */
-  _eyeSize(win) {
+  _eyeSize(win, sbs = true) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     let w = win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr);
     let h = win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr);
@@ -2367,6 +2377,16 @@ class Inline3D {
         scale = s;
         w = Math.max(1, Math.round(w * s));
         h = Math.max(1, Math.round(h * s));
+      }
+    }
+    const c = clampEyeBuffer(w, h, probeBufferLimits(), { cols: sbs ? 2 : 1 });
+    if (c.clamped) {
+      scale *= c.scale;
+      w = c.eyeW;
+      h = c.eyeH;
+      if (!win.warnedBufClamp) {
+        win.warnedBufClamp = true;
+        console.warn(clampWarning('[inline3d]', c));
       }
     }
     win.bufScale = scale;
@@ -2384,8 +2404,48 @@ class Inline3D {
     return { w: sw / 2, h: sh };
   }
 
+  /**
+   * A scene canvas is the app's to size, so the core cannot clamp it — but it can SEE the browser
+   * clamp it. Where the store exceeds the device's MAX_TEXTURE_SIZE (4096 on an Adreno 740 tablet)
+   * the drawing buffer silently comes out smaller than canvas.width, while getViewport() keeps
+   * splitting canvas.width: the eye boundary lands off-centre and the panel shows a double image.
+   * Say so once. ./viewer, ./splat and ./model clamp before sizing and never trip this.
+   *
+   * Only called after the app has drawn a stereo frame, so the canvas already HAS its context:
+   * getContext() of the same type returns it, of another type returns null — it never creates one.
+   */
+  _checkSceneBuffer(win) {
+    const c = win.canvas;
+    if (!c || typeof c.getContext !== 'function') return;
+    if (win.sceneGl === undefined) {
+      let gl = null;
+      try {
+        gl = c.getContext('webgl2') || c.getContext('webgl');
+      } catch {
+        gl = null;
+      }
+      win.sceneGl = gl && typeof gl.drawingBufferWidth === 'number' ? gl : null;
+    }
+    if (!win.sceneGl) return;
+    const b = bufferScale(c, win.sceneGl);
+    if (b.mismatch) {
+      win.warnedBufMismatch = true;
+      console.warn(
+        mismatchWarning(
+          '[inline3d]',
+          c,
+          b,
+          'getViewport() splits canvas.width, so the eyes are off-centre in the woven buffer. This ' +
+            'scene canvas is sized by the page: keep 2 × eye width and the height within ' +
+            'MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE / MAX_VIEWPORT_DIMS, or map getViewport() onto ' +
+            'gl.drawingBufferWidth/Height.',
+        ),
+      );
+    }
+  }
+
   _sizeBuffer(win, sbs) {
-    const { w: boxW, h: boxH } = this._eyeSize(win);
+    const { w: boxW, h: boxH } = this._eyeSize(win, sbs);
     win.eyeW = boxW;
     win.eyeH = boxH;
     win.canvas.width = sbs ? boxW * 2 : boxW; // SBS = two eye tiles wide
@@ -2515,7 +2575,7 @@ class Inline3D {
     if (win.srcKey !== srcKey) {
       win.srcKey = srcKey;
       if (win.ownsBuffer && !(win.reqW && win.reqH)) {
-        const { w, h } = this._eyeSize(win);
+        const { w, h } = this._eyeSize(win, win.sbs);
         if (w !== win.eyeW || h !== win.eyeH) this._sizeBuffer(win, win.sbs);
       }
     }
@@ -2706,7 +2766,10 @@ class Inline3D {
             win.onFrame(views, win.layer, f);
             // A stereo frame the page drew without throwing. A short view list is the load
             // fallback (a mono frame), which is not what a poster is waiting for.
-            if (views.length >= 2) win.fwStereo = true;
+            if (views.length >= 2) {
+              win.fwStereo = true;
+              if (!win.warnedBufMismatch) this._checkSceneBuffer(win);
+            }
           } catch (err) {
             if (!win.frameThrewWarned) {
               win.frameThrewWarned = true;

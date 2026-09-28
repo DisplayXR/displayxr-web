@@ -379,7 +379,11 @@ export interface SplatOptions {
    * so a long subject still fits once the turntable turns it (default true).
    */
   fitSweep?: boolean;
-  /** Per-eye buffer scale; 0.5–0.7 is usually free (default 1). */
+  /**
+   * Per-eye buffer scale; 0.5–0.7 is usually free (default 1). Clamped to the device's GL limits: the whole store (2 × eye wide in 3D) is kept within
+   * min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes shrunk by one factor,
+   * with a one-time console warning. The handle's `renderScale` reports the value in force.
+   */
   renderScale?: number;
   feather?: number;
   /**
@@ -1008,11 +1012,18 @@ export interface SplatHandle {
   /**
    * `engine: 'playcanvas'` only. Change the per-eye buffer scale live (the `renderScale` option),
    * in (0, 4]; the backing store is resized on the next animation frame. Throws a RangeError
-   * otherwise.
+   * otherwise. The request is kept as given (`renderScaleRequested`); the store is still clamped
+   * to the device's GL limits, and `renderScale` reports what is in force.
    */
   setRenderScale(scale: number): SplatHandle;
-  /** `engine: 'playcanvas'` only. The current per-eye buffer scale. */
+  /**
+   * The per-eye buffer scale IN FORCE: the request times the device-limit clamp. E.g. 0.8 for a
+   * request of 1 on a device whose MAX_TEXTURE_SIZE (4096) cannot hold a 5120-wide SBS store.
+   * Both engines.
+   */
   readonly renderScale: number;
+  /** The per-eye buffer scale as requested (the option, or the last `setRenderScale`). Both engines. */
+  readonly renderScaleRequested: number;
   /**
    * `engine: 'playcanvas'` only. The 2D tier's EYE offset — a head-parallax analogue for a flat
    * screen with no tracked eyes (e.g. a phone's tilt). `{x, y}` is normalised in the mono camera's

@@ -3,7 +3,13 @@
 
 /** Options shared by every add*() call. */
 export interface TileOptions {
-  /** Per-eye buffer resolution in px (defaults to the CSS box × devicePixelRatio, dpr capped at 2). */
+  /**
+   * Per-eye buffer resolution in px (defaults to the CSS box × devicePixelRatio, dpr capped at 2).
+   * `addImage` / `addVideo` clamp the store to the device's GL limits — 2 × width and the height
+   * within min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes by one
+   * factor, warned once — explicit sizes included. An `addScene` canvas is the page's to size;
+   * the SDK warns once if the browser clamped its drawing buffer below `canvas.width/height`.
+   */
   width?: number;
   /** Per-eye buffer height in px (see `width`). */
   height?: number;

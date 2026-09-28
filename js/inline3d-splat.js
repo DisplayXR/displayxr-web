@@ -245,6 +245,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     idleSpin,
     renderScale,
     feather,
+    logTag: '[inline3d/splat]',
   }).useEyeCamera(EyeCamera, EdgeFeather);
 
   // Spark renders through the ordinary three.js pipeline, so splats and meshes co-exist and
@@ -411,6 +412,10 @@ export function addSplat(wall, canvas, src, opts = {}) {
     },
     effects: () => [],
   };
+  // The per-eye buffer scale in force (the request times the device-limit clamp,
+  // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
   // `src` may be a URL or the bytes themselves.
   //

@@ -283,3 +283,16 @@ like a runtime or browser bug on the panel and turned out to be the page.
   frame or two before the runtime delivers views for a newly declared rig. Declare each photo's rig
   (or let the SOG camera block do it) and let `setSource` handle the swap: holding the old rig or
   easing between the two moves one of the photos.
+- **Don't assume `canvas.width` is the buffer.** A WebGL canvas larger than the device's limit is
+  clamped by the browser with no error: `canvas.width` keeps the value you set while
+  `gl.drawingBufferWidth` is smaller. An Android 3D tablet (Adreno 740) reports `MAX_TEXTURE_SIZE`
+  4096 where desktops report 16384 (the Chromium driver workaround tracked in browser-pvt#187), so a
+  full-screen SBS canvas at 5120 wide came out 4096 wide. `XRDisplayLayer.getViewport()` splits
+  `canvas.width`, so the eye boundary landed at 62.5% of the buffer while the weave split it at 50%:
+  a large double image. `./viewer`, `./splat`, `./model` and `addImage` / `addVideo` clamp the store
+  before sizing it (both axes by one factor) and warn once; `handle.renderScale` then reports the
+  scale in force. An `addScene` page sizes its own canvas: keep 2 × eye width and the height within
+  min(`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`), and draw into
+  `gl.drawingBufferWidth/Height` rather than `canvas.width/2`. The SDK warns once if it sees the
+  browser clamp a scene canvas. Test a large tile on Chrome with
+  `--webgl_or_caps_max_texture_size_limit_4096` to reproduce the tablet's limit on a desktop.

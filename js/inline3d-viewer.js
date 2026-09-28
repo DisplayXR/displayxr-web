@@ -64,6 +64,14 @@ import {
   MONO_NEAR,
   MONO_FAR,
 } from './inline3d-splat-shared.js';
+import {
+  glBufferLimits,
+  clampEyeBuffer,
+  clampWarning,
+  bufferScale,
+  scaleViewport,
+  mismatchWarning,
+} from './inline3d-buffer-limit.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 // NaN/Infinity into a transform silently blanks the tile — three propagates it into the
@@ -283,6 +291,14 @@ export class SceneViewer {
     this.depthLimit = depthLimit;
     this.fitSweep = fitSweep;
     this.renderScale = renderScale;
+    // The device-limit clamp on the backing store (./inline3d-buffer-limit.js): the factor _resize
+    // last had to apply on top of renderScale, 1 when the request fit. effectiveRenderScale reports
+    // the product. Warned once per viewer (one viewer per handle).
+    this._bufClamp = 1;
+    this._warnedBufClamp = false;
+    this._warnedBufMismatch = false;
+    /** Prefix for this viewer's warnings; ./splat and ./model set their own. */
+    this.logTag = opts.logTag || '[inline3d/viewer]';
     this.pitchLimit = pitchLimit;
     this.idleSpin = idleSpin;
 
@@ -711,10 +727,13 @@ export class SceneViewer {
 
     // Validated: this frame WILL draw over everything it clears.
     const r = this.renderer;
+    // getViewport() splits canvas.width; a drawing buffer the browser clamped behind our back
+    // (bufferScale().mismatch) gets the same split mapped onto its real size, never canvas.width/2.
+    const b = this._bufScale();
     r.clear();
     r.setScissorTest(true);
     for (let i = 0; i < views.length; i++) {
-      const vp = vps[i];
+      const vp = scaleViewport(vps[i], b.sx, b.sy);
       r.setViewport(vp.x, vp.y, vp.width, vp.height);
       r.setScissor(vp.x, vp.y, vp.width, vp.height);
       if (eye) {
@@ -753,7 +772,8 @@ export class SceneViewer {
       this._tick();
       const r = this.renderer;
       r.clear();
-      r.setViewport(0, 0, this.canvas.width, this.canvas.height);
+      const b = this._bufScale();
+      r.setViewport(0, 0, b.w, b.h);
       r.render(this.scene, this.monoCamera);
     };
     this._monoRaf = requestAnimationFrame(loop);
@@ -849,9 +869,11 @@ export class SceneViewer {
     const r = this.renderer;
     const eye = g.mono ? null : this._ensureEye();
     const el = this.renderer.domElement || this.canvas;
-    // A resize between the cache and the replay changes the buffer, not the split.
-    const sx = g.bufW > 0 && el.width ? el.width / g.bufW : 1;
-    const sy = g.bufH > 0 && el.height ? el.height / g.bufH : 1;
+    // A resize between the cache and the replay changes the buffer, not the split. The cache is in
+    // canvas-attribute px (getViewport's space); the target is the REAL drawing buffer.
+    const b = this._bufScale();
+    const sx = g.bufW > 0 && b.w ? b.w / g.bufW : 1;
+    const sy = g.bufH > 0 && b.h ? b.h / g.bufH : 1;
     const scaled = sx !== 1 || sy !== 1;
     r.clear();
     r.setScissorTest(true);
@@ -903,7 +925,8 @@ export class SceneViewer {
     if (this._mode === 'mono') {
       const r = this.renderer;
       r.clear();
-      r.setViewport(0, 0, this.canvas.width, this.canvas.height);
+      const b = this._bufScale();
+      r.setViewport(0, 0, b.w, b.h);
       r.render(this.scene, this.monoCamera);
       return;
     }
@@ -955,16 +978,69 @@ export class SceneViewer {
     const box = this.canvas.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2) * this.renderScale;
-    const w = Math.max(1, Math.round(box.width * dpr));
-    const h = Math.max(1, Math.round(box.height * dpr));
-    const bufW = this._mode === 'mono' ? w : w * 2;
+    // Clamp to the device's GL limits BEFORE sizing (./inline3d-buffer-limit.js): a store past
+    // MAX_TEXTURE_SIZE is silently clamped by the browser while getViewport() keeps splitting
+    // canvas.width, which puts the eye boundary off-centre in the woven buffer.
+    const c = clampEyeBuffer(
+      Math.max(1, Math.round(box.width * dpr)),
+      Math.max(1, Math.round(box.height * dpr)),
+      glBufferLimits(this._gl()),
+      { cols: this._mode === 'mono' ? 1 : 2 },
+    );
+    this._noteClamp(c);
+    const bufW = c.bufW;
+    const h = c.bufH;
     // Cheap and always correct to refresh, whether or not the backing store moves.
     this.monoCamera.aspect = box.width / box.height;
     this.monoCamera.updateProjectionMatrix();
     const el = this.renderer.domElement || this.canvas;
-    if (el.width === bufW && el.height === h) return; // observer fired, geometry didn't move
+    if (el.width === bufW && el.height === h) {
+      this._bufScale(); // observer fired, geometry didn't move; still name a browser-side clamp
+      return;
+    }
     this.renderer.setSize(bufW, h, false);
+    this._bufScale(); // warns once if the browser clamped anyway
     this._repaintAfterResize();
+  }
+
+  /**
+   * The renderScale actually in force: the request (`renderScale`) times the device-limit clamp
+   * the last resize applied. Equal to renderScale wherever the store fits.
+   */
+  get effectiveRenderScale() {
+    return this.renderScale * this._bufClamp;
+  }
+
+  _gl() {
+    try {
+      return this.renderer?.getContext?.() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Record a resize's clamp; warn once per viewer the first time the device limit bites. */
+  _noteClamp(c) {
+    this._bufClamp = c.scale;
+    if (c.clamped && !this._warnedBufClamp) {
+      this._warnedBufClamp = true;
+      console.warn(clampWarning(this.logTag, c, this.renderScale));
+    }
+  }
+
+  /**
+   * The drawing buffer's real size and its ratio to canvas.width/height (the space getViewport()
+   * reports in). Identity unless the browser clamped a store the limit query did not predict;
+   * warns once per viewer when it did.
+   */
+  _bufScale() {
+    const el = this.renderer.domElement || this.canvas;
+    const b = bufferScale(el, this._gl());
+    if (b.mismatch && !this._warnedBufMismatch) {
+      this._warnedBufMismatch = true;
+      console.warn(mismatchWarning(this.logTag, el, b));
+    }
+    return b;
   }
 
   /** Damping + idle turntable. Called once per rendered frame, 3D or mono. */

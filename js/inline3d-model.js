@@ -379,6 +379,7 @@ export function addModel(wall, canvas, src, opts = {}) {
     idleSpin,
     renderScale,
     feather,
+    logTag: '[inline3d/model]',
   }).useEyeCamera(EyeCamera, EdgeFeather);
 
   if (envMap) viewer.scene.environment = envMap;
@@ -403,6 +404,11 @@ export function addModel(wall, canvas, src, opts = {}) {
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
   };
+
+  // The per-eye buffer scale in force (the request times the device-limit clamp,
+  // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
   // Window first, content when it lands — same reasoning as ./splat: a grid should not appear
   // one tile at a time in download order.
