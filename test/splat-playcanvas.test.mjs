@@ -3218,6 +3218,50 @@ test('setVideo band on the plane: the quad takes the band, cover crops each eye 
   out.remove();
 });
 
+test('videoScreenRect (A5.3): window units map onto the canvas box, centred, clipped', async () => {
+  const { videoScreenRect } = await import('../js/inline3d-splat-video.js');
+  // A quad half as tall as the window, full width, on a 320x180 canvas: bars 45 px top and bottom.
+  assert.deepEqual({ ...videoScreenRect({ w: 1.6, h: 0.45, W: 1.6, H: 0.9 }, 320, 180) }, { x: 0, y: 45, width: 320, height: 90 });
+  // A cover quad wider than the window: clipped to the canvas.
+  assert.deepEqual({ ...videoScreenRect({ w: 2.4, h: 0.9, W: 1.6, H: 0.9 }, 320, 180) }, { x: 0, y: 0, width: 320, height: 180 });
+  // Pillarbox.
+  assert.deepEqual({ ...videoScreenRect({ w: 0.8, h: 0.9, W: 1.6, H: 0.9 }, 320, 180) }, { x: 80, y: 0, width: 160, height: 180 });
+});
+
+test('setVideo rect (A5.3): the picture rect after the first frame; onRectChange on a band change and a resize; null once replaced', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  const h = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }), { band: 2.39 });
+  assert.equal(h.rect, null, 'nothing drawn yet');
+  frame();
+  const W = v.boxCss.w;
+  const H = v.boxCss.h;
+  const r = h.rect;
+  assert.ok(r, 'a rect after the first drawn frame');
+  // 16:9 eye contained in a 2.39 band of a 16:9 canvas: the band is full width, W/2.39 tall; the
+  // eye is as tall as the band and pillarboxed inside it.
+  near(r.height, W / 2.39, 0.02);
+  near(r.width, (W / 2.39) * (16 / 9), 0.02);
+  near(r.y, (H - W / 2.39) / 2, 0.02);
+  const seen = [];
+  const off = h.onRectChange((x) => seen.push(x));
+  frame();
+  await new Promise((res) => setTimeout(res, 0));
+  assert.equal(seen.length, 0, 'no change, no call');
+  canvas.setBox(640, 180); // a wider box (the viewer re-measures on resize)
+  v._updateMonoProjection();
+  frame();
+  await new Promise((res) => setTimeout(res, 0));
+  assert.equal(seen.length, 1, 'one call for the resize');
+  assert.notDeepEqual({ ...seen[0] }, { ...r });
+  off();
+  const h2 = await out.setVideo(fakeVideo());
+  frame();
+  assert.equal(h.rect, null, 'the replaced result answers null');
+  assert.ok(h2.rect);
+  await out.setVideo(null);
+  out.remove();
+});
+
 test('setVideo guards: throws during an in-flight setSource; setSource / setRig refuse while a video is on; prepareSource is allowed; controls:page throws', async () => {
   const { out } = await videoRig();
   const swap = out.setSource('b.sog');

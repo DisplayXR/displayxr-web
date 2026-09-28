@@ -300,6 +300,14 @@ export interface SplatVideo {
   readonly fit: 'contain' | 'cover';
   /** The band's aspect, or null. */
   readonly band: number | null;
+  /**
+   * Where the picture is on screen, in CSS px from the canvas's top-left, clipped to the canvas;
+   * the letterbox bars are the canvas minus this. Null before the first drawn frame and once
+   * another `setVideo` replaced this one. Place controls against the picture with it.
+   */
+  readonly rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null;
+  /** `cb(rect)` whenever the rect changes (a resize, a new size, a band); asynchronous, off the draw. Returns an unsubscribe. */
+  onRectChange(cb: (rect: { x: number; y: number; width: number; height: number }) => void): () => void;
   /** What the swap did: `'crossfade'` only when it replaced a video on screen and asked to. Resolved at the swap, before the fade ends. */
   readonly transition: 'cut' | 'crossfade';
   /** `handle.setVideo(null)`, or a no-op if another setVideo has replaced this one. */
