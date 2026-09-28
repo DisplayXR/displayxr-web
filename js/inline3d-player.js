@@ -2425,6 +2425,9 @@ const SURFACE_IGNORED = ['band', 'poster', 'posterFormat', 'width', 'height', 'c
  * @param {Element} [opts.chromeContainer]  where the controls go. Default: the canvas's parent.
  * @returns {object} a PlayerHandle (player.d.ts) plus `detach()` and the `'detached'` event.
  */
+/** How long attachPlayer waits for a superseded element to leave the plane before it stops looking. */
+const KEEP_ON_PLANE_MAX_MS = 60_000;
+
 export function attachPlayer(splat, src, opts = {}) {
   if (!splat || typeof splat.setVideo !== 'function') {
     throw new TypeError(
@@ -2578,12 +2581,18 @@ export function attachPlayer(splat, src, opts = {}) {
     },
   }, ui);
 
+  // Bounded: if the replacement never lands (its load failed and the app never retried), the
+  // element stays on the plane for good, so stop polling after KEEP_ON_PLANE_MAX_MS and leave it
+  // paused rather than free it — freeing it is the very blank plane this exists to avoid. A later
+  // splat.remove() / setVideo still disposes of it through ./splat.
   function keepUntilOffPlane(v) {
     v.pause();
+    const until = Date.now() + KEEP_ON_PLANE_MAX_MS;
     const t = setInterval(() => {
-      if (splat.videoElement === v) return;
+      const onPlane = splat.videoElement === v;
+      if (onPlane && Date.now() < until) return;
       clearInterval(t);
-      releaseElement(v);
+      if (!onPlane) releaseElement(v);
     }, 250);
   }
 
