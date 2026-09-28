@@ -24,6 +24,10 @@
 //                     — nobody tracked yet / a runtime with nothing to locate eyes for yet.
 //   noDisplayApi: true  the layer has no getDisplayInfo / getRenderingModes (an older build), so the
 //                     shim cannot tell "no display" from "no eyes yet" and relies on its eye timeout.
+//   frameCostMs: N    every session rAF callback first burns N ms of CPU, but only while a layer
+//                     exists and is open — the cost of converting (the frame-rate guard's case).
+//   eyeZ: Z           both eye poses carry a +Z translation (camera looks down −Z: the eyes sit Z
+//                     BEHIND the page camera, as a display rig puts them at the viewer's distance).
 (() => {
   const SKEW = 0.1;
   const OPTS = window.__fakeXROpts || {};
@@ -65,7 +69,7 @@
     o[0] = t / aspect; o[5] = t; o[8] = skew; o[10] = -(f + n) / (f - n); o[11] = -1; o[14] = (-2 * f * n) / (f - n);
     return o;
   }
-  const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, +OPTS.eyeZ || 0, 1]);
 
   class FakeLayer {
     constructor(session, canvas, opts) {
@@ -101,7 +105,11 @@
     requestReferenceSpace(type) { return Promise.resolve({ type }); }
     updateRenderState(s) { Object.assign(this.renderState, s); H.renderStates.push({ ...s }); }
     requestAnimationFrame(cb) {
-      return window.requestAnimationFrame((t) => { if (!this.ended) cb(t, this._frame()); });
+      return window.requestAnimationFrame((t) => {
+        if (this.ended) return;
+        if (OPTS.frameCostMs && this._layer && !this._layer.closed) { const t0 = performance.now(); while (performance.now() - t0 < OPTS.frameCostMs) { /* burn */ } }
+        cb(t, this._frame());
+      });
     }
     cancelAnimationFrame(id) { window.cancelAnimationFrame(id); }
     end() {
