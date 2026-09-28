@@ -188,8 +188,8 @@ export default function cases({ P, NEW }) {
       },
     },
     {
-      id: 'g-30fps', name: 'frame-rate guard: a page that runs at 30 fps in 2D (its own rAF burns 30 ms) stays in 3D',
-      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 2500), ...NEW], cfg: { guardFps: 40 },
+      id: 'g-30fps', name: 'frame-rate guard: a page that is slow in 2D (its own rAF burns 60 ms a frame) stays in 3D',
+      url: P + 'pc-orbit.html', shim: [burnPrelude(60, 2500), ...NEW], cfg: { guardFps: 40 }, // 60 ms: ~16 fps in 2D, so the conversion's own few ms stay well inside the 0.8 x baseline margin
       async run(page, h) {
         await page.waitForFunction(settled(), { timeout: 30000, polling: 100 });
         const fps = await fpsOver(page, 7500); // warm-up (4 s from the cover drop) + a full window (2 s) + margin
@@ -205,11 +205,11 @@ export default function cases({ P, NEW }) {
       },
     },
     {
-      // The page's own loop burns 30 ms (a 30 fps page in 2D and in 3D alike) and it goes live on its
+      // The page's own loop burns 60 ms (a ~16 fps page in 2D and in 3D alike) and it goes live on its
       // first qualifying draw, so the first trip has no baseline. P0.2: any first trip retries once
-      // after guardRetryMs; the retry's baseline is the 30 fps drawn during the wait, so it stays.
-      id: 'g-retry', name: 'frame-rate guard, no baseline: a page that runs at 30 fps in 2D anyway -> trip, ONE retry with the 2D rate of the wait as baseline -> stays live',
-      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 0), ...NEW], cfg: { guardFps: 40 },
+      // after guardRetryMs; the retry's baseline is the ~16 fps drawn during the wait, so it stays.
+      id: 'g-retry', name: 'frame-rate guard, no baseline: a page that is slow in 2D anyway (60 ms burn) -> trip, ONE retry with the 2D rate of the wait as baseline -> stays live',
+      url: P + 'pc-orbit.html', shim: [burnPrelude(60, 0), ...NEW], cfg: { guardFps: 40 },
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });

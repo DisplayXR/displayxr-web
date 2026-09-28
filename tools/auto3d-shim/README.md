@@ -643,10 +643,10 @@ running), so the rig is always sampled at the configured depth.
 | `s-three-extra-gl` | three.js keyframes + a second WebGL canvas | the search goes on after go-live (another canvas has WebGL); the page then asks for `immersive-vr` → stand-down for good → `S.disarm()`: no timer, the extra canvas's id trap off |
 | `s-dev-plain` | the dev bundle on the plain page | the core is not loaded (no `__dxrAuto3D`, no HUD) |
 | `g-trip` | PlayCanvas orbit, `frameCostMs` 40 in the fake session rAF, no 2D baseline | the guard trips, waits `guardRetryMs` (report `converting`), retries ONCE with the wait's 2D rate as baseline, trips again → blocks; two sessions, still two 5 s later, report `guard`, no raw pair at either close (commit model), the out-cover holds a picture |
-| `g-retry` | PlayCanvas orbit, the page's own rAF burns 30 ms from the start (no baseline) | first trip → ONE retry, whose baseline is the ~30 fps drawn during the wait → **live**, two sessions, no `guard` report |
+| `g-retry` | PlayCanvas orbit, the page's own rAF burns 60 ms from the start (no baseline) | first trip → ONE retry, whose baseline is the ~16 fps drawn during the wait → **live**, two sessions, no `guard` report |
 | `g-loading` | PlayCanvas orbit, the page burns 40 ms a frame for 5 s after go-live, then runs clean | ends **live**, no `guard` report (the warm-up) |
 | `g-loading-long` | the same, 8 s of burn | first trip during the load, 2D fast meanwhile, ONE retry anyway → **live** (v0.5.1 blocked here) |
-| `g-30fps` | the page's own 2D rAF burns to 30 fps | the guard does **not** trip |
+| `g-30fps` | the page's own rAF burns 60 ms a frame (~16 fps in 2D and 3D; 60 ms keeps the conversion's cost well inside the 0.8 × baseline margin on a noisy headless box) | the guard does **not** trip |
 | `g-clamp-three` / `g-clamp-pc` | `glLimit` 512 | eye ≤ 512 with the aspect kept, the skew shift still ≈ 0.1 × eye width |
 | `a-dpr2` | `three-keyframes.html?pr=1&w=600&h=400` on a DPR 2 viewport (`deviceScaleFactor` 2) | eye 1200×800 (2 × CSS), SBS 2400×800, skew shift 120 px; the page reads 600×400 at pixel ratio 1; its store is 600×400 again after the turn-off |
 | `g-reduced` | `prefers-reduced-motion: reduce` | `rampMs` 1, and the turn-off still takes the out-cover |
