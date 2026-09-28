@@ -1,0 +1,20 @@
+{
+  "name": "displayxr-auto3d",
+  "version": "0.5.0",
+  "sourceCommit": "099383f2c876039bc8d7a3050ed26a7dfbad7dcb",
+  "sourceSha256": "ff7913fa7b8d3cd86a63464e480858fd17a29a6e21ffa97996c2b1151ba6ac07",
+  "files": {
+    "dist/auto3d-sentinel.js": {
+      "bytes": 2740,
+      "sha256": "967b15d9754b757369608b7583dc6a4ca4896b8f08babb90d446aece12aa8a06"
+    },
+    "dist/auto3d-core.js": {
+      "bytes": 83927,
+      "sha256": "872fa3ff3258e48a4f24e1d9a84c2d2ba2f1625077cbe5a671b2cfcbd201b7f7"
+    },
+    "dist/auto3d-dev.js": {
+      "bytes": 89523,
+      "sha256": "fca8fcb415795362e0450fcd206dca6407e29546b568e1b615772c5c8acc2e6b"
+    }
+  }
+}
