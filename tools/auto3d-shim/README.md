@@ -36,20 +36,40 @@ cap = { loadCore() -> function, save({ decision?, depths?, rig?, convScale? }), 
       // report: 'live' | 'converting' | 'standdown' | 'optout' | 'offer' | 'off' | 'flat' | 'idle' — transitions only
 ```
 
-A user `block` outside dev never loads the core (the sentinel stays detect-only). The dev extension
+**What a page can see of us.** Before an engine is found, exactly four things (the sentinel's
+header has the details; `test/cases/sentinel.mjs` `s-cost` checks them on a 2,000-element page with
+no engine: no other window key, no other prototype descriptor, no timer, `'pc' in window` false):
+
+1. `window.__THREE_DEVTOOLS__`, a non-enumerable accessor holding an `EventTarget`;
+2. `HTMLCanvasElement.prototype.getContext`, wrapped (the only prototype change);
+3. `navigator.xr.requestSession`, wrapped;
+4. an own, non-enumerable `id` accessor on armed `<canvas>` elements (plus, for the rest of a task
+   in which one was read, a one-shot setter for that id on `Object.prototype`).
+
+Plus the value-only symbol marker. After an engine is found the core adds what converting needs
+(per-instance wrappers on the renderer / app, the cover, the chip).
+
+**Opt-out.** `<meta name="displayxr-auto3d" content="off">` (name and content case-insensitive,
+content trimmed). The sentinel checks it on the first WebGL context and when an engine is found:
+the core is never loaded, one `{ status: 'optout' }` report, one console line. Inserted later, the
+core refuses to activate, and a live canvas goes back to 2D within 30 session frames.
+
+A user `block` outside dev never loads the core (the sentinel stays detect-only, and reports
+`{ status: 'off', engine }` once when it finds one). The `requestSession` wrapper stays installed
+under block. The dev extension
 emulates the host with `host-dev.js` over the page's `localStorage` (the v0.4 behaviour, including
 the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there, and only in dev.
 
 | file | owns |
 |---|---|
-| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), then the core. **Today it loads the core eagerly and the adapters keep their v0.4 detection**; lazy loading and detection move here next. |
+| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes), the page's `<meta>` opt-out (`S.optedOut()`), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found). On a page with no engine the core is never parsed. |
 | `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (`eyeScale` 0.5, capped at 3072) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
 | `guard.js` | `dxrGuard(core)`: the frame-rate guard (stub today: `onFlip`, `tick`) |
 | `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (stub today: `update`) |
 | `dev.js` | `dxrDev(core, ctl)`, only when `cfg.dev`: the HUD, the Ctrl+Alt hotkeys, `window.__dxrAuto3D` (`state()`, `probe()`, `set()`) |
 | `host-dev.js` | `dxrDevHost(loadCore)`: the dev extension's stand-in for the browser host, over `localStorage` |
-| `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Detection through `__THREE_DEVTOOLS__`, per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
-| `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: detects the app, drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
+| `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Fed by the sentinel's `__THREE_DEVTOOLS__` listener (`observe`, `register`); per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
+| `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: takes the app the sentinel found (`consider(app, how, ns)`), drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
 | `build.mjs` | the build above; `--check` for drift |
 
 **Convergence: the page's target first.** When the page says what it is looking at, that is the
@@ -167,20 +187,24 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 
 ### PlayCanvas (engine 2.x, WebGL2)
 
-**Finding the app.** Every route below is armed at `document_start`, and the first hit wins:
+**Finding the app** (the sentinel's job; the first hit wins, and the core loads only then):
 
-1. **`window.pc`**, a UMD / editor build: `pc.app`, `pc.AppBase.getApplication()`. The global is
-   watched with an accessor, so the moment the engine script assigns it is seen.
-2. **`window.app`**, when it is an AppBase: many demos. Polled every 500 ms for 20 s.
-   supersplat-viewer no longer uses this route: 1.35.2 does not set `window.app`, with or without
-   `exposeGlobals`. It is found through route 3 (verified on the panel, 2026-09-26).
-3. **ESM bundles with no global.** The first statement of the AppBase constructor is
+1. **Globals**: `window.pc.app`, `pc.AppBase.getApplication()`, `window.app` (when it is an
+   AppBase). Searched in the microtask after the document's first WebGL `getContext`, at
+   `DOMContentLoaded` / `load`, then every 500 ms, 40 times (once per document). There is no
+   `window.pc` accessor, so `'pc' in window` stays false. supersplat-viewer 1.35.2 sets no
+   `window.app`; it is found through route 2 (verified on the panel, 2026-09-26).
+2. **ESM bundles with no global.** The first statement of the AppBase constructor is
    `AppBase._applications[canvas.id] = this`, a plain-object store keyed by the canvas id. The
-   adapter watches canvas `id` reads (the `Element.prototype.id` getter, for canvases only) and
-   puts a one-shot setter for exactly that key on `Object.prototype`. It stays there for the rest
-   of that task and is removed at the next microtask checkpoint. The engine's assignment lands on
-   the setter, which hands over `this` (the app) and re-creates the property as an ordinary own
-   property, so the engine's store is unchanged.
+   sentinel puts a **per-instance** `id` accessor on each candidate canvas; a read of it puts a
+   one-shot setter for exactly that key on `Object.prototype`, for the rest of that task (removed
+   at the next microtask checkpoint). The engine's assignment lands on the setter, which hands
+   over `this` (the app) and re-creates the property as an ordinary own property, so the engine's
+   store is unchanged. The constructor reads the id **before** it creates the context, so a canvas
+   is armed at `readystatechange → interactive` (every `<canvas>` in the DOM, before deferred and
+   module scripts run) and on its first WebGL `getContext`. A trap comes off once an app is found,
+   on a `'2d'` context, or 10 s after `load`. (v0.4 wrapped `Element.prototype.id` instead: every
+   element's id read paid for it.)
 
 **Per-eye path.** This is the SDK adapter's recipe (`js/inline3d-splat-playcanvas.js`). The
 adapter sets `camera.camera.xrViews = [RenderView, RenderView]`. Each view gets the runtime's
@@ -221,6 +245,11 @@ are offset from it by a few ipd × m2v.
 | OffscreenCanvas / worker | not converted |
 
 **What the PlayCanvas adapter cannot see.**
+- An ESM app, with no global, on a canvas **created by script** after the document became
+  `interactive` (`document.createElement('canvas')` then `new Application(canvas)`): its id is
+  read before its context exists, so no trap is armed in time. It stays 2D and the sentinel says so
+  in one console line when its globals search ends (~20 s; harness case `s-pc-dyn`). Closing it
+  needs a parse-time `MutationObserver` (a cost on every page) or the engine-side hook below.
 - An ESM app whose canvas id collides with a property that already exists on `Object.prototype`.
   That takes an id such as `constructor` or `toString`.
 - An app constructed before `document_start`: never, for a content script.
@@ -258,7 +287,7 @@ Pages to start with:
 | `https://threejs.org/examples/webgl_shadowmap.html` | three.js: a reversed-depth renderer |
 | the PlayCanvas engine examples browser (`playcanvas.github.io`), a mesh example | PlayCanvas: meshes. The examples browser runs each example in an iframe; the script runs in all frames |
 | the same, a gaussian-splatting example | PlayCanvas: gsplat (footprint fix) |
-| a supersplat-viewer page with `&webgl` | PlayCanvas: an ESM app found through the canvas-id trap (route 3), `autoRender = false`. Without `&webgl` the viewer picks WebGPU and stays 2D. A standalone copy of the viewer (its built `index.html` served locally) needs the scene's `settings.json` next to it (`./settings.json`); without it the viewer never starts |
+| a supersplat-viewer page with `&webgl` | PlayCanvas: an ESM app found through the canvas-id trap (route 2), `autoRender = false`. Without `&webgl` the viewer picks WebGPU and stays 2D. A standalone copy of the viewer (its built `index.html` served locally) needs the scene's `settings.json` next to it (`./settings.json`); without it the viewer never starts |
 | the PlayCanvas engine examples, `loaders/glb` | PlayCanvas: the camera alternates perspective / orthographic every 2 s (3D, then 2D; see below) |
 
 ### Hardware verification checklist (for the tester)
