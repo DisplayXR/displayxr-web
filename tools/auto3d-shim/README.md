@@ -6,26 +6,51 @@ edit. It is a prototype for measuring coverage on real sites, in the same spirit
 `tools/immersive-shim/` (which does the same for WebXR `immersive-vr` pages). It is not a product
 and must not ship as one. How it would fold into the browser: [`docs/proposals/auto3d-browser-integration.md`](../../docs/proposals/auto3d-browser-integration.md).
 
-## Architecture: one core, one adapter per engine
+## Architecture: a sentinel, one core, one adapter per engine
+
+The sources are **part files**, each one top-level `function dxr…`, and `build.mjs` (Node, no
+dependencies, no bundler: concatenation plus a version stamp) assembles them into `dist/`:
 
 ```
-manifest.json  ->  core.js  ->  three-adapter.js  ->  playcanvas-adapter.js
-                   (MAIN world, document_start, in this order, all frames)
+dist/auto3d-sentinel.js   (function (cfg, cap) { sentinel.js ... return dxrSentinel(cfg, cap); })
+dist/auto3d-core.js       (function (cfg, cap, S) { core.js guard.js chip.js dev.js
+                            three-adapter.js playcanvas-adapter.js ... return dxrCore(cfg, cap, S); })
+dist/auto3d-dev.js        (() => { host-dev.js sentinel.js  const CORE = function (cfg, cap, S) {…};
+                            dxrSentinel(dxrDevHost(() => CORE)…) })()   <- manifest.json (dev extension)
+VENDOR.json               { name, version, sourceCommit, sourceSha256, files: { <f>: { bytes, sha256 } } }
 ```
 
-**Why plain scripts, not ES modules.** MV3 content scripts cannot be modules, and a dynamic
-`import()` of a `chrome-extension://` URL resolves asynchronously, after the page's first scripts
-have run. That would miss the moment both detection hooks depend on: `__THREE_DEVTOOLS__` must
-exist before three.js loads, and the PlayCanvas constructor trap before the first `new Application`.
-So the three files are ordinary scripts. Chrome runs them in order in the page's own world, and
-`core.js` hands its API to the adapters on a non-enumerable, symbol-keyed window property
-(`window[Symbol.for('dxr.auto3d.core')]`). There is no bundler and no build step.
+The browser vendors `dist/auto3d-sentinel.js` + `dist/auto3d-core.js` **verbatim** and checks them
+against `VENDOR.json`: fix here, `node build.mjs`, re-vendor. `node build.mjs --check` fails when the
+committed `dist/` is not what the sources build to. The two product files are **expressions**: the
+host evaluates the sentinel in the page's main world at document start and calls it with a frozen
+`cfg` and a capability object `cap`; the sentinel asks `cap.loadCore()` for the core. Parts hand
+each other plain function arguments inside one lexical scope; nothing is put on `window` except a
+value-only double-injection marker, `window[Symbol.for('dxr.auto3d')] = true` (the first injector
+wins: the dev extension, or the browser's).
+
+```
+cfg = { decision: 'allow'|'offer'|'block', depths: { camera, display } (0.02..1), rig: 'camera'|'display',
+        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas }, test }   // frozen
+cap = { loadCore() -> function, save({ decision?, depths?, rig?, convScale? }), report({ status, engine?, reason? }) }
+      // report: 'live' | 'converting' | 'standdown' | 'optout' | 'offer' | 'off' | 'flat' | 'idle' — transitions only
+```
+
+A user `block` outside dev never loads the core (the sentinel stays detect-only). The dev extension
+emulates the host with `host-dev.js` over the page's `localStorage` (the v0.4 behaviour, including
+the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there, and only in dev.
 
 | file | owns |
 |---|---|
-| `core.js` | everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page asks for `inline-3d` / `immersive-vr` / `immersive-ar` itself, and the per-origin config and kill switch. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand. **Sizing:** the side-by-side (SBS) rule (`eyeScale` 0.5, capped at 3072) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Other:** the HUD, hotkeys, `window.__dxrAuto3D`. |
-| `three-adapter.js` | the three.js prototype's own code, unchanged in behaviour. Detection through `__THREE_DEVTOOLS__`, per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
-| `playcanvas-adapter.js` | detects the app, drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
+| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), then the core. **Today it loads the core eagerly and the adapters keep their v0.4 detection**; lazy loading and detection move here next. |
+| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (`eyeScale` 0.5, capped at 3072) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
+| `guard.js` | `dxrGuard(core)`: the frame-rate guard (stub today: `onFlip`, `tick`) |
+| `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (stub today: `update`) |
+| `dev.js` | `dxrDev(core, ctl)`, only when `cfg.dev`: the HUD, the Ctrl+Alt hotkeys, `window.__dxrAuto3D` (`state()`, `probe()`, `set()`) |
+| `host-dev.js` | `dxrDevHost(loadCore)`: the dev extension's stand-in for the browser host, over `localStorage` |
+| `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Detection through `__THREE_DEVTOOLS__`, per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
+| `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: detects the app, drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
+| `build.mjs` | the build above; `--check` for drift |
 
 **Convergence: the page's target first.** When the page says what it is looking at, that is the
 convergence distance: the depth, along the camera's axis, of
@@ -56,7 +81,7 @@ stands among them, the result is the apparent-size-weighted median depth. The va
 
 **The adapter contract** (hooks the core calls on `st.ad`) is written out at the top of `core.js`:
 `unqualified`, `hasCamera`, `depthRange`, `rigFov`, `sampler`, `target`, `beforeActive` /
-`afterActive`, `firstDraw`, `redraw`, `restore`, `flipIdle`, `wake`, `describe`, plus `readEye` and
+`afterActive`, `firstDraw`, `redraw`, `restore`, `flipIdle`, `wake`, `describe`, `gl`, plus `readEye` and
 `coverAfterDraw` for the out-cover. The adapter calls back `core.drew(st)` after every draw or replay
 on the live store (it starts the no-eyes timer) and `core.takeOutCover(st)` right after a draw when
 one is due. A third engine means one new file that implements those hooks.
@@ -215,7 +240,9 @@ are offset from it by a few ipd × m2v.
 ## Try it on the display (Windows box)
 
 **A — in your own DisplayXR Browser (recommended).** `chrome://extensions` → *Developer mode* →
-*Load unpacked* → select this folder. Then open or reload a three.js / PlayCanvas page.
+*Load unpacked* → select this folder. Then open or reload a three.js / PlayCanvas page. The
+extension loads the committed `dist/auto3d-dev.js`; after editing a source file run
+`node build.mjs` here, then reload the extension.
 
 **B — a separate profile.** Close **every** DisplayXR Browser window first: a second browser
 instance gets no weave slot and stays 2D forever
@@ -337,7 +364,14 @@ views: identity poses, with an off-axis skew of ±0.1 in `P[8]`. That skew moves
 0.1 NDC whatever its depth, so the right half must equal the left half shifted by 0.1 × eye width
 (**64 px** on a 640 px eye). The scripts are injected with `page.evaluateOnNewDocument` (main
 world, before any page script, the same timing as the extension's content scripts) rather than
-`--load-extension`, so the pre-split `content.js` can be swapped in for the parity run.
+`--load-extension`, so the pre-split `content.js` can be swapped in for the parity run. `run.mjs`
+builds `dist/` **in memory** from the sources (`build.mjs`'s `build()`), so it always tests the
+working tree, never a stale committed `dist/`. Cases are a registry: every `test/cases/*.mjs`
+default-exports `(env) => case[]`, loaded in file-name order; a case may carry its own
+`run(page, helpers)` / `check(r, t, helpers)`. Dev-mode cases inject `dist/auto3d-dev.js` and read
+`window.__dxrAuto3D`; product-mode cases (`productShim(hostCfg)`) inject `test/fake-host.js`, which
+evaluates `dist/auto3d-sentinel.js` + `dist/auto3d-core.js` with an indirect `eval` as the browser
+would and records `loadCore` calls, `cap.save` and `cap.report` on `window.__dxrFakeHost`.
 
 ```bash
 cd tools/auto3d-shim/test
@@ -374,6 +408,9 @@ running), so the rig is always sampled at the configured depth.
 | `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
 | `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so |
+| `p-smoke` | three.js keyframes in **product mode** (fake host, `decision: 'allow'`), with a hostile `__dxrAuto3DTestCfg` | goes live; `loadCore` once; reports are transitions only (converting before live); nothing saved; no `__dxrAuto3D` / HUD; the test config is ignored; the only window symbol is the value-only marker |
+| `p-block` | product mode, `decision: 'block'` | the core is never loaded, no session |
+| `p-double` / `p-double-dev` | the product injector and the dev bundle both injected, in either order | the first injector wins: one core, one session, one layer |
 
 **The commit model** (`window.__fakeXRTrackCommits`, cases `a-kill`, `b-kill`, `b-flip`). After
 every frame's rAF callbacks (in a ResizeObserver callback, which runs after them and before paint)
