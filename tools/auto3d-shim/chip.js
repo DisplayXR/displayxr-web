@@ -27,8 +27,8 @@
 //   - never over page UI: a corner is used only when elementsFromPoint (the snapshotted built-in) at
 //     the box's four corners + centre, skipping our host, first hits the canvas (or its cover).
 //
-// Lifecycle (view): hidden | offer (outlined; click -> on) | live (green dot; amber while no views or
-// ramping; expanded for 3 s from its first appearance) | off (outlined; expanded 5 s after a turn-off).
+// Lifecycle (view): hidden | offer (outlined; click -> on) | live (green dot; amber while no views,
+// ramping, or the frame-rate guard waits to retry; expanded for 3 s from its first appearance) | off (outlined; expanded 5 s after a turn-off).
 // The live moment keys off the cover drop OR layerAt + holdMs, whichever comes first (risk R6: with
 // nobody seated the cover can stay up indefinitely).
 function dxrChip(ctl, S) {
@@ -305,6 +305,9 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
   // ------------------------------------------------------------ state -> view
   function viewOf(st) {
     if (!st || !st.canvas) return 'hidden';
+    // The frame-rate guard stood down after a first trip and will retry once (P0.2): still "3D on this
+    // site", amber until the retry is live again.
+    if (st.retrying) return st.enabled ? 'live' : 'off';
     // 'converting' + waiting: live on the layer, but no stereo frame yet (nobody tracked): amber pill.
     if (st.state === 'live' || st.waiting) {
       if (!st.enabled) return 'off'; // turning off: fading out / staged under the out-cover
@@ -329,7 +332,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     }
     if (next !== 'hidden' && !build()) return;
     observe(next !== 'hidden' ? st.canvas : null);
-    idle(next === 'offer' || next === 'off'); // no session loop: poll the placement
+    idle(next === 'offer' || next === 'off' || !!st.retrying); // no session loop: poll the placement
     if (menuOpen) syncMenu();
     render();
     place();
@@ -350,7 +353,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     const on = view === 'live';
     wrap.classList.toggle('outline', !on);
     wrap.classList.toggle('exp', menuOpen || hovering || now() < expandedUntil);
-    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.haveViews && !s.ramping ? 'g' : 'a'));
+    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.haveViews && !s.ramping && !s.retrying ? 'g' : 'a'));
     setA(pill, 'aria-pressed', String(on));
     setA(pill, 'aria-label', on ? '3D view: on. Turn off for this site' : view === 'offer' ? '3D view available. Turn on for this site' : '3D view: off. Turn on for this site');
   }

@@ -67,6 +67,8 @@ function dxrCore(cfg, cap, S) {
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
     guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
     guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
+    guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
+    guardRetryMs: 6000,  // ... the first trip stands down, then retries once after this long, whatever the 2D rate
     glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
@@ -228,7 +230,7 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
     if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
-    if (foreign || owner || guard.tripped || guard.measuring) return;
+    if (foreign || owner || guard.tripped || guard.retrying) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
     if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
@@ -319,7 +321,7 @@ function dxrCore(cfg, cap, S) {
       st.nextTry = Infinity;
       return;
     }
-    st.layerAt = now();
+    st.layerAt = now(); st.coverDropAt = 0;
     st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
     guard.onFlip(st);
     st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
@@ -888,6 +890,7 @@ function dxrCore(cfg, cap, S) {
     }
     if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
+      st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
       if (st.rampK < 1) startRamp(st, 1);
       return;
@@ -898,6 +901,7 @@ function dxrCore(cfg, cap, S) {
       // on the page camera), i.e. the mono picture, and the chip shows amber. rampK stays 0 until the
       // first stereo frame (above), so depth never pops in un-faded.
       dropCover(st);
+      st.coverDropAt = t;
       st.coverForced = true;
       info(`cover released at its ${T.coverMaxMs} ms maximum with no 2-view frame yet (nobody tracked?): flat until the eyes arrive`);
       return;
@@ -923,7 +927,7 @@ function dxrCore(cfg, cap, S) {
     if (foreign) return { status: 'standdown', reason: foreign };
     if (S.optedOut()) return { status: 'optout' };
     if (guard.tripped) return { status: 'guard', reason: guard.tripped };
-    if (guard.measuring) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.measuring };
+    if (guard.retrying) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.retrying };
     // Live but no stereo frame drawn yet (nobody tracked): not 3D to anyone, so 'converting'. The chip
     // still shows (amber) once the cover is down: `waiting`.
     if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
@@ -944,7 +948,7 @@ function dxrCore(cfg, cap, S) {
       // the target (in- or out-cover) and when the layer came up (it keys its live moment off
       // layerAt + holdMs, risk R6: the cover may stay up with nobody seated), the depth fade.
       enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
-      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp),
+      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp), retrying: !!guard.retrying,
     };
   }
   let lastReport = '';
@@ -1017,7 +1021,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood,
+    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,

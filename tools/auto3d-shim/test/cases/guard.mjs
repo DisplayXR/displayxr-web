@@ -49,6 +49,17 @@ const burnPrelude = (ms, holdMs) => `(() => {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sh];
   setTimeout(() => { document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sh); }, ${holdMs});
 })();`;
+// A page that burns N ms in its OWN rAF only while it is "loading": from the first layer until
+// holdMs + loadMs after it (the cover drop is ~holdMs after the layer), then runs clean. Only the
+// FIRST layer: a retry's layer finds a loaded page. (Spark hello-world / streaming-lod on the panel.)
+const loadingPrelude = (ms, loadMs) => `(() => {
+  const f = () => {
+    const L = window.__fakeXR && window.__fakeXR.layers[0];
+    if (L && performance.now() - L.at < 1200 + ${loadMs}) { const t0 = performance.now(); while (performance.now() - t0 < ${ms}) {} }
+    requestAnimationFrame(f);
+  };
+  requestAnimationFrame(f);
+})();`;
 const fpsOver = async (page, ms) => {
   const a = await page.evaluate(() => ({ f: window.__fakeXR.frames, t: performance.now() }));
   await new Promise((r) => setTimeout(r, ms));
@@ -136,11 +147,11 @@ export default function cases({ P, NEW }) {
 
   return [
     {
-      id: 'g-trip', name: 'frame-rate guard: conversion costs 40 ms a frame, no 2D baseline -> back to 2D, re-measure 2D (fast) -> blocked, no retry, report guard',
+      id: 'g-trip', name: 'frame-rate guard: conversion costs 40 ms a frame -> back to 2D, ONE retry after guardRetryMs, trips again -> blocked, report guard',
       url: P + 'pc-orbit.html', shim: NEW, fake: { frameCostMs: 40 }, commits: true,
       async run(page, h) {
         await page.evaluate(watchOutCover);
-        await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'guard'), { timeout: 25000, polling: 100 });
+        await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'guard'), { timeout: 50000, polling: 100 });
         await page.waitForFunction(() => { const r = window.__dxrAuto3D.state().renderers[0]; return r && !r.active && !r.releasing; }, { timeout: 5000, polling: 50 });
         await h.sleep(300);
         const cmp = await page.evaluate(compareOutCover);
@@ -155,19 +166,19 @@ export default function cases({ P, NEW }) {
         if (!O) return;
         t('the last report is guard (the chip hides on it)', O.reports[O.reports.length - 1].status === 'guard', O.reports.map((x) => x.status).join(' -> '));
         const S = O.state.renderers[0];
-        t('back to 2D, layer closed', S && !S.active && !S.releasing && O.closes.length === 1, `active ${S && S.active}, closes ${O.closes.length}`);
-        t('no retry: still ONE session and ONE layer 5 s later, while the page keeps drawing', O.sessions === 1 && O.layers === 1 && r.at.sessions === 1, `sessions ${r.at.sessions} -> ${O.sessions}, layers ${O.layers}`);
+        t('back to 2D, both layers closed', S && !S.active && !S.releasing && O.closes.length === 2, `active ${S && S.active}, closes ${O.closes.length}`);
+        t('exactly ONE retry: two sessions and two layers, still two 5 s after the block while the page keeps drawing', O.sessions === 2 && O.layers === 2 && r.at.sessions === 2, `sessions ${r.at.sessions} -> ${O.sessions}, layers ${O.layers}`);
         const lines = r.log.filter((l) => /back to 2D: frame-rate guard/.test(l));
-        t('one console line names it', lines.length === 1, lines[0] || `${lines.length} lines`);
-        // P0.1: this page goes live on its first qualifying draw, so the trip has no baseline: the guard
-        // stands down, measures the page's own 2D rate (report converting), finds it fast -> blocks.
+        t('two console lines: the first trip announces the retry, the second the block', lines.length === 2 && /retrying once in 6\.0 s/.test(lines[0]) && /after one retry — 2D for the rest of this page/.test(lines[1]), lines.join(' | ') || '0 lines');
         const st = O.reports.map((x) => x.status), iLive = st.indexOf('live'), iGuard = st.indexOf('guard');
-        t('no baseline -> re-measured 2D first (live -> converting -> guard), then blocked because 2D is fast', /no 2D baseline/.test(lines[0] || '') && iLive >= 0 && st.slice(iLive, iGuard).includes('converting') &&
-          /where the page runs at \d+(\.\d)? fps in 2D/.test(O.reports[iGuard] ? O.reports[iGuard].reason : ''), `${st.join(' -> ')}; ${O.reports[iGuard] ? O.reports[iGuard].reason : ''}`);
+        t('reports: live -> converting (retry wait) -> live (the retry) -> guard', iLive >= 0 && st.slice(iLive, iGuard).includes('converting') && st.slice(iLive + 1, iGuard).includes('live'), st.join(' -> '));
+        t('the retry is judged against the 2D rate drawn during the wait (the block names it)', /\(2D ran at \d+(\.\d)?\)/.test(O.reports[iGuard] ? O.reports[iGuard].reason : ''), O.reports[iGuard] ? O.reports[iGuard].reason : '');
         t('nothing saved', O.stored === null, `stored ${O.stored}`);
-        const rp = O.closes[0] ? h.rawPairAtClose(O.closes[0]) : null;
-        t('no raw side-by-side frame once the layer is closed (commit model)', rp && rp.frames >= 3 && rp.discriminates && rp.bad.length === 0,
-          rp ? `${rp.frames} committed frames from close(); at close ${rp.atClose.toFixed(2)}, pair ${rp.pairBase.toFixed(2)}, mono ${rp.monoBase.toFixed(2)}; raw pairs [${rp.bad.map((b) => b.i).join(', ')}]` : 'layer never closed');
+        for (const i of [0, 1]) {
+          const rp = O.closes[i] ? h.rawPairAtClose(O.closes[i]) : null;
+          t(`close #${i + 1}: no raw side-by-side frame once the layer is closed (commit model)`, rp && rp.frames >= 3 && rp.discriminates && rp.bad.length === 0,
+            rp ? `${rp.frames} committed frames from close(); at close ${rp.atClose.toFixed(2)}, pair ${rp.pairBase.toFixed(2)}, mono ${rp.monoBase.toFixed(2)}; raw pairs [${rp.bad.map((b) => b.i).join(', ')}]` : 'layer never closed');
+        }
         const k = r.cmp;
         t('the turn-off took the out-cover, and it holds a real picture', outCoverReal(k), k ? `data URL ${k.srcLen} chars; vs mono MAE ${k.mae.toFixed(2)} (flipped ${k.maeFlipped.toFixed(2)}), std ${k.std.toFixed(1)}` : 'no out-cover');
       },
@@ -177,7 +188,7 @@ export default function cases({ P, NEW }) {
       url: P + 'pc-orbit.html', shim: [burnPrelude(30, 2500), ...NEW],
       async run(page, h) {
         await page.waitForFunction(settled(), { timeout: 30000, polling: 100 });
-        const fps = await fpsOver(page, 5000); // arm (1 s) + a full window (2 s) + margin
+        const fps = await fpsOver(page, 7500); // warm-up (4 s from the cover drop) + a full window (2 s) + margin
         const out = await page.evaluate(readOut);
         return { fps, out };
       },
@@ -190,27 +201,71 @@ export default function cases({ P, NEW }) {
       },
     },
     {
-      // P0.1 fix 1. The page's own loop burns 30 ms (a 30 fps page in 2D and in 3D alike) and it goes
-      // live on its first qualifying draw, so the first trip has no baseline and is void.
-      id: 'g-retry', name: 'frame-rate guard, no baseline: a page that runs at 30 fps in 2D anyway -> re-measure, ONE retry with that baseline -> stays live',
+      // The page's own loop burns 30 ms (a 30 fps page in 2D and in 3D alike) and it goes live on its
+      // first qualifying draw, so the first trip has no baseline. P0.2: any first trip retries once
+      // after guardRetryMs; the retry's baseline is the 30 fps drawn during the wait, so it stays.
+      id: 'g-retry', name: 'frame-rate guard, no baseline: a page that runs at 30 fps in 2D anyway -> trip, ONE retry with the 2D rate of the wait as baseline -> stays live',
       url: P + 'pc-orbit.html', shim: [burnPrelude(30, 0), ...NEW],
       async run(page, h) {
-        await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 30000, polling: 100 });
+        await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
-        const fps = await fpsOver(page, 4500); // arm (1 s) + a full window (2 s) + margin: a second trip would land here
+        const fps = await fpsOver(page, 7500); // warm-up (4 s) + a full window (2 s) + margin: a second trip would land here
         await h.sleep(500);
         return { fps, out: await page.evaluate(readOut) };
       },
       check(r, t) {
         const O = r.out, S = O && O.state.renderers.find((x) => x.active);
-        t('first trip had no 2D baseline, and the re-measure found a slow page (void trip, one retry)', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*no 2D baseline/.test(l)) && r.log.some((l) => /runs at \d+(\.\d)? fps in 2D too .* retrying once/.test(l)),
+        t('first trip had no 2D baseline and announced ONE retry; the retry ran', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*no 2D baseline.*retrying once in/.test(l)) && r.log.some((l) => /frame-rate guard: retrying once$/.test(l)),
           r.error || r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
         if (!O) return;
         t('3D still runs below guardFps (the no-baseline rule alone would trip again)', r.fps < 40, `${r.fps.toFixed(1)} session fps`);
         t('LIVE after the retry: two sessions, the second still open, no guard report', !!S && O.sessions === 2 && O.layers === 2 && O.closes.length === 1 && !O.reports.some((x) => x.status === 'guard'),
           `active ${!!S}, sessions ${O.sessions}, layers ${O.layers}, closes ${O.closes.length}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
         const st = O.reports.map((x) => x.status);
-        t("reports: live -> converting (re-measure) -> ... -> live", st[st.length - 1] === 'live' && st.filter((x) => x === 'live').length === 2 && st.slice(st.indexOf('live')).includes('converting'), st.join(' -> '));
+        t('reports: live -> converting (retry wait) -> ... -> live', st[st.length - 1] === 'live' && st.filter((x) => x === 'live').length === 2 && st.slice(st.indexOf('live')).includes('converting'), st.join(' -> '));
+      },
+    },
+    {
+      // P0.2 fix 1a: the warm-up. Heavy for the first 5 s after the cover drop (a Spark page loading its
+      // splats), clean at 60 fps after. No guard window starts in the first 4 s, and whatever the guard
+      // decides after that, the page must end LIVE (a trip would retry once, into a loaded page).
+      id: 'g-loading', name: 'frame-rate guard: a page that burns 40 ms a frame for 5 s after go-live (loading), then runs clean -> ends LIVE',
+      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 5000), ...NEW],
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.layers.length >= 1, { timeout: 20000, polling: 100 });
+        const slow = await fpsOver(page, 3000); // inside the loading phase: really below guardFps
+        await page.waitForFunction(() => performance.now() - window.__fakeXR.layers[0].at > 17000, { timeout: 30000, polling: 200 });
+        await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
+        return { slow, out: await page.evaluate(readOut) };
+      },
+      check(r, t) {
+        const O = r.out, S = O && O.state.renderers.find((x) => x.active);
+        t('the loading phase really ran below guardFps in 3D', r.ok && r.slow < 40, r.error || `${r.slow && r.slow.toFixed(1)} session fps`);
+        if (!O) return;
+        t('ends LIVE, no guard report', !!S && !O.reports.some((x) => x.status === 'guard') && O.reports[O.reports.length - 1].status === 'live',
+          `active ${!!S}, sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+      },
+    },
+    {
+      // P0.2 fix 1b: a loading phase longer than the warm-up. The first window trips (no baseline); the
+      // page is fast in 2D by then, which #100 read as "the conversion's fault" and blocked. Now: ONE
+      // retry after guardRetryMs whatever the 2D rate, into the loaded page -> live.
+      id: 'g-loading-long', name: 'frame-rate guard: 40 ms a frame for 8 s after go-live -> first trip, 2D fast meanwhile, ONE retry anyway -> LIVE',
+      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 8000), ...NEW],
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
+        await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
+        await h.sleep(7500); // a second trip would land here (headless 'clean' is 30-60 fps: judged against the wait's 2D rate)
+        return { out: await page.evaluate(readOut) };
+      },
+      check(r, t) {
+        const O = r.out, S = O && O.state.renderers.find((x) => x.active);
+        t('first trip during the load, announced a retry', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*retrying once in 6\.0 s/.test(l)), r.error || r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
+        if (!O) return;
+        t('LIVE after the retry: two sessions, one close, no guard report', !!S && O.sessions === 2 && O.closes.length === 1 && !O.reports.some((x) => x.status === 'guard'),
+          `active ${!!S}, sessions ${O.sessions}, closes ${O.closes.length}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+        const st = O.reports.map((x) => x.status);
+        t('reports end live', st[st.length - 1] === 'live', st.join(' -> '));
       },
     },
     clampCase('g-clamp-three', 'GL size clamp (glLimit 512): three.js keyframes', 'three-keyframes.html', { convTarget: false }),
