@@ -72,8 +72,9 @@ call owns a *variable* number of tiles, so it creates and owns the per-participa
 - **TURN:** ~10–20% of networks need a relay. Default DisplayXR-provided (Cloudflare TURN free tier,
   short-lived credentials minted by the signalling server — **no secret ever in the client**);
   `iceServers` overrides.
-- **Codec:** VP9 preferred, VP8 fallback, AV1 opportunistic. **The DisplayXR Browser has no H.264**
-  (proprietary-codec build), so H.264 is never required. Sender: `contentHint='detail'`,
+- **Codec:** VP9 preferred, VP8 fallback, AV1 opportunistic. **The DisplayXR Browser has no H.264
+  for WebRTC** (1.0.6+ plays H.264/AAC *media files* through the OS decoders, but WebRTC gets no
+  H.264 codec), so H.264 is never required for a call. Sender: `contentHint='detail'`,
   `degradationPreference='maintain-resolution'`, `maxBitrate` per tier.
 
 ### Wire format
