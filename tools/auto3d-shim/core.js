@@ -59,6 +59,7 @@ function dxrCore(cfg, cap, S) {
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
+    coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
@@ -319,6 +320,7 @@ function dxrCore(cfg, cap, S) {
       return;
     }
     st.layerAt = now();
+    st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
     guard.onFlip(st);
     st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
     st.displayOk = null;
@@ -879,11 +881,25 @@ function dxrCore(cfg, cap, S) {
   }
   function tickCover(st, t) {
     const cv = st.cover;
-    if (!cv) return;
+    if (!cv) {
+      // Dropped at coverMaxMs with no stereo frame: the depth fades in from the first one instead.
+      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp) startRamp(st, 1); }
+      return;
+    }
     if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
       if (st.rampK < 1) startRamp(st, 1);
+      return;
+    }
+    if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
+      // R6: a display is there (displayOk) but nobody is tracked, so no stereo frame ever comes and the
+      // cover would stay up forever. Drop it anyway: with no views the pair under it is flat (both eyes
+      // on the page camera), i.e. the mono picture, and the chip shows amber. rampK stays 0 until the
+      // first stereo frame (above), so depth never pops in un-faded.
+      dropCover(st);
+      st.coverForced = true;
+      info(`cover released at its ${T.coverMaxMs} ms maximum with no 2-view frame yet (nobody tracked?): flat until the eyes arrive`);
       return;
     }
     if (cv.fixed) {
@@ -908,6 +924,9 @@ function dxrCore(cfg, cap, S) {
     if (S.optedOut()) return { status: 'optout' };
     if (guard.tripped) return { status: 'guard', reason: guard.tripped };
     if (guard.measuring) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.measuring };
+    // Live but no stereo frame drawn yet (nobody tracked): not 3D to anyone, so 'converting'. The chip
+    // still shows (amber) once the cover is down: `waiting`.
+    if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
@@ -918,7 +937,7 @@ function dxrCore(cfg, cap, S) {
   function status() {
     const s = statusOf(), t = lastTarget || candidate;
     return {
-      state: s.status, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
+      state: s.status, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
       convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews),
       // For the chip (read-only facts; it never touches the state): the site switch, the cover over
@@ -936,7 +955,7 @@ function dxrCore(cfg, cap, S) {
     const key = `${s.status}|${s.engine || ''}|${s.reason || ''}`;
     if (key !== lastReport) {
       lastReport = key;
-      try { cap.report(s); } catch (e) { warnOnce('report', 'could not report the status', e); }
+      try { cap.report(s.waiting ? { status: s.status, engine: s.engine } : s); } catch (e) { warnOnce('report', 'could not report the status', e); }
     }
     if (chip) chip.update(status());
     if (dev) dev.hud();

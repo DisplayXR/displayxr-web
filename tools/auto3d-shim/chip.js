@@ -283,7 +283,8 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
   // ------------------------------------------------------------ state -> view
   function viewOf(st) {
     if (!st || !st.canvas) return 'hidden';
-    if (st.state === 'live') {
+    // 'converting' + waiting: live on the layer, but no stereo frame yet (nobody tracked): amber pill.
+    if (st.state === 'live' || st.waiting) {
       if (!st.enabled) return 'off'; // turning off: fading out / staged under the out-cover
       if (st.coverUp && !(st.layerAt && now() >= st.layerAt + st.holdMs)) return 'hidden'; // R6
       return 'live';

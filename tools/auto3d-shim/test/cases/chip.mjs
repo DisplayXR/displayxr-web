@@ -318,5 +318,31 @@ export default function cases({ P, productShim }) {
         t('no menu key reached the page\'s document keydown listener', r.keys === 0, `keys ${r.keys}`);
       },
     },
+    {
+      // P0.1 fix 4 (R6): a display behind the layer (getDisplayInfo answers) but nobody tracked, ever.
+      id: 'chip-cover-max', name: 'cover max hold: displayOk but never two views -> cover gone at ~coverMaxMs (5 s), chip amber, report converting (never live)',
+      url: P + 'three-corner-ui.html', shim: allowDev, fake: { viewsAfterMs: 1e9 },
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.layers.length === 1, W8);
+        await h.sleep(2500);
+        const mid = await page.evaluate(() => ({ cover: !!document.querySelector('[data-dxr-auto3d-cover]'), t: performance.now() - window.__fakeXR.layers[0].at }));
+        await page.waitForFunction(() => !document.querySelector('[data-dxr-auto3d-cover]'), { timeout: 9000, polling: 25 });
+        const gone = await page.evaluate(() => performance.now() - window.__fakeXR.layers[0].at);
+        await page.waitForFunction(liveChip, W8);
+        await h.sleep(1500);
+        const A = await page.evaluate(chipInfo);
+        const S = await page.evaluate(() => { const s = window.__dxrAuto3D.state(); const r = s.renderers.find((x) => x.active); return { active: !!r, rampK: r && r.rampK, stereo: r && r.stats.stereo, open: window.__fakeXR.layers[0].closedAt === null }; });
+        return { mid, gone, A, S, H: await page.evaluate(host) };
+      },
+      check(r, t) {
+        t('cover still up 2.5 s in (past the 1.2 s hold: no stereo frame yet)', r.ok && r.mid && r.mid.cover, r.error || JSON.stringify(r.mid));
+        if (!r.S) return;
+        t('cover gone at ~5 s (4.9-5.6 s after the layer)', r.gone >= 4900 && r.gone <= 5600, `${Math.round(r.gone)} ms`);
+        t('still converted, layer open, flat (rampK 0, no stereo frame)', r.S.active && r.S.open && r.S.rampK === 0 && r.S.stereo === 0, JSON.stringify(r.S));
+        t('chip shown, amber dot', r.A && r.A.state === 'live' && !!r.A.rect && r.A.dot === 'dot a', JSON.stringify(r.A && { state: r.A.state, rect: !!r.A.rect, dot: r.A.dot }));
+        t("reports: last is 'converting', never 'live'", r.H && r.H.reports[r.H.reports.length - 1] === 'converting' && !r.H.reports.includes('live'), r.H && r.H.reports.join(' -> '));
+        t('the console says why', r.log.some((l) => /cover released at its 5000 ms maximum/.test(l)), '');
+      },
+    },
   ];
 }
