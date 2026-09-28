@@ -1238,6 +1238,10 @@ class Tile {
     this.autoLocked = false;
     this.autoStats = { n: 0, ms: 0, readMs: 0, method: null, via: null };
     this.autoPending = false;
+    // Bumped on every stream change and on destroy(): an async copyTo() that resolves after either
+    // belongs to a stream this tile no longer shows, and is dropped (review of #92).
+    this.autoGen = 0;
+    this.destroyed = false;
     this.conv.depth = call.depth;
     this.hintGate = rateGate(HINT_MAX_HZ);
     this.layerFails = 0;
@@ -1632,18 +1636,22 @@ class Tile {
       }
       if (frame && Y_PLANE_FORMATS.has(frame.format)) {
         this.autoPending = true;
+        const gen = this.autoGen;
         const fw = frame.visibleRect ? frame.visibleRect.width : frame.displayWidth;
         const fh = frame.visibleRect ? frame.visibleRect.height : frame.displayHeight;
         const buf = new Uint8Array(frame.allocationSize());
         frame
           .copyTo(buf)
           .then((layout) => {
+            if (gen !== this.autoGen) return; // the stream changed or the tile is gone: stale frame
             const t0 = performance.now();
             const f = Math.max(1, Math.ceil(fw / 2 / AUTO_CONV_EYE_WIDTH));
             const ds = downsampleLuma(buf, layout[0].offset, layout[0].stride, fw, fh, f);
             this._applyMeasurement(ds.img, ds.w, ds.h, ds.w / fw, now, performance.now() - t0, 'videoframe');
           })
-          .catch(() => this._applyMeasurement(null, 0, 0, 1, now, 0, 'videoframe'))
+          .catch(() => {
+            if (gen === this.autoGen) this._applyMeasurement(null, 0, 0, 1, now, 0, 'videoframe');
+          })
           .finally(() => {
             frame.close();
             this.autoPending = false;
@@ -1679,6 +1687,7 @@ class Tile {
    * time spent getting the pixels.
    */
   _applyMeasurement(img, w, h, s, at, readMs, via) {
+    if (this.destroyed) return;
     const t = performance.now();
     const m = img ? this.autoFocus.measure(img, w, h, at) : null;
     const d = this.autoTrack.push(m ? m.d / s : null);
@@ -1703,6 +1712,7 @@ class Tile {
   }
 
   _resetAutoConverge() {
+    this.autoGen++;
     this.autoTrack.reset();
     this.autoFocus.reset();
     this.conv.measuredPx = null;
@@ -1710,6 +1720,8 @@ class Tile {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.autoGen++;
     clearTimeout(this.helloTimer);
     clearTimeout(this.layerTimer);
     clearTimeout(this.leaveTimer);
