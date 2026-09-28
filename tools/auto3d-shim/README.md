@@ -46,6 +46,9 @@ no engine: no other window key, no other prototype descriptor, no timer, `'pc' i
 4. an own, non-enumerable `id` accessor on armed `<canvas>` elements (plus, for the rest of a task
    in which one was read, a one-shot setter for that id on `Object.prototype`).
 
+Plus one `MutationObserver` on the document (not page-visible; it arms `<canvas>` elements as they are
+added, see R1 below) until an app is found or the first mutation after load + 10 s.
+
 Plus the value-only symbol marker. After an engine is found the core adds what converting needs:
 
 5. per-instance wrappers on the renderer / app (three.js `render` / `setSize` / getters, plus
@@ -78,9 +81,9 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 
 | file | owns |
 |---|---|
-| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes), the page's `<meta>` opt-out (`S.optedOut()`), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found). On a page with no engine the core is never parsed. |
+| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes incl. the parse-time canvas observer), the page's `<meta>` opt-out (`S.optedOut()`), `S.settle(canvas)` (a canvas went live: the PlayCanvas search stops unless another canvas has a WebGL context) and `S.disarm()` (the core stands down for good: every trap and poll off, for good), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found). On a page with no engine the core is never parsed. |
 | `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (`eyeScale` 0.5, capped at 3072) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
-| `guard.js` | `dxrGuard(core)`: the frame-rate guard (see [The guard](#the-frame-rate-guard-the-gl-clamp-reduced-motion)). Hooks: `draw` (the page's 2D rate, from the top of `considerActivation`), `onFlip`, `tick`, `tripped` (`statusOf` → `'guard'`) |
+| `guard.js` | `dxrGuard(core)`: the frame-rate guard (see [The guard](#the-frame-rate-guard-the-gl-clamp-reduced-motion)). Hooks: `draw` (the page's 2D rate, from the top of `considerActivation`; also the re-measure after a trip with no baseline), `onFlip`, `tick`, `tripped` (`statusOf` → `'guard'`), `measuring` (`statusOf` → `'converting'`) |
 | `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (see [The chip](#the-3d-chip)). Uses only `ctl` and `S.intrinsics`; the core calls `frame(st)` per session frame and exposes it as `core.chip` (`__dxrAuto3D.chip()` in dev). While the site is off the core still qualifies a **candidate** canvas (`considerCandidate`) so offer mode has something to offer 3D on |
 | `dev.js` | `dxrDev(core, ctl)`, only when `cfg.dev`: the HUD, the Ctrl+Alt hotkeys, `window.__dxrAuto3D` (`state()`, `probe()`, `set()`) |
 | `host-dev.js` | `dxrDevHost(loadCore)`: the dev extension's stand-in for the browser host, over `localStorage` |
@@ -168,6 +171,14 @@ Under the cover the rig is flat (`rampK` 0: both eyes on the page camera, the mo
 cover drops, a hard cut between two identical pictures, the depth fades in over `rampMs` (500 ms,
 smoothstep): `rampK` scales the rig's ipd and parallax factors from 0 to 1. `cfg.coverImg = false`
 restores the canvas cover (diagnostics).
+
+**Cover max hold (v0.5.1, risk R6).** The cover normally drops `holdMs` (1.2 s) after the layer, at the
+first stereo frame. With a display behind the layer (`displayOk`) but nobody tracked, no stereo frame
+ever comes (and the no-eyes timer does not apply, since a display is there), so the cover used to stay
+up for good and the chip never appeared. After `coverMaxMs` (5 s) it drops anyway: with no views the
+pair under it is flat, i.e. the mono picture; `rampK` stays 0 and the depth fades in from the first
+stereo frame. The chip shows amber, and the report is `'converting'` (not `'live'`) until a stereo
+frame has been drawn in this activation.
 
 **3D → 2D (`Ctrl+Alt+3` off).** The depth fades out to `rampK` 0 first and holds two frames (a rig
 drives the NEXT locate). Then the **out-cover** goes over the canvas: one eye of that flat pair, which
@@ -395,7 +406,13 @@ site (`block` / `allow` saved); the caret opens a menu: site toggle, depth slide
 release), Style (camera / display rig), Focus (nearer / auto / farther), Reset, and **Just this
 time** (on or off now, nothing saved). Menu keys: arrows, Home / End, Escape (closes and returns
 focus to the pill). It hides while a page modal (`<dialog>`) covers the canvas, and shows nothing
-after a guard trip or an opt-out.
+after a guard trip or an opt-out. **In fullscreen** (v0.5.1): a fullscreen element enters the top layer
+after the chip and would paint over it, so when the fullscreen element is (or contains) the converted
+canvas the chip host is torn down and a **fresh** one is built and shown once (the newest top-layer
+entry paints on top); on leaving fullscreen, the same again. The pill hides after 3 s without pointer
+movement and comes back on the next move. Measured headless: Chromium **paints** the fresh chip over
+the fullscreen canvas but routes pointer input there to the fullscreen element, not to a later
+non-modal popover, so in fullscreen the chip shows the state but does not take clicks (panel check).
 
 It must stay out of the weave: a **plain quad** (no opacity, filter, transform, blend, mask or
 clip-path anywhere; fades are colour alpha only), always smaller than the tile, hidden with
@@ -415,6 +432,12 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
   page that already runs at 30 fps in 2D is not the conversion's fault). On a trip: the ordinary
   turn-off (fade, out-cover, staged stand), no retry in this document, report `'guard'`, nothing
   saved.
+  **No baseline (v0.5.1).** Most pages go live on their first qualifying draw, so they have no
+  baseline and the 40 fps test alone decided. Now a FIRST trip with no baseline turns off the same
+  way, then measures the page's own 2D rate for 2 s (the `considerActivation` draws keep coming;
+  report `'converting'`). Below `guardFps` in 2D too, the trip was void: ONE retry, whose flip has that
+  2D run as its baseline (a second trip blocks for good). Faster in 2D, or too few draws to measure (a
+  render-on-demand page: the per-frame replay is our cost), and it blocks as before (`'guard'`).
 - **GL clamp.** The SBS store fits the zero-copy width cap (3072) **and** the context's own limits
   (`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`, read once per canvas): a 2×-wide
   store is over those on many Android GPUs. One scale for both axes, so the eye keeps its aspect.
@@ -570,9 +593,14 @@ running), so the rig is always sampled at the configured depth.
 | `s-cost` | `pages/plain-2000.html`: 2,000 elements, no engine, product mode | `loadCore` never called; only `HTMLCanvasElement.prototype.getContext` changed; `'pc' in window` false; no timers; only new window key `__THREE_DEVTOOLS__`; sentinel eval < 0.5 ms (median of 5); `div.id` reads within ±5 % of a control |
 | `s-meta` / `s-meta-boot` / `s-meta-late` | `pages/meta-off.html`: the meta static, inserted before the first draw, inserted 2.5 s in while live | core never loaded / never activates / turned off within 30 session frames; report `optout`; one console line |
 | `s-block-pc` | PlayCanvas, product `block` | detect-only: one `{ off, PlayCanvas }` report, no session, the id trap removed |
-| `s-pc-dyn` | `pages/pc-dyn.html`: a script-created canvas, `new Application`, no globals | coverage today: **2D** (the R1 gap), the page keeps working, one console line says why, the trap expires |
+| `s-cost` (v0.5.1 addition) | the same | the parse-time canvas observer's callbacks < 0.5 ms per load (median of 5) while the 2,000 elements go in |
+| `s-pc-dyn` | `pages/pc-dyn.html`: a script-created canvas, inserted and handed to `new Application` in the **same task**, no globals | still **2D**: the observer's callback is a microtask, so the id is read before the trap exists (and before the context); the page keeps working, one console line says why, the trap expires |
+| `s-pc-dyn-defer` | `pc-dyn.html?defer=1`: the launcher pattern, inserted then `new Application` in a later task | **3D**, found through the id trap the observer armed; no sentinel timer 1 s after go-live |
+| `s-three-settle` | three.js keyframes, product | once live, no PlayCanvas search timer (poll / sweep) pending 1 s after go-live, none created in the next 3 s, id trap off |
+| `s-three-extra-gl` | three.js keyframes + a second WebGL canvas | the search goes on after go-live (another canvas has WebGL); the page then asks for `immersive-vr` → stand-down for good → `S.disarm()`: no timer, the extra canvas's id trap off |
 | `s-dev-plain` | the dev bundle on the plain page | the core is not loaded (no `__dxrAuto3D`, no HUD) |
-| `g-trip` | three.js keyframes, `frameCostMs` 40 in the fake session rAF | the guard trips, `nextTry` blocks retries, one session 5 s later, report `guard`, no chip, no raw pair at close (commit model) |
+| `g-trip` | PlayCanvas orbit, `frameCostMs` 40 in the fake session rAF, no 2D baseline | the guard trips, re-measures 2D (report `converting`), finds it fast → blocks; one session 5 s later, report `guard`, no raw pair at close (commit model), the out-cover holds a picture |
+| `g-retry` | PlayCanvas orbit, the page's own rAF burns 30 ms from the start (no baseline) | first trip void (2D ~28 fps too) → ONE retry with that baseline → **live**, two sessions, no `guard` report |
 | `g-30fps` | the page's own 2D rAF burns to 30 fps | the guard does **not** trip |
 | `g-clamp-three` / `g-clamp-pc` | `glLimit` 512 | eye ≤ 512 with the aspect kept, the skew shift still ≈ 0.1 × eye width |
 | `g-reduced` | `prefers-reduced-motion: reduce` | `rampMs` 1, and the turn-off still takes the out-cover |
@@ -583,6 +611,8 @@ running), so the rig is always sampled at the configured depth.
 | `chip-layout` | three.js keyframes | **no layout change**: DOM, attributes, boxes and computed styles identical before / after go-live (host + cover excluded, R7 allowlisted) |
 | `chip-dialog` | `pages/three-dialog.html` | a page `<dialog>` modal over the canvas hides the chip; closed, it comes back; the R9 `::backdrop` neutraliser |
 | `chip-a11y` | three.js keyframes | roles, menu arrows / Home / End, Escape closes and returns focus, the slider |
+| `chip-fs` | three.js, a real `canvas.requestFullscreen()` | a new host (old one gone, one in the document, top layer), **painted** above the fullscreen canvas (pill region differs shown vs hidden), hidden after 3 s idle, back on a move; a fresh host again on exit |
+| `chip-cover-max` | three.js, `displayOk` but never two views | cover still up at 2.5 s, gone at ~5 s, layer open and flat, chip amber, reports end at `converting`, never `live` |
 
 **The commit model** (`window.__fakeXRTrackCommits`, cases `a-kill`, `b-kill`, `b-flip`). After
 every frame's rAF callbacks (in a ResizeObserver callback, which runs after them and before paint)
@@ -615,28 +645,27 @@ On Windows the harness uses the installed Chrome (`CHROME=` to override) with AN
 
 ## Verified, and what is not
 
-**Headless, v0.5.0 (the sentinel, guard and chip slices integrated), Windows, ANGLE D3D11:** all 42
-cases pass (19 earlier + 7 sentinel + 7 guard + 9 chip), `a` / `a-legacy` still byte-identical;
-`node build.mjs --check` clean. **+ Spark (3 cases, `spark*`)**: pass with the one-frame-per-pair
-change and the 42 still green; `spark-eyes` fails without the change. Not yet on the panel: a Spark
+**Headless, v0.5.1 (P0.1 follow-ups), Windows, ANGLE D3D11:** 48 cases (19 earlier + 10 sentinel +
+8 guard + 11 chip); `a` / `a-legacy` still byte-identical; `node build.mjs --check` clean.
+**+ post-processing (`e-postfx`) and Spark (3 cases, `spark*`)**: pass with the one-frame-per-pair
+change; `spark-eyes` fails without the change. Not yet on the panel: a Spark
 page (`https://sparkjs.dev/examples/hello-world/index.html`; World Labs Marble worlds in
 `https://sparkjs.dev/examples/streaming-lod/index.html`, streamed `.rad` LoD).
 
-**Not yet on the panel (v0.5.0), and open:**
+**Not yet on the panel (v0.5.1), and open:**
 
 - **The chip's woven safety is not judged**: whether it composites as crisp 2D over the woven
   tile, at every corner and with the menu open. This is the blocking gate before anything ships.
-- **The guard has no 2D baseline on most pages** (render-on-demand, or converted before 20 draws),
-  so the 40 fps threshold alone decides. Candidate for P0.1: after a trip, re-measure 2D and allow
-  one retry.
-- **No chip in fullscreen**: a fullscreen element enters the top layer after the chip, so it sits
-  above it.
-- **R1 gap**: a script-created canvas with no globals (`s-pc-dyn`) stays 2D. Closing it needs a
-  parse-time `MutationObserver` (measured against the cost budget) or the upstream `AppBase`
-  announce hook, which should become **blocking**, not optional: PlayCanvas reads `canvas.id`
-  before `getContext` (hence arming at `readystatechange` too).
-- **three.js pages still run the ~20 s PlayCanvas globals search** (40 × 500 ms).
-- `S.disarm()` is part of the sentinel contract, but nothing in the core calls it yet.
+- **The chip in fullscreen takes no clicks** (headless: Chromium paints the fresh popover over the
+  fullscreen canvas but hit-tests the fullscreen element). Check on the panel; if confirmed, the
+  fullscreen chip is status-only (exit fullscreen to change it) unless the host draws it natively.
+- **R1, still a gap for one order**: a script-created canvas inserted and handed to
+  `new Application()` in the same task (`s-pc-dyn`) stays 2D: the observer's callback is a
+  microtask, and PlayCanvas reads `canvas.id` before `getContext`. The launcher order (insert, then
+  create the app in a later task) is now covered (`s-pc-dyn-defer`). Closing the rest still needs the
+  upstream `AppBase` announce hook, which should become **blocking**, not optional.
+- The guard's re-measure and retry are headless-verified with a synthetic 30 fps page only; not yet
+  seen on a real slow page on the panel.
 
 **On the display (2026-09-23, three.js only, pre-split v0.1.0):** loaded unpacked into the
 DisplayXR Browser 154.0.8037.17 on an SR display, `webgl_animation_keyframes` converts and shows.
