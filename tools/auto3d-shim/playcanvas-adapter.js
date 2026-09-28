@@ -1,7 +1,7 @@
 // DisplayXR auto-3D — PlayCanvas adapter. PROTOTYPE, not a product.
 //
 // A part of the core bundle (build.mjs): `function dxrPlayCanvas(core)`, called by dxrCore with its
-// internal API; returns { consider } (the sentinel will own detection). Turns an existing PlayCanvas (engine 2.x, WebGL2) page into
+// internal API; returns { consider }. Turns an existing PlayCanvas (engine 2.x, WebGL2) page into
 // a woven inline-3D window with no change to the page and WITHOUT the engine's XrManager: the
 // page's own camera renders both eyes through the engine's RenderView path — the same recipe
 // @displayxr/inline3d's PlayCanvas splat backend uses (js/inline3d-splat-playcanvas.js):
@@ -9,19 +9,13 @@
 // eye pose, viewport = its half of the side-by-side (SBS) backing store, and the camera's
 // fov/aspect/near/far from `setXrProperties` so LOD and culling see the frustum the views have.
 //
-// Finding the app (first hit wins, all armed at document_start):
-//   1. `window.pc` — a UMD / editor build: `pc.app`, `pc.AppBase.getApplication()`. The global is
-//      watched with an accessor, so it is seen the moment the engine script assigns it.
-//   2. `window.app` when it is an AppBase (supersplat-viewer with exposeGlobals, many demos).
-//   3. ESM bundles with NO global: the AppBase constructor's first statement is
-//      `AppBase._applications[canvas.id] = this` — a plain-object store keyed by the canvas id. The
-//      canvas `id` read is observed (Element.prototype.id getter, canvases only) and a one-shot
-//      setter for exactly that key is put on Object.prototype for the rest of that task; the
-//      assignment lands on it and hands us `this`, the app. The trap is removed in the same
-//      microtask checkpoint and the property is re-created as an ordinary own property, so the
-//      engine's store is unchanged. Nothing else in the engine is reachable from a bare canvas: the
-//      tick is a closure, the device is created after the constructor and holds no back-pointer,
-//      input handlers are bound functions (see README "What the PlayCanvas adapter cannot see").
+// Finding the app is the SENTINEL's (sentinel.js): `window.pc.app`, `pc.AppBase.getApplication()`,
+// `window.app`, and — for ESM bundles with no global — the AppBase constructor's
+// `AppBase._applications[canvas.id] = this`, caught through a per-canvas `id` trap. It loads the
+// core when it finds an app and hands it over with consider(app, how, ns). Nothing else in the
+// engine is reachable from a bare canvas: the tick is a closure, the device is created after the
+// constructor and holds no back-pointer, input handlers are bound functions (see README "What the
+// PlayCanvas adapter cannot see").
 //
 // What it stands down on (flat, with the reason on the HUD): a WebGPU device, several cameras
 // rendering to the canvas (a UI camera, picture-in-picture), post effects / CameraFrame (frame
@@ -37,7 +31,7 @@ function dxrPlayCanvas(core) {
   let pcNS = null;            // the engine namespace, when the page has one (UMD / editor builds)
   core.meta.playcanvas = { detected: [] };
 
-  // ------------------------------------------------------------ detection
+  // ------------------------------------------------------------ what the sentinel hands over
   const isApp = (a) =>
     !!a && typeof a === 'object' && typeof a.tick === 'function' && typeof a.on === 'function' &&
     typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
@@ -81,7 +75,9 @@ function dxrPlayCanvas(core) {
   // CameraControls (`focusPoint`). Only those two names, read only on the camera's own scripts.
   const TARGET_FIELDS = [['pivotPoint', 'orbit-camera pivotPoint'], ['focusPoint', 'CameraControls focusPoint']];
 
-  function consider(app, how) {
+  // Called by the sentinel with each app it finds, and the engine namespace when the page has one.
+  function consider(app, how, ns) {
+    if (!pcNS && ns && typeof ns === 'object' && (ns.AppBase || ns.Application)) pcNS = ns;
     if (!isApp(app) || apps.has(app)) return;
     apps.set(app, null);
     hookRoot(app);
@@ -92,71 +88,6 @@ function dxrPlayCanvas(core) {
     app.on('postrender', () => onPostRender(app));
     app.on('prerender', () => onPreRender(app));
     app.on('destroy', () => { const st = apps.get(app); if (st && (st.active || st.pending || st.armed)) core.stand(st, 'the page destroyed the app'); });
-  }
-
-  function lookGlobals() {
-    const pc = pcNS || window.pc;
-    if (pc && typeof pc === 'object') {
-      if (!pcNS && (pc.AppBase || pc.Application)) pcNS = pc;
-      if (isApp(pc.app)) consider(pc.app, 'window.pc.app');
-      try { const a = pc.AppBase && pc.AppBase.getApplication && pc.AppBase.getApplication(); if (a) consider(a, 'pc.AppBase.getApplication()'); } catch (e) { /* ignore */ }
-    }
-    try { if (isApp(window.app)) consider(window.app, 'window.app'); } catch (e) { /* ignore */ }
-  }
-
-  // 1. window.pc — an accessor, so a UMD build's `pc = …` / `global.pc = …` is seen immediately.
-  try {
-    if (!('pc' in window)) {
-      let pcVal;
-      Object.defineProperty(window, 'pc', {
-        configurable: true, enumerable: true,
-        get: () => pcVal,
-        set: (v) => { pcVal = v; setTimeout(lookGlobals, 0); },
-      });
-    }
-  } catch (e) { /* ignore */ }
-  // 2. polling for window.app / pc.app (set after the page's own boot code runs).
-  let polls = 0;
-  const poll = () => { lookGlobals(); if (++polls < 40) setTimeout(poll, 500); };
-  setTimeout(poll, 0);
-  document.addEventListener('DOMContentLoaded', lookGlobals);
-  window.addEventListener('load', lookGlobals);
-
-  // 3. ESM bundles: the constructor's `_applications[canvas.id] = this`.
-  const ID = core.intrinsics.elementId; // snapshotted by the sentinel
-  const traps = new Set();
-  function removeTrap(key) {
-    if (!traps.has(key)) return;
-    traps.delete(key);
-    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
-  }
-  function trapKey(key) {
-    if (typeof key !== 'string' || traps.has(key) || key === '__proto__' || key in Object.prototype) return;
-    traps.add(key);
-    try {
-      Object.defineProperty(Object.prototype, key, {
-        configurable: true, enumerable: false,
-        get() { return undefined; },
-        set(v) {
-          removeTrap(key);
-          Object.defineProperty(this, key, { value: v, writable: true, enumerable: true, configurable: true });
-          if (isApp(v)) consider(v, 'AppBase constructor (canvas-id trap)');
-        },
-      });
-    } catch (e) { traps.delete(key); return; }
-    queueMicrotask(() => removeTrap(key));
-  }
-  if (ID && ID.get) {
-    try {
-      Object.defineProperty(Element.prototype, 'id', {
-        configurable: true, enumerable: ID.enumerable, set: ID.set,
-        get() {
-          const v = ID.get.call(this);
-          if (this instanceof HTMLCanvasElement && core.on() && !core.foreign) trapKey(v);
-          return v;
-        },
-      });
-    } catch (e) { warnOnce('pc-idtrap', 'could not watch canvas ids — ESM PlayCanvas apps without a global will not be found', e); }
   }
 
   // ------------------------------------------------------------ per-app state
