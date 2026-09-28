@@ -3262,6 +3262,164 @@ test('setVideo rect (A5.3): the picture rect after the first frame; onRectChange
   out.remove();
 });
 
+// ── #107 review regressions (B1, S1-S4, N1, N3, blend factors, eye split) ──────────────────
+
+const livePlanes = (rec, removedMI) => rec.meshInstances.filter((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane' && !removedMI.includes(mi));
+
+test('#107 B1: a CUT between two same-size videos re-points the texture at the new element', async () => {
+  const { out, textures, frame } = await videoRig();
+  const a = fakeVideo({ w: 1280, h: 360 });
+  const b = fakeVideo({ w: 1280, h: 360 });
+  await out.setVideo(a);
+  frame();
+  const tex = textures.at(-1);
+  assert.equal(tex.src, a);
+  await out.setVideo(b); // a cut (no transition), same size
+  frame();
+  assert.equal(textures.at(-1), tex, 'same size: the texture is reused');
+  assert.equal(tex.src, b, 'but it samples the NEW element');
+  // and a crossfade after that cut fades from B, not from A
+  const c = fakeVideo({ w: 1280, h: 360 });
+  await out.setVideo(c, { transition: 'crossfade', durationMs: 1000 });
+  const ghostTex = out.viewer._videoPlane.ghost.tex;
+  assert.equal(ghostTex.src, b, 'the ghost is B, the picture that was on screen');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S1: a cut during a running crossfade drops the ghost at once', async () => {
+  const { out, rec, removedMI, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  frame();
+  assert.equal(livePlanes(rec, removedMI).length, 2, 'fading');
+  const ghost = out.viewer._videoPlane.ghost.mi;
+  await out.setVideo(fakeVideo()); // a cut
+  assert.equal(out.viewer._videoPlane.ghost, null);
+  assert.ok(removedMI.includes(ghost), 'the old ghost is gone, not fading over the new video');
+  assert.equal(livePlanes(rec, removedMI).length, 1);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S2: onRectChange subscriptions do not outlive their video (10 swaps leave at most one)', async () => {
+  const { out, frame, canvas } = await videoRig();
+  const calls = [];
+  for (let i = 0; i < 10; i++) {
+    const h = await out.setVideo(fakeVideo({ w: 1280 + i * 2, h: 360 }));
+    h.onRectChange((r) => calls.push([i, r]));
+    frame();
+  }
+  const plane = out.viewer._videoPlane;
+  assert.ok(plane._rectListeners.size <= 1, `listeners after 10 swaps: ${plane._rectListeners.size}`);
+  await new Promise((r) => setTimeout(r, 0));
+  calls.length = 0;
+  canvas.setBox(640, 180); // a resize after all ten swaps
+  out.viewer._updateMonoProjection();
+  frame();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls.map((c) => c[0]), [9], 'only the current video hears the resize');
+  const h = await out.setVideo(fakeVideo());
+  const off = h.onRectChange(() => {});
+  off();
+  assert.ok(plane._rectListeners.size <= 1, 'an unsubscribe removes it');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S3: rect is null after a swap until the new video has drawn a frame', async () => {
+  const { out, frame } = await videoRig();
+  const h1 = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }));
+  frame();
+  assert.ok(h1.rect);
+  const h2 = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }), { band: 2.39 });
+  assert.equal(h2.rect, null, "no stale rect: the new video hasn't drawn yet");
+  assert.equal(h1.rect, null, 'the replaced one answers null');
+  frame();
+  assert.ok(h2.rect, 'a rect after its first frame');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S4: the ghost keeps its on-screen size when the incoming video refits the rig (new virtualDisplayHeight)', async () => {
+  const { out, frame, v } = await videoRig();
+  await out.setVideo(fakeVideo(), { virtualDisplayHeight: 0.2 });
+  frame();
+  const plane = v._videoPlane;
+  const before = [...plane.node.scale];
+  const frac0 = before[1] / 0.2;
+  await out.setVideo(fakeVideo(), { virtualDisplayHeight: 0.4, transition: 'crossfade', durationMs: 60000 });
+  frame();
+  const g = plane.ghost;
+  assert.ok(g, 'fading');
+  near(g.node.scale[1] / 0.4, frac0, 1e-9, 'same fraction of the (refitted) window');
+  near(g.node.scale[1], before[1] * 2, 1e-9, 'scaled by vH_new / vH_old');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N1: transition reports what happened, not what was asked', async () => {
+  const { out, frame } = await videoRig();
+  const el = fakeVideo();
+  const h0 = await out.setVideo(el, { transition: 'crossfade' });
+  assert.equal(h0.transition, 'cut', 'from the splat');
+  frame();
+  const h1 = await out.setVideo(el, { transition: 'crossfade' });
+  assert.equal(h1.transition, 'cut', 'the same element again: nothing to fade from');
+  const h2 = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 0 });
+  assert.equal(h2.transition, 'cut', 'durationMs 0');
+  frame();
+  const h3 = await out.setVideo(fakeVideo(), { transition: 'crossfade' });
+  assert.equal(h3.transition, 'crossfade');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N3: an unchanged frame keeps the same rect object (no per-frame allocation)', async () => {
+  const { out, frame } = await videoRig();
+  const h = await out.setVideo(fakeVideo());
+  frame();
+  const r = h.rect;
+  const n = out.viewer._videoPlane.rectComputes;
+  frame(); frame(); frame();
+  assert.equal(h.rect, r, 'identical object');
+  assert.equal(out.viewer._videoPlane.rectComputes, n, 'not recomputed on an unchanged frame');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107: the ghost blend factors are pinned — straight colour over, ONE on alpha — and it draws over, depth off', async () => {
+  const { out, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  const m = out.viewer._videoPlane.ghost.mat;
+  assert.deepEqual(m.blendState.args, [true, 'ADD', 'SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ADD', 'ONE', 'ONE_MINUS_SRC_ALPHA']);
+  assert.equal(m.depthTest, false);
+  assert.equal(m.depthWrite, false);
+  assert.equal(out.viewer._videoPlane.mat.blendState, undefined, 'the incoming quad stays opaque');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107: in stereo the ghost gets the same eye split as the incoming quad, every tick of the fade', async () => {
+  const { out, frame } = await videoRig({ stereo: true });
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  frame();
+  const plane = out.viewer._videoPlane;
+  assert.equal(plane.mat.params.get('dxrVidSplit'), 320, 'incoming: the right eye starts at x = 320');
+  assert.equal(plane.ghost.mat.params.get('dxrVidSplit'), 320, 'ghost: the same split, not mono');
+  // The split moves mid-fade (a 1-view frame: the panel went 2D): the ghost follows it.
+  out.viewer._tick(); out.viewer._drawMono();
+  assert.equal(plane.mat.params.get('dxrVidSplit'), 1e9);
+  assert.equal(plane.ghost.mat.params.get('dxrVidSplit'), 1e9, 'the ghost follows the split, tick by tick');
+  await out.setVideo(null);
+  out.remove();
+});
+
 test('setVideo guards: throws during an in-flight setSource; setSource / setRig refuse while a video is on; prepareSource is allowed; controls:page throws', async () => {
   const { out } = await videoRig();
   const swap = out.setSource('b.sog');
