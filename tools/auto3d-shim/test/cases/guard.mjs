@@ -41,13 +41,17 @@ const hotkey = async (page, code) => {
   await page.keyboard.up('Alt'); await page.keyboard.up('Control');
 };
 // A page that burns N ms in its OWN rAF (every frame, 2D and 3D alike) and keeps its canvas
-// unqualified (opacity .99) for the first holdMs, so the shim sees a 2D rate before going live.
+// unqualified (opacity .99) for the first holdMs after the canvas appears (not after document start:
+// on a slow box the engine may take longer than that to load), so the shim sees a 2D rate before
+// going live.
 const burnPrelude = (ms, holdMs) => `(() => {
   const f = () => { const t0 = performance.now(); while (performance.now() - t0 < ${ms}) {} requestAnimationFrame(f); };
   requestAnimationFrame(f);
   const sh = new CSSStyleSheet(); sh.replaceSync('canvas { opacity: .99 }');
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sh];
-  setTimeout(() => { document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sh); }, ${holdMs});
+  const lift = () => { document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sh); };
+  const wait = () => { if (document.querySelector('canvas')) setTimeout(lift, ${holdMs}); else setTimeout(wait, 50); };
+  wait();
 })();`;
 // A page that burns N ms in its OWN rAF only while it is "loading": from the first layer until
 // holdMs + loadMs after it (the cover drop is ~holdMs after the layer), then runs clean. Only the
@@ -148,7 +152,7 @@ export default function cases({ P, NEW }) {
   return [
     {
       id: 'g-trip', name: 'frame-rate guard: conversion costs 40 ms a frame -> back to 2D, ONE retry after guardRetryMs, trips again -> blocked, report guard',
-      url: P + 'pc-orbit.html', shim: NEW, fake: { frameCostMs: 40 }, commits: true,
+      url: P + 'pc-orbit.html', shim: NEW, cfg: { guardFps: 40 }, fake: { frameCostMs: 40 }, commits: true,
       async run(page, h) {
         await page.evaluate(watchOutCover);
         await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'guard'), { timeout: 50000, polling: 100 });
@@ -185,7 +189,7 @@ export default function cases({ P, NEW }) {
     },
     {
       id: 'g-30fps', name: 'frame-rate guard: a page that runs at 30 fps in 2D (its own rAF burns 30 ms) stays in 3D',
-      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 2500), ...NEW],
+      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 2500), ...NEW], cfg: { guardFps: 40 },
       async run(page, h) {
         await page.waitForFunction(settled(), { timeout: 30000, polling: 100 });
         const fps = await fpsOver(page, 7500); // warm-up (4 s from the cover drop) + a full window (2 s) + margin
@@ -205,7 +209,7 @@ export default function cases({ P, NEW }) {
       // first qualifying draw, so the first trip has no baseline. P0.2: any first trip retries once
       // after guardRetryMs; the retry's baseline is the 30 fps drawn during the wait, so it stays.
       id: 'g-retry', name: 'frame-rate guard, no baseline: a page that runs at 30 fps in 2D anyway -> trip, ONE retry with the 2D rate of the wait as baseline -> stays live',
-      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 0), ...NEW],
+      url: P + 'pc-orbit.html', shim: [burnPrelude(30, 0), ...NEW], cfg: { guardFps: 40 },
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
@@ -230,7 +234,7 @@ export default function cases({ P, NEW }) {
       // splats), clean at 60 fps after. No guard window starts in the first 4 s, and whatever the guard
       // decides after that, the page must end LIVE (a trip would retry once, into a loaded page).
       id: 'g-loading', name: 'frame-rate guard: a page that burns 40 ms a frame for 5 s after go-live (loading), then runs clean -> ends LIVE',
-      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 5000), ...NEW],
+      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 5000), ...NEW], cfg: { guardFps: 30 }, // the load runs ~20 fps; headless 'clean' is 40-60
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.layers.length >= 1, { timeout: 20000, polling: 100 });
         const slow = await fpsOver(page, 3000); // inside the loading phase: really below guardFps
@@ -240,7 +244,7 @@ export default function cases({ P, NEW }) {
       },
       check(r, t) {
         const O = r.out, S = O && O.state.renderers.find((x) => x.active);
-        t('the loading phase really ran below guardFps in 3D', r.ok && r.slow < 40, r.error || `${r.slow && r.slow.toFixed(1)} session fps`);
+        t('the loading phase really ran below guardFps (30) in 3D', r.ok && r.slow < 30, r.error || `${r.slow && r.slow.toFixed(1)} session fps`);
         if (!O) return;
         t('ends LIVE, no guard report', !!S && !O.reports.some((x) => x.status === 'guard') && O.reports[O.reports.length - 1].status === 'live',
           `active ${!!S}, sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
@@ -251,7 +255,7 @@ export default function cases({ P, NEW }) {
       // page is fast in 2D by then, which #100 read as "the conversion's fault" and blocked. Now: ONE
       // retry after guardRetryMs whatever the 2D rate, into the loaded page -> live.
       id: 'g-loading-long', name: 'frame-rate guard: 40 ms a frame for 8 s after go-live -> first trip, 2D fast meanwhile, ONE retry anyway -> LIVE',
-      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 8000), ...NEW],
+      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 8000), ...NEW], cfg: { guardFps: 30 },
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });

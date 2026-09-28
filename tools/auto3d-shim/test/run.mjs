@@ -66,7 +66,15 @@ const P = '/tools/auto3d-shim/test/pages/';
 // fake-host.js with (0,eval) and driven through a recording cap (window.__dxrFakeHost).
 const FAKE_HOST = readFileSync(join(here, 'fake-host.js'), 'utf8');
 const PRODUCT_SRC = { sentinel: BUILT['dist/auto3d-sentinel.js'], core: BUILT['dist/auto3d-core.js'] };
-const productShim = (hostCfg = {}) => [`window.__dxrFakeHostSrc = ${JSON.stringify(PRODUCT_SRC)}; window.__dxrFakeHostCfg = ${JSON.stringify(hostCfg)};`, FAKE_HOST];
+// The frame-rate guard's threshold for every case that does not set its own: headless Chrome's rAF
+// on this harness runs at 40-60 fps (lower when the box is locked or idle), right at the product's
+// guardFps 40, so a long case could trip the guard on the harness's own timing (P0.2: a-display, c).
+// The guard cases (cases/guard.mjs) set guardFps explicitly.
+const HARNESS_GUARD_FPS = 20;
+const productShim = (hostCfg = {}) => {
+  const cfg = hostCfg.dev ? { ...hostCfg, test: { guardFps: HARNESS_GUARD_FPS, ...(hostCfg.test || {}) } } : hostCfg;
+  return [`window.__dxrFakeHostSrc = ${JSON.stringify(PRODUCT_SRC)}; window.__dxrFakeHostCfg = ${JSON.stringify(cfg)};`, FAKE_HOST];
+};
 const CASES = [];
 const env = { P, NEW, LEGACY, BUILT, productShim, hasSog, SOG_DIR };
 for (const f of readdirSync(join(here, 'cases')).filter((x) => x.endsWith('.mjs')).sort()) {
@@ -110,7 +118,7 @@ async function runCase(browser, base, c) {
   page.on('pageerror', (e) => log.push(`[pageerror] ${String(e.message || e).slice(0, 240)}`));
   const missing = []; // an engine / addon the page could not load: fail loudly, not as a 60 s timeout
   page.on('response', (res) => { if (res.status() >= 400 && /\/deps\//.test(res.url())) missing.push(`${res.status()} ${new URL(res.url()).pathname}`); });
-  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify(c.cfg || {})}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
+  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify({ guardFps: HARNESS_GUARD_FPS, ...(c.cfg || {}) })}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
   if (c.seed) await page.evaluateOnNewDocument(`if (!sessionStorage.getItem('dxrSeeded')) { sessionStorage.setItem('dxrSeeded', '1'); localStorage.setItem('dxrAuto3D', ${JSON.stringify(JSON.stringify(c.seed))}); }`);
   await page.evaluateOnNewDocument(FAKE);
   for (const s of c.shim) await page.evaluateOnNewDocument(s);
