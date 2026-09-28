@@ -201,6 +201,7 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
+    if (S.optedOut()) { notify(); return; } // <meta name="displayxr-auto3d" content="off">
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
@@ -451,6 +452,7 @@ function dxrCore(cfg, cap, S) {
   function onSessionFrame(st, frame) {
     const ad = st.ad;
     st.stats.xrFrames++;
+    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)');
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
