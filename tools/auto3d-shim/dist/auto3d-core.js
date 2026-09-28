@@ -1707,6 +1707,16 @@ function dxrThree(core) {
     for (const c of [0, 4, 8, 12]) e[c + 2] = (e[c + 3] - e[c + 2]) / 2;
   }
 
+  const frameInfo = (st) => (st.r.info && st.r.info.render && typeof st.r.info.render.frame === 'number' ? st.r.info.render : null);
+  function eyeFrame(fi, i, f) {
+    if (!fi) return f;
+    if (i === 0) return { f0: fi.frame, hi: fi.frame };
+    f.hi = Math.max(f.hi, fi.frame);
+    fi.frame = f.f0;
+    return f;
+  }
+  const endFrame = (fi, f) => { if (fi && f && fi.frame < f.hi) fi.frame = f.hi; };
+
   function renderStereo(st, scene, camera) {
     st.mainCam = camera; st.lastScene = scene;
     if (!st.haveViews) { // no eyes yet: flat into both halves, never a blank tile
@@ -1718,8 +1728,11 @@ function dxrThree(core) {
     const eyes = eyeCameras(st, camera);
     const rev = reversedDepth(st);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st);
+    let fr = null;
     try {
       for (let i = 0; i < 2; i++) {
+        fr = eyeFrame(fi, i, fr);
         const e = eyes[i];
         st.m4.fromArray(st.V[i].pose);
         e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4); // attach pattern: identity rig pose
@@ -1738,6 +1751,7 @@ function dxrThree(core) {
         st.call('render', scene, e);
       }
     } finally {
+      endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
     }
@@ -1746,13 +1760,17 @@ function dxrThree(core) {
   }
   function renderFlat(st, scene, camera) {
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st);
+    let fr = null;
     try {
       for (let i = 0; i < 2; i++) {
+        fr = eyeFrame(fi, i, fr);
         setEyeViewport(st, i);
         if (i === 1 && sm) sm.autoUpdate = false;
         st.call('render', scene, camera);
       }
     } finally {
+      endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
     }
@@ -1886,13 +1904,18 @@ function dxrThree(core) {
     const face = st.call('getActiveCubeFace'), level = st.call('getActiveMipmapLevel');
     const sw = seed ? null : taintedSwaps(st, scene); // read before the left draw: the same textures
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st); // the eye pair is one renderer frame here too (see eyeFrame)
+    let fr = null;
     try {
+      fr = eyeFrame(fi, 0, fr);
       st.call('render', scene, stereo ? aimEye(st, camera, eyes, 0, rev) : camera);
       swapIn(sw);
       st.call('setRenderTarget', tw, face, level);
       if (sm) sm.autoUpdate = false; // shadow maps are view-independent: rendered by the left draw
+      fr = eyeFrame(fi, 1, fr);
       st.call('render', scene, stereo ? aimEye(st, camera, eyes, 1, rev) : camera);
     } finally {
+      endFrame(fi, fr);
       swapOut(sw);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setRenderTarget', rt, face, level);
@@ -1908,14 +1931,19 @@ function dxrThree(core) {
   function renderPostScreen(st, scene, camera) {
     const sw = taintedSwaps(st, scene);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st);
+    let fr = null;
     try {
+      fr = eyeFrame(fi, 0, fr);
       setEyeViewport(st, 0);
       st.call('render', scene, camera);
       setEyeViewport(st, 1);
       swapIn(sw);
       if (sm) sm.autoUpdate = false;
+      fr = eyeFrame(fi, 1, fr);
       st.call('render', scene, camera);
     } finally {
+      endFrame(fi, fr);
       swapOut(sw);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
