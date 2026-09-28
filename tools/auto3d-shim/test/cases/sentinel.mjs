@@ -253,6 +253,49 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
+      id: 's-three-settle', name: 'three.js page (product): once converted, the PlayCanvas globals search stops — no sentinel timer 1 s after go-live',
+      url: P + 'three-keyframes.html', shim: [PROBE, ...productShim({ decision: 'allow' })],
+      async run(page, h) {
+        await page.waitForFunction(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((x) => x.status === 'live')); }, { timeout: 20000, polling: 50 });
+        const t1 = await page.evaluate(() => performance.now());
+        await h.sleep(1000);
+        const at1 = { pending: await page.evaluate(() => window.__dxrProbe.pending()) };
+        await h.sleep(2000);
+        return { at1, made: await page.evaluate((t) => window.__dxrProbe.made(t), t1), X: await page.evaluate(hostRead) };
+      },
+      check(r, t) {
+        t('went live', r.ok && r.X && r.X.host.reports.some((x) => x.status === 'live'), r.error || rep(r.X && r.X.host));
+        if (!r.at1) return;
+        t('1 s after go-live: no sentinel timer pending (poll / sweep)', !r.at1.pending.some(SEARCH), r.at1.pending.join(' | ') || '(none pending)');
+        t('and none created in the 3 s after go-live', !r.made.some(SEARCH), r.made.filter(SEARCH).join(' | ') || `(none; ${r.made.length} other timers)`);
+        t('the canvas id trap is off', r.X.canvasOwnId === false, String(r.X.canvasOwnId));
+      },
+    },
+    {
+      id: 's-three-extra-gl', name: 'three.js page + a second WebGL canvas: the search goes on after go-live; the page then asks for XR (stand down for good) -> S.disarm() stops it',
+      url: P + 'three-keyframes.html', shim: [PROBE, ...productShim({ decision: 'allow' }),
+        "addEventListener('DOMContentLoaded', () => { const c = document.createElement('canvas'); c.width = c.height = 4; c.getContext('webgl'); window.__extraGL = c; });"],
+      async run(page, h) {
+        await page.waitForFunction(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((x) => x.status === 'live')); }, { timeout: 20000, polling: 50 });
+        await h.sleep(1000);
+        const before = await page.evaluate(() => window.__dxrProbe.pending());
+        const idBefore = await page.evaluate(() => !!Object.getOwnPropertyDescriptor(window.__extraGL, 'id'));
+        await page.evaluate(() => { navigator.xr.requestSession('immersive-vr').catch(() => {}); });
+        const t1 = await page.evaluate(() => performance.now());
+        await h.sleep(1500);
+        return { before, idBefore, after: await page.evaluate(() => window.__dxrProbe.pending()), made: await page.evaluate((t) => window.__dxrProbe.made(t), t1), X: await page.evaluate(hostRead),
+          extraId: await page.evaluate(() => !!Object.getOwnPropertyDescriptor(window.__extraGL, 'id')) };
+      },
+      check(r, t) {
+        const H = r.X && r.X.host;
+        t('went live, then stood down (the page asked for immersive-vr)', r.ok && H && H.reports.some((x) => x.status === 'live') && H.reports[H.reports.length - 1].status === 'standdown', r.error || rep(H));
+        if (!r.before) return;
+        t('another canvas has a WebGL context: the search (poll + its id trap) still runs after go-live', r.before.some(SEARCH) && r.idBefore === true, `id trap ${r.idBefore}; ${r.before.join(' | ') || '(none pending)'}`);
+        t('after the stand-down for good: no sentinel timer pending, none created, the extra canvas id trap off (S.disarm)', !r.after.some(SEARCH) && !r.made.some(SEARCH) && r.extraId === false,
+          `pending ${r.after.join(' | ') || '(none)'}; created ${r.made.filter(SEARCH).join(' | ') || '(none)'}; id trap ${r.extraId}`);
+      },
+    },
+    {
       // The dev bundle is lazy too: on a page with no engine the core (HUD, hotkeys, __dxrAuto3D) never loads.
       id: 's-dev-plain', name: 'dev bundle on the plain page: the core is not loaded (no __dxrAuto3D, no HUD)',
       url: P + 'plain-2000.html', shim: NEW,

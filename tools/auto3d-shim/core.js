@@ -11,7 +11,10 @@
 //        The host validates cap.save against the same ranges. A user 'block' outside dev never
 //        reaches the core (the sentinel stays detect-only).
 //   cap  the host's capabilities, closures only: { loadCore(), save(partial), report({status, engine?, reason?}) }
-//   S    what the sentinel owns: { intrinsics, xrRequest, foreign(), onForeign(cb), optedOut(), disarm(), devtools }
+//   S    what the sentinel owns: { intrinsics, xrRequest, foreign(), onForeign(cb), optedOut(), disarm(),
+//        settle(canvas), devtools }. The core calls S.settle(canvas) when a canvas goes live (the
+//        PlayCanvas search is over unless another canvas has a WebGL context) and S.disarm() when it
+//        stands down for good (the page owns XR, opted out, the frame-rate guard blocked).
 // and gets back { ctl, three: { observe, register }, playcanvas: { consider } }.
 //
 // What lives here (everything that is not about one engine):
@@ -130,7 +133,7 @@ function dxrCore(cfg, cap, S) {
   // every such request (wired at the end of dxrCore, with a catch-up for one made before we loaded).
   const xrRequest = S.xrRequest;
   function yieldTo(reason) {
-    if (!foreign) { foreign = reason; info('standing down for this document:', reason); }
+    if (!foreign) { foreign = reason; info('standing down for this document:', reason); standDownForGood(); }
     if (owner) stand(owner, reason);
     notify();
   }
@@ -227,7 +230,7 @@ function dxrCore(cfg, cap, S) {
     if (foreign || owner || guard.tripped) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
-    if (S.optedOut()) { notify(); return; } // <meta name="displayxr-auto3d" content="off">
+    if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
@@ -336,6 +339,7 @@ function dxrCore(cfg, cap, S) {
     };
     session.requestAnimationFrame(loop);
     ad.firstDraw(st);
+    try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
     info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
       `convergence ${st.conv.d.toPrecision(3)} units (${convSource(st)}${st.conv.via ? ': ' + st.conv.via : ''}), depth ${depthOf()}`);
     notify();
@@ -488,7 +492,7 @@ function dxrCore(cfg, cap, S) {
   function onSessionFrame(st, frame) {
     const ad = st.ad;
     st.stats.xrFrames++;
-    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)');
+    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) { standDownForGood(); turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)'); }
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
@@ -970,6 +974,15 @@ function dxrCore(cfg, cap, S) {
     onChange(cb) { listeners.push(cb); return () => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1); }; },
   });
 
+  // Standing down for the rest of the document (the page owns XR, opted out, the guard blocked): the
+  // sentinel's detection traps and polls have nothing left to find.
+  let retired = false;
+  function standDownForGood() {
+    if (retired) return;
+    retired = true;
+    try { S.disarm(); } catch (e) { /* ignore */ }
+  }
+
   // Product behaviour, not a dev feature (risk R8): leaving the page releases the session at once.
   window.addEventListener('pagehide', () => { if (owner) stand(owner, 'pagehide'); });
 
@@ -984,7 +997,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save,
+    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
