@@ -86,8 +86,8 @@ const call = await mountCall(document.querySelector('#call'));   // hosted signa
   (`auto|stereo|mono`), `layout`, `accent`, `max-peers`, `no-ui`, `auto-join`, `mono3d="off"`.
   Everything else (a `MediaStream`, a custom adapter, `lift`) is set as a JS property before
   connect (`el.options = {...}`) or by using `mountCall` directly.
-- **`DisplayXR.call(el, opts)`** — the CDN bundle also sets `globalThis.DisplayXR.call = mountCall`,
-  for inline `<script>` blocks that are not modules. That is the only global the SDK ever defines.
+- ~~`DisplayXR.call(el, opts)` global~~ — **dropped (Decision 11):** every target browser runs
+  `type="module"`, so the CDN bundle is module-only and the SDK defines zero globals.
 
 **Alternatives considered.** *Element only* (the embed-SDK default): loses typed options, custom
 signalling and stream injection, and makes headless mode awkward. *Function only*: no paste-and-go
@@ -369,7 +369,8 @@ covers localisation. `PLATE_TEXT` stops being an export.
 Mechanics: the helpers stay exported from their files under `js/call/` (tests import them there);
 the `./call` entry stops re-exporting them. For **one minor release** the entry keeps the old names
 as getters that `console.warn` once ("internal, will be removed from the public entry in 1.N+1");
-preview-tier rules allow removal without a major, but a warning release is cheap.
+preview-tier rules allow removal without a major, but a warning release is cheap. (Exception:
+`peerjsCloud` is removed immediately — Decision 12.)
 
 ---
 
@@ -480,8 +481,8 @@ const view = await addCameraView(wall, canvas, cam, {
 
 const photo = await cam.capturePhoto({ type: 'image/jpeg' });
 // → { blob, width, height, layout: 'sbs', convergencePx, suggestedName: 'photo_2x1.jpg' }
-const rec = cam.record({ mimeType: 'video/webm;codecs=vp9' });   // MediaRecorder on the SBS stream
-const clip = await rec.stop();                                    // → { blob, suggestedName: 'clip_2x1.webm' }
+const rec = cam.record({ mimeType: 'video/webm;codecs=vp9', mono: true }); // SBS + optional left-eye copy
+const clip = await rec.stop();   // → { blob, mono?: Blob, suggestedName: 'clip_2x1.webm' }  (Decision 13)
 
 cam.on('ended', () => …);   // revoked by the runtime, unplugged, or taken by another app
 cam.close();
@@ -729,25 +730,23 @@ details, convergence behaviour and exact pixels, `diagnostics()`.
 5. **Signalling and the demo move to a DisplayXR-owned domain** (`signal.displayxr.org`,
    `call.displayxr.org`). The workers.dev URL stays as an alias during the transition (§5g).
 6. **North star:** a drop-in call widget for any web app (`mountCall(el, { key })` / `<dxr-call>`).
+7. **`parseInviteLink` stays public** — SPA routers read the room without mounting a call.
+8. **No 3D inside cross-origin iframes for now** — the widget runs in 2D there; revisit after C1.
+9. **SBS photo metadata lives in the file** (XMP for JPEG, a WebM tag for recordings), so it
+   travels with the photo; no sidecar.
+10. **React: a docs recipe only** — no `@displayxr/inline3d-react` package until a second
+    component needs the same treatment.
+11. **No classic-script global** — `globalThis.DisplayXR.call` is not defined; module-only, zero
+    globals.
+12. **`peerjsCloud` is removed immediately** — no known external user, so no warning release.
+13. **`/camera` `record({ mono: true })`** — an option (default off) that also produces a
+    left-eye mono file for 2D platforms.
+14. **Business model:** build key-scoped metering in C1 with **billing off**; decide on charging
+    once real usage exists.
 
 ## Open questions for the maintainer
 
-1. **Expose `parseInviteLink`?** SPA routers want to read the room without mounting a call. Small,
-   stable-looking; keep it public or make pages use `new URL(link).hash`?
-2. **3D inside cross-origin iframes.** The widget runs in 2D there regardless. Should the browser
-   weave inside a cross-origin iframe, which would allow a hosted "embed this call" iframe? It needs
-   a browser answer first.
-3. **SBS photo metadata.** Store convergence (and baseline/FOV) in the file (XMP/EXIF for JPEG, a
-   WebM tag), a sidecar JSON like the player's, or only in the name?
-4. **React.** Recipe only (this RFC's recommendation), or a thin `@displayxr/inline3d-react` once a
-   second component (player) wants the same treatment?
-5. **Classic-script global.** Is `globalThis.DisplayXR.call` worth defining at all, given every
-   target browser runs `type="module"`? Dropping it leaves zero globals.
-6. **`peerjsCloud` removal.** Any external page known to use it? If so, one warning release first.
-7. **`/camera` scope.** Should `record()` also produce a mono-compatible file (left eye) for sharing
-   to 2D platforms, or is that the page's job?
-8. **Business model** (above): which of the ideas, if any, to pursue, and when metering turns into
-   charging.
+None — all resolved (see Decisions 7–14). New questions go in the PR thread.
 
 ## Not in this RFC
 
