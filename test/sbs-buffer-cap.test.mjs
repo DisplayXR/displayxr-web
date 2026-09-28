@@ -233,3 +233,110 @@ test('the buffer re-derives when the source changes size (a new title), and deco
   assert.equal(c.height, 720);
   assert.equal(win.bufScale, 0.8);
 });
+
+// ── the device-limit clamp (./js/inline3d-buffer-limit.js) ─────────────────────────────────
+//
+// An Android 3D tablet (Adreno 740) reports MAX_TEXTURE_SIZE 4096 where desktops report 16384.
+// The core probes a throwaway WebGL context for it once per document.
+
+const { _resetProbedLimits } = await import('../js/inline3d-buffer-limit.js');
+
+/**
+ * A document whose probe canvas hands out a GL context reporting `tex` for every limit. Install it
+ * AFTER installEnv() (which clears `document`); the wrapper clears it again afterwards.
+ */
+function installProbe(tex) {
+  const gl = {
+    MAX_TEXTURE_SIZE: 0x0d33,
+    MAX_RENDERBUFFER_SIZE: 0x84e8,
+    MAX_VIEWPORT_DIMS: 0x0d3a,
+    getParameter: (p) => (p === 0x0d3a ? Int32Array.from([tex, tex]) : tex),
+    getExtension: () => ({ loseContext() {} }),
+  };
+  globalThis.document = { createElement: () => ({ getContext: () => gl }) };
+  _resetProbedLimits();
+}
+const withDeviceLimit = (fn) => async () => {
+  try {
+    await fn();
+  } finally {
+    globalThis.document = undefined;
+    _resetProbedLimits();
+  }
+};
+
+test(
+  'a full-screen SBS video past MAX_TEXTURE_SIZE is clamped to the device, both axes by one factor, warned once',
+  withDeviceLimit(async () => {
+    const env = installEnv();
+    installProbe(4096);
+    const wall = await newWall();
+    const c = makeCanvas(2560, 1348);
+    const warns = await captureWarnings(async () => {
+      wall.addVideo(c, vid(10240, 2696)); // 5120x2696 per eye: the source cap does not bite
+      await flush();
+      env.runFrame();
+      env.runFrame();
+    });
+    const win = wall._windows.get(c);
+    assert.equal(c.width, 4096, '2 x 2048, not 2 x 2560');
+    assert.equal(c.height, 1078);
+    assert.equal(win.eyeW, 2048);
+    assert.ok(Math.abs(win.bufScale - 0.8) < 1e-9, 'decoration scales with the clamp');
+    const hits = warns.filter((w) => String(w[0]).includes('exceeds MAX_TEXTURE_SIZE 4096'));
+    assert.equal(hits.length, 1);
+    assert.match(String(hits[0][0]), /^\[inline3d\] SBS buffer 5120×1348 exceeds MAX_TEXTURE_SIZE 4096 on this device; rendering at 4096×1078/);
+  }),
+);
+
+test(
+  'an explicit {width,height} past the device limit is clamped too (the source cap exempts it, the device cannot)',
+  withDeviceLimit(async () => {
+    const env = installEnv();
+    installProbe(4096);
+    const wall = await newWall();
+    const c = makeCanvas(1152, 648);
+    await captureWarnings(async () => {
+      wall.addVideo(c, vid(1280, 360), { width: 3000, height: 1000 });
+      await flush();
+      env.runFrame();
+    });
+    assert.equal(c.width, 4096);
+    assert.equal(c.height, Math.floor(1000 * (4096 / 6000)));
+  }),
+);
+
+test('an addScene canvas the browser clamped below canvas.width is named once (the page sizes it; the core can only see it)', async () => {
+  const env = installEnv();
+  const wall = await newWall();
+  const c = makeCanvas(2560, 1348);
+  c.width = 5120;
+  c.height = 1348;
+  const gl = { drawingBufferWidth: 4096, drawingBufferHeight: 1348 };
+  c.getContext = (type) => (type === 'webgl2' ? gl : null);
+  const warns = await captureWarnings(async () => {
+    wall.addScene(c, () => {});
+    await flush();
+    env.runFrame();
+    env.runFrame();
+    env.runFrame();
+  });
+  const hits = warns.filter((w) => String(w[0]).includes("clamped this canvas's drawing buffer"));
+  assert.equal(hits.length, 1);
+  assert.match(String(hits[0][0]), /^\[inline3d\] .* to 4096×1348 \(canvas\.width\/height say 5120×1348\); getViewport\(\) splits canvas\.width/);
+});
+
+test('an addScene canvas whose drawing buffer matches canvas.width says nothing', async () => {
+  const env = installEnv();
+  const wall = await newWall();
+  const c = makeCanvas(1000, 500);
+  c.width = 2000;
+  c.height = 500;
+  c.getContext = (type) => (type === 'webgl2' ? { drawingBufferWidth: 2000, drawingBufferHeight: 500 } : null);
+  const warns = await captureWarnings(async () => {
+    wall.addScene(c, () => {});
+    await flush();
+    env.runFrame();
+  });
+  assert.equal(warns.filter((w) => String(w[0]).includes('drawing buffer')).length, 0);
+});

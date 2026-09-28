@@ -72,6 +72,14 @@ import { LayerRigCameras, validateLayerRig, validateLayerRigOptions, DEFAULT_VIE
 import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
 import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
+  glBufferLimits,
+  probeBufferLimits,
+  clampEyeBuffer,
+  clampWarning,
+  bufferScale,
+  mismatchWarning,
+} from './inline3d-buffer-limit.js';
+import {
   clamp,
   finite,
   now,
@@ -890,6 +898,13 @@ export class PlayCanvasSplatViewer {
     this.depthLimit = depthLimit;
     this.fitSweep = fitSweep;
     this.renderScale = renderScale;
+    // The device-limit clamp on the backing store (./inline3d-buffer-limit.js), as SceneViewer:
+    // the factor the last _resize applied on top of renderScale; warned once per viewer.
+    this._bufClamp = 1;
+    this._warnedBufClamp = false;
+    this._warnedBufMismatch = false;
+    /** Prefix for this viewer's warnings; ./model sets its own. */
+    this.logTag = opts.logTag || '[inline3d/splat]';
     this.pitchLimit = pitchLimit;
     this.idleSpin = this.pageCamera ? 0 : idleSpin;
     this.flipY = opts.flipY !== false;
@@ -1320,6 +1335,9 @@ export class PlayCanvasSplatViewer {
     // The SDK's frame drives the engine: no second rAF. `tick` is the engine's own loop body.
     app.requestAnimationFrame = () => {};
     this.app = app;
+    // The store may have been sized before the engine existed (from the probed limits, or none):
+    // re-check it against THIS context's. A no-op when nothing moves.
+    this._scheduleResize();
 
     // Footprint fix (§ patchGsplatFootprint) and the perf quad-extent cap, both as chunk
     // overrides. The gsplat chunks are registered by GSplatComponentSystem during init, so
@@ -1943,8 +1961,9 @@ export class PlayCanvasSplatViewer {
     const v = this._monoView();
     e.proj = v.proj;
     e.pose = v.pose;
-    e.width = c.width;
-    e.height = c.height;
+    const b = this._bufScale();
+    e.width = b.w || c.width;
+    e.height = b.h || c.height;
     this._drawEntries(this._monoEntry, null);
   }
 
@@ -1956,9 +1975,7 @@ export class PlayCanvasSplatViewer {
     const app = this.app;
     if (!app || !this.pc) return false;
     const pc = this.pc;
-    const el = this.canvas;
-    const sx = cache && cache.bufW > 0 && el.width ? el.width / cache.bufW : 1;
-    const sy = cache && cache.bufH > 0 && el.height ? el.height / cache.bufH : 1;
+    const { b, sx, sy } = this._entryScale(cache);
     if (this.pageCamera) {
       // The page's near/far join the caller's nearClip/farClip as a floor and a cap: only the
       // depth mapping moves, the runtime's frustum (fov, skew, principal point) stays untouched.
@@ -2033,8 +2050,8 @@ export class PlayCanvasSplatViewer {
         this._budgetViews = entries.length;
         this._applyBudget();
       }
-      const W = el.width || 1;
-      const H = el.height || 1;
+      const W = b.w || 1;
+      const H = b.h || 1;
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
         const cam = cams[i];
@@ -2120,16 +2137,66 @@ export class PlayCanvasSplatViewer {
     const box = this.canvas.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
     const dpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * this.renderScale;
-    const w = Math.max(1, Math.round(box.width * dpr));
-    const h = Math.max(1, Math.round(box.height * dpr));
-    const bufW = this._mode === 'mono' ? w : w * 2;
+    // Clamp to the device's GL limits BEFORE sizing (./inline3d-buffer-limit.js). Measured on an
+    // Adreno 740 tablet: MAX_TEXTURE_SIZE 4096, a 5120-wide request silently became a 4096-wide
+    // drawing buffer, getViewport() still split 5120, and the eye boundary sat at 62.5%.
+    const c = clampEyeBuffer(
+      Math.max(1, Math.round(box.width * dpr)),
+      Math.max(1, Math.round(box.height * dpr)),
+      glBufferLimits(this.app?.graphicsDevice?.gl) || probeBufferLimits(),
+      { cols: this._mode === 'mono' ? 1 : 2 },
+    );
+    this._noteClamp(c);
+    const bufW = c.bufW;
+    const h = c.bufH;
     this._updateMonoProjection();
     const el = this.canvas;
-    if (el.width === bufW && el.height === h) return;
+    if (el.width === bufW && el.height === h) {
+      this._bufScale(); // unchanged; still name a browser-side clamp (once)
+      return;
+    }
     el.width = bufW;
     el.height = h;
+    this._bufScale(); // warns once if the browser clamped anyway
     if (this._mode === 'mono') this._drawMono();
     else this._replayLastGood();
+  }
+
+  /** The renderScale in force: the request times the device-limit clamp (SceneViewer's twin). */
+  get effectiveRenderScale() {
+    return this.renderScale * this._bufClamp;
+  }
+
+  _noteClamp(c) {
+    this._bufClamp = c.scale;
+    if (c.clamped && !this._warnedBufClamp) {
+      this._warnedBufClamp = true;
+      console.warn(clampWarning(this.logTag, c, this.renderScale));
+    }
+  }
+
+  /**
+   * How a frame's entries map into the buffer. Entries are in canvas-attribute px (getViewport()
+   * splits canvas.width), cached with that size; they are drawn into the REAL drawing buffer.
+   * Identity unless a resize happened since the cache or the browser clamped the buffer behind
+   * the SDK (the device-limit clamp in _resize normally prevents that).
+   */
+  _entryScale(cache) {
+    const b = this._bufScale();
+    const sx = cache && cache.bufW > 0 && b.w ? b.w / cache.bufW : 1;
+    const sy = cache && cache.bufH > 0 && b.h ? b.h / cache.bufH : 1;
+    return { b, sx, sy };
+  }
+
+  /** The real drawing buffer vs canvas.width/height; warns once per viewer on a mismatch. */
+  _bufScale() {
+    const el = this.canvas;
+    const b = bufferScale(el, this.app?.graphicsDevice?.gl || null);
+    if (b.mismatch && !this._warnedBufMismatch) {
+      this._warnedBufMismatch = true;
+      console.warn(mismatchWarning(this.logTag, el, b));
+    }
+    return b;
   }
 
   _tick() {
@@ -3051,9 +3118,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let cancelPendingVideo = null;
   let warnedAutoplayMuted = false;
 
-  // The current per-eye buffer scale (the `renderScale` option, or the last setRenderScale). A
-  // real accessor: Object.assign below would copy a getter's value once.
-  Object.defineProperty(out, 'renderScale', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+  // The per-eye buffer scale IN FORCE: the request (the `renderScale` option, or the last
+  // setRenderScale) times the device-limit clamp — e.g. 0.8 for a request of 1 on a device whose
+  // MAX_TEXTURE_SIZE cannot hold the full SBS store (./inline3d-buffer-limit.js).
+  // `renderScaleRequested` is the request as given. Real accessors: Object.assign below would
+  // copy a getter's value once.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
   // The current eye offset (after the unit-disc clamp), a fresh object per read.
   Object.defineProperty(out, 'viewOffset', {
     get: () => ({ x: viewer._viewOffset[0], y: viewer._viewOffset[1] }),
@@ -3147,7 +3218,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     /**
      * Change the per-eye buffer scale live (the `renderScale` option): e.g. full resolution on a
      * screen that hides the splat and draws only stage quads, 0.6 elsewhere. The backing store is
-     * resized on the next animation frame (never mid-frame). Returns the handle.
+     * resized on the next animation frame (never mid-frame). The request is kept as given
+     * (`renderScaleRequested`); the store is still clamped to the device's GL limits, and
+     * `renderScale` reports what is in force. Returns the handle.
      */
     setRenderScale(s) {
       if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0 || s > 4) {

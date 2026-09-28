@@ -29,7 +29,11 @@ export interface SceneViewerOptions {
   orbit?: boolean;
   /** Degrees/second of turntable once idle. Ignored under prefers-reduced-motion. */
   idleSpin?: number;
-  /** Per-eye buffer scale; 0.5–0.7 is usually free after the interlace (default 1). */
+  /**
+   * Per-eye buffer scale; 0.5–0.7 is usually free after the interlace (default 1). Clamped to the device's GL limits: the whole store (2 × eye wide in 3D) is kept within
+   * min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes shrunk by one factor,
+   * with a one-time console warning. `effectiveRenderScale` reports the value in force.
+   */
   renderScale?: number;
   /** Edge fade in buffer px (needs EdgeFeather from ./three). */
   feather?: number;
@@ -96,6 +100,13 @@ export declare class SceneViewer {
   readonly monoCamera: object;
   /** True while the side-by-side backing store is in use. */
   readonly is3D: boolean;
+  /** The requested per-eye buffer scale (the `renderScale` option). */
+  renderScale: number;
+  /**
+   * The per-eye buffer scale in force: `renderScale` times the device-limit clamp the last resize
+   * applied (1 where the store fits the device's MAX_TEXTURE_SIZE & co.).
+   */
+  readonly effectiveRenderScale: number;
 
   /** Centre the subject on the zero-disparity plane and scale it to the tile. */
   fitTo(

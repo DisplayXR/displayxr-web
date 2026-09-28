@@ -34,7 +34,11 @@ export interface ModelOptions {
    * so a long subject still fits once the turntable turns it (default true).
    */
   fitSweep?: boolean;
-  /** Per-eye buffer scale; 0.5–0.7 is usually free (default 1). */
+  /**
+   * Per-eye buffer scale; 0.5–0.7 is usually free (default 1). Clamped to the device's GL limits: the whole store (2 × eye wide in 3D) is kept within
+   * min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes shrunk by one factor,
+   * with a one-time console warning. The handle's `renderScale` reports the value in force.
+   */
   renderScale?: number;
   feather?: number;
   /**
@@ -175,6 +179,11 @@ export interface ModelHandle {
   ): ModelHandle;
   /** The last pose the page set (a copy), or null. */
   getCameraPose(): SplatCameraPose | null;
+
+  /** The per-eye buffer scale in force: the `renderScale` option times the device-limit clamp. */
+  readonly renderScale: number;
+  /** The `renderScale` option as given. */
+  readonly renderScaleRequested: number;
 
   remove(): void;
   exclude(el: Element): void;

@@ -455,6 +455,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     orbit,
     idleSpin,
     renderScale,
+    logTag: '[inline3d/model]',
     flipY: false, // glTF is already Y-up
     orbitMaxDeg: opts.orbitMaxDeg,
     orbitEase: opts.orbitEase,
@@ -511,6 +512,11 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
   });
+
+  // The per-eye buffer scale in force (the request times the device-limit clamp,
+  // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {

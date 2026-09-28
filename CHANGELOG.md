@@ -7,8 +7,37 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** (a new subpath, `./call`) and one **core** fix: image/video backing
-buffers are capped at the source's resolution.
+Touches the **preview tier** (a new subpath, `./call`; the SBS store clamp below) and two **core**
+fixes: image/video backing buffers are capped at the source's resolution, and every SBS store is
+clamped to the device's GL limits.
+
+### Fixed — core + preview: SBS backing stores clamped to the device's GL limits
+
+- A woven canvas wider than the device's WebGL limit was **silently** clamped by the browser, and
+  the SDK still laid the eyes out from `canvas.width / 2`. On an Android 3D tablet (Adreno 740,
+  DisplayXR Browser 154) `MAX_TEXTURE_SIZE` is 4096 (Chromium's
+  `webgl_or_caps_max_texture_size_limit_4096` workaround, browser-pvt#187) where Windows and Linux
+  report 16384. A full-screen SBS canvas at `renderScale` 1 asked for 5120×1348, got a 4096-wide
+  drawing buffer, and put the eye boundary at 62.5% of it while the weave split it at 50%: a large
+  double image on the panel, nothing logged.
+- Every path that sizes an SBS store now clamps the request **before** setting `canvas.width/height`,
+  so 2 × eye width and the height stay within min(`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`,
+  `MAX_VIEWPORT_DIMS`). Both axes shrink by one factor, so the eye keeps its aspect and the store
+  stays 2:1 of the per-eye size. Mono (the 2D tier) is clamped with one eye across. Limits are
+  queried once per GL context and cached. One shared helper (`js/inline3d-buffer-limit.js`) serves
+  the core (`addImage` / `addVideo`, explicit `{width, height}` included), `./viewer`, `./splat` on
+  both engines and `./model` on both engines.
+- Belt and braces: if the drawing buffer still differs from `canvas.width/height` after a resize (a
+  browser clamp the query did not predict), the viewers map the layer's viewports onto the real
+  drawing buffer instead of `canvas.width / 2`, for live frames, replays and mono. An `addScene`
+  canvas is the page's to size; the core warns once if the browser clamped it.
+- One warning per handle when the clamp bites, naming the limit and the numbers, e.g.
+  `[inline3d/splat] SBS buffer 5120×1348 exceeds MAX_TEXTURE_SIZE 4096 on this device; rendering at
+  4096×1078 (renderScale 1 → 0.8)`.
+- `handle.renderScale` (`./splat`, both engines; `./model`, both engines) now reports the scale **in
+  force** (0.8 in the case above); the new `handle.renderScaleRequested` is the request as given.
+  `setRenderScale` still accepts (0, 4]. `SceneViewer` gains `effectiveRenderScale`. Nothing changes
+  on a device whose limit holds the store.
 
 ### Fixed — core: image/video buffers capped at the source's per-eye resolution
 
