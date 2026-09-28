@@ -18,8 +18,15 @@
 // unwoven until the next commit lands. The harness then asserts that neither the frame committed
 // before close() nor the next few is a side-by-side pair (unless the cover hides the canvas).
 // Everything the harness asserts on is on window.__fakeXR.
+//
+// window.__fakeXROpts (per case):
+//   viewsAfterMs: N   frames carry NO views until N ms after the layer was created (Infinity: never)
+//                     — nobody tracked yet / a runtime with nothing to locate eyes for yet.
+//   noDisplayApi: true  the layer has no getDisplayInfo / getRenderingModes (an older build), so the
+//                     shim cannot tell "no display" from "no eyes yet" and relies on its eye timeout.
 (() => {
   const SKEW = 0.1;
+  const OPTS = window.__fakeXROpts || {};
   const CANVAS_W = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
   const CANVAS_H = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
   const H = (window.__fakeXR = { skew: SKEW, sessions: [], sessionObjs: [], layers: [], rigPushes: 0, lastRig: null, frames: 0, renderStates: [], closes: [], committed: null, history: [], watch: null });
@@ -69,6 +76,7 @@
       H.layers.push({ canvas: canvas.id || canvas.tagName, opts: JSON.parse(JSON.stringify(opts || {})), at: performance.now(), coverAtCreate: coverUp(), closedAt: null });
       this._rec = H.layers[H.layers.length - 1];
       if (this.rig) H.lastRig = this.rig;
+      if (OPTS.noDisplayApi) { this.getDisplayInfo = undefined; this.getRenderingModes = undefined; }
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }
     getDisplayInfo() { return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 }); }
@@ -107,6 +115,7 @@
       const aspect = w / 2 / (h || 1);
       const vfov = L && L.rig && L.rig.verticalFov ? L.rig.verticalFov : (50 * Math.PI) / 180;
       const { depthNear: n, depthFar: f } = this.renderState;
+      if (OPTS.viewsAfterMs && (!L || performance.now() - L._rec.at < OPTS.viewsAfterMs)) { H.noViewFrames = (H.noViewFrames || 0) + 1; return { session: this, getViewerPose: () => ({ views: [] }) }; }
       const views = [+SKEW, -SKEW].map((s, i) => ({
         eye: i ? 'right' : 'left',
         projectionMatrix: proj(vfov, aspect, n, f, s),

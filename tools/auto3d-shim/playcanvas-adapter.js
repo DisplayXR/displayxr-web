@@ -347,7 +347,7 @@
     const st = stateFor(app);
     if (!st) return;
     st.frame.drew = true;
-    if (st.active) { if (st.outCoverDue) core.takeOutCover(st); return; } // the flat pair was just drawn
+    if (st.active) { core.drew(st); if (st.outCoverDue) core.takeOutCover(st); return; } // the flat pair was just drawn
     if (st.releasing) { core.monoDrawn(st); return; } // the mono frame after a staged stand-down
     if (st.armed) {
       const pick = pickCamera(app);

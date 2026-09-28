@@ -68,7 +68,15 @@ const CASES = [
   { id: 'b-kill', name: 'PlayCanvas meshes, Ctrl+Alt+3 off while live, then on again (autoRender false)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
   { id: 'a-target', name: 'three.js OrbitControls target off the scene centre', url: P + 'three-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
   { id: 'b-target', name: 'PlayCanvas CameraControls focusPoint off the scene centre', url: P + 'pc-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
-  { id: 'a-display', name: 'three.js keyframes, Ctrl+Alt+P: display rig and back', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', displayAfter: true },
+  { id: 'a-display', name: 'three.js keyframes, Ctrl+Alt+P: display rig and back, per-rig depth, the joint depth control', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', displayAfter: true },
+  // A site tuned under v0.3 stored ONE depth (applied to both rigs): it becomes the camera rig's.
+  { id: 'a-migrate', name: 'three.js, a v0.3 single stored depth 0.5 -> camera 0.5, display its default 1.0', url: P + 'three-keyframes.html', shim: NEW, expect: 'migrate', seed: { v: 1, enabled: true, depth: 0.5, convScale: 1, rig: 'display', hud: true } },
+  // Bug B: the no-views timer. The page draws nothing for 2.5 s once the layer exists (busy loading,
+  // render on demand) and the runtime has no eyes until 3.2 s; timed from the layer (1.5 s) that is a
+  // false 'no 2-view frame' stand-down, timed from the first draw (2.5 + 1.5 s) it converts.
+  { id: 'b-late', name: 'PlayCanvas, page draws nothing for 2.5 s after the layer, eyes at 3.2 s (noViewsMs 1.5 s)', url: P + 'pc-mesh.html?stallMs=2500', shim: NEW, cfg: { noViewsMs: 1500 }, fake: { viewsAfterMs: 3200, noDisplayApi: true }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', lateViews: true, timeoutMs: 15000 },
+  // ... and the timer still fires when the eyes never come (the fix must not disable it).
+  { id: 'b-noviews', name: 'PlayCanvas, no eyes ever, no display API: back to 2D noViewsMs after the first draw', url: P + 'pc-mesh.html', shim: NEW, cfg: { noViewsMs: 1500 }, fake: { viewsAfterMs: 1e12, noDisplayApi: true }, expect: 'noviews' },
   { id: 'b-flip', name: 'PlayCanvas camera alternating perspective / orthographic every 2 s', url: P + 'pc-flip.html', shim: NEW, expect: 'flip', commits: true },
   { id: 'c', name: 'PlayCanvas gsplat ports_25.sog', url: P + 'pc-gsplat.html', shim: NEW, expect: 'convert', fovDeg: 50, ready: 'window.__splatReady', minFrames: 700, skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
   { id: 'd', name: 'SDK samples/splat (must stand down)', url: '/samples/splat/index.html?engine=playcanvas&url=/bench/ports_25.sog', shim: NEW, expect: 'standdown', skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
@@ -104,13 +112,33 @@ async function runCase(browser, base, c) {
   const log = [];
   page.on('console', (m) => log.push(`[${m.type()}] ${m.text().slice(0, 240)}`));
   page.on('pageerror', (e) => log.push(`[pageerror] ${String(e.message || e).slice(0, 240)}`));
-  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify(c.cfg || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
+  const missing = []; // an engine / addon the page could not load: fail loudly, not as a 60 s timeout
+  page.on('response', (res) => { if (res.status() >= 400 && /\/deps\//.test(res.url())) missing.push(`${res.status()} ${new URL(res.url()).pathname}`); });
+  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify(c.cfg || {})}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
+  if (c.seed) await page.evaluateOnNewDocument(`if (!sessionStorage.getItem('dxrSeeded')) { sessionStorage.setItem('dxrSeeded', '1'); localStorage.setItem('dxrAuto3D', ${JSON.stringify(JSON.stringify(c.seed))}); }`);
   await page.evaluateOnNewDocument(FAKE);
   for (const s of c.shim) await page.evaluateOnNewDocument(s);
   const t0 = Date.now();
   await page.goto(base + c.url, { waitUntil: 'load', timeout: 60000 });
+  // Settled = converted, enough 2-view frames, the page's own ready flag, AND the go-live depth fade
+  // finished (rampK exactly 1, no ramp running): the rig is sampled at the configured depth, never
+  // mid-fade. (The pre-split script has no fade: rampK null.)
   const convertReady = `(() => { const s = window.__dxrAuto3D && window.__dxrAuto3D.state(); const r = s && s.renderers.find((x) => x.active);
-    return !!(r && r.stats.twoView > ${c.minFrames || 90} && (${c.ready || 'true'})); })()`;
+    return !!(r && r.stats.twoView > ${c.minFrames || 90} && (r.rampK == null || (r.rampK === 1 && !r.ramping)) && (${c.ready || 'true'})); })()`;
+  if (missing.length) { await ctx.close(); return { c, ok: false, ms: Date.now() - t0, missing, log, state: null, fake: null }; }
+  if (c.expect === 'migrate') {
+    await page.waitForFunction(() => !!window.__dxrAuto3D, { timeout: 10000 });
+    const res = await page.evaluate(() => { const s = window.__dxrAuto3D.state(); return { depths: s.depths, depth: s.depth, rigMode: s.rigMode }; });
+    await ctx.close();
+    return { c, ok: true, ms: Date.now() - t0, log, migrate: res, state: null, fake: null, missing };
+  }
+  if (c.expect === 'noviews') {
+    // Wait for the stand-down (or give up after 8 s), then read what happened.
+    try { await page.waitForFunction(() => window.__fakeXR.layers.some((l) => l.closedAt !== null), { timeout: 8000, polling: 50 }); } catch { /* asserted below */ }
+    const res = await page.evaluate(() => ({ state: window.__dxrAuto3D.state(), layers: window.__fakeXR.layers, noViewFrames: window.__fakeXR.noViewFrames || 0}));
+    await ctx.close();
+    return { c, ok: true, ms: Date.now() - t0, log, noviews: res, state: res.state, fake: null, missing };
+  }
   if (c.expect === 'flip') {
     // Sample the shim and the page's phase every 100 ms across four phases.
     const samples = [];
@@ -128,10 +156,11 @@ async function runCase(browser, base, c) {
   }
   const settle = c.expect === 'convert' ? convertReady : `(${c.ready || 'true'}) && performance.now() > 6000`;
   let ok = true;
-  try { await page.waitForFunction(settle, { timeout: 60000, polling: 200 }); } catch { ok = false; }
+  try { await page.waitForFunction(settle, { timeout: c.timeoutMs || 60000, polling: 200 }); } catch { ok = false; }
   if (c.expect !== 'convert') await new Promise((r) => setTimeout(r, 1500));
   const state = await page.evaluate(() => (window.__dxrAuto3D ? window.__dxrAuto3D.state() : null));
   const hud = await page.evaluate(() => (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null);
+  const stall = await page.evaluate(() => window.__stall || null);
   const fake = await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length, lastRig: window.__fakeXR.lastRig, frames: window.__fakeXR.frames, expected: window.__expectedConvergence ?? null, expectedSource: window.__expectedConvergenceSource ?? null }));
   let pixels = null;
   if (c.expect === 'convert' && ok) {
@@ -156,12 +185,32 @@ async function runCase(browser, base, c) {
   };
   let display = null;
   if (c.displayAfter && ok) {
+    const snap = async (ms) => {
+      await new Promise((r) => setTimeout(r, ms));
+      return page.evaluate(() => ({ rig: window.__fakeXR.lastRig, state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, stored: localStorage.getItem('dxrAuto3D') }));
+    };
+    // Camera rig first: one step down (0.3 -> 0.24), which must NOT leak into the display rig.
+    await hotkey('Minus');
+    const cam = await snap(300);
     await hotkey('KeyP');
-    await new Promise((r) => setTimeout(r, 600));
-    display = await page.evaluate(() => ({ rig: window.__fakeXR.lastRig, state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, stored: localStorage.getItem('dxrAuto3D') }));
+    display = await snap(600);          // display rig at ITS default, 1.0
+    display.cam = cam;
+    await hotkey('Minus');
+    display.down = await snap(300);     // display 0.8: ipd AND parallax
+    await hotkey('Equal'); await hotkey('Equal');
+    display.up = await snap(300);       // 0.8 -> 1.0 -> capped at 1.0
+    await hotkey('Minus');
+    display.down2 = await snap(300);    // 0.8 again, left there
     await hotkey('KeyP');
-    await new Promise((r) => setTimeout(r, 400));
-    display.back = await page.evaluate(() => ({ rig: window.__fakeXR.lastRig, rigMode: window.__dxrAuto3D.state().rigMode }));
+    display.back = await snap(400);     // camera rig: its own 0.24 is back
+    await hotkey('KeyP');
+    display.again = await snap(400);    // display rig: its own 0.8 is back
+    await hotkey('KeyP');
+    await new Promise((r) => setTimeout(r, 200));
+    // Remembered per site, per rig: a reload of the same origin comes back with both values.
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => !!window.__dxrAuto3D, { timeout: 10000 });
+    display.reloaded = await page.evaluate(() => { const s = window.__dxrAuto3D.state(); return { depths: s.depths, depth: s.depth, rigMode: s.rigMode }; });
   }
   let after = null;
   if (c.killAfter && ok) {
@@ -218,7 +267,7 @@ async function runCase(browser, base, c) {
     after.reenable = { again, ms: Date.now() - t1, ...(await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, frozen: !!window.__frozen, pageFrames: window.__pageFrames ?? null }))) };
   }
   await ctx.close();
-  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display };
+  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, stall: stall || { from: NaN, ms: 0 } };
 }
 
 // Is a small (128x72) committed frame a side-by-side pair? The fake's skew shifts the right half
@@ -261,7 +310,24 @@ function check(r, results) {
   const { c, state, fake, pixels } = r;
   const A = [];
   const t = (name, pass, detail) => A.push({ name, pass: !!pass, detail });
+  if (r.missing && r.missing.length) {
+    t('engine files load (run `node deps.mjs`; see its header for local overrides)', false, r.missing.join(', '));
+    return A;
+  }
   if (c.expect === 'flip') return checkFlip(r, t, A);
+  if (c.expect === 'migrate') {
+    const M = r.migrate;
+    t('v0.3 single depth carried to the camera rig only; the display rig starts at its 1.0; active = display', M.depths.camera === 0.5 && M.depths.display === 1 && M.rigMode === 'display' && M.depth === 1, JSON.stringify(M));
+    return A;
+  }
+  if (c.expect === 'noviews') {
+    const N = r.noviews, L = N.layers[0], S = N.state.renderers[0];
+    const since = L && L.closedAt !== null && S && S.drawnAt ? L.closedAt - S.drawnAt : NaN;
+    t('no eyes ever: back to 2D (layer closed, not active)', L && L.closedAt !== null && S && !S.active && !S.releasing, `layers ${N.layers.length}, closedAt ${L && L.closedAt}, active ${S && S.active}, frames without views ${N.noViewFrames}`);
+    t(`... noViewsMs (${c.cfg.noViewsMs} ms) after the FIRST DRAW, not before`, since >= c.cfg.noViewsMs && since < c.cfg.noViewsMs + 1000, `closed ${since.toFixed(0)} ms after the first draw (layer at ${L && L.at.toFixed(0)}, first draw at ${S && S.drawnAt && S.drawnAt.toFixed(0)})`);
+    t('console names the reason', r.log.some((l) => /back to 2D: no 2-view frame within 1500 ms/.test(l)), '');
+    return A;
+  }
   if (c.expect === 'idle') {
     t('no session requested', fake.sessions === 0, `sessions=${fake.sessions}`);
     t('nothing converted', state && state.renderers.every((x) => !x.active), `renderers=${state && state.renderers.length}`);
@@ -275,7 +341,12 @@ function check(r, results) {
     t('HUD says it stood down', /standing down \(the page requested 'inline-3d'\)/.test(r.hud || ''), `hud="${r.hud}"`);
     return A;
   }
-  t('converted within 60 s', r.ok, `${r.ms} ms`);
+  t(`converted within ${(c.timeoutMs || 60000) / 1000} s`, r.ok, `${r.ms} ms`);
+  if (c.lateViews) {
+    const S = state && state.renderers.find((x) => x.active);
+    t('late first draw + late eyes: ONE layer, never a false no-views stand-down', fake.layers === 1 && !r.log.some((l) => /no 2-view frame/.test(l)),
+      `layers ${fake.layers}, sessions ${fake.sessions}; timer started at the first draw, ${S && S.drawnAt ? (S.drawnAt - r.stall.from).toFixed(0) : '?'} ms into the page's ${r.stall.ms} ms stall` + (r.log.find((l) => /no 2-view frame/.test(l)) ? `; ${r.log.find((l) => /no 2-view frame/.test(l))}` : ''));
+  }
   const R = state && state.renderers.find((x) => x.active);
   if (!R || !pixels) return A;
   const [rw, rh] = R.real, [ew, eh] = R.eye || [rw / 2, rh]; // the pre-split script does not report the eye
@@ -341,13 +412,35 @@ function check(r, results) {
     const D = r.display, g = D && D.rig, S = D && D.state.renderers.find((x) => x.active);
     const dd = S ? S.convergence : NaN, fov = (c.fovDeg * Math.PI) / 180;
     const want = 2 * dd * Math.tan(fov / 2);
-    t('Ctrl+Alt+P: display rig declared (portal on the convergence plane, framed by the page FOV, ipdFactor = depth)',
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+    const hudDepth = (h) => ((h || '').match(/depth (\d+\.\d+)/) || [])[1];
+    t('Ctrl+Alt+P: display rig declared (portal on the convergence plane, framed by the page FOV) at ITS default depth 1.0: ipd = parallax = 1',
       g && g.type === 'display' && Math.abs(g.position.z + dd) < 1e-3 * dd && g.position.x === 0 && g.position.y === 0 && g.orientation.w === 1 &&
-      Math.abs(g.virtualDisplayHeight - want) < 1e-3 * want && Math.abs(g.ipdFactor - 0.3) < 1e-9 && g.parallaxFactor === 1 && g.perspectiveFactor === 1 && !('verticalFov' in g),
-      g ? `type=${g.type} pos=(${g.position.x},${g.position.y},${g.position.z.toFixed(3)}) vdh=${g.virtualDisplayHeight?.toFixed(4)} (want ${want.toFixed(4)}) ipd=${g.ipdFactor} parallax=${g.parallaxFactor} persp=${g.perspectiveFactor}` : 'no rig');
+      Math.abs(g.virtualDisplayHeight - want) < 1e-3 * want && near(g.ipdFactor, 1) && near(g.parallaxFactor, 1) && g.perspectiveFactor === 1 && !('verticalFov' in g) &&
+      near(D.state.depth, 1) && hudDepth(D.hud) === '1.00',
+      g ? `type=${g.type} pos=(${g.position.x},${g.position.y},${g.position.z.toFixed(3)}) vdh=${g.virtualDisplayHeight?.toFixed(4)} (want ${want.toFixed(4)}) ipd=${g.ipdFactor} parallax=${g.parallaxFactor} persp=${g.perspectiveFactor}; state depth ${D.state.depth}, HUD depth ${hudDepth(D.hud)}` : 'no rig');
     t('display rig on the HUD, in state() and remembered for the site', D && D.state.rigMode === 'display' && /display rig/.test(D.hud || '') && JSON.parse(D.stored || '{}').rig === 'display',
       `rigMode=${D && D.state.rigMode} hud="${D && D.hud}" stored=${D && D.stored}`);
-    t('Ctrl+Alt+P again: back to the camera rig', D && D.back.rig && D.back.rig.type === 'camera' && D.back.rigMode === 'camera', `type=${D && D.back.rig && D.back.rig.type} rigMode=${D && D.back.rigMode}`);
+    const C = D && D.cam, cg = C && C.rig, cd = C && C.state.renderers.find((x) => x.active);
+    t('camera rig, Ctrl+Alt+-: depth 0.3 -> 0.24 (m2v = 0.24·d/0.5), HUD + state()', cg && cg.type === 'camera' && near(C.state.depth, 0.24) && Math.abs(cg.metersToVirtual - (0.24 * cd.convergence) / 0.5) < 1e-6 * cd.convergence && hudDepth(C.hud) === '0.24',
+      cg ? `depth ${C.state.depth}, m2v ${cg.metersToVirtual} (want ${((0.24 * cd.convergence) / 0.5).toFixed(6)}), HUD depth ${hudDepth(C.hud)}` : 'n/a');
+    const dn = D && D.down, dg = dn && dn.rig;
+    t('display rig, Ctrl+Alt+-: ONE joint control, ipdFactor = parallaxFactor = depth = 0.8; the camera rig keeps 0.24',
+      dg && dg.type === 'display' && near(dg.ipdFactor, 0.8) && near(dg.parallaxFactor, 0.8) && near(dn.state.depth, 0.8) && hudDepth(dn.hud) === '0.80' && near(dn.state.depths.camera, 0.24) && near(dn.state.depths.display, 0.8),
+      dg ? `ipd ${dg.ipdFactor}, parallax ${dg.parallaxFactor}, depths ${JSON.stringify(dn.state.depths)}, HUD depth ${hudDepth(dn.hud)}` : 'n/a');
+    const up = D && D.up, ug = up && up.rig;
+    t('display rig, Ctrl+Alt+= twice from 0.8: 1.0, then capped at 1.0 (the runtime\'s display-rig limit)', ug && near(ug.ipdFactor, 1) && near(ug.parallaxFactor, 1) && near(up.state.depth, 1),
+      ug ? `ipd ${ug.ipdFactor}, parallax ${ug.parallaxFactor}, depth ${up.state.depth}` : 'n/a');
+    const b = D && D.back, bg = b && b.rig, bd = b && b.state.renderers.find((x) => x.active);
+    t('Ctrl+Alt+P again: back to the camera rig WITH its own depth 0.24 (not the display rig\'s 0.8)',
+      bg && bg.type === 'camera' && b.state.rigMode === 'camera' && near(b.state.depth, 0.24) && Math.abs(bg.metersToVirtual - (0.24 * bd.convergence) / 0.5) < 1e-6 * bd.convergence && hudDepth(b.hud) === '0.24',
+      bg ? `type=${bg.type} rigMode=${b.state.rigMode} depth ${b.state.depth} m2v ${bg.metersToVirtual} HUD depth ${hudDepth(b.hud)}` : 'n/a');
+    const ag = D && D.again && D.again.rig;
+    t('Ctrl+Alt+P once more: the display rig restores ITS 0.8', ag && ag.type === 'display' && near(ag.ipdFactor, 0.8) && near(ag.parallaxFactor, 0.8) && near(D.again.state.depth, 0.8),
+      ag ? `ipd ${ag.ipdFactor}, parallax ${ag.parallaxFactor}, depth ${D.again.state.depth}` : 'n/a');
+    const rl = D && D.reloaded, st = D && JSON.parse(D.again.stored || '{}');
+    t('depth stored per site PER RIG: localStorage and a reload give camera 0.24, display 0.8', rl && near(rl.depths.camera, 0.24) && near(rl.depths.display, 0.8) && st.depths && near(st.depths.camera, 0.24) && near(st.depths.display, 0.8) && !('depth' in st),
+      `stored ${D && D.again.stored}; after reload ${JSON.stringify(rl)}`);
   }
   t('frame stable across two reads', diffCount(pixels.px, pixels.px2) === 0, `${diffCount(pixels.px, pixels.px2)} bytes differ`);
   return A;
@@ -375,6 +468,16 @@ function checkFlip(r, t, A) {
 
 // ------------------------------------------------------------ main
 const only = process.argv.slice(2);
+// Preflight: every engine file the pages import, and the browser. Missing ones fail HERE, loudly,
+// instead of as pages that never convert (a 60 s timeout per case).
+const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs'];
+const missingDeps = DEP_FILES.filter((f) => !existsSync(join(here, '.deps', f)));
+if (missingDeps.length) {
+  console.error(`FAILED: engine files missing from ${join(here, '.deps')}: ${missingDeps.join(', ')}\n` +
+    'Run `node deps.mjs` (npm pack from the registry), or point it at local copies: THREE_BUILD_DIR, PLAYCANVAS_MJS, THREE_ORBIT_CONTROLS, PLAYCANVAS_CAMERA_CONTROLS (see deps.mjs).');
+  process.exit(2);
+}
+if (!existsSync(CHROME)) { console.error(`FAILED: no Chrome at ${CHROME} — set CHROME=<binary>`); process.exit(2); }
 let running = '';
 if (!WIN) { try { running = execFileSync('sh', ['-c', 'ps aux | grep -- --headless=new | grep -v grep || true'], { encoding: 'utf8' }).trim(); } catch { /* no ps */ } }
 if (running) console.warn('WARNING: another headless Chrome is running — GPU contention can skew timings:\n' + running.split('\n').slice(0, 3).join('\n'));

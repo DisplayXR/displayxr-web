@@ -44,8 +44,8 @@ patch for the component-extension plumbing; the immersive shim's patch already c
 
 ## The dependency: `XRDisplayLayer.wovenState`
 
-The cover in `core.js` is a still of the last mono frame, held for a fixed **1200 ms** after the
-layer is created. That is the `firstWoven` hold from [woven-canvas rules](../woven-canvas-rules.md)
+The cover in `core.js` is a still of the last mono frame (an `<img>`: a congruent `<canvas>` cover
+was woven with the tile), held for a fixed **1200 ms** after the layer is created. That is the `firstWoven` hold from [woven-canvas rules](../woven-canvas-rules.md)
 rule 5, and the reason for it is the same: no shipping browser tells a page when the compositor
 has joined a canvas. A fixed hold is too long on a warm canvas and can be too short on a slow
 machine.
@@ -72,6 +72,24 @@ committed frame is still the side-by-side pair (the README's "Turning off"). The
 ordering guess, like the 1.2 s hold. A close that takes effect with the next commit, or a
 `wovenState` that reports `'withheld'` for the mono frame, would make it exact.
 
+**Note (v0.4.0, from the 2026-09-27 panel run): what the covers cost without browser help.** Both
+transitions are now clean on the panel, but only through three workarounds a browser-side
+integration could drop or simplify (README, "Transitions"):
+
+- The depth fades in after the go-live cover and out before a turn-off (`rampK` on the rig's ipd
+  and parallax), so each swap is between two identical flat pictures. That stays worth having for
+  comfort even with `wovenState`; it no longer has to hide the join.
+- The 3D→2D out-cover cannot use `drawImage()` of the canvas: with an `XRDisplayLayer` bound it
+  returns nothing. It is a `gl.readPixels` of the left eye, taken by each adapter in the task that
+  drew it (the drawing buffer is not preserved). A readable bound canvas, or a browser-held "last
+  woven frame, one eye" for the swap, would remove the per-engine hook.
+- The out-cover `<img>` goes in only once decoded (`decoding = 'sync'`); inserted earlier, its box
+  paints its background for a frame.
+
+The no-eyes timeout (back to 2D when no 2-view frame arrives) now starts at the first draw on the
+side-by-side store, not at the layer, so a render-on-demand page is not dropped before it has drawn.
+A `wovenState` would let it start at the join instead.
+
 ## What stays browser-owned
 
 - **The join.** When the compositor has matched the canvas, and the `withheld` verdict. The shim
@@ -94,7 +112,8 @@ ordering guess, like the 1.2 s hold. A close that takes effect with the next com
 1. `wovenState` shipped, and the cover released on it (above).
 2. Hardware sign-off per engine on the Windows display. For each page: stereo confirmed eye by eye,
    no raw pair at the switch (no `no-identity` token after the cover drops), comfortable depth at
-   the default `depth` 0.3, and frame rate recorded. Every converted draw runs twice.
+   the defaults (depth per rig: camera 0.3, display 1.0, each remembered per site; one joint
+   depth/parallax control on both rigs), and frame rate recorded. Every converted draw runs twice.
 3. Post-processing handled, or cleanly flat. Today both engines stand down to 2D on post-processing
    chains, CameraFrame and multi-camera pages, which is a large share of modern sites. The next
    adapter step is per-eye render-target twins.
