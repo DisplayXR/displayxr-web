@@ -5,11 +5,11 @@ export default function cases({ P, NEW }) {
   const dpr2 = (page) => page.setViewport({ width: 1280, height: 720, deviceScaleFactor: 2 });
   return [
     {
-      id: 'a-dpr2', name: 'three.js at pixel ratio 1 on a DPR 2 viewport: eye = 2 x CSS width (device pixels); the page still reads its mono store; restore() puts it back',
+      id: 'a-dpr2', name: 'three.js at pixel ratio 1 on a DPR 2 viewport: SBS store = the element\'s device size (eye 600x800: half the 1200 device width, the full 800 height); the page still reads its mono store; restore() puts it back',
       url: P + 'three-keyframes.html?pr=1&w=600&h=400', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
       killAfter: true, commits: true, before: dpr2,
       alsoCheck(r, t, h, R) {
-        t('eye = 2 x the 600x400 CSS canvas (1200x800), SBS 2400x800', R.eye[0] === 1200 && R.eye[1] === 800 && R.real[0] === 2400 && R.real[1] === 800,
+        t('600x400 CSS at DPR 2: eye 600x800, SBS 1200x800 (the device size)', R.eye[0] === 600 && R.eye[1] === 800 && R.real[0] === 1200 && R.real[1] === 800,
           `eye ${R.eye.join('x')}, store ${R.real.join('x')}, CSS ${R.css.join('x')}`);
         t("the page's own store stays 600x400 at pixel ratio 1 (getSize / getPixelRatio / canvas.width)", R.page.w === 600 && R.page.h === 400 && R.page.pr === 1 && R.page.canvasWidthSeenByPage === 600,
           JSON.stringify(R.page));
