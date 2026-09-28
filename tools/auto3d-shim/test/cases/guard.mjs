@@ -64,6 +64,16 @@ const loadingPrelude = (ms, loadMs) => `(() => {
   };
   requestAnimationFrame(f);
 })();`;
+// A page still STREAMING: its own rAF alternates 80 ms / 40 ms burns every 700 ms (unsteady in 2D,
+// ~17 fps in 3D) from the first layer until holdMs + loadMs after it, then runs clean.
+const streamingPrelude = (loadMs) => `(() => {
+  const f = () => {
+    const L = window.__fakeXR && window.__fakeXR.layers[0], t = performance.now();
+    if (L && t - L.at < 1200 + ${loadMs}) { const ms = Math.floor(t / 700) % 2 ? 80 : 40; const t0 = performance.now(); while (performance.now() - t0 < ms) {} }
+    requestAnimationFrame(f);
+  };
+  requestAnimationFrame(f);
+})();`;
 const fpsOver = async (page, ms) => {
   const a = await page.evaluate(() => ({ f: window.__fakeXR.frames, t: performance.now() }));
   await new Promise((r) => setTimeout(r, ms));
@@ -143,16 +153,16 @@ export default function cases({ P, NEW }) {
   const clampCase = (id, name, url, extra) => ({
     id, name, url: P + url, shim: NEW, cfg: { glLimit: 512, ...(extra || {}) }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
     alsoCheck(r, t, h, R) {
-      const [ew, eh] = R.eye, want = 1280 / 720; // the unclamped eye: the 1280x720 CSS canvas at DPR 1
-      t('glLimit 512: SBS store and eye within 512, eye aspect kept', 2 * ew <= 512 && eh <= 512 && Math.abs(ew / eh - want) < 0.01 && R.real[0] === 2 * ew && R.real[1] === eh,
-        `store ${R.real.join('x')}, eye ${ew}x${eh} (aspect ${(ew / eh).toFixed(4)}, want ${want.toFixed(4)})`);
+      const [ew, eh] = R.eye; // unclamped: eye 640x720 (the 1280x720 CSS canvas at DPR 1, half width)
+      t('glLimit 512: each axis capped on its own (SBS width 512 -> eye 256; height 720 -> 512)', ew === 256 && eh === 512 && R.real[0] === 512 && R.real[1] === 512,
+        `store ${R.real.join('x')}, eye ${ew}x${eh}`);
     },
   });
 
   return [
     {
-      id: 'g-trip', name: 'frame-rate guard: conversion costs 40 ms a frame -> back to 2D, ONE retry after guardRetryMs, trips again -> blocked, report guard',
-      url: P + 'pc-orbit.html', shim: NEW, cfg: { guardFps: 40 }, fake: { frameCostMs: 40 }, commits: true,
+      id: 'g-trip', name: 'frame-rate guard: conversion costs 60 ms a frame -> back to 2D, ONE retry after guardRetryMs, trips again -> blocked, report guard',
+      url: P + 'pc-orbit.html', shim: NEW, cfg: { guardFps: 24 }, fake: { frameCostMs: 60 }, commits: true, // 3D ~14 fps: below 24 and below 0.6 x the ~55 fps 2D rate
       async run(page, h) {
         await page.evaluate(watchOutCover);
         await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'guard'), { timeout: 50000, polling: 100 });
@@ -189,7 +199,7 @@ export default function cases({ P, NEW }) {
     },
     {
       id: 'g-30fps', name: 'frame-rate guard: a page that is slow in 2D (its own rAF burns 60 ms a frame) stays in 3D',
-      url: P + 'pc-orbit.html', shim: [burnPrelude(60, 2500), ...NEW], cfg: { guardFps: 40 }, // 60 ms: ~16 fps in 2D, so the conversion's own few ms stay well inside the 0.8 x baseline margin
+      url: P + 'pc-orbit.html', shim: [burnPrelude(60, 2500), ...NEW], cfg: { guardFps: 24 }, // 60 ms: ~16 fps in 2D and 3D: below 24, but never below 0.6 x baseline
       async run(page, h) {
         await page.waitForFunction(settled(), { timeout: 30000, polling: 100 });
         const fps = await fpsOver(page, 7500); // warm-up (4 s from the cover drop) + a full window (2 s) + margin
@@ -200,7 +210,7 @@ export default function cases({ P, NEW }) {
         const O = r.out, S = O && O.state.renderers.find((x) => x.active);
         t('went live', r.ok && !!S, r.error || '');
         if (!O) return;
-        t('3D really runs below guardFps (the absolute test alone would trip)', r.fps < 40, `${r.fps.toFixed(1)} session fps`);
+        t('3D really runs below guardFps 24 (the absolute test alone would trip)', r.fps < 24, `${r.fps.toFixed(1)} session fps`);
         t('no guard trip: still live, one session, no guard report', S && O.sessions === 1 && !O.reports.some((x) => x.status === 'guard'), `sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
       },
     },
@@ -209,7 +219,7 @@ export default function cases({ P, NEW }) {
       // first qualifying draw, so the first trip has no baseline. P0.2: any first trip retries once
       // after guardRetryMs; the retry's baseline is the ~16 fps drawn during the wait, so it stays.
       id: 'g-retry', name: 'frame-rate guard, no baseline: a page that is slow in 2D anyway (60 ms burn) -> trip, ONE retry with the 2D rate of the wait as baseline -> stays live',
-      url: P + 'pc-orbit.html', shim: [burnPrelude(60, 0), ...NEW], cfg: { guardFps: 40 },
+      url: P + 'pc-orbit.html', shim: [burnPrelude(60, 0), ...NEW], cfg: { guardFps: 24 },
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
@@ -219,10 +229,10 @@ export default function cases({ P, NEW }) {
       },
       check(r, t) {
         const O = r.out, S = O && O.state.renderers.find((x) => x.active);
-        t('first trip had no 2D baseline and announced ONE retry; the retry ran', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*no 2D baseline.*retrying once in/.test(l)) && r.log.some((l) => /frame-rate guard: retrying once$/.test(l)),
+        t('first trip had no 2D baseline and announced ONE retry; the retry ran', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*no 2D baseline.*retrying once in/.test(l)) && r.log.some((l) => /frame-rate guard: retrying once \(/.test(l)),
           r.error || r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
         if (!O) return;
-        t('3D still runs below guardFps (the no-baseline rule alone would trip again)', r.fps < 40, `${r.fps.toFixed(1)} session fps`);
+        t('3D still runs below guardFps 24 (the no-baseline rule alone would trip again)', r.fps < 24, `${r.fps.toFixed(1)} session fps`);
         t('LIVE after the retry: two sessions, the second still open, no guard report', !!S && O.sessions === 2 && O.layers === 2 && O.closes.length === 1 && !O.reports.some((x) => x.status === 'guard'),
           `active ${!!S}, sessions ${O.sessions}, layers ${O.layers}, closes ${O.closes.length}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
         const st = O.reports.map((x) => x.status);
@@ -233,18 +243,18 @@ export default function cases({ P, NEW }) {
       // P0.2 fix 1a: the warm-up. Heavy for the first 5 s after the cover drop (a Spark page loading its
       // splats), clean at 60 fps after. No guard window starts in the first 4 s, and whatever the guard
       // decides after that, the page must end LIVE (a trip would retry once, into a loaded page).
-      id: 'g-loading', name: 'frame-rate guard: a page that burns 40 ms a frame for 5 s after go-live (loading), then runs clean -> ends LIVE',
-      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 5000), ...NEW], cfg: { guardFps: 30 }, // the load runs ~20 fps; headless 'clean' is 40-60
+      id: 'g-loading', name: 'frame-rate guard: a page that burns 60 ms a frame for 5 s after go-live (loading), then runs clean -> ends LIVE',
+      url: P + 'pc-orbit.html', shim: [loadingPrelude(60, 5000), ...NEW], cfg: { guardFps: 24 }, // the load runs ~16 fps; headless 'clean' is 40-60
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.layers.length >= 1, { timeout: 20000, polling: 100 });
-        const slow = await fpsOver(page, 3000); // inside the loading phase: really below guardFps
+        const slow = await fpsOver(page, 3000); // inside the loading phase: really below guardFps 24
         await page.waitForFunction(() => performance.now() - window.__fakeXR.layers[0].at > 17000, { timeout: 30000, polling: 200 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
         return { slow, out: await page.evaluate(readOut) };
       },
       check(r, t) {
         const O = r.out, S = O && O.state.renderers.find((x) => x.active);
-        t('the loading phase really ran below guardFps (30) in 3D', r.ok && r.slow < 30, r.error || `${r.slow && r.slow.toFixed(1)} session fps`);
+        t('the loading phase really ran below guardFps (24) in 3D', r.ok && r.slow < 24, r.error || `${r.slow && r.slow.toFixed(1)} session fps`);
         if (!O) return;
         t('ends LIVE, no guard report', !!S && !O.reports.some((x) => x.status === 'guard') && O.reports[O.reports.length - 1].status === 'live',
           `active ${!!S}, sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
@@ -254,8 +264,8 @@ export default function cases({ P, NEW }) {
       // P0.2 fix 1b: a loading phase longer than the warm-up. The first window trips (no baseline); the
       // page is fast in 2D by then, which #100 read as "the conversion's fault" and blocked. Now: ONE
       // retry after guardRetryMs whatever the 2D rate, into the loaded page -> live.
-      id: 'g-loading-long', name: 'frame-rate guard: 40 ms a frame for 8 s after go-live -> first trip, 2D fast meanwhile, ONE retry anyway -> LIVE',
-      url: P + 'pc-orbit.html', shim: [loadingPrelude(40, 8000), ...NEW], cfg: { guardFps: 30 },
+      id: 'g-loading-long', name: 'frame-rate guard: 60 ms a frame for 8 s after go-live -> first trip, 2D fast meanwhile, ONE retry anyway -> LIVE',
+      url: P + 'pc-orbit.html', shim: [loadingPrelude(60, 8000), ...NEW], cfg: { guardFps: 24 },
       async run(page, h) {
         await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 40000, polling: 100 });
         await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
@@ -270,6 +280,29 @@ export default function cases({ P, NEW }) {
           `active ${!!S}, sessions ${O.sessions}, closes ${O.closes.length}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
         const st = O.reports.map((x) => x.status);
         t('reports end live', st[st.length - 1] === 'live', st.join(' -> '));
+      },
+    },
+    {
+      // Panel, Marble / streaming-lod: a fixed 6 s retry landed while the world was still streaming and
+      // tripped again (20.0 vs a 2D rate of 25.4). The retry now waits for a steady 2D rate (2 s).
+      id: 'g-steady', name: 'frame-rate guard: the page is still streaming (unsteady 2D) when guardRetryMs is up -> the retry waits for a steady 2D rate -> LIVE',
+      url: P + 'pc-orbit.html', shim: [streamingPrelude(15000), ...NEW], cfg: { guardFps: 24 },
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.sessions.length >= 2, { timeout: 45000, polling: 100 });
+        const at = await page.evaluate(() => ({ trip: window.__fakeXR.layers[0].closedAt - window.__fakeXR.layers[0].at, retry: window.__fakeXR.sessions[1].at - window.__fakeXR.layers[0].at }));
+        await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
+        await h.sleep(7500); // a second trip would land here
+        return { at, out: await page.evaluate(readOut) };
+      },
+      check(r, t) {
+        const O = r.out, S = O && O.state.renderers.find((x) => x.active);
+        t('first trip during the stream', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*retrying once/.test(l)), r.error || r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
+        if (!O) return;
+        t('the retry waited past guardRetryMs for the stream to end (unsteady until 16.2 s after the layer)', r.at.retry > 16200 && r.at.retry - r.at.trip > 6000,
+          `trip at ${Math.round(r.at.trip)} ms, retry at ${Math.round(r.at.retry)} ms after the first layer`);
+        t('the retry names the steady 2D rate', r.log.some((l) => /frame-rate guard: retrying once \(2D steady at \d+(\.\d)? fps\)/.test(l)), r.log.filter((l) => /retrying once/.test(l)).join(' | '));
+        t('LIVE after the retry: two sessions, no guard report', !!S && O.sessions === 2 && !O.reports.some((x) => x.status === 'guard'),
+          `active ${!!S}, sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
       },
     },
     clampCase('g-clamp-three', 'GL size clamp (glLimit 512): three.js keyframes', 'three-keyframes.html', { convTarget: false }),

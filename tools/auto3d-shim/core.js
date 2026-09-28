@@ -55,7 +55,7 @@ function dxrCore(cfg, cap, S) {
   // Not per site. Overridable only by the harness, through cfg.test, and only in a dev build
   // (risk R8: fakeViews / noLayer / coverImg / outHoldMs are page-controllable otherwise).
   const TUNING = {
-    eyeScale: 1,        // per-eye width / element DEVICE width (P0.2: was 0.5 of the page's store — a 1x page on a 2.5x panel got 519-px eyes)
+    eyeScale: 0.5,      // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
     maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
@@ -68,10 +68,12 @@ function dxrCore(cfg, cap, S) {
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
-    guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
-    guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
+    guardFps: 24,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (was 40 before 0.5.2)
+    guardMs: 2000,      // ... (and below 0.6 x the page's 2D rate, when it has one; was 0.8)
     guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
-    guardRetryMs: 6000,  // ... the first trip stands down, then retries once after this long, whatever the 2D rate
+    guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
+    guardSteadyMs: 2000, // ... once the page's own 2D rate has been steady this long (a page still streaming is not judged again yet) ...
+    guardRetryMaxMs: 30000, // ... or after this long at the latest
     glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
@@ -189,12 +191,15 @@ function dxrCore(cfg, cap, S) {
   // st.L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas:
   // pixels, pr 1). The eye is sized from the ELEMENT's device pixels, whatever store the page keeps
   // (P0.2: Spark's hello-world renders at pixel ratio 1 on a 2.5× panel, a 1038-px store, so a
-  // store-sized eye was 519 px — "a little low res"): eyeW = CSS width × min(devicePixelRatio,
-  // maxEyeDpr) × eyeScale, eyeH = CSS height × the same ratio. The page keeps seeing its own mono
-  // store (the adapters virtualise it; restore() puts it back). With no layout box (not rendered),
-  // the page's store stands in. The SBS store then fits the zero-copy width cap AND the context's own
-  // limits (a 2× wide store is over MAX_TEXTURE_SIZE / MAX_VIEWPORT_DIMS on many Android GPUs); one
-  // scale for both axes, so the eye keeps its aspect.
+  // store-sized eye was 519x703 — "a little low res"): eyeW = CSS width × min(devicePixelRatio,
+  // maxEyeDpr) × eyeScale (0.5), eyeH = CSS height × the same ratio, i.e. the SBS store is the
+  // element's full device size (hello-world: eye 1298x1758, as a three.js page at setPixelRatio(2.5)).
+  // The page keeps seeing its own mono store (the adapters virtualise it; restore() puts it back).
+  // With no layout box (not rendered), the page's store stands in. Each axis is then capped on its
+  // own — the width by the zero-copy cap (maxSbsWidth / 2 per eye) and the GL limits, the height by
+  // the GL limits (a 2× wide store is over MAX_TEXTURE_SIZE / MAX_VIEWPORT_DIMS on many Android GPUs).
+  // The eye's aspect is NOT kept: it is squeezed horizontally by design and the weave un-squeezes it,
+  // so capping the width never costs height (panel, 2026-09-28: a joint scale cost ~40 % of the pixels).
   function realSizeFor(st) {
     const L = st.L, c = st.canvas;
     const cw = c.clientWidth, ch = c.clientHeight;
@@ -211,11 +216,8 @@ function dxrCore(cfg, cap, S) {
       }
     }
     const lim = T.glLimit > 0 ? T.glLimit : st.glLim || Infinity;
-    const s = Math.min(1, Math.min(T.maxSbsWidth, lim) / (2 * eyeW), lim / eyeH);
-    if (s < 1) {
-      eyeW = Math.max(2, Math.floor(eyeW * s));
-      eyeH = Math.max(2, Math.floor(eyeH * s));
-    }
+    eyeW = Math.max(2, Math.min(eyeW, Math.floor(Math.min(T.maxSbsWidth, lim) / 2)));
+    eyeH = Math.max(2, Math.min(eyeH, Math.floor(lim)));
     return { eyeW, eyeH, W: 2 * eyeW, H: eyeH };
   }
   // The page's view of canvas.width / height stays the mono store it would have made. Reads and
