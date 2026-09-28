@@ -718,7 +718,7 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
 
 ## Verified, and what is not
 
-**Headless, v0.5.2 (P0.2), Windows, ANGLE D3D11:** 58 cases (52 + `g-loading`, `g-loading-long`, `g-steady`,
+**Headless, v0.5.2 (P0.2), Windows, ANGLE D3D11:** 60 cases (52 + `g-loading`, `g-loading-long`, `g-steady`, `spark-est`, `spark-room`,
 `chip-no-display`, `chip-amber-debounce`, `a-dpr2`); `a` pins `eyeScale` 0.5 to stay
 byte-identical with `a-legacy`.
 
