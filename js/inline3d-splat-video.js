@@ -162,10 +162,9 @@ export function videoPlaneSize({ boxAspect, eyeAspect: a, vH, fit = 'contain', b
   if (!(a > 0) || !(boxAspect > 0)) return { w: W, h: H };
   if (band > 0) {
     const b = videoBandSlot(W, H, band);
-    const ba = b.w / b.h;
     // 'cover': the quad IS the band, and the overflow is cut in texture space (videoCrop).
     if (fit === 'cover') return { w: b.w, h: b.h };
-    return a >= ba ? { w: b.w, h: b.w / a } : { w: b.h * a, h: b.h };
+    return a >= band ? { w: b.w, h: b.w / a } : { w: b.h * a, h: b.h }; // the slot's aspect is `band`
   }
   const wider = a >= boxAspect;
   if ((fit === 'contain') === wider) return { w: W, h: W / a };
@@ -184,9 +183,8 @@ export function videoBandSlot(W, H, band) {
  */
 export function videoCrop({ boxAspect, eyeAspect: a, fit, band }) {
   if (fit !== 'cover' || !(band > 0) || !(a > 0) || !(boxAspect > 0)) return [1, 1];
-  const b = videoBandSlot(boxAspect, 1, band);
-  const ba = b.w / b.h;
-  return a >= ba ? [ba / a, 1] : [1, a / ba];
+  // The slot keeps the band's aspect whatever the window, so crop the eye to `band` directly.
+  return a >= band ? [band / a, 1] : [1, a / band];
 }
 
 /**
@@ -285,6 +283,7 @@ export class VideoPlane {
     this._rectBox = null;
     this._rectPlane = null;
     this._texSource = null;
+    this._eyeA = 0; // the current video's eye aspect, as last sized (the ghost's geometry)
     /** How many times the rect was recomputed (a test hook for the no-per-frame-allocation promise). */
     this.rectComputes = 0;
     /** Upload accounting (handle.setVideo(...).stats()). */
@@ -350,8 +349,10 @@ export class VideoPlane {
     // S4 / review R4: the ghost keeps its OWN geometry (eye aspect, fit, band) and is re-sized every
     // tick against the current window, so a refit (a new virtualDisplayHeight) or a resize mid-fade
     // keeps the outgoing picture where it was, without stretching it.
-    const ov = this.video;
-    const geom = { a: eyeAspect(this.format, ov.videoWidth, ov.videoHeight), fit: this.fit, band: this.band };
+    // The eye aspect cached when this quad was last sized, NOT read off the element now: for a URL
+    // source setVideo has already released the outgoing <video> (load() zeroes videoWidth), and a
+    // NaN aspect would stretch the ghost over the letterbox bars for the whole fade.
+    const geom = { a: this._eyeA, fit: this.fit, band: this.band };
     this.ghost = { mat, node: this.node, mi: this.mi, tex: this.tex, durationMs, ease, t0: null, geom };
     this.tex = null;
     this._texSource = null;
@@ -417,6 +418,7 @@ export class VideoPlane {
       this.rect = null;
       this._rectKey = '';
       this._planeSize = null;
+      this._eyeA = 0;
       this._rectBox = null;
     }
     this.format = format;
@@ -516,6 +518,7 @@ export class VideoPlane {
       this._sizeKey = key;
       this._ensureTexture();
       const a = eyeAspect(this.format, v.videoWidth, v.videoHeight);
+      this._eyeA = a;
       const s = videoPlaneSize({ boxAspect, eyeAspect: a, vH: this.vH, fit: this.fit, band: this.band });
       this.node.setLocalScale(s.w, s.h, 1);
       this._planeSize = { w: s.w, h: s.h, W: this.vH * boxAspect, H: this.vH };
@@ -559,7 +562,9 @@ export class VideoPlane {
     this._rectKey = key;
     this.rect = r;
     for (const cb of [...this._rectListeners]) {
-      // Off the draw: a page callback that throws or lays out must not stall the frame.
+      // A microtask: after this draw, still inside the same rAF task (before paint), so controls
+      // move in the same frame and a throw is isolated. A callback that READS layout still forces
+      // layout inside the frame.
       queueMicrotask(() => {
         if (!this._rectListeners.has(cb)) return; // unsubscribed (or its video replaced) since
         try {
