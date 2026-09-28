@@ -319,6 +319,60 @@ export default function cases({ P, productShim }) {
       },
     },
     {
+      // P0.1 fix 2. A real fullscreen request (puppeteer's evaluate carries a user gesture), not a stub.
+      id: 'chip-fs', name: 'chip in fullscreen: a fresh host PAINTED above the fullscreen canvas; hides after 3 s idle, back on a move; fresh again on exit',
+      url: P + 'three-corner-ui.html', shim: allowDev,
+      async run(page, h) {
+        await page.waitForFunction(liveChip, W8);
+        const hostIs = () => { const c = window.__dxrAuto3D.chip(); window.__hosts = window.__hosts || []; if (!window.__hosts.includes(c.host)) window.__hosts.push(c.host); return window.__hosts.indexOf(c.host); };
+        const count = () => document.querySelectorAll('[data-dxr-auto3d-chip]').length;
+        const h0 = await page.evaluate(hostIs);
+        const A = await page.evaluate(chipInfo);
+        await page.evaluate(() => document.querySelector('#stage canvas').requestFullscreen());
+        await page.waitForFunction(() => document.fullscreenElement === document.querySelector('#stage canvas'), { timeout: 5000, polling: 50 });
+        await page.waitForFunction(liveChip, W8);
+        await h.sleep(200);
+        const B = { ...(await page.evaluate(chipInfo)), host: await page.evaluate(hostIs), count: await page.evaluate(count),
+          oldConnected: await page.evaluate(() => window.__hosts[0].isConnected), fs: await page.evaluate(() => !!document.fullscreenElement) };
+        // What is PAINTED at the pill: the pill region with the chip shown, then (below) with it hidden
+        // by the idle timer. Under the fullscreen element (the old host) the two would be identical.
+        const clip = B.rect ? { x: Math.floor(B.rect.left), y: Math.floor(B.rect.top), width: Math.ceil(B.rect.width), height: Math.ceil(B.rect.height) } : null;
+        const shot = async () => (clip ? page.screenshot({ clip, encoding: 'base64' }) : null);
+        const shown = await shot();
+        await h.sleep(3400); // no pointer movement: hides
+        const idle = await page.evaluate(chipInfo);
+        const hidden = await shot();
+        const painted = shown && hidden ? await page.evaluate(async (a, b) => {
+          const px = async (b64) => { const i = new Image(); i.src = 'data:image/png;base64,' + b64; await i.decode(); const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const g = c.getContext('2d'); g.drawImage(i, 0, 0); return g.getImageData(0, 0, c.width, c.height).data; };
+          const x = await px(a), y = await px(b); let e = 0; for (let k = 0; k < x.length; k += 4) e += Math.abs(x[k] - y[k]) + Math.abs(x[k + 1] - y[k + 1]) + Math.abs(x[k + 2] - y[k + 2]);
+          return e / (x.length / 4) / 3;
+        }, shown, hidden) : null;
+        await page.mouse.move(300, 300); await page.mouse.move(320, 310);
+        await h.sleep(150);
+        const moved = await page.evaluate(chipInfo);
+        await page.evaluate(() => document.exitFullscreen());
+        await page.waitForFunction(() => !document.fullscreenElement, { timeout: 5000, polling: 50 });
+        await page.waitForFunction(liveChip, W8);
+        await h.sleep(200);
+        const C = { ...(await page.evaluate(chipInfo)), host: await page.evaluate(hostIs), count: await page.evaluate(count) };
+        return { h0, A, B, idle, moved, C, painted };
+      },
+      check(r, t) {
+        const A = r.A, B = r.B, C = r.C;
+        t('live chip before fullscreen, hit test hits it', r.ok && A && A.hitFirst === 'host', r.error || JSON.stringify(A && A.hitFirst));
+        if (!B) return;
+        t('fullscreen on the converted canvas; still live', B.fs && B.state === 'live', `fullscreen ${B.fs}, state ${B.state}`);
+        t('a NEW host, the old one torn down, exactly one in the document, in the top layer', B.host === 1 && !B.oldConnected && B.count === 1 && B.topLayer === true, `host #${B.host}, old connected ${B.oldConnected}, hosts ${B.count}, topLayer ${B.topLayer}`);
+        // PAINTED above the fullscreen element: the pill region changes when the chip hides. (Not hit-tested:
+        // Chromium sends pointer input over a fullscreen element to it, not to a later non-modal top-layer
+        // popover — measured headless; so in fullscreen the chip shows state but does not take clicks.)
+        t('painted above the fullscreen element: the pill region differs with the chip shown vs hidden', r.painted > 8, `mean |diff| ${r.painted == null ? 'n/a' : r.painted.toFixed(1)} levels; elementsFromPoint first: ${B.hitFirst}`);
+        t('in fullscreen: hidden after 3 s without pointer movement', r.idle && r.idle.rect === null, JSON.stringify(r.idle && r.idle.rect));
+        t('back on the next pointer move', r.moved && !!r.moved.rect, JSON.stringify(r.moved && { rect: r.moved.rect, hit: r.moved.hitFirst }));
+        t('on exit: a fresh host again, one in the document, top layer, hit test hits it', C && C.host === 2 && C.count === 1 && C.topLayer === true && C.hitFirst === 'host', JSON.stringify(C && { host: C.host, count: C.count, top: C.topLayer, hit: C.hitFirst }));
+      },
+    },
+    {
       // P0.1 fix 4 (R6): a display behind the layer (getDisplayInfo answers) but nobody tracked, ever.
       id: 'chip-cover-max', name: 'cover max hold: displayOk but never two views -> cover gone at ~coverMaxMs (5 s), chip amber, report converting (never live)',
       url: P + 'three-corner-ui.html', shim: allowDev, fake: { viewsAfterMs: 1e9 },
