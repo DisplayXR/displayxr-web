@@ -61,6 +61,8 @@ function dxrCore(cfg, cap, S) {
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
+    guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
+    guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
@@ -197,8 +199,9 @@ function dxrCore(cfg, cap, S) {
 
   // ------------------------------------------------------------ activation
   function considerActivation(st) {
-    if (!on() || foreign || owner) return;
     const t = now();
+    guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
+    if (!on() || foreign || owner || guard.tripped) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
     if (S.optedOut()) { notify(); return; } // <meta name="displayxr-auto3d" content="off">
@@ -860,12 +863,12 @@ function dxrCore(cfg, cap, S) {
     return null;
   };
   // One status for the chip, the dev HUD and the host. Report statuses:
-  //   'live' | 'converting' | 'standdown' | 'optout' | 'offer' | 'off' | 'flat' | 'idle'
-  // ('guard' arrives with the frame-rate guard.)
+  //   'live' | 'converting' | 'standdown' | 'optout' | 'guard' | 'offer' | 'off' | 'flat' | 'idle'
   function statusOf() {
     const st = owner;
     if (foreign) return { status: 'standdown', reason: foreign };
     if (S.optedOut()) return { status: 'optout' };
+    if (guard.tripped) return { status: 'guard', reason: guard.tripped };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
