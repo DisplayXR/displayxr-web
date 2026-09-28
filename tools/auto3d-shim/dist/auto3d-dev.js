@@ -71,6 +71,16 @@ function dxrSentinel(cfg, cap) {
   if (typeof window.XRDisplayLayer !== 'function' || !navigator.xr) return; // not the DisplayXR Browser: inert
   try { Object.defineProperty(window, MARK, { value: true }); } catch (e) { return; }
 
+  const apply = Reflect.apply;
+  const defProp = Object.defineProperty;
+  const qsa = Document.prototype.querySelectorAll;
+  const byTag = Document.prototype.getElementsByTagName;
+  const getAttr = Element.prototype.getAttribute;
+  const micro = queueMicrotask;
+  const sTimeout = setTimeout, cTimeout = clearTimeout;
+  const perfNow = performance.now.bind(performance);
+  const info = (...a) => console.info(TAG, ...a);
+
   const gopd = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return d ? Object.freeze(d) : null; };
   const intrinsics = Object.freeze({
     attachShadow: Element.prototype.attachShadow,
@@ -85,40 +95,268 @@ function dxrSentinel(cfg, cap) {
   const foreignCbs = [];
   const xrObj = navigator.xr;
   const xrReqOrig = xrObj.requestSession;
-  const xrRequest = (mode, init) => xrReqOrig.call(xrObj, mode, init);
+  const xrRequest = (mode, init) => apply(xrReqOrig, xrObj, [mode, init]);
   try {
     xrObj.requestSession = function (mode, init) {
       if (mode === 'inline-3d' || mode === 'immersive-vr' || mode === 'immersive-ar') {
         const reason = `the page requested '${mode}'`;
-        if (!foreign) foreign = reason;
+        if (!foreign) { foreign = reason; onForeignEarly(); }
         for (const cb of foreignCbs.slice()) { try { cb(reason); } catch (e) { /* the core logs its own */ } }
       }
-      return xrReqOrig.call(xrObj, mode, init);
+      return apply(xrReqOrig, xrObj, [mode, init]);
     };
   } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
 
+  const en = cfg.engines || {};
+  const blocked = cfg.decision === 'block' && !cfg.dev;
+  let core = null;     // what dxrCore returned, once loaded
+  let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
+
+  let opted = false;
+  function optedOut() {
+    if (opted) return true;
+    let list = null;
+    try { list = apply(qsa, document, ['meta[name="displayxr-auto3d" i]']); } catch (e) { return false; }
+    for (let i = 0; i < list.length; i++) {
+      const c = apply(getAttr, list[i], ['content']);
+      if (typeof c === 'string' && c.trim().toLowerCase() === 'off') {
+        opted = true; // sticky for the document
+        disarm();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  const reported = new Set();
+  const reportOnce = (r) => {
+    if (reported.has(r.status)) return;
+    reported.add(r.status);
+    try { cap.report(r); } catch (e) { /* ignore */ }
+  };
+  const reportOff = (engine) => reportOnce({ status: 'off', engine });
+
+  function signal(engine) {
+    if (core) return core;
+    if (done) return null;
+    if (optedOut()) {
+      done = true;
+      info('this page opted out (<meta name="displayxr-auto3d" content="off">): staying 2D');
+      reportOnce({ status: 'optout' });
+      return null;
+    }
+    if (!engine) return null;
+    if (blocked) { done = true; disarm(); reportOff(engine); return null; }
+    let make = null;
+    try { make = cap.loadCore(); } catch (e) { console.warn(TAG, 'the core could not be loaded', e); }
+    if (typeof make !== 'function') { done = true; disarm(); return null; }
+    core = make(cfg, cap, S);
+    return core;
+  }
+  function onForeignEarly() {
+    if (core || done || cfg.dev) return;
+    done = true;
+    disarm();
+  }
+
+  let devtools = null;
+  if (en.three !== false) {
+    const onObserve = (e) => { const c = signal('three.js'); if (c && c.three) c.three.observe(e); };
+    const onRegister = (e) => { const c = signal('three.js'); if (c && c.three) c.three.register(e); };
+    const hooked = new WeakSet();
+    const attachHook = (t) => {
+      if (!t || typeof t.addEventListener !== 'function' || hooked.has(t)) return;
+      hooked.add(t);
+      t.addEventListener('observe', onObserve);
+      t.addEventListener('register', onRegister);
+    };
+    devtools = window.__THREE_DEVTOOLS__ || new EventTarget();
+    attachHook(devtools);
+    try {
+      defProp(window, '__THREE_DEVTOOLS__', {
+        configurable: true, enumerable: false,
+        get: () => devtools,
+        set: (v) => { devtools = v; attachHook(v); },
+      });
+    } catch (e) { window.__THREE_DEVTOOLS__ = devtools; }
+  }
+
+  const isApp = (a) =>
+    !!a && typeof a === 'object' && typeof a.tick === 'function' && typeof a.on === 'function' &&
+    typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
+  const nsOf = (pc) => (pc && typeof pc === 'object' && (pc.AppBase || pc.Application) ? pc : null);
+  let pcFound = false;
+  function foundPC(app, how, ns) {
+    if (pcFound) return;
+    pcFound = true;
+    disarmCanvases(); // the id traps have done their job
+    stopPoll();
+    let g = null;
+    try { g = window.pc; } catch (e) { /* ignore */ }
+    const c = signal('PlayCanvas');
+    if (c && c.playcanvas) c.playcanvas.consider(app, how, ns || nsOf(g));
+  }
+
+  const ID = intrinsics.elementId;
+  const armed = new Map(); // canvas -> the time its trap expires (Infinity until the page's load)
+  let loaded = document.readyState === 'complete';
+  let sweepT = 0;
+  const keyTraps = new Set();
+  function removeKeyTrap(key) {
+    if (!keyTraps.has(key)) return;
+    keyTraps.delete(key);
+    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
+  }
+  function trapKey(key) {
+    if (typeof key !== 'string' || keyTraps.has(key) || key === '__proto__' || key in Object.prototype) return;
+    keyTraps.add(key);
+    try {
+      defProp(Object.prototype, key, {
+        configurable: true, enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          removeKeyTrap(key);
+          defProp(this, key, { value: v, writable: true, enumerable: true, configurable: true });
+          if (isApp(v)) foundPC(v, 'AppBase constructor (canvas-id trap)');
+        },
+      });
+    } catch (e) { keyTraps.delete(key); return; }
+    micro(() => removeKeyTrap(key));
+  }
+  function arm(c) {
+    if (done || pcFound || armed.has(c) || !ID || !ID.get || !ID.set) return;
+    try {
+      defProp(c, 'id', {
+        configurable: true, enumerable: false,
+        get() {
+          const v = apply(ID.get, this, []);
+          if (!done && !pcFound) trapKey(v);
+          return v;
+        },
+        set(v) { apply(ID.set, this, [v]); },
+      });
+    } catch (e) { return; }
+    armed.set(c, loaded ? perfNow() + 10000 : Infinity);
+    scheduleSweep();
+  }
+  function unarm(c) {
+    if (!armed.delete(c)) return;
+    try { delete c.id; } catch (e) { /* ignore */ }
+  }
+  function disarmCanvases() {
+    for (const c of [...armed.keys()]) unarm(c);
+    if (sweepT) { cTimeout(sweepT); sweepT = 0; }
+  }
+  function scheduleSweep() {
+    if (sweepT || !loaded || !armed.size) return;
+    let t = Infinity;
+    for (const v of armed.values()) t = Math.min(t, v);
+    sweepT = sTimeout(sweep, Math.max(0, t - perfNow()));
+  }
+  function sweep() {
+    sweepT = 0;
+    const n = perfNow();
+    for (const [c, t] of [...armed]) if (t <= n) unarm(c);
+    scheduleSweep();
+  }
+
+  let polling = false, polls = 0, pollT = 0, glCanvas = null;
+  function lookGlobals() {
+    if (done || pcFound) return;
+    let pc = null;
+    try { pc = window.pc; } catch (e) { /* ignore */ }
+    if (pc && typeof pc === 'object') {
+      const ns = nsOf(pc);
+      try { if (isApp(pc.app)) { foundPC(pc.app, 'window.pc.app', ns); return; } } catch (e) { /* ignore */ }
+      try { const a = pc.AppBase && pc.AppBase.getApplication && pc.AppBase.getApplication(); if (isApp(a)) { foundPC(a, 'pc.AppBase.getApplication()', ns); return; } } catch (e) { /* ignore */ }
+    }
+    try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
+  }
+  function startPoll() {
+    if (polling) return;
+    polling = true;
+    micro(lookGlobals);
+    document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
+    window.addEventListener('load', lookGlobals, { once: true });
+    pollT = sTimeout(poll, 500);
+  }
+  function poll() {
+    pollT = 0;
+    if (done || pcFound) return;
+    lookGlobals();
+    if (done || pcFound) return;
+    if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
+    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    info(`a WebGL canvas (${descCanvas(glCanvas)}) but no supported engine found — left 2D.`,
+      'A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its',
+      'canvas id when the <canvas> is in the HTML before deferred / module scripts run. A canvas created by script with no',
+      'global is not visible (an engine-side announce hook would fix it).');
+  }
+  function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
+  const descCanvas = (c) => {
+    if (!c) return 'canvas';
+    let id = '';
+    try { id = ID && ID.get ? apply(ID.get, c, []) : ''; } catch (e) { /* ignore */ }
+    return 'canvas' + (id ? '#' + id : '');
+  };
+
+  const disarm = () => { disarmCanvases(); stopPoll(); for (const k of [...keyTraps]) removeKeyTrap(k); };
+
+  if (en.playcanvas !== false) {
+    const GC = HTMLCanvasElement.prototype.getContext;
+    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1 };
+    const seenGL = new WeakSet();
+    const onContext = (c, type) => {
+      if (done || pcFound) return;
+      if (type === '2d') { unarm(c); return; }
+      if (WEBGL[type] !== 1 || seenGL.has(c)) return;
+      seenGL.add(c);
+      if (!glCanvas) glCanvas = c;
+      signal(null); // the first engine / WebGL signal: the page's opt-out
+      if (done) return;
+      arm(c);
+      startPoll();
+    };
+    try {
+      HTMLCanvasElement.prototype.getContext = function getContext(type) {
+        const ctx = apply(GC, this, arguments);
+        try { onContext(this, type); } catch (e) { /* never break the page's getContext */ }
+        return ctx;
+      };
+    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps may not be found', e); }
+
+    const armDom = () => {
+      if (done || pcFound) return;
+      if (optedOut()) return; // the report comes with the first WebGL / engine signal
+      const list = apply(byTag, document, ['canvas']);
+      for (let i = 0; i < list.length; i++) arm(list[i]);
+    };
+    const onReady = () => {
+      const s = document.readyState;
+      if (s === 'loading') return;
+      if (!loaded && s === 'complete') {
+        loaded = true;
+        const t = perfNow() + 10000;
+        for (const c of armed.keys()) armed.set(c, t);
+        scheduleSweep();
+      }
+      if (!armedDom) { armedDom = true; armDom(); }
+      if (loaded) document.removeEventListener('readystatechange', onReady);
+    };
+    let armedDom = false;
+    if (document.readyState === 'loading') document.addEventListener('readystatechange', onReady);
+    else onReady();
+  }
+
   const S = Object.freeze({
-    devtools: null,               // (next slice) the __THREE_DEVTOOLS__ EventTarget the sentinel owns
+    get devtools() { return devtools; }, // the __THREE_DEVTOOLS__ EventTarget the sentinel listens on
     intrinsics,
     xrRequest,
     foreign: () => foreign,       // why the page owns XR in this document, or null
     onForeign(cb) { foreignCbs.push(cb); },
-    optedOut: () => false,        // (next slice) <meta name="displayxr-auto3d" content="off">
-    disarm() {},                  // (next slice) remove the per-instance traps
+    optedOut,                     // <meta name="displayxr-auto3d" content="off"> (sticky once seen)
+    disarm,                       // take every trap off (the core never needs it today)
   });
-
-  let offReported = false;
-  const reportOff = (engine) => {
-    if (offReported) return;
-    offReported = true;
-    try { cap.report({ status: 'off', engine }); } catch (e) { /* ignore */ }
-  };
-  if (cfg.decision === 'block' && !cfg.dev) { void reportOff; return; }
-
-  let make = null;
-  try { make = cap.loadCore(); } catch (e) { console.warn(TAG, 'the core could not be loaded', e); return; }
-  if (typeof make !== 'function') return;
-  make(cfg, cap, S);
 }
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
@@ -139,12 +377,20 @@ function dxrCore(cfg, cap, S) {
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
+    guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
+    guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
+    glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
   };
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
   const T = { ...TUNING };
   if (cfg.dev && cfg.test && typeof cfg.test === 'object') {
     for (const k of Object.keys(cfg.test)) if (!SITE_KEYS.includes(k)) T[k] = cfg.test[k];
   }
+  const RAMP_MS = T.rampMs;
+  const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+  const applyMotion = () => { T.rampMs = reducedMotion && reducedMotion.matches ? 1 : RAMP_MS; };
+  applyMotion();
+  if (reducedMotion && reducedMotion.addEventListener) reducedMotion.addEventListener('change', applyMotion);
 
   const cd = cfg.depths || {};
   const site = {
@@ -178,6 +424,7 @@ function dxrCore(cfg, cap, S) {
   const tracked = [];           // WeakRef<state>, for state() and the HUD
   let owner = null;             // the one canvas converted (or converting) — one inline-3D session per document
   let lastTarget = null;        // the last canvas we converted: the chip keeps pointing at it after release
+  let candidate = null;         // while OFF (offer / block in dev): a canvas that would convert — the chip's target
   let foreign = null;           // why we stood down for good in this document (the page owns inline-3D / XR)
   const engines = [];           // adapter names, for the HUD / console
 
@@ -203,11 +450,21 @@ function dxrCore(cfg, cap, S) {
     return st;
   }
 
-  function realSizeFor(L) {
+  function realSizeFor(st) {
+    const L = st.L;
     let eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale));
     let eyeH = Math.max(2, Math.round(L.h * L.pr));
-    if (2 * eyeW > T.maxSbsWidth) {
-      const s = T.maxSbsWidth / (2 * eyeW);
+    if (st.glLim === undefined) {
+      const gl = st.ad.gl(st);
+      if (gl) {
+        let v = Infinity;
+        try { const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS); v = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]); } catch (e) { v = Infinity; }
+        st.glLim = v > 0 ? v : Infinity; // cached per canvas: a context's limits do not change
+      }
+    }
+    const lim = T.glLimit > 0 ? T.glLimit : st.glLim || Infinity;
+    const s = Math.min(1, Math.min(T.maxSbsWidth, lim) / (2 * eyeW), lim / eyeH);
+    if (s < 1) {
       eyeW = Math.max(2, Math.floor(eyeW * s));
       eyeH = Math.max(2, Math.floor(eyeH * s));
     }
@@ -231,16 +488,27 @@ function dxrCore(cfg, cap, S) {
   function unvirtualizeCanvas(st) { try { delete st.canvas.width; delete st.canvas.height; } catch (e) { /* ignore */ } }
 
   function considerActivation(st) {
-    if (!on() || foreign || owner) return;
     const t = now();
+    guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
+    if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
+    if (foreign || owner || guard.tripped) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
+    if (S.optedOut()) { notify(); return; } // <meta name="displayxr-auto3d" content="off">
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
       return;
     }
     activate(st);
+  }
+  function considerCandidate(st) {
+    const t = now();
+    if (t < (st.candAt || 0)) return;
+    st.candAt = t + 500;
+    const ok = !st.ad.unqualified(st);
+    const next = ok ? st : candidate === st ? null : candidate;
+    if (next !== candidate) { candidate = next; notify(); }
   }
   function canvasPlacement(c) {
     if (!c.isConnected) return 'canvas is not in the document';
@@ -443,6 +711,7 @@ function dxrCore(cfg, cap, S) {
   function onSessionFrame(st, frame) {
     const ad = st.ad;
     st.stats.xrFrames++;
+    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)');
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
@@ -474,6 +743,7 @@ function dxrCore(cfg, cap, S) {
     if (st.outCoverDue && !ad.coverAfterDraw) takeOutCover(st);
     tickCover(st, t);
     guard.tick(st, t);
+    chip.frame(st);
     if (st.stats.xrFrames % 20 === 0) notify();
   }
 
@@ -762,6 +1032,7 @@ function dxrCore(cfg, cap, S) {
     const st = owner;
     if (foreign) return { status: 'standdown', reason: foreign };
     if (S.optedOut()) return { status: 'optout' };
+    if (guard.tripped) return { status: 'guard', reason: guard.tripped };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
@@ -770,11 +1041,13 @@ function dxrCore(cfg, cap, S) {
     return { status: 'idle' };
   }
   function status() {
-    const s = statusOf(), t = lastTarget;
+    const s = statusOf(), t = lastTarget || candidate;
     return {
       state: s.status, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
       convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews),
+      enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
+      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp),
     };
   }
   let lastReport = '';
@@ -840,6 +1113,7 @@ function dxrCore(cfg, cap, S) {
   };
   const guard = dxrGuard(core);
   chip = dxrChip(ctl, S);
+  core.chip = chip; // dev.js: __dxrAuto3D.chip()
   dev = cfg.dev ? dxrDev(core, ctl) : null;
   const en = cfg.engines || {};
   const three = en.three === false ? null : dxrThree(core);
@@ -852,14 +1126,438 @@ function dxrCore(cfg, cap, S) {
   return { ctl, three, playcanvas };
 }
 function dxrGuard(core) {
-  return {
-    onFlip(st) {},
-    tick(st, t) {},
+  const T = core.T;
+  const RING = 60, MAX_DT = 250, MIN_BASE = 20, ARM_MS = 1000;
+  const g = new WeakMap(); // st -> { ring[], base, readyAt, last, dts[], sum }
+  const of = (st) => { let s = g.get(st); if (!s) g.set(st, (s = { ring: [], base: 0, readyAt: 0, last: 0, dts: [], sum: 0 })); return s; };
+  const resetWindow = (s) => { s.readyAt = 0; s.last = 0; s.dts.length = 0; s.sum = 0; };
+  const api = { tripped: null };
+
+  document.addEventListener('visibilitychange', () => {
+    for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
+  });
+
+  api.draw = (st, t) => {
+    if (st.active) return;
+    const r = of(st).ring;
+    r.push(t);
+    if (r.length > RING) r.shift();
   };
+
+  api.onFlip = (st) => {
+    const s = of(st);
+    let n = 0, sum = 0;
+    for (let i = 1; i < s.ring.length; i++) { const dt = s.ring[i] - s.ring[i - 1]; if (dt > 0 && dt <= MAX_DT) { n++; sum += dt; } }
+    s.base = n >= MIN_BASE ? (1000 * n) / sum : 0;
+    s.ring.length = 0;
+    resetWindow(s);
+  };
+
+  api.tick = (st, t) => {
+    if (api.tripped) return;
+    const s = of(st);
+    const settled = st.active && !st.cover && !st.ramp && !st.releasing && !st.offTok && core.rampK(st) === 1;
+    if (!settled || document.hidden) { resetWindow(s); return; }
+    if (!s.readyAt) s.readyAt = t;
+    const prev = s.last;
+    s.last = t;
+    if (t - s.readyAt < ARM_MS || !prev) return;
+    const dt = t - prev;
+    if (!(dt > 0) || dt > MAX_DT) return; // a hitch (GC, tab switch, debugger) is not a rate
+    s.dts.push(dt); s.sum += dt;
+    if (s.sum < T.guardMs) return;
+    const fps = (1000 * s.dts.length) / s.sum;
+    if (fps < T.guardFps && (!s.base || fps < 0.8 * s.base)) { trip(st, fps, s.base); return; }
+    while (s.dts.length && s.sum - s.dts[0] >= T.guardMs) s.sum -= s.dts.shift();
+  };
+
+  function trip(st, fps, base) {
+    api.tripped = `frame-rate guard: ${fps.toFixed(1)} fps in 3D over ${(T.guardMs / 1000).toFixed(1)} s` +
+      (base ? ` (2D ran at ${base.toFixed(1)})` : ' (no 2D baseline)') + ' — 2D for the rest of this page';
+    for (const w of core.tracked) { const o = w.deref(); if (o) o.nextTry = Infinity; }
+    core.turnOff(st, api.tripped); // logs the one "back to 2D: …" line
+    core.notify();
+  }
+
+  return api;
 }
 function dxrChip(ctl, S) {
+  const I = S.intrinsics;
+  const doc = document;
+  const TAG = '[dxr-auto3d]';
+  const INSET = 8;
+  const PILL_W = 38, CARET_W = 22;            // + 2 px border = 40 collapsed, 62 expanded (<= 64)
+  const H_FINE = 24, H_COARSE = 44;           // + border, inside 28 / 44
+  const LIVE_EXPAND_MS = 3000, OFF_EXPAND_MS = 5000, FS_IDLE_MS = 3000, IDLE_TICK_MS = 500, HIT_EVERY = 30;
+  const mq = (q) => { try { return matchMedia(q); } catch (e) { return { matches: false, addEventListener() {} }; } };
+  const coarseMq = mq('(pointer: coarse)');
+  const now = () => performance.now();
+
+  let s = null;                 // last ctl.status()
+  let view = 'hidden';          // what the chip shows
+  let host = null, root = null, wrap, pill, dot, caret, menu, live, els = {};
+  let corner = null, rectKey = '', frames = 0, canvasObserved = null, ro = null;
+  let expandedUntil = 0, expandTimer = 0, hovering = false, menuOpen = false, announced = false;
+  let idleTimer = 0, fsIdle = false, fsIdleTimer = 0, rafPending = false;
+  let down = null;              // { id, x, y, moved } — a press on the pill / caret
+
+  const CSS = `
+.wrap{position:fixed;left:0;top:0;box-sizing:border-box;display:flex;align-items:stretch;height:${H_FINE + 2}px;width:${PILL_W + 2}px;
+  margin:0;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:14px;background-color:rgba(16,17,22,.85);
+  pointer-events:auto;font:12px/1 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;user-select:none;-webkit-user-select:none;
+  touch-action:none;cursor:default;transition:background-color .2s linear,border-color .2s linear}
+.wrap.hide{display:none}
+.wrap.exp{width:${PILL_W + CARET_W + 2}px}
+.wrap.outline{background-color:rgba(16,17,22,.45);border-color:rgba(255,255,255,.85)}
+button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:inherit;font:inherit;cursor:pointer}
+.pill{width:${PILL_W}px;gap:5px;padding:0 0 0 2px;font-weight:600;letter-spacing:.02em}
+.dot{width:6px;height:6px;box-sizing:border-box;border-radius:50%;background-color:#34c759;border:1px solid #34c759}
+.dot.a{background-color:#ffb020;border-color:#ffb020}
+.dot.o{background-color:transparent;border-color:#fff}
+.caret{width:${CARET_W}px;display:none;border-left:1px solid rgba(255,255,255,.25);font-size:10px}
+.wrap.exp .caret{display:flex}
+.pill:focus-visible,.caret:focus-visible{outline:2px solid #fff;outline-offset:-3px;border-radius:12px}
+.menu{position:fixed;inset:auto;left:0;top:0;margin:0;box-sizing:border-box;width:236px;padding:6px 0;overflow:visible;
+  border:1px solid rgba(255,255,255,.35);border-radius:8px;background-color:rgb(16,17,22);color:#fff;
+  font:12px/1.3 system-ui,-apple-system,"Segoe UI",sans-serif;pointer-events:auto;display:none}
+.menu.open{display:block}
+.menu button{width:100%;justify-content:space-between;padding:6px 12px;text-align:left}
+.menu button:focus-visible,.menu button:hover{background-color:rgba(255,255,255,.12)}
+.menu [role=menuitemradio]::before{content:"";width:8px;height:8px;margin-right:8px;box-sizing:border-box;border-radius:50%;border:1px solid #fff;flex:none}
+.menu [role=menuitemradio][aria-checked=true]::before{background-color:#fff}
+.menu [role=menuitemradio]{justify-content:flex-start}
+.sw{width:26px;height:14px;box-sizing:border-box;border-radius:7px;border:1px solid #fff;display:flex;align-items:center;padding:0 2px}
+.sw::after{content:"";width:8px;height:8px;border-radius:50%;background-color:#fff}
+[aria-checked=true] .sw{justify-content:flex-end;background-color:#34c759;border-color:#34c759}
+.row{display:flex;align-items:center;gap:8px;padding:4px 12px}
+.row>span{flex:none;width:40px;color:rgba(255,255,255,.75)}
+.row input{flex:1;min-width:0;margin:0;accent-color:#34c759}
+.row output{width:30px;text-align:right;font-variant-numeric:tabular-nums}
+.row.focus button{width:auto;flex:1;justify-content:center;padding:4px 0;border:1px solid rgba(255,255,255,.35);border-radius:4px}
+.row.focus button[aria-pressed=true]{background-color:rgba(255,255,255,.2)}
+.head{padding:4px 12px 2px;color:rgba(255,255,255,.75)}
+.sep{height:1px;margin:4px 0;background-color:rgba(255,255,255,.2)}
+.menu .hidden{display:none}
+.sr{position:fixed;left:-10000px;top:0;width:1px;height:1px;overflow:hidden}
+@media (pointer:coarse){.wrap{height:${H_COARSE}px;border-radius:22px}}
+@media (prefers-reduced-motion:reduce){.wrap{transition:none}}
+`;
+  const HTML = `
+<div class="wrap hide" part="chip">
+  <button class="pill" tabindex="-1" aria-pressed="false" aria-haspopup="menu" aria-label="3D view">3D<span class="dot"></span></button>
+  <button class="caret" tabindex="-1" aria-haspopup="menu" aria-expanded="false" aria-label="3D view settings">&#x2304;</button>
+</div>
+<div class="menu" role="menu" aria-label="3D view settings" popover="manual">
+  <button role="menuitemcheckbox" tabindex="-1" data-k="site" aria-checked="false">3D on this site<span class="sw"></span></button>
+  <div class="sep" role="separator"></div>
+  <div class="row" role="group" aria-label="Depth"><span>Depth</span><input type="range" tabindex="-1" min="0.02" max="1" step="0.01" aria-label="Depth" data-k="depth"><output>0.30</output></div>
+  <div role="group" aria-label="Style" data-g="style">
+    <div class="head" aria-hidden="true">Style</div>
+    <button role="menuitemradio" tabindex="-1" data-k="camera" aria-checked="false">Scene camera</button>
+    <button role="menuitemradio" tabindex="-1" data-k="display" aria-checked="false">Object on the glass</button>
+  </div>
+  <div class="row focus" role="group" aria-label="Focus"><span>Focus</span>
+    <button role="menuitem" tabindex="-1" data-k="nearer">nearer</button><button role="menuitem" tabindex="-1" data-k="auto">auto</button><button role="menuitem" tabindex="-1" data-k="farther">farther</button>
+  </div>
+  <div class="sep" role="separator"></div>
+  <button role="menuitem" tabindex="-1" data-k="reset">Reset depth and focus</button>
+  <button role="menuitem" tabindex="-1" data-k="once">Just this time (don't remember)</button>
+</div>
+<div class="sr" aria-live="polite"></div>`;
+
+  function build() {
+    if (host) return true;
+    const de = doc.documentElement;
+    if (!de || typeof I.attachShadow !== 'function') return false;
+    host = doc.createElement('div');
+    host.setAttribute('data-dxr-auto3d-chip', '');
+    host.setAttribute('popover', 'manual');
+    host.setAttribute('style', 'all:initial!important;position:fixed!important;inset:auto!important;left:0!important;top:0!important;' +
+      'width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;' +
+      'background:transparent!important;overflow:visible!important;display:block!important;pointer-events:none!important');
+    try { root = I.attachShadow.call(host, { mode: 'closed' }); } catch (e) { console.warn(TAG, 'chip: attachShadow failed', e); host = null; return false; }
+    const style = doc.createElement('style');
+    style.textContent = CSS;
+    root.appendChild(style);
+    const t = doc.createElement('template');
+    t.innerHTML = HTML;
+    root.appendChild(t.content);
+    wrap = root.querySelector('.wrap'); pill = root.querySelector('.pill'); dot = root.querySelector('.dot');
+    caret = root.querySelector('.caret'); menu = root.querySelector('.menu'); live = root.querySelector('.sr');
+    for (const el of root.querySelectorAll('[data-k]')) els[el.getAttribute('data-k')] = el;
+    els.out = root.querySelector('output'); els.style = root.querySelector('[data-g=style]');
+    wireInput();
+    wireMenu();
+    de.appendChild(host);
+    show();
+    for (const [t2, o] of [['scroll', true], ['resize', false]]) window.addEventListener(t2, schedule, { capture: o, passive: true });
+    doc.addEventListener('fullscreenchange', onFullscreen);
+    doc.addEventListener('pointerdown', (e) => { if (menuOpen && !e.composedPath().includes(host)) closeMenu(false); }, true);
+    return true;
+  }
+  function show() {
+    try {
+      if (I.showPopover) { I.showPopover.call(host); I.showPopover.call(menu); }
+      else host.style.setProperty('z-index', '2147483647', 'important'); // no popover API: plain fixed
+    } catch (e) { console.warn(TAG, 'chip: showPopover failed', e); }
+    try {
+      const b = getComputedStyle(host, '::backdrop');
+      const clear = (v) => !v || v === 'none' || v === 'transparent' || v === 'rgba(0, 0, 0, 0)';
+      if (!(clear(b.backgroundColor) && clear(b.backgroundImage) && clear(b.backdropFilter) && clear(b.filter))) {
+        const sh = new CSSStyleSheet();
+        sh.replaceSync('[data-dxr-auto3d-chip]::backdrop{background:transparent!important;backdrop-filter:none!important;filter:none!important}');
+        doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, sh];
+      }
+    } catch (e) { /* no ::backdrop support: nothing to neutralise */ }
+  }
+
+  const STOP = ['pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'pointerover', 'pointerout', 'gotpointercapture', 'lostpointercapture',
+    'mousedown', 'mouseup', 'mousemove', 'mouseover', 'mouseout', 'click', 'dblclick', 'auxclick', 'contextmenu', 'wheel',
+    'touchstart', 'touchmove', 'touchend', 'touchcancel', 'keydown', 'keyup', 'keypress', 'input', 'change', 'focusin', 'focusout',
+    'dragstart', 'selectstart'];
+  function wireInput() {
+    for (const t of STOP) root.addEventListener(t, (e) => e.stopPropagation(), { passive: t === 'wheel' || t.startsWith('touch') ? true : false });
+    wrap.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      down = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+      try { e.target.setPointerCapture(e.pointerId); } catch (x) { /* ignore */ }
+    });
+    wrap.addEventListener('mousedown', (e) => e.preventDefault());
+    wrap.addEventListener('pointermove', (e) => { if (down && e.pointerId === down.id && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) down.moved = true; });
+    wrap.addEventListener('pointerenter', () => { hovering = true; render(); });
+    wrap.addEventListener('pointerleave', () => { hovering = false; render(); });
+    pill.addEventListener('click', (e) => {
+      const drag = down && down.moved; down = null;
+      if (drag) return; // a drag that ended on the pill is not a click
+      e.preventDefault();
+      if (view === 'live') ctl.setEnabled(false);
+      else if (view === 'off' || view === 'offer') ctl.setEnabled(true);
+    });
+    caret.addEventListener('click', (e) => { const drag = down && down.moved; down = null; if (!drag) toggleMenu(); });
+    pill.addEventListener('contextmenu', (e) => { e.preventDefault(); openMenu(); });
+    caret.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  const items = () => [...menu.querySelectorAll('button,input')].filter((el) => el.offsetParent !== null || el.getClientRects().length);
+  function wireMenu() {
+    menu.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('button[data-k]');
+      if (!b) return;
+      const k = b.getAttribute('data-k'), st = s || ctl.status();
+      if (k === 'site') ctl.setEnabled(!st.enabled);
+      else if (k === 'camera' || k === 'display') ctl.setRig(k);
+      else if (k === 'nearer') ctl.nudgeFocus(-1);
+      else if (k === 'auto') ctl.nudgeFocus(0);
+      else if (k === 'farther') ctl.nudgeFocus(+1);
+      else if (k === 'reset') ctl.reset();
+      else if (k === 'once') { closeMenu(true); ctl.setEnabled(!st.enabled, { remember: false }); }
+    });
+    els.depth.addEventListener('input', () => ctl.setDepth(+els.depth.value, { remember: false }));
+    els.depth.addEventListener('change', () => ctl.setDepth(+els.depth.value));
+    menu.addEventListener('keydown', (e) => {
+      const list = items(), i = list.indexOf(root.activeElement);
+      const go = (j) => { const el = list[(j + list.length) % list.length]; if (el) el.focus(); };
+      switch (e.key) {
+        case 'ArrowDown': go(i + 1); break;
+        case 'ArrowUp': go(i - 1); break;
+        case 'Home': go(0); break;
+        case 'End': go(list.length - 1); break;
+        case 'Escape': closeMenu(true); break;
+        case 'Tab': closeMenu(true); break;
+        default: return; // Enter / Space click natively; Left / Right move the slider natively
+      }
+      e.preventDefault();
+    });
+  }
+  function toggleMenu() { if (menuOpen) closeMenu(true); else openMenu(); }
+  function openMenu() {
+    if (view === 'hidden' || !host) return;
+    menuOpen = true;
+    caret.setAttribute('aria-expanded', 'true');
+    syncMenu();
+    menu.classList.add('open');
+    placeMenu();
+    render();
+    const first = items()[0];
+    if (first) first.focus({ preventScroll: true });
+  }
+  function closeMenu(refocus) {
+    if (!menuOpen) return;
+    menuOpen = false;
+    menu.classList.remove('open');
+    caret.setAttribute('aria-expanded', 'false');
+    if (refocus && view !== 'hidden') pill.focus({ preventScroll: true });
+    else if (root.activeElement && root.activeElement.blur) root.activeElement.blur();
+    render();
+  }
+  function syncMenu() {
+    if (!s) return;
+    els.site.setAttribute('aria-checked', String(!!s.enabled));
+    if (root.activeElement !== els.depth) els.depth.value = String(s.depth);
+    els.out.textContent = (+s.depth).toFixed(2);
+    els.style.classList.toggle('hidden', !s.rigSupported);
+    els.camera.setAttribute('aria-checked', String(s.rig === 'camera'));
+    els.display.setAttribute('aria-checked', String(s.rig === 'display'));
+    els.auto.setAttribute('aria-pressed', String(s.convScale === 1));
+    els.once.textContent = `${s.enabled ? 'Off' : 'On'} just this time (don't remember)`;
+  }
+  function placeMenu() {
+    if (!menuOpen || !s || !s.canvas) return;
+    const r = s.canvas.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    const vw = doc.documentElement.clientWidth || innerWidth, vh = doc.documentElement.clientHeight || innerHeight;
+    const right = corner === 'tr' || corner === 'br', top = corner === 'tr' || corner === 'tl';
+    let x = right ? w.right - mw : w.left, y = top ? w.bottom + 4 : w.top - 4 - mh;
+    const inside = x >= r.left + INSET && x + mw <= r.right - INSET && y >= r.top + INSET && y + mh <= r.bottom - INSET &&
+      mw * mh < 0.5 * r.width * r.height;
+    if (!inside) {
+      const fits = (a, b) => a >= 0 && b >= 0 && a + mw <= vw && b + mh <= vh;
+      const xs = right ? r.right - mw : r.left;
+      const opts = [[xs, r.bottom + 4], [xs, r.top - 4 - mh], [r.right + 4, w.top], [r.left - 4 - mw, w.top]];
+      const hit = opts.find(([a, b]) => fits(a, b));
+      if (hit) [x, y] = hit;
+      else { x = Math.min(Math.max(0, x), vw - mw); y = Math.min(Math.max(0, y), vh - mh); }
+    }
+    setPx(menu, 'left', x);
+    setPx(menu, 'top', y);
+  }
+
+  function viewOf(st) {
+    if (!st || !st.canvas) return 'hidden';
+    if (st.state === 'live') {
+      if (!st.enabled) return 'off'; // turning off: fading out / staged under the out-cover
+      if (st.coverUp && !(st.layerAt && now() >= st.layerAt + st.holdMs)) return 'hidden'; // R6
+      return 'live';
+    }
+    if (st.state === 'off') return 'off';
+    if (st.state === 'offer') return 'offer';
+    return 'hidden'; // converting, idle, flat, standdown, optout, guard
+  }
+  function refresh(st) {
+    s = st;
+    const prev = view, next = viewOf(st);
+    view = next;
+    if (next !== prev) {
+      if (next === 'live') {
+        expandFor(LIVE_EXPAND_MS);
+        if (!announced && build()) { announced = true; live.textContent = '3D view on'; }
+      } else if (next === 'off' && prev === 'live') expandFor(OFF_EXPAND_MS);
+      else if (next === 'hidden') { expandedUntil = 0; if (menuOpen) closeMenu(false); }
+      rectKey = ''; // re-run the hit test for the new state
+    }
+    if (next !== 'hidden' && !build()) return;
+    observe(next !== 'hidden' ? st.canvas : null);
+    idle(next === 'offer' || next === 'off'); // no session loop: poll the placement
+    if (menuOpen) syncMenu();
+    render();
+    place();
+  }
+  function expandFor(ms) {
+    expandedUntil = now() + ms;
+    clearTimeout(expandTimer);
+    expandTimer = setTimeout(render, ms + 20);
+  }
+  const setA = (el, k, v) => { if (el.getAttribute(k) !== v) el.setAttribute(k, v); };
+  const setPx = (el, k, v) => { const t = Math.round(v) + 'px'; if (el.style[k] !== t) el.style[k] = t; };
+  function render() {
+    if (!host) return;
+    const vis = view !== 'hidden' && corner !== null && !fsIdle;
+    wrap.classList.toggle('hide', !vis);
+    if (!vis) return;
+    const on = view === 'live';
+    wrap.classList.toggle('outline', !on);
+    wrap.classList.toggle('exp', menuOpen || hovering || now() < expandedUntil);
+    setA(dot, 'class', 'dot ' + (!on ? 'o' : s.haveViews && !s.ramping ? 'g' : 'a'));
+    setA(pill, 'aria-pressed', String(on));
+    setA(pill, 'aria-label', on ? '3D view: on. Turn off for this site' : view === 'offer' ? '3D view available. Turn on for this site' : '3D view: off. Turn on for this site');
+  }
+
+  const boxH = () => (coarseMq.matches ? H_COARSE : H_FINE) + 2;
+  const BOX_W = PILL_W + CARET_W + 2; // hit-test the EXPANDED box: expanding never grows over page UI
+  function boxAt(c, r) {
+    const h = boxH();
+    const x = c === 'tr' || c === 'br' ? r.right - INSET - BOX_W : r.left + INSET;
+    const y = c === 'tr' || c === 'tl' ? r.top + INSET : r.bottom - INSET - h;
+    return { x, y, w: BOX_W, h };
+  }
+  function clearAt(b, cv, cover) {
+    const pts = [[b.x + 1, b.y + 1], [b.x + b.w - 1, b.y + 1], [b.x + 1, b.y + b.h - 1], [b.x + b.w - 1, b.y + b.h - 1], [b.x + b.w / 2, b.y + b.h / 2]];
+    for (const [x, y] of pts) {
+      let first = null;
+      for (const el of I.elementsFromPoint.call(doc, x, y)) { if (el !== host) { first = el; break; } }
+      if (!first || (first !== cv && first !== cover)) return false;
+    }
+    return true;
+  }
+  function place() {
+    if (!host) return;
+    if (view === 'hidden' || !s || !s.canvas || !s.canvas.isConnected) { if (corner !== null) { corner = null; render(); } return; }
+    if (!host.isConnected) { doc.documentElement.appendChild(host); show(); }
+    const r = s.canvas.getBoundingClientRect();
+    const key = `${r.left},${r.top},${r.width},${r.height},${innerWidth},${innerHeight},${coarseMq.matches}`;
+    if (key !== rectKey || frames % HIT_EVERY === 0) {
+      rectKey = key;
+      const was = corner;
+      corner = null;
+      if (r.width > 2 * INSET + BOX_W && r.height > 2 * INSET + boxH()) {
+        for (const c of ['tr', 'br', 'tl', 'bl']) if (clearAt(boxAt(c, r), s.canvas, s.cover)) { corner = c; break; }
+      }
+      if (corner !== was) render();
+    }
+    if (corner === null) return;
+    const b = boxAt(corner, r);
+    const w = wrap.classList.contains('exp') ? BOX_W : PILL_W + 2;
+    const x = corner === 'tr' || corner === 'br' ? b.x + b.w - w : b.x;
+    setPx(wrap, 'left', x);
+    setPx(wrap, 'top', b.y);
+    if (menuOpen) placeMenu();
+  }
+  function schedule() {
+    if (rafPending || view === 'hidden') return;
+    rafPending = true;
+    requestAnimationFrame(() => { rafPending = false; rectKey = ''; place(); });
+  }
+  function observe(cv) {
+    if (cv === canvasObserved) return;
+    if (ro) ro.disconnect();
+    canvasObserved = cv;
+    if (!cv || typeof ResizeObserver !== 'function') return;
+    if (!ro) ro = new ResizeObserver(schedule);
+    ro.observe(cv);
+  }
+  function idle(onoff) {
+    if (onoff && !idleTimer) idleTimer = setInterval(() => { frames = 0; refresh(ctl.status()); }, IDLE_TICK_MS);
+    else if (!onoff && idleTimer) { clearInterval(idleTimer); idleTimer = 0; }
+  }
+
+  const fsOurs = () => { const f = doc.fullscreenElement; return !!(f && s && s.canvas && (f === s.canvas || f.contains(s.canvas))); };
+  function onPointerActivity() {
+    if (!fsOurs()) return;
+    if (fsIdle) { fsIdle = false; render(); }
+    clearTimeout(fsIdleTimer);
+    fsIdleTimer = setTimeout(() => { if (fsOurs()) { fsIdle = true; render(); } }, FS_IDLE_MS);
+  }
+  function onFullscreen() {
+    if (fsOurs()) { window.addEventListener('pointermove', onPointerActivity, { capture: true, passive: true }); onPointerActivity(); }
+    else { window.removeEventListener('pointermove', onPointerActivity, true); clearTimeout(fsIdleTimer); if (fsIdle) { fsIdle = false; render(); } }
+    schedule();
+  }
+
+  ctl.onChange(() => refresh(ctl.status()));
   return {
-    update(status) {},
+    update() { /* the chip listens through ctl.onChange */ },
+    frame() {
+      frames++;
+      refresh(ctl.status());
+    },
+    inspect() {
+      const r = host && !wrap.classList.contains('hide') ? wrap.getBoundingClientRect() : null;
+      return {
+        root, host, state: view, corner, menu: menuOpen,
+        rect: r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null,
+        menuRect: menuOpen ? (({ left, top, width, height }) => ({ left, top, width, height }))(menu.getBoundingClientRect()) : null,
+      };
+    },
   };
 }
 function dxrDev(core, ctl) {
@@ -959,7 +1657,7 @@ function dxrDev(core, ctl) {
       };
       return { layer: true, displayInfo: await ask('getDisplayInfo'), renderingModes: await ask('getRenderingModes') };
     },
-    chip: () => null,
+    chip: () => (core.chip && core.chip.inspect ? core.chip.inspect() : null),
   };
   return { hud };
 }
@@ -972,7 +1670,6 @@ function dxrThree(core) {
   let revision = null;
   Object.defineProperty(core.meta, 'revision', { enumerable: true, get: () => revision });
 
-  let devtools = window.__THREE_DEVTOOLS__ || null;
   const onObserve = (e) => {
     const o = e && e.detail;
     if (!o) return;
@@ -981,22 +1678,6 @@ function dxrThree(core) {
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
   const onRegister = (e) => { if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
-  const hooked = new WeakSet();
-  const attachHook = (t) => {
-    if (!t || typeof t.addEventListener !== 'function' || hooked.has(t)) return;
-    hooked.add(t);
-    t.addEventListener('observe', onObserve);
-    t.addEventListener('register', onRegister);
-  };
-  if (!devtools) devtools = new EventTarget();
-  attachHook(devtools);
-  try {
-    Object.defineProperty(window, '__THREE_DEVTOOLS__', {
-      configurable: true, enumerable: false,
-      get: () => devtools,
-      set: (v) => { devtools = v; attachHook(v); },
-    });
-  } catch (e) { window.__THREE_DEVTOOLS__ = devtools; }
 
   const lookAts = new WeakMap(); // camera -> { x, y, z } (world), the last lookAt
   const hookedProtos = new WeakSet();
@@ -1291,7 +1972,7 @@ function dxrThree(core) {
   }
 
   function applyRealSize(st) {
-    const R = core.realSizeFor(st.L);
+    const R = core.realSizeFor(st);
     st.R = R;
     const pr1 = st.call('getPixelRatio') === 1;
     if (pr1 && realW(st.canvas) === R.W && realH(st.canvas) === R.H) return false;
@@ -1502,7 +2183,8 @@ function dxrPlayCanvas(core) {
   }
   const TARGET_FIELDS = [['pivotPoint', 'orbit-camera pivotPoint'], ['focusPoint', 'CameraControls focusPoint']];
 
-  function consider(app, how) {
+  function consider(app, how, ns) {
+    if (!pcNS && ns && typeof ns === 'object' && (ns.AppBase || ns.Application)) pcNS = ns;
     if (!isApp(app) || apps.has(app)) return;
     apps.set(app, null);
     hookRoot(app);
@@ -1512,68 +2194,6 @@ function dxrPlayCanvas(core) {
     app.on('postrender', () => onPostRender(app));
     app.on('prerender', () => onPreRender(app));
     app.on('destroy', () => { const st = apps.get(app); if (st && (st.active || st.pending || st.armed)) core.stand(st, 'the page destroyed the app'); });
-  }
-
-  function lookGlobals() {
-    const pc = pcNS || window.pc;
-    if (pc && typeof pc === 'object') {
-      if (!pcNS && (pc.AppBase || pc.Application)) pcNS = pc;
-      if (isApp(pc.app)) consider(pc.app, 'window.pc.app');
-      try { const a = pc.AppBase && pc.AppBase.getApplication && pc.AppBase.getApplication(); if (a) consider(a, 'pc.AppBase.getApplication()'); } catch (e) { /* ignore */ }
-    }
-    try { if (isApp(window.app)) consider(window.app, 'window.app'); } catch (e) { /* ignore */ }
-  }
-
-  try {
-    if (!('pc' in window)) {
-      let pcVal;
-      Object.defineProperty(window, 'pc', {
-        configurable: true, enumerable: true,
-        get: () => pcVal,
-        set: (v) => { pcVal = v; setTimeout(lookGlobals, 0); },
-      });
-    }
-  } catch (e) { /* ignore */ }
-  let polls = 0;
-  const poll = () => { lookGlobals(); if (++polls < 40) setTimeout(poll, 500); };
-  setTimeout(poll, 0);
-  document.addEventListener('DOMContentLoaded', lookGlobals);
-  window.addEventListener('load', lookGlobals);
-
-  const ID = core.intrinsics.elementId; // snapshotted by the sentinel
-  const traps = new Set();
-  function removeTrap(key) {
-    if (!traps.has(key)) return;
-    traps.delete(key);
-    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
-  }
-  function trapKey(key) {
-    if (typeof key !== 'string' || traps.has(key) || key === '__proto__' || key in Object.prototype) return;
-    traps.add(key);
-    try {
-      Object.defineProperty(Object.prototype, key, {
-        configurable: true, enumerable: false,
-        get() { return undefined; },
-        set(v) {
-          removeTrap(key);
-          Object.defineProperty(this, key, { value: v, writable: true, enumerable: true, configurable: true });
-          if (isApp(v)) consider(v, 'AppBase constructor (canvas-id trap)');
-        },
-      });
-    } catch (e) { traps.delete(key); return; }
-    queueMicrotask(() => removeTrap(key));
-  }
-  if (ID && ID.get) {
-    try {
-      Object.defineProperty(Element.prototype, 'id', {
-        configurable: true, enumerable: ID.enumerable, set: ID.set,
-        get() {
-          const v = ID.get.call(this);
-          if (this instanceof HTMLCanvasElement && core.on() && !core.foreign) trapKey(v);
-          return v;
-        },
-      });
-    } catch (e) { warnOnce('pc-idtrap', 'could not watch canvas ids — ESM PlayCanvas apps without a global will not be found', e); }
   }
 
   function stateFor(app) {
@@ -1618,7 +2238,7 @@ function dxrPlayCanvas(core) {
     }
   }
   function applyRealSize(st) {
-    const R = core.realSizeFor(st.L);
+    const R = core.realSizeFor(st);
     st.R = R;
     if (realW(st.canvas) === R.W && realH(st.canvas) === R.H) return false;
     st.stats.resizes++;
@@ -1691,6 +2311,7 @@ function dxrPlayCanvas(core) {
       st.app.renderNextFrame = true;
     },
     restore(st, wasLive) {
+      restoreShadows(st);
       if (st.cam && st.cam.camera) { try { st.cam.camera.xrViews = null; } catch (e) { /* ignore */ } }
       st.cam = null; st.views = null; st.frustumKey = '';
       if (wasLive) {
@@ -1836,6 +2457,40 @@ function dxrPlayCanvas(core) {
     const f = frustumFromProjection(P0);
     const key = `${f.fov.toFixed(4)}|${f.aspectRatio.toFixed(4)}|${f.nearClip}|${f.farClip}`;
     if (key !== st.frustumKey) { st.frustumKey = key; st.cam.camera.setXrProperties({ ...f, horizontalFov: false }); }
+    offsetShadows(st);
+  }
+
+  const shadowOrig = new WeakMap(); // light component -> { orig, wrote }
+  function offsetShadows(st) {
+    if (core.T.pcShadowOffset === false) return;
+    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) : 0;
+    if (!st.shadowLights || ++st.shadowScan >= 30) {
+      st.shadowScan = 0;
+      try { st.shadowLights = st.app.root.findComponents('light'); } catch (e) { st.shadowLights = []; }
+      if (!st.shadowTouched) st.shadowTouched = new Set();
+    }
+    for (const lc of st.shadowLights) {
+      if (!lc || !lc.castShadows) continue;
+      let rec = shadowOrig.get(lc);
+      const cur = lc.shadowDistance;
+      if (!rec) {
+        if (!(d > 0.01)) continue; // nothing to offset: leave the light untouched
+        shadowOrig.set(lc, (rec = { orig: cur, wrote: NaN }));
+        st.shadowTouched.add(lc);
+      } else if (cur !== rec.wrote) rec.orig = cur; // the page set its own value since our last write
+      const want = rec.orig + d;
+      if (Math.abs(want - cur) > 0.01) { lc.shadowDistance = want; rec.wrote = lc.shadowDistance; }
+    }
+  }
+  function restoreShadows(st) {
+    if (!st.shadowTouched) return;
+    for (const lc of st.shadowTouched) {
+      const rec = shadowOrig.get(lc);
+      if (!rec) continue;
+      try { if (lc.shadowDistance === rec.wrote || rec.wrote !== rec.wrote) lc.shadowDistance = rec.orig; } catch (e) { /* ignore */ }
+      shadowOrig.delete(lc);
+    }
+    st.shadowTouched = null; st.shadowLights = null;
   }
 
   function layersMeet(a, b) {
