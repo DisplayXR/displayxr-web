@@ -10,6 +10,7 @@
 // Output, for the case's assertions: window.__dxrFakeHost
 //   loadCore   how many times the sentinel called cap.loadCore()
 //   coreEvalMs time spent evaluating the core text (0 while not loaded)
+//   sentinelMs time spent evaluating the sentinel text AND running it (its whole document-start cost)
 //   saves[]    every cap.save(partial), deep-copied
 //   reports[]  every cap.report(r), with t = performance.now()
 // (A real host keeps all of this out of the page; the recorder is on window only for the harness.)
@@ -38,6 +39,8 @@
     save(p) { H.saves.push(JSON.parse(JSON.stringify(p))); },
     report(r) { H.reports.push({ ...r, t: performance.now() }); },
   };
+  const t0 = performance.now();
   const sentinel = (0, eval)(src.sentinel);
   sentinel(cfg, cap);
+  H.sentinelMs = performance.now() - t0;
 })();
