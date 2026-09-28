@@ -187,6 +187,22 @@ export function videoCrop({ boxAspect, eyeAspect: a, fit, band }) {
   return a >= ba ? [ba / a, 1] : [1, a / ba];
 }
 
+/**
+ * The quad's on-screen rect in CSS px of a `boxW × boxH` canvas: the display rig's z = 0 plane spans
+ * the element, so window units map linearly onto it, centred. Clipped to the canvas (a 'cover' quad
+ * outside a band overflows it), rounded to 1/100 px.
+ */
+export function videoScreenRect({ w, h, W, H }, boxW, boxH) {
+  const pw = (w / W) * boxW;
+  const ph = (h / H) * boxH;
+  const x0 = Math.max(0, (boxW - pw) / 2);
+  const y0 = Math.max(0, (boxH - ph) / 2);
+  const x1 = Math.min(boxW, (boxW + pw) / 2);
+  const y1 = Math.min(boxH, (boxH + ph) / 2);
+  const q = (v) => Math.round(v * 100) / 100;
+  return Object.freeze({ x: q(x0), y: q(y0), width: q(x1 - x0), height: q(y1 - y0) });
+}
+
 /** An eye region [s0, t0, ds, dt] narrowed about its centre to [fx, fy] of itself. */
 export function cropRegion(r, [fx, fy]) {
   return [r[0] + (r[2] * (1 - fx)) / 2, r[1] + (r[3] * (1 - fy)) / 2, r[2] * fx, r[3] * fy];
@@ -259,6 +275,11 @@ export class VideoPlane {
     this._rvfc = 0;
     this._sizeKey = '';
     this._onSeeked = () => (this._dirty = true);
+    /** The picture's on-screen rect (CSS px, canvas-relative, clipped), and who wants to know. */
+    this.rect = null;
+    this._rectKey = '';
+    this._planeSize = null;
+    this._rectListeners = new Set();
     /** Upload accounting (handle.setVideo(...).stats()). */
     this.uploads = 0;
     this.frames = 0;
@@ -435,11 +456,13 @@ export class VideoPlane {
       const a = eyeAspect(this.format, v.videoWidth, v.videoHeight);
       const s = videoPlaneSize({ boxAspect, eyeAspect: a, vH: this.vH, fit: this.fit, band: this.band });
       this.node.setLocalScale(s.w, s.h, 1);
+      this._planeSize = { w: s.w, h: s.h, W: this.vH * boxAspect, H: this.vH };
       const crop = videoCrop({ boxAspect, eyeAspect: a, fit: this.fit, band: this.band });
       const r = eyeRegions(this.format);
       this.mat.setParameter('dxrVidL', cropRegion(r.L, crop));
       this.mat.setParameter('dxrVidR', cropRegion(r.R, crop));
     }
+    this._updateRect();
     // A new frame: rVFC said so, a seek landed, or (no rVFC) the clock moved.
     const t = v.currentTime;
     if (this._dirty || (!this._rvfc && t !== this._lastT)) {
@@ -452,12 +475,41 @@ export class VideoPlane {
     }
   }
 
+  /** `cb(rect)` on every change of the on-screen rect; returns an unsubscribe. */
+  onRect(cb) {
+    this._rectListeners.add(cb);
+    return () => this._rectListeners.delete(cb);
+  }
+
+  /** The quad in CSS px of the canvas box, per frame; listeners hear only a change. */
+  _updateRect() {
+    const box = this.viewer.boxCss;
+    const s = this._planeSize;
+    if (!box || !s || !(box.w > 0) || !(box.h > 0)) return;
+    const r = videoScreenRect(s, box.w, box.h);
+    const key = `${r.x}|${r.y}|${r.width}|${r.height}`;
+    if (key === this._rectKey) return;
+    this._rectKey = key;
+    this.rect = r;
+    for (const cb of [...this._rectListeners]) {
+      // Off the draw: a page callback that throws or lays out must not stall the frame.
+      queueMicrotask(() => {
+        try {
+          cb(r);
+        } catch (err) {
+          console.error('[inline3d/splat] onRectChange callback threw:', err);
+        }
+      });
+    }
+  }
+
   hide() {
     this._dropGhost();
     this.mi.visible = false;
   }
 
   destroy() {
+    this._rectListeners.clear();
     this._dropGhost();
     this._unwatch();
     this.video = null;

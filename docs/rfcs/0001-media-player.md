@@ -410,6 +410,7 @@ None of these block surface mode v1. Each makes it match the canvas player more 
    smaller quad, cover is the band with a centred texture crop; `attachPlayer` passes `band` and
    lays its controls in the bars.
 3. The plane's on-screen rect on `setVideo`'s result, updated on resize, for controls in the bars (A4).
+   **Done** (#105): `result.rect` (CSS px, canvas-relative, clipped) and `result.onRectChange(cb)`.
 
 ### A6. Plan
 

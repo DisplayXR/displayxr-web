@@ -260,7 +260,11 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
   - **An element you pass stays yours.** The SDK never plays or pauses it unless you pass
     `autoplay: true`, and it never releases it.
 - **The promise resolves on the first frame the video has**, to `{ video, format, fit, band,
-  transition, remove(), stats() }` (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
+  transition, rect, onRectChange(), remove(), stats() }`. `rect` is where the picture is on
+  screen, in CSS px from the canvas's top-left and clipped to it (`null` before the first drawn
+  frame and once replaced); `onRectChange(cb)` hears every change (resize, new size, band) off the
+  draw and returns an unsubscribe. The bars are the canvas minus `rect`: place controls in them, or
+  against the picture, with it (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
   declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
   that fails to load rejects, and the splat stays on screen. A call superseded before its first
   frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and

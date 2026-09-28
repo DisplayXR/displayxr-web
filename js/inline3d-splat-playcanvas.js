@@ -1915,6 +1915,7 @@ export class PlayCanvasSplatViewer {
     const box = this.canvas.getBoundingClientRect();
     const aspect = box.height > 0 ? box.width / box.height : 1;
     this.boxAspect = aspect; // setVideo's plane reads it per frame (no layout read in the draw)
+    this.boxCss = { w: box.width || 0, h: box.height || 0 }; // and this, for its on-screen rect
     if (this.mono.capture) {
       captureProjection(this.mono.capture, aspect, this.mono.near, this.mono.far, this.mono.proj, this.captureFit);
       if (this.captureFit !== 'height') {
@@ -4473,6 +4474,21 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           fit: state.fit,
           /** The letterbox band's aspect, or null. */
           band: state.band,
+          /**
+           * Where the picture is on screen, in CSS px from the canvas's top-left, clipped to the
+           * canvas: `{ x, y, width, height }`. The bars are the canvas minus this. Null once
+           * another setVideo replaced this one, or before the first drawn frame.
+           */
+          get rect() {
+            return vid === state && viewer._videoPlane === plane ? plane.rect : null;
+          },
+          /** Called with the new rect whenever it changes (resize, band, a new size). Returns an unsubscribe. */
+          onRectChange(cb) {
+            if (typeof cb !== 'function') throw new TypeError('@displayxr/inline3d/splat: onRectChange(cb) — expected a function.');
+            return plane.onRect((r) => {
+              if (vid === state) cb(r);
+            });
+          },
           /** What this swap did: 'crossfade' only when it replaced a video on screen, else 'cut'. */
           transition: fade ? 'crossfade' : 'cut',
           /** Exit (setVideo(null)) — a no-op once another setVideo replaced this one. */

@@ -10,6 +10,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 Touches the **core** (additive: `handle.rewoven()`) and the **preview tier** (`./player`, `./splat`
 `engine: 'playcanvas'`). Additive; no change for a page that does not call the new API.
 
+- **`./splat` `setVideo` crossfade, band and on-screen rect** (#105, RFC 0001 A5.1-A5.3,
+  `engine: 'playcanvas'`). `transition: 'crossfade'` (`durationMs` 600, `easing`
+  'easeInOutSine', the player's defaults) dissolves on the GPU from the video already on the plane:
+  its quad is frozen and drawn blended over the incoming one, the buffer opaque throughout; from the
+  splat and on `setVideo(null)` it stays a cut. `band: 2.39 | '2.39:1'` fits the picture into a
+  centred letterbox slot (`cover` fills the band and crops each eye about its centre). The result
+  gains `transition`, `band`, `rect` (the picture in CSS px, canvas-relative, clipped) and
+  `onRectChange(cb)`. `attachPlayer` now crossfades and takes `band` (controls in the bars) through
+  these instead of cutting / ignoring them.
 - **`handle.rewoven()`** — `firstWoven`, measured from the call, for a canvas that is already woven
   but whose rect is about to change (fullscreen, a layout resize). Same `{ woven, confirmed,
   reason, ms }` shape, never rejects; a change of the canvas's CSS size or devicePixelRatio while
