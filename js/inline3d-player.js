@@ -1068,7 +1068,10 @@ function readBuffered(video) {
  */
 function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d, title, skipButtons, fullscreen, skin, size, band = null, onBack = null, rewoven = null, fullscreenCover = false }) {
   ensureStyle();
-  if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+  // Both marks below are undone in cleanup(), and only if the bar made them: under attachPlayer the
+  // container and canvas are the app's, and detach() must leave them as it found them.
+  const setPosition = getComputedStyle(container).position === 'static';
+  if (setPosition) container.style.position = 'relative';
   container.classList.add('dxr-player-host');
   /** Skin, size and accent are all host state — one class or one property, inherited by every overlay. */
   let currentSkin = skin || 'classic';
@@ -1277,7 +1280,8 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
   }
 
   // Focusable so keyboard control works without first clicking a button.
-  if (!canvas.hasAttribute('tabindex')) canvas.tabIndex = 0;
+  const setTabIndex = !canvas.hasAttribute('tabindex');
+  if (setTabIndex) canvas.tabIndex = 0;
 
   let scrubbing = false;
   let pipTimer = 0;
@@ -1581,6 +1585,8 @@ function buildTransportBar(container, canvas, video, { keyboard, accent, badge3d
       fsCoverToken++;
       fsCover?.remove();
       fsCover = null;
+      if (setPosition) container.style.removeProperty('position');
+      if (setTabIndex) canvas.removeAttribute('tabindex');
     },
   };
 }
@@ -2484,7 +2490,7 @@ export function attachPlayer(splat, src, opts = {}) {
     } catch (err) {
       pending = null;
       queueMicrotask(() => emit('error', err));
-      return;
+      return false;
     }
     Promise.resolve(p).then(
       () => {
@@ -2501,6 +2507,7 @@ export function attachPlayer(splat, src, opts = {}) {
         else emit('error', err);
       }
     );
+    return true;
   }
 
   // Nothing reports another setVideo taking the slot once ours is on, so look: twice a second and
@@ -2524,13 +2531,18 @@ export function attachPlayer(splat, src, opts = {}) {
       if (sOpts.title !== undefined) ui.setTitle?.(sOpts.title);
       const prev = proxy.element;
       const next = makeElement(newSrc, prev);
+      // Hand it to setVideo FIRST: it throws while a splat setSource is in flight, and then the
+      // transport must stay on the element the plane is still showing.
+      if (!show(next)) {
+        releaseElement(next);
+        return;
+      }
       if (prev) {
         prev.pause();
         retired.add(prev);
       }
       proxy.use(next);
       ui.resync?.();
-      show(next);
       if (o.autoplay) next.play().catch(() => {});
     },
     exclude: (el) => splat.exclude?.(el),
@@ -2548,14 +2560,32 @@ export function attachPlayer(splat, src, opts = {}) {
       if (ours) splat.setVideo(null);
     },
     release() {
-      for (const r of retired) releaseElement(r);
+      // ./splat keeps its on-screen video until a replacement's first frame, so when another
+      // setVideo supersedes a swap of ours the plane is still showing `shown`. Freeing it now
+      // would drop videoWidth to 0 and blank the plane until the replacement lands (or for good,
+      // if it never does). Pause it and hand it back only once the slot has moved on.
+      const onPlane = 'videoElement' in splat ? splat.videoElement : null;
+      for (const r of retired) if (r !== onPlane) releaseElement(r);
       retired.clear();
       const cur = proxy.element;
-      for (const v of new Set([shown, pending, cur])) if (v) releaseElement(v);
+      for (const v of new Set([shown, pending, cur])) {
+        if (!v) continue;
+        if (v === onPlane) keepUntilOffPlane(v);
+        else releaseElement(v);
+      }
       proxy.use(null);
       shown = pending = null;
     },
   }, ui);
+
+  function keepUntilOffPlane(v) {
+    v.pause();
+    const t = setInterval(() => {
+      if (splat.videoElement === v) return;
+      clearInterval(t);
+      releaseElement(v);
+    }, 250);
+  }
 
   /** The slot went to someone else: stop driving the handle, say so once, tear down our side. */
   function lost(reason) {
@@ -2599,8 +2629,7 @@ export function attachPlayer(splat, src, opts = {}) {
 
   const first = makeElement(src, null);
   proxy.use(first);
-  show(first);
-  if (o.autoplay) first.play().catch(() => {});
+  if (show(first) && o.autoplay) first.play().catch(() => {});
 
   /** Give the slot back (setVideo(null): the scene, pose, lens and rig as they were) and tear down. */
   handle.detach = () => {
