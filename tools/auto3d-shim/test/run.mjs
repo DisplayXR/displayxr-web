@@ -5,17 +5,22 @@
 // extension's MAIN-world document_start content scripts):
 //   1. the harness config (window.__dxrAuto3DTestCfg),
 //   2. fake-xr.js — a fake inline-3d session whose views carry a ±0.1 off-axis skew,
-//   3. the shim: core.js, three-adapter.js, playcanvas-adapter.js (or, for the parity run, the
-//      pre-split content.js from PR #47's commit 84b14f7, read out of git).
+//   3. the shim: dist/auto3d-dev.js, built IN MEMORY from the sources by ../build.mjs (never the
+//      committed dist/, which may lag the sources between releases); or, for the parity run, the
+//      pre-split content.js from PR #47's commit 84b14f7, read out of git; or, for product-mode
+//      cases, fake-host.js driving dist/auto3d-sentinel.js + dist/auto3d-core.js as the browser would.
+//
+// Cases live in test/cases/*.mjs (a registry, loaded in file-name order; see cases/existing.mjs).
 //
 // Usage: node run.mjs [caseId…]      env: CHROME=<binary>  SOG_DIR=<dir with ports_25.sog>  KEEP=1 (write PNGs to test/out)
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, extname, join, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { build } from '../build.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const shimDir = join(here, '..');
@@ -51,36 +56,26 @@ function serve() {
 }
 
 // ------------------------------------------------------------ the cases
-const NEW = ['core.js', 'three-adapter.js', 'playcanvas-adapter.js'].map((f) => readFileSync(join(shimDir, f), 'utf8'));
+const BUILT = build(shimDir).files;
+const NEW = [BUILT['dist/auto3d-dev.js']];
 const LEGACY = [execFileSync('git', ['-C', repo, 'show', `${LEGACY_COMMIT}:tools/auto3d-shim/content.js`], { encoding: 'utf8' })];
 const FAKE = readFileSync(join(here, 'fake-xr.js'), 'utf8');
 const hasSog = existsSync(join(SOG_DIR, 'ports_25.sog'));
 const P = '/tools/auto3d-shim/test/pages/';
-// cfg.convTarget false on 'a': the page's setup-time camera.lookAt(0, 1, 0) is the same point the
-// estimator finds, but its distance is exact rather than estimated, and parity with the pre-split
-// script (which had no target) is about the machinery, not the new source. a-target covers it.
-const CASES = [
-  { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
-  { id: 'a-legacy', name: 'three.js keyframes, pre-split content.js', url: P + 'three-keyframes.html', shim: LEGACY, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', parityOf: 'a' },
-  { id: 'a-off', name: 'three.js keyframes, site switched off', url: P + 'three-keyframes.html', shim: NEW, cfg: { enabled: false }, expect: 'idle', ready: 'window.__frozen' },
-  { id: 'b', name: 'PlayCanvas meshes (ESM, no globals)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
-  { id: 'a-kill', name: 'three.js keyframes, Ctrl+Alt+3 off while live, then on again (render-on-demand)', url: P + 'three-keyframes.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
-  { id: 'b-kill', name: 'PlayCanvas meshes, Ctrl+Alt+3 off while live, then on again (autoRender false)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
-  { id: 'a-target', name: 'three.js OrbitControls target off the scene centre', url: P + 'three-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
-  { id: 'b-target', name: 'PlayCanvas CameraControls focusPoint off the scene centre', url: P + 'pc-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
-  { id: 'a-display', name: 'three.js keyframes, Ctrl+Alt+P: display rig and back, per-rig depth, the joint depth control', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', displayAfter: true },
-  // A site tuned under v0.3 stored ONE depth (applied to both rigs): it becomes the camera rig's.
-  { id: 'a-migrate', name: 'three.js, a v0.3 single stored depth 0.5 -> camera 0.5, display its default 1.0', url: P + 'three-keyframes.html', shim: NEW, expect: 'migrate', seed: { v: 1, enabled: true, depth: 0.5, convScale: 1, rig: 'display', hud: true } },
-  // Bug B: the no-views timer. The page draws nothing for 2.5 s once the layer exists (busy loading,
-  // render on demand) and the runtime has no eyes until 3.2 s; timed from the layer (1.5 s) that is a
-  // false 'no 2-view frame' stand-down, timed from the first draw (2.5 + 1.5 s) it converts.
-  { id: 'b-late', name: 'PlayCanvas, page draws nothing for 2.5 s after the layer, eyes at 3.2 s (noViewsMs 1.5 s)', url: P + 'pc-mesh.html?stallMs=2500', shim: NEW, cfg: { noViewsMs: 1500 }, fake: { viewsAfterMs: 3200, noDisplayApi: true }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', lateViews: true, timeoutMs: 15000 },
-  // ... and the timer still fires when the eyes never come (the fix must not disable it).
-  { id: 'b-noviews', name: 'PlayCanvas, no eyes ever, no display API: back to 2D noViewsMs after the first draw', url: P + 'pc-mesh.html', shim: NEW, cfg: { noViewsMs: 1500 }, fake: { viewsAfterMs: 1e12, noDisplayApi: true }, expect: 'noviews' },
-  { id: 'b-flip', name: 'PlayCanvas camera alternating perspective / orthographic every 2 s', url: P + 'pc-flip.html', shim: NEW, expect: 'flip', commits: true },
-  { id: 'c', name: 'PlayCanvas gsplat ports_25.sog', url: P + 'pc-gsplat.html', shim: NEW, expect: 'convert', fovDeg: 50, ready: 'window.__splatReady', minFrames: 700, skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
-  { id: 'd', name: 'SDK samples/splat (must stand down)', url: '/samples/splat/index.html?engine=playcanvas&url=/bench/ports_25.sog', shim: NEW, expect: 'standdown', skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
-];
+// Product mode: the page gets what the browser injects — the sentinel + core texts, evaluated by
+// fake-host.js with (0,eval) and driven through a recording cap (window.__dxrFakeHost).
+const FAKE_HOST = readFileSync(join(here, 'fake-host.js'), 'utf8');
+const PRODUCT_SRC = { sentinel: BUILT['dist/auto3d-sentinel.js'], core: BUILT['dist/auto3d-core.js'] };
+const productShim = (hostCfg = {}) => [`window.__dxrFakeHostSrc = ${JSON.stringify(PRODUCT_SRC)}; window.__dxrFakeHostCfg = ${JSON.stringify(hostCfg)};`, FAKE_HOST];
+const CASES = [];
+const env = { P, NEW, LEGACY, BUILT, productShim, hasSog, SOG_DIR };
+for (const f of readdirSync(join(here, 'cases')).filter((x) => x.endsWith('.mjs')).sort()) {
+  const mod = await import(pathToFileURL(join(here, 'cases', f)).href);
+  for (const c of mod.default(env)) {
+    if (CASES.some((x) => x.id === c.id)) throw new Error(`duplicate case id '${c.id}' (cases/${f})`);
+    CASES.push({ ...c, file: f });
+  }
+}
 
 // ------------------------------------------------------------ pixel helpers
 const lum = (px, i) => 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
@@ -126,6 +121,13 @@ async function runCase(browser, base, c) {
   const convertReady = `(() => { const s = window.__dxrAuto3D && window.__dxrAuto3D.state(); const r = s && s.renderers.find((x) => x.active);
     return !!(r && r.stats.twoView > ${c.minFrames || 90} && (r.rampK == null || (r.rampK === 1 && !r.ramping)) && (${c.ready || 'true'})); })()`;
   if (missing.length) { await ctx.close(); return { c, ok: false, ms: Date.now() - t0, missing, log, state: null, fake: null }; }
+  if (c.run) {
+    // A case with its own driver (cases/*.mjs): it returns what its check() reads.
+    let extra = {}, ok = true;
+    try { extra = await c.run(page, HELPERS); } catch (e) { ok = false; extra = { error: String((e && e.message) || e) }; }
+    await ctx.close();
+    return { c, ok, ms: Date.now() - t0, log, missing, state: null, fake: null, ...extra };
+  }
   if (c.expect === 'migrate') {
     await page.waitForFunction(() => !!window.__dxrAuto3D, { timeout: 10000 });
     const res = await page.evaluate(() => { const s = window.__dxrAuto3D.state(); return { depths: s.depths, depth: s.depth, rigMode: s.rigMode }; });
@@ -314,6 +316,7 @@ function check(r, results) {
     t('engine files load (run `node deps.mjs`; see its header for local overrides)', false, r.missing.join(', '));
     return A;
   }
+  if (c.check) { c.check(r, t, HELPERS); return A; }
   if (c.expect === 'flip') return checkFlip(r, t, A);
   if (c.expect === 'migrate') {
     const M = r.migrate;
@@ -465,6 +468,9 @@ function checkFlip(r, t, A) {
   t('console names the reason', r.log.some((l) => /back to 2D: the camera is orthographic/.test(l)), '');
   return A;
 }
+
+// What a case's own run() / check() may use.
+const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae, diffCount, bestShift, pairResidual, rawPairAtClose, W, H };
 
 // ------------------------------------------------------------ main
 const only = process.argv.slice(2);
