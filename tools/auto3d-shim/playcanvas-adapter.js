@@ -143,7 +143,7 @@ function dxrPlayCanvas(core) {
     }
   }
   function applyRealSize(st) {
-    const R = core.realSizeFor(st.L);
+    const R = core.realSizeFor(st);
     st.R = R;
     if (realW(st.canvas) === R.W && realH(st.canvas) === R.H) return false;
     st.stats.resizes++;
