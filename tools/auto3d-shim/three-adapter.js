@@ -127,6 +127,14 @@ function dxrThree(core) {
         st.lastOps = ops;
         return;
       }
+      if (st.postfx && st.monoOps && st.monoOps.length) {
+        // A post-processing page: its screen draws are the chain's final passes, whose render targets
+        // still hold the last composed frame. Repaint those, flat, instead of the bare scene.
+        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], false]));
+        replay(st, ops);
+        st.lastOps = ops;
+        return;
+      }
       renderFlat(st, st.lastScene, st.mainCam); // repaint NOW: the resize just cleared the store
       st.lastOps = [['render', st.lastScene, st.mainCam, true]];
     },
@@ -144,6 +152,7 @@ function dxrThree(core) {
     restore(st, wasLive) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
+      disposeChain(st);
       core.unvirtualizeCanvas(st);
       if (wasLive) {
         try {
@@ -211,6 +220,9 @@ function dxrThree(core) {
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
       frame: { drew: false, ops: [] }, lastOps: null,
       monoOps: null, monoCur: null, monoOpen: false, idleOps: null, // the page's last MONO frame (draws before / between conversions)
+      // Post-processing (see "post-processing chains" below): set once the page is seen drawing its
+      // scene into a render target and then a full-screen pass to the screen.
+      postfx: false, seedTask: null, twins: new Map(), texTwin: new Map(), chainStereo: false,
     });
     states.set(r, st);
     wrap(st);
@@ -303,7 +315,9 @@ function dxrThree(core) {
     });
     W('getScissorTest', () => (st.active ? st.L.scTest : st.call('getScissorTest')));
     W('clear', (color, depth, stencil) => {
-      if (!top() || st.call('getRenderTarget') !== null) return st.call('clear', color, depth, stencil);
+      const rt = st.call('getRenderTarget');
+      if (top() && st.active && st.postfx && rt && st.twins.has(rt)) return clearChain(st, rt, color, depth, stencil);
+      if (!top() || rt !== null) return st.call('clear', color, depth, stencil);
       if (!st.active) { recordMono(st, ['clear', color, depth, stencil]); return st.call('clear', color, depth, stencil); }
       st.frame.drew = true;
       st.frame.ops.push(['clear', color, depth, stencil]);
@@ -312,20 +326,33 @@ function dxrThree(core) {
     W('render', (scene, camera) => {
       if (!top() || !scene || !camera) return st.call('render', scene, camera);
       st.stats.calls++;
-      const toScreen = st.call('getRenderTarget') === null;
+      const target = st.call('getRenderTarget');
+      const toScreen = target === null;
       const xrLive = !!(r.xr && r.xr.enabled && r.xr.isPresenting);
       if (!st.active) {
         const out = st.call('render', scene, camera);
+        if (!toScreen && !xrLive && isSeed(st, target, camera)) markSeed(st, scene, camera);
         if (toScreen && !xrLive) {
           recordMono(st, ['render', scene, camera]);
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
           if (persp) {
+            if (st.seedTask) st.seedTask.direct = true; // the scene also went straight to the screen: not a composer
             st.lastMono = { scene, camera }; st.sawPersp = true;
             hookLookAt(camera); // fallback for a page that built no Scene before its camera (rare)
             // Flip / qualify only on the scene draw itself — never on an ortho background, HUD or
             // post quad drawn in the same frame (the throttle would otherwise keep landing on it).
             if (st.armed) flip(st, scene, camera);
             else { st.qualifyCam = camera; core.considerActivation(st); }
+          } else if (st.seedTask && !st.seedTask.direct) {
+            // A post-processing frame: the scene went into a render target earlier in this task, and
+            // this full-screen pass put the result on the screen. Qualify / flip on it, with the
+            // scene's own camera, after the pass is drawn (the cover is taken from it).
+            const sd = st.seedTask;
+            st.postfx = true; st.sawPersp = true;
+            st.lastMono = { scene: sd.scene, camera: sd.camera };
+            hookLookAt(sd.camera);
+            if (st.armed) flip(st, sd.scene, sd.camera);
+            else { st.qualifyCam = sd.camera; core.considerActivation(st); }
           } else if (!st.sawPersp && !st.lastWhy) {
             st.lastWhy = 'the screen camera is not a PerspectiveCamera';
             info('not converting', desc(st.canvas), 'yet:', st.lastWhy, '(a post-processing chain, or an ortho-only scene)');
@@ -334,8 +361,23 @@ function dxrThree(core) {
         return out;
       }
       if (xrLive) { core.stand(st, 'the renderer is presenting WebXR'); return st.call('render', scene, camera); }
-      if (!toScreen) return st.call('render', scene, camera); // shadow / post-processing / picking targets: untouched, mono
+      if (!toScreen) {
+        if (st.postfx) {
+          // The scene pass seeds the per-eye chain; any pass writing a chain target or sampling one
+          // is part of it. Everything else (picking, PMREM, cube cameras) stays a single mono draw.
+          if (isSeed(st, target, camera)) { st.mainCam = camera; st.lastScene = scene; st.chainStereo = st.haveViews; return renderIntoChain(st, scene, camera, target, true); }
+          if (st.twins.has(target) || taintedSwaps(st, scene)) return renderIntoChain(st, scene, camera, target, false);
+        }
+        return st.call('render', scene, camera); // shadow / picking / other targets: untouched, mono
+      }
       st.frame.drew = true;
+      if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
+        // The chain's final pass to the screen: once per eye, the right eye sampling the twins.
+        st.frame.ops.push(['render', scene, camera, false, true]);
+        const out = renderPostScreen(st, scene, camera);
+        takeCover(st);
+        return out;
+      }
       const stereo = isMainPerspective(st, camera);
       st.frame.ops.push(['render', scene, camera, stereo]);
       const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
@@ -506,6 +548,7 @@ function dxrThree(core) {
     try {
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
+        else if (op[4]) renderPostScreen(st, op[1], op[2]);
         else if (op[3]) renderStereo(st, op[1], op[2]);
         else renderFlat(st, op[1], op[2]);
       }
@@ -527,6 +570,171 @@ function dxrThree(core) {
   function repaintNow(st) {
     const ops = st.frame.ops.length ? st.frame.ops : st.lastOps;
     if (ops && ops.length) replay(st, ops);
+  }
+
+  // ------------------------------------------------------------ post-processing chains
+  // A composer (three's EffectComposer, pmndrs postprocessing, or a page's own) draws the scene into
+  // a render target with the page camera, runs full-screen passes between targets, and puts the
+  // last one on the screen. Each eye needs its own copy of that whole chain. So:
+  //   - SEED: a draw with the page camera into a target shaped like the canvas starts the chain.
+  //     It runs twice: the left eye into the page's target, the right eye into a TWIN of it.
+  //   - A draw that writes a chain target, or samples a chain texture, is part of the chain. It
+  //     runs twice too; for the right eye its target is the twin, and every chain texture its
+  //     materials sample is swapped to its twin for that one draw (and put back right after).
+  //   - The pass that samples the chain onto the screen runs once per eye, into its half.
+  // Each draw is duplicated the moment it happens, so a material whose uniforms the page rewrites
+  // between passes (a two-pass blur on one material) is right for both eyes. Replaying a recorded
+  // frame would not be. A target the chain never touches (picking, PMREM, a cube camera) keeps its
+  // single mono draw.
+  const TEX_PROPS = ['map', 'alphaMap', 'emissiveMap', 'envMap', 'lightMap', 'aoMap'];
+  function isSeed(st, rt, camera) {
+    if (!rt || rt.isWebGLCubeRenderTarget || rt.isWebGL3DRenderTarget || rt.isWebGLArrayRenderTarget) return false;
+    if (!camera || !camera.isPerspectiveCamera || camera.isArrayCamera || (camera.view && camera.view.enabled)) return false;
+    if (st.active && st.mainCam && camera !== st.mainCam) return false;
+    const L = st.L;
+    if (!(L.w > 0 && L.h > 0 && rt.width > 0 && rt.height > 0)) return false;
+    const a = L.w / L.h, near = (x) => Math.abs(x - a) / a < 0.1;
+    // Shaped like the canvas: excludes a PMREM / cube-face draw (square camera, atlas-shaped
+    // target) and a picking draw (tiny target).
+    return near(rt.width / rt.height) && near(camera.aspect || a) && rt.width >= 0.5 * L.w * L.pr && rt.height >= 0.5 * L.h * L.pr;
+  }
+  function markSeed(st, scene, camera) {
+    if (!st.seedTask) queueMicrotask(() => { st.seedTask = null; }); // a page draws its frame in one task
+    st.seedTask = { scene, camera };
+  }
+  // The materials of a small object (a full-screen quad, or a scene holding one): a pass. A big
+  // scene is not scanned, so a scene draw never pays for this.
+  function passMaterials(obj) {
+    const mats = [];
+    let meshes = 0, seen = 0;
+    const stack = [obj];
+    while (stack.length) {
+      const o = stack.pop();
+      if (++seen > 64) return null;
+      if (o.isMesh || o.isPoints || o.isLine || o.isSprite) {
+        if (++meshes > 8) return null;
+        const m = o.material;
+        if (Array.isArray(m)) { for (const x of m) if (x) mats.push(x); } else if (m) mats.push(m);
+      }
+      const ch = o.children;
+      if (ch) for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+    }
+    if (obj.overrideMaterial) mats.push(obj.overrideMaterial);
+    return mats;
+  }
+  // [holder, key, chain texture, its twin] for every chain texture the object's materials sample,
+  // or null when there is none.
+  function taintedSwaps(st, obj) {
+    if (!st.texTwin.size) return null;
+    const mats = passMaterials(obj);
+    if (!mats) return null;
+    let out = null;
+    const hit = (holder, key, tex) => {
+      const tw = tex && tex.isTexture ? st.texTwin.get(tex) : null;
+      if (tw) (out || (out = [])).push([holder, key, tex, tw]);
+    };
+    for (const m of mats) {
+      const u = m.uniforms;
+      if (u) {
+        for (const k in u) {
+          const e = u[k], v = e && e.value;
+          if (!v) continue;
+          if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) hit(v, i, v[i]); } else hit(e, 'value', v);
+        }
+      }
+      for (const k of TEX_PROPS) hit(m, k, m[k]);
+    }
+    return out;
+  }
+  const swapIn = (sw) => { if (sw) for (const s of sw) s[0][s[1]] = s[3]; };
+  const swapOut = (sw) => { if (sw) for (let i = sw.length - 1; i >= 0; i--) { const s = sw[i]; s[0][s[1]] = s[2]; } };
+  // The right eye's copy of a chain target, created on first use and kept the target's size.
+  function twinOf(st, rt) {
+    let tw = st.twins.get(rt);
+    if (!tw) {
+      tw = rt.clone();
+      st.twins.set(rt, tw);
+      const a = rt.textures || [rt.texture], b = tw.textures || [tw.texture];
+      for (let i = 0; i < a.length; i++) if (a[i] && b[i]) st.texTwin.set(a[i], b[i]);
+      if (rt.texture && tw.texture) st.texTwin.set(rt.texture, tw.texture);
+    }
+    if (rt.depthTexture && !tw.depthTexture) tw.depthTexture = rt.depthTexture.clone();
+    if (rt.depthTexture && tw.depthTexture) st.texTwin.set(rt.depthTexture, tw.depthTexture);
+    if (tw.width !== rt.width || tw.height !== rt.height) tw.setSize(rt.width, rt.height, rt.depth);
+    if (tw.viewport && rt.viewport) tw.viewport.copy(rt.viewport);
+    if (tw.scissor && rt.scissor) tw.scissor.copy(rt.scissor);
+    tw.scissorTest = rt.scissorTest;
+    return tw;
+  }
+  // An eye camera aimed from the page camera, as renderStereo does it.
+  function aimEye(st, camera, eyes, i, rev) {
+    const e = eyes[i];
+    st.m4.fromArray(st.V[i].pose);
+    e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4);
+    e.matrix.copy(e.matrixWorld);
+    invertFrom(e.matrixWorldInverse, e.matrixWorld);
+    e.projectionMatrix.fromArray(st.V[i].proj);
+    if (rev) { toReversedZ(e.projectionMatrix.elements); e._reversedDepth = true; }
+    if (e.projectionMatrixInverse) invertFrom(e.projectionMatrixInverse, e.projectionMatrix);
+    e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
+    if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
+    return e;
+  }
+  // One chain draw, twice: the left eye into the page's target, the right eye into its twin.
+  function renderIntoChain(st, scene, camera, rt, seed) {
+    const stereo = seed && st.haveViews;
+    let eyes = null, rev = false;
+    if (stereo) {
+      if (typeof camera.updateWorldMatrix === 'function') camera.updateWorldMatrix(true, false);
+      else if (camera.parent === null) camera.updateMatrixWorld();
+      eyes = eyeCameras(st, camera); rev = reversedDepth(st);
+    }
+    const tw = twinOf(st, rt);
+    const face = st.call('getActiveCubeFace'), level = st.call('getActiveMipmapLevel');
+    const sw = seed ? null : taintedSwaps(st, scene); // read before the left draw: the same textures
+    const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    try {
+      st.call('render', scene, stereo ? aimEye(st, camera, eyes, 0, rev) : camera);
+      swapIn(sw);
+      st.call('setRenderTarget', tw, face, level);
+      if (sm) sm.autoUpdate = false; // shadow maps are view-independent: rendered by the left draw
+      st.call('render', scene, stereo ? aimEye(st, camera, eyes, 1, rev) : camera);
+    } finally {
+      swapOut(sw);
+      if (sm) sm.autoUpdate = smAuto;
+      st.call('setRenderTarget', rt, face, level);
+    }
+  }
+  function clearChain(st, rt, color, depth, stencil) {
+    const tw = twinOf(st, rt);
+    const face = st.call('getActiveCubeFace'), level = st.call('getActiveMipmapLevel');
+    st.call('clear', color, depth, stencil);
+    try { st.call('setRenderTarget', tw, face, level); st.call('clear', color, depth, stencil); }
+    finally { st.call('setRenderTarget', rt, face, level); }
+  }
+  // The chain's last pass onto the screen: the left eye's half from the page's targets, the right
+  // eye's half from the twins.
+  function renderPostScreen(st, scene, camera) {
+    const sw = taintedSwaps(st, scene);
+    const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    try {
+      setEyeViewport(st, 0);
+      st.call('render', scene, camera);
+      setEyeViewport(st, 1);
+      swapIn(sw);
+      if (sm) sm.autoUpdate = false;
+      st.call('render', scene, camera);
+    } finally {
+      swapOut(sw);
+      if (sm) sm.autoUpdate = smAuto;
+      st.call('setScissorTest', false);
+    }
+    if (st.chainStereo) st.stats.stereo++; else st.stats.flat++;
+    core.drew(st);
+  }
+  function disposeChain(st) {
+    for (const tw of st.twins.values()) { try { tw.dispose(); } catch (e) { /* ignore */ } }
+    st.twins.clear(); st.texTwin.clear(); st.chainStereo = false;
   }
 
   // ------------------------------------------------------------ convergence: the scene's bounds

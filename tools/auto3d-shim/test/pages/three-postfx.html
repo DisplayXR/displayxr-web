@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- TEST PAGE — a three.js page with its own post-processing chain, in the shape EffectComposer
+     and pmndrs postprocessing use. It knows nothing about DisplayXR.
+       1. the scene into a render target (with a depth texture), with the page camera;
+       2. a two-pass blur at half resolution on ONE ShaderMaterial whose uniforms are rewritten
+          between the passes (UnrealBloomPass does exactly this);
+       3. a full-screen composite to the screen that samples the scene target, the blur and the depth;
+       4. a flat HUD pass.
+     Same subject as three-keyframes.html (everything symmetric about (0, 1, 0), the camera 8 units
+     in front), so the expected convergence is 8. Deterministic: fixed 1/60 s steps; after FREEZE
+     frames it stops drawing (render on demand from then on: the shim's replay path). -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three post-processing (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+const FREEZE = 60;
+window.__expectedConvergence = 8;
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.autoClear = false;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 1, 8);
+camera.lookAt(0, 1, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(3, 6, 4); sun.castShadow = true;
+scene.add(sun);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x556070 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+scene.add(floor);
+const turntable = new THREE.Group();
+turntable.position.set(0, 1, 0);
+scene.add(turntable);
+const mk = (geo, color, x, y, z) => {
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.4 }));
+  m.position.set(x, y, z); m.castShadow = true; turntable.add(m); return m;
+};
+mk(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), 0xff7a2f, 0, 0, 0);
+const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+mk(box, 0x2fb4ff, 1.8, 0, 0); mk(box, 0x2fb4ff, -1.8, 0, 0);
+const ball = new THREE.SphereGeometry(0.35, 32, 16);
+mk(ball, 0x9dff4a, 0, 0, 1.8); mk(ball, 0x9dff4a, 0, 0, -1.8);
+
+// ---- the post chain
+const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+const rtScene = new THREE.WebGLRenderTarget(size.x, size.y, { depthTexture: new THREE.DepthTexture(size.x, size.y) });
+const rtA = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1);
+const rtB = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1);
+const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const vs = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+const blurMat = new THREE.ShaderMaterial({ // ONE material, both blur passes
+  uniforms: { tex: { value: null }, dir: { value: new THREE.Vector2() } },
+  vertexShader: vs,
+  fragmentShader: `varying vec2 vUv; uniform sampler2D tex; uniform vec2 dir;
+    void main(){ vec4 c = vec4(0.0); for (int i = -4; i <= 4; i++) c += texture2D(tex, vUv + dir * float(i)) / 9.0; gl_FragColor = c; }`,
+  depthTest: false, depthWrite: false,
+});
+const compMat = new THREE.ShaderMaterial({
+  uniforms: { base: { value: rtScene.texture }, glow: { value: rtB.texture }, depthTex: { value: rtScene.depthTexture } },
+  vertexShader: vs,
+  fragmentShader: `varying vec2 vUv; uniform sampler2D base; uniform sampler2D glow; uniform sampler2D depthTex;
+    void main(){ float d = texture2D(depthTex, vUv).r; vec4 c = texture2D(base, vUv) + 0.35 * texture2D(glow, vUv);
+      gl_FragColor = vec4(c.rgb * (0.9 + 0.1 * d), 1.0); }`,
+  depthTest: false, depthWrite: false,
+});
+const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blurMat);
+quad.frustumCulled = false;
+const quadScene = new THREE.Scene();
+quadScene.add(quad);
+
+// a flat HUD pass drawn after the composite (ortho camera, its own scene)
+const hudScene = new THREE.Scene();
+const hudCam = new THREE.OrthographicCamera(0, innerWidth, innerHeight, 0, -1, 1);
+const badge = new THREE.Mesh(new THREE.PlaneGeometry(120, 40), new THREE.MeshBasicMaterial({ color: 0xffd400 }));
+badge.position.set(80, innerHeight - 40, 0);
+hudScene.add(badge);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+let n = 0, t = 0;
+function frame() {
+  if (n >= FREEZE) { window.__frozen = true; return; } // stops drawing: render-on-demand from here
+  requestAnimationFrame(frame);
+  n++; t += 1 / 60;
+  turntable.rotation.y = t * Math.PI / 2;
+  const c = renderer.domElement;
+  if (c.width !== Math.floor(innerWidth * devicePixelRatio)) renderer.setSize(innerWidth, innerHeight, false);
+  // 1. scene -> rtScene
+  renderer.setRenderTarget(rtScene); renderer.clear(); renderer.render(scene, camera);
+  // 2. blur, one material, uniforms rewritten between the passes
+  quad.material = blurMat;
+  blurMat.uniforms.tex.value = rtScene.texture; blurMat.uniforms.dir.value.set(1 / rtA.width, 0);
+  renderer.setRenderTarget(rtA); renderer.clear(); renderer.render(quadScene, quadCam);
+  blurMat.uniforms.tex.value = rtA.texture; blurMat.uniforms.dir.value.set(0, 1 / rtB.height);
+  renderer.setRenderTarget(rtB); renderer.clear(); renderer.render(quadScene, quadCam);
+  // 3. composite -> screen, 4. HUD
+  quad.material = compMat;
+  renderer.setRenderTarget(null); renderer.clear(); renderer.render(quadScene, quadCam);
+  renderer.render(hudScene, hudCam);
+  window.__pageFrames = n;
+}
+requestAnimationFrame(frame);
+</script>
+</body></html>

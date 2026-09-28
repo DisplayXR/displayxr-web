@@ -197,9 +197,34 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | reversed-depth renderer (`reversedDepthBuffer: true`) | **3D** (eye projection converted to reversed-Z) |
 | extra screen passes after the scene (HUD, overlay) | **3D** scene, flat overlay |
 | several viewports in one canvas | flat per viewport |
-| post-processing chain (the screen pass is a full-screen quad) | **2D**: needs per-eye render-target twins (next) |
+| post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
+| a chain whose scene pass uses `setViewOffset` (TAA / SSAA jitter) | **2D** (the seed is not recognised) |
 | `WebGPURenderer`, r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
 | a second renderer in the same document | 2D (one converted canvas per document) |
+
+**Post-processing chains (three.js).** Each eye needs its own copy of the whole chain, so the
+adapter duplicates every chain draw at the moment the page makes it:
+
+- **Seed.** A draw with the page camera into a target shaped like the canvas (same aspect, at least
+  half its size, not a cube / 3D / array target, no `setViewOffset`) starts the chain. The left eye
+  draws into the page's target, the right eye into a **twin** (`rt.clone()`, kept the target's size,
+  viewport and scissor). The aspect test is what keeps a PMREM / cube-face draw (square camera,
+  atlas-shaped target) and a picking draw (tiny target) out of it.
+- **Chain draws.** A draw that writes a chain target, or whose materials sample a chain texture
+  (uniform values, uniform arrays, `map` & co., the depth texture), runs twice. For the right eye the
+  target is the twin, and every chain texture it samples is swapped to the twin's for that one draw,
+  then put back. Only small objects are scanned (a full-screen quad, or a scene holding a few
+  meshes), so a scene draw never pays for it.
+- **The screen pass** that samples the chain runs once per eye, into its half.
+
+Because each draw is duplicated as it happens, a material whose uniforms the page rewrites between
+passes (a two-pass blur on one material, as `UnrealBloomPass` does) is right for both eyes, and a
+temporal effect gets a history per eye (its history target is a chain target too). Clears of a
+chain target clear its twin. Idle frames replay the final screen passes, sampling each eye's own
+chain. Twins are disposed when the canvas goes back to 2D. Cost: every chain pass runs twice, at
+the page's own target sizes. A page qualifies for this path when a frame draws the scene into such a
+target and then a non-perspective pass to the screen, with no perspective draw to the screen in the
+same frame.
 
 ### PlayCanvas (engine 2.x, WebGL2)
 
