@@ -320,14 +320,15 @@ test('playlist: next() goes through a new element and emits titlechange; back() 
   await player.detach();
 });
 
-test("crossfade goes to setVideo as its GPU crossfade (durationMs, easing); a cut passes none; band / poster are ignored with a warning", async () => {
+test("crossfade goes to setVideo as its GPU crossfade (durationMs, easing); a cut passes none; band goes to setVideo; poster is ignored with a warning", async () => {
   const splat = makeSplat();
   let player;
   const w1 = await quiet(() => {
     player = attachPlayer(splat, 'a.webm', { controls: 'none', band: 2.39, poster: 'p.jpg', transition: 'crossfade', durationMs: 450 });
   });
-  assert.ok(w1.some((w) => w.includes('ignores') && w.includes('band') && w.includes('poster')));
+  assert.ok(w1.some((w) => w.includes('ignores') && w.includes('poster') && !w.includes('band')));
   assert.equal(splat.calls[0].o.transition, undefined, 'the first title enters from the scene: no transition asked');
+  assert.equal(splat.calls[0].o.band, 2.39, "band is ./splat setVideo's letterbox slot now (A5.2)");
   splat.firstFrame();
   await flush();
   const w2 = await quiet(() => player.setSource('b.webm'));

@@ -4440,7 +4440,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     if (owned ? r.autoplay !== false : r.autoplay === true) autoplay(el);
     // The guard state is taken NOW (setSource / setRig refuse from this call on), the pixels change
     // on the first frame the video has.
-    const state = { seq, el, owned, format: r.format, fit: r.fit, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true };
+    const state = { seq, el, owned, format: r.format, fit: r.fit, band: r.band, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true };
     if (!prev || !prev.on) vid = state; // a pending one it supersedes is cancelled above
     return first
       .catch(() => null)
@@ -4465,12 +4465,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         // A crossfade only dissolves between two videos: from the splat (entry) it is a cut.
         const fade = live && r.transition.type === 'crossfade' && r.transition.durationMs > 0 ? r.transition : null;
         viewer._videoPlane ||= new VideoPlane(viewer);
-        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH }, fade);
+        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH, band: state.band }, fade);
         const plane = viewer._videoPlane;
         return Object.freeze({
           video: el,
           format: state.format,
           fit: state.fit,
+          /** The letterbox band's aspect, or null. */
+          band: state.band,
           /** What this swap did: 'crossfade' only when it replaced a video on screen, else 'cut'. */
           transition: fade ? 'crossfade' : 'cut',
           /** Exit (setVideo(null)) — a no-op once another setVideo replaced this one. */

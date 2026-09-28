@@ -259,8 +259,8 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
     decoder (pause, drop `src`, `load()`) on exit, on a replacing `setVideo` and on `remove()`.
   - **An element you pass stays yours.** The SDK never plays or pauses it unless you pass
     `autoplay: true`, and it never releases it.
-- **The promise resolves on the first frame the video has**, to `{ video, format, fit, transition,
-  remove(), stats() }` (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
+- **The promise resolves on the first frame the video has**, to `{ video, format, fit, band,
+  transition, remove(), stats() }` (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
   declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
   that fails to load rejects, and the splat stays on screen. A call superseded before its first
   frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and
@@ -284,6 +284,7 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 | `durationMs` | `600` | The crossfade's length (the player's default). `0` is a cut. |
 | `easing` | `'easeInOutSine'` | A named easing (`EASINGS`) or `(x) => y` on [0, 1]. |
 | `outgoing` | `'frozen'` | Only `'frozen'`: the outgoing video dissolves from its last frame. |
+| `band` | none | A letterbox slot: the picture is fitted into a centred band of this aspect (`2.39` or `'2.39:1'`) inside the element, the rest left clear, as `./player`'s `band`. `'contain'` in the band is a smaller quad; `'cover'` makes the quad the band and crops each eye about its centre in texture space (the band's edges are inside the window, so the window cannot cut the overflow). |
 
 **Crossfade (`transition: 'crossfade'`).** At the swap, the quad on screen becomes a *ghost*: its
 texture stops uploading (so the outgoing `<video>` can be released at once, as the SDK does with
