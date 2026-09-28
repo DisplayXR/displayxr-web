@@ -309,7 +309,7 @@ Pages to start with:
 ### Hardware verification checklist (for the tester)
 
 1. **It converts.** The console shows `[dxr-auto3d] three.js r… renderer found` or `PlayCanvas app found via …`, then `live on canvas…`.
-   The HUD (bottom left) reads `DXR auto-3D ● camera rig · depth 0.30 · conv … · 3D <growing> · flat <small>`.
+   The HUD (bottom left) reads `DXR auto-3D ● camera rig · depth 0.50 · conv … · 3D <growing> · flat <small>`.
    `window.__dxrAuto3D.state()` reports `active: true`, the engine, the detection route, `real` =
    the SBS store, and `eye`.
 2. **It weaves.** Close each eye in turn: the views must differ. Depth must read sensibly at the
@@ -402,7 +402,7 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
 `Ctrl+Alt+…`: **3** turns it on or off for this site · **P** camera rig / display rig · **=** /
 **-** depth of the active rig (×1.25 / ÷1.25, 0.02 to 1) · **0** / **9** convergence farther /
 nearer · **8** reset the active rig's depth and the convergence · **D** HUD. Everything is
-remembered per origin, and **depth per rig**: camera 0.30, display 1.00 by default, and toggling
+remembered per origin, and **depth per rig**: camera 0.50, display 1.00 by default, and toggling
 the rig brings back that rig's own value. The HUD and `state().depth` show the active rig's depth
 (`state().depths` has both). The HUD also shows the rig, the convergence distance and its source,
 and counts of stereo / flat / replayed frames.
@@ -429,8 +429,8 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
   on both rigs. The far plane is pushed out by however far behind the page camera the runtime put
   the eyes. Declared, never computed: no Kooima in the page.
 
-Defaults (`DEFAULT_DEPTH`, one line at the top of `core.js`, David's call 2026-09-27): **camera rig
-0.30**, **display rig 1.00**. Display depth 1 is the physically true portal: natural IPD and full
+Defaults (`DEFAULT_DEPTH`, one line at the top of `core.js`, David's call: 0.30 on 2026-09-27, raised to 0.50 on 2026-09-28 after a panel pass where 0.3 read shallow): **camera rig
+0.50**, **display rig 1.00**. Display depth 1 is the physically true portal: natural IPD and full
 head parallax. It is also the ceiling, on both rigs: the display rig's factors are `[0, 1]` in the
 `XR_DXR_view_rig` contract (the runtime currently accepts more, as a widening it documents as
 temporary while validating the rig converters), and a camera-rig depth above 1 breaks the runtime's
@@ -507,8 +507,8 @@ running), so the rig is always sampled at the configured depth.
 | `a-kill` / `b-kill` | three.js keyframes / PlayCanvas meshes, both frozen (render on demand): `Ctrl+Alt+3` while live, then again | back to 2D (PlayCanvas: `xrViews` released), the canvas shows one mono view; **no raw pair after `close()`** in the commit model (below); the **out-cover holds a real picture** (textured, and matching the mono canvas the right way up); on again, **3D again within 4 s** with the page not drawing |
 | `a-target` | `pages/three-orbit.html`: real `OrbitControls`, target 5 units away, scene centre 8 | convergence 5 ± 5 %, source `target` on the HUD and in `state()` |
 | `b-target` | `pages/pc-orbit.html`: the engine's `CameraControls`, `focusPoint` 5 units away | the same |
-| `a-display` | three.js keyframes: `-` on the camera rig, `P`, `-`, `=` `=`, `-`, `P`, `P`, then a reload | camera depth 0.3 → 0.24 (m2v 0.24·d/0.5); the display rig declared (portal at −d, height 2·d·tan(fov/2)) at **its** 1.0 with `ipdFactor = parallaxFactor = 1`; `-` there gives **both** 0.8 and leaves the camera rig at 0.24; `=` twice caps at 1.0; each toggle restores that rig's own depth; HUD + `state().depth` show the active rig's; `localStorage` and a reload give camera 0.24 / display 0.8 |
-| `a-migrate` | three.js keyframes with a v0.3 `{depth: 0.5}` pre-seeded in `localStorage` | camera 0.5, display 1.0 |
+| `a-display` | three.js keyframes: `-` on the camera rig, `P`, `-`, `=` `=`, `-`, `P`, `P`, then a reload | camera depth 0.5 → 0.4 (m2v 0.4·d/0.5); the display rig declared (portal at −d, height 2·d·tan(fov/2)) at **its** 1.0 with `ipdFactor = parallaxFactor = 1`; `-` there gives **both** 0.8 and leaves the camera rig at 0.4; `=` twice caps at 1.0; each toggle restores that rig's own depth; HUD + `state().depth` show the active rig's; `localStorage` and a reload give camera 0.4 / display 0.8 |
+| `a-migrate` | three.js keyframes with a v0.3 `{depth: 0.35}` pre-seeded in `localStorage` | camera 0.35, display 1.0 |
 | `b-late` | `pc-mesh.html?stallMs=2500`: the page draws nothing for 2.5 s once the layer exists; the fake has no eyes until 3.2 s and no display API; `noViewsMs` 1.5 s | converts with ONE layer and no false no-eyes stand-down (the timer starts at the first draw, ~2.5 s in) |
 | `b-noviews` | `pc-mesh.html`, no eyes ever, no display API, `noViewsMs` 1.5 s | back to 2D (layer closed) 1.5-2.5 s after the FIRST DRAW, with the reason in the console: the timer still fires |
 | `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
@@ -607,7 +607,7 @@ three.js path renders byte-identical frames before and after the split (case `a`
 source off so the comparison is about the machinery).
 
 **Not verified: needs the display and a human.** That the weave shows 3D for either engine, with
-real runtime views. The cover timing against the real join. Whether `depth` 0.3 and the automatic
+real runtime views. The cover timing against the real join. Whether `depth` 0.5 (camera rig; one panel pass says so) and the automatic
 convergence are comfortable. Frame rate. PlayCanvas on real sites (UMD builds, the examples
 browser's iframes, supersplat-viewer). The gsplat sort artefacts from sorting around the page
 camera rather than the eyes.

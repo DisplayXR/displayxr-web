@@ -193,7 +193,7 @@ async function runCase(browser, base, c) {
       await new Promise((r) => setTimeout(r, ms));
       return page.evaluate(() => ({ rig: window.__fakeXR.lastRig, state: window.__dxrAuto3D.state(), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || null, stored: localStorage.getItem('dxrAuto3D') }));
     };
-    // Camera rig first: one step down (0.3 -> 0.24), which must NOT leak into the display rig.
+    // Camera rig first: one step down (0.5 -> 0.4), which must NOT leak into the display rig.
     await hotkey('Minus');
     const cam = await snap(300);
     await hotkey('KeyP');
@@ -206,7 +206,7 @@ async function runCase(browser, base, c) {
     await hotkey('Minus');
     display.down2 = await snap(300);    // 0.8 again, left there
     await hotkey('KeyP');
-    display.back = await snap(400);     // camera rig: its own 0.24 is back
+    display.back = await snap(400);     // camera rig: its own 0.4 is back
     await hotkey('KeyP');
     display.again = await snap(400);    // display rig: its own 0.8 is back
     await hotkey('KeyP');
@@ -322,7 +322,7 @@ function check(r, results) {
   if (c.expect === 'flip') return checkFlip(r, t, A);
   if (c.expect === 'migrate') {
     const M = r.migrate;
-    t('v0.3 single depth carried to the camera rig only; the display rig starts at its 1.0; active = display', M.depths.camera === 0.5 && M.depths.display === 1 && M.rigMode === 'display' && M.depth === 1, JSON.stringify(M));
+    t('v0.3 single depth carried to the camera rig only; the display rig starts at its 1.0; active = display', M.depths.camera === 0.35 && M.depths.display === 1 && M.rigMode === 'display' && M.depth === 1, JSON.stringify(M));
     return A;
   }
   if (c.expect === 'noviews') {
@@ -365,8 +365,8 @@ function check(r, results) {
   const rig = fake.lastRig || {};
   const d = R.convergence;
   const rigOk = rig.type === 'camera' && Math.abs(rig.verticalFov - (c.fovDeg * Math.PI) / 180) < 1e-6 && Math.abs(rig.convergenceDiopters - 1 / d) < 1e-3 * (1 / d) &&
-    Math.abs(rig.metersToVirtual - (0.3 * d) / 0.5) < 1e-3 * d && rig.ipdFactor === 1 && rig.parallaxFactor === 1;
-  t('rig pushed: camera, page fov, 1/d, 0.3·d/0.5, ipd/parallax 1', rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
+    Math.abs(rig.metersToVirtual - (0.5 * d) / 0.5) < 1e-3 * d && rig.ipdFactor === 1 && rig.parallaxFactor === 1;
+  t('rig pushed: camera, page fov, 1/d, 0.5·d/0.5, ipd/parallax 1', rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
   const exp = fake.expected;
   t('convergence ≈ known subject distance (±5 %)', exp && Math.abs(d - exp) / exp < 0.05, `estimated ${d.toFixed(3)}, expected ${exp && exp.toFixed(3)}, source ${R.convergenceSource}${R.convergenceVia ? ' (' + R.convergenceVia + ')' : ''}`);
   if (fake.expectedSource) {
@@ -427,24 +427,24 @@ function check(r, results) {
     t('display rig on the HUD, in state() and remembered for the site', D && D.state.rigMode === 'display' && /display rig/.test(D.hud || '') && JSON.parse(D.stored || '{}').rig === 'display',
       `rigMode=${D && D.state.rigMode} hud="${D && D.hud}" stored=${D && D.stored}`);
     const C = D && D.cam, cg = C && C.rig, cd = C && C.state.renderers.find((x) => x.active);
-    t('camera rig, Ctrl+Alt+-: depth 0.3 -> 0.24 (m2v = 0.24·d/0.5), HUD + state()', cg && cg.type === 'camera' && near(C.state.depth, 0.24) && Math.abs(cg.metersToVirtual - (0.24 * cd.convergence) / 0.5) < 1e-6 * cd.convergence && hudDepth(C.hud) === '0.24',
-      cg ? `depth ${C.state.depth}, m2v ${cg.metersToVirtual} (want ${((0.24 * cd.convergence) / 0.5).toFixed(6)}), HUD depth ${hudDepth(C.hud)}` : 'n/a');
+    t('camera rig, Ctrl+Alt+-: depth 0.5 -> 0.4 (m2v = 0.4·d/0.5), HUD + state()', cg && cg.type === 'camera' && near(C.state.depth, 0.4) && Math.abs(cg.metersToVirtual - (0.4 * cd.convergence) / 0.5) < 1e-6 * cd.convergence && hudDepth(C.hud) === '0.40',
+      cg ? `depth ${C.state.depth}, m2v ${cg.metersToVirtual} (want ${((0.4 * cd.convergence) / 0.5).toFixed(6)}), HUD depth ${hudDepth(C.hud)}` : 'n/a');
     const dn = D && D.down, dg = dn && dn.rig;
-    t('display rig, Ctrl+Alt+-: ONE joint control, ipdFactor = parallaxFactor = depth = 0.8; the camera rig keeps 0.24',
-      dg && dg.type === 'display' && near(dg.ipdFactor, 0.8) && near(dg.parallaxFactor, 0.8) && near(dn.state.depth, 0.8) && hudDepth(dn.hud) === '0.80' && near(dn.state.depths.camera, 0.24) && near(dn.state.depths.display, 0.8),
+    t('display rig, Ctrl+Alt+-: ONE joint control, ipdFactor = parallaxFactor = depth = 0.8; the camera rig keeps 0.4',
+      dg && dg.type === 'display' && near(dg.ipdFactor, 0.8) && near(dg.parallaxFactor, 0.8) && near(dn.state.depth, 0.8) && hudDepth(dn.hud) === '0.80' && near(dn.state.depths.camera, 0.4) && near(dn.state.depths.display, 0.8),
       dg ? `ipd ${dg.ipdFactor}, parallax ${dg.parallaxFactor}, depths ${JSON.stringify(dn.state.depths)}, HUD depth ${hudDepth(dn.hud)}` : 'n/a');
     const up = D && D.up, ug = up && up.rig;
     t('display rig, Ctrl+Alt+= twice from 0.8: 1.0, then capped at 1.0 (the runtime\'s display-rig limit)', ug && near(ug.ipdFactor, 1) && near(ug.parallaxFactor, 1) && near(up.state.depth, 1),
       ug ? `ipd ${ug.ipdFactor}, parallax ${ug.parallaxFactor}, depth ${up.state.depth}` : 'n/a');
     const b = D && D.back, bg = b && b.rig, bd = b && b.state.renderers.find((x) => x.active);
-    t('Ctrl+Alt+P again: back to the camera rig WITH its own depth 0.24 (not the display rig\'s 0.8)',
-      bg && bg.type === 'camera' && b.state.rigMode === 'camera' && near(b.state.depth, 0.24) && Math.abs(bg.metersToVirtual - (0.24 * bd.convergence) / 0.5) < 1e-6 * bd.convergence && hudDepth(b.hud) === '0.24',
+    t('Ctrl+Alt+P again: back to the camera rig WITH its own depth 0.4 (not the display rig\'s 0.8)',
+      bg && bg.type === 'camera' && b.state.rigMode === 'camera' && near(b.state.depth, 0.4) && Math.abs(bg.metersToVirtual - (0.4 * bd.convergence) / 0.5) < 1e-6 * bd.convergence && hudDepth(b.hud) === '0.40',
       bg ? `type=${bg.type} rigMode=${b.state.rigMode} depth ${b.state.depth} m2v ${bg.metersToVirtual} HUD depth ${hudDepth(b.hud)}` : 'n/a');
     const ag = D && D.again && D.again.rig;
     t('Ctrl+Alt+P once more: the display rig restores ITS 0.8', ag && ag.type === 'display' && near(ag.ipdFactor, 0.8) && near(ag.parallaxFactor, 0.8) && near(D.again.state.depth, 0.8),
       ag ? `ipd ${ag.ipdFactor}, parallax ${ag.parallaxFactor}, depth ${D.again.state.depth}` : 'n/a');
     const rl = D && D.reloaded, st = D && JSON.parse(D.again.stored || '{}');
-    t('depth stored per site PER RIG: localStorage and a reload give camera 0.24, display 0.8', rl && near(rl.depths.camera, 0.24) && near(rl.depths.display, 0.8) && st.depths && near(st.depths.camera, 0.24) && near(st.depths.display, 0.8) && !('depth' in st),
+    t('depth stored per site PER RIG: localStorage and a reload give camera 0.4, display 0.8', rl && near(rl.depths.camera, 0.4) && near(rl.depths.display, 0.8) && st.depths && near(st.depths.camera, 0.4) && near(st.depths.display, 0.8) && !('depth' in st),
       `stored ${D && D.again.stored}; after reload ${JSON.stringify(rl)}`);
   }
   t('frame stable across two reads', diffCount(pixels.px, pixels.px2) === 0, `${diffCount(pixels.px, pixels.px2)} bytes differ`);

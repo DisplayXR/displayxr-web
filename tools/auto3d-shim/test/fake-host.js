@@ -6,7 +6,7 @@
 // Inputs (set by run.mjs's productShim() just before this script):
 //   window.__dxrFakeHostSrc  { sentinel, core }  the two built texts (deleted once read)
 //   window.__dxrFakeHostCfg  host data for this frame: { decision, depths, rig, convScale, dev,
-//                            engines, test } — defaults: allow, 0.3 / 1.0, camera, 1, false, both, null
+//                            engines, test } — defaults: allow, 0.5 / 1.0, camera, 1, false, both, null
 // Output, for the case's assertions: window.__dxrFakeHost
 //   loadCore   how many times the sentinel called cap.loadCore()
 //   coreEvalMs time spent evaluating the core text (0 while not loaded)
@@ -22,7 +22,7 @@
   const H = (window.__dxrFakeHost = { loadCore: 0, coreEvalMs: 0, saves: [], reports: [] });
   const cfg = Object.freeze({
     decision: o.decision || 'allow',
-    depths: Object.freeze({ camera: 0.3, display: 1.0, ...(o.depths || {}) }),
+    depths: Object.freeze({ camera: 0.5, display: 1.0, ...(o.depths || {}) }),
     rig: o.rig || 'camera',
     convScale: typeof o.convScale === 'number' ? o.convScale : 1,
     dev: !!o.dev,

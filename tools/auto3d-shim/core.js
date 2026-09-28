@@ -38,11 +38,11 @@ function dxrCore(cfg, cap, S) {
 
   // The default depth PER RIG (David's call, 2026-09-27). One number per rig, one meaning: the
   // comfort number, i.e. the disparity of content at infinity in units of the viewer's IPD.
-  //   camera rig: ipd × m2v × diopters × 0.5 — 0.3 (the runtime's qwerty rig sits at 0.25).
+  //   camera rig: ipd × m2v × diopters × 0.5 — 0.5 (panel pass 2026-09-28; 0.3 read shallow. The runtime's qwerty rig sits at 0.25).
   //   display rig: ipdFactor (= parallaxFactor) — 1.0, the physically true portal (natural IPD,
   //     full head parallax). The runtime's display-rig contract is [0, 1] (XR_DXR_view_rig.h), so
   //     1.0 is also the ceiling: there is no headroom above it on either rig.
-  const DEFAULT_DEPTH = { camera: 0.3, display: 1.0 };
+  const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
   // The convergence scale (a multiplier on the automatic convergence distance; 1 = automatic) is
   // clamped to this range everywhere it is set. The host mirrors it when it validates cap.save.
