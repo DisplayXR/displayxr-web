@@ -14,7 +14,8 @@
 // Convergence without a target (?at=, ?room=): a SplatMesh is a THREE.Object3D with no geometry
 // bounds; the three adapter samples its splat centres (three-adapter.js, splatBounds). From outside:
 // one sphere, converge on its centre (as PlayCanvas's gsplat AABB). From inside (a room-scale world):
-// the apparent-size-weighted median depth of the splats in view.
+// a high percentile (T.convRoomPercentile, 0.7) of the apparent-size-weighted depths of the splats in
+// view: the space the camera looks into, not the nearest surface.
 
 // Over one second of live frames: Spark updates per stereo frame, regenerations, sorts, and the
 // viewpoint of the latest sort vs the camera Spark was last updated with.
@@ -67,12 +68,17 @@ export default function cases({ P, NEW }) {
     // splat bounds it saw nothing and fell back to 5.00).
     { id: 'spark-est', name: 'Spark splats, no lookAt: estimator converges on the SplatMesh centre (7)', url: P + 'three-spark.html?at=7', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
     // No lookAt, the camera inside the splat mesh (lattice at 8 + a 15-unit shell around the camera):
-    // the mesh's sphere holds the camera, so its in-view splats go to the core's median rule.
-    { id: 'spark-room', name: 'Spark splats, camera inside the mesh: apparent-size-weighted median depth (8)', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+    // the mesh's sphere holds the camera, so its in-view splats go to the core's room rule: the 70th
+    // percentile of their apparent-size-weighted depths, toward the back of the lattice (8.6; the
+    // weighted median, the rule before, gave 8.06).
+    { id: 'spark-room', name: 'Spark splats, camera inside the mesh: 70th percentile of the apparent-size-weighted depths (8.6)', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
       alsoCheck(r, t, h, R) {
         const d = R && R.convergence;
         t('inside the mesh: finite, in front of the room shell (not the 15-unit shell, not the near plane, not the 5.00 default)', isFinite(d) && d > 1 && d < 12 && Math.abs(d - 5) > 0.5, `convergence ${d}`);
       } },
+    // The same room with T.convRoomPercentile = 0.5 (the dev tuning key, via __dxrAuto3DTestCfg):
+    // the pre-0.5.3 weighted MEDIAN rule, so the key is proven live and the two rules stay comparable.
+    { id: 'spark-room-p50', name: 'Spark splats, camera inside the mesh, convRoomPercentile 0.5: the weighted median (the old rule)', url: P + 'three-spark.html?room=1&p=0.5', shim: NEW, cfg: { convRoomPercentile: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
     // Render on demand: the page stops drawing 30 frames after the splats are sorted; the shim's
     // replay keeps both eyes drawn (Spark's onBeforeRender runs in every replayed eye render).
     { id: 'spark-idle', name: 'Spark splats, page stops drawing (replay)', url: P + 'three-spark.html?freeze=30', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
