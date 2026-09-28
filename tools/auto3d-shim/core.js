@@ -64,6 +64,8 @@ function dxrCore(cfg, cap, S) {
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
+    eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
+    eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
     guardFps: 40,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ...
     guardMs: 2000,      // ... (and below 0.8 x the page's 2D rate, when it has one)
@@ -175,6 +177,7 @@ function dxrCore(cfg, cap, S) {
       haveViews: false, near: NaN, far: NaN, R: null,
       conv: { d: 0, src: 'estimator', via: null }, cover: null, savedStyle: null, displayOk: null,
       releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null,
+      lastTwoAt: 0, noDisplay: false, nd: false, eyesOn: false, twoRun: 0, shortRun: 0,
       stats: { calls: 0, stereo: 0, flat: 0, flatAfterEyes: 0, replays: 0, resizes: 0, xrFrames: 0, twoView: 0, shortView: 0 },
     };
     tracked.push(new WeakRef(st));
@@ -326,6 +329,7 @@ function dxrCore(cfg, cap, S) {
     guard.onFlip(st);
     st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
     st.displayOk = null;
+    st.lastTwoAt = 0; st.noDisplay = false; st.nd = false; st.eyesOn = false; st.twoRun = 0; st.shortRun = 0;
     st.rampK = T.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
     if (!st.cover && st.rampK < 1) startRamp(st, 1);
     if (st.layer && !T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
@@ -475,6 +479,7 @@ function dxrCore(cfg, cap, S) {
     }
     if (st.layer !== layer) return;
     st.displayOk = false;
+    st.noDisplay = true; // the chip's outline "no display" pill, report { flat, no-display }
     stand(st, 'no display behind the layer (getDisplayInfo() null, no rendering modes) — is another DisplayXR Browser holding it? (browser#162)');
     st.nextTry = now() + 30000;
   }
@@ -501,7 +506,9 @@ function dxrCore(cfg, cap, S) {
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
     const t = now();
+    let two = false;
     if (views && views.length >= 2) {
+      two = true;
       // COPIES: an XRView is valid only inside this callback (porting pitfall 9).
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
@@ -510,13 +517,15 @@ function dxrCore(cfg, cap, S) {
       st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14]));
     } else {
       st.stats.shortView++;
-      if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; }
+      if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
     }
+    trackEyes(st, t, two);
     // Timed from the first draw on the SBS store, not from the layer: a render-on-demand page (or
     // one busy loading) may not draw for a while after activation, and a runtime has nothing to
     // locate eyes for until the tile has content. No draw yet = no timeout (the join-window cover,
     // which only drops after a stereo frame, keeps the page's own mono picture up meanwhile).
     if (!st.haveViews && st.displayOk !== true && st.drawnAt && t - st.drawnAt > T.noViewsMs) {
+      st.noDisplay = !st.lastTwoAt; // never a 2-view frame in this activation: most likely no weave slot
       stand(st, `no 2-view frame within ${T.noViewsMs} ms (nobody tracked, or this browser instance has no weave slot — browser#162)`, { staged: true });
       st.nextTry = st.tries < 3 ? t + 15000 : Infinity;
       return;
@@ -547,6 +556,32 @@ function dxrCore(cfg, cap, S) {
     guard.tick(st, t);
     chip.frame(st);
     if (st.stats.xrFrames % 20 === 0) notify();
+  }
+
+  // The two-view state, per session frame. lastTwoAt: the last 2-view frame of this activation (0:
+  // none yet). eyes: the DEBOUNCED "eyes tracked" the chip's dot shows — eye tracking flips
+  // isTracking 0/1 every few seconds in normal use, and a dot that followed every flip would blink.
+  // Amber only after eyesOffMs continuously without 2-view frames, green after eyesOnMs with them.
+  // nd: live but no display for this window (P0.2) — the layer found none (displayOk false), or no
+  // 2-view frame has arrived in the coverMaxMs since the layer (a second browser instance whose
+  // session got XR_ERROR_LIMIT_REACHED stays mono). The chip shows the outline pill and the core
+  // reports { status: 'flat', reason: 'no-display' }; the noViewsMs stand-down is unchanged.
+  function trackEyes(st, t, two) {
+    if (two) {
+      st.lastTwoAt = t; st.shortRun = 0;
+      if (!st.twoRun) st.twoRun = t;
+      if (!st.eyesOn && t - st.twoRun >= T.eyesOnMs) st.eyesOn = true;
+    } else {
+      st.twoRun = 0;
+      if (!st.shortRun) st.shortRun = t;
+      if (st.eyesOn && t - st.shortRun >= T.eyesOffMs) st.eyesOn = false;
+    }
+    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && t - st.layerAt > T.coverMaxMs));
+    if (nd !== st.nd) {
+      st.nd = nd;
+      if (nd) info(`no 2-view frame in the ${T.coverMaxMs} ms since the layer: 3D display not available to this window (another browser instance holding it?) — flat until one arrives`);
+      notify();
+    }
   }
 
   function takeOutCover(st) {
@@ -928,12 +963,14 @@ function dxrCore(cfg, cap, S) {
     if (S.optedOut()) return { status: 'optout' };
     if (guard.tripped) return { status: 'guard', reason: guard.tripped };
     if (guard.retrying) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.retrying };
+    if (st && st.active && st.nd) return { status: 'flat', engine: st.engine, reason: 'no-display' };
     // Live but no stereo frame drawn yet (nobody tracked): not 3D to anyone, so 'converting'. The chip
     // still shows (amber) once the cover is down: `waiting`.
     if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
+    if (!st && lastTarget && lastTarget.noDisplay) return { status: 'flat', engine: lastTarget.engine, reason: 'no-display' };
     const flat = flatNote();
     if (flat) return { status: 'flat', engine: flat.engine, reason: flat.flatReason };
     return { status: 'idle' };
@@ -941,9 +978,9 @@ function dxrCore(cfg, cap, S) {
   function status() {
     const s = statusOf(), t = lastTarget || candidate;
     return {
-      state: s.status, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
+      state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
-      convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews),
+      convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       // For the chip (read-only facts; it never touches the state): the site switch, the cover over
       // the target (in- or out-cover) and when the layer came up (it keys its live moment off
       // layerAt + holdMs, risk R6: the cover may stay up with nobody seated), the depth fade.

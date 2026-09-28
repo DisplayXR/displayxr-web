@@ -24,6 +24,11 @@
 //                     — nobody tracked yet / a runtime with nothing to locate eyes for yet.
 //   noDisplayApi: true  the layer has no getDisplayInfo / getRenderingModes (an older build), so the
 //                     shim cannot tell "no display" from "no eyes yet" and relies on its eye timeout.
+//   noDisplay: true   the layer's display API answers "no display" (getDisplayInfo() null, no
+//                     rendering modes): an instance with no weave slot (browser#162).
+//   flipViewsMs: N    from the layer on, frames alternate N ms WITH two views / N ms with none (eye
+//                     tracking flipping isTracking 0/1: the chip's dot must not blink).
+//   viewsStopAfterMs: N  no views from N ms after the layer on (the viewer left).
 //   frameCostMs: N    every session rAF callback first burns N ms of CPU, but only while a layer
 //                     exists and is open — the cost of converting (the frame-rate guard's case).
 //   eyeZ: Z           both eye poses carry a +Z translation (camera looks down −Z: the eyes sit Z
@@ -85,6 +90,7 @@
       this._rec = H.layers[H.layers.length - 1];
       if (this.rig) H.lastRig = this.rig;
       if (OPTS.noDisplayApi) { this.getDisplayInfo = undefined; this.getRenderingModes = undefined; }
+      if (OPTS.noDisplay) { this.getDisplayInfo = () => Promise.resolve(null); this.getRenderingModes = () => Promise.resolve([]); }
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }
     getDisplayInfo() { return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 }); }
@@ -128,6 +134,12 @@
       const vfov = L && L.rig && L.rig.verticalFov ? L.rig.verticalFov : (50 * Math.PI) / 180;
       const { depthNear: n, depthFar: f } = this.renderState;
       if (OPTS.viewsAfterMs && (!L || performance.now() - L._rec.at < OPTS.viewsAfterMs)) { H.noViewFrames = (H.noViewFrames || 0) + 1; return { session: this, getViewerPose: () => ({ views: [] }) }; }
+      if (L && (OPTS.flipViewsMs || OPTS.viewsStopAfterMs)) {
+        const dt = performance.now() - L._rec.at;
+        if ((OPTS.viewsStopAfterMs && dt >= OPTS.viewsStopAfterMs) || (OPTS.flipViewsMs && Math.floor(dt / OPTS.flipViewsMs) % 2 === 1)) {
+          H.noViewFrames = (H.noViewFrames || 0) + 1; return { session: this, getViewerPose: () => ({ views: [] }) };
+        }
+      }
       const views = [+SKEW, -SKEW].map((s, i) => ({
         eye: i ? 'right' : 'left',
         projectionMatrix: proj(vfov, aspect, n, f, s),
