@@ -4,7 +4,15 @@
 pass; a new `/camera` subpath enters preview. **Author:** DX pass, 2026-09-28. **Builds on:**
 [RFC 0002](0002-video-call.md) (the call module as designed and built, P0–P2a). **Touches:** the
 `/call` public surface, a new `/camera` subpath, a CDN bundle, one small core helper, the hosted
-signalling service, and four asks of the DisplayXR Browser.
+signalling service, and four asks of the DisplayXR Browser. **Decisions:** see
+[Decisions](#decisions-maintainer-2026-09-28) (2026-09-28).
+
+## North star
+
+**Any developer can drop a "holochat" call widget into ANY web app with the web SDK**, one line:
+`mountCall(el, { key })` or `<dxr-call key="pk_…">`. A DisplayXR Browser user on a 3D display sees
+the other people in 3D; everyone else gets a complete, fully working 2D call from the same widget.
+No accounts, no backend of the developer's own, no vendor SDK. Every section below serves that goal.
 
 ## Problem
 
@@ -85,8 +93,28 @@ const call = await mountCall(document.querySelector('#call'));   // hosted signa
 signalling and stream injection, and makes headless mode awkward. *Function only*: no paste-and-go
 for CMS/no-code pages, which is the audience that most needs a zero-config path. *An `<iframe>` to a
 hosted call page*: the simplest embed pattern elsewhere, but a woven canvas lives in the top-level
-document's weave list and the iframe case is unverified on the browser side (open question Q6);
+document's weave list and the iframe case is unverified on the browser side (open question Q2);
 it also gives the host page no events.
+
+### Embedding scope
+
+| Host | Works? | Notes |
+|---|---|---|
+| Plain site / CMS page | yes | CDN bundle + `<dxr-call>` |
+| SPA (React, Vue, Svelte, …) | yes | `mountCall` on mount, `leave()` on unmount; the element does this on disconnect. Route changes must not remount the widget mid-call (woven-canvas rule 2): mount it in a layout that survives navigation |
+| Third-party page (a widget a developer ships to other sites) | yes | the widget uses the embedding page's document and its shared wall; the **key's origin allowlist** lists the pages it may run on |
+| Cross-origin `<iframe>` | **2D: yes. 3D: open (Q2).** | the iframe needs `allow="camera; microphone"`. Inline 3D inside a cross-origin iframe is unverified on the browser side, so the widget reports `wall.supported = false` there and runs flat until the browser answers |
+
+**What each user sees.** DisplayXR Browser on a 3D display: woven 3D tiles (stereo senders
+converged, 2D senders lifted), 3D self view. Any other browser: the same widget, lobby, invite,
+controls and participants, all in 2D. A stereo sender shows its left eye, and there's a
+non-blocking "see it in 3D" offer (§3d). A 2D user is never a second-class participant.
+
+**Native apps.** A native app can host the same widget in a web view, or in the project's CEF host.
+Inline 3D is only available where the web view is the DisplayXR Browser/runtime path (the CEF host
+over the runtime). A system web view (WKWebView, Android WebView, WebView2) gives a working 2D
+call. A native call SDK (the same wire and signalling from C/C++/Kotlin/Swift) is **future work**.
+The protocol freeze in §7 is what makes it possible later without a server change.
 
 ### How it gets the wall: a document-scoped shared manager (one small core addition)
 
@@ -151,7 +179,7 @@ conflicts with `"sideEffects": false` and is invisible in review; making lift a 
 React 19 passes properties and listens to custom events on custom elements natively, so
 `<dxr-call room={room} ondxr-call:joined={...} />` works; for React 18 the docs carry a 20-line
 `useCall(ref, opts)` hook recipe around `mountCall`. A package would be one more thing to version
-against React majors for no capability the element lacks. Revisit if demand shows up (Q9).
+against React majors for no capability the element lacks. Revisit if demand shows up (Q4).
 
 ### Before / after
 
@@ -310,7 +338,7 @@ covers localisation. `PLATE_TEXT` stops being an export.
 | `peerjsCloud` | **remove from the package**; lives in `samples/call/` | a demo broker DisplayXR does not run |
 | `normalizeCallOptions`, `normalizeMono3D` | internal | test helpers |
 | `newRoomId`, `isValidRoomId` | internal (a page gets rooms from `inviteLink()` / `room`) | |
-| `parseInviteLink`, `buildInviteLink` | internal; `handle.inviteLink()` is the API | Q3: expose `parseInviteLink` for routers? |
+| `parseInviteLink`, `buildInviteLink` | internal; `handle.inviteLink()` is the API | Q1: expose `parseInviteLink` for routers? |
 | `roomKey`, `SIGNAL_PROTOCOL` | internal; documented in `signaling/README.md` | protocol detail |
 | `routeFor`, `badgeFor` | internal | |
 | `resolveLift`, `createLiftPool`, `CallLiftPool`, `createFrameWatch`, `liftConvergenceFor`, `liftPriorityFor`, `setLiftPriority`, `defaultLiftSpecifier`, `LIFT_PRIORITY` | internal | lift adapter internals |
@@ -392,7 +420,7 @@ ones that never heard of this SDK.
   URL. Because the URL is passed whole, the fragment reaches the browser and the room still never
   touches a server. If the scheme is not registered, the button falls through (after a short
   timeout) to the download page.
-- **App Links / "open with" for DisplayXR's own hosted demo origin only.** Registering the browser
+- **App Links / "open with" for DisplayXR's own hosted demo origin (`call.displayxr.org`) only.** Registering the browser
   as handler for arbitrary https origins is impossible by design, and asking third parties to host
   an association file for our browser is the wrong direction.
 - *Rejected:* a `displayxr://` invite as the shared link (dead in every messenger and on every
@@ -468,7 +496,7 @@ Decisions:
 - **Captured media is plain SBS with the layout in the name** (`_2x1`), so it plays in `/player`
   and anything else that understands side-by-side. Converged or raw? Photos store the **raw
   rectified pair** and report `convergencePx` alongside, so a viewer can re-converge; baking the
-  shift crops the edges. (Q7: embed it as metadata.)
+  shift crops the edges. (Q3: embed it as metadata.)
 - **Relationship to `/call`:** `mountCall(el, { camera: cam })` accepts a `StereoCamera`; with
   `camera: 'auto'` the call calls `openCamera()` itself. The call's self view *is* an
   `addCameraView`. One implementation of capture, mirroring and convergence, one set of tests.
@@ -491,7 +519,7 @@ and something DisplayXR can run without a surprise bill or an outage caused by o
 | Signalling | yes | yes |
 | TURN | yes, **short TTL (600 s)** and the first to be shed under budget pressure (§5c) | yes, 3600 s |
 | Limits | tight (below) | 10× the anonymous limits, adjustable per key |
-| Obtain | nothing | a self-serve form or an issue, then an entry in a KV namespace; revocable |
+| Obtain | nothing | **issued by hand** at first (a request, then an entry in a KV namespace); self-serve later; revocable |
 
 The key is **public** (it sits in page source). Its value is attribution + a quota bucket + an origin
 binding that browsers enforce; a non-browser client can forge `Origin`, which is why quotas, not the
@@ -501,7 +529,8 @@ key, are the actual protection. No secret ever goes in a client. `dxrSignaling(u
 *Alternatives:* origin allowlist only (no way to give one customer more headroom, no attribution);
 a signed-token flow where the page's backend mints a join token (right for private rooms and
 accounts — the `SignalingAdapter` seam already allows it — but it kills the static-page use case,
-so it is a later, optional tier, Q4).
+and private rooms/accounts are **out of scope for the hosted service** by decision: self-host or
+bring your own adapter).
 
 ### 5b. Rate limits and caps (proposed starting values)
 
@@ -528,11 +557,14 @@ Only the ~10–20% of calls that cannot go peer-to-peer use TURN, and TURN is th
   preview; not a production ceiling.
 - **Metering.** A scheduled Worker polls the TURN usage analytics hourly and writes month-to-date
   GB into KV; every credential mint reads it.
-- **Ceiling policy (automatic):** at **70%** of the monthly budget, anonymous mints get TTL 300 s
-  and a per-IP hourly cap of 5; at **90%**, anonymous mints stop (their calls still connect
-  wherever peer-to-peer works; the rest see the existing "network needs a relay" plate); at
-  **100%** of the *paid* ceiling DisplayXR sets (Q2), keyed mints stop too. The health endpoint
-  reports `turn: "ok" | "degraded" | "off"` so the SDK can say *why* a peer is unreachable.
+- **Hard cap (decided): $100/month of TURN beyond the free 1,000 GB**, org-wide, enforced by the
+  service. At $0.05/GB (verify current pricing) that is roughly 2,000 GB of paid relay, so ~3,000 GB/month in all.
+  Graduated shedding before the cap: at **70%** of the total, anonymous mints get TTL 300 s and a per-IP
+  hourly cap of 5; at **90%**, anonymous mints stop. At **100%**, **new relays are refused for everyone**:
+  `welcome` carries no TURN, and the SDK emits `error { code: 'turn-cap' }` ("relay capacity for this
+  month is used up; direct connections still work") instead of a generic unreachable plate.
+  **Direct P2P keeps working** throughout, and relays already allocated run until their credentials
+  expire. The health endpoint reports `turn: "ok" | "degraded" | "off"`.
 - Bitrate is the cheapest lever: relayed pairs could cap `maxBitrate` lower (the SDK learns from
   the selected candidate pair that it is relayed). Proposed as an SDK change in C3.
 
@@ -574,13 +606,29 @@ anyone porting it. This RFC adds: the same limits as §5b as configurable vars, 
 failure rate. **`dxr-signal/1` gets frozen at the `/call` stable gate** (§7), because self-hosters
 depend on it independently of the SDK version.
 
+### 5g. Domain migration (decided)
+
+Signalling moves to **`wss://signal.displayxr.org`** and the demo to **`https://call.displayxr.org`**.
+The `displayxr.org` zone's DNS is on Vercel; the Worker runs on Cloudflare today.
+
+1. Add the Worker custom domain `signal.displayxr.org` on Cloudflare. It needs a CNAME in the Vercel
+   DNS pointing at the Worker (or the subdomain delegated to Cloudflare); verify the certificate.
+2. Add `signal.displayxr.org` to the Worker's routes in `signaling/deploy/displayxr.toml` and deploy.
+   The **same Worker** answers on both hosts, so rooms are shared and a caller on the old URL meets one
+   on the new.
+3. Switch `DXR_SIGNAL_DEFAULT` to the new URL in the next SDK minor release.
+   **`dxr-signal.displayxr.workers.dev` stays live as an alias** for at least two minor releases, and
+   until its traffic (Worker analytics by host) is negligible. Only then is it retired, with a
+   CHANGELOG notice first.
+4. Serve the demo from `call.displayxr.org` (Vercel), and host the App Link / association files there (§3c).
+
 ---
 
 ## 6. Docs, playground, examples
 
 | Deliverable | Content |
 |---|---|
-| **Hosted demo** (a DisplayXR-owned https origin) | `<dxr-call>` with no options, the "open in DisplayXR Browser" App Link target, a keyed quota; the page everyone tests invites against |
+| **Hosted demo** (`call.displayxr.org`) | `<dxr-call>` with no options, the "open in DisplayXR Browser" App Link target, a keyed quota; the page everyone tests invites against |
 | **Docs page** `docs/call.md` | 60-second quickstart (the two AFTER snippets), options table, events, headless recipe, theming (variables + parts, screenshot per accent), React recipe, self-hosting, privacy, what 3D needs on each side |
 | **Copy-this snippet** | on the demo page and at the top of the docs, with the current pinned version filled in |
 | **Troubleshooting** | table below, each row linked from the matching `error`/`warning` code |
@@ -598,6 +646,7 @@ Troubleshooting rows (the code is what the SDK emits):
 | Everyone flat, even stereo | — | not in the DisplayXR Browser, or a woven-canvas rule broken (link to the rules page) |
 | Room full | `room-full` | 4-person mesh limit |
 | Quota | `quota` | anonymous limits → get a key |
+| "Relay capacity used up" | `turn-cap` | the hosted service's monthly TURN cap is reached; direct calls still work, or bring your own `iceServers` |
 
 **Ergonomics compared with embed-style video SDKs (patterns, no products):**
 
@@ -616,6 +665,27 @@ Troubleshooting rows (the code is what the SDK emits):
 
 ---
 
+## Business model (ideas, not decisions)
+
+- **Free tier** on the hosted service: the anonymous tier plus a keyed free allowance, enough
+  for prototypes and small sites.
+- **Usage-based metering per publishable key.** TURN GB is the real marginal cost; signalling is ~free.
+  Plan tiers are GB allowances plus rate limits. The org-wide **$100 cap** stays as the safety net
+  under every plan.
+- **Bring your own signalling/TURN is always free**: self-hosting (§5f) is never a paid feature.
+- **Premium features:** an SFU for more than 4 participants; storage for 3D recordings and captures;
+  server-side 2D→3D for non-3D senders (so 2D-only receivers' partners still get depth); branding
+  removal on the widget chrome; an SLA; per-key analytics.
+- **Platform/reseller model:** a usage API and webhooks per key (minutes, GB, rooms), so developers
+  can pass costs through to *their* users and run their own plans on top.
+- **Billing identity from day one:** every signalling session is tagged with its key id (or
+  `anon`), and usage is aggregated per key now. Charging can then switch on later with no API
+  change and no re-integration.
+- **Not doing:** no per-call paywall or upsell inside the widget (end users never see billing), and
+  no accounts for end users. Billing is between DisplayXR and the developer's key.
+
+---
+
 ## 7. Migration and stability plan
 
 `/call` and `/camera` promote on evidence, not on time. Each phase is independently shippable as a
@@ -626,7 +696,7 @@ minor release.
 | **C0 — today** | preview `/call` (RFC 0002 P1 + P2a + auto-convergence) | — |
 | **C1 — one-line path** | `mountCall`, `sharedInline3D` (core, additive), `<dxr-call>`, `dist/call.js` CDN bundle, `/call/full`, `warning` event with `lift-not-bundled`, `docs/call.md`, hosted demo page | unit tests for the element (attribute→option mapping, events, disconnect=leave); headless e2e: element in stock Chrome ↔ element in stock Chrome over the hosted server; **bundler smoke tests** (Vite + webpack + esbuild builds of the `/call/full` sample: lift resolves; plain `/call` build emits `lift-not-bundled`); one panel run: `<dxr-call>` from the CDN bundle, 3D camera → woven tile. Needs `feat/lift` merged for the lift half. |
 | **C2 — surface trim + `/camera`** | the §2 table (internal helpers leave the entry, one warning release), options regrouped, `theme`/parts/strings, `/camera` preview (`openCamera`, `addCameraView`, `capturePhoto`, `record`), call built on it | `npm test` typecheck of the new `.d.ts` against a checked-in API snapshot (a diff fails CI unless the snapshot is updated in the same PR); every sample and doc snippet compiles against the public types only; panel run: 3D self view mirrored correctly (eye-swap check with the synthetic L/R pair), SBS photo opens in `/player` in 3D |
-| **C3 — service** | keys, §5b limits, TURN metering + ceiling policy, `quota` error, relayed-bitrate cap, privacy page, self-host vars + coturn recipe | load test against a staging Worker (join flood trips `rate-limited`, not an outage); a forced budget trip degrades anonymous TURN only; forced relay over TLS 443 still connects for a keyed page; privacy page reviewed |
+| **C3 — service** | domain migration (§5g), hand-issued keys with a key id on every session, §5b limits, TURN metering + the $100 hard cap (`turn-cap` error), `quota` error, relayed-bitrate cap, privacy page, self-host vars + coturn recipe | load test against a staging Worker (join flood trips `rate-limited`, not an outage); a forced 90% trip degrades anonymous TURN only, and a forced cap trip refuses new relays with `turn-cap` while a direct P2P call still connects; forced relay over TLS 443 still connects for a keyed page; privacy page reviewed |
 | **C4 — browser/runtime** | Asks 1–4: capabilities hint, rectified default, camera-consumer client class + merged consent (R3), `displayxr://open` launcher, Android camera enumeration | runtime: consent revoke ends the track and the page sees `ended`; eye tracking unaffected with the camera open (measured, not assumed); browser: stereo device selected with no extra open; Android tablet front pair ↔ laptop call in 3D both ways |
 | **C5 — stable** | `/call` and `dxr-signal/1` move into the semver-covered list; `/camera` follows when its own record allows | two consecutive releases with no change to any public option's meaning **and** the hardware matrix below green on the release candidate |
 
@@ -648,32 +718,36 @@ details, convergence behaviour and exact pixels, `diagnostics()`.
 
 ---
 
+## Decisions (maintainer, 2026-09-28)
+
+1. **`sharedInline3D()` goes into core** (additive, semver-safe) — §1.
+2. **TURN spend: hard cap of $100/month beyond the free tier**, enforced by the service. At the cap,
+   new relays are refused with a clear error (`turn-cap`) and direct P2P keeps working (§5c).
+3. **Private rooms / accounts are not in scope for the hosted service.** Self-host or bring your
+   own `SignalingAdapter` (§5a).
+4. **Publishable keys are issued by hand at first**; self-serve later (§5a).
+5. **Signalling and the demo move to a DisplayXR-owned domain** (`signal.displayxr.org`,
+   `call.displayxr.org`). The workers.dev URL stays as an alias during the transition (§5g).
+6. **North star:** a drop-in call widget for any web app (`mountCall(el, { key })` / `<dxr-call>`).
+
 ## Open questions for the maintainer
 
-1. **`sharedInline3D()` in core.** It is the one change outside the preview tier. Accept it as a core
-   addition (additive, semver-safe), or keep the shared-wall logic inside `/call` only?
-2. **TURN cost ceiling.** What monthly spend beyond the free 1,000 GB is acceptable, if any, and is
-   "anonymous TURN stops at 90%" the right trade (some 2D-network calls fail) versus a paid overflow?
-3. **Expose `parseInviteLink`?** SPA routers want to read the room without mounting a call. Small,
+1. **Expose `parseInviteLink`?** SPA routers want to read the room without mounting a call. Small,
    stable-looking; keep it public or make pages use `new URL(link).hash`?
-4. **Private rooms / accounts.** Is a server-minted join-token tier in scope for the hosted service
-   at all, or is that permanently "self-host or BYO adapter"?
-5. **Keys: self-serve or issued by hand?** A form + KV entry is a small service of its own; issuing
-   by hand is fine while the audience is small.
-6. **Iframe embeds.** Should inline 3D (and so `<dxr-call>`) be supported inside a cross-origin
-   iframe? It decides whether a hosted "embed this call" iframe is ever an option. Needs a browser
-   answer first.
-7. **SBS photo metadata.** Store convergence (and baseline/FOV) in the file (XMP/EXIF for JPEG, a
+2. **3D inside cross-origin iframes.** The widget runs in 2D there regardless. Should the browser
+   weave inside a cross-origin iframe, which would allow a hosted "embed this call" iframe? It needs
+   a browser answer first.
+3. **SBS photo metadata.** Store convergence (and baseline/FOV) in the file (XMP/EXIF for JPEG, a
    WebM tag), a sidecar JSON like the player's, or only in the name?
-8. **Domain for the hosted service and demo.** Keep `*.workers.dev`, or move signalling and the demo
-   to a DisplayXR-owned domain before C3 (needed anyway for App Links in §3c)?
-9. **React.** Recipe only (this RFC's recommendation), or a thin `@displayxr/inline3d-react` once a
+4. **React.** Recipe only (this RFC's recommendation), or a thin `@displayxr/inline3d-react` once a
    second component (player) wants the same treatment?
-10. **Classic-script global.** Is `globalThis.DisplayXR.call` worth defining at all, given every
-    target browser runs `type="module"`? Dropping it leaves zero globals.
-11. **`peerjsCloud` removal.** Any external page known to use it? If so, one warning release first.
-12. **`/camera` scope.** Should `record()` also produce a mono-compatible file (left eye) for sharing
-    to 2D platforms, or is that the page's job?
+5. **Classic-script global.** Is `globalThis.DisplayXR.call` worth defining at all, given every
+   target browser runs `type="module"`? Dropping it leaves zero globals.
+6. **`peerjsCloud` removal.** Any external page known to use it? If so, one warning release first.
+7. **`/camera` scope.** Should `record()` also produce a mono-compatible file (left eye) for sharing
+   to 2D platforms, or is that the page's job?
+8. **Business model** (above): which of the ideas, if any, to pursue, and when metering turns into
+   charging.
 
 ## Not in this RFC
 
