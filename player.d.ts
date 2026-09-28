@@ -255,9 +255,9 @@ export interface AttachedPlayerHandle extends PlayerHandle {
  * PREVIEW. Surface mode (RFC 0001 Addendum A): the same transport, playlist and events as
  * {@link addPlayer}, drawn through an EXISTING `addSplat(…, { engine: 'playcanvas' })` handle's
  * `setVideo` — no canvas, layer or session of its own. The scene stays on screen until the first
- * frame (it is the poster); a source swap cuts at the next title's first frame. Differences from
- * `addPlayer`: `fullscreen` defaults to false; `transition: 'crossfade'` cuts (warns once) until
- * `./splat` setVideo crossfades; `band`, `poster`, `posterFormat` and the tile options are ignored
+ * frame (it is the poster); a source swap lands at the next title's first frame, as a cut or, with
+ * `transition: 'crossfade'`, `./splat` setVideo's GPU crossfade. Differences from `addPlayer`:
+ * `fullscreen` defaults to false; `band`, `poster`, `posterFormat` and the tile options are ignored
  * (warns once). If another `setVideo` takes the slot, the player stops and emits `'detached'`
  * ({@link PlayerDetachedEvent}); it never fights for it.
  */

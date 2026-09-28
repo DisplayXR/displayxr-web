@@ -271,6 +271,18 @@ export interface SplatVideoOptions {
   muted?: boolean;
   /** Default true for a URL (the SDK's own element), false for an element you pass. */
   autoplay?: boolean;
+  /**
+   * `'cut'` (default) or `'crossfade'`: a GPU dissolve from the video already on the plane (its
+   * last frame, frozen) to this one. From the splat, and on `setVideo(null)`, it is always a cut.
+   * The same vocabulary as `./player`'s `setSource`; `./splat`'s gaussian transitions throw here.
+   */
+  transition?: 'cut' | 'crossfade';
+  /** Crossfade length. Default 600 (the player's). 0 = a cut. */
+  durationMs?: number;
+  /** A named easing (`./splat`'s `EASINGS`) or `(x) => y` on [0, 1]. Default `'easeInOutSine'`. */
+  easing?: string | ((x: number) => number);
+  /** Only `'frozen'`: the outgoing video dissolves from its last frame. */
+  outgoing?: 'frozen';
 }
 
 /** What `handle.setVideo(src)` resolves to. */
@@ -279,6 +291,8 @@ export interface SplatVideo {
   readonly video: HTMLVideoElement;
   readonly format: 'sbs' | 'tb' | 'mono';
   readonly fit: 'contain' | 'cover';
+  /** What the swap did: `'crossfade'` only when it replaced a video on screen and asked to. Resolved at the swap, before the fade ends. */
+  readonly transition: 'cut' | 'crossfade';
   /** `handle.setVideo(null)`, or a no-op if another setVideo has replaced this one. */
   remove(): Promise<null>;
   /** Frames drawn with the plane up, and texture uploads (new video frames). */

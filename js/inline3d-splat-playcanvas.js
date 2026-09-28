@@ -4411,7 +4411,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * handle.setVideo(src, options) — play a stereo video on THIS handle: no new canvas, layer or
    * session. The splat is hidden and a screen-locked plane on the display rig shows the video, each
    * eye its own half (sbs: left/right, tb: top/bottom); flat (mono), the left half at full
-   * resolution. Applies on the first frame the video has. Resolves to `{ video, remove(), stats() }`;
+   * resolution. Applies on the first frame the video has; `transition: 'crossfade'` (with
+   * `durationMs`, `easing`) dissolves from a video already on the plane, on the GPU, and is a cut
+   * from the splat. Resolves to `{ video, transition, remove(), stats() }`;
    * the page drives transport through `video`. setVideo(null) exits and restores the splat, the rig
    * and its declaration exactly as they were. Throws during an in-flight setSource.
    */
@@ -4460,13 +4462,17 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         } else enterVideo(state);
         vid = state;
         state.pending = false;
+        // A crossfade only dissolves between two videos: from the splat (entry) it is a cut.
+        const fade = live && r.transition.type === 'crossfade' && r.transition.durationMs > 0 ? r.transition : null;
         viewer._videoPlane ||= new VideoPlane(viewer);
-        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH });
+        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH }, fade);
         const plane = viewer._videoPlane;
         return Object.freeze({
           video: el,
           format: state.format,
           fit: state.fit,
+          /** What this swap did: 'crossfade' only when it replaced a video on screen, else 'cut'. */
+          transition: fade ? 'crossfade' : 'cut',
           /** Exit (setVideo(null)) — a no-op once another setVideo replaced this one. */
           remove: () => (vid === state ? setVideo(null) : Promise.resolve(null)),
           /** Upload accounting: frames drawn with the plane up, and texture uploads (new frames). */

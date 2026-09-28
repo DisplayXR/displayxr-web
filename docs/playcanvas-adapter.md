@@ -259,8 +259,8 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
     decoder (pause, drop `src`, `load()`) on exit, on a replacing `setVideo` and on `remove()`.
   - **An element you pass stays yours.** The SDK never plays or pauses it unless you pass
     `autoplay: true`, and it never releases it.
-- **The promise resolves on the first frame the video has**, to `{ video, format, fit, remove(),
-  stats() }`. The switch happens in one task at that point: the splat is hidden, the display rig is
+- **The promise resolves on the first frame the video has**, to `{ video, format, fit, transition,
+  remove(), stats() }` (`transition` says what the swap did: `'crossfade'` or `'cut'`). The switch happens in one task at that point: the splat is hidden, the display rig is
   declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
   that fails to load rejects, and the splat stays on screen. A call superseded before its first
   frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and
@@ -280,6 +280,19 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 | `virtualDisplayHeight` | the tile's own | The display rig's height while the video is on. A flat plane at the window has no disparity of its own, so it does not change the picture. |
 | `loop`, `muted` | the element's | Applied when given. |
 | `autoplay` | `true` for a URL, `false` for an element | |
+| `transition` | `'cut'` | `'crossfade'`: a GPU dissolve from the video already on the plane (see below). From the splat, and on `setVideo(null)`, always a cut. `./splat`'s gaussian transitions (`flip`, `wavefront`, particles) throw: a video frame has no gaussians. |
+| `durationMs` | `600` | The crossfade's length (the player's default). `0` is a cut. |
+| `easing` | `'easeInOutSine'` | A named easing (`EASINGS`) or `(x) => y` on [0, 1]. |
+| `outgoing` | `'frozen'` | Only `'frozen'`: the outgoing video dissolves from its last frame. |
+
+**Crossfade (`transition: 'crossfade'`).** At the swap, the quad on screen becomes a *ghost*: its
+texture stops uploading (so the outgoing `<video>` can be released at once, as the SDK does with
+its own), and it is drawn blended over a fresh quad carrying the incoming video, its opacity eased
+from 1 to 0 over `durationMs` from the incoming video's first drawn frame. Each quad keeps its own
+format, fit and size, so a swap between two aspects fades bar for bar; the buffer stays opaque
+under the incoming picture throughout. A `setVideo` while a fade is running drops the old ghost
+and fades from the video then on screen. The promise resolves at the swap, not at the end of the
+fade. Cost: one extra full-plane textured draw for the length of the fade, no extra upload.
 
 **How it is drawn.**
 - **The plane.** One quad is parented under the **rig node**, the eye camera's parent, at display
