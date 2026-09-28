@@ -497,7 +497,7 @@ const base = `http://127.0.0.1:${srv.address().port}`;
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: 'new',
-  args: [`--use-angle=${ANGLE}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1'],
+  args: [`--use-angle=${ANGLE}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1', '--disable-features=OpenXR,WebXR'],
 });
 const results = [];
 let failed = 0;
