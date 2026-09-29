@@ -1,0 +1,572 @@
+{
+  "date": "2026-09-28",
+  "tag": "2026-09-28-sample",
+  "verdict": "HARM FOUND: 1 site(s) FAIL the §3.3 budget",
+  "counts": {
+    "PASS": 8,
+    "REVIEW": 1,
+    "FAIL": 1,
+    "ERROR": 0
+  },
+  "bundle": {
+    "version": "0.5.3",
+    "sourceCommit": "f2c8e0498a46e6a3f2e23fd700337263a248e309"
+  },
+  "chrome": "Chrome/154.0.8037.58",
+  "totalSeconds": 272,
+  "secondsPerSite": 27,
+  "estimatedFullRunMinutes": 32,
+  "budget": {
+    "sentinelMs": 0.5,
+    "allowedProto": [
+      "HTMLCanvasElement.getContext (changed)"
+    ],
+    "allowedKeys": [
+      "__THREE_DEVTOOLS__"
+    ],
+    "allowedKeysWebGL": [
+      "__THREE_DEVTOOLS__",
+      "pc"
+    ]
+  },
+  "rows": [
+    {
+      "id": "google",
+      "group": "plain",
+      "url": "https://www.google.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 1.7,
+      "reports": [],
+      "title": "Google",
+      "finalUrl": "https://www.google.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 3.1,
+      "sentinelMsWarm": [
+        0.2,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "closure_lm_193303",
+        "closure_lm_142362"
+      ],
+      "keysNoise": [
+        "closure_lm_193303",
+        "closure_lm_142362"
+      ],
+      "ourTimers": {
+        "created": 1,
+        "pending": 1,
+        "where": [
+          "timeout 10000 ms: at setTimeout (<anonymous>:18:171) < at scheduleSweep (dxr-auto3d-sentinel.js:194:14) < at arm (dxr-auto3d-sentinel.js:180:5)"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "FAIL",
+      "reasons": [
+        "1 timer(s) from our scripts on a page with no WebGL (1 still pending)"
+      ],
+      "ms": 19901
+    },
+    {
+      "id": "wikipedia",
+      "group": "plain",
+      "url": "https://en.wikipedia.org/wiki/Stereoscopy",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 2.9,
+      "reports": [],
+      "title": "Stereoscopy - Wikipedia",
+      "finalUrl": "https://en.wikipedia.org/wiki/Stereoscopy",
+      "partialLoad": false,
+      "sentinelMsCold": 1.9,
+      "sentinelMsWarm": [
+        0.2,
+        0.2,
+        0.4
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "jQuery371096795827229948511"
+      ],
+      "keysNoise": [
+        "jQuery371096795827229948511"
+      ],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 18841
+    },
+    {
+      "id": "github-repo",
+      "group": "plain",
+      "url": "https://github.com/mrdoob/three.js",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 1.4,
+      "reports": [],
+      "title": "GitHub - mrdoob/three.js: JavaScript 3D Library. · GitHub",
+      "finalUrl": "https://github.com/mrdoob/three.js",
+      "partialLoad": false,
+      "sentinelMsCold": 3.8,
+      "sentinelMsWarm": [
+        0.2,
+        0.3,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 22970
+    },
+    {
+      "id": "youtube",
+      "group": "plain",
+      "url": "https://www.youtube.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.3,
+      "coreEvalMs": 0,
+      "webglContexts": 2,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 5.3,
+      "reports": [],
+      "title": "YouTube",
+      "finalUrl": "https://www.youtube.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 0.1,
+      "sentinelMsWarm": [
+        0.3,
+        0.2,
+        0.3
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [
+        "Blocked script execution in 'about:blank' because the document's frame is sandboxed and the 'allow-scripts' permission is not set."
+      ],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 15,
+        "pending": 2,
+        "where": [
+          "timeout 10000 ms: at setTimeout (<anonymous>:18:171) < at scheduleSweep (dxr-auto3d-sentinel.js:194:14) < at arm (dxr-auto3d-sentinel.js:180:5)",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at startPoll (dxr-auto3d-sentinel.js:221:13) < at onContext (dxr-auto3d-sentinel.js:282:7)",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "REVIEW",
+      "reasons": [
+        "1 console error(s) not in the control load (unattributed; re-run to rule out network noise)",
+        "our MutationObserver spent 5.3 ms"
+      ],
+      "controlLoads": 2,
+      "ms": 54126
+    },
+    {
+      "id": "nytimes",
+      "group": "plain",
+      "url": "https://www.nytimes.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "reports": [],
+      "title": "nytimes.com",
+      "finalUrl": "https://www.nytimes.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 3.5,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 19916
+    },
+    {
+      "id": "google-maps",
+      "group": "plain",
+      "url": "https://www.google.com/maps/@37.7749,-122.4194,15z",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 3,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 3,
+      "reports": [],
+      "title": "Google Maps",
+      "finalUrl": "https://www.google.com/maps/@37.7749,-122.4194,15z?entry=ttu&g_ep=EgoyMDI2MDkyMy4wIKXMDSoASAFQAw%3D%3D",
+      "partialLoad": false,
+      "sentinelMsCold": 3.3,
+      "sentinelMsWarm": [
+        0.3,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "closure_lm_759783",
+        "closure_uid_225751519",
+        "closure_lm_795069"
+      ],
+      "keysNoise": [
+        "closure_lm_759783",
+        "closure_uid_225751519",
+        "closure_lm_795069"
+      ],
+      "ourTimers": {
+        "created": 23,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at startPoll (dxr-auto3d-sentinel.js:221:13) < at onContext (dxr-auto3d-sentinel.js:282:7)",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 26119
+    },
+    {
+      "id": "three-bloom",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 4.1,
+      "webglContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "reports": [
+        "idle@790",
+        "converting:three.js@2574",
+        "live:three.js@2958"
+      ],
+      "title": "three.js webgl - postprocessing - unreal bloom",
+      "finalUrl": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html",
+      "partialLoad": false,
+      "sentinelMsCold": 3.5,
+      "sentinelMsWarm": [
+        0.2,
+        0.3,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 9999.899999976158 ms: at setTimeout (<anonymous>:18:171) < at scheduleSweep (dxr-auto3d-sentinel.js:194:14) < at arm (dxr-auto3d-sentinel.js:180:5)",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at startPoll (dxr-auto3d-sentinel.js:221:13) < at onContext (dxr-auto3d-sentinel.js:282:7)",
+          "timeout 250 ms: at setTimeout (<anonymous>:18:171) < at activate (dxr-auto3d-core.js:201:7)",
+          "timeout 3020 ms: at setTimeout (<anonymous>:18:171) < at expandFor (dxr-auto3d-core.js:1276:19) < at refresh (dxr-auto3d-core.js:1260:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.5.3)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.5.3)",
+        "[info] [dxr-auto3d] core armed (v0.5.3) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 6.60 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 23109
+    },
+    {
+      "id": "model-viewer",
+      "group": "engine",
+      "url": "https://modelviewer.dev/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 4.5,
+      "webglContexts": 3,
+      "engineOracle": [
+        "three.js r183"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.3,
+      "reports": [
+        "idle@520",
+        "converting:three.js@9943",
+        "live:three.js@10292"
+      ],
+      "title": "<model-viewer>",
+      "finalUrl": "https://modelviewer.dev/",
+      "partialLoad": false,
+      "sentinelMsCold": 2.7,
+      "sentinelMsWarm": [
+        0.4,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 33,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at startPoll (dxr-auto3d-sentinel.js:221:13) < at onContext (dxr-auto3d-sentinel.js:282:7)",
+          "timeout 10000 ms: at setTimeout (<anonymous>:18:171) < at scheduleSweep (dxr-auto3d-sentinel.js:194:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:306:9)",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147",
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at poll (dxr-auto3d-sentinel.js:228:33) < at <anonymous>:18:147"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.5.3)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.5.3)",
+        "[info] [dxr-auto3d] core armed (v0.5.3) ",
+        "[info] [dxr-auto3d] three.js r183 renderer found on canvas#webgl-canvas.show",
+        "[info] [dxr-auto3d] not converting canvas#webgl-canvas.show yet: canvas is not in the document",
+        "[info] [dxr-auto3d] converting canvas#webgl-canvas.show (three r183)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 32565
+    },
+    {
+      "id": "supersplat",
+      "group": "engine",
+      "url": "https://superspl.at/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.3,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.4,
+      "reports": [],
+      "title": "SuperSplat - The Home for 3D Gaussian Splatting",
+      "finalUrl": "https://superspl.at/",
+      "partialLoad": false,
+      "sentinelMsCold": 3.4,
+      "sentinelMsWarm": [
+        0.2,
+        0.3,
+        0.3
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 34184
+    },
+    {
+      "id": "sdk-hello-cube",
+      "group": "sdk",
+      "url": "https://displayxr.github.io/displayxr-web/samples/hello-cube/",
+      "outcome": "standdown (the page requested 'inline-3d')",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 2.5,
+      "webglContexts": 1,
+      "engineOracle": [
+        "three.js r161"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "reports": [
+        "idle@403",
+        "standdown(the page requested 'inline-3d')@431"
+      ],
+      "title": "hello-cube — DisplayXR inline-3D sample",
+      "finalUrl": "https://displayxr.github.io/displayxr-web/samples/hello-cube/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.8,
+      "sentinelMsWarm": [
+        0,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 1,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (<anonymous>:18:171) < at startPoll (dxr-auto3d-sentinel.js:221:13) < at onContext (dxr-auto3d-sentinel.js:282:7)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.5.3)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.5.3)",
+        "[info] [dxr-auto3d] core armed (v0.5.3) ",
+        "[info] [dxr-auto3d] three.js r161 renderer found on canvas#cube",
+        "[info] [dxr-auto3d] standing down for this document: the page requested 'inline-3d'",
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.5.3)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 19439
+    }
+  ]
+}
