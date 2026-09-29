@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -401,7 +401,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.4'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.5'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -420,6 +420,7 @@ function dxrCore(cfg, cap, S) {
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
@@ -495,7 +496,7 @@ function dxrCore(cfg, cap, S) {
       V: [0, 1].map(() => ({ proj: new Float32Array(16), pose: new Float32Array(16) })),
       haveViews: false, near: NaN, far: NaN, R: null,
       conv: { d: 0, src: 'estimator', via: null }, cover: null, savedStyle: null, displayOk: null,
-      releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null,
+      releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null, piv: null,
       lastTwoAt: 0, noDisplay: false, nd: false, eyesOn: false, twoRun: 0, shortRun: 0,
       stats: { calls: 0, stereo: 0, flat: 0, flatAfterEyes: 0, replays: 0, resizes: 0, xrFrames: 0, twoView: 0, shortView: 0 },
     };
@@ -618,6 +619,7 @@ function dxrCore(cfg, cap, S) {
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
     estimateConvergence(st, true);
+    st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     const rig = buildRig(st, ad.rigFov(st));
     try {
       st.layer = T.noLayer ? null : new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: { ...rig } } : { virtualDisplayHeight: 0.24 });
@@ -786,7 +788,7 @@ function dxrCore(cfg, cap, S) {
       two = true;
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
-      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14]));
+      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
       if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
@@ -883,7 +885,7 @@ function dxrCore(cfg, cap, S) {
         display: { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       };
     }
-    const d = Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+    const d = rigDistance(st);
     if (rigMode() === 'display') {
       const r = st.rigs.display;
       r.position.x = r.position.y = 0; r.position.z = -d;
@@ -917,6 +919,52 @@ function dxrCore(cfg, cap, S) {
     rig.parallaxFactor = k;
     st.rig = rig;
     return rig;
+  }
+  const rigDistance = (st) => Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+
+  const PIVOT_CUT_COS = Math.cos(Math.PI / 6);
+  const ZERO3 = Object.freeze([0, 0, 0]);
+  function pivotOffset(st, m) {
+    if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
+    const d = rigDistance(st), P = st.piv;
+    if (P && P.d === d) {
+      let same = true;
+      for (let k = 0; k < 16; k++) if (P.m[k] !== m[k]) { same = false; break; }
+      if (same) return P.t;
+    }
+    const p = [m[12], m[13], m[14]];
+    const fl = Math.hypot(m[8], m[9], m[10]) || 1;
+    const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
+    let c = null;
+    if (P) {
+      const dp = [p[0] - P.p[0], p[1] - P.p[1], p[2] - P.p[2]];
+      const u = [f[0] - P.f[0], f[1] - P.f[1], f[2] - P.f[2]];
+      const uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+      const s = uu > 1e-12 ? -(dp[0] * u[0] + dp[1] * u[1] + dp[2] * u[2]) / uu : 0;
+      const tr = [dp[0] + s * u[0], dp[1] + s * u[1], dp[2] + s * u[2]];
+      const cut = f[0] * P.f[0] + f[1] * P.f[1] + f[2] * P.f[2] < PIVOT_CUT_COS || Math.hypot(tr[0], tr[1], tr[2]) > P.d;
+      if (!cut) {
+        const dd = d - P.d;
+        c = [P.c[0] + tr[0] + f[0] * dd, P.c[1] + tr[1] + f[1] * dd, P.c[2] + tr[2] + f[2] * dd];
+      }
+    }
+    let t = ZERO3;
+    if (!c) c = [p[0] + f[0] * d, p[1] + f[1] * d, p[2] + f[2] * d]; // (re-)anchored on the page camera's axis: t = 0
+    else {
+      const w = [c[0] - f[0] * d - p[0], c[1] - f[1] * d - p[1], c[2] - f[2] * d - p[2]];
+      const ax = (k) => { const x = m[k], y = m[k + 1], z = m[k + 2], n = x * x + y * y + z * z || 1; return (x * w[0] + y * w[1] + z * w[2]) / n; };
+      t = [ax(0), ax(4), ax(8)];
+    }
+    st.piv = { m: Float64Array.from(m), p, f, c, d, t };
+    return t;
+  }
+  function eyePose(st, i, m) {
+    const src = st.V[i].pose, t = pivotOffset(st, m);
+    if (!t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0)) return src;
+    const o = st.Vp || (st.Vp = [new Float32Array(16), new Float32Array(16)]);
+    o[i].set(src);
+    o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
+    return o[i];
   }
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
@@ -1259,7 +1307,7 @@ function dxrCore(cfg, cap, S) {
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
     newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
-    buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
+    buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
@@ -1883,6 +1931,8 @@ function dxrDev(core, ctl) {
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
           convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing,
+          pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
+          eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
           rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
           why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
           ...(d.extra || {}),
@@ -2356,8 +2406,9 @@ function dxrThree(core) {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
         const e = eyes[i];
-        st.m4.fromArray(st.V[i].pose);
+        st.m4.fromArray(core.eyePose(st, i, camera.matrixWorld.elements)); // + the display rig's pivot (core.pivotOffset)
         e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4); // attach pattern: identity rig pose
+        if (i === 0) st.eyeAt = e.matrixWorld.elements.slice(12, 15); // diagnostics (dev state(): eyeAt)
         e.matrix.copy(e.matrixWorld);
         invertFrom(e.matrixWorldInverse, e.matrixWorld);
         e.projectionMatrix.fromArray(st.V[i].proj);               // the runtime's off-axis frustum, untouched
@@ -2507,7 +2558,7 @@ function dxrThree(core) {
   }
   function aimEye(st, camera, eyes, i, rev) {
     const e = eyes[i];
-    st.m4.fromArray(st.V[i].pose);
+    st.m4.fromArray(core.eyePose(st, i, camera.matrixWorld.elements));
     e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4);
     e.matrix.copy(e.matrixWorld);
     invertFrom(e.matrixWorldInverse, e.matrixWorld);
@@ -2980,8 +3031,11 @@ function dxrPlayCanvas(core) {
     const R = st.R, local = st.cam.entity.getLocalTransform().data;
     let P0;
     if (st.haveViews) {
+      const world = st.cam.entity.getWorldTransform().data;
       for (let i = 0; i < 2; i++) {
-        mul4(local, st.V[i].pose, st.eyeInv[i]);
+        const pose = core.eyePose(st, i, world);
+        mul4(local, pose, st.eyeInv[i]);
+        if (i === 0) st.eyeAt = [0, 1, 2].map((k) => world[k] * pose[12] + world[4 + k] * pose[13] + world[8 + k] * pose[14] + world[12 + k]); // diagnostics (dev state(): eyeAt)
         st.views[i].setView(st.V[i].proj, st.eyeInv[i]);
         st.views[i].setViewport(i * R.eyeW, 0, R.eyeW, R.eyeH);
       }
@@ -3007,7 +3061,7 @@ function dxrPlayCanvas(core) {
   const shadowOrig = new WeakMap(); // light component -> { orig, wrote }
   function offsetShadows(st) {
     if (core.T.pcShadowOffset === false) return;
-    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) : 0;
+    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0) : 0;
     if (!st.shadowLights || ++st.shadowScan >= 30) {
       st.shadowScan = 0;
       try { st.shadowLights = st.app.root.findComponents('light'); } catch (e) { st.shadowLights = []; }
