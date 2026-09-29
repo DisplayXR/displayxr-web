@@ -723,6 +723,7 @@ running), so the rig is always sampled at the configured depth.
 | `p-block` | product mode, `decision: 'block'` | the core is never loaded, no session |
 | `p-double` / `p-double-dev` | the product injector and the dev bundle both injected, in either order | the first injector wins: one core, one session, one layer |
 | `s-cost` | `pages/plain-2000.html`: 2,000 elements, no engine, product mode | `loadCore` never called; only `HTMLCanvasElement.prototype.getContext` changed; `'pc' in window` false; no timers; only new window key `__THREE_DEVTOOLS__`; sentinel eval < 0.5 ms (median of 5); `div.id` reads within ±5 % of a control |
+| `s-late-canvas` | `pages/plain-late-canvas.html`: a canvas added after load (id read, never a context) and a `2d` canvas, product mode | `loadCore` never called; no sentinel timer pending or ever created (fails without v0.5.4: the observer's arm scheduled the 10 s expiry sweep, the corpus's google.com finding) |
 | `s-meta` / `s-meta-boot` / `s-meta-late` | `pages/meta-off.html`: the meta static, inserted before the first draw, inserted 2.5 s in while live | core never loaded / never activates / turned off within 30 session frames; report `optout`; one console line |
 | `s-block-pc` | PlayCanvas, product `block` | detect-only: one `{ off, PlayCanvas }` report, no session, the id trap removed |
 | `s-cost` (v0.5.1 addition) | the same | the parse-time canvas observer's callbacks < 0.5 ms per load (median of 5) while the 2,000 elements go in |
@@ -786,9 +787,12 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
 
 ## Verified, and what is not
 
-**Headless, v0.5.4 (P0.3), Windows, ANGLE D3D11:** 64 cases (63 + `d-pc`); new assertions: no
+**Headless, v0.5.4 (P0.3), Windows, ANGLE D3D11:** 65 cases (63 + `d-pc`, `s-late-canvas`); new assertions: no
 detection after a stand-down (`d`, `d-pc`), Spark's `renderSize` = the eye (`spark`, `spark-eyes`),
-one settle line (`spark-room-subject`).
+one settle line (`spark-room-subject`), no sentinel timer when a canvas is added after load on a
+page that never asks for WebGL (`s-late-canvas`: the canvas-id trap's 10 s expiry sweep owns a timer
+only once a WebGL context exists; before that a trap expires lazily, on its own id read, the next
+mutation or the next `getContext`).
 
 **Headless, v0.5.2 (P0.2), Windows, ANGLE D3D11:** 60 cases (52 + `g-loading`, `g-loading-long`, `g-steady`, `spark-est`, `spark-room`,
 `chip-no-display`, `chip-amber-debounce`, `a-dpr2`); `a` pins `eyeScale` 0.5 to stay

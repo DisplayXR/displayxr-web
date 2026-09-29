@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- TEST PAGE — a 2D page that adds <canvas> elements AFTER load and never asks for WebGL (as
+     google.com does): one canvas that never gets a context (its id is read, as a framework would),
+     and one that gets a '2d' context. No engine, no timers of its own (a load listener and rAF
+     only), no window globals. Case s-late-canvas: the sentinel must not load the core and must
+     leave no timer of its own behind (§3.3: no timers on non-WebGL pages). -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>plain late canvas (test)</title>
+<style>body{margin:0;font:12px sans-serif}canvas{display:block;width:200px;height:100px}</style>
+</head><body>
+<main id="root">plain page</main>
+<script>
+(() => {
+  addEventListener('load', () => requestAnimationFrame(() => {
+    const a = document.createElement('canvas');
+    a.id = 'late-plain';
+    document.body.appendChild(a);
+    requestAnimationFrame(() => {
+      void a.id; // a framework reading the id: with the trap armed, this is where a key trap is set
+      const b = document.createElement('canvas');
+      b.id = 'late-2d';
+      document.body.appendChild(b);
+      requestAnimationFrame(() => {
+        const g = b.getContext('2d');
+        g.fillStyle = '#48c'; g.fillRect(0, 0, 50, 50);
+        document.documentElement.dataset.lateDone = '1';
+      });
+    });
+  }));
+})();
+</script>
+</body></html>
