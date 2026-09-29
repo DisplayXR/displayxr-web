@@ -13,3 +13,11 @@ _scratch/
 
 # Wrangler local state (signaling/ deploys)
 .wrangler/
+
+# The CDN bundle (dist/call.js, dist/lift.js) is BUILT, not committed: `npm run build:dist`, and
+# `prepack` builds it into every published tarball (jsDelivr serves it from npm).
+dist/
+
+# No lockfile: CI installs the two dev tools with --no-save (see .github/workflows); a local
+# `npm install` writes one that must not be committed.
+package-lock.json

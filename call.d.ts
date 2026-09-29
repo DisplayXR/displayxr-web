@@ -330,6 +330,54 @@ export function addCall(wall: unknown, container: HTMLElement, opts?: CallOption
  */
 export function mountCall(el: HTMLElement, opts?: CallOptions): Promise<CallHandle>;
 
+// ── <dxr-call> — the one-line path as markup ───────────────────────────────────────────────
+//
+// Importing this entry (or `./call/full`, or the CDN bundle `dist/call.js`) registers the element.
+// It mounts on connect (`mountCall(this, { ...attrsToOpts(this), ...this.options })`), leaves on
+// disconnect (a DOM move IS a teardown — woven-canvas rule 2), re-dispatches every call event as
+// a bubbling, composed `CustomEvent` named `dxr-call:<event>` with the payload in `detail`, and
+// exposes the handle as `el.call`. Attributes (read once, at connect): `room`, `signaling` (a
+// URL), `key`, `camera`, `layout`, `accent`, `max-peers`, `no-ui`, `auto-join`, `mono3d="off"`,
+// `no-audio`, `no-self-view`, `no-auto-converge`, `tile-aspect`, `invite-base`, `browser-url`,
+// `debug`. Everything else is `el.options`, set before connect; options win over attributes.
+
+export class DxrCallElement extends HTMLElement {
+  /** The mount seam: null = `mountCall` of `./call`; `./call/full` sets its own. */
+  static mount: ((el: HTMLElement, opts?: CallOptions) => Promise<CallHandle>) | null;
+  /** Non-string options (a `MediaStream`, an adapter, `lift`, a `wall`) — set BEFORE connecting. */
+  options: CallOptions | null;
+  /** The handle once mounted; null before, and again after disconnect. */
+  readonly call: CallHandle | null;
+  /** Resolves with the handle when the mount lands (null if the element left the DOM first); rejects if it failed. */
+  readonly ready: Promise<CallHandle | null> | null;
+  connectedCallback(): void;
+  disconnectedCallback(): void;
+}
+
+/** The attribute → option mapping the element applies at connect. Pure; unset attributes contribute nothing. */
+export function attrsToOpts(source: { getAttribute(name: string): string | null } | ((name: string) => string | null)): Partial<CallOptions>;
+
+/**
+ * Register the element (default name `dxr-call`) once. True when this call registered it; false
+ * when the name was taken or there is no `customElements` registry. The entries call it for you.
+ */
+export function defineCallElement(name?: string, registry?: CustomElementRegistry): boolean;
+
+/** `'dxr-call:'` — every DOM event the element dispatches starts with it. */
+export const CALL_EVENT_PREFIX: 'dxr-call:';
+
+/** The DOM events: one per {@link CallEvents} key, plus `dxr-call:ready` once the handle exists. */
+export type DxrCallEventMap = { [K in keyof CallEvents as `dxr-call:${K}`]: CustomEvent<CallEvents[K]> } & {
+  'dxr-call:ready': CustomEvent<{ call: CallHandle }>;
+};
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'dxr-call': DxrCallElement;
+  }
+  interface HTMLElementEventMap extends DxrCallEventMap {}
+}
+
 // ── pure helpers (exported for tests and advanced pages) ──────────────────────────────────
 export function normalizeCallOptions(opts?: Partial<CallOptions>): Record<string, unknown>;
 export function newRoomId(getRandomValues?: (a: Uint8Array) => Uint8Array): string;

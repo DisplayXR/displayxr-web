@@ -104,6 +104,14 @@ export class El {
   fire(t) {
     for (const f of this.listeners[t] || []) f({ type: t });
   }
+  /** Enough of EventTarget for a custom element's CustomEvents: listeners on THIS node only. */
+  dispatchEvent(ev) {
+    for (const f of this.listeners[ev.type] || []) f(ev);
+    return true;
+  }
+  hasAttribute(k) {
+    return k in this.attrs;
+  }
   insertAdjacentHTML() {}
   getBoundingClientRect() {
     return { x: 0, y: 0, left: 0, top: 0, width: 0, height: 0 };

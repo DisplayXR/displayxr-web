@@ -101,6 +101,8 @@ import { openCamera, openMic } from './call/capture.js';
 import { drawQr } from './call/qr.js';
 import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } from './call/ui.js';
 import { normalizeMono3D, resolveLift, createLiftPool, createFrameWatch } from './call/lift.js';
+import { defineCallElement } from './call/element.js';
+export { DxrCallElement, defineCallElement, attrsToOpts, CALL_EVENT_PREFIX } from './call/element.js';
 
 import { dxrSignaling } from './call/signaling.js';
 import { lumaFromRgba, createDisparityTrack, createFocusTracker, downsampleLuma } from './call/disparity.js';
@@ -1892,3 +1894,8 @@ class SelfTile {
     }
   }
 }
+
+// `<dxr-call>` — the one-line path as markup — is registered by importing this entry (RFC 0003 §1;
+// the ONE side effect of this module, declared in package.json `sideEffects`). A no-op where there
+// is no `customElements` registry (Node, workers) or the name is already defined.
+defineCallElement();

@@ -40,12 +40,20 @@
       "types": "./call.d.ts",
       "import": "./js/inline3d-call.js"
     },
+    "./call/full": {
+      "types": "./call-full.d.ts",
+      "import": "./js/inline3d-call-full.js"
+    },
     "./undock": {
       "types": "./index.d.ts",
       "import": "./js/inline3d-undock.js"
     }
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./js/inline3d-call.js",
+    "./js/inline3d-call-full.js",
+    "./dist/*.js"
+  ],
   "files": [
     "js/inline3d.js",
     "js/inline3d-undock.js",
@@ -72,7 +80,10 @@
     "js/inline3d-playcanvas-engine.js",
     "js/inline3d-player.js",
     "js/inline3d-call.js",
+    "js/inline3d-call-full.js",
     "js/call/",
+    "js/lift/",
+    "dist/",
     "index.d.ts",
     "three.d.ts",
     "viewer.d.ts",
@@ -80,6 +91,7 @@
     "model.d.ts",
     "player.d.ts",
     "call.d.ts",
+    "call-full.d.ts",
     "CHANGELOG.md",
     "README.md",
     "LICENSE",
@@ -133,10 +145,15 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\""
+    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\"",
+    "build:dist": "node tools/dist/build.mjs",
+    "prepack": "node tools/dist/build.mjs",
+    "test:e2e": "node test/e2e/call-element.e2e.mjs",
+    "test:bundlers": "node test/bundlers/run.mjs"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
-    "@types/webxr": "^0.5.0"
+    "@types/webxr": "^0.5.0",
+    "esbuild": "^0.25.0"
   }
 }
