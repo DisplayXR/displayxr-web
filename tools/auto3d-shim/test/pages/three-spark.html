@@ -12,11 +12,16 @@
      ?room=1: no lookAt, and the camera stands INSIDE the splat mesh: the same lattice centred 8
      units ahead plus a sparse shell of large splats on a 15-unit sphere around the camera (a
      room-scale world, as a World Labs / Marble scene is). The mesh's bounding sphere holds the
-     camera, so the estimator takes the T.convRoomPercentile (default 0.7) percentile of the
-     apparent-size-weighted depths of the splats in view: the lattice (5 layers, 7.3..8.7) fills most
-     of the view, so the glass lands toward its back, expected convergence 8.6 (measured 8.63; the old
-     weighted-median rule gave 8.06), source 'estimator'. &p=0.5 (with cfg convRoomPercentile 0.5,
-     case spark-room-p50): the median rule, expected 8.
+     camera and every splat in view is a piece of it: an OPEN scene, so the core's fixed focus
+     applies (T.openSceneMode 'fixed', the default): expected convergence 2 (T.openSceneConvM, read
+     as metres), source 'fixed', rig at real scale (metersToVirtual 1).
+     &mode=percentile (with cfg openSceneMode 'percentile', case spark-room-percentile): the 0.5.3 room
+     rule, the T.convRoomPercentile (default 0.7) percentile of the apparent-size-weighted depths of
+     the splats in view: the lattice (5 layers, 7.3..8.7) fills most of the view, so the glass lands
+     toward its back, expected 8.6 (measured 8.63), source 'estimator'. &p=0.5 on top (cfg
+     convRoomPercentile 0.5, case spark-room-percentile-p50): the weighted median, expected 8 (8.06).
+     window.__addSubject(): adds a bounded mesh (a 0.4-unit box) 3 units ahead of the camera, inside
+     the room (case spark-room-subject): the estimator converges on it (3), source 'estimator'.
      ?freeze=N: N drawn frames after the splats are ready (sorted), the page stops drawing (render on demand: the shim replays).
      Instrumentation (window.__spark, read by cases/spark.mjs): every SparkRenderer.updateInternal
      call (Spark's per-frame generate + sort driver, run from its onBeforeRender), whether it
@@ -37,8 +42,9 @@ const Q = new URLSearchParams(location.search);
 const FREEZE = +(Q.get('freeze') || 0);
 const ROOM = Q.has('room'), AT = ROOM ? 8 : +(Q.get('at') || 0);
 const DEPTH = AT || 5; // the lattice centre, along -z from the camera
-window.__expectedConvergence = ROOM ? (Q.get('p') === '0.5' ? 8 : 8.6) : DEPTH;
-window.__expectedConvergenceSource = AT ? 'estimator' : 'target';
+const PCT = Q.get('mode') === 'percentile';
+window.__expectedConvergence = ROOM ? (PCT ? (Q.get('p') === '0.5' ? 8 : 8.6) : 2) : DEPTH;
+window.__expectedConvergenceSource = ROOM && !PCT ? 'fixed' : AT ? 'estimator' : 'target';
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -83,6 +89,13 @@ const splats = new SplatMesh({
   },
 });
 scene.add(splats);
+// A bounded subject that appears later (a model that loads into an open world): see the header.
+window.__addSubject = () => {
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), new THREE.MeshBasicMaterial({ color: 0xd08040 }));
+  box.position.set(0, 0, -3);
+  scene.add(box);
+  window.__subjectAt = performance.now();
+};
 
 // ------------------------------------------------------------ instrumentation (test only)
 const S = (window.__spark = { updates: [], gens: 0, sorts: [], frames: 0 });

@@ -107,8 +107,39 @@ convergence distance: the depth, along the camera's axis, of
 It is used only while the camera is still looking at it (within a quarter of the half-FOV of the
 axis) and it is in `[2·near, 0.9·far]`; a stale `lookAt` falls back to the estimator. The target is
 followed every frame, eased by 0.25 per frame. The HUD and `state().renderers[].convergenceSource`
-say which one is in use: `target`, `estimator`, or `manual` once `Ctrl+Alt+0` / `9` has scaled it
-(`convergenceVia` names the target's origin, e.g. `camera.lookAt`).
+say which one is in use: `target`, `estimator`, `fixed`, or `manual` once `Ctrl+Alt+0` / `9` (the
+chip's Focus nearer / farther) has scaled it (`convergenceVia` names the target's origin, e.g.
+`camera.lookAt`, or `open scene`).
+
+**Convergence, three tiers** (David's call for open scenes, 2026-09-28):
+
+1. **The page's target** (above), when there is one and the camera is looking at it.
+2. **A bounded subject**: the estimator (below) on what is in view, when anything bounded is in view
+   (a model, a SplatMesh seen from outside, a mesh among volume pieces: then only the bounded items
+   count, the room around them is no subject).
+3. **An open scene** (no target, and every sampled bound is a volume around the camera: a World Labs
+   / Marble world, a sky + floor): **no dynamic convergence**. A FIXED focus, as legacy WebXR had:
+   converge `T.openSceneConvM` (**2**) units in front of the page camera, at **real scale**. The rig
+   declares `metersToVirtual = 1` (one scene unit = one metre, so the viewer's own IPD applies) and
+   `convergenceDiopters = 1/2`; the user's depth scales the eye separation instead of m2v:
+   `ipdFactor = parallaxFactor = rampK × clamp(depth / T.openSceneRealDepth, 0, 1)` with
+   `openSceneRealDepth` 0.5, so the default depth 0.5 is the real IPD and 0.25 halves it (never above
+   real). Comfort by the camera-rig formula: `ipd × m2v × diopters × 0.5 = 1 × 1 × 0.5 × 0.5 = 0.25`,
+   the legacy-WebXR level, whatever the room's size. HUD: `conv 2.00 (fixed)`; the chip's Focus row
+   reads `auto (fixed)`.
+
+   **The metric assumption.** The 2 m reads as 2 m only if the scene is in metres (Marble worlds and
+   most three.js scenes are). As a sanity check the core still computes the 70th-percentile
+   (`T.convRoomPercentile`) apparent-size-weighted depth in view and, once per canvas, logs a console
+   note when it is below 0.2 or above 200 units (`the scene may not be metric; use Focus nearer /
+   farther`). It does not act on it: **Focus nearer / farther** (`Ctrl+Alt+9` / `0`, or the chip) is the
+   escape, and scales the fixed focus at real scale.
+
+   The estimator keeps running every 30 frames, so a subject that appears later (a model that loads
+   into the world) takes over (`fixed` -> `estimator`), and back when it leaves the view. The fixed
+   focus is constant: it snaps rather than eases. `T.openSceneMode = 'percentile'` restores the 0.5.3
+   room rule (below) instead of the fixed focus, for an A/B on the panel:
+   `window.__dxrAuto3DTestCfg = { openSceneMode: 'percentile' }` on a dev build.
 
 **The convergence interface.** `core.estimateSubjectDistance(sampler)` takes
 `{ cameraPose, viewMatrix?, verticalFov, tanHalfFov?, aspect, near, far, forEachBounds(cb) }`. The
@@ -117,7 +148,10 @@ when `cb` returns `false`. The rule is the prototype's: a sphere that contains t
 subject. If the camera is outside the rest, the result is the distance to their centre. If it
 stands among them, the result is the apparent-size-weighted median depth. `among = true` marks an
 item as a piece of a volume that holds the camera (a room-scale splat world fed as its splats in
-view): the room rule then applies whatever the centroid test says — not the median but the
+view). With `estimateSubjectDistance(sampler, out)` and `T.openSceneMode` `'fixed'` (the default),
+a scene whose in-view items are all such pieces (or with nothing in view but spheres that hold the
+camera) sets `out.open` and the caller uses the fixed focus (tier 3 above); a bounded item among the
+pieces is converged on by itself. In `'percentile'` mode the room rule applies whatever the centroid test says — not the median but the
 `T.convRoomPercentile` (default **0.7**) percentile of the apparent-size-weighted depths, i.e. the
 space the camera looks INTO, not the nearest surface. Why: apparent-size weighting lets the floor /
 wall just ahead dominate, so the weighted median lands on it (a Marble world on the panel converged
@@ -256,8 +290,10 @@ and applies `matrixWorld` per call. From **outside**, the mesh is one sphere (ce
 centres, 98th-percentile radius so a capture's floaters do not inflate it) and the camera converges
 on its middle, as PlayCanvas's gsplat AABB does. From **inside** (a World Labs / Marble room, whose
 sphere holds the camera and would be dropped), the mesh is fed as its <= 1500 sampled splats in view,
-each a sphere of its own scale, flagged `among`: the result is the 70th percentile (`T.convRoomPercentile`) of their
-apparent-size-weighted depths: the glass sits inside the room, not on the floor in front of it. The `SparkRenderer` (an instanced quad) is skipped.
+each a sphere of its own scale, flagged `among`: an open scene, so the fixed 2 m focus at real
+scale applies (tier 3 above); with `T.openSceneMode` `'percentile'`, the 70th percentile
+(`T.convRoomPercentile`) of their apparent-size-weighted depths: the glass sits inside the room, not
+on the floor in front of it. The `SparkRenderer` (an instanced quad) is skipped.
 The target (`camera.lookAt`, `OrbitControls`) still wins when there is one.
 
 **Post-processing chains (three.js).** Each eye needs its own copy of the whole chain, so the
@@ -510,6 +546,10 @@ dev build only.
 | `maxEyeDpr` | 3 | the device-pixel ratio the eye is sized at, at most |
 | `maxSbsWidth` | 3072 | the SBS store's width cap (browser-pvt#24), then the GL limits |
 | `coverMaxMs` | 5000 | the join cover's longest hold; also the "no display" threshold |
+| `openSceneMode` | `'fixed'` | open scenes (no target, no bounded subject): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
+| `openSceneConvM` | 2 | `'fixed'`: the focus distance in front of the page camera, in scene units read as metres |
+| `openSceneRealDepth` | 0.5 | `'fixed'`: the camera-rig depth that means the viewer's real IPD (`ipdFactor` 1); less scales it down linearly |
+| `convRoomPercentile` | 0.7 | `'percentile'`: the percentile of the in-view apparent-size-weighted depths; `'fixed'`: only the scale-sanity note |
 
 **Eye size (v0.5.2).** `eyeW = round(cssW × min(devicePixelRatio, maxEyeDpr) × eyeScale)`,
 `eyeH = round(cssH × min(devicePixelRatio, maxEyeDpr))`, from the canvas's layout box, regardless of
@@ -556,6 +596,8 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
 - **Camera rig (default).** `{type:'camera', verticalFov, convergenceDiopters = 1/d,
   metersToVirtual = depth·d/0.5, ipd/parallax 1}`, attached to the page camera (identity pose).
   It keeps the author's FOV and framing; comfort = ipd × m2v × diopters × 0.5 = `depth`.
+  In an **open scene** (fixed focus, see Convergence): `metersToVirtual = 1` (real scale),
+  `convergenceDiopters = 1/2`, `ipd/parallax = clamp(depth / 0.5, 0, 1)`: comfort 0.25 at depth 0.5.
 - **Display rig (`Ctrl+Alt+P`).** For object-centric scenes, like the P key in the legacy WebXR
   apps. `{type:'display', position (0, 0, −d), identity orientation, virtualDisplayHeight =
   2·d·tan(vfov/2), ipdFactor = parallaxFactor = depth, perspective 1}`, in the page camera's space. The
@@ -646,8 +688,10 @@ running), so the rig is always sampled at the configured depth.
 | `spark-eyes` | the same page, the fake's eyes 0.04 apart (`eyeX` 0.02) | skew shift minus the eyes' parallax (≈ 56 px), stable frame, the same Spark assertions (fail without the one-frame-per-pair change) |
 | `spark-idle` | `three-spark.html?freeze=30`: stops drawing once sorted | as `spark`, with every frame a replay |
 | `spark-est` | `three-spark.html?at=7`: no `lookAt`, the lattice 7 units ahead | as `a`, convergence 7 ± 5 % from the `estimator` (the SplatMesh's sampled centres; 5.00, the default, before) |
-| `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera) | as `a`, convergence 8.6 ± 5 % from the `estimator` (room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
-| `spark-room-p50` | the same page, cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the old median rule: the tuning key is live) |
+| `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera): an open scene | as `a`, convergence exactly 2 from `fixed` (via `open scene`), rig at real scale: `metersToVirtual` 1, ipd = parallax = 1 at depth 0.5 |
+| `spark-room-percentile` | the same page, cfg `openSceneMode: 'percentile'` | convergence 8.6 ± 5 % from the `estimator` (the 0.5.3 room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
+| `spark-room-percentile-p50` | the same, plus cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the weighted median: the key is live) |
+| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | `fixed` (2, m2v 1) before; `estimator` after, converging on the box (3 ± 5 %), m2v = d again |
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |

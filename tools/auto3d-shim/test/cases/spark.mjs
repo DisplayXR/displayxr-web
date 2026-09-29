@@ -13,9 +13,11 @@
 //
 // Convergence without a target (?at=, ?room=): a SplatMesh is a THREE.Object3D with no geometry
 // bounds; the three adapter samples its splat centres (three-adapter.js, splatBounds). From outside:
-// one sphere, converge on its centre (as PlayCanvas's gsplat AABB). From inside (a room-scale world):
-// a high percentile (T.convRoomPercentile, 0.7) of the apparent-size-weighted depths of the splats in
-// view: the space the camera looks into, not the nearest surface.
+// one sphere, converge on its centre (as PlayCanvas's gsplat AABB). From inside (a room-scale world,
+// an OPEN scene: every bound in view is a piece of a volume that holds the camera): a FIXED focus 2
+// units ahead at real scale (T.openSceneMode 'fixed', the legacy-WebXR rule, David 2026-09-28); with
+// T.openSceneMode 'percentile', the 0.5.3 room rule, a high percentile (T.convRoomPercentile, 0.7) of
+// the apparent-size-weighted depths of the splats in view.
 
 // Over one second of live frames: Spark updates per stereo frame, regenerations, sorts, and the
 // viewpoint of the latest sort vs the camera Spark was last updated with.
@@ -68,17 +70,48 @@ export default function cases({ P, NEW }) {
     // splat bounds it saw nothing and fell back to 5.00).
     { id: 'spark-est', name: 'Spark splats, no lookAt: estimator converges on the SplatMesh centre (7)', url: P + 'three-spark.html?at=7', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
     // No lookAt, the camera inside the splat mesh (lattice at 8 + a 15-unit shell around the camera):
-    // the mesh's sphere holds the camera, so its in-view splats go to the core's room rule: the 70th
-    // percentile of their apparent-size-weighted depths, toward the back of the lattice (8.6; the
-    // weighted median, the rule before, gave 8.06).
-    { id: 'spark-room', name: 'Spark splats, camera inside the mesh: 70th percentile of the apparent-size-weighted depths (8.6)', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+    // the mesh's sphere holds the camera and nothing bounded is in view: an OPEN scene. Fixed focus:
+    // convergence 2 (units read as metres), source 'fixed', rig at real scale (the generic rig check:
+    // metersToVirtual 1, ipd = parallax = 1 at the default depth 0.5).
+    { id: 'spark-room', name: 'Spark splats, camera inside the mesh (open scene): fixed focus 2 m at real scale', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+      alsoCheck(r, t, h, R) {
+        t(`open scene: convergence exactly T.openSceneConvM (2), via 'open scene'`, R && R.convergence === 2 && R.convergenceVia === 'open scene', `convergence ${R && R.convergence} via ${R && R.convergenceVia}`);
+      } },
+    // The same room with T.openSceneMode 'percentile' (the dev tuning key, via __dxrAuto3DTestCfg):
+    // the 0.5.3 room rule, the 70th percentile of the in-view splats' apparent-size-weighted depths,
+    // toward the back of the lattice (8.6), so the A/B stays live.
+    { id: 'spark-room-percentile', name: 'Spark splats, camera inside the mesh, openSceneMode percentile: 70th percentile (8.6)', url: P + 'three-spark.html?room=1&mode=percentile', shim: NEW, cfg: { openSceneMode: 'percentile' }, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
       alsoCheck(r, t, h, R) {
         const d = R && R.convergence;
         t('inside the mesh: finite, in front of the room shell (not the 15-unit shell, not the near plane, not the 5.00 default)', isFinite(d) && d > 1 && d < 12 && Math.abs(d - 5) > 0.5, `convergence ${d}`);
       } },
-    // The same room with T.convRoomPercentile = 0.5 (the dev tuning key, via __dxrAuto3DTestCfg):
-    // the pre-0.5.3 weighted MEDIAN rule, so the key is proven live and the two rules stay comparable.
-    { id: 'spark-room-p50', name: 'Spark splats, camera inside the mesh, convRoomPercentile 0.5: the weighted median (the old rule)', url: P + 'three-spark.html?room=1&p=0.5', shim: NEW, cfg: { convRoomPercentile: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
+    // ... and with T.convRoomPercentile 0.5 on top: the weighted MEDIAN (8.06).
+    { id: 'spark-room-percentile-p50', name: 'Spark splats, camera inside the mesh, percentile mode, convRoomPercentile 0.5: the weighted median (8)', url: P + 'three-spark.html?room=1&mode=percentile&p=0.5', shim: NEW, cfg: { openSceneMode: 'percentile', convRoomPercentile: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
+    // A bounded subject appears inside the open scene (a model loading into a Marble world): 1 s after
+    // settling on the fixed focus, the page adds a 0.4-unit box 3 units ahead. The estimator keeps
+    // running, so the source switches from 'fixed' to 'estimator' and the rig leaves real scale
+    // (metersToVirtual = depth·d/0.5, eased toward the box at 3; read 5 s after it appears).
+    { id: 'spark-room-subject', name: 'Spark splats, open scene, a bounded subject appears after 1 s: fixed -> estimator', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+      probe: async () => {
+        const read = () => { const R = window.__dxrAuto3D.state().renderers.find((x) => x.active); return { src: R.convergenceSource, via: R.convergenceVia, d: R.convergence, rig: JSON.parse(JSON.stringify(window.__fakeXR.lastRig)), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || '' }; };
+        const before = read();
+        await new Promise((r) => setTimeout(r, 1000));
+        window.__addSubject();
+        await new Promise((r) => setTimeout(r, 5000)); // the estimator runs every 30 frames, eased by 0.25: ~10 steps
+        return { before, after: read() };
+      },
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const p = r.probe;
+        if (!p) { t('probe read', false, 'no probe'); return; }
+        const b = p.before, a = p.after;
+        t(`before: source 'fixed', convergence 2, real scale (m2v 1, ipd = parallax = 1), HUD "(fixed)"`,
+          b.src === 'fixed' && b.d === 2 && b.rig.metersToVirtual === 1 && b.rig.ipdFactor === 1 && b.rig.parallaxFactor === 1 && b.hud.includes('(fixed)'),
+          `src ${b.src} d ${b.d} m2v ${b.rig.metersToVirtual} ipd ${b.rig.ipdFactor} parallax ${b.rig.parallaxFactor} hud "${b.hud}"`);
+        t(`after the box: source 'estimator', convergence toward the box (3 ± 5 %), rig m2v = 0.5·d/0.5 again`,
+          a.src === 'estimator' && Math.abs(a.d - 3) / 3 < 0.05 && Math.abs(a.rig.metersToVirtual - a.d) < 1e-3 * a.d && Math.abs(a.rig.convergenceDiopters - 1 / a.d) < 1e-3 / a.d && a.hud.includes('(estimator)'),
+          `src ${a.src} via ${a.via} d ${a.d} m2v ${a.rig.metersToVirtual} diopters ${a.rig.convergenceDiopters} hud "${a.hud}"`);
+      } },
     // Render on demand: the page stops drawing 30 frames after the splats are sorted; the shim's
     // replay keeps both eyes drawn (Spark's onBeforeRender runs in every replayed eye render).
     { id: 'spark-idle', name: 'Spark splats, page stops drawing (replay)', url: P + 'three-spark.html?freeze=30', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',

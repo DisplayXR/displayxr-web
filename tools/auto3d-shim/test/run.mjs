@@ -373,9 +373,11 @@ function check(r, results) {
   t('HUD counters: stereo > 0, no flat scene frame after eyes', R.stats.stereo > 0 && (R.stats.flatAfterEyes ?? 0) === 0, `3D ${R.stats.stereo} · flat ${R.stats.flat} · flatAfterEyes ${R.stats.flatAfterEyes} · replay ${R.stats.replays} · twoView ${R.stats.twoView}`);
   const rig = fake.lastRig || {};
   const d = R.convergence;
+  // An open scene's fixed focus is at REAL scale: metersToVirtual 1 (depth 0.5 = the real IPD: ipd/parallax 1).
+  const m2v = R.convergenceSource === 'fixed' ? 1 : (0.5 * d) / 0.5;
   const rigOk = rig.type === 'camera' && Math.abs(rig.verticalFov - (c.fovDeg * Math.PI) / 180) < 1e-6 && Math.abs(rig.convergenceDiopters - 1 / d) < 1e-3 * (1 / d) &&
-    Math.abs(rig.metersToVirtual - (0.5 * d) / 0.5) < 1e-3 * d && rig.ipdFactor === 1 && rig.parallaxFactor === 1;
-  t('rig pushed: camera, page fov, 1/d, 0.5·d/0.5, ipd/parallax 1', rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
+    Math.abs(rig.metersToVirtual - m2v) < 1e-3 * m2v && rig.ipdFactor === 1 && rig.parallaxFactor === 1;
+  t(`rig pushed: camera, page fov, 1/d, ${R.convergenceSource === 'fixed' ? 'm2v 1 (real scale, fixed focus)' : '0.5·d/0.5'}, ipd/parallax 1`, rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
   const exp = fake.expected;
   t('convergence ≈ known subject distance (±5 %)', exp && Math.abs(d - exp) / exp < 0.05, `estimated ${d.toFixed(3)}, expected ${exp && exp.toFixed(3)}, source ${R.convergenceSource}${R.convergenceVia ? ' (' + R.convergenceVia + ')' : ''}`);
   if (fake.expectedSource) {
