@@ -19,7 +19,10 @@ function dxrCore(cfg, cap, S) {
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
-    convRoomPercentile: 0.7, // camera INSIDE a volume (a room-scale splat world): converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance)
+    openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
+    openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
+    openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
@@ -496,12 +499,20 @@ function dxrCore(cfg, cap, S) {
     }
     const rig = st.rigs.camera;
     rig.type = 'camera';
+    const k = rampK(st); // the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
     rig.verticalFov = verticalFov;
     rig.convergenceDiopters = 1 / d;
+    if (st.conv.src === 'fixed') {
+      rig.metersToVirtual = 1;
+      const f = k * clamp(depthOf('camera') / (+T.openSceneRealDepth || 0.5), 0, 1);
+      rig.ipdFactor = f;
+      rig.parallaxFactor = f;
+      st.rig = rig;
+      return rig;
+    }
     rig.metersToVirtual = (depthOf('camera') * d) / 0.5;
-    const k = rampK(st);
     rig.ipdFactor = k;
     rig.parallaxFactor = k;
     st.rig = rig;
@@ -514,12 +525,21 @@ function dxrCore(cfg, cap, S) {
     if (!(d > 0)) {
       if (targetOnly) return false;
       src = 'estimator'; st.conv.via = null;
-      d = estimateSubjectDistance(s);
-      if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+      const o = {};
+      d = estimateSubjectDistance(s, o);
+      if (o.open) {
+        src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
+        if (o.p > 0 && !st.scaleWarned && (o.p < 0.2 || o.p > 200)) {
+          st.scaleWarned = true;
+          info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
+        }
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
     }
     d = clamp(d, s.near * 2, s.far * 0.9);
-    st.conv.d = snap || !st.conv.d ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    const was = st.conv.src;
     st.conv.src = src;
+    if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     return true;
   }
   function targetDepth(st, s) {
@@ -556,27 +576,34 @@ function dxrCore(cfg, cap, S) {
     o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det; o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
     return o;
   }
-  function estimateSubjectDistance(s) {
+  function estimateSubjectDistance(s, out) {
     const cw = s.cameraPose;
     const vm = s.viewMatrix || invert4(cw);
     const px = cw[12], py = cw[13], pz = cw[14];
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2), aspect = s.aspect || 1;
     const near = s.near;
-    const items = [];
-    let n = 0, among = false;
+    const fixedMode = T.openSceneMode !== 'percentile';
+    let items = [];
+    let n = 0, among = false, enclosing = 0, bounded = 0;
     s.forEachBounds((wx, wy, wz, wr, inVolume) => {
       if (n >= 4000) return false;
       n++;
-      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) return true;
-      if (inVolume) among = true;
+      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; return true; }
+      if (inVolume) { among = true; enclosing++; }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
       if (z <= near) return true;
       if (Math.abs(vx) - wr > z * tanV * aspect * 1.2 || Math.abs(vy) - wr > z * tanV * 1.2) return true; // out of view
-      items.push({ z, r: wr, x: wx, y: wy, w: wz });
+      items.push({ z, r: wr, x: wx, y: wy, w: wz, v: !!inVolume });
+      if (!inVolume) bounded++;
       return true;
     });
+    if (fixedMode && enclosing && !bounded) {
+      if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
+      return 0;
+    }
+    if (fixedMode && among) { items = items.filter((it) => !it.v); among = false; }
     if (!items.length) return 0;
     let cx = 0, cy = 0, cz = 0, ws = 0;
     for (const it of items) { const k = it.r * it.r + 1e-12; cx += it.x * k; cy += it.y * k; cz += it.w * k; ws += k; }
@@ -584,10 +611,12 @@ function dxrCore(cfg, cap, S) {
     let R = 0;
     for (const it of items) R = Math.max(R, Math.hypot(it.x - cx, it.y - cy, it.w - cz) + it.r);
     if (!among && Math.hypot(cx - px, cy - py, cz - pz) > R) return -(vm[2] * cx + vm[6] * cy + vm[10] * cz + vm[14]);
+    return weightedPercentile(items, among ? clamp(+T.convRoomPercentile || 0.5, 0.05, 0.95) : 0.5);
+  }
+  function weightedPercentile(items, q) {
     items.sort((a, b) => a.z - b.z);
     let tot = 0;
     for (const it of items) { it.k = Math.min(1, (it.r / it.z) ** 2); tot += it.k; }
-    const q = among ? clamp(+T.convRoomPercentile || 0.5, 0.05, 0.95) : 0.5;
     let acc = 0;
     for (const it of items) { acc += it.k; if (acc >= tot * q) return it.z; }
     return items[items.length - 1].z;
@@ -747,7 +776,7 @@ function dxrCore(cfg, cap, S) {
     return {
       state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
-      convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
+      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
       layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp), retrying: !!guard.retrying,
     };
@@ -1183,6 +1212,9 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     els.camera.setAttribute('aria-checked', String(s.rig === 'camera'));
     els.display.setAttribute('aria-checked', String(s.rig === 'display'));
     els.auto.setAttribute('aria-pressed', String(s.convScale === 1));
+    const fixed = s.convSource === 'fixed';
+    if (els.auto.textContent !== (fixed ? 'auto (fixed)' : 'auto')) els.auto.textContent = fixed ? 'auto (fixed)' : 'auto';
+    els.auto.title = fixed ? 'Open scene: fixed focus 2 m ahead, at real scale' : '';
     els.once.textContent = `${s.enabled ? 'Off' : 'On'} just this time (don't remember)`;
   }
   function placeMenu() {
