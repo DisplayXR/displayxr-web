@@ -282,6 +282,10 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     els.camera.setAttribute('aria-checked', String(s.rig === 'camera'));
     els.display.setAttribute('aria-checked', String(s.rig === 'display'));
     els.auto.setAttribute('aria-pressed', String(s.convScale === 1));
+    // An open scene (no target, no bounded subject) is focused at a fixed 2 m, not estimated: say so.
+    const fixed = s.convSource === 'fixed';
+    if (els.auto.textContent !== (fixed ? 'auto (fixed)' : 'auto')) els.auto.textContent = fixed ? 'auto (fixed)' : 'auto';
+    els.auto.title = fixed ? 'Open scene: fixed focus 2 m ahead, at real scale' : '';
     els.once.textContent = `${s.enabled ? 'Off' : 'On'} just this time (don't remember)`;
   }
   // Inside the tile (8 px inset) when it covers less than half of it, else outside the tile.

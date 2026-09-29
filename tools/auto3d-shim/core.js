@@ -64,7 +64,12 @@ function dxrCore(cfg, cap, S) {
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
-    convRoomPercentile: 0.7, // camera INSIDE a volume (a room-scale splat world): converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance)
+    // OPEN scenes (no target, and every sampled bound holds the camera: a room-scale splat world, a
+    // sky + floor). David's call, 2026-09-28: no dynamic convergence; a FIXED focus, as legacy WebXR.
+    openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
+    openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
+    openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
@@ -696,25 +701,42 @@ function dxrCore(cfg, cap, S) {
     }
     const rig = st.rigs.camera;
     rig.type = 'camera';
+    const k = rampK(st); // the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
     // attach: identity pose — the page camera's world transform supplies THIS frame's pose at draw time.
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
     rig.verticalFov = verticalFov;
     rig.convergenceDiopters = 1 / d;
+    if (st.conv.src === 'fixed') {
+      // OPEN scene, fixed focus (the legacy-WebXR rule): REAL scale. 1 unit = 1 m, so the viewer's
+      // own IPD applies (metersToVirtual 1), converged T.openSceneConvM (2 m) ahead. The user's depth
+      // scales the eye separation instead of m2v: depth T.openSceneRealDepth (0.5, the default) = the
+      // real IPD, 0.25 = half of it, never above real. Comfort by the formula below, ipd × m2v ×
+      // diopters × 0.5 = 1 × 1 × 0.5 × 0.5 = 0.25 at the defaults: the level legacy WebXR had
+      // (content at infinity reads a quarter of the viewer's IPD of disparity, whatever the room).
+      rig.metersToVirtual = 1;
+      const f = k * clamp(depthOf('camera') / (+T.openSceneRealDepth || 0.5), 0, 1);
+      rig.ipdFactor = f;
+      rig.parallaxFactor = f;
+      st.rig = rig;
+      return rig;
+    }
     // metersToVirtual grows with the convergence distance: the depth budget is then the same for a
     // 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
     // comfort = ipd × m2v × diopters × 0.5 = the camera rig's depth by construction.
     rig.metersToVirtual = (depthOf('camera') * d) / 0.5;
-    // Scaled by the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture.
-    const k = rampK(st);
     rig.ipdFactor = k;
     rig.parallaxFactor = k;
     st.rig = rig;
     return rig;
   }
-  // Convergence: the page's explicit target when it has one and the camera is actually looking at
-  // it, else the scene estimator. Returns false when there was nothing to go on (targetOnly: no
-  // usable target).
+  // Convergence, three tiers: (1) the page's explicit target when it has one and the camera is
+  // actually looking at it; else (2) the scene estimator on a bounded subject; else, in an OPEN
+  // scene (every sampled bound holds the camera: a room-scale world, a sky + floor), (3) a FIXED
+  // focus T.openSceneConvM (2) units ahead at real scale (buildRig), as legacy WebXR did. David's
+  // call, 2026-09-28 (T.openSceneMode 'percentile' restores the 0.5.3 room rule instead). The
+  // estimator keeps running, so a subject that appears later (a model loads) takes over again.
+  // Returns false when there was nothing to go on (targetOnly: no usable target).
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
@@ -722,13 +744,25 @@ function dxrCore(cfg, cap, S) {
     if (!(d > 0)) {
       if (targetOnly) return false;
       src = 'estimator'; st.conv.via = null;
-      d = estimateSubjectDistance(s);
-      if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+      const o = {};
+      d = estimateSubjectDistance(s, o);
+      if (o.open) {
+        src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
+        // Scale sanity, a note only: a world whose typical depth in view is millimetres or
+        // kilometres is probably not in metres, and the 2 m focus will read wrong there.
+        if (o.p > 0 && !st.scaleWarned && (o.p < 0.2 || o.p > 200)) {
+          st.scaleWarned = true;
+          info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
+        }
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
     }
     d = clamp(d, s.near * 2, s.far * 0.9);
-    // Eased: a convergence that snaps pulls the whole scene through the glass in one frame.
-    st.conv.d = snap || !st.conv.d ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    // Eased: a convergence that snaps pulls the whole scene through the glass in one frame. The
+    // fixed focus is constant and snaps (entering it changes the rig's scale in the same frame anyway).
+    st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    const was = st.conv.src;
     st.conv.src = src;
+    if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     return true;
   }
   // The target's depth along the camera's view axis, or 0 when there is no target or the camera is
@@ -783,27 +817,40 @@ function dxrCore(cfg, cap, S) {
   //                      among = true: the item is a piece of a volume that holds the camera (a room-scale splat
   //                      world fed as its splats in view): the camera stands among the items, so the median rule applies
   // }
-  function estimateSubjectDistance(s) {
+  //
+  // out (optional), T.openSceneMode 'fixed' only: out.open = true when the scene is OPEN (at least
+  // one sampled bound holds the camera and nothing BOUNDED is in view: every item in view is a piece
+  // of such a volume); the caller then uses the fixed focus, and out.p is the T.convRoomPercentile
+  // depth of what is in view (0 if nothing), for a scale-sanity note only. In 'fixed' mode a bounded
+  // subject in view among volume pieces is converged on by itself: the room around it is no subject.
+  function estimateSubjectDistance(s, out) {
     const cw = s.cameraPose;
     const vm = s.viewMatrix || invert4(cw);
     const px = cw[12], py = cw[13], pz = cw[14];
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2), aspect = s.aspect || 1;
     const near = s.near;
-    const items = [];
-    let n = 0, among = false;
+    const fixedMode = T.openSceneMode !== 'percentile';
+    let items = [];
+    let n = 0, among = false, enclosing = 0, bounded = 0;
     s.forEachBounds((wx, wy, wz, wr, inVolume) => {
       if (n >= 4000) return false;
       n++;
-      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) return true;
-      if (inVolume) among = true;
+      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; return true; }
+      if (inVolume) { among = true; enclosing++; }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
       if (z <= near) return true;
       if (Math.abs(vx) - wr > z * tanV * aspect * 1.2 || Math.abs(vy) - wr > z * tanV * 1.2) return true; // out of view
-      items.push({ z, r: wr, x: wx, y: wy, w: wz });
+      items.push({ z, r: wr, x: wx, y: wy, w: wz, v: !!inVolume });
+      if (!inVolume) bounded++;
       return true;
     });
+    if (fixedMode && enclosing && !bounded) {
+      if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
+      return 0;
+    }
+    if (fixedMode && among) { items = items.filter((it) => !it.v); among = false; }
     if (!items.length) return 0;
     let cx = 0, cy = 0, cz = 0, ws = 0;
     for (const it of items) { const k = it.r * it.r + 1e-12; cx += it.x * k; cy += it.y * k; cz += it.w * k; ws += k; }
@@ -811,10 +858,7 @@ function dxrCore(cfg, cap, S) {
     let R = 0;
     for (const it of items) R = Math.max(R, Math.hypot(it.x - cx, it.y - cy, it.w - cz) + it.r);
     if (!among && Math.hypot(cx - px, cy - py, cz - pz) > R) return -(vm[2] * cx + vm[6] * cy + vm[10] * cz + vm[14]);
-    items.sort((a, b) => a.z - b.z);
-    let tot = 0;
-    for (const it of items) { it.k = Math.min(1, (it.r / it.z) ** 2); tot += it.k; }
-    // Inside a volume (a room): converge on the space the camera looks INTO, not the nearest big
+    // 'percentile' mode only (in 'fixed' mode an open scene returned above). Inside a volume (a room): converge on the space the camera looks INTO, not the nearest big
     // surface. Apparent-size weighting makes the floor / wall just ahead dominate the weight, so the
     // weighted median lands on it (Marble world, panel 2026-09-28: 1.62 with the room beyond). With
     // metersToVirtual ∝ d (buildRig), content at depth z sits at depth × (1 − d/z) IPD of disparity:
@@ -825,7 +869,13 @@ function dxrCore(cfg, cap, S) {
     // (T.convRoomPercentile): the glass sits inside the room, the nearer p of what is seen comes
     // forward of it (the floor at the frame's edge), the rest spreads behind it. Outside a volume
     // (a subject seen among other meshes) the median stands.
-    const q = among ? clamp(+T.convRoomPercentile || 0.5, 0.05, 0.95) : 0.5;
+    return weightedPercentile(items, among ? clamp(+T.convRoomPercentile || 0.5, 0.05, 0.95) : 0.5);
+  }
+  // The q-percentile of the items' depths, each weighted by its apparent size (r/z)^2, capped at 1.
+  function weightedPercentile(items, q) {
+    items.sort((a, b) => a.z - b.z);
+    let tot = 0;
+    for (const it of items) { it.k = Math.min(1, (it.r / it.z) ** 2); tot += it.k; }
     let acc = 0;
     for (const it of items) { acc += it.k; if (acc >= tot * q) return it.z; }
     return items[items.length - 1].z;
@@ -1017,7 +1067,7 @@ function dxrCore(cfg, cap, S) {
     return {
       state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
-      convScale: site.convScale, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
+      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       // For the chip (read-only facts; it never touches the state): the site switch, the cover over
       // the target (in- or out-cover) and when the layer came up (it keys its live moment off
       // layerAt + holdMs, risk R6: the cover may stay up with nobody seated), the depth fade.
