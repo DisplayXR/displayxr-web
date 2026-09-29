@@ -21,3 +21,7 @@ dist/
 # No lockfile: CI installs the two dev tools with --no-save (see .github/workflows); a local
 # `npm install` writes one that must not be committed.
 package-lock.json
+
+# Bundler smoke tests (test/bundlers): installed tools and build output, never committed
+test/bundlers/node_modules/
+test/bundlers/out/

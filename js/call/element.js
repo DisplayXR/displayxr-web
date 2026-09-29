@@ -151,11 +151,15 @@ export class DxrCallElement extends Base {
           // does, so it says it here — a drop-in widget's page usually has no JS listening at all.
           this._off.push(handle.on('error', (e) => console.warn(`${TAG} ${e.code}: ${e.message}`)));
           this._dispatch('ready', { call: handle });
-          // `auto-join` (and `no-ui`) join DURING the mount, before anything could subscribe: the
-          // one event a page wires first is 'joined', so it is re-issued here from the handle's
-          // state. (Errors raised while mounting — 'camera-busy' — were console.warned by the
-          // call itself, since nothing was listening yet.)
-          if (handle.state === 'in-call') this._dispatch('joined', { room: handle.room, id: handle.id });
+          // `auto-join` (and `no-ui`) join DURING the mount, before anything could subscribe —
+          // and a room that already had people reports them during the join too. Replay what a
+          // listener would have seen, from the handle's state: 'joined', then one 'peer' per
+          // participant already there. (Errors raised while mounting — 'camera-busy' — were
+          // console.warned by the call itself, since nothing was listening yet.)
+          if (handle.state === 'in-call') {
+            this._dispatch('joined', { room: handle.room, id: handle.id });
+            for (const p of handle.peers) this._dispatch('peer', { id: p.id });
+          }
           return handle;
         },
         (err) => {

@@ -8,6 +8,8 @@
 // network 404. Either way the call raises `warning { code: 'lift-not-bundled' }` when a 2D
 // participant would have been lifted, and the lobby reads "2D→3D unavailable in this build".
 //
-// Exports nothing a page should use.
+// `lift` is exported as null (not omitted): webpack turns a namespace access to a MISSING export
+// into a build error, and the point of this file is that `/call/full` builds everywhere today.
 
 export const LIFT_PLACEHOLDER = true;
+export const lift = null;

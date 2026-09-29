@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- test/e2e/element.html — `<dxr-call>` from the SOURCE files (import map), as a CMS page would
+     paste it. The room comes from the invite fragment (#room=…), which is the real join flow.
+     Events are observed at the DOCUMENT: they bubble. Driven by test/e2e/call-element.e2e.mjs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>dxr-call e2e (source)</title>
+<script type="importmap">
+{ "imports": {
+  "@displayxr/inline3d": "/js/inline3d.js",
+  "@displayxr/inline3d/call": "/js/inline3d-call.js"
+} }
+</script>
+<script>
+  window.__events = [];
+  for (const t of ['ready', 'joined', 'left', 'peer', 'peerleft', 'state', 'format', 'speaker', 'quality', 'error', 'warning']) {
+    document.addEventListener('dxr-call:' + t, (e) => {
+      // `ready` carries the handle (not serialisable, and its diagnostics include the session's
+      // short-lived TURN credentials — keep those out of any log); everything else is plain data.
+      let d = null;
+      if (t === 'ready') d = { state: e.detail.call.state, peers: e.detail.call.peers.map((p) => p.id) };
+      else try { d = JSON.parse(JSON.stringify(e.detail, (k, v) => (v instanceof Error ? String(v) : v))); } catch { d = String(e.detail); }
+      window.__events.push({ t, d, at: performance.now() });
+    });
+  }
+</script>
+<script type="module">import '@displayxr/inline3d/call';</script>
+</head>
+<body>
+<dxr-call auto-join no-ui></dxr-call>
+</body>
+</html>

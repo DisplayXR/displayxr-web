@@ -305,9 +305,12 @@ test('end to end with the REAL mountCall: <dxr-call auto-join no-ui> joins, even
   // No navigator.xr here: a 2D wall, as in any non-DisplayXR browser (the woven path is the
   // #172 gate test's; the element adds nothing to routing).
   const joined = [];
+  const peers = [];
   const el = makeEl({ 'auto-join': '', 'no-ui': '', 'no-audio': '', 'no-self-view': '', room: 'E'.repeat(22) });
+  el.addEventListener('dxr-call:peer', (e) => peers.push(e.detail));
   el.options = {
-    signaling: { async join(room, hooks) { return { id: hooks.id, peers: [], send() {}, leave() {} }; } },
+    // One participant already in the room: reported DURING the join, i.e. during the mount.
+    signaling: { async join(room, hooks) { return { id: hooks.id, peers: ['~~~~~~~~~~~'], send() {}, leave() {} }; } },
     camera: new FakeStream([new FakeTrack('video')]),
     format: 'mono',
   };
@@ -324,6 +327,8 @@ test('end to end with the REAL mountCall: <dxr-call auto-join no-ui> joins, even
     assert.equal(joined.length, 1, "auto-join joined DURING the mount; the element re-issues 'joined' once it can");
     assert.equal(joined[0].id, h.id);
     assert.equal(joined[0].room, h.room);
+    assert.deepEqual(peers, [{ id: '~~~~~~~~~~~' }], "a participant already in the room is replayed as 'peer' after ready");
+    assert.equal(h.peers.length, 1);
     assert.ok(el.classList.contains('dxr-call-host'), 'the element is the call host');
   } finally {
     disconnect(el); // a failing assertion must not leave the call's timers holding the process
