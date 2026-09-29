@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -392,7 +392,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.2'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.3'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -416,7 +416,7 @@ function dxrCore(cfg, cap, S) {
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
-    guardFps: 24,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (was 40 before 0.5.2)
+    guardFps: 15,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
     guardMs: 2000,      // ... (and below 0.6 x the page's 2D rate, when it has one; was 0.8)
     guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
