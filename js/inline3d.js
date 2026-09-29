@@ -593,6 +593,39 @@ export async function createInline3D(opts = {}) {
   return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome, modeSwitch, untrackedFallback });
 }
 
+// The one shared creation in flight, so two callers racing before the first session resolves
+// (a <dxr-call> and a player both mounting on load) share ONE createInline3D() rather than
+// opening two sessions. Cleared once it settles: from then on `liveManager` is the answer.
+let sharedPending = null;
+
+/**
+ * The document's shared manager: the live `createInline3D()` result if one exists, else a new one
+ * (registered as the shared one by construction, since every manager is). Woven-canvas rule 1 —
+ * one inline-3D session per document — is what this exists for: a module that needs a wall it
+ * did not create (`mountCall`, `<dxr-call>`) must not open a second session next to the page's
+ * own, and a page that made its wall first and then adds such a module gets that same wall back.
+ *
+ * `opts` are `createInline3D`'s and apply only when this call creates the manager; a manager
+ * that already exists is returned as it was configured. An unsupported browser resolves to the
+ * same `{ supported: false }` shape as `createInline3D`, and it is NOT cached: nothing was
+ * created, and a later call re-probes (the weave service can bind after page load).
+ *
+ * Closing: whoever `close()`s the shared manager ends the document's session for everyone using
+ * it; the next `sharedInline3D()` opens a fresh one. Modules that borrow the wall must not close
+ * it (the call module never does; it only closes a wall it created — which it no longer does).
+ *
+ * @param {object} [opts]  see {@link createInline3D}
+ * @returns {Promise<Inline3D | {supported:false, trackingState:'unknown', error?:Error}>}
+ */
+export function sharedInline3D(opts = {}) {
+  if (liveManager && liveManager._running) return Promise.resolve(liveManager);
+  if (sharedPending) return sharedPending;
+  sharedPending = createInline3D(opts).finally(() => {
+    sharedPending = null;
+  });
+  return sharedPending;
+}
+
 /**
  * Back-compatible single-scene helper: open a session, weave one canvas, drive a render
  * callback with the two eye views each frame. Equivalent to
