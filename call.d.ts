@@ -4,6 +4,11 @@
 // P1 of docs/rfcs/0002-video-call.md: full-mesh WebRTC (<= 4 participants), pluggable signalling,
 // side-by-side stereo from a stereo camera, convergence from `hello` + `hint`, SDK chrome or
 // headless. P2a: mono peers lifted to 3D through `@displayxr/inline3d/lift` (`mono3D`).
+// RFC 0003 C1: `mountCall(el, opts?)` (the one-line path, the wall from `sharedInline3D()`), the
+// `warning` event (`lift-not-bundled`), `key`; `<dxr-call>` is `./call/element`, and
+// `./call/full` is this entry with lift statically imported.
+
+import type { Inline3D, Inline3DUnsupported, CreateInline3DOptions } from './index.js';
 
 /**
  * The `lift()` of `@displayxr/inline3d/lift`, as the call uses it: `lift(video, { mode: 'live',
@@ -110,32 +115,24 @@ export interface SignalingSession {
  */
 /** The hosted DisplayXR signalling server (`dxrSignaling()` with no URL). */
 export const DXR_SIGNAL_DEFAULT: string;
-export function dxrSignaling(url?: string, opts?: { WebSocket?: any; pingMs?: number }): SignalingAdapter;
-
-/**
- * DEMO ONLY — the free public PeerJS broker. No uptime guarantee and not operated by DisplayXR.
- * `Peer` defaults to `globalThis.Peer`, else the ESM build is imported from jsDelivr.
- */
-export function peerjsCloud(opts?: {
-  Peer?: any;
-  peerOptions?: object;
-  url?: string;
-  /** Upper bound on the join-time wait for slots to say hello (ms, default 5000). */
-  helloMs?: number;
-  /** A taken slot silent this long is reported unreachable (ms, default 10000). */
-  unreachableMs?: number;
-  /** Background re-dial interval for silent slots (ms, default 10000). */
-  retryMs?: number;
-  heartbeatMs?: number;
-  settleMs?: number;
-}): SignalingAdapter;
+export function dxrSignaling(url?: string, opts?: { WebSocket?: any; pingMs?: number; /** A publishable key for the hosted service (public by design; sent on connect). */ key?: string }): SignalingAdapter;
 
 export type CallAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' | 'ice';
 
 export interface CallOptions {
+  /**
+   * The inline-3D manager to put the tiles on. `mountCall` defaults it to the document's shared
+   * one (`sharedInline3D()`); `addCall` takes it as its first argument instead.
+   */
+  wall?: Inline3D | Inline3DUnsupported | null;
   /** Default `dxrSignaling()` (the hosted DisplayXR server). Or `dxrSignaling(url)` to self-host,
-   *  `peerjsCloud()` (demo only), or your own adapter. */
+   *  or your own adapter. */
   signaling?: SignalingAdapter;
+  /**
+   * A publishable key for the hosted signalling service (`pk_…`, RFC 0003 §5a). Public by design
+   * — it sits in page source — and only used when `signaling` is left at the default.
+   */
+  key?: string;
   /**
    * `'auto'` (default): the room in this page's `#room=` fragment, else a new one on join. Or a
    * room id / invite link. Room ids are >= 96 random bits (generated ones: 128), base64url.
@@ -212,8 +209,8 @@ export interface CallOptions {
   /** Scroll the call block to the top of the viewport once, on join, so every tile (and the self
    *  view) is on screen and woven. Default true (only with `ui`). */
   scrollIntoView?: boolean;
-  /** `createInline3D()` options used for that re-open. */
-  wallOptions?: object;
+  /** `createInline3D()` options for the wall `mountCall` creates, and for a session re-open. */
+  wallOptions?: CreateInline3DOptions;
   debug?: boolean;
   log?: (tag: string, detail: object) => void;
 }
@@ -268,6 +265,16 @@ export interface CallEvents {
   speaker: { id: string | null };
   /** Codes include `'camera-busy'`, `'no-camera'`, `'unreachable'` (error.peer = the tile id), `'room-full'`, `'session-ended'`. */
   error: { code: string; message: string; error: Error | null };
+  /**
+   * Degraded, not broken. `'lift-not-bundled'`: a 2D participant is on a 3D display, `mono3D`
+   * is `'auto'`, and the lift module could not be imported from this build (a bundler that could
+   * not follow the computed import, or a copy of the SDK without `./lift`) — they stay flat. Fix:
+   * `import { lift } from '@displayxr/inline3d/lift'` and pass `mono3D: lift`, or import
+   * `@displayxr/inline3d/call/full`. Emitted once per call, the first time such a peer routes,
+   * with one `console.warn`. A display that honestly cannot lift is NOT this: that is
+   * `handle.mono3D.reason` (`'no-provider'` / `'no-webgpu'`) and an info line.
+   */
+  warning: { code: 'lift-not-bundled' | string; message: string };
   state: { id: string; state: PeerState };
   joined: { room: string; id: string };
   left: { room: string };
@@ -312,7 +319,16 @@ export interface CallHandle {
   off<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): void;
 }
 
-export function addCall(wall: unknown, container: HTMLElement, opts: CallOptions): Promise<CallHandle>;
+export function addCall(wall: unknown, container: HTMLElement, opts?: CallOptions): Promise<CallHandle>;
+
+/**
+ * The one-line path (RFC 0003 §1): `addCall` with every argument optional. The wall is
+ * `opts.wall` if given, else the document's shared manager (`sharedInline3D(opts.wallOptions)` —
+ * the page's existing session, never a second one). Hosted signalling, `camera: 'auto'` and the
+ * SDK chrome by default; resolves once the lobby shows (or, with `autoJoin` / `ui: false`, once
+ * joined). `<dxr-call>` (`@displayxr/inline3d/call/element`) is this as markup.
+ */
+export function mountCall(el: HTMLElement, opts?: CallOptions): Promise<CallHandle>;
 
 // ── pure helpers (exported for tests and advanced pages) ──────────────────────────────────
 export function normalizeCallOptions(opts?: Partial<CallOptions>): Record<string, unknown>;
