@@ -28,7 +28,8 @@ const sparkProbe = async () => {
   await new Promise((r) => setTimeout(r, 1000));
   const b = { u: S.updates.length, g: S.gens, s: S.sorts.length, stereo: st().stats.stereo, replays: st().stats.replays, pageFrames: window.__pageFrames };
   const lastU = S.updates[S.updates.length - 1] || null, lastS = S.sorts[S.sorts.length - 1] || null;
-  return { a, b, lastU, lastS, eyeX: (window.__fakeXROpts && window.__fakeXROpts.eyeX) || 0 };
+  const R = st();
+  return { a, b, lastU, lastS, eyeX: (window.__fakeXROpts && window.__fakeXROpts.eyeX) || 0, rs: S.renderSize || null, eye: R.eye };
 };
 
 function sparkChecks(r, t) {
@@ -44,6 +45,13 @@ function sparkChecks(r, t) {
   const eyeOk = p.lastU && Math.abs(Math.abs(p.lastU.x) - p.eyeX) < 1e-4 && p.lastU.x <= 0;
   t('the order on screen was sorted for THIS view: last sort viewpoint = the camera of the last update (the left eye, as three WebXR shares one sort)',
     near(p.lastS, p.lastU) && eyeOk, `last sort at ${JSON.stringify(p.lastS)}, last update camera ${JSON.stringify(p.lastU)}, eyeX ${p.eyeX}`);
+  // Spark sizes its splats in pixels from renderer.getDrawingBufferSize() (its renderSize uniform).
+  // While converted that getter answers the page's mono store, smaller than the eye since P0.2;
+  // inside a SparkRenderer's onBeforeRender during an eye draw it answers the EYE (three-adapter.js,
+  // "Spark's pixel size"). Read by the page after its last render() (a stereo frame).
+  const replayOnly = p.a.pageFrames === p.b.pageFrames; // spark-idle: the page stopped drawing; its last read may predate the conversion
+  if (!replayOnly) t("Spark's drawing-buffer size during a stereo frame = the eye (eyeW x eyeH), not the page's mono store",
+    p.rs && p.eye && p.rs.x === p.eye[0] && p.rs.y === p.eye[1], `renderSize ${p.rs && p.rs.x}x${p.rs && p.rs.y}, eye ${p.eye && p.eye.join('x')}`);
 }
 
 export default function cases({ P, NEW }) {
@@ -105,12 +113,16 @@ export default function cases({ P, NEW }) {
         const p = r.probe;
         if (!p) { t('probe read', false, 'no probe'); return; }
         const b = p.before, a = p.after;
-        t(`before: source 'fixed', convergence 2, real scale (m2v 1, ipd = parallax = 1), HUD "(fixed)"`,
-          b.src === 'fixed' && b.d === 2 && b.rig.metersToVirtual === 1 && b.rig.ipdFactor === 1 && b.rig.parallaxFactor === 1 && b.hud.includes('(fixed)'),
+        t(`before: source 'fixed', convergence 2, real scale (m2v 1, ipd = parallax = 1), HUD "(fixed: open scene)"`,
+          b.src === 'fixed' && b.d === 2 && b.rig.metersToVirtual === 1 && b.rig.ipdFactor === 1 && b.rig.parallaxFactor === 1 && b.hud.includes('(fixed: open scene)'),
           `src ${b.src} d ${b.d} m2v ${b.rig.metersToVirtual} ipd ${b.rig.ipdFactor} parallax ${b.rig.parallaxFactor} hud "${b.hud}"`);
         t(`after the box: source 'estimator', convergence toward the box (3 ± 5 %), rig m2v = 0.5·d/0.5 again`,
           a.src === 'estimator' && Math.abs(a.d - 3) / 3 < 0.05 && Math.abs(a.rig.metersToVirtual - a.d) < 1e-3 * a.d && Math.abs(a.rig.convergenceDiopters - 1 / a.d) < 1e-3 / a.d && a.hud.includes('(estimator)'),
           `src ${a.src} via ${a.via} d ${a.d} m2v ${a.rig.metersToVirtual} diopters ${a.rig.convergenceDiopters} hud "${a.hud}"`);
+        // The go-live line said 2.00 (fixed); the move to the box gets ONE follow-up line once eased to rest.
+        const settled = r.log.filter((l) => /convergence settled: /.test(l));
+        t('one "convergence settled: ~3 units (estimator)" line after the go-live line', settled.length === 1 && /settled: (2\.9|3\.0)\d* units \(estimator\)/.test(settled[0]),
+          settled.join(' | ') || 'none');
       } },
     // Render on demand: the page stops drawing 30 frames after the splats are sorted; the shim's
     // replay keeps both eyes drawn (Spark's onBeforeRender runs in every replayed eye render).

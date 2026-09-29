@@ -30,6 +30,10 @@ export default function cases({ P, NEW, LEGACY, hasSog, SOG_DIR }) {
     { id: 'b-noviews', name: 'PlayCanvas, no eyes ever, no display API: back to 2D noViewsMs after the first draw', url: P + 'pc-mesh.html', shim: NEW, cfg: { noViewsMs: 1500 }, fake: { viewsAfterMs: 1e12, noDisplayApi: true }, expect: 'noviews' },
     { id: 'b-flip', name: 'PlayCanvas camera alternating perspective / orthographic every 2 s', url: P + 'pc-flip.html', shim: NEW, expect: 'flip', commits: true },
     { id: 'c', name: 'PlayCanvas gsplat ports_25.sog', url: P + 'pc-gsplat.html', shim: NEW, expect: 'convert', fovDeg: 50, ready: 'window.__splatReady', minFrames: 700, skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
+    // The same stand-down on a PlayCanvas page that asks for inline-3d BEFORE its app exists: in dev the
+    // sentinel keeps detecting, the app's constructor loads the core, the core stands down on load, and
+    // the find that loaded it must not take the app on ('PlayCanvas app found' after the stand-down).
+    { id: 'd-pc', name: 'PlayCanvas page requests inline-3d before its app exists (must stand down, no detection after)', url: P + 'pc-mesh.html?xrFirst=1', shim: NEW, expect: 'standdown' },
     { id: 'd', name: 'SDK samples/splat (must stand down)', url: '/samples/splat/index.html?engine=playcanvas&url=/bench/ports_25.sog', shim: NEW, expect: 'standdown', skip: hasSog ? null : `no ports_25.sog in ${SOG_DIR}` },
   ];
 }

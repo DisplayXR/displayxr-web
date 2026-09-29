@@ -213,7 +213,7 @@ function dxrSentinel(cfg, cap) {
   let pcFound = false;
   let retired = false;  // S.disarm(): nothing is armed again in this document
   function foundPC(app, how, ns) {
-    if (pcFound) return;
+    if (pcFound || retired) return; // after S.disarm() nothing is found (a late 'load' look, a trap mid-flight)
     pcFound = true;
     disarmCanvases(); // the id traps have done their job
     stopPoll();
@@ -291,7 +291,7 @@ function dxrSentinel(cfg, cap) {
   // The globals search, started by the first WebGL context (once per document).
   let polling = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
-    if (done || pcFound) return;
+    if (done || pcFound || retired) return;
     let pc = null;
     try { pc = window.pc; } catch (e) { /* ignore */ }
     if (pc && typeof pc === 'object') {
@@ -311,7 +311,7 @@ function dxrSentinel(cfg, cap) {
   }
   function poll() {
     pollT = 0;
-    if (done || pcFound) return;
+    if (done || pcFound || retired) return;
     lookGlobals();
     if (done || pcFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
@@ -360,7 +360,11 @@ function dxrSentinel(cfg, cap) {
     return 'canvas' + (id ? '#' + id : '');
   };
 
-  const disarm = () => { retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); };
+  const disarm = () => {
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k);
+    document.removeEventListener('DOMContentLoaded', lookGlobals);
+    window.removeEventListener('load', lookGlobals);
+  };
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;

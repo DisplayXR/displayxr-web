@@ -77,6 +77,7 @@ function dxrPlayCanvas(core) {
 
   // Called by the sentinel with each app it finds, and the engine namespace when the page has one.
   function consider(app, how, ns) {
+    if (core.retired) return; // stood down for good: no app is taken on after that
     if (!pcNS && ns && typeof ns === 'object' && (ns.AppBase || ns.Application)) pcNS = ns;
     if (!isApp(app) || apps.has(app)) return;
     apps.set(app, null);

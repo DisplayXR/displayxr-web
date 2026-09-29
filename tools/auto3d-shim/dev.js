@@ -7,7 +7,7 @@
 // Settings go through `ctl` (the same controller the chip uses); the HUD's own on/off is saved with
 // the host's `save` as a dev-only `hud` field.
 function dxrDev(core, ctl) {
-  const { VERSION, HAS_RIG, T, site, meta, tracked, engines, now, desc, realW, realH, rigMode, depthOf, convSource, rampK, flatNote } = core;
+  const { VERSION, HAS_RIG, T, site, meta, tracked, engines, now, desc, realW, realH, rigMode, depthOf, convSource, convText, rampK, flatNote } = core;
   let hudOn = core.cfg.hud !== false;
 
   // ------------------------------------------------------------ HUD + hotkeys
@@ -34,7 +34,7 @@ function dxrDev(core, ctl) {
     if (!enabled) text = 'DXR auto-3D: OFF for this site  (Ctrl+Alt+3)';
     else if (st && st.active) {
       const s = st.stats;
-      text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * site.convScale).toPrecision(3)} (${convSource(st)})` +
+      text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * site.convScale).toPrecision(3)} (${convText(st)})` +
         ` · 3D ${s.stereo} · flat ${s.flat} · replay ${s.replays}` +
         (st.nd ? ' · no 3D display for this window' : st.haveViews ? (st.eyesOn ? '' : ' · eyes lost') : ' · waiting for eyes');
     } else if (busy) text = 'DXR auto-3D: converting…';
