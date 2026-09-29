@@ -733,6 +733,22 @@ test('capture: every camera held by another app → camera-busy (never a 0x0 tra
   assert.equal(noCameraCode([]), 'no-camera');
 });
 
+test('capture: a labelled stereo camera is opened DIRECTLY, in one start (no default-first probe)', async () => {
+  const opened = [];
+  const md = fakeMedia((id) => {
+    opened.push(id || 'default');
+    return id === 'cam1' ? { w: 1280, h: 480 } : { w: 1280, h: 720 };
+  });
+  const cam = await openCamera('auto', { mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.deepEqual(opened, ['cam1']);
+  // camera=mono never takes the fast path.
+  opened.length = 0;
+  const mono = await openCamera('mono', { mediaDevices: md });
+  assert.equal(mono.format, 'mono');
+  assert.deepEqual(opened, ['default']);
+});
+
 test('capture: a runtime 3D camera (displayxrStereo) fills rectified + baseline + FOV; a page calibration wins', async () => {
   const stereo = { layout: 'side-by-side', rectified: true, baselineMm: 120, horizontalFovDeg: 64 };
   const cam = await openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 1280, h: 480, stereo })) });
@@ -752,7 +768,8 @@ test('capture: the default camera busy but another is a stereo pair → that pai
   assert.equal(cam.format, 'sbs');
   assert.equal(cam.width, 1280);
   assert.equal(cam.calibration.rectified, false);
-  assert.ok(cam.skipped.some((s) => s.busy));
+  // The labelled pair is opened directly (fast path), so the busy default is never even tried.
+  assert.equal(cam.skipped.length, 0);
 });
 
 /** An in-memory PeerJS broker: ids, data connections, zombie ids that never answer. */

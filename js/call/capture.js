@@ -123,6 +123,35 @@ export async function openCamera(want = 'auto', o = {}) {
     return result(await open({ deviceId: { exact: want }, ...MONO_CONSTRAINTS }), 'mono');
   }
 
+  // Fast path: when labels are already visible (camera permission persisted), open a device that
+  // NAMES itself stereo — e.g. the DisplayXR Browser's "3D Camera (DisplayXR)" — directly. Every
+  // camera start can take seconds (a busy capture stack took 7-20 s per start on a field box), and
+  // the default-first probe below costs two or three of them before it reaches the pair.
+  const tried = new Set();
+  if (want !== 'mono') {
+    let early = [];
+    try {
+      early = (await md.enumerateDevices()).filter((d) => d.kind === 'videoinput' && d.deviceId && stereoLabelHint(d.label));
+    } catch {
+      /* no enumeration yet: the normal path below */
+    }
+    for (const d of early) {
+      tried.add(d.deviceId);
+      let r = null;
+      try {
+        r = await open({ deviceId: { exact: d.deviceId }, ...PROBE_CONSTRAINTS });
+      } catch (err) {
+        skip(d.label, err);
+        continue;
+      }
+      if (looksSbs(r.width, r.height)) {
+        log('camera-sbs', { label: r.label, width: r.width, height: r.height, direct: true });
+        return result(r, 'sbs');
+      }
+      stop(r);
+    }
+  }
+
   // The default camera first: permission, labels, and the fallback.
   let mono = null;
   try {
@@ -143,6 +172,7 @@ export async function openCamera(want = 'auto', o = {}) {
   for (const d of devices) {
     if (!d.deviceId) continue; // no permission yet: an anonymous entry cannot be opened by id
     if (mono && d.deviceId === mono.deviceId) continue;
+    if (tried.has(d.deviceId)) continue; // the fast path already opened it (not a pair, or busy)
     let r = null;
     try {
       r = await open({ deviceId: { exact: d.deviceId }, ...PROBE_CONSTRAINTS });
