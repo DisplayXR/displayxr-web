@@ -141,6 +141,28 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
+      // Corpus finding (PR #112, google.com): a <canvas> added after load, no WebGL ever. The observer
+      // arms it, and arming used to schedule the 10 s expiry sweep: ONE sentinel timer on a non-WebGL
+      // page. Since v0.5.4 the sweep owns a timer only once a WebGL context exists; before that a trap
+      // expires lazily (its own id read, the next mutation, the next getContext).
+      id: 's-late-canvas', name: 'plain page adds a canvas after load (never WebGL) + a 2d canvas: no core, no sentinel timer',
+      url: P + 'plain-late-canvas.html', shim: [PROBE, ...shim],
+      async run(page, h) {
+        const t0 = await page.evaluate(() => performance.now());
+        await page.waitForFunction(() => document.documentElement.dataset.lateDone === '1', { timeout: 10000, polling: 'raf' }); // raf: the harness's own wait sets no timer
+        await h.sleep(1500);
+        return { X: await page.evaluate(hostRead), pending: await page.evaluate(() => window.__dxrProbe.pending()), made: await page.evaluate((t) => window.__dxrProbe.made(t), 0), t0 };
+      },
+      check(r, t) {
+        const X = r.X, H = X && X.host;
+        t('ran: the page added its canvases', r.ok, r.error || 'ok');
+        t('cap.loadCore() never called, nothing reported', H && H.loadCore === 0 && H.reports.length === 0, `loadCore ${H && H.loadCore}, reports ${rep(H)}`);
+        t('no sentinel timer pending', !r.pending.some(SEARCH), r.pending.filter(SEARCH).join(' | ') || `(none; ${r.pending.length} other)`);
+        t('no sentinel timer ever created', !r.made.some(SEARCH), r.made.filter(SEARCH).join(' | ') || `(none; ${r.made.length} other)`);
+        t('no timer at all (the page itself sets none)', r.pending.length === 0 && r.made.length === 0, [...r.pending, ...r.made].join(' | ') || '(none)');
+      },
+    },
+    {
       id: 's-meta', name: 'meta opt-out, static (<meta name="DisplayXR-Auto3D" content=" OFF ">): core never loaded, report optout, 2D',
       url: P + 'meta-off.html', shim: productShim({ decision: 'allow' }),
       async run(page, h) {

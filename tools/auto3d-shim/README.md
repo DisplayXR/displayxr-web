@@ -266,12 +266,16 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 `onBeforeRender` regenerates the splat accumulator for the camera it is given and starts an async
 sort (GPU readback + worker), **once per renderer frame** (`renderer.info.render.frame`). Its splat
 shader reads the camera's `projectionMatrix` as is, so the eyes' off-axis frusta (and reversed-Z)
-pass straight through; its pixel sizes come from `getDrawingBufferSize()`, which the adapter answers
-with the page's mono size. Since v0.5.2 the eye is sized from the element's device pixels, so on a
-page that renders below device resolution (Spark's hello-world: pixel ratio 1 on a 2.5× panel) the
-eye is larger than that mono size: Spark's pixel-space terms (its low-pass filter, pixel-radius
-limits) are then computed at the page's own resolution. Harmless in the harness (DPR 1, the two
-sizes equal); not yet looked at on the panel. The one change it needed is engine-generic: **the two eye
+pass straight through. Its pixel sizes (the `renderSize` uniform: the projection-to-pixel focal,
+the low-pass filter, the pixel-radius limits, the LoD's pixel-scale limit) come from
+`getDrawingBufferSize()`, which the adapter answers with the page's mono size to every other
+caller. Since v0.5.2 the eye is sized from the element's device pixels, so the eye is not that mono
+size (Spark's hello-world: pixel ratio 1 on a 2.5× panel); **since v0.5.4 a call made from inside a
+`SparkRenderer`'s `onBeforeRender` during an eye draw is answered with the EYE** (`eyeW × eyeH`,
+the viewport it draws into, as three's WebXR path gives Spark its per-view size). `SparkRenderer`s
+are found among the scene's direct children (where Spark's examples and its auto-created one put
+it); one nested deeper keeps the mono answer. Harness: the `spark` cases assert that Spark's
+`renderSize` during a stereo frame equals the eye. The one change it needed is engine-generic: **the two eye
 renders of a pair are one renderer frame** (the adapter restores `info.render.frame` between the
 eyes), as a three WebXR frame is. Counted per eye, Spark regenerated and re-sorted twice per frame
 and its single sort order ping-ponged between the eyes' viewpoints (case `spark-eyes` measures 2
@@ -429,6 +433,12 @@ Pages to start with:
 ### Hardware verification checklist (for the tester)
 
 1. **It converts.** The console shows `[dxr-auto3d] three.js r… renderer found` or `PlayCanvas app found via …`, then `live on canvas…`.
+   The go-live line carries the convergence of the first frame, often a fallback (`5.00 units
+   (estimator)`) before the page's splats or model have loaded. Since v0.5.4 one follow-up line,
+   `convergence settled: 2.95 units (estimator)`, follows once the source or the value has moved
+   (> 5 %) and the eased value is at rest; at most one such line per 2 s and three per document. The
+   source (`fixed: open scene`, `target: camera.lookAt`, `estimator`, `manual`) is also on the HUD and
+   in the chip's `auto` tooltip.
    The HUD (bottom left) reads `DXR auto-3D ● camera rig · depth 0.50 · conv … · 3D <growing> · flat <small>`.
    `window.__dxrAuto3D.state()` reports `active: true`, the engine, the detection route, `real` =
    the SBS store, and `eye`.
@@ -451,7 +461,10 @@ Pages to start with:
    reads better; `Ctrl+Alt+-` on the display rig must flatten the stereo AND damp the look-around
    together.
 5. **Stand-down.** Open an SDK sample (for example `samples/splat/`): the HUD must read
-   `standing down (the page requested 'inline-3d')`. Press `Ctrl+Alt+3` on a converted page: back
+   `standing down (the page requested 'inline-3d')`, and **detection stops there** (since v0.5.4):
+   no `PlayCanvas app found` / `renderer found` line may follow the `standing down for this
+   document` line (the sentinel's traps, polls and `load` look are off, and the adapters' `consider` /
+   `observe` / `register` are no-ops once the core has stood down for good). Press `Ctrl+Alt+3` on a converted page: back
    to 2D at once, the page intact. Press it again, without touching the page: 3D again within a
    second or so, including on render-on-demand pages (`webgl_geometry_teapot`, supersplat-viewer).
 6. **Frame rate.** Every converted draw runs twice. Note the page's fps before and after.
@@ -684,14 +697,14 @@ running), so the rig is always sampled at the configured depth.
 | case | page | asserts |
 |---|---|---|
 | `a` | `pages/three-keyframes.html`: keyframe turntable, shadowed floor, flat HUD pass; freezes after 60 frames (replay from then on) | SBS = 2 × eye, the page still sees its mono `canvas.width`, halves differ, 64 px shift, stereo > 0, no flat scene frame after the eyes arrive, rig fields, convergence 8 ± 5 % |
-| `spark` | `pages/three-spark.html`: Spark 2.2.0, a procedural `SplatMesh` (~3k splats), `setAnimationLoop`, `lookAt` the lattice 5 units ahead | as `a`, plus: ONE Spark update per stereo frame, no regenerate / re-sort once settled, the last sort made for the camera of the last update |
+| `spark` | `pages/three-spark.html`: Spark 2.2.0, a procedural `SplatMesh` (~3k splats), `setAnimationLoop`, `lookAt` the lattice 5 units ahead | as `a`, plus: ONE Spark update per stereo frame, no regenerate / re-sort once settled, the last sort made for the camera of the last update, Spark's `renderSize` = the eye (fails without v0.5.4: the page's mono store) |
 | `spark-eyes` | the same page, the fake's eyes 0.04 apart (`eyeX` 0.02) | skew shift minus the eyes' parallax (≈ 56 px), stable frame, the same Spark assertions (fail without the one-frame-per-pair change) |
 | `spark-idle` | `three-spark.html?freeze=30`: stops drawing once sorted | as `spark`, with every frame a replay |
 | `spark-est` | `three-spark.html?at=7`: no `lookAt`, the lattice 7 units ahead | as `a`, convergence 7 ± 5 % from the `estimator` (the SplatMesh's sampled centres; 5.00, the default, before) |
 | `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera): an open scene | as `a`, convergence exactly 2 from `fixed` (via `open scene`), rig at real scale: `metersToVirtual` 1, ipd = parallax = 1 at depth 0.5 |
 | `spark-room-percentile` | the same page, cfg `openSceneMode: 'percentile'` | convergence 8.6 ± 5 % from the `estimator` (the 0.5.3 room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
 | `spark-room-percentile-p50` | the same, plus cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the weighted median: the key is live) |
-| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | `fixed` (2, m2v 1) before; `estimator` after, converging on the box (3 ± 5 %), m2v = d again |
+| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | `fixed` (2, m2v 1) before; `estimator` after, converging on the box (3 ± 5 %), m2v = d again; ONE `convergence settled: ~3 units (estimator)` console line |
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |
@@ -704,11 +717,13 @@ running), so the rig is always sampled at the configured depth.
 | `b-noviews` | `pc-mesh.html`, no eyes ever, no display API, `noViewsMs` 1.5 s | back to 2D (layer closed) 1.5-2.5 s after the FIRST DRAW, with the reason in the console: the timer still fires |
 | `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
-| `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so |
+| `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so, no `app found` line after the stand-down |
+| `d-pc` | `pc-mesh.html?xrFirst=1`: the page asks for `inline-3d` before its app exists | as `d`; fails without v0.5.4 (the app's constructor loaded the core, which stood down, and the same find then took the app on: `PlayCanvas app found` after `standing down`) |
 | `p-smoke` | three.js keyframes in **product mode** (fake host, `decision: 'allow'`), with a hostile `__dxrAuto3DTestCfg` | goes live; `loadCore` once; reports are transitions only (converting before live); nothing saved; no `__dxrAuto3D` / HUD; the test config is ignored; the only window symbol is the value-only marker |
 | `p-block` | product mode, `decision: 'block'` | the core is never loaded, no session |
 | `p-double` / `p-double-dev` | the product injector and the dev bundle both injected, in either order | the first injector wins: one core, one session, one layer |
 | `s-cost` | `pages/plain-2000.html`: 2,000 elements, no engine, product mode | `loadCore` never called; only `HTMLCanvasElement.prototype.getContext` changed; `'pc' in window` false; no timers; only new window key `__THREE_DEVTOOLS__`; sentinel eval < 0.5 ms (median of 5); `div.id` reads within ±5 % of a control |
+| `s-late-canvas` | `pages/plain-late-canvas.html`: a canvas added after load (id read, never a context) and a `2d` canvas, product mode | `loadCore` never called; no sentinel timer pending or ever created (fails without v0.5.4: the observer's arm scheduled the 10 s expiry sweep, the corpus's google.com finding) |
 | `s-meta` / `s-meta-boot` / `s-meta-late` | `pages/meta-off.html`: the meta static, inserted before the first draw, inserted 2.5 s in while live | core never loaded / never activates / turned off within 30 session frames; report `optout`; one console line |
 | `s-block-pc` | PlayCanvas, product `block` | detect-only: one `{ off, PlayCanvas }` report, no session, the id trap removed |
 | `s-cost` (v0.5.1 addition) | the same | the parse-time canvas observer's callbacks < 0.5 ms per load (median of 5) while the 2,000 elements go in |
@@ -771,6 +786,13 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.5.4 (P0.3), Windows, ANGLE D3D11:** 65 cases (63 + `d-pc`, `s-late-canvas`); new assertions: no
+detection after a stand-down (`d`, `d-pc`), Spark's `renderSize` = the eye (`spark`, `spark-eyes`),
+one settle line (`spark-room-subject`), no sentinel timer when a canvas is added after load on a
+page that never asks for WebGL (`s-late-canvas`: the canvas-id trap's 10 s expiry sweep owns a timer
+only once a WebGL context exists; before that a trap expires lazily, on its own id read, the next
+mutation or the next `getContext`).
 
 **Headless, v0.5.2 (P0.2), Windows, ANGLE D3D11:** 60 cases (52 + `g-loading`, `g-loading-long`, `g-steady`, `spark-est`, `spark-room`,
 `chip-no-display`, `chip-amber-debounce`, `a-dpr2`); `a` pins `eyeScale` 0.5 to stay

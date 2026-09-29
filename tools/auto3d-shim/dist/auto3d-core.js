@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.5.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.3'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.4'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -252,7 +252,8 @@ function dxrCore(cfg, cap, S) {
     ad.firstDraw(st);
     try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
     info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
-      `convergence ${st.conv.d.toPrecision(3)} units (${convSource(st)}${st.conv.via ? ': ' + st.conv.via : ''}), depth ${depthOf()}`);
+      `convergence ${st.conv.d.toPrecision(3)} units (${convText(st)}), depth ${depthOf()}`);
+    st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
     notify();
   }
   function stand(st, reason, opts) {
@@ -457,6 +458,7 @@ function dxrCore(cfg, cap, S) {
   const depthOf = (mode) => clamp(site.depths[mode || rigMode()] || DEFAULT_DEPTH[mode || rigMode()], DEPTH_MIN, DEPTH_MAX);
   function setDepth(v) { site.depths = { ...site.depths, [rigMode()]: clamp(v, DEPTH_MIN, DEPTH_MAX) }; }
   const convSource = (st) => (site.convScale !== 1 ? 'manual' : st.conv.src);
+  const convText = (st) => convSource(st) + (st.conv.via ? ': ' + st.conv.via : '');
   function depthRangeFor(st) {
     const dr = st.ad.depthRange(st);
     return rigMode() === 'display' && st.eyeBack > 0 ? { near: dr.near, far: dr.far + st.eyeBack } : dr;
@@ -540,7 +542,19 @@ function dxrCore(cfg, cap, S) {
     const was = st.conv.src;
     st.conv.src = src;
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
+    if (st.active && st.convLogged) settleLog(st);
     return true;
+  }
+  let settleLines = 0, settleAt = -Infinity;
+  function settleLog(st) {
+    const L = st.convLogged, d = st.conv.d, prev = st.convPrev;
+    st.convPrev = d;
+    const moved = st.conv.src !== L.src || st.conv.via !== L.via || Math.abs(d - L.d) > 0.05 * L.d;
+    if (!moved || !(prev > 0) || Math.abs(d - prev) > 0.01 * d) return;
+    if (settleLines >= 3 || now() - settleAt < 2000) return;
+    settleLines++; settleAt = now();
+    st.convLogged = { d, src: st.conv.src, via: st.conv.via };
+    info(`convergence settled: ${d.toPrecision(3)} units (${convText(st)})`);
   }
   function targetDepth(st, s) {
     let t = null;
@@ -776,7 +790,8 @@ function dxrCore(cfg, cap, S) {
     return {
       state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
-      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
+      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null,
+      convText: owner && owner.active ? convText(owner) : null, convergence: owner && owner.active ? owner.conv.d * site.convScale : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
       layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp), retrying: !!guard.retrying,
     };
@@ -839,6 +854,7 @@ function dxrCore(cfg, cap, S) {
     intrinsics: S.intrinsics,
     get owner() { return owner; },
     get foreign() { return foreign; },
+    get retired() { return retired; }, // stood down for good: the adapters' detection entry points are no-ops
     get lastTarget() { return lastTarget; },
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
@@ -847,7 +863,7 @@ function dxrCore(cfg, cap, S) {
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
-    rigMode, depthOf, convSource, rampK, flatNote, statusOf, setEnabled,
+    rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
   const guard = dxrGuard(core);
   chip = dxrChip(ctl, S);
@@ -1214,7 +1230,8 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     els.auto.setAttribute('aria-pressed', String(s.convScale === 1));
     const fixed = s.convSource === 'fixed';
     if (els.auto.textContent !== (fixed ? 'auto (fixed)' : 'auto')) els.auto.textContent = fixed ? 'auto (fixed)' : 'auto';
-    els.auto.title = fixed ? 'Open scene: fixed focus 2 m ahead, at real scale' : '';
+    const src = s.convText ? `Focus ${(+s.convergence).toPrecision(3)} units (${s.convText})` : '';
+    els.auto.title = fixed ? `Open scene: fixed focus 2 m ahead, at real scale${src ? ' — ' + src : ''}` : src;
     els.once.textContent = `${s.enabled ? 'Off' : 'On'} just this time (don't remember)`;
   }
   function placeMenu() {
@@ -1389,7 +1406,7 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
   };
 }
 function dxrDev(core, ctl) {
-  const { VERSION, HAS_RIG, T, site, meta, tracked, engines, now, desc, realW, realH, rigMode, depthOf, convSource, rampK, flatNote } = core;
+  const { VERSION, HAS_RIG, T, site, meta, tracked, engines, now, desc, realW, realH, rigMode, depthOf, convSource, convText, rampK, flatNote } = core;
   let hudOn = core.cfg.hud !== false;
 
   let hudEl = null, hudUntil = 0, hudPending = false;
@@ -1413,7 +1430,7 @@ function dxrDev(core, ctl) {
     if (!enabled) text = 'DXR auto-3D: OFF for this site  (Ctrl+Alt+3)';
     else if (st && st.active) {
       const s = st.stats;
-      text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * site.convScale).toPrecision(3)} (${convSource(st)})` +
+      text = `DXR auto-3D ● ${HAS_RIG ? rigMode() : 'display'} rig · depth ${depthOf().toFixed(2)} · conv ${(st.conv.d * site.convScale).toPrecision(3)} (${convText(st)})` +
         ` · 3D ${s.stereo} · flat ${s.flat} · replay ${s.replays}` +
         (st.nd ? ' · no 3D display for this window' : st.haveViews ? (st.eyesOn ? '' : ' · eyes lost') : ' · waiting for eyes');
     } else if (busy) text = 'DXR auto-3D: converting…';
@@ -1499,13 +1516,14 @@ function dxrThree(core) {
   Object.defineProperty(core.meta, 'revision', { enumerable: true, get: () => revision });
 
   const onObserve = (e) => {
+    if (core.retired) return;
     const o = e && e.detail;
     if (!o) return;
     if (o.isScene) { hookLookAt(o); return; }
     if (o.isWebGPURenderer) { warnOnce('webgpu', 'WebGPURenderer seen — not converted by this prototype, left 2D'); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
-  const onRegister = (e) => { if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
+  const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
 
   const lookAts = new WeakMap(); // camera -> { x, y, z } (world), the last lookAt
   const hookedProtos = new WeakSet();
@@ -1715,7 +1733,10 @@ function dxrThree(core) {
     W('getPixelRatio', () => (st.active ? st.L.pr : st.call('getPixelRatio')));
     W('getDrawingBufferSize', (t) => {
       const out = st.call('getDrawingBufferSize', t);
-      if (st.active && out && typeof out.set === 'function') out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
+      if (st.active && out && typeof out.set === 'function') {
+        if (sparkIn > 0 && st.inEye && st.R) out.set(st.R.eyeW, st.R.eyeH);
+        else out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
+      }
       return out;
     });
     W('setViewport', (x, y, w, h) => {
@@ -1903,8 +1924,24 @@ function dxrThree(core) {
   }
   const endFrame = (fi, f) => { if (fi && f && fi.frame < f.hi) fi.frame = f.hi; };
 
+  let sparkIn = 0;
+  const sparkHooked = new WeakSet();
+  function hookSpark(st, scene) {
+    const n = st.stats.stereo + st.stats.flat;
+    if (scene === st.sparkScene && n - st.sparkScan < 60) return;
+    st.sparkScene = scene; st.sparkScan = n;
+    const ch = scene && scene.children;
+    if (!ch) return;
+    for (const o of ch) {
+      if (!o || sparkHooked.has(o) || !isSparkRenderer(o) || typeof o.onBeforeRender !== 'function') continue;
+      sparkHooked.add(o);
+      const f = o.onBeforeRender;
+      o.onBeforeRender = function () { sparkIn++; try { return f.apply(this, arguments); } finally { sparkIn--; } };
+    }
+  }
   function renderStereo(st, scene, camera) {
     st.mainCam = camera; st.lastScene = scene;
+    hookSpark(st, scene);
     if (!st.haveViews) { // no eyes yet: flat into both halves, never a blank tile
       if (st.stats.twoView > 0) st.stats.flatAfterEyes++;
       return renderFlat(st, scene, camera);
@@ -1916,6 +1953,7 @@ function dxrThree(core) {
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     let fr = null;
+    st.inEye = true;
     try {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
@@ -1937,6 +1975,7 @@ function dxrThree(core) {
         st.call('render', scene, e);
       }
     } finally {
+      st.inEye = false;
       endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
@@ -1945,9 +1984,11 @@ function dxrThree(core) {
     core.drew(st);
   }
   function renderFlat(st, scene, camera) {
+    hookSpark(st, scene);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     let fr = null;
+    st.inEye = true;
     try {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
@@ -1956,6 +1997,7 @@ function dxrThree(core) {
         st.call('render', scene, camera);
       }
     } finally {
+      st.inEye = false;
       endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
@@ -2287,6 +2329,7 @@ function dxrPlayCanvas(core) {
   const TARGET_FIELDS = [['pivotPoint', 'orbit-camera pivotPoint'], ['focusPoint', 'CameraControls focusPoint']];
 
   function consider(app, how, ns) {
+    if (core.retired) return; // stood down for good: no app is taken on after that
     if (!pcNS && ns && typeof ns === 'object' && (ns.AppBase || ns.Application)) pcNS = ns;
     if (!isApp(app) || apps.has(app)) return;
     apps.set(app, null);

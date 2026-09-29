@@ -353,6 +353,11 @@ function check(r, results) {
     t('shim opened no session of its own', fake.sessions === 1, `sessions=${fake.sessions} (the SDK's)`);
     t('nothing converted by the shim', state && state.renderers.every((x) => !x.active && !x.pending), `renderers=${state && state.renderers.map((x) => x.engine).join(',')}`);
     t('HUD says it stood down', /standing down \(the page requested 'inline-3d'\)/.test(r.hud || ''), `hud="${r.hud}"`);
+    // Detection stops with the stand-down (S.disarm + the adapters' entry points): no engine is
+    // found after it (the SDK splat sample: a late 'load' look found the SDK's PlayCanvas app).
+    const at = r.log.findIndex((l) => /standing down for this document/.test(l));
+    const late = at < 0 ? [] : r.log.slice(at + 1).filter((l) => /dxr-auto3d/.test(l) && /app found|PlayCanvas app on|renderer found on/.test(l));
+    t('no detection after the stand-down (no "app found" line after it)', at >= 0 && late.length === 0, at < 0 ? 'no stand-down line' : late.length ? late[0] : 'none');
     return A;
   }
   t(`converted within ${(c.timeoutMs || 60000) / 1000} s`, r.ok, `${r.ms} ms`);
@@ -381,7 +386,7 @@ function check(r, results) {
   const exp = fake.expected;
   t('convergence ≈ known subject distance (±5 %)', exp && Math.abs(d - exp) / exp < 0.05, `estimated ${d.toFixed(3)}, expected ${exp && exp.toFixed(3)}, source ${R.convergenceSource}${R.convergenceVia ? ' (' + R.convergenceVia + ')' : ''}`);
   if (fake.expectedSource) {
-    t(`convergence source = '${fake.expectedSource}', on the HUD and in state()`, R.convergenceSource === fake.expectedSource && (r.hud || '').includes(`(${fake.expectedSource})`),
+    t(`convergence source = '${fake.expectedSource}', on the HUD and in state()`, R.convergenceSource === fake.expectedSource && (r.hud || '').includes(`(${fake.expectedSource}`) /* '(target: camera.lookAt)': the source, then its via */,
       `state ${R.convergenceSource} via ${R.convergenceVia}; hud "${r.hud}"`);
   }
   if (R.engine === 'PlayCanvas') {

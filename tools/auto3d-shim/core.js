@@ -367,7 +367,8 @@ function dxrCore(cfg, cap, S) {
     ad.firstDraw(st);
     try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
     info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
-      `convergence ${st.conv.d.toPrecision(3)} units (${convSource(st)}${st.conv.via ? ': ' + st.conv.via : ''}), depth ${depthOf()}`);
+      `convergence ${st.conv.d.toPrecision(3)} units (${convText(st)}), depth ${depthOf()}`);
+    st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
     notify();
   }
   // Back to 2D. Two orders:
@@ -641,6 +642,8 @@ function dxrCore(cfg, cap, S) {
   const depthOf = (mode) => clamp(site.depths[mode || rigMode()] || DEFAULT_DEPTH[mode || rigMode()], DEPTH_MIN, DEPTH_MAX);
   function setDepth(v) { site.depths = { ...site.depths, [rigMode()]: clamp(v, DEPTH_MIN, DEPTH_MAX) }; }
   const convSource = (st) => (site.convScale !== 1 ? 'manual' : st.conv.src);
+  // 'fixed: open scene', 'target: camera.lookAt', 'estimator' — the go-live / settle lines, the HUD.
+  const convText = (st) => convSource(st) + (st.conv.via ? ': ' + st.conv.via : '');
   function depthRangeFor(st) {
     const dr = st.ad.depthRange(st);
     return rigMode() === 'display' && st.eyeBack > 0 ? { near: dr.near, far: dr.far + st.eyeBack } : dr;
@@ -764,7 +767,24 @@ function dxrCore(cfg, cap, S) {
     const was = st.conv.src;
     st.conv.src = src;
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
+    if (st.active && st.convLogged) settleLog(st);
     return true;
+  }
+  // The go-live line prints the convergence of the first frame, often the fallback (5.00, estimator)
+  // before the page's splats / model / bounds have loaded; the real value arrives later, eased. One
+  // follow-up line once the source or the value has MOVED from what was logged (> 5 %) and the eased
+  // value is at rest (< 1 % per step): "convergence settled: 2.95 units (estimator)". Product log
+  // (the browser's log is where a tester reads it): at most one line per 2 s, three per document.
+  let settleLines = 0, settleAt = -Infinity;
+  function settleLog(st) {
+    const L = st.convLogged, d = st.conv.d, prev = st.convPrev;
+    st.convPrev = d;
+    const moved = st.conv.src !== L.src || st.conv.via !== L.via || Math.abs(d - L.d) > 0.05 * L.d;
+    if (!moved || !(prev > 0) || Math.abs(d - prev) > 0.01 * d) return;
+    if (settleLines >= 3 || now() - settleAt < 2000) return;
+    settleLines++; settleAt = now();
+    st.convLogged = { d, src: st.conv.src, via: st.conv.via };
+    info(`convergence settled: ${d.toPrecision(3)} units (${convText(st)})`);
   }
   // The target's depth along the camera's view axis, or 0 when there is no target or the camera is
   // not looking at it (conservative: a lookAt the camera has since moved away from is stale). A
@@ -1068,7 +1088,8 @@ function dxrCore(cfg, cap, S) {
     return {
       state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
       rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
-      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
+      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null,
+      convText: owner && owner.active ? convText(owner) : null, convergence: owner && owner.active ? owner.conv.d * site.convScale : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       // For the chip (read-only facts; it never touches the state): the site switch, the cover over
       // the target (in- or out-cover) and when the layer came up (it keys its live moment off
       // layerAt + holdMs, risk R6: the cover may stay up with nobody seated), the depth fade.
@@ -1142,6 +1163,7 @@ function dxrCore(cfg, cap, S) {
     intrinsics: S.intrinsics,
     get owner() { return owner; },
     get foreign() { return foreign; },
+    get retired() { return retired; }, // stood down for good: the adapters' detection entry points are no-ops
     get lastTarget() { return lastTarget; },
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
@@ -1150,7 +1172,7 @@ function dxrCore(cfg, cap, S) {
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
-    rigMode, depthOf, convSource, rampK, flatNote, statusOf, setEnabled,
+    rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
   const guard = dxrGuard(core);
   chip = dxrChip(ctl, S);

@@ -26,7 +26,7 @@
      Instrumentation (window.__spark, read by cases/spark.mjs): every SparkRenderer.updateInternal
      call (Spark's per-frame generate + sort driver, run from its onBeforeRender), whether it
      regenerated the splat accumulator, and every sort (readbackDepth) with the viewpoint it sorted
-     for. -->
+     for, and (renderSize) the drawing-buffer size Spark's onBeforeRender read for its pixel terms. -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three + Spark splats (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
 <script type="importmap">{ "imports": {
@@ -128,6 +128,7 @@ renderer.setAnimationLoop(() => {
   if (FREEZE && readyN >= FREEZE) { renderer.setAnimationLoop(null); window.__frozen = true; return; }
   if (window.__splatReady) readyN++;
   renderer.render(scene, camera);
+  S.renderSize = { x: spark.renderSize.x, y: spark.renderSize.y }; // what Spark sized its pixels from (the last draw)
   n++; S.frames = n; window.__pageFrames = n;
   // Ready once the splats are in and Spark has sorted at least once (its ordering texture exists).
   if (S.initialized && spark.orderingTexture && spark.activeSplats > 0 && !window.__splatReady) window.__splatReady = true;

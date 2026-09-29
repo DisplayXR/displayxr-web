@@ -37,14 +37,17 @@ function dxrThree(core) {
   // ------------------------------------------------------------ the three.js devtools listeners
   // The sentinel owns `__THREE_DEVTOOLS__` and forwards every 'observe' / 'register' event here,
   // starting with the one that made it load the core.
+  // Both are no-ops once the core has stood down for good (core.retired: the page owns XR, opted
+  // out, the guard blocked): nothing new is detected or wrapped in this document.
   const onObserve = (e) => {
+    if (core.retired) return;
     const o = e && e.detail;
     if (!o) return;
     if (o.isScene) { hookLookAt(o); return; }
     if (o.isWebGPURenderer) { warnOnce('webgpu', 'WebGPURenderer seen — not converted by this prototype, left 2D'); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
-  const onRegister = (e) => { if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
+  const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
 
   // ------------------------------------------------------------ convergence target: camera.lookAt
   // OrbitControls / MapControls / TrackballControls all end their update() in
@@ -283,9 +286,13 @@ function dxrThree(core) {
       return out;
     });
     W('getPixelRatio', () => (st.active ? st.L.pr : st.call('getPixelRatio')));
+    // One exception: Spark's own per-pixel terms (see "Spark's pixel size" below) get the EYE.
     W('getDrawingBufferSize', (t) => {
       const out = st.call('getDrawingBufferSize', t);
-      if (st.active && out && typeof out.set === 'function') out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
+      if (st.active && out && typeof out.set === 'function') {
+        if (sparkIn > 0 && st.inEye && st.R) out.set(st.R.eyeW, st.R.eyeH);
+        else out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
+      }
       return out;
     });
     W('setViewport', (x, y, w, h) => {
@@ -501,8 +508,35 @@ function dxrThree(core) {
   }
   const endFrame = (fi, f) => { if (fi && f && fi.frame < f.hi) fi.frame = f.hi; };
 
+  // Spark's pixel size. A SparkRenderer's onBeforeRender sizes its splats in PIXELS from
+  // renderer.getDrawingBufferSize() when it draws to the screen (the renderSize uniform: the
+  // projection-to-pixel focal, the 0.3 px anti-alias blur, the min / max pixel radius, and the LoD's
+  // pixel-scale limit). The getter answers the page's mono store while converted, which since P0.2
+  // is smaller than the eye (the eye is sized from the element's device pixels; hello-world keeps a
+  // pixel-ratio-1 store): Spark's pixel terms were off by that ratio. So, during an eye draw only, a
+  // call made from inside a SparkRenderer's onBeforeRender sees the eye viewport (eyeW x eyeH) —
+  // exactly what three's WebXR path hands Spark (its XR target's per-view size). Every other caller
+  // keeps the mono answer. SparkRenderers are found among the scene's direct children (Spark's
+  // examples add it there, and Spark's auto-created one is added there too), re-scanned every 60
+  // eye draws or when the scene changes; one nested deeper keeps the mono size (flat terms, as before).
+  let sparkIn = 0;
+  const sparkHooked = new WeakSet();
+  function hookSpark(st, scene) {
+    const n = st.stats.stereo + st.stats.flat;
+    if (scene === st.sparkScene && n - st.sparkScan < 60) return;
+    st.sparkScene = scene; st.sparkScan = n;
+    const ch = scene && scene.children;
+    if (!ch) return;
+    for (const o of ch) {
+      if (!o || sparkHooked.has(o) || !isSparkRenderer(o) || typeof o.onBeforeRender !== 'function') continue;
+      sparkHooked.add(o);
+      const f = o.onBeforeRender;
+      o.onBeforeRender = function () { sparkIn++; try { return f.apply(this, arguments); } finally { sparkIn--; } };
+    }
+  }
   function renderStereo(st, scene, camera) {
     st.mainCam = camera; st.lastScene = scene;
+    hookSpark(st, scene);
     if (!st.haveViews) { // no eyes yet: flat into both halves, never a blank tile
       if (st.stats.twoView > 0) st.stats.flatAfterEyes++;
       return renderFlat(st, scene, camera);
@@ -516,6 +550,7 @@ function dxrThree(core) {
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     let fr = null;
+    st.inEye = true;
     try {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
@@ -540,6 +575,7 @@ function dxrThree(core) {
         st.call('render', scene, e);
       }
     } finally {
+      st.inEye = false;
       endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
@@ -548,9 +584,11 @@ function dxrThree(core) {
     core.drew(st);
   }
   function renderFlat(st, scene, camera) {
+    hookSpark(st, scene);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     let fr = null;
+    st.inEye = true;
     try {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
@@ -559,6 +597,7 @@ function dxrThree(core) {
         st.call('render', scene, camera);
       }
     } finally {
+      st.inEye = false;
       endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);

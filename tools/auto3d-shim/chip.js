@@ -285,7 +285,9 @@ button{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-c
     // An open scene (no target, no bounded subject) is focused at a fixed 2 m, not estimated: say so.
     const fixed = s.convSource === 'fixed';
     if (els.auto.textContent !== (fixed ? 'auto (fixed)' : 'auto')) els.auto.textContent = fixed ? 'auto (fixed)' : 'auto';
-    els.auto.title = fixed ? 'Open scene: fixed focus 2 m ahead, at real scale' : '';
+    // The tooltip names where the focus comes from: 'target: camera.lookAt', 'estimator', 'fixed: open scene'.
+    const src = s.convText ? `Focus ${(+s.convergence).toPrecision(3)} units (${s.convText})` : '';
+    els.auto.title = fixed ? `Open scene: fixed focus 2 m ahead, at real scale${src ? ' — ' + src : ''}` : src;
     els.once.textContent = `${s.enabled ? 'Off' : 'On'} just this time (don't remember)`;
   }
   // Inside the tile (8 px inset) when it covers less than half of it, else outside the tile.

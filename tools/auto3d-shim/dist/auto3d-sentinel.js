@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -126,7 +126,7 @@ function dxrSentinel(cfg, cap) {
   let pcFound = false;
   let retired = false;  // S.disarm(): nothing is armed again in this document
   function foundPC(app, how, ns) {
-    if (pcFound) return;
+    if (pcFound || retired) return; // after S.disarm() nothing is found (a late 'load' look, a trap mid-flight)
     pcFound = true;
     disarmCanvases(); // the id traps have done their job
     stopPoll();
@@ -170,7 +170,7 @@ function dxrSentinel(cfg, cap) {
         configurable: true, enumerable: false,
         get() {
           const v = apply(ID.get, this, []);
-          if (!done && !pcFound) trapKey(v);
+          if (!done && !pcFound) { if (expired(this)) unarm(this); else trapKey(v); }
           return v;
         },
         set(v) { apply(ID.set, this, [v]); },
@@ -183,12 +183,14 @@ function dxrSentinel(cfg, cap) {
     if (!armed.delete(c)) return;
     try { delete c.id; } catch (e) { /* ignore */ }
   }
+  function expired(c) { const t = armed.get(c); return t !== undefined && t <= perfNow(); }
+  function sweepLazy() { if (!armed.size) return; const n = perfNow(); for (const [c, t] of [...armed]) if (t <= n) unarm(c); }
   function disarmCanvases() {
     for (const c of [...armed.keys()]) unarm(c);
     if (sweepT) { cTimeout(sweepT); sweepT = 0; }
   }
   function scheduleSweep() {
-    if (sweepT || !loaded || !armed.size) return;
+    if (sweepT || !loaded || !armed.size || !glCanvas) return; // no WebGL yet: lazy expiry only (above)
     let t = Infinity;
     for (const v of armed.values()) t = Math.min(t, v);
     sweepT = sTimeout(sweep, Math.max(0, t - perfNow()));
@@ -202,7 +204,7 @@ function dxrSentinel(cfg, cap) {
 
   let polling = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
-    if (done || pcFound) return;
+    if (done || pcFound || retired) return;
     let pc = null;
     try { pc = window.pc; } catch (e) { /* ignore */ }
     if (pc && typeof pc === 'object') {
@@ -222,7 +224,7 @@ function dxrSentinel(cfg, cap) {
   }
   function poll() {
     pollT = 0;
-    if (done || pcFound) return;
+    if (done || pcFound || retired) return;
     lookGlobals();
     if (done || pcFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
@@ -237,7 +239,8 @@ function dxrSentinel(cfg, cap) {
   let mo = null, canvasList = null;
   const moSeen = new WeakSet(); // arm each canvas at most once from here (a '2d' canvas stays unarmed)
   function onMutations() {
-    if (done || pcFound || retired || (loaded && perfNow() > moDeadline)) { unobserve(); return; }
+    if (done || pcFound || retired || (loaded && perfNow() > moDeadline)) { unobserve(); sweepLazy(); return; }
+    sweepLazy();
     const l = canvasList;
     for (let i = 0; i < l.length; i++) { const c = l[i]; if (!moSeen.has(c)) { moSeen.add(c); arm(c); } }
   }
@@ -263,7 +266,11 @@ function dxrSentinel(cfg, cap) {
     return 'canvas' + (id ? '#' + id : '');
   };
 
-  const disarm = () => { retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); };
+  const disarm = () => {
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k);
+    document.removeEventListener('DOMContentLoaded', lookGlobals);
+    window.removeEventListener('load', lookGlobals);
+  };
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;
@@ -271,6 +278,7 @@ function dxrSentinel(cfg, cap) {
     const seenGL = new WeakSet();
     const onContext = (c, type) => {
       if (done || pcFound) return;
+      sweepLazy();
       if (type === '2d') { unarm(c); return; }
       if (WEBGL[type] !== 1 || seenGL.has(c)) return;
       seenGL.add(c);
@@ -279,6 +287,7 @@ function dxrSentinel(cfg, cap) {
       signal(null); // the first engine / WebGL signal: the page's opt-out
       if (done) return;
       arm(c);
+      scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };
     try {
