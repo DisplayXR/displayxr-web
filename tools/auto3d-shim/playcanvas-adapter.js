@@ -358,12 +358,17 @@ function dxrPlayCanvas(core) {
   // the engine syncs the hierarchy). A RenderView's pose is composed with the camera node's PARENT
   // (Camera.updateViewTransforms), so the attach pattern eye = camera world × view.transform is
   // RenderView pose = camera LOCAL × view.transform.
+  // In the display rig the pose also carries the rig's pivot offset (core.pivotOffset), taken in the
+  // camera's own axes from its WORLD transform: world × offset × view = parent × local × offset × view.
   function updateViews(st) {
     const R = st.R, local = st.cam.entity.getLocalTransform().data;
     let P0;
     if (st.haveViews) {
+      const world = st.cam.entity.getWorldTransform().data;
       for (let i = 0; i < 2; i++) {
-        mul4(local, st.V[i].pose, st.eyeInv[i]);
+        const pose = core.eyePose(st, i, world);
+        mul4(local, pose, st.eyeInv[i]);
+        if (i === 0) st.eyeAt = [0, 1, 2].map((k) => world[k] * pose[12] + world[4 + k] * pose[13] + world[8 + k] * pose[14] + world[12 + k]); // diagnostics (dev state(): eyeAt)
         st.views[i].setView(st.V[i].proj, st.eyeInv[i]);
         st.views[i].setViewport(i * R.eyeW, 0, R.eyeW, R.eyeH);
       }
@@ -402,7 +407,7 @@ function dxrPlayCanvas(core) {
   const shadowOrig = new WeakMap(); // light component -> { orig, wrote }
   function offsetShadows(st) {
     if (core.T.pcShadowOffset === false) return;
-    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) : 0;
+    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0) : 0;
     if (!st.shadowLights || ++st.shadowScan >= 30) {
       st.shadowScan = 0;
       try { st.shadowLights = st.app.root.findComponents('light'); } catch (e) { st.shadowLights = []; }

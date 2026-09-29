@@ -26,6 +26,9 @@ camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov:
 camera.setPosition(0, 1, 8);
 camera.lookAt(0, 1, 0);
 app.root.addChild(camera);
+// Test hooks (cases/pivot.mjs): the page camera's world matrix, and an in-place turn (yaw, degrees).
+window.__camWorld = () => Array.from(camera.getWorldTransform().data);
+window.__yaw = (deg) => camera.rotateLocal(0, deg, 0);
 const light = new pc.Entity('sun');
 light.addComponent('light', { type: 'directional', intensity: 1.5 });
 light.setEulerAngles(45, 30, 0);

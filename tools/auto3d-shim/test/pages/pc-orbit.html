@@ -33,6 +33,8 @@ const prim = (type, m, x, y, z, s) => { const e = new pc.Entity(type); e.addComp
 prim('torus', mat(1, 0.48, 0.18), 0, 1, 0, 1.1);
 prim('box', mat(0.18, 0.7, 1), 1.8, 1, 0, 0.6); prim('box', mat(0.18, 0.7, 1), -1.8, 1, 0, 0.6);
 prim('sphere', mat(0.62, 1, 0.29), 0, 1, 1.8, 0.7); prim('sphere', mat(0.62, 1, 0.29), 0, 1, -1.8, 0.7);
+// Test hook (cases/pivot.mjs): the page camera's world matrix.
+window.__camWorld = () => Array.from(camera.getWorldTransform().data);
 let n = 0;
 app.on('update', () => { if (n >= 60) { window.__frozen = true; return; } n++; });
 app.start();
