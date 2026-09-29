@@ -74,7 +74,8 @@ function dxrCore(cfg, cap, S) {
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
-    guardFps: 24,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (was 40 before 0.5.2)
+    guardFps: 15,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
+                        // worlds run 25-44 fps on the reference box and read well; 24 still reverted them. 24 in 0.5.2, 40 before)
     guardMs: 2000,      // ... (and below 0.6 x the page's 2D rate, when it has one; was 0.8)
     guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...

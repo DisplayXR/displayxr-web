@@ -505,7 +505,7 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
   (v0.5.2):** no window starts within `guardWarmupMs` (4 s) of the cover drop, so a page that is
   still loading its assets is not judged by its load (Spark hello-world / streaming-lod tripped at
   25-39 fps 4-5 s after go-live on the panel, then run at a steady 60 / ~44). Trip: under
-  `guardFps` (**24**; 40 before v0.5.2) over `guardMs` (2 s) **and**, when there is a baseline, under **0.6** × baseline (0.8 before; David, 2026-09-28: heavy splat worlds run 25-44 fps in 3D on the panel and look great) (a
+  `guardFps` (**15** since v0.5.3; 24 in v0.5.2, 40 before; David, 2026-09-28: 24 still reverted heavy splat worlds that read well at 25-44 fps) over `guardMs` (2 s) **and**, when there is a baseline, under **0.6** × baseline (0.8 before; David, 2026-09-28: heavy splat worlds run 25-44 fps in 3D on the panel and look great) (a
   page that already runs at 30 fps in 2D is not the conversion's fault).
   **Retry once (v0.5.2).** On ANY first trip in a document: the ordinary turn-off (fade, out-cover,
   staged stand), then a wait (report `'converting'`, chip amber): at least `guardRetryMs` (6 s), then until the page's own 2D rate has been steady for `guardSteadyMs` (2 s: four 500 ms buckets within 1.3× of each other; a page that draws almost nothing counts as steady), at most `guardRetryMaxMs` (30 s). Panel, Marble / streaming-lod: a fixed 6 s retry landed while the world was still streaming and tripped again at 20.0 fps against a 2D rate of 25.4. Then ONE
@@ -536,7 +536,7 @@ dev build only.
 | Key | Default | Meaning |
 |---|---|---|
 | `guardWarmupMs` | 4000 | no frame-rate-guard window starts within this long after the cover drop |
-| `guardFps` | 24 | the guard's absolute floor (and 0.6 × the page's 2D rate when it has one) |
+| `guardFps` | 15 | the guard's absolute floor (and 0.6 × the page's 2D rate when it has one) |
 | `guardRetryMs` | 6000 | after a first guard trip, wait at least this long before the one retry ... |
 | `guardSteadyMs` | 2000 | ... and until the page's 2D rate has been steady this long ... |
 | `guardRetryMaxMs` | 30000 | ... or this long at the latest |
@@ -717,12 +717,12 @@ running), so the rig is always sampled at the configured depth.
 | `s-three-settle` | three.js keyframes, product | once live, no PlayCanvas search timer (poll / sweep) pending 1 s after go-live, none created in the next 3 s, id trap off |
 | `s-three-extra-gl` | three.js keyframes + a second WebGL canvas | the search goes on after go-live (another canvas has WebGL); the page then asks for `immersive-vr` → stand-down for good → `S.disarm()`: no timer, the extra canvas's id trap off |
 | `s-dev-plain` | the dev bundle on the plain page | the core is not loaded (no `__dxrAuto3D`, no HUD) |
-| `g-trip` | PlayCanvas orbit, `frameCostMs` 60 in the fake session rAF, no 2D baseline | the guard trips, waits `guardRetryMs` (report `converting`), retries ONCE with the wait's 2D rate as baseline, trips again → blocks; two sessions, still two 5 s later, report `guard`, no raw pair at either close (commit model), the out-cover holds a picture |
-| `g-retry` | PlayCanvas orbit, the page's own rAF burns 60 ms from the start (no baseline) | first trip → ONE retry, whose baseline is the ~16 fps drawn during the wait → **live**, two sessions, no `guard` report |
-| `g-loading` | PlayCanvas orbit, the page burns 60 ms a frame for 5 s after go-live, then runs clean | ends **live**, no `guard` report (the warm-up) |
+| `g-trip` | PlayCanvas orbit, `frameCostMs` 90 in the fake session rAF (3D ~10 fps), no 2D baseline | the guard trips, waits `guardRetryMs` (report `converting`), retries ONCE with the wait's 2D rate as baseline, trips again → blocks; two sessions, still two 5 s later, report `guard`, no raw pair at either close (commit model), the out-cover holds a picture |
+| `g-retry` | PlayCanvas orbit, the page's own rAF burns 90 ms from the start (no baseline) | first trip → ONE retry, whose baseline is the ~10 fps drawn during the wait → **live**, two sessions, no `guard` report |
+| `g-loading` | PlayCanvas orbit, the page burns 90 ms a frame (~10 fps) for 5 s after go-live, then runs clean | ends **live**, no `guard` report (the warm-up) |
 | `g-loading-long` | the same, 8 s of burn | first trip during the load, 2D fast meanwhile, ONE retry anyway → **live** (v0.5.1 blocked here) |
-| `g-steady` | the page alternates 80 / 40 ms burns every 700 ms for 15 s after go-live (still streaming) | the retry waits past `guardRetryMs` until the 2D rate is steady (after 16.2 s), names it, and ends **live** |
-| `g-30fps` | the page's own rAF burns 60 ms a frame (~16 fps in 2D and 3D; below `guardFps` 24, never below 0.6 × baseline) | the guard does **not** trip |
+| `g-steady` | the page alternates 120 / 60 ms burns every 700 ms for 15 s after go-live (still streaming) | the retry waits past `guardRetryMs` until the 2D rate is steady (after 16.2 s), names it, and ends **live** |
+| `g-30fps` | the page's own rAF burns 90 ms a frame (~10 fps in 2D and 3D; below `guardFps` 15, never below 0.6 × baseline) | the guard does **not** trip |
 | `g-clamp-three` / `g-clamp-pc` | `glLimit` 512 | eye ≤ 512 with the aspect kept, the skew shift still ≈ 0.1 × eye width |
 | `a-dpr2` | `three-keyframes.html?pr=1&w=600&h=400` on a DPR 2 viewport (`deviceScaleFactor` 2) | eye 600×800 (half the device width, the full device height), SBS 1200×800, skew shift 60 px; the page reads 600×400 at pixel ratio 1; its store is 600×400 again after the turn-off |
 | `g-reduced` | `prefers-reduced-motion: reduce` | `rampMs` 1, and the turn-off still takes the out-cover |

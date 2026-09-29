@@ -18,9 +18,10 @@
 // Spark's hello-world and streaming-lod on the panel, 25-39 fps for the first seconds, then a steady
 // 60 / 44 — must not be judged by its loading phase). Intervals over 250 ms and hidden-page time are
 // excluded, and a visibilitychange starts over. Trip: the mean rate over the last T.guardMs is below
-// T.guardFps (24) AND, when there is a baseline, below GUARD_REL (0.6) × baseline (a page that runs at
+// T.guardFps (15; 24 in v0.5.2) AND, when there is a baseline, below GUARD_REL (0.6) × baseline (a page that runs at
 // 30 fps in 2D is not the conversion's fault). David, 2026-09-28: heavy splat worlds (Marble via Spark
-// streaming-lod) run 25-44 fps in 3D on the panel and look great; the old 40 / 0.8 kept reverting them.
+// streaming-lod) run 25-44 fps in 3D on the panel and look great; the old 40 / 0.8 kept reverting them,
+// and 24 still did (v0.5.3: 15).
 //
 // On the FIRST trip in a document, whatever the baseline (P0.2): core.turnOff (fade to flat ->
 // out-cover -> staged stand), then wait (report 'converting', chip amber) and retry ONCE, whatever
