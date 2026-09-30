@@ -9,6 +9,7 @@ on:
       - "*.d.ts"
       - "package.json"
       - "tsconfig.json"
+      - "tools/dist/**"
       - ".github/workflows/sdk-ci.yml"
   pull_request:
     paths:
@@ -17,6 +18,7 @@ on:
       - "*.d.ts"
       - "package.json"
       - "tsconfig.json"
+      - "tools/dist/**"
       - ".github/workflows/sdk-ci.yml"
 
 jobs:
@@ -28,11 +30,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Install typecheck deps
-        run: npm install --no-save typescript@^5.4.0 @types/webxr@^0.5.0
+      - name: Install typecheck + bundle deps
+        # esbuild: `npm pack` runs `prepack`, which builds the CDN bundle (dist/call.js).
+        run: npm install --no-save typescript@^5.4.0 @types/webxr@^0.5.0 esbuild@^0.25.0
       - name: Typecheck .d.ts against tsconfig
         run: npx tsc --noEmit -p tsconfig.json
-      - name: Verify package publishes only the intended files
+      - name: Verify package publishes only the intended files (builds dist/ via prepack)
         run: npm pack --dry-run
 
   unit:

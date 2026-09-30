@@ -1,7 +1,8 @@
 // call — a 3D video call via addCall(). See docs/rfcs/0002-video-call.md.
 
 import { createInline3D } from '@displayxr/inline3d';
-import { addCall, dxrSignaling, peerjsCloud } from '@displayxr/inline3d/call';
+import { addCall, dxrSignaling } from '@displayxr/inline3d/call';
+import { peerjsCloud } from './peerjs-cloud.js'; // demo-only broker adapter; a sample, not part of the package
 
 const q = new URLSearchParams(location.search);
 

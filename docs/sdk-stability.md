@@ -9,7 +9,10 @@ will and won't break.
 The **exported** surface of the package entry points:
 
 - `@displayxr/inline3d`
-  - `createInline3D(opts?)`, `startInline3D(canvas, opts?)`
+  - `createInline3D(opts?)`, `startInline3D(canvas, opts?)`, and (1.29) `sharedInline3D(opts?)` —
+    the document's shared manager (the live one, else a new one). What is frozen is the identity
+    contract: the same manager while it is live, a fresh one after `close()`, one creation for
+    concurrent callers, and a page's own `createInline3D()` result is what it returns.
   - the `Inline3D` manager: `addImage`, `addVideo`, `addScene`, `addGlobalOverlay`,
     `removeGlobalOverlay`, `close`, and the `supported` / `session` / `refSpace` / `liveCount` fields
   - the `TileHandle`: `remove`, `exclude`, `unexclude`, `setViewRig`, and (1.10) `firstWoven` /
@@ -59,7 +62,8 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
 
 ## Explicitly NOT covered (may change without a major bump)
 
-- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/model`, `/player` and `/call`.**
+- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/model`, `/player`, `/call` and
+  `/call/full`.**
   `SceneViewer`, `boundsFromPositions`, `addSplat`, `addModel`, `addPlayer`, `addCall`, and every option
   they take are **experimental** and may change in any release. They are shipped inside the 1.x
   package rather than as a separate one so there is a single version to install and a single CI
@@ -76,14 +80,22 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   restart the promotion clock below; changing `format`'s, `fit`'s or `controls`'s existing meaning
   would.
 
-  `/call` (`addCall`, `dxrSignaling`, `peerjsCloud`, the `SignalingAdapter` seam) is in this
-  tier from its first release (P1 of `docs/rfcs/0002-video-call.md`). Three things are expected to
-  move: the **`dxr-signal/1` protocol** and its reference servers (`signaling/`, no hosted default
-  yet — `dxrSignaling(url)` needs a URL), the **`hello` wire message** (P2 adds calibration for
-  rectified tablet pairs; a new optional field, `v` bumps only for an incompatible change), and
-  **mono tiles**, which are flat in P1 and gain `lift()` in P2 through the existing `mono3D` hook.
-  The chrome's markup and CSS classes (`dxr-call-*`) are not an API. `peerjsCloud()` is a demo
-  convenience on a broker DisplayXR does not run, and will stay one.
+  `/call` (`addCall`, `mountCall`, `dxrSignaling`, the `SignalingAdapter` seam, `<dxr-call>`),
+  `/call/full` and the CDN bundle `dist/call.js` are in this tier (P1 of
+  `docs/rfcs/0002-video-call.md`; the one-line path of `docs/rfcs/0003-call-developer-experience.md`,
+  phase C1, in 1.29). Things expected to move: the **`dxr-signal/1` protocol** and its reference
+  servers (`signaling/`; the hosted server is the default, and it is frozen only at the C5 gate),
+  the **`hello` wire message** (new optional fields only; `v` bumps only for an incompatible
+  change), the **public surface itself** — RFC 0003 §2 trims it in C2 (the ~45 test helpers leave
+  the entry, options regroup, `accent` → `theme`, `format` event → `display`) after one warning
+  release — and the **`<dxr-call>` attribute set**, which is the string-typed subset of the
+  options and moves with them. The chrome's markup and CSS classes (`dxr-call-*`) are not an API.
+  The DOM event naming (`dxr-call:<event>`, payload in `detail`, bubbling) and the
+  `lift-not-bundled` warning code are meant to survive C2 unchanged. `dist/call.js` is a
+  packaging of these entries and inherits their tier; only its URL shape
+  (`@displayxr/inline3d@<version>/dist/call.js`) is a promise. `peerjsCloud` left the package in
+  1.29 (Decision 12) and is a sample, not an API. The path to stable — and what freezes then —
+  is RFC 0003 §7.
 
   `/model` is in this tier for the same reason as the other two, not a lesser one: it is a thin
   wrapper over the SAME `SceneViewer`, so anything that moves the viewer's framing moves meshes

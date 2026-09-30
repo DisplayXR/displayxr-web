@@ -7,8 +7,67 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **core** (additive: `handle.rewoven()`) and the **preview tier** (`./player`, `./splat`
-`engine: 'playcanvas'`). Additive; no change for a page that does not call the new API.
+Touches the **core** (additive: `sharedInline3D()`, `handle.rewoven()`) and the **preview tier**
+(`./call` — RFC 0003 C1, the one-line path; `./player`, `./splat` `engine: 'playcanvas'`). One
+**removal** in the preview tier: `peerjsCloud`. Otherwise additive; no change for a page that does
+not call the new API.
+
+### `./call` — the one-line path (RFC 0003 §1, phase C1)
+
+- **`mountCall(el, opts?)`** — `addCall` with every argument optional: the wall is the document's
+  shared manager (`sharedInline3D()`, below), signalling defaults to the hosted server, the camera
+  to `'auto'`, the SDK chrome to on. `addCall(wall, container, opts)` stays as the explicit form.
+  A call's session recovery now re-opens through the shared manager too, so it joins a wall the
+  page re-created rather than opening a second session.
+- **`<dxr-call>`** — the same thing as markup, registered by importing `./call` (or `./call/full`,
+  or the CDN bundle): mounts on connect, `leave()`s on disconnect (a DOM move IS a teardown —
+  woven-canvas rule 2), re-dispatches every call event as a bubbling, composed `CustomEvent`
+  named `dxr-call:<event>` with the payload in `detail`, and exposes the handle as `el.call`
+  (plus a `ready` promise). Attributes are the string-typed options: `room`, `signaling` (a
+  URL), `key`, `camera`, `layout`, `accent`, `max-peers`, `no-ui`, `auto-join`, `mono3d="off"`,
+  `no-audio`, `no-self-view`, `no-auto-converge`, `tile-aspect`, `invite-base`, `browser-url`,
+  `debug`; anything else is `el.options = { … }`, set before connect (options win). Light DOM, no
+  shadow root, **no globals** (RFC 0003 Decision 11). `auto-join` joins during the mount, so the
+  element replays `joined` and one `peer` per participant already in the room once it can
+  subscribe. Exported: `DxrCallElement`, `defineCallElement`, `attrsToOpts`, `CALL_EVENT_PREFIX`.
+- **`@displayxr/inline3d/call/full`** — `./call` with `mono3D` defaulted to a **statically
+  imported** `lift`, the one shape a bundler can follow; importing it also points `<dxr-call>` at
+  that `mountCall`. `liftBundled` says whether this copy of the SDK carries the module. **Until
+  `./lift` lands on `main`, `js/lift/index.js` is a placeholder** (`lift === null`): the entry
+  builds and behaves like `./call`, and `liftBundled` is `false`.
+- **CDN bundle `dist/call.js`** — one pre-bundled ESM file (core + call + element, ~124 KB min,
+  no three/PlayCanvas), built by `npm run build:dist` (esbuild) and by `prepack` into every
+  published tarball, so jsDelivr serves it as `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1/dist/call.js`.
+  `<script type="module">` only; lift is a lazy sibling chunk (`dist/lift.js`) once the module
+  is present. `dist/` is not committed.
+- **`warning` event, code `'lift-not-bundled'`** — a 2D participant is on a 3D display, `mono3D`
+  is `'auto'`, and the lift module could not be imported from this build (a bundler that could
+  not follow the computed import, or a copy without `./lift`). Emitted once per call with one
+  `console.warn` naming the fix (`mono3D: lift` or `./call/full`); the lobby reads "2D→3D
+  unavailable in this build". Previously a silent flat tile and an info line. A display that
+  honestly cannot lift is unchanged (`handle.mono3D.reason`).
+- **`key`** — `dxrSignaling(url, { key })` / `CallOptions.key` / `<dxr-call key>`: a publishable
+  key for the hosted service (RFC 0003 §5a), sent as a query parameter on connect. Accepted and
+  forwarded now; the server ignores it until C3.
+- **Removed: `peerjsCloud`** (RFC 0003 Decision 12 — no known external user, so no warning
+  release). The demo adapter over the public PeerJS broker lives on as
+  `samples/call/peerjs-cloud.js`; the sample's `?signal=peerjs` still works. `dxrSignaling()`
+  (the hosted server) has been the default since 1.28.
+- **Types:** `mountCall`, `CallOptions.wall` / `.key`, `CallEvents.warning`, `DxrCallElement`,
+  `attrsToOpts`, `defineCallElement`, `DxrCallEventMap` (+ `HTMLElementTagNameMap` /
+  `HTMLElementEventMap` augmentations), `call-full.d.ts`.
+- **Tests:** element unit tests (attribute→option table, events, disconnect = leave); a
+  headless Chrome ↔ Chrome end-to-end run of `<dxr-call>` (source and CDN bundle) over the
+  hosted server (`npm run test:e2e`); Vite/webpack/esbuild smoke builds of `./call/full` and
+  `./call` that also run the bundles (`npm run test:bundlers`). Neither is part of `npm test`.
+
+### Core — additive
+
+- **`sharedInline3D(opts?)`** — the document's shared manager: the live `createInline3D()`
+  result if one exists, else a new one (concurrent callers share one creation; an unsupported
+  browser is never cached). Woven-canvas rule 1 as an API: a module that needs a wall it did not
+  create (`mountCall`, `<dxr-call>`) uses this and never opens a second session next to the
+  page's own; a page that made its wall first gets that same wall back here. Semver-covered.
 
 - **`./splat` `setVideo` crossfade, band and on-screen rect** (#105, RFC 0001 A5.1-A5.3,
   `engine: 'playcanvas'`). `transition: 'crossfade'` (`durationMs` 600, `easing`

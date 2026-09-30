@@ -43,7 +43,16 @@ export function normalizeMono3D(v) {
  * passes `mono3D: lift` (imported itself) instead.
  */
 export function defaultLiftSpecifier(base = import.meta.url) {
+  if (liftSpecifier) return typeof liftSpecifier === 'function' ? liftSpecifier() : liftSpecifier;
   return new URL('../lift/index.js', base).href;
+}
+
+// The pre-bundled CDN build (dist/call.js) has no js/call/ directory to resolve against: it points
+// this at its own sibling chunk (`dist/lift.js`) instead. A URL string, or a function returning
+// one (evaluated at import time, so `import.meta.url` of the caller can be used). Null = default.
+let liftSpecifier = null;
+export function setLiftSpecifier(spec) {
+  liftSpecifier = spec || null;
 }
 
 function defaultImporter() {

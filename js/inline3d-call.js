@@ -1,16 +1,20 @@
 // inline3d-call.js — a 3D video call in any page, in one call.
 //
 // PREVIEW tier. Not covered by the SDK's 1.x semver promise — see docs/sdk-stability.md.
-// Implements P1 of docs/rfcs/0002-video-call.md.
+// Implements P1 of docs/rfcs/0002-video-call.md and the one-line path of RFC 0003 §1 (C1).
 //
-//   import { createInline3D } from '@displayxr/inline3d';
-//   import { addCall, dxrSignaling } from '@displayxr/inline3d/call';
-//
-//   const wall = await createInline3D();
-//   const call = await addCall(wall, document.getElementById('call'), {
-//     signaling: dxrSignaling(),            // hosted DisplayXR server; or dxrSignaling('wss://your.server')
-//   });
+//   import { mountCall } from '@displayxr/inline3d/call';
+//   const call = await mountCall(document.getElementById('call'));   // hosted signalling, auto camera, SDK UI
 //   call.on('peer', ({ id }) => console.log('joined', id));
+//
+// `mountCall(el, opts?)` is `addCall` with every argument optional: the wall is the document's
+// shared manager (`sharedInline3D()` — never a second session next to the page's own), signalling
+// defaults to the hosted server, the camera to 'auto', the chrome to on. `addCall(wall, container,
+// opts)` stays as the explicit form for a page that manages its own wall. `<dxr-call>`
+// (call/element.js) is the same thing as markup. A bundled app that wants 2D→3D imports
+// `@displayxr/inline3d/call/full` (lift statically imported) or passes `mono3D: lift` itself —
+// on the plain `/call` entry a mono peer on a 3D display raises `warning { code:
+// 'lift-not-bundled' }` instead of silently staying flat.
 //
 // WHAT IT OWNS. Unlike the other modules this one takes a CONTAINER, not a canvas: a call has a
 // variable number of participants, so it creates one persistent canvas per remote participant
@@ -67,7 +71,7 @@
 // SDK's teardown synchronously, so no listener can distinguish them afterwards); `leave()`
 // restores it.
 
-import { createInline3D } from './inline3d.js';
+import { sharedInline3D } from './inline3d.js';
 import {
   WIRE_VERSION,
   CALL_SDK,
@@ -97,10 +101,12 @@ import { openCamera, openMic } from './call/capture.js';
 import { drawQr } from './call/qr.js';
 import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } from './call/ui.js';
 import { normalizeMono3D, resolveLift, createLiftPool, createFrameWatch } from './call/lift.js';
+import { defineCallElement } from './call/element.js';
+export { DxrCallElement, defineCallElement, attrsToOpts, CALL_EVENT_PREFIX } from './call/element.js';
 
 import { dxrSignaling } from './call/signaling.js';
 import { lumaFromRgba, createDisparityTrack, createFocusTracker, downsampleLuma } from './call/disparity.js';
-export { dxrSignaling, peerjsCloud, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
+export { dxrSignaling, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
 export {
   WIRE_VERSION,
   CALL_SDK,
@@ -166,8 +172,9 @@ export function normalizeCallOptions(opts = {}) {
   }
   return {
     room,
-    // Default: the hosted DisplayXR signalling server (which also mints TURN credentials).
-    signaling: opts.signaling || dxrSignaling(),
+    // Default: the hosted DisplayXR signalling server (which also mints TURN credentials). A
+    // publishable key (RFC 0003 §5a) rides along on connect; the server may ignore it today.
+    signaling: opts.signaling || dxrSignaling(undefined, typeof opts.key === 'string' && opts.key ? { key: opts.key } : {}),
     iceServers: Array.isArray(opts.iceServers) ? opts.iceServers : undefined,
     camera: opts.camera === undefined ? 'auto' : opts.camera,
     format: opts.format === 'sbs' ? 'sbs' : opts.format === 'mono' ? 'mono' : undefined,
@@ -198,6 +205,8 @@ export function normalizeCallOptions(opts = {}) {
     scrollIntoView: opts.scrollIntoView === undefined ? true : !!opts.scrollIntoView,
     wallOptions: opts.wallOptions && typeof opts.wallOptions === 'object' ? opts.wallOptions : {},
     log: typeof opts.log === 'function' ? opts.log : opts.debug ? (tag, obj) => console.log(`${TAG} ${tag} ${JSON.stringify(obj)}`) : null,
+    // Internal (tests): replaces the lift module importer behind `mono3D: 'auto'`.
+    _liftImporter: typeof opts._liftImporter === 'function' ? opts._liftImporter : undefined,
   };
 }
 
@@ -213,11 +222,28 @@ export async function addCall(wall, container, opts = {}) {
   if (!container || typeof container.appendChild !== 'function') throw new TypeError('@displayxr/inline3d/call: addCall(wall, container, opts) needs a container element');
   const o = normalizeCallOptions(opts);
   if (!o.signaling || typeof o.signaling.join !== 'function') {
-    throw new TypeError('@displayxr/inline3d/call: opts.signaling must be a SignalingAdapter — dxrSignaling([url]), peerjsCloud() (demo only), or your own');
+    throw new TypeError('@displayxr/inline3d/call: opts.signaling must be a SignalingAdapter — dxrSignaling([url]) or your own');
   }
   const call = new Call(wall, container, o);
   await call._init();
   return call.handle;
+}
+
+/**
+ * The one-line path (RFC 0003 §1): `addCall` with every argument optional. The wall is
+ * `opts.wall` if given, else the document's shared manager — `sharedInline3D(opts.wallOptions)`,
+ * which returns the page's existing session rather than opening a second one (woven-canvas
+ * rule 1). Everything else defaults as `addCall` does: hosted signalling, `camera: 'auto'`,
+ * `ui: true`.
+ *
+ * @param {HTMLElement} el  the container (a `<dxr-call>`, a `<div>`, …)
+ * @param {object} [opts]   see call.d.ts `CallOptions`
+ */
+export async function mountCall(el, opts = {}) {
+  if (!el || typeof el.appendChild !== 'function') throw new TypeError('@displayxr/inline3d/call: mountCall(el, opts) needs a container element');
+  const { wall: given, ...rest } = opts;
+  const wall = given || (await sharedInline3D(rest.wallOptions));
+  return addCall(wall, el, rest);
 }
 
 class Call {
@@ -250,6 +276,8 @@ class Call {
     this.liftPool = null;
     this._liftP = null;
     this.liftProven = false;
+    this.liftMissing = false; // the lift MODULE failed to import (vs. a display that can't lift)
+    this._liftWarned = false;
     this._frameWatch = createFrameWatch();
     this.handle = this._makeHandle();
     if (this.wallLive) this._hookWall(this.wall);
@@ -282,6 +310,13 @@ class Call {
     this.log('error', { code, message });
     if (!this.listeners.get('error')?.size) console.warn(`${TAG} ${code}: ${message}`);
     this.emit('error', { code, message, error: err || null });
+  }
+
+  /** Degraded, not broken (RFC 0003 §2): one console.warn (always — the page must see it) + an event. */
+  warning(code, message) {
+    this.log('warning', { code, message });
+    console.warn(`${TAG} ${code}: ${message}`);
+    this.emit('warning', { code, message });
   }
 
   // ── setup ────────────────────────────────────────────────────────────────────────────────
@@ -707,7 +742,9 @@ class Call {
       if (this.state === 'left') return;
       let w = null;
       try {
-        w = await createInline3D(this.o.wallOptions);
+        // The shared manager: if the page has already re-opened its own wall, join it rather than
+        // opening a second session (rule 1); else this creates the document's new one.
+        w = await sharedInline3D(this.o.wallOptions);
       } catch {
         w = null;
       }
@@ -760,7 +797,7 @@ class Call {
       const lo = this.o.liftOptions;
       // liftCapabilities probes the same model source the lifts will use.
       const capsOpts = { webFallback: true, ...(lo && lo.models ? { models: lo.models } : {}) };
-      this._liftP = resolveLift(this.mono3D, { log, capsOpts }).then((r) => {
+      this._liftP = resolveLift(this.mono3D, { log, capsOpts, ...(this.o._liftImporter ? { importer: this.o._liftImporter } : {}) }).then((r) => {
         this.liftApi = r;
         if (r.lift) {
           this.liftPool = createLiftPool({ lift: r.lift, max: this.o.maxLifted, log, options: this.o.liftOptions });
@@ -775,6 +812,12 @@ class Call {
               })
               .catch(() => {});
           }
+        } else if (r.reason === 'import-failed' || r.reason === 'no-lift-export') {
+          // The MODULE is missing (a bundled app whose bundler could not follow the computed
+          // import, or a copy of the SDK built without lift) — not a display that can't lift. Said
+          // loudly, once, when a mono peer actually arrives (_warnLiftMissing): a developer testing
+          // in the DisplayXR Browser sees it the first time a 2D caller joins.
+          this.liftMissing = true;
         } else if (r.reason !== 'off') {
           console.info(`${TAG} mono→3D unavailable (${r.reason}) — mono participants are shown flat`);
         }
@@ -784,6 +827,21 @@ class Call {
       });
     }
     return this._liftP;
+  }
+
+  /**
+   * `warning { code: 'lift-not-bundled' }`, once per call: a mono peer is on a 3D display, lift
+   * was asked for ('auto'), and the lift module could not be imported. Names the fix.
+   */
+  _warnLiftMissing() {
+    if (this._liftWarned || !this.liftMissing || !this.mono3DOn) return;
+    this._liftWarned = true;
+    this.warning(
+      'lift-not-bundled',
+      'a 2D participant is on a 3D display but the 2D→3D module could not be imported from this build, so they stay flat. ' +
+        "Import it explicitly — `import { lift } from '@displayxr/inline3d/lift'; mountCall(el, { mono3D: lift })` — " +
+        "or use `@displayxr/inline3d/call/full`, which bundles it."
+    );
   }
 
   /** Re-run the routing table for every mono tile (lift resolved, a slot freed, setMono3D). */
@@ -810,7 +868,7 @@ class Call {
     if (!this.mono3DOn) return 'Mono cameras: 2D (2D→3D is off).';
     const r = this.liftApi;
     if (!r) return 'Mono cameras: checking 2D→3D…';
-    if (!r.lift) return 'Mono cameras: 2D (no 2D→3D provider here).';
+    if (!r.lift) return this.liftMissing ? 'Mono cameras: 2D→3D unavailable in this build.' : 'Mono cameras: 2D (no 2D→3D provider here).';
     const c = r.caps;
     if (c && c.native) return `Mono cameras: 2D→3D (native${c.provider ? `, ${c.provider}` : ''}).`;
     if (c && c.webFallback && c.webFallback.webgpu) return 'Mono cameras: 2D→3D (in this page, WebGPU).';
@@ -1416,6 +1474,8 @@ class Tile {
           });
     // First mono peer on a woven wall and lift not asked for yet (e.g. setMono3D(true) later).
     if (this.format !== 'sbs' && call.woven && call.mono3DOn && !call._liftP) call._ensureLift();
+    // A mono peer on a 3D display that stays flat because the lift MODULE is missing: say so.
+    if (this.format !== 'sbs' && call.woven && call.liftMissing) call._warnLiftMissing();
     const key = `${r.route}|${this.format}`;
     if (!force && key === this.routedKey) return;
     this.routedKey = key;
@@ -1834,3 +1894,8 @@ class SelfTile {
     }
   }
 }
+
+// `<dxr-call>` — the one-line path as markup — is registered by importing this entry (RFC 0003 §1;
+// the ONE side effect of this module, declared in package.json `sideEffects`). A no-op where there
+// is no `customElements` registry (Node, workers) or the name is already defined.
+defineCallElement();

@@ -691,6 +691,20 @@ export function createInline3D(
 ): Promise<Inline3D | Inline3DUnsupported>;
 
 /**
+ * The document's shared manager: the live {@link createInline3D} result if one exists, else a new
+ * one. One inline-3D session per document (woven-canvas rule 1) is the point: a module that needs
+ * a wall it did not create (`mountCall`, `<dxr-call>`) uses this instead of opening a second
+ * session, and a page that made its own wall first gets that same wall back here.
+ *
+ * `opts` apply only when this call creates the manager. An unsupported browser resolves to
+ * `{ supported: false }` every time (nothing is cached; a later call re-probes). Two callers
+ * racing before the first session resolves share one creation. Additive since 1.29.
+ */
+export function sharedInline3D(
+  opts?: CreateInline3DOptions,
+): Promise<Inline3D | Inline3DUnsupported>;
+
+/**
  * Back-compatible single-scene helper: open a session, weave one canvas, drive a render callback
  * each frame. Equivalent to `createInline3D({lazy:false})` then `addScene(canvas, onFrame)`.
  */

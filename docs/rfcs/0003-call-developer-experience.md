@@ -701,6 +701,17 @@ minor release.
 | **C4 — browser/runtime** | Asks 1–4: capabilities hint, rectified default, camera-consumer client class + merged consent (R3), `displayxr://open` launcher, Android camera enumeration | runtime: consent revoke ends the track and the page sees `ended`; eye tracking unaffected with the camera open (measured, not assumed); browser: stereo device selected with no extra open; Android tablet front pair ↔ laptop call in 3D both ways |
 | **C5 — stable** | `/call` and `dxr-signal/1` move into the semver-covered list; `/camera` follows when its own record allows | two consecutive releases with no change to any public option's meaning **and** the hardware matrix below green on the release candidate |
 
+**C1 status (2026-09-28).** Implemented on `feat/call-c1` (PR): `mountCall`, `sharedInline3D`
+(core), `<dxr-call>` (registered by importing `./call`), `dist/call.js` (esbuild, built by
+`prepack`, ~124 KB min), `./call/full`, `warning { code: 'lift-not-bundled' }`, `key` forwarded,
+`peerjsCloud` removed (Decision 12). Gate: element unit tests ✓; headless e2e ✓ — `<dxr-call>`
+from the source files ↔ `<dxr-call>` from the CDN bundle in stock Chrome over the hosted server,
+both in-call in ~2.1 s and seeing each other's video (VP9 1280×720) in ~4.1 s, `peerleft` on
+element removal; bundler smoke ✓ — Vite 7 / webpack 5 / esbuild 0.25 × `/call/full` and `/call`
+all build, and every bundled `/call` emits `lift-not-bundled` when run. **Pending:** the lift half
+(`feat/lift` not merged — `js/lift/index.js` is a placeholder, so `/call/full` builds but
+`liftBundled` is `false`), `docs/call.md` + the hosted demo (paired docs PR), and the panel run.
+
 **The hardware matrix for C5** (each row a recorded run, like RFC 0002's P0 notes):
 
 1. 3D laptop (built-in 3D camera) ↔ 3D laptop, both woven, auto-converged, 30 min without drift.
