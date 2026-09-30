@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>call embed — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:1100px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#5aa8ff}
+  h1{font-size:28px;margin:0 0 4px}
+  h2{font-size:16px;margin:34px 0 8px;font-weight:600}
+  .sub{opacity:.72;margin:0 0 22px;max-width:74ch}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+  .status{font:13px/1.5 system-ui;padding:8px 12px;border-radius:8px;margin:0 0 20px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+  /* <dxr-call> is an ancestor of every woven tile in it, so it stays visually bare: no
+     border-radius, shadow, filter or opacity here or on .wrap (docs/woven-canvas-rules.md,
+     rule 7). The element draws its own chrome around the tiles, and nothing on this page
+     overlaps it — the snippet box and footer sit BELOW it in normal flow. */
+  dxr-call{display:block;margin:0 0 8px}
+  /* The snippet box: page chrome that never overlaps a tile, so it may be as decorated as it
+     likes. A plain tint, no backdrop-filter (rule 10 — habit, even where it would be harmless). */
+  .snippet{position:relative;margin:0 0 14px;border:1px solid #ffffff1a;border-radius:12px;background:#16181f}
+  .snippet header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #ffffff12;font-size:13px}
+  .snippet header .lbl{opacity:.75}
+  .snippet header .file{margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;opacity:.55}
+  .snippet pre{margin:0;padding:14px 16px;overflow:auto;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#dfe3ea}
+  .snippet pre code{background:none;padding:0}
+  .copy{font:600 12px/1 system-ui;padding:7px 12px;border-radius:99px;cursor:pointer;
+    border:1px solid #ffffff2a;background:#ffffff0d;color:inherit}
+  .copy:hover{background:#ffffff1f}
+  .copy[data-done="1"]{background:#4da3ff;border-color:#4da3ff;color:#06121f}
+  footer{margin-top:36px;font-size:13px;opacity:.6;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>call embed</h1>
+  <p class="sub">The one-line 3D call widget. The <code>&lt;dxr-call&gt;</code> element below is
+     mounted with no options at all: hosted signalling, the best camera it can find, the SDK's
+     own lobby, invite link + QR and controls. Start a call here, send the link to someone (or
+     open it in a second browser), and up to four people are in it. On the DisplayXR Browser with
+     a 3D display the other people are in glasses-free 3D &mdash; a stereo camera is sent as a real
+     side-by-side pair and converged on the face, a plain webcam is lifted from 2D to 3D on the
+     receiving side. In any other browser it is the same call, fully working, in 2D.</p>
+
+  <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
+
+  <!-- The widget. No attributes = the defaults. Everything the copy box below says is true of
+       this element; the only difference is that this page loads the SDK from ../../js/ (via the
+       import map at the bottom) so it runs straight off this checkout / GitHub Pages, while the
+       snippet loads the pre-bundled CDN file. -->
+  <dxr-call id="call"></dxr-call>
+
+  <h2>Copy this snippet</h2>
+  <p class="sub">Paste it into any page &mdash; a CMS block, a static site, an SPA layout. Two lines,
+     no build step, no account. <code>@1</code> follows the 1.x line; pin an exact version in
+     production.</p>
+
+  <div class="snippet">
+    <header>
+      <span class="lbl">CDN &mdash; any page, no build step</span>
+      <button class="copy" data-copy="cdn">Copy</button>
+      <span class="file">index.html</span>
+    </header>
+<pre><code id="snippet-cdn">&lt;script type="module" src="https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1/dist/call.js"&gt;&lt;/script&gt;
+&lt;dxr-call&gt;&lt;/dxr-call&gt;</code></pre>
+  </div>
+
+  <div class="snippet">
+    <header>
+      <span class="lbl">With options</span>
+      <button class="copy" data-copy="opts">Copy</button>
+      <span class="file">index.html</span>
+    </header>
+<pre><code id="snippet-opts">&lt;dxr-call accent="violet" layout="speaker" max-peers="3"&gt;&lt;/dxr-call&gt;
+&lt;script type="module"&gt;
+  const el = document.querySelector('dxr-call');
+  el.addEventListener('dxr-call:joined', (e) =&gt; console.log('in room', e.detail.room));
+  el.addEventListener('dxr-call:error',  (e) =&gt; console.warn(e.detail.code, e.detail.message));
+&lt;/script&gt;</code></pre>
+  </div>
+
+  <div class="snippet">
+    <header>
+      <span class="lbl">npm &mdash; a bundled app (2D&rarr;3D lift included)</span>
+      <button class="copy" data-copy="npm">Copy</button>
+      <span class="file">app.js</span>
+    </header>
+<pre><code id="snippet-npm">import { mountCall } from '@displayxr/inline3d/call/full';
+
+const call = await mountCall(document.getElementById('call'));
+call.on('peer', ({ id }) =&gt; console.log('peer', id));
+shareBtn.onclick = () =&gt; navigator.share({ url: call.inviteLink() });</code></pre>
+  </div>
+
+  <footer>
+    The room travels in the invite link's <code>#room=</code> fragment, which the browser never
+    sends to any server; the signalling server relays only WebRTC offers, answers and ICE
+    candidates, and never sees audio or video (media is DTLS-SRTP between the browsers).
+    Attributes: <code>room</code> · <code>signaling</code> (your own <code>dxr-signal/1</code>
+    server) · <code>camera</code> (<code>auto|stereo|mono|deviceId</code>) ·
+    <code>layout</code> (<code>grid|speaker</code>) · <code>accent</code> · <code>max-peers</code> ·
+    <code>no-ui</code> · <code>auto-join</code> · <code>mono3d="off"</code>. Non-string options
+    (a <code>MediaStream</code>, a custom adapter) go on <code>el.options</code> before the element
+    connects; the handle is <code>el.call</code>. URL params on this page:
+    <code>?signal=dev</code> uses <code>node signaling/dev-server.mjs</code> on
+    <code>ws://localhost:8787</code>, <code>?signal=wss://…</code> your own server,
+    <code>?accent=violet</code>, <code>?layout=speaker</code>. Developer guide:
+    <a href="../../docs/call.md">docs/call.md</a> (options, events, headless, theming, React,
+    self-hosting, troubleshooting). Preview tier &mdash;
+    <a href="../../docs/sdk-stability.md">sdk-stability.md</a>,
+    <a href="../../docs/rfcs/0003-call-developer-experience.md">RFC 0003</a>. The explicit
+    <code>addCall()</code> form with test switches (synthetic stereo pair, lift toggles) is
+    <a href="../call/">samples/call/</a>. Get the
+    <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>.
+  </footer>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/call": "../../js/inline3d-call.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
