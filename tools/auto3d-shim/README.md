@@ -621,6 +621,12 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
   scale-invariant. A display rig's comfort number is its `ipdFactor`, so `depth` keeps one meaning
   on both rigs. The far plane is pushed out by however far behind the page camera the runtime put
   the eyes. Declared, never computed: no Kooima in the page.
+  **Rule (v0.5.5): the virtual display's centre is the object view's pivot, and on entering the
+  display rig it is the centre of the screen on the convergence plane (page camera + forward ×
+  convergence distance).** Mechanism (`core.pivotOffset` / `core.eyePose`, both adapters): the eyes
+  hang from a render camera whose rotations — the page camera's, whatever the page's controls pivot
+  about — are re-applied about the display's centre; `T.displayPivot: false` is the 0.5.4 rigid
+  attach (harness A/B only).
 
 Defaults (`DEFAULT_DEPTH`, one line at the top of `core.js`, David's call: 0.30 on 2026-09-27, raised to 0.50 on 2026-09-28 after a panel pass where 0.3 read shallow): **camera rig
 0.50**, **display rig 1.00**. Display depth 1 is the physically true portal: natural IPD and full
@@ -741,6 +747,8 @@ running), so the rig is always sampled at the configured depth.
 | `g-clamp-three` / `g-clamp-pc` | `glLimit` 512 | eye ≤ 512 with the aspect kept, the skew shift still ≈ 0.1 × eye width |
 | `a-dpr2` | `three-keyframes.html?pr=1&w=600&h=400` on a DPR 2 viewport (`deviceScaleFactor` 2) | eye 600×800 (half the device width, the full device height), SBS 1200×800, skew shift 60 px; the page reads 600×400 at pixel ratio 1; its store is 600×400 again after the turn-off |
 | `g-reduced` | `prefers-reduced-motion: reduce` | `rampMs` 1, and the turn-off still takes the out-cover |
+| `pivot-three-orbit` / `pivot-pc-orbit` | `three-orbit.html` (OrbitControls, target 5 ahead) / `pc-orbit.html` (CameraControls), camera rig → display rig (`ctl.setRig`) | the display's centre (page camera × (pivot offset + rig position)) = the camera rig's convergence point (screen centre on the convergence plane) within 1 %, `virtualDisplayHeight` = the camera rig's framing there (2·d·tan(vfov/2)) within 1 %; three: after a 25° orbit about the controls' target the centre is still on the target; back on the camera rig, no offset |
+| `pivot-spark-room` / `pivot-pc-mesh` | `three-spark.html?room=1` (Spark open world, fixed 2 m) / `pc-mesh.html`, the same toggle, then a 25° first-person turn (the camera rotates about itself, 5 × 5°) | as above, plus: the display's centre moves < 1 % of d across the view axis; eye 0 as the adapter composed it sits at centre − forward·d (the render camera orbits the display), not at the page camera; A/B with `displayPivot: false` the same turn swings it by > 30 % of d (0.5.4) |
 | `g-shadow` / `g-shadow-ctl` | `pages/pc-shadow.html`, display rig, eyes pulled far back | with the offset the ground patch in each eye tile is shadowed (~20 levels darker) and `shadowDistance` is restored after; with it off (control) the eyes lose the shadow |
 | `chip-place` / `chip-fallback` / `chip-none` | three.js keyframes; `pages/three-corner-ui.html` (fixed UI in one or all corners) | top layer, top-right inset 8, ≤ 64×28, no render-surface CSS, hit test hits the host; bottom-right when top-right is taken; none when all four are |
 | `chip-click` / `chip-offer` | product host | click → off + `block`, again → on + `allow`, "Just this time" saves nothing; offer → outlined pill, click converts + saves `allow` |

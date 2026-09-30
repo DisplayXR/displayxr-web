@@ -90,6 +90,10 @@ function dxrDev(core, ctl) {
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
           convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing,
+          // The display rig's pivot (core.pivotOffset): the render camera's offset in the page camera's
+          // axes, and the anchor (the virtual display's centre) in world space.
+          pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
+          eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
           rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
           why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
           ...(d.extra || {}),

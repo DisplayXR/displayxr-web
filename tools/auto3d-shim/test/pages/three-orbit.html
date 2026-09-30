@@ -36,6 +36,15 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1, 3);
 controls.update(); // camera.lookAt(target): the camera now looks at (0, 1, 3)
 const render = () => renderer.render(scene, camera);
+// Test hooks (cases/pivot.mjs): the page camera's world matrix, and an orbit of the controls' own
+// kind (about controls.target, yaw), ending in controls.update() as a drag does.
+window.__camWorld = () => { camera.updateMatrixWorld(); return Array.from(camera.matrixWorld.elements); };
+window.__orbit = (rad) => {
+  const o = camera.position.clone().sub(controls.target).applyAxisAngle(new THREE.Vector3(0, 1, 0), rad);
+  camera.position.copy(controls.target).add(o);
+  controls.update();
+};
+window.__target = () => [controls.target.x, controls.target.y, controls.target.z];
 controls.addEventListener('change', render);
 let n = 0;
 function frame() {

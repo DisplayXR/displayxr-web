@@ -555,8 +555,9 @@ function dxrThree(core) {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
         const e = eyes[i];
-        st.m4.fromArray(st.V[i].pose);
+        st.m4.fromArray(core.eyePose(st, i, camera.matrixWorld.elements)); // + the display rig's pivot (core.pivotOffset)
         e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4); // attach pattern: identity rig pose
+        if (i === 0) st.eyeAt = e.matrixWorld.elements.slice(12, 15); // diagnostics (dev state(): eyeAt)
         e.matrix.copy(e.matrixWorld);
         invertFrom(e.matrixWorldInverse, e.matrixWorld);
         e.projectionMatrix.fromArray(st.V[i].proj);               // the runtime's off-axis frustum, untouched
@@ -735,7 +736,7 @@ function dxrThree(core) {
   // An eye camera aimed from the page camera, as renderStereo does it.
   function aimEye(st, camera, eyes, i, rev) {
     const e = eyes[i];
-    st.m4.fromArray(st.V[i].pose);
+    st.m4.fromArray(core.eyePose(st, i, camera.matrixWorld.elements));
     e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4);
     e.matrix.copy(e.matrixWorld);
     invertFrom(e.matrixWorldInverse, e.matrixWorld);

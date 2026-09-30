@@ -69,6 +69,7 @@ function dxrCore(cfg, cap, S) {
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
@@ -186,7 +187,7 @@ function dxrCore(cfg, cap, S) {
       V: [0, 1].map(() => ({ proj: new Float32Array(16), pose: new Float32Array(16) })),
       haveViews: false, near: NaN, far: NaN, R: null,
       conv: { d: 0, src: 'estimator', via: null }, cover: null, savedStyle: null, displayOk: null,
-      releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null,
+      releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null, piv: null,
       lastTwoAt: 0, noDisplay: false, nd: false, eyesOn: false, twoRun: 0, shortRun: 0,
       stats: { calls: 0, stereo: 0, flat: 0, flatAfterEyes: 0, replays: 0, resizes: 0, xrFrames: 0, twoView: 0, shortView: 0 },
     };
@@ -332,6 +333,7 @@ function dxrCore(cfg, cap, S) {
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
     estimateConvergence(st, true);
+    st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     const rig = buildRig(st, ad.rigFov(st));
     try {
       // T.noLayer is TEST ONLY: everything but the weave binding, so a 2D instance shows the raw pair.
@@ -543,7 +545,8 @@ function dxrCore(cfg, cap, S) {
       st.haveViews = true; st.stats.twoView++;
       // How far behind the page camera the runtime put the eyes (a display rig backs them off to the
       // nominal viewing distance): the far plane is pushed out by that much so nothing new clips.
-      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14]));
+      // The display rig's pivot (pivotOffset) moves the eyes by up to |t| more.
+      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
       if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
@@ -678,7 +681,7 @@ function dxrCore(cfg, cap, S) {
         display: { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       };
     }
-    const d = Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+    const d = rigDistance(st);
     if (rigMode() === 'display') {
       // DISPLAY rig, for object-centric scenes (the P key of legacy WebXR apps): the canvas is a
       // portal onto a virtual display. Framing: the portal sits on the convergence plane, square to
@@ -691,6 +694,9 @@ function dxrCore(cfg, cap, S) {
       // ONE joint control, as on the camera rig (where metersToVirtual scales the eye separation AND
       // the head motion together): ipdFactor = parallaxFactor = depth. Depth 1 is the true portal;
       // less flattens the stereo and damps the look-around by the same factor.
+      // The portal stays at (0, 0, -d) in the page camera's space; where that camera is in the world
+      // while in this rig (so that the page's own rotations pivot about the portal) is pivotOffset's
+      // business, applied by the adapters when they compose the eyes (eyePose).
       const r = st.rigs.display;
       r.position.x = r.position.y = 0; r.position.z = -d;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
@@ -733,6 +739,82 @@ function dxrCore(cfg, cap, S) {
     rig.parallaxFactor = k;
     st.rig = rig;
     return rig;
+  }
+  // The convergence distance both rigs use: the camera rig's convergence plane, the display rig's portal.
+  const rigDistance = (st) => Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+
+  // ------------------------------------------------------------ the display rig's pivot
+  // RULE (David, panel 2026-09-29): in the display rig the virtual display's centre IS the pivot of
+  // the object view, and on entering the rig it is the centre of the screen on the convergence plane
+  // (page camera + forward × the convergence distance) — the point the camera rig converged on, so
+  // nothing at that plane moves on the toggle.
+  //
+  // The portal rides the page camera at (0, 0, -d) (buildRig), which puts it at the right place on
+  // entry. But the page's own navigation pivots wherever the page's controls do: a first-person
+  // page (Spark's SparkControls, any pointer-look / FPS camera) turns the camera about ITSELF, so the
+  // portal — 2 m ahead in an open world — swung across the view on every drag instead of the object
+  // turning in place; an orbit page whose orbit centre is not the convergence point (a focus the
+  // estimator chose) did the same about the wrong point. So, in the display rig only, the eyes are
+  // composed from a RENDER camera instead of the page camera: the page camera's orientation, placed
+  // so that its portal sits at the anchor c. Each change of the page camera is split into a rotation
+  // about the point of its forward axis that moved least (the page's own pivot: the orbit target for
+  // an orbit page, the camera itself for a first-person one) plus what is left, a translation; the
+  // rotation is re-applied about c (it keeps the portal where it is), the translation moves c with
+  // the page. A change of the convergence distance moves c along the view axis (the render camera
+  // stays put). An orbit page that orbits the convergence point is untouched by this (its axis point
+  // does not move); a cut (> 30° or > d in one frame) re-anchors on the page camera's axis, as
+  // entering the rig does. The camera rig never goes through here ("2D to 3D is perfect").
+  //
+  // Returns t, the render camera's offset in the page camera's own axes (null = none), for eyePose;
+  // m is the page camera's column-major world matrix at draw time. Cached per camera pose + distance,
+  // so both eyes (and every chain pass) of one frame see the same t.
+  const PIVOT_CUT_COS = Math.cos(Math.PI / 6);
+  const ZERO3 = Object.freeze([0, 0, 0]);
+  function pivotOffset(st, m) {
+    if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
+    const d = rigDistance(st), P = st.piv;
+    if (P && P.d === d) {
+      let same = true;
+      for (let k = 0; k < 16; k++) if (P.m[k] !== m[k]) { same = false; break; }
+      if (same) return P.t;
+    }
+    const p = [m[12], m[13], m[14]];
+    const fl = Math.hypot(m[8], m[9], m[10]) || 1;
+    const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
+    let c = null;
+    if (P) {
+      const dp = [p[0] - P.p[0], p[1] - P.p[1], p[2] - P.p[2]];
+      const u = [f[0] - P.f[0], f[1] - P.f[1], f[2] - P.f[2]];
+      const uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+      // The axis point at depth s moves by dp + s·u; the page's pivot is the s where that is least.
+      const s = uu > 1e-12 ? -(dp[0] * u[0] + dp[1] * u[1] + dp[2] * u[2]) / uu : 0;
+      const tr = [dp[0] + s * u[0], dp[1] + s * u[1], dp[2] + s * u[2]];
+      const cut = f[0] * P.f[0] + f[1] * P.f[1] + f[2] * P.f[2] < PIVOT_CUT_COS || Math.hypot(tr[0], tr[1], tr[2]) > P.d;
+      if (!cut) {
+        const dd = d - P.d;
+        c = [P.c[0] + tr[0] + f[0] * dd, P.c[1] + tr[1] + f[1] * dd, P.c[2] + tr[2] + f[2] * dd];
+      }
+    }
+    let t = ZERO3;
+    if (!c) c = [p[0] + f[0] * d, p[1] + f[1] * d, p[2] + f[2] * d]; // (re-)anchored on the page camera's axis: t = 0
+    else {
+      // The render camera's centre v = c - f·d, in the page camera's own axes (scale included).
+      const w = [c[0] - f[0] * d - p[0], c[1] - f[1] * d - p[1], c[2] - f[2] * d - p[2]];
+      const ax = (k) => { const x = m[k], y = m[k + 1], z = m[k + 2], n = x * x + y * y + z * z || 1; return (x * w[0] + y * w[1] + z * w[2]) / n; };
+      t = [ax(0), ax(4), ax(8)];
+    }
+    st.piv = { m: Float64Array.from(m), p, f, c, d, t };
+    return t;
+  }
+  // Eye i's pose for the adapters' attach pattern (eye world = camera world × this): the runtime's
+  // view transform, moved by the display rig's pivot offset (pivotOffset) when there is one.
+  function eyePose(st, i, m) {
+    const src = st.V[i].pose, t = pivotOffset(st, m);
+    if (!t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0)) return src;
+    const o = st.Vp || (st.Vp = [new Float32Array(16), new Float32Array(16)]);
+    o[i].set(src);
+    o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
+    return o[i];
   }
   // Convergence, three tiers: (1) the page's explicit target when it has one and the camera is
   // actually looking at it; else (2) the scene estimator on a bounded subject; else, in an OPEN
@@ -1170,7 +1252,7 @@ function dxrCore(cfg, cap, S) {
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
     newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
-    buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
+    buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
