@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.6 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -27,6 +27,7 @@ function dxrSentinel(cfg, cap) {
     canvasWidth: gopd(HTMLCanvasElement.prototype, 'width'),
     canvasHeight: gopd(HTMLCanvasElement.prototype, 'height'),
     elementId: gopd(Element.prototype, 'id'),
+    attr: Object.freeze({ set: Element.prototype.setAttribute, remove: Element.prototype.removeAttribute, has: Element.prototype.hasAttribute }),
   });
 
   let foreign = null;
