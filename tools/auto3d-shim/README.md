@@ -63,10 +63,14 @@ Plus the value-only symbol marker. After an engine is found the core adds what c
    the shadow root, but page **capture-phase** listeners on `window` / `document` still see them;
 8. possibly **one** `document.adoptedStyleSheets` entry, a single rule
    (`[data-dxr-auto3d-chip]::backdrop{…transparent…}`), appended only when a page-wide `::backdrop`
-   rule would otherwise dim the whole page behind the top-layer chip (risk R9).
+   rule would otherwise dim the whole page behind the top-layer chip (risk R9);
+9. while a canvas is converted (v0.5.6): the attribute **`data-dxr-auto3d="live"`** on that canvas
+   (see [Coexistence with Convert to 3D](#coexistence-with-convert-to-3d-v056)). A page's own
+   `MutationObserver` sees exactly one set and one remove per conversion.
 
 `test/cases/chip.mjs` `chip-layout` checks that the page's DOM, attributes, boxes and computed styles
-are identical before and after go-live, minus the host and the cover, with item 6 allowlisted.
+are identical before and after go-live, minus the host and the cover, with item 6 allowlisted and
+item 9 asserted on its own (the only attribute added).
 
 **Opt-out.** `<meta name="displayxr-auto3d" content="off">` (name and content case-insensitive,
 content trimmed). The sentinel checks it on the first WebGL context and when an engine is found:
@@ -576,6 +580,34 @@ cost ~40 % of the pixels on the panel). The page keeps reading its own mono stor
 with no CSS size (laid out at its store size) gets its current used width / height pinned inline
 while converted (the same box), and unpinned after.
 
+### Coexistence with Convert to 3D (v0.5.6)
+
+The DisplayXR Browser's **Convert to 3D** (lift) converts an image, video or canvas from an isolated
+world. On a canvas auto-3D has converted the drawing buffer is side by side with an `XRDisplayLayer`
+bound: lifted, those pixels would be taken for a flat picture and a second inline-3D session would
+open on the element. So each feature refuses the other's element. The isolated world shares the
+DOM, so **DOM attributes are the contract**, both tested by presence:
+
+- **Out: `data-dxr-auto3d="live"`** on the canvas element auto-3D converts, set when the canvas is
+  claimed (before its store first becomes side by side, so it covers `converting` and the go-live
+  cover) and removed once the store is mono again and the layer is released, on **every** exit path:
+  the user (chip, `Ctrl+Alt+3`, the host's decision), the frame-rate guard (including the wait before
+  its retry), a stand-down because the page asked for `inline-3d` / WebXR, the opt-out meta, no
+  display / no eyes, the session ending, `pagehide`. One pair of helpers in `core.js`
+  (`claim` / `unclaim`) owns both the marker and `owner`, so the two cannot drift. It is output only:
+  nothing in the shim reads it, and no selector of ours matches it (ours are the exact names
+  `[data-dxr-auto3d-cover]` / `-chip` / `-hud`). The sentinel's `MutationObserver` watches
+  `childList` only, so the write does not reach it.
+- **In: `LIFT_MARKERS`** (one constant in `core.js`; **provisional** `['dxr-lift', 'dxr-lift-menu']`
+  pending the lift side's confirmation of what marks a lifted canvas). A canvas carrying one, itself
+  or on an ancestor (across shadow roots), is never converted: not at first, not from the chip of an
+  `offer` page (it is not offered), not on the guard's retry. One console line
+  (`not converting canvas…: element is lifted (Convert to 3D, [dxr-lift])`), report
+  `{ status: 'standdown', reason: 'lifted' }`, the page untouched. A canvas lifted **while live**
+  (checked every 30 session frames, ~2/s, next to the opt-out check: no observer, no timer) goes
+  back to 2D the normal way (fade, out-cover, staged release). Either way it stays 2D for the rest
+  of the document, until the user turns auto-3D on again (then it looks again).
+
 ### Opting out, and the dev switches
 
 - **A page** opts out with `<meta name="displayxr-auto3d" content="off">` (see
@@ -753,13 +785,19 @@ running), so the rig is always sampled at the configured depth.
 | `chip-place` / `chip-fallback` / `chip-none` | three.js keyframes; `pages/three-corner-ui.html` (fixed UI in one or all corners) | top layer, top-right inset 8, ≤ 64×28, no render-surface CSS, hit test hits the host; bottom-right when top-right is taken; none when all four are |
 | `chip-click` / `chip-offer` | product host | click → off + `block`, again → on + `allow`, "Just this time" saves nothing; offer → outlined pill, click converts + saves `allow` |
 | `chip-input` | three.js keyframes | a drag starting on the pill reaches no page bubble listener and moves nothing |
-| `chip-layout` | three.js keyframes | **no layout change**: DOM, attributes, boxes and computed styles identical before / after go-live (host + cover excluded, R7 allowlisted) |
+| `chip-layout` | three.js keyframes | **no layout change**: DOM, attributes, boxes and computed styles identical before / after go-live (host + cover excluded, R7 allowlisted); the only attribute added is the canvas's `data-dxr-auto3d="live"` |
 | `chip-dialog` | `pages/three-dialog.html` | a page `<dialog>` modal over the canvas hides the chip; closed, it comes back; the R9 `::backdrop` neutraliser |
 | `chip-a11y` | three.js keyframes | roles, menu arrows / Home / End, Escape closes and returns focus, the slider |
 | `chip-fs` | three.js, a real `canvas.requestFullscreen()` | a new host (old one gone, one in the document, top layer), **painted** above the fullscreen canvas (pill region differs shown vs hidden), hidden after 3 s idle, back on a move; a fresh host again on exit |
 | `chip-cover-max` | three.js, `displayOk` but never two views | cover still up at 2.5 s, gone at ~5 s, layer open and flat; chip **no display** (outline, hollow dot, tooltip), reports end at `{ flat, no-display }`, never `live` |
 | `chip-no-display` | three.js, the fake's display API answers "no display" | back to 2D at ~1.5 s; chip **no display** with the tooltip, report `{ flat, no-display }`; a click opens the menu, saves nothing |
 | `chip-amber-debounce` | three.js, the fake's views on / off every 500 ms, then gone from 6.5 s | the dot stays green through the flips, turns amber 1-1.6 s after the views stop, and the chip stays live |
+| `m-order` | `three-keyframes.html?pr=0.5` (a 640-wide mono store, 1280 SBS), a page-side `MutationObserver` recording the marker and `width` | `data-dxr-auto3d` set before the first write of the SBS width and removed after the write back to mono; on at the first `converting` report |
+| `m-three` / `m-pc` | three.js keyframes / PlayCanvas meshes | marker `live` while converted; gone after `Ctrl+Alt+3`, back on re-enable, gone after the page's own `inline-3d` request (three) / a `pagehide` (PlayCanvas, in the same task); the page sees exactly set, remove, set, remove; every `converting` / `live` report made with it on, the `standdown` one with it gone |
+| `g-trip` (v0.5.6 addition) | the same | marker set, removed, set, removed: off before the retry's session is requested, off after the block |
+| `m-lifted-three` / `m-lifted-pc` | `dxr-lift` on the canvas / `dxr-lift-menu` on its parent, from insertion | never converted: no session, layer, cover or marker; one `element is lifted` line; report `standdown` / `lifted` |
+| `m-lifted-offer` | the same (three.js), product host, `offer` | not offered (chip hidden), report `standdown` / `lifted`, no session |
+| `m-lift-live-three` / `m-lift-live-pc` | the lift attribute added while live | back to 2D in < 3 s through the staged path (out-cover, `mono frame drawn first`), no raw pair at close (commit model), marker removed after the close, no retry 3 s later |
 
 **The commit model** (`window.__fakeXRTrackCommits`, cases `a-kill`, `b-kill`, `b-flip`). After
 every frame's rAF callbacks (in a ResizeObserver callback, which runs after them and before paint)
@@ -794,6 +832,12 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.5.6, Windows, ANGLE D3D11:** 75 cases (67 + `m-order`, `m-three`, `m-pc`,
+`m-lifted-three`, `m-lifted-pc`, `m-lifted-offer`, `m-lift-live-three`, `m-lift-live-pc`; marker
+assertions added to `g-trip` and `chip-layout`), 0 failures in one full run. The real lift marker on a
+lifted canvas is **not confirmed** yet (`LIFT_MARKERS` is provisional), and nothing here has run against
+the browser's lift code: the cases set the attributes themselves.
 
 **Headless, v0.5.4 (P0.3), Windows, ANGLE D3D11:** 65 cases (63 + `d-pc`, `s-late-canvas`); new assertions: no
 detection after a stand-down (`d`, `d-pc`), Spark's `renderSize` = the eye (`spark`, `spark-eyes`),

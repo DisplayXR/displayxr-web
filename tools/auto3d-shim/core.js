@@ -142,6 +142,53 @@ function dxrCore(cfg, cap, S) {
   let foreign = null;           // why we stood down for good in this document (the page owns inline-3D / XR)
   const engines = [];           // adapter names, for the HUD / console
 
+  // ------------------------------------------------------------ coexistence with Convert to 3D (lift)
+  // The browser's "Convert to 3D" (lift) runs in an isolated world that shares the DOM, so DOM
+  // attributes are the contract between the two features, one in each direction:
+  //
+  // OUT: MARKER on the canvas element we convert, from the claim (activate(): before its store first
+  // becomes side-by-side, so it covers 'converting' and the go-live cover) until its store is mono
+  // again and the layer is released (stand() / release()). Set and removed ONLY by claim() /
+  // unclaim(), which also own `owner`, so the two cannot drift. Output only: no code here reads it.
+  // Lift tests it by PRESENCE. Its name has no '-' suffix, so no `[data-dxr-auto3d-…]` rule of ours
+  // matches it (and nothing of ours uses a prefix selector).
+  //
+  // IN: a canvas that carries (or has an ancestor that carries) any of LIFT_MARKERS is never
+  // converted; one that becomes lifted while live goes back to 2D the normal way (turnOff). Tested by
+  // PRESENCE (any value). PROVISIONAL list, pending the lift owner's confirmation of what marks a
+  // lifted canvas: `dxr-lift` (browser patch 0328: the native live path's attribute, set on a
+  // <video>/<img>) and `dxr-lift-menu` (the menu's "converted" label hint, cleared on the built-in's
+  // disposal). The final name is a one-line edit here.
+  const MARKER = 'data-dxr-auto3d';
+  const LIFT_MARKERS = ['dxr-lift', 'dxr-lift-menu'];
+  const ATTR = S.intrinsics.attr;
+  function claim(st) {
+    owner = st; lastTarget = st;
+    if (!st.marked) { st.marked = true; try { ATTR.set.call(st.canvas, MARKER, 'live'); } catch (e) { /* ignore */ } }
+  }
+  function unclaim(st) {
+    if (owner === st) owner = null;
+    if (st.marked) { st.marked = false; try { ATTR.remove.call(st.canvas, MARKER); } catch (e) { /* ignore */ } }
+  }
+  // The lift marker on the element or an ancestor (across shadow roots), or null.
+  function liftedBy(el) {
+    for (let e = el; e;) {
+      if (e.nodeType !== 1) { e = e.host || null; continue; } // a ShadowRoot -> its host; the Document -> done
+      for (const n of LIFT_MARKERS) if (ATTR.has.call(e, n)) return n;
+      e = e.parentNode;
+    }
+    return null;
+  }
+  // This canvas is lifted: leave it alone (sticky for the document, until the user turns auto-3D on
+  // again: setEnabled). One console line per canvas; the status is 'standdown' (reason 'lifted').
+  function refuseLifted(st, n) {
+    if (st.lifted) return;
+    st.lifted = n;
+    info(`not converting ${desc(st.canvas)}: element is lifted (Convert to 3D, [${n}])`);
+    if (candidate === st) candidate = null;
+    notify();
+  }
+
   // ------------------------------------------------------------ navigator.xr: yield to the page
   // The requestSession wrapper lives in the sentinel (risk R3: a page may ask for inline-3d before
   // the core exists). Our own requests go straight to the captured original through S.xrRequest, so
@@ -252,10 +299,12 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
     if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
-    if (foreign || owner || guard.tripped || guard.retrying) return;
+    if (foreign || owner || guard.tripped || guard.retrying || st.lifted) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
     if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
+    const lf = liftedBy(st.canvas); // Convert to 3D took it (first conversion, a chip click, the guard's retry)
+    if (lf) { refuseLifted(st, lf); return; }
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
@@ -269,7 +318,9 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     if (t < (st.candAt || 0)) return;
     st.candAt = t + 500;
-    const ok = !st.ad.unqualified(st);
+    const lf = st.lifted || liftedBy(st.canvas);
+    if (lf && !st.lifted) refuseLifted(st, lf); // never offered: a click would convert a lifted canvas
+    const ok = !lf && !st.ad.unqualified(st);
     const next = ok ? st : candidate === st ? null : candidate;
     if (next !== candidate) { candidate = next; notify(); }
   }
@@ -297,13 +348,15 @@ function dxrCore(cfg, cap, S) {
     return null;
   }
   async function activate(st) {
-    owner = st; lastTarget = st; st.pending = true; st.lastWhy = null; st.tries++;
+    claim(st); st.pending = true; st.lastWhy = null; st.tries++;
     info('converting', desc(st.canvas), `(${st.ad.label(st)})`);
     notify();
     let session = null;
     try {
       session = await xrRequest('inline-3d');
       if (!st.pending || foreign || !on()) { try { session.end(); } catch (e) { /* ignore */ } return; }
+      const lf = liftedBy(st.canvas); // lifted while the session was being granted: nothing resized yet
+      if (lf) { try { session.end(); } catch (e) { /* ignore */ } refuseLifted(st, lf); stand(st, 'the element was lifted (Convert to 3D)'); return; }
       st.session = session;
       st.ref = await session.requestReferenceSpace('viewer');
       session.addEventListener('end', () => { if (st.session === session) stand(st, 'the inline-3d session ended'); });
@@ -314,7 +367,7 @@ function dxrCore(cfg, cap, S) {
     } catch (e) {
       warnOnce('session', 'inline-3d session refused — staying 2D:', e && e.message);
       if (session) { try { session.end(); } catch (e2) { /* ignore */ } }
-      st.pending = false; if (owner === st) owner = null;
+      st.pending = false; unclaim(st);
       st.nextTry = now() + 10000;
       notify();
     }
@@ -413,7 +466,7 @@ function dxrCore(cfg, cap, S) {
       st.ad.restore(st, wasLive);
       unpromote(st);
       dropCover(st);
-      if (owner === st) owner = null;
+      unclaim(st); // the store is mono and the layer gone: the marker goes last
     }
     if (was) info('back to 2D:', reason);
     notify();
@@ -441,7 +494,7 @@ function dxrCore(cfg, cap, S) {
       requestAnimationFrame(tick);
     }
     else dropCover(st);
-    if (owner === st) owner = null;
+    unclaim(st); // mono frame drawn (restore() at the stand), layer released: the marker goes last
     info(`layer released ${Math.round(now() - rel.at)} ms after the stand (${rel.drawn ? 'mono frame drawn first' : 'no mono frame: timed out'})`);
     if (st.wakeOnRelease) { st.wakeOnRelease = false; wake(st); }
     notify();
@@ -466,6 +519,7 @@ function dxrCore(cfg, cap, S) {
         const st = w.deref();
         if (!st) continue;
         st.nextTry = 0; st.tries = 0; st.lastWhy = null;
+        if (!st.offTok && !st.releasing) st.lifted = null; // the user asked: look again (a canvas still lifted is refused again)
         if (st.releasing) st.wakeOnRelease = true; else wake(st);
       }
     }
@@ -533,6 +587,9 @@ function dxrCore(cfg, cap, S) {
     const ad = st.ad;
     st.stats.xrFrames++;
     if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) { standDownForGood(); turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)'); }
+    // Convert to 3D took this canvas while it is live: back to 2D the normal way (fade, out-cover,
+    // staged stand). Polled here, ~2/s, rather than by an observer: no new timer, no page-visible hook.
+    if (st.stats.xrFrames % 30 === 15 && !st.offTok) { const lf = liftedBy(st.canvas); if (lf) { refuseLifted(st, lf); turnOff(st, 'the element was lifted (Convert to 3D)'); } }
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
@@ -1145,6 +1202,10 @@ function dxrCore(cfg, cap, S) {
     for (const w of tracked) { const st = w.deref(); if (st && st.flatReason) return st; }
     return null;
   };
+  const liftedNote = () => {
+    for (const w of tracked) { const st = w.deref(); if (st && st.lifted) return st; }
+    return null;
+  };
   // One status for the chip, the dev HUD and the host. Report statuses:
   //   'live' | 'converting' | 'standdown' | 'optout' | 'guard' | 'offer' | 'off' | 'flat' | 'idle'
   function statusOf() {
@@ -1159,6 +1220,8 @@ function dxrCore(cfg, cap, S) {
     if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
+    // A canvas Convert to 3D took, and nothing else to convert or offer: a stand-down for that canvas.
+    if (!st && !candidate) { const lf = liftedNote(); if (lf) return { status: 'standdown', engine: lf.engine, reason: 'lifted' }; }
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
     if (!st && lastTarget && lastTarget.noDisplay) return { status: 'flat', engine: lastTarget.engine, reason: 'no-display' };
     const flat = flatNote();

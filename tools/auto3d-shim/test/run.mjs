@@ -75,8 +75,29 @@ const productShim = (hostCfg = {}) => {
   const cfg = hostCfg.dev ? { ...hostCfg, test: { guardFps: HARNESS_GUARD_FPS, ...(hostCfg.test || {}) } } : hostCfg;
   return [`window.__dxrFakeHostSrc = ${JSON.stringify(PRODUCT_SRC)}; window.__dxrFakeHostCfg = ${JSON.stringify(cfg)};`, FAKE_HOST];
 };
+// The converted-canvas marker (v0.5.6): a PAGE-side recorder, injected before the shim, as a page's
+// own code would see it. window.__mk.recs: every `data-dxr-auto3d` / `width` attribute mutation on a
+// page canvas, in order, with its OLD value (a record's new value is the next one's old value);
+// __mk.covers: cover elements ever inserted. The dev host's report log (window.__dxrAuto3DReports)
+// is pre-created so each report also records whether a canvas carried the marker AT that moment.
+const MARKS = `(() => {
+  const H = (window.__mk = { recs: [], covers: 0 });
+  const R = (window.__dxrAuto3DReports = []);
+  R.push = function (r) { r.marker = [...document.querySelectorAll('canvas')].some((c) => c.hasAttribute('data-dxr-auto3d')); return Array.prototype.push.call(this, r); };
+  const take = (recs) => {
+    for (const r of recs) {
+      if (r.type === 'childList') { for (const n of r.addedNodes) if (n.nodeType === 1 && n.hasAttribute('data-dxr-auto3d-cover')) H.covers++; continue; }
+      const e = r.target;
+      if (e.tagName !== 'CANVAS' || e.hasAttribute('data-dxr-auto3d-cover')) continue;
+      H.recs.push({ t: performance.now(), a: r.attributeName, old: r.oldValue });
+    }
+  };
+  const mo = new MutationObserver(take);
+  H.flush = () => take(mo.takeRecords()); // the records so far, synchronously
+  mo.observe(document, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['data-dxr-auto3d', 'width'] });
+})();`;
 const CASES = [];
-const env = { P, NEW, LEGACY, BUILT, productShim, hasSog, SOG_DIR };
+const env = { P, NEW, LEGACY, BUILT, productShim, hasSog, SOG_DIR, MARKS };
 for (const f of readdirSync(join(here, 'cases')).filter((x) => x.endsWith('.mjs')).sort()) {
   const mod = await import(pathToFileURL(join(here, 'cases', f)).href);
   for (const c of mod.default(env)) {

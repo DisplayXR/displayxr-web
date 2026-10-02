@@ -69,7 +69,9 @@ function snapshot() {
   const out = [];
   const walk = (e, path) => {
     if (skip(e)) return;
-    const attrs = [...e.attributes].map((a) => {
+    // The converted-canvas marker (v0.5.6, data-dxr-auto3d="live") is OURS, by design: asserted on
+    // its own in chip-layout, left out of the comparison.
+    const attrs = [...e.attributes].filter((a) => !(e.tagName === 'CANVAS' && a.name === 'data-dxr-auto3d')).map((a) => {
       // The converted canvas's STORE is the side-by-side pair (2 x the device-pixel eye, P0.2): its
       // width / height attributes (and the intrinsic aspect-ratio they imply) change by design; its
       // BOX must not, and the box is compared below.
@@ -258,9 +260,11 @@ export default function cases({ P, productShim }) {
         await h.sleep(500);
         const after = await page.evaluate(snapshot);
         const hostOn = await page.evaluate(() => { const e = document.querySelector('[data-dxr-auto3d-chip]'); return !!e && e.parentNode === document.documentElement && e.matches(':popover-open'); });
-        return { diff: diffSnap(before, after), n: before.length, sb, hostOn, noDev: await page.evaluate(() => typeof window.__dxrAuto3D) };
+        const marker = await page.evaluate(() => [...document.querySelectorAll('[data-dxr-auto3d]')].map((e) => `${e.tagName.toLowerCase()}=${e.getAttribute('data-dxr-auto3d')}`));
+        return { diff: diffSnap(before, after), n: before.length, sb, hostOn, marker, noDev: await page.evaluate(() => typeof window.__dxrAuto3D) };
       },
       check(r, t) {
+        t('the only attribute added to a page element is the converted canvas\'s data-dxr-auto3d="live"', r.marker && r.marker.join(',') === 'canvas=live', JSON.stringify(r.marker));
         t('snapshot taken before anything converted', r.ok && r.sb && !r.sb.reports.includes('converting') && !r.sb.reports.includes('live'), r.error || JSON.stringify(r.sb));
         t('product mode (no dev surface), chip host present in the top layer', r.noDev === 'undefined' && r.hostOn === true, `dev ${r.noDev}, host ${r.hostOn}`);
         t(`no page element changed (${r.n} elements compared)`, r.diff && r.diff.length === 0, r.diff && r.diff.slice(0, 8).join(' | '));

@@ -100,6 +100,8 @@ function dxrSentinel(cfg, cap) {
     canvasWidth: gopd(HTMLCanvasElement.prototype, 'width'),
     canvasHeight: gopd(HTMLCanvasElement.prototype, 'height'),
     elementId: gopd(Element.prototype, 'id'),
+    // The core's converted-canvas marker (data-dxr-auto3d) and its Convert-to-3D check (core.js).
+    attr: Object.freeze({ set: Element.prototype.setAttribute, remove: Element.prototype.removeAttribute, has: Element.prototype.hasAttribute }),
   });
 
   // ------------------------------------------------------------ navigator.xr: yield to the page (R3)
