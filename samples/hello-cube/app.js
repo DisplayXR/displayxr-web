@@ -120,12 +120,15 @@ document.body.appendChild(dbgEl);
 const DEBUG_HUD = new URLSearchParams(location.search).has('debug');
 if (!DEBUG_HUD && typeof dbgEl !== 'undefined' && dbgEl) dbgEl.style.display = 'none';
 let dbgN = 0;
-// bring-up: tap anywhere -> toggle fullscreen (window becomes the full panel; tests the
-// target-extent-vs-panel-height hypothesis for the portrait double image)
-addEventListener('pointerup', () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen().catch(()=>{});
-});
+// Bring-up only, behind ?debug like the HUD: a tap anywhere toggles fullscreen (the window
+// becomes the full panel — used to test target extent vs panel height on a portrait panel).
+// OFF by default: on an ordinary page a click must never maximise or restore the window.
+if (DEBUG_HUD) {
+  addEventListener('pointerup', () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
+  });
+}
 function dbgUpdate(views, layer) {
   if (!DEBUG_HUD) return;
   if ((dbgN++ % 30) !== 0) return;
