@@ -116,7 +116,7 @@ const shadowRead = (mode) => new Promise((res) => requestAnimationFrame(() => se
   res({ W, H, sd, eyes: [0, 1].map((i) => ({ shadow: patch(at(S.shadowPt, i)), lit: patch(at(S.litPt, i)), at: at(S.shadowPt, i).map(Math.round) })) });
 }, 0)));
 
-export default function cases({ P, NEW }) {
+export default function cases({ P, NEW, MARKS }) {
   const shadowCase = (id, name, offsetOn) => ({
     id, name, url: P + 'pc-shadow.html', shim: NEW,
     cfg: { rig: 'display', ...(offsetOn ? {} : { pcShadowOffset: false }) }, fake: { eyeZ: 12 },
@@ -162,7 +162,7 @@ export default function cases({ P, NEW }) {
   return [
     {
       id: 'g-trip', name: 'frame-rate guard: conversion costs 90 ms a frame -> back to 2D, ONE retry after guardRetryMs, trips again -> blocked, report guard',
-      url: P + 'pc-orbit.html', shim: NEW, cfg: { guardFps: 15 }, fake: { frameCostMs: 90 }, commits: true, // 3D ~10 fps: below 15 and below 0.6 x the ~55 fps 2D rate
+      url: P + 'pc-orbit.html', shim: [MARKS, ...NEW], cfg: { guardFps: 15 }, fake: { frameCostMs: 90 }, commits: true, // 3D ~10 fps: below 15 and below 0.6 x the ~55 fps 2D rate
       async run(page, h) {
         await page.evaluate(watchOutCover);
         await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'guard'), { timeout: 50000, polling: 100 });
@@ -172,7 +172,9 @@ export default function cases({ P, NEW }) {
         const at = await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length }));
         await h.sleep(5000);
         const out = await page.evaluate(readOut);
-        return { at, out, cmp };
+        const mk = await page.evaluate(() => ({ recs: window.__mk.recs.filter((x) => x.a === 'data-dxr-auto3d'), sessions: window.__fakeXR.sessions.map((s) => s.at),
+          now: document.querySelector('canvas:not([data-dxr-auto3d-cover])').getAttribute('data-dxr-auto3d') }));
+        return { at, out, cmp, mk };
       },
       check(r, t, h) {
         const O = r.out;
@@ -193,6 +195,12 @@ export default function cases({ P, NEW }) {
           t(`close #${i + 1}: no raw side-by-side frame once the layer is closed (commit model)`, rp && rp.frames >= 3 && rp.discriminates && rp.bad.length === 0,
             rp ? `${rp.frames} committed frames from close(); at close ${rp.atClose.toFixed(2)}, pair ${rp.pairBase.toFixed(2)}, mono ${rp.monoBase.toFixed(2)}; raw pairs [${rp.bad.map((b) => b.i).join(', ')}]` : 'layer never closed');
         }
+        // v0.5.6 marker: on for each of the two conversions, OFF through the retry wait (removed before
+        // the retry's session was even requested), and off after the block.
+        const M = r.mk, seq = M ? M.recs.map((x) => (x.old === null ? 'set' : 'rm')).join(',') : '';
+        t('marker: set, remove, set, remove; removed before the retry, absent after the block',
+          seq === 'set,rm,set,rm' && M.recs[1].t < M.sessions[1] && M.recs[2].t >= M.sessions[1] && M.now === null,
+          M ? `${seq}; removed ${M.recs[1] && M.recs[1].t.toFixed(0)}, retry session ${M.sessions[1] && M.sessions[1].toFixed(0)}, set again ${M.recs[2] && M.recs[2].t.toFixed(0)}, now ${M.now}` : 'no record');
         const k = r.cmp;
         t('the turn-off took the out-cover, and it holds a real picture', outCoverReal(k), k ? `data URL ${k.srcLen} chars; vs mono MAE ${k.mae.toFixed(2)} (flipped ${k.maeFlipped.toFixed(2)}), std ${k.std.toFixed(1)}` : 'no out-cover');
       },

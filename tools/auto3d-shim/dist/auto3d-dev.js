@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.6 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -90,6 +90,7 @@ function dxrSentinel(cfg, cap) {
     canvasWidth: gopd(HTMLCanvasElement.prototype, 'width'),
     canvasHeight: gopd(HTMLCanvasElement.prototype, 'height'),
     elementId: gopd(Element.prototype, 'id'),
+    attr: Object.freeze({ set: Element.prototype.setAttribute, remove: Element.prototype.removeAttribute, has: Element.prototype.hasAttribute }),
   });
 
   let foreign = null;
@@ -401,7 +402,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.5'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.6'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -481,6 +482,33 @@ function dxrCore(cfg, cap, S) {
   let foreign = null;           // why we stood down for good in this document (the page owns inline-3D / XR)
   const engines = [];           // adapter names, for the HUD / console
 
+  const MARKER = 'data-dxr-auto3d';
+  const LIFT_MARKERS = ['dxr-lift'];
+  const ATTR = S.intrinsics.attr;
+  function claim(st) {
+    owner = st; lastTarget = st;
+    if (!st.marked) { st.marked = true; try { ATTR.set.call(st.canvas, MARKER, 'live'); } catch (e) { /* ignore */ } }
+  }
+  function unclaim(st) {
+    if (owner === st) owner = null;
+    if (st.marked) { st.marked = false; try { ATTR.remove.call(st.canvas, MARKER); } catch (e) { /* ignore */ } }
+  }
+  function liftedBy(el) {
+    for (let e = el; e;) {
+      if (e.nodeType !== 1) { e = e.host || null; continue; } // a ShadowRoot -> its host; the Document -> done
+      for (const n of LIFT_MARKERS) if (ATTR.has.call(e, n)) return n;
+      e = e.parentNode;
+    }
+    return null;
+  }
+  function refuseLifted(st, n) {
+    if (st.lifted) return;
+    st.lifted = n;
+    info(`not converting ${desc(st.canvas)}: element is lifted (Convert to 3D, [${n}])`);
+    if (candidate === st) candidate = null;
+    notify();
+  }
+
   const xrRequest = S.xrRequest;
   function yieldTo(reason) {
     if (!foreign) { foreign = reason; info('standing down for this document:', reason); standDownForGood(); }
@@ -545,10 +573,12 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
     if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
-    if (foreign || owner || guard.tripped || guard.retrying) return;
+    if (foreign || owner || guard.tripped || guard.retrying || st.lifted) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
     if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
+    const lf = liftedBy(st.canvas); // Convert to 3D took it (first conversion, a chip click, the guard's retry)
+    if (lf) { refuseLifted(st, lf); return; }
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
@@ -560,7 +590,9 @@ function dxrCore(cfg, cap, S) {
     const t = now();
     if (t < (st.candAt || 0)) return;
     st.candAt = t + 500;
-    const ok = !st.ad.unqualified(st);
+    const lf = st.lifted || liftedBy(st.canvas);
+    if (lf && !st.lifted) refuseLifted(st, lf); // never offered: a click would convert a lifted canvas
+    const ok = !lf && !st.ad.unqualified(st);
     const next = ok ? st : candidate === st ? null : candidate;
     if (next !== candidate) { candidate = next; notify(); }
   }
@@ -586,13 +618,15 @@ function dxrCore(cfg, cap, S) {
     return null;
   }
   async function activate(st) {
-    owner = st; lastTarget = st; st.pending = true; st.lastWhy = null; st.tries++;
+    claim(st); st.pending = true; st.lastWhy = null; st.tries++;
     info('converting', desc(st.canvas), `(${st.ad.label(st)})`);
     notify();
     let session = null;
     try {
       session = await xrRequest('inline-3d');
       if (!st.pending || foreign || !on()) { try { session.end(); } catch (e) { /* ignore */ } return; }
+      const lf = liftedBy(st.canvas); // lifted while the session was being granted: nothing resized yet
+      if (lf) { try { session.end(); } catch (e) { /* ignore */ } refuseLifted(st, lf); stand(st, 'the element was lifted (Convert to 3D)'); return; }
       st.session = session;
       st.ref = await session.requestReferenceSpace('viewer');
       session.addEventListener('end', () => { if (st.session === session) stand(st, 'the inline-3d session ended'); });
@@ -601,7 +635,7 @@ function dxrCore(cfg, cap, S) {
     } catch (e) {
       warnOnce('session', 'inline-3d session refused — staying 2D:', e && e.message);
       if (session) { try { session.end(); } catch (e2) { /* ignore */ } }
-      st.pending = false; if (owner === st) owner = null;
+      st.pending = false; unclaim(st);
       st.nextTry = now() + 10000;
       notify();
     }
@@ -680,7 +714,7 @@ function dxrCore(cfg, cap, S) {
       st.ad.restore(st, wasLive);
       unpromote(st);
       dropCover(st);
-      if (owner === st) owner = null;
+      unclaim(st); // the store is mono and the layer gone: the marker goes last
     }
     if (was) info('back to 2D:', reason);
     notify();
@@ -704,7 +738,7 @@ function dxrCore(cfg, cap, S) {
       requestAnimationFrame(tick);
     }
     else dropCover(st);
-    if (owner === st) owner = null;
+    unclaim(st); // mono frame drawn (restore() at the stand), layer released: the marker goes last
     info(`layer released ${Math.round(now() - rel.at)} ms after the stand (${rel.drawn ? 'mono frame drawn first' : 'no mono frame: timed out'})`);
     if (st.wakeOnRelease) { st.wakeOnRelease = false; wake(st); }
     notify();
@@ -725,6 +759,7 @@ function dxrCore(cfg, cap, S) {
         const st = w.deref();
         if (!st) continue;
         st.nextTry = 0; st.tries = 0; st.lastWhy = null;
+        if (!st.offTok && !st.releasing) st.lifted = null; // the user asked: look again (a canvas still lifted is refused again)
         if (st.releasing) st.wakeOnRelease = true; else wake(st);
       }
     }
@@ -779,6 +814,7 @@ function dxrCore(cfg, cap, S) {
     const ad = st.ad;
     st.stats.xrFrames++;
     if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) { standDownForGood(); turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)'); }
+    if (st.stats.xrFrames % 30 === 15 && !st.offTok) { const lf = liftedBy(st.canvas); if (lf) { refuseLifted(st, lf); turnOff(st, 'the element was lifted (Convert to 3D)'); } }
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
@@ -1215,6 +1251,10 @@ function dxrCore(cfg, cap, S) {
     for (const w of tracked) { const st = w.deref(); if (st && st.flatReason) return st; }
     return null;
   };
+  const liftedNote = () => {
+    for (const w of tracked) { const st = w.deref(); if (st && st.lifted) return st; }
+    return null;
+  };
   function statusOf() {
     const st = owner;
     if (foreign) return { status: 'standdown', reason: foreign };
@@ -1225,6 +1265,7 @@ function dxrCore(cfg, cap, S) {
     if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
     if (st && st.active) return { status: 'live', engine: st.engine };
     if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
+    if (!st && !candidate) { const lf = liftedNote(); if (lf) return { status: 'standdown', engine: lf.engine, reason: 'lifted' }; }
     if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
     if (!st && lastTarget && lastTarget.noDisplay) return { status: 'flat', engine: lastTarget.engine, reason: 'no-display' };
     const flat = flatNote();
@@ -1930,7 +1971,7 @@ function dxrDev(core, ctl) {
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
           convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
-          rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing,
+          rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
           rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
