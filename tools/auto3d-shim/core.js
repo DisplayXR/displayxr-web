@@ -155,12 +155,15 @@ function dxrCore(cfg, cap, S) {
   //
   // IN: a canvas that carries (or has an ancestor that carries) any of LIFT_MARKERS is never
   // converted; one that becomes lifted while live goes back to 2D the normal way (turnOff). Tested by
-  // PRESENCE (any value). PROVISIONAL list, pending the lift owner's confirmation of what marks a
-  // lifted canvas: `dxr-lift` (browser patch 0328: the native live path's attribute, set on a
-  // <video>/<img>) and `dxr-lift-menu` (the menu's "converted" label hint, cleared on the built-in's
-  // disposal). The final name is a one-line edit here.
+  // PRESENCE (any value: 'off' too). `dxr-lift` (browser patch 0328) is what the native live path
+  // puts on a <video> ('auto' live, 'off' while explore owns the pixels; removed on the second
+  // Convert to 3D and on Exit). A lifted <img> / <canvas> source carries no attribute today, and
+  // Convert to 3D is not offered on canvases (browser v1.2.x), so this check is forward-looking: it
+  // fires only when a page puts `dxr-lift` on a canvas or a container, where staying 2D is right.
+  // Not `data-inline3d-lift`: a SIBLING host, not an ancestor, to be replaced by a marker on the
+  // source when canvas lift returns.
   const MARKER = 'data-dxr-auto3d';
-  const LIFT_MARKERS = ['dxr-lift', 'dxr-lift-menu'];
+  const LIFT_MARKERS = ['dxr-lift'];
   const ATTR = S.intrinsics.attr;
   function claim(st) {
     owner = st; lastTarget = st;

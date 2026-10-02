@@ -598,15 +598,25 @@ DOM, so **DOM attributes are the contract**, both tested by presence:
   nothing in the shim reads it, and no selector of ours matches it (ours are the exact names
   `[data-dxr-auto3d-cover]` / `-chip` / `-hud`). The sentinel's `MutationObserver` watches
   `childList` only, so the write does not reach it.
-- **In: `LIFT_MARKERS`** (one constant in `core.js`; **provisional** `['dxr-lift', 'dxr-lift-menu']`
-  pending the lift side's confirmation of what marks a lifted canvas). A canvas carrying one, itself
-  or on an ancestor (across shadow roots), is never converted: not at first, not from the chip of an
-  `offer` page (it is not offered), not on the guard's retry. One console line
-  (`not converting canvas…: element is lifted (Convert to 3D, [dxr-lift])`), report
-  `{ status: 'standdown', reason: 'lifted' }`, the page untouched. A canvas lifted **while live**
-  (checked every 30 session frames, ~2/s, next to the opt-out check: no observer, no timer) goes
-  back to 2D the normal way (fade, out-cover, staged release). Either way it stays 2D for the rest
-  of the document, until the user turns auto-3D on again (then it looks again).
+- **In: `LIFT_MARKERS = ['dxr-lift']`** (one constant in `core.js`), tested by presence (any value,
+  `off` included) on the canvas or an ancestor (across shadow roots). A canvas carrying it is never
+  converted: not at first, not from the chip of an `offer` page (it is not offered), not on the
+  guard's retry. One console line (`not converting canvas…: element is lifted (Convert to 3D,
+  [dxr-lift])`), report `{ status: 'standdown', reason: 'lifted' }`, the page untouched. A canvas
+  that gets it **while live** (checked every 30 session frames, ~2/s, next to the opt-out check: no
+  observer, no timer) goes back to 2D the normal way (fade, out-cover, staged release). Either way it
+  **stays refused for the rest of the document, until the user turns auto-3D on again** (chip,
+  `Ctrl+Alt+3`), which looks again.
+
+  What lift puts on the DOM today: a `<video>` on the native path carries `dxr-lift` (`auto` while
+  live, `off` while explore owns the pixels) plus `dxr-lift-strength` / `-convergence` / `-priority`,
+  removed on the second Convert to 3D and on Exit / disposal (browser patches 0328, 0331, 0335,
+  0337). A lifted `<img>` or `<canvas>` **source carries no attribute**: the only trace is a sibling
+  host `div[data-inline3d-lift]`, removed on Exit, which we do not key on (a sibling, not an
+  ancestor, and due to be replaced by a marker on the source when canvas lift returns). Convert to 3D
+  is **not offered on canvases** in browser v1.2.0 / v1.2.1, so this check is forward-looking: today
+  it fires only when a page author puts `dxr-lift` on a canvas or a container, where staying 2D is
+  right.
 
 ### Opting out, and the dev switches
 
@@ -795,7 +805,7 @@ running), so the rig is always sampled at the configured depth.
 | `m-order` | `three-keyframes.html?pr=0.5` (a 640-wide mono store, 1280 SBS), a page-side `MutationObserver` recording the marker and `width` | `data-dxr-auto3d` set before the first write of the SBS width and removed after the write back to mono; on at the first `converting` report |
 | `m-three` / `m-pc` | three.js keyframes / PlayCanvas meshes | marker `live` while converted; gone after `Ctrl+Alt+3`, back on re-enable, gone after the page's own `inline-3d` request (three) / a `pagehide` (PlayCanvas, in the same task); the page sees exactly set, remove, set, remove; every `converting` / `live` report made with it on, the `standdown` one with it gone |
 | `g-trip` (v0.5.6 addition) | the same | marker set, removed, set, removed: off before the retry's session is requested, off after the block |
-| `m-lifted-three` / `m-lifted-pc` | `dxr-lift` on the canvas / `dxr-lift-menu` on its parent, from insertion | never converted: no session, layer, cover or marker; one `element is lifted` line; report `standdown` / `lifted` |
+| `m-lifted-three` / `m-lifted-pc` | `dxr-lift` on the canvas / on its parent, from insertion | never converted: no session, layer, cover or marker; one `element is lifted` line; report `standdown` / `lifted` |
 | `m-lifted-offer` | the same (three.js), product host, `offer` | not offered (chip hidden), report `standdown` / `lifted`, no session |
 | `m-lift-live-three` / `m-lift-live-pc` | the lift attribute added while live | back to 2D in < 3 s through the staged path (out-cover, `mono frame drawn first`), no raw pair at close (commit model), marker removed after the close, no retry 3 s later |
 
@@ -835,9 +845,8 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
 
 **Headless, v0.5.6, Windows, ANGLE D3D11:** 75 cases (67 + `m-order`, `m-three`, `m-pc`,
 `m-lifted-three`, `m-lifted-pc`, `m-lifted-offer`, `m-lift-live-three`, `m-lift-live-pc`; marker
-assertions added to `g-trip` and `chip-layout`), 0 failures in one full run. The real lift marker on a
-lifted canvas is **not confirmed** yet (`LIFT_MARKERS` is provisional), and nothing here has run against
-the browser's lift code: the cases set the attributes themselves.
+assertions added to `g-trip` and `chip-layout`), 0 failures in one full run. Nothing here has run against
+the browser's lift code: the cases set `dxr-lift` themselves.
 
 **Headless, v0.5.4 (P0.3), Windows, ANGLE D3D11:** 65 cases (63 + `d-pc`, `s-late-canvas`); new assertions: no
 detection after a stand-down (`d`, `d-pc`), Spark's `renderSize` = the eye (`spark`, `spark-eyes`),

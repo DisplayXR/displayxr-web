@@ -2,7 +2,7 @@
 // "coexistence with Convert to 3D"):
 //   OUT  data-dxr-auto3d="live" on the converted canvas, from the claim (before the store becomes
 //        side-by-side) until the store is mono again and the layer is released, on every exit path;
-//   IN   a canvas carrying a lift marker (core.js LIFT_MARKERS: dxr-lift, dxr-lift-menu), itself or
+//   IN   a canvas carrying a lift marker (core.js LIFT_MARKERS: dxr-lift), itself or
 //        on an ancestor, is never converted; lifted while live -> back to 2D the normal way.
 // Dev bundle (env.NEW) behind env.MARKS, the page-side recorder (run.mjs): every marker / width
 // mutation a page's own MutationObserver sees, and whether the marker was on at each report.
@@ -176,7 +176,7 @@ export default function cases({ P, NEW, MARKS, productShim }) {
     liveCase('m-three', 'three.js', 'three-keyframes.html', 'the page requests inline-3d'),
     liveCase('m-pc', 'PlayCanvas', 'pc-mesh.html', 'pagehide'),
     liftedCase('m-lifted-three', 'three.js', 'three-keyframes.html', 'self', 'dxr-lift'),
-    liftedCase('m-lifted-pc', 'PlayCanvas', 'pc-mesh.html', 'parent', 'dxr-lift-menu'),
+    liftedCase('m-lifted-pc', 'PlayCanvas', 'pc-mesh.html', 'parent', 'dxr-lift'),
     {
       id: 'm-lifted-offer', name: 'lift (three.js, product host, offer): a lifted canvas is never offered (no offer pill to click), report standdown/lifted',
       url: P + 'three-keyframes.html', shim: [liftTag('self', 'dxr-lift'), ...productShim({ decision: 'offer', dev: true })],
@@ -195,6 +195,6 @@ export default function cases({ P, NEW, MARKS, productShim }) {
       },
     },
     liftLiveCase('m-lift-live-three', 'three.js', 'three-keyframes.html', 'self', 'dxr-lift'),
-    liftLiveCase('m-lift-live-pc', 'PlayCanvas', 'pc-mesh.html', 'parent', 'dxr-lift-menu'),
+    liftLiveCase('m-lift-live-pc', 'PlayCanvas', 'pc-mesh.html', 'parent', 'dxr-lift'),
   ];
 }
