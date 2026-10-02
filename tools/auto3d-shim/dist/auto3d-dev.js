@@ -483,7 +483,7 @@ function dxrCore(cfg, cap, S) {
   const engines = [];           // adapter names, for the HUD / console
 
   const MARKER = 'data-dxr-auto3d';
-  const LIFT_MARKERS = ['dxr-lift', 'dxr-lift-menu'];
+  const LIFT_MARKERS = ['dxr-lift'];
   const ATTR = S.intrinsics.attr;
   function claim(st) {
     owner = st; lastTarget = st;
