@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.5.6 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.5.7 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.6'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.5.7'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -130,6 +130,13 @@ function dxrCore(cfg, cap, S) {
       stats: { calls: 0, stereo: 0, flat: 0, flatAfterEyes: 0, replays: 0, resizes: 0, xrFrames: 0, twoView: 0, shortView: 0 },
     };
     tracked.push(new WeakRef(st));
+    return st;
+  }
+  function noteFlat(engine, canvas, reason) {
+    const st = newState(engine, canvas, { label: () => engine, unqualified: () => reason, describe: () => ({ page: null }) });
+    st.flatReason = reason;
+    info(`${engine} canvas ${desc(canvas)} stays 2D:`, reason);
+    notify();
     return st;
   }
 
@@ -947,7 +954,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
+    newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,
@@ -1610,9 +1617,17 @@ function dxrThree(core) {
     const o = e && e.detail;
     if (!o) return;
     if (o.isScene) { hookLookAt(o); return; }
-    if (o.isWebGPURenderer) { warnOnce('webgpu', 'WebGPURenderer seen — not converted by this prototype, left 2D'); return; }
+    if (o.isWebGPURenderer) { flatWebGPU(o); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
+  const webgpu = new WeakSet();
+  const WEBGPU_WHY = 'WebGPURenderer — the prototype drives WebGL renderers only';
+  function flatWebGPU(r) {
+    if (webgpu.has(r)) return;
+    webgpu.add(r);
+    if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted by this prototype, left 2D'); return; }
+    core.noteFlat('three.js', r.domElement, WEBGPU_WHY);
+  }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
 
   const lookAts = new WeakMap(); // camera -> { x, y, z } (world), the last lookAt
