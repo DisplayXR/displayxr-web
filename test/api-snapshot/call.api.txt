@@ -30,7 +30,7 @@ function createLiftPool [deprecated]: (o:{lift:LiftFunction;max?:number;log?:(ta
 function createLiveGate [deprecated]: (o?:{need?:number;needNoPose?:number}):{feed(viewCount:number|null):boolean;readonly live:boolean}
 function defaultLiftSpecifier [deprecated]: (base?:string):string
 function defineCallElement: (name?:string,registry?:CustomElementRegistry):boolean
-function dxrSignaling: (url?:string,opts?:{WebSocket?:any;pingMs?:number;key?:string}):SignalingAdapter
+function dxrSignaling: (url?:string,opts?:{WebSocket?:any;pingMs?:number;key?:string;aliases?:string[]}):SignalingAdapter
 function eyeCropRect [deprecated]: (eyeW:number,eyeH:number,aspect:number,shift:number,eye:0|1):{sx:number;sy:number;sw:number;sh:number}
 function isValidRoomId [deprecated]: (room:unknown):boolean
 function liftConvergenceFor [deprecated]: (depth:number|null|undefined):'auto'|number
@@ -149,15 +149,22 @@ interface SignalingHooks
 interface SignalingSession
   SignalingSession.iceServers?: iceServers?:RTCIceServer[]
   SignalingSession.id: id:string
+  SignalingSession.key?: key?:string
   SignalingSession.leave: leave():void
   SignalingSession.peers: peers:string[]
   SignalingSession.send: send(to:string,data:unknown):void
+  SignalingSession.tier?: tier?:'anon'|'key'
+  SignalingSession.turn?: turn?:SignalingTurnStatus
+interface SignalingTurnStatus
+  SignalingTurnStatus.reason?: reason?:'unconfigured'|'budget'|'cap'|'rate'|'mint-failed'
+  SignalingTurnStatus.status: status:'ok'|'degraded'|'off'
+  SignalingTurnStatus.ttl?: ttl?:number
 type CallAccent: 'azure'|'violet'|'magenta'|'sunset'|'amber'|'lime'|'mint'|'ice'
 type CallDisplay: '3D'|'2D→3D'|'2D'
-type CallErrorCode: |'camera-busy'|'no-camera'|'permission-denied'|'unreachable'|'room-full'|'session-ended'|'signaling-closed'|'join-failed'|'camera-failed'|'rectify-failed'|'mount-failed'|(string &{})
+type CallErrorCode: |'camera-busy'|'no-camera'|'permission-denied'|'unreachable'|'room-full'|'session-ended'|'signaling-closed'|'join-failed'|'camera-failed'|'rectify-failed'|'mount-failed'|'signaling-unreachable'|'rate-limited'|'quota'|'bad-key'|'origin-not-allowed'|'blocked'|'expired'|'turn-cap'|(string &{})
 type CallFormat: 'sbs'|'mono'
 type CallStrings: Partial<Record<|'lobbyStartTitle'|'lobbyJoinTitle'|'lobbyFullTitle'|'lobbyLeftTitle'|'lobbyFullText'|'lobbyText'|'cameraDefault'|'kindBusy'|'kindNone'|'kindSbs'|'kindMono'|'liftOff'|'liftChecking'|'liftMissing'|'liftNoProvider'|'liftNative'|'liftWeb'|'liftProven'|'liftUnproven'|'start'|'join'|'rejoin'|'retryCamera'|'cameraSelect'|'joining'|'waitingTitle'|'waitingText'|'inviteTitle'|'inviteText'|'inviteLink'|'copyLink'|'copied'|'pressCopy'|'qrLabel'|'banner2D'|'bannerLink'|'mute'|'unmute'|'cameraOn'|'cameraOff'|'cameraRetry'|'cameraBusyRetry'|'depth'|'invite'|'leave'|'connecting'|'reconnecting'|'leftCall'|'cameraOffPlate'|'noCamera'|'unreachable'|'cameraBusy'|'you'|'badge3D'|'badge2D3D'|'badge2D'|'badgePending',string>>
-type CallWarningCode: 'lift-not-bundled'|(string &{})
+type CallWarningCode: 'lift-not-bundled'|'turn-shed'|(string &{})
 type DxrCallEventMap: {[K in keyof CallEvents as `dxr-call:${K}`]:CustomEvent<CallEvents[K]>}&{'dxr-call:ready':CustomEvent<{call:CallHandle}>}
 type LiftFunction: ((element:HTMLVideoElement,opts:Record<string,unknown>&{mode:'live';wall:unknown;ui:'none';convergence:'auto'|number;priority:'high'|'normal'|'low'|'paused'})=>Promise<{remove():void;setPriority?(p:'high'|'normal'|'low'|'paused'):boolean;setConvergence?(x:'auto'|number):void;on?(type:string,cb:(d:any)=>void):()=>void;readonly native?:boolean;readonly state?:string;readonly canvas?:HTMLCanvasElement}>)&{liftCapabilities?:(o?:{webFallback?:boolean})=>Promise<any>}
 type PeerState: 'new'|'connecting'|'connected'|'reconnecting'|'unreachable'|'left'
