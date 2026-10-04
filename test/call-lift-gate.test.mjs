@@ -15,7 +15,8 @@ import assert from 'node:assert/strict';
 import { installCallDom, doc, channels, FakeTrack, FakeStream, silentUntilLayerWall } from './call-dom.mjs';
 
 installCallDom();
-const { addCall, makeHello, createLiveGate } = await import('../js/inline3d-call.js');
+const { addCall } = await import('../js/inline3d-call.js');
+const { makeHello, createLiveGate } = await import('../js/call/wire.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -67,8 +68,10 @@ test('#172 deadlock regression: an all-mono call lifts at once, then re-creates 
     await sleep(50);
     assert.equal(lifts.length, 2, 'no further re-creates once live');
     const p = call.peers[0];
-    assert.equal(p.route, 'lifted');
-    assert.equal(p.lift.live, true);
+    assert.equal(p.display, '2D→3D');
+    const d = call.diagnostics().peers[0];
+    assert.equal(d.route, 'lifted');
+    assert.equal(d.lift.live, true);
   } finally {
     // Always leave: a failing assertion must fail the test, not leave timers that hang the run.
     call.leave();

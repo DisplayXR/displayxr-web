@@ -6,7 +6,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { newRoomId, roomKey } from '../js/inline3d-call.js';
+import { newRoomId } from '../js/call/wire.js';
+import { roomKey } from '../js/call/signaling.js';
 import { peerjsCloud } from '../samples/call/peerjs-cloud.js';
 
 function hooksRecorder(id) {

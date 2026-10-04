@@ -37,7 +37,7 @@ import { mountCall, dxrSignaling } from '../inline3d-call.js';
 
 /** Every call event is re-dispatched as `dxr-call:<type>`; `dxr-call:ready` carries the handle. */
 export const CALL_EVENT_PREFIX = 'dxr-call:';
-const CALL_EVENTS = ['joined', 'left', 'peer', 'peerleft', 'state', 'format', 'speaker', 'quality', 'error', 'warning', 'session'];
+const CALL_EVENTS = ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning'];
 const TAG = '[inline3d/call] <dxr-call>';
 
 /** A boolean attribute: present is true, unless its value spells "false"/"0"/"off"/"no". */
@@ -61,18 +61,19 @@ const str = (v) => (v === null || v === undefined || String(v).trim() === '' ? u
  * | `signaling`          | `signaling: dxrSignaling(url)`           |
  * | `key`                | `key`                                    |
  * | `camera`             | `camera` (`auto`/`stereo`/`mono`/deviceId)|
- * | `layout`             | `layout` (`grid`/`speaker`)              |
- * | `accent`             | `accent`                                 |
+ * | `layout`             | `layout` (`grid`/`speaker`/`none`)       |
+ * | `accent`             | `theme.accent`                           |
  * | `max-peers`          | `maxPeers`                               |
  * | `no-ui`              | `ui: false`                              |
+ * | `ui="tiles"`         | `ui: 'tiles'`                            |
  * | `auto-join`          | `autoJoin: true`                         |
  * | `mono3d="off"`       | `mono3D: 'off'`                          |
  * | `no-audio`           | `audio: false`                           |
  * | `no-self-view`       | `selfView: false`                        |
  * | `no-auto-converge`   | `autoConverge: false`                    |
- * | `tile-aspect`        | `tileAspect` (a number, or `w/h`)        |
- * | `invite-base`        | `inviteBase`                             |
- * | `browser-url`        | `browserUrl`                             |
+ * | `tile-aspect`        | `theme.tileAspect` (a number, or `w/h`)  |
+ * | `invite-base`        | `invite.base`                            |
+ * | `browser-url`        | `landing.browserUrl`                     |
  * | `debug`              | `debug: true`                            |
  *
  * @param {{ getAttribute(name: string): string | null } | ((name: string) => string | null)} source
@@ -90,18 +91,21 @@ export function attrsToOpts(source) {
   put('key', str(get('key')));
   put('camera', str(get('camera')));
   put('layout', str(get('layout')));
-  put('accent', str(get('accent')));
   put('maxPeers', num(get('max-peers')));
+  const ui = str(get('ui'));
   if (isOn(get('no-ui'))) o.ui = false;
+  else if (ui === 'tiles') o.ui = 'tiles';
   if (isOn(get('auto-join'))) o.autoJoin = true;
   const m3 = str(get('mono3d'));
   if (m3 && /^(off|false|0|no)$/i.test(m3)) o.mono3D = 'off';
   if (isOn(get('no-audio'))) o.audio = false;
   if (isOn(get('no-self-view'))) o.selfView = false;
   if (isOn(get('no-auto-converge'))) o.autoConverge = false;
-  put('tileAspect', num(get('tile-aspect')));
-  put('inviteBase', str(get('invite-base')));
-  put('browserUrl', str(get('browser-url')));
+  // The C2 groups (RFC 0003 §2): the attribute names are the C1 ones, the option shapes are new.
+  const theme = { accent: str(get('accent')), tileAspect: num(get('tile-aspect')) };
+  if (theme.accent !== undefined || theme.tileAspect !== undefined) o.theme = Object.fromEntries(Object.entries(theme).filter(([, v]) => v !== undefined));
+  if (str(get('invite-base'))) o.invite = { base: str(get('invite-base')) };
+  if (str(get('browser-url'))) o.landing = { browserUrl: str(get('browser-url')) };
   if (isOn(get('debug'))) o.debug = true;
   return o;
 }

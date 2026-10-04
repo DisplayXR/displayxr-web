@@ -35,6 +35,10 @@ jobs:
         run: npm install --no-save typescript@^5.4.0 @types/webxr@^0.5.0 esbuild@^0.25.0
       - name: Typecheck .d.ts against tsconfig
         run: npx tsc --noEmit -p tsconfig.json
+      - name: Public API snapshot (tools/api-surface.mjs --check)
+        run: node tools/api-surface.mjs --check
+      - name: Samples + doc snippets compile against the public types only
+        run: node tools/check-snippets.mjs
       - name: Verify package publishes only the intended files (builds dist/ via prepack)
         run: npm pack --dry-run
 

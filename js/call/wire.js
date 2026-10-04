@@ -13,8 +13,11 @@ export const CALL_SDK = 'inline3d-call/1';
 /** Formats a sender may declare. Anything else — or no hello at all — is read as `'mono'`. */
 export const CALL_FORMATS = Object.freeze(['sbs', 'mono']);
 
-/** A delivered frame wider than this (w / h) is a side-by-side pair (e.g. 1280x480, 2560x720). */
-export const SBS_ASPECT_MIN = 2.5;
+// The side-by-side geometry (what counts as a pair, eye crops, the mirror-and-swap self view)
+// moved to js/camera/geometry.js in C2 — `/camera` owns it, `/call` consumes it. Re-exported here
+// so every in-tree import and test path keeps resolving.
+export { SBS_ASPECT_MIN, looksSbs, eyeCropRect, eyeOutputSize, mirrorSwapOps, mirrorSwapPixels } from '../camera/geometry.js';
+export { CONVERGENCE_ALPHA, CONVERGENCE_MAX_FRACTION, DEPTH_RANGE_FRACTION } from '../camera/converge.js';
 
 /** Default and hard cap of participants in a full-mesh call (including yourself). */
 export const DEFAULT_MAX_PEERS = 4;
@@ -22,15 +25,6 @@ export const MESH_HARD_CAP = 4;
 
 /** `hint` messages are rate-limited to this many per second, on the sender AND the receiver. */
 export const HINT_MAX_HZ = 5;
-
-/** Low-pass factor for the convergence shift (RFC §3): next = prev + α·(target − prev). */
-export const CONVERGENCE_ALPHA = 0.2;
-
-/** The convergence shift never exceeds this fraction of the per-eye width, either way. */
-export const CONVERGENCE_MAX_FRACTION = 0.12;
-
-/** `setDepth(v)`: v in [-1, 1] adds v times this fraction of the per-eye width to the shift. */
-export const DEPTH_RANGE_FRACTION = 0.05;
 
 /** Plausible subject distances, mm. A hint outside this is ignored as noise. */
 export const SUBJECT_Z_MIN_MM = 150;
@@ -231,143 +225,9 @@ export function badgeFor(route) {
   return route === 'woven-sbs' ? '3D' : route === 'lifted' ? '2D→3D' : '2D';
 }
 
-// ── convergence (RFC §3) ───────────────────────────────────────────────────────────────────
-
-/** Focal length in px of an eye image `eyeWidthPx` wide with horizontal FOV `hfovDeg`. */
-export function focalPx(eyeWidthPx, hfovDeg) {
-  if (!(eyeWidthPx > 0) || !(hfovDeg > 0) || hfovDeg >= 180) return null;
-  return eyeWidthPx / 2 / Math.tan(((hfovDeg / 2) * Math.PI) / 180);
-}
-
-/**
- * Per-eye horizontal shift, in SOURCE eye pixels, that puts a subject at `subjectZmm` on the
- * display plane: `f_px · baseline / (2 · subjectZ)`. A parallel stereo camera gives everything a
- * crossed disparity of `f·B/Z` (full, between the eyes); half of it comes off each eye.
- *
- * Positive = the left eye's crop moves RIGHT and the right eye's LEFT (content pushed back).
- * Returns 0 when anything it needs is unknown — the receiver then shows the pair as sent.
- */
-export function convergenceShiftPx({ eyeWidthPx, hfovDeg, baselineMm, subjectZmm }) {
-  const f = focalPx(eyeWidthPx, hfovDeg);
-  if (f === null || !(baselineMm > 0) || !(subjectZmm > 0)) return 0;
-  return (f * baselineMm) / (2 * subjectZmm);
-}
-
-/** Clamp a shift to ±CONVERGENCE_MAX_FRACTION of the per-eye width. */
-export function clampShift(px, eyeWidthPx, maxFraction = CONVERGENCE_MAX_FRACTION) {
-  const lim = Math.max(0, eyeWidthPx * maxFraction);
-  return Math.max(-lim, Math.min(lim, px || 0));
-}
-
-/** One low-pass step: `prev + α(target − prev)`. Snaps when within 0.05 px so it can settle. */
-export function lowPass(prev, target, alpha = CONVERGENCE_ALPHA) {
-  const next = prev + alpha * (target - prev);
-  return Math.abs(target - next) < 0.05 ? target : next;
-}
-
-/**
- * A tile's convergence state: the target from hello+hint, the page's depth offset, and the
- * smoothed value actually painted. `step()` once per painted frame.
- */
-export function createConvergence() {
-  const s = {
-    hello: null,
-    subjectZmm: null,
-    // Auto-convergence (call/disparity.js): the MEASURED disparity of the point between the remote
-    // person's eyes, in source eye pixels (left x − right x). When set it wins over the hint: it is
-    // read off the frames, so it needs no calibration and cannot disagree with them.
-    measuredPx: null,
-    depth: 0, // setDepth(), [-1, 1]
-    current: 0,
-    target(eyeWidthPx) {
-      const auto =
-        s.measuredPx !== null
-          ? s.measuredPx / 2 // half the disparity comes off each eye: the eyes land at zero parallax
-          : s.hello && s.subjectZmm
-            ? convergenceShiftPx({
-                eyeWidthPx,
-                hfovDeg: s.hello.hfovDeg,
-                baselineMm: s.hello.baselineMm,
-                subjectZmm: s.subjectZmm,
-              })
-            : 0;
-      return clampShift(auto + s.depth * DEPTH_RANGE_FRACTION * eyeWidthPx, eyeWidthPx);
-    },
-    step(eyeWidthPx) {
-      s.current = lowPass(s.current, s.target(eyeWidthPx));
-      return s.current;
-    },
-  };
-  return s;
-}
-
-/**
- * The source rectangle of ONE eye, cropped to the tile's aspect and shifted by the convergence
- * offset. Never upscales past the source: a 640-wide eye (a real raw stereo camera) stays 640.
- *
- * @param {number} eyeW  source per-eye width (px)
- * @param {number} eyeH  source height
- * @param {number} aspect  the tile's (= the woven buffer's per-eye) aspect, w/h
- * @param {number} shift  per-eye shift in source px (see convergenceShiftPx); + = push back
- * @param {0|1} eye  0 = left, 1 = right
- * @returns {{sx:number, sy:number, sw:number, sh:number}} relative to that eye's half
- */
-export function eyeCropRect(eyeW, eyeH, aspect, shift, eye) {
-  const s = Math.abs(shift || 0);
-  let sw = Math.min(eyeW - 2 * s, eyeH * aspect);
-  sw = Math.max(1, sw);
-  const sh = Math.min(eyeH, sw / aspect);
-  sw = sh * aspect;
-  const cx = (eyeW - sw) / 2 + (eye === 0 ? shift : -shift);
-  return { sx: Math.max(0, Math.min(eyeW - sw, cx)), sy: (eyeH - sh) / 2, sw, sh };
-}
-
-/** The output per-eye size for a source eye and a tile aspect: no upscaling, even numbers. */
-export function eyeOutputSize(eyeW, eyeH, aspect) {
-  const w = Math.min(eyeW, eyeH * aspect);
-  const h = w / aspect;
-  return { w: Math.max(2, Math.round(w / 2) * 2), h: Math.max(2, Math.round(h / 2) * 2) };
-}
-
-// ── self view: the mirroring trap (RFC §3) ─────────────────────────────────────────────────
-
-/**
- * The draw operations for a MIRRORED stereo self-view: each half mirrored AND the halves swapped.
- *
- * Why both: mirroring a scene horizontally means the reflected left eye sees what the original
- * right eye saw (mirrored), and vice versa. Mirroring each half IN PLACE keeps the eyes where they
- * were and inverts every disparity — the face goes pseudoscopic (inside-out). Mirror + swap keeps
- * crossed disparity crossed. (It is the same pixels as flipping the whole SBS frame; spelled out
- * per half so the intent survives refactoring.) The WIRE is never mirrored — only this preview.
- *
- * @param {number} W  full SBS frame width
- * @param {number} H  height
- * @returns {Array<{src:'L'|'R', sx:number, sw:number, dx:number, dw:number, mirror:true}>}
- */
-export function mirrorSwapOps(W, H) {
-  const half = W / 2;
-  return [
-    { src: 'R', sx: half, sw: half, sy: 0, sh: H, dx: 0, dw: half, mirror: true },
-    { src: 'L', sx: 0, sw: half, sy: 0, sh: H, dx: half, dw: half, mirror: true },
-  ];
-}
-
-/**
- * Apply mirrorSwapOps to a row-major single-channel frame (tests, and a reference for the canvas
- * path). Returns a new array.
- */
-export function mirrorSwapPixels(px, W, H) {
-  const out = new px.constructor(px.length);
-  for (const op of mirrorSwapOps(W, H)) {
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < op.dw; x++) {
-        const srcX = op.sx + (op.sw - 1 - x); // mirrored within the half
-        out[y * W + op.dx + x] = px[y * W + srcX];
-      }
-    }
-  }
-  return out;
-}
+// ── convergence (RFC 0002 §3) — moved to js/camera/converge.js in C2 (the self view and the remote
+// tiles share one convergence state); re-exported so in-tree imports and test paths keep resolving.
+export { focalPx, convergenceShiftPx, clampShift, lowPass, createConvergence } from '../camera/converge.js';
 
 // ── weave liveness (displayxr-browser-pvt#172) ─────────────────────────────────────────────
 
@@ -426,9 +286,4 @@ export function maxBitrateKbps(format, remotePeers) {
 export function backoffMs(attempt, { baseMs = 1000, maxMs = 30000, rand = Math.random } = {}) {
   const raw = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, attempt)));
   return Math.round(raw * (0.8 + 0.4 * rand()));
-}
-
-/** Does a delivered frame look like a side-by-side pair? (capture 'auto' only) */
-export function looksSbs(width, height) {
-  return width > 0 && height > 0 && width / height > SBS_ASPECT_MIN;
 }

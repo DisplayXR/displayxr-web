@@ -9,7 +9,8 @@ controls, up to four participants. No accounts, no backend of your own.
 **Tier: preview.** `/call` is not yet under the 1.x semver promise
 ([`sdk-stability.md`](sdk-stability.md)); option names can still move between minor releases,
 and the [migration plan](rfcs/0003-call-developer-experience.md#7-migration-and-stability-plan)
-says which ones. Design: [RFC 0002](rfcs/0002-video-call.md) (the call itself) and
+says which ones. This page describes the **C2** surface (1.30): the 1.29 spellings keep working
+for one release with a console warning — see the [CHANGELOG](../CHANGELOG.md). Design: [RFC 0002](rfcs/0002-video-call.md) (the call itself) and
 [RFC 0003](rfcs/0003-call-developer-experience.md) (this developer surface). Live demo:
 [`samples/call-embed/`](../samples/call-embed/).
 
@@ -90,9 +91,10 @@ the element connects**, or you use `mountCall` directly.
 | `key` | `key` | a publishable key for the hosted service (`pk_…`). Reserved: keys arrive with the hosted-service phase (C3); the hosted server is anonymous until then |
 | `camera` | `camera` | `auto` (default) · `stereo` · `mono` · a `deviceId` |
 | `layout` | `layout` | `grid` (default) · `speaker` |
-| `accent` | `accent` | a named accent (`azure` `violet` `magenta` `sunset` `amber` `lime` `mint` `ice`) or any CSS colour |
+| `accent` | `theme.accent` | a named accent (`azure` `violet` `magenta` `sunset` `amber` `lime` `mint` `ice`) or any CSS colour |
 | `max-peers` | `maxPeers` | 2–4, including you (default 4) |
 | `no-ui` | `ui: false` | boolean attribute: no SDK chrome (see [Headless](#headless-mode)) |
+| `ui="tiles"` | `ui: 'tiles'` | badges and plates only — your bar, the module's per-tile chrome |
 | `auto-join` | `autoJoin` | boolean attribute: skip the lobby |
 | `mono3d` | `mono3D` | `off` to keep 2D callers 2D; default `auto` |
 
@@ -103,7 +105,7 @@ the element connects**, or you use `mountCall` directly.
 ```js
 // Non-string options: set before the element is connected.
 const el = document.createElement('dxr-call');
-el.options = { camera: myMediaStream, format: 'sbs', signaling: myAdapter };
+el.options = { camera: myMediaStream, format: 'sbs', signaling: myAdapter, theme: { accent: 'violet' } };
 document.body.append(el);
 
 // The handle, once mounted (same object mountCall resolves to):
@@ -133,53 +135,60 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `signaling` | `dxrSignaling()` | A `SignalingAdapter`. `dxrSignaling(url)` for your own server, or any object with `join()` |
 | `key` | — | Hosted-service publishable key (reserved until C3) |
 | `iceServers` | server's list | Override STUN/TURN. Default: public STUN + the TURN the signalling server hands out |
-| `camera` | `'auto'` | `'auto'` picks a stereo device when one is present (a wide side-by-side device, or the DisplayXR Browser's "3D Camera") else the default webcam; `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId` string; or a `MediaStream` you own |
+| `camera` | `'auto'` | `'auto'` opens the best camera through [`/camera`](camera.md): a stereo device when one is present (the DisplayXR Browser's "3D Camera", or a wide side-by-side device) else the default webcam; `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId` string; a `MediaStream` you own; or a `StereoCamera` from `openCamera()` (left open when the call ends) |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream` (`'sbs'` or `'mono'`). 3D-ness is never guessed from a stream |
 | `audio` | `true` | Microphone, with echo cancellation and noise suppression |
 | `autoConverge` | `true` | Measure the disparity of the point between a stereo peer's eyes and put that person at the display plane. No calibration needed |
-| `calibration` | — | `{ baselineMm, hfovDeg, rectified }` sent in `hello` for a page-supplied stereo stream (moves to `/camera` in C2) |
 | `mono3D` | `'auto'` | Lift 2D peers to 3D: `'auto'` · `'off'` · a `lift` function (see [`/call/full`](#callfull-vs-call--lift--which-import)) |
-| `liftOptions` | — | Extra `lift()` options, e.g. `{ models }` for where the depth model is served from |
-| `maxLifted` | `4` | Concurrent lifted tiles; further 2D peers stay flat |
+| `liftOptions` | — | Extra `lift()` options, e.g. `{ models }` for where the depth model is served from, plus `max` (default 4): concurrent lifted tiles; further 2D peers stay flat |
 | `maxPeers` | `4` | Participants including you, clamped to 2–4 (full mesh) |
-| `layout` | `'grid'` | `'grid'` · `'speaker'` (the active speaker spans the row) · `'none'` (**C2**: the page lays tiles out) |
-| `ui` | `true` | `true` full chrome · `false` nothing · `'tiles'` (**C2**: badges and plates only) |
-| `autoJoin` | `!ui` | Join without the lobby |
-| `selfView` | `true` | The small mirrored self view (a stereo self view is mirrored **and** eye-swapped, which is what a mirror does) |
-| `tileAspect` | `16/9` | Tile aspect = the woven buffer's per-eye aspect |
-| `accent` | `'azure'` | Named accent or CSS colour → `--dxr-accent` (folds into `theme` in C2) |
-| `inviteBase` | this page's URL | Base of invite links (query kept, fragment replaced) |
-| `updateUrl` | `ui` | Write `#room=` into the page URL on join so a reload rejoins |
-| `browserUrl` | the browser's releases page | Where the "see it in 3D" offer links |
-| `debug` | `false` | Verbose console logging |
+| `layout` | `'grid'` | `'grid'` · `'speaker'` (the active speaker spans the row) · `'none'` (the page lays tiles out — see [Headless](#headless-mode)) |
+| `ui` | `true` | `true` full chrome · `'tiles'` badges and plates only · `false` nothing |
+| `autoJoin` | `ui !== true` | Join without the lobby |
+| `selfView` | `true` | The small mirrored self view — an [`addCameraView`](camera.md#addcameraviewwall-canvas-cam-opts--the-self-view): a stereo self view is mirrored **and** eye-swapped, which is what a mirror does |
+| `theme` | — | `{ accent, ink, shell, danger, radius, font, tileAspect, strings }` — see [Theming](#theming) |
+| `invite` | — | `{ base, updateUrl }`: the link's base (default this page's URL, query kept, fragment replaced); write `#room=` into the page URL on join so a reload rejoins (default `ui === true`) |
+| `landing` | — | `{ browserUrl, allow2D }`: where the "see it in 3D" offer links; `allow2D: false` for 3D-only kiosk pages |
+| `debug` | `false` | Verbose console logging; `call.diagnostics()` has the rest |
 
-`recoverSession` / `wallOptions` (re-opening the inline-3D session if the runtime ends it) are
-properties of the document's session, not of the call; they move behind `sharedInline3D()`.
+Camera calibration and rectification (`calibration`, `rectify`) are [`openCamera()`](camera.md)
+options now: open the camera there and pass it as `camera`. Re-opening the inline-3D session if
+the runtime ends it is a property of the document's session (`sharedInline3D()`), not of the
+call; a call always recovers it.
 
 ### The handle
 
 ```ts
+import type { CallFormat, CallPeer, CallEvents } from '@displayxr/inline3d/call';
+import type { StereoCamera } from '@displayxr/inline3d/camera';
+
 interface CallHandle {
   readonly room: string | null;  readonly id: string;
-  readonly state: 'idle' | 'lobby' | 'joining' | 'in-call' | 'full' | 'left';
+  readonly state: 'lobby' | 'joining' | 'in-call' | 'full' | 'left';
   readonly camera: 'ok' | 'busy' | 'none' | 'pending';
-  readonly format: CallFormat | null;         // what YOU send: 'sbs' | 'mono'
-  readonly muted: boolean;  readonly depth: number;  readonly speaker: string | null;
-  readonly peers: ReadonlyArray<CallPeer>;    // id, format, state, muted, cameraOff, speaking, …
-  readonly mono3D: { on; state; reason; provider; lifted; max; … };
-  join(): Promise<CallHandle>;  leave(): void;
+  readonly localFormat: CallFormat | null;    // what YOU send: 'sbs' | 'mono'
+  readonly muted: boolean;  readonly cameraOff: boolean;
+  readonly depth: number;  readonly speaker: string | null;
+  readonly peers: ReadonlyArray<CallPeer>;    // id, format, display, state, muted, cameraOff, speaking
+  readonly mono3D: { on: boolean; state: string; reason: string | null; provider: string | null; lifted: number; max: number };
+  join(): Promise<void>;  leave(): void;
   inviteLink(): string | null;                // …#room=<id>; null before a room exists
-  mute(on?): boolean;  cameraOff(on?): boolean;     // no argument toggles; returns the new state
-  setCamera(idOrStream, { format? }): Promise<…>;  retryCamera(): Promise<…>;
+  mute(on?: boolean): boolean;  setCameraOff(on?: boolean): boolean;   // no argument toggles; returns the new state
+  setCamera(src: string | MediaStream | StereoCamera, opts?: { format?: CallFormat }): Promise<{ format: CallFormat; width: number; height: number; label: string }>;
+  retryCamera(): Promise<{ format: CallFormat; width: number; height: number; label: string }>;
   setDepth(v: number): number;                // the ONE depth control, [-1, 1], + = push back
-  setMono3D(on?): boolean;
-  on(type, cb): () => void;  off(type, cb): void;
+  setMono3D(on?: boolean): boolean;
+  tile(peerId: string): HTMLElement | null;   // for layout: 'none'
+  on<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): () => void;
+  off<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): void;
+  diagnostics(): Record<string, unknown>;     // explicitly UNSTABLE: the wall, the transport, per-peer hello / route / convergence / lift / quality
 }
 ```
 
-C2 renames for read/write symmetry: `cameraOff(on)` → `setCameraOff(on)` with `cameraOff` as the
-boolean getter, `format` → `localFormat`; and `diagnostics()` takes over the debug data that
-sits on `CallPeer` today (`hello`, `route`, `convergencePx`, `autoConverge`, `lift`, `quality`).
+`CallPeer.display` is how **this side** shows a participant — `'3D'` (a woven pair), `'2D→3D'`
+(lifted), `'2D'` (flat). Everything that was debug data on the 1.29 handle and peers (`wall`,
+`route`, `hello`, `convergencePx`, `autoConverge`, `lift`, `quality`) is in `diagnostics()`,
+whose shape is free to change.
 
 ---
 
@@ -191,14 +200,14 @@ sits on `CallPeer` today (`hello`, `route`, `convergencePx`, `autoConverge`, `li
 | Event | Payload | When |
 |---|---|---|
 | `joined` | `{ room, id }` | You are in the room |
-| `left` | `{ room }` | You left (or were disconnected for good) |
+| `left` | `{ room, reason }` | You left (`'left'`: `leave()` / the element was removed; `'pagehide'`) |
 | `peer` | `{ id }` | A participant appeared |
 | `peerleft` | `{ id, reason }` | A participant is gone |
 | `state` | `{ id, state }` | A participant's connection changed: `new` `connecting` `connected` `reconnecting` `unreachable` `left` |
-| `format` | `{ id, format, route, mono3d, hello }` | How a participant is shown. **C2** replaces it with `display: { id, display: '3D' \| '2D→3D' \| '2D' }` and moves route detail to `diagnostics()` |
+| `display` | `{ id, display }` | How this side shows a participant changed: `'3D'` · `'2D→3D'` · `'2D'` (a hello arrived, lift went live, the wall came back). Route detail is in `diagnostics()` |
 | `speaker` | `{ id \| null }` | The active speaker changed |
 | `quality` | `{ id, in, out }` | Per peer every 2 s: resolution, fps, codec, kbps. With `id: null` and `lift`: the web lift provider is degrading the page's frame rate, or has recovered. Shape stable, values informative |
-| `error` | `{ code, message, error }` | Something a feature depends on failed — see [Troubleshooting](#troubleshooting). Never fatal to the widget: a camera error joins audio-only, an unreachable peer keeps retrying |
+| `error` | `{ code, message, error }` | Something a feature depends on failed — see [Troubleshooting](#troubleshooting). Never fatal to the widget: a camera error joins audio-only, an unreachable peer keeps retrying. Codes are typed (`CallErrorCode`) |
 | `warning` | `{ code, message }` | Degraded, not broken. Today: `lift-not-bundled` |
 
 ---
@@ -226,10 +235,20 @@ The **tiles stay module-owned** even headless. They are woven canvases and have 
 partial chrome only — and enforcing those is the point of the module. The module places them in
 `el` and lays them out as `layout` says.
 
-**C2 adds** `layout: 'none'` (the module creates the tiles but does not position them; each carries
-`data-dxr-peer="<id>"` and `handle.tile(id)` returns its box for your own CSS grid) and
-`ui: 'tiles'` (badges and state plates only — your bar, the module's per-tile chrome). Until then,
-headless means "your bar, the module's grid".
+**`ui: 'tiles'`** is the middle ground most branded apps want: no lobby, bar, banner or invite
+panel, but the badges and state plates on each tile stay (they are the module's job to get
+right: partial regions, never a plate the size of the tile). **`layout: 'none'`** makes the module
+create the tiles but not position them: each carries `data-dxr-peer="<id>"`, `call.tile(id)`
+returns it, and your CSS lays them out on the host (the grid box steps aside with
+`display: contents`). Style a tile **in place** — never move it; a DOM move is a teardown
+([rule 2](woven-canvas-rules.md#2-never-remount-a-woven-canvas-inside-a-screen)).
+
+```js
+import { mountCall } from '@displayxr/inline3d/call';
+
+const call = await mountCall(document.getElementById('call'), { ui: 'tiles', layout: 'none' });
+call.on('peer', ({ id }) => call.tile(id).style.gridArea = nextArea());
+```
 
 Chrome you draw yourself has to follow the same rules as the module's. In practice: keep controls
 **below or beside** the tiles, not over them; if something must sit on a tile, make it small (a
@@ -240,8 +259,10 @@ with `display: none`, never `opacity: 0`.
 
 ## Theming
 
-The chrome reads a handful of CSS custom properties from the host element. Set them on
-`<dxr-call>` / the mount element or any ancestor:
+Three hooks — and the `dxr-call-*` class names are none of them (they change without notice).
+
+**CSS custom properties** on the host. Set them on `<dxr-call>` / the mount element or any
+ancestor:
 
 ```css
 dxr-call {
@@ -249,24 +270,56 @@ dxr-call {
   --dxr-ink:    #fff;                  /* text on chrome */
   --dxr-shell:  rgba(16, 17, 22, .92); /* chrome background — near-solid on purpose (no blur) */
   --dxr-danger: #ff5a5f;               /* leave, muted */
+  --dxr-radius: 12px;                  /* chrome corners — never a tile */
+  --dxr-font:   system-ui, sans-serif; /* chrome text */
 }
 ```
 
-`accent` (the option / attribute) is a shortcut that writes `--dxr-accent`, and takes the eight
-named accents the player shares (`azure` `violet` `magenta` `sunset` `amber` `lime` `mint` `ice`).
+**`theme`** (the option) sets the same properties from JS, plus the tile aspect and the strings:
+
+```js
+import { mountCall } from '@displayxr/inline3d/call';
+
+await mountCall(document.getElementById('call'), {
+  theme: { accent: 'violet', radius: 8, font: 'Inter, sans-serif', tileAspect: 4 / 3, strings: { start: 'Start the call' } },
+});
+```
+
+`theme.accent` (and the `accent` attribute) takes the eight named accents the player shares
+(`azure` `violet` `magenta` `sunset` `amber` `lime` `mint` `ice`) or any CSS colour.
+
+**Parts.** The chrome carries `part` names — `bar`, `invite`, `badge`, `plate`, `lobby`,
+`banner`, `self`, `tile`, `grid` — and they, not the classes, are the selector contract:
+
+```css
+dxr-call [part="bar"]   { gap: 10px; }
+dxr-call [part="badge"] { font-weight: 500; }
+```
+
+They are reached as attribute selectors rather than `::part()` because the chrome is **light
+DOM** on purpose: a woven canvas has to live in the document's own tree, so the element has no
+shadow root. If the chrome ever moves into one, the same names become `::part(bar)`.
+
+**Strings** (`theme.strings`) override any subset of the chrome's text by key, which is also how
+you localise it. Keys and defaults: lobby — `lobbyStartTitle` ("Start a 3D call"),
+`lobbyJoinTitle`, `lobbyFullTitle`, `lobbyLeftTitle`, `lobbyFullText` (`{maxPeers}`),
+`lobbyText` (`{camera}`, `{kind}`), `cameraDefault`, `kindBusy`, `kindNone`, `kindSbs` /
+`kindMono` (`{width}`, `{height}`), `liftOff`, `liftChecking`, `liftMissing`, `liftNoProvider`,
+`liftNative` (`{provider}`), `liftWeb`, `liftProven`, `liftUnproven`, `start`, `join`, `rejoin`,
+`retryCamera`, `cameraSelect`, `joining`; invite — `waitingTitle`, `waitingText`, `inviteTitle`,
+`inviteText`, `inviteLink`, `copyLink`, `copied`, `pressCopy`, `qrLabel`; banner — `banner2D`,
+`bannerLink`; bar — `mute`, `unmute`, `cameraOn`, `cameraOff`, `cameraRetry`, `cameraBusyRetry`
+(`{cameraBusy}`), `depth`, `invite`, `leave`; tiles — `connecting`, `reconnecting`, `leftCall`,
+`cameraOffPlate`, `noCamera`, `unreachable`, `cameraBusy`, `you`, `badge3D`, `badge2D3D`,
+`badge2D`, `badgePending`. `{…}` placeholders are filled by the module.
 
 **What theming cannot reach, by design.** A woven tile and every ancestor of it must be visually
 bare: no `filter`, `opacity < 1`, `border-radius`, `box-shadow`, `mask`, `backdrop-filter`
 ([rule 7](woven-canvas-rules.md#7-no-css-effects-on-a-woven-canvas-or-on-any-of-its-ancestors)).
 The chrome's own translucent surfaces use a near-solid tint instead of a blur for the same reason
 ([rule 10](woven-canvas-rules.md#10-no-backdrop-filter-on-anything-drawn-over-the-weave)). The
-variables above only ever style chrome, so a theme cannot break a tile. Do not style the tiles
-through the `dxr-call-*` class names: they are not an API and change without notice.
-
-**C2 adds** the rest of the theming API: a `theme` option (`{ accent, tileAspect, strings }`),
-`--dxr-radius` (chrome only) and `--dxr-font`, `::part()` names on the element (`bar`, `invite`,
-`badge`, `plate`, `lobby`, `banner`), and `theme.strings` for lobby/plate/banner text (which is
-also how you localise it).
+variables and parts above only ever style chrome (`--dxr-radius` is never applied to a tile), so
+a theme cannot break a tile — that constraint is enforced by the module, not documented at you.
 
 ---
 
@@ -283,8 +336,9 @@ also how you localise it).
 A 2D user is never a second-class participant. When the page is opened from an invite in a
 browser without inline 3D, the widget shows **"Join now"** first (2D, never blocked) and, on a
 platform that could run the DisplayXR Browser, a secondary "see the others in 3D on a 3D display"
-offer; after joining, a dismissible one-line banner below the grid. `browserUrl` points that offer
-at your own distribution if you have one.
+offer; after joining, a dismissible one-line banner below the grid. `landing.browserUrl` points
+that offer at your own distribution if you have one; `landing.allow2D: false` is for 3D-only
+kiosk pages.
 
 **What 3D needs on each side.** To *send* 3D: a stereo camera — the DisplayXR Browser's built-in
 "3D Camera" device on a 3D laptop, or a side-by-side USB pair (a device delivering wider than
@@ -330,8 +384,9 @@ origin in charge of the product.
 - `call.inviteLink()` — the link for the current room (`null` before one exists).
 - `room: 'auto'` (default) picks up `#room=` from the page's own URL, so a recipient who opens the
   link lands in the room; `updateUrl` writes it on join so a reload rejoins.
-- `inviteBase` sets the link's base when the page that mounts the widget is not the page a
-  recipient should open (a modal, a route with private query parameters).
+- `invite.base` sets the link's base when the page that mounts the widget is not the page a
+  recipient should open (a modal, a route with private query parameters); `invite.updateUrl`
+  controls the `#room=` write-back.
 - `parseInviteLink(linkOrLocation) → room | null` is public so an SPA router can read the room
   and route to the call screen **without** mounting a call first.
 
@@ -439,7 +494,7 @@ Each row is what the widget emits (`error` / `warning` events, `handle.camera`,
 |---|---|---|
 | A tile says "Can't reach this participant" | `error` `unreachable` (`error.peer` = the tile) | That pair has had no connection for ~10 s: one side is on a network that needs a relay (TURN). Retries continue in the background and the plate clears on its own if it connects. Fix: TURN on your signalling server, or your own `iceServers`; on the hosted server, check its health endpoint's `turn` |
 | "Camera busy" plate on your self view; `handle.camera === 'busy'` | `error` `camera-busy` | Every camera is held by another process. **On 3D laptops that is usually the eye tracker**, which owns the camera while tracking; the call joins audio-only. Fix: the "Retry camera" button / `call.retryCamera()` once it is free, or `camera: <deviceId>` for a different device. The DisplayXR Browser's built-in "3D Camera" device reads the pair *without* taking it from tracking, so prefer it where present (`camera: 'auto'` does) |
-| No camera prompt, or denied | `error` `no-camera` | An insecure context (`http://` on a LAN IP — `getUserMedia` is not available at all), no device, or a permission denied earlier. Fix: serve over `https://` or `localhost`; reset the site's camera permission in the browser's site settings (the lock icon in the address bar) and reload |
+| No camera prompt, or denied | `error` `permission-denied` / `no-camera` | `permission-denied`: the prompt was refused, a policy forbids it, or the context is insecure (`http://` on a LAN IP). `no-camera`: no device. Fix: serve over `https://` or `localhost`; reset the site's camera permission in the browser's site settings (the lock icon in the address bar) and reload |
 | Cannot reach the signalling server | `error` `signaling-unreachable` | The URL is wrong, the server is down, or a proxy blocks WebSockets. Check `signaling`; for self-hosted, that `wss://` (not `ws://`) is used from an `https://` page |
 | Tiles went flat mid-call in the DisplayXR Browser, then came back | `error` `session-ended` | The inline-3D session ended without the page closing it (a runtime service restart). The widget re-opens it and re-weaves the tiles by itself; media is not interrupted. Nothing to do unless it does not come back, in which case reload |
 | 2D callers stay 2D **in my bundled build** | `warning` `lift-not-bundled` | The lift module could not be imported from the bundle. Fix: `import { mountCall } from '@displayxr/inline3d/call/full'`, or import `lift` yourself and pass `mono3D: lift` ([above](#callfull-vs-call--lift--which-import)) |
@@ -468,7 +523,8 @@ rooms.
 
 ## Read next
 
-- [`samples/call-embed/`](../samples/call-embed/) — the copy-this-snippet demo; [`samples/call/`](../samples/call/) — the explicit `addCall` form with test switches (synthetic stereo pair, local dev server).
+- [`samples/call-embed/`](../samples/call-embed/) — the copy-this-snippet demo; [`samples/call/`](../samples/call/) — the explicit `addCall` form with test switches (synthetic stereo pair, local dev server); [`samples/camera/`](../samples/camera/) — the 3D selfie page.
+- [`camera.md`](camera.md) — the camera primitive the call is built on: `openCamera`, the mirrored self view, `capturePhoto` / `record`.
 - [`woven-canvas-rules.md`](woven-canvas-rules.md) — what a page hosting a woven tile must and must not do.
 - [`authoring-inline-3d.md`](authoring-inline-3d.md) — the inline-3D model under the widget.
 - [`signaling/README.md`](../signaling/README.md) — protocol, reference servers, TURN.

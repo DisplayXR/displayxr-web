@@ -5,6 +5,117 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** only (`./call`, `./call/full`, the new `./camera`). RFC 0003
+**phase C2**: the `./call` public surface is trimmed to what a page needs (one warning release
+for the old names), options are regrouped, theming gets a real API, and the stereo camera
+becomes its own subpath. The core entry points are untouched.
+
+### `./camera` — new preview subpath (RFC 0003 §4)
+
+- **`openCamera(opts)`** → a `StereoCamera`: device selection (`prefer: 'auto' | 'stereo' | 'mono'
+  | deviceId | MediaStream`, the `displayxrStereo` hint, the > 2.5:1 pair heuristic, the
+  busy-device skip), `calibration` / `rectify` (moved here from `./call`), `format` / `stereo`
+  (`{ rectified, baselineMm, horizontalFovDeg }`) / `stream` / `video`, `on('ended')` (revoked,
+  unplugged, taken — never fired by `close()`), `close()`. Rejects only when no camera opens, with
+  `code` `'camera-busy'` | `'permission-denied'` (new: a refused prompt / policy / insecure
+  context) | `'no-camera'`.
+- **`addCameraView(wall, canvas, cam, { mirror, autoConverge, depth, aspect })`** — the self view:
+  woven on a 3D wall, flat elsewhere, mirrored **correctly** (each half mirrored AND the halves
+  swapped — pinned by a synthetic-pair test: a subject in front stays in front; the naive per-half
+  mirror is proven pseudoscopic). `autoConverge` runs the call's disparity tracker on the face.
+- **`cam.capturePhoto({ type, quality, name })`** → `{ blob, width, height, layout, convergencePx,
+  stereo, suggestedName: '<base>_2x1.jpg', xmp }`: the RAW pair, with the stereo record written
+  INTO the JPEG as XMP (`dxr:` namespace — layout, columns×rows, convergence, baseline, FOV,
+  rectified, eye size, software). **`cam.record({ mimeType, mono, audio })`** → `stop()` →
+  `{ blob, mono?, suggestedName: '<base>_2x1.webm', monoSuggestedName?, convergencePx, tagged }`,
+  the record as `DXR_*` Matroska tags; `mono: true` adds a left-eye copy (Decision 13). Readers:
+  `readJpegStereoMeta`, `readWebmStereoMeta`, `readJpegXmp`, `parseStereoXmp`. Decision 9: the
+  metadata lives in the file, no sidecar. `suggestedName`, `isStereoCamera`, `CAMERA_SDK`.
+- The call is built on it: `CallOptions.camera` accepts a `StereoCamera` (left open when the
+  call ends), `camera: 'auto'` opens one through `openCamera()`, and the call's self view IS an
+  `addCameraView` — one implementation of capture, mirroring and convergence. A camera that ends
+  under a call (`ended`) drops it to audio-only with "Retry camera".
+- Also in the CDN bundle `dist/call.js` (~153 KB min now, was ~124). `camera.d.ts`,
+  `docs/camera.md`, `samples/camera/`.
+
+### `./call` — the public surface (RFC 0003 §2)
+
+**Renamed / regrouped options** (the 1.29 spelling still works for this release with one
+`console.warn` per key; removed in 1.31):
+
+| 1.29 | 1.30 |
+|---|---|
+| `accent` | `theme.accent` |
+| `tileAspect` | `theme.tileAspect` |
+| `inviteBase`, `updateUrl` | `invite: { base, updateUrl }` |
+| `browserUrl` | `landing: { browserUrl, allow2D }` |
+| `maxLifted` | `liftOptions.max` |
+| `calibration`, `rectify` | `openCamera({ calibration, rectify })` of `./camera`, passed as `camera` |
+| `log` | `debug: true` + `diagnostics()` |
+| `recoverSession`, `wallOptions` | removed — a call always recovers the document's session (`sharedInline3D()`) |
+| `scrollIntoView` | removed — always on with `ui: true` |
+
+**New options:** `theme` (`accent`, `ink`, `shell`, `danger`, `radius`, `font`, `tileAspect`,
+`strings`) → CSS custom properties `--dxr-accent/-ink/-shell/-danger/-radius/-font` on the host
+and the string table; `ui: 'tiles'` (badges + plates only); `layout: 'none'` (tiles carry
+`data-dxr-peer`, `call.tile(id)` returns them, the grid box steps aside); `landing.allow2D`.
+`<dxr-call>` attributes are unchanged (`accent`, `tile-aspect`, `invite-base`, `browser-url` map
+to the new groups) plus `ui="tiles"`.
+
+**Handle renames:** `cameraOff(on)` → `setCameraOff(on)` with **`cameraOff` now the boolean
+getter**; `format` → `localFormat`; `join()` resolves `void`; **new** `tile(peerId)`,
+`diagnostics()` (explicitly unstable: the wall, the transport, per-peer `hello` / `route` /
+`convergencePx` / `autoConverge` / `lift` / `quality`, the lift pool). **Removed from the public
+handle** (kept as non-enumerable getters that warn once, gone in 1.31): `wall`, `format`,
+`sendHint`, `_debug`. `CallPeer` is trimmed to `id`, `format`, `display` (`'3D' | '2D→3D' |
+'2D'`), `state`, `muted`, `cameraOff`, `speaking`; the rest is in `diagnostics()`.
+`handle.state` no longer lists `'idle'`.
+
+**Events:** `format` → **`display`** `{ id, display }` (the old event still fires for a listener
+that subscribes to it, with a warning; gone in 1.31); `session` is internal (subscribing warns);
+`left` carries `reason`. New types `CallErrorCode` (adds `'permission-denied'`), `CallWarningCode`,
+`CallDisplay`, `CallTheme`, `CallStrings`, `LiftFunction`.
+
+**Removed from the `./call` entry — 38 internal helpers**, each kept for this release as a
+`@deprecated` wrapper that `console.warn`s once on first use (a primitive constant cannot warn)
+and removed in 1.31; all stay importable by file path from `js/call/*.js` / `js/camera/*.js`:
+`normalizeCallOptions`, `newRoomId`, `isValidRoomId`, `buildInviteLink`, `normalizeHello`,
+`makeHello`, `routeFor`, `badgeFor`, `createLiveGate`, `convergenceShiftPx`, `lowPass`,
+`clampShift`, `eyeCropRect`, `mirrorSwapOps`, `mirrorSwapPixels`, `maxBitrateKbps`,
+`measureFocusDisparity`, `preferVideoCodecs`, `sortCodecCapabilities`, `VIDEO_CODEC_ORDER`,
+`MeshTransport`, `clampMaxPeers`, `qrEncode`, `roomKey`, `SIGNAL_PROTOCOL`, `WIRE_VERSION`,
+`CALL_SDK`, `PLATE_TEXT` (→ `theme.strings`), `CALL_ACCENTS` (→ `theme.accent` takes the names),
+`normalizeMono3D`, `resolveLift`, `createLiftPool`, `createFrameWatch`, `liftConvergenceFor`,
+`liftPriorityFor`, `setLiftPriority`, `defaultLiftSpecifier`, `LIFT_PRIORITY`. Types gone with
+them: `CallHello`, `CallCalibration`, `CallRoute`, `Mono3DReason`, `CallMono3DInfo`,
+`CallLiftHandle`, `CallLiftFunction` (→ `LiftFunction`), `LiftStreamPriority`, `CallLiftPool`.
+**Stays public:** `mountCall`, `addCall`, `dxrSignaling`, `DXR_SIGNAL_DEFAULT`,
+`parseInviteLink` (Decision 7), `DxrCallElement`, `defineCallElement`, `attrsToOpts`,
+`CALL_EVENT_PREFIX` — 9 value exports (from 47).
+
+Internal moves (no API): `js/call/capture.js` → `js/camera/capture.js`, `js/call/disparity.js` →
+`js/camera/disparity.js`, the SBS geometry and convergence math → `js/camera/geometry.js` /
+`js/camera/converge.js`, option normalisation → `js/call/options.js`; the old paths re-export.
+
+### Gates (RFC 0003 §7, C2)
+
+- **API snapshot:** `tools/api-surface.mjs` pins the public surface of `call.d.ts`,
+  `call-full.d.ts` and `camera.d.ts` in `test/api-snapshot/*.api.txt`; `npm test` (and CI) fail
+  when the surface changes without `node tools/api-surface.mjs --update` in the same change. The
+  deprecated set is part of the record, so 1.31's removal is a visible diff.
+- **Snippets:** `tools/check-snippets.mjs` compiles every fenced `js`/`ts`/`jsx` block of
+  `docs/call.md` + `docs/camera.md` and every call/camera sample against the public `.d.ts` only
+  (and fails on a deprecated import); run by `npm test` where `typescript` is installed and by
+  CI's typecheck job.
+- **Tests:** camera unit tests (the mirror-and-swap proof, XMP/WebM round-trips, error codes,
+  view routes), the surface tests (deprecation wrappers, legacy options, handle renames, theme /
+  strings / parts / `ui: 'tiles'` / `layout: 'none'`), and a headless Chrome e2e
+  (`npm run test:e2e:camera`: the mirrored pair's pixels on a mock woven wall, a JPEG whose XMP
+  parses, a WebM whose tags parse). Panel runs still required: the mirrored self view on glass,
+  an SBS photo opened in `/player`.
+
 ## 1.29.0 — 2026-09-30
 
 Touches the **core** (additive: `sharedInline3D()`, `handle.rewoven()`) and the **preview tier**

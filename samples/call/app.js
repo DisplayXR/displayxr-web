@@ -2,6 +2,7 @@
 
 import { createInline3D } from '@displayxr/inline3d';
 import { addCall, dxrSignaling } from '@displayxr/inline3d/call';
+import { openCamera } from '@displayxr/inline3d/camera';
 import { peerjsCloud } from './peerjs-cloud.js'; // demo-only broker adapter; a sample, not part of the package
 
 const q = new URLSearchParams(location.search);
@@ -64,16 +65,16 @@ function syntheticSbs() {
 }
 
 const cam = q.get('camera');
-const camera = cam === 'synthetic' ? syntheticSbs() : cam === 'mono' || cam === 'stereo' ? cam : 'auto';
+// The synthetic pair is opened through /camera (a page-supplied stream declares its format and
+// its calibration there — the module never guesses 3D from a stream's aspect) and handed to the
+// call as `camera`; the real cameras go through the call's own 'auto' / 'stereo' / 'mono'.
+const camera = cam === 'synthetic' ? await openCamera({ prefer: syntheticSbs(), format: 'sbs', calibration: { baselineMm: 63, horizontalFovDeg: 70 } }) : cam === 'mono' || cam === 'stereo' ? cam : 'auto';
 
 const call = await addCall(wall, document.getElementById('call'), {
   signaling,
   camera,
-  // A page-supplied stream declares its format (the module never guesses 3D from its aspect).
-  format: cam === 'synthetic' ? 'sbs' : undefined,
-  calibration: cam === 'synthetic' ? { baselineMm: 63, hfovDeg: 70 } : undefined,
   layout: q.get('layout') === 'speaker' ? 'speaker' : 'grid',
-  accent: q.get('accent') || undefined,
+  theme: q.get('accent') ? { accent: q.get('accent') } : undefined,
   autoJoin: q.get('autojoin') === '1',
   // Mono participants are lifted to 3D through @displayxr/inline3d/lift when this copy of the SDK
   // has it (and a native provider or WebGPU is there); otherwise they stay 2D. ?lift=0 turns it
@@ -82,17 +83,15 @@ const call = await addCall(wall, document.getElementById('call'), {
   liftOptions: q.get('models') ? { models: q.get('models') } : undefined,
   // The invite carries only what a joiner needs (the signalling server), never this page's own
   // test switches — a guest opening a `?camera=synthetic` host's link should use their camera.
-  inviteBase: location.origin + location.pathname + (q.get('signal') ? `?signal=${encodeURIComponent(q.get('signal'))}` : ''),
+  invite: { base: location.origin + location.pathname + (q.get('signal') ? `?signal=${encodeURIComponent(q.get('signal'))}` : '') },
   debug: q.has('debug'),
 });
 
-for (const ev of ['peer', 'peerleft', 'format', 'speaker', 'error', 'joined', 'left', 'session', 'quality']) {
-  if (ev === 'quality') {
-    call.on(ev, (p) => p.lift && console.log(`[call-sample] lift frame time ${JSON.stringify(p.lift)}`));
-    continue;
-  }
+for (const ev of /** @type {const} */ (['peer', 'peerleft', 'display', 'speaker', 'error', 'warning', 'joined', 'left'])) {
   call.on(ev, (p) => console.log(`[call-sample] ${ev} ${JSON.stringify(p)}`));
 }
+// `quality` with `id: null` is the lift frame-time watch (web provider only); per-peer stats are noisy.
+call.on('quality', (p) => 'lift' in p && console.log(`[call-sample] lift frame time ${JSON.stringify(p.lift)}`));
 
 // Debug hooks, same convention as the other samples' __wall / __player: a devtools console (or an
 // agent driving the page over CDP) can inspect and drive the call directly.

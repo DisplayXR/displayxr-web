@@ -133,7 +133,7 @@ test('attrsToOpts: the attribute → option table (unset attributes contribute n
   assert.equal(o.key, 'pk_abc');
   assert.equal(o.camera, 'stereo');
   assert.equal(o.layout, 'speaker');
-  assert.equal(o.accent, 'violet');
+  assert.equal(o.theme.accent, 'violet', 'accent → theme.accent (C2)');
   assert.equal(o.maxPeers, 3);
   assert.equal(o.ui, false);
   assert.equal(o.autoJoin, true);
@@ -141,16 +141,19 @@ test('attrsToOpts: the attribute → option table (unset attributes contribute n
   assert.equal(o.audio, false);
   assert.equal(o.selfView, false);
   assert.equal(o.autoConverge, false);
-  assert.equal(o.tileAspect, 4 / 3);
-  assert.equal(o.inviteBase, 'https://x.example/call');
-  assert.equal(o.browserUrl, 'https://dl.example');
+  assert.equal(o.theme.tileAspect, 4 / 3);
+  assert.equal(o.invite.base, 'https://x.example/call');
+  assert.equal(o.landing.browserUrl, 'https://dl.example');
+  assert.equal(o.accent, undefined, 'no 1.29 spellings leave the element (they would warn)');
+  assert.equal(attrsToOpts(makeEl({ ui: 'tiles' })).ui, 'tiles');
+  assert.equal(attrsToOpts(makeEl({ ui: 'tiles', 'no-ui': '' })).ui, false);
   assert.equal(o.debug, true);
   // Booleans: present = true, unless the value spells false. mono3d only knows "off".
   assert.equal(attrsToOpts(makeEl({ 'no-ui': 'false' })).ui, undefined);
   assert.equal(attrsToOpts(makeEl({ 'auto-join': 'true' })).autoJoin, true);
   assert.equal(attrsToOpts(makeEl({ mono3d: 'auto' })).mono3D, undefined);
-  assert.equal(attrsToOpts(makeEl({ 'tile-aspect': '1.5' })).tileAspect, 1.5);
-  assert.equal(attrsToOpts(makeEl({ 'tile-aspect': 'wide' })).tileAspect, undefined);
+  assert.equal(attrsToOpts(makeEl({ 'tile-aspect': '1.5' })).theme.tileAspect, 1.5);
+  assert.equal(attrsToOpts(makeEl({ 'tile-aspect': 'wide' })).theme, undefined);
   assert.equal(attrsToOpts(makeEl({ 'max-peers': '' })).maxPeers, undefined);
   // No `signaling` attribute → no adapter here: the call's own default (the hosted server) applies.
   assert.equal(attrsToOpts(makeEl({ key: 'pk_1' })).signaling, undefined);
@@ -164,7 +167,7 @@ test('connect mounts with attrs + el.options (options win); el.call and dxr-call
   await withMount(m, async () => {
     const el = makeEl({ room: 'R'.repeat(22), accent: 'amber', 'max-peers': '2' });
     const stream = new FakeStream([new FakeTrack('video')]);
-    el.options = { camera: stream, format: 'sbs', accent: 'lime' };
+    el.options = { camera: stream, format: 'sbs', theme: { accent: 'lime' } };
     const readyEvents = [];
     el.addEventListener('dxr-call:ready', (e) => readyEvents.push(e));
     assert.equal(el.call, null);
@@ -175,7 +178,7 @@ test('connect mounts with attrs + el.options (options win); el.call and dxr-call
     assert.equal(m.calls[0].opts.maxPeers, 2);
     assert.equal(m.calls[0].opts.camera, stream, 'a non-string option came from el.options');
     assert.equal(m.calls[0].opts.format, 'sbs');
-    assert.equal(m.calls[0].opts.accent, 'lime', 'el.options wins over the attribute');
+    assert.equal(m.calls[0].opts.theme.accent, 'lime', 'el.options wins over the attribute');
     const h = await el.ready;
     assert.equal(el.call, h);
     assert.equal(readyEvents.length, 1);
@@ -192,7 +195,7 @@ test('every call event is re-dispatched as a bubbling CustomEvent dxr-call:<type
   await withMount(fakeMount(), async () => {
     const el = makeEl();
     const seen = [];
-    for (const t of ['joined', 'left', 'peer', 'peerleft', 'state', 'format', 'speaker', 'quality', 'error', 'warning', 'session']) {
+    for (const t of ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning']) {
       el.addEventListener(`dxr-call:${t}`, (e) => seen.push([e.type, e.detail, e.bubbles]));
     }
     const warned = [];
@@ -323,7 +326,7 @@ test('end to end with the REAL mountCall: <dxr-call auto-join no-ui> joins, even
   try {
     assert.equal(h.state, 'in-call', 'auto-join: mounted straight into the call');
     assert.equal(h.room, 'E'.repeat(22));
-    assert.equal(h.wall.supported, false, 'the shared wall of a 2D document');
+    assert.equal(h.diagnostics().wall.supported, false, 'the shared wall of a 2D document');
     assert.equal(joined.length, 1, "auto-join joined DURING the mount; the element re-issues 'joined' once it can");
     assert.equal(joined[0].id, h.id);
     assert.equal(joined[0].room, h.room);

@@ -54,7 +54,8 @@ function installXr() {
 }
 installXr();
 
-const { mountCall, addCall, makeHello, dxrSignaling } = await import('../js/inline3d-call.js');
+const { mountCall, addCall, dxrSignaling } = await import('../js/inline3d-call.js');
+const { makeHello } = await import('../js/call/wire.js');
 const { sharedInline3D, createInline3D } = await import('../js/inline3d.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -67,24 +68,24 @@ test('mountCall: no wall → the document\'s shared manager; two mounts share it
   const a = await mountCall(host, base());
   try {
     const shared = await sharedInline3D();
-    assert.equal(a.wall, shared, 'the wall is the shared one');
-    assert.equal(a.wall.supported, true);
+    assert.equal(a.diagnostics().wall, shared, 'the wall is the shared one');
+    assert.equal(a.diagnostics().wall.supported, true);
     const host2 = doc.body.appendChild(doc.createElement('div'));
     const b = await mountCall(host2, base());
-    assert.equal(b.wall, a.wall, 'a second call on the page joins the SAME session (rule 1)');
+    assert.equal(b.diagnostics().wall, a.diagnostics().wall, 'a second call on the page joins the SAME session (rule 1)');
     b.leave();
   } finally {
     a.leave();
   }
   // Modules that borrow the wall never close it: leave() left the page's session alone.
   const still = await sharedInline3D();
-  assert.equal(still, a.wall, 'leave() did not close the shared manager');
+  assert.equal(still, a.diagnostics().wall, 'leave() did not close the shared manager');
   still.close();
   // A page that made its own wall first, then mounts: that wall.
   const mine = await createInline3D();
   const host3 = doc.body.appendChild(doc.createElement('div'));
   const c = await mountCall(host3, base());
-  assert.equal(c.wall, mine);
+  assert.equal(c.diagnostics().wall, mine);
   c.leave();
   mine.close();
 });
@@ -93,7 +94,7 @@ test('mountCall: an explicit `wall` wins over the shared one, and a 2D wall is f
   const w = { supported: false, trackingState: 'unknown' };
   const host = doc.body.appendChild(doc.createElement('div'));
   const call = await mountCall(host, { ...base(), wall: w });
-  assert.equal(call.wall, w);
+  assert.equal(call.diagnostics().wall, w);
   call.leave();
   await assert.rejects(mountCall(null, {}), /needs a container element/);
 });
@@ -131,7 +132,8 @@ test("warning 'lift-not-bundled': once, when a mono peer routes flat on a 3D dis
     arriveMono();
     for (let i = 0; i < 200 && !warnings.length; i++) await sleep(5);
     assert.equal(call.mono3D.reason, 'import-failed');
-    assert.equal(call.peers[0].route, 'flat');
+    assert.equal(call.peers[0].display, '2D');
+    assert.equal(call.diagnostics().peers[0].route, 'flat');
     arriveMono(); // a second routing pass of the same peer: still one warning
     await sleep(20);
   } finally {

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>camera — DisplayXR inline-3D sample</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1014;color:#e8e8ea}
+  .wrap{max-width:1100px;margin:0 auto;padding:36px 20px 72px}
+  a{color:#5aa8ff}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.72;margin:0 0 22px;max-width:74ch}
+  code{background:#ffffff14;padding:1px 5px;border-radius:4px}
+  .status{font:13px/1.5 system-ui;padding:8px 12px;border-radius:8px;margin:0 0 20px;display:inline-block}
+  .status.woven{background:#134e2a55;border:1px solid #24a05a55;color:#7ee2a4}
+  .status.flat{background:#3a2a1155;border:1px solid #a0742455;color:#e6c07a}
+  /* The self view is a WOVEN canvas: its CSS box is the shape the viewer sees, and nothing on it
+     or its ancestors may be a CSS effect (docs/woven-canvas-rules.md, rule 7) — no border-radius,
+     shadow, filter, opacity here or on .wrap. Chrome sits BELOW it, over no part of the tile. */
+  #self{display:block;width:min(100%,960px);aspect-ratio:16/9;background:#000}
+  .bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:14px 0 0;padding:10px 12px;border-radius:12px;
+       background:rgba(16,17,22,.92);border:1px solid #ffffff1a}
+  .bar button{appearance:none;border:1px solid #ffffff2e;background:#ffffff12;color:inherit;font:600 13px/1 system-ui;
+       padding:9px 14px;border-radius:9px;cursor:pointer}
+  .bar button:hover{background:#ffffff24}
+  .bar button[data-on="1"]{background:#ff5a5f;border-color:#ff5a5f;color:#fff}
+  .bar label{display:flex;align-items:center;gap:6px;font-size:13px;opacity:.9}
+  .bar input[type=range]{width:120px;accent-color:#4da3ff}
+  .files{margin:12px 0 0;font-size:13px;line-height:1.9}
+  .files a{margin-right:14px}
+  footer{margin-top:36px;font-size:13px;opacity:.6;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>camera</h1>
+  <p class="sub">The stereo camera as a primitive (<code>@displayxr/inline3d/camera</code>): open the
+     best camera, show a <b>correctly mirrored</b> 3D self view, take a 3D photo, record a 3D clip.
+     Files are plain side-by-side with the layout in the name (<code>_2x1</code>) and the stereo
+     record inside the file, so they open in the <a href="../player/">player</a>. On the DisplayXR
+     Browser with a 3D display the self view is glasses-free 3D; anywhere else it is the left eye,
+     flat — and the files are still real pairs when the camera is one.</p>
+
+  <div id="status" class="status flat">Opening the camera…</div>
+
+  <canvas id="self"></canvas>
+
+  <div class="bar">
+    <button id="photo" type="button" disabled>Take 3D photo</button>
+    <button id="rec" type="button" disabled>Record</button>
+    <label><input id="mirror" type="checkbox" checked> Mirror</label>
+    <label><input id="converge" type="checkbox"> Auto-converge</label>
+    <label>Depth <input id="depth" type="range" min="-1" max="1" step="0.05" value="0"></label>
+    <label><input id="mono" type="checkbox" checked> Also a 2D copy</label>
+  </div>
+  <div id="files" class="files"></div>
+
+  <footer>
+    URL params: <code>?camera=stereo</code> prefer a pair · <code>?camera=mono</code> · <code>?camera=synthetic</code>
+    a generated side-by-side pair with a known disparity (no camera needed; what the eye-swap check
+    uses) · <code>?debug</code> logs. A pair is detected by the DisplayXR Browser's
+    <code>displayxrStereo</code> track settings or by a device delivering wider than 2.5:1 frames.
+    Developer guide: <a href="../../docs/camera.md">docs/camera.md</a>. Preview tier —
+    <a href="../../docs/sdk-stability.md">sdk-stability.md</a>,
+    <a href="../../docs/rfcs/0003-call-developer-experience.md">RFC 0003 §4</a>. The call built on
+    this is <a href="../call-embed/">samples/call-embed/</a>.
+  </footer>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/camera": "../../js/inline3d-camera.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

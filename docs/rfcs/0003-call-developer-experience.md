@@ -712,6 +712,22 @@ all build, and every bundled `/call` emits `lift-not-bundled` when run. **Pendin
 (`feat/lift` not merged — `js/lift/index.js` is a placeholder, so `/call/full` builds but
 `liftBundled` is `false`), `docs/call.md` + the hosted demo (paired docs PR), and the panel run.
 
+**C2 status (2026-10-03).** Implemented on `feat/call-c2` (PR): the §2 table (9 public value
+exports, the 38 helpers kept for 1.30 as warn-once `@deprecated` wrappers, 1.31 removes them —
+Decision 12's `peerjsCloud` was already gone), options regrouped (`theme` / `invite` / `landing` /
+`liftOptions.max`; 1.29 spellings warn for one release; the `<dxr-call>` attributes unchanged),
+`theme` with the CSS variables + `theme.strings` + `part` names (light DOM: reached as
+`dxr-call [part="bar"]`, not `::part()` — the names are the contract), `ui: 'tiles'`,
+`layout: 'none'` + `tile(id)`, `diagnostics()`, the `display` event, `handle.setCameraOff` /
+`localFormat`; `/camera` preview (`openCamera`, `addCameraView`, `capturePhoto`, `record`, Decision
+9's in-file metadata — XMP in JPEG, Matroska tags in WebM — and Decision 13's `mono: true`); the
+call built on it (self view = `addCameraView`, `camera: cam`). Gate: API snapshot ✓
+(`tools/api-surface.mjs`, `test/api-snapshot/`); every sample and doc snippet typechecks against
+the public types ✓ (`tools/check-snippets.mjs`, in `npm test` and CI); headless e2e ✓ (the
+mirror-and-swap pixels on a mock woven wall with the synthetic L/R pair, a JPEG whose XMP parses,
+a WebM whose tags parse). **Pending:** the panel run — 3D self view mirrored correctly on glass
+(eye-swap check with `samples/camera/?camera=synthetic`), an SBS photo opened in `/player` in 3D.
+
 **The hardware matrix for C5** (each row a recorded run, like RFC 0002's P0 notes):
 
 1. 3D laptop (built-in 3D camera) ↔ 3D laptop, both woven, auto-converged, 30 min without drift.
