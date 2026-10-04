@@ -248,7 +248,10 @@ async function main() {
     report.flood = { sockets: FLOOD, ms: floodMs, codes, rateLimited, errors, retryMs, p95Ms: p95 };
     console.log(`gate 1: ${JSON.stringify(report.flood)}`);
     if (errors) throw new Error(`flood: ${errors} sockets errored/timed out — that is an outage, not a refusal`);
-    if (rateLimited < FLOOD - 25) throw new Error(`flood: only ${rateLimited} rate-limited`);
+    // A dual-stack client may reach the Worker from its IPv4 AND its IPv6 address — two per-IP
+    // meters, so up to 2 × joinsPerMin get through before the refusals start.
+    const admitted = 2 * health.limits.anon.joinsPerMin;
+    if (rateLimited < FLOOD - admitted - 5) throw new Error(`flood: only ${rateLimited} rate-limited (expected ≥ ${FLOOD - admitted - 5})`);
     const h2 = await (await fetch(`${HTTP}/`)).json();
     if (!h2.ok) throw new Error('health not ok after the flood');
     const keyedAfter = await rawJoin(b64url(16), { key: keyAny });
@@ -261,8 +264,9 @@ async function main() {
     const budget = snap.budgetGB;
     await admin('POST', 'usage', { overrideGB: 0.95 * budget });
     await sleep(20000); // the Worker caches the budget snapshot per isolate for 15 s
-    // The anonymous join window from this address is hot after the flood: wait it out.
-    const anonWait = Math.max(0, 61000 - (Date.now() - t0));
+    // The anonymous join windows from this address are hot after the flood (a window starts at
+    // its subject's FIRST hit, which for a second address may be late in the flood): wait them out.
+    const anonWait = Math.max(0, 62000 - (Date.now() - (t0 + floodMs)));
     if (anonWait) {
       console.log(`gate 2: waiting ${Math.ceil(anonWait / 1000)} s for this address's anonymous join window…`);
       await sleep(anonWait);
@@ -271,7 +275,7 @@ async function main() {
     const k90 = await rawJoin(b64url(16), { key: keyAny });
     report.at90 = { usedGB: 0.95 * budget, anon: { turn: a90.first?.turn, ice: !!a90.first?.iceServers }, keyed: { turn: k90.first?.turn, ice: !!k90.first?.iceServers }, health: (await (await fetch(`${HTTP}/`)).json()).turn };
     console.log(`gate 2: ${JSON.stringify(report.at90)}`);
-    if (a90.first?.t !== 'welcome' || a90.first.iceServers || a90.first.turn?.reason !== 'budget') throw new Error('90%: anonymous should join without TURN (reason budget)');
+    if (a90.first?.t !== 'welcome' || a90.first.iceServers || a90.first.turn?.reason !== 'budget') throw new Error(`90%: anonymous should join without TURN (reason budget); got ${JSON.stringify(a90.first)}`);
     if (k90.first?.t !== 'welcome' || !k90.first.iceServers || k90.first.turn?.status !== 'degraded') throw new Error('90%: keyed should keep TURN (degraded)');
 
     // ── 3. forced cap + a direct P2P call ────────────────────────────────────────────────

@@ -394,7 +394,6 @@ class Call {
       }
       throw err;
     }
-    this._reportTurn(session);
     this._setState('in-call');
     // The grid is sized so the whole call block fits ONE viewport, but only if it starts at the
     // top: a tile below the fold is withheld from the weave (browser#167), so its layer goes
@@ -412,6 +411,12 @@ class Call {
     globalThis.addEventListener?.('pagehide', this._pagehide);
     this.log('joined', { id: this.id, peers: this.tiles.size });
     this.emit('joined', { room: this.room, id: this.id });
+    // The TURN decision is reported on the next task, after join() / mountCall() have resolved:
+    // a page (or <dxr-call>) subscribes once it has the handle, and an event raised mid-join
+    // would reach nobody.
+    setTimeout(() => {
+      if (this.transport === t) this._reportTurn(session);
+    }, 0);
     return this.handle;
   }
 
