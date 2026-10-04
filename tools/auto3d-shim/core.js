@@ -244,6 +244,17 @@ function dxrCore(cfg, cap, S) {
     tracked.push(new WeakRef(st));
     return st;
   }
+  // A canvas an adapter can see but will never drive (three.js WebGPURenderer): a state that only
+  // carries its flat reason, for statusOf() (the host's 'flat' report), the chip and the HUD. Nothing
+  // on the page is wrapped, and nothing ever calls considerActivation on it. Its `ad` is a stub, so
+  // the loops over `tracked` (setEnabled's wake, the dev state()) find nothing to draw or describe.
+  function noteFlat(engine, canvas, reason) {
+    const st = newState(engine, canvas, { label: () => engine, unqualified: () => reason, describe: () => ({ page: null }) });
+    st.flatReason = reason;
+    info(`${engine} canvas ${desc(canvas)} stays 2D:`, reason);
+    notify();
+    return st;
+  }
 
   // ------------------------------------------------------------ sizing
   // st.L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas:
@@ -1316,7 +1327,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
+    newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, readGlEye,

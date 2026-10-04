@@ -261,7 +261,8 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | several viewports in one canvas | flat per viewport |
 | post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
 | a chain whose scene pass uses `setViewOffset` (TAA / SSAA jitter) | **2D** (the seed is not recognised) |
-| `WebGPURenderer`, r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
+| `WebGPURenderer` | **2D**, reported `flat` with the reason `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7; before, a bare `idle`). Nothing on the renderer or its canvas is touched. Harness case `p-webgpu` |
+| r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
 | a second renderer in the same document | 2D (one converted canvas per document) |
 | Spark Gaussian splats (`@sparkjsdev/spark` 2.x, World Labs worlds) | **3D** (below) |
 
@@ -842,6 +843,9 @@ with DisplayXR installed can block context creation (every PlayCanvas page then 
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**v0.5.7 (corpus follow-ups, 2026-10-04): not yet run.** Adds `p-webgpu` (76 cases). Validation is
+pending a quiet-box window.
 
 **Headless, v0.5.6, Windows, ANGLE D3D11:** 75 cases (67 + `m-order`, `m-three`, `m-pc`,
 `m-lifted-three`, `m-lifted-pc`, `m-lifted-offer`, `m-lift-live-three`, `m-lift-live-pc`; marker

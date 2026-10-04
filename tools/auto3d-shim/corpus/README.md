@@ -30,7 +30,7 @@ PASS / REVIEW / FAIL per site and a one-line verdict. The exit code is 1 if any 
 Each site is loaded twice, in fresh incognito contexts of real-GPU headless Chrome with
 `../test/run.mjs`'s launch flags (including `--disable-features=OpenXR,WebXR`):
 
-| load | injected at document start (main world, main frame) |
+| load | injected at document start (main world, **main frame only**) |
 |---|---|
 | control | `../test/fake-xr.js` + a probe |
 | injected | `../test/fake-xr.js` + the probe + the **committed** `dist/auto3d-sentinel.js` + `dist/auto3d-core.js`, evaluated by `../test/fake-host.js` in product mode with `decision: 'allow'` |
@@ -39,14 +39,27 @@ The product texts are what the browser vendors (checked against `VENDOR.json`; a
 Each gets a `//# sourceURL` (`dxr-auto3d-sentinel.js`, `dxr-auto3d-core.js`), so a timer, observer
 or exception can be traced to **our** code by its stack. The probe snapshots `window`'s own keys
 and the own-property descriptors of `Object`, `EventTarget`, `Node`, `Element`, `HTMLElement`,
-`HTMLCanvasElement`, `Document` and `Window` prototypes; it counts WebGL contexts, records every
-timer whose creating stack is ours, and times our `MutationObserver`'s callbacks. The probe runs in
-both loads, so its own changes cancel out.
+`HTMLCanvasElement`, `Document` and `Window` prototypes; it counts WebGL contexts and
+`getContext('webgpu')` calls, records every timer whose creating stack is ours, and times our
+`MutationObserver`'s callbacks: total ms (`moMs`), the number of callbacks (`moCalls`) and the
+longest single one (`moMaxMs`), so a total over the REVIEW line can be judged per callback. The
+probe runs in both loads, so its own changes cancel out.
+
+Every injected text is gated on `window === window.top` and run with an indirect `eval`.
+`evaluateOnNewDocument` also runs in same-process subframes, including sandboxed `about:blank`
+frames without `allow-scripts`. A listener registered there is blocked when it fires, and Chrome
+logs "Blocked script execution in 'about:blank'…" for each firing (youtube, cnn, stackoverflow, ebay,
+spotify, cesium, unity-play in the 2026-10-03 run). The browser injects into the main frame here,
+so subframes get nothing in either load.
 
 Each load gets a 30 s navigation budget (`--budget-ms`). If `load` never fires, the partial page is
 judged and the site is marked REVIEW. After load the page is watched for 6 s (plain), 12 s
 (engine) or 10 s (sdk). A terminal report (`live`, `flat`, `standdown`, `guard`, `optout`) ends the
 watch 2 s later. Then the injected tab is reloaded three times for the **warm** sentinel cost.
+Only the injected load reloads. Console errors, page errors and our log lines from those reloads go
+into separate buckets (`warmErrors`, shown as `+N` in the table) and are **not judged**. The verdict
+compares the two first loads, like for like. Repeat visits log things a first visit does not: FedCM
+"Not signed in with the identity provider" (reddit, notion, stackoverflow) and 403s (etsy).
 
 Both loads use `setBypassCSP(true)` and a user agent without "Headless". The real injector is
 exempt from a page's CSP, but the fake host uses `eval`, which a strict CSP or Trusted Types would
@@ -66,7 +79,10 @@ A site **FAILs** on any of the following (design §3.3):
 - **window:** a new `window` key other than `__THREE_DEVTOOLS__`, or `pc` on a page that created a
   WebGL context, when the key is ours (named `dxr`/`auto3d`, or `pc`). `'pc' in window` newly true
   on a page with no WebGL is a FAIL.
-- **no-WebGL pages:** any timer created by our code, or `cap.loadCore()` called.
+- **pages with no graphics context** (no WebGL context and no `getContext('webgpu')` in either
+  load): any timer created by our code, or `cap.loadCore()` called. A WebGPU page (three.js
+  `WebGPURenderer`) is a graphics page. The core may load there, since three announces itself, and
+  the expected outcome is `flat (WebGPURenderer …)`. A WebGPU-only page that converts is REVIEW.
 - **errors:** an uncaught exception whose stack is ours (`dxr-auto3d-*.js`, `dxr…` part functions),
   or a new console error that names us.
 - **outcome:** a `plain` page that converts or detects an engine, unless the control load shows
@@ -76,7 +92,8 @@ A site **FAILs** on any of the following (design §3.3):
 
 A site is **REVIEW** when something differs but cannot be pinned on us. Examples: console errors
 missing from the control (ads and network noise; re-run), unattributed new window keys, page text
-or element count below half the control's, our observer's callbacks over 5 ms in total, an engine
+or element count below half the control's, our observer's callbacks over 5 ms in total (the reason
+gives the callback count and the longest callback), an engine
 page stuck `converting` or flat without a reason, an `offer` under `allow`, a converted page under
 half the control's frame rate, or a partial load. Keys ending in 4 or more digits
 (`closure_lm_560377`) are per-load ids the page makes. They are listed in `keysNoise` and not
@@ -90,13 +107,14 @@ Expected outcomes by group:
 | group | pass |
 |---|---|
 | `plain` | `none`: sentinel only, core never loaded, nothing reported |
-| `engine` | `converted`, or `flat (reason)` / `standdown (reason)`: clean 2D **with** a reason |
+| `engine` | `converted`, or `flat (reason)` / `standdown (reason)`: clean 2D **with** a reason. A three.js `WebGPURenderer` page: `flat (WebGPURenderer — …)` |
 | `sdk` | `standdown` or `none`: never `converted` |
 
 ## Not covered here (the panel sample in §3.9)
 
-Only the main frame is covered. `evaluateOnNewDocument` does not reach out-of-process iframes, and
-the browser injects `all_frames`. The corpus also does not check whether controls still work, raycast
+Only the main frame is covered. The injected texts are gated to the top frame (above), and
+`evaluateOnNewDocument` does not reach out-of-process iframes anyway, while the browser injects
+`all_frames`. The corpus also does not check whether controls still work, raycast
 picking against the virtualised `canvas.width`, screenshot and export features, turning auto-3D off
 and back, or anything about woven output.
 
