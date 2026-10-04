@@ -97,6 +97,14 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
   1.29 (Decision 12) and is a sample, not an API. The path to stable — and what freezes then —
   is RFC 0003 §7.
 
+  `/camera` (`openCamera`, `StereoCamera`, `addCameraView`, `capturePhoto`, `record`, the
+  `readJpegStereoMeta` / `readWebmStereoMeta` readers) entered preview in 1.30 (RFC 0003 §4, C2)
+  and is pinned by the same snapshot gate. What is meant to outlive the preview: the captured
+  **file shape** — plain side-by-side with the layout in the name (`_2x1`) and the stereo record
+  inside the file (XMP `dxr:` fields in a JPEG, `DXR_*` Matroska tags in a WebM) — since files
+  outlive SDK versions; its option names and the `CameraView` members may still move. It promotes
+  with `/call` or on its own record (RFC 0003 §7, C5).
+
   `/model` is in this tier for the same reason as the other two, not a lesser one: it is a thin
   wrapper over the SAME `SceneViewer`, so anything that moves the viewer's framing moves meshes
   too. Listing only `/viewer` and `/splat` here previously left its status to be inferred, and
