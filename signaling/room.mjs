@@ -6,6 +6,8 @@
 // What this server knows: a room id, random per-join peer ids, and the SDP/ICE blobs it relays.
 // It never sees media (DTLS-SRTP is peer-to-peer) and holds nothing after the last peer leaves.
 
+import { CLOSE_CODES } from './limits.mjs';
+
 export const PROTOCOL = 'dxr-signal/1';
 export const ROOM_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 export const PEER_ID_RE = /^[A-Za-z0-9_-]{8,32}$/;
@@ -31,18 +33,22 @@ export async function roomKey(room) {
  * @param {object} opts
  * @param {string} opts.key  the roomKey this room was addressed by (join must match it)
  * @param {number} [opts.cap]  server-side participant cap (clamped to MAX_ROOM_CAP)
- * @param {() => Promise<object[]|null>} [opts.iceServers]  mints short-lived TURN credentials
- *        per join; null/absent = the client uses its own defaults (public STUN)
+ * @param {(info: object|null) => Promise<object[]|null>} [opts.iceServers]  mints short-lived
+ *        TURN credentials per join (given the connection's admission session, see gate.mjs, whose
+ *        `turn.ttl` is the TTL to mint); null/absent = the client uses its own defaults (public STUN)
+ * @param {{ onFirst?: (info: object|null) => void, onEmpty?: () => void }} [opts.hooks]  the room
+ *        went 0→1 peers (start its lifetime clock) / 1→0 (stop it)
  * @param {() => number} [opts.now]
  */
 export class Room {
-  constructor({ key, cap = DEFAULT_ROOM_CAP, iceServers = null, now = () => Date.now() } = {}) {
+  constructor({ key, cap = DEFAULT_ROOM_CAP, iceServers = null, hooks = {}, now = () => Date.now() } = {}) {
     this.key = key || null;
     this.cap = Math.max(2, Math.min(MAX_ROOM_CAP, cap | 0 || DEFAULT_ROOM_CAP));
     this.max = null; // set by the first joiner (<= cap)
     this.peers = new Map(); // id -> conn
-    this.meta = new WeakMap(); // conn -> { id, count, windowAt }
+    this.meta = new WeakMap(); // conn -> { id, count, windowAt, session }
     this.iceServers = iceServers;
+    this.hooks = hooks || {};
     this.now = now;
   }
 
@@ -50,11 +56,28 @@ export class Room {
     return this.peers.size;
   }
 
+  _meta(conn) {
+    let m = this.meta.get(conn);
+    if (!m) {
+      m = { id: null, count: 0, windowAt: this.now(), session: null };
+      this.meta.set(conn, m);
+    }
+    return m;
+  }
+
+  /**
+   * Record what a connection was admitted as (gate.mjs `Session`: tier, key id, TURN decision,
+   * room lifetime). Call before its first message; absent = anonymous, TURN per server config.
+   */
+  attach(conn, session) {
+    this._meta(conn).session = session || null;
+  }
+
   /** Re-attach a connection that already joined (Durable Object wake from hibernation). */
-  restore(conn, id) {
+  restore(conn, id, session = null) {
     if (!PEER_ID_RE.test(id)) return;
     this.peers.set(id, conn);
-    this.meta.set(conn, { id, count: 0, windowAt: this.now() });
+    this.meta.set(conn, { id, count: 0, windowAt: this.now(), session: session || null });
   }
 
   async onMessage(conn, text) {
@@ -67,8 +90,7 @@ export class Room {
       return this._fail(conn, 'bad-message', 'not JSON');
     }
     if (!msg || typeof msg !== 'object') return this._fail(conn, 'bad-message', 'not an object');
-    const m = this.meta.get(conn) || { id: null, count: 0, windowAt: this.now() };
-    this.meta.set(conn, m);
+    const m = this._meta(conn);
     const t = this.now();
     if (t - m.windowAt > RATE_LIMIT.windowMs) {
       m.windowAt = t;
@@ -123,18 +145,33 @@ export class Room {
     const others = [...this.peers.keys()];
     m.id = msg.id;
     this.peers.set(msg.id, conn);
+    const first = others.length === 0;
+    const s = m.session;
+    // TURN: the admission decision (budget / tier / mint rate) says whether to mint at all and
+    // for how long; a server without TURN configured has no minter. The welcome always says
+    // which, so the SDK can tell "no relay this month" (`turn-cap`) from "self-hosted, no TURN".
     let ice = null;
+    /** @type {{status: string, reason?: string, ttl?: number}} */
+    let turn = { status: 'off', reason: 'unconfigured' };
     if (this.iceServers) {
-      try {
-        ice = await this.iceServers();
-      } catch {
-        ice = null; // TURN minting failed: the client falls back to STUN, the call may still work
+      const want = s && s.turn ? s.turn : { mint: true, ttl: 0, status: 'ok' };
+      if (!want.mint) turn = { status: want.status || 'off', reason: want.reason || 'budget' };
+      else {
+        try {
+          ice = await this.iceServers(s);
+          turn = ice ? { status: want.status || 'ok', ttl: want.ttl || undefined } : { status: 'off', reason: 'unconfigured' };
+        } catch {
+          ice = null; // TURN minting failed: the client falls back to STUN, the call may still work
+          turn = { status: want.status || 'ok', reason: 'mint-failed' };
+        }
       }
     }
-    const welcome = { t: 'welcome', v: 1, id: msg.id, peers: others, max: this.max };
+    const welcome = { t: 'welcome', v: 1, id: msg.id, peers: others, max: this.max, tier: s ? s.tier : 'anon', turn };
+    if (s && s.key) welcome.key = s.key;
     if (ice) welcome.iceServers = ice;
     safeSend(conn, welcome);
     for (const id of others) safeSend(this.peers.get(id), { t: 'peer-joined', id: msg.id });
+    if (first) this.hooks.onFirst?.(s);
   }
 
   /** The socket closed (or the peer left): tell the others. Idempotent. */
@@ -146,7 +183,32 @@ export class Room {
     if (this.peers.get(id) !== conn) return;
     this.peers.delete(id);
     for (const other of this.peers.values()) safeSend(other, { t: 'peer-left', id });
-    if (this.peers.size === 0) this.max = null;
+    if (this.peers.size === 0) {
+      this.max = null;
+      this.hooks.onEmpty?.();
+    }
+  }
+
+  /**
+   * The room's lifetime is up (RFC §5b: 2 h anonymous, 8 h keyed): every peer gets `expired`
+   * and is closed (4004). Media already flowing peer-to-peer is not touched by this; the peers
+   * simply have no signalling for that room any more.
+   */
+  expire() {
+    const conns = [...this.peers.values()];
+    this.peers.clear();
+    this.max = null;
+    for (const conn of conns) {
+      const m = this.meta.get(conn);
+      if (m) m.id = null;
+      safeSend(conn, { t: 'expired' });
+      try {
+        conn.close(CLOSE_CODES.expired, 'expired');
+      } catch {
+        /* ignore */
+      }
+    }
+    if (conns.length) this.hooks.onEmpty?.();
   }
 
   _fail(conn, code, message, close = false) {
@@ -154,11 +216,26 @@ export class Room {
     if (close) {
       this.onClose(conn);
       try {
-        conn.close(4000, code);
+        conn.close(CLOSE_CODES[code] || 4000, code);
       } catch {
         /* ignore */
       }
     }
+  }
+}
+
+/**
+ * Refuse a connection before it ever reaches a room (an admission failure, gate.mjs): one
+ * `error` message, then the close code for that error. The client learns why; nothing hangs.
+ */
+export function refuseConn(conn, { code, message, retryMs = 0, closeCode }) {
+  const err = { t: 'error', code, message };
+  if (retryMs > 0) err.retryMs = retryMs;
+  safeSend(conn, err);
+  try {
+    conn.close(closeCode || CLOSE_CODES[code] || 4000, code);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -175,20 +252,27 @@ function safeSend(conn, obj) {
  * or null when not configured. The key id and API token live in the Worker's env (a secret), and
  * ONLY there — clients receive credentials that expire after `ttl` seconds.
  *
+ * `customIdentifier` tags the credential with the session's key id ('anon' otherwise), which is
+ * how Cloudflare's TURN analytics attribute relay bytes per key (turn-budget.mjs readTurnUsage).
+ * If the API ever rejects that field, the mint is retried once without it.
+ *
  * @param {{TURN_KEY_ID?: string, TURN_KEY_API_TOKEN?: string, TURN_TTL?: string}} env
  * @param {typeof fetch} [fetchImpl]
+ * @param {{ ttl?: number, customIdentifier?: string }} [o]  `ttl` overrides env.TURN_TTL
  */
-export async function mintTurnCredentials(env, fetchImpl = globalThis.fetch) {
+export async function mintTurnCredentials(env, fetchImpl = globalThis.fetch, o = {}) {
   if (!env || !env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return null;
-  const ttl = Math.max(60, Math.min(86400, parseInt(env.TURN_TTL || '3600', 10) || 3600));
-  const res = await fetchImpl(
-    `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`,
-    {
+  const ttl = Math.max(60, Math.min(86400, (o.ttl > 0 ? o.ttl | 0 : 0) || parseInt(env.TURN_TTL || '3600', 10) || 3600));
+  const url = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`;
+  const post = (body) =>
+    fetchImpl(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ttl }),
-    }
-  );
+      body: JSON.stringify(body),
+    });
+  const tag = typeof o.customIdentifier === 'string' && o.customIdentifier ? o.customIdentifier.slice(0, 64) : '';
+  let res = await post(tag ? { ttl, customIdentifier: tag } : { ttl });
+  if (!res.ok && tag && res.status === 400) res = await post({ ttl });
   if (!res.ok) throw new Error(`TURN credential mint failed: HTTP ${res.status}`);
   const body = await res.json();
   // Current API: { iceServers: [ {urls}, {urls, username, credential} ] }. The older

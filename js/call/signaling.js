@@ -53,6 +53,18 @@ export async function roomKey(room) {
  */
 export const DXR_SIGNAL_DEFAULT = 'wss://dxr-signal.displayxr.workers.dev';
 
+/**
+ * Every host the hosted server answers on. The SAME Worker serves all of them (rooms are shared),
+ * so the adapter fails over between them when one cannot be reached: the first entry is tried
+ * first. `signal.displayxr.org` is the target of the domain move (RFC 0003 §5g); the workers.dev
+ * host stays an alias through the transition. Only applies to the hosted default — a self-hosted
+ * URL is tried as given (pass `aliases` to add your own fallbacks).
+ */
+export const DXR_SIGNAL_ALIASES = Object.freeze([DXR_SIGNAL_DEFAULT, 'wss://signal.displayxr.org']);
+
+/** Join-time error codes from the server that mean "do not retry with the same inputs". */
+const FATAL_JOIN_CODES = ['bad-room', 'bad-id', 'bad-version', 'bad-key', 'origin-not-allowed', 'blocked'];
+
 export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
   if (!url || typeof url !== 'string') {
     throw codedError(
@@ -60,16 +72,21 @@ export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
       'dxrSignaling(url): url must be a ws:// or wss:// string (omit it for the hosted DisplayXR server)'
     );
   }
-  const base = url.replace(/\/+$/, '');
+  const strip = (u) => String(u).replace(/\/+$/, '');
+  const base = strip(url);
   const WS = opts.WebSocket || globalThis.WebSocket;
   const pingMs = opts.pingMs || 20000;
+  const extra = Array.isArray(opts.aliases) ? opts.aliases.filter((a) => typeof a === 'string' && a).map(strip) : DXR_SIGNAL_ALIASES.includes(base) ? [...DXR_SIGNAL_ALIASES] : [];
+  const bases = [base, ...extra.filter((b) => b !== base)];
+  let baseIdx = 0;
 
   return {
     name: 'dxr',
     url: base,
     async join(room, hooks) {
       const key = await roomKey(room);
-      const endpoint = `${base}/v1/connect?k=${key}${typeof opts.key === 'string' && opts.key ? `&key=${encodeURIComponent(opts.key)}` : ''}`;
+      const query = `k=${key}${typeof opts.key === 'string' && opts.key ? `&key=${encodeURIComponent(opts.key)}` : ''}`;
+      const endpointAt = (i) => `${bases[i]}/v1/connect?${query}`;
       let ws = null;
       let left = false;
       let attempt = 0;
@@ -77,11 +94,15 @@ export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
       let known = new Set();
       let queue = [];
 
-      const open = (isReconnect) =>
+      // One open() tries every alias once (in order from the last one that worked) before it
+      // reports `signaling-unreachable`; a host that cannot be reached is skipped, not waited on.
+      const open = (isReconnect) => openAt(isReconnect, bases.length);
+      const openAt = (isReconnect, triesLeft) =>
         new Promise((resolve, reject) => {
           let settled = false;
           let joined = false;
-          const sock = new WS(endpoint);
+          let opened = false;
+          const sock = new WS(endpointAt(baseIdx));
           ws = sock;
           const fail = (err) => {
             if (!settled) {
@@ -95,6 +116,7 @@ export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
             }
           };
           sock.onopen = () => {
+            opened = true;
             sock.send(JSON.stringify({ t: 'join', v: 1, room, id: hooks.id, max: hooks.maxPeers }));
           };
           sock.onmessage = (ev) => {
@@ -121,17 +143,42 @@ export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
                 } else known = new Set(peers);
                 settled = true;
                 joined = true;
-                resolve({ id: msg.id, peers, iceServers: Array.isArray(msg.iceServers) ? msg.iceServers : undefined, max: msg.max });
+                resolve({
+                  id: msg.id,
+                  peers,
+                  iceServers: Array.isArray(msg.iceServers) ? msg.iceServers : undefined,
+                  max: msg.max,
+                  // Hosted-service fields (RFC 0003 §5): the tier this session was admitted as,
+                  // its key id, and the TURN decision — `turn.reason === 'cap'` is the SDK's
+                  // `turn-cap`. A server that predates them sends none; nothing here is required.
+                  tier: msg.tier === 'key' ? 'key' : 'anon',
+                  key: typeof msg.key === 'string' ? msg.key : undefined,
+                  turn: msg.turn && typeof msg.turn === 'object' ? msg.turn : undefined,
+                });
                 break;
               }
               case 'full':
                 left = true;
                 fail(codedError('room-full', `this call is full (${msg.max} participants)`));
                 break;
+              case 'expired': {
+                // The room's lifetime is up (hosted limits): no reconnect — the call reports it.
+                left = true;
+                clearInterval(pingTimer);
+                const e = codedError('expired', 'this room has reached its lifetime on the signalling server');
+                if (!settled) fail(e);
+                else hooks.onDisconnect?.(e);
+                break;
+              }
               case 'error':
-                if (!settled && ['bad-room', 'bad-id', 'bad-version'].includes(msg.code)) {
+                if (!settled && FATAL_JOIN_CODES.includes(msg.code)) {
                   left = true;
                   fail(codedError(msg.code, msg.message || msg.code));
+                } else if (!settled && (msg.code === 'rate-limited' || msg.code === 'quota')) {
+                  // Refused by a limit, not by the inputs: a reconnect may retry after `retryMs`.
+                  const e = codedError(msg.code, msg.message || msg.code);
+                  /** @type {any} */ (e).retryMs = msg.retryMs > 0 ? msg.retryMs : 0;
+                  fail(e);
                 } else if (!settled && msg.code === 'id-taken') {
                   // A reconnect raced the server noticing the old socket close: retry shortly.
                   fail(codedError('id-taken', 'peer id still held; retrying'));
@@ -154,7 +201,16 @@ export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
                 break;
             }
           };
-          sock.onerror = () => fail(codedError('signaling-unreachable', `cannot reach ${base}`));
+          sock.onerror = () => {
+            if (!opened && !settled && triesLeft > 1) {
+              // This host is unreachable: fail over to the next alias right away.
+              settled = true;
+              baseIdx = (baseIdx + 1) % bases.length;
+              openAt(isReconnect, triesLeft - 1).then(resolve, reject);
+              return;
+            }
+            fail(codedError('signaling-unreachable', `cannot reach ${bases[baseIdx]}`));
+          };
           sock.onclose = () => {
             clearInterval(pingTimer);
             fail(codedError('signaling-closed', 'signalling closed before joining'));
@@ -172,11 +228,12 @@ export function dxrSignaling(url = DXR_SIGNAL_DEFAULT, opts = {}) {
         const tryAgain = () => {
           if (left) return;
           open(true).catch((err) => {
-            if (left || (err && err.code === 'room-full')) {
+            if (left || (err && (err.code === 'room-full' || FATAL_JOIN_CODES.includes(err.code)))) {
               hooks.onDisconnect?.(err);
               return;
             }
-            setTimeout(tryAgain, backoffMs(attempt++, { baseMs: 500, maxMs: 15000 }));
+            // A `rate-limited` / `quota` refusal says when to come back; never sooner.
+            setTimeout(tryAgain, Math.max(backoffMs(attempt++, { baseMs: 500, maxMs: 15000 }), (err && err.retryMs) || 0));
           });
         };
         setTimeout(tryAgain, backoffMs(attempt++, { baseMs: 300, maxMs: 15000 }));

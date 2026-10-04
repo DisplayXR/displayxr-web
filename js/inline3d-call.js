@@ -362,8 +362,9 @@ class Call {
       log: (tag, obj) => this.log(tag, obj),
     });
     this.transport = t;
+    let session = null;
     try {
-      await t.start({
+      session = await t.start({
         room: this.room,
         localStream: this.local.stream,
         sendFormat: this.local.format,
@@ -393,6 +394,7 @@ class Call {
       }
       throw err;
     }
+    this._reportTurn(session);
     this._setState('in-call');
     // The grid is sized so the whole call block fits ONE viewport, but only if it starts at the
     // top: a tile below the fold is withheld from the weave (browser#167), so its layer goes
@@ -411,6 +413,29 @@ class Call {
     this.log('joined', { id: this.id, peers: this.tiles.size });
     this.emit('joined', { room: this.room, id: this.id });
     return this.handle;
+  }
+
+  /**
+   * The signalling server's TURN decision for this session (hosted service, RFC 0003 §5c), once
+   * per join. `turn-cap` (an `error`): the service's monthly relay budget is spent, nobody gets
+   * TURN — direct connections still work. `turn-shed` (a `warning`): only THIS session has no
+   * TURN (an anonymous session near the budget, or too many credential requests from this
+   * address). A server with no TURN at all (self-hosted) says nothing here: that is a setup
+   * choice, documented in docs/call.md.
+   */
+  _reportTurn(session) {
+    const turn = session && session.turn;
+    if (!turn || typeof turn !== 'object') return;
+    if (turn.status === 'off' && turn.reason === 'cap') {
+      this.error('turn-cap', 'relay (TURN) capacity for this month is used up; direct connections still work, but a participant behind a strict NAT may be unreachable', null);
+    } else if (turn.reason === 'budget' || turn.reason === 'rate') {
+      this.warning(
+        'turn-shed',
+        turn.reason === 'rate'
+          ? 'no relay (TURN) for this session: too many credential requests from this address this hour'
+          : 'no relay (TURN) for this anonymous session: the hosted service is near its monthly relay budget (a publishable key keeps TURN)'
+      );
+    }
   }
 
   _onPeer(id) {

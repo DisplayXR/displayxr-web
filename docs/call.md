@@ -88,7 +88,7 @@ the element connects**, or you use `mountCall` directly.
 |---|---|---|
 | `room` | `room` | a room id or a full invite link. Default: the `#room=` in this page's URL, else a new room on join |
 | `signaling` | `signaling` | a `wss://` URL of your own `dxr-signal/1` server. Default: the hosted server |
-| `key` | `key` | a publishable key for the hosted service (`pk_…`). Reserved: keys arrive with the hosted-service phase (C3); the hosted server is anonymous until then |
+| `key` | `key` | a publishable key for the hosted service (`pk_…`, issued by hand — [`signaling/README.md` § Access](../signaling/README.md#access-anonymous-tier-and-publishable-keys-rfc-0003-5a)). Public by design; binds the session to the key's origin list and its 10× limits, and keeps TURN when anonymous sessions are shed. Without it the page is on the anonymous tier |
 | `camera` | `camera` | `auto` (default) · `stereo` · `mono` · a `deviceId` |
 | `layout` | `layout` | `grid` (default) · `speaker` |
 | `accent` | `theme.accent` | a named accent (`azure` `violet` `magenta` `sunset` `amber` `lime` `mint` `ice`) or any CSS colour |
@@ -133,7 +133,7 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `wall` | the document's shared session | An `Inline3D` from `createInline3D()`; pass it if you manage your own |
 | `room` | `'auto'` | Room id or invite link. `'auto'` = this page's `#room=` fragment, else a new one on join |
 | `signaling` | `dxrSignaling()` | A `SignalingAdapter`. `dxrSignaling(url)` for your own server, or any object with `join()` |
-| `key` | — | Hosted-service publishable key (reserved until C3) |
+| `key` | — | Hosted-service publishable key (`pk_…`; anonymous tier without one) |
 | `iceServers` | server's list | Override STUN/TURN. Default: public STUN + the TURN the signalling server hands out |
 | `camera` | `'auto'` | `'auto'` opens the best camera through [`/camera`](camera.md): a stereo device when one is present (the DisplayXR Browser's "3D Camera", or a wide side-by-side device) else the default webcam; `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId` string; a `MediaStream` you own; or a `StereoCamera` from `openCamera()` (left open when the call ends) |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream` (`'sbs'` or `'mono'`). 3D-ness is never guessed from a stream |
@@ -399,9 +399,15 @@ adapter for that (below).
 ## Self-hosting signalling and TURN
 
 The hosted server (`DXR_SIGNAL_DEFAULT`, `wss://dxr-signal.displayxr.workers.dev` today, moving
-to `wss://signal.displayxr.org`) is what the widget uses with no `signaling` given. It relays
-offers/answers/ICE and mints short-lived TURN credentials; it is fine for demos, prototypes and
-small sites. Self-hosting is first-class and always free:
+to `wss://signal.displayxr.org` — `dxrSignaling()` already fails over between the two by
+itself; plan in [`signaling-domain.md`](signaling-domain.md)) is what the widget
+uses with no `signaling` given. It relays offers/answers/ICE and mints short-lived TURN
+credentials; it is fine for demos, prototypes and small sites. It has an **anonymous tier** (no
+key: 20 joins/min and 5 open rooms per address, 2 h rooms, short TURN credentials) and a **keyed
+tier** (`key: 'pk_…'`, issued by hand: 10× the limits, 8 h rooms, origin-bound) and an org-wide
+monthly **relay budget** with a hard cap — the limits, the budget and what the server sees are in
+[`signaling/README.md`](../signaling/README.md) and [`privacy-call.md`](privacy-call.md).
+Self-hosting is first-class and always free:
 
 ```js
 mountCall(el, { signaling: dxrSignaling('wss://signal.example.com') });
@@ -501,8 +507,11 @@ Each row is what the widget emits (`error` / `warning` events, `handle.camera`,
 | 2D callers stay 2D in the DisplayXR Browser, no warning | `handle.mono3D.reason` = `no-webgpu` / `no-provider` | This display can't lift; expected. `mono3D.state` says `unavailable` |
 | Everyone flat, even a stereo sender, in the DisplayXR Browser | — | Either the page is not on the inline-3D path (`inline3DAvailable()` is false: a cross-origin iframe, a system web view), or a [woven-canvas rule](woven-canvas-rules.md) is broken — most often an effect (`border-radius`, `opacity`, `filter`, `backdrop-filter`) on the mount element or one of its ancestors, or a second `createInline3D()` in the document. The browser's `withheld` log line says which |
 | "This call is full" | `error` `room-full` | Four is the mesh limit (`maxPeers` can only lower it). More participants is RFC 0002 P3 (an SFU) |
-| Quota / rate limit on the hosted server | `error` `quota` (C3), `rate-limited` | The anonymous tier's limits. Self-host, or get a key when keys ship |
-| "Relay capacity used up" | `error` `turn-cap` (C3) | The hosted service's monthly TURN cap. Direct calls still connect; bring your own `iceServers` for relayed ones |
+| The join is refused: "too many joins" / "too many open rooms" | `error` `rate-limited` (`error.retryMs` = when the window reopens), `quota` | A limit of the hosted service's tier: anonymous = 20 joins/min and 5 concurrent rooms per address, keyed = 10×, per key ([`signaling/README.md` § Limits](../signaling/README.md#limits-rfc-0003-5b)). A reconnect retries after `retryMs` by itself. Fix: a publishable key (`key: 'pk_…'`), or self-host |
+| The join is refused with "unknown or revoked key" / "not allowed from origin" | `error` `bad-key`, `origin-not-allowed` | The `key` is malformed, revoked or unknown to this server, or the page's origin is not on the key's list. Fix: check the key and its origins (`node tools/signal-keys.mjs show pk_…`); a self-hosted server without a `KEYS` namespace refuses every key — drop the `key` there |
+| "Relay capacity for this month is used up" | `error` `turn-cap` | The hosted service's monthly TURN cap (RFC 0003 §5c): the call still joins and direct connections work, but nobody gets a relay until next month — a participant behind a strict NAT shows `unreachable`. Fix: your own `iceServers` (they override the server's), or self-host with your own TURN |
+| "No relay (TURN) for this session" | `warning` `turn-shed` | Only this session got no TURN: an anonymous session while the relay budget is nearly spent, or too many credential requests from this address this hour. The call runs STUN-only. Fix: a publishable key keeps TURN |
+| Everyone dropped at once after hours in a call | `error` `expired` | The room's lifetime on the hosted server is up (2 h anonymous, 8 h keyed). Media that was flowing is not touched, but no one new can join and reconnects stop. Start a new room |
 
 ---
 
@@ -517,7 +526,8 @@ and relayed media is still encrypted end to end. One honest caveat: DTLS keys ar
 through the signalling server, so a *malicious operator* of that server could man-in-the-middle a
 call — the standard WebRTC trust model. Pages that need more than that self-host signalling
 (above). Room state lives in memory and is dropped when a room empties; there is no database of
-rooms.
+rooms. The full statement — retention, the salted rate-limit counters, per-key monthly
+aggregates, the blocklist, abuse contact — is [`privacy-call.md`](privacy-call.md).
 
 ---
 

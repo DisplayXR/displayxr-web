@@ -1,9 +1,13 @@
-# Template for the dxr-signal/1 reference server on Cloudflare Workers + Durable Objects.
-# NOT deployed by this repo. Copy, set `name` / routes for your account, then `wrangler deploy`.
+# Template for the dxr-signal/1 reference server on Cloudflare Workers + Durable Objects + KV.
+# NOT deployed by this repo. Copy, set `name` / routes for your account, create the KV namespace
+# (`wrangler kv namespace create dxr-signal-keys` → paste its id below), then `wrangler deploy`.
 #
-# Secrets are NEVER written here. Set them with:
-#   wrangler secret put TURN_KEY_API_TOKEN
-# and put the (non-secret) TURN key id in [vars] or as a secret too.
+# Secrets are NEVER written here. Set them with `wrangler secret put <NAME>`:
+#   TURN_KEY_API_TOKEN      Cloudflare Realtime TURN key API token (TURN minting)
+#   ADMIN_TOKEN             enables the /admin/* endpoints (usage, keys, meters); absent = no admin surface
+#   RATE_SALT               salt for the IP hashes in rate-limit state (any random string)
+#   CF_ANALYTICS_API_TOKEN  "Account Analytics: Read" token, for the hourly real TURN usage poll
+#   CF_ACCOUNT_ID           your account id (needed with CF_ANALYTICS_API_TOKEN; not secret, but keep it with the token)
 
 name = "dxr-signal"
 main = "worker.mjs"
@@ -13,17 +17,55 @@ compatibility_date = "2026-09-01"
 name = "ROOMS"
 class_name = "CallRoom"
 
+[[durable_objects.bindings]]
+name = "METERS"
+class_name = "MeterObject"
+
+[[durable_objects.bindings]]
+name = "BUDGET"
+class_name = "BudgetObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CallRoom"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MeterObject", "BudgetObject"]
+
+# Publishable keys (`key:<pk_…>` → JSON record) and the IP blocklist (`block:<ip>`). Optional:
+# without it every connect is anonymous and `?key=` is refused with `bad-key`.
+[[kv_namespaces]]
+binding = "KEYS"
+id = "<your namespace id>"
+
+# Hourly poll of Cloudflare's TURN analytics into the budget (no-op unless CF_ANALYTICS_API_TOKEN is set).
+[triggers]
+crons = ["17 * * * *"]
+
 [vars]
 # Participants per room (the client's maxPeers is clamped to this). Full mesh: keep it at 4.
 MAX_PEERS = "4"
-# Comma-separated list of page origins allowed to connect; empty = any origin.
+# Deployment-wide origin allowlist (comma-separated, empty = any). Keys carry their own per-key list.
 ALLOWED_ORIGINS = ""
 # Cloudflare Realtime TURN key id (Dashboard → Realtime → TURN). Leave empty for STUN-only.
 TURN_KEY_ID = ""
-# Lifetime of the TURN credentials handed to each joining client, seconds (60-86400).
+# TURN credential TTL for KEYED sessions, seconds (60-86400); anonymous sessions use ANON_TURN_TTL.
 TURN_TTL = "3600"
-# TURN_KEY_API_TOKEN: set with `wrangler secret put TURN_KEY_API_TOKEN` — never here.
+# TURN_FAKE = "1" hands out dummy TURN credentials without any token — STAGING / tests only.
+
+# ── Limits (RFC 0003 §5b; unset = these defaults) ───────────────────────────────────────────
+# ANON_JOINS_PER_MIN = "20"      KEY_JOINS_PER_MIN = "200"      joins per IP per minute
+# ANON_ROOMS = "5"               KEY_ROOMS = "50"               concurrent rooms per IP / per key
+# ANON_ROOM_TTL = "7200"         KEY_ROOM_TTL = "28800"         room lifetime, seconds → `expired`
+# ANON_MINTS_PER_HOUR = "30"     KEY_MINTS_PER_HOUR = "300"     TURN credential mints per IP per hour
+# ANON_TURN_TTL = "600"                                         anonymous TURN credential TTL
+
+# ── TURN budget (RFC 0003 §5c; unset = these defaults) ──────────────────────────────────────
+# TURN_FREE_GB = "1000"            free relay GB per month
+# TURN_CAP_USD = "100"             hard cap beyond the free tier (Decision 2)
+# TURN_PRICE_PER_GB = "0.05"       → budget = free + cap/price = 3000 GB
+# TURN_SHED_FRAC = "0.7"           anonymous TTL 300 s + 5 mints/h from here
+# TURN_STOP_ANON_FRAC = "0.9"      anonymous sessions get no TURN from here
+# TURN_EST_GB_PER_TTL_HOUR = "0.3" the estimate when no analytics figure is fresh
+# TURN_FORCE_USAGE_GB = ""         force the month's usage figure (tests) — leave unset

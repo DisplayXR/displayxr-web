@@ -728,6 +728,19 @@ mirror-and-swap pixels on a mock woven wall with the synthetic L/R pair, a JPEG 
 a WebM whose tags parse). **Pending:** the panel run — 3D self view mirrored correctly on glass
 (eye-swap check with `samples/camera/?camera=synthetic`), an SBS photo opened in `/player` in 3D.
 
+**C3 status (2026-10-03).** Implemented on `feat/call-c3-service` (PR): hand-issued publishable
+keys with an origin list (KV, `tools/signal-keys.mjs`, key id on every session), the §5b limits
+as Durable-Object meters (`rate-limited` + `retryMs`, `quota`, `expired`), TURN metering
+(minted TTLs always; Cloudflare's per-`customIdentifier` relay bytes via the GraphQL analytics
+cron when a token is set) against the free tier + $100 cap with 70/90/100 % shedding (`turn-shed`
+warning, `turn-cap` error), `docs/privacy-call.md`, self-host vars + a coturn recipe, and the
+domain move **prepared** (`DXR_SIGNAL_ALIASES` failover; `docs/signaling-domain.md` — NS
+delegation of a subdomain to Cloudflare is Enterprise-only, so the recommendation is to move the
+zone's DNS to Cloudflare Free with the site staying on Vercel; no DNS changed). Staging Worker
+`dxr-signal-staging` deployed with fake TURN. Gate: see the PR for the staging run's numbers.
+**Not done:** the relayed-bitrate cap (an SDK transport change, deferred), the forced-relay row
+(needs the TURN secret on staging), the cut-over itself.
+
 **The hardware matrix for C5** (each row a recorded run, like RFC 0002's P0 notes):
 
 1. 3D laptop (built-in 3D camera) ↔ 3D laptop, both woven, auto-converged, 30 min without drift.

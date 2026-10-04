@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 // signaling/dev-server.mjs — a zero-dependency Node server for the `dxr-signal/1` protocol, for
-// local development and the test suite. Same room logic as the Cloudflare Worker (./room.mjs);
-// only the socket plumbing differs. NOT for production: one process, rooms in memory, no TLS.
+// local development and the test suite. Same room logic (./room.mjs) and the same admission —
+// keys, rate limits, room leases, the TURN budget (./gate.mjs) — as the Cloudflare Worker; only
+// the socket plumbing and where the counters live differ. NOT for production: one process, rooms
+// and counters in memory, no TLS.
 //
-//   node signaling/dev-server.mjs [--port 8787] [--cap 4]
-//   → ws://localhost:8787/v1/connect?k=<sha256(room)>
+//   node signaling/dev-server.mjs [--port 8787] [--cap 4] [--keys keys.json]
+//   → ws://localhost:8787/v1/connect?k=<sha256(room)>[&key=pk_…]
 //
-// Optional TURN (same variables as the Worker): TURN_KEY_ID, TURN_KEY_API_TOKEN, TURN_TTL.
+// Optional TURN (same variables as the Worker): TURN_KEY_ID, TURN_KEY_API_TOKEN, TURN_TTL. The
+// limit and budget variables (README.md) are read from the environment too; `--keys` is a JSON
+// object `{ "pk_…": { "origins": [...] } }` for keyed sessions.
 //
 // The WebSocket framing below is the minimal RFC 6455 server subset: the upgrade handshake,
 // masked client frames (text, continuation, ping/pong, close), unmasked server text frames. That
@@ -14,8 +18,13 @@
 
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { Room, DEFAULT_ROOM_CAP, MAX_MESSAGE_BYTES, mintTurnCredentials } from './room.mjs';
+import { Room, DEFAULT_ROOM_CAP, MAX_MESSAGE_BYTES, mintTurnCredentials, refuseConn } from './room.mjs';
+import { Meter, limitsFromEnv } from './limits.mjs';
+import { TurnBudget, budgetFromEnv } from './turn-budget.mjs';
+import { mapKeyStore } from './keys.mjs';
+import { createGate } from './gate.mjs';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const KEY_RE = /^[0-9a-f]{64}$/;
@@ -23,21 +32,54 @@ const IDLE_MS = 60_000;
 
 /**
  * Start a dev server. Resolves once listening.
- * @param {{port?: number, host?: string, cap?: number, env?: object, log?: (s: string) => void}} [opts]
- * @returns {Promise<{port: number, url: string, rooms: Map<string, Room>, close(): Promise<void>}>}
+ * @param {{port?: number, host?: string, cap?: number, env?: object, keys?: Map<string, object>|object,
+ *          turn?: ((session: object|null) => Promise<object[]|null>)|null, blocklist?: Set<string>,
+ *          log?: (s: string) => void}} [opts]
+ *        `turn`: a minter to use instead of Cloudflare (tests: fake TURN without a token).
+ * @returns {Promise<{port: number, url: string, rooms: Map<string, Room>, budget: TurnBudget, meters: Map<string, Meter>, close(): Promise<void>}>}
  */
-export function startDevServer({ port = 8787, host = '127.0.0.1', cap = DEFAULT_ROOM_CAP, env = process.env, log = () => {} } = {}) {
+export function startDevServer({ port = 8787, host = '127.0.0.1', cap = DEFAULT_ROOM_CAP, env = process.env, keys = null, turn = undefined, blocklist = null, log = () => {} } = {}) {
   /** @type {Map<string, Room>} */
   const rooms = new Map();
+  const timers = new Map(); // room key -> lifetime timer
   const sockets = new Set();
   const raw = new Set(); // every upgraded TCP socket, destroyed on shutdown
-  const turn = env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN ? () => mintTurnCredentials(env) : null;
+  const budget = new TurnBudget({ cfg: budgetFromEnv(env) });
+  /** @type {Map<string, Meter>} */
+  const meters = new Map();
+  const meterOf = (subject) => {
+    let m = meters.get(subject);
+    if (!m) meters.set(subject, (m = new Meter()));
+    return m;
+  };
+  const gate = createGate({
+    limits: limitsFromEnv(env),
+    keys: keys ? mapKeyStore(keys) : null,
+    budget: { snapshot: () => budget.snapshot(), cfg: budget.cfg },
+    meters: { exec: (subject, cmd) => meterOf(subject).exec(cmd) },
+    blocklist: blocklist ? { has: (ip) => blocklist.has(ip) } : null,
+    salt: env.RATE_SALT || '',
+  });
+  const cfTurn = env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN;
+  const minter =
+    turn !== undefined
+      ? turn
+      : cfTurn
+        ? (s) => mintTurnCredentials(env, undefined, { ttl: s && s.turn && s.turn.ttl > 0 ? s.turn.ttl : undefined, customIdentifier: (s && s.key) || 'anon' })
+        : null;
+  const ice = minter
+    ? async (s) => {
+        const r = await minter(s);
+        if (r) budget.recordMint(s ? s.key : null, s && s.turn && s.turn.ttl > 0 ? s.turn.ttl : parseInt(env.TURN_TTL || '3600', 10) || 3600);
+        return r;
+      }
+    : null;
 
   const server = createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     if (u.pathname === '/' || u.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ ok: true, protocol: 'dxr-signal/1', rooms: rooms.size, turn: !!turn }));
+      res.end(JSON.stringify({ ok: true, protocol: 'dxr-signal/1', rooms: rooms.size, turn: ice ? budget.snapshot().status : 'unconfigured', keys: !!keys }));
       return;
     }
     res.writeHead(426, { 'Content-Type': 'text/plain' });
@@ -60,22 +102,63 @@ export function startDevServer({ port = 8787, host = '127.0.0.1', cap = DEFAULT_
     socket.setNoDelay(true);
     raw.add(socket);
     socket.on('close', () => raw.delete(socket));
-    let room = rooms.get(key);
-    if (!room) {
-      room = new Room({ key, cap, iceServers: turn });
-      rooms.set(key, room);
-    }
-    const r = room;
+    let session = null;
+    let room = null;
+    let early = []; // messages that arrive while admission is still deciding (a join sent on open)
     const conn = wrapSocket(socket, {
-      onText: (text) => r.onMessage(conn, text).catch(() => {}),
+      onText: (text) => (room ? room.onMessage(conn, text).catch(() => {}) : early && early.push(text)),
       onClose: () => {
         sockets.delete(conn);
-        r.onClose(conn);
-        if (r.size === 0 && rooms.get(key) === r) rooms.delete(key);
+        if (room) {
+          room.onClose(conn);
+          if (room.size === 0 && rooms.get(key) === room) rooms.delete(key);
+        }
+        if (session) gate.release(session).catch(() => {});
       },
     });
     sockets.add(conn);
-    log(`connect k=${key.slice(0, 8)}… (${rooms.size} rooms)`);
+    gate
+      .admit({ ip: socket.remoteAddress || '', origin: String(req.headers.origin || ''), key: u.searchParams.get('key') || null, roomKey: key, wantTurn: !!ice })
+      .then((a) => {
+        if (!a.ok) {
+          log(`refuse ${a.code} k=${key.slice(0, 8)}…`);
+          return refuseConn(conn, a);
+        }
+        session = a.session;
+        budget.recordJoin(session.key);
+        room = rooms.get(key);
+        if (!room) {
+          const r = new Room({
+            key,
+            cap,
+            iceServers: ice,
+            hooks: {
+              onFirst: (s) => {
+                clearTimeout(timers.get(key));
+                const ttlS = s && s.roomTtlS > 0 ? s.roomTtlS : limitsFromEnv(env).anon.roomTtlS;
+                const t = setTimeout(() => r.expire(), ttlS * 1000);
+                t.unref();
+                timers.set(key, t);
+              },
+              onEmpty: () => {
+                clearTimeout(timers.get(key));
+                timers.delete(key);
+              },
+            },
+          });
+          rooms.set(key, r);
+          room = r;
+        }
+        room.attach(conn, session);
+        log(`connect k=${key.slice(0, 8)}… ${session.tier}${session.key ? ' ' + session.key : ''} (${rooms.size} rooms)`);
+        const replay = early;
+        early = null;
+        for (const text of replay) room.onMessage(conn, text).catch(() => {});
+      })
+      .catch(() => {
+        early = null;
+        refuseConn(conn, { code: 'bad-message', message: 'admission failed', closeCode: 4000 });
+      });
   });
 
   return new Promise((resolve, reject) => {
@@ -87,8 +170,11 @@ export function startDevServer({ port = 8787, host = '127.0.0.1', cap = DEFAULT_
         port: p,
         url: `ws://${host === '0.0.0.0' ? 'localhost' : host}:${p}`,
         rooms,
+        budget,
+        meters,
         close: () =>
           new Promise((done) => {
+            for (const t of timers.values()) clearTimeout(t);
             for (const c of sockets) c.close(1001, 'server shutting down');
             for (const s of raw) s.destroy();
             server.close(() => done());
@@ -226,7 +312,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const port = parseInt(arg('port', process.env.PORT || '8787'), 10);
   const cap = parseInt(arg('cap', '4'), 10);
   const host = arg('host', '127.0.0.1');
-  startDevServer({ port, cap, host, log: (s) => console.log(`[dxr-signal] ${s}`) }).then((s) => {
-    console.log(`[dxr-signal] dev server on ${s.url}/v1/connect (cap ${cap}${process.env.TURN_KEY_ID ? ', TURN on' : ''})`);
+  const keysFile = arg('keys', '');
+  const keys = keysFile ? JSON.parse(readFileSync(keysFile, 'utf8')) : null;
+  startDevServer({ port, cap, host, keys, log: (s) => console.log(`[dxr-signal] ${s}`) }).then((s) => {
+    console.log(`[dxr-signal] dev server on ${s.url}/v1/connect (cap ${cap}${process.env.TURN_KEY_ID ? ', TURN on' : ''}${keys ? `, ${Object.keys(keys).length} keys` : ''})`);
   });
 }

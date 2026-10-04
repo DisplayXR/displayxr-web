@@ -60,6 +60,12 @@ export interface SignalingSession {
   peers: string[];
   /** Short-lived TURN credentials minted by the server, if it has any. */
   iceServers?: RTCIceServer[];
+  /** Hosted service (RFC 0003 §5): the tier this session was admitted as. */
+  tier?: 'anon' | 'key';
+  /** Hosted service: the publishable key id this session is attributed to. */
+  key?: string;
+  /** Hosted service: why `iceServers` is (or is not) there — see {@link SignalingTurnStatus}. */
+  turn?: SignalingTurnStatus;
   send(to: string, data: unknown): void;
   leave(): void;
 }
@@ -67,12 +73,38 @@ export interface SignalingSession {
 /** The hosted DisplayXR signalling server (`dxrSignaling()` with no URL). */
 export const DXR_SIGNAL_DEFAULT: string;
 /**
+ * The server's TURN decision for one session (`welcome.turn`, `dxr-signal/1`). `status` is the
+ * service-wide state of the monthly relay budget (`ok` / `degraded` / `off`); `reason` says why
+ * THIS session got no credentials: `unconfigured` (the server has no TURN — self-hosted), `budget`
+ * (anonymous session shed near the budget → `warning` `turn-shed`), `rate` (too many mints from
+ * this address → `turn-shed`), `cap` (the monthly cap → `error` `turn-cap`), `mint-failed`.
+ */
+export interface SignalingTurnStatus {
+  status: 'ok' | 'degraded' | 'off';
+  reason?: 'unconfigured' | 'budget' | 'cap' | 'rate' | 'mint-failed';
+  /** Credential lifetime, seconds, when minted. */
+  ttl?: number;
+}
+
+/**
  * The `dxr-signal/1` JSON-over-WebSocket client (protocol: signaling/README.md). `url` is your
  * server's base, e.g. `wss://signal.example.com` or `ws://localhost:8787` — the reference servers
  * are `signaling/worker.mjs` (Cloudflare) and `node signaling/dev-server.mjs`. No URL = the hosted
  * server. `key`: a publishable key for the hosted service (public by design; sent on connect).
+ * The hosted server answers on more than one host (RFC 0003 §5g) and the adapter fails over
+ * between them on connect and reconnect by itself; `aliases` adds fallbacks for a self-hosted URL.
  */
-export function dxrSignaling(url?: string, opts?: { WebSocket?: any; pingMs?: number; key?: string }): SignalingAdapter;
+export function dxrSignaling(
+  url?: string,
+  opts?: {
+    WebSocket?: any;
+    pingMs?: number;
+    /** A publishable key for the hosted service (public by design; sent on connect). */
+    key?: string;
+    /** Extra base URLs to fail over to when `url` is unreachable (the hosted default has its own). */
+    aliases?: string[];
+  }
+): SignalingAdapter;
 
 /** The eight named accents `theme.accent` takes (the same names `/player` uses). */
 export type CallAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' | 'ice';
@@ -248,7 +280,13 @@ export interface CallPeer {
  * `error` codes — fatal for a feature, never for the widget. `'camera-busy'` (held by another
  * app: audio-only until `retryCamera()`), `'no-camera'`, `'permission-denied'`, `'unreachable'`
  * (`error.peer` = the tile), `'room-full'`, `'session-ended'`, `'signaling-closed'`,
- * `'join-failed'`, `'camera-failed'`, `'rectify-failed'`, `'mount-failed'` (the element).
+ * `'signaling-unreachable'`, `'join-failed'`, `'camera-failed'`, `'rectify-failed'`,
+ * `'mount-failed'` (the element). From the hosted signalling service (RFC 0003 §5, C3):
+ * `'rate-limited'` / `'quota'` (a limit of the anonymous or keyed tier — the join is refused;
+ * `error.retryMs` says when a retry may work), `'bad-key'` / `'origin-not-allowed'` (the
+ * publishable key is unknown, revoked, or not allowed from this page's origin), `'blocked'`,
+ * `'expired'` (the room's lifetime is up), and `'turn-cap'` (the service's monthly relay budget
+ * is spent: the call still joins and direct connections work, but nobody gets TURN — not fatal).
  */
 export type CallErrorCode =
   | 'camera-busy'
@@ -262,11 +300,19 @@ export type CallErrorCode =
   | 'camera-failed'
   | 'rectify-failed'
   | 'mount-failed'
-  // Hosted-service codes (RFC 0003 §5, phase C3) are added here by the service work.
+  | 'signaling-unreachable'
+  // Hosted signalling service (RFC 0003 §5, C3).
+  | 'rate-limited'
+  | 'quota'
+  | 'bad-key'
+  | 'origin-not-allowed'
+  | 'blocked'
+  | 'expired'
+  | 'turn-cap'
   | (string & {});
 
 /** `warning` codes — degraded, not broken. */
-export type CallWarningCode = 'lift-not-bundled' | (string & {});
+export type CallWarningCode = 'lift-not-bundled' | 'turn-shed' | (string & {});
 
 export interface CallEvents {
   joined: { room: string; id: string };
@@ -289,6 +335,9 @@ export interface CallEvents {
    * module could not be imported from this build — they stay flat. Fix: `mono3D: lift` or
    * `./call/full`. Emitted once per call with one `console.warn`. A display that honestly cannot
    * lift is NOT this: that is `handle.mono3D.reason` (`'no-provider'` / `'no-webgpu'`).
+   * `'turn-shed'`: only THIS session got no TURN from the hosted service (an anonymous session
+   * while the monthly relay budget is nearly spent, or too many credential requests from this
+   * address this hour); the call runs STUN-only. A publishable key keeps TURN.
    */
   warning: { code: CallWarningCode; message: string };
 }
