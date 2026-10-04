@@ -73,16 +73,20 @@ const FAKE_HOST = readFileSync(join(shimDir, 'test', 'fake-host.js'), 'utf8');
 const PRODUCT = [`window.__dxrFakeHostSrc = ${JSON.stringify(PRODUCT_SRC)}; window.__dxrFakeHostCfg = ${JSON.stringify({ decision: 'allow' })};`, FAKE_HOST];
 
 // Injected after fake-xr.js and BEFORE the product bundle, in BOTH loads (so its own changes cancel
-// out). Snapshots window keys + prototype descriptors, counts WebGL contexts, records every timer
-// with the stack that made it, and times the callbacks of MutationObservers constructed by our code.
+// out). Snapshots window keys + prototype descriptors, counts WebGL and WebGPU contexts, records every
+// timer with the stack that made it, and times the callbacks of MutationObservers constructed by our
+// code (total ms, callback count, longest single callback).
 const PROBE = `(() => {
   const OURS = ${OURS};
   const protos = { Object: Object.prototype, EventTarget: EventTarget.prototype, Node: Node.prototype, Element: Element.prototype,
     HTMLElement: HTMLElement.prototype, HTMLCanvasElement: HTMLCanvasElement.prototype, Document: Document.prototype, Window: Window.prototype };
-  // WebGL context count: wrapped BEFORE the snapshot, so it is not itself a diff.
-  const gc = HTMLCanvasElement.prototype.getContext; let webgl = 0;
+  // WebGL / WebGPU context counts: wrapped BEFORE the snapshot, so it is not itself a diff. A WebGPU
+  // page (three.js WebGPURenderer) is a graphics page too: it may load the core, it just stays flat.
+  const gc = HTMLCanvasElement.prototype.getContext; let webgl = 0, webgpu = 0;
   HTMLCanvasElement.prototype.getContext = function getContext(type, ...a) {
-    const r = gc.call(this, type, ...a); if (r && /webgl/i.test(String(type))) webgl++; return r;
+    const r = gc.call(this, type, ...a);
+    if (r && /webgl/i.test(String(type))) webgl++; else if (/^webgpu$/i.test(String(type))) webgpu++; // a null webgpu context still names a WebGPU page
+    return r;
   };
   const keys0 = Object.getOwnPropertyNames(window);
   const snap = (o) => { const m = new Map(); for (const k of Reflect.ownKeys(o)) m.set(k, Object.getOwnPropertyDescriptor(o, k)); return m; };
@@ -96,11 +100,11 @@ const PROBE = `(() => {
   window.setInterval = function setInterval(fn, ms, ...a) { const id = sI(fn, ms, ...a); note(id, 'interval', ms); return id; };
   window.clearTimeout = function clearTimeout(id) { pending.delete(id); return cT(id); };
   window.clearInterval = function clearInterval(id) { pending.delete(id); return cI(id); };
-  const MO0 = window.MutationObserver; const mo = { ms: 0, calls: 0, observers: 0 };
+  const MO0 = window.MutationObserver; const mo = { ms: 0, calls: 0, maxMs: 0, observers: 0 };
   window.MutationObserver = function MutationObserver(cb) {
     if (!OURS.test(stack())) return new MO0(cb);
     mo.observers++;
-    return new MO0(function (recs, o) { const t0 = performance.now(); try { return cb.call(this, recs, o); } finally { mo.ms += performance.now() - t0; mo.calls++; } });
+    return new MO0(function (recs, o) { const t0 = performance.now(); try { return cb.call(this, recs, o); } finally { const d = performance.now() - t0; mo.ms += d; mo.calls++; if (d > mo.maxMs) mo.maxMs = d; } });
   };
   window.MutationObserver.prototype = MO0.prototype;
   Object.defineProperty(window, '__dxrCorpusProbe', { value: {
@@ -119,7 +123,7 @@ const PROBE = `(() => {
       try { if (window.BABYLON) engineOracle.push('babylon'); } catch (e) {}
       try { if (typeof window.createUnityInstance === 'function' || window.unityInstance) engineOracle.push('unity'); } catch (e) {}
       return {
-        newKeys: Object.getOwnPropertyNames(window).filter((k) => !k0.has(k)), protoChanges, webgl,
+        newKeys: Object.getOwnPropertyNames(window).filter((k) => !k0.has(k)), protoChanges, webgl, webgpu,
         pcInWindow: 'pc' in window, ours: { ...ours, pending: [...pending.values()] }, mo: { ...mo }, engineOracle,
         host: H && { loadCore: H.loadCore, sentinelMs: H.sentinelMs, coreEvalMs: H.coreEvalMs, saves: H.saves.length,
           reports: H.reports.map(({ status, engine, reason, t }) => ({ status, engine: engine || null, reason: reason || null, t: Math.round(t) })) },
@@ -131,6 +135,13 @@ const PROBE = `(() => {
 })();`;
 
 // ------------------------------------------------------------ one load
+// Main frame only, in BOTH loads. CDP's addScriptToEvaluateOnNewDocument also runs in same-process
+// subframes, including sandboxed about:blank frames without allow-scripts: any listener a script
+// registers there is blocked when it fires and Chrome logs "Blocked script execution in
+// 'about:blank'…" per firing (triage 2026-10-03, H2). The real injector targets the main frame
+// (README: only the main frame is covered), so every injected text is gated on window === top and
+// evaluated with an indirect eval (setBypassCSP is on in both loads; fake-host.js evals the same way).
+const topOnly = (src) => `if (window === window.top) (0, eval)(${JSON.stringify(src)});`;
 const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what}: timed out after ${ms} ms`)), ms))]);
 const norm = (s) => String(s).replace(/https?:\/\/[^\s)'"]+/g, (u) => u.split('?')[0]).replace(/\d+/g, '#').slice(0, 200);
 
@@ -138,6 +149,9 @@ async function load(browser, site, injected) {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   const out = { errors: [], pageErrors: [], ourLogs: [], nav: null };
+  // After the first load, the injected tab's warm reloads log into their own buckets (see below).
+  let warmPhase = false;
+  const bucket = (k) => (warmPhase ? out['warm' + k[0].toUpperCase() + k.slice(1)] : out[k]);
   try {
     await page.setViewport({ width: W, height: H, deviceScaleFactor: 1 });
     await page.setBypassCSP(true); // the real host injects outside CSP; the fake host evals — both loads alike
@@ -146,14 +160,14 @@ async function load(browser, site, injected) {
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
     page.on('console', (m) => {
       const t = m.text();
-      if (/dxr-auto3d/.test(t)) out.ourLogs.push(`[${m.type()}] ${t.slice(0, 200)}`);
-      if (m.type() === 'error') out.errors.push(t.slice(0, 300));
+      if (/dxr-auto3d/.test(t)) bucket('ourLogs').push(`[${m.type()}] ${t.slice(0, 200)}`);
+      if (m.type() === 'error') bucket('errors').push(t.slice(0, 300));
     });
-    page.on('pageerror', (e) => out.pageErrors.push({ msg: String((e && e.message) || e).slice(0, 300), stack: String((e && e.stack) || '').slice(0, 1200) }));
-    await page.evaluateOnNewDocument('window.__fakeXROpts = {};');
-    await page.evaluateOnNewDocument(FAKE_XR);
-    await page.evaluateOnNewDocument(PROBE);
-    if (injected) for (const s of PRODUCT) await page.evaluateOnNewDocument(s);
+    page.on('pageerror', (e) => bucket('pageErrors').push({ msg: String((e && e.message) || e).slice(0, 300), stack: String((e && e.stack) || '').slice(0, 1200) }));
+    await page.evaluateOnNewDocument(topOnly('window.__fakeXROpts = {};'));
+    await page.evaluateOnNewDocument(topOnly(FAKE_XR));
+    await page.evaluateOnNewDocument(topOnly(PROBE));
+    if (injected) for (const s of PRODUCT) await page.evaluateOnNewDocument(topOnly(s));
     const t0 = Date.now();
     try {
       const res = await page.goto(site.url, { waitUntil: 'load', timeout: BUDGET_MS });
@@ -179,7 +193,13 @@ async function load(browser, site, injected) {
       // figure is per document on a browser that has run the scripts before, so two reloads in the same
       // context give the warm sentinel cost the budget is judged on (median of 3, as test/cases/sentinel.mjs
       // s-cost takes a median: one reload on a busy box can spike to 1-2 ms).
+      // Only the injected load reloads, so whatever the reloads log (FedCM "Not signed in with the
+      // identity provider", 403s on a repeat visit — triage 2026-10-03, H1) is moved aside into
+      // warmErrors / warmPageErrors / warmOurLogs: kept for reading, never judged. The verdict compares
+      // the two FIRST loads, like for like.
       if (injected) {
+        Object.assign(out, { warmErrors: [], warmPageErrors: [], warmOurLogs: [] });
+        warmPhase = true;
         out.warm = [];
         for (let i = 0; i < 3; i++) {
           try {
@@ -221,11 +241,17 @@ function judge(site, C, I) {
   if (P.error) return { ...row, verdict: 'ERROR', outcome: 'error', reasons: [`probe read failed: ${P.error}`] };
   const { outcome, engine } = outcomeOf(P);
   const webgl = (P.webgl || 0) > 0 || (Q && Q.webgl > 0);
+  // A WebGPU page (three.js WebGPURenderer: threejs-journey, bruno-simon) is a graphics page: the
+  // core may load there (three announced itself); the expected outcome is flat/standdown, not live.
+  const webgpu = (P.webgpu || 0) > 0 || (Q && Q.webgpu > 0);
+  const gpu = webgl || webgpu;
   const H = P.host || {};
   Object.assign(row, {
     outcome, engine, loadCore: H.loadCore || 0, sentinelMs: H.sentinelMs != null ? +H.sentinelMs.toFixed(3) : null,
-    coreEvalMs: H.coreEvalMs ? +H.coreEvalMs.toFixed(1) : 0, webglContexts: P.webgl || 0, engineOracle: Q ? Q.engineOracle : null,
+    coreEvalMs: H.coreEvalMs ? +H.coreEvalMs.toFixed(1) : 0, webglContexts: P.webgl || 0, webgpuContexts: P.webgpu || 0, engineOracle: Q ? Q.engineOracle : null,
     fps: { control: C.fps ?? null, injected: I.fps ?? null }, moMs: P.mo ? +P.mo.ms.toFixed(2) : null,
+    moCalls: P.mo ? P.mo.calls : null, moMaxMs: P.mo && P.mo.maxMs != null ? +P.mo.maxMs.toFixed(2) : null,
+    warmErrors: [...new Set([...(I.warmErrors || []), ...(I.warmPageErrors || []).map((e) => e.msg)].map(norm))].slice(0, 8), // logged during the warm reloads: not judged
     reports: (H.reports || []).map((r) => `${r.status}${r.engine ? ':' + r.engine : ''}${r.reason ? '(' + r.reason + ')' : ''}@${r.t}`),
     title: P.title, finalUrl: P.url, partialLoad: !!I.nav.partial,
   });
@@ -255,7 +281,7 @@ function judge(site, C, I) {
   const ctrlKeys = new Set(Q ? Q.newKeys : []);
   const keysNew = (P.newKeys || []).filter((k) => !ctrlKeys.has(k) && !HARNESS_KEYS.has(k));
   row.windowKeysDiff = keysNew;
-  const allowed = webgl ? BUDGET.allowedKeysWebGL : BUDGET.allowedKeys;
+  const allowed = gpu ? BUDGET.allowedKeysWebGL : BUDGET.allowedKeys;
   // Keys ending in a long number (closure_lm_182716, jQuery3510…, __jsonp_…) are per-load ids the page
   // makes itself: listed in keysNoise, not judged.
   row.keysNoise = keysNew.filter((k) => !allowed.has(k) && /\d{4,}$/.test(k));
@@ -263,14 +289,14 @@ function judge(site, C, I) {
   const keysOurs = keysBad.filter((k) => /dxr|auto3d/i.test(k) || k === 'pc');
   if (keysOurs.length) fail.push(`window keys: ${keysOurs.join(', ')}`);
   else if (keysBad.length) review.push(`window keys not in the control load (likely page nondeterminism): ${keysBad.slice(0, 6).join(', ')}`);
-  if (!webgl && P.pcInWindow && !(Q && Q.pcInWindow)) fail.push("'pc' in window on a page with no WebGL");
-  // 4. timers, core, observers on non-WebGL pages
+  if (!gpu && P.pcInWindow && !(Q && Q.pcInWindow)) fail.push("'pc' in window on a page with no WebGL / WebGPU");
+  // 4. timers, core, observers on pages with no graphics context (neither WebGL nor WebGPU)
   row.ourTimers = { created: P.ours ? P.ours.created : null, pending: P.ours ? P.ours.pending.length : null, where: P.ours ? P.ours.where : [] };
-  if (!webgl) {
-    if (row.ourTimers.created) fail.push(`${row.ourTimers.created} timer(s) from our scripts on a page with no WebGL (${row.ourTimers.pending} still pending)`);
-    if (row.loadCore) fail.push('core loaded on a page with no WebGL');
+  if (!gpu) {
+    if (row.ourTimers.created) fail.push(`${row.ourTimers.created} timer(s) from our scripts on a page with no WebGL / WebGPU (${row.ourTimers.pending} still pending)`);
+    if (row.loadCore) fail.push('core loaded on a page with no WebGL / WebGPU');
   }
-  if (row.moMs != null && row.moMs > BUDGET.moReviewMs) review.push(`our MutationObserver spent ${row.moMs} ms`);
+  if (row.moMs != null && row.moMs > BUDGET.moReviewMs) review.push(`our MutationObserver spent ${row.moMs} ms in ${row.moCalls} callback(s), longest ${row.moMaxMs} ms`);
   // 5. page intact (coarse): its text and element count stay in the control's range
   if (Q && Q.text > 500 && P.text < 0.5 * Q.text) review.push(`page text ${P.text} chars vs ${Q.text} in control`);
   if (Q && Q.els > 200 && P.els < 0.5 * Q.els) review.push(`element count ${P.els} vs ${Q.els} in control`);
@@ -288,6 +314,7 @@ function judge(site, C, I) {
     if (/^flat$|^standdown$/.test(outcome)) review.push(`${outcome} without a reason`);
     if (outcome === 'offer') review.push('offer under decision allow');
     if (live && C.fps && I.fps && I.fps < 0.5 * C.fps) review.push(`fps ${I.fps} converted vs ${C.fps} control`);
+    if (webgpu && !webgl && live) review.push('converted on a WebGPU-only page (expected flat / standdown)');
   }
   if (I.nav.partial) review.push('load event did not fire in budget (judged on the partial page)');
   row.ourLogs = I.ourLogs.slice(0, 6);
@@ -365,10 +392,10 @@ const md = [
   `# auto-3D no-harm corpus — ${tag}`, '',
   `**${verdict}.**`, '',
   `Bundle ${VENDOR.version} (${VENDOR.sourceCommit || '?'}), ${summary.chrome || 'Chrome'}, ${rows.length} site(s) in ${totalS} s (${Math.round(perSite)} s/site; full ${all.length}-site run ≈ ${summary.estimatedFullRunMinutes} min).`, '',
-  '| verdict | group | site | outcome | engine | loadCore | sentinel ms warm (cold) | WebGL ctx | surface diff (keys / protos) | our timers | new console errors | notes |',
-  '|---|---|---|---|---|---|---|---|---|---|---|---|',
-  ...rows.map((r) => `| ${r.verdict} | ${r.group} | [${r.id}](${r.url}) | ${esc(r.outcome)} | ${esc(r.engine || '')} | ${r.loadCore ?? ''} | ${r.sentinelMs ?? ''} (${r.sentinelMsCold ?? ''}) | ${r.webglContexts ?? ''} | ${esc((r.windowKeysDiff || []).join(', ') || '—')} / ${esc((r.protoDiff || []).join(', ') || '—')} | ${r.ourTimers ? `${r.ourTimers.created} (${r.ourTimers.pending} pending)` : ''} | ${(r.consoleErrorsIntroduced || []).length} | ${esc((r.reasons || []).join('; '))} |`),
-  '', 'Budget (design §3.3): sentinel < 0.5 ms warm (median of three reloads; the cold first load is shown in brackets); no prototype change beyond `HTMLCanvasElement.prototype.getContext`; on pages without WebGL no timers, no core, and nothing on `window` except `__THREE_DEVTOOLS__`. See README.md.', '',
+  '| verdict | group | site | outcome | engine | loadCore | sentinel ms warm (cold) | WebGL / WebGPU ctx | surface diff (keys / protos) | our timers | our MO ms (calls, max) | new console errors (+ reload-only, not judged) | notes |',
+  '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+  ...rows.map((r) => `| ${r.verdict} | ${r.group} | [${r.id}](${r.url}) | ${esc(r.outcome)} | ${esc(r.engine || '')} | ${r.loadCore ?? ''} | ${r.sentinelMs ?? ''} (${r.sentinelMsCold ?? ''}) | ${r.webglContexts ?? ''} / ${r.webgpuContexts ?? ''} | ${esc((r.windowKeysDiff || []).join(', ') || '—')} / ${esc((r.protoDiff || []).join(', ') || '—')} | ${r.ourTimers ? `${r.ourTimers.created} (${r.ourTimers.pending} pending)` : ''} | ${r.moMs ?? ''}${r.moCalls != null ? ` (${r.moCalls}, ${r.moMaxMs})` : ''} | ${(r.consoleErrorsIntroduced || []).length}${(r.warmErrors || []).length ? ` (+${r.warmErrors.length})` : ''} | ${esc((r.reasons || []).join('; '))} |`),
+  '', 'Budget (design §3.3): sentinel < 0.5 ms warm (median of three reloads; the cold first load is shown in brackets); no prototype change beyond `HTMLCanvasElement.prototype.getContext`; on pages without WebGL or WebGPU no timers, no core, and nothing on `window` except `__THREE_DEVTOOLS__`. See README.md.', '',
 ].join('\n');
 writeFileSync(join(resDir, `${tag}.md`), md);
 console.log(`\n${verdict}\n${totalS} s total, ~${Math.round(perSite)} s/site → full ${all.length}-site run ≈ ${summary.estimatedFullRunMinutes} min\nwrote results/${tag}.json + .md`);

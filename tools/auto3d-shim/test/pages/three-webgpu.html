@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- TEST PAGE — the smallest stand-in for a three.js page rendered with WebGPURenderer
+     (threejs-journey, bruno-simon in the corpus). No three.js: it does only what three r183+
+     does on __THREE_DEVTOOLS__ — a 'register' event with the revision at module load, then an
+     'observe' event whose detail is the renderer (isWebGPURenderer: true, domElement: its canvas).
+     The renderer has no getContext() / WebGL surface, so nothing could be wrapped even by mistake.
+     Case p-webgpu: the core loads (three announced itself), reports { status: 'flat', engine:
+     'three.js', reason } and converts nothing. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three WebGPURenderer stub (test)</title>
+<style>body{margin:0;background:#111}canvas{display:block;width:640px;height:360px}</style>
+</head><body>
+<script>
+(() => {
+  const dt = () => window.__THREE_DEVTOOLS__;
+  if (dt()) dt().dispatchEvent(new CustomEvent('register', { detail: { revision: '185' } }));
+  class WebGPURenderer {
+    constructor() {
+      this.isWebGPURenderer = true;
+      this.domElement = document.createElement('canvas');
+      this.domElement.width = 640; this.domElement.height = 360;
+      if (dt()) dt().dispatchEvent(new CustomEvent('observe', { detail: this }));
+    }
+    render() {}
+  }
+  const r = new WebGPURenderer();
+  document.body.appendChild(r.domElement);
+  window.__stubRenderer = r;
+  addEventListener('load', () => { document.documentElement.dataset.done = '1'; });
+})();
+</script>
+</body></html>

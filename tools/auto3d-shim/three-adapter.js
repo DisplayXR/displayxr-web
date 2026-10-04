@@ -23,7 +23,7 @@
 //     screen draws, so the tile is redrawn every frame (woven-canvas rules) and head motion still
 //     looks around.
 // It stands down when a renderer presents through renderer.xr (and, via the core, for SDK / WebXR
-// pages). WebGPURenderer is left 2D.
+// pages). WebGPURenderer is left 2D and reported 'flat' with the reason (core.noteFlat).
 function dxrThree(core) {
   core.registerEngine('three.js');
   const { info, warnOnce, desc, realW, realH } = core;
@@ -44,9 +44,20 @@ function dxrThree(core) {
     const o = e && e.detail;
     if (!o) return;
     if (o.isScene) { hookLookAt(o); return; }
-    if (o.isWebGPURenderer) { warnOnce('webgpu', 'WebGPURenderer seen — not converted by this prototype, left 2D'); return; }
+    if (o.isWebGPURenderer) { flatWebGPU(o); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
+  // WebGPURenderer: never driven (the prototype wraps WebGL only), but the host and the chip get a
+  // terminal 'flat' with the reason instead of a bare 'idle', as PlayCanvas reports a WebGPU device.
+  // Nothing on the renderer or its canvas is touched.
+  const webgpu = new WeakSet();
+  const WEBGPU_WHY = 'WebGPURenderer — the prototype drives WebGL renderers only';
+  function flatWebGPU(r) {
+    if (webgpu.has(r)) return;
+    webgpu.add(r);
+    if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted by this prototype, left 2D'); return; }
+    core.noteFlat('three.js', r.domElement, WEBGPU_WHY);
+  }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
 
   // ------------------------------------------------------------ convergence target: camera.lookAt
