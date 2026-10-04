@@ -15,6 +15,16 @@
 //  4. Hidden chrome is `display: none`, never `opacity: 0`.
 //  5. The one full-tile element is the opaque COVER held until `handle.firstWoven` (rule 5 of the
 //     woven-canvas rules), cut — never faded — when it resolves.
+//
+// THE THEMING API (RFC 0003 §2, C2) is three things, and the class names are none of them:
+//  - CSS custom properties on the host: --dxr-accent, --dxr-ink, --dxr-shell, --dxr-danger,
+//    --dxr-radius (chrome only, never a tile), --dxr-font. `theme` in JS sets the same ones.
+//  - `part` names on the chrome: bar, invite, badge, plate, lobby, banner, self, tile, grid.
+//    The chrome is LIGHT DOM (a woven canvas must live in the document's own tree), so they are
+//    reached as `dxr-call [part="bar"]` rather than `::part(bar)`; the names are the contract.
+//  - `theme.strings`: every string the chrome shows, by key (CALL_STRINGS) — also localisation.
+//  The woven-canvas constraints are enforced here, not documented: every variable styles chrome
+//  only, so no theme can reach a tile.
 
 /** Named accents, shared with ./player (same names, same colours). */
 export const CALL_ACCENTS = Object.freeze({
@@ -29,14 +39,97 @@ export const CALL_ACCENTS = Object.freeze({
 });
 export const resolveCallAccent = (a) => (typeof a === 'string' && CALL_ACCENTS[a.toLowerCase()]) || a;
 
+/** The CSS custom properties `theme` writes (key → property). `tileAspect` / `strings` are not CSS. */
+export const THEME_VARS = Object.freeze({ accent: '--dxr-accent', ink: '--dxr-ink', shell: '--dxr-shell', danger: '--dxr-danger', radius: '--dxr-radius', font: '--dxr-font' });
+
+/**
+ * Every string the chrome shows, by key. `theme.strings` overrides any subset (a flat map), which
+ * is also how the chrome is localised. `{n}`-style placeholders are filled by the module.
+ */
+export const CALL_STRINGS = Object.freeze({
+  // lobby
+  lobbyStartTitle: 'Start a 3D call',
+  lobbyJoinTitle: 'Join the 3D call',
+  lobbyFullTitle: 'This call is full',
+  lobbyLeftTitle: 'You left the call',
+  lobbyFullText: 'It already has {maxPeers} participants.',
+  lobbyText: 'Check your framing below. Camera: {camera} — {kind}.',
+  cameraDefault: 'default',
+  kindBusy: 'busy (joining audio-only)',
+  kindNone: 'none (joining audio-only)',
+  kindSbs: 'sending 3D (side-by-side, {width}×{height})',
+  kindMono: 'sending 2D ({width}×{height})',
+  liftOff: 'Mono cameras: 2D (2D→3D is off).',
+  liftChecking: 'Mono cameras: checking 2D→3D…',
+  liftMissing: 'Mono cameras: 2D→3D unavailable in this build.',
+  liftNoProvider: 'Mono cameras: 2D (no 2D→3D provider here).',
+  liftNative: 'Mono cameras: 2D→3D (native{provider}).',
+  liftWeb: 'Mono cameras: 2D→3D (in this page, WebGPU).',
+  liftProven: 'Mono cameras: 2D→3D.',
+  liftUnproven: 'Mono cameras: 2D→3D (confirmed on the first mono participant).',
+  start: 'Start 3D call',
+  join: 'Join call',
+  rejoin: 'Rejoin',
+  retryCamera: 'Retry camera',
+  cameraSelect: 'Camera',
+  joining: 'Joining…',
+  // invite
+  waitingTitle: 'Waiting for others',
+  waitingText: 'Share this link (or scan the code). Anyone who opens it joins — keep it private.',
+  inviteTitle: 'Invite',
+  inviteText: 'Anyone with this link can join.',
+  inviteLink: 'Invite link',
+  copyLink: 'Copy link',
+  copied: 'Copied',
+  pressCopy: 'Press Ctrl/Cmd+C',
+  qrLabel: 'QR code of the invite link',
+  // banner
+  banner2D: 'You are seeing this call in 2D.',
+  bannerLink: 'View in 3D with DisplayXR Browser',
+  // bar
+  mute: 'Mute microphone',
+  unmute: 'Unmute microphone',
+  cameraOn: 'Turn camera on',
+  cameraOff: 'Turn camera off',
+  cameraRetry: 'No camera — click to retry',
+  cameraBusyRetry: '{cameraBusy} — click to retry',
+  depth: 'Depth',
+  invite: 'Invite',
+  leave: 'Leave call',
+  // plates and badges
+  connecting: 'Connecting…',
+  reconnecting: 'Reconnecting…',
+  leftCall: 'Left the call',
+  cameraOffPlate: 'Camera off',
+  noCamera: 'No camera',
+  unreachable: "Can't reach this participant — the network needs a relay (TURN)",
+  cameraBusy: 'Camera busy — in use by another app (e.g. eye tracking)',
+  you: 'You',
+  badge3D: '3D',
+  badge2D3D: '2D→3D',
+  badge2D: '2D',
+  badgePending: '…',
+});
+
+/** A string table over CALL_STRINGS with `overrides`: `t(key, vars)` fills `{var}` placeholders. */
+export function createStrings(overrides) {
+  const table = { ...CALL_STRINGS, ...(overrides && typeof overrides === 'object' ? overrides : {}) };
+  return (key, vars) => {
+    let s = typeof table[key] === 'string' ? table[key] : CALL_STRINGS[key] || key;
+    if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v));
+    return s;
+  };
+}
+
 const STYLE_ID = 'dxr-call-style';
 const CSS = `
-.dxr-call-host{--dxr-accent:#4da3ff;--dxr-ink:#fff;--dxr-shell:rgba(16,17,22,.92);--dxr-danger:#ff5a5f;
+.dxr-call-host{--dxr-accent:#4da3ff;--dxr-ink:#fff;--dxr-shell:rgba(16,17,22,.92);--dxr-danger:#ff5a5f;--dxr-radius:12px;
+  --dxr-font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   display:flex;flex-direction:column;gap:12px;color:var(--dxr-ink);
-  font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+  font:14px/1.4 var(--dxr-font);}
 .dxr-call-host *{box-sizing:border-box;}
 .dxr-call-hidden{display:none !important;}
-.dxr-call-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 14px;border-radius:10px;
+.dxr-call-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 14px;border-radius:var(--dxr-radius);
   background:var(--dxr-shell);border:1px solid rgba(255,255,255,.12);font-size:13px;}
 .dxr-call-banner a{color:var(--dxr-accent);font-weight:600;}
 /* ── grid: bare boxes, nothing that makes a render surface ── */
@@ -50,6 +143,10 @@ const CSS = `
 .dxr-call-grid[data-layout="speaker"]{grid-template-columns:repeat(3,1fr);}
 .dxr-call-grid[data-layout="speaker"] .dxr-call-tile--main{grid-column:1/-1;}
 .dxr-call-grid[data-layout="speaker"][data-n="1"]{grid-template-columns:1fr;}
+/* layout:'none' — the module creates the tiles but does not position them: the grid box steps
+   aside (display:contents) so each [data-dxr-peer] tile is laid out by the PAGE's own CSS on the
+   host. A tile is never moved; it is styled in place (woven-canvas rule 2). */
+.dxr-call-grid[data-layout="none"]{display:contents;}
 .dxr-call-tile{position:relative;min-width:0;}
 .dxr-call-stage{position:relative;background:#000;}
 .dxr-call-stage>canvas{display:block;width:100%;height:100%;}
@@ -70,29 +167,29 @@ const CSS = `
   will-change:transform;pointer-events:none;}
 .dxr-call-cover{position:absolute;inset:0;z-index:1;background:#000;}
 /* ── empty room / lobby ── */
-.dxr-call-panel{padding:18px;border-radius:12px;background:var(--dxr-shell);border:1px solid rgba(255,255,255,.1);}
+.dxr-call-panel{padding:18px;border-radius:var(--dxr-radius);background:var(--dxr-shell);border:1px solid rgba(255,255,255,.1);}
 .dxr-call-panel h3{margin:0 0 6px;font-size:17px;}
 .dxr-call-panel p{margin:0 0 12px;opacity:.75;}
 .dxr-call-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
 .dxr-call-btn{appearance:none;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:inherit;
-  font:600 13px/1 system-ui,-apple-system,"Segoe UI",sans-serif;padding:9px 14px;border-radius:9px;cursor:pointer;}
+  font:600 13px/1 var(--dxr-font);padding:9px 14px;border-radius:calc(var(--dxr-radius) * .75);cursor:pointer;}
 .dxr-call-btn:hover{background:rgba(255,255,255,.16);}
 .dxr-call-btn:focus-visible{outline:2px solid var(--dxr-accent);outline-offset:2px;}
 .dxr-call-btn--primary{background:var(--dxr-accent);border-color:var(--dxr-accent);color:#07111d;}
 .dxr-call-btn--primary:hover{background:var(--dxr-accent);}
 .dxr-call-btn--danger{background:var(--dxr-danger);border-color:var(--dxr-danger);color:#fff;}
 .dxr-call-select{font:inherit;color:inherit;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);
-  border-radius:8px;padding:7px 9px;max-width:260px;}
+  border-radius:calc(var(--dxr-radius) * .66);padding:7px 9px;max-width:260px;}
 .dxr-call-invite{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;}
 .dxr-call-invite input{flex:1 1 240px;min-width:0;font:12px ui-monospace,Menlo,monospace;color:inherit;
-  background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px;}
+  background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.14);border-radius:calc(var(--dxr-radius) * .66);padding:8px;}
 .dxr-call-invite canvas{width:132px;height:132px;image-rendering:pixelated;background:#fff;}
 /* ── footer: self view + bar, BELOW the grid (over no tile) ── */
 .dxr-call-foot{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;}
 .dxr-call-self{width:200px;flex:none;}
 .dxr-call-host--lobby .dxr-call-self{width:min(560px,100%);}
 .dxr-call-self .dxr-call-badge b{color:var(--dxr-ink);}
-.dxr-call-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;border-radius:14px;
+.dxr-call-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;border-radius:calc(var(--dxr-radius) + 2px);
   background:var(--dxr-shell);border:1px solid rgba(255,255,255,.1);will-change:transform;}
 .dxr-call-host--lobby .dxr-call-bar{display:none;}
 .dxr-call-ib{appearance:none;border:0;width:40px;height:40px;border-radius:50%;padding:9px;cursor:pointer;
@@ -127,7 +224,7 @@ export const ICONS = {
   mutedSmall: P('M19 11h-2a5 5 0 0 1-.4 1.97l1.47 1.47A6.96 6.96 0 0 0 19 11zM15 11V5a3 3 0 0 0-5.94-.6L15 10.34zM4.27 3 3 4.27l6 6V11a3 3 0 0 0 4.52 2.59l1.46 1.46A5 5 0 0 1 7 11H5a7 7 0 0 0 6 6.92V21h2v-3.08a6.9 6.9 0 0 0 3.02-1.14L19.73 21 21 19.73z'),
 };
 
-/** `el('div', {class: 'x'}, [children])` — a tiny builder, attributes as properties or attrs. */
+/** `el('div', {class: 'x', part: 'bar'}, [children])` — a tiny builder, attributes as properties or attrs. */
 export function el(tag, props = {}, children = []) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {

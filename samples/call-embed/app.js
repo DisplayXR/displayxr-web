@@ -44,7 +44,7 @@ if (!customElements.get('dxr-call')) {
 }
 
 // Log every call event the element re-dispatches, same convention as the other samples.
-for (const ev of ['joined', 'left', 'peer', 'peerleft', 'state', 'format', 'display', 'speaker', 'error', 'warning']) {
+for (const ev of ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'error', 'warning']) {
   el.addEventListener(`dxr-call:${ev}`, (e) => console.log(`[call-embed] ${ev} ${JSON.stringify(e.detail)}`));
 }
 

@@ -8,7 +8,7 @@
 <title>dxr-call e2e (dist bundle)</title>
 <script>
   window.__events = [];
-  for (const t of ['ready', 'joined', 'left', 'peer', 'peerleft', 'state', 'format', 'speaker', 'quality', 'error', 'warning']) {
+  for (const t of ['ready', 'joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning']) {
     document.addEventListener('dxr-call:' + t, (e) => {
       // `ready` carries the handle (not serialisable, and its diagnostics include the session's
       // short-lived TURN credentials — keep those out of any log); everything else is plain data.

@@ -1,7 +1,8 @@
 // inline3d-call.js — a 3D video call in any page, in one call.
 //
 // PREVIEW tier. Not covered by the SDK's 1.x semver promise — see docs/sdk-stability.md.
-// Implements P1 of docs/rfcs/0002-video-call.md and the one-line path of RFC 0003 §1 (C1).
+// Implements P1 of docs/rfcs/0002-video-call.md, the one-line path of RFC 0003 §1 (C1) and the
+// public surface of RFC 0003 §2 (C2).
 //
 //   import { mountCall } from '@displayxr/inline3d/call';
 //   const call = await mountCall(document.getElementById('call'));   // hosted signalling, auto camera, SDK UI
@@ -15,6 +16,17 @@
 // `@displayxr/inline3d/call/full` (lift statically imported) or passes `mono3D: lift` itself —
 // on the plain `/call` entry a mono peer on a 3D display raises `warning { code:
 // 'lift-not-bundled' }` instead of silently staying flat.
+//
+// THE PUBLIC SURFACE (RFC 0003 §2, C2) is what a page needs to RUN, OBSERVE and DRESS a call:
+// `mountCall` / `addCall`, `dxrSignaling` + `DXR_SIGNAL_DEFAULT`, `parseInviteLink` (Decision 7),
+// the `<dxr-call>` element, and the types. Everything that exists so the module can be unit-tested
+// stays importable by file path (`js/call/*.js`) and is no longer part of this entry — for ONE
+// release (1.30) the old names remain here as deprecated wrappers that `console.warn` once (the
+// block at the end of this file); 1.31 removes them. The surface is pinned by test/api-snapshot.
+//
+// THE CAMERA is `@displayxr/inline3d/camera` (RFC 0003 §4): `camera: 'auto'` makes this module
+// call `openCamera()` itself, `camera: cam` takes a StereoCamera the page opened, and the self
+// view IS an `addCameraView` — one implementation of capture, mirroring and convergence.
 //
 // WHAT IT OWNS. Unlike the other modules this one takes a CONTAINER, not a canvas: a call has a
 // variable number of participants, so it creates one persistent canvas per remote participant
@@ -72,71 +84,27 @@
 // restores it.
 
 import { sharedInline3D } from './inline3d.js';
-import {
-  WIRE_VERSION,
-  CALL_SDK,
-  DEFAULT_MAX_PEERS,
-  HINT_MAX_HZ,
-  newRoomId,
-  newPeerId,
-  isValidRoomId,
-  parseInviteLink,
-  buildInviteLink,
-  normalizeHello,
-  makeHello,
-  normalizeHint,
-  normalizeState,
-  rateGate,
-  routeFor,
-  badgeFor,
-  createConvergence,
-  eyeCropRect,
-  eyeOutputSize,
-  mirrorSwapOps,
-  backoffMs,
-  createLiveGate,
-} from './call/wire.js';
-import { MeshTransport, clampMaxPeers } from './call/transport.js';
-import { openCamera, openMic } from './call/capture.js';
+import * as wire from './call/wire.js';
+import { DEFAULT_MAX_PEERS, HINT_MAX_HZ, newPeerId, parseInviteLink, normalizeHint, normalizeState, rateGate, createConvergence, eyeOutputSize, backoffMs } from './call/wire.js';
+import { MeshTransport as MeshTransportImpl, clampMaxPeers as clampMaxPeersImpl } from './call/transport.js';
+import { openMic } from './camera/capture.js';
+import { openCamera, addCameraView, isStereoCamera } from './inline3d-camera.js';
 import { drawQr } from './call/qr.js';
-import { injectCallStyle, ICONS, el, show, resolveCallAccent, CALL_ACCENTS } from './call/ui.js';
-import { normalizeMono3D, resolveLift, createLiftPool, createFrameWatch } from './call/lift.js';
+import * as qrMod from './call/qr.js';
+import * as sdp from './call/sdp.js';
+import * as liftMod from './call/lift.js';
+import * as disparity from './call/disparity.js';
+import * as signalingMod from './call/signaling.js';
+import { injectCallStyle, ICONS, el, show, CALL_ACCENTS as CALL_ACCENTS_IMPL, createStrings, CALL_STRINGS } from './call/ui.js';
+import { normalizeCallOptions as normalizeOptions } from './call/options.js';
 import { defineCallElement } from './call/element.js';
-export { DxrCallElement, defineCallElement, attrsToOpts, CALL_EVENT_PREFIX } from './call/element.js';
-
-import { dxrSignaling } from './call/signaling.js';
 import { lumaFromRgba, createDisparityTrack, createFocusTracker, downsampleLuma } from './call/disparity.js';
-export { dxrSignaling, SIGNAL_PROTOCOL, roomKey, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
-export {
-  WIRE_VERSION,
-  CALL_SDK,
-  newRoomId,
-  isValidRoomId,
-  parseInviteLink,
-  buildInviteLink,
-  normalizeHello,
-  makeHello,
-  routeFor,
-  badgeFor,
-  CALL_ACCENTS,
-};
-export { createLiveGate } from './call/wire.js';
-export { measureFocusDisparity } from './call/disparity.js';
-export { convergenceShiftPx, lowPass, clampShift, eyeCropRect, mirrorSwapOps, mirrorSwapPixels, maxBitrateKbps } from './call/wire.js';
-export { preferVideoCodecs, sortCodecCapabilities, VIDEO_CODEC_ORDER } from './call/sdp.js';
-export { MeshTransport, clampMaxPeers } from './call/transport.js';
-export { qrEncode } from './call/qr.js';
-export {
-  normalizeMono3D,
-  resolveLift,
-  createLiftPool,
-  createFrameWatch,
-  liftConvergenceFor,
-  liftPriorityFor,
-  setLiftPriority,
-  defaultLiftSpecifier,
-  LIFT_PRIORITY,
-} from './call/lift.js';
+import { dxrSignaling } from './call/signaling.js';
+
+// ── the public surface (RFC 0003 §2) ────────────────────────────────────────────────────────
+export { DxrCallElement, defineCallElement, attrsToOpts, CALL_EVENT_PREFIX } from './call/element.js';
+export { dxrSignaling, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
+export { parseInviteLink };
 
 const TAG = '[inline3d/call]';
 const HELLO_WAIT_MS = 2000;
@@ -151,65 +119,6 @@ const AUTO_CONV_INTERVAL_MS = 200;
 const AUTO_CONV_EYE_WIDTH = 240;
 // WebCodecs pixel formats whose plane 0 is luma (Y): read directly, no colour conversion.
 const Y_PLANE_FORMATS = new Set(['I420', 'I420A', 'I422', 'I444', 'NV12']);
-const DEFAULT_BROWSER_URL = 'https://github.com/DisplayXR/displayxr-browser';
-export const PLATE_TEXT = Object.freeze({
-  unreachable: "Can't reach this participant — the network needs a relay (TURN)",
-  cameraBusy: 'Camera busy — in use by another app (e.g. eye tracking)',
-});
-
-/**
- * Apply defaults and validate. Pure (no DOM, no network) — see test/call.test.mjs.
- * @param {object} [opts]
- */
-export function normalizeCallOptions(opts = {}) {
-  const ui = opts.ui === undefined ? true : !!opts.ui;
-  const aspect = typeof opts.tileAspect === 'number' && opts.tileAspect > 0.3 && opts.tileAspect < 4 ? opts.tileAspect : 16 / 9;
-  let room = opts.room === undefined || opts.room === null ? 'auto' : opts.room;
-  if (room !== 'auto' && !isValidRoomId(room)) {
-    const fromLink = parseInviteLink(room);
-    if (!fromLink) throw new Error(`@displayxr/inline3d/call: room "${room}" is not a valid room id (16-64 base64url chars) or invite link`);
-    room = fromLink;
-  }
-  return {
-    room,
-    // Default: the hosted DisplayXR signalling server (which also mints TURN credentials). A
-    // publishable key (RFC 0003 §5a) rides along on connect; the server may ignore it today.
-    signaling: opts.signaling || dxrSignaling(undefined, typeof opts.key === 'string' && opts.key ? { key: opts.key } : {}),
-    iceServers: Array.isArray(opts.iceServers) ? opts.iceServers : undefined,
-    camera: opts.camera === undefined ? 'auto' : opts.camera,
-    format: opts.format === 'sbs' ? 'sbs' : opts.format === 'mono' ? 'mono' : undefined,
-    calibration: opts.calibration && typeof opts.calibration === 'object' ? { ...opts.calibration } : {},
-    rectify: typeof opts.rectify === 'function' ? opts.rectify : null,
-    audio: opts.audio === undefined ? true : !!opts.audio,
-    // Auto-convergence (call/disparity.js): measure the disparity of the point between each SBS
-    // peer's eyes and shift the eyes so it sits at the display plane. The depth slider stays an
-    // offset on top. Off = the pair as sent (plus any `hint`).
-    autoConverge: opts.autoConverge === undefined ? true : !!opts.autoConverge,
-    mono3D: normalizeMono3D(opts.mono3D),
-    maxPeers: clampMaxPeers(opts.maxPeers === undefined ? DEFAULT_MAX_PEERS : opts.maxPeers),
-    // Extra lift() options for lifted tiles (models, ort, quality, providers). The call's own
-    // keys (mode, wall, ui, convergence, priority) always win.
-    liftOptions: opts.liftOptions && typeof opts.liftOptions === 'object' ? { ...opts.liftOptions } : null,
-    // Concurrent lifted tiles. Default = maxPeers (4): every mono peer can be lifted.
-    maxLifted: Number.isFinite(+opts.maxLifted) && opts.maxLifted !== null ? Math.max(0, Math.min(DEFAULT_MAX_PEERS, Math.floor(+opts.maxLifted))) : DEFAULT_MAX_PEERS,
-    layout: opts.layout === 'speaker' ? 'speaker' : 'grid',
-    ui,
-    autoJoin: opts.autoJoin === undefined ? !ui : !!opts.autoJoin,
-    selfView: opts.selfView === undefined ? true : !!opts.selfView,
-    tileAspect: aspect,
-    accent: typeof opts.accent === 'string' && opts.accent ? resolveCallAccent(opts.accent) : null,
-    inviteBase: typeof opts.inviteBase === 'string' ? opts.inviteBase : null,
-    updateUrl: opts.updateUrl === undefined ? ui : !!opts.updateUrl,
-    browserUrl: typeof opts.browserUrl === 'string' ? opts.browserUrl : DEFAULT_BROWSER_URL,
-    recoverSession: opts.recoverSession === undefined ? true : !!opts.recoverSession,
-    scrollIntoView: opts.scrollIntoView === undefined ? true : !!opts.scrollIntoView,
-    wallOptions: opts.wallOptions && typeof opts.wallOptions === 'object' ? opts.wallOptions : {},
-    log: typeof opts.log === 'function' ? opts.log : opts.debug ? (tag, obj) => console.log(`${TAG} ${tag} ${JSON.stringify(obj)}`) : null,
-    // Internal (tests): replaces the lift module importer behind `mono3D: 'auto'`.
-    _liftImporter: typeof opts._liftImporter === 'function' ? opts._liftImporter : undefined,
-  };
-}
-
 /**
  * Put a 3D video call in `container`. Resolves once the camera is open and (with `ui:true`) the
  * lobby is showing; with `ui:false` (or `autoJoin:true`) once the call is joined.
@@ -220,7 +129,7 @@ export function normalizeCallOptions(opts = {}) {
  */
 export async function addCall(wall, container, opts = {}) {
   if (!container || typeof container.appendChild !== 'function') throw new TypeError('@displayxr/inline3d/call: addCall(wall, container, opts) needs a container element');
-  const o = normalizeCallOptions(opts);
+  const o = normalizeOptions(opts);
   if (!o.signaling || typeof o.signaling.join !== 'function') {
     throw new TypeError('@displayxr/inline3d/call: opts.signaling must be a SignalingAdapter — dxrSignaling([url]) or your own');
   }
@@ -249,6 +158,7 @@ export async function mountCall(el, opts = {}) {
 class Call {
   constructor(wall, container, o) {
     this.o = o;
+    this.t = createStrings(o.strings); // every chrome string, overridable via theme.strings
     this.container = container;
     this.wall = wall || null;
     this.wallLive = !!(wall && wall.supported);
@@ -278,7 +188,7 @@ class Call {
     this.liftProven = false;
     this.liftMissing = false; // the lift MODULE failed to import (vs. a display that can't lift)
     this._liftWarned = false;
-    this._frameWatch = createFrameWatch();
+    this._frameWatch = liftMod.createFrameWatch();
     this.handle = this._makeHandle();
     if (this.wallLive) this._hookWall(this.wall);
   }
@@ -332,35 +242,31 @@ class Call {
     else this._setState('lobby');
   }
 
+  /**
+   * Open the camera through `@displayxr/inline3d/camera` (`want` = 'auto' | 'stereo' | 'mono' |
+   * deviceId | MediaStream | a StereoCamera the page opened) and the microphone, and rebuild the
+   * local stream. A camera this module opened is closed when replaced; a page's StereoCamera or
+   * MediaStream is left alone.
+   */
   async _openMedia(want, format, { keepOnFail = false } = {}) {
     const log = (t, x) => this.log(t, x);
     let cam = null;
     let camError = null;
+    const given = isStereoCamera(want) ? want : null;
     try {
-      cam = await openCamera(want, { format: format || this.o.format, calibration: this.o.calibration, log });
+      cam = given || (await openCamera({ prefer: want, format: format || this.o.format, calibration: this.o.calibration, rectify: this.o.rectify || undefined, log }));
+      if (given && given.state !== 'live') throw Object.assign(new Error('the camera given is not live'), { code: 'no-camera', skipped: [] });
     } catch (err) {
       camError = err;
       // No camera is never fatal: the call goes on audio-only, the self view and every receiver
       // say why, and the user can retry (the tracker may let go) or pick another camera.
       const busy = err.code === 'camera-busy';
-      this.error(busy ? 'camera-busy' : err.code || 'no-camera', busy ? `${PLATE_TEXT.cameraBusy}. Joining audio-only.` : `no camera: ${err.message}. Joining audio-only.`, err);
+      this.error(busy ? 'camera-busy' : err.code || 'no-camera', busy ? `${this.t('cameraBusy')}. Joining audio-only.` : `no camera: ${err.message}. Joining audio-only.`, err);
       if (keepOnFail && this.local && this.local.videoTrack) return this.local; // keep the working one
       this.camStatus = busy ? 'busy' : 'none';
     }
     if (cam) this.camStatus = 'ok';
-    if (cam && cam.format === 'sbs' && this.o.rectify) {
-      // P2 seam: a calibrated rectification step (plug-in or runtime supplied). Its output is a
-      // rectified SBS stream; the hello then says so.
-      try {
-        const out = await this.o.rectify(cam.stream, { width: cam.width, height: cam.height, deviceId: cam.deviceId, label: cam.label });
-        if (out && typeof out.getVideoTracks === 'function') {
-          cam.stream = out;
-          cam.calibration = { ...cam.calibration, rectified: true };
-        }
-      } catch (err) {
-        this.error('rectify-failed', `rectify() threw — sending the raw pair: ${err.message}`, err);
-      }
-    }
+    if (cam && cam.rectifyError) this.error('rectify-failed', `rectify() threw — sending the raw pair: ${cam.rectifyError.message}`, cam.rectifyError);
     let audioTrack = this.local ? this.local.audioTrack : null;
     if (this.o.audio && !audioTrack) audioTrack = await openMic({ log });
     if (audioTrack) audioTrack.enabled = !this.muted;
@@ -375,28 +281,39 @@ class Call {
       videoTrack.enabled = !this.camOff;
     }
     const stream = new MediaStream([videoTrack, audioTrack].filter(Boolean));
-    const video = this.local?.video || Object.assign(document.createElement('video'), { muted: true, playsInline: true, autoplay: true });
-    video.srcObject = cam ? cam.stream : null;
-    video.play().catch(() => {});
     const prev = this.local;
     this.local = {
       stream,
+      cam, // the StereoCamera (null = audio-only)
       camStream: cam ? cam.stream : null,
-      video,
+      video: cam ? cam.video : null,
       videoTrack,
       audioTrack,
       format: cam ? cam.format : 'mono',
       width: cam ? cam.width : 0,
       height: cam ? cam.height : 0,
       calibration: cam ? cam.calibration : {},
-      owned: cam ? cam.owned : false,
+      owned: cam ? cam.owned && cam !== given : false,
       label: cam ? cam.label : '',
       // Kept on the error path too: which cameras were held, and why, is the one clue a
       // 'camera-busy' / 'no-camera' report carries.
       skipped: cam ? cam.skipped : camError?.skipped || [],
     };
+    if (cam && cam !== prev?.cam) {
+      // The camera ending under us (revoked, unplugged, taken): audio-only + "Retry camera".
+      this._camEndedOff?.();
+      this._camEndedOff = cam.on('ended', () => {
+        if (this.local?.cam !== cam) return;
+        this.local.videoTrack = null;
+        this.camStatus = 'none';
+        this.error('no-camera', 'the camera ended (revoked, unplugged, or taken by another app). Audio-only until "Retry camera".');
+        this.transport?.broadcast(this.stateMsg());
+        this._refreshSelf();
+        this._refreshBar();
+      });
+    }
     this.log('camera', { format: this.local.format, width: this.local.width, height: this.local.height, label: this.local.label, skipped: this.local.skipped.length });
-    if (prev && prev.owned && prev.camStream && prev.camStream !== this.local.camStream) prev.camStream.getVideoTracks().forEach((t) => t.stop());
+    if (prev && prev.owned && prev.cam && prev.cam !== cam) prev.cam.close();
     this._refreshSelf();
     this._refreshLobby();
     return this.local;
@@ -404,7 +321,7 @@ class Call {
 
   hello() {
     const l = this.local || {};
-    return makeHello({
+    return wire.makeHello({
       format: l.format,
       width: l.width,
       height: l.height,
@@ -426,18 +343,18 @@ class Call {
     if (this.state === 'joining' || this.state === 'in-call') return this.handle;
     if (this.state === 'left' && !this.local?.videoTrack) await this._openMedia(this.o.camera);
     if (!this.room) {
-      this.room = newRoomId();
+      this.room = wire.newRoomId();
       this.log('room-created', {});
     }
-    if (this.o.updateUrl && globalThis.history && globalThis.location) {
+    if (this.o.invite.updateUrl && globalThis.history && globalThis.location) {
       try {
-        history.replaceState(history.state, '', buildInviteLink(location.href, this.room));
+        history.replaceState(history.state, '', wire.buildInviteLink(location.href, this.room));
       } catch {
         /* sandboxed iframe */
       }
     }
     this._setState('joining');
-    const t = new MeshTransport({
+    const t = new MeshTransportImpl({
       signaling: this.o.signaling,
       id: this.id,
       maxPeers: this.o.maxPeers,
@@ -480,7 +397,7 @@ class Call {
     // The grid is sized so the whole call block fits ONE viewport, but only if it starts at the
     // top: a tile below the fold is withheld from the weave (browser#167), so its layer goes
     // live late. Bring the block into view once, on join.
-    if (this.o.ui && this.o.scrollIntoView) {
+    if (this.o.chrome) {
       try {
         this.container.scrollIntoView?.({ block: 'start', behavior: 'instant' });
         this._fitGrid();
@@ -489,7 +406,7 @@ class Call {
       }
     }
     this._startStats();
-    this._pagehide = () => this.leave();
+    this._pagehide = () => this.leave('pagehide');
     globalThis.addEventListener?.('pagehide', this._pagehide);
     this.log('joined', { id: this.id, peers: this.tiles.size });
     this.emit('joined', { room: this.room, id: this.id });
@@ -546,7 +463,7 @@ class Call {
       tile.onChannelOpen();
       return;
     }
-    const h = normalizeHello(msg);
+    const h = wire.normalizeHello(msg);
     if (h) return tile.setHello(h);
     const hint = normalizeHint(msg);
     if (hint) return tile.setHint(hint);
@@ -558,8 +475,8 @@ class Call {
 
   inviteLink() {
     if (!this.room) return null;
-    const base = this.o.inviteBase || (globalThis.location ? location.href : '');
-    return buildInviteLink(base, this.room);
+    const base = this.o.invite.base || (globalThis.location ? location.href : '');
+    return wire.buildInviteLink(base, this.room);
   }
 
   mute(on) {
@@ -571,7 +488,7 @@ class Call {
     return this.muted;
   }
 
-  cameraOff(on) {
+  setCameraOff(on) {
     this.camOff = on === undefined ? !this.camOff : !!on;
     if (this.local?.videoTrack) this.local.videoTrack.enabled = !this.camOff;
     this.transport?.broadcast(this.stateMsg());
@@ -615,7 +532,7 @@ class Call {
     return true;
   }
 
-  leave() {
+  leave(reason = 'left') {
     if (this.state === 'left') return;
     globalThis.removeEventListener?.('pagehide', this._pagehide);
     this.transport?.stop();
@@ -626,19 +543,20 @@ class Call {
     clearInterval(this._statsTimer);
     this._setSpeaker(null);
     if (this.local) {
+      this._camEndedOff?.();
+      this._camEndedOff = null;
       this.local.stream.getTracks().forEach((t) => t.stop());
-      if (this.local.owned && this.local.camStream) this.local.camStream.getTracks().forEach((t) => t.stop());
+      // A camera THIS module opened is closed; a page's StereoCamera / MediaStream is left running.
+      if (this.local.owned && this.local.cam) this.local.cam.close();
+      else if (this.local.cam) this.self?.detach();
       this.local.videoTrack = null;
       this.local.audioTrack = null;
     }
-    if (this.self) {
-      this.self.unregister();
-      this.self.route = null; // a rejoin re-registers it
-    }
+    this.self?.detach(); // a rejoin re-attaches it
     this._unhookWall();
     this._setState('left');
     this._layout();
-    this.emit('left', { room: this.room });
+    this.emit('left', { room: this.room, reason });
   }
 
   // ── the wall: session loss and recovery ───────────────────────────────────────────────
@@ -672,7 +590,7 @@ class Call {
       this.weaveLive = true; // nothing to wait on
       return;
     }
-    const gate = createLiveGate();
+    const gate = wire.createLiveGate();
     const t0 = performance.now();
     const onFrame = (_t, f) => {
       if (w !== this.wall || !this.wallLive || this.state === 'left') return;
@@ -727,7 +645,7 @@ class Call {
     this.log('session-ended', { byPage: hook.pageClosed });
     for (const t of this.tiles.values()) t.onWallLost();
     this.self?.onWallLost();
-    if (hook.pageClosed || !this.o.recoverSession || this.state === 'left') {
+    if (hook.pageClosed || this.state === 'left') {
       this._unhookWall();
       return;
     }
@@ -744,7 +662,7 @@ class Call {
       try {
         // The shared manager: if the page has already re-opened its own wall, join it rather than
         // opening a second session (rule 1); else this creates the document's new one.
-        w = await sharedInline3D(this.o.wallOptions);
+        w = await sharedInline3D();
       } catch {
         w = null;
       }
@@ -755,7 +673,6 @@ class Call {
       this.log('session-recovered', { attempt });
       for (const t of this.tiles.values()) t.reroute(true);
       this.self?.reroute(true);
-      this.emit('session', { wall: w });
     }, backoffMs(attempt, { baseMs: 1000, maxMs: 15000 }));
   }
 
@@ -765,7 +682,6 @@ class Call {
     let last = 0;
     const tick = (now) => {
       this._raf = requestAnimationFrame(tick);
-      this.self?.paint();
       for (const t of this.tiles.values()) t.paint();
       if (last && this.liftPool && this.liftPool.anyWeb) this._watchFrames(now - last);
       last = now;
@@ -797,10 +713,10 @@ class Call {
       const lo = this.o.liftOptions;
       // liftCapabilities probes the same model source the lifts will use.
       const capsOpts = { webFallback: true, ...(lo && lo.models ? { models: lo.models } : {}) };
-      this._liftP = resolveLift(this.mono3D, { log, capsOpts, ...(this.o._liftImporter ? { importer: this.o._liftImporter } : {}) }).then((r) => {
+      this._liftP = liftMod.resolveLift(this.mono3D, { log, capsOpts, ...(this.o._liftImporter ? { importer: this.o._liftImporter } : {}) }).then((r) => {
         this.liftApi = r;
         if (r.lift) {
-          this.liftPool = createLiftPool({ lift: r.lift, max: this.o.maxLifted, log, options: this.o.liftOptions });
+          this.liftPool = liftMod.createLiftPool({ lift: r.lift, max: this.o.maxLifted, log, options: this.o.liftOptions });
           this.liftPool.setDepth(this.depth);
           this.liftPool.setSpeaker(this.speakerId);
           if (!r.caps && r.capabilities) {
@@ -865,14 +781,15 @@ class Call {
   /** What the lobby says a mono participant will look like here. */
   _liftHint() {
     if (!this.wallLive) return '';
-    if (!this.mono3DOn) return 'Mono cameras: 2D (2D→3D is off).';
+    const t = this.t;
+    if (!this.mono3DOn) return t('liftOff');
     const r = this.liftApi;
-    if (!r) return 'Mono cameras: checking 2D→3D…';
-    if (!r.lift) return this.liftMissing ? 'Mono cameras: 2D→3D unavailable in this build.' : 'Mono cameras: 2D (no 2D→3D provider here).';
+    if (!r) return t('liftChecking');
+    if (!r.lift) return this.liftMissing ? t('liftMissing') : t('liftNoProvider');
     const c = r.caps;
-    if (c && c.native) return `Mono cameras: 2D→3D (native${c.provider ? `, ${c.provider}` : ''}).`;
-    if (c && c.webFallback && c.webFallback.webgpu) return 'Mono cameras: 2D→3D (in this page, WebGPU).';
-    return this.liftProven ? 'Mono cameras: 2D→3D.' : 'Mono cameras: 2D→3D (confirmed on the first mono participant).';
+    if (c && c.native) return t('liftNative', { provider: c.provider ? `, ${c.provider}` : '' });
+    if (c && c.webFallback && c.webFallback.webgpu) return t('liftWeb');
+    return this.liftProven ? t('liftProven') : t('liftUnproven');
   }
 
   _mono3DInfo() {
@@ -989,7 +906,7 @@ class Call {
    */
   _fitGrid() {
     const ui = this.ui;
-    if (!ui || !this.o.ui || typeof globalThis.innerHeight !== 'number') return;
+    if (!ui || !this.o.chrome || typeof globalThis.innerHeight !== 'number') return;
     const host = this.container.getBoundingClientRect?.();
     const grid = ui.grid.getBoundingClientRect?.();
     if (!host || !grid || !grid.height) return;
@@ -1010,55 +927,59 @@ class Call {
 
   _buildDom() {
     const c = this.container;
+    const t = this.t;
     injectCallStyle(c.ownerDocument || document);
     c.classList.add('dxr-call-host');
-    if (this.o.accent) c.style.setProperty('--dxr-accent', this.o.accent);
+    // theme → CSS custom properties on the host (chrome only: no variable can reach a tile).
+    for (const [prop, v] of Object.entries(this.o.cssVars)) c.style.setProperty(prop, v);
     const ui = (this.ui = {});
-    ui.banner = el('div', { class: 'dxr-call-banner dxr-call-hidden' }, [
-      el('span', { text: 'You are seeing this call in 2D.' }),
-      el('a', { href: this.o.browserUrl, target: '_blank', rel: 'noopener', text: 'View in 3D with DisplayXR Browser' }),
+    ui.banner = el('div', { class: 'dxr-call-banner dxr-call-hidden', part: 'banner' }, [
+      el('span', { text: t('banner2D') }),
+      el('a', { href: this.o.landing.browserUrl, target: '_blank', rel: 'noopener', text: t('bannerLink') }),
     ]);
-    ui.grid = el('div', { class: 'dxr-call-grid', 'data-layout': this.o.layout, 'data-n': '0' });
-    ui.panel = el('div', { class: 'dxr-call-panel dxr-call-hidden' });
-    ui.selfSlot = el('div', { class: 'dxr-call-self' });
-    ui.bar = el('div', { class: 'dxr-call-bar' });
+    ui.grid = el('div', { class: 'dxr-call-grid', part: 'grid', 'data-layout': this.o.layout, 'data-n': '0' });
+    ui.panel = el('div', { class: 'dxr-call-panel dxr-call-hidden', part: 'lobby' });
+    ui.selfSlot = el('div', { class: 'dxr-call-self', part: 'self' });
+    ui.bar = el('div', { class: 'dxr-call-bar', part: 'bar' });
     ui.foot = el('div', { class: 'dxr-call-foot' }, [ui.selfSlot, ui.bar]);
-    ui.invite = el('div', { class: 'dxr-call-panel dxr-call-hidden' });
-    if (!this.o.ui) {
+    ui.invite = el('div', { class: 'dxr-call-panel dxr-call-hidden', part: 'invite' });
+    if (!this.o.chrome) {
       show(ui.bar, false);
     }
     c.append(ui.banner, ui.panel, ui.grid, ui.invite, ui.foot);
     if (this.o.selfView) this.self = new SelfTile(this, ui.selfSlot);
     else show(ui.selfSlot, false);
-    if (this.o.ui) this._buildBar();
+    if (this.o.chrome) this._buildBar();
   }
 
   _buildBar() {
     const ui = this.ui;
+    const t = this.t;
     const ib = (label, icon, onclick, extra = '') => el('button', { class: `dxr-call-ib ${extra}`, type: 'button', 'aria-label': label, title: label, html: icon, onclick });
-    ui.mic = ib('Mute microphone', ICONS.mic, () => this.mute());
-    ui.cam = ib('Turn camera off', ICONS.cam, () => (this.local?.videoTrack ? this.cameraOff() : this.retryCamera().catch(() => {})));
-    ui.depth = el('input', { type: 'range', min: '-1', max: '1', step: '0.05', value: '0', 'aria-label': 'Depth' });
+    ui.mic = ib(t('mute'), ICONS.mic, () => this.mute());
+    ui.cam = ib(t('cameraOff'), ICONS.cam, () => (this.local?.videoTrack ? this.setCameraOff() : this.retryCamera().catch(() => {})));
+    ui.depth = el('input', { type: 'range', min: '-1', max: '1', step: '0.05', value: '0', 'aria-label': t('depth') });
     ui.depth.addEventListener('input', () => this.setDepth(+ui.depth.value));
     ui.depth.addEventListener('dblclick', () => this.setDepth(0));
-    ui.inviteBtn = ib('Invite', ICONS.link, () => {
+    ui.inviteBtn = ib(t('invite'), ICONS.link, () => {
       this._showInvite = !this._showInvite;
       this._layout();
     });
-    ui.leave = ib('Leave call', ICONS.leave, () => this.leave(), 'dxr-call-ib--leave');
-    ui.bar.append(ui.mic, ui.cam, el('label', { class: 'dxr-call-depth' }, ['Depth', ui.depth]), ui.inviteBtn, ui.leave);
+    ui.leave = ib(t('leave'), ICONS.leave, () => this.leave(), 'dxr-call-ib--leave');
+    ui.bar.append(ui.mic, ui.cam, el('label', { class: 'dxr-call-depth' }, [t('depth'), ui.depth]), ui.inviteBtn, ui.leave);
   }
 
   _refreshBar() {
     const ui = this.ui;
     if (!ui || !ui.mic) return;
+    const t = this.t;
     ui.mic.innerHTML = this.muted ? ICONS.micOff : ICONS.mic;
     ui.mic.setAttribute('aria-pressed', String(this.muted));
-    ui.mic.title = this.muted ? 'Unmute microphone' : 'Mute microphone';
+    ui.mic.title = this.muted ? t('unmute') : t('mute');
     const noCam = !this.local?.videoTrack;
     ui.cam.innerHTML = this.camOff || noCam ? ICONS.camOff : ICONS.cam;
     ui.cam.setAttribute('aria-pressed', String(this.camOff || noCam));
-    ui.cam.title = noCam ? (this.camStatus === 'busy' ? `${PLATE_TEXT.cameraBusy} — click to retry` : 'No camera — click to retry') : this.camOff ? 'Turn camera on' : 'Turn camera off';
+    ui.cam.title = noCam ? (this.camStatus === 'busy' ? t('cameraBusyRetry', { cameraBusy: t('cameraBusy') }) : t('cameraRetry')) : this.camOff ? t('cameraOn') : t('cameraOff');
   }
 
   _refreshSelf() {
@@ -1073,20 +994,21 @@ class Call {
     target.replaceChildren();
     const link = this.inviteLink();
     if (!link) return;
-    const input = el('input', { type: 'text', readOnly: true, value: link, 'aria-label': 'Invite link' });
+    const t = this.t;
+    const input = el('input', { type: 'text', readOnly: true, value: link, 'aria-label': t('inviteLink') });
     input.addEventListener('focus', () => input.select());
-    const copy = el('button', { class: 'dxr-call-btn dxr-call-btn--primary', type: 'button', text: 'Copy link' });
+    const copy = el('button', { class: 'dxr-call-btn dxr-call-btn--primary', type: 'button', text: t('copyLink') });
     copy.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(link);
-        copy.textContent = 'Copied';
+        copy.textContent = t('copied');
       } catch {
         input.select();
-        copy.textContent = 'Press Ctrl/Cmd+C';
+        copy.textContent = t('pressCopy');
       }
-      setTimeout(() => (copy.textContent = 'Copy link'), 1800);
+      setTimeout(() => (copy.textContent = t('copyLink')), 1800);
     });
-    const qr = el('canvas', { 'aria-label': 'QR code of the invite link', role: 'img' });
+    const qr = el('canvas', { 'aria-label': t('qrLabel'), role: 'img' });
     try {
       drawQr(qr, link, { px: 4 });
     } catch {
@@ -1103,16 +1025,17 @@ class Call {
     const ui = this.ui;
     if (!ui) return;
     const c = this.container;
-    const lobby = this.o.ui && (this.state === 'lobby' || this.state === 'idle' || this.state === 'full' || this.state === 'left');
+    const t = this.t;
+    const lobby = this.o.chrome && (this.state === 'lobby' || this.state === 'idle' || this.state === 'full' || this.state === 'left');
     c.classList.toggle('dxr-call-host--lobby', lobby);
-    show(ui.banner, this.o.ui && !this.woven);
+    show(ui.banner, this.o.chrome && !this.woven);
     const n = this.tiles.size;
     ui.grid.dataset.n = String(Math.min(n, 4));
     show(ui.grid, n > 0 && this.state !== 'left');
-    // Speaker layout: the active speaker (or the first tile) spans the row.
+    // Speaker layout: the active speaker (or the first tile) spans the row. layout:'none' positions nothing.
     const main = this.o.layout === 'speaker' ? this.speakerId || [...this.tiles.keys()][0] : null;
-    for (const [id, t] of this.tiles) t.el.classList.toggle('dxr-call-tile--main', id === main);
-    if (!this.o.ui) return;
+    for (const [id, tile] of this.tiles) tile.el.classList.toggle('dxr-call-tile--main', id === main);
+    if (!this.o.chrome) return;
     this._refreshBar();
     queueMicrotask(() => this._fitGrid());
     const p = ui.panel;
@@ -1121,37 +1044,65 @@ class Call {
       p.replaceChildren();
       const l = this.local;
       const joining = !!this.room;
-      const title =
-        this.state === 'full' ? 'This call is full' : this.state === 'left' ? 'You left the call' : joining ? 'Join the 3D call' : 'Start a 3D call';
-      const kind = this.camStatus === 'busy' ? 'busy (joining audio-only)' : !l || !l.videoTrack ? 'none (joining audio-only)' : l.format === 'sbs' ? `sending 3D (side-by-side, ${l.width}×${l.height})` : `sending 2D (${l.width}×${l.height})`;
+      const title = this.state === 'full' ? t('lobbyFullTitle') : this.state === 'left' ? t('lobbyLeftTitle') : joining ? t('lobbyJoinTitle') : t('lobbyStartTitle');
+      const dims = { width: l?.width || 0, height: l?.height || 0 };
+      const kind = this.camStatus === 'busy' ? t('kindBusy') : !l || !l.videoTrack ? t('kindNone') : l.format === 'sbs' ? t('kindSbs', dims) : t('kindMono', dims);
       const text =
         this.state === 'full'
-          ? `It already has ${this.o.maxPeers} participants.`
-          : `Check your framing below. Camera: ${l?.label || 'default'} — ${kind}.${this._liftHint() ? ` ${this._liftHint()}` : ''}`;
+          ? t('lobbyFullText', { maxPeers: this.o.maxPeers })
+          : `${t('lobbyText', { camera: l?.label || t('cameraDefault'), kind })}${this._liftHint() ? ` ${this._liftHint()}` : ''}`;
       const go = el('button', {
         class: 'dxr-call-btn dxr-call-btn--primary',
         type: 'button',
-        text: this.state === 'left' ? 'Rejoin' : joining ? 'Join call' : 'Start 3D call',
+        text: this.state === 'left' ? t('rejoin') : joining ? t('join') : t('start'),
       });
       go.addEventListener('click', () => this.join().catch(() => {}));
-      const sel = el('select', { class: 'dxr-call-select', 'aria-label': 'Camera' });
+      const sel = el('select', { class: 'dxr-call-select', 'aria-label': t('cameraSelect') });
       this._fillCameras(sel);
       sel.addEventListener('change', () => this.setCamera(sel.value).catch((e) => this.error('camera-failed', e.message, e)));
-      const retry = !l || !l.videoTrack ? el('button', { class: 'dxr-call-btn', type: 'button', text: 'Retry camera' }) : null;
+      const retry = !l || !l.videoTrack ? el('button', { class: 'dxr-call-btn', type: 'button', text: t('retryCamera') }) : null;
       retry?.addEventListener('click', () => this.retryCamera().catch(() => {}));
       p.append(el('h3', { text: title }), el('p', { text }), el('div', { class: 'dxr-call-row' }, [this.state === 'full' ? null : go, retry, sel]));
     } else if (this.state === 'in-call' && n === 0) {
       show(p, true);
-      this._renderInvite(p, 'Waiting for others', 'Share this link (or scan the code). Anyone who opens it joins — keep it private.');
+      this._renderInvite(p, t('waitingTitle'), t('waitingText'));
     } else if (this.state === 'joining') {
       show(p, true);
-      p.replaceChildren(el('p', { text: 'Joining…' }));
+      p.replaceChildren(el('p', { text: t('joining') }));
     } else show(p, false);
     const inviteOpen = this.state === 'in-call' && n > 0 && this._showInvite;
-    if (inviteOpen && !ui.invite.childElementCount) this._renderInvite(ui.invite, 'Invite', 'Anyone with this link can join.');
+    if (inviteOpen && !ui.invite.childElementCount) this._renderInvite(ui.invite, t('inviteTitle'), t('inviteText'));
     show(ui.invite, inviteOpen);
     if (!inviteOpen) ui.invite.replaceChildren();
     ui.inviteBtn?.setAttribute('aria-pressed', String(!!inviteOpen));
+  }
+
+  /**
+   * Diagnostics (explicitly UNSTABLE — RFC 0003 §2): everything that used to sit on the public
+   * handle and `CallPeer` as debug data. Shape free to change; read it in devtools, never in code.
+   */
+  diagnostics() {
+    const l = this.local;
+    return {
+      sdk: wire.CALL_SDK,
+      wire: wire.WIRE_VERSION,
+      state: this.state,
+      wall: this.wall,
+      wallLive: this.wallLive,
+      weaveLive: this.weaveLive,
+      woven: this.woven,
+      local: l
+        ? { format: l.format, width: l.width, height: l.height, label: l.label, calibration: l.calibration, owned: l.owned, skipped: l.skipped, camera: l.cam || null, stream: l.stream }
+        : null,
+      hello: this.hello(),
+      transport: this.transport,
+      peers: [...this.tiles.values()].map((tile) => tile.diag()),
+      mono3D: { ...this._mono3DInfo(), lift: this.liftApi, pool: this.liftPool ? this.liftPool.list() : [] },
+      speaker: this.speakerId,
+      depth: this.depth,
+      options: this.o,
+      kill: (id) => this.transport?._debugKill(id),
+    };
   }
 
   async _fillCameras(sel) {
@@ -1169,7 +1120,8 @@ class Call {
 
   _makeHandle() {
     const call = this;
-    return {
+    const renamedEvents = { format: 'display', session: null };
+    const handle = {
       get room() {
         return call.room;
       },
@@ -1179,14 +1131,15 @@ class Call {
       get state() {
         return call.state;
       },
-      get wall() {
-        return call.wall;
-      },
-      get format() {
+      /** What YOU send: 'sbs' | 'mono'; null before a camera opened. */
+      get localFormat() {
         return call.local ? call.local.format : null;
       },
       get muted() {
         return call.muted;
+      },
+      get cameraOff() {
+        return call.camOff;
       },
       get depth() {
         return call.depth;
@@ -1206,18 +1159,25 @@ class Call {
       get peers() {
         return Object.freeze([...call.tiles.values()].map((t) => t.info()));
       },
-      join: () => call.join(),
+      join: () => call.join().then(() => undefined),
       inviteLink: () => call.inviteLink(),
       mute: (on) => call.mute(on),
-      cameraOff: (on) => call.cameraOff(on),
-      setCamera: (idOrStream, o) => call.setCamera(idOrStream, o),
+      setCameraOff: (on) => call.setCameraOff(on),
+      setCamera: (src, o) => call.setCamera(src, o),
       setDepth: (v) => call.setDepth(v),
       retryCamera: () => call.retryCamera(),
-      sendHint: (z) => call.sendHint(z),
       setMono3D: (on) => call.setMono3D(on),
-      leave: () => call.leave(),
+      leave: () => call.leave('left'),
+      /** A remote participant's tile element (for `layout: 'none'`), or null. */
+      tile: (peerId) => call.tiles.get(peerId)?.el || null,
+      diagnostics: () => call.diagnostics(),
       on(type, cb) {
         if (typeof cb !== 'function') throw new TypeError(`${TAG} on() takes a function`);
+        if (type in renamedEvents && !call._eventWarned?.has(type)) {
+          (call._eventWarned ||= new Set()).add(type);
+          const to = renamedEvents[type];
+          console.warn(`${TAG} the '${type}' event is deprecated (removed in 1.31)${to ? ` — listen for '${to}'` : ' — it is internal now; diagnostics() has the wall'}`);
+        }
         if (!call.listeners.has(type)) call.listeners.set(type, new Set());
         call.listeners.get(type).add(cb);
         return () => call.listeners.get(type)?.delete(cb);
@@ -1225,14 +1185,28 @@ class Call {
       off(type, cb) {
         call.listeners.get(type)?.delete(cb);
       },
-      /** Diagnostics: the transport (mesh) and a way to simulate a dropped connection. */
-      _debug: {
-        get transport() {
-          return call.transport;
-        },
-        kill: (id) => call.transport?._debugKill(id),
-      },
     };
+    // 1.29 handle members, one release of warnings (RFC 0003 §2): removed in 1.31.
+    const legacy = {
+      wall: ['diagnostics().wall (or the wall you passed / sharedInline3D())', () => call.wall],
+      format: ['localFormat', () => handle.localFormat],
+      sendHint: ['nothing — auto-convergence superseded it', () => (z) => call.sendHint(z)],
+      _debug: ['diagnostics()', () => ({ transport: call.transport, kill: (id) => call.transport?._debugKill(id) })],
+    };
+    for (const [name, [to, get]] of Object.entries(legacy)) {
+      Object.defineProperty(handle, name, {
+        enumerable: false,
+        configurable: true,
+        get() {
+          if (!call._handleWarned?.has(name)) {
+            (call._handleWarned ||= new Set()).add(name);
+            console.warn(`${TAG} handle.${name} is deprecated (removed in 1.31) — use ${to}`);
+          }
+          return get();
+        },
+      });
+    }
+    return handle;
   }
 }
 
@@ -1262,7 +1236,7 @@ function paintFlat(canvas, video, { eyeHalf = null, mirror = false } = {}) {
   const H = video.videoHeight;
   if (!W || !H || (video.readyState || 0) < 2) return;
   const eyeW = eyeHalf === null ? W : W / 2;
-  const r = eyeCropRect(eyeW, H, canvas.width / canvas.height, 0, 0);
+  const r = wire.eyeCropRect(eyeW, H, canvas.width / canvas.height, 0, 0);
   g.save();
   if (mirror) {
     g.translate(canvas.width, 0);
@@ -1319,11 +1293,12 @@ class Tile {
     this.video.addEventListener('resize', () => this._maybeRoute());
     this.canvas = el('canvas');
     this.cover = el('div', { class: 'dxr-call-cover dxr-call-hidden' });
-    this.badge = el('div', { class: 'dxr-call-badge' });
-    this.plate = el('div', { class: 'dxr-call-state', text: 'Connecting…' });
+    this.badge = el('div', { class: 'dxr-call-badge', part: 'badge' });
+    this.plate = el('div', { class: 'dxr-call-state', part: 'plate', text: call.t('connecting') });
     this.stage = el('div', { class: 'dxr-call-stage' }, [this.canvas, this.cover, this.badge, this.plate]);
     this.stage.style.aspectRatio = String(call.o.tileAspect);
-    this.el = el('div', { class: 'dxr-call-tile', 'data-peer': id }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
+    // `data-dxr-peer` is the documented hook (layout:'none', handle.tile()); `data-peer` is the 1.29 spelling.
+    this.el = el('div', { class: 'dxr-call-tile', part: 'tile', 'data-dxr-peer': id, 'data-peer': id }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
     if (!call.o.ui) {
       show(this.badge, false);
     }
@@ -1331,15 +1306,29 @@ class Tile {
     this._renderBadge();
   }
 
+  /** How this side shows the participant: `3D` (woven pair) | `2D→3D` (lifted) | `2D` (flat). */
+  display() {
+    return wire.badgeFor(this.route);
+  }
+
+  /** The public `CallPeer` (RFC 0003 §2): what a page needs to run and observe. Debug data is `diag()`. */
   info() {
     return Object.freeze({
       id: this.id,
       format: this.format || 'mono',
-      route: this.route,
+      display: this.display(),
       state: this.conn,
       muted: this.remote.muted,
       cameraOff: this.remote.cameraOff,
       speaking: this.speaking,
+    });
+  }
+
+  /** Everything else (UNSTABLE): `handle.diagnostics().peers[i]`. */
+  diag() {
+    return {
+      ...this.info(),
+      route: this.route,
       rectified: !!(this.hello && this.hello.rectified),
       hello: this.hello,
       quality: this.quality,
@@ -1354,14 +1343,15 @@ class Tile {
         via: this.autoStats.via,
       },
       lift: this.lifted
-        ? Object.freeze({
+        ? {
             live: this.liftLive,
             native: !!(this.liftHandle && this.liftHandle.native),
             priority: this.call.liftPool ? this.call.liftPool.priority(this.id) : null,
             state: this.liftHandle ? this.liftHandle.state || null : 'pending',
-          })
+          }
         : null,
-    });
+      element: this.el,
+    };
   }
 
   setStream(stream) {
@@ -1416,7 +1406,7 @@ class Tile {
 
   setConn(st) {
     if (st === 'unreachable' && this.conn !== 'unreachable') {
-      this.call.error('unreachable', `${PLATE_TEXT.unreachable}. Still retrying in the background.`, Object.assign(new Error('unreachable'), { peer: this.id }));
+      this.call.error('unreachable', `${this.call.t('unreachable')}. Still retrying in the background.`, Object.assign(new Error('unreachable'), { peer: this.id }));
     }
     this.conn = st;
     if (st === 'connected' && this.leaveTimer) {
@@ -1427,26 +1417,28 @@ class Tile {
   }
 
   _renderPlate() {
+    const s = this.call.t;
     const t =
       this.conn === 'left'
-        ? 'Left the call'
+        ? s('leftCall')
         : this.conn === 'unreachable'
-          ? PLATE_TEXT.unreachable
+          ? s('unreachable')
           : this.conn === 'reconnecting'
-          ? 'Reconnecting…'
-          : this.conn !== 'connected'
-            ? 'Connecting…'
-            : this.remote.cameraOff
-              ? 'Camera off'
-              : null;
+            ? s('reconnecting')
+            : this.conn !== 'connected'
+              ? s('connecting')
+              : this.remote.cameraOff
+                ? s('cameraOffPlate')
+                : null;
     this.plate.textContent = t || '';
     show(this.plate, !!t);
   }
 
   _renderBadge() {
-    const b = badgeFor(this.route);
+    const s = this.call.t;
+    const b = this.route === 'woven-sbs' ? s('badge3D') : this.route === 'lifted' ? s('badge2D3D') : s('badge2D');
     // A lifted tile whose lift is still loading reads "2D→3D…" (it is painted flat meanwhile).
-    const text = !this.route ? '…' : this.route === 'lifted' && !this.liftLive ? `${b}…` : b;
+    const text = !this.route ? s('badgePending') : this.route === 'lifted' && !this.liftLive ? `${b}${s('badgePending')}` : b;
     this.badge.replaceChildren(el('b', { text }));
     this.badge.dataset.route = this.route || '';
     if (this.remote.muted) this.badge.insertAdjacentHTML('beforeend', ICONS.mutedSmall);
@@ -1464,7 +1456,7 @@ class Tile {
     const r =
       this.forceFlat && this.format === 'sbs'
         ? { route: 'flat-left' }
-        : routeFor({
+        : wire.routeFor({
             format: this.format,
             woven: call.woven,
             mono3D: call.mono3DOn ? 'auto' : 'off',
@@ -1484,7 +1476,9 @@ class Tile {
     if (r.route === 'woven-sbs') this._registerWoven();
     else if (r.route === 'lifted') this._registerLifted();
     call.log('route', { peer: this.id, route: r.route, format: this.format, mono3d: r.mono3d || null });
-    call.emit('format', { id: this.id, format: this.format, route: r.route, mono3d: r.mono3d || null, hello: this.hello });
+    call.emit('display', { id: this.id, display: this.display() });
+    // 1.29's 'format' event (route / mono3d detail → diagnostics()): one release of compatibility.
+    if (call.listeners.get('format')?.size) call.emit('format', { id: this.id, format: this.format, route: r.route, mono3d: r.mono3d || null, hello: this.hello });
     this._renderBadge();
   }
 
@@ -1669,7 +1663,7 @@ class Tile {
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
     for (const eye of [0, 1]) {
-      const r = eyeCropRect(eyeW, H, A, shift, eye);
+      const r = wire.eyeCropRect(eyeW, H, A, shift, eye);
       g.drawImage(v, eye * eyeW + r.sx, r.sy, r.sw, r.sh, eye * outW, 0, outW, outH);
     }
   }
@@ -1795,105 +1789,196 @@ class Tile {
 
 // ── the self view ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * The self view IS an `addCameraView` of `@displayxr/inline3d/camera` (RFC 0003 §4): mirrored
+ * correctly (each half mirrored AND the halves swapped — mirroring each half in place would invert
+ * every disparity), woven on a 3D wall, flat elsewhere. The stream that is SENT is never touched.
+ * This class owns the tile's chrome (badge, plate) and re-attaches the view when the camera or
+ * the wall changes; the view owns the pixels.
+ */
 class SelfTile {
   constructor(call, slot) {
     this.call = call;
     this.canvas = el('canvas');
-    this.badge = el('div', { class: 'dxr-call-badge' });
-    this.plate = el('div', { class: 'dxr-call-state dxr-call-hidden' });
+    this.badge = el('div', { class: 'dxr-call-badge', part: 'badge' });
+    this.plate = el('div', { class: 'dxr-call-state dxr-call-hidden', part: 'plate' });
     this.stage = el('div', { class: 'dxr-call-stage' }, [this.canvas, this.badge, this.plate]);
     this.stage.style.aspectRatio = String(call.o.tileAspect);
-    this.el = el('div', { class: 'dxr-call-tile dxr-call-tile--self' }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
+    this.el = el('div', { class: 'dxr-call-tile dxr-call-tile--self', part: 'tile' }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
     slot.appendChild(this.el);
-    this.route = null;
-    this.handle = null;
-    this.mirror = null;
+    this.view = null; // the CameraView over the current camera
+    this.cam = null;
+  }
+
+  /** 'woven-sbs' | 'flat-left' | 'flat' | null (no camera). */
+  get route() {
+    return this.view ? this.view.route : null;
   }
 
   update() {
     const l = this.call.local;
+    const t = this.call.t;
     const noCam = !l || !l.videoTrack;
-    this.plate.textContent = noCam ? (this.call.camStatus === 'busy' ? PLATE_TEXT.cameraBusy : this.call.camStatus === 'pending' ? '' : 'No camera') : this.call.camOff ? 'Camera off' : '';
+    this.plate.textContent = noCam ? (this.call.camStatus === 'busy' ? t('cameraBusy') : this.call.camStatus === 'pending' ? '' : t('noCamera')) : this.call.camOff ? t('cameraOffPlate') : '';
     show(this.plate, noCam || this.call.camOff);
     this.reroute(false);
   }
 
   reroute(force) {
     const l = this.call.local;
-    // Local SBS on a woven wall → woven mirror-and-swap preview; anything else is flat.
-    const route = l && l.format === 'sbs' && this.call.woven && l.videoTrack ? 'woven-sbs' : l && l.format === 'sbs' ? 'flat-left' : 'flat';
-    if (!force && route === this.route) return this._badge();
-    this.unregister();
-    this.route = route;
-    if (route === 'woven-sbs') {
-      if (!this.mirror) this.mirror = document.createElement('canvas');
-      this._paintMirror();
-      this.handle = this.call.wall.addImage(this.canvas, this.mirror);
+    const cam = l && l.videoTrack ? l.cam : null;
+    const wall = this.call.woven ? this.call.wall : { supported: false };
+    if (!cam || cam.state !== 'live') {
+      this.detach();
+      return this._badge();
+    }
+    if (this.view && this.cam === cam) this.view._reroute(force, wall);
+    else {
+      this.detach();
+      this.cam = cam;
+      this.view = addCameraView(wall, this.canvas, cam, { mirror: true, autoConverge: false, aspect: this.call.o.tileAspect });
     }
     this._badge();
   }
 
   _badge() {
-    this.badge.replaceChildren(el('b', { text: `You · ${this.route === 'woven-sbs' ? '3D' : '2D'}` }));
+    const t = this.call.t;
+    this.badge.replaceChildren(el('b', { text: `${t('you')} · ${this.route === 'woven-sbs' ? t('badge3D') : t('badge2D')}` }));
   }
 
   onWallLost() {
-    this.handle = null;
-    this.reroute(true);
+    this.view?._onWallLost();
+    this._badge();
   }
 
-  unregister() {
-    if (this.handle) {
-      try {
-        this.handle.remove();
-      } catch {
-        /* ignore */
-      }
-      this.handle = null;
-    }
+  /** Drop the view (leave(), a camera change). The canvas keeps its last frame; a rejoin re-attaches. */
+  detach() {
+    if (this.view) this.view.remove();
+    this.view = null;
+    this.cam = null;
   }
 
   setSpeaking(on) {
     this.el.classList.toggle('dxr-call-tile--speaking', on);
   }
-
-  paint() {
-    const l = this.call.local;
-    if (!l || !l.video || this.call.state === 'left') return;
-    if (this.route === 'woven-sbs') this._paintMirror();
-    else paintFlat(this.canvas, l.video, { eyeHalf: this.route === 'flat-left' ? 0 : null, mirror: true });
-  }
-
-  /**
-   * The MIRRORED stereo preview: each half mirrored AND the halves swapped (wire.js
-   * mirrorSwapOps). Mirroring each half in place would invert every disparity. The stream that is
-   * SENT is never touched — only this canvas.
-   */
-  _paintMirror() {
-    const v = this.call.local.video;
-    const W = v.videoWidth;
-    const H = v.videoHeight;
-    if (!W || !H || (v.readyState || 0) < 2) return;
-    const A = this.call.o.tileAspect;
-    const eyeW = W / 2;
-    const { w: outW, h: outH } = eyeOutputSize(eyeW, H, A);
-    const c = this.mirror;
-    if (c.width !== 2 * outW || c.height !== outH) {
-      c.width = 2 * outW;
-      c.height = outH;
-    }
-    const g = c.getContext('2d');
-    const r = eyeCropRect(eyeW, H, A, 0, 0);
-    for (const op of mirrorSwapOps(W, H)) {
-      const dx = op.dx === 0 ? 0 : outW;
-      g.save();
-      g.translate(dx + outW, 0);
-      g.scale(-1, 1);
-      g.drawImage(v, op.sx + r.sx, r.sy, r.sw, r.sh, 0, 0, outW, outH);
-      g.restore();
-    }
-  }
 }
+
+// ── 1.29 exports kept for ONE release (RFC 0003 §2 "Mechanics") ───────────────────────────
+//
+// Every helper below is INTERNAL: it exists so the module can be unit-tested, and it stays
+// importable by file path (`js/call/*.js`). It is no longer part of this entry's public surface
+// (call.d.ts marks each `@deprecated`; test/api-snapshot pins the list) and 1.31 removes it from
+// here. Until then a function or class warns once on its first call, an object on its first
+// property read; a primitive constant cannot warn (ESM bindings have no getter) and is simply
+// typed `@deprecated`. `peerjsCloud` left in 1.29 outright (Decision 12).
+
+const REMOVED_IN = '1.31';
+const deprecatedWarned = new Set();
+function deprecate(name, from, value) {
+  const warn = () => {
+    if (deprecatedWarned.has(name)) return;
+    deprecatedWarned.add(name);
+    console.warn(`${TAG} \`${name}\` is internal and leaves '@displayxr/inline3d/call' in ${REMOVED_IN} — import it from ${from} if you must, or stop depending on it`);
+  };
+  if (typeof value === 'function') {
+    return new Proxy(value, {
+      apply(target, self, args) {
+        warn();
+        return Reflect.apply(target, self, args);
+      },
+      construct(target, args) {
+        warn();
+        return Reflect.construct(target, args);
+      },
+    });
+  }
+  if (value && typeof value === 'object') {
+    return new Proxy(value, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string') warn();
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  }
+  return value;
+}
+
+/** @deprecated internal (js/call/options.js) — removed from this entry in 1.31 */
+export const normalizeCallOptions = deprecate('normalizeCallOptions', 'js/call/options.js', normalizeOptions);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31 */
+export const newRoomId = deprecate('newRoomId', 'js/call/wire.js', wire.newRoomId);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31 */
+export const isValidRoomId = deprecate('isValidRoomId', 'js/call/wire.js', wire.isValidRoomId);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31; `handle.inviteLink()` is the API */
+export const buildInviteLink = deprecate('buildInviteLink', 'js/call/wire.js', wire.buildInviteLink);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31; the wire is documented in docs/call-wire.md */
+export const normalizeHello = deprecate('normalizeHello', 'js/call/wire.js', wire.normalizeHello);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31 */
+export const makeHello = deprecate('makeHello', 'js/call/wire.js', wire.makeHello);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31; `CallPeer.display` is the API */
+export const routeFor = deprecate('routeFor', 'js/call/wire.js', wire.routeFor);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31 */
+export const badgeFor = deprecate('badgeFor', 'js/call/wire.js', wire.badgeFor);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31 */
+export const createLiveGate = deprecate('createLiveGate', 'js/call/wire.js', wire.createLiveGate);
+/** @deprecated internal (js/camera/converge.js) — removed from this entry in 1.31 */
+export const convergenceShiftPx = deprecate('convergenceShiftPx', 'js/camera/converge.js', wire.convergenceShiftPx);
+/** @deprecated internal (js/camera/converge.js) — removed from this entry in 1.31 */
+export const lowPass = deprecate('lowPass', 'js/camera/converge.js', wire.lowPass);
+/** @deprecated internal (js/camera/converge.js) — removed from this entry in 1.31 */
+export const clampShift = deprecate('clampShift', 'js/camera/converge.js', wire.clampShift);
+/** @deprecated internal (js/camera/geometry.js) — removed from this entry in 1.31 */
+export const eyeCropRect = deprecate('eyeCropRect', 'js/camera/geometry.js', wire.eyeCropRect);
+/** @deprecated internal (js/camera/geometry.js) — removed from this entry in 1.31; `addCameraView` of `/camera` mirrors a self view */
+export const mirrorSwapOps = deprecate('mirrorSwapOps', 'js/camera/geometry.js', wire.mirrorSwapOps);
+/** @deprecated internal (js/camera/geometry.js) — removed from this entry in 1.31 */
+export const mirrorSwapPixels = deprecate('mirrorSwapPixels', 'js/camera/geometry.js', wire.mirrorSwapPixels);
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31 */
+export const maxBitrateKbps = deprecate('maxBitrateKbps', 'js/call/wire.js', wire.maxBitrateKbps);
+/** @deprecated internal (js/camera/disparity.js) — removed from this entry in 1.31; `autoConverge` of `/camera` and `/call` is the behaviour */
+export const measureFocusDisparity = deprecate('measureFocusDisparity', 'js/camera/disparity.js', disparity.measureFocusDisparity);
+/** @deprecated internal (js/call/sdp.js) — removed from this entry in 1.31 */
+export const preferVideoCodecs = deprecate('preferVideoCodecs', 'js/call/sdp.js', sdp.preferVideoCodecs);
+/** @deprecated internal (js/call/sdp.js) — removed from this entry in 1.31 */
+export const sortCodecCapabilities = deprecate('sortCodecCapabilities', 'js/call/sdp.js', sdp.sortCodecCapabilities);
+/** @deprecated internal (js/call/sdp.js) — removed from this entry in 1.31 */
+export const VIDEO_CODEC_ORDER = deprecate('VIDEO_CODEC_ORDER', 'js/call/sdp.js', sdp.VIDEO_CODEC_ORDER);
+/** @deprecated internal (js/call/transport.js) — removed from this entry in 1.31; an SFU adapter will get a designed Transport seam */
+export const MeshTransport = deprecate('MeshTransport', 'js/call/transport.js', MeshTransportImpl);
+/** @deprecated internal (js/call/transport.js) — removed from this entry in 1.31 */
+export const clampMaxPeers = deprecate('clampMaxPeers', 'js/call/transport.js', clampMaxPeersImpl);
+/** @deprecated internal (js/call/qr.js) — removed from this entry in 1.31 */
+export const qrEncode = deprecate('qrEncode', 'js/call/qr.js', qrMod.qrEncode);
+/** @deprecated internal (js/call/signaling.js) — removed from this entry in 1.31; documented in signaling/README.md */
+export const roomKey = deprecate('roomKey', 'js/call/signaling.js', signalingMod.roomKey);
+/** @deprecated internal (js/call/signaling.js) — removed from this entry in 1.31; a primitive: no runtime warning */
+export const SIGNAL_PROTOCOL = signalingMod.SIGNAL_PROTOCOL;
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31; a primitive: no runtime warning */
+export const WIRE_VERSION = wire.WIRE_VERSION;
+/** @deprecated internal (js/call/wire.js) — removed from this entry in 1.31; a primitive: no runtime warning */
+export const CALL_SDK = wire.CALL_SDK;
+/** @deprecated replaced by `theme.strings` (js/call/ui.js CALL_STRINGS) — removed from this entry in 1.31 */
+export const PLATE_TEXT = deprecate('PLATE_TEXT', 'js/call/ui.js (CALL_STRINGS)', Object.freeze({ unreachable: CALL_STRINGS.unreachable, cameraBusy: CALL_STRINGS.cameraBusy }));
+/** @deprecated folded into `theme.accent` (which takes the names) — removed from this entry in 1.31 */
+export const CALL_ACCENTS = deprecate('CALL_ACCENTS', 'js/call/ui.js', CALL_ACCENTS_IMPL);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const normalizeMono3D = deprecate('normalizeMono3D', 'js/call/lift.js', liftMod.normalizeMono3D);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const resolveLift = deprecate('resolveLift', 'js/call/lift.js', liftMod.resolveLift);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const createLiftPool = deprecate('createLiftPool', 'js/call/lift.js', liftMod.createLiftPool);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const createFrameWatch = deprecate('createFrameWatch', 'js/call/lift.js', liftMod.createFrameWatch);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const liftConvergenceFor = deprecate('liftConvergenceFor', 'js/call/lift.js', liftMod.liftConvergenceFor);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const liftPriorityFor = deprecate('liftPriorityFor', 'js/call/lift.js', liftMod.liftPriorityFor);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const setLiftPriority = deprecate('setLiftPriority', 'js/call/lift.js', liftMod.setLiftPriority);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const defaultLiftSpecifier = deprecate('defaultLiftSpecifier', 'js/call/lift.js', liftMod.defaultLiftSpecifier);
+/** @deprecated internal (js/call/lift.js) — removed from this entry in 1.31 */
+export const LIFT_PRIORITY = deprecate('LIFT_PRIORITY', 'js/call/lift.js', liftMod.LIFT_PRIORITY);
 
 // `<dxr-call>` — the one-line path as markup — is registered by importing this entry (RFC 0003 §1;
 // the ONE side effect of this module, declared in package.json `sideEffects`). A no-op where there

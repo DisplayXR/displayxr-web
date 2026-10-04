@@ -104,7 +104,7 @@ shareBtn.onclick = () =&gt; navigator.share({ url: call.inviteLink() });</code><
     Attributes: <code>room</code> · <code>signaling</code> (your own <code>dxr-signal/1</code>
     server) · <code>camera</code> (<code>auto|stereo|mono|deviceId</code>) ·
     <code>layout</code> (<code>grid|speaker</code>) · <code>accent</code> · <code>max-peers</code> ·
-    <code>no-ui</code> · <code>auto-join</code> · <code>mono3d="off"</code>. Non-string options
+    <code>no-ui</code> · <code>ui="tiles"</code> · <code>auto-join</code> · <code>mono3d="off"</code>. Non-string options
     (a <code>MediaStream</code>, a custom adapter) go on <code>el.options</code> before the element
     connects; the handle is <code>el.call</code>. URL params on this page:
     <code>?signal=dev</code> uses <code>node signaling/dev-server.mjs</code> on
@@ -123,7 +123,8 @@ shareBtn.onclick = () =&gt; navigator.share({ url: call.inviteLink() });</code><
 <script type="importmap">
 { "imports": {
   "@displayxr/inline3d": "../../js/inline3d.js",
-  "@displayxr/inline3d/call": "../../js/inline3d-call.js"
+  "@displayxr/inline3d/call": "../../js/inline3d-call.js",
+  "@displayxr/inline3d/camera": "../../js/inline3d-camera.js"
 } }
 </script>
 <script type="module" src="./app.js"></script>

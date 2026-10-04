@@ -7,8 +7,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
+// Internal helpers are imported by FILE PATH (RFC 0003 §2): they left the `./call` entry in C2
+// (1.30 keeps them there as deprecated wrappers — test/call-surface.test.mjs covers those).
+import { normalizeCallOptions } from '../js/call/options.js';
 import {
-  normalizeCallOptions,
   routeFor,
   badgeFor,
   normalizeHello,
@@ -24,22 +26,12 @@ import {
   mirrorSwapOps,
   mirrorSwapPixels,
   maxBitrateKbps,
-  preferVideoCodecs,
-  sortCodecCapabilities,
-  MeshTransport,
-  clampMaxPeers,
-  qrEncode,
-  dxrSignaling,
-  roomKey,
-  resolveLift,
-  createLiftPool,
-  createFrameWatch,
-  liftConvergenceFor,
-  liftPriorityFor,
-  setLiftPriority,
-  defaultLiftSpecifier,
-  LIFT_PRIORITY,
-} from '../js/inline3d-call.js';
+} from '../js/call/wire.js';
+import { preferVideoCodecs, sortCodecCapabilities } from '../js/call/sdp.js';
+import { MeshTransport, clampMaxPeers } from '../js/call/transport.js';
+import { qrEncode } from '../js/call/qr.js';
+import { dxrSignaling, roomKey } from '../js/call/signaling.js';
+import { resolveLift, createLiftPool, createFrameWatch, liftConvergenceFor, liftPriorityFor, setLiftPriority, defaultLiftSpecifier, LIFT_PRIORITY } from '../js/call/lift.js';
 import {
   focalPx,
   createConvergence,
@@ -347,9 +339,10 @@ test('normalizeCallOptions: defaults, a link as room, clamped maxPeers', () => {
   const fn = async () => ({});
   assert.equal(normalizeCallOptions({ mono3D: fn }).mono3D, fn);
   assert.equal(normalizeCallOptions({ mono3D: 'yes' }).mono3D, 'auto');
-  assert.equal(normalizeCallOptions({ maxLifted: 2 }).maxLifted, 2);
-  assert.equal(normalizeCallOptions({ maxLifted: 9 }).maxLifted, 4);
-  assert.equal(normalizeCallOptions({ maxLifted: -1 }).maxLifted, 0);
+  assert.equal(normalizeCallOptions({ liftOptions: { max: 2 } }).maxLifted, 2);
+  assert.equal(normalizeCallOptions({ liftOptions: { max: 9 } }).maxLifted, 4);
+  assert.equal(normalizeCallOptions({ liftOptions: { max: -1 } }).maxLifted, 0);
+  assert.equal(normalizeCallOptions({ liftOptions: { max: 2, models: 'x' } }).liftOptions.max, undefined, '`max` is the call\'s, not lift()\'s');
   assert.equal(o.camera, 'auto');
   assert.equal(o.tileAspect, 16 / 9);
   assert.equal(normalizeCallOptions({ ui: false }).autoJoin, true);
@@ -358,7 +351,14 @@ test('normalizeCallOptions: defaults, a link as room, clamped maxPeers', () => {
   const room = 'Q'.repeat(22);
   assert.equal(normalizeCallOptions({ room: `https://x/#room=${room}` }).room, room);
   assert.throws(() => normalizeCallOptions({ room: 'nope' }), /not a valid room id/);
-  assert.equal(normalizeCallOptions({ accent: 'violet' }).accent, '#9b7bff');
+  assert.equal(normalizeCallOptions({ theme: { accent: 'violet' } }).cssVars['--dxr-accent'], '#9b7bff');
+  assert.deepEqual(normalizeCallOptions({ theme: { accent: '#123', ink: 'red', radius: 4, font: 'serif' } }).cssVars, { '--dxr-accent': '#123', '--dxr-ink': 'red', '--dxr-radius': '4px', '--dxr-font': 'serif' });
+  assert.equal(normalizeCallOptions({ ui: 'tiles' }).chrome, false);
+  assert.equal(normalizeCallOptions({ ui: 'tiles' }).autoJoin, true, 'no lobby without the full chrome');
+  assert.equal(normalizeCallOptions({ layout: 'none' }).layout, 'none');
+  assert.equal(normalizeCallOptions({ invite: { base: 'https://x/', updateUrl: false } }).invite.updateUrl, false);
+  assert.equal(normalizeCallOptions({}).invite.updateUrl, true);
+  assert.equal(normalizeCallOptions({ landing: { browserUrl: 'https://dl' } }).landing.browserUrl, 'https://dl');
 });
 
 test('clampMaxPeers: full mesh is 2..4', () => {
@@ -725,11 +725,13 @@ test('capture: every camera held by another app → camera-busy (never a 0x0 tra
   await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => ({ w: 0, h: 0 })) }), (e) => e.code === 'camera-busy' || e.code === 'no-camera');
   // Some other failure is not "busy".
   const denied = Object.assign(new Error('denied'), { name: 'NotAllowedError' });
-  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => denied) }), (e) => e.code === 'no-camera');
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => denied) }), (e) => e.code === 'permission-denied' && e.skipped.every((x) => x.denied));
+  await assert.rejects(openCamera('auto', { mediaDevices: fakeMedia(() => Object.assign(new Error('x'), { name: 'OverconstrainedError' })) }), (e) => e.code === 'no-camera');
   assert.equal(isBusyError(busyErr()), true);
   assert.equal(noCameraCode([{ busy: true }, { busy: true }]), 'camera-busy');
   assert.equal(noCameraCode([{ busy: true }, { busy: false }]), 'no-camera');
   assert.equal(noCameraCode([]), 'no-camera');
+  assert.equal(noCameraCode([{ busy: false, denied: true }, { busy: true }]), 'permission-denied');
 });
 
 test('capture: a labelled stereo camera is opened DIRECTLY, in one start (no default-first probe)', async () => {

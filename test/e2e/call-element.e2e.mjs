@@ -118,9 +118,9 @@ async function main() {
         p,
         () => {
           const c = document.querySelector('dxr-call').call;
-          const peer = c.peers[0];
+          const peer = c.diagnostics().peers[0]; // route + quality are diagnostics since C2
           const q = peer && peer.quality && peer.quality.in;
-          return peer && peer.state === 'connected' && q && q.fps > 0 ? { id: peer.id, state: peer.state, fps: q.fps, w: q.width, h: q.height, codec: q.codec, route: peer.route, format: peer.format } : null;
+          return peer && peer.state === 'connected' && q && q.fps > 0 ? { id: peer.id, state: peer.state, fps: q.fps, w: q.width, h: q.height, codec: q.codec, route: peer.route, format: peer.format, display: peer.display } : null;
         },
         `${name}: peer connected with inbound video`
       );
