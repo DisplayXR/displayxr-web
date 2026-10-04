@@ -36,6 +36,10 @@
       "types": "./player.d.ts",
       "import": "./js/inline3d-player.js"
     },
+    "./camera": {
+      "types": "./camera.d.ts",
+      "import": "./js/inline3d-camera.js"
+    },
     "./call": {
       "types": "./call.d.ts",
       "import": "./js/inline3d-call.js"
@@ -79,8 +83,10 @@
     "js/inline3d-pc-look.js",
     "js/inline3d-playcanvas-engine.js",
     "js/inline3d-player.js",
+    "js/inline3d-camera.js",
     "js/inline3d-call.js",
     "js/inline3d-call-full.js",
+    "js/camera/",
     "js/call/",
     "js/lift/",
     "dist/",
@@ -90,6 +96,7 @@
     "splat.d.ts",
     "model.d.ts",
     "player.d.ts",
+    "camera.d.ts",
     "call.d.ts",
     "call-full.d.ts",
     "CHANGELOG.md",
@@ -149,6 +156,10 @@
     "build:dist": "node tools/dist/build.mjs",
     "prepack": "node tools/dist/build.mjs",
     "test:e2e": "node test/e2e/call-element.e2e.mjs",
+    "test:e2e:camera": "node test/e2e/camera.e2e.mjs",
+    "api:check": "node tools/api-surface.mjs --check",
+    "api:update": "node tools/api-surface.mjs --update",
+    "check:snippets": "node tools/check-snippets.mjs",
     "test:bundlers": "node test/bundlers/run.mjs"
   },
   "devDependencies": {

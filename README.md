@@ -210,6 +210,8 @@ docs/
                            the WebXR→inline-3d mapping table and the whole render loop
   woven-canvas-rules.md    never show a raw side-by-side frame: the join, the rules,
                            handle.firstWoven / rewoven(), reading the browser's `withheld` log line
+  camera.md                The 3D camera primitive (/camera): openCamera, the mirrored self view,
+                           capturePhoto / record with the stereo record inside the file.
   call.md                  3D video calls: the <dxr-call> / mountCall() one-line embed, options,
                            events, headless, theming, React, self-hosting, troubleshooting
   proposals/               browser-side asks the SDK is waiting on

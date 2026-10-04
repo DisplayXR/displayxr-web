@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- test/e2e/camera.html — the /camera primitive from the SOURCE files, driven by
+     test/e2e/camera.e2e.mjs in headless Chrome. The page builds a synthetic side-by-side pair
+     with a KNOWN disparity (a white marker further right in the left eye: a subject in front of
+     the screen), opens it as a StereoCamera, and puts it on a MOCK WOVEN WALL whose addImage()
+     hands back the SBS buffer the view paints — so the test can read the mirrored pixels. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>camera e2e</title>
+<script type="importmap">
+{ "imports": {
+  "@displayxr/inline3d": "/js/inline3d.js",
+  "@displayxr/inline3d/camera": "/js/inline3d-camera.js"
+} }
+</script>
+<style>#self{display:block;width:640px;height:360px;background:#000}</style>
+</head>
+<body>
+<canvas id="self"></canvas>
+<script type="module">
+  import { openCamera, addCameraView, readJpegStereoMeta, readWebmStereoMeta } from '@displayxr/inline3d/camera';
+
+  // Eye 320×240; the marker is a 40 px white square: left eye at x 100..140, right eye at 60..100
+  // → disparity (left x − right x) = +40, crossed, in front of the screen. Rows 80..160.
+  const EYE = 320, H = 240;
+  const src = Object.assign(document.createElement('canvas'), { width: EYE * 2, height: H });
+  const g = src.getContext('2d');
+  const draw = () => {
+    g.fillStyle = '#202020';
+    g.fillRect(0, 0, EYE * 2, H);
+    g.fillStyle = '#fff';
+    g.fillRect(100, 80, 40, 80);          // left eye marker
+    g.fillRect(EYE + 60, 80, 40, 80);     // right eye marker
+    g.fillStyle = '#4af';
+    g.fillRect(10, 10, 20, 20);           // a corner tag in the LEFT eye only (which eye is which)
+  };
+  draw();
+  setInterval(draw, 33);
+  const stream = src.captureStream(30);
+
+  const wall = {
+    supported: true,
+    added: [],
+    addImage(canvas, buffer) {
+      const h = { canvas, buffer, removed: 0, remove() { this.removed++; }, firstWoven: Promise.resolve({ woven: true, confirmed: false, reason: 'mock', ms: 0 }) };
+      wall.added.push(h);
+      return h;
+    },
+  };
+  window.__wall = wall;
+  window.__ready = (async () => {
+    const cam = await openCamera({ prefer: stream, format: 'sbs', calibration: { baselineMm: 63, horizontalFovDeg: 70 } });
+    window.__cam = cam;
+    window.__view = addCameraView(wall, document.getElementById('self'), cam, { mirror: true });
+    window.__readJpeg = (bytes) => readJpegStereoMeta(bytes);
+    window.__readWebm = (bytes) => readWebmStereoMeta(bytes);
+    return { format: cam.format, width: cam.width, height: cam.height, route: window.__view.route };
+  })();
+
+  /** The x-range of bright pixels on row `y` of each half of the view's SBS buffer. */
+  window.__markers = (y = 120) => {
+    const b = wall.added.at(-1).buffer;
+    const half = b.width / 2;
+    const row = b.getContext('2d').getImageData(0, Math.round((y / H) * b.height), b.width, 1).data;
+    const range = (from) => {
+      let lo = -1, hi = -1;
+      for (let x = 0; x < half; x++) if (row[(from + x) * 4] > 200) { if (lo < 0) lo = x; hi = x; }
+      return { lo, hi, mid: (lo + hi) / 2 };
+    };
+    return { bufferW: b.width, bufferH: b.height, left: range(0), right: range(half), scale: half / EYE };
+  };
+</script>
+</body>
+</html>
