@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DisplayXR — inline-3D web samples</title>
+<title>DisplayXR Browser — apps and samples</title>
 <style>
   :root { color-scheme: light dark; }
   html,body{margin:0;font:16px/1.6 system-ui,sans-serif}
@@ -15,81 +15,133 @@
   .soon{opacity:.55;font-size:14px}
   code{background:#8882;padding:1px 5px;border-radius:4px}
   a{color:#3b82f6}
+  .grid{display:grid;grid-template-columns:1fr;gap:0 14px}
+  @media (min-width:760px){.grid{grid-template-columns:1fr 1fr}}
+  @media (min-width:960px){.grid3{grid-template-columns:1fr 1fr 1fr}}
+  .wrap{max-width:1000px}
+  section{margin:34px 0 0}
+  section>h2{font-size:22px;margin:0 0 2px}
+  section>p.lead{opacity:.7;margin:0 0 6px}
+  .feature{border-width:2px}
+  .toc{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px;margin:0 0 8px}
+  .tag{font-size:12px;opacity:.65;font-weight:normal}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>DisplayXR — inline-3D web samples</h1>
-  <p class="sub">Glasses-free 3D elements inside ordinary web pages, for the
-    <a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a>. The analog of
-    <code>immersive-web/webxr-samples</code>.
-    <br><strong><a href="https://github.com/DisplayXR/displayxr-browser/releases">Get the DisplayXR Browser</a></strong>
-    and open a sample below on DisplayXR hardware to see it in glasses-free 3D — in any other browser the
-    pages render as normal 2D, so they're safe to view anywhere.</p>
+  <h1>DisplayXR Browser &mdash; the web, in depth</h1>
+  <p class="sub">3D products, movies, photos, maps and video calls, right inside ordinary web pages.
+    Open these in the <a href="https://displayxr.org/browser">DisplayXR Browser</a> on a spatial display
+    to see them in 3D; in any other browser they render as normal 2D, so they're safe to view anywhere.
+    <br><strong><a href="https://github.com/DisplayXR/displayxr-browser/releases/latest">Get the DisplayXR Browser</a></strong>
+    &middot; <a href="https://displayxr.org/browser">displayxr.org/browser</a></p>
+  <nav class="toc">
+    <a href="#apps">Featured apps</a><a href="#start">Start here</a><a href="#media">Photos &amp; video</a>
+    <a href="#content">3D models &amp; splats</a><a href="#scenes">Scenes &amp; cameras</a>
+    <a href="#calls">Video calls</a><a href="#composition">Page composition</a>
+    <a href="#more">More apps</a><a href="#build">Build your own</a>
+  </nav>
 
-  <div class="card">
+  <section id="apps">
+    <h2>Featured apps</h2>
+    <p class="lead">Complete web apps built on the DisplayXR Browser and the <code>@displayxr/inline3d</code> SDK.</p>
+    <div class="grid grid3">
+<div class="card feature">
+    <h2><a href="https://displayxr-gallery.vercel.app">DisplayXR Gallery</a> <span class="tag">live app</span></h2>
+    <p>A full 3D-photo/video social app (a 3D Instagram) built on the inline-3D SDK and
+       hosted on Vercel — browse, upload, and view a feed of woven 3D posts.</p>
+  </div>
+<div class="card feature">
+    <h2><a href="https://displayxr-shop.vercel.app">DisplayXR Shop</a> <span class="tag">live app</span></h2>
+    <p>A full shop, except the products are actually there: four departments, a product page whose
+       hero you look <em>around</em> rather than spin a turntable of photos, search, a cart — and a
+       studio that turns one photograph into a 3D item you can keep. Sign in with Google to scan
+       your own.</p>
+  </div>
+  <div class="card feature">
+    <h2><a href="https://displayxr-ride.vercel.app">DisplayXR Ride</a> <span class="tag">live app</span></h2>
+    <p>An in-car rider screen with real depth: a captured destination as an immersive Gaussian-splat
+       scene, a photoreal 3D map that flies you there, and a one-tap 2D/3D toggle &mdash; all in a web
+       page, built on <code>addSplat()</code>.</p>
+  </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <h2>Start here</h2>
+    <p class="lead">The smallest complete inline-3D pages.</p>
+    <div class="grid">
+<div class="card">
     <h2><a href="samples/hello-cube/">hello cube</a></h2>
     <p>The minimal sample — one rotating three.js cube in a bordered canvas, re-projected off-axis
        so you look <em>around</em> it. Start here to see the smallest complete inline-3D page.</p>
   </div>
-
-  <div class="card">
-    <h2><a href="https://displayxr-shop.vercel.app">Northline storefront</a> — live app</h2>
-    <p>A full shop, except the products are actually there: four departments, a product page whose
-       hero you look <em>around</em> rather than spin a turntable of photos, search, a cart — and a
-       studio that turns one photograph into a 3D item you can keep. Sign in with Google to scan
-       your own. Open it in the DisplayXR Browser on hardware for glasses-free 3D; anywhere else it
-       degrades to 2D.</p>
+<div class="card">
+    <h2><a href="samples/windows/">mixed 3D windows</a></h2>
+    <p>Still 3D photos, a live 3D video, and a real-time three.js scene — every kind of 3D
+       content, each woven with one <a href="docs/authoring-inline-3d.md">SDK</a> call, all on one session.
+       The runtime batches every visible window into a single weave per frame, so it scales to a wall.</p>
   </div>
+    </div>
+  </section>
 
-  <div class="card">
-    <h2><a href="samples/splat/">gaussian splat</a></h2>
-    <p>A 3D Gaussian splat as a glasses-free tile, loaded with one
-       <code>addSplat()</code> call and rendered with the PlayCanvas engine. It auto-frames on
-       the display plane and turns slowly (a <code>.sog</code> that records its capture camera
-       opens at that camera instead), drag to tilt, with a 2D plate composited crisply over the
-       woven 3D. <code>?engine=spark</code> renders the same tile with Spark.</p>
-  </div>
-
-  <div class="card">
-    <h2><a href="samples/model/">glTF model</a></h2>
-    <p>A glTF mesh as a glasses-free tile via <code>addModel()</code> — and, beside it, a mesh and a
-       Gaussian splat sharing one scene and sorting against each other, so a catalogue can mix
-       captured and authored content instead of committing to one. PlayCanvas by default,
-       <code>?engine=three</code> for the three.js twin.</p>
-  </div>
-
-  <div class="card">
+  <section id="media">
+    <h2>Photos &amp; video</h2>
+    <p class="lead">3D photos, 3D video and a full media player.</p>
+    <div class="grid">
+<div class="card">
     <h2><a href="samples/player/">media player</a></h2>
     <p>A 3D media title with real transport via <code>addPlayer()</code> — play/pause/seek/mute
        from an SDK-drawn bar or the keyboard, built on <code>addVideo()</code>. Default (SBS) and
        <code>format:'mono'</code> side by side.</p>
   </div>
-
-  <div class="card">
-    <h2><a href="samples/call/">3D video call</a></h2>
-    <p>A peer-to-peer video call via <code>addCall()</code> — share a link (or its QR code) and up
-       to four people join. A stereo camera is sent as a real side-by-side pair and woven with depth;
-       everyone else, and every other browser, is an ordinary 2D call.</p>
+<div class="card">
+    <h2><a href="samples/wall-3d/">3D picture wall</a></h2>
+    <p>A lazy-loading scrolling wall of 3D pictures — each tile's weave layer is created as it nears
+       the viewport and closed as it scrolls away, so a long wall only pays for what's on screen.</p>
   </div>
-
-  <div class="card">
-    <h2><a href="samples/call-embed/">3D call embed</a></h2>
-    <p>The same call as a drop-in widget: one <code>&lt;dxr-call&gt;</code> element and one
-       <code>&lt;script&gt;</code> tag, no options, no build step, no account &mdash; with a
-       copy-this-snippet box for your own page. 2D in any browser, glasses-free 3D on the DisplayXR
-       Browser. Guide: <a href="docs/call.md">docs/call.md</a>.</p>
+<div class="card">
+    <h2><a href="samples/demo-gallery/">demo gallery</a></h2>
+    <p>A grid of the DisplayXR demo logos, each woven inline as a 3D tile — a compact
+       showcase of the multi-element weave.</p>
   </div>
+    </div>
+  </section>
 
-  <div class="card">
+  <section id="content">
+    <h2>3D models &amp; splats</h2>
+    <p class="lead">Product models and captured scenes, one call each.</p>
+    <div class="grid">
+<div class="card">
+    <h2><a href="samples/model/">glTF model</a></h2>
+    <p>A glTF mesh as a 3D tile via <code>addModel()</code> — and, beside it, a mesh and a
+       Gaussian splat sharing one scene and sorting against each other, so a catalogue can mix
+       captured and authored content instead of committing to one. PlayCanvas by default,
+       <code>?engine=three</code> for the three.js twin.</p>
+  </div>
+<div class="card">
     <h2><a href="samples/shopify/">Shopify product</a></h2>
     <p>A real product from a Shopify demo storefront, loaded straight from
        <code>cdn.shopify.com</code> by URL — no conversion, no re-export, no copy in this repo.
        Shopify serves 3D product media uncompressed, CORS-open and at real-world metre scale, so a
        merchant&rsquo;s existing catalogue already works. Paste another URL to try your own.</p>
   </div>
+<div class="card">
+    <h2><a href="samples/splat/">gaussian splat</a></h2>
+    <p>A 3D Gaussian splat as a 3D tile, loaded with one
+       <code>addSplat()</code> call and rendered with the PlayCanvas engine. It auto-frames on
+       the display plane and turns slowly (a <code>.sog</code> that records its capture camera
+       opens at that camera instead), drag to tilt, with a 2D plate composited crisply over the
+       woven 3D. <code>?engine=spark</code> renders the same tile with Spark.</p>
+  </div>
+    </div>
+  </section>
 
-  <div class="card">
+  <section id="scenes">
+    <h2>Scenes &amp; cameras</h2>
+    <p class="lead">Your own renderer, your own camera, and the display it runs on.</p>
+    <div class="grid">
+<div class="card">
     <h2><a href="samples/camera-rig/">camera rig</a></h2>
     <p>Hand the runtime <em>your</em> camera instead of a virtual display: pose, vertical FOV and a
        convergence distance, sent every frame with <code>setViewRig()</code>. Drag to orbit — your
@@ -97,8 +149,7 @@
        readout, and <code>C</code> to cut between a camera rig and the display rig that frames the
        same cube, which is the clearest way to see what each one is for.</p>
   </div>
-
-  <div class="card">
+<div class="card">
     <h2><a href="samples/display-modes/">display modes</a></h2>
     <p>Ask the panel what it is &mdash; metres, pixels, the view scale it recommends &mdash; and what
        rendering modes the runtime can put it in, then ask it to change one. A 2D/3D
@@ -106,27 +157,34 @@
        alone leaves the woven atlas showing flat, which is blurry), a per-mode <em>request</em>
        button with the non-2-view modes greyed out, and a live log of the two session events.</p>
   </div>
+    </div>
+  </section>
 
-  <div class="card">
-    <h2><a href="samples/windows/">mixed 3D windows</a></h2>
-    <p>Still 3D photos, a live 3D video, and a real-time three.js scene — every kind of glasses-free-3D
-       content, each woven with one <a href="docs/authoring-inline-3d.md">SDK</a> call, all on one session.
-       The runtime batches every visible window into a single weave per frame, so it scales to a wall.</p>
+  <section id="calls">
+    <h2>Video calls</h2>
+    <p class="lead">Peer-to-peer calls with depth, as an API or a drop-in element.</p>
+    <div class="grid">
+<div class="card">
+    <h2><a href="samples/call/">3D video call</a></h2>
+    <p>A peer-to-peer video call via <code>addCall()</code> — share a link (or its QR code) and up
+       to four people join. A stereo camera is sent as a real side-by-side pair and woven with depth;
+       everyone else, and every other browser, is an ordinary 2D call.</p>
   </div>
-
-  <div class="card">
-    <h2><a href="samples/demo-gallery/">demo gallery</a></h2>
-    <p>A grid of the DisplayXR demo logos, each woven inline as a glasses-free-3D tile — a compact
-       showcase of the multi-element weave.</p>
+<div class="card">
+    <h2><a href="samples/call-embed/">3D call embed</a></h2>
+    <p>The same call as a drop-in widget: one <code>&lt;dxr-call&gt;</code> element and one
+       <code>&lt;script&gt;</code> tag, no options, no build step, no account &mdash; with a
+       copy-this-snippet box for your own page. 2D in any browser, 3D on the DisplayXR
+       Browser. Guide: <a href="docs/call.md">docs/call.md</a>.</p>
   </div>
+    </div>
+  </section>
 
-  <div class="card">
-    <h2><a href="samples/wall-3d/">3D picture wall</a></h2>
-    <p>A lazy-loading scrolling wall of 3D pictures — each tile's weave layer is created as it nears
-       the viewport and closed as it scrolls away, so a long wall only pays for what's on screen.</p>
-  </div>
-
-  <div class="card">
+  <section id="composition">
+    <h2>Page composition</h2>
+    <p class="lead">How flat page content and 3D tiles layer over each other.</p>
+    <div class="grid">
+<div class="card">
     <h2><a href="samples/composition/">composition showcase</a></h2>
     <p>Every hard way flat 2D and woven 3D can land on top of each other, as
        <strong>15 numbered cases on one page</strong> — translucent chrome, frosted glass, opaque
@@ -137,50 +195,54 @@
        every section carries a stable <code>data-case</code> marker so a test session can be
        scripted against it.</p>
   </div>
+    </div>
+  </section>
 
-  <div class="card">
-    <h2><a href="https://dfattal.github.io/F1000/">Historic Sites Navigator</a> — live app</h2>
-    <p>Pick a historic site off a globe and drop into it — a travel/heritage experience built on the
-       inline-3D SDK. Open it in the DisplayXR Browser on hardware for glasses-free 3D; anywhere else
-       it degrades to 2D.</p>
-  </div>
-
-  <div class="card">
+  <section id="more">
+    <h2>More apps</h2>
+    <p class="lead">Community-hosted experiences built on the SDK.</p>
+    <div class="grid">
+<div class="card">
     <h2><a href="https://azbleia.github.io/arcade/">DisplayXR Arcade</a> — live app</h2>
     <p>Three small games with real depth, all built the same way on the inline-3D SDK:
        <a href="https://azbleia.github.io/arcade/tetris3d/">Tetris 3D</a> (the stack sits behind the
        glass, the falling piece hovers in front),
        <a href="https://azbleia.github.io/arcade/dino3d/">Dino Run 3D</a> and
        <a href="https://azbleia.github.io/arcade/gems3d/">Gem Swap 3D</a>. Open them in the DisplayXR
-       Browser on hardware for glasses-free 3D; anywhere else they degrade to 2D.</p>
+       Browser on hardware to see it in 3D; anywhere else they degrade to 2D.</p>
   </div>
-
-  <div class="card">
-    <h2><a href="https://displayxr-gallery.vercel.app">DisplayXR Gallery</a> — live app</h2>
-    <p>A full 3D-photo/video social app (a glasses-free-3D Instagram) built on the inline-3D SDK and
-       hosted on Vercel — browse, upload, and view a feed of woven 3D posts. Open it in the DisplayXR
-       Browser on hardware for glasses-free 3D; anywhere else it degrades to 2D.</p>
+<div class="card">
+    <h2><a href="https://dfattal.github.io/F1000/">Historic Sites Navigator</a> — live app</h2>
+    <p>Pick a historic site off a globe and drop into it — a travel/heritage experience built on the
+       inline-3D SDK. Open it in the DisplayXR Browser on hardware to see it in 3D; anywhere else
+       it degrades to 2D.</p>
   </div>
+    </div>
+  </section>
 
-  <div class="card">
-    <h2>The SDK — <code>js/inline3d.js</code></h2>
+  <section id="build">
+    <h2>Build your own</h2>
+    <div class="grid">
+<div class="card">
+    <h2>The SDK &mdash; <code>@displayxr/inline3d</code></h2>
     <p>A dependency-free helper over the <code>inline-3d</code> WebXR surface:
        <code>wall.addImage()</code> / <code>addVideo()</code> / <code>addScene()</code> turn any canvas into a
        weaved 3D window and manage the side-by-side buffer, feature detection, and (for many windows) a lazy
        create/close lifecycle. Optional three.js glue in <code>js/inline3d-three.js</code>.
        Start here: <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
   </div>
-
   <div class="card">
-    <h2>Build your own</h2>
-    <p>Clone <a href="https://github.com/DisplayXR/displayxr-web"><code>displayxr-web</code></a> and turn any
-       canvas into a woven 3D window with one SDK call:</p>
-    <pre style="background:#8882;padding:12px;border-radius:8px;overflow:auto"><code>import { createInline3D } from './js/inline3d.js';
+    <h2>Quick start</h2>
+    <pre style="background:#8882;padding:12px;border-radius:8px;overflow:auto"><code>npm install @displayxr/inline3d</code></pre>
+    <pre style="background:#8882;padding:12px;border-radius:8px;overflow:auto"><code>import { createInline3D } from '@displayxr/inline3d';
 const wall = await createInline3D();
 if (wall.supported) wall.addImage(canvas, 'photo-sbs.png');</code></pre>
-    <p>Full API in the <a href="js/README.md">SDK reference</a>, authoring details in
-       <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
+    <p>Or clone <a href="https://github.com/DisplayXR/displayxr-web"><code>displayxr-web</code></a> (these
+       samples import the SDK by relative path). Full API in the <a href="js/README.md">SDK reference</a>,
+       authoring details in <a href="docs/authoring-inline-3d.md">Authoring inline-3D pages</a>.</p>
   </div>
+    </div>
+  </section>
 </div>
 <!-- Update check (displayxr-browser#154). This page is the DisplayXR Browser's startup page,
      which makes it the one place a check reaches users without shipping an updater. It is a
