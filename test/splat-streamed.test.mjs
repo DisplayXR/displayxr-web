@@ -339,7 +339,9 @@ test("engine:'spark' refuses a Streamed SOG URL by name, synchronously, before S
   assert.equal(sharedIsStreamed, isStreamedUrl, 'one definition, shared by both engines');
   assert.match(STREAMED_NEEDS_PLAYCANVAS, /read only by engine:'playcanvas'/);
   const fs = await import('node:fs');
-  const splat = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const splat = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   const body = splat.slice(splat.indexOf('export function addSplat('));
   const refuse = body.indexOf('if (isStreamedUrl(src)) throw new Error(');
   assert.ok(refuse > 0, 'the Spark branch refuses a streamed URL');

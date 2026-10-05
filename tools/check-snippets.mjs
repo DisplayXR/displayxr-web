@@ -46,6 +46,7 @@ const ENTRIES = {
   '@displayxr/inline3d/three': 'three.d.ts',
   '@displayxr/inline3d/viewer': 'viewer.d.ts',
   '@displayxr/inline3d/splat': 'splat.d.ts',
+  '@displayxr/inline3d/splat/playcanvas': 'splat-playcanvas.d.ts',
   '@displayxr/inline3d/model': 'model.d.ts',
   '@displayxr/inline3d/player': 'player.d.ts',
   '@displayxr/inline3d/call': 'call.d.ts',
