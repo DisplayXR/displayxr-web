@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.30.0 — 2026-10-05
 
 Touches the **preview tier** only (`./call`, `./call/full`, the new `./camera` and `./splat/playcanvas`). RFC 0003
 **phase C2**: the `./call` public surface is trimmed to what a page needs (one warning release
