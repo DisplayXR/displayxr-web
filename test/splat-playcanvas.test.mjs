@@ -701,7 +701,9 @@ test('onFocusChange assigned on the stub BEFORE the adapter loads is the one tha
 
 test('./splat stub carries an onFocusChange slot; the adapter never writes out.ready (source check)', async () => {
   const fs = await import('node:fs');
-  const splat = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const splat = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   const stub = splat.slice(splat.indexOf('function addSplatDeferred'));
   assert.match(stub, /onFocusChange: null,/);
   assert.equal((stub.match(/out\.ready =/g) || []).length, 1, 'one owner of ready');
@@ -1182,7 +1184,9 @@ test('setSource options: transitions validated before anything loads', async () 
 
 test('Spark refuses every effect entry point by name (source check: ./splat imports three)', async () => {
   const fs = await import('node:fs');
-  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   const spark = src.slice(src.indexOf("if (resolveSplatEngine(opts) === 'playcanvas')"));
   assert.match(spark, /if \(opts\.reveal !== undefined && opts\.reveal !== false\) throw effectsNotOnSpark\('reveal'\);/);
   for (const m of ['playEffect', 'setEffect', 'stopEffect']) assert.match(spark, new RegExp(`${m}\\(\\) \\{\\n\\s+throw effectsNotOnSpark\\('${m}\\(\\)'\\);`));
@@ -1627,7 +1631,9 @@ test("the PlayCanvas viewer's mono camera honours captureFit, and re-declares th
 
 test('addSplat validates captureFit at call time (source check — ./splat imports three)', async () => {
   const fs = await import('node:fs');
-  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   assert.match(src, /CAPTURE_FITS\.includes\(opts\.captureFit\)/);
 });
 
@@ -2843,7 +2849,9 @@ test("setRig throws at the call: controls:'page', an unknown type, a bad option"
 });
 
 test('./splat: setRig on the deferred stub queues until ready; Spark refuses it (source check)', async () => {
-  const src = await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = ((await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8')) +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    (await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8')));
   assert.match(src, /setRig: page\s*\?\s*pageOnly\('setRig'\)/);
   assert.match(src, /setRig\(\) is implemented on the PlayCanvas backend only/);
 });
@@ -3653,7 +3661,9 @@ test('setVideo(url): the SDK makes, autoplays and releases its own <video>; a pe
 });
 
 test('./splat: setVideo on the deferred stub waits for ready; controls:page and Spark refuse it (source check)', async () => {
-  const src = await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = ((await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8')) +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    (await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8')));
   assert.match(src, /setVideo: page \? pageOnly\('setVideo'\)/);
   assert.match(src, /setVideo\(\) is implemented on the PlayCanvas backend only/);
 });

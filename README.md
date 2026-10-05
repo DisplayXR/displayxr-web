@@ -24,6 +24,8 @@ npm install @displayxr/inline3d
 import { createInline3D } from '@displayxr/inline3d';
 import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three'; // optional three.js glue
 import { addSplat } from '@displayxr/inline3d/splat';               // experimental: 3DGS in a tile
+//   …or '@displayxr/inline3d/splat/playcanvas': the same addSplat on PlayCanvas, without the
+//   three + Spark download (use it whenever you pass engine: 'playcanvas')
 import { addModel } from '@displayxr/inline3d/model';               // experimental: glTF/GLB in a tile
                                                                     //   (Draco / meshopt / KTX2 too —
                                                                     //    you serve the decoder files)

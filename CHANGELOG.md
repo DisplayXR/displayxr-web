@@ -7,10 +7,23 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** only (`./call`, `./call/full`, the new `./camera`). RFC 0003
+Touches the **preview tier** only (`./call`, `./call/full`, the new `./camera` and `./splat/playcanvas`). RFC 0003
 **phase C2**: the `./call` public surface is trimmed to what a page needs (one warning release
 for the old names), options are regrouped, theming gets a real API, and the stereo camera
 becomes its own subpath. The core entry points are untouched.
+
+### `./splat/playcanvas` — new preview subpath: splats without Spark/three on the page
+
+- **`addSplat` from `@displayxr/inline3d/splat/playcanvas`** is `./splat`'s `addSplat` with the
+  engine fixed to `'playcanvas'`: same options, same synchronous handle. `./splat` imports `three`
+  and `@sparkjsdev/spark` statically (Spark is its default engine and its Spark path is
+  synchronous), so a page passing `engine: 'playcanvas'` there still downloaded both, measured at
+  ~1.7 MB gzipped on displayxr.org. This entry imports neither. `playcanvas` is still loaded on
+  demand, at the first `addSplat`. Passing any other `engine` throws at the call.
+- Internal: the deferred PlayCanvas handle moved from `inline3d-splat.js` to
+  `inline3d-splat-deferred.js`, shared by both entries. `./splat` behaves exactly as before.
+- `test/splat-pc-entry.test.mjs` walks the entry's static import graph and fails on any bare
+  package import, so the property can't silently regress.
 
 ### `./camera` — new preview subpath (RFC 0003 §4)
 

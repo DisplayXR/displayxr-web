@@ -23,6 +23,10 @@
       "types": "./splat.d.ts",
       "import": "./js/inline3d-splat.js"
     },
+    "./splat/playcanvas": {
+      "types": "./splat-playcanvas.d.ts",
+      "import": "./js/inline3d-splat-pc-entry.js"
+    },
     "./model": {
       "types": "./model.d.ts",
       "import": "./js/inline3d-model-entry.js"
@@ -66,6 +70,8 @@
     "js/inline3d-three.js",
     "js/inline3d-viewer.js",
     "js/inline3d-splat.js",
+    "js/inline3d-splat-pc-entry.js",
+    "js/inline3d-splat-deferred.js",
     "js/inline3d-sog.js",
     "js/inline3d-splat-perf.js",
     "js/inline3d-splat-rig.js",
@@ -94,6 +100,7 @@
     "three.d.ts",
     "viewer.d.ts",
     "splat.d.ts",
+    "splat-playcanvas.d.ts",
     "model.d.ts",
     "player.d.ts",
     "camera.d.ts",
