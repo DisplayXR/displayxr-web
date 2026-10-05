@@ -972,6 +972,33 @@ The runtime's eye-tracking contract (`displayxr-runtime`:
 - **MANUAL**: **the app owns it.** The vendor does nothing, so an untracked viewer sees the woven
   pair as a soft double image unless the page goes flat. That is what `untrackedFallback` is for.
 
+### The tracking ease (on by default)
+
+While nobody is tracked the views come from a fallback viewpoint (the runtime's nominal viewer, or
+the vendor's collapsed untracked pair). Where the eye stream switches to the tracked eyes in one
+frame, everything drawn from the views (the eye cameras, head parallax, display-rig layers) would
+snap. The SDK's renderers (`./viewer`'s SceneViewer, `./splat` and `./model` on both engines) ease
+that instead: when the views jump within 600 ms of a `trackingState` edge (more than 0.15 of an eye
+separation in one frame), or by more than half an eye separation where the browser reports no
+state, the eye cameras glide from where they were drawn to the live
+views over 300 ms (smoothstep), and keep following the viewer while they do. The eased views are
+exact frusta for the eased eye, so rig matching and the layer rig are unaffected. A stream the
+vendor already animates (the MANAGED revival ramp) is left alone, as are 2D<->3D mode switches
+(the mode switch's own ramp) and buffer resizes.
+
+```js
+const wall = await createInline3D({ viewerEase: { durationMs: 400, easing: 'easeOutCubic' } }); // session default
+addSplat(wall, canvas, src, { viewerEase: false });   // per renderer: off (the old snap)
+```
+
+A page that renders its own `addScene` from the views can use the same thing, `ViewerEase` (core
+export): copy each view's two matrices, `ease.apply(entries, frame.session.trackingState)` once per
+live frame, render from the copies, and keep using the real `XRView` for `layer.getViewport`.
+
+The ease changes WHAT is rendered (the perspective), not where the weave sends it. The panel's own
+response to an acquisition (the weaver switching from its untracked presentation to weaving, and on
+some panels a lens state change) is the display's, and no page-side setting changes it.
+
 ### Letting the SDK flatten the windows it owns (MANUAL displays)
 
 For `addImage` and `addVideo` the SDK owns the backing store, so it can do the flat switch:

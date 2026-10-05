@@ -31,6 +31,9 @@
 // three entry points are re-exported below so a page has a single import site.
 import { undock, undockAvailable, undockUrl, tileScreenRect, setUndockLayerResolver } from './inline3d-undock.js';
 export { undock, undockAvailable, undockUrl, tileScreenRect };
+import { setSessionViewerEase } from './inline3d-viewer-ease.js';
+// The tracking-acquisition ease, for pages that render their own addScene from the views.
+export { ViewerEase, resolveViewerEaseOption, frameTrackingState, VIEWER_EASE_DEFAULT_MS } from './inline3d-viewer-ease.js';
 
 // The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
 // `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
@@ -558,6 +561,14 @@ function noteRigWinsOverHeight() {
  *        layer; no buffer reallocation) and back on 'tracking', over the mode switch's duration;
  *        'unknown' leaves it where it is. Scene windows are never touched: the page owns those
  *        pixels — listen for `trackingstatechange` and do the same for a scene.
+ * @param {boolean|{enabled?:boolean,durationMs?:number,easing?:string}} [opts.viewerEase]  The
+ *        default, for every SDK renderer drawing through this session (`./viewer`'s SceneViewer,
+ *        `./splat`, `./model`, both engines), of the TRACKING EASE: when a viewer is acquired
+ *        (the views jump from the runtime's nominal viewer to the tracked eyes) or lost, the eye
+ *        views glide from where they were drawn to the new ones over `durationMs` (300) on
+ *        `easing` ('smoothstep' | 'linear' | 'easeOutCubic') instead of snapping in one frame.
+ *        On by default; `false` restores the snap. A renderer's own `viewerEase` option
+ *        overrides this. A page rendering its own addScene uses the exported `ViewerEase`.
  * @returns {Promise<Inline3D | {supported:false, trackingState:'unknown', error?:Error}>} the
  *        manager, which also carries
  *        the display API (`getDisplayInfo` / `getRenderingModes` / `requestRenderingMode` /
@@ -572,6 +583,7 @@ export async function createInline3D(opts = {}) {
     autoChrome = true,
     modeSwitch = null,
     untrackedFallback = 'none',
+    viewerEase,
   } = opts;
   // The unsupported shapes carry `trackingState` too, so a page can read it without branching on
   // `supported` first. There is no on() here to pair with it: nothing would ever fire.
@@ -584,6 +596,7 @@ export async function createInline3D(opts = {}) {
   } catch (e) {
     return { supported: false, trackingState: 'unknown', error: e };
   }
+  if (viewerEase !== undefined) setSessionViewerEase(session, viewerEase);
   let refSpace = null;
   try {
     refSpace = await session.requestReferenceSpace(referenceSpace);

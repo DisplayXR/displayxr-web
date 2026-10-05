@@ -555,7 +555,63 @@ export interface CreateInline3DOptions {
    * `trackingstatechange` and do the same for a scene.
    */
   untrackedFallback?: 'none' | 'mono';
+  /**
+   * The TRACKING EASE, as the default for every SDK renderer drawing through this session
+   * (`./viewer`'s SceneViewer, `./splat` and `./model` on both engines). When a viewer is
+   * acquired — the views jump from the runtime's nominal viewer to the tracked eyes — or lost,
+   * the eye cameras glide from where they were drawn to the new views over `durationMs` instead
+   * of snapping in one frame; everything parented to the views (parallax, display-rig layers)
+   * follows. Triggered by a jump in the views around a `trackingState` edge (or, where the browser
+   * reports no state, by a large one-frame jump); a no-op when the vendor already animates the eyes. On by default; `false` restores
+   * the snap; a renderer's own `viewerEase` option overrides this. A page rendering its own
+   * `addScene` can use the exported {@link ViewerEase}.
+   */
+  viewerEase?: ViewerEaseOption;
 }
+
+/** `true`/unset = on with defaults, `false` = off, or tune it. */
+export type ViewerEaseOption =
+  | boolean
+  | {
+      /** Default true. */
+      enabled?: boolean;
+      /** The glide, in ms (default 300). 0 disables. */
+      durationMs?: number;
+      /** 'smoothstep' (default) | 'linear' | 'easeOutCubic'. */
+      easing?: 'smoothstep' | 'linear' | 'easeOutCubic' | string;
+    };
+
+/** One frame's matrices as an SDK renderer copies them out of an XRView (column-major). */
+export interface ViewerEaseEntry {
+  proj: Float32Array | Float64Array | number[];
+  pose: Float32Array | Float64Array | number[];
+}
+
+/**
+ * The tracking ease on its own, for a page that renders its own `addScene`: copy each view's
+ * `projectionMatrix` and `transform.matrix` into an entry, call `apply(entries,
+ * frame.session.trackingState)` once per LIVE frame, and render from the entries (keep using the
+ * real XRView for `layer.getViewport`). It rewrites the entries only while an ease is running.
+ */
+export declare class ViewerEase {
+  constructor(opts?: ViewerEaseOption & object);
+  readonly enabled: boolean;
+  readonly durationMs: number;
+  readonly easing: string;
+  /** Is an ease running right now? */
+  readonly active: boolean;
+  /** What the last apply() did: the weight of the old views (0 = passed through), the trigger, the jump (eye separations). */
+  readonly last: { weight: number; reason: null | 'armed-jump' | 'jump' | 'easing'; jump: number };
+  apply(entries: ViewerEaseEntry[], trackingState?: XRTrackingState | string | null, timeMs?: number): number;
+  configure(opts?: ViewerEaseOption): void;
+  /** Forget the previous frame (call after a resize or a view-count change you handle yourself). */
+  reset(): void;
+}
+export function resolveViewerEaseOption(opt?: ViewerEaseOption): { enabled: boolean; durationMs: number; easing: string };
+/** `frame.session.trackingState`, or null when the browser does not report one. */
+export function frameTrackingState(frame: unknown): XRTrackingState | null;
+/** 300. */
+export const VIEWER_EASE_DEFAULT_MS: number;
 
 /**
  * The eased 2D<->3D transition — on by default, and the same sequencer (and the same defaults)

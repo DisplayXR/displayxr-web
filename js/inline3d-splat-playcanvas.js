@@ -67,6 +67,7 @@ import {
   sequenceSpans,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
+import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
 import { LayerRigCameras, validateLayerRig, validateLayerRigOptions, DEFAULT_VIEWER_DISTANCE_M } from './inline3d-splat-layer-rig.js';
 import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
@@ -817,8 +818,13 @@ export class PlayCanvasSplatViewer {
       sky = false,
       pageCamera = false,
       toneMapping = 'none',
+      viewerEase,
     } = opts;
     this.canvas = canvas;
+    // The tracking-acquisition ease (./inline3d-viewer-ease.js): undefined = the session's
+    // createInline3D({ viewerEase }) default. Built on the first 3D frame, which knows the session.
+    this._viewerEaseOpt = viewerEase;
+    this.viewerEase = null;
     // controls:'page': the PAGE owns the camera (setPageCamera). No orbit, no idle, no fit; the
     // rig node carries the page's matrix instead of the inverse pivot.
     this.pageCamera = pageCamera === true;
@@ -1194,7 +1200,7 @@ export class PlayCanvasSplatViewer {
   }
 
   /** wall.addScene's frame callback. Validate BEFORE drawing; replay the last good frame else. */
-  onFrame(views, layer) {
+  onFrame(views, layer, frame) {
     if (this._disposed) return;
     if (this._mode !== '3d') this.stopMono();
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
@@ -1224,6 +1230,9 @@ export class PlayCanvasSplatViewer {
       vps.push(vp);
     }
     this._cacheGood(views, vps);
+    // Ease a tracking acquisition/loss on the copies (never the XRViews), before anything —
+    // the rig map, the layer rig, the live outgoing photo — reads them.
+    (this.viewerEase ||= viewerEaseFor(frame, this._viewerEaseOpt)).apply(this._lastGood.entries, frameTrackingState(frame));
     this._drawEntries(this._lastGood.entries, this._lastGood);
   }
 
@@ -2139,6 +2148,7 @@ export class PlayCanvasSplatViewer {
     if (this._disposed) return;
     const box = this.canvas.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
+    this.viewerEase?.reset(); // a new window size moves every projection: not a viewer jump
     const dpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * this.renderScale;
     // Clamp to the device's GL limits BEFORE sizing (./inline3d-buffer-limit.js). Measured on an
     // Adreno 740 tablet: MAX_TEXTURE_SIZE 4096, a 5120-wide request silently became a 4096-wide
@@ -3072,6 +3082,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     nearClip: opts.nearClip,
     farClip: opts.farClip,
     sky: opts.sky,
+    viewerEase: opts.viewerEase,
   });
 
   let handle = null;
@@ -3394,9 +3405,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let initialViewRig = null; // the rig addScene is created with (controls:'page'), else the shorthand
   if (wall && wall.supported) {
     const onFrame = diag
-      ? (views, layer) => {
+      ? (views, layer, frame) => {
           const t = performance.now();
-          viewer.onFrame(views, layer);
+          viewer.onFrame(views, layer, frame);
           diag.frame(views, t); // after the draw: the overlay state is what this frame showed
         }
       : viewer.onFrame;
