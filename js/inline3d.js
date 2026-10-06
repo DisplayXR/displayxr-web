@@ -1015,6 +1015,9 @@ class Inline3D {
     const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
+    // The SDK's own renderers (./viewer, ./splat, ./model) clamp their buffers before sizing and
+    // say so, so the core never inspects (or creates!) their GL context — see _checkSceneBuffer.
+    if (opts.bufferClamped === true) win.warnedBufMismatch = true;
     return this._handle(canvas, win);
   }
 
@@ -2506,8 +2509,15 @@ class Inline3D {
    * splitting canvas.width: the eye boundary lands off-centre and the panel shows a double image.
    * Say so once. ./viewer, ./splat and ./model clamp before sizing and never trip this.
    *
-   * Only called after the app has drawn a stereo frame, so the canvas already HAS its context:
-   * getContext() of the same type returns it, of another type returns null — it never creates one.
+   * Only called after the app's onFrame has run a stereo frame. For a page that draws there, the
+   * canvas already HAS its context: getContext() of the same type returns it, of another type
+   * returns null. NOT for an engine that boots asynchronously (PlayCanvas: the onFrame runs, draws
+   * nothing, the device is created later). There getContext() here CREATES the context — with the
+   * default attributes, antialias:true among them — and the engine's own getContext() then gets
+   * that one back, its attributes ignored: a multisampled default framebuffer the engine never
+   * asked for, which its MSAA resolve cannot blit into (GL_INVALID_OPERATION, nothing drawn —
+   * every addModel tile, 1.28.0–1.32.0). The SDK's renderers opt out (`bufferClamped`); a page
+   * with an async engine should create its context before addScene.
    */
   _checkSceneBuffer(win) {
     const c = win.canvas;

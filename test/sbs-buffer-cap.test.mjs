@@ -340,3 +340,45 @@ test('an addScene canvas whose drawing buffer matches canvas.width says nothing'
   });
   assert.equal(warns.filter((w) => String(w[0]).includes('drawing buffer')).length, 0);
 });
+
+test('bufferClamped: the core never calls getContext on the canvas — an async engine (PlayCanvas) must create its OWN context, with its own attributes', async () => {
+  // The regression: _checkSceneBuffer ran after the first stereo onFrame, before PlayCanvas had
+  // booted, so ITS getContext created the tile's context with the default antialias:true. The
+  // engine then got a multisampled default framebuffer it never asked for, its MSAA resolve blit
+  // failed (GL_INVALID_OPERATION) and every woven addModel tile drew nothing (1.28.0–1.32.0).
+  const env = installEnv();
+  const wall = await newWall();
+  const calls = [];
+  const c = makeCanvas(1000, 500);
+  c.width = 2000;
+  c.height = 500;
+  c.getContext = (type) => {
+    calls.push(type);
+    return type === 'webgl2' ? { drawingBufferWidth: 2000, drawingBufferHeight: 500 } : null;
+  };
+  wall.addScene(c, () => {}, { bufferClamped: true });
+  await flush();
+  env.runFrame();
+  env.runFrame();
+  assert.deepEqual(calls, [], 'no getContext from the core');
+  // and without the flag the page-canvas check still runs (the control)
+  const d = makeCanvas(1000, 500);
+  d.width = 2000;
+  d.height = 500;
+  const dCalls = [];
+  d.getContext = (type) => (dCalls.push(type), type === 'webgl2' ? { drawingBufferWidth: 2000, drawingBufferHeight: 500 } : null);
+  wall.addScene(d, () => {});
+  await flush();
+  env.runFrame();
+  assert.ok(dCalls.includes('webgl2'), 'the page-canvas check still looks');
+});
+
+test('every SDK renderer passes bufferClamped to addScene (source check)', async () => {
+  const fs = await import('node:fs');
+  for (const f of ['inline3d-model-playcanvas.js', 'inline3d-model.js', 'inline3d-splat.js', 'inline3d-splat-playcanvas.js']) {
+    const src = fs.readFileSync(new URL(`../js/${f}`, import.meta.url), 'utf8');
+    const calls = src.match(/wall\.addScene\(canvas,[\s\S]*?\}\);/g) || [];
+    assert.ok(calls.length >= 1, `${f}: an addScene call`);
+    for (const call of calls) assert.match(call, /bufferClamped: true/, `${f}: passes bufferClamped`);
+  }
+});

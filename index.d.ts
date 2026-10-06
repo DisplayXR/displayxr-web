@@ -280,6 +280,14 @@ export interface SceneOptions extends TileOptions {
    * mono path). NOT called when a lazy tile merely scrolls off screen — that layer is coming
    * back. A throw is caught and warned about.
    */
+  /**
+   * This caller sizes the canvas within the device's GL limits itself, so the core must not
+   * inspect its drawing buffer. With it the core never calls `getContext()` on the canvas, which
+   * matters for an engine that creates its context AFTER `addScene` (asynchronously): a core
+   * `getContext()` would create it first, with the default attributes. The SDK's own renderers
+   * pass it. Default false.
+   */
+  bufferClamped?: boolean;
   onLayerLost?: () => void;
 }
 
