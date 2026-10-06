@@ -420,6 +420,7 @@ export function addModel(wall, canvas, src, opts = {}) {
       // The layer can go away for good (the session ends, the constructor refuses): take the
       // canvas flat rather than leave its last side-by-side frame on the page (web#28).
       onLayerLost: viewer.onLayerLost,
+      bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
     });

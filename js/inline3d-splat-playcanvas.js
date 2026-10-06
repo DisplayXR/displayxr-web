@@ -3544,6 +3544,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         ? { viewRig: (initialViewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth })) }
         : { virtualDisplayHeight }),
       onLayerLost: viewer.onLayerLost,
+      bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
     });
