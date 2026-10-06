@@ -157,7 +157,7 @@ test('attrsToOpts: the attribute → option table (unset attributes contribute n
   assert.equal(attrsToOpts(makeEl({ 'max-peers': '' })).maxPeers, undefined);
   // No `signaling` attribute → no adapter here: the call's own default (the hosted server) applies.
   assert.equal(attrsToOpts(makeEl({ key: 'pk_1' })).signaling, undefined);
-  assert.equal(DXR_SIGNAL_DEFAULT, 'wss://dxr-signal.displayxr.workers.dev');
+  assert.equal(DXR_SIGNAL_DEFAULT, 'wss://signal.displayxr.org');
   // A key with an explicit signaling URL reaches that adapter (its connect URL carries it).
   assert.equal(attrsToOpts(makeEl({ signaling: 'wss://s', key: 'pk_1' })).key, 'pk_1');
 });

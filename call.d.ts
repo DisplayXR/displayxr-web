@@ -70,7 +70,12 @@ export interface SignalingSession {
   leave(): void;
 }
 
-/** The hosted DisplayXR signalling server (`dxrSignaling()` with no URL). */
+/**
+ * The hosted DisplayXR signalling server (`dxrSignaling()` with no URL): `wss://signal.displayxr.org`
+ * since the release after 1.32.0 (it was `wss://dxr-signal.displayxr.workers.dev`). The same server
+ * answers on both hosts, and `dxrSignaling()` given either one fails over to the other; a
+ * self-hosted URL is tried as given.
+ */
 export const DXR_SIGNAL_DEFAULT: string;
 /**
  * The server's TURN decision for one session (`welcome.turn`, `dxr-signal/1`). `status` is the

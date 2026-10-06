@@ -1,8 +1,8 @@
 # Privacy — the hosted call signalling service
 
-What the hosted `dxr-signal/1` server behind `@displayxr/inline3d/call` (`wss://dxr-signal.displayxr.workers.dev`,
-moving to `wss://signal.displayxr.org`) sees, keeps, and never sees. It is a small relay for the
-WebRTC handshake plus a credential vendor for TURN; the call itself is peer-to-peer. This page is
+What the hosted `dxr-signal/1` server behind `@displayxr/inline3d/call` (`wss://signal.displayxr.org`,
+also reachable as `wss://dxr-signal.displayxr.workers.dev` — one server, two hostnames) sees,
+keeps, and never sees. It is a small relay for the WebRTC handshake plus a credential vendor for TURN; the call itself is peer-to-peer. This page is
 the plain-language version of the service's design (RFC 0003 §5); the code is public in
 [`signaling/`](../signaling/) and self-hosting it is always free.
 

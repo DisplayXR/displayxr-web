@@ -398,9 +398,9 @@ adapter for that (below).
 
 ## Self-hosting signalling and TURN
 
-The hosted server (`DXR_SIGNAL_DEFAULT`, `wss://dxr-signal.displayxr.workers.dev` today, moving
-to `wss://signal.displayxr.org` — `dxrSignaling()` already fails over between the two by
-itself; plan in [`signaling-domain.md`](signaling-domain.md)) is what the widget
+The hosted server (`DXR_SIGNAL_DEFAULT`, `wss://signal.displayxr.org`; the same server still
+answers on its old host `wss://dxr-signal.displayxr.workers.dev`, and `dxrSignaling()` fails over
+between the two by itself — [`signaling-domain.md`](signaling-domain.md)) is what the widget
 uses with no `signaling` given. It relays offers/answers/ICE and mints short-lived TURN
 credentials; it is fine for demos, prototypes and small sites. It has an **anonymous tier** (no
 key: 20 joins/min and 5 open rooms per address, 2 h rooms, short TURN credentials) and a **keyed

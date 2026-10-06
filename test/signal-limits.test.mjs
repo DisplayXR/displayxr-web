@@ -557,11 +557,13 @@ test('dev server: a room expires after its lifetime — every peer gets `expired
 
 class FakeWS {
   static urls = [];
+  /** Hosts that refuse the socket (reset per case). */
+  static dead = /dead/;
   constructor(url) {
     FakeWS.urls.push(url);
     this.readyState = 0;
     setTimeout(() => {
-      if (/dead|workers\.dev/.test(url)) {
+      if (FakeWS.dead.test(url)) {
         this.readyState = 3;
         this.onerror?.();
         this.onclose?.();
@@ -581,21 +583,62 @@ class FakeWS {
 }
 
 test('dxrSignaling: the hosted default fails over across DXR_SIGNAL_ALIASES; a custom URL takes `aliases`; one dead host alone is `signaling-unreachable`', async () => {
-  assert.equal(DXR_SIGNAL_ALIASES[0], DXR_SIGNAL_DEFAULT);
-  assert.ok(DXR_SIGNAL_ALIASES.includes('wss://signal.displayxr.org'));
-  FakeWS.urls = [];
-  const s = await dxrSignaling(undefined, { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1'));
-  assert.equal(FakeWS.urls.length, 2);
-  assert.match(FakeWS.urls[0], /^wss:\/\/dxr-signal\.displayxr\.workers\.dev\/v1\/connect\?k=[0-9a-f]{64}$/);
-  assert.match(FakeWS.urls[1], /^wss:\/\/signal\.displayxr\.org\/v1\/connect\?k=/);
-  assert.deepEqual(s.turn, { status: 'off', reason: 'cap' });
-  s.leave();
-  FakeWS.urls = [];
-  const c = await dxrSignaling('wss://dead.example/', { WebSocket: FakeWS, aliases: ['wss://alive.example'], key: 'pk_x' }).join(newRoomId(), hooks('peerAAAA1'));
-  assert.equal(FakeWS.urls.length, 2);
-  assert.match(FakeWS.urls[1], /^wss:\/\/alive\.example\/v1\/connect\?k=[0-9a-f]{64}&key=pk_x$/);
-  c.leave();
-  FakeWS.urls = [];
-  await assert.rejects(dxrSignaling('wss://dead.example', { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1')), (e) => e.code === 'signaling-unreachable');
-  assert.equal(FakeWS.urls.length, 1, 'a self-hosted URL has no aliases to try');
+  const NEW = /^wss:\/\/signal\.displayxr\.org\/v1\/connect\?k=[0-9a-f]{64}$/;
+  const OLD = /^wss:\/\/dxr-signal\.displayxr\.workers\.dev\/v1\/connect\?k=[0-9a-f]{64}$/;
+  // The canonical host is the vanity domain (RFC 0003 §5g step 3); workers.dev is the fallback.
+  assert.equal(DXR_SIGNAL_DEFAULT, 'wss://signal.displayxr.org');
+  assert.deepEqual([...DXR_SIGNAL_ALIASES], ['wss://signal.displayxr.org', 'wss://dxr-signal.displayxr.workers.dev']);
+  // Every session is left in `finally`: a failed assertion must not leave a ping timer that keeps
+  // the test process alive.
+  const live = [];
+  const track = (x) => (live.push(x), x);
+  try {
+    // (a) Both hosts up: a default join opens ONE socket, to signal.displayxr.org.
+    FakeWS.dead = /dead/;
+    FakeWS.urls = [];
+    let s = track(await dxrSignaling(undefined, { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1')));
+    assert.equal(FakeWS.urls.length, 1);
+    assert.match(FakeWS.urls[0], NEW);
+    assert.deepEqual(s.turn, { status: 'off', reason: 'cap' });
+    s.leave();
+    // (b) The new host is unreachable: the default fails over to the workers.dev host.
+    FakeWS.dead = /dead|signal\.displayxr\.org/;
+    FakeWS.urls = [];
+    s = track(await dxrSignaling(undefined, { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1')));
+    assert.equal(FakeWS.urls.length, 2);
+    assert.match(FakeWS.urls[0], NEW);
+    assert.match(FakeWS.urls[1], OLD);
+    s.leave();
+    // (c) A page that names the OLD host (signaling="wss://dxr-signal.displayxr.workers.dev", with
+    // or without a trailing slash) tries it first and still fails over to the new one.
+    FakeWS.dead = /dead|workers\.dev/;
+    FakeWS.urls = [];
+    s = track(await dxrSignaling('wss://dxr-signal.displayxr.workers.dev/', { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1')));
+    assert.equal(FakeWS.urls.length, 2);
+    assert.match(FakeWS.urls[0], OLD);
+    assert.match(FakeWS.urls[1], NEW);
+    s.leave();
+    // ...and a page that names the NEW host explicitly fails over to the old one.
+    FakeWS.dead = /dead|signal\.displayxr\.org/;
+    FakeWS.urls = [];
+    s = track(await dxrSignaling('wss://signal.displayxr.org', { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1')));
+    assert.equal(FakeWS.urls.length, 2);
+    assert.match(FakeWS.urls[0], NEW);
+    assert.match(FakeWS.urls[1], OLD);
+    s.leave();
+    // (d) A self-hosted URL gets no hosted aliases: only its own `aliases`, or nothing.
+    FakeWS.dead = /dead/;
+    FakeWS.urls = [];
+    const c = track(await dxrSignaling('wss://dead.example/', { WebSocket: FakeWS, aliases: ['wss://alive.example'], key: 'pk_x' }).join(newRoomId(), hooks('peerAAAA1')));
+    assert.equal(FakeWS.urls.length, 2);
+    assert.match(FakeWS.urls[1], /^wss:\/\/alive\.example\/v1\/connect\?k=[0-9a-f]{64}&key=pk_x$/);
+    c.leave();
+    FakeWS.urls = [];
+    await assert.rejects(dxrSignaling('wss://dead.example', { WebSocket: FakeWS }).join(newRoomId(), hooks('peerAAAA1')), (e) => e.code === 'signaling-unreachable');
+    assert.equal(FakeWS.urls.length, 1, 'a self-hosted URL has no aliases to try');
+    assert.ok(!FakeWS.urls.some((u) => /displayxr/.test(u)), 'no hosted alias is appended to a custom URL');
+  } finally {
+    FakeWS.dead = /dead/;
+    for (const x of live) x.leave();
+  }
 });
