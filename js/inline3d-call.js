@@ -1127,6 +1127,9 @@ class Call {
       hello: this.hello(),
       transport: this.transport,
       peers: [...this.tiles.values()].map((tile) => tile.diag()),
+      // The self view's ACTUAL weave state (web#131): route, woven, the fallback reason and the
+      // tile's firstWoven result — null without a self view.
+      self: this.self ? this.self.diag() : null,
       mono3D: { ...this._mono3DInfo(), lift: this.liftApi, pool: this.liftPool ? this.liftPool.list() : [] },
       speaker: this.speakerId,
       depth: this.depth,
@@ -1866,14 +1869,34 @@ class SelfTile {
     else {
       this.detach();
       this.cam = cam;
-      this.view = addCameraView(wall, this.canvas, cam, { mirror: true, autoConverge: false, aspect: this.call.o.tileAspect });
+      // onRouteChange: the view drops to its flat left eye by itself when the wall says the tile
+      // will not weave (firstWoven → woven:false, web#131), and the badge must follow it.
+      this.view = addCameraView(wall, this.canvas, cam, {
+        mirror: true,
+        autoConverge: false,
+        aspect: this.call.o.tileAspect,
+        onRouteChange: (route, st) => {
+          if (this.cam !== cam) return; // a view this tile already replaced
+          this.call.log('self-route', { route, woven: st.woven, reason: st.reason });
+          this._badge();
+        },
+      });
     }
     this._badge();
   }
 
+  /** 3D only while the view is on the woven route — a layer the wall failed has already taken it flat. */
   _badge() {
     const t = this.call.t;
-    this.badge.replaceChildren(el('b', { text: `${t('you')} · ${this.route === 'woven-sbs' ? t('badge3D') : t('badge2D')}` }));
+    const woven = !!(this.view && this.view.woven);
+    this.badge.replaceChildren(el('b', { text: `${t('you')} · ${woven ? t('badge3D') : t('badge2D')}` }));
+    this.badge.dataset.route = this.route || '';
+  }
+
+  /** For `call.diagnostics().self`: what the self view actually shows. */
+  diag() {
+    if (!this.view) return { route: null, woven: false, reason: 'no-camera', firstWoven: null, layerRetries: 0 };
+    return this.view.weaveState();
   }
 
   onWallLost() {

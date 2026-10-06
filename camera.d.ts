@@ -193,6 +193,24 @@ export interface CameraViewOptions {
   depth?: number;
   /** The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
   aspect?: number;
+  /**
+   * Called when the view's route changes — including when the wall says the tile will not weave
+   * and the view drops to its flat left eye by itself — and when its `firstWoven` settles. Keep a
+   * "3D" badge on `view.woven`, not on the wall.
+   */
+  onRouteChange?: (route: CameraView['route'], state: CameraViewWeaveState) => void;
+}
+
+/** What a {@link CameraView} actually shows (`view.weaveState()`), for diagnostics. */
+export interface CameraViewWeaveState {
+  route: 'woven-sbs' | 'flat-left' | 'flat' | null;
+  woven: boolean;
+  /** Why a pair on a 3D wall is flat: the tile's `firstWoven` reason (`'layer-failed'`, `'session-ended'`), else null. */
+  reason: string | null;
+  /** The current registration's settled `firstWoven`, `'pending'`, or null off the woven route. */
+  firstWoven: { woven: boolean; confirmed: boolean; reason: string | null; ms: number } | 'pending' | null;
+  /** Layer re-registrations attempted after a `'layer-failed'` (bounded; reset by a woven result). */
+  layerRetries: number;
 }
 
 /** A self view from {@link addCameraView}. */
@@ -200,7 +218,12 @@ export interface CameraView {
   readonly canvas: HTMLCanvasElement;
   /** `'woven-sbs'`: 3D on the panel; `'flat-left'`: a pair shown as its left eye; `'flat'`: mono. */
   readonly route: 'woven-sbs' | 'flat-left' | 'flat' | null;
+  /** On the woven route. A tile the wall will not weave drops the view flat, so this goes false with it. */
   readonly woven: boolean;
+  /** Why a pair on a 3D wall is shown flat (`'layer-failed'`, `'session-ended'`), else null. */
+  readonly fallbackReason: string | null;
+  /** What the view actually shows, for diagnostics. */
+  weaveState(): CameraViewWeaveState;
   /** The wall's tile handle while woven (its `firstWoven` settles when the tile is safe to reveal), else null. */
   readonly handle: TileHandle | null;
   readonly mirror: boolean;

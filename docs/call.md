@@ -181,7 +181,7 @@ interface CallHandle {
   tile(peerId: string): HTMLElement | null;   // for layout: 'none'
   on<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): () => void;
   off<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): void;
-  diagnostics(): Record<string, unknown>;     // explicitly UNSTABLE: the wall, the transport, per-peer hello / route / convergence / lift / quality
+  diagnostics(): Record<string, unknown>;     // explicitly UNSTABLE: the wall, the transport, per-peer hello / route / convergence / lift / quality, the self view's weave state
 }
 ```
 
@@ -189,6 +189,14 @@ interface CallHandle {
 (lifted), `'2D'` (flat). Everything that was debug data on the 1.29 handle and peers (`wall`,
 `route`, `hello`, `convergencePx`, `autoConverge`, `lift`, `quality`) is in `diagnostics()`,
 whose shape is free to change.
+
+The self view follows the same rule as a remote tile: its "3D" badge is shown only while its
+layer is on the woven route. If the wall reports that the self view's tile will not weave (its
+`firstWoven` settles `woven: false`, e.g. `'layer-failed'`), the self view drops to its flat,
+mirrored left eye with a `2D` badge and re-tries the layer a few times; a recovered session
+re-weaves it. `diagnostics().self` is `{ route, woven, reason, firstWoven, layerRetries }`, so a
+self view that looks wrong on the panel can be read off directly
+([web#131](https://github.com/DisplayXR/displayxr-web/issues/131)).
 
 ---
 

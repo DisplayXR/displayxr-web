@@ -372,3 +372,45 @@ test('a buffering video re-commits its last frame instead of going idle (#28)', 
   assert.equal(movie.ctx.clears.length, 0, 'a stalled frame must never clear the tile to blank');
   wall.close();
 });
+
+// ── 6. the self-view shape: a CANVAS source (web#131) ───────────────────────────────────
+
+test('a canvas-sourced SBS image window with no live layer paints ONE eye, never the packed pair (#131)', async () => {
+  // The call's self view (addCameraView) and remote tiles register `addImage(canvas, buffer)`
+  // with an SBS CANVAS as the source — it has width/height, no naturalWidth. Pin that shape on
+  // every layer-less path: a refused constructor, a scroll-away, and a stale SBS flag.
+  const buffer = () => ({ width: 800, height: 200 });
+  installEnv({ throwOnConstruct: true });
+  let wall;
+  const refused = makeCanvas();
+  await captureWarnings(async () => {
+    wall = await newWall();
+    wall.addImage(refused, buffer());
+    await flush();
+  });
+  const win = wall._windows.get(refused);
+  assert.equal(win.layer, null);
+  assert.equal(win.sbs, false);
+  assertMono(refused, 'a canvas source whose layer was refused');
+  win.repaint(); // the per-call repaint path the page drives
+  assertMono(refused, 'a repaint of a canvas source with no layer');
+  wall.close();
+
+  installEnv();
+  const wall2 = await newWall();
+  const tile = makeCanvas();
+  wall2.addImage(tile, buffer());
+  await flush();
+  const w2 = wall2._windows.get(tile);
+  assert.equal(w2.sbs, true, 'live: a side-by-side buffer');
+  assert.equal(lastDraw(tile).sw, 800, 'live: the whole pair is drawn, for the layer to weave');
+  wall2._deactivate(w2);
+  assert.equal(w2.sbs, false);
+  assertMono(tile, 'a canvas source after its layer closed');
+  w2.sbs = true; // whatever path put an SBS flag back, the next layer-less paint is still one eye
+  tile.width = 600;
+  w2.repaint();
+  assert.equal(tile.width, 300);
+  assertMono(tile, 'a stale SBS flag on a layer-less canvas source');
+  wall2.close();
+});

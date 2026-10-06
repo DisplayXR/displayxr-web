@@ -101,6 +101,7 @@ const view = addCameraView(await sharedInline3D(), document.querySelector('canva
   aspect: 16 / 9,        // the tile's aspect = the woven buffer's per-eye aspect
 });
 view.route;              // 'woven-sbs' | 'flat-left' | 'flat'
+view.woven;              // true only while on the woven route (a failed layer takes it flat)
 view.setDepth(0.2);  view.setMirror(false);  view.setAutoConverge(false);
 view.remove();           // leave the wall; the camera stays open
 ```
@@ -117,6 +118,26 @@ The canvas is a woven tile and must obey the [woven-canvas rules](woven-canvas-r
 box is the shape the viewer sees, no `filter` / `opacity` / `border-radius` on it or any
 ancestor, controls below or beside it. On a 2D wall (any other browser) the view is the left eye,
 flat and mirrored; `view.route` says which.
+
+**A tile the wall will not weave falls back to the left eye, never to the packed pair.** On a 3D
+wall the view follows its tile's `firstWoven`: if the browser refuses the layer
+(`'layer-failed'`) or the session ends under it (`'session-ended'`), the view drops to
+`'flat-left'` by itself, `view.woven` goes false and `view.fallbackReason` says why. A refused
+layer is re-registered a few times with backoff while the wall stays up; after a session ended the
+view waits for a new wall. Put a "3D" badge on `view.woven` (or listen with `onRouteChange`), not
+on whether the wall is 3D — a canvas the browser is not weaving shows its side-by-side buffer as
+ordinary 2D, which is the squeezed-pair look ([web#131](https://github.com/DisplayXR/displayxr-web/issues/131)).
+
+```js
+const view = addCameraView(wall, canvas, cam, {
+  onRouteChange: (route, state) => (badge.textContent = view.woven ? '3D' : '2D'),
+});
+view.weaveState(); // { route, woven, reason, firstWoven: {…} | 'pending' | null, layerRetries }
+```
+
+`firstWoven` is the SDK's worst-case timer, not a report from the browser (no browser says when
+its compositor joined a canvas), so this catches every failure the page *can* see; a layer the
+browser silently never joins still reads as woven.
 
 ---
 
