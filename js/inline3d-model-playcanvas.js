@@ -459,6 +459,8 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     flipY: false, // glTF is already Y-up
     orbitMaxDeg: opts.orbitMaxDeg,
     orbitEase: opts.orbitEase,
+    // A mesh turns all the way round, like the three path's SceneViewer: not the photo tilt.
+    orbitStyle: opts.orbitStyle ?? 'turntable',
     zoom: opts.zoom,
     feather,
     nearClip: opts.nearClip,

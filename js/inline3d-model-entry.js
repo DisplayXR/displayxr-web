@@ -54,7 +54,7 @@ export function resolveModelEngine(opts = {}) {
 }
 
 /** Options that exist only on the PlayCanvas backend: an error on an explicit engine:'three'. */
-const PLAYCANVAS_ONLY = ['playcanvas', 'environmentRotation', 'controls', 'comfortDepth', 'onBeforeFrame', 'antialias', 'preserveDrawingBuffer', 'nearClip', 'farClip', 'orbitMaxDeg', 'orbitEase', 'zoom'];
+const PLAYCANVAS_ONLY = ['playcanvas', 'environmentRotation', 'controls', 'comfortDepth', 'onBeforeFrame', 'antialias', 'preserveDrawingBuffer', 'nearClip', 'farClip', 'orbitMaxDeg', 'orbitEase', 'orbitStyle', 'zoom'];
 
 /**
  * Everything that can be checked before a module loads. Throws at CALL time — a page bug is true
@@ -66,6 +66,9 @@ export function validateModelCall(canvas, src, opts, route) {
   }
   if (typeof src !== 'string' || !src) {
     throw new Error('@displayxr/inline3d/model: addModel(wall, canvas, src) — `src` must be the URL of a .glb or .gltf.');
+  }
+  if (opts.orbitStyle !== undefined && opts.orbitStyle !== 'turntable' && opts.orbitStyle !== 'tilt') {
+    throw new Error(`@displayxr/inline3d/model: orbitStyle must be 'turntable' or 'tilt' (got ${String(opts.orbitStyle)}).`);
   }
   if (route.engine === 'three' && route.explicit) {
     const bad = PLAYCANVAS_ONLY.filter((k) => opts[k] !== undefined && !(k === 'controls' && opts[k] === 'viewer'));

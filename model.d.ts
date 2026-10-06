@@ -126,6 +126,13 @@ export interface ModelOptions {
   farClip?: number;
   /** PlayCanvas only: the drag's tilt cap in degrees (default 15, tilt-and-relax). */
   orbitMaxDeg?: number;
+  /**
+   * PlayCanvas only: how a drag turns the model. `'turntable'` (the default for addModel, as on the
+   * three path): cumulative, a full drag across the tile is a half turn, and it stays where you
+   * leave it. `'tilt'` (addSplat's mapping for photo splats): capped at ±`orbitMaxDeg` from the
+   * press and relaxing back to rest on release.
+   */
+  orbitStyle?: 'turntable' | 'tilt';
   /** PlayCanvas only: the orbit's easing time constants, seconds. */
   orbitEase?: { drag?: number; rest?: number };
   /** PlayCanvas only: zoom bounds + relax (wheel, pinch, setPose) — see the splat option. */

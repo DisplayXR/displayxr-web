@@ -342,6 +342,35 @@ test('default engine with neither playcanvas nor three resolvable: ready rejects
   }
 });
 
+test("addModel's drag is the three path's TURNTABLE (cumulative, half a turn per tile width, no relax); orbitStyle:'tilt' opts back into the photo mapping", async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const h = addModel(null, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0 });
+  await h.ready;
+  const v = h.viewer;
+  assert.equal(v.orbitStyle, 'turntable');
+  v._onDown({ clientX: 100, clientY: 150, pointerId: 1 });
+  v._onMove({ clientX: 200, clientY: 150, pointerId: 1 }); // +25 % of the width
+  v._onMove({ clientX: 300, clientY: 150, pointerId: 1 }); // another +25 %
+  assert.equal(v.getPose({ target: true }).yaw, 90, 'half the width = a quarter turn, NOT capped at 15°');
+  v._onUp({ pointerId: 1 });
+  assert.equal(v.getPose({ target: true }).yaw, 90, 'release keeps it: no relax to centre');
+  v._onDown({ clientX: 300, clientY: 150, pointerId: 2 });
+  v._onMove({ clientX: 400, clientY: 150, pointerId: 2 });
+  assert.equal(v.getPose({ target: true }).yaw, 135, 'a second drag adds to it');
+  v._onUp({ pointerId: 2 });
+  h.remove();
+  const t = addModel(null, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0, orbitStyle: 'tilt' });
+  await t.ready;
+  t.viewer._onDown({ clientX: 100, clientY: 150, pointerId: 1 });
+  t.viewer._onMove({ clientX: 300, clientY: 150, pointerId: 1 });
+  assert.equal(t.viewer.getPose({ target: true }).yaw, 15, 'tilt: capped');
+  t.viewer._onUp({ pointerId: 1 });
+  assert.equal(t.viewer.getPose({ target: true }).yaw, 0, 'tilt: relaxes');
+  t.remove();
+});
+
 // ── 3. engine setup + lighting ──────────────────────────────────────────────────────────────
 
 test('engine defaults: MSAA on, Khronos PBR Neutral tone mapping, no sky, neutral-studio envAtlas', async () => {

@@ -5,6 +5,17 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### `./model` — the PlayCanvas drag is a turntable again
+
+- `addModel` on PlayCanvas (the default) had inherited `addSplat`'s photo-splat drag: a tilt capped
+  at ±15° from the press that relaxes back to centre on release. On a mesh that reads as "the
+  movement is too small and it snaps back". It now uses the three path's turntable: cumulative, a
+  full drag across the tile is a half turn, and the model stays where you leave it. New option
+  **`orbitStyle: 'turntable' | 'tilt'`** (PlayCanvas only; default `'turntable'` for addModel).
+  `'tilt'` restores the photo mapping. `addSplat` is unchanged.
+
 ## 1.33.1 — 2026-10-06
 
 ### Fixed — woven `addModel` tiles drew nothing (1.28.0–1.32.0)
