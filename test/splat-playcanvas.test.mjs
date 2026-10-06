@@ -2824,6 +2824,174 @@ test("setRig('display'): a transmissive mesh under root gets the grab pass, tran
   out.remove();
 });
 
+
+// ── handle.setStereo: live stereo strength, no cut ───────────────────────────────────────────
+
+test('setStereo re-declares the camera rig with new scalars and NO cut; null keys go back to the asset; sticky across setSource', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [camFlat(), camFlat()];
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setPose({ yaw: 10, zoom: 1.3 });
+  const poseBefore = out.viewer.getPose();
+  const declBefore = pushed.at(-1);
+  assert.equal(declBefore.type, 'camera');
+  assert.deepEqual(out.rig.stereoDefault, { ipdFactor: 1, parallaxFactor: 1 });
+  const n = pushed.length;
+  assert.equal(out.setStereo({ ipdFactor: 0.4 }), out);
+  assert.equal(pushed.length, n + 1, 'declared at once');
+  const d = pushed.at(-1);
+  assert.equal(d.type, 'camera');
+  assert.equal(d.ipdFactor, 0.4);
+  assert.equal(d.parallaxFactor, 1, 'an absent key keeps its value');
+  assert.deepEqual({ ...d, ipdFactor: declBefore.ipdFactor }, declBefore, 'only the scalar changed');
+  assert.deepEqual(out.viewer.getPose(), poseBefore, 'no cut: the pose stays');
+  assert.equal(out.rig.ipdFactor, 0.4);
+  out.setStereo({ parallaxFactor: 0.5 });
+  assert.equal(pushed.at(-1).ipdFactor, 0.4, 'keys merge');
+  assert.equal(pushed.at(-1).parallaxFactor, 0.5);
+  await out.setSource('b.sog');
+  assert.equal(out.rig.ipdFactor, 0.4, 'sticky across setSource');
+  assert.equal(pushed.at(-1).ipdFactor, 0.4, "the incoming asset's rig carries it");
+  out.setStereo({ ipdFactor: null });
+  assert.equal(pushed.at(-1).ipdFactor, 1, "null key = the asset's own");
+  assert.equal(pushed.at(-1).parallaxFactor, 0.5);
+  out.setStereo(null);
+  assert.deepEqual(pushed.at(-1), declBefore, 'cleared: the load-time descriptor');
+  out.remove();
+});
+
+test('setStereo before the first load applies to it; on a display rig it replaces the declared factors; setRig keeps it', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  const p = attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setStereo({ ipdFactor: 0.7 }); // before the asset has loaded
+  await p;
+  assert.equal(pushed.at(-1).ipdFactor, 0.7);
+  addMesh(pc, out, [0, 0, 0], [0.1, 0.1, 0.1]);
+  await out.setRig('display', { environment: 'none' });
+  assert.equal(pushed.at(-1).type, 'display');
+  assert.equal(pushed.at(-1).ipdFactor, 0.7, 'the display rig carries it');
+  const n = pushed.length;
+  out.setStereo({ ipdFactor: 0.7 });
+  assert.equal(pushed.length, n, 'the same display rig is not re-sent');
+  out.setStereo({ parallaxFactor: 0.2 });
+  assert.equal(pushed.at(-1).type, 'display');
+  assert.equal(pushed.at(-1).parallaxFactor, 0.2);
+  assert.equal(pushed.at(-1).virtualDisplayHeight, 0.24, 'same display rig otherwise');
+  await out.setRig('camera');
+  assert.equal(pushed.at(-1).type, 'camera');
+  assert.equal(pushed.at(-1).ipdFactor, 0.7);
+  assert.equal(pushed.at(-1).parallaxFactor, 0.2);
+  out.remove();
+});
+
+// ── handle.setDepthEnvelope: the frame envelope, tile-wide and live ─────────────────────────────
+
+const ENV = (rec, k) => rec.tileParams.get(`dxrFx_envelope_${k}`);
+const ENV_OPTS = { maxFrontM: 0.02, edgeM: 0.001, bandM: 0.016, canvasSizeM: [0.32, 0.18], viewerM: 0.6 };
+
+test('setDepthEnvelope: a hidden tile-scope effect fed from the DECLARED camera rig; setStereo moves it; off on a display rig; null removes it', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.setDepthEnvelope(ENV_OPTS), out);
+  assert.deepEqual(out.effects(), [], "the SDK's, not a page effect");
+  assert.match([...rec.tileChunks.values()].join('\n'), /dxrFx_envelope_center/, 'in the tile chunk');
+  out.viewer._tick();
+  const rig = pushed.at(-1);
+  assert.equal(rig.type, 'camera');
+  assert.equal(ENV(rec, 'on'), 1);
+  const fr = out.viewer.monoFrame();
+  const tanY = Math.tan(rig.verticalFov / 2);
+  const K = ENV(rec, 'K');
+  near(K[0], rig.convergenceDiopters / fr.scale, 1e-12, '1/D in world units');
+  near(K[1], fr.scale * rig.ipdFactor * rig.metersToVirtual * (0.18 / (2 * tanY)), 1e-12, 'k·f_p');
+  assert.deepEqual([K[2], K[3]], [0.6, 0.02]);
+  const T = ENV(rec, 'T');
+  near(T[0], tanY * (320 / 180), 1e-12);
+  assert.deepEqual([T[2], T[3]], [0.16, 0.09]);
+  assert.deepEqual(ENV(rec, 'O'), fr.origin);
+  out.setStereo({ ipdFactor: 0.5 });
+  out.viewer._tick();
+  near(ENV(rec, 'K')[1], K[1] / 2, 1e-12, 'half the eye baseline: half the disparity per depth');
+  addMesh(pc, out, [0, 0, 0], [0.1, 0.1, 0.1]);
+  await out.setRig('display', { environment: 'none' });
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 0, 'a display rig is a portal: inert');
+  await out.setRig('camera');
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1);
+  out.stopEffect();
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1, 'stopEffect() leaves it');
+  out.setDepthEnvelope(null);
+  assert.doesNotMatch([...rec.tileChunks.values()].join('\n'), /dxrFx_envelope_/, 'gone from the chunk');
+  out.remove();
+});
+
+test('setDepthEnvelope before the first asset installs with it; a key given replaces; rects land canvas-normalised, y up', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [camFlat(), camFlat()];
+  const { wall } = rigWall();
+  const out = {};
+  const p = attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setDepthEnvelope({ ...ENV_OPTS, rects: [{ x: 0.75, y: 0, w: 0.25, h: 0.1, weight: 0.5 }] });
+  await p;
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1);
+  assert.deepEqual(ENV(rec, 'F0'), [0.5, 1, 0.8, 1]);
+  assert.deepEqual(ENV(rec, 'W0'), [0.5, 0, 0, 0]);
+  assert.deepEqual(ENV(rec, 'F1'), [1, -1, 1, -1], 'an unused slot is empty');
+  out.setDepthEnvelope({ maxFrontM: 0.01 });
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'K')[3], 0.01);
+  assert.deepEqual(ENV(rec, 'F0'), [0.5, 1, 0.8, 1], 'rects kept');
+  await out.setSource('b.sog');
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1, 'the incoming asset is under it from its first frame');
+  out.remove();
+});
+
+test("setDepthEnvelope reads the panel from the tile's getDisplayInfo (metres per CSS px, nominal viewer)", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const info = { displayWidthMeters: 0.6, displayHeightMeters: 0.3375, displayPixelWidth: 3840, displayPixelHeight: 2160, nominalViewerPosition: { z: 0.8 } };
+  const wall = { supported: true, addScene: () => ({ exclude() {}, unexclude() {}, remove() {}, setViewRig() {}, getDisplayInfo: async () => info }) };
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setDepthEnvelope({});
+  await new Promise((r) => setTimeout(r, 0));
+  out.viewer._tick();
+  const mpp = (0.6 / 3840) * (globalThis.devicePixelRatio || 1);
+  near(ENV(rec, 'T')[2], (320 * mpp) / 2, 1e-12);
+  assert.equal(ENV(rec, 'K')[2], 0.8);
+  out.remove();
+});
+
+test('setStereo throws at the call on a bad value or an unknown key', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.throws(() => out.setStereo({ ipdFactor: -1 }), RangeError);
+  assert.throws(() => out.setStereo({ ipdFactor: NaN }), RangeError);
+  assert.throws(() => out.setStereo({ ipd: 1 }), /unknown option/);
+  assert.throws(() => out.setStereo(3), TypeError);
+  out.remove();
+});
+
 test("setRig throws at the call: controls:'page', an unknown type, a bad option", async () => {
   assert.throws(() => validateSetRig('display', {}, true), /controls:'page'/);
   assert.throws(() => validateSetRig('photo'), /expected 'display', 'camera' or 'auto'/);

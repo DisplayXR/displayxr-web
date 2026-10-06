@@ -401,6 +401,20 @@ export function addSplat(wall, canvas, src, opts = {}) {
           "(addSplat(…, { engine:'playcanvas' })).",
       );
     },
+    /** Not on this backend: the depth envelope is a PlayCanvas-backend feature. */
+    setDepthEnvelope() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setDepthEnvelope() is implemented on the PlayCanvas backend only " +
+          "(addSplat(…, { engine:'playcanvas' })).",
+      );
+    },
+    /** Not on this backend: live stereo strength is a PlayCanvas-backend feature. */
+    setStereo() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setStereo() is implemented on the PlayCanvas backend only " +
+          "(addSplat(…, { engine:'playcanvas' })).",
+      );
+    },
     /** Not on this backend (splat effects are PlayCanvas-only in this version). */
     playEffect() {
       throw effectsNotOnSpark('playEffect()');

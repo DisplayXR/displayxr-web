@@ -174,8 +174,11 @@ export interface ResolvedRig {
   focusDistances: { subject_m: number | null; near_m: number | null; far_m: number | null } | null;
   /** Focus distance along the rest camera's view axis — the zero-disparity PLANE. */
   convergence: number;
+  /** In force — `setStereo`'s values when set, else `stereoDefault`'s. */
   ipdFactor: number;
   parallaxFactor: number;
+  /** The asset's own scalars (block `dxr`, else addSplat's options, else 1) — what `setStereo(null)` restores. PlayCanvas backend. */
+  stereoDefault?: { ipdFactor: number; parallaxFactor: number };
 }
 
 /**
@@ -731,6 +734,38 @@ export interface SplatSetRigDisplayOptions {
   frame?: { center: number[] | { x: number; y: number; z: number }; extent: number[] | { x: number; y: number; z: number } };
 }
 
+/** A rectangle in canvas fractions: origin top-left, y DOWN (a DOM rect / canvas size). */
+export interface SplatCanvasRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** `handle.setDepthEnvelope`'s options. Metres are on the panel. */
+export interface SplatDepthEnvelopeOptions {
+  /** The out-of-glass cap well inside the frame. Default 0.02. */
+  maxFrontM?: number;
+  /** The cap AT a stage edge / rect edge. Default 0.001 (clamped to `maxFrontM`). */
+  edgeM?: number;
+  /** Ramp width from `edgeM` to `maxFrontM`. Default 0.016. */
+  bandM?: number;
+  /** The window content may come out in. Default (or `null`): the whole canvas. */
+  stage?: SplatCanvasRect | null;
+  /** 2D elements over the canvas to keep flat around; `weight` 0..1 (default 1) fades one in/out. The 8 heaviest are kept. */
+  rects?: Array<SplatCanvasRect & { weight?: number }> | null;
+  /** Viewer distance override; default `nominalViewerPosition.z`, else 0.65. */
+  viewerM?: number | null;
+  /** Canvas physical size override, [w, h]; default the CSS box × the panel's metres per CSS px. */
+  canvasSizeM?: [number, number] | null;
+}
+
+/** `handle.setStereo`'s options. Each a finite number >= 0; `null` = back to the asset's own. */
+export interface SplatStereoOptions {
+  ipdFactor?: number | null;
+  parallaxFactor?: number | null;
+}
+
 /** `setSource`'s options. */
 export interface SplatSourceOptions {
   /** > 0 = a crossfade of this length (the 1.10 option; same as `transition: 'crossfade'`). */
@@ -1017,6 +1052,34 @@ export interface SplatHandle {
    */
   setRig(type: 'display', opts?: SplatSetRigDisplayOptions): Promise<SplatHandle>;
   setRig(type: 'camera' | 'auto'): Promise<SplatHandle>;
+  /**
+   * PlayCanvas backend only — throws on Spark. Live stereo strength: re-declares the rig in force
+   * with these scalars on the next frame, with NO cut (pose, focus and framing stay) — a depth
+   * slider. A key given replaces; a key set to `null` returns to the asset's own value (the SOG
+   * camera block's `dxr`, else addSplat's options, else 1); `setStereo(null)` clears both. Sticky
+   * across `setSource` and `setRig`. On a camera rig the values are ABSOLUTE, exactly like
+   * addSplat's `ipdFactor`/`parallaxFactor`; on a display rig they replace the declared display
+   * rig's factors. `controls:'page'` applies them from the next tick. A stereo video holds its own
+   * display rig; a value set meanwhile applies when the video exits. `handle.rig.ipdFactor` /
+   * `parallaxFactor` read what is in force. The 2D↔3D mode-switch ramp still multiplies on top.
+   */
+  setStereo(opts: SplatStereoOptions | null): SplatHandle;
+  /**
+   * PlayCanvas backend only — throws on Spark. THE FRAME ENVELOPE: content may come OUT of the
+   * glass only well inside the frame. At each screen spot the out-of-glass cap is
+   * `edgeM + (maxFrontM − edgeM) · smoothstep(0, bandM, distance)`, where `distance` (metres on the
+   * panel) is to the nearest `stage` edge or to any `rects` entry (weighted). A gaussian beyond the
+   * cap slides back along its own ray from the declared camera rig (centre and scale together), so
+   * the 2D picture is unchanged, the sort stays valid and both eyes agree; behind the glass is never
+   * touched. Tile-wide and LIVE: every asset — an incoming one from its first frame, both sides of
+   * a crossfade — is judged through the rig declared now (its convergence, lens, `ipdFactor` ×
+   * `metersToVirtual`, so `setStereo` is accounted for). Camera rigs only (incl. `controls:'page'`);
+   * inert on a display rig and while a stereo video holds the rig. Physical size comes from
+   * `getDisplayInfo()` (see `displayMetrics()`), overridable with `canvasSizeM` / `viewerM`.
+   * A key given replaces; `null` turns it off. Cheap to call per layout change: uniforms only.
+   * docs/splat-effects.md §Depth envelope.
+   */
+  setDepthEnvelope(opts: SplatDepthEnvelopeOptions | null): SplatHandle;
   /**
    * PlayCanvas backend only — throws on Spark, and with `controls:'page'`. Play a stereo video ON
    * this handle: no new canvas, layer or session (docs/playcanvas-adapter.md §setVideo). The splat

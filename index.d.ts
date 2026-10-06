@@ -123,6 +123,35 @@ export interface XRDisplayInfo {
   nominalViewerPosition?: DOMPointReadOnly;
 }
 
+/** {@link TileHandle.displayMetrics}: a window in physical units. Metres throughout. */
+export interface DisplayMetrics {
+  /** The canvas's CSS box on the panel, [width, height]. */
+  canvasSizeM: [number, number];
+  /** One CSS px on the panel (physical pixel pitch × devicePixelRatio). */
+  metersPerCssPx: number;
+  displaySizeM: [number, number];
+  /** `nominalViewerPosition.z`, else the default. */
+  nominalViewerM: number;
+  /** Always the default today: no browser or runtime surface reports one. */
+  eyeSeparationM: number;
+  source: { size: 'display' | 'default'; viewer: 'display' | 'default'; eyeSeparation: 'default' };
+}
+
+/** What {@link TileHandle.displayMetrics} fills in when the display cannot say. */
+export const DISPLAY_METRICS_DEFAULTS: Readonly<{
+  displaySizeM: readonly [number, number];
+  displayPixels: readonly [number, number];
+  nominalViewerM: number;
+  eyeSeparationM: number;
+}>;
+
+/** {@link TileHandle.displayMetrics} as a pure function of an XRDisplayInfo, a client rect and devicePixelRatio. */
+export function displayMetricsFrom(
+  info: XRDisplayInfo | null,
+  rect: { width: number; height: number } | null,
+  dpr?: number,
+): DisplayMetrics;
+
 /**
  * One rendering mode the DISPLAY can be put in, as reported by the runtime.
  *
@@ -310,6 +339,13 @@ export interface TileHandle {
    * tile off screen).
    */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
+  /**
+   * This window in physical units — canvas size in metres, metres per CSS px, the panel, the
+   * nominal viewer distance, the eye separation — from {@link getDisplayInfo}, with anything not
+   * measurable filled from {@link DISPLAY_METRICS_DEFAULTS} and flagged in `source`. Never rejects.
+   * The canvas size is read at the call: call again after a resize.
+   */
+  displayMetrics(): Promise<DisplayMetrics>;
   /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /**
