@@ -1,7 +1,16 @@
 # Moving signalling to `signal.displayxr.org` (RFC 0003 §5g) — options and the recommendation
 
-**Status: prepared, not cut over.** No DNS has been changed and nothing is deployed to the new
-host. The SDK and the Worker config are ready (below); the cut-over is one DNS decision away.
+**Status (2026-10-06): the domain is live and the SDK default has moved.**
+
+| Step | State |
+|---|---|
+| Worker custom domain `signal.displayxr.org` (steps 3–4 below; how the zone reaches Cloudflare is not recorded here) | **DONE 2026-10-06.** The same `dxr-signal` deployment answers on both hosts; `/health` and a real join return identical results on `signal.displayxr.org` and `dxr-signal.displayxr.workers.dev`. |
+| SDK flip (step 5) | **DONE in the release after 1.32.0:** `DXR_SIGNAL_DEFAULT` is `wss://signal.displayxr.org` and `DXR_SIGNAL_ALIASES` is `[signal.displayxr.org, dxr-signal.displayxr.workers.dev]`. |
+| Record the custom domain in `signaling/deploy/displayxr.toml` | **Open.** The toml has no `routes` entry yet; its header comment still calls the new host the "target". |
+| Retire `dxr-signal.displayxr.workers.dev` | **Open, not before** two minor releases after the flip AND negligible traffic on that host in the Worker's analytics; a CHANGELOG notice ships first. SDKs ≤ 1.32 default to that host (and fail over to the new one), so retiring it early would cost every such page one failed connect per join. |
+| `call.displayxr.org` for the demo (step 6) | not covered by this page's change |
+
+The rest of this page is the plan as written before the cut-over, kept for the reasoning.
 
 ## The constraint
 
@@ -49,7 +58,8 @@ Steps (half a day, no SDK release required):
 4. Verify: `curl https://signal.displayxr.org/` → `{"ok":true,…}`; a two-page call with
    `signaling="wss://signal.displayxr.org"`.
 5. SDK: swap the order of `DXR_SIGNAL_ALIASES` (and `DXR_SIGNAL_DEFAULT`) in the next **minor**
-   release. `dxr-signal.displayxr.workers.dev` stays live as an alias for at least two minor
+   release. *(Done in the release after 1.32.0 — both changed: the adapter always tries the URL it
+   was given first, so flipping the list alone would not have moved the default's first connect.)* `dxr-signal.displayxr.workers.dev` stays live as an alias for at least two minor
    releases and until its traffic (Worker analytics by host) is negligible; retirement gets a
    CHANGELOG notice first.
 6. `call.displayxr.org` for the demo stays a Vercel host (a `CNAME` on Cloudflare DNS); the App
@@ -60,14 +70,15 @@ before switching nameservers; (b) the Vercel project keeps its domain configured
 nameservers move; (c) if the Free plan's proxy ever gets in the way, every record can stay
 DNS-only — only the Worker's own hostname is proxied, and Cloudflare manages that one.
 
-## What is already in place (this PR)
+## What was put in place before the cut-over (the preparing PR)
 
-- **Client failover:** `DXR_SIGNAL_ALIASES = [DXR_SIGNAL_DEFAULT, 'wss://signal.displayxr.org']`
+- **Client failover:** `DXR_SIGNAL_ALIASES = [DXR_SIGNAL_DEFAULT, 'wss://signal.displayxr.org']` (then; the default was the workers.dev host)
   (internal: `js/call/signaling.js`, not a `./call` export — the public surface is the 9 C2 exports;
   pages see the failover through `dxrSignaling()` alone).
   `dxrSignaling()` (the hosted default) tries the aliases in order whenever a host is unreachable,
   on the first join and on every reconnect, and remembers the one that worked. A self-hosted URL
-  is tried as given (`aliases` adds fallbacks). `DXR_SIGNAL_DEFAULT` is unchanged.
+  is tried as given (`aliases` adds fallbacks). `DXR_SIGNAL_DEFAULT` was unchanged then; the
+  flip (status table above) changed it to the new host and put workers.dev second.
 - **Server:** one Worker, any number of hosts; nothing in the protocol or the config keys on the
   hostname. Adding the route is the only Worker change.
 - **Docs** (`docs/call.md`, `signaling/README.md`) name both hosts.

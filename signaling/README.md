@@ -16,9 +16,10 @@ Client side: `dxrSignaling(url, { key })` in [`js/call/signaling.js`](../js/call
 other transport can be plugged into `addCall` by implementing the `SignalingAdapter` interface
 (`call.d.ts`); this protocol is just the one the SDK ships.
 
-**Hosted instance:** `wss://dxr-signal.displayxr.workers.dev` today, `wss://signal.displayxr.org`
-once the zone moves ([`docs/signaling-domain.md`](../docs/signaling-domain.md)); the same Worker
-answers on every host and the SDK fails over between them (`DXR_SIGNAL_ALIASES` in
+**Hosted instance:** `wss://signal.displayxr.org` (the SDK's default since the release after
+1.32.0), with `wss://dxr-signal.displayxr.workers.dev` kept as an alias through the transition
+([`docs/signaling-domain.md`](../docs/signaling-domain.md)); the same Worker answers on every host
+and the SDK fails over between them (`DXR_SIGNAL_ALIASES` in
 `js/call/signaling.js`, internal). What it sees and
 keeps: [`docs/privacy-call.md`](../docs/privacy-call.md).
 

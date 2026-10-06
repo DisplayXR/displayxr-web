@@ -50,17 +50,25 @@ export async function roomKey(room) {
  * The hosted DisplayXR `dxr-signal/1` server (a Cloudflare Worker running `signaling/worker.mjs`,
  * config in `signaling/deploy/displayxr.toml`). It also mints short-lived TURN credentials per
  * join. `dxrSignaling()` with no URL uses it; pass your own URL to self-host.
+ *
+ * From the first release after 1.32.0 this is `wss://signal.displayxr.org` (RFC 0003 §5g step 3;
+ * the custom domain went live 2026-10-06 on the same Worker). Before that it was
+ * `wss://dxr-signal.displayxr.workers.dev`, which the same Worker still serves and which stays in
+ * {@link DXR_SIGNAL_ALIASES} as the fallback — so a page (or an older SDK) that names the old host
+ * keeps working and meets callers on the new one in the same rooms.
  */
-export const DXR_SIGNAL_DEFAULT = 'wss://dxr-signal.displayxr.workers.dev';
+export const DXR_SIGNAL_DEFAULT = 'wss://signal.displayxr.org';
 
 /**
  * Every host the hosted server answers on. The SAME Worker serves all of them (rooms are shared),
- * so the adapter fails over between them when one cannot be reached: the first entry is tried
- * first. `signal.displayxr.org` is the target of the domain move (RFC 0003 §5g); the workers.dev
- * host stays an alias through the transition. Only applies to the hosted default — a self-hosted
- * URL is tried as given (pass `aliases` to add your own fallbacks).
+ * so the adapter fails over between them when one cannot be reached: the URL the page gave (the
+ * default when it gave none) is tried first, then the rest in this order. `signal.displayxr.org`
+ * is the canonical host; the workers.dev host stays an alias through the transition (at least two
+ * minor releases, retired only with a CHANGELOG notice — docs/signaling-domain.md). Only applies
+ * when the URL is one of these hosts — a self-hosted URL is tried as given (pass `aliases` to add
+ * your own fallbacks).
  */
-export const DXR_SIGNAL_ALIASES = Object.freeze([DXR_SIGNAL_DEFAULT, 'wss://signal.displayxr.org']);
+export const DXR_SIGNAL_ALIASES = Object.freeze([DXR_SIGNAL_DEFAULT, 'wss://dxr-signal.displayxr.workers.dev']);
 
 /** Join-time error codes from the server that mean "do not retry with the same inputs". */
 const FATAL_JOIN_CODES = ['bad-room', 'bad-id', 'bad-version', 'bad-key', 'origin-not-allowed', 'blocked'];

@@ -5,6 +5,29 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./call`) only: one default value. No export is added, removed or
+renamed, and no type changes.
+
+### `./call` — the hosted signalling server is now `wss://signal.displayxr.org`
+
+- **`DXR_SIGNAL_DEFAULT` is `wss://signal.displayxr.org`** (was
+  `wss://dxr-signal.displayxr.workers.dev`), and the internal failover list `DXR_SIGNAL_ALIASES` is
+  now `[signal.displayxr.org, dxr-signal.displayxr.workers.dev]`. A `dxrSignaling()` / `<dxr-call>`
+  with no `signaling` connects to the vanity domain first and falls back to workers.dev if it
+  cannot be reached, on the first join and on every reconnect (RFC 0003 §5g step 3; the custom
+  domain went live on 2026-10-06 on the same Worker deployment, so rooms are shared and a caller
+  on either host meets one on the other).
+- **Nothing to do for existing pages.** A page that names either host explicitly
+  (`signaling="wss://dxr-signal.displayxr.workers.dev"` or `"wss://signal.displayxr.org"`) still
+  gets failover to the other. A self-hosted URL is untouched: it is tried as given, with only the
+  `aliases` the page passes. SDKs up to 1.32.0 keep defaulting to workers.dev, which stays live as
+  an alias for at least two minor releases and until its traffic is negligible; its retirement
+  will get a CHANGELOG notice first (`docs/signaling-domain.md`).
+- A page that compares a URL against `DXR_SIGNAL_DEFAULT` to detect "the hosted server" should
+  compare hosts against both names during the transition.
+
 ## 1.32.0 — 2026-10-06
 
 Touches the **core** additively (one new handle method, two new exports) and the **preview tier**
