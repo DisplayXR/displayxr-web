@@ -362,8 +362,9 @@ class Call {
       log: (tag, obj) => this.log(tag, obj),
     });
     this.transport = t;
+    let session = null;
     try {
-      await t.start({
+      session = await t.start({
         room: this.room,
         localStream: this.local.stream,
         sendFormat: this.local.format,
@@ -410,7 +411,36 @@ class Call {
     globalThis.addEventListener?.('pagehide', this._pagehide);
     this.log('joined', { id: this.id, peers: this.tiles.size });
     this.emit('joined', { room: this.room, id: this.id });
+    // The TURN decision is reported on the next task, after join() / mountCall() have resolved:
+    // a page (or <dxr-call>) subscribes once it has the handle, and an event raised mid-join
+    // would reach nobody.
+    setTimeout(() => {
+      if (this.transport === t) this._reportTurn(session);
+    }, 0);
     return this.handle;
+  }
+
+  /**
+   * The signalling server's TURN decision for this session (hosted service, RFC 0003 §5c), once
+   * per join. `turn-cap` (an `error`): the service's monthly relay budget is spent, nobody gets
+   * TURN — direct connections still work. `turn-shed` (a `warning`): only THIS session has no
+   * TURN (an anonymous session near the budget, or too many credential requests from this
+   * address). A server with no TURN at all (self-hosted) says nothing here: that is a setup
+   * choice, documented in docs/call.md.
+   */
+  _reportTurn(session) {
+    const turn = session && session.turn;
+    if (!turn || typeof turn !== 'object') return;
+    if (turn.status === 'off' && turn.reason === 'cap') {
+      this.error('turn-cap', 'relay (TURN) capacity for this month is used up; direct connections still work, but a participant behind a strict NAT may be unreachable', null);
+    } else if (turn.reason === 'budget' || turn.reason === 'rate') {
+      this.warning(
+        'turn-shed',
+        turn.reason === 'rate'
+          ? 'no relay (TURN) for this session: too many credential requests from this address this hour'
+          : 'no relay (TURN) for this anonymous session: the hosted service is near its monthly relay budget (a publishable key keeps TURN)'
+      );
+    }
   }
 
   _onPeer(id) {

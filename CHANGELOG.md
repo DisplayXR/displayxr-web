@@ -129,6 +129,41 @@ Internal moves (no API): `js/call/capture.js` → `js/camera/capture.js`, `js/ca
   parses, a WebM whose tags parse). Panel runs still required: the mirrored self view on glass,
   an SBS photo opened in `/player`.
 
+### `./call` + the hosted service (RFC 0003 §5, phase C3)
+
+Also in this release: the hosted signalling service productised, with the **reference server**
+(`signaling/`). Additive for pages; `dxr-signal/1` gains optional fields and new error codes only.
+
+- **Publishable keys.** `mountCall(el, { key: 'pk_…' })` / `<dxr-call key="pk_…">` now mean
+  something: the hosted server validates the key against its origin list on connect, applies the
+  keyed tier's limits (10× anonymous), and attributes every session to the key id (billing
+  identity from day one; billing is off). Issued by hand: `tools/signal-keys.mjs`. No key = the
+  anonymous tier, as before, with tighter limits.
+- **Limits** (RFC §5b): joins per address per minute, concurrent rooms per address / per key, room
+  lifetime (2 h / 8 h → `expired`), TURN mints per address per hour. A refused join is an `error`
+  with `rate-limited` (+ `error.retryMs`) / `quota` / `bad-key` / `origin-not-allowed` / `blocked`
+  — never a silent hang; reconnects honour `retryMs`.
+- **TURN metering and the monthly cap** (RFC §5c, Decision 2): the service meters minted
+  credentials (and, when configured, Cloudflare's real per-key relay bytes) against the free
+  1000 GB + a $100 hard cap. At 70 % anonymous credentials shorten, at 90 % anonymous sessions
+  get none (`warning` **`turn-shed`**), at 100 % nobody does (`error` **`turn-cap`**) — the call
+  still joins and direct P2P keeps working. `welcome.turn` / `SignalingSession.turn` carry the
+  decision (`SignalingTurnStatus`).
+- **Domain move prepared, not cut over** (RFC §5g): the hosted server answers on every host of
+  `DXR_SIGNAL_ALIASES` (`dxr-signal.displayxr.workers.dev`, `signal.displayxr.org`) and
+  `dxrSignaling()` fails over between them on connect and reconnect. `DXR_SIGNAL_DEFAULT` is
+  unchanged; the alias list is internal (`js/call/signaling.js`, importable by path — the
+  `./call` entry keeps its 9 exports). `dxrSignaling(url, { aliases })` adds fallbacks for a
+  self-hosted URL. Options and the recommendation: `docs/signaling-domain.md`.
+- **Docs:** `docs/privacy-call.md` (what the server sees, retention, the E2E caveat),
+  `signaling/README.md` (keys, limits, budget, self-host vars, a coturn recipe, staging),
+  `docs/call.md` troubleshooting rows for the new codes.
+- **Server:** `signaling/gate.mjs` + `limits.mjs` + `keys.mjs` + `turn-budget.mjs`, shared by
+  the Worker (Durable Objects per subject + one budget, a KV namespace for keys, an hourly
+  analytics cron, `/admin/*` behind `ADMIN_TOKEN`) and the Node dev server (same admission in
+  memory). Staging twin `signaling/deploy/staging.toml`; the C3 gate
+  `test/e2e/signal-staging.e2e.mjs`.
+
 ## 1.29.0 — 2026-09-30
 
 Touches the **core** (additive: `sharedInline3D()`, `handle.rewoven()`) and the **preview tier**

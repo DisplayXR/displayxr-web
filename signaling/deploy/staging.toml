@@ -1,0 +1,49 @@
+# STAGING dxr-signal/1 server: the same code as displayxr.toml, its own Durable Objects / KV /
+# counters, and FAKE TURN credentials (TURN_FAKE) so the budget path runs without any token.
+#   wss://dxr-signal-staging.displayxr.workers.dev
+# Deploy:   npx wrangler deploy --config signaling/deploy/staging.toml
+# Gate:     node test/e2e/signal-staging.e2e.mjs        (RFC 0003 §7, C3 row)
+#
+# Secrets:  npx wrangler secret put ADMIN_TOKEN --config signaling/deploy/staging.toml   (the gate needs it:
+#           ADMIN_TOKEN=… node test/e2e/signal-staging.e2e.mjs). To test real TURN / forced relay here,
+#           also `secret put TURN_KEY_API_TOKEN` and set TURN_KEY_ID + TURN_FAKE = "" below.
+
+name = "dxr-signal-staging"
+main = "../worker.mjs"
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "CallRoom"
+
+[[durable_objects.bindings]]
+name = "METERS"
+class_name = "MeterObject"
+
+[[durable_objects.bindings]]
+name = "BUDGET"
+class_name = "BudgetObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CallRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MeterObject", "BudgetObject"]
+
+# Namespace "dxr-signal-keys-staging" on account ee1192962dfd260c76dd37d7b97d90c8.
+[[kv_namespaces]]
+binding = "KEYS"
+id = "a6bc30730a2e4596bf494f6f8fe32286"
+
+[triggers]
+crons = ["17 * * * *"]
+
+[vars]
+MAX_PEERS = "4"
+ALLOWED_ORIGINS = ""
+TURN_KEY_ID = ""
+TURN_TTL = "3600"
+# Dummy credentials, no token: exercises minting, metering and the budget (not a real relay).
+TURN_FAKE = "1"

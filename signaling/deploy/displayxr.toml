@@ -1,11 +1,16 @@
 # The HOSTED DisplayXR dxr-signal/1 server — what `dxrSignaling()` with no URL connects to:
-#   wss://dxr-signal.displayxr.workers.dev
+#   wss://dxr-signal.displayxr.workers.dev   (alias, kept through the move — docs/signaling-domain.md)
+#   wss://signal.displayxr.org               (target; add it under [[routes]] / custom_domain once the zone is ready)
 # Deploy from the repo root:   npx wrangler deploy --config signaling/deploy/displayxr.toml
+# Staging (same code, own counters, fake TURN):  signaling/deploy/staging.toml
 # Self-hosting? Use ../wrangler.toml (the template) with your own account instead.
 #
-# The TURN API token is a Worker SECRET, never in this file:
-#   npx wrangler secret put TURN_KEY_API_TOKEN --config signaling/deploy/displayxr.toml
-# Health: GET https://dxr-signal.displayxr.workers.dev/  →  {"ok":true,"protocol":"dxr-signal/1","turn":true}
+# Secrets (never in this file):  npx wrangler secret put <NAME> --config signaling/deploy/displayxr.toml
+#   TURN_KEY_API_TOKEN   set        (TURN minting)
+#   ADMIN_TOKEN          optional   (/admin/* — usage, keys, meters)
+#   RATE_SALT            optional   (IP-hash salt for rate-limit state)
+#   CF_ANALYTICS_API_TOKEN + CF_ACCOUNT_ID   optional (hourly real TURN usage; else the estimate counts)
+# Health: GET https://dxr-signal.displayxr.workers.dev/  →  {"ok":true,"protocol":"dxr-signal/1","turn":"ok","keys":true,…}
 
 name = "dxr-signal"
 main = "../worker.mjs"
@@ -15,9 +20,29 @@ compatibility_date = "2026-09-01"
 name = "ROOMS"
 class_name = "CallRoom"
 
+[[durable_objects.bindings]]
+name = "METERS"
+class_name = "MeterObject"
+
+[[durable_objects.bindings]]
+name = "BUDGET"
+class_name = "BudgetObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CallRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MeterObject", "BudgetObject"]
+
+# Publishable keys + blocklist. Namespace "dxr-signal-keys" on account ee1192962dfd260c76dd37d7b97d90c8.
+[[kv_namespaces]]
+binding = "KEYS"
+id = "bbe8206ef6ef4f1ab291c064a5c718ef"
+
+[triggers]
+crons = ["17 * * * *"]
 
 [vars]
 MAX_PEERS = "4"
@@ -25,3 +50,4 @@ ALLOWED_ORIGINS = ""
 # Cloudflare Realtime TURN app "dxr-signal" (key id — not a secret).
 TURN_KEY_ID = "0cb7455446b49d3b3baa466e7273999a"
 TURN_TTL = "3600"
+# Limits and budget: RFC 0003 defaults (see ../wrangler.toml for the knobs).
