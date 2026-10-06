@@ -33,6 +33,13 @@ Touches the **core** additively (one new handle method, two new exports) and the
   live declared rig (convergence, lens, `ipdFactor × metersToVirtual`), so every asset is covered
   from its first frame, through crossfades and through `setStereo`, with no per-asset install.
   Camera rigs only. docs/splat-effects.md §Depth envelope.
+- `setStereo({ ipdScale, parallaxScale })`: the same scalars RELATIVE to each asset's own
+  (`rig.stereoDefault`), re-applied to every asset `setSource` brings in. Per scalar, the absolute
+  and relative keys are exclusive; the last one given wins.
+- **`splatHandle.displayMetrics()`**: the core tile's `displayMetrics()`, on the splat handle.
+- The deferred PlayCanvas handle (what `addSplat` returns before the engine module loads) now has
+  `setStereo`, `setDepthEnvelope` and `displayMetrics`. A call right after `addSplat` was
+  `not a function`. A test now pins this.
 - `STAGE_ORDER` gains `'envelope'` (between `custom` and `cull`), so a page's custom effect runs
   before the cap.
 

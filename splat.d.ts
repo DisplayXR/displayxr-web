@@ -2,7 +2,7 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult, ViewerEaseOption } from './index.js';
+import type { FirstWovenResult, ViewerEaseOption, DisplayMetrics } from './index.js';
 
 /**
  * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
@@ -764,6 +764,9 @@ export interface SplatDepthEnvelopeOptions {
 export interface SplatStereoOptions {
   ipdFactor?: number | null;
   parallaxFactor?: number | null;
+  /** RELATIVE to the asset's own (`rig.stereoDefault`): re-applied to each asset `setSource` brings in. Exclusive with `ipdFactor`; the last one given wins. */
+  ipdScale?: number | null;
+  parallaxScale?: number | null;
 }
 
 /** `setSource`'s options. */
@@ -1064,6 +1067,8 @@ export interface SplatHandle {
    * `parallaxFactor` read what is in force. The 2D↔3D mode-switch ramp still multiplies on top.
    */
   setStereo(opts: SplatStereoOptions | null): SplatHandle;
+  /** This tile in physical units — the core `TileHandle.displayMetrics()`, on the splat handle. Never rejects. */
+  displayMetrics(): Promise<DisplayMetrics>;
   /**
    * PlayCanvas backend only — throws on Spark. THE FRAME ENVELOPE: content may come OUT of the
    * glass only well inside the frame. At each screen spot the out-of-glass cap is

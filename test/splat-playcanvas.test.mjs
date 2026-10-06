@@ -2891,6 +2891,67 @@ test('setStereo before the first load applies to it; on a display rig it replace
   out.remove();
 });
 
+test('setStereo ipdScale/parallaxScale are RELATIVE to each asset’s own and re-apply across setSource; exclusive with the absolute keys', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  const withDxr = (ipd) => {
+    const r = fakeFlat(600, 0);
+    r.gsplatData.meta = { camera: { ...CAM_BLOCK, dxr: { ipd_factor: ipd, parallax_factor: 1 } } };
+    return r;
+  };
+  rec.queue = [withDxr(0.8), withDxr(0.5)];
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.rig.stereoDefault.ipdFactor, 0.8);
+  out.setStereo({ ipdScale: 0.5 });
+  near(pushed.at(-1).ipdFactor, 0.4, 1e-12, 'asset 1 × 0.5');
+  await out.setSource('b.sog');
+  near(pushed.at(-1).ipdFactor, 0.25, 1e-12, 'asset 2 × 0.5 — no page-side re-read');
+  out.setStereo({ ipdFactor: 0.3 });
+  assert.equal(pushed.at(-1).ipdFactor, 0.3, 'absolute replaces the scale');
+  out.setStereo({ ipdScale: 2 });
+  assert.equal(pushed.at(-1).ipdFactor, 1, 'and back: the scale replaces the absolute');
+  assert.throws(() => out.setStereo({ ipdFactor: 1, ipdScale: 1 }), /exclusive/);
+  out.setStereo({ ipdScale: null });
+  assert.equal(pushed.at(-1).ipdFactor, 0.5);
+  out.remove();
+});
+
+test('splat handle displayMetrics() resolves from the tile’s getDisplayInfo, defaults without one', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const info = { displayWidthMeters: 0.6, displayHeightMeters: 0.3375, displayPixelWidth: 3840, displayPixelHeight: 2160, nominalViewerPosition: { z: 0.8 } };
+  const wall = { supported: true, addScene: () => ({ exclude() {}, unexclude() {}, remove() {}, setViewRig() {}, getDisplayInfo: async () => info }) };
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const m = await out.displayMetrics();
+  assert.equal(m.nominalViewerM, 0.8);
+  assert.equal(m.source.size, 'display');
+  near(m.canvasSizeM[0], 320 * (0.6 / 3840) * (globalThis.devicePixelRatio || 1), 1e-12, 'w');
+  out.remove();
+  const bare = {};
+  await attachPlayCanvasSplat(bare, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal((await bare.displayMetrics()).source.size, 'default');
+  bare.remove();
+});
+
+test('the deferred PlayCanvas handle carries every method the adapter adds (a call right after addSplat must not be "not a function")', async () => {
+  const fs = await import('node:fs');
+  const stub = fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8');
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  // adapter-only by design: engine accessors and calls that need a loaded engine are listed here
+  const adapterOnly = new Set(['setRenderScale', 'layerRigs', 'getLayerRig', 'debugCapture', 'diag', 'setPerf']);
+  const missing = Object.keys(out).filter((k) => typeof out[k] === 'function' && !k.startsWith('_') && !adapterOnly.has(k) && !new RegExp(`\\b${k}\\s*[:(]`).test(stub));
+  assert.deepEqual(missing.filter((k) => ['setStereo', 'setDepthEnvelope', 'displayMetrics'].includes(k)), [], 'the new ones');
+  out.remove();
+});
+
 // ── handle.setDepthEnvelope: the frame envelope, tile-wide and live ─────────────────────────────
 
 const ENV = (rec, k) => rec.tileParams.get(`dxrFx_envelope_${k}`);
