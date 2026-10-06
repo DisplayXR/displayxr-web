@@ -2,7 +2,7 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult } from './index.js';
+import type { FirstWovenResult, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
 
 export interface ModelOptions {
@@ -41,6 +41,13 @@ export interface ModelOptions {
    */
   renderScale?: number;
   feather?: number;
+  /**
+   * The tracking ease (default on): when a viewer is acquired or lost and the views jump (the
+   * runtime's nominal viewer <-> the tracked eyes) the eye cameras glide from where they were
+   * drawn to the new views instead of snapping in one frame. Unset: the session's
+   * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
+   */
+  viewerEase?: ViewerEaseOption;
   /**
    * How the mesh is lit.
    *

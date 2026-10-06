@@ -5,6 +5,34 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.31.0 — 2026-10-05
+
+The 1.29 `./call` option spellings stay accepted (with their warning) for one more release; they go in 1.32.
+
+Touches the **preview tier** (`./viewer`, `./splat`, `./model`: the eye cameras they draw) and adds
+one **core** option and export. Pixels move only around a tracking acquisition or loss.
+
+### Added — the tracking ease (`viewerEase`, default on)
+
+- When a viewer is acquired (the views jump from the untracked fallback viewpoint to the tracked
+  eyes) or lost, the SDK's renderers now glide the eye cameras from where they were drawn to the
+  live views over 300 ms (smoothstep) instead of snapping in one frame. Triggered by a jump of more
+  than 0.15 eye separations in one frame within 600 ms of a `trackingState` edge (the state and the
+  jump need not land on the same frame; an edge with no jump changes nothing), or, where the browser
+  reports no state, by a one-frame jump of more than half an eye separation. The eye positions for that test are read off the projections,
+  so rig changes, scene scale and canvas size do not trigger it.
+- Exact, not approximate: every DisplayXR frustum is affine in the eye position, so offsetting the
+  pose (in the view's own frame) and the projection (element-wise) by the same weight gives the
+  frustum the runtime would report for the eased eye. The rig map and the layer rig see consistent
+  views throughout.
+- Left alone: ordinary head motion, a vendor-animated ramp, view-count changes (2D<->3D mode switch),
+  buffer resizes, replayed frames, mono.
+- `createInline3D({ viewerEase })` sets the session default; `viewerEase` on `SceneViewer`,
+  `addSplat` and `addModel` overrides it. `false` (or `{ durationMs: 0 }`) restores the snap;
+  `{ durationMs, easing }` tunes it. Core exports `ViewerEase`, `resolveViewerEaseOption`,
+  `frameTrackingState`, `VIEWER_EASE_DEFAULT_MS` for pages that render their own `addScene`.
+  `handle.viewer.viewerEase.last` reports the last frame's weight and trigger.
+
 ## 1.30.0 — 2026-10-05
 
 Touches the **preview tier** only (`./call`, `./call/full`, the new `./camera` and `./splat/playcanvas`). RFC 0003

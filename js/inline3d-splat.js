@@ -246,6 +246,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     renderScale,
     feather,
     logTag: '[inline3d/splat]',
+    viewerEase: opts.viewerEase,
   }).useEyeCamera(EyeCamera, EdgeFeather);
 
   // Spark renders through the ordinary three.js pipeline, so splats and meshes co-exist and

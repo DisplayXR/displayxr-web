@@ -72,6 +72,7 @@ import {
   scaleViewport,
   mismatchWarning,
 } from './inline3d-buffer-limit.js';
+import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 // NaN/Infinity into a transform silently blanks the tile — three propagates it into the
@@ -281,9 +282,14 @@ export class SceneViewer {
       renderScale = 1,
       feather = 0,
       pitchLimit = PITCH_LIMIT,
+      viewerEase,
     } = opts;
 
     this._THREE = THREE;
+    // The tracking-acquisition ease (./inline3d-viewer-ease.js): undefined = the session's
+    // createInline3D({ viewerEase }) default. Built on the first 3D frame, which knows the session.
+    this._viewerEaseOpt = viewerEase;
+    this.viewerEase = null;
     this.canvas = canvas;
     this.vH = virtualDisplayHeight;
     this.fit = fit;
@@ -681,7 +687,7 @@ export class SceneViewer {
    * stale sub-rect, which smears). A one-frame-stale eye pose is imperceptible; a smear and a
    * black frame are not.
    */
-  onFrame(views, layer) {
+  onFrame(views, layer, frame) {
     if (this._disposed) return;
     // A lazily-activated tile can start weaving after the page already fell back to mono (or
     // after a scroll-away/scroll-back). Take the buffer back to the SBS shape when that happens
@@ -725,7 +731,12 @@ export class SceneViewer {
       vps.push(vp);
     }
 
-    // Validated: this frame WILL draw over everything it clears.
+    // Validated: this frame WILL draw over everything it clears. Copy the matrices first (the
+    // last-good cache), ease a tracking acquisition/loss on the copies, and draw from them, so
+    // the live draw and a later replay are the same numbers.
+    this._cacheGood(views, vps, !eye);
+    const g = this._lastGood;
+    if (eye) (this.viewerEase ||= viewerEaseFor(frame, this._viewerEaseOpt)).apply(g.entries, frameTrackingState(frame));
     const r = this.renderer;
     // getViewport() splits canvas.width; a drawing buffer the browser clamped behind our back
     // (bufferScale().mismatch) gets the same split mapped onto its real size, never canvas.width/2.
@@ -737,7 +748,7 @@ export class SceneViewer {
       r.setViewport(vp.x, vp.y, vp.width, vp.height);
       r.setScissor(vp.x, vp.y, vp.width, vp.height);
       if (eye) {
-        eye.setFromView(views[i]);
+        eye.setFromMatrices(g.entries[i].proj, g.entries[i].pose);
         r.render(this.scene, eye.camera);
       } else {
         r.render(this.scene, this.monoCamera);
@@ -745,7 +756,6 @@ export class SceneViewer {
       if (this._feather) this._feather.render(r, vp);
     }
     r.setScissorTest(false);
-    this._cacheGood(views, vps, !eye);
   }
 
   /**
@@ -977,6 +987,7 @@ export class SceneViewer {
     if (this._disposed) return;
     const box = this.canvas.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
+    this.viewerEase?.reset(); // a new window size moves every projection: not a viewer jump
     const dpr = Math.min(window.devicePixelRatio || 1, 2) * this.renderScale;
     // Clamp to the device's GL limits BEFORE sizing (./inline3d-buffer-limit.js): a store past
     // MAX_TEXTURE_SIZE is silently clamped by the browser while getViewport() keeps splitting

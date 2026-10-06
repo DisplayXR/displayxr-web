@@ -2,7 +2,7 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult } from './index.js';
+import type { FirstWovenResult, ViewerEaseOption } from './index.js';
 
 /**
  * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
@@ -462,6 +462,13 @@ export interface SplatOptions {
   sky?: boolean;
   /** PlayCanvas: a CAP on the projection's far plane (only ever lowers it). Unset: untouched. */
   farClip?: number;
+  /**
+   * The tracking ease (default on): when a viewer is acquired or lost and the views jump (the
+   * runtime's nominal viewer <-> the tracked eyes) the eye cameras glide from where they were
+   * drawn to the new views instead of snapping in one frame. Unset: the session's
+   * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
+   */
+  viewerEase?: ViewerEaseOption;
   /** Camera rig only: the distance in world metres that sits ON the glass. */
   convergence?: number;
   /**

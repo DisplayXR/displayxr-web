@@ -380,6 +380,7 @@ export function addModel(wall, canvas, src, opts = {}) {
     renderScale,
     feather,
     logTag: '[inline3d/model]',
+    viewerEase: opts.viewerEase,
   }).useEyeCamera(EyeCamera, EdgeFeather);
 
   if (envMap) viewer.scene.environment = envMap;

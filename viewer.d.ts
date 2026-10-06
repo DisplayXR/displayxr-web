@@ -1,6 +1,8 @@
 // Type definitions for @displayxr/inline3d/viewer.
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
+import type { ViewerEaseOption } from './index.js';
+
 /** Model-space bounds of the subject a viewer frames on. */
 export interface SubjectBounds {
   center: number[];
@@ -39,6 +41,13 @@ export interface SceneViewerOptions {
   feather?: number;
   /** Pitch clamp in degrees (default [-60, 60]). */
   pitchLimit?: number[];
+  /**
+   * The tracking ease (default on): when a viewer is acquired or lost and the views jump (the
+   * runtime's nominal viewer <-> the tracked eyes) the eye cameras glide from where they were
+   * drawn to the new views instead of snapping in one frame. Unset: the session's
+   * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
+   */
+  viewerEase?: ViewerEaseOption;
 }
 
 export interface OrbitPose {
