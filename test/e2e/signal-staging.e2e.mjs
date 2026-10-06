@@ -132,7 +132,7 @@ async function waitFor(page, fn, what, ms = TIMEOUT_MS) {
         const c = document.querySelector('dxr-call')?.call;
         return {
           state: c?.state,
-          peers: (c?.peers || []).map((p) => ({ id: p.id, state: p.state, inFps: p.quality?.in?.fps ?? null })),
+          peers: (c?.diagnostics?.().peers || []).map((p) => ({ id: p.id, state: p.state, inFps: p.quality?.in?.fps ?? null })),
           events: window.__events.filter((e) => e.t !== 'quality').map((e) => [e.t, e.d]).slice(-12),
         };
       });
@@ -184,7 +184,7 @@ async function headlessCall({ key, relay = false }) {
         p,
         () => {
           const c = document.querySelector('dxr-call').call;
-          const peer = c.peers[0];
+          const peer = c.diagnostics().peers[0]; // quality is diagnostics since C2 (`peers` is the stable info() shape)
           const q = peer && peer.quality && peer.quality.in;
           return peer && peer.state === 'connected' && q && q.fps > 0 ? { id: peer.id, fps: q.fps, w: q.width, h: q.height, codec: q.codec } : null;
         },
@@ -195,7 +195,8 @@ async function headlessCall({ key, relay = false }) {
       out.pages[name].errors = await p.evaluate(() => window.__events.filter((e) => e.t === 'error' || e.t === 'warning').map((e) => `${e.t}:${e.d && e.d.code}`));
       if (relay) {
         out.pages[name].candidatePair = await p.evaluate(async () => {
-          const pc = document.querySelector('dxr-call').call.transport?.peerConnection?.(document.querySelector('dxr-call').call.peers[0].id);
+          const d = document.querySelector('dxr-call').call.diagnostics(); // the transport is diagnostics since C2
+          const pc = d.transport?.peerConnection?.(d.peers[0].id);
           if (!pc) return null;
           const stats = await pc.getStats();
           let pair = null;
