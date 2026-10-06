@@ -1,7 +1,7 @@
 {
   "name": "@displayxr/inline3d",
   "version": "1.30.0",
-  "description": "Turn any HTML <canvas> into a glasses-free-3D window on a DisplayXR display, inside an ordinary web page. Dependency-free; progressive enhancement (falls back to plain 2D everywhere else).",
+  "description": "Turn any HTML <canvas> into a 3D window on a spatial display, inside an ordinary web page, for the DisplayXR Browser. Dependency-free; progressive enhancement (falls back to plain 2D everywhere else).",
   "type": "module",
   "types": "./index.d.ts",
   "main": "./js/inline3d.js",
@@ -116,6 +116,7 @@
     "webxr",
     "inline-3d",
     "glasses-free-3d",
+    "spatial-display",
     "stereo",
     "3d-display",
     "lightfield",

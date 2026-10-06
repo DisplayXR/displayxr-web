@@ -3,12 +3,12 @@
 Inline-3D **web samples** and a small JS SDK for the
 [DisplayXR Browser](https://github.com/DisplayXR/displayxr-browser) — the DisplayXR analog of
 [`immersive-web/webxr-samples`](https://github.com/immersive-web/webxr-samples). This is the canonical
-repo web developers clone to build glasses-free 3D pages, and the site the browser navigates to for the
+repo web developers clone to build 3D pages for spatial displays, and the site the browser navigates to for the
 live demos.
 
 **▶ See it live:** <https://displayxr.github.io/displayxr-web/> — open in the
-[DisplayXR Browser](https://github.com/DisplayXR/displayxr-browser/releases) on DisplayXR hardware for
-glasses-free 3D; in any other browser the pages render as a normal 2D fallback, so they're safe to view
+[DisplayXR Browser](https://github.com/DisplayXR/displayxr-browser/releases) on a spatial display to see
+them in 3D; in any other browser the pages render as a normal 2D fallback, so they're safe to view
 anywhere.
 
 ## Install
@@ -107,7 +107,7 @@ that is intentionally **not** in 1.0): [`docs/sdk-stability.md`](docs/sdk-stabil
 
 ## Quick start
 
-One SDK call turns a `<canvas>` into a glasses-free-3D window. Everything degrades to plain 2D on a
+One SDK call turns a `<canvas>` into a 3D window on a spatial display. Everything degrades to plain 2D on a
 non-DisplayXR browser, so a page is safe to ship anywhere.
 
 ```js
@@ -117,7 +117,7 @@ const wall = await createInline3D();       // opens an inline-3d session (detect
 if (!wall.supported) {
   // Not the DisplayXR Browser (or no 3D display) — your page's normal 2D content shows. Done.
 } else {
-  // Woven, glasses-free 3D. Add content — one call per element:
+  // Woven 3D. Add content — one call per element:
   wall.addImage(canvas, 'photo-sbs.png');                  // a still side-by-side 3D photo
   wall.addVideo(canvas, videoEl);                          // an SBS 3D video
   wall.addScene(canvas, (views, layer) => { /* render */ });// a live three.js / WebGL stereo scene
