@@ -5,6 +5,23 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.33.1 — 2026-10-06
+
+### Fixed — woven `addModel` tiles drew nothing (1.28.0–1.32.0)
+
+- On every DisplayXR Browser, an `addModel` tile (PlayCanvas, the default) loaded its glTF and then
+  drew nothing in 3D, logging `GL_INVALID_OPERATION: glBlitFramebuffer: Invalid operation on
+  multisampled framebuffer` every frame. **Cause:** the core's scene-buffer check (1.28.0) called
+  `canvas.getContext('webgl2')` after the first stereo frame, before PlayCanvas had booted, so it
+  CREATED the tile's context with the default attributes (`antialias: true`). PlayCanvas then got
+  that context back, its own attributes ignored, and its MSAA resolve could not blit into the
+  multisampled default framebuffer. `addSplat` tiles drew, but on a context they never asked for
+  (MSAA on, `preserveDrawingBuffer` ignored).
+- New `addScene` option **`bufferClamped`**. With it the core never inspects or creates the
+  canvas's context. Every SDK renderer passes it (they clamp their own buffers). A page running an
+  engine that creates its context after `addScene` should create the context first, or pass the
+  option.
+
 ## 1.33.0 — 2026-10-06
 
 Touches the **preview tier** (`./call`) only: one default value. No export is added, removed or
@@ -27,23 +44,6 @@ renamed, and no type changes.
   will get a CHANGELOG notice first (`docs/signaling-domain.md`).
 - A page that compares a URL against `DXR_SIGNAL_DEFAULT` to detect "the hosted server" should
   compare hosts against both names during the transition.
-
-## Unreleased
-
-### Fixed — woven `addModel` tiles drew nothing (1.28.0–1.32.0)
-
-- On every DisplayXR Browser, an `addModel` tile (PlayCanvas, the default) loaded its glTF and then
-  drew nothing in 3D, logging `GL_INVALID_OPERATION: glBlitFramebuffer: Invalid operation on
-  multisampled framebuffer` every frame. **Cause:** the core's scene-buffer check (1.28.0) called
-  `canvas.getContext('webgl2')` after the first stereo frame, before PlayCanvas had booted, so it
-  CREATED the tile's context with the default attributes (`antialias: true`). PlayCanvas then got
-  that context back, its own attributes ignored, and its MSAA resolve could not blit into the
-  multisampled default framebuffer. `addSplat` tiles drew, but on a context they never asked for
-  (MSAA on, `preserveDrawingBuffer` ignored).
-- New `addScene` option **`bufferClamped`**. With it the core never inspects or creates the
-  canvas's context. Every SDK renderer passes it (they clamp their own buffers). A page running an
-  engine that creates its context after `addScene` should create the context first, or pass the
-  option.
 
 ## 1.32.0 — 2026-10-06
 
