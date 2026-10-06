@@ -1,6 +1,6 @@
 # The HOSTED DisplayXR dxr-signal/1 server — what `dxrSignaling()` with no URL connects to:
-#   wss://dxr-signal.displayxr.workers.dev   (alias, kept through the move — docs/signaling-domain.md)
-#   wss://signal.displayxr.org               (target; add it under [[routes]] / custom_domain once the zone is ready)
+#   wss://signal.displayxr.org               (the default since the SDK release after 1.32.0; a Workers custom domain, declared below)
+#   wss://dxr-signal.displayxr.workers.dev   (alias, kept for SDKs <= 1.32 — docs/signaling-domain.md says when it may go)
 # Deploy from the repo root:   npx wrangler deploy --config signaling/deploy/displayxr.toml
 # Staging (same code, own counters, fake TURN):  signaling/deploy/staging.toml
 # Self-hosting? Use ../wrangler.toml (the template) with your own account instead.
@@ -10,10 +10,15 @@
 #   ADMIN_TOKEN          optional   (/admin/* — usage, keys, meters)
 #   RATE_SALT            optional   (IP-hash salt for rate-limit state)
 #   CF_ANALYTICS_API_TOKEN + CF_ACCOUNT_ID   optional (hourly real TURN usage; else the estimate counts)
-# Health: GET https://dxr-signal.displayxr.workers.dev/  →  {"ok":true,"protocol":"dxr-signal/1","turn":"ok","keys":true,…}
+# Health: GET https://signal.displayxr.org/  →  {"ok":true,"protocol":"dxr-signal/1","turn":"ok","keys":true,…}
 
 name = "dxr-signal"
 main = "../worker.mjs"
+# Both hostnames, declared: workers.dev stays on, and the custom domain is part of the deploy rather
+# than a dashboard-only setting (it was first added there on 2026-10-06; a deploy without this entry
+# left it in place, but a config that does not say so is one `wrangler` behaviour change from losing it).
+workers_dev = true
+routes = [{ pattern = "signal.displayxr.org", custom_domain = true }]
 compatibility_date = "2026-09-01"
 
 [[durable_objects.bindings]]

@@ -4,9 +4,9 @@
 
 | Step | State |
 |---|---|
-| Worker custom domain `signal.displayxr.org` (steps 3–4 below; how the zone reaches Cloudflare is not recorded here) | **DONE 2026-10-06.** The same `dxr-signal` deployment answers on both hosts; `/health` and a real join return identical results on `signal.displayxr.org` and `dxr-signal.displayxr.workers.dev`. |
+| Worker custom domain `signal.displayxr.org` (steps 3–4 below; the zone took the recommended route — full setup on the Free plan, nameservers switched at the registrar, every imported record left DNS-only so the site's host still terminates TLS for the website) | **DONE 2026-10-06.** The same `dxr-signal` deployment answers on both hosts; `/health` and a real join return identical results on `signal.displayxr.org` and `dxr-signal.displayxr.workers.dev`. |
 | SDK flip (step 5) | **DONE in the release after 1.32.0:** `DXR_SIGNAL_DEFAULT` is `wss://signal.displayxr.org` and `DXR_SIGNAL_ALIASES` is `[signal.displayxr.org, dxr-signal.displayxr.workers.dev]`. |
-| Record the custom domain in `signaling/deploy/displayxr.toml` | **Open.** The toml has no `routes` entry yet; its header comment still calls the new host the "target". |
+| Record the custom domain in `signaling/deploy/displayxr.toml` | **DONE:** `routes = [{ pattern = "signal.displayxr.org", custom_domain = true }]` with `workers_dev = true`. Before that entry existed, a `wrangler deploy` from the toml did leave the dashboard-added domain in place (prod was redeployed after the domain was added and kept answering on it). |
 | Retire `dxr-signal.displayxr.workers.dev` | **Open, not before** two minor releases after the flip AND negligible traffic on that host in the Worker's analytics; a CHANGELOG notice ships first. SDKs ≤ 1.32 default to that host (and fail over to the new one), so retiring it early would cost every such page one failed connect per join. |
 | `call.displayxr.org` for the demo (step 6) | not covered by this page's change |
 
@@ -64,6 +64,8 @@ Steps (half a day, no SDK release required):
    CHANGELOG notice first.
 6. `call.displayxr.org` for the demo stays a Vercel host (a `CNAME` on Cloudflare DNS); the App
    Link / association files are served from there (RFC §3c).
+
+What the move actually hit: the destination's automatic record scan MISSED a hostname that existed only as plain A records to a third-party host (four A records, one name) and flattened the site host's dynamic ALIAS records into fixed IPs. Both were caught by reading the old provider's record list by hand before the switch — the scan is a starting point, not the inventory.
 
 Risk notes: (a) a missed MX/TXT record is the classic migration failure — diff the zone export
 before switching nameservers; (b) the Vercel project keeps its domain configured as today, only the
