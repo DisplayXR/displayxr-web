@@ -98,6 +98,7 @@ import {
   ORBIT_MAX_DEG,
   ORBIT_TAU_DRAG_S,
   ORBIT_TAU_REST_S,
+  DRAG_DEG_PER_TILE,
   WHEEL_LINE_PX,
   WHEEL_PAGE_PX,
   WHEEL_MAX_PX,
@@ -812,6 +813,7 @@ export class PlayCanvasSplatViewer {
       pitchLimit = PITCH_LIMIT,
       orbitMaxDeg = ORBIT_MAX_DEG,
       orbitEase = {},
+      orbitStyle = 'tilt',
       zoom,
       feather = 0,
       captureFit = 'height',
@@ -853,6 +855,10 @@ export class PlayCanvasSplatViewer {
     // from where the press started, easing with τ = orbitEase.drag; release relaxes back with
     // τ = orbitEase.rest. `_orbitMode` is 'drag' | 'rest' | null (null = ordinary damping).
     this.orbitMaxDeg = orbitMaxDeg;
+    // 'tilt' (the default; photo splats: a capped tilt that relaxes) or 'turntable' (./model: an
+    // object you turn all the way round — SceneViewer's cumulative drag, DRAG_DEG_PER_TILE per
+    // tile width, no relax).
+    this.orbitStyle = orbitStyle === 'turntable' ? 'turntable' : 'tilt';
     this.orbitEase = { drag: orbitEase.drag ?? ORBIT_TAU_DRAG_S, rest: orbitEase.rest ?? ORBIT_TAU_REST_S };
     this._orbitMode = null;
     // Zoom bounds + relax (./inline3d-splat-shared.js §ZOOM). Wheel and pinch clamp to
@@ -2414,6 +2420,7 @@ export class PlayCanvasSplatViewer {
     };
     const endDrag = () => {
       dragging = false;
+      if (this.orbitStyle === 'turntable') return; // stays where it was turned
       this._targetYaw = restYaw;
       this._targetPitch = clamp(restPitch, this.pitchLimit[0], this.pitchLimit[1]);
       this._orbitMode = 'rest';
@@ -2443,7 +2450,8 @@ export class PlayCanvasSplatViewer {
       // Rest = where the pose was heading when pressed (an idle turntable's yaw included).
       restYaw = this._orbitMode ? restYaw : this._targetYaw;
       restPitch = this._orbitMode ? restPitch : this._targetPitch;
-      this._orbitMode = 'drag';
+      // turntable: the ordinary damping (no drag ease, no relax), as SceneViewer
+      this._orbitMode = this.orbitStyle === 'turntable' ? null : 'drag';
       this._lastInput = now();
     };
     this._onMove = (ev) => {
@@ -2457,6 +2465,20 @@ export class PlayCanvasSplatViewer {
       }
       if (!dragging) return;
       const box = el.getBoundingClientRect();
+      if (this.orbitStyle === 'turntable') {
+        // SceneViewer's drag (./inline3d-viewer.js): a full drag across the tile is a half turn,
+        // accumulated from the last move, near face following the pointer on both axes.
+        this._targetYaw += ((ev.clientX - startX) / Math.max(box.width, 1)) * DRAG_DEG_PER_TILE;
+        this._targetPitch = clamp(
+          this._targetPitch + ((ev.clientY - startY) / Math.max(box.height, 1)) * DRAG_DEG_PER_TILE,
+          this.pitchLimit[0],
+          this.pitchLimit[1],
+        );
+        startX = ev.clientX;
+        startY = ev.clientY;
+        this._lastInput = now();
+        return;
+      }
       const dx = (ev.clientX - startX) / Math.max(box.width, 1);
       const dy = (ev.clientY - startY) / Math.max(box.height, 1);
       const max = this.orbitMaxDeg;
