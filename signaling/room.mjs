@@ -59,7 +59,7 @@ export class Room {
   _meta(conn) {
     let m = this.meta.get(conn);
     if (!m) {
-      m = { id: null, count: 0, windowAt: this.now(), session: null };
+      m = { id: null, count: 0, windowAt: this.now(), session: null, pending: null };
       this.meta.set(conn, m);
     }
     return m;
@@ -77,7 +77,20 @@ export class Room {
   restore(conn, id, session = null) {
     if (!PEER_ID_RE.test(id)) return;
     this.peers.set(id, conn);
-    this.meta.set(conn, { id, count: 0, windowAt: this.now(), session: session || null });
+    this.meta.set(conn, { id, count: 0, windowAt: this.now(), session: session || null, pending: null });
+  }
+
+  /**
+   * Send to a peer, respecting the protocol's ordering rule: `welcome` is the FIRST message a
+   * joined peer receives. Between a peer's slot being reserved and its welcome going out there
+   * can be an await (the TURN mint is a network call), and in that window another peer's
+   * `peer-joined` / `signal` / `peer-left` may be addressed to it. Those are held here and
+   * flushed, in order, right behind the welcome.
+   */
+  _deliver(conn, obj) {
+    const m = conn && this.meta.get(conn);
+    if (m && m.pending) m.pending.push(obj);
+    else safeSend(conn, obj);
   }
 
   async onMessage(conn, text) {
@@ -100,15 +113,16 @@ export class Room {
 
     switch (msg.t) {
       case 'ping':
-        return safeSend(conn, { t: 'pong' });
+        return this._deliver(conn, { t: 'pong' });
       case 'join':
         return this._join(conn, m, msg);
       case 'signal':
-        if (!m.id) return this._fail(conn, 'not-joined', 'join first');
+        // A peer is "joined" once its welcome is out; until then it has nothing to signal about.
+        if (!m.id || m.pending) return this._fail(conn, 'not-joined', 'join first');
         if (typeof msg.to !== 'string' || !this.peers.has(msg.to) || msg.to === m.id) {
           return safeSend(conn, { t: 'error', code: 'no-such-peer', to: msg.to ?? null });
         }
-        return safeSend(this.peers.get(msg.to), { t: 'signal', from: m.id, data: msg.data ?? null });
+        return this._deliver(this.peers.get(msg.to), { t: 'signal', from: m.id, data: msg.data ?? null });
       case 'leave':
         this.onClose(conn);
         try {
@@ -142,10 +156,20 @@ export class Room {
       }
       return;
     }
-    const others = [...this.peers.keys()];
+    // Reserve the slot NOW (synchronously), so a burst cannot oversubscribe the room or mint TURN
+    // credentials for peers that will be turned away — and open the hold-back queue: nothing
+    // reaches this peer before its own welcome (see _deliver). Peers that are already welcomed do
+    // not know this one, so they are told here; peers still waiting for their welcome will find
+    // it in their roster, which is read at send time. Either way each pair hears of the other
+    // exactly once.
+    const first = this.peers.size === 0;
+    for (const [, other] of this.peers) {
+      const om = this.meta.get(other);
+      if (!om || !om.pending) safeSend(other, { t: 'peer-joined', id: msg.id });
+    }
     m.id = msg.id;
+    m.pending = [];
     this.peers.set(msg.id, conn);
-    const first = others.length === 0;
     const s = m.session;
     // TURN: the admission decision (budget / tier / mint rate) says whether to mint at all and
     // for how long; a server without TURN configured has no minter. The welcome always says
@@ -166,11 +190,25 @@ export class Room {
         }
       }
     }
+    // The peer may have gone (closed, expired) while the mint was in flight: then its slot is
+    // already released and the others already heard `peer-left`.
+    if (this.peers.get(msg.id) !== conn || m.id !== msg.id) return;
+    const held = m.pending || [];
+    m.pending = null;
+    // The roster is read HERE, not at reservation: it is everyone in the room as this welcome
+    // goes out, including peers that joined during the mint.
+    const others = [...this.peers.keys()].filter((id) => id !== msg.id);
     const welcome = { t: 'welcome', v: 1, id: msg.id, peers: others, max: this.max, tier: s ? s.tier : 'anon', turn };
     if (s && s.key) welcome.key = s.key;
     if (ice) welcome.iceServers = ice;
     safeSend(conn, welcome);
-    for (const id of others) safeSend(this.peers.get(id), { t: 'peer-joined', id: msg.id });
+    // What was held during the mint, minus what the roster already says: a `peer-joined` for
+    // someone listed in `peers` would announce them twice.
+    const listed = new Set(others);
+    for (const obj of held) {
+      if (obj && obj.t === 'peer-joined' && listed.has(obj.id)) continue;
+      safeSend(conn, obj);
+    }
     if (first) this.hooks.onFirst?.(s);
   }
 
@@ -182,7 +220,7 @@ export class Room {
     m.id = null;
     if (this.peers.get(id) !== conn) return;
     this.peers.delete(id);
-    for (const other of this.peers.values()) safeSend(other, { t: 'peer-left', id });
+    for (const other of this.peers.values()) this._deliver(other, { t: 'peer-left', id });
     if (this.peers.size === 0) {
       this.max = null;
       this.hooks.onEmpty?.();

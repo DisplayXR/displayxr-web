@@ -10,6 +10,17 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 Touches the **core** additively (one new handle method, two new exports) and the **preview tier**
 (`./splat`, PlayCanvas backend).
 
+
+### Hosted signalling server (`signaling/`, not part of the npm package)
+
+- **`welcome` is now always the first message a joined peer receives.** With a real TURN key the
+  server awaits a credential mint between reserving a peer's slot and welcoming it; another peer
+  joining or signalling in that window used to reach the first peer *before* its own welcome, and
+  that welcome's `peers` then omitted the newcomer. Messages addressed to a not-yet-welcomed peer
+  are now held and flushed behind its welcome, and the roster is read when the welcome is sent. The
+  SDK was already tolerant of the old order (its transport replays early `peer-joined`s); raw
+  `dxr-signal/1` clients were not. No protocol field changed.
+
 ### Core — `handle.displayMetrics()`
 
 - **`handle.displayMetrics()`** → `{ canvasSizeM, metersPerCssPx, displaySizeM, nominalViewerM,

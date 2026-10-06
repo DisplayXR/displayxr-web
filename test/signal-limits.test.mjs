@@ -354,6 +354,108 @@ const wsWithOrigin = (origin) =>
     }
   };
 
+// ── room.mjs: ordering — `welcome` is the first message a joined peer receives ────────────────
+// With a real TURN key the mint is a network call, so a join has an await between "slot reserved"
+// and "welcome sent". Whatever is addressed to that peer in between must wait behind its welcome.
+
+/** A minter whose calls resolve only when the test says so (and in the order it says). */
+const deferredMinter = () => {
+  const calls = [];
+  const ice = [{ urls: 'turn:x', username: 'u', credential: 'c' }];
+  return { calls, mint: () => new Promise((res) => calls.push(() => res(ice))) };
+};
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const types = (c) => c.out.map((m) => m.t || (m.closed ? `closed:${m.closed}` : '?'));
+const joinMsg = (id, extra = {}) => JSON.stringify({ t: 'join', v: 1, room: 'roomroomroomroom1234', id, ...extra });
+
+test('Room: nothing reaches a peer before its welcome, even when another peer joins and signals it during its TURN mint; the roster is read at send time and each pair hears of the other exactly once', async () => {
+  const d = deferredMinter();
+  const r = new Room({ iceServers: d.mint });
+  const a = fakeConn();
+  const b = fakeConn();
+  const pa = r.onMessage(a.conn, joinMsg('peerAAAA1'));
+  const pb = r.onMessage(b.conn, joinMsg('peerBBBB2'));
+  await tick();
+  assert.equal(d.calls.length, 2, 'both joins are waiting on their mint');
+  assert.deepEqual(types(a), [], 'A: nothing before its welcome (B joined during A\'s mint)');
+  assert.deepEqual(types(b), []);
+  // B's mint lands first: B is welcomed while A is still waiting.
+  d.calls[1]();
+  await pb;
+  assert.deepEqual(types(b), ['welcome']);
+  assert.deepEqual(b.out[0].peers, ['peerAAAA1'], 'B\'s roster already has A (its slot is reserved)');
+  assert.deepEqual(types(a), [], 'A still has nothing: no peer-joined ahead of its welcome');
+  // B is entitled to signal A now; A must not see it before its own welcome.
+  await r.onMessage(b.conn, JSON.stringify({ t: 'signal', to: 'peerAAAA1', data: { sdp: 'offer' } }));
+  assert.deepEqual(types(a), [], 'a signal addressed to a not-yet-welcomed peer is held');
+  // A, not yet welcomed, has nothing to signal about.
+  await r.onMessage(a.conn, JSON.stringify({ t: 'signal', to: 'peerBBBB2', data: {} }));
+  assert.equal(a.out.length, 1);
+  assert.equal(a.out[0].code, 'not-joined');
+  a.out.length = 0;
+  d.calls[0]();
+  await pa;
+  assert.deepEqual(types(a), ['welcome', 'signal'], 'welcome first, then what was held, in order');
+  assert.deepEqual(a.out[0].peers, ['peerBBBB2'], 'A\'s roster is read when its welcome goes out — it includes B');
+  assert.equal(a.out[1].from, 'peerBBBB2');
+  assert.ok(!types(b).includes('peer-joined'), 'B had A in its roster: no second announcement');
+  assert.ok(!types(a).includes('peer-joined'), 'A has B in its roster: no second announcement');
+  // A third peer, after both are welcomed: told to each of them exactly once.
+  const c = fakeConn();
+  const pc = r.onMessage(c.conn, joinMsg('peerCCCC3'));
+  await tick();
+  assert.deepEqual(a.out.filter((m) => m.t === 'peer-joined').map((m) => m.id), ['peerCCCC3']);
+  assert.deepEqual(b.out.filter((m) => m.t === 'peer-joined').map((m) => m.id), ['peerCCCC3']);
+  d.calls[2]();
+  await pc;
+  assert.deepEqual(types(c), ['welcome']);
+  assert.deepEqual(c.out[0].peers, ['peerAAAA1', 'peerBBBB2']);
+});
+
+test('Room: a burst into a room of 4 reserves exactly 4 slots and mints exactly 4 times — the rest are `full` at once, with no credentials minted for them', async () => {
+  const d = deferredMinter();
+  const r = new Room({ iceServers: d.mint });
+  const conns = Array.from({ length: 7 }, fakeConn);
+  const ps = conns.map((c, i) => r.onMessage(c.conn, joinMsg(`peerBURST${i}`, { max: 4 })));
+  await tick();
+  assert.equal(d.calls.length, 4, 'one mint per reserved slot, none for the refused');
+  assert.deepEqual(conns.slice(4).map(types), [['full', 'closed:4003'], ['full', 'closed:4003'], ['full', 'closed:4003']]);
+  assert.deepEqual(conns.slice(0, 4).map(types), [[], [], [], []], 'the four admitted are silent until their own welcome');
+  for (const go of [d.calls[3], d.calls[1], d.calls[0], d.calls[2]]) go(); // any order
+  await Promise.all(ps);
+  for (const c of conns.slice(0, 4)) {
+    assert.equal(types(c)[0], 'welcome', 'welcome is first for every admitted peer');
+    assert.equal(c.out[0].peers.length, 3, 'and every roster has the other three');
+    assert.ok(!types(c).includes('peer-joined'), 'so nobody is announced twice');
+  }
+});
+
+test('Room: a peer that goes away during its mint gets no welcome; the others hear peer-left once and the slot is free again', async () => {
+  const d = deferredMinter();
+  const r = new Room({ iceServers: d.mint });
+  const b = fakeConn();
+  const pb = r.onMessage(b.conn, joinMsg('peerBBBB2', { max: 2 }));
+  await tick();
+  d.calls[0]();
+  await pb;
+  const a = fakeConn();
+  const pa = r.onMessage(a.conn, joinMsg('peerAAAA1'));
+  await tick();
+  assert.deepEqual(b.out.slice(1).map((m) => [m.t, m.id]), [['peer-joined', 'peerAAAA1']]);
+  r.onClose(a.conn); // the socket died while the mint was in flight
+  assert.deepEqual(b.out.slice(2).map((m) => [m.t, m.id]), [['peer-left', 'peerAAAA1']]);
+  d.calls[1]();
+  await pa;
+  assert.deepEqual(types(a), [], 'no welcome to a peer that already left');
+  assert.equal(r.size, 1);
+  const c = fakeConn();
+  const pc = r.onMessage(c.conn, joinMsg('peerCCCC3'));
+  await tick();
+  d.calls[2]();
+  await pc;
+  assert.equal(types(c)[0], 'welcome', 'the freed slot is usable');
+});
+
 test('dev server: a join flood from one IP is answered `rate-limited` (with retryMs), never a hang; a keyed join from the same IP still works', async () => {
   const id = newKeyId();
   await withServer({ env: { ANON_JOINS_PER_MIN: '3' }, keys: { [id]: { origins: ['*'] } } }, async (srv) => {
