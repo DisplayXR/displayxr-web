@@ -91,6 +91,18 @@ export function addSplatDeferred(wall, canvas, src, opts) {
           validateSetRigArgs(type, o);
           return out.ready.then(() => out.setRig(type, o));
         },
+    // Stereo strength / the depth envelope before the adapter has loaded: queued, replayed in
+    // order once it has (both are sticky handle state, applied to the first asset from its first
+    // frame). Validated by the adapter at replay.
+    setStereo: (...args) => {
+      pending.push(['setStereo', args]);
+      return out;
+    },
+    setDepthEnvelope: (...args) => {
+      pending.push(['setDepthEnvelope', args]);
+      return out;
+    },
+    displayMetrics: () => out.ready.then(() => out.displayMetrics()),
     // A video before the first asset has landed: controls:'page' throws at the call's own line,
     // the rest is validated by the adapter's setVideo, which runs once the asset is on screen.
     setVideo: page ? pageOnly('setVideo') : (src, o) => out.ready.then(() => out.setVideo(src, o)),

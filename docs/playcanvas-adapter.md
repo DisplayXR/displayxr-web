@@ -240,7 +240,13 @@ h.setStereo({ ipdFactor: 0.6 });          // a depth slider: next frame, pose an
 h.setStereo({ parallaxFactor: 0.5 });     // keys merge
 h.setStereo({ ipdFactor: null });         // back to the asset's own
 h.setStereo(null);                        // both back
+h.setStereo({ ipdScale: 0.7 });           // RELATIVE: 0.7 × each asset's own, re-applied per setSource
 ```
+
+`ipdScale` / `parallaxScale` multiply the asset's own value (`rig.stereoDefault`) and follow every
+asset `setSource` brings in. That is the shape for a depth slider over photos whose capture blocks
+carry different `dxr` scalars. Per scalar, the absolute and the relative key are exclusive, and the
+last one given wins.
 
 It re-declares the rig in force with new scalars and leaves everything else alone: no
 `resetPose`, no re-framing, no new environment. That makes it the continuous control `setRig`

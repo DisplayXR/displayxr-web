@@ -2893,20 +2893,31 @@ export function validateDepthEnvelope(o, prev) {
 export function validateSetStereo(o, prev) {
   if (o === null) return null;
   if (typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: setStereo takes an object or null.');
-  const keys = ['ipdFactor', 'parallaxFactor'];
+  // Absolute (…Factor) or RELATIVE to the asset's own (…Scale); per scalar, the last one given wins.
+  const pairs = [
+    ['ipdFactor', 'ipdScale'],
+    ['parallaxFactor', 'parallaxScale'],
+  ];
+  const keys = pairs.flat();
   const unknown = Object.keys(o).filter((k) => !keys.includes(k));
   if (unknown.length) throw new Error(`@displayxr/inline3d/splat: setStereo — unknown option(s) ${unknown.join(', ')}.`);
+  for (const [a, b] of pairs) {
+    if (o[a] != null && o[b] != null) throw new Error(`@displayxr/inline3d/splat: setStereo — ${a} and ${b} are exclusive.`);
+  }
   const next = { ...(prev || {}) };
-  for (const k of keys) {
-    if (!(k in o) || o[k] === undefined) continue;
-    if (o[k] === null) {
-      delete next[k];
-      continue;
+  for (const [a, b] of pairs) {
+    for (const k of [a, b]) {
+      if (!(k in o) || o[k] === undefined) continue;
+      if (o[k] === null) {
+        delete next[k];
+        continue;
+      }
+      if (typeof o[k] !== 'number' || !Number.isFinite(o[k]) || o[k] < 0) {
+        throw new RangeError(`@displayxr/inline3d/splat: setStereo — ${k} must be a finite number >= 0 (got ${o[k]}).`);
+      }
+      next[k] = o[k];
+      delete next[k === a ? b : a];
     }
-    if (typeof o[k] !== 'number' || !Number.isFinite(o[k]) || o[k] < 0) {
-      throw new RangeError(`@displayxr/inline3d/splat: setStereo — ${k} must be a finite number >= 0 (got ${o[k]}).`);
-    }
-    next[k] = o[k];
   }
   return Object.keys(next).length ? next : null;
 }
@@ -3320,6 +3331,19 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     setRig,
     setStereo,
     setDepthEnvelope,
+    /**
+     * This tile in physical units (core TileHandle.displayMetrics, from getDisplayInfo()). Never
+     * rejects: defaults, flagged in `source`, where the display cannot say.
+     */
+    async displayMetrics() {
+      let info = null;
+      try {
+        info = (await handle?.getDisplayInfo?.()) ?? null;
+      } catch {
+        /* no display API / no live layer: the defaults */
+      }
+      return displayMetricsFrom(info, canvas.getBoundingClientRect(), globalThis.devicePixelRatio || 1);
+    },
     setVideo,
     /**
      * Draw a layer of this tile's engine through the DISPLAY rig (round, physical-depth stage
@@ -4075,7 +4099,10 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // raw: setVideo's own display rig — not the page's rig, so neither setStereo's factors nor
     // the base setStereo re-declares from.
     if (!raw) lastDisplayBase = base;
-    const f = stereoOverride && !raw ? { ...base, ...stereoOverride } : base;
+    const f =
+      stereoOverride && !raw
+        ? { ...base, ipdFactor: stereoScalar(base.ipdFactor ?? 1, 'ipd'), parallaxFactor: stereoScalar(base.parallaxFactor ?? 1, 'parallax') }
+        : base;
     const key = `${f.vH}|${f.ipdFactor ?? 1}|${f.parallaxFactor ?? 1}|${f.perspectiveFactor ?? 1}`;
     if (declaredDisplay === key) return;
     // Back at the boot rig from the shorthand it was built with: nothing to say.
@@ -4150,8 +4177,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   /** setStereo's factors onto a resolved rig, over the asset's own (stereoDefault). */
   function applyStereoTo(r) {
     const d = r.stereoDefault;
-    r.ipdFactor = stereoOverride?.ipdFactor ?? d.ipdFactor;
-    r.parallaxFactor = stereoOverride?.parallaxFactor ?? d.parallaxFactor;
+    r.ipdFactor = stereoScalar(d.ipdFactor, 'ipd');
+    r.parallaxFactor = stereoScalar(d.parallaxFactor, 'parallax');
+  }
+  /** One scalar under setStereo: its absolute value, else `base` × its scale, else `base`. */
+  function stereoScalar(base, k) {
+    const o = stereoOverride;
+    if (o?.[`${k}Factor`] != null) return o[`${k}Factor`];
+    if (o?.[`${k}Scale`] != null) return base * o[`${k}Scale`];
+    return base;
   }
 
   /**
