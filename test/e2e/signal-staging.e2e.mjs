@@ -125,7 +125,19 @@ async function waitFor(page, fn, what, ms = TIMEOUT_MS) {
   for (;;) {
     const v = await page.evaluate(fn);
     if (v) return v;
-    if (Date.now() - t0 > ms) throw new Error(`timeout (${ms} ms) waiting for: ${what}\nevents: ${JSON.stringify(await page.evaluate(() => window.__events.map((e) => [e.t, e.d]).slice(-12)))}`);
+    if (Date.now() - t0 > ms) {
+      // Say what the page actually holds, not only its last events: a condition on `peers[0]` can
+      // fail because of a second tile (a peer that rejoined under a new id) rather than the first.
+      const dump = await page.evaluate(() => {
+        const c = document.querySelector('dxr-call')?.call;
+        return {
+          state: c?.state,
+          peers: (c?.peers || []).map((p) => ({ id: p.id, state: p.state, inFps: p.quality?.in?.fps ?? null })),
+          events: window.__events.filter((e) => e.t !== 'quality').map((e) => [e.t, e.d]).slice(-12),
+        };
+      });
+      throw new Error(`timeout (${ms} ms) waiting for: ${what}\n${JSON.stringify(dump)}`);
+    }
     await sleep(200);
   }
 }

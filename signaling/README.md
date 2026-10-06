@@ -55,12 +55,19 @@ Every message is one JSON object with a `t` field.
 
 ### Server → client
 
+**Ordering.** `welcome` is the first message a joined peer receives. The server may need a network
+round-trip between accepting a join and answering it (minting TURN credentials), and other peers can
+join or signal in that window; anything addressed to the joining peer is held and delivered, in
+order, right behind its welcome. `welcome.peers` is the room as the welcome is sent, so it includes
+peers that joined during that window. A client may therefore treat the first message on a socket as
+the outcome of its join (`welcome`, `full`, or `error`).
+
 | `t` | Fields | Meaning |
 |---|---|---|
 | `welcome` | `v: 1`, `id`, `peers: string[]`, `max`, `iceServers?`, `tier`, `key?`, `turn` | Joined. `peers` are the ids already in the room. `iceServers` = short-lived TURN credentials, when the server minted some for this session. `tier` = `'anon'` or `'key'`; `key` = the key id this session is attributed to; `turn` = `{ status, reason?, ttl? }` — the service-wide relay-budget state (`ok` / `degraded` / `off`) and, when there are no credentials, why: `unconfigured` (no TURN on this server), `budget` (anonymous session shed near the budget), `rate` (too many mints from this address), `cap` (the monthly cap — everyone), `mint-failed`. |
 | `full` | `max` | The room already has `max` peers. The server closes the socket (4003). |
 | `expired` | — | The room's lifetime is up (2 h anonymous / 8 h keyed, from its first join). The server closes every peer's socket (4004). Media already flowing is not touched. |
-| `peer-joined` | `id` | Someone joined after you. |
+| `peer-joined` | `id` | Someone joined after you — i.e. someone who is **not** in your `welcome.peers`. Each pair hears of the other exactly once: through one side's roster or the other side's `peer-joined`, never both. |
 | `peer-left` | `id` | Someone left (or their socket dropped). |
 | `signal` | `from`, `data` | Relayed from `from`. |
 | `pong` | — | Reply to `ping`. |
