@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.32.0 — 2026-10-06
 
 Touches the **core** additively (one new handle method, two new exports) and the **preview tier**
 (`./splat`, PlayCanvas backend).
