@@ -65,6 +65,7 @@
   "files": [
     "js/inline3d.js",
     "js/inline3d-undock.js",
+    "js/inline3d-display-metrics.js",
     "js/inline3d-mode-switch.js",
     "js/inline3d-buffer-limit.js",
     "js/inline3d-viewer-ease.js",

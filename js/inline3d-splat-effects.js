@@ -23,7 +23,7 @@
 //
 // The SDK owns the chunk: every active effect of a scope is ONE function body with its own
 // uniform prefix, and the chunk calls them in a FIXED order, STAGE_ORDER: grade → clip → reveal →
-// pulse → custom. Removing the last effect deletes the chunk (tile) or the modifier (entity),
+// pulse → custom → envelope (→ cull). Removing the last effect deletes the chunk (tile) or the modifier (entity),
 // which restores the engine's own default — the exact baseline, not a no-op look-alike.
 //
 // Adding an effect = one GLSL body + one registry entry in EFFECTS below: `glsl(P, opts)` defines
@@ -47,7 +47,16 @@
 import { coverageExponent, FADE_TRANSMITTANCE_FLOOR } from './inline3d-splat-shared.js';
 
 /** The fixed composition order of a generated chunk. */
-export const STAGE_ORDER = Object.freeze(['grade', 'clip', 'reveal', 'pulse', 'custom', 'cull']);
+export const STAGE_ORDER = Object.freeze(['grade', 'clip', 'reveal', 'pulse', 'custom', 'envelope', 'cull']);
+
+/** handle.setDepthEnvelope's flat rects the shader takes (the largest-weight first beyond it). */
+export const ENVELOPE_MAX_RECTS = 8;
+const ENVELOPE_NO_RECT = Object.freeze([1, -1, 1, -1]);
+const ENVELOPE_OFF = (() => {
+  const o = { on: 0, O: [0, 0, 0], A: [0, 0, -1], R: [1, 0, 0], U: [0, 1, 0], T: [1, 1, 1, 1], K: [0, 1, 1, 0], S: [-1, 1, -1, 1], E: [1, 0, 0, 0], W0: [0, 0, 0, 0], W1: [0, 0, 0, 0] };
+  for (let i = 0; i < ENVELOPE_MAX_RECTS; i++) o['F' + i] = ENVELOPE_NO_RECT;
+  return Object.freeze(o);
+})();
 
 /** The most eye views setSource's wavefront culls for (more: every gaussian is drawn). */
 export const WIPE_CULL_MAX_VIEWS = 4;
@@ -598,6 +607,87 @@ void ${P}color(vec3 c, inout vec4 col) { if (${P}cut) col.a = 0.0; }
         out['X' + i] = v ? v.X : ZERO4;
         out['W' + i] = v ? v.W : ZERO4;
         out['K' + i] = v ? v.K : ZERO4;
+      }
+      return out;
+    },
+  },
+
+  // Internal: handle.setDepthEnvelope — THE FRAME ENVELOPE. Content may come OUT of the glass only
+  // well inside the frame: a gaussian whose panel depth would exceed the cap at its screen spot
+  //   F(x, y) = edge + (maxFront − edge) · e,  e = smoothstep(0, band, distance to the stage edge or
+  //             to a flat rect (weighted)), in metres on the panel,
+  // slides back ALONG ITS OWN RAY from the declared camera rig's centre (centre and scale × λ), so
+  // the rig's mono picture is unchanged and the engine's sort order stays valid. On a camera rig a
+  // point at depth d has panel disparity  k·e·f_p·(1/D − 1/d)  (k = ipdFactor·metersToVirtual per
+  // world unit, f_p = canvas height / (2·tan(vfov/2)), D the convergence), and F metres out needs
+  // −e·F/(n − F) — so the deepest-out allowed depth is  1/d_env = 1/D + F / (k·f_p·(n − F)); the
+  // viewer's eye separation e cancels. Behind the glass is never touched. Keyed on world position
+  // and the RIG (not the tracked eyes), so both eyes and every head position agree. The adapter
+  // supplies everything per tick through opts.state() (null = off); world space throughout.
+  envelope: {
+    stage: 'envelope',
+    kind: 'persistent',
+    internal: true,
+    defaults: {},
+    glsl: (P) => `
+uniform float ${P}on;
+uniform vec3 ${P}O;
+uniform vec3 ${P}A;
+uniform vec3 ${P}R;
+uniform vec3 ${P}U;
+uniform vec4 ${P}T;   // tan half-fov x, y; canvas half-size x, y (m)
+uniform vec4 ${P}K;   // 1/D (world), k·f_p (world·m), viewer n (m), maxFront (m)
+uniform vec4 ${P}S;   // stage l, r, b, t (canvas-normalised, y up)
+uniform vec4 ${P}E;   // band (m), edge (m), rect count, -
+${[0, 1, 2, 3, 4, 5, 6, 7].map((i) => `uniform vec4 ${P}F${i};`).join('\n')}
+uniform vec4 ${P}W0;
+uniform vec4 ${P}W1;
+float ${P}lambda;
+float ${P}flat(vec2 f, vec4 C, float w) {
+  if (w <= 0.0 || C.x >= C.y || C.z >= C.w) return 1.0;
+  vec2 o = max(vec2(max(C.x - f.x, f.x - C.y) * ${P}T.z, max(C.z - f.y, f.y - C.w) * ${P}T.w), vec2(0.0));
+  return mix(1.0, smoothstep(0.0, ${P}E.x, length(o)), w);
+}
+void ${P}center(inout vec3 c) {
+  ${P}lambda = 1.0;
+  if (${P}on < 0.5) return;
+  vec3 v = c - ${P}O;
+  float d = dot(v, ${P}A);
+  if (d <= 1e-4) return;
+  vec2 f = vec2(dot(v, ${P}R) / (d * ${P}T.x), dot(v, ${P}U) / (d * ${P}T.y));
+  vec4 S = ${P}S;
+  float inside = min(min(f.x - S.x, S.y - f.x) * ${P}T.z, min(f.y - S.z, S.w - f.y) * ${P}T.w);
+  float e = smoothstep(0.0, ${P}E.x, inside);
+${[0, 1, 2, 3, 4, 5, 6, 7].map((i) => `  e = min(e, ${P}flat(f, ${P}F${i}, ${P}W${i >> 2}.${'xyzw'[i & 3]}));`).join('\n')}
+  float F = ${P}E.y + max(${P}K.w - ${P}E.y, 0.0) * e;
+  float invEnv = ${P}K.x + F / (${P}K.y * max(${P}K.z - F, 1e-3));
+  if (1.0 / d <= invEnv) return;
+  ${P}lambda = 1.0 / (invEnv * d);
+  c = ${P}O + v * ${P}lambda;
+}
+void ${P}rs(vec3 oc, vec3 mc, inout vec4 r, inout vec3 sc) { sc *= ${P}lambda; }
+void ${P}color(vec3 c, inout vec4 col) {}
+`,
+    uniforms: (ctx, inst) => {
+      const st = typeof inst.opts.state === 'function' ? inst.opts.state() : null;
+      if (!st) return ENVELOPE_OFF;
+      const out = {
+        on: 1,
+        O: st.origin,
+        A: st.axis,
+        R: st.right,
+        U: st.up,
+        T: [st.tanX, st.tanY, st.halfW, st.halfH],
+        K: [st.invD, st.kfp, st.viewer, st.maxFront],
+        S: st.stage,
+        E: [st.band, st.edge, st.rects.length, 0],
+        W0: [0, 0, 0, 0],
+        W1: [0, 0, 0, 0],
+      };
+      for (let i = 0; i < ENVELOPE_MAX_RECTS; i++) {
+        const r = st.rects[i];
+        out['F' + i] = r ? r.f : ENVELOPE_NO_RECT;
+        if (r) out[i < 4 ? 'W0' : 'W1'][i & 3] = r.weight;
       }
       return out;
     },

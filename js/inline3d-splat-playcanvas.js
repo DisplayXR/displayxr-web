@@ -51,8 +51,10 @@ import {
 } from './inline3d-splat-perf.js';
 import { boundsFromPositions, boundsFromPositionsAsync } from './inline3d-viewer.js';
 import { cameraRigFromPose, displayRig } from './inline3d-three.js';
+import { displayMetricsFrom } from './inline3d-display-metrics.js';
 import {
   SplatEffects,
+  ENVELOPE_MAX_RECTS,
   EFFECTS,
   EASINGS,
   resolveRevealOption,
@@ -2312,6 +2314,26 @@ export class PlayCanvasSplatViewer {
     };
   }
 
+  /**
+   * The MONO camera's frame in WORLD (content) space — the rig the page declared, not the tracked
+   * eyes: `origin`, unit `axis`/`right`/`up`, and `scale` = world units per rig unit (the rig
+   * node's uniform scale). The depth envelope keys on it, so it holds still under head motion.
+   */
+  monoFrame() {
+    const M = mat4Mul(this.rigMatrix(), this.mono.pose);
+    const len = (x, y, z) => Math.hypot(x, y, z) || 1;
+    const sx = len(M[0], M[1], M[2]);
+    const sy = len(M[4], M[5], M[6]);
+    const sz = len(M[8], M[9], M[10]);
+    return {
+      origin: [M[12], M[13], M[14]],
+      axis: [-M[8] / sz, -M[9] / sz, -M[10] / sz],
+      right: [M[0] / sx, M[1] / sx, M[2] / sx],
+      up: [M[4] / sy, M[5] / sy, M[6] / sy],
+      scale: Math.cbrt(sx * sy * sz),
+    };
+  }
+
   _easeFocus() {
     if (this._focusSettled) return;
     const f = this._focus;
@@ -2811,6 +2833,84 @@ const PAGE_SETRIG_ERROR =
   "@displayxr/inline3d/splat: setRig() is not available with controls:'page' — the page owns the " +
   'camera (its camera IS the rig). Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).';
 
+/** handle.setDepthEnvelope's defaults, metres on the panel (Ride Spatial's depth rules v2). */
+export const DEPTH_ENVELOPE_DEFAULTS = Object.freeze({ maxFrontM: 0.02, edgeM: 0.001, bandM: 0.016 });
+
+/**
+ * handle.setDepthEnvelope's argument, validated and merged onto the current one (throws at the
+ * call). A key given replaces; `null` (the whole argument) turns the envelope off. Rects are kept
+ * as given (canvas fractions, y DOWN) plus `f` — [l, r, b, t] canvas-normalised, y UP — for the
+ * shader; more than ENVELOPE_MAX_RECTS keeps the heaviest (then largest) ones.
+ */
+export function validateDepthEnvelope(o, prev) {
+  if (o === null) return null;
+  const E = '@displayxr/inline3d/splat: setDepthEnvelope';
+  if (typeof o !== 'object' || Array.isArray(o)) throw new TypeError(`${E} takes an object or null.`);
+  const keys = ['maxFrontM', 'edgeM', 'bandM', 'stage', 'rects', 'viewerM', 'canvasSizeM'];
+  const unknown = Object.keys(o).filter((k) => !keys.includes(k));
+  if (unknown.length) throw new Error(`${E} — unknown option(s) ${unknown.join(', ')}.`);
+  const next = { ...DEPTH_ENVELOPE_DEFAULTS, stage: { x: 0, y: 0, w: 1, h: 1 }, rects: [], viewerM: null, canvasSizeM: null, ...(prev || {}) };
+  const num = (k, v, min, max = Infinity) => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) throw new RangeError(`${E} — ${k} must be a finite number in [${min}, ${max}] (got ${v}).`);
+    return v;
+  };
+  const rect = (r, what) => {
+    if (!r || typeof r !== 'object') throw new TypeError(`${E} — ${what} must be { x, y, w, h }.`);
+    const x = num(`${what}.x`, r.x, -10, 10);
+    const y = num(`${what}.y`, r.y, -10, 10);
+    const w = num(`${what}.w`, r.w, 0, 20);
+    const h = num(`${what}.h`, r.h, 0, 20);
+    return { x, y, w, h, f: [2 * x - 1, 2 * (x + w) - 1, 1 - 2 * (y + h), 1 - 2 * y] };
+  };
+  for (const k of ['maxFrontM', 'edgeM', 'bandM']) if (k in o && o[k] !== undefined) next[k] = num(k, o[k], k === 'bandM' ? 1e-5 : 0, 1);
+  if ('viewerM' in o && o.viewerM !== undefined) next.viewerM = o.viewerM === null ? null : num('viewerM', o.viewerM, 0.05, 10);
+  if ('canvasSizeM' in o && o.canvasSizeM !== undefined) {
+    const c = o.canvasSizeM;
+    if (c === null) next.canvasSizeM = null;
+    else {
+      if (!Array.isArray(c) || c.length !== 2) throw new TypeError(`${E} — canvasSizeM must be [width, height] in metres, or null.`);
+      next.canvasSizeM = [num('canvasSizeM[0]', c[0], 1e-4, 10), num('canvasSizeM[1]', c[1], 1e-4, 10)];
+    }
+  }
+  if ('stage' in o && o.stage !== undefined) next.stage = o.stage === null ? { x: 0, y: 0, w: 1, h: 1 } : rect(o.stage, 'stage');
+  next.stage = next.stage.f ? next.stage : rect(next.stage, 'stage');
+  if ('rects' in o && o.rects !== undefined) {
+    if (o.rects !== null && !Array.isArray(o.rects)) throw new TypeError(`${E} — rects must be an array.`);
+    next.rects = (o.rects || [])
+      .map((r, i) => ({ ...rect(r, `rects[${i}]`), weight: r.weight === undefined ? 1 : num(`rects[${i}].weight`, r.weight, 0, 1) }))
+      .filter((r) => r.weight > 0 && r.w > 0 && r.h > 0)
+      .sort((a, b) => b.weight - a.weight || b.w * b.h - a.w * a.h)
+      .slice(0, ENVELOPE_MAX_RECTS);
+  }
+  if (next.edgeM > next.maxFrontM) next.edgeM = next.maxFrontM;
+  return next;
+}
+
+/**
+ * handle.setStereo's argument, validated and merged onto the current override (throws at the
+ * call). Returns the new override, or null when nothing is overridden.
+ */
+export function validateSetStereo(o, prev) {
+  if (o === null) return null;
+  if (typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: setStereo takes an object or null.');
+  const keys = ['ipdFactor', 'parallaxFactor'];
+  const unknown = Object.keys(o).filter((k) => !keys.includes(k));
+  if (unknown.length) throw new Error(`@displayxr/inline3d/splat: setStereo — unknown option(s) ${unknown.join(', ')}.`);
+  const next = { ...(prev || {}) };
+  for (const k of keys) {
+    if (!(k in o) || o[k] === undefined) continue;
+    if (o[k] === null) {
+      delete next[k];
+      continue;
+    }
+    if (typeof o[k] !== 'number' || !Number.isFinite(o[k]) || o[k] < 0) {
+      throw new RangeError(`@displayxr/inline3d/splat: setStereo — ${k} must be a finite number >= 0 (got ${o[k]}).`);
+    }
+    next[k] = o[k];
+  }
+  return Object.keys(next).length ? next : null;
+}
+
 /**
  * handle.setRig's arguments, validated and resolved (throws at the call, before anything runs).
  * @returns {{type:'display'|'camera'|'auto', o?:object}}
@@ -3218,6 +3318,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     setSource,
     prepareSource,
     setRig,
+    setStereo,
+    setDepthEnvelope,
     setVideo,
     /**
      * Draw a layer of this tile's engine through the DISPLAY rig (round, physical-depth stage
@@ -3950,6 +4052,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
     });
     if (type !== 'auto') resolved.typeSource = 'setRig';
+    // What the asset (or addSplat's options) asked for, kept so setStereo(null) can go back to it.
+    resolved.stereoDefault = { ipdFactor: resolved.ipdFactor, parallaxFactor: resolved.parallaxFactor };
+    applyStereoTo(resolved);
     resolved.focusDefault = resolved.focus.slice();
     resolved.focusDefaultSource = resolved.focusSource;
     return resolved;
@@ -3966,7 +4071,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
 
   /** Declare a DISPLAY rig to the runtime, unless that exact one is already declared. */
-  function declareDisplay(f) {
+  function declareDisplay(base, { raw = false } = {}) {
+    // raw: setVideo's own display rig — not the page's rig, so neither setStereo's factors nor
+    // the base setStereo re-declares from.
+    if (!raw) lastDisplayBase = base;
+    const f = stereoOverride && !raw ? { ...base, ...stereoOverride } : base;
     const key = `${f.vH}|${f.ipdFactor ?? 1}|${f.parallaxFactor ?? 1}|${f.perspectiveFactor ?? 1}`;
     if (declaredDisplay === key) return;
     // Back at the boot rig from the shorthand it was built with: nothing to say.
@@ -4031,6 +4140,125 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     if (disp) resolved.frame = bounds ? { center: bounds.center.slice(), extent: bounds.extent.slice(), source: 'splat' } : null;
     declareDisplay(disp || { vH: bootFraming.vH });
+  }
+
+  // ── handle.setStereo: live stereo strength on whatever rig is declared ──
+  /** { ipdFactor?, parallaxFactor? } set by handle.setStereo — sticky across setSource; null = none. */
+  let stereoOverride = null;
+  /** The display rig declareDisplay was last asked for, BEFORE setStereo's factors (to re-declare). */
+  let lastDisplayBase = null;
+  /** setStereo's factors onto a resolved rig, over the asset's own (stereoDefault). */
+  function applyStereoTo(r) {
+    const d = r.stereoDefault;
+    r.ipdFactor = stereoOverride?.ipdFactor ?? d.ipdFactor;
+    r.parallaxFactor = stereoOverride?.parallaxFactor ?? d.parallaxFactor;
+  }
+
+  /**
+   * handle.setStereo({ ipdFactor, parallaxFactor }) — re-declare the rig in force with new stereo
+   * scalars, next frame, with no cut: the pose, focus and framing stay. A key given replaces, a key
+   * set to null goes back to the asset's own value, `null` clears both. Sticky across setSource and
+   * setRig. On a camera rig the values are ABSOLUTE (like addSplat's options); on a display rig
+   * they replace the declared display rig's factors.
+   */
+  function setStereo(o) {
+    const next = validateSetStereo(o, stereoOverride);
+    stereoOverride = next;
+    if (out.rig?.stereoDefault) applyStereoTo(out.rig);
+    redeclareStereo();
+    return out;
+  }
+  /** Re-declare the rig in force with setStereo's factors (deduplicated on a display rig). */
+  function redeclareStereo() {
+    if (pageMode || vid?.on || !out.rig) return; // pageTick reads out.rig; video exit calls this
+    if (out.rig.type === 'camera') pushViewRig(true);
+    else if (lastDisplayBase) declareDisplay(lastDisplayBase);
+  }
+
+  // ── handle.setDepthEnvelope: the frame envelope (./inline3d-splat-effects.js EFFECTS.envelope) ──
+  /** validateDepthEnvelope's result, or null (off). */
+  let envelope = null;
+  /** displayMetricsFrom(getDisplayInfo()) — metres per CSS px and the viewer; defaults until it lands. */
+  let envMetrics = null;
+  let envMetricsSeq = 0;
+  function refreshEnvelopeMetrics() {
+    const seq = ++envMetricsSeq;
+    const done = (info) => {
+      if (seq === envMetricsSeq) envMetrics = displayMetricsFrom(info ?? null, null, globalThis.devicePixelRatio || 1);
+    };
+    let p = null;
+    try {
+      p = handle?.getDisplayInfo?.();
+    } catch {
+      /* no display API: the defaults */
+    }
+    if (p && typeof p.then === 'function') p.then(done, () => done(null));
+    else done(null);
+  }
+  /**
+   * The envelope's inputs for this frame, all from the DECLARED rig (never the tracked eyes): null
+   * = off — no envelope, not a camera rig (a display rig is a portal; its depth is the page's), a
+   * stereo video holding the rig, no disparity to cap (ipdFactor 0), or no canvas box.
+   */
+  function envelopeState() {
+    const E = envelope;
+    const r = out.viewRig;
+    if (!E || !r || r.type !== 'camera' || vid?.on) return null;
+    const k = (r.ipdFactor ?? 1) * (r.metersToVirtual ?? 1);
+    if (!(k > 0) || !(r.verticalFov > 0)) return null;
+    // clientWidth/Height: no layout flush on a clean frame (a real canvas always has them)
+    const box = canvas.clientWidth === undefined ? canvas.getBoundingClientRect() : null;
+    const cw = box ? box.width : canvas.clientWidth;
+    const ch = box ? box.height : canvas.clientHeight;
+    if (!(cw > 0 && ch > 0)) return null;
+    const m = envMetrics || displayMetricsFrom(null, null, 1);
+    const W = E.canvasSizeM ? E.canvasSizeM[0] : cw * m.metersPerCssPx;
+    const H = E.canvasSizeM ? E.canvasSizeM[1] : ch * m.metersPerCssPx;
+    const tanY = Math.tan(r.verticalFov / 2);
+    const fr = viewer.monoFrame();
+    return {
+      origin: fr.origin,
+      axis: fr.axis,
+      right: fr.right,
+      up: fr.up,
+      tanX: tanY * (cw / ch),
+      tanY,
+      halfW: W / 2,
+      halfH: H / 2,
+      // world units = rig units × fr.scale: the convergence and the eye baseline both scale with it
+      invD: (r.convergenceDiopters || 0) / fr.scale,
+      kfp: fr.scale * k * (H / (2 * tanY)),
+      viewer: E.viewerM ?? m.nominalViewerM,
+      maxFront: E.maxFrontM,
+      stage: E.stage.f,
+      band: E.bandM,
+      edge: E.edgeM,
+      rects: E.rects,
+    };
+  }
+  /** Install / update / remove the tile-scope envelope effect (no-op until the effects exist). */
+  function syncEnvelope() {
+    if (!fx) return;
+    fx.setInternal('tile', 'envelope', envelope ? { state: envelopeState } : null);
+    const inst = fx.scopes.get('tile')?.get('envelope');
+    if (inst) inst.hidden = true; // the SDK's, not the page's: never in effects(), never stopEffect()ed
+  }
+  /**
+   * handle.setDepthEnvelope(opts | null) — cap how far the splat may come OUT of the glass by where
+   * it lands on the canvas (docs/splat-effects.md §Depth envelope). Tile-wide and LIVE: every asset
+   * shown — an incoming one included, from its first frame, and both sides of a crossfade — is
+   * judged through the rig declared right now. A key given replaces; null turns it off.
+   */
+  function setDepthEnvelope(o) {
+    const next = validateDepthEnvelope(o, envelope);
+    if (next && !envelope) {
+      refreshEnvelopeMetrics();
+      // a lazy layer may not answer getDisplayInfo yet: ask again once the tile is woven
+      Promise.resolve(out.firstWoven).then(() => envelope && refreshEnvelopeMetrics());
+    }
+    envelope = next;
+    syncEnvelope();
+    return out;
   }
 
   // ── handle.setRig: a live, reversible rig switch (docs/playcanvas-adapter.md §setRig) ──
@@ -4241,6 +4469,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const kept = applyLoaded(loaded);
     current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
     fx = makeEffects(pcModule);
+    syncEnvelope(); // a setDepthEnvelope before the first asset
     // `reveal`: installed at its START state before the asset's first frame, played once the
     // tile is woven (handle.firstWoven — which is immediate in 2D) and the first frames are built.
     if (revealSpec) {
@@ -4374,7 +4603,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       v._placeMonoForFit();
       v._updateMonoProjection();
     }
-    declareDisplay({ vH: state.vH });
+    declareDisplay({ vH: state.vH }, { raw: true });
+    state.stereoAtEnter = stereoOverride;
     state.on = true;
   }
 
@@ -4408,6 +4638,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     } else out.viewRig = s.viewRig;
     lastConvergence = s.lastConvergence;
     state.on = false;
+    if (stereoOverride !== state.stereoAtEnter) redeclareStereo(); // a setStereo made while the video held the rig
+
   }
 
   /** Tear the video down now (setVideo(null) / remove()). */
@@ -4466,6 +4698,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           // Another video on screen: keep ITS snapshot (the pre-video state), swap the source.
           state.saved = live.saved;
           state.on = true;
+          state.stereoAtEnter = live.stereoAtEnter;
           // S2: the plane outlives this swap; the replaced video's rect subscriptions go with it.
           for (const off of live.rectOffs) off();
           live.rectOffs.clear();
@@ -4474,7 +4707,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             viewer.vH = state.vH;
             viewer._placeMonoForFit();
             viewer._updateMonoProjection();
-            declareDisplay({ vH: state.vH });
+            declareDisplay({ vH: state.vH }, { raw: true });
           }
         } else enterVideo(state);
         vid = state;

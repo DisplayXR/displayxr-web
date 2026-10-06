@@ -5,6 +5,37 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **core** additively (one new handle method, two new exports) and the **preview tier**
+(`./splat`, PlayCanvas backend).
+
+### Core — `handle.displayMetrics()`
+
+- **`handle.displayMetrics()`** → `{ canvasSizeM, metersPerCssPx, displaySizeM, nominalViewerM,
+  eyeSeparationM, source }`: the tile in physical units, derived from `getDisplayInfo()` (panel
+  pitch × `devicePixelRatio` × the canvas's CSS box). Never rejects. Anything the display can't
+  report comes from `DISPLAY_METRICS_DEFAULTS` and is flagged in `source`. **Eye separation is
+  always the 63 mm default**, because no browser or runtime surface reports one. Also exported as
+  the pure `displayMetricsFrom(info, rect, dpr)`.
+
+### `./splat` (PlayCanvas backend)
+
+- **`handle.setStereo({ ipdFactor, parallaxFactor })`**: live stereo strength. It re-declares the
+  rig in force on the next frame with no cut (pose, focus and framing kept). Keys merge, a `null`
+  key returns to the asset's own value, and `setStereo(null)` clears both. Sticky across
+  `setSource` / `setRig`. `handle.rig.stereoDefault` holds the asset's own values.
+  docs/playcanvas-adapter.md §setStereo.
+- **`handle.setDepthEnvelope({ maxFrontM, edgeM, bandM, stage, rects, viewerM, canvasSizeM })`**:
+  the frame envelope. Content may come out of the glass only well inside the frame and away from 2D
+  elements. Gaussians past the cap slide back along their own rays from the declared camera rig,
+  so the picture, the sort order and the stereo rule all hold. It is tile-wide and keyed on the
+  live declared rig (convergence, lens, `ipdFactor × metersToVirtual`), so every asset is covered
+  from its first frame, through crossfades and through `setStereo`, with no per-asset install.
+  Camera rigs only. docs/splat-effects.md §Depth envelope.
+- `STAGE_ORDER` gains `'envelope'` (between `custom` and `cull`), so a page's custom effect runs
+  before the cap.
+
 ## 1.31.0 — 2026-10-05
 
 The 1.29 `./call` option spellings stay accepted (with their warning) for one more release; they go in 1.32.

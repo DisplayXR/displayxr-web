@@ -233,6 +233,30 @@ pixels match exactly. In the round trip, the mono camera, projection, rig-node m
 tone mapping and the declared camera-rig descriptor are bit-identical to before the switch. The
 IBL installed for the display rig is gone afterwards.
 
+## `setStereo` — live stereo strength, no cut
+
+```js
+h.setStereo({ ipdFactor: 0.6 });          // a depth slider: next frame, pose and focus kept
+h.setStereo({ parallaxFactor: 0.5 });     // keys merge
+h.setStereo({ ipdFactor: null });         // back to the asset's own
+h.setStereo(null);                        // both back
+```
+
+It re-declares the rig in force with new scalars and leaves everything else alone: no
+`resetPose`, no re-framing, no new environment. That makes it the continuous control `setRig`
+isn't. On a camera rig the values are **absolute**, exactly like addSplat's
+`ipdFactor` / `parallaxFactor` (and never normalised against the convergence). On a display rig
+they replace the declared display rig's factors. The choice is sticky across `setSource` and
+`setRig` until cleared. `handle.rig.ipdFactor` / `parallaxFactor` read what is in force, and
+`handle.rig.stereoDefault` reads the asset's own. With `controls:'page'` it applies from the next
+tick. A stereo video holds its own display rig, so a value set meanwhile lands when the video
+exits. The 2D↔3D mode-switch ramp still multiplies on top.
+
+Compared with scaling the splat's depth in a shader (`1/d' = 1/D + k·(1/d − 1/D)`), `ipdFactor`
+scales disparity for every object in the tile, meshes included, and `parallaxFactor` scales
+head-motion parallax, which a geometry warp can't. `setDepthEnvelope` reads the live `ipdFactor`,
+so its cap stays exact while the slider moves.
+
 ## `setVideo` — a stereo video on the persistent handle (#36)
 
 A page that renders everything through **one persistent woven canvas and one `addSplat` handle**

@@ -34,6 +34,8 @@ export { undock, undockAvailable, undockUrl, tileScreenRect };
 import { setSessionViewerEase } from './inline3d-viewer-ease.js';
 // The tracking-acquisition ease, for pages that render their own addScene from the views.
 export { ViewerEase, resolveViewerEaseOption, frameTrackingState, VIEWER_EASE_DEFAULT_MS } from './inline3d-viewer-ease.js';
+export { DISPLAY_METRICS_DEFAULTS, displayMetricsFrom } from './inline3d-display-metrics.js';
+import { displayMetricsFrom } from './inline3d-display-metrics.js';
 
 // The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
 // `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
@@ -133,6 +135,7 @@ const hasViewRig = () => {
 // required — a browser with a partial set is a browser mid-implementation, and treating it as
 // supported would hand a page a `requestRenderingMode is not a function` at the worst moment.
 const DISPLAY_MODE_METHODS = ['getDisplayInfo', 'getRenderingModes', 'requestRenderingMode'];
+
 // The two display events, fired on the XRSession rather than the layer — so a page hears about a
 // mode or hardware-state change even while its tile's layer is closed (lazy mode), and one
 // subscription covers every window in the document.
@@ -1088,6 +1091,24 @@ class Inline3D {
        * @returns {Promise<object|null>}
        */
       getDisplayInfo: () => this._layerCall(win, 'getDisplayInfo', 'getDisplayInfo()'),
+      /**
+       * This window in PHYSICAL units: the canvas's size in metres, metres per CSS px, the panel,
+       * the nominal viewer distance and the eye separation — from getDisplayInfo(), with every
+       * value that could not be measured filled from a stated default (see `source`). Never
+       * rejects: no display API, no live layer, no glasses-free display all resolve the defaults.
+       * The canvas size is re-read at each call (call it again after a resize).
+       *
+       * @returns {Promise<object>}
+       */
+      displayMetrics: async () => {
+        let info = null;
+        try {
+          info = await this._layerCall(win, 'getDisplayInfo', 'getDisplayInfo()');
+        } catch {
+          /* no display API / no live layer: the defaults */
+        }
+        return displayMetricsFrom(info, canvas.getBoundingClientRect(), globalThis.devicePixelRatio || 1);
+      },
       /**
        * Every rendering mode the runtime can put this display in, as reported by the runtime:
        * `{modeIndex, modeName, viewCount, viewScaleX, viewScaleY, tileColumns, tileRows,
