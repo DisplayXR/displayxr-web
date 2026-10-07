@@ -53,8 +53,12 @@ function kooima(ex, ey, ez) {
     transform: { matrix: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ex, ey, ez, 1]) },
   };
 }
-const views = [kooima(-0.032 * s, 0, 0.6 * s), kooima(0.032 * s, 0, 0.6 * s)];
+let headX = 0;
+const makeViews = () => [kooima(headX - 0.032 * s, 0, 0.6 * s), kooima(headX + 0.032 * s, 0, 0.6 * s)];
+let views = makeViews();
 const layer = { getViewport: (v) => ({ x: views.indexOf(v) * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height }) };
+const anchor = new URLSearchParams(location.search).get('anchor') || undefined;
+const cursorOpt = anchor ? { anchor } : 'depth';
 
 let onFrame = null;
 const wall = {
@@ -66,8 +70,8 @@ const wall = {
 };
 const pcOnly = engine === 'playcanvas' ? { preserveDrawingBuffer: true } : {};
 const handle = kind === 'splat'
-  ? addSplat(wall, canvas, '../../../samples/splat/assets/butterfly.sog', { engine: engine === 'three' ? 'spark' : engine, cursor: 'depth', idleSpin: 0, orbit: false, ...pcOnly })
-  : addModel(wall, canvas, './cube.gltf', { engine, cursor: 'depth', idleSpin: 0, orbit: false, ...pcOnly });
+  ? addSplat(wall, canvas, '../../../samples/splat/assets/butterfly.sog', { engine: engine === 'three' ? 'spark' : engine, cursor: cursorOpt, idleSpin: 0, orbit: false, ...pcOnly })
+  : addModel(wall, canvas, './cube.gltf', { engine, cursor: cursorOpt, idleSpin: 0, orbit: false, ...pcOnly });
 
 // Record the crosshair the cursor queues (PlayCanvas: immediate lines).
 let lines = null;
@@ -94,18 +98,26 @@ let sprite = null;
 let modelWorld = null; // () => column-major world matrix of the cube's root (unit cube, ±0.5)
 if (engine === 'playcanvas') {
   const app = handle.engine.app;
-  const real = app.drawLineArrays.bind(app);
-  app.drawLineArrays = (p, c, dt, l) => { lines = { pts: Array.from(p), depthTest: dt }; return real(p, c, dt, l); };
   rig = app.root.findByName('inline3d-rig');
   modelWorld = () => handle.engine.root.getWorldTransform().data;
   if (kind === 'splat') modelWorld = null;
 } else {
   let root = handle.model || handle.mesh;
   while (root.parent) root = root.parent;
-  root.traverse((o) => { if (o.isLineSegments && o.renderOrder === 1e9) sprite = o; });
+  root.traverse((o) => { if (o.name === 'inline3d-cursor') sprite = o; });
   modelWorld = kind === 'splat' ? null : () => handle.model.matrixWorld.elements;
 }
+// The crosshair's world position + its depth-test flag, or null while hidden.
 const spriteLines = () => {
+  if (rig) {
+    const app = handle.engine.app;
+    const node = app.root.findByName('inline3d-cursor');
+    const ui = app.scene.layers.getLayerById(4); // LAYERID_UI
+    const mi = node && (ui.meshInstances || []).find((m) => m.node === node);
+    if (!mi || !mi.visible) return null;
+    const p = node.getPosition();
+    return { pts: [p.x, p.y, p.z], depthTest: mi.material.depthTest };
+  }
   if (!sprite || !sprite.visible) return null;
   const e = sprite.matrix.elements;
   return { pts: [e[12], e[13], e[14]], depthTest: sprite.material.depthTest };
@@ -157,7 +169,7 @@ async function measure(u, v, settle = SETTLE) {
   const g = solveCursorGeometry(...[worldViews()[0], worldViews()[1]], u, v);
   const front = modelWorld ? cubeFront(g) : null;
   let cursor = null;
-  if (!rig) lines = spriteLines();
+  lines = spriteLines();
   if (lines) {
     const P = lines.pts, n = P.length / 3;
     const c = [0, 1, 2].map((i) => { let x = 0; for (let k = 0; k < n; k++) x += P[k * 3 + i]; return x / n; });
@@ -171,21 +183,42 @@ const over = await measure(0.5, 0.5);
 prog('over done ' + JSON.stringify(over));
 // Off the subject the cursor SINKS back to the glass, slowly by design (250 ms time constant).
 const off = await measure(0.05, 0.08, SETTLE * 2);
-lines = null;
 canvas.dispatchEvent(new PointerEvent('pointerleave'));
 await wait(5);
-const left = { cssCursor: canvas.style.cursor, linesQueued: !!(rig ? lines : spriteLines()) };
-point(0.5, 0.5);
-await wait(45);
+const left = { cssCursor: canvas.style.cursor, linesQueued: !!spriteLines() };
+// Head motion with the pointer STILL: hybrid (default) and world keep the sprite fixed in the
+// world (it parallaxes like the content); screen keeps it on the line of sight (it slides).
+for (let i = 0; i < 3; i++) { point(0.5, 0.5); await wait(5); }
+await wait(SETTLE);
+const before = spriteLines();
+headX = 0.06 * s; // 6 cm to the right
+views = makeViews();
+await wait(Math.round(SETTLE / 2));
+const after = spriteLines();
+// LATERAL movement only (across the display plane): with the pointer still, the sprite's DEPTH
+// still follows the content under the line of sight (a splat's surface is not flat), by design.
+const lateral = (d) => {
+  const m = worldViews()[0].transformMatrix;
+  const l = Math.hypot(m[8], m[9], m[10]);
+  const n = [m[8] / l, m[9] / l, m[10] / l];
+  const k = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+  return Math.hypot(d[0] - k * n[0], d[1] - k * n[1], d[2] - k * n[2]);
+};
+const headMove = before && after ? lateral([0, 1, 2].map((i) => after.pts[i] - before.pts[i])) : null;
+headX = 0;
+views = makeViews();
+await wait(10);
 document.getElementById('shot').src = canvas.toDataURL('image/png');
 const margin = CURSOR_DEFAULT_TUNING.margin;
-const pass = kind === 'splat'
+const expectFixed = (anchor || 'hybrid') !== 'screen';
+const headOk = headMove !== null && (expectFixed ? headMove < 1e-3 : headMove > 1e-3);
+const depthOk = kind === 'splat'
   ? over.cursorDisparity !== null && over.cursorDisparity < -0.01 && off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none'
-  :
-  over.cursorDisparity !== null && over.cubeFrontDisparity !== null &&
-  over.cursorDisparity < over.cubeFrontDisparity && Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.02 &&
-  off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none' && over.depthTest === false;
-log({ engine, kind, pass, over, off, afterLeave: left, frames });
+  : over.cursorDisparity !== null && over.cubeFrontDisparity !== null &&
+    over.cursorDisparity < over.cubeFrontDisparity && Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.003 &&
+    off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none' && over.depthTest === false;
+const pass = headOk && depthOk;
+log({ engine, kind, anchor: anchor || 'hybrid', pass, headMove, over, off, afterLeave: left, frames });
 </script>
 </body>
 </html>
