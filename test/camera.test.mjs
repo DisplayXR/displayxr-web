@@ -287,3 +287,123 @@ test('addCameraView: a pair on a 3D wall is woven (addImage) and mirrored; on a 
   assert.throws(() => addCameraView(wall, null, cam), /needs a canvas/);
   assert.throws(() => addCameraView(wall, doc.createElement('canvas'), {}), /StereoCamera/);
 });
+
+// ── addCameraView: follows firstWoven (web#131) ───────────────────────────────────────────
+
+/** A 3D wall whose addImage handles carry a firstWoven the test settles by hand. */
+function fwWall() {
+  const added = [];
+  const wall = {
+    supported: true,
+    addImage(canvas, src) {
+      let settle;
+      const firstWoven = new Promise((r) => (settle = r));
+      const h = { canvas, src, removed: 0, firstWoven, settle: (woven, reason) => settle({ woven, confirmed: false, reason, ms: 5 }), remove() { this.removed++; } };
+      added.push(h);
+      return h;
+    },
+  };
+  return { wall, added };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test('addCameraView: a tile the wall will not weave (layer-failed) drops to the flat left eye, says why, and is retried', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { wall, added } = fwWall();
+  const cam = await sbsCam();
+  const changes = [];
+  const view = addCameraView(wall, doc.createElement('canvas'), cam, { onRouteChange: (route, st) => changes.push([route, st.woven, st.reason]) });
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.weaveState().firstWoven, 'pending');
+  added[0].settle(false, 'layer-failed');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(view.route, 'flat-left', 'never the packed pair: one eye, flat');
+  assert.equal(view.woven, false);
+  assert.equal(view.fallbackReason, 'layer-failed');
+  assert.equal(added[0].removed, 1, 'the dead registration was left');
+  assert.deepEqual(changes.at(-1), ['flat-left', false, 'layer-failed']);
+  assert.deepEqual(view.weaveState(), { route: 'flat-left', woven: false, reason: 'layer-failed', firstWoven: null, layerRetries: 1 });
+  // An unforced reroute (the call's update()) keeps it flat while the fallback stands.
+  view._reroute(false);
+  assert.equal(view.route, 'flat-left');
+  assert.equal(added.length, 1);
+  // The backoff retry re-registers on the same wall.
+  t.mock.timers.tick(1500);
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.fallbackReason, null);
+  assert.equal(added.length, 2);
+  // …and a woven result this time sticks, resets the retry count, and tells the page.
+  added[1].settle(true, 'hold-elapsed');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(view.route, 'woven-sbs');
+  assert.deepEqual(view.weaveState().firstWoven, { woven: true, confirmed: false, reason: 'hold-elapsed', ms: 5 });
+  assert.equal(view.weaveState().layerRetries, 0);
+  assert.deepEqual(changes.at(-1), ['woven-sbs', true, null]);
+  view.remove();
+});
+
+test('addCameraView: retries are bounded; a session that ended waits for _reroute(true, wall)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { wall, added } = fwWall();
+  const cam = await sbsCam();
+  const view = addCameraView(wall, doc.createElement('canvas'), cam);
+  for (let i = 0; i < 4; i++) {
+    added.at(-1).settle(false, 'layer-failed');
+    await tick0();
+    assert.equal(view.route, 'flat-left');
+    t.mock.timers.tick(20000);
+    assert.equal(view.route, 'woven-sbs', `retry ${i + 1} re-registered`);
+  }
+  added.at(-1).settle(false, 'layer-failed');
+  await tick0();
+  t.mock.timers.tick(60000);
+  assert.equal(view.route, 'flat-left', 'after the last retry the view stays flat');
+  assert.equal(added.length, 5);
+  // The wall comes back (the call's recovery): a forced reroute registers again.
+  view._reroute(true, wall);
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.fallbackReason, null);
+  assert.equal(added.length, 6);
+  // A session that ended is not retried on a timer: flat until a wall is handed back.
+  added.at(-1).settle(false, 'session-ended');
+  await tick0();
+  assert.equal(view.route, 'flat-left');
+  assert.equal(view.fallbackReason, 'session-ended');
+  t.mock.timers.tick(60000);
+  assert.equal(added.length, 6);
+  view._reroute(true, wall);
+  assert.equal(view.route, 'woven-sbs');
+  // A result for a registration the view already left is ignored.
+  const stale = added.at(-1);
+  view._reroute(true, wall);
+  stale.settle(false, 'layer-failed');
+  await tick0();
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.fallbackReason, null);
+  view.remove();
+  added.at(-1).settle(false, 'removed');
+  await tick0();
+  assert.equal(view.fallbackReason, null, 'its own remove() is not a failure');
+});
+
+test('addCameraView: a woven tile stays 3D when firstWoven settles woven', async () => {
+  const { wall, added } = fwWall();
+  const cam = await sbsCam();
+  const view = addCameraView(wall, doc.createElement('canvas'), cam);
+  added[0].settle(true, 'hold-elapsed');
+  await tick();
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.woven, true);
+  assert.equal(view.fallbackReason, null);
+  assert.equal(added.length, 1, 'no re-registration');
+  assert.equal(added[0].removed, 0);
+  view.remove();
+});
+
+/** Two microtask turns: the firstWoven .then and anything it chains (no timer, so mock-safe). */
+async function tick0() {
+  await Promise.resolve();
+  await Promise.resolve();
+}

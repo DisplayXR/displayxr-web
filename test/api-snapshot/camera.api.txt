@@ -57,6 +57,7 @@ interface CameraView
   CameraView.readonly convergencePx: readonly convergencePx:number
   CameraView.readonly depth: readonly depth:number
   CameraView.readonly disparityPx: readonly disparityPx:number|null
+  CameraView.readonly fallbackReason: readonly fallbackReason:string|null
   CameraView.readonly handle: readonly handle:TileHandle|null
   CameraView.readonly mirror: readonly mirror:boolean
   CameraView.readonly route: readonly route:'woven-sbs'|'flat-left'|'flat'|null
@@ -65,11 +66,19 @@ interface CameraView
   CameraView.setAutoConverge: setAutoConverge(on?:boolean):boolean
   CameraView.setDepth: setDepth(v:number|null):number
   CameraView.setMirror: setMirror(on?:boolean):boolean
+  CameraView.weaveState: weaveState():CameraViewWeaveState
 interface CameraViewOptions
   CameraViewOptions.aspect?: aspect?:number
   CameraViewOptions.autoConverge?: autoConverge?:boolean
   CameraViewOptions.depth?: depth?:number
   CameraViewOptions.mirror?: mirror?:boolean
+  CameraViewOptions.onRouteChange?: onRouteChange?:(route:CameraView['route'],state:CameraViewWeaveState)=>void
+interface CameraViewWeaveState
+  CameraViewWeaveState.firstWoven: firstWoven:{woven:boolean;confirmed:boolean;reason:string|null;ms:number}|'pending'|null
+  CameraViewWeaveState.layerRetries: layerRetries:number
+  CameraViewWeaveState.reason: reason:string|null
+  CameraViewWeaveState.route: route:'woven-sbs'|'flat-left'|'flat'|null
+  CameraViewWeaveState.woven: woven:boolean
 interface CapturePhotoOptions
   CapturePhotoOptions.convergencePx?: convergencePx?:number
   CapturePhotoOptions.name?: name?:string

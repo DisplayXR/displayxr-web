@@ -5,6 +5,27 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./camera`, `./call`) additively. The core is unchanged (one new
+unit test pins its existing behaviour).
+
+### `./call` + `./camera` — the self view never shows a squeezed pair (web#131)
+
+- **The self view follows its tile's `firstWoven`.** Seen once in the DisplayXR Browser: a
+  call's self view showed the whole packed L|R pair in each eye under a `You · 3D` badge, the
+  look of a canvas the browser is not weaving. `addCameraView` now watches `handle.firstWoven`
+  the way a remote tile does: on `woven: false` (`'layer-failed'`, `'session-ended'`) the view
+  drops to `'flat-left'` (one eye, mirrored), re-registers a refused layer up to 4 times with
+  backoff, and re-weaves on `_reroute(true, wall)` when a wall comes back.
+- **The self badge is honest**: `3D` only while the view is on the woven route.
+- **`CameraView` additions**: `fallbackReason`, `weaveState()` and the `onRouteChange` option
+  (types: `CameraViewWeaveState` in `camera.d.ts`).
+- **`call.diagnostics().self`** = `{ route, woven, reason, firstWoven, layerRetries }`, so the
+  next occurrence can be diagnosed from devtools.
+- Hardening, not a root-cause fix: `firstWoven` is the SDK's hold timer, so a layer the browser
+  silently never joins still reads as woven.
+
 ## 1.34.0 — 2026-10-06
 
 ### `./model` — the PlayCanvas drag is a turntable again

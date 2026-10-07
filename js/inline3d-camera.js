@@ -51,6 +51,11 @@ export const CAMERA_SDK = 'inline3d-camera/1';
 const AUTO_CONV_INTERVAL_MS = 200;
 const AUTO_CONV_EYE_WIDTH = 240;
 const FRAME_WAIT_MS = 4000;
+// A self view whose layer the wall could not build (`firstWoven` → `woven:false, 'layer-failed'`)
+// goes flat and re-registers a few times with backoff — the remote tile's rule (web#131).
+const LAYER_RETRIES = 4;
+const LAYER_RETRY_BASE_MS = 1500;
+const LAYER_RETRY_MAX_MS = 20000;
 const RECORD_MIME_CANDIDATES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
 
 const hasDoc = () => typeof document !== 'undefined' && document && typeof document.createElement === 'function';
@@ -471,7 +476,12 @@ function sizeFlat(canvas) {
  * @param {object|null} wall  a `createInline3D()` / `sharedInline3D()` result (may be unsupported) or null
  * @param {HTMLCanvasElement} canvas  the tile — its CSS box is the shape the viewer sees
  * @param {StereoCamera} cam
- * @param {{ mirror?: boolean, autoConverge?: boolean, depth?: number, aspect?: number }} [opts]
+ * On a 3D wall the view follows its tile's `firstWoven`: a window the wall will not weave
+ * (`'layer-failed'`, `'session-ended'`) drops the view to the flat left eye — never the packed
+ * pair — with `fallbackReason` saying why, and `onRouteChange(route, state)` tells the page (a
+ * badge reads `route`). A refused layer is retried a few times; `_reroute(true, wall)` recovers.
+ *
+ * @param {{ mirror?: boolean, autoConverge?: boolean, depth?: number, aspect?: number, onRouteChange?: Function }} [opts]
  */
 export function addCameraView(wall, canvas, cam, opts = {}) {
   if (!canvas || typeof canvas.getContext !== 'function') throw new TypeError(`${TAG} addCameraView(wall, canvas, cam, opts) needs a canvas`);
@@ -494,6 +504,15 @@ class CameraView {
     this.setDepth(o.depth);
     this.route = null;
     this.handle = null;
+    // Why a pair on a 3D-capable wall is shown FLAT (web#131): the wall said this tile's window
+    // will not weave (`firstWoven` → woven:false — 'layer-failed', 'session-ended'). Null while
+    // nothing has failed. A packed pair is never the visible fallback: the view paints one eye.
+    this.fallbackReason = null;
+    // The current registration's settled `firstWoven`, null while pending / not registered.
+    this._fw = null;
+    this._onRouteChange = typeof o.onRouteChange === 'function' ? o.onRouteChange : null;
+    this._layerFails = 0;
+    this._layerTimer = 0;
     this.buffer = null; // the SBS canvas the wall repaints the tile from (woven route)
     this.removed = false;
     this._raf = 0;
@@ -507,9 +526,28 @@ class CameraView {
     if (this._loop) this._start();
   }
 
-  /** `'woven-sbs'` (3D on the panel) | `'flat-left'` (a pair, shown flat) | `'flat'` (mono). */
+  /**
+   * True while the view is on the woven route: registered on a 3D wall, and the wall has not said
+   * the tile will not weave (a failed layer drops the view to `'flat-left'`). Route is
+   * `'woven-sbs'` (3D on the panel) | `'flat-left'` (a pair, shown flat) | `'flat'` (mono).
+   */
   get woven() {
     return this.route === 'woven-sbs';
+  }
+
+  /**
+   * What is actually on the panel, for diagnostics: `{ route, woven, reason, firstWoven,
+   * layerRetries }`. `firstWoven` is the current registration's settled result, `'pending'`
+   * before it settles, null off the woven route.
+   */
+  weaveState() {
+    return {
+      route: this.route,
+      woven: this.woven,
+      reason: this.fallbackReason,
+      firstWoven: this.route === 'woven-sbs' ? (this._fw ? { ...this._fw } : 'pending') : null,
+      layerRetries: this._layerFails,
+    };
   }
 
   /** The per-eye convergence shift currently painted, source px. */
@@ -543,20 +581,77 @@ class CameraView {
     return this.autoConverge;
   }
 
-  /** Re-register on the wall (the call does this when the weave goes live, #172, or a session is recovered). */
+  /**
+   * Re-register on the wall (the call does this when the weave goes live, #172, or a session is
+   * recovered). A FORCED reroute also clears a layer fallback (web#131): a wall that came back
+   * gets a fresh registration. An unforced one keeps the view flat while a fallback stands.
+   */
   _reroute(force, wall) {
     if (wall !== undefined) this.wall = wall;
     if (this.removed) return;
+    if (force && this.fallbackReason) {
+      this.fallbackReason = null;
+      clearTimeout(this._layerTimer);
+      this._layerTimer = 0;
+    }
     const cam = this.cam;
     const live = cam.state === 'live' && cam.video;
-    const route = cam.format === 'sbs' && live && this.wall && this.wall.supported ? 'woven-sbs' : cam.format === 'sbs' ? 'flat-left' : 'flat';
+    const wovenOk = cam.format === 'sbs' && live && this.wall && this.wall.supported && !this.fallbackReason;
+    const route = wovenOk ? 'woven-sbs' : cam.format === 'sbs' ? 'flat-left' : 'flat';
     if (!force && route === this.route) return;
+    const prev = this.route;
     this._unregister();
     this.route = route;
-    if (route === 'woven-sbs') {
-      if (!this.buffer) this.buffer = document.createElement('canvas');
-      this._paintWoven(); // the first frame exists before the layer does
-      this.handle = this.wall.addImage(this.canvas, this.buffer);
+    if (route === 'woven-sbs') this._registerWoven();
+    if (route !== prev) this._routeChanged();
+  }
+
+  _registerWoven() {
+    if (!this.buffer) this.buffer = document.createElement('canvas');
+    this._paintWoven(); // the first frame exists before the layer does
+    const handle = this.wall.addImage(this.canvas, this.buffer);
+    this.handle = handle;
+    this._fw = null;
+    const fw = handle && handle.firstWoven;
+    if (!fw || typeof fw.then !== 'function') return;
+    fw.then((res) => {
+      // A result for a registration we already left (removed, re-registered) says nothing now.
+      if (this.handle !== handle || this.removed || !res) return;
+      this._fw = { woven: !!res.woven, confirmed: !!res.confirmed, reason: res.reason || null, ms: res.ms };
+      this.cam.log?.('view-first-woven', { woven: !!res.woven, reason: res.reason || null });
+      if (res.woven) {
+        this._layerFails = 0;
+        this._routeChanged(); // the state settled; the route did not move
+      } else if (res.reason !== 'removed') this._layerLost(res.reason || 'layer-failed');
+    });
+  }
+
+  /**
+   * The wall said this window will not weave (web#131): the canvas must never be left showing the
+   * packed pair under a 3D badge. Go flat (one eye, mirrored) and say why. A layer the browser
+   * refused is retried a few times with backoff while the wall stays up (the remote tile's rule);
+   * a session that ended waits for `_reroute(true, wall)` with the new wall.
+   */
+  _layerLost(reason) {
+    this.fallbackReason = reason;
+    this._reroute(false);
+    if (reason !== 'layer-failed' || this._layerFails >= LAYER_RETRIES) return;
+    const delay = Math.min(LAYER_RETRY_MAX_MS, LAYER_RETRY_BASE_MS * Math.pow(2, this._layerFails++));
+    this.cam.log?.('view-layer-retry', { attempt: this._layerFails, inMs: delay });
+    clearTimeout(this._layerTimer);
+    this._layerTimer = setTimeout(() => {
+      this._layerTimer = 0;
+      if (this.removed || this.fallbackReason !== reason) return;
+      this._reroute(true);
+    }, delay);
+  }
+
+  _routeChanged() {
+    if (!this._onRouteChange) return;
+    try {
+      this._onRouteChange(this.route, this.weaveState());
+    } catch (err) {
+      console.error(`${TAG} onRouteChange threw`, err);
     }
   }
 
@@ -672,6 +767,8 @@ class CameraView {
     this.removed = true;
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = 0;
+    clearTimeout(this._layerTimer);
+    this._layerTimer = 0;
     this._unregister();
     this.cam._views?.delete(this);
   }
