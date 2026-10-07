@@ -5,6 +5,38 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Driven by a tester's run on a head-tracked panel (the depth cursor shipped in 1.36.0). Additive
+API, plus two deliberate default changes to the cursor, which is opt-in, so nothing changes for a
+page that does not use it.
+
+### Depth cursor: parallax, margin, overlays, visibility
+
+- **The cursor now parallaxes like the content (new default `anchor: 'hybrid'`).** 1.36.0 kept
+  the sprite on the line of sight through the pointer. Its image on the glass then never moved
+  with the head: disparity without motion parallax. On a head-tracked display that reads as "at
+  the glass", behind the content it should sit on.
+  - **Hybrid:** follows the pointer exactly while it moves, and stays world-fixed while the
+    pointer is still, so it parallaxes with the content as you look around. It is continuous at
+    the moment the pointer stops.
+  - **`anchor: 'screen'`:** the 1.36 behaviour.
+  - **`anchor: 'world'`:** always straight in front of the pointer's canvas point.
+- **Default margin 0.03 → 0.005** (eye-baseline units, about 1.5 mm at 60 cm). The old default
+  floated 1–2 cm off shallow content; the cursor now rests on what it hovers. There's also a
+  `margin` option.
+- **`pointerScope: 'window'`:** the cursor stays active over DOM layered on the canvas (overlay
+  buttons), and the CSS cursor is hidden page-wide while it shows.
+- **Filled, outlined crosshair** instead of 1 px lines, which read too thin through the lens.
+  Both engines draw it the same way.
+- **`./model` / `./splat`:** `cursor` also takes an object, `{ margin, anchor, height,
+  pointerScope }`, validated at the call.
+- **`./cursor-depth`:** `CURSOR_ANCHOR_MODES`, `CursorOptions`, `resolveCursorOption`,
+  `cursorCrosshairMesh`, `cursorModelMatrix`; `CursorDepthPlacer` takes `{ anchor }`.
+- **Docs:** `hitTest` must be cheap and cover everything that sticks out.
+- **e2e:** `test:e2e:cursor` adds a head-move check on the real viewers. Hybrid and world stay
+  world-fixed and screen slides; this holds on both engines, for models and splats.
+
 ## 1.36.0 — 2026-10-07
 
 Additive everywhere it touches: the **core** `./three` (new helpers, minor per

@@ -67,7 +67,8 @@ try {
     // samples anyway, so the detail beyond this is rendered and then discarded.
     renderScale: 0.6,
     // ?cursor=depth — the depth-aware cursor (opt-in). Cheapest on PlayCanvas, this page's default.
-    ...(params.get('cursor') === 'depth' ? { cursor: 'depth' } : {}),
+    // Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
+    ...(params.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(params) } : {}),
   });
 } catch (err) {
   // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)
@@ -101,4 +102,13 @@ if (handle) {
   } catch {
     statusEl.textContent = `Could not load ${url} with ${engineName} — check the URL, its format and its CORS headers.`;
   }
+}
+
+/** ?cursor=depth plus optional &anchor= &margin= &scope= → addModel/addSplat's `cursor` option. */
+function sampleCursorOptions(p) {
+  const o = {};
+  if (p.get('anchor')) o.anchor = p.get('anchor');
+  if (p.get('margin')) o.margin = Number(p.get('margin'));
+  if (p.get('scope')) o.pointerScope = p.get('scope');
+  return Object.keys(o).length ? o : 'depth';
 }

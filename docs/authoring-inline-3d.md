@@ -1045,7 +1045,7 @@ from the views.
 ## A cursor that respects depth
 
 **On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
-(or `addSplat`). PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
+(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
 cheap pass. three raycasts the subject, and on Spark splats that is amortised to one ray a frame.
 Without the option nothing is built or loaded. For your own three.js scene, use `DepthCursor`
 directly:
@@ -1074,8 +1074,21 @@ wall.addScene(canvas, (views, layer) => {
   and native cursors behave alike.
 - **When it's inactive.** In 2D (one view) and off the canvas the crosshair hides and the normal
   cursor returns.
-- **Head motion.** The crosshair stays under the mouse on the glass as the viewer looks around;
-  only its depth follows what is under that line of sight.
+- **Head motion: `anchor`.** By default (`'hybrid'`) the crosshair follows the pointer exactly
+  while it moves. While the pointer is still, it stays fixed in the scene, so it parallaxes with
+  the content as the viewer looks around. A cursor that never parallaxes reads as being at the
+  glass on a head-tracked display, even when its disparity says otherwise. `'screen'` never
+  parallaxes, and `'world'` always does (and drifts a few mm off the pointer for an off-axis
+  viewer).
+- **Margin.** `margin` (default 0.005 eye baselines, about 1.5 mm at 60 cm) is how far in front of
+  the content it floats. Larger values look detached.
+- **DOM over the canvas.** `pointerScope: 'window'` keeps the cursor active over HTML layered on
+  the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
+- **Your `hitTest` must be cheap, and it must cover everything that sticks out.** It runs every
+  frame, over a footprint of several rays (two eyes × 9 points). A stock raycast through a
+  million-triangle mesh is too slow, so use a heightfield march, a BVH, or proxies. Anything you
+  leave out (a small spinning icon, a label) is something the cursor sinks behind; bounding boxes
+  are fine for small parts.
 - **Splats.** Supply a `hitTest` that returns the splat renderer's expected depth along the ray.
   Raycasting splats doesn't work.
 - **Attach pattern.** If your eye cameras hang off an app camera, pass `viewSpace: appCamera`.
