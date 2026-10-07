@@ -15,6 +15,10 @@
       "types": "./three.d.ts",
       "import": "./js/inline3d-three.js"
     },
+    "./cursor-depth": {
+      "types": "./cursor-depth.d.ts",
+      "import": "./js/inline3d-cursor-depth.js"
+    },
     "./viewer": {
       "types": "./viewer.d.ts",
       "import": "./js/inline3d-viewer.js"
@@ -70,6 +74,7 @@
     "js/inline3d-buffer-limit.js",
     "js/inline3d-viewer-ease.js",
     "js/inline3d-three.js",
+    "js/inline3d-cursor-depth.js",
     "js/inline3d-viewer.js",
     "js/inline3d-splat.js",
     "js/inline3d-splat-pc-entry.js",
@@ -100,6 +105,7 @@
     "dist/",
     "index.d.ts",
     "three.d.ts",
+    "cursor-depth.d.ts",
     "viewer.d.ts",
     "splat.d.ts",
     "splat-playcanvas.d.ts",
