@@ -237,3 +237,21 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
   assert.equal(canvas.handlers.pointermove, undefined);
   assert.equal(canvas.style.cursor, 'crosshair');
 });
+
+test('DepthCursor: raysPerFrame (an expensive hit test) casts N rays a frame and still finds the content', () => {
+  const canvas = stubCanvas();
+  let rays = 0;
+  const hitTest = (o, d) => {
+    rays++;
+    if (d[2] >= 0) return null;
+    const t = (0.1 - o[2]) / d[2];
+    return [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
+  };
+  const cur = new DepthCursor(stubTHREE(), { canvas, hitTest, raysPerFrame: 1 });
+  const views = [kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])];
+  cur.setPointer(0.5, 0.5);
+  let p;
+  for (let i = 0; i < 9; i++) p = cur.update(views, 1000 + i * 16);
+  assert.equal(rays, 9, 'one ray per frame');
+  near(p.targetDisparity, 1 - 0.6 / 0.5 - T.margin);
+});

@@ -52,7 +52,7 @@
 // descriptor and nothing else: no Kooima, no off-axis math, no scale, here or anywhere in this
 // SDK. That stays in the runtime, which is the point of the extension.
 
-import { CursorDepthPlacer, cursorViewRay, CURSOR_DEFAULT_HEIGHT } from './inline3d-cursor-depth.js';
+import { CursorDepthPlacer, CursorPointer, cursorFootprint, cursorViewRay, CURSOR_CROSSHAIR, CURSOR_DEFAULT_HEIGHT } from './inline3d-cursor-depth.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with
@@ -475,28 +475,27 @@ export class DepthCursor {
    * @param {number} [opts.height=0.03]  sprite height as a fraction of the canvas height.
    * @param {number} [opts.color=0xffd419]
    * @param {object} [opts.viewSpace]  Object3D whose world matrix maps view transforms to world.
+   * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 9
+   *        points). N > 0 = an EXPENSIVE hit test (e.g. a gaussian-splat raycast, ~8 ms a ray):
+   *        cast N rays a frame from the first eye, cycling through the footprint, and take the
+   *        nearest of the most recent full cycle.
    */
-  constructor(THREE, { canvas, hitTest, height = CURSOR_DEFAULT_HEIGHT, color = 0xffd419, viewSpace = null }) {
+  constructor(THREE, { canvas, hitTest, height = CURSOR_DEFAULT_HEIGHT, color = 0xffd419, viewSpace = null, raysPerFrame = 0 }) {
     this._THREE = THREE;
     this.canvas = canvas;
     this.hitTest = hitTest;
     this.height = height;
     this.viewSpace = viewSpace;
+    this.raysPerFrame = raysPerFrame;
+    this._ring = []; // amortised mode: the last hit per footprint point (null = a miss)
+    this._next = 0;
     this.placer = new CursorDepthPlacer();
+    this.pointer = new CursorPointer(canvas);
     /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity}`. */
     this.placement = { active: false };
-    this._uv = null;
-    this._cursorHidden = false;
-    this._prevCssCursor = '';
 
-    // Crosshair + small square in the sprite's XY plane, unit = sprite height.
-    const s = 0.15;
-    const seg = [
-      [-0.5, 0, -s, 0], [s, 0, 0.5, 0], [0, -0.5, 0, -s], [0, s, 0, 0.5],
-      [-s, -s, s, -s], [s, -s, s, s], [s, s, -s, s], [-s, s, -s, -s],
-    ];
     const pos = [];
-    for (const [x0, y0, x1, y1] of seg) pos.push(x0, y0, 0, x1, y1, 0);
+    for (const [x0, y0, x1, y1] of CURSOR_CROSSHAIR) pos.push(x0, y0, 0, x1, y1, 0);
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     const mat = new THREE.LineBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true });
@@ -505,21 +504,11 @@ export class DepthCursor {
     this.object.frustumCulled = false;
     this.object.renderOrder = 1e9; // last: never occluded, it is in front by construction
     this.object.visible = false;
-
-    this._onMove = (e) => {
-      const r = canvas.getBoundingClientRect();
-      this._uv = r.width > 0 && r.height > 0 ? [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] : null;
-    };
-    this._onLeave = () => {
-      this._uv = null;
-    };
-    canvas.addEventListener('pointermove', this._onMove);
-    canvas.addEventListener('pointerleave', this._onLeave);
   }
 
   /** Set the pointer position directly (canvas-normalised, v down), or null — for scripted input. */
   setPointer(u, v) {
-    this._uv = u === null || u === undefined ? null : [u, v];
+    this.pointer.set(u, v);
   }
 
   /**
@@ -529,9 +518,10 @@ export class DepthCursor {
    */
   update(views, nowMs = globalThis.performance ? globalThis.performance.now() : Date.now()) {
     const vs = this._worldViews(views);
+    const uv = this.pointer.uv;
     let p = { active: false };
-    if (this._uv && vs.length >= 2) {
-      const [u, v] = this._uv;
+    if (uv && vs.length >= 2) {
+      const [u, v] = uv;
       const nearestPoint = this._footprintHit(vs, u, v);
       p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: this.height }, nowMs / 1000);
     }
@@ -549,56 +539,52 @@ export class DepthCursor {
       ]);
       this.object.matrixWorldNeedsUpdate = true;
     }
-    this._setCssCursorHidden(!!p.active);
+    this.pointer.hideCss(!!p.active);
     return p;
   }
 
   /** Remove listeners, give the CSS cursor back, free the sprite's GPU resources. */
   dispose() {
-    this.canvas.removeEventListener('pointermove', this._onMove);
-    this.canvas.removeEventListener('pointerleave', this._onLeave);
-    this._setCssCursorHidden(false);
+    this.pointer.dispose();
     this.object.visible = false;
     this.object.geometry.dispose();
     this.object.material.dispose();
   }
 
-  _setCssCursorHidden(hide) {
-    if (hide === this._cursorHidden) return;
-    if (hide) {
-      this._prevCssCursor = this.canvas.style.cursor || '';
-      this.canvas.style.cursor = 'none';
-    } else {
-      this.canvas.style.cursor = this._prevCssCursor;
-    }
-    this._cursorHidden = hide;
-  }
-
-  // Nearest content point under the footprint (the sprite plus 50%), from the two outer views.
+  // Nearest content point under the footprint, from the two outer views (or, amortised, from
+  // the first eye over the last cycle of footprint points).
   _footprintHit(views, u, v) {
     const a = views[0], b = views[views.length - 1];
-    const r = 0.75 * this.height;
-    const rect = this.canvas.getBoundingClientRect();
-    const aspect = rect.height > 0 ? rect.width / rect.height : 1;
     const m = a.transformMatrix;
     const fl = Math.hypot(m[8], m[9], m[10]) || 1;
     const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
-    let best = Infinity, nearest = null;
-    for (let k = -1; k < 8; k++) {
-      let su = u, sv = v;
-      if (k >= 0) {
-        su += (r * Math.cos(k * Math.PI / 4)) / aspect;
-        sv += r * Math.sin(k * Math.PI / 4);
+    const fp = cursorFootprint(u, v, this.height, this.pointer.aspect());
+    let candidates;
+    if (this.raysPerFrame > 0) {
+      const ring = this._ring;
+      ring.length = fp.length;
+      for (let i = 0; i < this.raysPerFrame; i++) {
+        const k = this._next++ % fp.length;
+        const ray = cursorViewRay(a, fp[k][0], fp[k][1]);
+        ring[k] = this.hitTest(ray.origin, ray.direction);
       }
-      for (const view of [a, b]) {
-        const ray = cursorViewRay(view, su, sv);
-        const p = this.hitTest(ray.origin, ray.direction);
-        if (!p) continue;
-        const depth = p[0] * f[0] + p[1] * f[1] + p[2] * f[2]; // smaller = nearer the viewer
-        if (depth < best) {
-          best = depth;
-          nearest = p;
+      candidates = ring;
+    } else {
+      candidates = [];
+      for (const [su, sv] of fp) {
+        for (const view of [a, b]) {
+          const ray = cursorViewRay(view, su, sv);
+          candidates.push(this.hitTest(ray.origin, ray.direction));
         }
+      }
+    }
+    let best = Infinity, nearest = null;
+    for (const p of candidates) {
+      if (!p) continue;
+      const depth = p[0] * f[0] + p[1] * f[1] + p[2] * f[2]; // smaller = nearer the viewer
+      if (depth < best) {
+        best = depth;
+        nearest = p;
       }
     }
     return nearest;
