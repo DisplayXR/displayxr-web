@@ -49,6 +49,16 @@ export interface ModelOptions {
    */
   viewerEase?: ViewerEaseOption;
   /**
+   * `'depth'`: a cursor that rises to the subject under it instead of being drawn on the glass,
+   * behind content that pops out (ADR-046, same maths as native `XR_DXR_cursor_depth`). A
+   * crosshair just in front of the nearest content under the pointer's footprint; the CSS cursor
+   * is hidden while it shows and comes back in 2D and off the canvas. OPT-IN: without it nothing
+   * is loaded or run. PlayCanvas: hit-tested with the engine's depth picker (meshes and splats,
+   * one low-res pass every other frame while the pointer is over the tile). three: a raycast
+   * against the subject.
+   */
+  cursor?: 'depth';
+  /**
    * How the mesh is lit.
    *
    * PlayCanvas (default engine):

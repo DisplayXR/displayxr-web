@@ -823,8 +823,14 @@ export class PlayCanvasSplatViewer {
       pageCamera = false,
       toneMapping = 'none',
       viewerEase,
+      cursor = null,
     } = opts;
     this.canvas = canvas;
+    // `cursor: 'depth'` (ADR-046): the depth-aware cursor. OPT-IN AND FREE OTHERWISE — its module
+    // is imported only when asked for (attachEngine), and every per-frame hook is an optional call
+    // on `cursorDepth`, which stays null without it.
+    this._cursorOpt = cursor;
+    this.cursorDepth = null;
     // The tracking-acquisition ease (./inline3d-viewer-ease.js): undefined = the session's
     // createInline3D({ viewerEase }) default. Built on the first 3D frame, which knows the session.
     this._viewerEaseOpt = viewerEase;
@@ -1253,6 +1259,7 @@ export class PlayCanvasSplatViewer {
       this._monoRaf = requestAnimationFrame(loop);
       this._beforeFrame?.(null);
       if (this._disposed || this._mode !== 'mono') return; // the callback removed or re-wove us
+      this.cursorDepth?.inactive(); // 2D: the normal cursor
       this._tick();
       this._drawMono();
     };
@@ -1283,6 +1290,8 @@ export class PlayCanvasSplatViewer {
     this._live = null;
     this._videoPlane?.destroy();
     this._videoPlane = null;
+    this.cursorDepth?.dispose();
+    this.cursorDepth = null;
     this.layerRigs = null; // its cameras go with the app
     try {
       this.app?.destroy();
@@ -1405,6 +1414,13 @@ export class PlayCanvasSplatViewer {
     if (this.featherPx > 0) this._makeFeather();
     this._applyTransform();
     app.start();
+    if (this._cursorOpt === 'depth') {
+      import('./inline3d-cursor-depth-playcanvas.js')
+        .then(({ PlayCanvasDepthCursor }) => {
+          if (!this._disposed) this.cursorDepth = new PlayCanvasDepthCursor(pc, this, { canvas: this.canvas });
+        })
+        .catch((err) => console.warn(`${this.logTag || '[inline3d/splat]'} cursor: 'depth' could not load; the normal cursor stays.`, err));
+    }
     return app;
   }
 
@@ -2103,6 +2119,8 @@ export class PlayCanvasSplatViewer {
     }
     // handle.setVideo's plane: size, eye split, and a new frame's upload (./inline3d-splat-video.js).
     this._videoPlane?.beforeDraw(entries, rect);
+    // cursor: 'depth' — place the sprite and queue its lines for the tick below (no-op unless opted in).
+    this.cursorDepth?.frame(entries);
     app.tick(now());
     this._afterTick();
     return true;
@@ -3216,6 +3234,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     farClip: opts.farClip,
     sky: opts.sky,
     viewerEase: opts.viewerEase,
+    cursor: opts.cursor,
   });
 
   let handle = null;

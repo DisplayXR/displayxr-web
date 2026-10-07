@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cursor: 'depth' — e2e harness</title>
+<style>html,body{margin:0;background:#111;color:#ddd;font:12px monospace}canvas{display:block;width:600px;height:400px}</style>
+</head>
+<body>
+<!--
+  Drives the REAL ./model PlayCanvas backend with two hand-built off-axis views (what the
+  DisplayXR Browser would hand addScene) and a scripted pointer, then checks the depth cursor:
+
+    over the cube  → crosshair disparity ≈ (cube front disparity − margin), i.e. in front of it;
+    off the cube   → crosshair on the glass (disparity 0).
+
+  No DisplayXR Browser needed: `wall` is a fake whose addScene hands us viewer.onFrame. Results
+  land in <pre id="out"> as JSON (read with `--dump-dom`), plus a snapshot of the SBS frame.
+  Serve the repo root and open test/e2e/cursor-depth/?engine=playcanvas (or three).
+-->
+<canvas id="c"></canvas>
+<pre id="out">running</pre>
+<img id="shot">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "@displayxr/inline3d/model": "../../../js/inline3d-model-entry.js",
+  "@displayxr/inline3d/splat": "../../../js/inline3d-splat.js"
+} }
+</script>
+<script type="module">
+import { addModel } from '@displayxr/inline3d/model';
+const kind = new URLSearchParams(location.search).get('kind') || 'model';
+const { addSplat } = kind === 'splat' ? await import('@displayxr/inline3d/splat') : {};
+import { solveCursorGeometry, cursorPointDisparity, CURSOR_DEFAULT_TUNING } from '../../../js/inline3d-cursor-depth.js';
+
+const out = document.getElementById('out');
+const engine = new URLSearchParams(location.search).get('engine') || 'playcanvas';
+const canvas = document.getElementById('c');
+const log = (o) => (out.textContent = JSON.stringify(o, null, 1));
+window.onerror = (m) => log({ error: String(m) });
+
+// ── two off-axis views, as the runtime builds them (display rig: canvas = vH tall at z = 0) ──
+const vH = 0.24, aspect = 600 / 400, s = vH / 0.2; // 0.2 m physical canvas, 0.6 m viewer
+const W = vH * aspect;
+function kooima(ex, ey, ez) {
+  const l = (-W / 2 - ex) / ez, r = (W / 2 - ex) / ez, u = (vH / 2 - ey) / ez, d = (-vH / 2 - ey) / ez;
+  const n = 0.01, f = 100;
+  return {
+    projectionMatrix: new Float32Array([2 / (r - l), 0, 0, 0, 0, 2 / (u - d), 0, 0, (r + l) / (r - l), (u + d) / (u - d), -(f + n) / (f - n), -1, 0, 0, (-2 * f * n) / (f - n), 0]),
+    transform: { matrix: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ex, ey, ez, 1]) },
+  };
+}
+const views = [kooima(-0.032 * s, 0, 0.6 * s), kooima(0.032 * s, 0, 0.6 * s)];
+const layer = { getViewport: (v) => ({ x: views.indexOf(v) * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height }) };
+
+let onFrame = null;
+const wall = {
+  supported: true,
+  addScene(_c, cb) {
+    onFrame = cb;
+    return new Proxy({ firstWoven: new Promise(() => {}) }, { get: (t, k) => (k in t ? t[k] : () => {}) });
+  },
+};
+const pcOnly = engine === 'playcanvas' ? { preserveDrawingBuffer: true } : {};
+const handle = kind === 'splat'
+  ? addSplat(wall, canvas, '../../../samples/splat/assets/butterfly.sog', { engine: engine === 'three' ? 'spark' : engine, cursor: 'depth', idleSpin: 0, orbit: false, ...pcOnly })
+  : addModel(wall, canvas, './cube.gltf', { engine, cursor: 'depth', idleSpin: 0, orbit: false, ...pcOnly });
+
+// Record the crosshair the cursor queues (PlayCanvas: immediate lines).
+let lines = null;
+let frames = 0;
+// A timer, not rAF: headless Chrome throttles rAF to nothing under --dump-dom.
+setInterval(() => {
+  if (onFrame) onFrame(views, layer, null);
+  frames++;
+}, 16);
+
+const point = (u, v) => canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: u * 600, clientY: v * 400, bubbles: true }));
+const wait = (n) => new Promise((res) => { const f0 = frames; const t = () => (frames - f0 >= n ? res() : setTimeout(t, 16)); t(); });
+
+const prog = (m) => (out.textContent = `running: ${m} (frames ${frames})`);
+prog('loading');
+setInterval(() => { if (out.textContent.startsWith('running')) out.textContent = out.textContent.replace(/\(frames \d+\)/, `(frames ${frames})`); }, 200);
+await handle.ready;
+prog('ready');
+// Where the crosshair is, per engine. PlayCanvas: the immediate lines it queues (world space,
+// views carried through the rig node). three: the LineSegments sprite (world space; the views
+// ARE world space there).
+let rig = null;
+let sprite = null;
+let modelWorld = null; // () => column-major world matrix of the cube's root (unit cube, ±0.5)
+if (engine === 'playcanvas') {
+  const app = handle.engine.app;
+  const real = app.drawLineArrays.bind(app);
+  app.drawLineArrays = (p, c, dt, l) => { lines = { pts: Array.from(p), depthTest: dt }; return real(p, c, dt, l); };
+  rig = app.root.findByName('inline3d-rig');
+  modelWorld = () => handle.engine.root.getWorldTransform().data;
+  if (kind === 'splat') modelWorld = null;
+} else {
+  let root = handle.model || handle.mesh;
+  while (root.parent) root = root.parent;
+  root.traverse((o) => { if (o.isLineSegments && o.renderOrder === 1e9) sprite = o; });
+  modelWorld = kind === 'splat' ? null : () => handle.model.matrixWorld.elements;
+}
+const spriteLines = () => {
+  if (!sprite || !sprite.visible) return null;
+  const e = sprite.matrix.elements;
+  return { pts: [e[12], e[13], e[14]], depthTest: sprite.material.depthTest };
+};
+const worldViews = () => {
+  if (!rig) return views.map((v) => ({ projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix }));
+  const R = rig.getWorldTransform().data;
+  const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let x = 0; for (let k = 0; k < 4; k++) x += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = x; } return o; };
+  return views.map((v) => ({ projectionMatrix: v.projectionMatrix, transformMatrix: mul(R, v.transform.matrix) }));
+};
+// The cube's front along the cyclopean ray through (u, v): analytic slab test in its local frame.
+function cubeFront(g) {
+  const M = invert4(modelWorld()); // world → model root (cube = unit, ±0.5)
+  const tp = (m, p, w) => [0, 1, 2].map((i) => m[i] * p[0] + m[4 + i] * p[1] + m[8 + i] * p[2] + (w ? m[12 + i] : 0));
+  const o = tp(M, g.eye, 1), e = tp(M, g.canvasPoint, 1), d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]];
+  let t0 = -Infinity, t1 = Infinity;
+  for (let i = 0; i < 3; i++) { let a = (-0.5 - o[i]) / d[i], b = (0.5 - o[i]) / d[i]; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); }
+  if (!(t0 <= t1) || t1 < 0) return null;
+  return [0, 1, 2].map((i) => g.eye[i] + t0 * (g.canvasPoint[i] - g.eye[i]));
+}
+function invert4(m) {
+  // General 4x4 inverse (column-major), cofactor expansion.
+  const a = Array.from(m), o = new Array(16);
+  o[0] = a[5]*a[10]*a[15]-a[5]*a[11]*a[14]-a[9]*a[6]*a[15]+a[9]*a[7]*a[14]+a[13]*a[6]*a[11]-a[13]*a[7]*a[10];
+  o[4] = -a[4]*a[10]*a[15]+a[4]*a[11]*a[14]+a[8]*a[6]*a[15]-a[8]*a[7]*a[14]-a[12]*a[6]*a[11]+a[12]*a[7]*a[10];
+  o[8] = a[4]*a[9]*a[15]-a[4]*a[11]*a[13]-a[8]*a[5]*a[15]+a[8]*a[7]*a[13]+a[12]*a[5]*a[11]-a[12]*a[7]*a[9];
+  o[12] = -a[4]*a[9]*a[14]+a[4]*a[10]*a[13]+a[8]*a[5]*a[14]-a[8]*a[6]*a[13]-a[12]*a[5]*a[10]+a[12]*a[6]*a[9];
+  o[1] = -a[1]*a[10]*a[15]+a[1]*a[11]*a[14]+a[9]*a[2]*a[15]-a[9]*a[3]*a[14]-a[13]*a[2]*a[11]+a[13]*a[3]*a[10];
+  o[5] = a[0]*a[10]*a[15]-a[0]*a[11]*a[14]-a[8]*a[2]*a[15]+a[8]*a[3]*a[14]+a[12]*a[2]*a[11]-a[12]*a[3]*a[10];
+  o[9] = -a[0]*a[9]*a[15]+a[0]*a[11]*a[13]+a[8]*a[1]*a[15]-a[8]*a[3]*a[13]-a[12]*a[1]*a[11]+a[12]*a[3]*a[9];
+  o[13] = a[0]*a[9]*a[14]-a[0]*a[10]*a[13]-a[8]*a[1]*a[14]+a[8]*a[2]*a[13]+a[12]*a[1]*a[10]-a[12]*a[2]*a[9];
+  o[2] = a[1]*a[6]*a[15]-a[1]*a[7]*a[14]-a[5]*a[2]*a[15]+a[5]*a[3]*a[14]+a[13]*a[2]*a[7]-a[13]*a[3]*a[6];
+  o[6] = -a[0]*a[6]*a[15]+a[0]*a[7]*a[14]+a[4]*a[2]*a[15]-a[4]*a[3]*a[14]-a[12]*a[2]*a[7]+a[12]*a[3]*a[6];
+  o[10] = a[0]*a[5]*a[15]-a[0]*a[7]*a[13]-a[4]*a[1]*a[15]+a[4]*a[3]*a[13]+a[12]*a[1]*a[7]-a[12]*a[3]*a[5];
+  o[14] = -a[0]*a[5]*a[14]+a[0]*a[6]*a[13]+a[4]*a[1]*a[14]-a[4]*a[2]*a[13]-a[12]*a[1]*a[6]+a[12]*a[2]*a[5];
+  o[3] = -a[1]*a[6]*a[11]+a[1]*a[7]*a[10]+a[5]*a[2]*a[11]-a[5]*a[3]*a[10]-a[9]*a[2]*a[7]+a[9]*a[3]*a[6];
+  o[7] = a[0]*a[6]*a[11]-a[0]*a[7]*a[10]-a[4]*a[2]*a[11]+a[4]*a[3]*a[10]+a[8]*a[2]*a[7]-a[8]*a[3]*a[6];
+  o[11] = -a[0]*a[5]*a[11]+a[0]*a[7]*a[9]+a[4]*a[1]*a[11]-a[4]*a[3]*a[9]-a[8]*a[1]*a[7]+a[8]*a[3]*a[5];
+  o[15] = a[0]*a[5]*a[10]-a[0]*a[6]*a[9]-a[4]*a[1]*a[10]+a[4]*a[2]*a[9]+a[8]*a[1]*a[6]-a[8]*a[2]*a[5];
+  const det = a[0]*o[0]+a[1]*o[4]+a[2]*o[8]+a[3]*o[12];
+  return o.map((x) => x / det);
+}
+
+async function measure(u, v, settle = SETTLE) {
+  // Re-sent: the opt-in module loads asynchronously, and a real pointer keeps moving.
+  for (let i = 0; i < 3; i++) { point(u, v); await wait(5); }
+  lines = null;
+  await wait(settle);
+  const g = solveCursorGeometry(...[worldViews()[0], worldViews()[1]], u, v);
+  const front = modelWorld ? cubeFront(g) : null;
+  let cursor = null;
+  if (!rig) lines = spriteLines();
+  if (lines) {
+    const P = lines.pts, n = P.length / 3;
+    const c = [0, 1, 2].map((i) => { let x = 0; for (let k = 0; k < n; k++) x += P[k * 3 + i]; return x / n; });
+    cursor = cursorPointDisparity(g, c);
+  }
+  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, cssCursor: canvas.style.cursor };
+}
+// Frames to settle: the picker's readback is async and, under headless virtual time, slow.
+const SETTLE = Number(new URLSearchParams(location.search).get('settle') || 240);
+const over = await measure(0.5, 0.5);
+prog('over done ' + JSON.stringify(over));
+// Off the subject the cursor SINKS back to the glass, slowly by design (250 ms time constant).
+const off = await measure(0.05, 0.08, SETTLE * 2);
+lines = null;
+canvas.dispatchEvent(new PointerEvent('pointerleave'));
+await wait(5);
+const left = { cssCursor: canvas.style.cursor, linesQueued: !!(rig ? lines : spriteLines()) };
+point(0.5, 0.5);
+await wait(45);
+document.getElementById('shot').src = canvas.toDataURL('image/png');
+const margin = CURSOR_DEFAULT_TUNING.margin;
+const pass = kind === 'splat'
+  ? over.cursorDisparity !== null && over.cursorDisparity < -0.01 && off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none'
+  :
+  over.cursorDisparity !== null && over.cubeFrontDisparity !== null &&
+  over.cursorDisparity < over.cubeFrontDisparity && Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.02 &&
+  off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none' && over.depthTest === false;
+log({ engine, kind, pass, over, off, afterLeave: left, frames });
+</script>
+</body>
+</html>
