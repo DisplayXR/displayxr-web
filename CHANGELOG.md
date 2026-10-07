@@ -5,6 +5,30 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Additive to the **core** `./three` (new helpers, minor per `docs/sdk-stability.md`), plus a new
+dependency-free subpath `./cursor-depth`. Nothing existing changes; nothing runs unless a page
+constructs a `DepthCursor`.
+
+### Depth-aware cursor — `DepthCursor` (`./three`) + `./cursor-depth`
+
+- **The cursor rises to the content it hovers.** The CSS cursor is drawn on the glass (zero
+  disparity), so over content that pops out it sits *behind* what it covers: a depth violation.
+  `new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [model]) })` tracks the pointer,
+  hit-tests the cursor footprint against your content, and places a crosshair just in front of the
+  nearest hit (add `cursor.object` to the scene; call `cursor.update(views)` each frame before
+  rendering). It hides the CSS cursor exactly while the crosshair replaces it, and gives it back in
+  2D and off the canvas.
+- **Same maths as native apps.** `./cursor-depth` is a line-for-line port of the runtime's
+  `u_cursor_depth` (displayxr-runtime ADR-046, `XR_DXR_cursor_depth`): the same geometry
+  (solved from the views alone, so display and camera rigs, scale and head tracking just work),
+  the same defaults (margin, comfort clamp, fast rise / slow sink), and the same test numbers.
+- **Head motion leaves it put.** The crosshair stays under the mouse on the glass while you look
+  around; only its depth follows the content under that line of sight.
+- Splats: pass a `hitTest` that returns the renderer's expected depth along the ray. Raycasting
+  splats doesn't work.
+
 ## 1.35.0 — 2026-10-06
 
 Touches the **preview tier** (`./camera`, `./call`) additively. The core is unchanged (one new

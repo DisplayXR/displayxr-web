@@ -1042,6 +1042,40 @@ wall.on('trackingstatechange', (state) => {
 MANAGED display skip this; the runtime already eases the views together, and a scene renders
 from the views.
 
+## A cursor that respects depth
+
+The mouse cursor is drawn ON the glass (zero disparity). Over content that pops out of the glass it
+is drawn on top of pixels that say they are in front of it, which reads as a broken image. If your
+page knows what is under the pointer (a mesh you can raycast, a depth buffer, a depth map), let the
+cursor rise to it:
+
+```js
+import { DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
+
+const cursor = new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [model]) });
+scene.add(cursor.object);
+wall.addScene(canvas, (views, layer) => {
+  cursor.update(views);          // first, with THIS frame's views
+  // ... render every view as usual ...
+});
+```
+
+- **What it does.** It hit-tests the cursor's footprint, not just the hotspot, so a nearer edge
+  beside the hotspot can't cut through the crosshair. It places a crosshair just in front of the
+  nearest hit, and hides the CSS cursor while the crosshair is shown.
+- **Behaviour and placement.** The cursor rises fast and sinks slowly, so it doesn't flicker at
+  edges. The placement maths and defaults are the native runtime's (`XR_DXR_cursor_depth`), so web
+  and native cursors behave alike.
+- **When it's inactive.** In 2D (one view) and off the canvas the crosshair hides and the normal
+  cursor returns.
+- **Head motion.** The crosshair stays under the mouse on the glass as the viewer looks around;
+  only its depth follows what is under that line of sight.
+- **Splats.** Supply a `hitTest` that returns the splat renderer's expected depth along the ray.
+  Raycasting splats doesn't work.
+- **Attach pattern.** If your eye cameras hang off an app camera, pass `viewSpace: appCamera`.
+- **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths, dependency-free
+  (`CursorDepthPlacer`).
+
 ## Rounded corners
 
 CSS `border-radius` on a weaved canvas rounds the **packed SBS rectangle's** outer corners —

@@ -142,3 +142,52 @@ export class EdgeFeather {
     vp: { x: number; y: number; width: number; height: number },
   ): void;
 }
+
+import type { CursorPlacement, CursorView } from './cursor-depth.js';
+
+/**
+ * A hit test for {@link DepthCursor} that raycasts three.js objects (recursively): the first hit
+ * along the ray as a world point, or null.
+ */
+export function raycastHitTest(
+  THREE: unknown,
+  targets: unknown[],
+): (origin: number[], direction: number[]) => number[] | null;
+
+/**
+ * A cursor that rises to the depth of the content under it, so it is never drawn behind something
+ * that pops out of the glass. Same maths and defaults as the runtime's XR_DXR_cursor_depth
+ * (ADR-046). Tracks the pointer over `canvas`, hit-tests the cursor FOOTPRINT, places a crosshair
+ * (`object`, add it to your scene) and hides the CSS cursor exactly while the crosshair replaces it.
+ * Opt-in: nothing runs unless you construct one and call `update(views)` each frame.
+ *
+ * Head motion leaves the crosshair's image on the glass where it is (it stays under the mouse like
+ * the OS cursor); only its depth follows the content under that line of sight.
+ */
+export class DepthCursor {
+  constructor(
+    THREE: unknown,
+    opts: {
+      /** The woven canvas; the pointer is tracked over it. */
+      canvas: HTMLElement;
+      /** Nearest content point along a WORLD ray, or null. For splats return the expected depth along the ray. */
+      hitTest: (origin: number[], direction: number[]) => number[] | null;
+      /** Sprite height as a fraction of the canvas height (default 0.03). */
+      height?: number;
+      /** Crosshair colour (default 0xffd419). */
+      color?: number;
+      /** Attach pattern: the Object3D the eye cameras hang off; its world matrix carries the views to world. */
+      viewSpace?: unknown;
+    },
+  );
+  /** The crosshair (a `THREE.LineSegments`, depth test off, drawn last). Add it to the scene root. */
+  readonly object: unknown;
+  /** The last placement, for diagnostics. */
+  readonly placement: CursorPlacement | { active: false };
+  /** Place the sprite for this frame — call with the views you are about to render, before rendering. */
+  update(views: ArrayLike<XRView | CursorView>, nowMs?: number): CursorPlacement | { active: false };
+  /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */
+  setPointer(u: number | null, v?: number): void;
+  /** Remove listeners, restore the CSS cursor, free the sprite's GPU resources. */
+  dispose(): void;
+}
