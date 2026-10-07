@@ -27,6 +27,8 @@ const pageParams = new URLSearchParams(location.search);
 const ENGINE = pageParams.get('engine') || undefined;
 const onThree = ENGINE === 'three' || ENGINE === 'spark';
 const engineOpt = onThree ? { engine: 'three' } : ENGINE ? { engine: ENGINE } : {};
+// ?cursor=depth — the depth-aware cursor on every tile (opt-in; see docs/authoring-inline-3d.md).
+const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: 'depth' } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
@@ -35,6 +37,7 @@ const a = addModel(wall, document.getElementById('tileA'), GLB, {
   feather: 24,
   renderScale: 0.6,
   ...engineOpt,
+  ...cursorOpt,
 });
 a.exclude(document.getElementById('plateA')); // crisp 2D price plate over the woven 3D
 
@@ -60,7 +63,7 @@ const mixedEngine = onThree ? 'spark' : 'playcanvas';
 // vH, so a different value does not change how big anything looks — but it does change the
 // world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
 // them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
-const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6 };
+const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6, ...cursorOpt };
 // Layout of the pair, the same on both paths: the splat stands SPLAT_H of the mesh's height,
 // to the mesh's right, GAP of the mesh's width apart, bases level. The gap has to cover the
 // turntable: both subjects turn about the union's centre, so a box's corners swing wider than
@@ -211,6 +214,7 @@ const c = addModel(wall, document.getElementById('tileC'), DRACO_GLTF, {
   idleSpin: 12,
   feather: 24,
   renderScale: 0.6,
+  ...cursorOpt,
   decoderPath: DECODER_PATH,
   ...engineOpt,
 });
