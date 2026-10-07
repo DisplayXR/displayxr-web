@@ -8,7 +8,7 @@
 
 import * as THREE from 'three';
 import { createInline3D, inline3dViewRigSupported } from '@displayxr/inline3d';
-import { EdgeFeather, displayRig } from '@displayxr/inline3d/three';
+import { EdgeFeather, displayRig, DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('cube');
 const statusEl = document.getElementById('status');
@@ -60,6 +60,14 @@ cube.geometry.setAttribute('uv2', cube.geometry.attributes.uv);  // aoMap sample
 // lifted to y=0.03 to stand ON the grid; with the grid gone that would just sit it high.)
 cube.position.set(0, 0, 0);
 scene.add(cube);
+
+// Opt-in depth-aware cursor (?cursor=depth): the pointer rises to the cube instead of being drawn
+// on the glass behind the half of it that pops out. Hit-tests the cube, draws a crosshair, hides
+// the CSS cursor while it does. See "A cursor that respects depth" in docs/authoring-inline-3d.md.
+const depthCursor = new URLSearchParams(location.search).get('cursor') === 'depth'
+  ? new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [cube]) })
+  : null;
+if (depthCursor) scene.add(depthCursor.object);
 
 
 scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 0.9));
@@ -153,6 +161,10 @@ function onXRFrame(views, layer) {
   const now = performance.now(); const dt = last ? (now - last) / 1000 : 0; last = now;
   dbgUpdate(views, layer);
   spin(dt);
+  if (depthCursor) {
+    scene.updateMatrixWorld();   // the raycast reads this frame's cube pose
+    depthCursor.update(views, now);
+  }
   const size = new THREE.Vector2(); renderer.getSize(size);
   renderer.clear();
   renderer.setScissorTest(true);
