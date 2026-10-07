@@ -143,7 +143,7 @@ export class EdgeFeather {
   ): void;
 }
 
-import type { CursorPlacement, CursorView } from './cursor-depth.js';
+import type { CursorAnchorMode, CursorPlacement, CursorView } from './cursor-depth.js';
 
 /**
  * A hit test for {@link DepthCursor} that raycasts three.js objects (recursively): the first hit
@@ -174,13 +174,21 @@ export class DepthCursor {
       hitTest: (origin: number[], direction: number[]) => number[] | null;
       /** Sprite height as a fraction of the canvas height (default 0.03). */
       height?: number;
-      /** Crosshair colour (default 0xffd419). */
+      /** Fill colour of the crosshair (default 0xffd61a; the outline is always dark). */
       color?: number;
+      /** How far in front of the content it floats, in eye-baseline units (default 0.005 ≈ 1.5 mm at 60 cm). */
+      margin?: number;
+      /** Default `'hybrid'`: exact while the pointer moves, world-fixed (parallaxing) while it is still. */
+      anchor?: CursorAnchorMode;
+      /** `'window'`: keep the cursor over DOM layered on the canvas; hides the CSS cursor page-wide meanwhile. */
+      pointerScope?: 'canvas' | 'window';
+      /** An EXPENSIVE hit test: N rays a frame from the first eye, cycling the footprint (0 = all). */
+      raysPerFrame?: number;
       /** Attach pattern: the Object3D the eye cameras hang off; its world matrix carries the views to world. */
       viewSpace?: unknown;
     },
   );
-  /** The crosshair (a `THREE.LineSegments`, depth test off, drawn last). Add it to the scene root. */
+  /** The crosshair (a `THREE.Mesh` of filled, outlined strokes; depth test off, drawn last). Add it to the scene root. */
   readonly object: unknown;
   /** The last placement, for diagnostics. */
   readonly placement: CursorPlacement | { active: false };

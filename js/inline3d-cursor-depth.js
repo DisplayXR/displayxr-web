@@ -27,8 +27,20 @@
 //  - the policy works in DISPARITY d = 1 - 1/t, in eye-baseline units (on-screen disparity =
 //    baseline × d): 0 on the canvas, < 0 in front. The eye compares disparities, so the margin,
 //    the clamp and the slew rates live there;
-//  - the sprite goes at C = E + t (S - E) — on the cyclopean ray, so it never slides sideways
-//    as it rises — with its height scaled by t so its apparent size is constant.
+//  - WHERE along that depth the sprite goes is the anchor mode (CURSOR_ANCHOR_MODES):
+//      'screen' — C = E + t (S - E), on the cyclopean ray: exactly over the pointer from where the
+//                 viewer is, but head-motion invariant — disparity WITHOUT motion parallax, which
+//                 on a head-tracked display reads as "at the glass";
+//      'world'  — C = S - f (1 - t) eyeToCanvas, straight in front of the pointer's canvas point:
+//                 parallaxes like content, drifts ~mm off the pointer from an off-axis viewer;
+//      'hybrid' (default) — 'screen' while the pointer moves (exact aim), and world-FIXED while it
+//                 is still (correct parallax): the foot F of the last moving placement on the glass
+//                 is kept, and C = F - f (1 - t) eyeToCanvas. Continuous at the stop frame.
+//    The height is scaled by t either way, so the apparent size is constant.
+
+import { CURSOR_ANCHOR_MODES } from './inline3d-cursor-option.js';
+
+export { CURSOR_ANCHOR_MODES, CURSOR_OPTION_KEYS, resolveCursorOption } from './inline3d-cursor-option.js';
 
 /** Default sprite height, as a fraction of the canvas height. */
 export const CURSOR_DEFAULT_HEIGHT = 0.03;
@@ -38,8 +50,12 @@ export const CURSOR_DEFAULT_HEIGHT = 0.03;
  * Disparities are in eye-baseline units; times in seconds.
  */
 export const CURSOR_DEFAULT_TUNING = Object.freeze({
-  /** How far in front of the content the cursor floats (~2 mm on screen at 65 mm IPD). */
-  margin: 0.03,
+  /**
+   * How far in front of the content the cursor floats. 0.005 baseline is ~1.5 mm at a 60 cm
+   * viewing distance: it RESTS on what it hovers. (1.36.0 shipped 0.03, ~1–2 cm, which a tester
+   * on a panel found floated visibly off shallow content.)
+   */
+  margin: 0.005,
   /** Comfort clamp: t >= 0.625, never more than ~3/8 of the way to the eye. */
   minDisparity: -0.6,
   maxDisparity: 0.6,
@@ -176,6 +192,10 @@ export function placeCursor(g, disparity, heightFraction) {
   return { position: addScaled(g.eye, sub(g.canvasPoint, g.eye), t), height: hf * g.canvasHeight * t };
 }
 
+
+/** A pointer moving less than this (canvas-normalised) between frames counts as still. */
+const POINTER_STILL_EPS = 1e-4;
+
 /**
  * The whole pipeline with its state: one per cursor.
  *
@@ -189,23 +209,63 @@ export function placeCursor(g, disparity, heightFraction) {
  * FOOTPRINT nearest the viewer, in the views' space, or null for "nothing under it".
  */
 export class CursorDepthPlacer {
-  constructor(tuning = CURSOR_DEFAULT_TUNING) {
+  /**
+   * @param {object} [tuning=CURSOR_DEFAULT_TUNING]  placement policy (see CursorTuning).
+   * @param {{anchor?: 'hybrid'|'screen'|'world'}} [opts]
+   */
+  constructor(tuning = CURSOR_DEFAULT_TUNING, { anchor = 'hybrid' } = {}) {
+    if (!CURSOR_ANCHOR_MODES.includes(anchor)) {
+      throw new Error(`@displayxr/inline3d: cursor anchor "${anchor}" — expected ${CURSOR_ANCHOR_MODES.join(', ')}.`);
+    }
     this.tuning = tuning;
+    this.anchor = anchor;
     this.filter = {};
+    this._foot = null; // hybrid: the world-fixed foot on the glass while the pointer is still
+    this._last = null; // [u, v] of the previous active frame
   }
 
   update(views, hint, nowSec) {
     const inactive = { active: false, position: null, basis: null, height: 0, disparity: 0, targetDisparity: 0 };
-    if (!views || views.length < 2 || !hint) return inactive;
+    if (!views || views.length < 2 || !hint) {
+      this._foot = null;
+      this._last = null;
+      return inactive;
+    }
     const a = asView(views[0]);
     const b = asView(views[views.length - 1]);
     const g = solveCursorGeometry(a, b, hint.u, hint.v);
-    if (!g) return inactive;
+    if (!g) {
+      this._foot = null;
+      this._last = null;
+      return inactive;
+    }
     const content = hint.nearestPoint ? cursorPointDisparity(g, hint.nearestPoint) : null;
     const target = cursorTarget(this.tuning, content !== null, content);
-    const disparity = cursorFilterStep(this.filter, this.tuning, target, nowSec);
-    const { position, height } = placeCursor(g, disparity, hint.cursorHeight);
-    return { active: true, position, basis: g.basis, height, disparity, targetDisparity: target, geometry: g };
+    const f = this.filter;
+    const reprimed = !f.primed || nowSec < f.last || nowSec - f.last > this.tuning.stale;
+    const disparity = cursorFilterStep(f, this.tuning, target, nowSec);
+    const { position: onRay, height } = placeCursor(g, disparity, hint.cursorHeight);
+    const t = 1 / (1 - disparity);
+    const out = (-(1 - t) * g.eyeToCanvas); // signed offset along the normal (toward the viewer)
+    const fw = g.forward;
+    let position = onRay;
+    let anchored = false;
+    if (this.anchor === 'world') {
+      position = addScaled(g.canvasPoint, fw, out);
+    } else if (this.anchor === 'hybrid') {
+      const last = this._last;
+      const moved =
+        reprimed || !this._foot || !last || Math.abs(hint.u - last[0]) > POINTER_STILL_EPS || Math.abs(hint.v - last[1]) > POINTER_STILL_EPS;
+      if (moved) {
+        // The foot of the on-ray placement on the glass, along the normal: C = F - f·(1-t)·eyeToCanvas.
+        this._foot = addScaled(onRay, fw, -out);
+      } else {
+        position = addScaled(this._foot, fw, out);
+        anchored = true;
+      }
+    }
+    this._last = [hint.u, hint.v];
+    return { active: true, position, basis: g.basis, height, disparity, targetDisparity: target, anchored, geometry: g };
   }
 }
 
@@ -219,22 +279,45 @@ function asView(v) {
  * Constructing one adds two listeners; nothing else runs until a backend asks for `uv`.
  */
 export class CursorPointer {
-  /** @param {HTMLElement} canvas */
-  constructor(canvas) {
+  /**
+   * @param {HTMLElement} canvas
+   * @param {{scope?: 'canvas'|'window'}} [opts]  'canvas' (default): the pointer counts only while
+   *        it is over the canvas element itself. 'window': while it is inside the canvas's BOX,
+   *        even over DOM layered on top of it (overlay buttons, labels) — and the CSS cursor is then
+   *        hidden page-wide while the sprite shows, since the overlay has its own cursor.
+   */
+  constructor(canvas, { scope = 'canvas' } = {}) {
+    if (scope !== 'canvas' && scope !== 'window') {
+      throw new Error(`@displayxr/inline3d: cursor pointerScope "${scope}" — expected 'canvas' or 'window'.`);
+    }
     this.canvas = canvas;
+    this.scope = scope;
     /** `[u, v]` while the pointer is over the canvas, else null. */
     this.uv = null;
     this._hidden = false;
     this._prev = '';
     this._onMove = (e) => {
       const r = canvas.getBoundingClientRect();
-      this.uv = r.width > 0 && r.height > 0 ? [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] : null;
+      if (!(r.width > 0 && r.height > 0)) return void (this.uv = null);
+      const u = (e.clientX - r.left) / r.width;
+      const v = (e.clientY - r.top) / r.height;
+      this.uv = u >= 0 && u <= 1 && v >= 0 && v <= 1 ? [u, v] : null;
     };
     this._onLeave = () => {
       this.uv = null;
     };
-    canvas.addEventListener('pointermove', this._onMove);
-    canvas.addEventListener('pointerleave', this._onLeave);
+    this._target = scope === 'window' ? globalThis : canvas;
+    this._target.addEventListener('pointermove', this._onMove);
+    if (scope === 'window') {
+      // Leaving the window (relatedTarget null) or losing focus mid-hover: nothing to hover.
+      this._onOut = (e) => {
+        if (!e.relatedTarget) this.uv = null;
+      };
+      globalThis.addEventListener('pointerout', this._onOut);
+      globalThis.addEventListener('blur', this._onLeave);
+    } else {
+      canvas.addEventListener('pointerleave', this._onLeave);
+    }
   }
 
   /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */
@@ -251,7 +334,9 @@ export class CursorPointer {
   /** Hide (true) or restore (false) the CSS cursor; idempotent. */
   hideCss(hide) {
     if (hide === this._hidden) return;
-    if (hide) {
+    if (this.scope === 'window') {
+      pageCursorHidden(hide);
+    } else if (hide) {
       this._prev = this.canvas.style.cursor || '';
       this.canvas.style.cursor = 'none';
     } else {
@@ -261,10 +346,32 @@ export class CursorPointer {
   }
 
   dispose() {
-    this.canvas.removeEventListener('pointermove', this._onMove);
-    this.canvas.removeEventListener('pointerleave', this._onLeave);
+    this._target.removeEventListener('pointermove', this._onMove);
+    if (this.scope === 'window') {
+      globalThis.removeEventListener('pointerout', this._onOut);
+      globalThis.removeEventListener('blur', this._onLeave);
+    } else {
+      this.canvas.removeEventListener('pointerleave', this._onLeave);
+    }
     this.hideCss(false);
   }
+}
+
+// pointerScope 'window': the overlay DOM has its own cursor, so hiding it on the canvas alone is
+// not enough. A class on <html> plus one injected rule hides it everywhere while any depth cursor
+// shows; a count keeps two tiles from un-hiding each other.
+let _pageHides = 0;
+function pageCursorHidden(hide) {
+  const doc = globalThis.document;
+  if (!doc || !doc.documentElement) return;
+  if (hide && !doc.getElementById('inline3d-cursor-style')) {
+    const st = doc.createElement('style');
+    st.id = 'inline3d-cursor-style';
+    st.textContent = 'html.inline3d-cursor-hidden, html.inline3d-cursor-hidden * { cursor: none !important; }';
+    (doc.head || doc.documentElement).appendChild(st);
+  }
+  _pageHides = Math.max(0, _pageHides + (hide ? 1 : -1));
+  doc.documentElement.classList.toggle('inline3d-cursor-hidden', _pageHides > 0);
 }
 
 /**
@@ -291,6 +398,53 @@ export const CURSOR_CROSSHAIR = Object.freeze([
   [-0.15, -0.15, 0.15, -0.15], [0.15, -0.15, 0.15, 0.15], [0.15, 0.15, -0.15, 0.15], [-0.15, 0.15, -0.15, -0.15],
 ]);
 
+/** Fill and outline stroke widths, in sprite heights; and their colours (RGBA, 0..1). */
+const STROKE_FILL = 0.07;
+const STROKE_OUTLINE = 0.15;
+export const CURSOR_FILL_COLOR = Object.freeze([1, 0.84, 0.1, 1]);
+export const CURSOR_OUTLINE_COLOR = Object.freeze([0.04, 0.04, 0.06, 0.85]);
+
+/**
+ * The crosshair as FILLED strokes in its own XY plane (unit = sprite height): a dark outline
+ * pass first, the coloured fill over it — the order a depth-test-off draw needs. A 1 px line
+ * reads too thin through a lenticular panel. Triangles, non-indexed.
+ * @returns {{positions: Float32Array, colors: Float32Array, count: number}}
+ */
+export function cursorCrosshairMesh(fill = CURSOR_FILL_COLOR, outline = CURSOR_OUTLINE_COLOR) {
+  const pos = [];
+  const col = [];
+  const quad = ([x0, y0, x1, y1], w, ext, c) => {
+    const dx = x1 - x0, dy = y1 - y0;
+    const l = Math.hypot(dx, dy) || 1;
+    const ux = dx / l, uy = dy / l; // along
+    const nx = -uy * (w / 2), ny = ux * (w / 2); // across
+    const ax = x0 - ux * ext, ay = y0 - uy * ext, bx = x1 + ux * ext, by = y1 + uy * ext;
+    const v = [[ax - nx, ay - ny], [bx - nx, by - ny], [bx + nx, by + ny], [ax - nx, ay - ny], [bx + nx, by + ny], [ax + nx, ay + ny]];
+    for (const [x, y] of v) {
+      pos.push(x, y, 0);
+      col.push(c[0], c[1], c[2], c[3]);
+    }
+  };
+  for (const seg of CURSOR_CROSSHAIR) quad(seg, STROKE_OUTLINE, (STROKE_OUTLINE - STROKE_FILL) / 2, outline);
+  for (const seg of CURSOR_CROSSHAIR) quad(seg, STROKE_FILL, 0, fill);
+  return { positions: new Float32Array(pos), colors: new Float32Array(col), count: pos.length / 3 };
+}
+
+/**
+ * A column-major model matrix placing the unit crosshair for a placement: the sprite's basis
+ * scaled by its height, at its position.
+ */
+export function cursorModelMatrix(placement, out = new Array(16)) {
+  const { x, y, z } = placement.basis;
+  const h = placement.height;
+  const e = placement.position;
+  out[0] = x[0] * h; out[1] = x[1] * h; out[2] = x[2] * h; out[3] = 0;
+  out[4] = y[0] * h; out[5] = y[1] * h; out[6] = y[2] * h; out[7] = 0;
+  out[8] = z[0] * h; out[9] = z[1] * h; out[10] = z[2] * h; out[11] = 0;
+  out[12] = e[0]; out[13] = e[1]; out[14] = e[2]; out[15] = 1;
+  return out;
+}
+
 /**
  * The crosshair's segment endpoints in the views' space for a placement, as a flat
  * [x, y, z, x, y, z, …] array (16 points) — what a line renderer takes.
@@ -309,3 +463,4 @@ export function cursorCrosshairPoints(placement, out = []) {
   }
   return out;
 }
+

@@ -15,14 +15,16 @@
 //
 // Placement: the same maths as everywhere else (./inline3d-cursor-depth.js, a port of the
 // runtime's u_cursor_depth, ADR-046), solved in WORLD space from this frame's views carried
-// through the rig node. Drawn as immediate-mode lines with depth test off, so every eye camera
-// draws it and nothing occludes it.
+// through the rig node. Drawn as a filled mesh (strokes + a dark outline) in the UI layer with
+// depth test off, so every eye camera draws it last and nothing occludes it; the picker skips the
+// UI layer, so the cursor never picks itself.
 
 import {
   CursorDepthPlacer,
   CursorPointer,
   CURSOR_DEFAULT_HEIGHT,
-  cursorCrosshairPoints,
+  CURSOR_DEFAULT_TUNING,
+  cursorCrosshairMesh,
   cursorFootprint,
   cursorViewRay,
 } from './inline3d-cursor-depth.js';
@@ -38,15 +40,15 @@ export class PlayCanvasDepthCursor {
   /**
    * @param {object} pc  the PlayCanvas namespace the adapter renders with.
    * @param {object} viewer  the PlayCanvasSplatViewer (app, rigNode, eye are read lazily).
-   * @param {{canvas: HTMLElement, height?: number, color?: number[]}} opts
+   * @param {{canvas: HTMLElement, height?: number, margin?: number, anchor?: string, pointerScope?: string}} opts
    */
-  constructor(pc, viewer, { canvas, height = CURSOR_DEFAULT_HEIGHT, color = [1, 0.83, 0.1, 1] }) {
+  constructor(pc, viewer, { canvas, height = CURSOR_DEFAULT_HEIGHT, margin, anchor = 'hybrid', pointerScope = 'canvas' }) {
     this.pc = pc;
     this.viewer = viewer;
-    this.height = height;
-    this.color = color;
-    this.pointer = new CursorPointer(canvas);
-    this.placer = new CursorDepthPlacer();
+    this.height = height > 0 && Number.isFinite(height) ? height : CURSOR_DEFAULT_HEIGHT;
+    this.pointer = new CursorPointer(canvas, { scope: pointerScope });
+    const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
+    this.placer = new CursorDepthPlacer(tuning, { anchor });
     /** The last placement (diagnostics). */
     this.placement = { active: false };
     /** The last picked world point under the footprint, or null (nothing under it). */
@@ -58,8 +60,7 @@ export class PlayCanvasDepthCursor {
     this._pickStart = 0;
     this._frame = 0;
     this._disposed = false;
-    this._points = [];
-    this._colors = [];
+    this._sprite = null; // { mi, node, mat } — built on first use
   }
 
   /**
@@ -93,26 +94,81 @@ export class PlayCanvasDepthCursor {
     const p = this.placer.update(views, { u: uv[0], v: uv[1], nearestPoint: this.hit, cursorHeight: this.height }, now);
     this.placement = p;
     this.pointer.hideCss(!!p.active);
+    const sprite = this._sprite || (p.active ? this._makeSprite(app) : null);
+    if (!sprite) return;
+    sprite.mi.visible = !!p.active;
     if (!p.active) return;
-    const pts = cursorCrosshairPoints(p, this._points);
-    const cols = this._colors;
-    if (cols.length !== (pts.length / 3) * 4) {
-      cols.length = 0;
-      for (let i = 0; i < pts.length / 3; i++) cols.push(...this.color);
-    }
-    app.drawLineArrays(pts, cols, false);
+    // The unit crosshair in the sprite's XY plane: basis (rotation), height (scale), position.
+    const { x, y, z } = p.basis;
+    const q = quatFromMatrix([x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, 0, 0, 0, 1]);
+    sprite.node.setLocalPosition(p.position[0], p.position[1], p.position[2]);
+    sprite.node.setLocalRotation(q[0], q[1], q[2], q[3]);
+    sprite.node.setLocalScale(p.height, p.height, p.height);
   }
 
   /** Mono / no pointer / no views: no sprite, the CSS cursor back. */
   inactive() {
     if (this.placement.active) this.placement = { active: false };
+    this.placer.update(null); // forget the hybrid anchor
+    if (this._sprite) this._sprite.mi.visible = false;
     this.pointer.hideCss(false);
+  }
+
+  // The filled crosshair: one mesh (outline triangles first, fill after — the order a
+  // depth-test-off draw needs), vertex-coloured, alpha-blended, in the UI layer.
+  _makeSprite(app) {
+    const pc = this.pc;
+    const m = cursorCrosshairMesh();
+    const mesh = new pc.Mesh(app.graphicsDevice);
+    mesh.setPositions(m.positions);
+    mesh.setColors(m.colors);
+    mesh.update();
+    const mat = new pc.ShaderMaterial({
+      uniqueName: 'inline3dDepthCursor',
+      attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_color: pc.SEMANTIC_COLOR },
+      vertexGLSL: `
+        attribute vec3 vertex_position;
+        attribute vec4 vertex_color;
+        uniform mat4 matrix_model;
+        uniform mat4 matrix_viewProjection;
+        varying vec4 vColor;
+        void main() { vColor = vertex_color; gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0); }`,
+      fragmentGLSL: `
+        varying vec4 vColor;
+        void main() { gl_FragColor = vColor; }`,
+    });
+    mat.blendState = new pc.BlendState(
+      true,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_SRC_ALPHA,
+      pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_ONE,
+      pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+    );
+    mat.depthTest = false;
+    mat.depthWrite = false;
+    mat.cull = pc.CULLFACE_NONE;
+    mat.update();
+    const node = new pc.GraphNode('inline3d-cursor');
+    app.root.addChild(node); // world space = the views' (rig-carried) space
+    const mi = new pc.MeshInstance(mesh, mat, node);
+    mi.cull = false;
+    mi.pick = false;
+    mi.drawOrder = 1e9;
+    app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances([mi]);
+    this._sprite = { mi, node, mat };
+    return this._sprite;
   }
 
   dispose() {
     this._disposed = true;
     this.pointer.dispose();
     try {
+      if (this._sprite) {
+        this.viewer.app?.scene?.layers?.getLayerById(this.pc.LAYERID_UI)?.removeMeshInstances?.([this._sprite.mi]);
+        this._sprite.node.destroy?.();
+      }
       this._picker?.destroy?.();
       this._pickCam?.destroy?.();
     } catch {

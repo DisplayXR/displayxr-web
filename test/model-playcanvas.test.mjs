@@ -685,7 +685,7 @@ test('inline3d-playcanvas-engine.js exports every engine member the two adapters
 });
 
 test('the default model path imports neither three nor playcanvas statically (both are dynamic)', () => {
-  for (const f of ['inline3d-model-entry.js', 'inline3d-model-playcanvas.js', 'inline3d-pc-look.js', 'inline3d-splat-playcanvas.js', 'inline3d-splat-shared.js', 'inline3d-splat-rig.js', 'inline3d-splat-effects.js', 'inline3d-splat-live.js', 'inline3d-sog.js', 'inline3d-splat-perf.js', 'inline3d-viewer.js', 'inline3d-three.js', 'inline3d-cursor-depth.js', 'inline3d-cursor-depth-playcanvas.js']) {
+  for (const f of ['inline3d-model-entry.js', 'inline3d-model-playcanvas.js', 'inline3d-pc-look.js', 'inline3d-splat-playcanvas.js', 'inline3d-splat-shared.js', 'inline3d-splat-rig.js', 'inline3d-splat-effects.js', 'inline3d-splat-live.js', 'inline3d-sog.js', 'inline3d-splat-perf.js', 'inline3d-viewer.js', 'inline3d-three.js', 'inline3d-cursor-depth.js', 'inline3d-cursor-depth-playcanvas.js', 'inline3d-cursor-option.js']) {
     const src = readFileSync(join(JS, f), 'utf8');
     const statics = [...src.matchAll(/^\s*import\s[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
     for (const s of statics) assert.ok(s.startsWith('./'), `${f} statically imports ${s}`);

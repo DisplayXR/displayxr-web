@@ -21,6 +21,7 @@
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { EyeCamera, EdgeFeather, cameraRigFromCamera, DepthCursor, raycastHitTest } from './inline3d-three.js';
+import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { resolveRevealOption, effectsNotOnSpark } from './inline3d-splat-effects.js';
@@ -250,7 +251,8 @@ export function addSplat(wall, canvas, src, opts = {}) {
   }).useEyeCamera(EyeCamera, EdgeFeather);
   // A gaussian-splat raycast is ~8 ms a ray on Spark: one ray a frame, cycling the footprint.
   // (engine:'playcanvas' hit-tests with the engine's depth picker instead, which is far cheaper.)
-  if (opts.cursor === 'depth') viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), { raysPerFrame: 1 });
+  const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/splat');
+  if (cursorOpts) viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), { ...cursorOpts, raysPerFrame: 1 });
 
   // Spark renders through the ordinary three.js pipeline, so splats and meshes co-exist and
   // sort against each other — which is what lets a product page mix a captured hero with a

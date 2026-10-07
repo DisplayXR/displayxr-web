@@ -52,7 +52,16 @@
 // descriptor and nothing else: no Kooima, no off-axis math, no scale, here or anywhere in this
 // SDK. That stays in the runtime, which is the point of the extension.
 
-import { CursorDepthPlacer, CursorPointer, cursorFootprint, cursorViewRay, CURSOR_CROSSHAIR, CURSOR_DEFAULT_HEIGHT } from './inline3d-cursor-depth.js';
+import {
+  CursorDepthPlacer,
+  CursorPointer,
+  cursorCrosshairMesh,
+  cursorFootprint,
+  cursorModelMatrix,
+  cursorViewRay,
+  CURSOR_DEFAULT_HEIGHT,
+  CURSOR_DEFAULT_TUNING,
+} from './inline3d-cursor-depth.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with
@@ -473,14 +482,24 @@ export class DepthCursor {
    *        content point along a ray in WORLD space, or null. {@link raycastHitTest} for meshes;
    *        for splats return the renderer's expected depth along the ray (never raycast splats).
    * @param {number} [opts.height=0.03]  sprite height as a fraction of the canvas height.
-   * @param {number} [opts.color=0xffd419]
+   * @param {number} [opts.color=0xffd61a]  fill colour (the outline is always dark).
+   * @param {number} [opts.margin=0.005]  how far in front of the content it floats, in eye-baseline
+   *        units (0.005 ≈ 1.5 mm at 60 cm: it rests on the content).
+   * @param {'hybrid'|'screen'|'world'} [opts.anchor='hybrid']  where along that depth: 'hybrid'
+   *        follows the pointer exactly while it moves and stays world-fixed (parallaxes with the
+   *        content) while it is still; 'screen' never parallaxes; 'world' always does.
+   * @param {'canvas'|'window'} [opts.pointerScope='canvas']  'window' keeps the cursor over DOM
+   *        layered on the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
    * @param {object} [opts.viewSpace]  Object3D whose world matrix maps view transforms to world.
    * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 9
    *        points). N > 0 = an EXPENSIVE hit test (e.g. a gaussian-splat raycast, ~8 ms a ray):
    *        cast N rays a frame from the first eye, cycling through the footprint, and take the
    *        nearest of the most recent full cycle.
    */
-  constructor(THREE, { canvas, hitTest, height = CURSOR_DEFAULT_HEIGHT, color = 0xffd419, viewSpace = null, raysPerFrame = 0 }) {
+  constructor(
+    THREE,
+    { canvas, hitTest, height = CURSOR_DEFAULT_HEIGHT, color = 0xffd61a, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas' },
+  ) {
     this._THREE = THREE;
     this.canvas = canvas;
     this.hitTest = hitTest;
@@ -489,17 +508,28 @@ export class DepthCursor {
     this.raysPerFrame = raysPerFrame;
     this._ring = []; // amortised mode: the last hit per footprint point (null = a miss)
     this._next = 0;
-    this.placer = new CursorDepthPlacer();
-    this.pointer = new CursorPointer(canvas);
-    /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity}`. */
+    const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
+    this.placer = new CursorDepthPlacer(tuning, { anchor });
+    this.pointer = new CursorPointer(canvas, { scope: pointerScope });
+    /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
     this.placement = { active: false };
 
-    const pos = [];
-    for (const [x0, y0, x1, y1] of CURSOR_CROSSHAIR) pos.push(x0, y0, 0, x1, y1, 0);
+    // Filled strokes with a dark outline (a 1 px line reads too thin through the lens).
+    const fill = [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
+    const m = cursorCrosshairMesh(fill);
     const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    const mat = new THREE.LineBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true });
-    this.object = new THREE.LineSegments(geom, mat);
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(m.colors, 4));
+    const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    this.object = new THREE.Mesh(geom, mat);
+    this.object.name = 'inline3d-cursor';
     this.object.matrixAutoUpdate = false;
     this.object.frustumCulled = false;
     this.object.renderOrder = 1e9; // last: never occluded, it is in front by construction
@@ -528,15 +558,7 @@ export class DepthCursor {
     this.placement = p;
     this.object.visible = !!p.active;
     if (p.active) {
-      const { x, y, z } = p.basis;
-      const h = p.height;
-      const e = p.position;
-      this.object.matrix.fromArray([
-        x[0] * h, x[1] * h, x[2] * h, 0,
-        y[0] * h, y[1] * h, y[2] * h, 0,
-        z[0] * h, z[1] * h, z[2] * h, 0,
-        e[0], e[1], e[2], 1,
-      ]);
+      this.object.matrix.fromArray(cursorModelMatrix(p));
       this.object.matrixWorldNeedsUpdate = true;
     }
     this.pointer.hideCss(!!p.active);

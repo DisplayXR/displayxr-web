@@ -1,6 +1,7 @@
 // Type definitions for @displayxr/inline3d/model (and ./model/three).
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
+import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
 import type { FirstWovenResult, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
@@ -55,9 +56,10 @@ export interface ModelOptions {
    * is hidden while it shows and comes back in 2D and off the canvas. OPT-IN: without it nothing
    * is loaded or run. PlayCanvas: hit-tested with the engine's depth picker (meshes and splats,
    * one low-res pass every other frame while the pointer is over the tile). three: a raycast
-   * against the subject.
+   * against the subject. Pass an object to tune it: `{ margin, anchor, height, pointerScope }`
+   * (any object also means depth).
    */
-  cursor?: 'depth';
+  cursor?: 'depth' | CursorOptions;
   /**
    * How the mesh is lit.
    *
