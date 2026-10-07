@@ -5,11 +5,12 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.36.0 — 2026-10-07
 
-Additive to the **core** `./three` (new helpers, minor per `docs/sdk-stability.md`), plus a new
-dependency-free subpath `./cursor-depth`. Nothing existing changes; nothing runs unless a page
-constructs a `DepthCursor`.
+Additive everywhere it touches: the **core** `./three` (new helpers, minor per
+`docs/sdk-stability.md`), the **preview-tier** `./model` and `./splat` (one new option,
+`cursor: 'depth'`), and a new dependency-free subpath `./cursor-depth`. Nothing existing changes;
+nothing runs unless a page asks for it (`cursor: 'depth'`, or constructs a `DepthCursor`).
 
 ### Depth-aware cursor — `DepthCursor` (`./three`) + `./cursor-depth`
 
