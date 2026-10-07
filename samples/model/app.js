@@ -28,7 +28,8 @@ const ENGINE = pageParams.get('engine') || undefined;
 const onThree = ENGINE === 'three' || ENGINE === 'spark';
 const engineOpt = onThree ? { engine: 'three' } : ENGINE ? { engine: ENGINE } : {};
 // ?cursor=depth — the depth-aware cursor on every tile (opt-in; see docs/authoring-inline-3d.md).
-const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: 'depth' } : {};
+// Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
+const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(pageParams) } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
@@ -325,3 +326,12 @@ document.getElementById('reset').addEventListener('click', () => {
 Promise.allSettled([a.ready, mixed]).then(applyFit);
 
 Object.assign(window, { __model: a, __mixed: b, __mixedEngine: mixedEngine, __THREE: THREE }); // debug hooks, as in other samples
+
+/** ?cursor=depth plus optional &anchor= &margin= &scope= → addModel/addSplat's `cursor` option. */
+function sampleCursorOptions(p) {
+  const o = {};
+  if (p.get('anchor')) o.anchor = p.get('anchor');
+  if (p.get('margin')) o.margin = Number(p.get('margin'));
+  if (p.get('scope')) o.pointerScope = p.get('scope');
+  return Object.keys(o).length ? o : 'depth';
+}
