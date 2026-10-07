@@ -212,3 +212,100 @@ export class CursorDepthPlacer {
 function asView(v) {
   return v.transformMatrix ? v : { projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix };
 }
+
+/**
+ * The pointer half of a depth cursor, shared by every backend: tracks the pointer over the
+ * canvas (canvas-normalised, v down) and hides the CSS cursor exactly while a sprite replaces it.
+ * Constructing one adds two listeners; nothing else runs until a backend asks for `uv`.
+ */
+export class CursorPointer {
+  /** @param {HTMLElement} canvas */
+  constructor(canvas) {
+    this.canvas = canvas;
+    /** `[u, v]` while the pointer is over the canvas, else null. */
+    this.uv = null;
+    this._hidden = false;
+    this._prev = '';
+    this._onMove = (e) => {
+      const r = canvas.getBoundingClientRect();
+      this.uv = r.width > 0 && r.height > 0 ? [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] : null;
+    };
+    this._onLeave = () => {
+      this.uv = null;
+    };
+    canvas.addEventListener('pointermove', this._onMove);
+    canvas.addEventListener('pointerleave', this._onLeave);
+  }
+
+  /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */
+  set(u, v) {
+    this.uv = u === null || u === undefined ? null : [u, v];
+  }
+
+  /** The canvas aspect (width / height), for a round footprint. */
+  aspect() {
+    const r = this.canvas.getBoundingClientRect();
+    return r.height > 0 ? r.width / r.height : 1;
+  }
+
+  /** Hide (true) or restore (false) the CSS cursor; idempotent. */
+  hideCss(hide) {
+    if (hide === this._hidden) return;
+    if (hide) {
+      this._prev = this.canvas.style.cursor || '';
+      this.canvas.style.cursor = 'none';
+    } else {
+      this.canvas.style.cursor = this._prev;
+    }
+    this._hidden = hide;
+  }
+
+  dispose() {
+    this.canvas.removeEventListener('pointermove', this._onMove);
+    this.canvas.removeEventListener('pointerleave', this._onLeave);
+    this.hideCss(false);
+  }
+}
+
+/**
+ * The footprint ring every backend samples: the hotspot plus 8 points on a circle of radius
+ * 0.75 × the sprite height (canvas heights), so the sprite and a margin are covered.
+ * @returns {Array<[number, number]>} canvas-normalised points, the hotspot first.
+ */
+export function cursorFootprint(u, v, height, aspect) {
+  const r = 0.75 * height;
+  const out = [[u, v]];
+  for (let k = 0; k < 8; k++) {
+    const a = (k * Math.PI) / 4;
+    out.push([u + (r * Math.cos(a)) / aspect, v + r * Math.sin(a)]);
+  }
+  return out;
+}
+
+/**
+ * The crosshair every backend draws: 8 segments in the sprite's own XY plane, unit = sprite
+ * height (a "+" with a gap and a small square at the hotspot), as [x0, y0, x1, y1] tuples.
+ */
+export const CURSOR_CROSSHAIR = Object.freeze([
+  [-0.5, 0, -0.15, 0], [0.15, 0, 0.5, 0], [0, -0.5, 0, -0.15], [0, 0.15, 0, 0.5],
+  [-0.15, -0.15, 0.15, -0.15], [0.15, -0.15, 0.15, 0.15], [0.15, 0.15, -0.15, 0.15], [-0.15, 0.15, -0.15, -0.15],
+]);
+
+/**
+ * The crosshair's segment endpoints in the views' space for a placement, as a flat
+ * [x, y, z, x, y, z, …] array (16 points) — what a line renderer takes.
+ */
+export function cursorCrosshairPoints(placement, out = []) {
+  out.length = 0;
+  const { position: p, basis: b, height: h } = placement;
+  for (const [x0, y0, x1, y1] of CURSOR_CROSSHAIR) {
+    for (const [x, y] of [[x0, y0], [x1, y1]]) {
+      out.push(
+        p[0] + (b.x[0] * x + b.y[0] * y) * h,
+        p[1] + (b.x[1] * x + b.y[1] * y) * h,
+        p[2] + (b.x[2] * x + b.y[2] * y) * h,
+      );
+    }
+  }
+  return out;
+}
