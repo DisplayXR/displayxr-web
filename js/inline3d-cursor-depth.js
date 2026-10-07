@@ -34,8 +34,11 @@
 //      'world'  — C = S - f (1 - t) eyeToCanvas, straight in front of the pointer's canvas point:
 //                 parallaxes like content, drifts ~mm off the pointer from an off-axis viewer;
 //      'hybrid' (default) — 'screen' while the pointer moves (exact aim), and world-FIXED while it
-//                 is still (correct parallax): the foot F of the last moving placement on the glass
-//                 is kept, and C = F - f (1 - t) eyeToCanvas. Continuous at the stop frame.
+//                 is still (correct parallax): the line of sight at the last pointer move (E0 → S0)
+//                 is kept, and the sprite sits on it at the current depth — the point whose
+//                 distance in front of the glass is (1 - t) eyeToCanvas. A head move leaves it
+//                 put; a depth change slides it along that line, so it stays on the click point
+//                 for the viewer who placed it. Continuous at the stop frame.
 //    The height is scaled by t either way, so the apparent size is constant.
 
 import { CURSOR_ANCHOR_MODES } from './inline3d-cursor-option.js';
@@ -220,14 +223,14 @@ export class CursorDepthPlacer {
     this.tuning = tuning;
     this.anchor = anchor;
     this.filter = {};
-    this._foot = null; // hybrid: the world-fixed foot on the glass while the pointer is still
+    this._line = null; // hybrid: the line of sight at the last pointer move { E, S, D }
     this._last = null; // [u, v] of the previous active frame
   }
 
   update(views, hint, nowSec) {
     const inactive = { active: false, position: null, basis: null, height: 0, disparity: 0, targetDisparity: 0 };
     if (!views || views.length < 2 || !hint) {
-      this._foot = null;
+      this._line = null;
       this._last = null;
       return inactive;
     }
@@ -235,7 +238,7 @@ export class CursorDepthPlacer {
     const b = asView(views[views.length - 1]);
     const g = solveCursorGeometry(a, b, hint.u, hint.v);
     if (!g) {
-      this._foot = null;
+      this._line = null;
       this._last = null;
       return inactive;
     }
@@ -255,12 +258,14 @@ export class CursorDepthPlacer {
     } else if (this.anchor === 'hybrid') {
       const last = this._last;
       const moved =
-        reprimed || !this._foot || !last || Math.abs(hint.u - last[0]) > POINTER_STILL_EPS || Math.abs(hint.v - last[1]) > POINTER_STILL_EPS;
+        reprimed || !this._line || !last || Math.abs(hint.u - last[0]) > POINTER_STILL_EPS || Math.abs(hint.v - last[1]) > POINTER_STILL_EPS;
       if (moved) {
-        // The foot of the on-ray placement on the glass, along the normal: C = F - f·(1-t)·eyeToCanvas.
-        this._foot = addScaled(onRay, fw, -out);
+        this._line = { E: g.eye, S: g.canvasPoint, D: g.eyeToCanvas };
       } else {
-        position = addScaled(this._foot, fw, out);
+        // On the kept line E0 → S0, the point (1 - t)·eyeToCanvas in front of the glass.
+        const L = this._line;
+        const k = 1 - ((1 - t) * g.eyeToCanvas) / L.D;
+        position = addScaled(L.E, sub(L.S, L.E), k);
         anchored = true;
       }
     }

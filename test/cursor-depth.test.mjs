@@ -373,3 +373,48 @@ test('DepthCursor: margin option + pointerScope window (over overlay DOM, page-w
     delete globalThis.document;
   }
 });
+
+test('anchor hybrid: depth changing under a STILL pointer slides along the kept line of sight (no drift off the click point)', () => {
+  // Off-axis viewer (10 cm up, 6 cm right): the case where lifting along the display normal
+  // would pull the sprite visibly off the pointer.
+  const views = [kooima([0.06 - 0.032, 0.1, 0.6]), kooima([0.06 + 0.032, 0.1, 0.6])];
+  const hybrid = new CursorDepthPlacer();
+  const world = new CursorDepthPlacer(T, { anchor: 'world' });
+  // Frame 1: nothing under the pointer yet — anchored on the glass.
+  const a0 = hybrid.update(views, { u: 0.4, v: 0.6, nearestPoint: null }, 1.0);
+  world.update(views, { u: 0.4, v: 0.6, nearestPoint: null }, 1.0);
+  const E0 = a0.geometry.eye, S0 = a0.geometry.canvasPoint;
+  // Content appears under the still pointer; let the filter rise.
+  let h, w;
+  for (let i = 1; i <= 40; i++) {
+    h = hybrid.update(views, { u: 0.4, v: 0.6, nearestPoint: [0, 0, 0.12] }, 1.0 + i * 0.016);
+    w = world.update(views, { u: 0.4, v: 0.6, nearestPoint: [0, 0, 0.12] }, 1.0 + i * 0.016);
+  }
+  assert.equal(h.anchored, true);
+  assert.ok(h.position[2] > 0.1, 'it rose');
+  // Projected from E0 onto the glass, the hybrid sprite is still exactly on the click point S0 …
+  const onGlass = (e, p) => { const k = e[2] / (e[2] - p[2]); return [e[0] + (p[0] - e[0]) * k, e[1] + (p[1] - e[1]) * k]; };
+  near3(onGlass(E0, h.position), [S0[0], S0[1]], 1e-6);
+  // … while lifting along the normal (world) lands visibly off it for this viewer.
+  const off = onGlass(E0, w.position);
+  assert.ok(Math.hypot(off[0] - S0[0], off[1] - S0[1]) > 0.005, 'world drifts > 5 mm here');
+  // And it is at the same depth as the world placement (only the line differs).
+  near(h.position[2], w.position[2], 1e-6);
+});
+
+test('anchor hybrid: a still pointer + the head moving NEARER keeps the sprite at the depth the content needs', () => {
+  const hint = { u: 0.45, v: 0.5, nearestPoint: [0, 0, 0.1] };
+  const at = (z) => [kooima([-0.032, 0, z]), kooima([0.032, 0, z])];
+  const hybrid = new CursorDepthPlacer();
+  const world = new CursorDepthPlacer(T, { anchor: 'world' });
+  hybrid.update(at(0.6), hint, 1.0);
+  world.update(at(0.6), hint, 1.0);
+  let h, w;
+  for (let i = 1; i <= 60; i++) {
+    h = hybrid.update(at(0.5), hint, 1.0 + i * 0.016); // 10 cm nearer, pointer still
+    w = world.update(at(0.5), hint, 1.0 + i * 0.016);
+  }
+  assert.equal(h.anchored, true);
+  near(h.position[2], w.position[2], 1e-6); // same distance in front of the glass as the world placement
+  assert.ok(h.position[2] > 0.1, 'still in front of the content');
+});

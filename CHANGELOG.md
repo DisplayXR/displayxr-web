@@ -5,6 +5,23 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.37.1 — 2026-10-07
+
+### Depth cursor: hybrid anchor keeps the line of sight, not the foot
+
+- 1.37.0's `'hybrid'` held the sprite's foot on the glass while the pointer was still. When the
+  depth under a still pointer changed (content animating under a resting mouse, or the first
+  frames after load), the sprite then rose along the display NORMAL. For an off-axis viewer that
+  pulls it off the pointer (27 px in the runtime's off-axis capture).
+- It now keeps the line of sight from the last pointer move, and sits on that line at the current
+  depth:
+  - **head moves:** the sprite stays put (it parallaxes, as in 1.37.0);
+  - **depth changes:** the sprite slides along that line, so it stays on the click point for the
+    viewer who placed it;
+  - **stop frame:** still continuous.
+- Matches the runtime's `XR_DXR_cursor_depth` v3 rule. Tests cover it, including an off-axis
+  depth-change case and a head moving nearer; each mutant is caught.
+
 ## 1.37.0 — 2026-10-07
 
 Driven by a tester's run on a head-tracked panel (the depth cursor shipped in 1.36.0). Additive
