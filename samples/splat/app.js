@@ -66,6 +66,8 @@ try {
     // Half-scale per eye. After the interlace each eye receives roughly half the panel's
     // samples anyway, so the detail beyond this is rendered and then discarded.
     renderScale: 0.6,
+    // ?cursor=depth — the depth-aware cursor (opt-in). Cheapest on PlayCanvas, this page's default.
+    ...(params.get('cursor') === 'depth' ? { cursor: 'depth' } : {}),
   });
 } catch (err) {
   // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)
