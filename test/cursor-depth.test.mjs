@@ -170,6 +170,15 @@ function stubTHREE() {
     BufferGeometry: Geom,
     Float32BufferAttribute: class { constructor(a, n) { this.array = a; this.itemSize = n; } },
     LineBasicMaterial: Mat,
+    MeshBasicMaterial: Mat,
+    DoubleSide: 2,
+    Mesh: class {
+      constructor(geometry, material) {
+        this.geometry = geometry;
+        this.material = material;
+        this.matrix = { elements: null, fromArray(a) { this.elements = a; } };
+      }
+    },
     LineSegments: class {
       constructor(geometry, material) {
         this.geometry = geometry;
@@ -254,4 +263,113 @@ test('DepthCursor: raysPerFrame (an expensive hit test) casts N rays a frame and
   for (let i = 0; i < 9; i++) p = cur.update(views, 1000 + i * 16);
   assert.equal(rays, 9, 'one ray per frame');
   near(p.targetDisparity, 1 - 0.6 / 0.5 - T.margin);
+});
+
+// ── 1.37: anchor modes, margin, options, pointer scope ─────────────────────────────────────
+
+import { CURSOR_ANCHOR_MODES, resolveCursorOption } from '../js/inline3d-cursor-depth.js';
+
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+
+test('cursor-depth: the default margin rests on the content (0.005 baseline)', () => {
+  assert.equal(T.margin, 0.005);
+});
+
+test('anchor hybrid: on the ray while the pointer moves, world-FIXED while it is still', () => {
+  const placer = new CursorDepthPlacer(); // hybrid by default
+  const hint = (u, v) => ({ u, v, nearestPoint: [0, 0, 0.1] });
+  const head = (x) => [kooima([x - 0.032, 0, 0.6]), kooima([x + 0.032, 0, 0.6])];
+  // Moving: identical to the screen placement.
+  const screen = new CursorDepthPlacer(T, { anchor: 'screen' });
+  let p = placer.update(head(0), hint(0.4, 0.5), 1.0);
+  const s = screen.update(head(0), hint(0.4, 0.5), 1.0);
+  near3(p.position, s.position);
+  assert.equal(p.anchored, false);
+  // Still, same head: continuous (the stop frame does not jump).
+  const stopped = placer.update(head(0), hint(0.4, 0.5), 1.016);
+  assert.equal(stopped.anchored, true);
+  near3(stopped.position, screen.update(head(0), hint(0.4, 0.5), 1.016).position);
+  // Still, head moves 8 cm: the cursor stays put in the WORLD (so it parallaxes like content),
+  // while the screen-anchored one slides with the head.
+  p = placer.update(head(0.08), hint(0.4, 0.5), 1.032);
+  const sMoved = screen.update(head(0.08), hint(0.4, 0.5), 1.032);
+  near3([p.position[0], p.position[1]], [stopped.position[0], stopped.position[1]], 1e-6);
+  assert.ok(Math.abs(sMoved.position[0] - stopped.position[0]) > 1e-3, 'screen mode follows the head');
+  // Pointer moves again: back on the ray.
+  p = placer.update(head(0.08), hint(0.45, 0.5), 1.048);
+  near3(p.position, screen.update(head(0.08), hint(0.45, 0.5), 1.048).position);
+});
+
+test('anchor world: straight in front of the pointer canvas point, at the placed depth', () => {
+  const placer = new CursorDepthPlacer(T, { anchor: 'world' });
+  const views = [kooima([0.05 - 0.032, 0.02, 0.6]), kooima([0.05 + 0.032, 0.02, 0.6])]; // off-axis viewer
+  const p = placer.update(views, { u: 0.3, v: 0.6, nearestPoint: [0, 0, 0.1] }, 1.0);
+  const g = p.geometry;
+  // Same x/y as the canvas point (display normal = z here), in front of it.
+  near(p.position[0], g.canvasPoint[0]);
+  near(p.position[1], g.canvasPoint[1]);
+  assert.ok(p.position[2] > 0);
+  // Same depth along the normal as the screen-anchored placement.
+  const s = new CursorDepthPlacer(T, { anchor: 'screen' }).update(views, { u: 0.3, v: 0.6, nearestPoint: [0, 0, 0.1] }, 1.0);
+  near(p.position[2], s.position[2]);
+  assert.deepEqual([...CURSOR_ANCHOR_MODES], ['hybrid', 'screen', 'world']);
+  assert.throws(() => new CursorDepthPlacer(T, { anchor: 'nope' }), /anchor/);
+});
+
+test('resolveCursorOption: off by default, depth or an options object, validated', () => {
+  assert.equal(resolveCursorOption(undefined), null);
+  assert.equal(resolveCursorOption(false), null);
+  assert.deepEqual(resolveCursorOption('depth'), {});
+  assert.deepEqual(resolveCursorOption({ margin: 0.003, anchor: 'world', pointerScope: 'window', height: 0.04 }), {
+    margin: 0.003,
+    anchor: 'world',
+    pointerScope: 'window',
+    height: 0.04,
+  });
+  assert.throws(() => resolveCursorOption('flat'), /expected 'depth'/);
+  assert.throws(() => resolveCursorOption({ size: 1 }), /unknown option/);
+  assert.throws(() => resolveCursorOption({ anchor: 'x' }), /anchor/);
+  assert.throws(() => resolveCursorOption({ pointerScope: 'page' }), /pointerScope/);
+  assert.throws(() => resolveCursorOption({ margin: -1 }), /positive/);
+});
+
+test('DepthCursor: margin option + pointerScope window (over overlay DOM, page-wide CSS hide)', () => {
+  const winHandlers = {};
+  const realAdd = globalThis.addEventListener, realRemove = globalThis.removeEventListener;
+  globalThis.addEventListener = (k, f) => (winHandlers[k] = f);
+  globalThis.removeEventListener = (k) => delete winHandlers[k];
+  const classes = new Set();
+  const styles = [];
+  globalThis.document = {
+    documentElement: { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) } },
+    head: { appendChild: (el) => styles.push(el) },
+    getElementById: () => (styles.length ? styles[0] : null),
+    createElement: () => ({}),
+  };
+  try {
+    const canvas = stubCanvas();
+    const hitTest = (o, d) => {
+      const t = (0.1 - o[2]) / d[2];
+      return [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
+    };
+    const cur = new DepthCursor(stubTHREE(), { canvas, hitTest, margin: 0.002, pointerScope: 'window' });
+    const views = [kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])];
+    // A move over an overlay element still lands in the canvas box: tracked.
+    winHandlers.pointermove({ clientX: 150, clientY: 100 });
+    const p = cur.update(views, 1000);
+    assert.equal(p.active, true);
+    near(p.targetDisparity, 1 - 0.6 / 0.5 - 0.002);
+    assert.ok(classes.has('inline3d-cursor-hidden'), 'page-wide hide while it shows');
+    assert.equal(styles.length, 1);
+    // Outside the canvas box: inactive, page cursor back.
+    winHandlers.pointermove({ clientX: 900, clientY: 100 });
+    assert.equal(cur.update(views, 1016).active, false);
+    assert.ok(!classes.has('inline3d-cursor-hidden'));
+    cur.dispose();
+    assert.equal(winHandlers.pointermove, undefined);
+  } finally {
+    globalThis.addEventListener = realAdd;
+    globalThis.removeEventListener = realRemove;
+    delete globalThis.document;
+  }
 });

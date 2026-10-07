@@ -40,6 +40,7 @@
 
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
+import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { SceneViewer } from './inline3d-viewer.js';
 // Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
 // is the default lighting path, so deferring it would only add a frame of unlit content.
@@ -382,7 +383,8 @@ export function addModel(wall, canvas, src, opts = {}) {
     logTag: '[inline3d/model]',
     viewerEase: opts.viewerEase,
   }).useEyeCamera(EyeCamera, EdgeFeather);
-  if (opts.cursor === 'depth') viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]));
+  const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/model');
+  if (cursorOpts) viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), cursorOpts);
 
   if (envMap) viewer.scene.environment = envMap;
   else if (environment === 'room') addRoomEnvironment(viewer);

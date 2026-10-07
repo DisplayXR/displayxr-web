@@ -33,5 +33,7 @@ test('PlayCanvasSplatViewer: no cursor option → no cursor, and its module is o
   // The module is reached by a DYNAMIC import guarded by the option, never statically.
   const src = readFileSync(new URL('../js/inline3d-splat-playcanvas.js', import.meta.url), 'utf8');
   assert.ok(!/^\s*import\s[^;]*inline3d-cursor-depth/m.test(src), 'no static import of the cursor modules');
-  assert.match(src, /if \(this\._cursorOpt === 'depth'\) \{\s*import\('\.\/inline3d-cursor-depth-playcanvas\.js'\)/);
+  assert.match(src, /if \(this\._cursorOpt\) \{[^}]*?import\('\.\/inline3d-cursor-depth-playcanvas\.js'\)/s);
+  // The option is validated by the tiny option module, never by importing the cursor itself.
+  assert.match(src, /^import \{ resolveCursorOption \} from '\.\/inline3d-cursor-option\.js';$/m);
 });

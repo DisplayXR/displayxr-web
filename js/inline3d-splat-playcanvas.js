@@ -120,6 +120,7 @@ import {
   coverageExponent,
   declareViewRig,
 } from './inline3d-splat-shared.js';
+import { resolveCursorOption } from './inline3d-cursor-option.js';
 
 /**
  * The component systems the tile's `AppBase` registers. Camera + GSplat draw the splat; Render,
@@ -829,7 +830,7 @@ export class PlayCanvasSplatViewer {
     // `cursor: 'depth'` (ADR-046): the depth-aware cursor. OPT-IN AND FREE OTHERWISE — its module
     // is imported only when asked for (attachEngine), and every per-frame hook is an optional call
     // on `cursorDepth`, which stays null without it.
-    this._cursorOpt = cursor;
+    this._cursorOpt = resolveCursorOption(cursor, opts.logTag || '[inline3d/splat]'); // null = off
     this.cursorDepth = null;
     // The tracking-acquisition ease (./inline3d-viewer-ease.js): undefined = the session's
     // createInline3D({ viewerEase }) default. Built on the first 3D frame, which knows the session.
@@ -1414,10 +1415,11 @@ export class PlayCanvasSplatViewer {
     if (this.featherPx > 0) this._makeFeather();
     this._applyTransform();
     app.start();
-    if (this._cursorOpt === 'depth') {
+    if (this._cursorOpt) {
+      const cursorOpts = this._cursorOpt;
       import('./inline3d-cursor-depth-playcanvas.js')
         .then(({ PlayCanvasDepthCursor }) => {
-          if (!this._disposed) this.cursorDepth = new PlayCanvasDepthCursor(pc, this, { canvas: this.canvas });
+          if (!this._disposed) this.cursorDepth = new PlayCanvasDepthCursor(pc, this, { ...cursorOpts, canvas: this.canvas });
         })
         .catch((err) => console.warn(`${this.logTag || '[inline3d/splat]'} cursor: 'depth' could not load; the normal cursor stays.`, err));
     }
