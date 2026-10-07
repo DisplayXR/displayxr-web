@@ -39,7 +39,7 @@
 // docs/authoring-inline-3d.md#compressed-gltf.
 
 import * as THREE from 'three';
-import { EyeCamera, EdgeFeather } from './inline3d-three.js';
+import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
 import { SceneViewer } from './inline3d-viewer.js';
 // Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
 // is the default lighting path, so deferring it would only add a frame of unlit content.
@@ -382,6 +382,7 @@ export function addModel(wall, canvas, src, opts = {}) {
     logTag: '[inline3d/model]',
     viewerEase: opts.viewerEase,
   }).useEyeCamera(EyeCamera, EdgeFeather);
+  if (opts.cursor === 'depth') viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]));
 
   if (envMap) viewer.scene.environment = envMap;
   else if (environment === 'room') addRoomEnvironment(viewer);

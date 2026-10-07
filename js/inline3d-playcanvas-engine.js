@@ -38,6 +38,9 @@ export {
   Quat,
   LAYERID_SKYBOX,
   LAYERID_UI,
+  LAYERID_IMMEDIATE,
+  // cursor: 'depth' (./inline3d-cursor-depth-playcanvas.js, loaded only on opt-in)
+  Picker,
   // materials / meshes (the edge feather)
   Mesh,
   MeshInstance,

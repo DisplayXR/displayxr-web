@@ -1044,6 +1044,12 @@ from the views.
 
 ## A cursor that respects depth
 
+**On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
+(or `addSplat`). PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
+cheap pass. three raycasts the subject, and on Spark splats that is amortised to one ray a frame.
+Without the option nothing is built or loaded. For your own three.js scene, use `DepthCursor`
+directly:
+
 The mouse cursor is drawn ON the glass (zero disparity). Over content that pops out of the glass it
 is drawn on top of pixels that say they are in front of it, which reads as a broken image. If your
 page knows what is under the pointer (a mesh you can raycast, a depth buffer, a depth map), let the

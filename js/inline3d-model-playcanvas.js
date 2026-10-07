@@ -467,6 +467,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     farClip: opts.farClip,
     sky: false,
     viewerEase: opts.viewerEase,
+    cursor: opts.cursor,
     // Each environment's own look: 'room' is three's (untonemapped), the rest the Sample Viewer's.
     toneMapping: envMap ? 'neutral' : ENVIRONMENT_TONE_MAPPING[environment] || 'neutral',
   });

@@ -737,6 +737,11 @@ export class SceneViewer {
     this._cacheGood(views, vps, !eye);
     const g = this._lastGood;
     if (eye) (this.viewerEase ||= viewerEaseFor(frame, this._viewerEaseOpt)).apply(g.entries, frameTrackingState(frame));
+    // cursor: 'depth' (ADR-046) — only when a page opted in; null otherwise.
+    if (this.cursorDepth) {
+      this.scene.updateMatrixWorld(); // the hit test reads THIS frame's subject pose
+      this.cursorDepth.update(g.entries.map((e) => ({ projectionMatrix: e.proj, transformMatrix: e.pose })));
+    }
     const r = this.renderer;
     // getViewport() splits canvas.width; a drawing buffer the browser clamped behind our back
     // (bufferScale().mismatch) gets the same split mapped onto its real size, never canvas.width/2.
@@ -771,6 +776,22 @@ export class SceneViewer {
     return this;
   }
 
+  /**
+   * `cursor: 'depth'` (ADR-046): a cursor that rises to the subject under it instead of being
+   * drawn on the glass behind content that pops out. Called by ./model and ./splat on opt-in
+   * only — without it nothing is built and every hook below is skipped. Injected, like
+   * useEyeCamera, so this module never imports three.js itself.
+   * @param {Function} DepthCursorClass  ./three's DepthCursor.
+   * @param {(content: object) => Function} hitTestFor  builds the hit test over the subject group.
+   * @param {object} [opts]  extra DepthCursor options (./splat passes `raysPerFrame`).
+   */
+  useDepthCursor(DepthCursorClass, hitTestFor, opts = {}) {
+    if (this.cursorDepth) return this;
+    this.cursorDepth = new DepthCursorClass(this._THREE, { ...opts, canvas: this.canvas, hitTest: hitTestFor(this.content) });
+    this.scene.add(this.cursorDepth.object);
+    return this;
+  }
+
   /** Drive a flat, single-camera render loop for browsers without inline-3D. */
   startMono() {
     if (this._monoRaf || this._disposed) return;
@@ -780,6 +801,7 @@ export class SceneViewer {
       if (this._disposed) return;
       this._monoRaf = requestAnimationFrame(loop);
       this._tick();
+      this.cursorDepth?.update(null); // 2D: no sprite, the normal cursor
       const r = this.renderer;
       r.clear();
       const b = this._bufScale();
@@ -809,6 +831,8 @@ export class SceneViewer {
     if (this._ro) this._ro.disconnect();
     else removeEventListener('resize', this._onResize);
     this._unbindOrbit();
+    this.cursorDepth?.dispose();
+    this.cursorDepth = null;
     this.renderer.dispose();
   }
 

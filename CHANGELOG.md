@@ -26,8 +26,19 @@ constructs a `DepthCursor`.
   the same defaults (margin, comfort clamp, fast rise / slow sink), and the same test numbers.
 - **Head motion leaves it put.** The crosshair stays under the mouse on the glass while you look
   around; only its depth follows the content under that line of sight.
-- Splats: pass a `hitTest` that returns the renderer's expected depth along the ray. Raycasting
-  splats doesn't work.
+- **`./model` and `./splat`: `cursor: 'depth'`** (preview tier, additive). This is one option on
+  both engines:
+  - **PlayCanvas:** hit-tests with the engine's own depth picker. One low-res pass covers meshes
+    and splats; it runs every other frame, only while the pointer is over the tile.
+  - **three / Spark:** raycasts the subject. On Spark that is about 8 ms a ray, so it's amortised
+    to one ray a frame; PlayCanvas is the cheaper engine for splats with the cursor.
+  - **No option, no cost:** nothing is built, and on PlayCanvas the cursor module isn't even
+    downloaded.
+  - **Samples:** `samples/model/?cursor=depth`, `samples/splat/?cursor=depth`.
+- `DepthCursor` option `raysPerFrame`, for an expensive hit test.
+- **e2e:** `npm run test:e2e:cursor` drives the real viewers (both engines, model and splat) with
+  two off-axis views and checks the crosshair sits at *content − margin* over the subject and on
+  the glass off it.
 
 ## 1.35.0 — 2026-10-06
 
