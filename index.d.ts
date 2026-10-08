@@ -424,6 +424,14 @@ export interface TileHandle {
   /**
    * The panel this window weaves on, or `null` where there is no glasses-free display.
    *
+   * `null` is returned only once the layer has answered, never for "not ready yet". Called before
+   * this window's layer has delivered its first frame (right after `add*()`, the natural place),
+   * the call waits for that frame — the first stereo frame, or the first non-`'pending'`
+   * {@link TileHandle.wovenState} read where the browser reports one; no first-woven hold — and asks then.
+   * The wait is capped at the first-woven cap (four holds from the layer's construction, never
+   * under 4.8 s): a layer that never frames still resolves, with whatever it answers then.
+   * Without a live layer it settles at once, as below.
+   *
    * Rejects with an `Error` on a browser without the display-mode API
    * ({@link inline3dDisplayModesSupported}) or while this window has no live layer (lazy mode,
    * tile off screen).
@@ -436,7 +444,13 @@ export interface TileHandle {
    * The canvas size is read at the call: call again after a resize.
    */
   displayMetrics(): Promise<DisplayMetrics>;
-  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  /**
+   * Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}.
+   *
+   * An empty list is returned only once the layer has answered, never for "not ready yet": like
+   * {@link getDisplayInfo}, a call made before this window's layer has delivered its first frame
+   * waits for it (same release, same cap) and asks then. Rejects as {@link getDisplayInfo} does.
+   */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /**
    * Ask the runtime to switch the display to `modeIndex`. A thin pass-through — it resolves and
@@ -449,6 +463,10 @@ export interface TileHandle {
    * by the session's `renderingmodechange` event, not by this promise.
    *
    * A `viewCount === 1` mode is requestable and is how a page goes flat.
+   *
+   * Made before this window's layer has delivered its first frame, the request waits for it (the
+   * same release and cap as {@link getDisplayInfo}): before then the browser has no weave session
+   * to forward it to.
    *
    * With the eased transition on (the default — see {@link ModeSwitchOptions}) a going-flat
    * request is HELD while the disparity ramps out, so the promise resolves when the request has
@@ -555,9 +573,16 @@ export interface Inline3D {
   // The panel is the DOCUMENT's, not a tile's, so the display API lives here; the same names are
   // on every tile handle, routed to whichever window currently holds a live layer.
 
-  /** The panel, or `null` where there is no glasses-free display. See {@link TileHandle.getDisplayInfo}. */
+  /**
+   * The panel, or `null` where there is no glasses-free display — returned only once the layer
+   * has answered, never for "not ready yet" (a call before the live window's first frame waits
+   * for it, capped). See {@link TileHandle.getDisplayInfo}.
+   */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
-  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  /**
+   * Every rendering mode the display can be put in; an empty list only once the layer has
+   * answered, never for "not ready yet". See {@link TileHandle.getRenderingModes}.
+   */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /** Switch the display to `modeIndex`. See {@link TileHandle.requestRenderingMode}. */
   requestRenderingMode(modeIndex: number): Promise<void>;

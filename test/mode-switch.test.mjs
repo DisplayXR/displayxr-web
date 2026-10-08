@@ -202,6 +202,8 @@ function makeModes() {
 }
 
 const FRAME = { getViewerPose: () => null };
+/** A frame with two views: what releases the display reads waiting on a layer's first frame. */
+const STEREO_FRAME = { getViewerPose: () => ({ views: [{ eye: 'left' }, { eye: 'right' }] }) };
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 /**
@@ -296,6 +298,13 @@ function installEnv({ refuse = [] } = {}) {
       for (const m of modes) m.isActive = m.modeIndex === i;
       for (const fn of listeners.get('renderingmodechange') ?? []) fn({ type: 'renderingmodechange', detail: { modeIndex: i } });
     },
+    /** One stereo session frame at the current clock: the layer has delivered its first frame. */
+    async stereoFrame() {
+      const cb = pendingFrame;
+      pendingFrame = null;
+      if (cb) cb(clock.now, STEREO_FRAME);
+      await flush();
+    },
     /** Advance the wall clock by `ms` and run one session frame with it. */
     async step(ms) {
       clock.now += ms;
@@ -335,11 +344,14 @@ function quietInfo(fn) {
   });
 }
 
-/** A live, non-lazy wall with one scene window whose first mode read has already landed. */
+/**
+ * A live, non-lazy wall with one scene window whose layer has delivered its first frame (display
+ * calls wait for it, see test/display-reads.test.mjs) and whose first mode read has landed.
+ */
 async function makeWall(env, wallOpts = {}) {
   const wall = await createInline3D({ lazy: false, autoChrome: false, ...wallOpts });
   const handle = wall.addScene(makeCanvas(), () => {}, {});
-  await flush();
+  await env.stereoFrame();
   return { wall, handle, layer: env.created[0] };
 }
 
@@ -594,7 +606,7 @@ test('the transition is skipped on a browser with no setViewRig — there is not
   try {
     const wall = await createInline3D({ lazy: false, autoChrome: false });
     const handle = wall.addScene(makeCanvas(), () => {}, {});
-    await flush();
+    await env.stereoFrame();
     await handle.requestRenderingMode(0);
     assert.deepEqual(env.created[0].modeRequests, [0], 'forwarded at once, exactly as before rigs existed');
     wall.close();

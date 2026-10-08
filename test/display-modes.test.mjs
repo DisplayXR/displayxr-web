@@ -163,6 +163,7 @@ function installEnv(opts = {}) {
   const { FakeDisplayLayer, created, modes } = makeLayerClass(opts);
   const observers = [];
   const listeners = new Map();
+  let pendingFrame = null;
   const session = {
     addEventListener(type, fn) {
       if (!listeners.has(type)) listeners.set(type, new Set());
@@ -172,7 +173,10 @@ function installEnv(opts = {}) {
       listeners.get(type)?.delete(fn);
     },
     requestReferenceSpace: async () => ({}),
-    requestAnimationFrame: () => 1,
+    requestAnimationFrame(cb) {
+      pendingFrame = cb;
+      return 1;
+    },
     end() {},
   };
   Object.defineProperty(globalThis, 'navigator', {
@@ -221,6 +225,16 @@ function installEnv(opts = {}) {
       for (const m of modes) m.isActive = m.modeIndex === i;
       this.fire('renderingmodechange', { modeIndex: i });
     },
+    /**
+     * One stereo session frame: every live layer has delivered its first frame, which is what
+     * the display calls wait for (test/display-reads.test.mjs pins that wait).
+     */
+    async stereoFrame() {
+      const cb = pendingFrame;
+      pendingFrame = null;
+      if (cb) cb(0, { getViewerPose: () => ({ views: [{ eye: 'left' }, { eye: 'right' }] }) });
+      await flush();
+    },
     intersect(el, isIntersecting) {
       for (const o of observers) o.cb([{ target: el, isIntersecting }]);
     },
@@ -263,7 +277,8 @@ const { createInline3D, inline3dDisplayModesSupported, inline3dUndockSupported, 
 const CAM_RIG = { type: 'camera', position: { x: 0, y: 0, z: 0 }, verticalFov: 0.8, ipdFactor: 2, parallaxFactor: 2 };
 
 /**
- * A live, non-lazy wall with one scene window whose first mode read has already landed.
+ * A live, non-lazy wall with one scene window whose layer has delivered its first frame and
+ * whose first mode read has already landed.
  *
  * `wallOpts` reaches `createInline3D`. Two tests below pass `{modeSwitch:{enabled:false}}`: they
  * assert that a REQUEST touches no rig, which is the structural invariant of this file, and the
@@ -274,7 +289,7 @@ async function makeWall(env, opts = {}, wallOpts = {}) {
   const wall = await createInline3D({ lazy: false, autoChrome: false, ...wallOpts });
   const canvas = makeCanvas();
   const handle = wall.addScene(canvas, () => {}, opts);
-  await flush();
+  await env.stereoFrame();
   return { wall, handle, canvas, layer: env.created[0] };
 }
 
@@ -463,7 +478,7 @@ test('EVERY window collapses, not just the one that was asked — the mode is th
   const wall = await createInline3D({ lazy: false, autoChrome: false });
   const a = wall.addScene(makeCanvas(), () => {});
   const b = wall.addScene(makeCanvas(), () => {});
-  await flush();
+  await env.stereoFrame();
   a.setViewRig({ ...CAM_RIG });
   b.setViewRig({ ...CAM_RIG });
   await quietInfo(async () => {
@@ -481,7 +496,7 @@ test('a lazy tile that rebuilds its layer while flat comes back FLAT, not in 3D'
   const canvas = makeCanvas();
   const handle = wall.addScene(canvas, () => {});
   env.intersect(canvas, true);
-  await flush();
+  await env.stereoFrame();
   handle.setViewRig(CAM_RIG);
   await quietInfo(async () => {
     env.goActive(0);
@@ -505,7 +520,7 @@ test('a page that OPENS with a 1-view mode already active is collapsed by the fi
   let layer;
   await quietInfo(async () => {
     wall.addScene(makeCanvas(), () => {}, { virtualDisplayHeight: 0.4 });
-    await flush();
+    await env.stereoFrame();
     layer = env.created[0];
   });
   assert.equal(wall.stereoCollapsed, true, 'no event ever fired — the first mode read is the source');

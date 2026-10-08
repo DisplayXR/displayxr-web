@@ -7,8 +7,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** (`./call`, `./splat`) only: one default and two additive handle
-methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
+Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
+`rewoven()` settle on the browser's `wovenState` report where it exists (the hold path elsewhere,
+byte for byte), the optional `onResize` on `addScene`, a warning on a double attach (the call
+proceeds as before), and the display reads (`getDisplayInfo()` / `getRenderingModes()` /
+`requestRenderingMode()`) waiting for a layer's first frame instead of answering `null` / `[]`
+before it. The **preview tier** has one default change, `rectCover: 'auto'` on `./splat` and
+`./model` (the core keeps `'off'`), plus additive handle methods (`finishSwap()`, `rewoven()` on
+the splat handle) and the call's self view following `autoConverge`. New types only
+(`WovenState`, `WovenWithheldReason`, `RectCoverOption`); no export is removed or renamed.
 
 ### `./call` — the stereo self view auto-converges too
 
@@ -95,6 +102,22 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
   callback with `{ width, height, dpr }`, so a page-drawn window can resize and draw before the
   paint too. It runs only on a real change, and a throw is caught. Without it, nothing changes:
   no observer is attached to a scene canvas.
+
+### Display reads wait for the layer's first frame (core `.`, additive, no new API)
+
+- **`getDisplayInfo()` / `getRenderingModes()` / `requestRenderingMode()`**, on a tile handle or
+  the wall, called before the window's layer has delivered its first frame now **wait for it** and
+  ask the layer then. Before, a page calling them right after `add*()` got `null` / `[]` (and a
+  request answered "not forwarded"): the browser only answers once the layer has a weave session,
+  and `null` is documented as "no glasses-free display". Found by the samples panel test (#151),
+  which worked around it page-side with `await handle.firstWoven`; that is no longer needed.
+  - **Released by** the layer's first stereo frame, or, where the browser reports `wovenState`,
+    the first read that is not `'pending'`. No first-woven hold.
+  - **Capped** at the first-woven cap: four holds from the layer's construction, never under
+    4.8 s. A layer that never frames still resolves, with whatever it answers then (`null` / `[]`
+    is a real absence).
+  - **Unchanged:** a call after the first frame goes straight through; no session, no live layer,
+    a failed layer, or a window removed / session ended mid-wait settles at once, as before.
 
 ### Double-attach warning (core, and the `./splat` / `./model` entries)
 
