@@ -1873,7 +1873,7 @@ class SelfTile {
       // will not weave (firstWoven → woven:false, web#131), and the badge must follow it.
       this.view = addCameraView(wall, this.canvas, cam, {
         mirror: true,
-        autoConverge: false,
+        autoConverge: !!this.call.o.autoConverge, // the call option (default on) governs the self view too
         aspect: this.call.o.tileAspect,
         onRouteChange: (route, st) => {
           if (this.cam !== cam) return; // a view this tile already replaced
