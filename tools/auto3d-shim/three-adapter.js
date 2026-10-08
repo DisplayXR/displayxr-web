@@ -23,7 +23,18 @@
 //     screen draws, so the tile is redrawn every frame (woven-canvas rules) and head motion still
 //     looks around.
 // It stands down when a renderer presents through renderer.xr (and, via the core, for SDK / WebXR
-// pages). WebGPURenderer is left 2D and reported 'flat' with the reason (core.noteFlat).
+// pages).
+//
+// Two renderer DRIVERS share all of the above (v0.6.1, P-W1b): WebGLRenderer, and three's common
+// `Renderer` behind WebGPURenderer (st.common), on either of its backends — WebGPU, or the WebGL2
+// fallback (`forceWebGL`, or no adapter at init). The common renderer differs where it matters, and
+// only there does its driver differ (see "WebGPURenderer" below): it is tracked from its constructor
+// but converts only once init() has resolved (the backend is final then); its eye cameras carry the
+// renderer's coordinateSystem and get the runtime's projection in that system's clip space
+// (surface.toClip on WebGPU, reversed-Z when reversedDepthBuffer); its clears ignore the scissor, so
+// the eye pair is drawn the way its output path allows (eyeBegin); three's own reads of its size /
+// viewport getters see the REAL store (its screen nodes and output pass sample by them); and a
+// PostProcessing chain is reported 'flat' with a reason, not split. Verified revisions: GPU_REVS.
 function dxrThree(core) {
   core.registerEngine('three.js');
   const { info, warnOnce, desc, realW, realH } = core;
@@ -44,19 +55,27 @@ function dxrThree(core) {
     const o = e && e.detail;
     if (!o) return;
     if (o.isScene) { hookLookAt(o); return; }
-    if (o.isWebGPURenderer) { flatWebGPU(o); return; }
+    if (o.isWebGPURenderer) { trackCommon(o); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
-  // WebGPURenderer: never driven (the prototype wraps WebGL only), but the host and the chip get a
-  // terminal 'flat' with the reason instead of a bare 'idle', as PlayCanvas reports a WebGPU device.
-  // Nothing on the renderer or its canvas is touched.
-  const webgpu = new WeakSet();
-  const WEBGPU_WHY = 'WebGPURenderer — the prototype drives WebGL renderers only';
-  function flatWebGPU(r) {
-    if (webgpu.has(r)) return;
-    webgpu.add(r);
-    if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted by this prototype, left 2D'); return; }
-    core.noteFlat('three.js', r.domElement, WEBGPU_WHY);
+  // WebGPURenderer (three r178+ announces it on __THREE_DEVTOOLS__ from its constructor; earlier
+  // revisions never do, so they are never seen). Driven on the revisions this driver was read and
+  // tested against (the private fields it reads, _initialized / _getFrameBufferTarget, and the output
+  // pass it relies on move between releases); any other revision, or an object without the common
+  // Renderer API, is left untouched and reported 'flat' with the reason.
+  const GPU_REVS = [178, 186];
+  const COMMON_API = ['render', 'setSize', 'setPixelRatio', 'getPixelRatio', 'getSize', 'getDrawingBufferSize', 'setViewport', 'setScissor', 'setScissorTest', 'getRenderTarget', 'setRenderTarget', 'getContext'];
+  const seenCommon = new WeakSet();
+  function trackCommon(r) {
+    if (seenCommon.has(r)) return;
+    seenCommon.add(r);
+    if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted, left 2D'); return; }
+    const rev = parseInt(revision, 10);
+    let why = null;
+    if (!(rev >= GPU_REVS[0] && rev <= GPU_REVS[1])) why = `WebGPURenderer r${revision || '?'} — the driver is verified on r${GPU_REVS[0]}–r${GPU_REVS[1]} only`;
+    else if (!r.backend || !('autoClearColor' in r) || COMMON_API.some((k) => typeof r[k] !== 'function')) why = 'WebGPURenderer without the common Renderer API (backend, autoClearColor, setViewport …)';
+    if (why) { core.noteFlat('three.js', r.domElement, why); return; }
+    track(r, true);
   }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
 
@@ -93,8 +112,12 @@ function dxrThree(core) {
 
   // ------------------------------------------------------------ the adapter hooks the core calls
   const ad = {
-    label: () => `three r${revision || '?'}`,
+    label: (st) => `three r${revision || '?'}` + (st && st.common ? ` (WebGPURenderer, ${backendOf(st) || 'not initialised'})` : ''),
     unqualified(st) {
+      if (st.common) {
+        if (!ready(st)) return 'WebGPURenderer not initialised yet';
+        if (st.gpuPostfx) return st.flatReason;
+      }
       const camera = st.qualifyCam;
       if (!camera || !camera.isPerspectiveCamera || camera.isArrayCamera) return 'the screen camera is not a PerspectiveCamera';
       const where = core.canvasPlacement(st.canvas);
@@ -161,8 +184,28 @@ function dxrThree(core) {
     // The out-cover's pixels: the left eye of the pair just drawn, read back from the GL context —
     // drawImage() of the layer-bound canvas is empty. Taken by takeCover() below, not by the core.
     coverAfterDraw: true,
-    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
-    gl: (st) => (st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null),
+    // WebGLRenderer: its WebGL context (readPixels, the GL limits). WebGPURenderer: chosen from its
+    // backend once init() has resolved (null before: the core asks again). WebGPU: the backend's device
+    // and the canvas context (read live: r186's canvas targets swap it), no flush (three submits each
+    // render pass in finishRender, so a read right after render() sees the frame), and the alphaMode
+    // three configured (alpha, default true -> 'premultiplied'). WebGL2 fallback: its context, as above.
+    surface(st) {
+      const r = st.r;
+      if (st.common) {
+        if (!ready(st) || !r.backend) return null;
+        if (r.backend.isWebGPUBackend) {
+          return core.surfaces.gpu({
+            get device() { return r.backend.device; }, get context() { return r.getContext(); },
+            flush() {},
+            get alphaMode() { const a = typeof r.alpha === 'boolean' ? r.alpha : r.backend.parameters && r.backend.parameters.alpha; return a === false ? 'opaque' : 'premultiplied'; },
+          });
+        }
+        const gl = r.backend.gl || r.getContext();
+        return gl ? core.surfaces.gl(gl) : null;
+      }
+      const gl = r && typeof r.getContext === 'function' ? r.getContext() : null;
+      return gl ? core.surfaces.gl(gl) : null;
+    },
     restore(st, wasLive) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
@@ -218,17 +261,30 @@ function dxrThree(core) {
       const l = lookAts.get(cam);
       return l ? { x: l.x, y: l.y, z: l.z, via: 'camera.lookAt' } : null;
     },
-    describe: (st) => ({ page: { w: st.L.w, h: st.L.h, pr: st.L.pr, canvasWidthSeenByPage: st.canvas.width } }),
+    describe: (st) => ({
+      page: { w: st.L.w, h: st.L.h, pr: st.L.pr, canvasWidthSeenByPage: st.canvas.width },
+      extra: st.common ? {
+        renderer: 'WebGPURenderer', backend: backendOf(st), surface: st.surf ? st.surf.kind : null, clearPath: st.clearPath || null,
+        coordinateSystem: ready(st) ? st.r.coordinateSystem : null, outCoverVia: st.outCoverVia || null,
+        eyeProj0: st.eyes ? Array.from(st.eyes[0].projectionMatrix.elements) : null, // what three draws eye 0 with
+        eyeCoord0: st.eyes ? st.eyes[0].coordinateSystem : null,
+      } : undefined,
+    }),
   };
 
   // ------------------------------------------------------------ per-renderer wrapping
-  function track(r) {
+  const ready = (st) => !st.common || (typeof st.r.hasInitialized === 'function' ? st.r.hasInitialized() === true : st.r._initialized === true);
+  const backendOf = (st) => { const b = st.common && ready(st) ? st.r.backend : null; return !b ? null : b.isWebGPUBackend ? 'webgpu' : b.isWebGLBackend ? 'webgl2' : 'unknown'; };
+  function track(r, common = false) {
     if (states.has(r)) return;
     const canvas = r.domElement;
     if (!(canvas instanceof HTMLCanvasElement)) { warnOnce('offscreen', 'renderer on an OffscreenCanvas — not supported, left 2D'); return; }
     const st = core.newState('three.js', canvas, ad);
     Object.assign(st, {
-      r, depth: 0, orig: {},
+      r, depth: 0, orig: {}, common,
+      // WebGPURenderer: a screen draw with a non-perspective camera whose render (nested) drew a
+      // perspective camera into a render target — a PostProcessing chain (pass(scene, camera)).
+      nestPersp: null, gpuPostfx: false, clearPath: null,
       L: { w: 0, h: 0, pr: 1, vp: [0, 0, 0, 0], sc: [0, 0, 0, 0], scTest: false }, // what the PAGE believes
       eyes: null, eyesFor: null, m4: null,
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
@@ -248,7 +304,7 @@ function dxrThree(core) {
       st.L.sc = [0, 0, st.L.w, st.L.h];
       st.L.scTest = !!st.call('getScissorTest');
     } catch (e) { /* an old three without these: the page's own setSize fills L in */ }
-    info(`three.js r${revision || '?'} renderer found on`, desc(canvas));
+    info(`three.js r${revision || '?'} ${common ? 'WebGPURenderer' : 'renderer'} found on`, desc(canvas));
   }
 
   function wrap(st) {
@@ -291,16 +347,22 @@ function dxrThree(core) {
     });
     // Getters answer with the PAGE's numbers while converted, even when called from inside a render
     // (an effect sizing itself in onBeforeRender must see the mono canvas it was written for).
+    // WebGPURenderer: three ITSELF reads these (screen-space nodes: screenUV / screenSize / viewport, the
+    // output pass sampling the frame-buffer target, the backend sizing its colour buffer). Those reads
+    // happen inside our own calls (st.depth > 0) and must see the real store; the page's see its own.
+    const real = () => st.common && !top();
     W('getSize', (t) => {
+      const inner = real();
       const out = st.call('getSize', t);
-      if (st.active && out) { if (typeof out.set === 'function') out.set(st.L.w, st.L.h); else { out.width = st.L.w; out.height = st.L.h; } }
+      if (st.active && out && !inner) { if (typeof out.set === 'function') out.set(st.L.w, st.L.h); else { out.width = st.L.w; out.height = st.L.h; } }
       return out;
     });
-    W('getPixelRatio', () => (st.active ? st.L.pr : st.call('getPixelRatio')));
+    W('getPixelRatio', () => (st.active && !real() ? st.L.pr : st.call('getPixelRatio')));
     // One exception: Spark's own per-pixel terms (see "Spark's pixel size" below) get the EYE.
     W('getDrawingBufferSize', (t) => {
+      const inner = real();
       const out = st.call('getDrawingBufferSize', t);
-      if (st.active && out && typeof out.set === 'function') {
+      if (st.active && out && typeof out.set === 'function' && !inner) {
         if (sparkIn > 0 && st.inEye && st.R) out.set(st.R.eyeW, st.R.eyeH);
         else out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
       }
@@ -312,8 +374,9 @@ function dxrThree(core) {
       if (!st.active) return st.call('setViewport', x, y, w, h);
     });
     W('getViewport', (t) => {
+      const inner = real();
       const out = st.call('getViewport', t);
-      if (st.active && out && typeof out.set === 'function') out.set(...st.L.vp);
+      if (st.active && out && typeof out.set === 'function' && !inner) out.set(...st.L.vp);
       return out;
     });
     W('setScissor', (x, y, w, h) => {
@@ -322,8 +385,9 @@ function dxrThree(core) {
       if (!st.active) return st.call('setScissor', x, y, w, h);
     });
     W('getScissor', (t) => {
+      const inner = real();
       const out = st.call('getScissor', t);
-      if (st.active && out && typeof out.set === 'function') out.set(...st.L.sc);
+      if (st.active && out && typeof out.set === 'function' && !inner) out.set(...st.L.sc);
       return out;
     });
     W('setScissorTest', (b) => {
@@ -331,7 +395,7 @@ function dxrThree(core) {
       st.L.scTest = !!b;
       if (!st.active) return st.call('setScissorTest', b);
     });
-    W('getScissorTest', () => (st.active ? st.L.scTest : st.call('getScissorTest')));
+    W('getScissorTest', () => (st.active && !real() ? st.L.scTest : st.call('getScissorTest')));
     W('clear', (color, depth, stencil) => {
       const rt = st.call('getRenderTarget');
       if (top() && st.active && st.postfx && rt && st.twins.has(rt)) return clearChain(st, rt, color, depth, stencil);
@@ -342,7 +406,12 @@ function dxrThree(core) {
       forEyes(st, () => st.call('clear', color, depth, stencil));
     });
     W('render', (scene, camera) => {
+      if (st.common && !top()) { noteNested(st, camera); return st.call('render', scene, camera); }
       if (!top() || !scene || !camera) return st.call('render', scene, camera);
+      // WebGPURenderer before init(): three forwards to renderAsync (r178-r181) or throws (r182+). Not
+      // ours to count: the backend (WebGPU, or the WebGL2 fallback) is not decided yet.
+      if (st.common && !ready(st)) return st.call('render', scene, camera);
+      if (st.common) st.nestPersp = null;
       st.stats.calls++;
       const target = st.call('getRenderTarget');
       const toScreen = target === null;
@@ -361,6 +430,8 @@ function dxrThree(core) {
             // post quad drawn in the same frame (the throttle would otherwise keep landing on it).
             if (st.armed) flip(st, scene, camera);
             else { st.qualifyCam = camera; core.considerActivation(st); }
+          } else if (st.common && ((st.nestPersp && !st.sawPersp) || (st.seedTask && !st.seedTask.direct))) {
+            gpuPostfx(st); // WebGPURenderer + a post-processing chain: flat with the reason, not split
           } else if (st.seedTask && !st.seedTask.direct) {
             // A post-processing frame: the scene went into a render target earlier in this task, and
             // this full-screen pass put the result on the screen. Qualify / flip on it, with the
@@ -400,8 +471,19 @@ function dxrThree(core) {
       st.frame.ops.push(['render', scene, camera, stereo]);
       const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
+      // WebGPURenderer: a flat screen pass that drew the page camera into a target (PostProcessing
+      // switched on while converted): stand down, flat with the reason.
+      if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) { gpuPostfx(st); core.stand(st, WHY_GPU_POSTFX); }
       return out;
     });
+    // WebGPURenderer: renderAsync() (deprecated in r181, still common on r178-r180 pages) renders through
+    // _renderScene, bypassing render(): once initialised, route it through the wrapped render().
+    if (st.common) {
+      W('renderAsync', (scene, camera) => {
+        if (top() && ready(st)) { try { r.render(scene, camera); return Promise.resolve(); } catch (e) { return Promise.reject(e); } }
+        return st.call('renderAsync', scene, camera);
+      });
+    }
     W('dispose', (...a) => {
       if (st.active || st.pending || st.armed) core.stand(st, 'the page disposed the renderer');
       return st.call('dispose', ...a);
@@ -410,6 +492,21 @@ function dxrThree(core) {
   function flip(st, scene, camera) {
     st.mainCam = camera; st.lastScene = scene;
     core.flip(st);
+  }
+  // WebGPURenderer post-processing. three's PostProcessing draws a full-screen QuadMesh with an
+  // orthographic camera; its PassNode renders the scene with the page camera into a render target
+  // from INSIDE that draw (a node's updateBefore), i.e. nested. The twin-chain logic of the WebGL
+  // driver (EffectComposer) does not transfer to TSL node chains: not split, flat with the reason.
+  const WHY_GPU_POSTFX = 'WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)';
+  function noteNested(st, camera) {
+    if (camera && camera.isPerspectiveCamera && !camera.isArrayCamera && st.call('getRenderTarget') !== null) st.nestPersp = { camera };
+  }
+  function gpuPostfx(st) {
+    if (st.gpuPostfx) return;
+    st.gpuPostfx = true; st.flatReason = WHY_GPU_POSTFX;
+    info('three.js canvas', desc(st.canvas), 'stays 2D:', WHY_GPU_POSTFX);
+    if (st.pending || st.armed) core.stand(st, WHY_GPU_POSTFX);
+    core.notify();
   }
   // The page's screen draws while NOT converted, one list per task (a page draws its frame in one
   // callback). The last complete list is the mono frame wake / flipIdle replay.
@@ -499,6 +596,63 @@ function dxrThree(core) {
   function toReversedZ(e) {
     for (const c of [0, 4, 8, 12]) e[c + 2] = (e[c + 3] - e[c + 2]) / 2;
   }
+  // Eye i's projection, from the runtime's (GL clip z -1..1), in the clip space the renderer draws with.
+  // WebGLRenderer: as is, or reversed-Z (above). WebGPURenderer: the common Renderer re-derives
+  // (updateProjectionMatrix: a SYMMETRIC frustum, the runtime's off-axis one lost) any camera whose
+  // coordinateSystem differs from the renderer's, or that is not marked reversed on a
+  // reversedDepthBuffer renderer (r182+), so both are set here, before render(); and the matrix is put in
+  // that system's clip space: reversed-Z (the same row for both systems, Matrix4.makePerspective), else
+  // WebGPU's z 0..1 (surface.toClip) on the WebGPU backend, else GL's as is (the WebGL2 fallback).
+  // Frustum culling reads the matrix with the same coordinateSystem, so it culls what is drawn.
+  function eyeProjection(st, e, i, rev) {
+    const m = e.projectionMatrix.elements;
+    e.projectionMatrix.fromArray(st.V[i].proj);
+    if (st.common) {
+      e.coordinateSystem = st.r.coordinateSystem;
+      if (st.r.reversedDepthBuffer === true) { toReversedZ(m); e._reversedDepth = true; }
+      else {
+        const sf = core.surfaceOf(st);
+        if (sf && sf.kind === 'webgpu' && core.T.gpuDepthRange !== false) sf.toClip(m, m);
+      }
+    } else if (rev) {
+      // Marked BEFORE render: on a reversed-depth renderer three otherwise calls
+      // updateProjectionMatrix() on any camera not marked, which would replace the runtime's
+      // off-axis frustum with a symmetric one (porting guide: never do that to an eye camera).
+      toReversedZ(m);
+      e._reversedDepth = true;
+    }
+    if (e.projectionMatrixInverse) invertFrom(e.projectionMatrixInverse, e.projectionMatrix);
+  }
+
+  // WebGPURenderer: how the pair is drawn into the one store. The common Renderer clears the WHOLE
+  // attachment (WebGPU: loadOp 'clear', which ignores the scissor), so the WebGL driver's "the scissor
+  // confines autoClear to this eye's half" does not hold. Two paths (st.clearPath, in state()):
+  //   'fb'      the default (tone mapping, or an output colour space other than the working one, i.e.
+  //             sRGB output): three draws each render() into an intermediate frame-buffer target, cleared
+  //             whole, then an output pass (autoClear off) samples it at screenUV into the renderer's
+  //             viewport + scissor on the canvas, which is loaded, never cleared. Per eye: clear the
+  //             intermediate, draw this half, output this half. Nothing to change.
+  //   'direct'  NoToneMapping + output = working colour space: the scene draws straight to the canvas,
+  //             and eye 1's clear would wipe eye 0. Eye 0 clears the whole store (scissor off: one clear
+  //             colour in both halves, the draw itself still confined by its viewport); eye 1 draws with
+  //             autoClearColor off (depth / stencil still clear: harmless, eye 0 is done with them). A
+  //             colour scene.background forces a clear, but only of what autoClearColor allows.
+  function clearPathFor(st) {
+    if (!st.common) return null;
+    const r = st.r;
+    let fb = true;
+    try {
+      if (typeof r.needsFrameBufferTarget === 'boolean') fb = r.needsFrameBufferTarget; // r182+: side-effect free
+      else if (typeof r._getFrameBufferTarget === 'function') fb = st.call('_getFrameBufferTarget') !== null; // r178-r181 (sized by the real store: st.call)
+    } catch (e) { fb = true; }
+    return (st.clearPath = fb ? 'fb' : 'direct');
+  }
+  function eyeBegin(st, i, cp) {
+    if (cp !== 'direct' || core.T.gpuClearFix === false) return;
+    if (i === 0) { if (!st.L.scTest) st.call('setScissorTest', false); }
+    else { st.acc = st.r.autoClearColor; st.r.autoClearColor = false; }
+  }
+  function eyeEnd(st) { if (st.acc !== undefined) { st.r.autoClearColor = st.acc; st.acc = undefined; } }
 
   // Both eyes of a pair are ONE renderer frame, as they are when three renders WebXR (one render()
   // call, one info.render.frame for both views). three itself keys its once-per-frame work on that
@@ -558,6 +712,7 @@ function dxrThree(core) {
     else if (camera.parent === null) camera.updateMatrixWorld();
     const eyes = eyeCameras(st, camera);
     const rev = reversedDepth(st);
+    const cp = clearPathFor(st);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     let fr = null;
@@ -571,23 +726,17 @@ function dxrThree(core) {
         if (i === 0) st.eyeAt = e.matrixWorld.elements.slice(12, 15); // diagnostics (dev state(): eyeAt)
         e.matrix.copy(e.matrixWorld);
         invertFrom(e.matrixWorldInverse, e.matrixWorld);
-        e.projectionMatrix.fromArray(st.V[i].proj);               // the runtime's off-axis frustum, untouched
-        if (rev) {
-          // Marked BEFORE render: on a reversed-depth renderer three otherwise calls
-          // updateProjectionMatrix() on any camera not marked, which would replace the runtime's
-          // off-axis frustum with a symmetric one (porting guide: never do that to an eye camera).
-          toReversedZ(e.projectionMatrix.elements);
-          e._reversedDepth = true;
-        }
-        if (e.projectionMatrixInverse) invertFrom(e.projectionMatrixInverse, e.projectionMatrix);
+        eyeProjection(st, e, i, rev);                             // the runtime's off-axis frustum, x / y untouched
         e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
         if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
         setEyeViewport(st, i);
+        eyeBegin(st, i, cp);
         if (i === 1 && sm) sm.autoUpdate = false; // shadow maps are view-independent: render them once
         st.call('render', scene, e);
       }
     } finally {
       st.inEye = false;
+      eyeEnd(st);
       endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
@@ -597,6 +746,7 @@ function dxrThree(core) {
   }
   function renderFlat(st, scene, camera) {
     hookSpark(st, scene);
+    const cp = clearPathFor(st);
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     let fr = null;
@@ -605,11 +755,13 @@ function dxrThree(core) {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
         setEyeViewport(st, i);
+        eyeBegin(st, i, cp);
         if (i === 1 && sm) sm.autoUpdate = false;
         st.call('render', scene, camera);
       }
     } finally {
       st.inEye = false;
+      eyeEnd(st);
       endFrame(fi, fr);
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
@@ -751,9 +903,7 @@ function dxrThree(core) {
     e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4);
     e.matrix.copy(e.matrixWorld);
     invertFrom(e.matrixWorldInverse, e.matrixWorld);
-    e.projectionMatrix.fromArray(st.V[i].proj);
-    if (rev) { toReversedZ(e.projectionMatrix.elements); e._reversedDepth = true; }
-    if (e.projectionMatrixInverse) invertFrom(e.projectionMatrixInverse, e.projectionMatrix);
+    eyeProjection(st, e, i, rev);
     e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
     if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
     return e;

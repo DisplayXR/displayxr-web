@@ -1,7 +1,7 @@
 // DisplayXR auto-3D — PlayCanvas adapter. PROTOTYPE, not a product.
 //
 // A part of the core bundle (build.mjs): `function dxrPlayCanvas(core)`, called by dxrCore with its
-// internal API; returns { consider }. Turns an existing PlayCanvas (engine 2.x, WebGL2) page into
+// internal API; returns { consider }. Turns an existing PlayCanvas (engine 2.x, WebGL2 or WebGPU) page into
 // a woven inline-3D window with no change to the page and WITHOUT the engine's XrManager: the
 // page's own camera renders both eyes through the engine's RenderView path — the same recipe
 // @displayxr/inline3d's PlayCanvas splat backend uses (js/inline3d-splat-playcanvas.js):
@@ -17,10 +17,23 @@
 // constructor and holds no back-pointer, input handlers are bound functions (see README "What the
 // PlayCanvas adapter cannot see").
 //
-// What it stands down on (flat, with the reason on the HUD): a WebGPU device, several cameras
-// rendering to the canvas (a UI camera, picture-in-picture), post effects / CameraFrame (frame
-// passes) on the camera, an orthographic camera, an app presenting WebXR through app.xr, and —
-// via the core — SDK / WebXR pages.
+// What it stands down on (flat, with the reason on the HUD): several cameras rendering to the
+// canvas (a UI camera, picture-in-picture), post effects / CameraFrame (frame passes) on the camera,
+// an orthographic camera, an app presenting WebXR through app.xr, and — via the core — SDK / WebXR
+// pages.
+//
+// WebGPU (v0.6.0): the same recipe. The engine's forward loop draws every RenderView of
+// camera.xrViews with its own viewport and bind group on both backends; on WebGPU it wraps the passes
+// in FramePassMultiView, which falls through to one plain render when device.xrSubImages is empty
+// (only the engine's own XRGPUBinding path fills it, and we never touch app.xr). What differs sits
+// behind the core's surface (surface.js): the eye projection goes through surface.toClip (the
+// engine uses xrViews[i].projMat AS IS, and the runtime's is GL clip z -1..1), the out-cover is a
+// copy of the canvas's current texture, the size limit is the device's maxTextureDimension2D. The
+// gsplat footprint fix is re-done in WGSL at the device's createShaderModule. The store is resized
+// through the same device.setResolution (WebGPU's writes canvas.width / height; the engine's
+// frameStart re-creates its back buffer when getCurrentTexture() comes back another size, so
+// GPUCanvasContext.configure is never re-called; maxPixelRatio only shapes the page's MONO store, the
+// SBS store is sized by the core from the element's device pixels).
 function dxrPlayCanvas(core) {
   core.registerEngine('PlayCanvas');
   const { info, warnOnce, desc, realW, realH } = core;
@@ -132,6 +145,9 @@ function dxrPlayCanvas(core) {
     // patchGsplatFootprint): an SBS eye is half-width over a full-height frustum, and the engine's
     // gsplatCornerVS derives ONE focal length from the viewport width. Applied at the GL boundary
     // because ShaderChunks is not reachable from an ESM app; square pixels are unchanged by it.
+    // WebGPU: the same fix in WGSL, at the device's createShaderModule (patchGsplatFootprintWgsl).
+    if (core.T.pcFootprint === false) return; // TEST ONLY (A/B)
+    if (dev.isWebGPU) { wrapWgsl(st); return; }
     const gl = dev.gl;
     if (gl && typeof gl.shaderSource === 'function' && !dev.isWebGPU) {
       const ss = gl.shaderSource;
@@ -144,6 +160,24 @@ function dxrPlayCanvas(core) {
         return ss.call(this, sh, src);
       };
     }
+  }
+  // The engine compiles every WGSL module through `device.wgpu.createShaderModule({ code })` (its
+  // WebgpuShader.createShaderModule): the per-instance method is wrapped once. A device restored after a
+  // loss is a new GPUDevice, not wrapped: its splats keep the engine's single focal (half-height in
+  // the eyes) until the page reloads.
+  function wrapWgsl(st) {
+    const w = st.dev.wgpu;
+    if (!w || typeof w.createShaderModule !== 'function') return;
+    const csm = w.createShaderModule;
+    w.createShaderModule = function (desc) {
+      const code = desc && desc.code;
+      if (typeof code === 'string' && code.indexOf('J2') >= 0 && /let\s+J2\s*=/.test(code)) {
+        st.footprint.seen++;
+        const p = patchGsplatFootprintWgsl(code);
+        if (p.ok) { st.footprint.patched++; desc = { ...desc, code: p.src }; }
+      }
+      return csm.call(this, desc);
+    };
   }
   function applyRealSize(st) {
     const R = core.realSizeFor(st);
@@ -186,7 +220,6 @@ function dxrPlayCanvas(core) {
     label: (st) => `PlayCanvas ${pcNS && pcNS.version ? pcNS.version : '2.x'}, ${via.get(st.app)}`,
     unqualified(st) {
       const app = st.app;
-      if (st.dev.isWebGPU) return flatWhy(st, 'WebGPU device — the prototype drives WebGL2 apps only');
       if (app.xr && app.xr.active) return 'the app is presenting WebXR';
       const pick = pickCamera(app);
       if (!pick.cam) return pick.flat ? flatWhy(st, pick.why) : pick.why;
@@ -239,8 +272,22 @@ function dxrPlayCanvas(core) {
     // from postrender (onPostRender -> core.takeOutCover), right after that draw, not by the core
     // after redraw() — the drawing buffer is not preserved past the task that drew it.
     coverAfterDraw: true,
-    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
-    gl: (st) => (st.dev && st.dev.gl) || null,
+    // WebGL2: the context. WebGPU: the device + the canvas context, read live (a device restored after
+    // a loss replaces both); flush = the engine's own submit, so a read in postrender (before the
+    // engine's frameEnd) sees this frame; alphaMode from the engine's canvas configuration.
+    surface(st) {
+      const d = st.dev;
+      if (!d) return null;
+      if (d.isWebGPU) {
+        if (!d.wgpu || !d.gpuContext) return null;
+        return core.surfaces.gpu({
+          get device() { return d.wgpu; }, get context() { return d.gpuContext; },
+          flush: () => { if (typeof d.submit === 'function') d.submit(); },
+          get alphaMode() { return d.canvasConfig ? d.canvasConfig.alphaMode : 'opaque'; },
+        });
+      }
+      return d.gl ? core.surfaces.gl(d.gl) : null;
+    },
     target(st) {
       const e = st.cam && st.cam.entity;
       if (!e) return null;
@@ -265,6 +312,8 @@ function dxrPlayCanvas(core) {
       extra: {
         detection: via.get(st.app), renderView: st.rvKind, camera: st.cam ? st.cam.entity.name : null,
         footprint: { ...st.footprint }, device: st.dev.isWebGPU ? 'webgpu' : 'webgl2', autoRender: st.app.autoRender,
+        surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null,
+        eyeProj0: st.views && st.views[0] ? Array.from(st.views[0].projMat.data) : null, // what the engine draws eye 0 with
       },
     }),
   };
@@ -351,6 +400,7 @@ function dxrPlayCanvas(core) {
     st.frustumKey = '';
     st.flatProj = new Float64Array(16);
     st.eyeInv = [new Float64Array(16), new Float64Array(16)];
+    st.clipProj = [new Float64Array(16), new Float64Array(16)]; // WebGPU: the eye projections in clip z 0..1
     updateViews(st); // before the first draw: never a frame with an unset view
     st.cam.camera.xrViews = st.views.slice();
   }
@@ -362,6 +412,10 @@ function dxrPlayCanvas(core) {
   // camera's own axes from its WORLD transform: world × offset × view = parent × local × offset × view.
   function updateViews(st) {
     const R = st.R, local = st.cam.entity.getLocalTransform().data;
+    // The engine draws xrViews with projMat AS IS; on WebGPU its clip z is 0..1, the runtime's is GL's
+    // -1..1 (surface.toClip). frustumFromProjection below keeps reading the GL matrix.
+    const sf = core.surfaceOf(st);
+    const clip = sf && sf.kind === 'webgpu' && core.T.gpuDepthRange !== false ? sf : null;
     let P0;
     if (st.haveViews) {
       const world = st.cam.entity.getWorldTransform().data;
@@ -369,7 +423,7 @@ function dxrPlayCanvas(core) {
         const pose = core.eyePose(st, i, world);
         mul4(local, pose, st.eyeInv[i]);
         if (i === 0) st.eyeAt = [0, 1, 2].map((k) => world[k] * pose[12] + world[4 + k] * pose[13] + world[8 + k] * pose[14] + world[12 + k]); // diagnostics (dev state(): eyeAt)
-        st.views[i].setView(st.V[i].proj, st.eyeInv[i]);
+        st.views[i].setView(clip ? clip.toClip(st.V[i].proj, st.clipProj[i]) : st.V[i].proj, st.eyeInv[i]);
         st.views[i].setViewport(i * R.eyeW, 0, R.eyeW, R.eyeH);
       }
       P0 = st.V[0].proj;
@@ -378,8 +432,9 @@ function dxrPlayCanvas(core) {
       // No eyes yet: the page's own frustum, flat into both halves — never a blank tile.
       const p = pageCam(st);
       perspective(p.vfov, p.aspect, p.near, p.far, st.flatProj);
+      const fp = clip ? clip.toClip(st.flatProj, st.clipProj[0]) : st.flatProj;
       for (let i = 0; i < 2; i++) {
-        st.views[i].setView(st.flatProj, local);
+        st.views[i].setView(fp, local);
         st.views[i].setViewport(i * R.eyeW, 0, R.eyeW, R.eyeH);
       }
       P0 = st.flatProj;
@@ -518,6 +573,43 @@ function dxrPlayCanvas(core) {
         .replace(r2, '0.0, J1y, J2.y,'),
       ok: true,
     };
+  }
+
+  // The same fix in WGSL (WebGPU), for the engine's two splat footprint sites (playcanvas 2.22.3):
+  //   the compute projector (GSPLAT_RENDERER_RASTER_GPU_SORT, WebGPU's default; computeSplatCov):
+  //     let J1 = focal / vz;  let J2 = -J1 / vz * v.xy;  ...  let tt1 = J1 * w1 + J2.y * w2;
+  //     focal = viewportWidth × projMat[0] is a scalar uniform; the y focal is viewportHeight × P[1][1],
+  //     and P[1][1] = (viewProj × (w1, 0)).y: w1 is the camera's world Y axis (row 1 of the view
+  //     rotation), so viewProj × (w1, 0) is P's column 1 (the depth-range row does not enter);
+  //   the raster chunk (GSPLAT_RENDERER_RASTER_CPU_SORT): let focal = <ub>.viewport_size.x * ...; let J1 = focal / vp.z;
+  //     let J2 = -J1 / vp.z * vp.xy;  mat3x3f(..., vec3f(0.0, J1, J2.y), ...) — the GLSL shape, with
+  //     <ub>.viewport_size / <ub>.matrix_projection (<ub> = the view uniform block, ub_view in 2.22.3).
+  // |P[1][1]|: a flipY target negates it, and the engine's single focal never flips; square pixels
+  // (viewportWidth × P[0] = viewportHeight × |P[1][1]|) are unchanged by either rewrite. Each site is
+  // patched only when ALL its anchors are found; otherwise it is left as is (counted in footprint.seen).
+  function patchGsplatFootprintWgsl(src) {
+    if (typeof src !== 'string') return { src, ok: false };
+    if (src.includes('dxrFocalY')) return { src, ok: true };
+    let out = src, ok = false;
+    const c1 = /let\s+J2\s*=\s*-J1\s*\/\s*vz\s*\*\s*v\.xy\s*;/, c2 = /let\s+tt1\s*=\s*J1\s*\*\s*w1\s*\+\s*J2\.y\s*\*\s*w2\s*;/;
+    if (c1.test(out) && c2.test(out) && /\bviewProj\b/.test(out) && /\bviewportHeight\b/.test(out) && /\blet\s+w1\b/.test(out)) {
+      out = out
+        .replace(c1, 'let J1y = (viewportHeight * abs((viewProj * vec4f(w1, 0.0)).y)) / vz; /* dxrFocalY */ let J2 = vec2f(-J1 / vz * v.x, -J1y / vz * v.y);')
+        .replace(c2, 'let tt1 = J1y * w1 + J2.y * w2;');
+      ok = true;
+    }
+    // The uniform block's name in the FINAL code is the engine's (`uniform.` in the chunk becomes
+    // `ub_view.`): taken from the focal line itself, and matrix_projection must live in the same block.
+    const r1 = /let\s+J2\s*=\s*-J1\s*\/\s*vp\.z\s*\*\s*vp\.xy\s*;/, r2 = /vec3f\(\s*0\.0\s*,\s*J1\s*,\s*J2\.y\s*\)/;
+    const f = /let\s+focal\s*=\s*([A-Za-z_]\w*)\.viewport_size\.x\s*\*\s*center\.projMat00/.exec(out);
+    const ub = f && f[1];
+    if (ub && r1.test(out) && r2.test(out) && out.includes(`${ub}.matrix_projection`)) {
+      out = out
+        .replace(r1, `let J1y = (${ub}.viewport_size.y * abs(${ub}.matrix_projection[1][1])) / vp.z; /* dxrFocalY */ let J2 = vec2f(-J1 / vp.z * vp.x, -J1y / vp.z * vp.y);`)
+        .replace(r2, 'vec3f(0.0, J1y, J2.y)');
+      ok = true;
+    }
+    return { src: out, ok };
   }
 
   info(`PlayCanvas adapter armed (core v${core.VERSION})`);

@@ -5,6 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+<<<<<<< HEAD
 ## 1.38.0 — 2026-10-08
 
 ### Splat handle: `finishSwap()` and `rewoven()` (scene subpath `./splat`, additive)
@@ -21,6 +22,18 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   'unsupported' }` at once without a session.
 - Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
   stage queue), vendored there as a local patch first.
+=======
+## Unreleased
+
+Touches the **preview tier** (`./call`) only: one default. No export or type changes.
+
+### `./call` — the stereo self view auto-converges too
+
+- The call's self view now follows the call's **`autoConverge`** option (default `true`) instead of
+  being hard-wired off, so your own stereo camera feed sits at the display plane like the remote
+  tiles. `autoConverge: false` turns it off for both. (`samples/camera` also starts with
+  auto-convergence on.)
+>>>>>>> origin/main
 
 ## 1.37.1 — 2026-10-07
 

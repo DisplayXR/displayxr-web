@@ -36,6 +36,10 @@
 //   eyeX: X           the left eye pose sits −X, the right +X along the camera's x axis (a real
 //                     inter-eye baseline: two distinct viewpoints, for view-dependent engines such as
 //                     a splat sorter). Adds depth-dependent parallax on top of the skew.
+//   pixelAspect: K    the eye's projection aspect is K × (eye width / eye height): a store pixel is K
+//                     times as wide as it is tall, as on the panel (K = 2: the eye is stored at half
+//                     width and the weave un-squeezes it). A round object is then K times as tall as
+//                     wide in store pixels (the gsplat footprint cases measure exactly that).
 (() => {
   const SKEW = 0.1;
   const OPTS = window.__fakeXROpts || {};
@@ -130,7 +134,7 @@
       H.frames++;
       const L = this._layer, c = L && L.canvas;
       const w = c ? CANVAS_W.get.call(c) : 2, h = c ? CANVAS_H.get.call(c) : 1;
-      const aspect = w / 2 / (h || 1);
+      const aspect = (w / 2 / (h || 1)) * (+OPTS.pixelAspect || 1);
       const vfov = L && L.rig && L.rig.verticalFov ? L.rig.verticalFov : (50 * Math.PI) / 180;
       const { depthNear: n, depthFar: f } = this.renderState;
       if (OPTS.viewsAfterMs && (!L || performance.now() - L._rec.at < OPTS.viewsAfterMs)) { H.noViewFrames = (H.noViewFrames || 0) + 1; return { session: this, getViewerPose: () => ({ views: [] }) }; }
