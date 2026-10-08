@@ -82,7 +82,9 @@ function dxrCore(cfg, cap, S) {
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
     guardSteadyMs: 2000, // ... once the page's own 2D rate has been steady this long (a page still streaming is not judged again yet) ...
     guardRetryMaxMs: 30000, // ... or after this long at the latest
-    glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
+    glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
+    gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
+    pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
@@ -128,6 +130,7 @@ function dxrCore(cfg, cap, S) {
     return s;
   };
   const HAS_RIG = 'setViewRig' in window.XRDisplayLayer.prototype;
+  const surfaces = dxrSurface({ warnOnce }); // the per-graphics-API seam (surface.js)
   // Snapshotted by the sentinel before any page script could patch them (risk R4).
   const CANVAS_W = S.intrinsics.canvasWidth;
   const CANVAS_H = S.intrinsics.canvasHeight;
@@ -226,7 +229,14 @@ function dxrCore(cfg, cap, S) {
   //   target()                 -> the page's explicit convergence target in world space
   //                               ({ x, y, z, via }) or null (controls .target, an orbit script, lookAt)
   //   describe()               -> { page, real } for state()
-  //   gl()                     -> the page's WebGL context for this canvas (read-backs, GL limits)
+  //   surface()                -> the canvas's graphics-API SURFACE (surface.js): core.surfaces.gl(gl) or
+  //                               core.surfaces.gpu({ device, context, flush, alphaMode }), or null while
+  //                               there is none yet. It owns everything API-specific: the size limit, the
+  //                               out-cover read-back, the flush before a read, and toClip() (the eye
+  //                               projection the engine gets: WebGPU clip z is 0..1, the runtime's is GL's
+  //                               -1..1). The core caches it on st.surf (surfaceOf).
+  //   coverAfterDraw           -> true when the engine draws on its own tick: the adapter then calls
+  //                               core.takeOutCover(st) right after that draw
   // and calls core.drew(st) after every draw / replay on the live SBS store (the first one starts
   // the no-views timer).
   function newState(engine, canvas, ad) {
@@ -265,8 +275,10 @@ function dxrCore(cfg, cap, S) {
   // element's full device size (hello-world: eye 1298x1758, as a three.js page at setPixelRatio(2.5)).
   // The page keeps seeing its own mono store (the adapters virtualise it; restore() puts it back).
   // With no layout box (not rendered), the page's store stands in. Each axis is then capped on its
-  // own — the width by the zero-copy cap (maxSbsWidth / 2 per eye) and the GL limits, the height by
-  // the GL limits (a 2× wide store is over MAX_TEXTURE_SIZE / MAX_VIEWPORT_DIMS on many Android GPUs).
+  // own — the width by the zero-copy cap (maxSbsWidth / 2 per eye) and the context's limits, the height
+  // by the context's limits (surface.limit(): WebGL's MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE /
+  // MAX_VIEWPORT_DIMS, WebGPU's device maxTextureDimension2D; a 2× wide store is over them on many
+  // Android GPUs).
   // The eye's aspect is NOT kept: it is squeezed horizontally by design and the weave un-squeezes it,
   // so capping the width never costs height (panel, 2026-09-28: a joint scale cost ~40 % of the pixels).
   function realSizeFor(st) {
@@ -276,15 +288,11 @@ function dxrCore(cfg, cap, S) {
     let eyeW, eyeH;
     if (cw > 0 && ch > 0) { eyeW = Math.max(2, Math.round(cw * dpr * T.eyeScale)); eyeH = Math.max(2, Math.round(ch * dpr)); }
     else { eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale)); eyeH = Math.max(2, Math.round(L.h * L.pr)); }
-    if (st.glLim === undefined) {
-      const gl = st.ad.gl(st);
-      if (gl) {
-        let v = Infinity;
-        try { const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS); v = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]); } catch (e) { v = Infinity; }
-        st.glLim = v > 0 ? v : Infinity; // cached per canvas: a context's limits do not change
-      }
+    if (st.lim === undefined) {
+      const sf = surfaceOf(st);
+      if (sf) st.lim = sf.limit(); // cached per canvas: a context's limits do not change
     }
-    const lim = T.glLimit > 0 ? T.glLimit : st.glLim || Infinity;
+    const lim = T.glLimit > 0 ? T.glLimit : st.lim || Infinity;
     eyeW = Math.max(2, Math.min(eyeW, Math.floor(Math.min(T.maxSbsWidth, lim) / 2)));
     eyeH = Math.max(2, Math.min(eyeH, Math.floor(lim)));
     return { eyeW, eyeH, W: 2 * eyeW, H: eyeH };
@@ -307,6 +315,12 @@ function dxrCore(cfg, cap, S) {
     def('height', CANVAS_H, false);
   }
   function unvirtualizeCanvas(st) { try { delete st.canvas.width; delete st.canvas.height; } catch (e) { /* ignore */ } }
+  // The canvas's surface (see the contract), cached once the adapter has one; its API for messages.
+  const apiName = (sf) => (!sf ? 'the canvas' : sf.kind === 'webgpu' ? 'WebGPU' : 'WebGL');
+  function surfaceOf(st) {
+    if (!st.surf) { let s = null; try { s = st.ad.surface ? st.ad.surface(st) : null; } catch (e) { s = null; } st.surf = s || null; }
+    return st.surf;
+  }
 
   // ------------------------------------------------------------ activation
   function considerActivation(st) {
@@ -389,9 +403,25 @@ function dxrCore(cfg, cap, S) {
   // Called by the adapter in the task that just drew the page's mono frame.
   function flip(st) {
     const ad = st.ad;
+    // An async surface (WebGPU) reads the go-live cover back first: this mono frame starts the read,
+    // and the flip happens on the first mono frame drawn after it landed (the cover is then one frame
+    // old: a still either way). The page keeps drawing mono meanwhile; a page that does not is asked
+    // for one more frame (flipIdle) when the read lands.
+    const sf = surfaceOf(st);
+    if (sf && sf.async && st.armed) {
+      const a = st.armed;
+      if (!a.pre) {
+        a.pre = makeCover(st, false, true) || { el: null, ready: Promise.resolve() };
+        a.pre.ready.then(() => { a.pre.done = true; if (st.armed === a) { try { ad.flipIdle(st); } catch (e) { /* the 250 ms flipIdle still runs */ } } });
+        return;
+      }
+      if (!a.pre.done) return;
+    }
+    const pre = st.armed && st.armed.pre;
     st.armed = null;
     dropCover(st);
-    makeCover(st);            // the mono frame just drawn, over the canvas, until the join (rule 5)
+    if (pre && pre.el) { insertCover(st.canvas, pre.el); st.cover = { el: pre.el, fixed: pre.fixed }; } // read back one frame ago (above)
+    else makeCover(st);       // the mono frame just drawn, over the canvas, until the join (rule 5)
     ad.beforeActive(st);
     st.active = true; st.pending = false;
     promote(st);
@@ -706,7 +736,10 @@ function dxrCore(cfg, cap, S) {
         try { if (st.cover && st.cover.el === el) insertCover(st.canvas, el); } catch (e) {} // not if released meanwhile; done() always follows
         go();
       };
-      if (typeof el.decode === 'function') el.decode().then(place, place); else place();
+      const decode = () => { if (typeof el.decode === 'function') el.decode().then(place, place); else place(); };
+      // A WebGPU read-back resolves after this task (mapAsync): its pixels land in the <img> first.
+      const ready = st.cover && st.cover.el === el ? st.cover.ready : null;
+      if (ready) ready.then(decode, decode); else decode();
     }
   }
 
@@ -1082,11 +1115,16 @@ function dxrCore(cfg, cap, S) {
     }
     return '#fff';
   }
-  // A STILL of the last mono frame, taken in the task that drew it. It is not refreshed afterwards:
+  // A STILL of the last mono frame, taken in the task that drew it (after surface.flush(): on WebGPU the
+  // engine's frame may still be encoded but not submitted). It is not refreshed afterwards:
   // measured on a weave-less instance, drawImage() from a canvas that has an XRDisplayLayer bound
   // returns an empty image, so a live feed would blank the cover. It sits in the canvas's own
   // stacking context (next sibling, same z-index), so page chrome drawn over the canvas stays over it.
-  function makeCover(st, eyeOnly) {
+  // On an ASYNC surface (WebGPU) both covers come from the surface's GPU read-back, never from
+  // drawImage / toDataURL of the canvas (after present that is EMPTY into a GPU-backed 2D canvas,
+  // P-W0 probe): the go-live cover is PREPARED (pre = true: returned, not inserted, st.cover untouched)
+  // one frame before the flip (flip() waits for it), the out-cover is inserted once its read lands.
+  function makeCover(st, eyeOnly, pre) {
     try {
       const cv = st.canvas, cs = getComputedStyle(cv);
       const c = document.createElement('canvas');
@@ -1100,17 +1138,37 @@ function dxrCore(cfg, cap, S) {
         position: fixed ? 'fixed' : 'absolute', left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px',
         zIndex: cs.zIndex, pointerEvents: 'none', margin: '0', padding: '0', border: '0', background: coverBackground(cv),
       });
+      const sf = surfaceOf(st);
+      let ready = null;
       if (eyeOnly && st.R) {
         // Left eye of the flat pair. drawImage() of the layer-bound canvas is EMPTY on the panel
-        // (above), so the adapter reads it back from the page's GL context (readPixels) instead.
+        // (above), so the surface reads it back from the page's context instead: WebGL readPixels
+        // (synchronous), WebGPU a copy of the current texture (mapped after this task).
         let got = false;
-        try { got = !!(st.ad.readEye && st.ad.readEye(st, c)); } catch (e) { got = false; }
-        if (!got) {
-          warnOnce('outcover', 'could not read the flat frame back from WebGL — the 3D->2D cover may be blank');
+        try { got = sf ? sf.readEye(st, c) : false; } catch (e) { got = false; }
+        if (got && typeof got.then === 'function') {
+          // Async: a drawImage still NOW (the current texture expires with this task), replaced by
+          // the read-back once mapped; the out-cover goes in only after that (takeOutCover).
+          c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
+          ready = got.then((ok) => {
+            st.outCoverVia = ok ? 'readback' : 'drawImage';
+            if (!ok) warnOnce('outcover', `could not read the flat frame back from ${apiName(sf)} — the 3D->2D cover may be blank`);
+          }, () => { st.outCoverVia = 'drawImage'; });
+        } else if (got) st.outCoverVia = 'readback';
+        else {
+          st.outCoverVia = 'drawImage';
+          warnOnce('outcover', `could not read the flat frame back from ${apiName(sf)} — the 3D->2D cover may be blank`);
+          if (sf) sf.flush();
           c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
         }
       }
-      else c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); // the mono frame drawn in this same task
+      else if (pre) {
+        let got = false;
+        try { got = sf ? sf.readFrame(st, c) : false; } catch (e) { got = false; }
+        if (got && typeof got.then === 'function') ready = got.then((ok) => { if (!ok) warnOnce('incover', `could not read the mono frame back from ${apiName(sf)} — the 2D->3D cover may be blank`); });
+        else { if (sf) sf.flush(); c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); } // no read-back (no COPY_SRC, HDR): the drawing task's drawImage
+      }
+      else { if (sf) sf.flush(); c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); } // the mono frame drawn in this same task
       if (T.coverImg !== false) {
         // An <img>, not a <canvas> (panel run 2026-09-27): a canvas congruent with the tile is woven with
         // it (weave dumps showed the mono cover as the SBS input = David's 'big double image' at go-live).
@@ -1120,62 +1178,22 @@ function dxrCore(cfg, cap, S) {
         // 'sync' keeps cc from checker-imaging it: a large image is otherwise skipped on its first
         // raster, and the box paints only its background for a frame (the page-colour flash at 3D->2D).
         if (eyeOnly) img.decoding = 'sync';
-        img.src = c.toDataURL('image/png');
+        if (ready) ready = ready.then(() => { img.src = c.toDataURL('image/png'); });
+        else img.src = c.toDataURL('image/png');
         img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
+        if (pre) return { el: img, fixed, ready: (ready || Promise.resolve()).then(() => (typeof img.decode === 'function' ? img.decode() : null)).then(() => true, () => true) };
         if (!eyeOnly) insertCover(cv, img); // the out-cover is inserted by its caller, once decoded
-        st.cover = { el: img, fixed, out: !!eyeOnly };
+        st.cover = ready ? { el: img, fixed, out: !!eyeOnly, ready } : { el: img, fixed, out: !!eyeOnly };
         return;
       }
+      if (pre) return { el: c, fixed, ready: (ready || Promise.resolve()).then(() => true) };
       insertCover(cv, c);
       st.cover = { el: c, fixed };
-    } catch (e) { st.cover = null; }
+    } catch (e) { if (pre) return null; st.cover = null; }
   }
   function insertCover(cv, el) {
     if (cv.parentNode) cv.parentNode.insertBefore(el, cv.nextSibling);
     else (document.body || document.documentElement).appendChild(el);
-  }
-  // Copies the LEFT eye (store rect 0,0,eyeW,eyeH) of the default framebuffer's CURRENT contents into
-  // the 2D canvas `target`, scaled to it, forced opaque. Must run in the task that drew it (the pages'
-  // preserveDrawingBuffer is false). Leaves every GL binding / pack parameter it touches as it found it.
-  // false = could not (no context, lost, readPixels threw, or the read came back all zero).
-  function readGlEye(gl, st, target) {
-    if (!gl || !st.R || typeof gl.readPixels !== 'function' || (gl.isContextLost && gl.isContextLost())) return false;
-    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
-    const w = Math.min(st.R.eyeW, bw), h = Math.min(st.R.eyeH, bh);
-    if (!(w > 0 && h > 0)) return false;
-    const gl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-    const px = new Uint8Array(w * h * 4);
-    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING); // WebGL2: the DRAW binding
-    const rfb = gl2 ? gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) : null;
-    const pack = gl.getParameter(gl.PACK_ALIGNMENT);
-    const pbo = gl2 ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
-    const p2 = gl2 ? [gl.PACK_ROW_LENGTH, gl.PACK_SKIP_PIXELS, gl.PACK_SKIP_ROWS].map((k) => [k, gl.getParameter(k)]) : [];
-    try {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
-      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      for (const [k, v] of p2) if (v) gl.pixelStorei(k, 0);
-      // GL origin is bottom-left: the store's top rows (canvas y 0..h) are GL rows bh-h..bh.
-      gl.readPixels(0, bh - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    } catch (e) { return false; } finally {
-      for (const [k, v] of p2) if (v) gl.pixelStorei(k, v);
-      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
-      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, pack);
-      if (gl2) { gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, rfb); }
-      else gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    }
-    let any = 0;
-    for (let i = 0; i < px.length; i += 4) { any |= px[i] | px[i + 1] | px[i + 2] | px[i + 3]; px[i + 3] = 255; }
-    if (!any) return false; // an all-zero read is a cleared buffer, not a picture
-    const tmp = document.createElement('canvas');
-    tmp.width = w; tmp.height = h;
-    tmp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), w, h), 0, 0);
-    const g = target.getContext('2d');
-    g.save();
-    g.translate(0, target.height); g.scale(1, -1); // flip: the read is bottom-up
-    g.drawImage(tmp, 0, 0, w, h, 0, 0, target.width, target.height);
-    g.restore();
-    return true;
   }
   function tickCover(st, t) {
     const cv = st.cover;
@@ -1330,7 +1348,7 @@ function dxrCore(cfg, cap, S) {
     newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
-    makeCover, dropCover, takeOutCover, readGlEye,
+    makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
   const guard = dxrGuard(core);

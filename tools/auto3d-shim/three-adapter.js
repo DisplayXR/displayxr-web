@@ -161,8 +161,9 @@ function dxrThree(core) {
     // The out-cover's pixels: the left eye of the pair just drawn, read back from the GL context —
     // drawImage() of the layer-bound canvas is empty. Taken by takeCover() below, not by the core.
     coverAfterDraw: true,
-    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
-    gl: (st) => (st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null),
+    // WebGLRenderer: its WebGL context (readPixels, the GL limits). A WebGPURenderer driver (next) picks
+    // core.surfaces.gpu or .gl from renderer.backend, and routes its eye projections through toClip.
+    surface: (st) => { const gl = st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null; return gl ? core.surfaces.gl(gl) : null; },
     restore(st, wasLive) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
