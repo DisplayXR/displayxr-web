@@ -1002,7 +1002,11 @@ export class PlayCanvasSplatViewer {
     this._tileBudget = undefined; // undefined = the engine's own default
     this._budgetViews = 1;
 
-    this._onResize = () => this._scheduleResize();
+    // Resize AND draw inside the observer callback (it runs after the frame's animation callbacks
+    // and before the paint). Deferring to the next animation frame, as this used to, let one
+    // paint show the old backing store stretched onto the new box: a visible jolt on every
+    // CSS resize of a woven canvas. See _resizeNow for the two cases that still defer.
+    this._onResize = () => this._resizeNow();
     this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(this._onResize) : null;
     if (this._ro) this._ro.observe(canvas);
     else if (typeof addEventListener === 'function') addEventListener('resize', this._onResize);
@@ -2010,6 +2014,17 @@ export class PlayCanvasSplatViewer {
    * engine tick. Every entry is {proj, pose, x, y, width, height} in BUFFER pixels.
    */
   _drawEntries(entries, cache) {
+    // `_drawing` is what _resizeNow checks: never reallocate the buffer under a running render.
+    if (this._drawing) return this._drawEntriesInner(entries, cache);
+    this._drawing = true;
+    try {
+      return this._drawEntriesInner(entries, cache);
+    } finally {
+      this._drawing = false;
+    }
+  }
+
+  _drawEntriesInner(entries, cache) {
     const app = this.app;
     if (!app || !this.pc) return false;
     const pc = this.pc;
@@ -2139,6 +2154,7 @@ export class PlayCanvasSplatViewer {
     }
     g.bufW = el.width || 0;
     g.bufH = el.height || 0;
+    g.boxAspect = this.boxAspect || 0; // the CSS shape these views were located for (see _replayLastGood)
     g.rig = this._rigSnap ? { ...this._rigSnap } : null; // a replay re-uses the rig of its views
     g.rigAt = this._rigAtPull ?? null;
     for (let i = 0; i < views.length; i++) {
@@ -2156,7 +2172,53 @@ export class PlayCanvasSplatViewer {
   _replayLastGood() {
     const g = this._lastGood;
     if (!g || this._disposed) return false;
-    return this._drawEntries(g.entries, g);
+    // A box whose aspect changed since the cache (a CSS resize replayed before the runtime has
+    // located views for the new rect): the cached frustum was built for the OLD shape, and the
+    // viewports map onto the new buffer proportionally, so the picture would be stretched by
+    // exactly the aspect ratio change. Widen (or narrow) the frustum by the same factor —
+    // dividing the projection's x row by it — so the replayed frame keeps its proportions. One
+    // frame's approximation: the next located views carry the true frustum for the new window.
+    const f = g.boxAspect > 0 && this.boxAspect > 0 ? this.boxAspect / g.boxAspect : 1;
+    if (Math.abs(f - 1) < 1e-6) return this._drawEntries(g.entries, g);
+    const fixed = (this._aspectFixed ||= []);
+    fixed.length = g.entries.length;
+    for (let i = 0; i < g.entries.length; i++) {
+      const e = g.entries[i];
+      const o = (fixed[i] ||= { proj: new Float32Array(16), pose: null, x: 0, y: 0, width: 0, height: 0 });
+      o.proj.set(e.proj);
+      o.proj[0] /= f;
+      o.proj[4] /= f;
+      o.proj[8] /= f;
+      o.proj[12] /= f;
+      o.pose = e.pose;
+      o.x = e.x;
+      o.y = e.y;
+      o.width = e.width;
+      o.height = e.height;
+    }
+    return this._drawEntries(fixed, g);
+  }
+
+  /**
+   * The observer's resize, synchronous. Two cases still take the debounced path instead: a call
+   * that arrives while this viewer is already resizing (re-entrancy: setting canvas.width can
+   * queue more observer work), and one that arrives while it is drawing (a nested dispatch from
+   * inside the engine's tick). Reallocating the drawing buffer under a running render would
+   * leave that render half on a cleared store.
+   */
+  _resizeNow() {
+    if (this._disposed) return;
+    if (this._inResize || this._drawing) {
+      this._scheduleResize();
+      return;
+    }
+    this._resizePending = false; // this run supersedes a debounced one already queued
+    this._inResize = true;
+    try {
+      this._resize();
+    } finally {
+      this._inResize = false;
+    }
   }
 
   _scheduleResize() {

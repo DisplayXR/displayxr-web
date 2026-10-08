@@ -355,6 +355,15 @@ export interface SceneOptions extends TileOptions {
    */
   bufferClamped?: boolean;
   onLayerLost?: () => void;
+  /**
+   * Called INSIDE the ResizeObserver callback when the canvas's CSS box or devicePixelRatio
+   * changes — after the frame's animation callbacks, before its paint. Resize your backing store
+   * and draw one frame here (replay your last views) and the old store is never shown stretched
+   * onto the new box, which is what waiting for the next frame shows. Called only on a real
+   * change, never re-entrantly; a throw is caught and warned about once. Default: none, and then
+   * no observer is attached to a scene canvas (unchanged).
+   */
+  onResize?: (box: { width: number; height: number; dpr: number }) => void;
 }
 
 /** The per-frame render callback passed to {@link Inline3D.addScene}. */

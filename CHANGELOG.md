@@ -79,6 +79,23 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
 - From a kiosk demo that keeps one woven canvas and moves it between screens: a black box at the
   new rect for 0.4–1.2 s, covered by hand on timers until now.
 
+### Resize and draw in the same task (`./splat`, `./model`; core `onResize`, additive)
+
+- **The PlayCanvas viewer** (`./splat` `engine: 'playcanvas'`, `./model`'s default engine) now
+  resizes its backing store and replays the last frame inside the ResizeObserver callback, which
+  runs before the paint. Before, it waited for the next animation frame, and for one paint the
+  old store was shown stretched onto the new box.
+  - **The replay keeps its proportions.** The cached frustum's x row is scaled by the aspect
+    change, until the runtime's next views carry the true one.
+  - **Guards.** A callback that arrives while the viewer is drawing, or re-entrantly while it is
+    resizing, takes the old one-frame debounce instead.
+  - **Not covered:** `./splat` on Spark and `./model` `engine: 'three'` (`SceneViewer`) keep the
+    one-frame debounce for now.
+- **Core `addScene(…, { onResize(box) })`**, optional. It is called in the same ResizeObserver
+  callback with `{ width, height, dpr }`, so a page-drawn window can resize and draw before the
+  paint too. It runs only on a real change, and a throw is caught. Without it, nothing changes:
+  no observer is attached to a scene canvas.
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

@@ -766,6 +766,12 @@ function boxKeyOf(canvas) {
   return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}${pos}`;
 }
 
+/** A scene canvas's CSS box and dpr, as addScene's `onResize` receives it. */
+function sceneBoxOf(canvas) {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  return { width: canvas.clientWidth || 0, height: canvas.clientHeight || 0, dpr };
+}
+
 /**
  * The `rectCover` option of every add*(): null (off) or `{ color, snapshot }`. Off by default in
  * the core (frozen defaults); `./splat` and `./model` pass 'auto'. A bad value throws at the call:
@@ -1085,6 +1091,10 @@ class Inline3D {
    *        falls back to `virtualDisplayHeight` if one was given (that pair is the one reason
    *        to pass both) — either way the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
+   * @param {(box:{width:number, height:number, dpr:number}) => void} [opts.onResize]  called
+   *        inside the ResizeObserver callback when the canvas's CSS box or dpr changes, i.e.
+   *        before the paint: resize your backing store and draw one frame here and the old store
+   *        is never shown stretched onto the new box. Only on a real change; errors are caught.
    * @param {() => void} [opts.onLayerLost]  called once when this window's weave layer goes away
    *        for good — the session ended, or the layer could not be created. YOU own a scene
    *        canvas's pixels, so this is the SDK's only way to tell you that the side-by-side pair
@@ -2116,6 +2126,12 @@ class Inline3D {
       // therefore already fail to build its layer) inside this call.
       onLayerLost: typeof opts.onLayerLost === 'function' ? opts.onLayerLost : null,
       layerLostSent: false,
+      // Scene windows only (addScene's `onResize`): called inside the ResizeObserver callback, so
+      // a page-drawn window can resize its store and draw before the paint. Read here for the same
+      // reason as onLayerLost: a non-lazy window starts its size watch inside this call.
+      onResize: kind === 'scene' && typeof opts.onResize === 'function' ? opts.onResize : null,
+      resizeBox: null,
+      inResize: false,
       ready: null,
       ownsBuffer: kind !== 'scene',
       cornerRadius: opts.cornerRadius || 0,
@@ -2698,11 +2714,46 @@ class Inline3D {
   _startSizeWatch(win) {
     if (typeof ResizeObserver !== 'function') return;
     if (win.sizeObserver) return;
+    if (win.kind === 'scene') {
+      // The SDK never sizes a scene canvas; it only hands the page the moment to (opts.onResize).
+      if (!win.onResize) return;
+      win.resizeBox = sceneBoxOf(win.canvas);
+      win.sizeObserver = new ResizeObserver(() => this._onSceneResize(win));
+      win.sizeObserver.observe(win.canvas);
+      return;
+    }
     // Scene canvases are the app's (ownsBuffer false) — never touch their width/height.
     // An explicit {width, height} is box-independent by definition, so nothing to watch.
     if (!win.ownsBuffer || (win.reqW && win.reqH)) return;
     win.sizeObserver = new ResizeObserver(() => this._onBoxChange(win));
     win.sizeObserver.observe(win.canvas);
+  }
+
+  /**
+   * addScene's `onResize(box)`, run INSIDE the ResizeObserver callback. That callback runs after
+   * the frame's animation callbacks and before its paint, so a page that resizes its store and
+   * draws here never shows the old backing store stretched onto the new box for a frame — which
+   * is what deferring to the next animation frame shows. Only on a real change of the CSS box or
+   * dpr (an observer fires on plenty that moves neither), never re-entrantly, and a throw is
+   * contained and warned about once: this is a browser callback and must not take the page down.
+   */
+  _onSceneResize(win) {
+    if (!win.layer || !win.onResize || win.inResize) return;
+    const box = sceneBoxOf(win.canvas);
+    const last = win.resizeBox;
+    if (last && last.width === box.width && last.height === box.height && last.dpr === box.dpr) return;
+    win.resizeBox = box;
+    win.inResize = true;
+    try {
+      win.onResize(box);
+    } catch (err) {
+      if (!win.resizeThrewWarned) {
+        win.resizeThrewWarned = true;
+        console.warn("[inline3d] a scene window's onResize threw; further throws from it are silent.", err);
+      }
+    } finally {
+      win.inResize = false;
+    }
   }
 
   _stopSizeWatch(win) {
