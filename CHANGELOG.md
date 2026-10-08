@@ -7,7 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** (`./call`) only: one default. No export or type changes.
+Touches the **preview tier** (`./call`, `./splat`) only: one default and two additive handle
+methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
 
 ### `./call` — the stereo self view auto-converges too
 
@@ -15,6 +16,21 @@ Touches the **preview tier** (`./call`) only: one default. No export or type cha
   being hard-wired off, so your own stereo camera feed sits at the display plane like the remote
   tiles. `autoConverge: false` turns it off for both. (`samples/camera` also starts with
   auto-convergence on.)
+
+### Splat handle: `finishSwap()` and `rewoven()` (scene subpath `./splat`, additive)
+
+- **`handle.finishSwap()`** ends a running `setSource` transition now: the incoming asset at its
+  end state, the outgoing one gone, in this task. A no-op when none runs. The sequencer already
+  did this internally when a newer swap landed; it is now a page call. Needed by a page that keeps
+  ONE woven canvas across screens and leaves a photo screen mid-crossfade: without it the next
+  screen waited a transition out (about 1 s measured) before it could draw, and the canvas showed
+  nothing meanwhile.
+- **`handle.rewoven()`** forwards the core window's `TileHandle.rewoven()` (1.1x), which the splat
+  handle had left out while forwarding `firstWoven`. Cover the canvas across a rect change (moved
+  into a box, fullscreen, a layout resize) and release on it; `{ woven: false, reason:
+  'unsupported' }` at once without a session.
+- Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
+  stage queue), vendored there as a local patch first.
 
 ## 1.37.1 — 2026-10-07
 

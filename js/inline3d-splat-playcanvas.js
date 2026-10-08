@@ -3370,6 +3370,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return pickModel(clientX, clientY);
     },
     setSource,
+    /**
+     * End a running setSource transition now (its end state at once); a no-op when none runs.
+     * The same thing a newer setSource does to an older one in flight (`pendingSwap.finish()`),
+     * exposed for a page that leaves the photo mid-crossfade and must not wait for it.
+     */
+    finishSwap() {
+      pendingSwap?.finish();
+      return out;
+    },
     prepareSource,
     setRig,
     setStereo,
@@ -3633,6 +3642,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     out._resolveFirstWoven(handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
     delete out._resolveFirstWoven;
   }
+  // The core window's `rewoven()`, forwarded like `firstWoven`: a page covers the canvas across a
+  // rect change (a shared canvas moved into a box, fullscreen) and releases on this. Without a
+  // session it settles `woven: false, reason: 'unsupported'` at once, the same shape. Replaces the
+  // deferred stub's forwarder, as `setSource` does.
+  out.rewoven = () => (handle && typeof handle.rewoven === 'function' ? handle.rewoven() : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
 
   // addSplat's `displayRigLayers` sugar: [layer, …] or { layers: [...], viewerDistance, gain }.
   if (opts.displayRigLayers !== undefined) {

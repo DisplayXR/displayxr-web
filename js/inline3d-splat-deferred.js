@@ -83,6 +83,11 @@ export function addSplatDeferred(wall, canvas, src, opts) {
     // setSource replaces this stub on the same object by then).
     setSource: (...args) => out.ready.then(() => out.setSource(...args)),
     prepareSource: (...args) => out.ready.then(() => out.prepareSource(...args)),
+    // Nothing can be mid-transition before the adapter has loaded; the adapter replaces this.
+    finishSwap: () => out,
+    // `rewoven()` before the adapter: the core window's answer once it exists, `firstWoven`'s
+    // result if the engine never arrives (same shape, never rejects).
+    rewoven: () => out.ready.then(() => out.rewoven(), () => out.firstWoven),
     // A rig switch before the first asset has landed: validated now (controls:'page' and a bad
     // type throw at the call's own line), applied once it has.
     setRig: page
