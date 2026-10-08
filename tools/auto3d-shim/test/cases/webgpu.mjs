@@ -25,7 +25,7 @@ export function magenta(px, w, h) {
 
 // The centre (white) splat of pc-webgpu-gsplat.html in eye e of an SBS frame: the extent of the pixels
 // at >= half its peak; whiteness = the min channel (the other splats are coloured: a low min channel).
-function splatAspect(px, w, h, e) {
+export function splatAspect(px, w, h, e) {
   const ew = w / 2, x0 = e * ew;
   const m = (x, y) => { const i = (y * w + x) * 4; return Math.min(px[i], px[i + 1], px[i + 2]); };
   let peak = 0, px0 = 0, py0 = 0;

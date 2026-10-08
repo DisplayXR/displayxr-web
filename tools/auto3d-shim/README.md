@@ -375,6 +375,17 @@ sized from the element's device pixels, so the SBS store is the element's device
 page code that reads `canvas.width` directly sees the SBS width while converted (the engine's own
 getters are what PlayCanvas apps use).
 
+**A page that writes `canvas.width / height` itself** (v0.6.2). supersplat-viewer 1.37 sets
+`app._allowResize = false` and sizes the canvas in its own `resizeCanvas` on the app's `framerender`
+event, by assignment, whenever `canvas.width` differs from its size: on a converted canvas, every
+frame (the SBS store is narrower than its own wherever the 3072 cap applies: 3840 px at 250 % on the
+panel). `device.setResolution` never sees it. So while converted the adapter puts instance accessors
+on the canvas: reads stay **real** (the engine reads `canvas.width`), and a write the adapter does
+not make itself is recorded as the page's size (`st.L`), the SBS store kept (re-sized only when the
+element's size gives another SBS size). The accessors come off at stand-down, after the mono store
+is put back. Without them the viewer pulls the store back to its own size every frame (control
+`ssv-webgl-trap-ctl`). `state()` counts the writes (`pageSizeWrites`).
+
 **Gaussian splats.** A side-by-side eye has non-square pixels, and the engine's `gsplatCornerVS`
 derives one focal length from the viewport width, which draws every splat at half height. The
 SDK's `patchGsplatFootprint` rewrite is applied at `gl.shaderSource`, installed before the app's first
@@ -388,7 +399,9 @@ are offset from it by a few ipd × m2v.
 | `autoRender = false` (render on demand) | **3D**. The adapter sets `renderNextFrame` every session frame |
 | WebGPU device | **3D** since v0.6.0 (see [WebGPU](#webgpu-v060)); before, 2D with `WebGPU device — the prototype drives WebGL2 apps only` |
 | two or more cameras render to the canvas (UI camera, picture-in-picture) | **2D**, HUD reason |
-| post effects (`camera.postEffects`) or `CameraFrame` / `framePasses` | **2D**, HUD reason (per-eye targets: next) |
+| `CameraFrame` (the engine's post chain: SSAO, TAA, bloom, DOF, grading, vignette, fringing, sharpening) | **3D** since v0.6.2, the whole chain per eye (see [CameraFrame](#playcanvas-cameraframe-v062)); before, 2D with `CameraFrame / frame passes on the camera — needs per-eye targets (next)` |
+| legacy post effects (`camera.postEffects`), or `framePasses` that are not one `CameraFrame` | **2D**, HUD reason |
+| the page sizes the canvas by writing `canvas.width / height` itself (supersplat-viewer) | **3D** since v0.6.2: the writes are recorded as the page's size, the store stays side by side (below) |
 | orthographic camera | **2D**, HUD reason |
 | the app presents WebXR through `app.xr` | stands down (the immersive path owns it) |
 | OffscreenCanvas / worker | not converted |
@@ -728,13 +741,13 @@ would and records `loadCore` calls, `cap.save` and `cap.report` on `window.__dxr
 ```bash
 cd tools/auto3d-shim/test
 npm install                      # puppeteer-core only
-node deps.mjs                    # three@0.180.0 + playcanvas@2.22.3 + @sparkjsdev/spark@2.2.0 into .deps/ (npm pack; local overrides below)
+node deps.mjs                    # three@0.180.0 + playcanvas@2.22.3 + playcanvas@2.23.0 + @sparkjsdev/spark@2.2.0 + @playcanvas/supersplat-viewer@1.37.0 into .deps/ (npm pack; local overrides below)
 node run.mjs                     # every case; `node run.mjs a a-legacy` for one; KEEP=1 writes out/<case>.png
 ```
 
 **Engines, and a box with no registry access.** `deps.mjs` fails loudly (non-zero exit, the file
 and the override to use) instead of leaving a page that never converts, and `run.mjs` checks the
-same seven files and the Chrome binary before it starts (exit 2), and fails a case at once, naming
+same files and the Chrome binary before it starts (exit 2), and fails a case at once, naming
 the file, if a page gets a 404 for anything under `/deps/`. Every file can come from a local copy:
 `THREE_BUILD_DIR` (`three.module.js` + `three.core.js`), `PLAYCANVAS_MJS`, and for the addons
 `THREE_ORBIT_CONTROLS` / `PLAYCANVAS_CAMERA_CONTROLS`, or found next to the first two when they point
@@ -742,7 +755,10 @@ into an npm package layout (`<THREE_BUILD_DIR>/../examples/jsm/controls/OrbitCon
 `<PLAYCANVAS_MJS>/../../scripts/esm/camera-controls.mjs`). The Spark page also needs
 `SPARK_DIST` (a dir holding `spark.module.js`; default `npm pack @sparkjsdev/spark@2.2.0`) and
 three's `postprocessing/Pass.js` (`THREE_PASS_JS`, or next to `THREE_BUILD_DIR` in an npm layout).
-With all of them set, nothing is fetched.
+The CameraFrame pages need playcanvas 2.23.0 (`PLAYCANVAS_CF_MJS`, its `build/playcanvas.mjs`) and the
+real-viewer cases supersplat-viewer 1.37.0's `public/` (`SUPERSPLAT_VIEWER_DIR`, holding `index.html`,
+`index.js`, `index.css`). With all of them set, nothing is fetched. (On the Windows box `npm` may not
+be on the shell `deps.mjs` spawns: point the overrides at `npm pack`ed copies.)
 
 A converting case settles only once the go-live depth fade has finished (`rampK` exactly 1, no ramp
 running), so the rig is always sampled at the configured depth.
@@ -826,6 +842,13 @@ running), so the rig is always sampled at the configured depth.
 | `three-webgpu-kill` | the default page, frozen: `Ctrl+Alt+3` off, then on | as `b-kill`, plus `outCoverVia: 'readback'` |
 | `three-webgpu-postfx` | `?postfx=1`: `PostProcessing` with `TSL.pass(scene, camera)`, product mode | last report `flat` with the `WebGPU PostProcessing` reason, never live, no layer, the canvas keeps its mono store |
 | `p-three-webgpu` | the default page, product mode | goes `live` (engine three.js), one layer, never `flat` |
+| `pc-cf-kill` / `pc-cf-webgpu-kill` | `pages/pc-cf-mesh.html?taa=0&vignette=0`: PlayCanvas 2.23, a `CameraFrame` with bloom (an HDR emissive sphere) and SSAO, WebGL2 / WebGPU, frozen | as `b-kill` (64 px shift, rig, convergence 8, commit model, out-cover, on again; WebGPU: `outCoverVia: 'readback'`), plus the split in `state()`: two chains on 640 × 720 targets, eye 0's compose into the left half (clears), eye 1's into the right (no clear); after the stand-down no split is left |
+| `pc-cf` / `pc-cf-webgpu` | `pc-cf-mesh.html`: bloom + SSAO + TAA + grading + vignette on a grey clear colour; then the same page with `?bloom=0` | split with taa / bloom / ssao in both chains; the jitter non-zero and moving frame to frame; the sphere in both eyes, 64 px apart; the ring around it brighter than without bloom in BOTH eyes (~205 vs ~110); the vignette per eye (both edges of each eye alike, ~146, centre ~205) |
+| `pc-cf-unsplit-ctl` | `pc-cf-mesh.html?taa=0`, `pcCameraFrame: false` (approach a: the CameraFrame left as is under `xrViews`) | a pair comes out, but the vignette is the pair's: each eye's seam side ~205, its outer edge ~146 |
+| `pc-cf-toggle` | `pc-cf-mesh.html` on WebGPU; the page sets `cf.enabled = false`, then `true` + `update()` while converted | off: still converted, no split, the camera's `framePasses` empty, both eyes drawn by the plain path; on: the new pass split, same session, both eyes; no stand-down |
+| `pc-cf-gsplat` / `-webgpu` | `pages/pc-cf-gsplat.html`: a unified gsplat (the 3 × 3 grid) under the viewer's CameraFrame configuration; fake `pixelAspect: 2` | split (bloom compiled out on the RGBA8 target, as on the viewer); 64 px shift; the white centre splat ~2:1 tall in store px in each eye (round on the display) |
+| `ssv` / `ssv-webgl` | the REAL supersplat-viewer 1.37.0 (WebGPU / `?webgl`) on `.deps/gen/grid.ply` with post effects on; `maxSbsWidth` 1024 so the SBS store (1024) is narrower than the viewer's (1280), as on the panel | converts (found through the id trap); the viewer's own `canvas.width` writes recorded (~300) and the store kept 1024 × 720; the split; 51 px shift; round centre splat in each eye |
+| `ssv-webgl-trap-ctl` | the same, `pcCanvasTrap: false` | the viewer pulls the store back to its own 1280 |
 | `m-lift-live-three` / `m-lift-live-pc` | the lift attribute added while live | back to 2D in < 3 s through the staged path (out-cover, `mono frame drawn first`), no raw pair at close (commit model), marker removed after the close, no retry 3 s later |
 
 **The commit model** (`window.__fakeXRTrackCommits`, cases `a-kill`, `b-kill`, `b-flip`). After
@@ -967,6 +990,91 @@ Not done: `ArrayCamera` / multi-view (`renderer.render` with an `ArrayCamera` st
 existing rule), WebXR on the WebGPU renderer (`renderer.xr` presenting stands down, as on WebGL), and
 three's `PostProcessing` (above). Spark is WebGL-only.
 
+## PlayCanvas `CameraFrame` (v0.6.2)
+
+`CameraFrame` (`extras/render-passes/camera-frame.js`) is how PlayCanvas 2.x pages get post-processing,
+and what superspl.at's viewer builds whenever a scene's settings turn on any post effect or high-precision
+rendering. It sets `camera.framePasses = [FramePassCameraFrame]`, and the frame graph then adds those
+passes instead of the camera's own forward passes (`scene/renderer/forward-renderer.js`
+`buildFrameGraph`, `renderAction.useCameraPasses`). Read at playcanvas **2.23.0** (the viewer's own
+devDependency) and 2.22.3; the two differ only in bloom's threshold and the scene-half source.
+
+**Why the engine's own XR path is not enough (approach a, measured).** The chain's scene passes are
+`RenderPassForward`s, so under `xrViews` they already loop over the views
+(`renderForwardInternal`: one draw per `RenderView`, each with its viewport and bind group) and draw
+the pair into the scene target. But that target is sized to the canvas
+(`setupRenderPasses`: `sceneOptions.resizeSource = cameraComponent.renderTarget`, null = the back
+buffer), and every pass after it is one full-screen quad over the pair: one vignette and one
+fringing centred on the pair, sharpening and bloom across the seam, SSAO reconstructing with the
+pair's aspect, and TAA reprojecting through ONE camera matrix: under `xrViews` the renderer applies
+no jitter and never calls `Camera._storeShaderMatrices` (`renderer.js` `setCameraUniforms`), so the
+resolve reads stale matrices. The control case `pc-cf-unsplit-ctl` (TEST ONLY `pcCameraFrame: false`)
+shows it: a pair comes out, with the vignette's dark edges on the outside of the pair only.
+
+**What it does (approach c, with b's per-eye targets).** The whole chain runs once per eye, each eye
+into its own targets of the **eye's** size:
+
+- **Two chains.** Eye 0 is the page's own `FramePassCameraFrame` (A). Eye 1 is B, a second instance
+  built from A's own class (`new A.constructor(app, A.cameraFrame, camera, A.options)`, no engine
+  namespace needed). Both get `sceneOptions.resizeSource` = the eye size; every other target of the
+  chain (SSAO, TAA history, the half-res scene, bloom, DOF) resizes from the scene texture, so
+  memory is two half-width chains, about one mono chain. A rebuild of either (an option or layer
+  change: `update()` → `reset()` → `setupRenderPasses()`) is re-adopted through a per-instance
+  wrapper on `setupRenderPasses`.
+- **The page's settings drive both.** `CameraFrame.update()` writes into `renderPassCamera`; once per
+  frame it is applied to B with `renderPassCamera` swapped for the call, so bloom, grading, vignette,
+  TAA, SSAO and DOF are always the page's own. A's `layersDirty` is passed on to B.
+- **Ordering.** `camera.framePasses = [eye 0, eye 1]`: two disabled `FramePass`es (never rendered; the
+  frame graph runs their `frameUpdate` and adds their before passes, `frame-graph.js`
+  `addRenderPass`) holding `[marker, A]` and `[marker, B, end marker]`. The markers are `FramePass`es
+  of the engine's own base class (A's prototype parent) whose `execute` runs at render time, in pass
+  order: `device.xrCurrentViewIndex` = the eye, so the forward renderer draws only that view (the
+  mechanism the engine's WebGPU multiview path uses, `frame-pass-multi-view.js`), with the view's
+  viewport set to the eye target; on WebGPU the whole list still sits in the engine's
+  `FramePassMultiView`, which falls through to a plain render. A marker on each compose pass's
+  `afterPasses` moves the views back to the eye's half of the store for the after pass (the layers
+  after the post chain, e.g. UI). The end marker restores the view index.
+- **Compose into the half.** Each compose pass draws its quad into its eye's half
+  (`RenderPassShaderQuad.viewport` / `scissor`). Eye 1's compose clears nothing (a WebGPU load-op
+  clear ignores the scissor and would wipe eye 0); the frame graph's `compile` then makes eye 0's last
+  pass on the back buffer store. The camera-use flags make the pair one camera use: the scene
+  `prerender` event and the camera's before passes once, from eye 0; `postrender` from eye 1.
+- **TAA.** Each eye has its own history (B owns its `RenderPassTAA`). The engine's Halton jitter
+  (same sequence and amplitude, in eye-target pixels) is added to both eye projections, and before
+  each eye's resolve the camera carries that eye's previous / inverse view-projection and jitters
+  (`render-pass-taa.js` `before()` reads `_viewProjPrevious`, `_viewProjInverse`, `_jitters`).
+- **A page that changes its CameraFrame** is followed on `prerender`: a new pass is split again, a
+  disabled one leaves the plain `xrViews` path. `CameraFrame.disable()` destroys "its" frame passes,
+  i.e. the two proxies: eye 0's destroys A as the page asked, and B with it (case `pc-cf-toggle`).
+- **Stand-down** puts `camera.framePasses = [A]` back, A's targets back to the canvas size, its
+  compose back to full screen, and destroys B (re-asserting the camera's scene-depth flags, which B's
+  `reset()` clears and A still needs).
+
+**Gaussian splats under a CameraFrame.** The splats are drawn by the scene pass, per eye like any
+mesh. The footprint fix is unchanged (device-level, `gl.shaderSource` / `createShaderModule`), but
+**2.23 fixed the footprint upstream**: `gsplatCorner` (GLSL and WGSL) now takes
+`focal = viewport_size.xy * (projMat00, projMat11)`, and the WebGPU compute projector a separate
+`focalY` (`compute-gsplat-projector.js`). The patch still sees its `J2` marker but none of the 2.22.3
+anchors, so it patches nothing (`footprint` `0/1` on WebGL2, `0/2` on WebGPU), and the splats come
+out round in each eye on the engine's own maths. The roundness is asserted on the pixels (cases
+`pc-cf-gsplat*`, `ssv*`); on 2.22.3 pages the patch is still what makes it (`pc-webgpu-gsplat*`, `c`).
+
+**The real viewer in the harness.** `@playcanvas/supersplat-viewer@1.37.0`'s standalone build (its
+`public/`, engine bundled) is served from `.deps/supersplat-viewer/`, pointed at a generated 3 × 3
+splat grid (`.deps/gen/grid.ply`, written by `run.mjs`) with every post effect on in its settings
+(`pages/ssv-settings.json`): it builds its CameraFrame exactly as superspl.at does, on WebGPU (its
+default) and WebGL2 (`?webgl`). With `highPrecisionRendering` off it asks for an RGBA8 scene target
+(`renderFormats = []`), on which the engine compiles bloom out: sharpening, grading, vignette and
+fringing run, per eye.
+
+**Limits.** SSAO keeps the engine's screen-space maths over a squeezed eye (its sample disc uses the
+target's pixel aspect, half the eye's frustum aspect). `renderTargetScale` < 1 scales both eye
+targets (the views' viewports follow the actual target size). A CameraFrame on a camera with a
+`renderTarget`, or a non-full `rect`, is not a case the adapter takes (one camera to the canvas). TAA
+under motion (the per-eye reprojection) was checked by reading `taaResolve` and by the jitter moving
+per frame in `state()`, not on pixels; image quality under motion is the panel's call. Test switches
+(harness only): `pcCameraFrame: false` (unsplit, approach a), `pcTaaJitter: false`, `pcCanvasTrap: false`.
+
 ## Why a renderer shim, not the alternatives
 
 - **Duplicating WebGL commands** (the 3D Vision approach) works for any engine, but it has to guess
@@ -983,6 +1091,17 @@ three's `PostProcessing` (above). Spark is WebGL-only.
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.6.2 (PlayCanvas CameraFrame, P-W1c), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere):** 109
+cases (98 + 11 new: `pc-cf-kill`, `pc-cf-webgpu-kill`, `pc-cf`, `pc-cf-webgpu`, `pc-cf-unsplit-ctl`,
+`pc-cf-toggle`, `pc-cf-gsplat`, `pc-cf-gsplat-webgpu`, `ssv`, `ssv-webgl`, `ssv-webgl-trap-ctl`), 107 run,
+2 skipped (`c` / `d`: no `ports_25.sog`), no WebGPU case skipped, one full pass: 105 green, the two
+`pc-cf-*-kill` cases failing only the out-cover's flipped-orientation test (the cover was a real picture,
+luma std 15, but the page was up-down symmetric). A dark bar low in `pc-cf-mesh.html` fixed that and
+those two plus `pc-cf` / `pc-cf-toggle` (same page) were re-run green; the rest was not re-run. Every
+existing case, all WebGPU ones included, passes unchanged. The real supersplat-viewer 1.37.0 converts
+on both backends with its CameraFrame split. Nothing on the panel: the real superspl.at page is the
+next check.
 
 **Headless, v0.6.1 (three.js WebGPURenderer, P-W1b), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere):** 98
 cases (87 + 11 new: `three-webgpu`, `-raw`, `-raw-ctl`, `-pr2`, `-fallback`, `-kill`, `-near`, `-near-ctl`,
