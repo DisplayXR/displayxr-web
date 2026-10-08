@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.7 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.6.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -203,7 +203,7 @@ function dxrSentinel(cfg, cap) {
     scheduleSweep();
   }
 
-  let polling = false, polls = 0, pollT = 0, glCanvas = null;
+  let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
     if (done || pcFound || retired) return;
     let pc = null;
@@ -215,12 +215,16 @@ function dxrSentinel(cfg, cap) {
     }
     try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
   }
-  function startPoll() {
+  function startPoll(timed) {
     if (polling || retired) return;
+    if (!looking) {
+      looking = true;
+      micro(lookGlobals);
+      document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
+      window.addEventListener('load', lookGlobals, { once: true });
+    }
+    if (timed === false) return;
     polling = true; polls = 0;
-    micro(lookGlobals);
-    document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
-    window.addEventListener('load', lookGlobals, { once: true });
     pollT = sTimeout(poll, 500);
   }
   function poll() {
@@ -257,7 +261,7 @@ function dxrSentinel(cfg, cap) {
     settledOn = canvas;
     for (const c of glCanvases) if (c !== canvas) return;
     disarmCanvases(); stopPoll(); unobserve();
-    polling = false; // a WebGL context on another canvas later starts the search again
+    polling = false; looking = false; // a WebGL context on another canvas later starts the search again
   }
   const glCanvases = [];
   const descCanvas = (c) => {
@@ -275,19 +279,21 @@ function dxrSentinel(cfg, cap) {
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;
-    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1 };
+    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
     const onContext = (c, type) => {
       if (done || pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
-      if (WEBGL[type] !== 1 || seenGL.has(c)) return;
+      const kind = WEBGL[type];
+      if (!kind || seenGL.has(c)) return;
       seenGL.add(c);
-      if (!glCanvas) glCanvas = c;
+      if (kind === 1 && !glCanvas) glCanvas = c;
       if (c !== settledOn) glCanvases.push(c);
-      signal(null); // the first engine / WebGL signal: the page's opt-out
+      signal(null); // the first engine / graphics-context signal: the page's opt-out
       if (done) return;
       arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the trap finds the app; no timer (above)
       scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };

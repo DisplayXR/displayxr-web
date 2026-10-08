@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.5.7 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.6.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -266,7 +266,7 @@ function dxrSentinel(cfg, cap) {
     scheduleSweep();
   }
 
-  let polling = false, polls = 0, pollT = 0, glCanvas = null;
+  let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
     if (done || pcFound || retired) return;
     let pc = null;
@@ -278,12 +278,16 @@ function dxrSentinel(cfg, cap) {
     }
     try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
   }
-  function startPoll() {
+  function startPoll(timed) {
     if (polling || retired) return;
+    if (!looking) {
+      looking = true;
+      micro(lookGlobals);
+      document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
+      window.addEventListener('load', lookGlobals, { once: true });
+    }
+    if (timed === false) return;
     polling = true; polls = 0;
-    micro(lookGlobals);
-    document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
-    window.addEventListener('load', lookGlobals, { once: true });
     pollT = sTimeout(poll, 500);
   }
   function poll() {
@@ -320,7 +324,7 @@ function dxrSentinel(cfg, cap) {
     settledOn = canvas;
     for (const c of glCanvases) if (c !== canvas) return;
     disarmCanvases(); stopPoll(); unobserve();
-    polling = false; // a WebGL context on another canvas later starts the search again
+    polling = false; looking = false; // a WebGL context on another canvas later starts the search again
   }
   const glCanvases = [];
   const descCanvas = (c) => {
@@ -338,19 +342,21 @@ function dxrSentinel(cfg, cap) {
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;
-    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1 };
+    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
     const onContext = (c, type) => {
       if (done || pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
-      if (WEBGL[type] !== 1 || seenGL.has(c)) return;
+      const kind = WEBGL[type];
+      if (!kind || seenGL.has(c)) return;
       seenGL.add(c);
-      if (!glCanvas) glCanvas = c;
+      if (kind === 1 && !glCanvas) glCanvas = c;
       if (c !== settledOn) glCanvases.push(c);
-      signal(null); // the first engine / WebGL signal: the page's opt-out
+      signal(null); // the first engine / graphics-context signal: the page's opt-out
       if (done) return;
       arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the trap finds the app; no timer (above)
       scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };
@@ -402,7 +408,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.5.7'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.6.0'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -433,7 +439,9 @@ function dxrCore(cfg, cap, S) {
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
     guardSteadyMs: 2000, // ... once the page's own 2D rate has been steady this long (a page still streaming is not judged again yet) ...
     guardRetryMaxMs: 30000, // ... or after this long at the latest
-    glLimit: 0,         // TEST ONLY: > 0 stands in for the GL size limits in realSizeFor
+    glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
+    gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
+    pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
   };
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
   const T = { ...TUNING };
@@ -470,6 +478,7 @@ function dxrCore(cfg, cap, S) {
     return s;
   };
   const HAS_RIG = 'setViewRig' in window.XRDisplayLayer.prototype;
+  const surfaces = dxrSurface({ warnOnce }); // the per-graphics-API seam (surface.js)
   const CANVAS_W = S.intrinsics.canvasWidth;
   const CANVAS_H = S.intrinsics.canvasHeight;
   const realW = (c) => CANVAS_W.get.call(c);
@@ -546,15 +555,11 @@ function dxrCore(cfg, cap, S) {
     let eyeW, eyeH;
     if (cw > 0 && ch > 0) { eyeW = Math.max(2, Math.round(cw * dpr * T.eyeScale)); eyeH = Math.max(2, Math.round(ch * dpr)); }
     else { eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale)); eyeH = Math.max(2, Math.round(L.h * L.pr)); }
-    if (st.glLim === undefined) {
-      const gl = st.ad.gl(st);
-      if (gl) {
-        let v = Infinity;
-        try { const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS); v = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]); } catch (e) { v = Infinity; }
-        st.glLim = v > 0 ? v : Infinity; // cached per canvas: a context's limits do not change
-      }
+    if (st.lim === undefined) {
+      const sf = surfaceOf(st);
+      if (sf) st.lim = sf.limit(); // cached per canvas: a context's limits do not change
     }
-    const lim = T.glLimit > 0 ? T.glLimit : st.glLim || Infinity;
+    const lim = T.glLimit > 0 ? T.glLimit : st.lim || Infinity;
     eyeW = Math.max(2, Math.min(eyeW, Math.floor(Math.min(T.maxSbsWidth, lim) / 2)));
     eyeH = Math.max(2, Math.min(eyeH, Math.floor(lim)));
     return { eyeW, eyeH, W: 2 * eyeW, H: eyeH };
@@ -575,6 +580,11 @@ function dxrCore(cfg, cap, S) {
     def('height', CANVAS_H, false);
   }
   function unvirtualizeCanvas(st) { try { delete st.canvas.width; delete st.canvas.height; } catch (e) { /* ignore */ } }
+  const apiName = (sf) => (!sf ? 'the canvas' : sf.kind === 'webgpu' ? 'WebGPU' : 'WebGL');
+  function surfaceOf(st) {
+    if (!st.surf) { let s = null; try { s = st.ad.surface ? st.ad.surface(st) : null; } catch (e) { s = null; } st.surf = s || null; }
+    return st.surf;
+  }
 
   function considerActivation(st) {
     const t = now();
@@ -649,9 +659,21 @@ function dxrCore(cfg, cap, S) {
   }
   function flip(st) {
     const ad = st.ad;
+    const sf = surfaceOf(st);
+    if (sf && sf.async && st.armed) {
+      const a = st.armed;
+      if (!a.pre) {
+        a.pre = makeCover(st, false, true) || { el: null, ready: Promise.resolve() };
+        a.pre.ready.then(() => { a.pre.done = true; if (st.armed === a) { try { ad.flipIdle(st); } catch (e) { /* the 250 ms flipIdle still runs */ } } });
+        return;
+      }
+      if (!a.pre.done) return;
+    }
+    const pre = st.armed && st.armed.pre;
     st.armed = null;
     dropCover(st);
-    makeCover(st);            // the mono frame just drawn, over the canvas, until the join (rule 5)
+    if (pre && pre.el) { insertCover(st.canvas, pre.el); st.cover = { el: pre.el, fixed: pre.fixed }; } // read back one frame ago (above)
+    else makeCover(st);       // the mono frame just drawn, over the canvas, until the join (rule 5)
     ad.beforeActive(st);
     st.active = true; st.pending = false;
     promote(st);
@@ -893,7 +915,9 @@ function dxrCore(cfg, cap, S) {
         try { if (st.cover && st.cover.el === el) insertCover(st.canvas, el); } catch (e) {} // not if released meanwhile; done() always follows
         go();
       };
-      if (typeof el.decode === 'function') el.decode().then(place, place); else place();
+      const decode = () => { if (typeof el.decode === 'function') el.decode().then(place, place); else place(); };
+      const ready = st.cover && st.cover.el === el ? st.cover.ready : null;
+      if (ready) ready.then(decode, decode); else decode();
     }
   }
 
@@ -1148,7 +1172,7 @@ function dxrCore(cfg, cap, S) {
     }
     return '#fff';
   }
-  function makeCover(st, eyeOnly) {
+  function makeCover(st, eyeOnly, pre) {
     try {
       const cv = st.canvas, cs = getComputedStyle(cv);
       const c = document.createElement('canvas');
@@ -1162,70 +1186,52 @@ function dxrCore(cfg, cap, S) {
         position: fixed ? 'fixed' : 'absolute', left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px',
         zIndex: cs.zIndex, pointerEvents: 'none', margin: '0', padding: '0', border: '0', background: coverBackground(cv),
       });
+      const sf = surfaceOf(st);
+      let ready = null;
       if (eyeOnly && st.R) {
         let got = false;
-        try { got = !!(st.ad.readEye && st.ad.readEye(st, c)); } catch (e) { got = false; }
-        if (!got) {
-          warnOnce('outcover', 'could not read the flat frame back from WebGL — the 3D->2D cover may be blank');
+        try { got = sf ? sf.readEye(st, c) : false; } catch (e) { got = false; }
+        if (got && typeof got.then === 'function') {
+          c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
+          ready = got.then((ok) => {
+            st.outCoverVia = ok ? 'readback' : 'drawImage';
+            if (!ok) warnOnce('outcover', `could not read the flat frame back from ${apiName(sf)} — the 3D->2D cover may be blank`);
+          }, () => { st.outCoverVia = 'drawImage'; });
+        } else if (got) st.outCoverVia = 'readback';
+        else {
+          st.outCoverVia = 'drawImage';
+          warnOnce('outcover', `could not read the flat frame back from ${apiName(sf)} — the 3D->2D cover may be blank`);
+          if (sf) sf.flush();
           c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
         }
       }
-      else c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); // the mono frame drawn in this same task
+      else if (pre) {
+        let got = false;
+        try { got = sf ? sf.readFrame(st, c) : false; } catch (e) { got = false; }
+        if (got && typeof got.then === 'function') ready = got.then((ok) => { if (!ok) warnOnce('incover', `could not read the mono frame back from ${apiName(sf)} — the 2D->3D cover may be blank`); });
+        else { if (sf) sf.flush(); c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); } // no read-back (no COPY_SRC, HDR): the drawing task's drawImage
+      }
+      else { if (sf) sf.flush(); c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); } // the mono frame drawn in this same task
       if (T.coverImg !== false) {
         const img = document.createElement('img');
         img.setAttribute('data-dxr-auto3d-cover', ''); img.alt = '';
         if (eyeOnly) img.decoding = 'sync';
-        img.src = c.toDataURL('image/png');
+        if (ready) ready = ready.then(() => { img.src = c.toDataURL('image/png'); });
+        else img.src = c.toDataURL('image/png');
         img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
+        if (pre) return { el: img, fixed, ready: (ready || Promise.resolve()).then(() => (typeof img.decode === 'function' ? img.decode() : null)).then(() => true, () => true) };
         if (!eyeOnly) insertCover(cv, img); // the out-cover is inserted by its caller, once decoded
-        st.cover = { el: img, fixed, out: !!eyeOnly };
+        st.cover = ready ? { el: img, fixed, out: !!eyeOnly, ready } : { el: img, fixed, out: !!eyeOnly };
         return;
       }
+      if (pre) return { el: c, fixed, ready: (ready || Promise.resolve()).then(() => true) };
       insertCover(cv, c);
       st.cover = { el: c, fixed };
-    } catch (e) { st.cover = null; }
+    } catch (e) { if (pre) return null; st.cover = null; }
   }
   function insertCover(cv, el) {
     if (cv.parentNode) cv.parentNode.insertBefore(el, cv.nextSibling);
     else (document.body || document.documentElement).appendChild(el);
-  }
-  function readGlEye(gl, st, target) {
-    if (!gl || !st.R || typeof gl.readPixels !== 'function' || (gl.isContextLost && gl.isContextLost())) return false;
-    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
-    const w = Math.min(st.R.eyeW, bw), h = Math.min(st.R.eyeH, bh);
-    if (!(w > 0 && h > 0)) return false;
-    const gl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-    const px = new Uint8Array(w * h * 4);
-    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING); // WebGL2: the DRAW binding
-    const rfb = gl2 ? gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) : null;
-    const pack = gl.getParameter(gl.PACK_ALIGNMENT);
-    const pbo = gl2 ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
-    const p2 = gl2 ? [gl.PACK_ROW_LENGTH, gl.PACK_SKIP_PIXELS, gl.PACK_SKIP_ROWS].map((k) => [k, gl.getParameter(k)]) : [];
-    try {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
-      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      for (const [k, v] of p2) if (v) gl.pixelStorei(k, 0);
-      gl.readPixels(0, bh - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    } catch (e) { return false; } finally {
-      for (const [k, v] of p2) if (v) gl.pixelStorei(k, v);
-      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
-      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, pack);
-      if (gl2) { gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, rfb); }
-      else gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    }
-    let any = 0;
-    for (let i = 0; i < px.length; i += 4) { any |= px[i] | px[i + 1] | px[i + 2] | px[i + 3]; px[i + 3] = 255; }
-    if (!any) return false; // an all-zero read is a cleared buffer, not a picture
-    const tmp = document.createElement('canvas');
-    tmp.width = w; tmp.height = h;
-    tmp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), w, h), 0, 0);
-    const g = target.getContext('2d');
-    g.save();
-    g.translate(0, target.height); g.scale(1, -1); // flip: the read is bottom-up
-    g.drawImage(tmp, 0, 0, w, h, 0, 0, target.width, target.height);
-    g.restore();
-    return true;
   }
   function tickCover(st, t) {
     const cv = st.cover;
@@ -1356,7 +1362,7 @@ function dxrCore(cfg, cap, S) {
     newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
-    makeCover, dropCover, takeOutCover, readGlEye,
+    makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
   const guard = dxrGuard(core);
@@ -1372,6 +1378,137 @@ function dxrCore(cfg, cap, S) {
   info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
   notify();
   return { ctl, three, playcanvas };
+}
+function dxrSurface(core) {
+  const { warnOnce } = core;
+
+  function readGlEye(gl, st, target) {
+    if (!gl || !st.R || typeof gl.readPixels !== 'function' || (gl.isContextLost && gl.isContextLost())) return false;
+    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
+    const w = Math.min(st.R.eyeW, bw), h = Math.min(st.R.eyeH, bh);
+    if (!(w > 0 && h > 0)) return false;
+    const gl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    const px = new Uint8Array(w * h * 4);
+    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING); // WebGL2: the DRAW binding
+    const rfb = gl2 ? gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) : null;
+    const pack = gl.getParameter(gl.PACK_ALIGNMENT);
+    const pbo = gl2 ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
+    const p2 = gl2 ? [gl.PACK_ROW_LENGTH, gl.PACK_SKIP_PIXELS, gl.PACK_SKIP_ROWS].map((k) => [k, gl.getParameter(k)]) : [];
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
+      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      for (const [k, v] of p2) if (v) gl.pixelStorei(k, 0);
+      gl.readPixels(0, bh - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    } catch (e) { return false; } finally {
+      for (const [k, v] of p2) if (v) gl.pixelStorei(k, v);
+      if (pbo) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+      if (pack !== 4) gl.pixelStorei(gl.PACK_ALIGNMENT, pack);
+      if (gl2) { gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, rfb); }
+      else gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    }
+    let any = 0;
+    for (let i = 0; i < px.length; i += 4) { any |= px[i] | px[i + 1] | px[i + 2] | px[i + 3]; px[i + 3] = 255; }
+    if (!any) return false; // an all-zero read is a cleared buffer, not a picture
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    tmp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), w, h), 0, 0);
+    const g = target.getContext('2d');
+    g.save();
+    g.translate(0, target.height); g.scale(1, -1); // flip: the read is bottom-up
+    g.drawImage(tmp, 0, 0, w, h, 0, 0, target.width, target.height);
+    g.restore();
+    return true;
+  }
+  function gl(ctx) {
+    let lim;
+    return {
+      kind: 'webgl',
+      limit() {
+        if (lim === undefined) {
+          let v = Infinity;
+          try { const vp = ctx.getParameter(ctx.MAX_VIEWPORT_DIMS); v = Math.min(ctx.getParameter(ctx.MAX_TEXTURE_SIZE), ctx.getParameter(ctx.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]); } catch (e) { v = Infinity; }
+          lim = v > 0 ? v : Infinity; // a context's limits do not change
+        }
+        return lim;
+      },
+      flush() {}, // the default framebuffer is readable as drawn, in the drawing task
+      readEye: (st, target) => readGlEye(ctx, st, target),
+      readFrame: () => false, // the core's drawImage of the canvas, in the drawing task
+      async: false,
+      toClip: (m) => m,
+    };
+  }
+
+  function toClipGpu(m, out) {
+    for (let c = 0; c < 4; c++) {
+      out[c * 4] = m[c * 4]; out[c * 4 + 1] = m[c * 4 + 1];
+      out[c * 4 + 2] = 0.5 * (m[c * 4 + 2] + m[c * 4 + 3]);
+      out[c * 4 + 3] = m[c * 4 + 3];
+    }
+    return out;
+  }
+  function readGpuEye(o, st, target, full) {
+    const { device, context } = o;
+    if (!device || !context || (!full && !st.R) || typeof context.getCurrentTexture !== 'function') return false;
+    let tex = null;
+    try { tex = context.getCurrentTexture(); } catch (e) { return false; }
+    const U = typeof GPUTextureUsage !== 'undefined' ? GPUTextureUsage : null;
+    if (!tex || !U || !(tex.usage & U.COPY_SRC)) { warnOnce('gpu-copysrc', 'WebGPU canvas without COPY_SRC: no cover read-back (covers via drawImage in the drawing task)'); return false; }
+    const fmt = String(tex.format || '');
+    const bgra = /^bgra8unorm/.test(fmt);
+    if (!bgra && !/^rgba8unorm/.test(fmt)) { warnOnce('gpu-format', `WebGPU canvas format ${fmt} (HDR?): no cover read-back, the covers may be blank`); return false; }
+    const w = full ? tex.width : Math.min(st.R.eyeW, tex.width), h = full ? tex.height : Math.min(st.R.eyeH, tex.height);
+    if (!(w > 0 && h > 0)) return false;
+    const bpr = Math.ceil((w * 4) / 256) * 256;
+    let buf = null;
+    try {
+      o.flush(); // the engine's commands for this frame are queued before the copy
+      buf = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const enc = device.createCommandEncoder();
+      enc.copyTextureToBuffer({ texture: tex, origin: { x: 0, y: 0, z: 0 } }, { buffer: buf, bytesPerRow: bpr, rowsPerImage: h }, { width: w, height: h, depthOrArrayLayers: 1 });
+      device.queue.submit([enc.finish()]);
+    } catch (e) { if (buf) { try { buf.destroy(); } catch (e2) { /* ignore */ } } return false; }
+    const premul = o.alphaMode === 'premultiplied';
+    return buf.mapAsync(GPUMapMode.READ).then(() => {
+      const src = new Uint8Array(buf.getMappedRange());
+      const px = new Uint8ClampedArray(w * h * 4);
+      let any = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0, s = y * bpr, d = y * w * 4; x < w; x++, s += 4, d += 4) {
+          let r = src[s], g = src[s + 1], b = src[s + 2];
+          const a = src[s + 3];
+          if (bgra) { const t = r; r = b; b = t; }
+          if (premul && a > 0 && a < 255) { r = (r * 255) / a; g = (g * 255) / a; b = (b * 255) / a; }
+          any |= r | g | b | a;
+          px[d] = r; px[d + 1] = g; px[d + 2] = b; px[d + 3] = 255;
+        }
+      }
+      buf.unmap(); buf.destroy();
+      if (!any) return false; // a cleared texture, not a picture
+      const tmp = document.createElement('canvas');
+      tmp.width = w; tmp.height = h;
+      tmp.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
+      const g = target.getContext('2d');
+      g.clearRect(0, 0, target.width, target.height);
+      g.drawImage(tmp, 0, 0, w, h, 0, 0, target.width, target.height);
+      return true;
+    }, () => { try { buf.destroy(); } catch (e) { /* ignore */ } return false; });
+  }
+  function gpu(o) {
+    const s = {
+      kind: 'webgpu',
+      limit() { const v = o.device && o.device.limits && o.device.limits.maxTextureDimension2D; return v > 0 ? v : 8192; },
+      flush() { if (typeof o.flush === 'function') { try { o.flush(); } catch (e) { warnOnce('gpu-flush', 'could not submit the frame before a read', e); } } },
+      readEye: (st, target) => readGpuEye({ ...o, flush: s.flush }, st, target, false),
+      readFrame: (st, target) => readGpuEye({ ...o, flush: s.flush }, st, target, true),
+      async: true,
+      toClip: toClipGpu,
+    };
+    return s;
+  }
+
+  return { gl, gpu, readGlEye, toClipGpu };
 }
 function dxrGuard(core) {
   const T = core.T;
@@ -2112,8 +2249,7 @@ function dxrThree(core) {
       st.frame = { drew: false, ops: [] };
     },
     coverAfterDraw: true,
-    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
-    gl: (st) => (st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null),
+    surface: (st) => { const gl = st.r && typeof st.r.getContext === 'function' ? st.r.getContext() : null; return gl ? core.surfaces.gl(gl) : null; },
     restore(st, wasLive) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
@@ -2875,6 +3011,8 @@ function dxrPlayCanvas(core) {
       st.L.w = w; st.L.h = h;
       if (applyRealSize(st)) st.app.renderNextFrame = true;
     };
+    if (core.T.pcFootprint === false) return; // TEST ONLY (A/B)
+    if (dev.isWebGPU) { wrapWgsl(st); return; }
     const gl = dev.gl;
     if (gl && typeof gl.shaderSource === 'function' && !dev.isWebGPU) {
       const ss = gl.shaderSource;
@@ -2887,6 +3025,20 @@ function dxrPlayCanvas(core) {
         return ss.call(this, sh, src);
       };
     }
+  }
+  function wrapWgsl(st) {
+    const w = st.dev.wgpu;
+    if (!w || typeof w.createShaderModule !== 'function') return;
+    const csm = w.createShaderModule;
+    w.createShaderModule = function (desc) {
+      const code = desc && desc.code;
+      if (typeof code === 'string' && code.indexOf('J2') >= 0 && /let\s+J2\s*=/.test(code)) {
+        st.footprint.seen++;
+        const p = patchGsplatFootprintWgsl(code);
+        if (p.ok) { st.footprint.patched++; desc = { ...desc, code: p.src }; }
+      }
+      return csm.call(this, desc);
+    };
   }
   function applyRealSize(st) {
     const R = core.realSizeFor(st);
@@ -2925,7 +3077,6 @@ function dxrPlayCanvas(core) {
     label: (st) => `PlayCanvas ${pcNS && pcNS.version ? pcNS.version : '2.x'}, ${via.get(st.app)}`,
     unqualified(st) {
       const app = st.app;
-      if (st.dev.isWebGPU) return flatWhy(st, 'WebGPU device — the prototype drives WebGL2 apps only');
       if (app.xr && app.xr.active) return 'the app is presenting WebXR';
       const pick = pickCamera(app);
       if (!pick.cam) return pick.flat ? flatWhy(st, pick.why) : pick.why;
@@ -2973,8 +3124,19 @@ function dxrPlayCanvas(core) {
     },
     wake(st) { st.app.renderNextFrame = true; }, // re-enabled: one frame, whose postrender considers activation
     coverAfterDraw: true,
-    readEye: (st, target) => core.readGlEye(ad.gl(st), st, target),
-    gl: (st) => (st.dev && st.dev.gl) || null,
+    surface(st) {
+      const d = st.dev;
+      if (!d) return null;
+      if (d.isWebGPU) {
+        if (!d.wgpu || !d.gpuContext) return null;
+        return core.surfaces.gpu({
+          get device() { return d.wgpu; }, get context() { return d.gpuContext; },
+          flush: () => { if (typeof d.submit === 'function') d.submit(); },
+          get alphaMode() { return d.canvasConfig ? d.canvasConfig.alphaMode : 'opaque'; },
+        });
+      }
+      return d.gl ? core.surfaces.gl(d.gl) : null;
+    },
     target(st) {
       const e = st.cam && st.cam.entity;
       if (!e) return null;
@@ -2999,6 +3161,8 @@ function dxrPlayCanvas(core) {
       extra: {
         detection: via.get(st.app), renderView: st.rvKind, camera: st.cam ? st.cam.entity.name : null,
         footprint: { ...st.footprint }, device: st.dev.isWebGPU ? 'webgpu' : 'webgl2', autoRender: st.app.autoRender,
+        surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null,
+        eyeProj0: st.views && st.views[0] ? Array.from(st.views[0].projMat.data) : null, // what the engine draws eye 0 with
       },
     }),
   };
@@ -3080,11 +3244,14 @@ function dxrPlayCanvas(core) {
     st.frustumKey = '';
     st.flatProj = new Float64Array(16);
     st.eyeInv = [new Float64Array(16), new Float64Array(16)];
+    st.clipProj = [new Float64Array(16), new Float64Array(16)]; // WebGPU: the eye projections in clip z 0..1
     updateViews(st); // before the first draw: never a frame with an unset view
     st.cam.camera.xrViews = st.views.slice();
   }
   function updateViews(st) {
     const R = st.R, local = st.cam.entity.getLocalTransform().data;
+    const sf = core.surfaceOf(st);
+    const clip = sf && sf.kind === 'webgpu' && core.T.gpuDepthRange !== false ? sf : null;
     let P0;
     if (st.haveViews) {
       const world = st.cam.entity.getWorldTransform().data;
@@ -3092,7 +3259,7 @@ function dxrPlayCanvas(core) {
         const pose = core.eyePose(st, i, world);
         mul4(local, pose, st.eyeInv[i]);
         if (i === 0) st.eyeAt = [0, 1, 2].map((k) => world[k] * pose[12] + world[4 + k] * pose[13] + world[8 + k] * pose[14] + world[12 + k]); // diagnostics (dev state(): eyeAt)
-        st.views[i].setView(st.V[i].proj, st.eyeInv[i]);
+        st.views[i].setView(clip ? clip.toClip(st.V[i].proj, st.clipProj[i]) : st.V[i].proj, st.eyeInv[i]);
         st.views[i].setViewport(i * R.eyeW, 0, R.eyeW, R.eyeH);
       }
       P0 = st.V[0].proj;
@@ -3100,8 +3267,9 @@ function dxrPlayCanvas(core) {
     } else {
       const p = pageCam(st);
       perspective(p.vfov, p.aspect, p.near, p.far, st.flatProj);
+      const fp = clip ? clip.toClip(st.flatProj, st.clipProj[0]) : st.flatProj;
       for (let i = 0; i < 2; i++) {
-        st.views[i].setView(st.flatProj, local);
+        st.views[i].setView(fp, local);
         st.views[i].setViewport(i * R.eyeW, 0, R.eyeW, R.eyeH);
       }
       P0 = st.flatProj;
@@ -3223,6 +3391,29 @@ function dxrPlayCanvas(core) {
         .replace(r2, '0.0, J1y, J2.y,'),
       ok: true,
     };
+  }
+
+  function patchGsplatFootprintWgsl(src) {
+    if (typeof src !== 'string') return { src, ok: false };
+    if (src.includes('dxrFocalY')) return { src, ok: true };
+    let out = src, ok = false;
+    const c1 = /let\s+J2\s*=\s*-J1\s*\/\s*vz\s*\*\s*v\.xy\s*;/, c2 = /let\s+tt1\s*=\s*J1\s*\*\s*w1\s*\+\s*J2\.y\s*\*\s*w2\s*;/;
+    if (c1.test(out) && c2.test(out) && /\bviewProj\b/.test(out) && /\bviewportHeight\b/.test(out) && /\blet\s+w1\b/.test(out)) {
+      out = out
+        .replace(c1, 'let J1y = (viewportHeight * abs((viewProj * vec4f(w1, 0.0)).y)) / vz; /* dxrFocalY */ let J2 = vec2f(-J1 / vz * v.x, -J1y / vz * v.y);')
+        .replace(c2, 'let tt1 = J1y * w1 + J2.y * w2;');
+      ok = true;
+    }
+    const r1 = /let\s+J2\s*=\s*-J1\s*\/\s*vp\.z\s*\*\s*vp\.xy\s*;/, r2 = /vec3f\(\s*0\.0\s*,\s*J1\s*,\s*J2\.y\s*\)/;
+    const f = /let\s+focal\s*=\s*([A-Za-z_]\w*)\.viewport_size\.x\s*\*\s*center\.projMat00/.exec(out);
+    const ub = f && f[1];
+    if (ub && r1.test(out) && r2.test(out) && out.includes(`${ub}.matrix_projection`)) {
+      out = out
+        .replace(r1, `let J1y = (${ub}.viewport_size.y * abs(${ub}.matrix_projection[1][1])) / vp.z; /* dxrFocalY */ let J2 = vec2f(-J1 / vp.z * vp.x, -J1y / vp.z * vp.y);`)
+        .replace(r2, 'vec3f(0.0, J1y, J2.y)');
+      ok = true;
+    }
+    return { src: out, ok };
   }
 
   info(`PlayCanvas adapter armed (core v${core.VERSION})`);

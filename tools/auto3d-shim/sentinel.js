@@ -30,13 +30,19 @@
 //                   script-inserted, through one MutationObserver (childList + subtree on the
 //                   document) from document start until an app is found / the traps come off / the
 //                   first mutation after load + 10 s (it disconnects itself: no timer), and (c) on
-//                   a canvas's first webgl / webgl2 / experimental-webgl getContext(). The first
-//                   WebGL context also starts the
+//                   a canvas's first webgl / webgl2 / experimental-webgl / webgpu getContext(). On
+//                   WebGPU the context ALWAYS exists before the id read (createGraphicsDevice →
+//                   initWebGpu → getContext('webgpu'), then `new AppBase(canvas)`), so (c) alone
+//                   finds a WebGPU app, script-created canvas or not. The first WebGL context also
+//                   starts the
 //                   globals search: `window.pc.app`, `pc.AppBase.getApplication()`, `window.app`,
 //                   in the next microtask, at DOMContentLoaded / load, then every 500 ms, 40 times
 //                   (once per document). There is NO `window.pc` accessor ('pc' in window stays
-//                   false). A canvas trap is removed once an app is found, on a '2d' context, or
-//                   10 s after load. The core loads only when an app is actually found.
+//                   false). A WebGPU context starts only the timer-free part of that search (the
+//                   microtask, DOMContentLoaded / load looks) and owns no sweep timer: its trap expires
+//                   lazily (§3.3), so a WebGPU page with no engine gets no sentinel timer. A canvas
+//                   trap is removed once an app is found, on a '2d' context, or 10 s after load. The
+//                   core loads only when an app is actually found.
 //     Not seen (PlayCanvas): a canvas created by script with no global AND handed to
 //     `new Application()` in the SAME task that inserted it (or before inserting it) — the
 //     observer's callback is a microtask, so the id is read before the trap exists, and before the
@@ -295,8 +301,9 @@ function dxrSentinel(cfg, cap) {
     scheduleSweep();
   }
 
-  // The globals search, started by the first WebGL context (once per document).
-  let polling = false, polls = 0, pollT = 0, glCanvas = null;
+  // The globals search, started by the first WebGL context (once per document). A WebGPU context
+  // starts only its timer-free looks (timed = false: the microtask, DOMContentLoaded, load).
+  let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
     if (done || pcFound || retired) return;
     let pc = null;
@@ -308,12 +315,16 @@ function dxrSentinel(cfg, cap) {
     }
     try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
   }
-  function startPoll() {
+  function startPoll(timed) {
     if (polling || retired) return;
+    if (!looking) {
+      looking = true;
+      micro(lookGlobals);
+      document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
+      window.addEventListener('load', lookGlobals, { once: true });
+    }
+    if (timed === false) return;
     polling = true; polls = 0;
-    micro(lookGlobals);
-    document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
-    window.addEventListener('load', lookGlobals, { once: true });
     pollT = sTimeout(poll, 500);
   }
   function poll() {
@@ -358,7 +369,7 @@ function dxrSentinel(cfg, cap) {
     settledOn = canvas;
     for (const c of glCanvases) if (c !== canvas) return;
     disarmCanvases(); stopPoll(); unobserve();
-    polling = false; // a WebGL context on another canvas later starts the search again
+    polling = false; looking = false; // a WebGL context on another canvas later starts the search again
   }
   const glCanvases = [];
   const descCanvas = (c) => {
@@ -376,19 +387,21 @@ function dxrSentinel(cfg, cap) {
 
   if (en.playcanvas !== false) {
     const GC = HTMLCanvasElement.prototype.getContext;
-    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1 };
+    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
     const onContext = (c, type) => {
       if (done || pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
-      if (WEBGL[type] !== 1 || seenGL.has(c)) return;
+      const kind = WEBGL[type];
+      if (!kind || seenGL.has(c)) return;
       seenGL.add(c);
-      if (!glCanvas) glCanvas = c;
+      if (kind === 1 && !glCanvas) glCanvas = c;
       if (c !== settledOn) glCanvases.push(c);
-      signal(null); // the first engine / WebGL signal: the page's opt-out
+      signal(null); // the first engine / graphics-context signal: the page's opt-out
       if (done) return;
       arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the trap finds the app; no timer (above)
       scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };

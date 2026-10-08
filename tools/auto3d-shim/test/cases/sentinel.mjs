@@ -163,6 +163,33 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
+      // v0.6.0: a webgpu context is a graphics signal like WebGL (it arms the canvas's id trap and is
+      // when the page's opt-out is read), but on WebGPU the AppBase constructor always reads the id
+      // AFTER the context exists, so the trap alone finds an app: no globals poll, no sweep timer. A
+      // WebGPU page with no engine therefore keeps the §3.3 rule: no core, no sentinel timer.
+      id: 's-webgpu-plain', name: 'a webgpu context with no engine (product): canvas armed, no core, no sentinel timer', webgpu: true,
+      url: P + 'plain-webgpu.html', shim: [PROBE, ...shim],
+      async run(page, h) {
+        await page.waitForFunction(() => !!document.documentElement.dataset.gpuDone, { timeout: 15000, polling: 'raf' }); // raf: the harness's own wait sets no timer
+        await h.sleep(1500);
+        return {
+          X: await page.evaluate(hostRead), pending: await page.evaluate(() => window.__dxrProbe.pending()), made: await page.evaluate(() => window.__dxrProbe.made(0)),
+          done: await page.evaluate(() => document.documentElement.dataset.gpuDone),
+          armed: await page.evaluate(() => !!Object.getOwnPropertyDescriptor(window.__gpuCanvas, 'id')),
+          inDoc: await page.evaluate(() => window.__gpuCanvas.isConnected),
+        };
+      },
+      check(r, t) {
+        const X = r.X, H = X && X.host;
+        t('ran: the page made a webgpu context and drew', r.ok && r.done === '1', r.error || `gpuDone ${r.done}`);
+        t('the canvas (never in the document) is armed by its getContext(\'webgpu\'): own id trap', r.armed === true && r.inDoc === false, `own id accessor ${r.armed}, in document ${r.inDoc}`);
+        t('cap.loadCore() never called, nothing reported', H && H.loadCore === 0 && H.reports.length === 0, `loadCore ${H && H.loadCore}, reports ${rep(H)}`);
+        t('no sentinel timer pending', !r.pending.some(SEARCH), r.pending.filter(SEARCH).join(' | ') || `(none; ${r.pending.length} other)`);
+        t('no sentinel timer ever created', !r.made.some(SEARCH), r.made.filter(SEARCH).join(' | ') || `(none; ${r.made.length} other)`);
+        t('no timer at all (the page itself sets none)', r.pending.length === 0 && r.made.length === 0, [...r.pending, ...r.made].join(' | ') || '(none)');
+      },
+    },
+    {
       id: 's-meta', name: 'meta opt-out, static (<meta name="DisplayXR-Auto3D" content=" OFF ">): core never loaded, report optout, 2D',
       url: P + 'meta-off.html', shim: productShim({ decision: 'allow' }),
       async run(page, h) {

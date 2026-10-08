@@ -199,7 +199,9 @@ async function runCase(browser, base, c) {
   let pixels = null;
   if (c.expect === 'convert' && ok) {
     // Read the canvas between frames (the pages use preserveDrawingBuffer), twice, one frame apart.
-    const grab = () => page.evaluate(() => new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
+    // A WebGPU page reads back EMPTY once its frame is presented: it supplies window.__grabFrame(),
+    // which draws one frame and reads it in its drawing task (pages/pc-webgpu-*.html).
+    const grab = () => page.evaluate(() => window.__grabFrame ? window.__grabFrame() : new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
       const src = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
       const w = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width').get.call(src);
       const h = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height').get.call(src);
@@ -271,7 +273,9 @@ async function runCase(browser, base, c) {
         const oc = window.__outCover, w = 128, h = 72;
         const img = new Image(); img.src = oc.src; await img.decode();
         const px = (src) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(src, 0, 0, w, h); return g.getImageData(0, 0, w, h).data; };
-        const a = px(img), b = px(document.querySelector('canvas:not([data-dxr-auto3d-cover])'));
+        let mono = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
+        if (window.__grabFrame) { const g = await window.__grabFrame(); mono = new Image(); mono.src = g.png; await mono.decode(); } // WebGPU: read in the drawing task
+        const a = px(img), b = px(mono);
         const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
         let e = 0, ef = 0, m = 0, m2 = 0;
         for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -284,7 +288,7 @@ async function runCase(browser, base, c) {
       delete after.outCover.src;
     }
     // A page that renders on demand is asked for one repaint by the restore; read what is on the canvas now.
-    const g = await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
+    const g = await page.evaluate(() => window.__grabFrame ? window.__grabFrame() : new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
       const src = document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
       const x = c2.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0);
       const d = x.getImageData(0, 0, c2.width, c2.height).data; let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
@@ -537,13 +541,31 @@ const browser = await puppeteer.launch({
   args: [`--use-angle=${ANGLE}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1', '--disable-features=OpenXR,WebXR'],
 });
 const results = [];
-let failed = 0;
+let failed = 0, skipped = 0;
+// WebGPU cases (case.webgpu) need an adapter. No extra launch flag: Chrome 154 headless on the
+// Windows box (NVIDIA Ampere) exposes navigator.gpu on a localhost page as is. A box without an
+// adapter SKIPS them, loudly, instead of failing.
+let WEBGPU = { adapter: null, why: '' };
 try {
   const gpu = await (async () => { const p = await browser.newPage(); const g = await p.evaluate(() => { const gl = document.createElement('canvas').getContext('webgl2'); const d = gl && gl.getExtension('WEBGL_debug_renderer_info'); return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : 'n/a'; }); await p.close(); return g; })();
-  console.log(`GPU: ${gpu}\n`);
+  WEBGPU = await (async () => {
+    const p = await browser.newPage();
+    try {
+      await p.goto(base + '/tools/auto3d-shim/test/pages/plain-2000.html', { waitUntil: 'domcontentloaded' }); // any page on the server: a secure context
+      return await p.evaluate(async () => {
+        if (!navigator.gpu) return { adapter: null, why: 'navigator.gpu is undefined' };
+        const a = await navigator.gpu.requestAdapter();
+        if (!a) return { adapter: null, why: 'requestAdapter() returned null' };
+        const i = a.info || {};
+        return { adapter: [i.vendor, i.architecture, i.description, i.isFallbackAdapter ? '(fallback adapter)' : ''].filter(Boolean).join(' ') || 'unnamed', why: '' };
+      });
+    } catch (e) { return { adapter: null, why: String(e.message || e) }; } finally { await p.close(); }
+  })();
+  console.log(`GPU: ${gpu}\nWebGPU adapter: ${WEBGPU.adapter || 'NONE (' + WEBGPU.why + ') - WebGPU cases are SKIPPED'}\n`);
   for (const c of CASES) {
     if (only.length && !only.includes(c.id) && !(c.parityOf && only.includes(c.parityOf))) continue;
-    if (c.skip) { console.log(`— ${c.id} ${c.name}: SKIPPED (${c.skip})\n`); continue; }
+    if (c.skip) { console.log(`— ${c.id} ${c.name}: SKIPPED (${c.skip})\n`); skipped++; continue; }
+    if (c.webgpu && !WEBGPU.adapter) { console.log(`— ${c.id} ${c.name}: SKIPPED (no WebGPU adapter in this Chrome: ${WEBGPU.why})\n`); skipped++; continue; }
     const r = await runCase(browser, base, c);
     results.push(r);
     const A = check(r, results);
@@ -564,5 +586,5 @@ try {
   await browser.close();
   srv.close();
 }
-console.log(failed ? `${failed} assertion(s) FAILED` : 'all assertions passed');
+console.log((failed ? `${failed} assertion(s) FAILED` : 'all assertions passed') + ` (${results.length} case(s) run, ${skipped} skipped)`);
 process.exit(failed ? 1 : 0);
