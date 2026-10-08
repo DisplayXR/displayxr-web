@@ -228,12 +228,19 @@ async function weaveSubmitRects(since) {
   return null;
 }
 
+// The browser writes EVERY console message as `…:INFO:CONSOLE:<line>] "<text>", source: …`,
+// whatever its level, so the level cannot be read from the log: an error is recognised by its
+// text — an uncaught exception, or a message naming an Error type.
+export function isConsoleError(line) {
+  const m = line.match(/:(?:INFO|WARNING|ERROR|VERBOSE\d):CONSOLE[:(]\d+\)?\] "(.*)", source: /);
+  if (!m || /favicon/.test(line)) return false;
+  return /Uncaught|\b[A-Z]\w*Error\b|\bfailed\b/i.test(m[1]) && !/^\[dxr-auto3d\]/.test(m[1]);
+}
+
 function browserLogFindings(file, attachedAt) {
   if (!existsSync(file)) return { errors: ['chrome_debug.log missing'], withheldAfterSettle: 0, binds: 0 };
   const lines = readFileSync(file, 'utf8').split(/\r?\n/);
-  const errors = lines
-    .filter((l) => /:(ERROR|WARNING):CONSOLE\(|INFO:CONSOLE.*(Uncaught|Error:)/.test(l) && !/favicon/.test(l))
-    .map((l) => l.slice(0, 300));
+  const errors = lines.filter(isConsoleError).map((l) => l.slice(0, 300));
   // chrome_debug.log stamps are local MMDD/HHMMSS.mmm
   const stampMs = (l) => {
     const m = l.match(/:\d{4}\/(\d\d)(\d\d)(\d\d)\.(\d{3}):/);
@@ -375,7 +382,7 @@ async function main() {
   process.exitCode = results.every((r) => r.pass) ? 0 : 1;
 }
 
-main().catch((e) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main().catch((e) => {
   console.error(e);
   process.exitCode = 2;
 });
