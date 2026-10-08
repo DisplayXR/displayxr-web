@@ -221,12 +221,24 @@ cover.hidden = true;                  // cut, never fade
 ```
 
 `rewoven()` is `firstWoven` measured from the call, with the same result shape. A change of the
-canvas's CSS size or devicePixelRatio while it is pending restarts the hold (checked every frame,
-for every window kind), so a resize that settles over several frames is covered until the last
-one. A scroll or layout shift that moves the tile without resizing it is deliberately not
-detected. So that a size that never stops animating cannot hold the cover up for good, it settles
-anyway (`reason: 'hold-capped'`) four holds after the call. Before the first join it is `firstWoven` itself. The SDK's player
-(`addPlayer`) does this for its own fullscreen button with `fullscreenCover: true`.
+canvas's CSS size, devicePixelRatio or page position while it is pending restarts the hold
+(checked every frame, for every window kind), so a resize or a move that settles over several
+frames is covered until the last one. Position is measured in page coordinates, so scrolling the
+document is not a move (since 1.38; before, a move without a resize was not detected at all). So
+that a size that never stops animating cannot hold the cover up for good, it settles anyway
+(`reason: 'hold-capped'`) four holds after the call. Before the first join it is `firstWoven`
+itself. The SDK's player (`addPlayer`) does this for its own fullscreen button with
+`fullscreenCover: true`.
+
+**The SDK covers rect changes for you on `./splat` and `./model`** (1.38, `rectCover: 'auto'` by
+default there). After the first join, a move or resize of the canvas raises a cover over it on
+the frame the change is seen: a solid color with the last frame's left eye, cover-fit. The cover
+comes down when `rewoven()` settles. Pass `rectCover: 'off'` if the page runs its own cover. On
+core windows (`addScene` / `addImage` / `addVideo`) the same primitive is opt-in: pass
+`rectCover: 'auto'` (or `{ color, snapshot }`), or keep your own cover and release it on
+`handle.rewoven()`. A move is seen at the next session frame, so a move your page makes after that
+frame's callback can show for one frame. Move the canvas from an event handler or before the frame,
+not from a later animation callback.
 
 **Measured on the Leia panel (26 September, browser test build with patch 0195, blind A/B, one
 observer):** entering and leaving the player's fullscreen showed **no** raw side-by-side pair,

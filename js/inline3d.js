@@ -742,10 +742,45 @@ function chromeTextPlates(root) {
 /** A pending rewoven() settles anyway ('hold-capped') after this many holds from the call. */
 const REWOVEN_MAX_HOLDS = 4;
 
-/** The CSS size + dpr of a window's canvas: what a pending rewoven() restarts on. */
+/**
+ * The CSS size + dpr + PAGE position of a window's canvas: what a pending rewoven() restarts on,
+ * and what a rect cover goes up on.
+ *
+ * Position joined the key in 1.38: a canvas moved to another place on the page, at the same size,
+ * goes through the same identity gap as a resized one (a kiosk demo moving ONE woven canvas between
+ * screens measured 0.4-1.2 s of black at the new rect). It is measured in PAGE coordinates
+ * (viewport rect + document scroll) so that scrolling the document is not a move: a scrolled
+ * canvas keeps its identity (rule 11). Rounded to whole CSS px so sub-pixel layout jitter is not
+ * a move either. A scroll inside a nested scroller still reads as one; that is the price of one
+ * getBoundingClientRect per frame instead of walking the scroll ancestors.
+ */
 function boxKeyOf(canvas) {
   const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-  return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}`;
+  let pos = '';
+  if (typeof canvas.getBoundingClientRect === 'function') {
+    const r = canvas.getBoundingClientRect() || {};
+    const sx = (typeof window !== 'undefined' && window.scrollX) || 0;
+    const sy = (typeof window !== 'undefined' && window.scrollY) || 0;
+    pos = `+${Math.round((r.left ?? r.x ?? 0) + sx)},${Math.round((r.top ?? r.y ?? 0) + sy)}`;
+  }
+  return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}${pos}`;
+}
+
+/**
+ * The `rectCover` option of every add*(): null (off) or `{ color, snapshot }`. Off by default in
+ * the core (frozen defaults); `./splat` and `./model` pass 'auto'. A bad value throws at the call:
+ * a typo here would otherwise silently leave a page without the cover it asked for.
+ */
+function resolveRectCover(v) {
+  if (v === undefined || v === null || v === false || v === 'off') return null;
+  if (v === 'auto' || v === true) return { color: '#000', snapshot: true };
+  if (typeof v === 'object') {
+    if (v.color !== undefined && typeof v.color !== 'string') {
+      throw new TypeError('[inline3d] rectCover.color must be a CSS color string.');
+    }
+    return { color: v.color || '#000', snapshot: v.snapshot !== false };
+  }
+  throw new TypeError(`[inline3d] rectCover: expected 'auto', 'off' or { color?, snapshot? }; got ${JSON.stringify(v)}.`);
 }
 
 class Inline3D {
@@ -995,6 +1030,8 @@ class Inline3D {
    * @param {number} [opts.cornerRadius=0]  round each eye's corners in buffer px (CSS
    *        border-radius can't: it would round the packed SBS square's outer corners and
    *        come out lopsided after the eye-split).
+   * @param {'auto'|'off'|{color?:string, snapshot?:boolean}} [opts.rectCover='off']  (every add*())
+   *        cover the canvas across a later move/resize until rewoven() settles; see _rectCoverCheck.
    * @param {number} [opts.feather=0]  fade each eye's outer edges to transparent over this
    *        many buffer px, so the 3D window dissolves into the page instead of ending at a
    *        hard rectangle. Same reason CSS can't do it: a mask/filter on the canvas applies
@@ -1334,8 +1371,9 @@ class Inline3D {
        * already woven but whose rect is about to change (fullscreen, a layout resize): the
        * browser re-registers the moved rect and the same identity gap as a fresh canvas
        * applies, so cover the canvas across the change and release on this. A change of the
-       * canvas's CSS size or devicePixelRatio while it is pending restarts the hold (checked every
-       * frame, for every window kind; a move without a resize is not detected), and it settles
+       * canvas's CSS size, devicePixelRatio or page position (since 1.38: a moved canvas goes
+       * through the same gap; document scroll is not a move) while it is pending restarts the
+       * hold (checked every frame, for every window kind), and it settles
        * anyway with `reason: 'hold-capped'` four holds after the call, so a size that never stops
        * animating cannot keep a cover up. Calling it again while pending returns the same
        * promise, restarted. Before the first join it IS `firstWoven`; on a window that will not
@@ -2133,7 +2171,16 @@ class Inline3D {
       // Whether the CURRENT layer is on a browser that reports `wovenState` (set per layer in
       // _activate). False keeps firstWoven/rewoven on the hold, exactly as before the report.
       wsLive: false,
+      // The rect cover (opts.rectCover; see _rectCoverCheck), or null when off.
+      rc: null,
     };
+    const rcCfg = resolveRectCover(opts.rectCover);
+    if (rcCfg) {
+      // box: the last key seen (null = not looked yet); el: the cover element, made on first use;
+      // up: showing; snapped/snapWanted: this cycle's one snapshot; waiting: the rewoven promise
+      // that takes it down; w/h: the CSS box at the last look (the snapshot's source aspect).
+      win.rc = { cfg: rcCfg, box: null, el: null, up: false, snapped: false, snapWanted: false, waiting: null, w: 0, h: 0 };
+    }
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
     });
@@ -2153,6 +2200,7 @@ class Inline3D {
     this._deactivate(win);
     this._windows.delete(canvas);
     this._settleFirstWoven(win, false, 'removed');
+    this._dropCover(win);
   }
 
   _onIntersect(entries) {
@@ -2922,6 +2970,8 @@ class Inline3D {
     this._trackBakedStereo(t);
     for (const win of this._windows.values()) {
       if (!win.layer) continue;
+      // Before the draw: a moved/resized canvas is covered before anything else happens to it.
+      if (win.rc) this._rectCoverCheck(win);
       if (win.kind === 'scene') {
         if (views && win.onFrame) {
           // Count the SHORT view lists and hand them over unchanged. Under GPU load the session
@@ -2985,6 +3035,10 @@ class Inline3D {
           if (win.rw) win.rw.stereo = true;
         }
       }
+      // After the draw: the one snapshot of this cover cycle reads the frame just committed to
+      // the backing store, in the same task, which is the one moment a WebGL drawing buffer is
+      // guaranteed readable without preserveDrawingBuffer.
+      if (win.rc && win.rc.snapWanted) this._rectCoverSnap(win);
       this._tickFirstWoven(win);
     }
   }
@@ -3139,6 +3193,182 @@ class Inline3D {
     rw.resolve(Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - rw.calledAt) }));
   }
 
+  // ── rect cover (opts.rectCover) ──────────────────────────────────────────────────────
+  //
+  // A canvas that is already woven and then moves or resizes goes back through the identity gap
+  // (rule 11): until the browser rejoins it at the new rect, the screen shows the page's own
+  // raster of it — black, or the squeezed pair. A kiosk demo that moves ONE woven canvas between
+  // screens measured 0.4-1.2 s of that, and every page that hit it hand-rolled the same cover.
+  // This is that cover, owned by the SDK: a sibling element over the canvas (never a second woven
+  // canvas: two 2:1 candidates in one region are refused as ambiguous, rule 6), raised on the
+  // frame the change is seen and cut when rewoven() settles.
+
+  /** Per frame, before the draw: has the box (size, dpr, page position) changed since the last look? */
+  _rectCoverCheck(win) {
+    const rc = win.rc;
+    const key = boxKeyOf(win.canvas);
+    if (key === rc.box) return;
+    const first = rc.box === null;
+    const prevW = rc.w;
+    const prevH = rc.h;
+    rc.box = key;
+    rc.w = win.canvas.clientWidth || 0;
+    rc.h = win.canvas.clientHeight || 0;
+    if (first) return; // the first look is the baseline, not a change
+    if (rc.up) this._placeCover(win); // already up: follow the canvas
+    // Before the first join the page's own poster covers the canvas (rule 5), and a window that
+    // will not weave has nothing to wait for. A confirmed withheld first result still covers.
+    const fw = win.fwResult;
+    if (!fw || win.rwGone || !(fw.woven || fw.confirmed)) return;
+    if (!rc.up) {
+      if (!rc.snapped) rc.aspect = prevH > 0 ? prevW / prevH : 0; // what the eye looked like on screen
+      this._raiseCover(win);
+    }
+    if (rc.cfg.snapshot && !rc.snapped && rc.w > 0 && rc.h > 0) rc.snapWanted = true;
+    let p;
+    if (win.rw) {
+      this._noteRewovenBox(win); // a second change while pending restarts it
+      p = win.rw.promise;
+    } else {
+      p = this._rewoven(win);
+      if (win.rw) win.rw.boxFrame = this._frameCount; // the change was seen THIS frame
+    }
+    if (rc.waiting !== p) {
+      rc.waiting = p;
+      p.then(() => {
+        if (rc.waiting !== p) return;
+        rc.waiting = null;
+        this._lowerCover(win);
+      });
+    }
+  }
+
+  _raiseCover(win) {
+    const rc = win.rc;
+    if (!rc.el) {
+      if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function') return;
+      if (!win.canvas.parentElement) return;
+      const el = document.createElement('canvas');
+      el.setAttribute?.('aria-hidden', 'true');
+      if (el.dataset) el.dataset.inline3dCover = '';
+      const st = el.style;
+      st.position = 'absolute';
+      st.pointerEvents = 'none'; // the canvas under it keeps its input (orbit, clicks)
+      st.margin = '0';
+      st.border = '0';
+      st.padding = '0';
+      st.background = rc.cfg.color;
+      st.display = 'none';
+      // Stack with the canvas, not under it: a canvas the page raised gets the same z-index.
+      try {
+        const z = typeof getComputedStyle === 'function' ? getComputedStyle(win.canvas).zIndex : 'auto';
+        if (z && z !== 'auto') st.zIndex = z;
+      } catch {
+        /* no computed style: DOM order alone puts it on top */
+      }
+      rc.el = el;
+    }
+    this._placeCover(win);
+    rc.el.style.display = 'block';
+    rc.up = true;
+    // Declared through the existing exclusion path. On a draw-order browser that is a no-op and
+    // the cover is crisp 2D anyway (it sits over the tile in draw order). On an older one the
+    // full-tile guard refuses it, on purpose: a congruent plate would stage the CANVAS as the
+    // overlay. Pre-marked as warned so the SDK's own cover does not trip the page-facing warning.
+    this._fullTileWarned.add(rc.el);
+    this._applyExclusion(win, rc.el);
+  }
+
+  /** Put the cover exactly over the canvas, as its next sibling (the canvas may have been re-parented). */
+  _placeCover(win) {
+    const rc = win.rc;
+    const el = rc.el;
+    const c = win.canvas;
+    if (!el) return;
+    const parent = c.parentElement;
+    if (parent && (el.parentElement !== parent || el.previousSibling !== c)) {
+      parent.insertBefore(el, c.nextSibling);
+    }
+    const st = el.style;
+    if (c.offsetParent) {
+      // Same containing block as the canvas (its offsetParent), so offsets are directly usable.
+      st.position = 'absolute';
+      st.left = `${c.offsetLeft}px`;
+      st.top = `${c.offsetTop}px`;
+      st.width = `${c.offsetWidth}px`;
+      st.height = `${c.offsetHeight}px`;
+    } else {
+      // A fixed canvas (no offsetParent): cover its viewport rect.
+      const r = c.getBoundingClientRect();
+      st.position = 'fixed';
+      st.left = `${r.left ?? r.x ?? 0}px`;
+      st.top = `${r.top ?? r.y ?? 0}px`;
+      st.width = `${r.width}px`;
+      st.height = `${r.height}px`;
+    }
+  }
+
+  /**
+   * The last frame, once per cover cycle: the LEFT eye of the side-by-side buffer, cover-fit into a
+   * 2D canvas the size of the new CSS box (CSS px, not device px: it is on screen for about a second
+   * and must not cost a full-resolution copy). The eye's on-screen aspect was the OLD box's (each
+   * eye is stretched to the box by the weave), so the crop is computed from that aspect, not from
+   * the buffer's. Never toDataURL: one drawImage, at this moment only. Any failure (a lost
+   * context, a tainted source) leaves the solid color.
+   */
+  _rectCoverSnap(win) {
+    const rc = win.rc;
+    rc.snapWanted = false;
+    const el = rc.el;
+    const src = win.canvas;
+    if (!el || !rc.up || !(src.width > 1) || !(src.height > 0)) return;
+    const bw = Math.max(1, Math.round(rc.w));
+    const bh = Math.max(1, Math.round(rc.h));
+    const target = bw / bh;
+    // A canvas that was hidden (0x0) before the change has no old box to read: the eye half of the
+    // buffer, still at its old size at this point, has the same aspect.
+    const aspect = rc.aspect > 0 ? rc.aspect : src.width / 2 / src.height;
+    let fw = 1;
+    let fh = 1;
+    if (target > aspect) fh = aspect / target; // wider box: keep the width, crop height
+    else fw = target / aspect; // taller box: keep the height, crop width
+    const sw = (src.width / 2) * fw;
+    const sh = src.height * fh;
+    const sx = (src.width / 2 - sw) / 2;
+    const sy = (src.height - sh) / 2;
+    try {
+      el.width = bw;
+      el.height = bh;
+      const ctx = el.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(src, sx, sy, sw, sh, 0, 0, bw, bh);
+      rc.snapped = true;
+    } catch {
+      /* the solid color stays */
+    }
+  }
+
+  _lowerCover(win) {
+    const rc = win.rc;
+    if (!rc) return;
+    rc.up = false;
+    rc.snapped = false; // the next cycle takes its own snapshot
+    rc.snapWanted = false;
+    if (!rc.el) return;
+    rc.el.style.display = 'none';
+    this._dropExclusion(win, rc.el);
+  }
+
+  /** remove() / session end: the cover leaves the DOM with its window. */
+  _dropCover(win) {
+    const rc = win.rc;
+    if (!rc) return;
+    rc.waiting = null;
+    this._lowerCover(win);
+    if (rc.el && rc.el.parentElement) rc.el.parentElement.removeChild(rc.el);
+    rc.el = null;
+  }
+
   // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────
   //
   // A weaved window's rect reaches the compositor from the session's own rAF: every frame the
@@ -3271,6 +3501,7 @@ class Inline3D {
       this._paintMono(win);
       this._notifyLayerLost(win);
       this._settleFirstWoven(win, false, 'session-ended');
+      this._dropCover(win);
     }
     this._windows.clear();
     // Nobody is tracked through a session that has ended: say so ONCE, before the listeners are

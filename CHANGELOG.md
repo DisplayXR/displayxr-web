@@ -56,6 +56,29 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
   the withheld tokens.
 - "Woven" means submitted to the weave. A GPU-stage failure after submit is not reflected.
 
+### Cover across a rect change, owned by the SDK (`rectCover`; core primitive, subpath default)
+
+- **New `rectCover` option on every `add*()`**: `'auto' | 'off' | { color?, snapshot? }`. Once a
+  window has woven, a change of its canvas's CSS size, dpr or page position raises a cover on the
+  frame the change is seen, and cuts it when `rewoven()` settles. A further change while it is up
+  restarts the wait. `remove()` and session end take it out of the DOM.
+  - **What the cover is:** a 2D canvas placed as the canvas's next sibling, never a second woven
+    canvas. It has `pointer-events: none` and `data-inline3d-cover`, and it is filled with `color`
+    (default `#000`).
+  - **The snapshot:** with `snapshot` (the default), the cover also shows the last frame: the left
+    eye, cover-fit to the new box. It is taken once per change, with one `drawImage` into a canvas
+    the size of the CSS box. Never `toDataURL`, never per frame.
+  - **Not before the first join:** cover a fresh canvas yourself until `firstWoven` (rule 5).
+- **Defaults.** `'off'` on the core `addScene` / `addImage` / `addVideo` (frozen tier, unchanged).
+  **`'auto'` on `./splat` and `./model`, all engines.** That is a default change in the preview
+  tier: a page that already runs its own cover passes `rectCover: 'off'`.
+- **`rewoven()` now also restarts on a pure move** (core, timing only). The box it watches gained
+  the canvas's page position (viewport rect plus document scroll, whole CSS px). A canvas moved
+  to another place at the same size goes through the same identity gap. Scrolling the document is
+  not a move. A scroll inside a nested scroller does read as one.
+- From a kiosk demo that keeps one woven canvas and moves it between screens: a black box at the
+  new rect for 0.4–1.2 s, covered by hand on timers until now.
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

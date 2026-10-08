@@ -24,7 +24,31 @@ export interface TileOptions {
    * you know is not fresh; 0 means "the first stereo frame".
    */
   firstWovenHoldMs?: number;
+  /**
+   * Cover this canvas across a rect change, owned by the SDK. Default `'off'` on `addImage` /
+   * `addVideo` / `addScene` (frozen defaults); `'auto'` on `./splat` and `./model`.
+   *
+   * Once the window has woven, a change of the canvas's CSS size, devicePixelRatio or PAGE position
+   * (scrolling the document is not a move) raises a sibling element over the canvas on the frame
+   * the change is seen, and cuts it when {@link TileHandle.rewoven} settles; a further change
+   * while it is up restarts the wait. The cover is a 2D canvas, never a second woven canvas,
+   * placed as the canvas's next sibling (`pointer-events: none`, `data-inline3d-cover`). It is
+   * filled with `color` and, with `snapshot`, the last frame: the left eye, cover-fit to the new
+   * box, captured once at the change with one `drawImage` (never `toDataURL`).
+   *
+   * - `'auto'` — `{ color: '#000', snapshot: true }`.
+   * - `'off'` — nothing; a page that runs its own cover passes this.
+   * - `{ color?, snapshot? }` — `color` any CSS color (default `'#000'`); `snapshot` default true.
+   *
+   * Before the first join nothing is raised: cover a fresh canvas yourself until `firstWoven`
+   * (rule 5). A pure move is seen at the next session frame, so a move made after that frame's
+   * callback can show for one frame.
+   */
+  rectCover?: RectCoverOption;
 }
+
+/** See {@link TileOptions.rectCover}. */
+export type RectCoverOption = 'auto' | 'off' | { color?: string; snapshot?: boolean };
 
 /**
  * The browser's per-frame report for one layer (`XRDisplayLayer.wovenState`, DisplayXR Browser
@@ -484,9 +508,10 @@ export interface TileHandle {
   onFirstWoven(cb: (result: FirstWovenResult) => void): () => void;
   /**
    * {@link TileHandle.firstWoven}, measured from NOW. Cover an already-woven canvas across a rect
-   * change (fullscreen, a layout resize), then release on this. A change of the canvas's CSS size
-   * or devicePixelRatio while pending restarts the hold (checked every frame, any window kind; a
-   * move without a resize is not detected). It settles anyway, `woven: true, reason:
+   * change (fullscreen, a layout resize, a move), then release on this ({@link TileOptions.rectCover}
+   * does both for you). A change of the canvas's CSS size, devicePixelRatio or page position (since
+   * 1.38; document scroll excluded) while pending restarts the hold (checked every frame, any
+   * window kind). It settles anyway, `woven: true, reason:
    * 'hold-capped'`, four holds after the call, so a size that never stops animating cannot hold a
    * cover up for good. A second call while pending returns the same promise, restarted. Before the
    * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
