@@ -5,6 +5,23 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.38.0 — 2026-10-08
+
+### Splat handle: `finishSwap()` and `rewoven()` (scene subpath `./splat`, additive)
+
+- **`handle.finishSwap()`** ends a running `setSource` transition now: the incoming asset at its
+  end state, the outgoing one gone, in this task. A no-op when none runs. The sequencer already
+  did this internally when a newer swap landed; it is now a page call. Needed by a page that keeps
+  ONE woven canvas across screens and leaves a photo screen mid-crossfade: without it the next
+  screen waited a transition out (about 1 s measured) before it could draw, and the canvas showed
+  nothing meanwhile.
+- **`handle.rewoven()`** forwards the core window's `TileHandle.rewoven()` (1.1x), which the splat
+  handle had left out while forwarding `firstWoven`. Cover the canvas across a rect change (moved
+  into a box, fullscreen, a layout resize) and release on it; `{ woven: false, reason:
+  'unsupported' }` at once without a session.
+- Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
+  stage queue), vendored there as a local patch first.
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

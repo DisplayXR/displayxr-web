@@ -3640,11 +3640,13 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // Settle the stub's `firstWoven` (addSplatDeferred) with the core handle's own.
   if (typeof out._resolveFirstWoven === 'function') {
     out._resolveFirstWoven(handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
-    // The core tile's rewoven(): cover a canvas across a rect move until it is woven again
-    // (firstWoven was forwarded, rewoven was not).
-    if (!out.rewoven) out.rewoven = () => (handle && typeof handle.rewoven === 'function' ? handle.rewoven() : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
     delete out._resolveFirstWoven;
   }
+  // The core window's `rewoven()`, forwarded like `firstWoven`: a page covers the canvas across a
+  // rect change (a shared canvas moved into a box, fullscreen) and releases on this. Without a
+  // session it settles `woven: false, reason: 'unsupported'` at once, the same shape. Replaces the
+  // deferred stub's forwarder, as `setSource` does.
+  out.rewoven = () => (handle && typeof handle.rewoven === 'function' ? handle.rewoven() : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
 
   // addSplat's `displayRigLayers` sugar: [layer, …] or { layers: [...], viewerDistance, gain }.
   if (opts.displayRigLayers !== undefined) {

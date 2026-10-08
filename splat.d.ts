@@ -1235,6 +1235,17 @@ export interface SplatHandle {
    * `{ woven: false, reason: 'unsupported' }` at once where there is no inline-3D session.
    */
   readonly firstWoven: Promise<FirstWovenResult>;
+  /**
+   * The core window's `TileHandle.rewoven()`: `firstWoven` measured from now. Cover the canvas
+   * across a rect change (moved into a box, fullscreen, a layout resize) and release when this
+   * settles. Same result shape; `{ woven: false, reason: 'unsupported' }` without a session.
+   */
+  rewoven(): Promise<FirstWovenResult>;
+  /**
+   * End a running `setSource` transition now (the new asset at its end state, in this task).
+   * No-op when none runs. For a page that leaves a scene mid-crossfade on a shared canvas.
+   */
+  finishSwap(): SplatHandle;
 }
 
 /**
