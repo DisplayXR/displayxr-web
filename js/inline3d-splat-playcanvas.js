@@ -3370,6 +3370,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return pickModel(clientX, clientY);
     },
     setSource,
+    /**
+     * End a running setSource transition now (its end state at once); a no-op when none runs.
+     * The same thing a newer setSource does to an older one in flight (`pendingSwap.finish()`),
+     * exposed for a page that leaves the photo mid-crossfade and must not wait for it.
+     */
+    finishSwap() {
+      pendingSwap?.finish();
+      return out;
+    },
     prepareSource,
     setRig,
     setStereo,
@@ -3631,6 +3640,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // Settle the stub's `firstWoven` (addSplatDeferred) with the core handle's own.
   if (typeof out._resolveFirstWoven === 'function') {
     out._resolveFirstWoven(handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
+    // The core tile's rewoven(): cover a canvas across a rect move until it is woven again
+    // (firstWoven was forwarded, rewoven was not).
+    if (!out.rewoven) out.rewoven = () => (handle && typeof handle.rewoven === 'function' ? handle.rewoven() : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
     delete out._resolveFirstWoven;
   }
 

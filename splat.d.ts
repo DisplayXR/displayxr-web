@@ -1045,6 +1045,10 @@ export interface SplatHandle {
    * finished; rejects if the new asset cannot be loaded (the current one stays on screen).
    */
   setSource(src: string | Blob | ArrayBuffer | Uint8Array | SplatPreparedSource, opts?: SplatSourceOptions): Promise<SplatHandle>;
+  /** End a running setSource transition now (its end state at once); no-op when none runs. PlayCanvas backend. */
+  finishSwap?(): SplatHandle;
+  /** The core tile's rewoven(): resolves once the canvas is woven again after a rect move. */
+  rewoven?(): Promise<{ woven: boolean; reason?: string }>;
   /**
    * PlayCanvas backend only — throws on Spark. Fetch, decode and upload `src` now, in the
    * background (the SDK's own passes in idle periods; the engine's end-of-load unpack runs when
