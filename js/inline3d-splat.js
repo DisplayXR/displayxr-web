@@ -163,8 +163,8 @@ function sniffFileType(bytes) {
  * good enough for a clean, isolated capture, weaker on a scene with a background wall.
  */
 export function addSplat(wall, canvas, src, opts = {}) {
-  // One registration per canvas per wall: a second call on a live canvas warns once and returns
-  // the first handle (see guardedAttach).
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
   return guardedAttach(wall, canvas, 'addSplat', opts, (o) => addSplatUnguarded(wall, canvas, src, o));
 }
 

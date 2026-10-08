@@ -13,18 +13,17 @@
 // test/splat-playcanvas.test.mjs (values, and a behavioural trace of both viewers side by side).
 
 /**
- * The double-attach guard around a scene subpath's public entry (`addSplat`, `addModel`).
+ * Double-attach detection around a scene subpath's public entry (`addSplat`, `addModel`).
  *
  * The check has to run HERE, at the entry, and not only in the core's addScene: the subpaths build
  * a renderer on the canvas BEFORE the core window exists (asynchronously, once the engine module
- * has loaded), so a second `addSplat` on a live canvas would already have put a second engine on
- * its context by the time addScene could refuse it. `wall._attachGuard` (the core manager) does
- * the bookkeeping; a wall without it (no session, or an older core) attaches unguarded.
+ * has loaded), so a second `addSplat` during the first one's load would never reach the core's
+ * check in time. `wall._attachGuard` (the core manager) warns once per canvas and claims it; the
+ * call then proceeds exactly as before. A wall without it (no session, an older core) attaches as is.
  */
 export function guardedAttach(wall, canvas, method, opts, attach) {
   const g = wall && typeof wall._attachGuard === 'function' ? wall._attachGuard(canvas, method, opts) : null;
   if (!g) return attach(opts);
-  if (g.existing) return g.existing;
   const out = attach(g.opts);
   g.own(out);
   return out;

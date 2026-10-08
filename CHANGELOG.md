@@ -96,23 +96,19 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
   paint too. It runs only on a real change, and a throw is caught. Without it, nothing changes:
   no observer is attached to a scene canvas.
 
-### Double-attach guard (core, and the `./splat` / `./model` entries)
+### Double-attach warning (core, and the `./splat` / `./model` entries)
 
-- **One registration per canvas per manager.** `addScene` / `addImage` / `addVideo` /
-  `addSplat` / `addModel` on a canvas that is still registered on the same wall (not yet
-  `remove()`d) now:
-  - warns once per canvas, naming the method and the first registration that is still live;
-  - returns the **existing** handle, and creates no second layer or renderer.
-- **Behavior change in the core.** Before, a second call closed the window's layer and built a
-  new one. That started a fresh 0.4–1.2 s identity gap every time, and on `./splat` / `./model` it
-  put a second renderer on the same context.
-  - A page that re-called `addImage(canvas, newSource)` to swap pictures now keeps the first
-    picture, with the warning saying why.
-  - To swap content, redraw a source canvas or use `setSource`. To re-register on purpose,
-    `remove()` first.
+- `addScene` / `addImage` / `addVideo` / `addSplat` / `addModel` on a canvas that is still
+  registered on the same wall (not yet `remove()`d) now **warns**, once per canvas. The warning
+  names the method and the live registration, and says the call is rebuilding the layer (a fresh
+  0.4–1.2 s identity gap) or putting a second renderer on the context.
+- **It is a warning only, so no page changes behavior.** The call proceeds exactly as before: the
+  core closes and rebuilds the layer, the subpaths attach a new renderer, and the call returns its
+  own new handle. A page that re-adds to swap pictures keeps working.
+- To swap content, redraw a source canvas or use `setSource`. To re-register on purpose,
+  `remove()` first.
 - `./splat` and `./model` check at their entry, not only in `addScene`: their renderer exists
-  before their core window. A core `add*()` on a canvas that `addSplat` / `addModel` holds returns
-  that subpath handle. A subpath handle whose load failed keeps the canvas until its `remove()`.
+  before their core window, so a second call during the first one's load is caught too.
 - From a kiosk demo that attached its stage twice per screen visit.
 
 ### Every session frame presents (`./splat`, `./model`, `./viewer`)

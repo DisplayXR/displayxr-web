@@ -25,8 +25,8 @@ export { resolveRig } from './inline3d-splat-rig.js';
 
 /** addSplat with `engine: 'playcanvas'`; the same validation, at the call, as ./splat's. */
 export function addSplat(wall, canvas, src, opts = {}) {
-  // One registration per canvas per wall: a second call on a live canvas warns once and returns
-  // the first handle (see guardedAttach).
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
   return guardedAttach(wall, canvas, 'addSplat', opts, (o) => addSplatUnguarded(wall, canvas, src, o));
 }
 

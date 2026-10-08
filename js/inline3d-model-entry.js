@@ -99,8 +99,8 @@ export function validateModelCall(canvas, src, opts, route) {
  *          fill in as the backend loads.
  */
 export function addModel(wall, canvas, src, opts = {}) {
-  // One registration per canvas per wall: a second call on a live canvas warns once and returns
-  // the first handle (see guardedAttach).
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
   return guardedAttach(wall, canvas, 'addModel', opts, (o) => addModelUnguarded(wall, canvas, src, o));
 }
 
