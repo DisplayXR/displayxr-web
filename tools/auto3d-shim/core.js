@@ -84,6 +84,7 @@ function dxrCore(cfg, cap, S) {
     guardRetryMaxMs: 30000, // ... or after this long at the latest
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
+    gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
@@ -254,7 +255,7 @@ function dxrCore(cfg, cap, S) {
     tracked.push(new WeakRef(st));
     return st;
   }
-  // A canvas an adapter can see but will never drive (three.js WebGPURenderer): a state that only
+  // A canvas an adapter can see but will never drive (a three.js WebGPURenderer of an unverified revision): a state that only
   // carries its flat reason, for statusOf() (the host's 'flat' report), the chip and the HUD. Nothing
   // on the page is wrapped, and nothing ever calls considerActivation on it. Its `ad` is a stub, so
   // the loops over `tracked` (setEnabled's wake, the dev state()) find nothing to draw or describe.

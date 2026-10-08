@@ -1,0 +1,103 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary three.js page rendered with WebGPURenderer (three@0.180.0's
+     build/three.webgpu.js, the real renderer, which announces itself on __THREE_DEVTOOLS__ from its
+     constructor), the WebGPU twin of three-orbit.html: the same scene (every mesh symmetric about
+     (0, 1, 0)) on a floor, OrbitControls aimed at (0, 1, 3), 5 units in front of the camera: expected convergence
+     5, source 'target'. The loop is three's own renderer.setAnimationLoop (which awaits init()), stopped
+     after 60 frames; then render-on-demand on the controls' 'change'. One render() is issued right after
+     construction, BEFORE init has resolved (three warns and forwards it to renderAsync): the adapter must
+     not count or convert on it. It knows nothing about DisplayXR.
+       (default)  ACESFilmic tone mapping, sRGB output: three draws through its frame-buffer target +
+                  output pass (the 'fb' clear path).
+       ?raw=1     NoToneMapping and output = the working colour space (LinearSRGB): the scene draws
+                  straight to the canvas (the 'direct' clear path, where eye 1's clear would wipe eye 0).
+       ?webgl=1   forceWebGL: the WebGL2 fallback backend (a WebGL surface, GL clip space).
+       ?near=1    no tone mapping (the colour stays pure), camera near 0.2, and a magenta box 0.3 in front
+                  of the camera (1.5 x near): visible in both eyes only when the eye projection is in
+                  WebGPU's clip z 0..1 (in GL clip z it is at -0.33). window.__nearBox = true.
+       ?postfx=1  three's PostProcessing (TSL pass(scene, camera) as the output node): a full-screen quad
+                  with an orthographic camera on screen, the scene drawn into a target inside it.
+       ?pr=N      setPixelRatio(N) instead of devicePixelRatio: the page's mono store (N x the CSS size)
+                  differs from the side-by-side store, so three's own size reads must see the real one.
+       ?live=1    never stops the loop.
+     Test hooks: window.__grabFrame() renders one frame NOW and reads the canvas back in that task (a
+     WebGPU canvas reads back empty once presented). window.__backend: the backend after init. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three WebGPURenderer orbit (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.webgpu.js" } }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from '/deps/three/OrbitControls.js';
+const q = new URLSearchParams(location.search);
+const raw = q.has('raw'), webgl = q.has('webgl'), near = q.has('near'), postfx = q.has('postfx'), live = q.has('live');
+window.__expectedConvergence = 5;
+window.__expectedConvergenceSource = 'target';
+const renderer = new THREE.WebGPURenderer({ antialias: false, forceWebGL: webgl });
+renderer.setPixelRatio(q.has('pr') ? +q.get('pr') : window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+if (raw) { renderer.toneMapping = THREE.NoToneMapping; renderer.outputColorSpace = THREE.LinearSRGBColorSpace; }
+else if (!near) renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, near ? 0.2 : 0.1, 100);
+camera.position.set(0, 1, 8);
+scene.add(camera);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(3, 6, 4);
+scene.add(sun);
+const mk = (geo, color, x, y, z) => { const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.4 })); m.position.set(x, y, z); scene.add(m); return m; };
+mk(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), 0xff7a2f, 0, 1, 0);
+const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+mk(box, 0x2fb4ff, 1.8, 1, 0); mk(box, 0x2fb4ff, -1.8, 1, 0);
+const ball = new THREE.SphereGeometry(0.35, 32, 16);
+mk(ball, 0x9dff4a, 0, 1, 1.8); mk(ball, 0x9dff4a, 0, 1, -1.8);
+// A floor (not in three-orbit.html): the picture is not symmetric top-to-bottom, so the kill case's
+// out-cover check can tell a right-way-up cover from a flipped one.
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x55616f, roughness: 0.9 }));
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+if (near) {
+  // Unlit magenta, a child of the camera, a little below the axis (front face at 0.28 > near 0.2).
+  const b = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.04), new THREE.MeshBasicMaterial({ color: 0xff00ff }));
+  b.position.set(0, -0.03, -0.3);
+  camera.add(b);
+  window.__nearBox = true;
+}
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 3);
+controls.update(); // camera.lookAt(target): the camera now looks at (0, 1, 3)
+let post = null;
+if (postfx) {
+  post = new THREE.PostProcessing(renderer);
+  post.outputNode = THREE.TSL.pass(scene, camera);
+}
+const render = () => (post ? post.render() : renderer.render(scene, camera));
+try { renderer.render(scene, camera); } catch (e) { /* r182+: throws before init */ } // before init(): three forwards it to renderAsync
+window.__camWorld = () => { camera.updateMatrixWorld(); return Array.from(camera.matrixWorld.elements); };
+window.__target = () => [controls.target.x, controls.target.y, controls.target.z];
+controls.addEventListener('change', render);
+
+const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
+const CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+const canvas = renderer.domElement;
+window.__grabFrame = () => new Promise((res) => requestAnimationFrame(() => {
+  render(); // submitted by three before it returns; read in this task, before the canvas presents
+  const w = CW.get.call(canvas), h = CH.get.call(canvas);
+  const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+  const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+  const d = g.getImageData(0, 0, w, h).data;
+  let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
+  res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+}));
+
+let n = 0;
+renderer.setAnimationLoop(() => {
+  window.__backend = renderer.backend.isWebGPUBackend ? 'webgpu' : renderer.backend.isWebGLBackend ? 'webgl2' : '?';
+  if (!live && n >= 60) { renderer.setAnimationLoop(null); window.__frozen = true; return; }
+  n++; window.__pageFrames = n; render();
+});
+</script>
+</body></html>

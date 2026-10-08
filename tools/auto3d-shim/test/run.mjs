@@ -522,7 +522,7 @@ const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae
 const only = process.argv.slice(2);
 // Preflight: every engine file the pages import, and the browser. Missing ones fail HERE, loudly,
 // instead of as pages that never convert (a 60 s timeout per case).
-const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js'];
+const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js'];
 const missingDeps = DEP_FILES.filter((f) => !existsSync(join(here, '.deps', f)));
 if (missingDeps.length) {
   console.error(`FAILED: engine files missing from ${join(here, '.deps')}: ${missingDeps.join(', ')}\n` +

@@ -1,19 +1,20 @@
 // WebGPU. Two parts:
-//  - three.js WebGPURenderer (corpus 2026-10-03, G1: threejs-journey / bruno-simon reported a bare
-//    'idle'): product mode, the stub page announces three r185 and a WebGPURenderer on
+//  - three.js WebGPURenderer stubs (corpus 2026-10-03, G1: threejs-journey / bruno-simon reported a bare
+//    'idle'): product mode, the stub page announces a three revision and a WebGPURenderer on
 //    __THREE_DEVTOOLS__; the core must load, report a terminal 'flat' WITH a reason, and convert
-//    nothing. (The three.js WebGPURenderer driver is the next step; this case flips to 'live' then.)
+//    nothing — for a revision outside the driver's verified range, and for an object without the
+//    common Renderer API. The real WebGPURenderer driver (v0.6.1, P-W1b) is cases/webgpu-three.mjs.
 //  - PlayCanvas on a WebGPU device (v0.6.0, P-W1a): the surface seam (surface.js) and the adapter on
 //    WebGPU. Every case here carries `webgpu: true`: run.mjs SKIPS it (loudly) when the browser has
 //    no WebGPU adapter. The pages read their canvas back in the drawing task (window.__grabFrame): a
 //    WebGPU canvas reads back empty once presented.
 
 // Column-major GL clip -> WebGPU clip z (surface.toClip): z row := (z row + w row) / 2.
-const toClip = (m) => m.map((v, i) => (i % 4 === 2 ? 0.5 * (m[i] + m[i + 1]) : v));
-const near = (a, b, e = 1e-5) => Math.abs(a - b) <= e * Math.max(1, Math.abs(b));
+export const toClip = (m) => m.map((v, i) => (i % 4 === 2 ? 0.5 * (m[i] + m[i + 1]) : v));
+export const near = (a, b, e = 1e-5) => Math.abs(a - b) <= e * Math.max(1, Math.abs(b));
 
 // Magenta pixels (the near-plane box) in each half of an SBS frame, and in a mono frame.
-function magenta(px, w, h) {
+export function magenta(px, w, h) {
   const n = [0, 0];
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = (y * w + x) * 4;
@@ -40,7 +41,7 @@ function splatAspect(px, w, h, e) {
 
 // Injected before the shim: records the first go-live cover <img>; __inCoverStats() decodes and
 // measures it (a blank cover would be its CSS background only).
-const RECORD_IN_COVER = `(() => {
+export const RECORD_IN_COVER = `(() => {
   let src = null;
   new MutationObserver((recs) => { for (const r of recs) for (const x of r.addedNodes) if (!src && x.nodeType === 1 && x.matches && x.matches('img[data-dxr-auto3d-cover]')) src = x.src; })
     .observe(document, { childList: true, subtree: true });
@@ -78,10 +79,12 @@ export default function cases({ P, NEW, productShim }) {
     const f = L._frame(); const v = f.getViewerPose().views[0];
     return { glProj0: Array.from(v.projectionMatrix), deviceType: window.__deviceType, W, H };
   })()`;
-  return [
-    {
-      id: 'p-webgpu', name: 'product mode: a three.js WebGPURenderer page reports flat (WebGPU reason), converts nothing',
-      url: P + 'three-webgpu.html', shim: productShim({ decision: 'allow' }),
+  return [...[
+    ['p-webgpu', '?rev=190', 'a three.js WebGPURenderer of an unverified revision (r190)', /WebGPURenderer r190 .*verified on r178/],
+    ['p-webgpu-api', '?rev=185', 'an object announced as a WebGPURenderer (r185) without the common Renderer API', /WebGPURenderer without the common Renderer API/],
+  ].map(([id, qs, what, want]) => ({
+      id, name: `product mode: ${what} reports flat (WebGPU reason), converts nothing`,
+      url: P + 'three-webgpu.html' + qs, shim: productShim({ decision: 'allow' }),
       async run(page, h) {
         await page.waitForFunction("document.documentElement.dataset.done === '1'", { timeout: 30000, polling: 100 });
         await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((r) => r.status === 'flat')); })()", { timeout: 10000, polling: 100 }).catch(() => {});
@@ -101,12 +104,12 @@ export default function cases({ P, NEW, productShim }) {
         const X = r.P, H = X && X.host, R = (H && H.reports) || [];
         const last = R[R.length - 1];
         t('core loaded once (three announced itself)', r.ok && H && H.loadCore === 1, r.error || `loadCore ${H && H.loadCore}`);
-        t('last report is flat, engine three.js, with a WebGPU reason', !!last && last.status === 'flat' && last.engine === 'three.js' && /webgpu/i.test(last.reason || ''), JSON.stringify(R));
+        t('last report is flat, engine three.js, with the WebGPU reason', !!last && last.status === 'flat' && last.engine === 'three.js' && want.test(last.reason || ''), JSON.stringify(R));
         t('never converting / live', !R.some((x) => x.status === 'converting' || x.status === 'live'), JSON.stringify(R));
         t('no session, no layer', X && X.fake.sessions === 0 && X.fake.layers === 0, JSON.stringify(X && X.fake));
         t('the canvas is untouched (640x360, no inline style)', X && X.canvas && X.canvas.w === 640 && X.canvas.h === 360 && !X.canvas.style, JSON.stringify(X && X.canvas));
       },
-    },
+    })),
     {
       id: 'pc-webgpu-mesh', name: 'PlayCanvas on a WebGPU device (createGraphicsDevice + AppBase, no globals): converts like b; go-live cover read back', webgpu: true,
       url: P + 'pc-webgpu-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
