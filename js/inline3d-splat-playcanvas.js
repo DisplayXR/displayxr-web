@@ -1235,7 +1235,7 @@ export class PlayCanvasSplatViewer {
     this._beforeFrame?.(views || null);
     this._tick();
     if (!views || views.length < 2) {
-      this._replayLastGood();
+      this._replayOrFlat();
       return;
     }
     const vps = this._vps;
@@ -1243,7 +1243,7 @@ export class PlayCanvasSplatViewer {
     for (const view of views) {
       const vp = layer && typeof layer.getViewport === 'function' ? layer.getViewport(view) : null;
       if (!vp || !(vp.width > 0) || !(vp.height > 0)) {
-        this._replayLastGood();
+        this._replayOrFlat();
         return;
       }
       vps.push(vp);
@@ -2167,6 +2167,40 @@ export class PlayCanvasSplatViewer {
       e.width = vp.width;
       e.height = vp.height;
     }
+  }
+
+  /**
+   * A session frame that cannot draw its own views still PRESENTS: the last good frame, or —
+   * before there is one — the mono camera into both halves (flat, the subject if loaded, else
+   * the clear colour). A woven canvas that is not redrawn can drop out of the frame the
+   * compositor aggregates (woven-canvas-rules, "redraw every frame"), and a load-fallback frame
+   * before the first stereo one is exactly when no cache exists. The only frame this cannot
+   * cover is one before the engine has attached: there is no GL context yet, and creating one
+   * here would create it with the wrong attributes.
+   */
+  _replayOrFlat() {
+    return this._replayLastGood() || this._drawFlatPair();
+  }
+
+  _drawFlatPair() {
+    if (this._disposed || !this.app || !this.pc) return false;
+    const b = this._bufScale();
+    const W = b.w || this.canvas.width;
+    const H = b.h || this.canvas.height;
+    if (!(W > 1) || !(H > 0)) return false;
+    const half = Math.floor(W / 2);
+    const v = this._monoView();
+    const pair = (this._flatPair ||= [0, 1].map(() => ({ proj: null, pose: null, x: 0, y: 0, width: 0, height: 0 })));
+    for (let i = 0; i < 2; i++) {
+      const e = pair[i];
+      e.proj = v.proj;
+      e.pose = v.pose;
+      e.x = i * half;
+      e.y = 0;
+      e.width = half;
+      e.height = H;
+    }
+    return this._drawEntries(pair, null);
   }
 
   _replayLastGood() {

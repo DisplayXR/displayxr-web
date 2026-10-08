@@ -293,7 +293,10 @@ function onFrame(views, layer) {
 }
 
 function replayLastGood() {
-  if (!haveGood) return;             // before the first good frame do NOTHING — not even clear
+  if (!haveGood) {                   // before the first good frame: still PRESENT a frame — an
+    renderer.clear();                // undrawn canvas can drop out of the weave. A cleared frame
+    return;                          // counts (the SDK's viewers draw the mono camera flat here).
+  }
   renderer.clear();
   renderer.setScissorTest(true);
   for (let i = 0; i < 2; i++) {

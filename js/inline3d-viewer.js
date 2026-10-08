@@ -699,7 +699,7 @@ export class SceneViewer {
 
     // 1. A short view list is the load-induced mono fallback. Stereo needs two.
     if (!views || views.length < 2) {
-      this._replayLastGood();
+      this._replayOrFlat();
       return;
     }
 
@@ -725,7 +725,7 @@ export class SceneViewer {
     for (const view of views) {
       const vp = layer && typeof layer.getViewport === 'function' ? layer.getViewport(view) : null;
       if (!vp || !(vp.width > 0) || !(vp.height > 0)) {
-        this._replayLastGood();
+        this._replayOrFlat();
         return;
       }
       vps.push(vp);
@@ -892,10 +892,40 @@ export class SceneViewer {
   }
 
   /**
+   * A session frame that cannot draw its own views still PRESENTS (1.38): the last good frame,
+   * or, before there is one, the mono camera into both halves — flat, but drawn. An undrawn
+   * woven canvas can drop out of the frame the compositor aggregates (woven-canvas-rules,
+   * "redraw every frame"), and this viewer used to leave exactly the frames before the first
+   * stereo one undrawn. Every clear here is followed by a draw, so the dark-blink rule (web#12)
+   * still holds.
+   */
+  _replayOrFlat() {
+    return this._replayLastGood() || this._drawFlatPair();
+  }
+
+  _drawFlatPair() {
+    if (this._disposed) return false;
+    const r = this.renderer;
+    const b = this._bufScale();
+    if (!(b.w > 1) || !(b.h > 0)) return false;
+    const half = Math.floor(b.w / 2);
+    r.clear();
+    r.setScissorTest(true);
+    for (const x of [0, half]) {
+      const vp = { x, y: 0, width: half, height: b.h };
+      r.setViewport(vp.x, vp.y, vp.width, vp.height);
+      r.setScissor(vp.x, vp.y, vp.width, vp.height);
+      r.render(this.scene, this.monoCamera);
+      if (this._feather) this._feather.render(r, vp);
+    }
+    r.setScissorTest(false);
+    return true;
+  }
+
+  /**
    * Re-render the last good frame from the cached matrices. Returns false when there is no
-   * cache yet — and the caller must then do NOTHING, not clear: before the first good frame
-   * the canvas holds either the page's own initial state or the mono fallback's output, both
-   * of which are better than black.
+   * cache yet (onFrame then draws the flat pair, see _replayOrFlat; a resize leaves the
+   * freshly cleared store to the next session frame).
    */
   _replayLastGood() {
     const g = this._lastGood;

@@ -115,6 +115,24 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
   that subpath handle. A subpath handle whose load failed keeps the canvas until its `remove()`.
 - From a kiosk demo that attached its stage twice per screen visit.
 
+### Every session frame presents (`./splat`, `./model`, `./viewer`)
+
+- The viewers behind the scene subpaths now draw on **every** session frame they are handed. This
+  covers the PlayCanvas viewer (`./splat` `engine: 'playcanvas'`, `./model`'s default) and
+  `SceneViewer` (`./splat` on Spark, `./model` `engine: 'three'`, `./viewer`).
+  - **Before the first good frame,** a frame they cannot draw (a short view list, a missing or
+    degenerate viewport) used to draw nothing. It now draws the mono camera into both halves: the
+    subject flat if it is loaded, a cleared frame if not. Afterwards they replay the last good
+    frame, as before.
+  - **No source, or nothing visible,** still draws a frame.
+  - **Before the engine has created its GL context,** nothing can be presented, and creating one
+    early would give it the wrong attributes.
+  - The dark-blink rule holds: no clear without a draw.
+- **Note for `addScene` pages:** the SDK cannot enforce this for a window your page draws. Draw on
+  every `onFrame` ([`woven-canvas-rules.md`](docs/woven-canvas-rules.md), "redraw every frame").
+  A fully transparent woven frame weaves **black**: a browser bug (browser-pvt #255), listed there
+  as a known limitation.
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

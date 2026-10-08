@@ -261,7 +261,15 @@ A scroll is not a resize. The canvas keeps its size and its identity, and nothin
   last frame). A scene must draw in every `onFrame`, and on a frame it cannot draw it must
   **replay the last good one** rather than skip ([validate before you
   clear](authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
-  `./viewer`, `./splat` and `./model` already do this.
+  `./viewer`, `./splat` and `./model` already do this, and since 1.38 they also draw on the frames
+  before the first good one: the mono camera into both halves, the subject if it is loaded, or a
+  cleared frame if it is not. The only undrawn frames left are the ones before the engine has
+  created its context. The SDK cannot enforce this for an `addScene` window your page draws: draw
+  something on every `onFrame`, even with no content yet.
+  - **Known limitation: a transparent canvas weaves black.** A cleared (fully transparent) woven
+    frame comes out black on the panel, not see-through: a browser bug (browser-pvt #255), not
+    the SDK's. Until it is fixed, a frame with nothing to show is drawn but dark. If the page
+    behind the tile is not black, cover the tile until its content is in (rule 5).
 - **Large scene canvases: consider `preserveDrawingBuffer: true`.** On older DisplayXR Browser
   builds, the weave's zero-copy read of a full-window WebGL canvas can race the page's next
   write, and the frame is dropped. Keep the SBS buffer no wider than the panel, and try
