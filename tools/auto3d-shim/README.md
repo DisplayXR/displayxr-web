@@ -252,7 +252,7 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 
 ## What each adapter converts, and where it stands down
 
-### three.js (r105+, `WebGLRenderer`)
+### three.js (r105+ `WebGLRenderer`; r178–r186 `WebGPURenderer`)
 
 | Page | Result |
 |---|---|
@@ -263,7 +263,9 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | several viewports in one canvas | flat per viewport |
 | post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
 | a chain whose scene pass uses `setViewOffset` (TAA / SSAA jitter) | **2D** (the seed is not recognised) |
-| `WebGPURenderer` | **2D**, reported `flat` with the reason `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7; before, a bare `idle`). Nothing on the renderer or its canvas is touched. Harness case `p-webgpu` |
+| `WebGPURenderer` r178–r186, WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
+| `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
+| `WebGPURenderer` of another revision (r177 and older never announce it; r187+ are unverified), or an object without the common `Renderer` API | **2D**, reported `flat` with the reason (`WebGPURenderer r190 — the driver is verified on r178–r186 only`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
 | r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
 | a second renderer in the same document | 2D (one converted canvas per document) |
 | Spark Gaussian splats (`@sparkjsdev/spark` 2.x, World Labs worlds) | **3D** (below) |
@@ -816,6 +818,14 @@ running), so the rig is always sampled at the configured depth.
 | `pc-webgpu-near` / `-near-ctl` | `?near=1`: near 0.2, a magenta box 0.3 in front of the camera (clip z -0.33 in GL) | visible in both eyes (> 200 px each); the control (`gpuDepthRange: false`, the GL matrix as is) clips it in both |
 | `pc-webgpu-gsplat` / `-cpu` / `-ctl` | `pages/pc-webgpu-gsplat.html`: a 3 × 3 grid of round splats from a PLY written in the page; the fake's `pixelAspect: 2` (a store pixel twice as wide as tall, as on the panel) | as `b`, convergence 5; the WGSL footprint shader patched (GPU sort: the compute projector; `-cpu`: the raster chunk); the white centre splat about 2:1 tall in store pixels in each eye, i.e. round on the display. The control (`pcFootprint: false`): nothing patched, about 1:1 (half height) |
 | `s-webgpu-plain` | `pages/plain-webgpu.html`: a webgpu context on a canvas never inserted, no engine, product mode | the canvas carries the id trap; no core, no report, no timer at all |
+| `three-webgpu` | `pages/three-webgpu-orbit.html`: `three-orbit.html` (plus a floor) on a real three r180 `WebGPURenderer`, ACES + sRGB output (the frame-buffer target path), three's own `setAnimationLoop`, one `render()` before `init()` | as `a-target` (convergence 5, source `target`), plus backend and surface `webgpu`, clear path `fb`, the eye cameras' `coordinateSystem` = the renderer's (WebGPU), the eye projection three draws with = the fake's GL projection through `toClip` (off-axis x / y kept), the pre-init `render()` passed through (three's own warning only), the go-live cover holds a picture (GPU read-back) |
+| `three-webgpu-raw` / `-raw-ctl` | `?raw=1`: `NoToneMapping`, output = the working colour space (the direct path) | both eyes drawn (the generic shift check) and the same clear colour in both halves' corners; the control (`gpuClearFix: false`) leaves eye 0 wiped by eye 1's clear (no scene pixel in the left half) |
+| `three-webgpu-pr2` | `?pr=2`: a 2560-wide mono store, a 1280-wide SBS store | converts, the page sees its pixel-ratio-2 canvas, no WebGPU validation error (with three's own size reads answered with the page's numbers, every submit is invalid) |
+| `three-webgpu-fallback` | `?webgl=1`: `forceWebGL` (WebGL2 backend), no WebGPU adapter needed | converts; backend `webgl2`, surface `webgl`, `coordinateSystem` WebGL, the GL projection as is |
+| `three-webgpu-near` / `-near-ctl` | `?near=1`: near 0.2, a magenta box 0.3 in front of the camera | visible in both eyes; the control (`gpuDepthRange: false`) clips it in both |
+| `three-webgpu-kill` | the default page, frozen: `Ctrl+Alt+3` off, then on | as `b-kill`, plus `outCoverVia: 'readback'` |
+| `three-webgpu-postfx` | `?postfx=1`: `PostProcessing` with `TSL.pass(scene, camera)`, product mode | last report `flat` with the `WebGPU PostProcessing` reason, never live, no layer, the canvas keeps its mono store |
+| `p-three-webgpu` | the default page, product mode | goes `live` (engine three.js), one layer, never `flat` |
 | `m-lift-live-three` / `m-lift-live-pc` | the lift attribute added while live | back to 2D in < 3 s through the staged path (out-cover, `mono frame drawn first`), no raw pair at close (commit model), marker removed after the close, no retry 3 s later |
 
 **The commit model** (`window.__fakeXRTrackCommits`, cases `a-kill`, `b-kill`, `b-flip`). After
@@ -852,9 +862,8 @@ turn-off order, guard, rig and convergence. On WebGPU the engine wraps the passe
 empty (only the engine's own `XRGPUBinding` path fills it; we never touch `app.xr`), and that forward
 loop draws each `RenderView` with its own viewport and bind group, as on WebGL2. Gaussian splats work
 on both WebGPU renderers (GPU sort, the default, and CPU sort), with the footprint fix. **three.js
-`WebGPURenderer` is still 2D** (reported `flat`, case `p-webgpu`): it is a different renderer class, so
-it needs its own driver in `three-adapter.js` (clear semantics, `coordinateSystem`, init gating). That
-is the next step (P-W1b), and it plugs into the same surface. Spark has no WebGPU path at all.
+`WebGPURenderer`** converts since v0.6.1 through a second renderer driver in `three-adapter.js`
+([below](#threejs-webgpurenderer-v061)), on the same surface. Spark has no WebGPU path at all.
 
 **The surface seam.** Everything in the core that depends on the canvas's graphics API sits behind one
 object per canvas, `surface.js`, which the adapter returns from `ad.surface(st)`:
@@ -888,8 +897,8 @@ the shim hands a WebGPU engine goes through `surface.toClip`: **z row := (z row 
 (column-major `m[c*4+2] = (m[c*4+2] + m[c*4+3]) / 2`), the engine's own `_webGpuDepthRangeMatrix`.
 Without it, everything nearer than 2 × near is clipped (an object at 1.5 × near is at clip z -0.33)
 and half the depth range is wasted. Frustum maths read back from the matrix (`setXrProperties`' fov /
-near / far) keeps the GL matrix. three's `WebGPURenderer` driver will need the same, plus
-`coordinateSystem` on its eye cameras.
+near / far) keeps the GL matrix. three's `WebGPURenderer` driver does the same, plus
+`coordinateSystem` on its eye cameras (below).
 
 **What is WebGPU-specific in the adapter.**
 - **Gsplat footprint in WGSL**, at the device's `createShaderModule` (the GLSL rewrite is at
@@ -921,6 +930,43 @@ writer, ANGLE D3D11 weave reader, the fence); HDR canvases (R-W3); whether `draw
 layer-bound WebGPU canvas is empty in the drawing task too (only the fallback depends on it); the
 iframe off-axis error on superspl.at (Q5, a Blink fix, independent of WebGPU).
 
+**P-W0 answers (2026-10-08, the real browser and runtime on the panel):** a WebGPU canvas bound to an
+`XRDisplayLayer` weaves, including `rgba16float` with `toneMapping: 'extended'` (so HDR canvases are
+not refused) and `alphaMode: 'premultiplied'`. An HDR canvas gets no GPU read-back (no 8-bit format
+to copy): its covers come from the in-task `drawImage`, which works inside the frame task, before and
+while bound (after present it returns the other eye, or nothing). The depth-range conversion matters
+on the panel too: near content clips without it.
+
+### three.js `WebGPURenderer` (v0.6.1)
+
+`WebGPURenderer` is three's common `Renderer` over a backend: WebGPU, or the WebGL2 fallback
+(`forceWebGL: true`, or no WebGPU adapter at `init()`). It is a different renderer class from
+`WebGLRenderer`, not a backend of it, so `three-adapter.js` has a second **renderer driver**
+(`st.common`). Everything else (finding the scene camera, the SBS store and the page's virtualised
+sizes, replay of render-on-demand frames, the convergence target, covers, turn-off) is shared. One
+driver serves both backends: the backend only picks the surface (`surfaces.gpu` from
+`renderer.backend.device` + `renderer.getContext()`; `surfaces.gl` from the fallback's context) and
+the clip space. Read and tested at three **r180** (the harness's pin); the API it relies on was read at
+r178, r182, r184 and r186. **Supported: r178–r186.** r177 and older never announce a `WebGPURenderer`
+on `__THREE_DEVTOOLS__` (nothing to find); a later revision is reported `flat` with its number until
+it has been checked.
+
+How each difference was resolved:
+
+| | WebGLRenderer driver | WebGPURenderer driver |
+|---|---|---|
+| **init** | the renderer is ready when constructed | it announces itself from its constructor, before `init()` has chosen the backend. It is tracked (wrapped) at once, but a `render()` before `hasInitialized()` passes straight through (r178–r181: three forwards it to `renderAsync`; r182+: three throws, as without the shim), and `unqualified()` answers `WebGPURenderer not initialised yet`. `renderAsync()` (deprecated in r181, common on r178–r180 pages) is routed through the wrapped `render()` once initialised |
+| **projection** | the runtime's GL matrix, or reversed-Z | the common renderer calls `updateProjectionMatrix()` (a **symmetric** frustum: the runtime's off-axis one lost) on any camera whose `coordinateSystem` differs from its own, or, with `reversedDepthBuffer` (r182+), that is not marked reversed. So the eye cameras get `coordinateSystem = renderer.coordinateSystem` and `_reversedDepth` before each `render()`, and the matrix in that system's clip space: reversed-Z when `reversedDepthBuffer`, else `surface.toClip` on WebGPU (clip z 0..1), else GL's as is. Frustum culling reads the same pair, so it culls what is drawn |
+| **clears** | the scissor confines `autoClear` to the eye's half | a clear covers the **whole** attachment (WebGPU `loadOp: 'clear'` ignores the scissor), so it depends on the output path. **Default** (`fb`: tone mapping on, or the output colour space is not the working one, i.e. sRGB output): each `render()` draws into an intermediate frame-buffer target (cleared whole), then an output pass with `autoClear` off samples it at `screenUV` into the renderer's viewport and scissor on the canvas, which is loaded, never cleared. Two renders into two halves just work. **Direct** (`NoToneMapping` + output = working colour space): the scene draws straight to the canvas, and eye 1's clear would wipe eye 0. Eye 0 then clears with the scissor off (one clear colour in both halves; its draw is still confined by its viewport) and eye 1 draws with `autoClearColor = false` (depth / stencil still clear). The path is read per draw (`needsFrameBufferTarget`, r182+; `_getFrameBufferTarget()` before) and shown as `clearPath` in `state()` |
+| **size reads** | the page's numbers, even inside a render | three itself reads `getDrawingBufferSize`, `getViewport`, `getPixelRatio` … (its frame-buffer target, the backend's colour buffer, the screen nodes the output pass samples with). Inside the shim's own calls those see the **real** store; the page's own calls still see its mono one |
+| **frame counter** | the eye pair shares one `info.render.frame` | nothing to do: the common `Info` has no `render.frame`, and FRAME-scoped node updates advance only with three's own animation loop, so both eyes already share a frame |
+| **post-processing** | per-eye twins of an `EffectComposer` chain | **not split**: a full-screen pass whose render (nested, in `PassNode.updateBefore`) drew the page camera into a target is `PostProcessing`; reported `flat` with the reason, and a converted canvas that switches it on stands down |
+| **readback** | `readPixels` in the drawing task | WebGPU: the surface's GPU copy (three configures `COPY_SRC`, `alphaMode` premultiplied by default and submits each pass in `finishRender`, so `flush()` is a no-op); the WebGL2 fallback: `readPixels`, as `WebGLRenderer` |
+
+Not done: `ArrayCamera` / multi-view (`renderer.render` with an `ArrayCamera` stays flat per the
+existing rule), WebXR on the WebGPU renderer (`renderer.xr` presenting stands down, as on WebGL), and
+three's `PostProcessing` (above). Spark is WebGL-only.
+
 ## Why a renderer shim, not the alternatives
 
 - **Duplicating WebGL commands** (the 3D Vision approach) works for any engine, but it has to guess
@@ -937,6 +983,16 @@ iframe off-axis error on superspl.at (Q5, a Blink fix, independent of WebGPU).
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.6.1 (three.js WebGPURenderer, P-W1b), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere):** 98
+cases (87 + 11 new: `three-webgpu`, `-raw`, `-raw-ctl`, `-pr2`, `-fallback`, `-kill`, `-near`, `-near-ctl`,
+`-postfx`, `p-three-webgpu`, `p-webgpu-api`; `p-webgpu` now runs the stub at an unverified revision),
+96 run, 2 skipped (`c` / `d`: no `ports_25.sog`), no WebGPU case skipped, one full pass. Every new case
+passes and each control shows what its fix prevents (`-raw-ctl`: eye 0 wiped; `-near-ctl`: the near box
+clipped; with three's own size reads answered with the page's numbers, `-pr2` logs invalid command
+buffers). One failure, outside the changed code: `s-cost`'s div.id benchmark at +6.2 % (bound ±5 %),
+the known box noise. three was run at r180 only (the harness pin); r178–r186 were checked by reading
+their sources. Nothing on the panel.
 
 **Headless, v0.6.0 (WebGPU, P-W1a), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere, no extra flag):** 87 cases
 (78 registered on `main`, whose count above said 76, + 9 new: `pc-webgpu-mesh`, `-dyn`, `-kill`, `-near`, `-near-ctl`, `-gsplat`, `-gsplat-cpu`,
