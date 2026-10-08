@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // test/e2e/samples-panel.e2e.mjs — the published samples, one by one, in the REAL DisplayXR
-// Browser on a 3D panel (LOXR-826: the 3D scene samples):
+// Browser on a 3D panel (LOXR-826: the 3D scene samples; LOXR-827: media, call and shop):
 //
 //   node test/e2e/samples-panel.e2e.mjs                 # all samples in SAMPLES
 //   node test/e2e/samples-panel.e2e.mjs hello-cube      # just these
@@ -12,7 +12,10 @@
 //                received a weave submit whose rect is the canvas (the service's one-shot
 //                weave-input dump, `#73 diag` lines in the displayxr-service log);
 //   3. input   — the sample's control does what it says (a state change the page reports), where
-//                the sample has one; hello-cube has none (head tracking only);
+//                the sample has one; hello-cube has none (head tracking only). The two call samples
+//                first start a call from their own Start button, on Chrome's fake camera and
+//                microphone (call-embed: a side-by-side test video, so its self tile is 3D), using
+//                the sample's default hosted signalling; no real device is opened;
 //   4. a full-screen grab for review.
 //
 // Automation is attached only AFTER the page has settled (SETTLE_MS): attaching while a woven page
@@ -149,7 +152,113 @@ const SAMPLES = {
       return { ok: before !== after && restored === before, detail: `mode button "${before}" -> "${after}" -> "${restored}"` };
     },
   },
+
+  // ── LOXR-827: media, call and shop ──────────────────────────────────────────────────────────
+  player: {
+    path: 'samples/player/',
+    canvas: '#tile-sbs', // the left tile weaves; the right one is deliberately flat
+    woven: () => document.getElementById('status')?.classList.contains('woven') === true,
+    input: async (page) => {
+      // It opens paused on a play button (no autoplay, by design): press play the way a visitor
+      // does (Space on the focused tile, per the sample's keyboard map), then currentTime must move.
+      const pausedAtStart = await page.evaluate(() => window.player?.paused ?? null);
+      await page.focus('#tile-sbs').catch(() => {});
+      await page.keyboard.press('Space');
+      await sleep(300);
+      if (await page.evaluate(() => window.player?.paused ?? true)) await page.click('#tile-sbs'); // fall back to a click
+      const t0 = await page.evaluate(() => window.player?.currentTime ?? -1);
+      await sleep(1200);
+      const t1 = await page.evaluate(() => window.player?.currentTime ?? -1);
+      const playing = t1 > t0 && t0 >= 0;
+      await page.evaluate(() => window.player?.pause());
+      // The appearance controls reach both players: the sample echoes the call it made.
+      await page.click('#size button[data-v="l"]');
+      await page.click('#skin button[data-v="classic"]');
+      await sleep(300);
+      const call = await text(page, '#call');
+      await page.click('#size button[data-v="m"]');
+      await page.click('#skin button[data-v="dock"]');
+      const applied = /size: 'l'/.test(call) && /skin: 'classic'/.test(call);
+      return { ok: playing && applied, detail: `opened ${pausedAtStart ? 'paused' : 'playing'}; after play: ${playing ? 'playing' : 'NOT playing'} (${t0.toFixed(2)} -> ${t1.toFixed(2)} s); S/M/L + skin -> ${call}` };
+    },
+  },
+  shopify: {
+    path: 'samples/shopify/',
+    canvas: '#tile',
+    // The GLB comes from cdn.shopify.com: "loaded … woven" once it is in and weaving.
+    woven: () => /loaded .*· woven ·/.test(document.getElementById('note')?.textContent || ''),
+    input: async (page) => {
+      const before = await text(page, '#note');
+      await page.click('#reset'); // reloads the default product through the sample's own path
+      await page.waitForFunction(() => /loading…/.test(document.getElementById('note')?.textContent || ''), { timeout: 3000 }).catch(() => {});
+      const reloaded = await page
+        .waitForFunction(() => /loaded .*· woven ·/.test(document.getElementById('note')?.textContent || ''), { timeout: 20000 })
+        .then(() => true, () => false);
+      const after = await text(page, '#note');
+      return { ok: reloaded, detail: `Reset: "${before.slice(0, 60)}" -> "${after.slice(0, 90)}"` };
+    },
+  },
+  'demo-gallery': {
+    path: 'samples/demo-gallery/',
+    canvas: 'canvas.logo',
+    minRects: 5, // five logos, batched into one weave
+    woven: () => document.getElementById('status')?.classList.contains('woven') === true && window.__gallery?.tiles?.length === 5,
+    // Each card links to its demo repo: every link must resolve (opened from here, not clicked,
+    // so no new tab steals the panel).
+    input: async (page) => {
+      const links = await page.$$eval('a.tile', (as) => as.map((a) => a.href));
+      const codes = await Promise.all(links.map((u) => fetch(u, { method: 'HEAD', redirect: 'follow' }).then((r) => r.status, () => 0)));
+      const bad = links.filter((_, i) => codes[i] !== 200);
+      return { ok: links.length === 5 && bad.length === 0, detail: `${links.length} cards; ${links.map((u, i) => `${u.split('/').pop()} ${codes[i]}`).join(', ')}` };
+    },
+  },
+  call: {
+    // ?camera=synthetic: the sample's generated side-by-side test pair; the fake-device flags make
+    // sure no real camera or microphone is ever opened.
+    path: 'samples/call/?camera=synthetic',
+    flags: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+    canvas: '#call canvas',
+    before: startCall,
+    woven: () => document.getElementById('status')?.classList.contains('woven') === true && !!document.querySelector('#call canvas'),
+    input: null,
+  },
+  'call-embed': {
+    // <dxr-call> picks "the best camera it can find": the fake-device flags make that Chrome's fake one.
+    path: 'samples/call-embed/',
+    // A 2:1 side-by-side fake camera, which <dxr-call> takes for a stereo camera: its self tile is
+    // then 3D and must weave. (Chrome's default fake camera is mono, and a mono tile is only woven
+    // when the browser can lift it 2D->3D.)
+    flags: () => ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-video-capture=${fakeSbsCamera()}`],
+    canvas: '#call canvas',
+    before: startCall,
+    woven: () => document.getElementById('status')?.classList.contains('woven') === true && !!document.querySelector('#call canvas'),
+    input: null,
+  },
 };
+
+// A 4 s side-by-side test video (two crops of testsrc2, 40 px apart) for Chrome's fake camera,
+// made once with ffmpeg under test/e2e/out/.
+function fakeSbsCamera() {
+  const file = resolve(root, 'test', 'e2e', 'out', 'fake_sbs_1280x480.y4m');
+  if (!existsSync(file)) {
+    mkdirSync(dirname(file), { recursive: true });
+    execFileSync(FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=720x480:r=30:d=4', '-filter_complex',
+      '[0]split[a][b];[a]crop=640:480:0:0[l];[b]crop=640:480:40:0[r];[l][r]hstack', '-pix_fmt', 'yuv420p', file]);
+  }
+  return file;
+}
+
+// Start the call from the call UI's own primary button, and wait for the self tile.
+async function startCall(page) {
+  await page.waitForSelector('#call .dxr-call-btn--primary', { timeout: 15000 });
+  const label = await text(page, '#call .dxr-call-btn--primary');
+  await page.click('#call .dxr-call-btn--primary');
+  const tile = await page.waitForSelector('#call canvas', { timeout: 20000 }).then(() => true, () => false);
+  await sleep(2000); // let the self tile reach the weave
+  const state = await page.evaluate(() => (window.__call || document.getElementById('call')?.call)?.state ?? null).catch(() => null);
+  const badge = await page.$eval('#call', (el) => (el.textContent.match(/You\s*·\s*(2D→3D|2D|3D)/) || [])[1] || '').catch(() => '');
+  return { ok: tile, detail: `pressed "${label}"; self tile ${tile ? 'appeared' : 'did NOT appear'}${badge ? ` (badge "You · ${badge}")` : ''}; call state ${state}` };
+}
 
 async function text(page, sel) {
   return page.$eval(sel, (el) => el.textContent.trim()).catch(() => '');
@@ -293,7 +402,8 @@ async function runSample(puppeteer, name, spec) {
   mkdirSync(dir, { recursive: true });
   const res = { name, url, checks: {}, pass: false };
   const proc = spawn(BROWSER, [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE}`, '--no-first-run',
-    '--hide-crash-restore-bubble', '--enable-logging', '--v=1', '--start-maximized', url], { stdio: 'ignore' });
+    '--hide-crash-restore-bubble', '--enable-logging', '--v=1', '--start-maximized',
+    ...(typeof spec.flags === 'function' ? spec.flags() : spec.flags || []), url], { stdio: 'ignore' });
   let browser;
   try {
     await waitForCdp();
@@ -306,24 +416,32 @@ async function runSample(puppeteer, name, spec) {
     page.on('pageerror', (e) => pageErrors.push(e.message));
     page.on('console', (m) => m.type() === 'error' && pageErrors.push(m.text()));
 
+    // a step the sample needs before it weaves anything (e.g. starting a call)
+    if (spec.before) res.checks.start = await spec.before(page).catch((e) => ({ ok: false, detail: `threw: ${e.message}` }));
+
     // 2. the sample's own woven signal
     const woven = await page.waitForFunction(spec.woven, { timeout: 20000 }).then(() => true, () => false);
     const status = await page.evaluate(() =>
-      (document.getElementById('status')?.textContent ||
+      (document.getElementById('status')?.textContent || document.getElementById('note')?.textContent ||
         ['noteA', 'noteB', 'noteC'].map((id) => document.getElementById(id)?.textContent || '').join(' | ')).trim());
     res.checks.wovenSignal = { ok: woven, detail: status.slice(0, 200) };
 
     // 2b. the runtime got a weave submit whose rect is this canvas
+    // The weave rect is the canvas's VISIBLE part: a tile taller than the window is woven only
+    // where it is on screen.
     const cr = await page.$eval(spec.canvas, (c) => {
       const r = c.getBoundingClientRect();
       const d = window.devicePixelRatio || 1;
-      return { w: Math.round(r.width * d), h: Math.round(r.height * d) };
+      const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+      const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+      return { w: Math.round(Math.max(0, w) * d), h: Math.round(Math.max(0, h) * d) };
     });
     const sub = await weaveSubmitRects(Date.now() - 50);
     const match = sub?.rects.find((r) => Math.abs(r.w - cr.w) <= 4 && Math.abs(r.h - cr.h) <= 4);
+    const minRects = spec.minRects || 1;
     res.checks.weaveSubmit = {
-      ok: !!match,
-      detail: sub ? `${sub.submit}; rects ${sub.rects.map((r) => `${r.x},${r.y} ${r.w}x${r.h}`).join(' | ')}; canvas ${cr.w}x${cr.h}` : 'no weave submit seen within 6 s',
+      ok: !!match && sub.rects.length >= minRects,
+      detail: sub ? `${sub.submit}; rects ${sub.rects.map((r) => `${r.x},${r.y} ${r.w}x${r.h}`).join(' | ')}; canvas ${cr.w}x${cr.h}${minRects > 1 ? `; needs >= ${minRects} rects` : ''}` : 'no weave submit seen within 6 s',
     };
 
     // sample-specific checks
