@@ -1,0 +1,92 @@
+<!doctype html>
+<!-- TEST PAGE — PlayCanvas 2.23 gaussian splats through a CameraFrame configured the way
+     supersplat-viewer 1.37 configures it (Viewer.configureCamera + applyPostEffectSettings, with
+     post effects in the settings and highPrecisionRendering off): rendering.renderFormats = [] (an
+     RGBA8 scene target, so its bloom is compiled out), linear tone mapping, sharpening, grading,
+     vignette and fringing; the splats as a UNIFIED gsplat component, as the viewer adds them. The
+     3 x 3 grid of ROUND splats of pc-webgpu-gsplat.html (the centre one white, measured per eye); the
+     camera 5 units in front of the bounds centre: expected convergence 5.
+       ?gpu=webgpu   a WebGPU device (the viewer's default renderer), else WebGL2
+     Hooks: window.__grabFrame(), __deviceType, __splatReady, __cf. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas CameraFrame gsplat (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas-2.23/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="splat-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const q = new URLSearchParams(location.search);
+const canvas = document.getElementById('splat-canvas');
+const device = await pc.createGraphicsDevice(canvas, { deviceTypes: [q.get('gpu') === 'webgpu' ? 'webgpu' : 'webgl2'], antialias: false, depth: true, stencil: false });
+window.__deviceType = device.deviceType;
+const opts = new pc.AppOptions();
+opts.graphicsDevice = device;
+opts.componentSystems = [pc.CameraComponentSystem, pc.GSplatComponentSystem];
+opts.resourceHandlers = [pc.GSplatHandler];
+const app = new pc.AppBase(canvas);
+app.init(opts);
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0, 0, 0), fov: 50, nearClip: 0.1, farClip: 100 });
+app.root.addChild(camera);
+
+// The viewer's CameraFrame (supersplat-viewer 1.37 dist/viewer.js configureCamera, settings with every post effect on).
+const cf = new pc.CameraFrame(app, camera.camera);
+cf.enabled = true;
+cf.rendering.toneMapping = pc.TONEMAP_LINEAR;
+cf.rendering.renderFormats = [];
+cf.rendering.sharpness = 0.5;
+cf.bloom.intensity = 0.1; cf.bloom.blurLevel = 2;
+cf.grading.enabled = true; cf.grading.brightness = 1; cf.grading.contrast = 1.05; cf.grading.saturation = 1.1; cf.grading.tint = new pc.Color(1, 1, 1);
+cf.vignette.intensity = 0.5; cf.vignette.inner = 0.3; cf.vignette.outer = 0.75; cf.vignette.curvature = 1;
+cf.fringing.intensity = 0.5;
+cf.update();
+window.__cf = cf;
+
+// The PLY: 9 splats, float properties x y z f_dc_0..2 opacity scale_0..2 rot_0..3 (w x y z).
+const SH_C0 = 0.28209479177387814, dc = (c) => (c - 0.5) / SH_C0;
+const props = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+const splats = [];
+for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+  const centre = i === 0 && j === 0;
+  const col = centre ? [1, 1, 1] : [0.2 + 0.3 * (i + 1), 0.3, 0.9 - 0.3 * (j + 1)];
+  splats.push([i, j, 0, ...col.map(dc), 4, ...[0, 0, 0].map(() => Math.log(centre ? 0.12 : 0.1)), 1, 0, 0, 0]);
+}
+const header = `ply\nformat binary_little_endian 1.0\nelement vertex ${splats.length}\n${props.map((p) => `property float ${p}`).join('\n')}\nend_header\n`;
+const hb = new TextEncoder().encode(header);
+const body = new Float32Array(splats.flat());
+const bytes = new Uint8Array(hb.length + body.byteLength);
+bytes.set(hb, 0); bytes.set(new Uint8Array(body.buffer), hb.length);
+const asset = new pc.Asset('grid', 'gsplat', { url: 'grid.ply', filename: 'grid.ply', contents: new Response(bytes, { headers: { 'content-length': String(bytes.length) } }) });
+app.assets.add(asset);
+asset.ready(() => {
+  const e = new pc.Entity('splat');
+  e.addComponent('gsplat', { unified: true, asset });
+  app.root.addChild(e);
+  camera.setPosition(0, 0, 5);
+  camera.lookAt(0, 0, 0);
+  window.__expectedConvergence = 5;
+  window.__splatReady = true;
+});
+app.assets.load(asset);
+
+const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
+const CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+window.__grabFrame = () => new Promise((res) => {
+  app.once('postrender', () => {
+    if (app.graphicsDevice.isWebGPU) app.graphicsDevice.submit();
+    const w = CW.get.call(canvas), h = CH.get.call(canvas);
+    const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+    const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+    const d = g.getImageData(0, 0, w, h).data;
+    let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
+    res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+  });
+  app.renderNextFrame = true;
+});
+app.start();
+</script>
+</body></html>

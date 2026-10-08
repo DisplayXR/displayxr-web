@@ -522,14 +522,28 @@ const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae
 const only = process.argv.slice(2);
 // Preflight: every engine file the pages import, and the browser. Missing ones fail HERE, loudly,
 // instead of as pages that never convert (a 60 s timeout per case).
-const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js'];
+const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js',
+  'playcanvas-2.23/playcanvas.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css'];
 const missingDeps = DEP_FILES.filter((f) => !existsSync(join(here, '.deps', f)));
 if (missingDeps.length) {
   console.error(`FAILED: engine files missing from ${join(here, '.deps')}: ${missingDeps.join(', ')}\n` +
-    'Run `node deps.mjs` (npm pack from the registry), or point it at local copies: THREE_BUILD_DIR, PLAYCANVAS_MJS, THREE_ORBIT_CONTROLS, PLAYCANVAS_CAMERA_CONTROLS, THREE_PASS_JS, SPARK_DIST (see deps.mjs).');
+    'Run `node deps.mjs` (npm pack from the registry), or point it at local copies: THREE_BUILD_DIR, PLAYCANVAS_MJS, THREE_ORBIT_CONTROLS, PLAYCANVAS_CAMERA_CONTROLS, THREE_PASS_JS, SPARK_DIST, PLAYCANVAS_CF_MJS, SUPERSPLAT_VIEWER_DIR (see deps.mjs).');
   process.exit(2);
 }
 if (!existsSync(CHROME)) { console.error(`FAILED: no Chrome at ${CHROME} — set CHROME=<binary>`); process.exit(2); }
+// A splat file the real supersplat-viewer can be pointed at (?content=/deps/gen/grid.ply, cases/cameraframe.mjs):
+// the 3 x 3 grid of round splats the gsplat pages build in memory (the centre one white), as a binary PLY.
+{
+  const SH_C0 = 0.28209479177387814, dc = (c) => (c - 0.5) / SH_C0, rows = [];
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const centre = i === 0 && j === 0, col = centre ? [1, 1, 1] : [0.2 + 0.3 * (i + 1), 0.3, 0.9 - 0.3 * (j + 1)];
+    rows.push([i, j, 0, ...col.map(dc), 4, ...[0, 0, 0].map(() => Math.log(centre ? 0.12 : 0.1)), 1, 0, 0, 0]);
+  }
+  const props = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+  const head = Buffer.from(`ply\nformat binary_little_endian 1.0\nelement vertex ${rows.length}\n${props.map((p) => `property float ${p}`).join('\n')}\nend_header\n`);
+  mkdirSync(join(here, '.deps', 'gen'), { recursive: true });
+  writeFileSync(join(here, '.deps', 'gen', 'grid.ply'), Buffer.concat([head, Buffer.from(new Float32Array(rows.flat()).buffer)]));
+}
 let running = '';
 if (!WIN) { try { running = execFileSync('sh', ['-c', 'ps aux | grep -- --headless=new | grep -v grep || true'], { encoding: 'utf8' }).trim(); } catch { /* no ps */ } }
 if (running) console.warn('WARNING: another headless Chrome is running — GPU contention can skew timings:\n' + running.split('\n').slice(0, 3).join('\n'));

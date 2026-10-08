@@ -18,9 +18,21 @@
 // PlayCanvas adapter cannot see").
 //
 // What it stands down on (flat, with the reason on the HUD): several cameras rendering to the
-// canvas (a UI camera, picture-in-picture), post effects / CameraFrame (frame passes) on the camera,
-// an orthographic camera, an app presenting WebXR through app.xr, and — via the core — SDK / WebXR
-// pages.
+// canvas (a UI camera, picture-in-picture), legacy post effects (camera.postEffects) or frame passes
+// that are not ONE CameraFrame, an orthographic camera, an app presenting WebXR through app.xr, and
+// — via the core — SDK / WebXR pages.
+//
+// CameraFrame (v0.6.2, P-W1c; the engine's post chain: scene -> SSAO / TAA / bloom / DOF -> compose):
+// the page's FramePassCameraFrame (A) renders eye 0 and a second instance (B, built from A's own
+// class, CameraFrame and options; CameraFrame.update() applied to it every frame) renders eye 1,
+// each into ITS OWN half-width targets (sceneOptions.resizeSource = the eye size), so TAA history,
+// SSAO, bloom and DOF are per eye and the memory is two half-width chains. camera.framePasses =
+// [eye 0, eye 1] while converted; between the passes, marker passes (FramePass instances of the
+// engine's own base class) switch device.xrCurrentViewIndex (the forward renderer then draws that ONE
+// view of xrViews), the views' viewports (eye-target-local for the scene passes, the eye's half of the
+// SBS store for the after pass), and the camera's TAA reprojection matrices. Each compose draws into
+// its half (RenderPassShaderQuad.viewport / scissor); eye 1's does not clear. See playcanvas-adapter
+// "CameraFrame" below and the README.
 //
 // WebGPU (v0.6.0): the same recipe. The engine's forward loop draws every RenderView of
 // camera.xrViews with its own viewport and bind group on both backends; on WebGPU it wraps the passes
@@ -189,8 +201,10 @@ function dxrPlayCanvas(core) {
   }
 
   // ------------------------------------------------------------ the camera
-  // The ONE enabled camera that renders to the canvas, or why there is not exactly one.
-  function pickCamera(app) {
+  // The ONE enabled camera that renders to the canvas, or why there is not exactly one. cf: the
+  // camera's FramePassCameraFrame when it renders through a CameraFrame (the page's own, also while
+  // our per-eye pair stands in for it), else null.
+  function pickCamera(app, st) {
     const list = (app.systems.camera && app.systems.camera.cameras) || [];
     const cams = list.filter((c) => c && c.enabled && c.entity && c.entity.enabled && !c.renderTarget);
     if (!cams.length) return { why: 'no enabled camera renders to the canvas' };
@@ -200,8 +214,13 @@ function dxrPlayCanvas(core) {
     const pe = c.postEffects;
     if (c.postEffectsEnabled !== false && pe && Array.isArray(pe.effects) && pe.effects.length) return { why: 'post effects on the camera — needs per-eye targets (next)', flat: true };
     const fp = c.framePasses || (c.camera && c.camera.framePasses);
-    if (fp && fp.length) return { why: 'CameraFrame / frame passes on the camera — needs per-eye targets (next)', flat: true };
-    return { cam: c };
+    let cf = null;
+    if (fp && fp.length) {
+      if (st && st.cf && fp === st.cf.list) cf = st.cf.A;
+      else if (fp.length === 1 && isCameraFramePass(fp[0])) cf = core.T.pcCameraFrame === false ? null : fp[0]; // false: TEST ONLY, unsplit
+      else return { why: 'frame passes on the camera that are not one CameraFrame — not split', flat: true };
+    }
+    return { cam: c, cf };
   }
   // The page camera's OWN numbers (the public getters answer the XR properties while xrViews is set).
   function pageCam(st) {
@@ -221,7 +240,7 @@ function dxrPlayCanvas(core) {
     unqualified(st) {
       const app = st.app;
       if (app.xr && app.xr.active) return 'the app is presenting WebXR';
-      const pick = pickCamera(app);
+      const pick = pickCamera(app, st);
       if (!pick.cam) return pick.flat ? flatWhy(st, pick.why) : pick.why;
       st.flatReason = null;
       st.qualifyCam = pick.cam;
@@ -243,11 +262,18 @@ function dxrPlayCanvas(core) {
       };
     },
     fakeViewParams(st) { const p = pageCam(st); return { near: p.near, far: p.far, t: p.near * Math.tan(p.vfov / 2), aspect: p.aspect }; },
-    beforeActive() {},
+    beforeActive(st) {
+      // The canvas still holds the page's mono store here: a page that sizes it by writing
+      // canvas.width / height itself (supersplat-viewer: resizeCanvas on 'framerender', never
+      // device.setResolution) never told setResolution, so its size is taken from the canvas.
+      st.L.w = realW(st.canvas); st.L.h = realH(st.canvas);
+    },
     afterActive(st) {
       st.cam = st.qualifyCam;
+      trapCanvasSize(st);
       applyRealSize(st);
       bindViews(st);
+      syncCameraFrame(st, pickCamera(st.app, st).cf || null);
     },
     firstDraw(st) { st.app.renderNextFrame = true; },
     redraw(st) {
@@ -258,6 +284,7 @@ function dxrPlayCanvas(core) {
       st.app.renderNextFrame = true;
     },
     restore(st, wasLive) {
+      uninstallCameraFrame(st);
       restoreShadows(st);
       if (st.cam && st.cam.camera) { try { st.cam.camera.xrViews = null; } catch (e) { /* ignore */ } }
       st.cam = null; st.views = null; st.frustumKey = '';
@@ -265,6 +292,7 @@ function dxrPlayCanvas(core) {
         try { if (realW(st.canvas) !== st.L.w || realH(st.canvas) !== st.L.h) st.setRes(st.L.w, st.L.h); } catch (e) { /* ignore */ }
         st.app.renderNextFrame = true; // the mono frame: drawn on the engine's next tick, reported from postrender
       }
+      untrapCanvasSize(st);
       return false;
     },
     wake(st) { st.app.renderNextFrame = true; }, // re-enabled: one frame, whose postrender considers activation
@@ -314,6 +342,7 @@ function dxrPlayCanvas(core) {
         footprint: { ...st.footprint }, device: st.dev.isWebGPU ? 'webgpu' : 'webgl2', autoRender: st.app.autoRender,
         surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.views && st.views[0] ? Array.from(st.views[0].projMat.data) : null, // what the engine draws eye 0 with
+        cameraFrame: describeCameraFrame(st), pageSizeWrites: st.pageSizeWrites || 0,
       },
     }),
   };
@@ -330,7 +359,7 @@ function dxrPlayCanvas(core) {
     if (st.active) { core.drew(st); if (st.outCoverDue) core.takeOutCover(st); return; } // the flat pair was just drawn
     if (st.releasing) { core.monoDrawn(st); return; } // the mono frame after a staged stand-down
     if (st.armed) {
-      const pick = pickCamera(app);
+      const pick = pickCamera(app, st);
       if (!pick.cam) { core.stand(st, pick.why); if (pick.flat) flatWhy(st, pick.why); return; }
       st.qualifyCam = pick.cam;
       core.flip(st); // this task just drew the mono frame: it is the cover
@@ -341,7 +370,7 @@ function dxrPlayCanvas(core) {
   function onPreRender(app) {
     const st = stateFor(app); // created here at the latest: before the first frame compiles any shader
     if (!st || !st.active) return;
-    const pick = pickCamera(app);
+    const pick = pickCamera(app, st);
     if (pick.cam !== st.cam) {
       const why = pick.cam ? 'the page switched cameras' : pick.why;
       core.stand(st, why, { staged: true }); // this frame now renders mono; the layer goes after it
@@ -349,6 +378,7 @@ function dxrPlayCanvas(core) {
       st.nextTry = core.now() + 1000;
       return;
     }
+    syncCameraFrame(st, pick.cf || null); // the page may switch its CameraFrame on or off, or rebuild it
     updateViews(st);
   }
 
@@ -446,7 +476,250 @@ function dxrPlayCanvas(core) {
     const f = frustumFromProjection(P0);
     const key = `${f.fov.toFixed(4)}|${f.aspectRatio.toFixed(4)}|${f.nearClip}|${f.farClip}`;
     if (key !== st.frustumKey) { st.frustumKey = key; st.cam.camera.setXrProperties({ ...f, horizontalFov: false }); }
+    if (st.cf) cameraFrameJitter(st);
     offsetShadows(st);
+  }
+
+  // ------------------------------------------------------------ CameraFrame (v0.6.2, P-W1c)
+  // CameraFrame (extras/render-passes/camera-frame.js) sets camera.framePasses = [FramePassCameraFrame];
+  // the frame graph then adds those passes instead of the camera's forward passes (forward-renderer.js
+  // buildFrameGraph: renderAction.useCameraPasses). Its scene passes are RenderPassForwards, so under
+  // xrViews they already loop over the views (renderForwardInternal), but every pass after them is a
+  // full-screen quad over ONE scene texture sized to the canvas (sceneOptions.resizeSource = the back
+  // buffer): TAA would reproject through one camera matrix, bloom / DOF would bleed across the seam,
+  // vignette / fringing / sharpening would be centred on the pair. So each eye gets the whole chain:
+  //   eye 0 = the page's pass A, eye 1 = B, a second FramePassCameraFrame built from A's own class with
+  //   A's CameraFrame and options (no engine namespace needed). Each renders into its OWN targets of
+  //   the eye's size (sceneOptions.resizeSource = st.eyeSrc; every other target of the chain resizes
+  //   from the scene texture), so memory is two half-width chains, about one mono chain.
+  //   camera.framePasses = [proxy 0, proxy 1]: disabled FramePasses (never rendered) whose
+  //   beforePasses are [marker, A] and [marker, B, end marker]; the frame graph calls frameUpdate on
+  //   each, then adds its before passes (frame-graph.js addRenderPass). The markers run at RENDER
+  //   time, in pass order: device.xrCurrentViewIndex = eye (renderForwardInternal then draws only that
+  //   RenderView, with its own bind group: the WebGPU multiview mechanism, frame-pass-multi-view.js),
+  //   the views' viewports = the eye target's rect, and the camera's TAA reprojection matrices for this
+  //   eye. A marker hung on each compose pass's afterPasses moves the viewports to the eye's half of the
+  //   SBS store for the after pass (the layers after the post chain, e.g. UI). The compose pass draws
+  //   its quad into the eye's half (RenderPassShaderQuad.viewport / scissor); eye 1's compose clears
+  //   nothing (it would wipe eye 0: a WebGPU load-op clear ignores the scissor), and the frame graph's
+  //   compile then makes eye 0's last pass on the back buffer store.
+  //   B follows the page's settings: CameraFrame.update() is applied to B every frame (renderPassCamera
+  //   swapped for the call), so bloom / grading / vignette / TAA / SSAO / DOF are the page's own; a
+  //   layer change dirties both. The camera-use flags make the pair ONE camera use (EVENT_PRERENDER and
+  //   the camera's before passes once, from eye 0; EVENT_POSTRENDER from eye 1).
+  //   TAA: the engine applies no jitter and stores no reprojection matrices under xrViews
+  //   (renderer.js setCameraUniforms), so both are done here: the engine's Halton jitter added to both
+  //   eye projections (one sequence, eye-target pixels), and per eye the previous / inverse view-
+  //   projection the resolve reads (render-pass-taa.js before()); each eye has its own history (B owns
+  //   its RenderPassTAA).
+  // A page that rebuilds or disables its CameraFrame is followed (syncCameraFrame on prerender);
+  // CameraFrame.disable() destroys "its" framePasses, i.e. our proxies: proxy 0 destroys A as the page
+  // asked, and B with it. Stand-down puts camera.framePasses = [A] back and A's targets back to the
+  // canvas size.
+  const isCameraFramePass = (p) => !!p && typeof p === 'object' && !!p.cameraFrame && !!p.composePass && !!p.sceneOptions &&
+    typeof p.setupRenderPasses === 'function' && typeof p.update === 'function' && Array.isArray(p.beforePasses) && !!frameBase(p);
+  // The engine's FramePass class: FramePassCameraFrame extends it directly.
+  const frameBases = new WeakMap();
+  function frameBase(p) {
+    const K = p && p.constructor;
+    if (typeof K !== 'function') return null;
+    if (frameBases.has(K)) return frameBases.get(K);
+    let B = Object.getPrototypeOf(K);
+    try { if (!(typeof B === 'function' && B.prototype && typeof B.prototype.render === 'function' && Array.isArray(new B(p.device).beforePasses))) B = null; } catch (e) { B = null; }
+    frameBases.set(K, B);
+    return B;
+  }
+  const HALTON = [[0.5, 0.333333], [0.25, 0.666667], [0.75, 0.111111], [0.125, 0.444444], [0.625, 0.777778], [0.375, 0.222222], [0.875, 0.555556], [0.0625, 0.888889],
+    [0.5625, 0.037037], [0.3125, 0.37037], [0.8125, 0.703704], [0.1875, 0.148148], [0.6875, 0.481481], [0.4375, 0.814815], [0.9375, 0.259259], [0.03125, 0.592593]]; // renderer.js _haltonSequence
+
+  function syncCameraFrame(st, want) {
+    const C = st.cf;
+    if (C && C.A === want && st.cam.camera.framePasses === C.list) return;
+    if (!C && !want) return;
+    if (C) uninstallCameraFrame(st);
+    if (want) {
+      try { installCameraFrame(st, want); } catch (e) {
+        warnOnce('pc-cf', 'could not split the CameraFrame per eye — standing down', e);
+        uninstallCameraFrame(st);
+        core.stand(st, 'CameraFrame could not be split per eye', { staged: true });
+      }
+    }
+  }
+  function installCameraFrame(st, A) {
+    const cam = st.cam, sc = cam.camera, dev = st.dev, FP = frameBase(A);
+    if (!st.eyeSrc) st.eyeSrc = { get width() { return st.R ? st.R.eyeW : realW(st.canvas) >> 1; }, get height() { return st.R ? st.R.eyeH : realH(st.canvas); } };
+    const C = (st.cf = {
+      A, B: null, list: null, n: 0, frames: 0, jit: [0, 0, 0, 0], prev: [null, null],
+      vp: [{ x: 0, y: 0, z: 1, w: 1 }, { x: 0, y: 0, z: 1, w: 1 }],
+      saved: { idx: dev.xrCurrentViewIndex, prev: sc._viewProjPrevious && sc._viewProjPrevious.clone(), inv: sc._viewProjInverse && sc._viewProjInverse.clone(), jit: Array.isArray(sc._jitters) ? sc._jitters.slice() : null },
+    });
+    const mark = (name, fn) => { const m = new FP(dev); m.name = name; m.execute = fn; return m; };
+    C.mS = [0, 1].map((i) => mark(`DxrEye${i}Scene`, () => eyeScene(st, i)));
+    C.mA = [0, 1].map((i) => mark(`DxrEye${i}After`, () => eyeAfter(st)));
+    C.mEnd = mark('DxrEyeEnd', () => eyeEnd(st));
+    hookPass(st, A, 0);
+    C.B = new A.constructor(st.app, A.cameraFrame, cam, A.options);
+    hookPass(st, C.B, 1);
+    syncB(st);
+    const proxy = (i) => {
+      const p = new FP(dev);
+      p.name = `DxrEye${i}`;
+      p.enabled = false; // never rendered: the frame graph only runs its frameUpdate and adds its before passes
+      p.beforePasses = i ? [C.mS[1], C.B, C.mEnd] : [C.mS[0], A];
+      p.frameUpdate = () => { if (st.cf !== C) return; if (i === 0) { if (A.layersDirty) C.B.layersDirty = true; } else syncB(st); };
+      p.destroy = () => { if (st.cf === C && i === 0) uninstallCameraFrame(st, true); }; // CameraFrame.disable(): the page destroys its pass
+      return p;
+    };
+    C.list = [proxy(0), proxy(1)];
+    cam.framePasses = C.list;
+    info('CameraFrame split per eye:', JSON.stringify(describeCameraFrame(st)));
+  }
+  // Adopt a FramePassCameraFrame's passes for eye i; re-run after each of its rebuilds (update() ->
+  // reset() -> setupRenderPasses() on an options or layer change).
+  function hookPass(st, P, i) {
+    const own = Object.prototype.hasOwnProperty.call(P, 'setupRenderPasses');
+    const orig = P.setupRenderPasses;
+    P.setupRenderPasses = function (o) { const r = orig.call(this, o); if (st.cf && (st.cf.A === this || st.cf.B === this)) adoptPasses(st, this, i); return r; };
+    P.__dxrSetup = own ? orig : null;
+    adoptPasses(st, P, i);
+  }
+  function adoptPasses(st, P, i) {
+    const C = st.cf;
+    if (P.sceneOptions) P.sceneOptions.resizeSource = st.eyeSrc; // scenePass / prePass hold this object
+    const cp = P.composePass;
+    if (cp) {
+      cp.viewport = C.vp[i]; cp.scissor = C.vp[i];
+      cp.afterPasses = [C.mA[i]];
+      if (i === 1) { cp.setClearColor(undefined); cp.setClearDepth(undefined); cp.setClearStencil(undefined); }
+    }
+    for (const pass of P.beforePasses) {
+      const steps = pass && pass.layerRenderSteps;
+      if (steps) for (const s of steps) { if (i === 1) s.firstCameraUse = false; else s.lastCameraUse = false; }
+    }
+  }
+  function unhookPass(st, P, cam) {
+    if (P.__dxrSetup === undefined) return;
+    if (P.__dxrSetup) P.setupRenderPasses = P.__dxrSetup; else delete P.setupRenderPasses;
+    delete P.__dxrSetup;
+    if (P.sceneOptions) P.sceneOptions.resizeSource = cam.renderTarget;
+    const cp = P.composePass;
+    if (cp) { cp.viewport = undefined; cp.scissor = undefined; cp.afterPasses = []; }
+    if (typeof P.updateCameraUseFlags === 'function') P.updateCameraUseFlags();
+  }
+  // CameraFrame.update() for B: the page's current settings, B's passes.
+  function syncB(st) {
+    const C = st.cf, cf = C.A.cameraFrame;
+    if (!cf || cf.renderPassCamera !== C.A || typeof cf.update !== 'function') return;
+    cf.renderPassCamera = C.B;
+    try { cf.update(); } finally { cf.renderPassCamera = C.A; }
+  }
+  function uninstallCameraFrame(st, pageDestroys) {
+    const C = st.cf;
+    if (!C) return;
+    st.cf = null;
+    const cam = st.cam || st.qualifyCam, sc = cam && cam.camera, dev = st.dev;
+    try { if (cam && sc.framePasses === C.list) cam.framePasses = pageDestroys ? [] : [C.A]; } catch (e) { /* ignore */ }
+    try { unhookPass(st, C.A, cam); } catch (e) { /* ignore */ }
+    if (C.B) { try { unhookPass(st, C.B, cam); C.B.destroy(); } catch (e) { warnOnce('pc-cf-b', 'eye 1 CameraFrame passes did not destroy cleanly', e); } }
+    if (pageDestroys) { try { C.A.destroy(); } catch (e) { /* the page's own pass */ } }
+    else if (C.A.sceneDepthTexture && cam) {
+      // B's reset() cleared the camera's scene-depth flags, which A (still the page's) needs.
+      const sp = cam.shaderParams;
+      sp.sceneDepthMapLinear = true; sp.sceneDepthMapPacked = false; sp.sceneDepthMapReciprocal = true;
+    }
+    try { dev.xrCurrentViewIndex = C.saved.idx; } catch (e) { /* ignore */ }
+    if (sc) {
+      try {
+        if (C.saved.prev) sc._viewProjPrevious.copy(C.saved.prev);
+        if (C.saved.inv) sc._viewProjInverse.copy(C.saved.inv);
+        if (C.saved.jit) for (let k = 0; k < 4; k++) sc._jitters[k] = C.saved.jit[k];
+      } catch (e) { /* ignore */ }
+    }
+    if (st.views && st.R) for (let k = 0; k < 2; k++) st.views[k].setViewport(k * st.R.eyeW, 0, st.R.eyeW, st.R.eyeH);
+  }
+  // Markers (render time).
+  function eyeScene(st, i) {
+    const C = st.cf;
+    if (!C || !st.views) return;
+    const P = i ? C.B : C.A, sc = st.cam.camera, R = st.R;
+    st.dev.xrCurrentViewIndex = i;
+    const rt = P.rt, w = rt ? rt.width : R.eyeW, h = rt ? rt.height : R.eyeH;
+    for (const v of st.views) v.setViewport(0, 0, w, h);
+    // The compose quad goes to this eye's half of the store.
+    const vp = C.vp[i]; vp.x = i * R.eyeW; vp.y = 0; vp.z = R.eyeW; vp.w = R.eyeH;
+    if (P.taaPass && sc._viewProjPrevious) {
+      sc.updateViewTransforms();
+      const cur = st.views[i].projViewOffMat;
+      const prev = C.prev[i] || (C.prev[i] = cur.clone());
+      sc._viewProjPrevious.copy(prev);
+      sc._viewProjInverse.invert(cur);
+      prev.copy(cur);
+      for (let k = 0; k < 4; k++) sc._jitters[k] = C.jit[k];
+    }
+  }
+  function eyeAfter(st) {
+    const R = st.R;
+    if (st.views && R) for (let k = 0; k < 2; k++) st.views[k].setViewport(k * R.eyeW, 0, R.eyeW, R.eyeH);
+  }
+  function eyeEnd(st) {
+    const C = st.cf;
+    if (!C) return;
+    st.dev.xrCurrentViewIndex = C.saved.idx;
+    C.frames++;
+  }
+  // TAA jitter on both eye projections (prerender, after updateViews set them): the engine's own
+  // sequence and amplitude (renderer.js setCameraUniforms), in eye-target pixels.
+  function cameraFrameJitter(st) {
+    const C = st.cf, A = C.A, j = C.jit, sc = st.cam.camera;
+    j[2] = j[0]; j[3] = j[1];
+    if (!A.taaPass || !(sc.jitter > 0) || core.T.pcTaaJitter === false) { j[0] = j[1] = 0; return; }
+    const o = HALTON[C.n++ % HALTON.length];
+    const w = (A.rt && A.rt.width) || st.R.eyeW, h = (A.rt && A.rt.height) || st.R.eyeH;
+    j[0] = (sc.jitter * (o[0] * 2 - 1)) / w; j[1] = (sc.jitter * (o[1] * 2 - 1)) / h;
+    for (const v of st.views) { v.projMat.data[8] += j[0]; v.projMat.data[9] += j[1]; }
+  }
+  function describeCameraFrame(st) {
+    const C = st.cf;
+    if (!C) return null;
+    const one = (P) => P && {
+      target: P.rt ? [P.rt.width, P.rt.height] : null, taa: !!P.taaPass, bloom: !!P.bloomPass, ssao: !!P.ssaoPass, dof: !!P.dofPass,
+      prepass: !!P.prePass, sceneDepth: !!P.sceneDepthTexture,
+      compose: P.composePass ? { vp: P.composePass.viewport ? { ...P.composePass.viewport } : null, clears: !!(P.composePass.colorArrayOps && P.composePass.colorArrayOps[0] && P.composePass.colorArrayOps[0].clear) } : null,
+    };
+    return { eyes: [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2) };
+  }
+
+  // ------------------------------------------------------------ pages that size the canvas themselves
+  // supersplat-viewer (1.37) sizes the canvas by writing canvas.width / height on the app's
+  // 'framerender' (its resizeCanvas, with app._allowResize = false), never through
+  // device.setResolution, and does so whenever canvas.width differs from ITS size: every frame of a
+  // converted SBS store. While converted, a write the adapter does not make itself (st.depth) is
+  // recorded as the page's size (st.L) and the store stays side by side (resized only when the
+  // element's size gives another SBS size). Reads stay REAL (the engine reads canvas.width). The
+  // instance accessors come off at stand-down, after the mono store is put back.
+  function trapCanvasSize(st) {
+    if (st.trapped || core.T.pcCanvasTrap === false) return;
+    const c = st.canvas;
+    const def = (prop, D, isW) => Object.defineProperty(c, prop, {
+      configurable: true, enumerable: true,
+      get() { return D.get.call(this); },
+      set(v) {
+        if (!st.active || st.depth > 0) { D.set.call(this, v); return; }
+        const n = Math.max(0, Math.floor(+v || 0));
+        if (isW) st.L.w = n; else st.L.h = n;
+        st.pageSizeWrites = (st.pageSizeWrites || 0) + 1;
+        warnOnce('pc-rawsize', 'the page writes canvas.width / height itself (not device.setResolution): kept the side-by-side store, recorded as the page\'s size');
+        if (applyRealSize(st)) st.app.renderNextFrame = true;
+      },
+    });
+    def('width', core.CANVAS_W, true);
+    def('height', core.CANVAS_H, false);
+    st.trapped = true;
+  }
+  function untrapCanvasSize(st) {
+    if (!st.trapped) return;
+    st.trapped = false;
+    try { delete st.canvas.width; delete st.canvas.height; } catch (e) { /* ignore */ }
   }
 
   // ------------------------------------------------------------ shadow distance
