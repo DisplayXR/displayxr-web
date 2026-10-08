@@ -25,3 +25,6 @@ package-lock.json
 # Bundler smoke tests (test/bundlers): installed tools and build output, never committed
 test/bundlers/node_modules/
 test/bundlers/out/
+
+# Panel e2e run output (test/e2e/samples-panel.e2e.mjs): screenshots, logs, results
+test/e2e/out/

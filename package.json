@@ -176,6 +176,7 @@
     "test:e2e": "node test/e2e/call-element.e2e.mjs",
     "test:e2e:camera": "node test/e2e/camera.e2e.mjs",
     "test:e2e:cursor": "node test/e2e/cursor-depth.e2e.mjs",
+    "test:e2e:samples-panel": "node test/e2e/samples-panel.e2e.mjs",
     "api:check": "node tools/api-surface.mjs --check",
     "api:update": "node tools/api-surface.mjs --update",
     "check:snippets": "node tools/check-snippets.mjs",
