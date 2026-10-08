@@ -16,7 +16,7 @@
 // Not here: measureSplatBounds (it measures a Spark mesh — import it from ./splat).
 
 import { resolveRevealOption } from './inline3d-splat-effects.js';
-import { CAPTURE_FITS, playcanvasCannotRead, resolveControls } from './inline3d-splat-shared.js';
+import { CAPTURE_FITS, guardedAttach, playcanvasCannotRead, resolveControls } from './inline3d-splat-shared.js';
 import { addSplatDeferred } from './inline3d-splat-deferred.js';
 
 export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
@@ -25,6 +25,12 @@ export { resolveRig } from './inline3d-splat-rig.js';
 
 /** addSplat with `engine: 'playcanvas'`; the same validation, at the call, as ./splat's. */
 export function addSplat(wall, canvas, src, opts = {}) {
+  // One registration per canvas per wall: a second call on a live canvas warns once and returns
+  // the first handle (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addSplat', opts, (o) => addSplatUnguarded(wall, canvas, src, o));
+}
+
+function addSplatUnguarded(wall, canvas, src, opts = {}) {
   if (opts.engine !== undefined && opts.engine !== 'playcanvas') {
     throw new Error(
       `@displayxr/inline3d/splat/playcanvas: engine "${opts.engine}" — this entry is PlayCanvas ` +

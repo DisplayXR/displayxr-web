@@ -96,6 +96,25 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
   paint too. It runs only on a real change, and a throw is caught. Without it, nothing changes:
   no observer is attached to a scene canvas.
 
+### Double-attach guard (core, and the `./splat` / `./model` entries)
+
+- **One registration per canvas per manager.** `addScene` / `addImage` / `addVideo` /
+  `addSplat` / `addModel` on a canvas that is still registered on the same wall (not yet
+  `remove()`d) now:
+  - warns once per canvas, naming the method and the first registration that is still live;
+  - returns the **existing** handle, and creates no second layer or renderer.
+- **Behavior change in the core.** Before, a second call closed the window's layer and built a
+  new one. That started a fresh 0.4–1.2 s identity gap every time, and on `./splat` / `./model` it
+  put a second renderer on the same context.
+  - A page that re-called `addImage(canvas, newSource)` to swap pictures now keeps the first
+    picture, with the warning saying why.
+  - To swap content, redraw a source canvas or use `setSource`. To re-register on purpose,
+    `remove()` first.
+- `./splat` and `./model` check at their entry, not only in `addScene`: their renderer exists
+  before their core window. A core `add*()` on a canvas that `addSplat` / `addModel` holds returns
+  that subpath handle. A subpath handle whose load failed keeps the canvas until its `remove()`.
+- From a kiosk demo that attached its stage twice per screen visit.
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

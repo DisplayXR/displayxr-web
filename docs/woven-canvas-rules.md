@@ -68,8 +68,11 @@ re-renders over, and change what is **in** it:
 - **Scenes:** swap the content inside your `onFrame`, never the canvas.
 - **Splats on the PlayCanvas backend:** `handle.setSource(src, { fadeMs, resetPose })`.
 
-Calling `add*()` again on the same canvas is not a content swap. It closes the window's layer and
-builds a new one.
+Calling `add*()` again on the same canvas is not a content swap. Since 1.38 the SDK refuses
+it: while the first registration is live (not `remove()`d), a second `addScene` / `addImage` /
+`addVideo` / `addSplat` / `addModel` on that canvas warns once and returns the **existing** handle,
+and no second layer or renderer is created. Before 1.38 it closed the window's layer and built a
+new one: a fresh identity gap on every call. To re-register on purpose, `remove()` first.
 
 ### 3. Prefer one persistent canvas for the whole app
 

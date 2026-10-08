@@ -799,6 +799,11 @@ class Inline3D {
     this.session = session;
     this.refSpace = refSpace;
     this._windows = new Map(); // canvas -> window record
+    // Double-attach guard. `_claims`: canvases a scene subpath entry (addSplat / addModel) has
+    // taken before its core window exists (canvas -> { token, method, handle }); `_doubleWarned`:
+    // canvases already warned about, so a page calling add*() per render warns once.
+    this._claims = new Map();
+    this._doubleWarned = new WeakSet();
     this._globalOverlays = new Set(); // page-global overlays excluded from EVERY window
     // el -> Set(window) currently excluding it. Isolation (will-change) is a GLOBAL
     // property of the element while exclusion is PER-WINDOW, so the promotion has to
@@ -1046,12 +1051,15 @@ class Inline3D {
    * @returns {{remove():void}}
    */
   addImage(canvas, source, opts = {}) {
+    const dup = this._existingAttachment(canvas, opts._dxrClaim);
+    if (dup) return this._refuseDoubleAttach(canvas, 'addImage', dup);
     const win = this._register(canvas, 'image', opts);
+    win.method = 'addImage';
     win.ready = loadImage(source).then((img) => {
       win.img = img;
       win.repaint();
     });
-    return this._handle(canvas, win);
+    return (win.handle = this._handle(canvas, win));
   }
 
   /**
@@ -1062,9 +1070,12 @@ class Inline3D {
    * @returns {{remove():void}}
    */
   addVideo(canvas, video, opts = {}) {
+    const dup = this._existingAttachment(canvas, opts._dxrClaim);
+    if (dup) return this._refuseDoubleAttach(canvas, 'addVideo', dup);
     const win = this._register(canvas, 'video', opts);
+    win.method = 'addVideo';
     win.video = video;
-    return this._handle(canvas, win);
+    return (win.handle = this._handle(canvas, win));
   }
 
   /**
@@ -1107,14 +1118,91 @@ class Inline3D {
     // The rig and the height describe the same one slot in the layer init, so warn where a
     // caller has said it twice — silently dropping one of two things the page explicitly asked
     // for is how a scene ends up framed at a scale nobody chose.
+    const dup = this._existingAttachment(canvas, opts._dxrClaim);
+    if (dup) return this._refuseDoubleAttach(canvas, 'addScene', dup);
     if (opts.viewRig && opts.virtualDisplayHeight !== undefined) noteRigWinsOverHeight();
     const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
+    win.method = 'addScene';
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
     // The SDK's own renderers (./viewer, ./splat, ./model) clamp their buffers before sizing and
     // say so, so the core never inspects (or creates!) their GL context — see _checkSceneBuffer.
     if (opts.bufferClamped === true) win.warnedBufMismatch = true;
-    return this._handle(canvas, win);
+    return (win.handle = this._handle(canvas, win));
+  }
+
+  // ── double-attach guard ───────────────────────────────────────────────────────────────
+  //
+  // A second add*() on a canvas that is still registered used to close its layer and build a new
+  // one: a fresh identity gap on purpose (rule 2), and for ./splat and ./model a second renderer
+  // on the same context. A kiosk demo attached its stage twice per screen visit this way, without
+  // noticing. The first registration is what the page is actually looking at, so the second call
+  // is answered with it: one warning per canvas, the EXISTING handle, no new layer.
+
+  /** The live registration on `canvas` other than the one `token` belongs to: { method, handle } or null. */
+  _existingAttachment(canvas, token) {
+    const claim = this._claims.get(canvas);
+    if (claim && claim.token !== token) return claim;
+    const win = this._windows.get(canvas);
+    if (win && win.handle) return { method: win.method || 'add*', handle: win.handle };
+    return null;
+  }
+
+  _refuseDoubleAttach(canvas, method, dup) {
+    if (!this._doubleWarned.has(canvas)) {
+      this._doubleWarned.add(canvas);
+      console.warn(
+        `[inline3d] ${method}() on a canvas that is already registered on this inline-3D session ` +
+          `(by ${dup.method}(), not yet removed): the first registration is still live, so this ` +
+          'call returns ITS handle and creates no second layer. Re-registering would close and ' +
+          "rebuild the canvas's layer (a fresh 0.4-1.2 s identity gap) or put a second renderer on " +
+          'its context. Change what is IN the canvas instead (setSource, your onFrame, a redrawn ' +
+          'source canvas), or call handle.remove() first.',
+        canvas
+      );
+    }
+    return dup.handle;
+  }
+
+  /**
+   * For the scene subpath entries (via guardedAttach in ./inline3d-splat-shared.js). Returns
+   * `{ existing }` for a canvas already registered (warned), else `{ opts, own }`: attach with
+   * `opts` (it carries the claim token down to this entry's own addScene), then `own(handle)`.
+   * A nested entry (./model's engine:'three' route calls ./model/three's addModel) inherits the
+   * claim through the same token.
+   */
+  _attachGuard(canvas, method, opts = {}) {
+    const claim = this._claims.get(canvas);
+    if (opts && opts._dxrClaim && claim && claim.token === opts._dxrClaim) return { existing: null, opts, own: () => {} };
+    const dup = this._existingAttachment(canvas, null);
+    if (dup) return { existing: this._refuseDoubleAttach(canvas, method, dup), opts, own: () => {} };
+    const token = {};
+    return { existing: null, opts: { ...opts, _dxrClaim: token }, own: (out) => this._claim(canvas, method, out, token) };
+  }
+
+  /**
+   * Hold `canvas` for a subpath handle until that handle's remove(). The adapters REASSIGN
+   * `out.remove` when their module loads (a queued stub first, the real one later), so the release
+   * rides an accessor that wraps whatever is assigned. A handle whose load failed stays claimed
+   * until its remove(), like any registration: "not yet removed" is the rule.
+   */
+  _claim(canvas, method, out, token) {
+    if (!this._running || !out || typeof out !== 'object') return;
+    const claim = { token, method, handle: out };
+    this._claims.set(canvas, claim);
+    let impl = out.remove;
+    const remove = (...args) => {
+      if (this._claims.get(canvas) === claim) this._claims.delete(canvas);
+      return typeof impl === 'function' ? impl.apply(out, args) : undefined;
+    };
+    Object.defineProperty(out, 'remove', {
+      configurable: true,
+      enumerable: true,
+      get: () => remove,
+      set: (fn) => {
+        impl = fn;
+      },
+    });
   }
 
   /**
@@ -3555,6 +3643,7 @@ class Inline3D {
       this._dropCover(win);
     }
     this._windows.clear();
+    this._claims.clear();
     // Nobody is tracked through a session that has ended: say so ONCE, before the listeners are
     // dropped, so a page that gated its UI on 'tracking' is released rather than left latched. A
     // browser that never reported one is already 'unknown' and this is silent.

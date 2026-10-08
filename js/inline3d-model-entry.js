@@ -21,6 +21,7 @@
 // engine import fails, one warning names what to install, and the tile renders on three. With
 // neither, `ready` rejects naming both. An explicit `engine` never falls back.
 
+import { guardedAttach } from './inline3d-splat-shared.js';
 /** The engines `addModel` renders with; the first is the default. */
 export const MODEL_ENGINES = Object.freeze(['playcanvas', 'three']);
 
@@ -98,6 +99,12 @@ export function validateModelCall(canvas, src, opts, route) {
  *          fill in as the backend loads.
  */
 export function addModel(wall, canvas, src, opts = {}) {
+  // One registration per canvas per wall: a second call on a live canvas warns once and returns
+  // the first handle (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addModel', opts, (o) => addModelUnguarded(wall, canvas, src, o));
+}
+
+function addModelUnguarded(wall, canvas, src, opts = {}) {
   const route = resolveModelEngine(opts);
   validateModelCall(canvas, src, opts, route);
   if (route.engine === 'playcanvas') {

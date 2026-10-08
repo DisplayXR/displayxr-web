@@ -38,6 +38,7 @@
 // your own origin (`/draco/`, `/basis/`) and `opts.decoderPath` moves that. See
 // docs/authoring-inline-3d.md#compressed-gltf.
 
+import { guardedAttach } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
@@ -345,6 +346,12 @@ function kindFromMessage(msg) {
  *          `setPose`, `resetPose`, `frame`, and `ready`.
  */
 export function addModel(wall, canvas, src, opts = {}) {
+  // One registration per canvas per wall: a second call on a live canvas warns once and returns
+  // the first handle (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addModel', opts, (o) => addModelUnguarded(wall, canvas, src, o));
+}
+
+function addModelUnguarded(wall, canvas, src, opts = {}) {
   const {
     virtualDisplayHeight = 0.24,
     frame = null,
@@ -429,6 +436,8 @@ export function addModel(wall, canvas, src, opts = {}) {
       // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
       // preview tier; 'off' for a page that runs its own cover.
       rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();

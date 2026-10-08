@@ -373,7 +373,13 @@ export type SceneFrameCallback = (
   frame: XRFrame,
 ) => void;
 
-/** The handle returned by every add*() call. */
+/**
+ * The handle returned by every add*() call.
+ *
+ * One registration per canvas per manager: an add*() on a canvas that is still registered (not
+ * `remove()`d) warns once per canvas and returns the EXISTING handle, creating no second layer
+ * (1.38; before, it closed and rebuilt the layer). `remove()` first to re-register.
+ */
 export interface TileHandle {
   /** Remove this window: close its weave layer and stop driving it. */
   remove(): void;
