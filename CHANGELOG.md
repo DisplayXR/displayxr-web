@@ -5,6 +5,17 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./call`) only: one default. No export or type changes.
+
+### `./call` — the stereo self view auto-converges too
+
+- The call's self view now follows the call's **`autoConverge`** option (default `true`) instead of
+  being hard-wired off, so your own stereo camera feed sits at the display plane like the remote
+  tiles. `autoConverge: false` turns it off for both. (`samples/camera` also starts with
+  auto-convergence on.)
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

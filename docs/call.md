@@ -138,7 +138,7 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `camera` | `'auto'` | `'auto'` opens the best camera through [`/camera`](camera.md): a stereo device when one is present (the DisplayXR Browser's "3D Camera", or a wide side-by-side device) else the default webcam; `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId` string; a `MediaStream` you own; or a `StereoCamera` from `openCamera()` (left open when the call ends) |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream` (`'sbs'` or `'mono'`). 3D-ness is never guessed from a stream |
 | `audio` | `true` | Microphone, with echo cancellation and noise suppression |
-| `autoConverge` | `true` | Measure the disparity of the point between a stereo peer's eyes and put that person at the display plane. No calibration needed |
+| `autoConverge` | `true` | Measure the disparity of the point between a stereo peer's eyes and put that person at the display plane. No calibration needed. Also governs your own stereo self view |
 | `mono3D` | `'auto'` | Lift 2D peers to 3D: `'auto'` · `'off'` · a `lift` function (see [`/call/full`](#callfull-vs-call--lift--which-import)) |
 | `liftOptions` | — | Extra `lift()` options, e.g. `{ models }` for where the depth model is served from, plus `max` (default 4): concurrent lifted tiles; further 2D peers stay flat |
 | `maxPeers` | `4` | Participants including you, clamped to 2–4 (full mesh) |
