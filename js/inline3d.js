@@ -422,6 +422,55 @@ function nowMs() {
 // report. Per-window override: `firstWovenHoldMs` on any add*() call.
 const FIRST_WOVEN_HOLD_MS = 1200;
 
+// The browser's own join report (DisplayXR Browser PR #258, Windows, behind a feature flag):
+// `XRDisplayLayer.wovenState` — 'pending' (no presented frame has reported this layer yet: from
+// construction, again after close(), and whenever the reply does not list it), 'woven' (the
+// latest swapped frame put this layer's rect into the weave) or 'withheld' (with a why-token in
+// `withheldReason`: no-quad / no-identity / no-join / cross-pass:mono / cross-pass:mono(cover,2:1)
+// / resolve-dropped). It is a per-frame LEVEL, nothing latched, read off the GetLatestViews reply,
+// and the layer is not an EventTarget — so polling it once per session frame is the whole API.
+//
+// Where it exists, firstWoven/rewoven settle on it (`confirmed: true`) instead of on the hold.
+// Where it does not (mac, Linux, Android, and every Windows build without the patch: the
+// attribute is deliberately absent there, so `in` on the prototype is an honest feature test)
+// the hold below is used exactly as before.
+const WOVEN_STATES = new Set(['pending', 'woven', 'withheld']);
+// The report trails the join by 1-3 renderer frames. After a rect change that never reads
+// anything but 'woven' (a move the browser rejoins without a gap), a 'woven' read only means the
+// NEW rect once this many session frames have passed since the change was seen; before that it
+// can still be the old rect's.
+const WOVEN_STATE_LAG_FRAMES = 3;
+
+/** Does this browser build report `XRDisplayLayer.wovenState`? Feature-tested on the prototype. */
+function hasWovenState() {
+  try {
+    const L = typeof XRDisplayLayer === 'function' ? XRDisplayLayer : null;
+    return !!(L && L.prototype && 'wovenState' in L.prototype);
+  } catch {
+    return false;
+  }
+}
+
+/** This layer's woven state, or null when the read fails or returns something not in the contract. */
+function readWovenState(layer) {
+  try {
+    const s = layer ? layer.wovenState : null;
+    return WOVEN_STATES.has(s) ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The why-token while 'withheld', else null. */
+function readWithheldReason(layer) {
+  try {
+    const r = layer ? layer.withheldReason : null;
+    return typeof r === 'string' && r ? r : null;
+  } catch {
+    return null;
+  }
+}
+
 // The easing option, validated here rather than in the state machine: the sequencer falls back
 // silently (it has no opinion about a caller's config), but a typo in `createInline3D` is worth
 // exactly one warning — a page that asked for 'ease-in-out' and got smoothstep should know.
@@ -1221,14 +1270,35 @@ class Inline3D {
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
       stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
       /**
+       * The browser's own report for this window's layer, read live: 'pending' | 'woven' |
+       * 'withheld', or null on a browser that does not report it (the attribute is absent: mac,
+       * Linux, Android, Windows builds without it). 'pending' too while the window has no live
+       * layer (lazy, scrolled away), matching what the browser says of a closed layer. For
+       * diagnostics and pages; firstWoven/rewoven already settle on it.
+       */
+      get wovenState() {
+        if (!hasWovenState()) return null;
+        if (!win.layer) return 'pending';
+        return readWovenState(win.layer);
+      },
+      /** The browser's why-token while `wovenState` is 'withheld' (e.g. 'no-identity'), else null. */
+      get withheldReason() {
+        if (!hasWovenState() || !win.layer) return null;
+        return readWovenState(win.layer) === 'withheld' ? readWithheldReason(win.layer) : null;
+      },
+      /**
        * Resolves ONCE, never rejects: `{ woven, confirmed, reason, ms }`.
        *
        * `woven: true` — the window has drawn a stereo frame on a layer that has existed for
        * `firstWovenHoldMs` (default 1200). That is the moment to drop a poster covering the
-       * canvas. `confirmed` is `false` today, always: no browser reports when its compositor
-       * actually joined a canvas, so this is the browser's worst case, measured by the SDK so
-       * pages stop measuring it themselves. It becomes a reported fact (`confirmed: true`, no
-       * hold) when a browser can say so, with no change to the page.
+       * canvas. On a browser without `XRDisplayLayer.wovenState` this is the browser's worst
+       * case, measured by the SDK (`confirmed: false`, reason 'hold-elapsed'). On one that has it,
+       * it is the browser's report: `confirmed: true`, reason 'woven', on the first 'woven' read
+       * once a stereo frame is drawn, with no hold. Same page code on both.
+       *
+       * On the report, a layer that stays 'withheld' still settles after a cap (four holds, at
+       * least 4.8 s): `woven: false, confirmed: true, reason: <withheldReason>` (or 'pending').
+       * That is a level, not a loss: the canvas is NOT taken flat, and `rewoven()` keeps working.
        *
        * `woven: false` — this window will not weave: `reason` is `'layer-failed'`,
        * `'session-ended'` or `'removed'`. The SDK has already taken an image/video canvas flat,
@@ -1270,6 +1340,12 @@ class Inline3D {
        * animating cannot keep a cover up. Calling it again while pending returns the same
        * promise, restarted. Before the first join it IS `firstWoven`; on a window that will not
        * weave it resolves that `woven: false` result. Same shape, never rejects.
+       *
+       * On a browser with `XRDisplayLayer.wovenState` it settles on the report (`confirmed: true`,
+       * reason 'woven'): on a 'woven' read that follows a 'withheld'/'pending' read seen after the
+       * call, or three session frames after the last box change, so a stale 'woven' from the old
+       * rect never settles it. The cap stays: a layer that never leaves 'withheld' settles `woven:
+       * false, confirmed: true, reason: <withheldReason>` four holds after the call.
        */
       rewoven: () => this._rewoven(win),
     };
@@ -2054,6 +2130,9 @@ class Inline3D {
       // firstWoven's two halves again, counted from the call (and from each later box change).
       rw: null,
       rwGone: null, // the reason this window will never weave again, once one arrived
+      // Whether the CURRENT layer is on a browser that reports `wovenState` (set per layer in
+      // _activate). False keeps firstWoven/rewoven on the hold, exactly as before the report.
+      wsLive: false,
     };
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
@@ -2148,6 +2227,7 @@ class Inline3D {
       win.fwLayerAt = nowMs();
       win.fwStereo = false;
     }
+    win.wsLive = hasWovenState();
     this._restartRewoven(win);
     win.layerLostSent = false; // a live layer again: a future loss is worth reporting again
     // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
@@ -2920,6 +3000,13 @@ class Inline3D {
    * which knows nothing about whether the compositor has matched this canvas yet.
    */
   _tickFirstWoven(win) {
+    // The browser's report, where it has one. An unreadable or out-of-contract value falls back
+    // to the hold for this frame rather than guessing.
+    const ws = win.wsLive && win.layer ? readWovenState(win.layer) : null;
+    if (ws) {
+      this._tickWovenState(win, ws);
+      return;
+    }
     if (win.rw) {
       // Every frame, for every window kind: the ResizeObserver only watches SDK-sized buffers, and
       // no observer sees a dpr-only change.
@@ -2939,16 +3026,67 @@ class Inline3D {
     this._settleFirstWoven(win, true, 'hold-elapsed');
   }
 
-  /** One-shot: the first call wins, later ones are ignored. */
-  _settleFirstWoven(win, woven, reason) {
+  /**
+   * firstWoven / rewoven on the browser's report (`wovenState`, see WOVEN_STATES). Per session
+   * frame, per live window, one attribute read.
+   *
+   * firstWoven: the first 'woven' read once the layer has carried a stereo frame — no hold.
+   *
+   * rewoven(): a 'woven' read is only trusted as the NEW rect's once it follows a 'withheld' or
+   * 'pending' read seen after the call (the rect left the weave and came back), or once
+   * WOVEN_STATE_LAG_FRAMES frames have passed since the last box change (a move rejoined without
+   * a gap). A call with no box change and no gap settles after a hold of steady 'woven' reads,
+   * the same wait as without the report. Either way it needs a stereo frame since the last
+   * restart, as on the hold path.
+   *
+   * The cap stays, as a safety: the report is a level, and a layer that never leaves 'withheld'
+   * (a CSS effect on an ancestor, rule 7) must not hold a cover up for good. Four holds (never
+   * fewer than four default holds, so `firstWovenHoldMs: 0` does not mean "give up at once")
+   * after the call, it settles anyway: `woven: false` with the browser's reason while withheld,
+   * or `'hold-capped'` if the last read was 'woven' but never qualified.
+   */
+  _tickWovenState(win, state) {
+    const t = nowMs();
+    const cap = REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+    if (win.rw) {
+      this._noteRewovenBox(win); // first, so a change seen this frame is not credited to this read
+      const rw = win.rw;
+      if (state !== 'woven') rw.gap = true;
+      else if (
+        rw.stereo &&
+        (rw.gap ||
+          (rw.boxFrame !== null && this._frameCount - rw.boxFrame >= WOVEN_STATE_LAG_FRAMES) ||
+          (rw.boxFrame === null && t - rw.at >= win.fwHoldMs))
+      ) {
+        this._settleRewoven(win, true, 'woven', true);
+      }
+      if (win.rw && t - rw.calledAt >= cap) {
+        if (state === 'woven') this._settleRewoven(win, true, 'hold-capped', true);
+        else this._settleRewoven(win, false, readWithheldReason(win.layer) || state, true);
+      }
+    }
+    if (win.fwResult || win.fwLayerAt === null) return;
+    if (win.fwStereo && state === 'woven') this._settleFirstWoven(win, true, 'woven', true);
+    else if (t - win.fwLayerAt >= cap) {
+      if (state === 'woven') this._settleFirstWoven(win, true, 'hold-capped', true);
+      else this._settleFirstWoven(win, false, readWithheldReason(win.layer) || state, true);
+    }
+  }
+
+  /**
+   * One-shot: the first call wins, later ones are ignored. `confirmed` marks a result read off
+   * the browser's report; a confirmed `woven: false` is a capped 'withheld' level, which can still
+   * recover, so it is NOT a terminal "will not weave" and leaves rewoven() usable.
+   */
+  _settleFirstWoven(win, woven, reason, confirmed = false) {
     // Every "will not weave" path lands here, so a pending rewoven() is released with it, and a
     // later one answers at once (firstWoven may have settled woven:true long before).
-    if (!woven) {
+    if (!woven && !confirmed) {
       if (!win.rwGone) win.rwGone = reason;
       this._settleRewoven(win, false, reason);
     }
     if (win.fwResult) return;
-    win.fwResult = Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - win.fwRegAt) });
+    win.fwResult = Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - win.fwRegAt) });
     win.fwResolve(win.fwResult);
     win.fwResolve = null;
   }
@@ -2956,7 +3094,9 @@ class Inline3D {
   /** handle.rewoven(): see the handle's doc comment. */
   _rewoven(win) {
     if (!win.fwResult) return win.fwPromise; // still on the first join: the same question
-    if (!win.fwResult.woven) return Promise.resolve(win.fwResult);
+    // A terminal no-weave answers at once. A CONFIRMED woven:false (the first join capped while
+    // the browser reported 'withheld') is a level that can recover, so it is measured again.
+    if (!win.fwResult.woven && !win.fwResult.confirmed) return Promise.resolve(win.fwResult);
     if (win.rwGone) return Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: win.rwGone, ms: 0 }));
     if (win.rw) {
       this._restartRewoven(win);
@@ -2967,7 +3107,9 @@ class Inline3D {
       resolve = r;
     });
     const t = nowMs();
-    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false, box: boxKeyOf(win.canvas) };
+    // `gap` / `boxFrame` are the wovenState path's (see _tickWovenState): a 'withheld'/'pending'
+    // read since the last restart, and the session frame of the last box change (null = none).
+    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false, box: boxKeyOf(win.canvas), gap: false, boxFrame: null };
     return promise;
   }
 
@@ -2986,13 +3128,15 @@ class Inline3D {
     if (!win.rw) return;
     win.rw.at = nowMs();
     win.rw.stereo = false;
+    win.rw.gap = false;
+    win.rw.boxFrame = this._frameCount;
   }
 
-  _settleRewoven(win, woven, reason) {
+  _settleRewoven(win, woven, reason, confirmed = false) {
     const rw = win.rw;
     if (!rw) return;
     win.rw = null;
-    rw.resolve(Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - rw.calledAt) }));
+    rw.resolve(Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - rw.calledAt) }));
   }
 
   // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────

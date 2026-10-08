@@ -32,6 +32,30 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
 - Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
   stage queue), vendored there as a local patch first.
 
+### Core: `firstWoven` / `rewoven()` settle on the browser's join report (`.`, additive)
+
+- **`XRDisplayLayer.wovenState`** (`'pending' | 'woven' | 'withheld'`, plus `withheldReason`) is
+  the browser's per-frame report of whether a layer's rect went into the weave (DisplayXR Browser
+  draft PR #258, Windows, feature-flagged). Detected with `'wovenState' in
+  XRDisplayLayer.prototype`. Where it is absent (mac, Linux, Android, Windows builds without it)
+  nothing changes: the hold, `confirmed: false`, byte for byte.
+- Where it is present:
+  - **`firstWoven`** settles `{ woven: true, confirmed: true, reason: 'woven' }` on the first
+    `'woven'` read once a stereo frame is drawn, with no hold.
+  - **`rewoven()`** settles on a `'woven'` read that follows a `'withheld'`/`'pending'` read seen
+    after the call, or three session frames after the last box change. The report trails the join
+    by 1–3 frames, so a `'woven'` from the old rect never settles it. With no change and no gap it
+    waits a hold of steady `'woven'` reads, as before.
+  - **The cap stays, as a safety.** A layer that never leaves `'withheld'` (a CSS effect on an
+    ancestor) settles `{ woven: false, confirmed: true, reason: <withheldReason> }` (or
+    `'pending'`) four holds after the call, never sooner than 4.8 s. That is a level, not a loss:
+    the canvas is not taken flat and `rewoven()` keeps working.
+- **New read-only `handle.wovenState` / `handle.withheldReason`** on the `TileHandle`, read live
+  (`null` where the browser does not report it, `'pending'` while the window has no layer). Types:
+  `WovenState`, `WovenWithheldReason`; `FirstWovenResult.reason` gains `'woven'`, `'pending'` and
+  the withheld tokens.
+- "Woven" means submitted to the weave. A GPU-stage failure after submit is not reflected.
+
 ## 1.37.1 — 2026-10-07
 
 ### Depth cursor: hybrid anchor keeps the line of sight, not the foot

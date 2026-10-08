@@ -117,16 +117,20 @@ poster.remove();                                       // cut, never fade
 
 | result | meaning | what to do |
 |---|---|---|
-| `woven: true`, `reason: 'hold-elapsed'` | the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
+| `woven: true`, `reason: 'woven'`, `confirmed: true` | the browser reported the layer woven (`XRDisplayLayer.wovenState`), after a real stereo frame | drop the cover |
+| `woven: true`, `reason: 'hold-elapsed'` | a browser without that report: the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
+| `woven: false`, `confirmed: true`, `reason` a withheld token (or `'pending'`) | the browser kept reporting the layer withheld for the whole safety cap (four holds, at least 4.8 s). The canvas is not taken flat | drop the cover, then read the token in §3: it names the page fix |
 | `woven: false`, `reason: 'layer-failed'` / `'session-ended'` / `'removed'` | this window will not weave. An image or video canvas has already been painted flat, and a scene's `onLayerLost` has already run | drop the cover onto the 2D fallback |
 | `woven: false`, `reason: 'unsupported'` (`addSplat` / `addModel` only) | no inline-3D session: the viewer is on its mono path | same |
 
-**`confirmed` is `false` today, always.** No shipping browser reports the join (§1), so
-`firstWoven` is the documented worst case, measured by the SDK so that each page does not measure
-it separately. When a browser can report the join, `firstWoven` settles on the report
-(`confirmed: true`, no hold) and **the page does not change**. That is the reason to code
-against it now rather than keep a local `setTimeout`. The browser ask is in
-[`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
+**`confirmed` says which of the two you got.** A DisplayXR Browser build with the join report
+(`XRDisplayLayer.wovenState`, Windows, behind a flag; detected with `'wovenState' in
+XRDisplayLayer.prototype`) settles `firstWoven` on the report: `confirmed: true`, no hold. On
+every other browser `firstWoven` is the documented worst case, measured by the SDK so that each
+page does not measure it separately (`confirmed: false`). **The page code is the same on both**,
+which is the reason to code against it rather than keep a local `setTimeout`. To see the report
+yourself, read `handle.wovenState` (`'pending'`, `'woven'`, `'withheld'`, or `null` where absent)
+and `handle.withheldReason`. Background: [`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
 
 What counts as a "real stereo frame": for a scene, an `onFrame` that received two or more views
 and did not throw. A frame with a short view list is the load fallback, and a frame that threw

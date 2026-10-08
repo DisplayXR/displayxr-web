@@ -1450,9 +1450,9 @@ poster.remove();                                         // cut, never fade
 
 `firstWoven` resolves once and never rejects. `woven: false` means the window will not weave
 (the layer failed, the session ended, the window was removed), and the canvas is already flat.
-Until a browser reports joins, `firstWoven` holds for the measured worst case
-(`firstWovenHoldMs`, default 1200) and `confirmed` is `false`. When a browser does report joins,
-it will settle on the report with no change to your page.
+On a browser that reports joins (`XRDisplayLayer.wovenState`), `firstWoven` settles on the report
+(`confirmed: true`, no hold). Elsewhere it holds for the measured worst case (`firstWovenHoldMs`,
+default 1200) and `confirmed` is `false`. Your page is the same on both.
 
 `handle.rewoven()` asks the same question again, measured from the call, for a canvas that is
 already woven but whose rect is about to change (rule 11). Same result shape; a box change while

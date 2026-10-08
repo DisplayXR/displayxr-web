@@ -27,24 +27,66 @@ export interface TileOptions {
 }
 
 /**
+ * The browser's per-frame report for one layer (`XRDisplayLayer.wovenState`, DisplayXR Browser
+ * builds that carry it; absent elsewhere). A level, never latched.
+ *
+ * - `'pending'` — no presented frame has reported this layer yet (from construction, again after
+ *   close(), and whenever the frame's reply does not list it).
+ * - `'woven'` — the latest swapped frame put this layer's rect into the weave.
+ * - `'withheld'` — it did not; {@link WovenWithheldReason} says why.
+ */
+export type WovenState = 'pending' | 'woven' | 'withheld';
+
+/**
+ * Why a layer reads `'withheld'` (`XRDisplayLayer.withheldReason`). The same tokens the browser
+ * logs; what each means and whose fix it is: `docs/woven-canvas-rules.md` §3. A future browser may
+ * add tokens, so treat an unknown string as "withheld, reason not listed".
+ */
+export type WovenWithheldReason =
+  | 'no-quad'
+  | 'no-identity'
+  | 'no-join'
+  | 'cross-pass:mono'
+  | 'cross-pass:mono(cover,2:1)'
+  | 'resolve-dropped'
+  | (string & {});
+
+/**
  * What {@link TileHandle.firstWoven} resolves to. Settles once and never rejects.
  *
- * - `woven: true, reason: 'hold-elapsed'` — a stereo frame is on a layer that has existed for
- *   `firstWovenHoldMs`. Drop the poster covering the canvas.
- * - `woven: true, reason: 'hold-capped'` — `rewoven()` only: the canvas kept resizing, so it
- *   stopped waiting four holds after the call. Drop the cover; the rect may still be settling.
- * - `woven: false` — the window will not weave (`'layer-failed'`, `'session-ended'`,
- *   `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat (image/video) or
- *   its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
+ * - `woven: true, reason: 'woven'` (`confirmed: true`) — the BROWSER reported the layer woven
+ *   (`XRDisplayLayer.wovenState`), after a stereo frame was drawn. No hold. Drop the poster.
+ * - `woven: true, reason: 'hold-elapsed'` (`confirmed: false`) — a browser without that report:
+ *   a stereo frame is on a layer that has existed for `firstWovenHoldMs`. Drop the poster.
+ * - `woven: true, reason: 'hold-capped'` — `rewoven()`: the canvas kept resizing or moving, so
+ *   it stopped waiting four holds after the call; with the report, also a 'woven' read that never
+ *   qualified (see {@link TileHandle.rewoven}). Drop the cover; the rect may still be settling.
+ * - `woven: false, confirmed: true`, `reason` a {@link WovenWithheldReason} or `'pending'` — the
+ *   browser kept reporting the layer withheld (or never listed it) for the whole cap: four holds,
+ *   at least 4.8 s. A safety release, not a loss: the canvas is NOT taken flat and `rewoven()`
+ *   keeps working. Drop the cover; what shows is what the browser draws for that reason
+ *   (`cross-pass:mono` is flat in place; `no-identity` can be the raw pair).
+ * - `woven: false, confirmed: false` — the window will not weave (`'layer-failed'`,
+ *   `'session-ended'`, `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat
+ *   (image/video) or its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
  */
 export interface FirstWovenResult {
   readonly woven: boolean;
   /**
-   * `true` only when the BROWSER reported the join. Always `false` today: no browser exposes
-   * that, so the result is the SDK's worst-case hold rather than a report.
+   * `true` only when the BROWSER reported the state (`XRDisplayLayer.wovenState`). `false` on a
+   * browser without that report: the result is then the SDK's worst-case hold.
    */
   readonly confirmed: boolean;
-  readonly reason: 'hold-elapsed' | 'hold-capped' | 'layer-failed' | 'session-ended' | 'removed' | 'unsupported';
+  readonly reason:
+    | 'woven'
+    | 'hold-elapsed'
+    | 'hold-capped'
+    | 'layer-failed'
+    | 'session-ended'
+    | 'removed'
+    | 'unsupported'
+    | 'pending'
+    | WovenWithheldReason;
   /** Milliseconds from the add*() call to settling. */
   readonly ms: number;
 }
@@ -423,9 +465,19 @@ export interface TileHandle {
    */
   stats(): { frames: number; monoFrames: number };
   /**
+   * The browser's report for this window's layer, read live ({@link WovenState}); `'pending'`
+   * while the window has no live layer; `null` on a browser that does not report it (the
+   * attribute is absent on mac, Linux, Android and Windows builds without it). Diagnostics:
+   * `firstWoven` / `rewoven()` already settle on it.
+   */
+  readonly wovenState: WovenState | null;
+  /** The why-token while {@link TileHandle.wovenState} is `'withheld'`, else `null`. */
+  readonly withheldReason: WovenWithheldReason | null;
+  /**
    * Resolves once, when it is safe to reveal this canvas: see {@link FirstWovenResult}. THE way to
    * release a poster held over a woven canvas — `await Promise.all([ready, handle.firstWoven])`
-   * and cut, never fade. Approximate until a browser reports joins (`confirmed` stays `false`).
+   * and cut, never fade. On a browser that reports `wovenState` it settles on that report
+   * (`confirmed: true`, no hold); elsewhere it is the worst-case hold (`confirmed: false`).
    */
   readonly firstWoven: Promise<FirstWovenResult>;
   /** Callback form of {@link TileHandle.firstWoven}: called once, asynchronously. Returns an unsubscribe. */
@@ -438,6 +490,13 @@ export interface TileHandle {
    * 'hold-capped'`, four holds after the call, so a size that never stops animating cannot hold a
    * cover up for good. A second call while pending returns the same promise, restarted. Before the
    * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
+   *
+   * On a browser that reports `wovenState` it settles `confirmed: true, reason: 'woven'` on a
+   * 'woven' read that follows a 'withheld'/'pending' read seen after the call, or three session
+   * frames after the last box change (the report trails the join by 1–3 frames, so a 'woven' from
+   * the old rect never settles it), or after a hold of steady 'woven' reads when nothing changed.
+   * The cap stays: still 'withheld' four holds after the call (at least 4.8 s), it settles `woven:
+   * false, confirmed: true, reason: <withheldReason>`.
    */
   rewoven(): Promise<FirstWovenResult>;
 }
