@@ -27,6 +27,7 @@ import { readSogCamera } from './inline3d-sog.js';
 import { resolveRevealOption, effectsNotOnSpark } from './inline3d-splat-effects.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
 import { addSplatDeferred } from './inline3d-splat-deferred.js';
+import { resolveDeviceOption, deviceLogLine } from './inline3d-splat-device.js';
 import {
   toArray3,
   canvasNdc,
@@ -195,6 +196,16 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
   // on Spark it would need SceneViewer — which ./viewer and ./model share — to take an external
   // camera in both its mono and eye paths. Refused by name rather than half-supported.
   if (opts.reveal !== undefined && opts.reveal !== false) throw effectsNotOnSpark('reveal');
+  // `device` is a PlayCanvas-backend option: Spark is three's WebGLRenderer, WebGL2 only. Checked
+  // (a bad value throws) and answered on the handle; a WebGPU request falls back with one line.
+  const deviceRequested = resolveDeviceOption(opts.device);
+  const deviceInfo = Object.freeze({
+    requested: deviceRequested,
+    device: 'webgl2',
+    reason: deviceRequested === 'webgl2' ? 'requested' : "engine 'spark' is WebGL2 only",
+    adapter: null,
+  });
+  if (opts.device !== undefined && opts.device !== null) console.info(deviceLogLine(deviceInfo));
   if (pageControls) {
     throw new Error(
       "@displayxr/inline3d/splat: controls:'page' is not supported on Spark (the default engine) — " +
@@ -286,6 +297,9 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
   let handle = null;
   const out = {
     backend: 'spark',
+    /** Always 'webgl2' on Spark (three's WebGLRenderer); `device` is a PlayCanvas-backend option. */
+    device: 'webgl2',
+    deviceInfo,
     /**
      * ADVANCED, not covered by the semver promise: the three.js objects behind this window, for
      * a page that wants to add its own content. `camera` is whichever camera draws the current

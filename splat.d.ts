@@ -333,6 +333,25 @@ export interface SplatOptions {
    */
   engine?: 'spark' | 'playcanvas';
   /**
+   * `engine: 'playcanvas'` only: the GRAPHICS API the tile's engine runs on. `'webgl2'` (the
+   * default) is every existing page, unchanged. `'webgpu'` is an OPT-IN: the engine's GPU sort
+   * removes the WebGL2 worker-sort lag while the camera rotates (orbit, idle spin, a crossfade);
+   * head-tracked look-around gains nothing, and the boot costs ~1.2 s more. `'auto'` is `'webgpu'`
+   * on Windows in the DisplayXR Browser, `'webgl2'` elsewhere.
+   *
+   * WebGPU is used only when the rules allow it, else the tile runs on WebGL2 with the same handle
+   * (`handle.device` / `handle.deviceInfo.reason` say which and why; one console line when the
+   * option is given): `navigator.gpu` and an adapter present; the session delivers exactly 2 views
+   * (no inline-3D session = WebGL2); no GLSL-only option (`reveal` until WGSL effect chunks exist,
+   * `cursor: 'depth'`, `playcanvasViewPath: 'cameras'`); the engine's WebGPU boot succeeds.
+   * On a WebGPU tile, setSource plays `'cut'` / `'crossfade'` (live outgoing included) as asked and
+   * every effect-chunk transition (`'flip'`, `'wavefront'`, particles, sequences, `reveal`) as a
+   * crossfade; `playEffect` / `setEffect` / `setDepthEnvelope` are ignored with a warning;
+   * `setVideo` rejects and `makeSbsMaterial` throws. See docs/playcanvas-adapter.md § WebGPU (opt-in).
+   * Spark ignores it (WebGL2 only). Anything else throws.
+   */
+  device?: 'webgl2' | 'webgpu' | 'auto';
+  /**
    * `engine: 'playcanvas'` only. Sugar for `handle.setLayerRig(layer, 'display', opts)` on each
    * layer (a name, an id or a `pc.Layer`), applied as soon as the engine boots.
    */
@@ -978,6 +997,16 @@ export interface SplatStats {
 }
 
 /** What {@link addSplat} returns: a TileHandle plus the objects behind it. */
+/** `handle.deviceInfo`: which graphics API a splat tile runs on, and why. */
+export interface SplatDeviceInfo {
+  readonly requested: 'webgl2' | 'webgpu' | 'auto';
+  readonly device: 'webgl2' | 'webgpu';
+  /** `'requested'` / `'auto'` when granted, else the fallback's cause (e.g. `'navigator.gpu is absent'`). */
+  readonly reason: string;
+  /** `adapter.info` as `vendor/architecture (description)`; null on WebGL2. */
+  readonly adapter: string | null;
+}
+
 export interface SplatHandle {
   /**
    * SceneViewer on Spark; the PlayCanvas backend's own viewer on `engine: 'playcanvas'` (null
@@ -993,6 +1022,13 @@ export interface SplatHandle {
   readonly spark?: object;
   /** Which backend is rendering: `'playcanvas'` or `'spark'`; null until it has loaded. */
   readonly backend: 'playcanvas' | 'spark' | null;
+  /**
+   * The graphics API the tile actually runs on: `'webgl2'` or `'webgpu'`. Null on the PlayCanvas
+   * backend until the engine has booted (`await handle.ready`); always `'webgl2'` on Spark.
+   */
+  readonly device: 'webgl2' | 'webgpu' | null;
+  /** Why that device: the request, the result, the reason (`'requested'`, or the fallback's cause) and the adapter (`vendor/architecture (description)`, WebGPU only). Null until booted. */
+  readonly deviceInfo: SplatDeviceInfo | null;
   /**
    * ADVANCED — not covered by the semver promise. The renderer objects behind this window, for a
    * page that wants to add its own content. Null until the backend has booted.
