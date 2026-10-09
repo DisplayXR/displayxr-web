@@ -5,7 +5,9 @@
 //   - with it, firstWoven settles confirmed:true, reason 'woven', on the first 'woven' read once a
 //     stereo frame is drawn — no hold;
 //   - rewoven never settles on a stale 'woven' from the old rect: it needs a 'withheld'/'pending'
-//     read after the call, or WOVEN_STATE_LAG_FRAMES frames after the box change;
+//     read after the call, or WOVEN_STATE_LAG_FRAMES frames after a box change seen after the
+//     call, or (no such change) WOVEN_STATE_LAG_FRAMES frames after the call — never a hold, and
+//     never on the frame of the call;
 //   - the cap still releases a layer stuck in 'withheld', as woven:false with the browser's reason;
 //   - handle.wovenState / withheldReason read the report live, null where it is absent.
 //
@@ -258,18 +260,69 @@ test('rewoven: a woven read before the call does not count as the gap', async ()
   wall.close();
 });
 
-test('rewoven: no change and no gap settles after a hold of steady woven reads', async () => {
+test('rewoven: called after the move, steady woven reads settle three frames after the call, not after a hold', async () => {
   clock = 0;
   const env = installEnv();
-  const { wall, h } = await wovenWall(env, makeCanvas());
+  const canvas = makeCanvas(400, 200);
+  const { wall, h } = await wovenWall(env, canvas);
+  // The kiosk case: the page moves the canvas, a frame sees the new box (no rewoven pending
+  // yet), THEN the page calls rewoven(). The browser never reads withheld.
+  canvas.clientWidth = 640;
   clock = 100;
-  const p = h.rewoven();
-  clock = 1299;
   env.runFrame(2);
-  assert.equal(await peek(p), 'pending');
-  clock = 1300;
+  const p = h.rewoven(); // call frame C
+  clock = 116;
+  env.runFrame(2); // C+1
+  clock = 133;
+  env.runFrame(2); // C+2
+  assert.equal(await peek(p), 'pending', 'a woven read under three frames after the call can still be the old rect');
+  clock = 150;
+  env.runFrame(2); // C+3
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: true, reason: 'woven', ms: 50 });
+  wall.close();
+});
+
+test('rewoven: a stale woven read on the frame of the call does not settle it', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  let p = null;
+  let calls = 0;
+  // rewoven() called from inside the frame callback: that frame's own read is not after the call.
+  const h = wall.addScene(makeCanvas(), () => {
+    if (++calls === 3) p = h.rewoven();
+  });
+  env.report('woven');
+  env.runFrame(2); // frame 1: firstWoven
+  assert.equal((await peek(h.firstWoven)).confirmed, true);
+  env.runFrame(2); // frame 2
+  clock = 100;
+  env.runFrame(2); // frame 3: the call, then this frame's woven read
+  assert.ok(p, 'the call was made in the frame callback');
+  assert.equal(await peek(p), 'pending', 'never settled on the frame of the call');
   env.runFrame(2);
-  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: true, reason: 'woven', ms: 1200 });
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'nor two frames after it');
+  clock = 150;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: true, reason: 'woven', ms: 50 });
+  wall.close();
+});
+
+test('rewoven: a box change after the call still counts three frames from the change', async () => {
+  clock = 0;
+  const env = installEnv();
+  const canvas = makeCanvas(400, 200);
+  const { wall, h } = await wovenWall(env, canvas);
+  const p = h.rewoven(); // call frame C
+  env.runFrame(2); // C+1
+  canvas.clientWidth = 520;
+  env.runFrame(2); // C+2: change seen (frame N)
+  env.runFrame(2); // C+3 = N+1: three frames after the call, but not after the change
+  env.runFrame(2); // N+2
+  assert.equal(await peek(p), 'pending', 'the change restarts the count; the call frame no longer rules');
+  env.runFrame(2); // N+3
+  assert.equal((await peek(p)).reason, 'woven');
   wall.close();
 });
 
@@ -291,7 +344,7 @@ test('rewoven: withheld forever is capped, woven:false with withheldReason', asy
   const q = h.rewoven();
   env.report('woven');
   env.runFrame(2);
-  assert.equal(await peek(q), 'pending', 'a fresh call with no change waits a hold of woven reads');
+  assert.equal(await peek(q), 'pending', 'a fresh call with no change waits three frames of woven reads');
   wall.close();
 });
 

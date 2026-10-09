@@ -3347,10 +3347,13 @@ class Inline3D {
    *
    * rewoven(): a 'woven' read is only trusted as the NEW rect's once it follows a 'withheld' or
    * 'pending' read seen after the call (the rect left the weave and came back), or once
-   * WOVEN_STATE_LAG_FRAMES frames have passed since the last box change (a move rejoined without
-   * a gap). A call with no box change and no gap settles after a hold of steady 'woven' reads,
-   * the same wait as without the report. Either way it needs a stereo frame since the last
-   * restart, as on the hold path.
+   * WOVEN_STATE_LAG_FRAMES frames have passed since the last box change seen after the call (a
+   * move rejoined without a gap). A call that sees no box change and no gap settles on a 'woven'
+   * read WOVEN_STATE_LAG_FRAMES session frames after the call: the report is a live per-frame
+   * level trailing the join by at most that many frames, so such a read reflects the rect as it
+   * was at the call (the usual case: the page moved the canvas, THEN called rewoven()). Never on
+   * the frame of the call itself. Either way it needs a stereo frame since the last restart, as
+   * on the hold path.
    *
    * The cap stays, as a safety: the report is a level, and a layer that never leaves 'withheld'
    * (a CSS effect on an ancestor, rule 7) must not hold a cover up for good. Four holds (never
@@ -3369,7 +3372,7 @@ class Inline3D {
         rw.stereo &&
         (rw.gap ||
           (rw.boxFrame !== null && this._frameCount - rw.boxFrame >= WOVEN_STATE_LAG_FRAMES) ||
-          (rw.boxFrame === null && t - rw.at >= win.fwHoldMs))
+          (rw.boxFrame === null && this._frameCount - rw.callFrame >= WOVEN_STATE_LAG_FRAMES))
       ) {
         this._settleRewoven(win, true, 'woven', true);
       }
@@ -3420,9 +3423,20 @@ class Inline3D {
       resolve = r;
     });
     const t = nowMs();
-    // `gap` / `boxFrame` are the wovenState path's (see _tickWovenState): a 'withheld'/'pending'
-    // read since the last restart, and the session frame of the last box change (null = none).
-    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false, box: boxKeyOf(win.canvas), gap: false, boxFrame: null };
+    // `gap` / `boxFrame` / `callFrame` are the wovenState path's (see _tickWovenState): a
+    // 'withheld'/'pending' read since the last restart, the session frame of the last box change
+    // (null = none), and the session frame the call was made in.
+    win.rw = {
+      promise,
+      resolve,
+      calledAt: t,
+      at: t,
+      stereo: false,
+      box: boxKeyOf(win.canvas),
+      gap: false,
+      boxFrame: null,
+      callFrame: this._frameCount,
+    };
     return promise;
   }
 

@@ -50,9 +50,15 @@ the splat handle) and the call's self view following `autoConverge`. New types o
   - **`firstWoven`** settles `{ woven: true, confirmed: true, reason: 'woven' }` on the first
     `'woven'` read once a stereo frame is drawn, with no hold.
   - **`rewoven()`** settles on a `'woven'` read that follows a `'withheld'`/`'pending'` read seen
-    after the call, or three session frames after the last box change. The report trails the join
-    by 1–3 frames, so a `'woven'` from the old rect never settles it. With no change and no gap it
-    waits a hold of steady `'woven'` reads, as before.
+    after the call, or three session frames after the last box change seen after the call, or,
+    when no box change is seen after the call, three session frames after the call. The report
+    is a live per-frame level trailing the join by 1–3 frames, so a read three frames on reflects
+    the rect as it was at the call; a `'woven'` from the old rect, or one read on the frame of the
+    call, never settles it. A stereo frame since the call is still required, and the cap stays.
+    - The no-change case is the common one: a page that moves the canvas, then calls
+      `rewoven()`. It used to wait a full hold of steady `'woven'` reads (a kiosk panel run:
+      46/46 calls confirmed, median 1206 ms, the same as the timer path). It now settles about
+      three frames after the call (~50 ms). The timer path (no `wovenState`) is unchanged.
   - **The cap stays, as a safety.** A layer that never leaves `'withheld'` (a CSS effect on an
     ancestor) settles `{ woven: false, confirmed: true, reason: <withheldReason> }` (or
     `'pending'`) four holds after the call, never sooner than 4.8 s. That is a level, not a loss:

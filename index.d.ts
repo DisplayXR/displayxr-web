@@ -556,10 +556,15 @@ export interface TileHandle {
    * cover up for good. A second call while pending returns the same promise, restarted. Before the
    * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
    *
-   * On a browser that reports `wovenState` it settles `confirmed: true, reason: 'woven'` on a
-   * 'woven' read that follows a 'withheld'/'pending' read seen after the call, or three session
-   * frames after the last box change (the report trails the join by 1–3 frames, so a 'woven' from
-   * the old rect never settles it), or after a hold of steady 'woven' reads when nothing changed.
+   * On a browser that reports `wovenState` it settles `confirmed: true, reason: 'woven'` on the
+   * first 'woven' read (with a stereo frame drawn since the call) that either follows a
+   * 'withheld'/'pending' read seen after the call, or comes three session frames after the last
+   * box change seen after the call, or — when no box change is seen after the call, the usual
+   * case of a page that moves the canvas and THEN calls this — comes three session frames after
+   * the call. The report is a live per-frame level trailing the join by 1–3 frames, so a read
+   * three frames on reflects the rect as it was at the call, and a 'woven' from the old rect
+   * never settles it; a read on the frame of the call never does. Expect ~50 ms instead of the
+   * 1.2 s hold.
    * The cap stays: still 'withheld' four holds after the call (at least 4.8 s), it settles `woven:
    * false, confirmed: true, reason: <withheldReason>`.
    */
