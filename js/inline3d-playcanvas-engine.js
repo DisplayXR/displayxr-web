@@ -57,6 +57,7 @@ export {
   SEMANTIC_COLOR,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
+  SHADERLANGUAGE_WGSL,
   CHUNKAPI_2_8,
   // setSource's frame snapshot
   RenderTarget,
