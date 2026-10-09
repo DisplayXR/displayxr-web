@@ -3,7 +3,7 @@
 
 import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult, ViewerEaseOption } from './index.js';
+import type { FirstWovenResult, RectCoverOption, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
 
 export interface ModelOptions {
@@ -164,6 +164,13 @@ export interface ModelOptions {
   observe?: Element;
   /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
   firstWovenHoldMs?: number;
+  /**
+   * The SDK's cover across a move or resize of this canvas (see `TileOptions.rectCover`).
+   * **Default `'auto'` here** (the core default is `'off'`): a solid cover showing the last frame,
+   * raised when the canvas's size, dpr or page position changes and cut when `rewoven()` settles.
+   * Pass `'off'` if the page runs its own cover.
+   */
+  rectCover?: RectCoverOption;
 }
 
 /** What {@link addModel} returns — the same shape as addSplat's handle. */

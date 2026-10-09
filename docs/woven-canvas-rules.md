@@ -69,7 +69,9 @@ re-renders over, and change what is **in** it:
 - **Splats on the PlayCanvas backend:** `handle.setSource(src, { fadeMs, resetPose })`.
 
 Calling `add*()` again on the same canvas is not a content swap. It closes the window's layer and
-builds a new one.
+builds a new one (a fresh identity gap), and on `./splat` / `./model` it puts a second renderer on
+the context. Since 1.38 the SDK warns about it, once per canvas, while the first registration is
+live (not `remove()`d), then proceeds as before. To re-register on purpose, `remove()` first.
 
 ### 3. Prefer one persistent canvas for the whole app
 
@@ -117,16 +119,20 @@ poster.remove();                                       // cut, never fade
 
 | result | meaning | what to do |
 |---|---|---|
-| `woven: true`, `reason: 'hold-elapsed'` | the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
+| `woven: true`, `reason: 'woven'`, `confirmed: true` | the browser reported the layer woven (`XRDisplayLayer.wovenState`), after a real stereo frame | drop the cover |
+| `woven: true`, `reason: 'hold-elapsed'` | a browser without that report: the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
+| `woven: false`, `confirmed: true`, `reason` a withheld token (or `'pending'`) | the browser kept reporting the layer withheld for the whole safety cap (four holds, at least 4.8 s). The canvas is not taken flat | drop the cover, then read the token in §3: it names the page fix |
 | `woven: false`, `reason: 'layer-failed'` / `'session-ended'` / `'removed'` | this window will not weave. An image or video canvas has already been painted flat, and a scene's `onLayerLost` has already run | drop the cover onto the 2D fallback |
 | `woven: false`, `reason: 'unsupported'` (`addSplat` / `addModel` only) | no inline-3D session: the viewer is on its mono path | same |
 
-**`confirmed` is `false` today, always.** No shipping browser reports the join (§1), so
-`firstWoven` is the documented worst case, measured by the SDK so that each page does not measure
-it separately. When a browser can report the join, `firstWoven` settles on the report
-(`confirmed: true`, no hold) and **the page does not change**. That is the reason to code
-against it now rather than keep a local `setTimeout`. The browser ask is in
-[`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
+**`confirmed` says which of the two you got.** A DisplayXR Browser build with the join report
+(`XRDisplayLayer.wovenState`, Windows, behind a flag; detected with `'wovenState' in
+XRDisplayLayer.prototype`) settles `firstWoven` on the report: `confirmed: true`, no hold. On
+every other browser `firstWoven` is the documented worst case, measured by the SDK so that each
+page does not measure it separately (`confirmed: false`). **The page code is the same on both**,
+which is the reason to code against it rather than keep a local `setTimeout`. To see the report
+yourself, read `handle.wovenState` (`'pending'`, `'woven'`, `'withheld'`, or `null` where absent)
+and `handle.withheldReason`. Background: [`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
 
 What counts as a "real stereo frame": for a scene, an `onFrame` that received two or more views
 and did not throw. A frame with a short view list is the load fallback, and a frame that threw
@@ -217,12 +223,24 @@ cover.hidden = true;                  // cut, never fade
 ```
 
 `rewoven()` is `firstWoven` measured from the call, with the same result shape. A change of the
-canvas's CSS size or devicePixelRatio while it is pending restarts the hold (checked every frame,
-for every window kind), so a resize that settles over several frames is covered until the last
-one. A scroll or layout shift that moves the tile without resizing it is deliberately not
-detected. So that a size that never stops animating cannot hold the cover up for good, it settles
-anyway (`reason: 'hold-capped'`) four holds after the call. Before the first join it is `firstWoven` itself. The SDK's player
-(`addPlayer`) does this for its own fullscreen button with `fullscreenCover: true`.
+canvas's CSS size, devicePixelRatio or page position while it is pending restarts the hold
+(checked every frame, for every window kind), so a resize or a move that settles over several
+frames is covered until the last one. Position is measured in page coordinates, so scrolling the
+document is not a move (since 1.38; before, a move without a resize was not detected at all). So
+that a size that never stops animating cannot hold the cover up for good, it settles anyway
+(`reason: 'hold-capped'`) four holds after the call. Before the first join it is `firstWoven`
+itself. The SDK's player (`addPlayer`) does this for its own fullscreen button with
+`fullscreenCover: true`.
+
+**The SDK covers rect changes for you on `./splat` and `./model`** (1.38, `rectCover: 'auto'` by
+default there). After the first join, a move or resize of the canvas raises a cover over it on
+the frame the change is seen: a solid color with the last frame's left eye, cover-fit. The cover
+comes down when `rewoven()` settles. Pass `rectCover: 'off'` if the page runs its own cover. On
+core windows (`addScene` / `addImage` / `addVideo`) the same primitive is opt-in: pass
+`rectCover: 'auto'` (or `{ color, snapshot }`), or keep your own cover and release it on
+`handle.rewoven()`. A move is seen at the next session frame, so a move your page makes after that
+frame's callback can show for one frame. Move the canvas from an event handler or before the frame,
+not from a later animation callback.
 
 **Measured on the Leia panel (26 September, browser test build with patch 0195, blind A/B, one
 observer):** entering and leaving the player's fullscreen showed **no** raw side-by-side pair,
@@ -242,7 +260,15 @@ A scroll is not a resize. The canvas keeps its size and its identity, and nothin
   last frame). A scene must draw in every `onFrame`, and on a frame it cannot draw it must
   **replay the last good one** rather than skip ([validate before you
   clear](authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
-  `./viewer`, `./splat` and `./model` already do this.
+  `./viewer`, `./splat` and `./model` already do this, and since 1.38 they also draw on the frames
+  before the first good one: the mono camera into both halves, the subject if it is loaded, or a
+  cleared frame if it is not. The only undrawn frames left are the ones before the engine has
+  created its context. The SDK cannot enforce this for an `addScene` window your page draws: draw
+  something on every `onFrame`, even with no content yet.
+  - **Known limitation: a transparent canvas weaves black.** A cleared (fully transparent) woven
+    frame comes out black on the panel, not see-through: a browser bug (browser-pvt #255), not
+    the SDK's. Until it is fixed, a frame with nothing to show is drawn but dark. If the page
+    behind the tile is not black, cover the tile until its content is in (rule 5).
 - **Large scene canvases: consider `preserveDrawingBuffer: true`.** On older DisplayXR Browser
   builds, the weave's zero-copy read of a full-window WebGL canvas can race the page's next
   write, and the frame is dropped. Keep the SBS buffer no wider than the panel, and try

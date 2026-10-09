@@ -39,6 +39,7 @@ import {
   STREAMED_NEEDS_PLAYCANVAS,
   resolveControls,
   declareViewRig,
+  guardedAttach,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -162,6 +163,12 @@ function sniffFileType(bytes) {
  * good enough for a clean, isolated capture, weaker on a scene with a background wall.
  */
 export function addSplat(wall, canvas, src, opts = {}) {
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addSplat', opts, (o) => addSplatUnguarded(wall, canvas, src, o));
+}
+
+function addSplatUnguarded(wall, canvas, src, opts = {}) {
   if (opts.captureFit !== undefined && !CAPTURE_FITS.includes(opts.captureFit)) {
     throw new Error(
       `@displayxr/inline3d/splat: captureFit "${opts.captureFit}" — expected ` +
@@ -487,6 +494,11 @@ export function addSplat(wall, canvas, src, opts = {}) {
       bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
+      // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
+      // preview tier; 'off' for a page that runs its own cover.
+      rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();

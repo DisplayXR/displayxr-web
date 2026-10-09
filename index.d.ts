@@ -24,27 +24,93 @@ export interface TileOptions {
    * you know is not fresh; 0 means "the first stereo frame".
    */
   firstWovenHoldMs?: number;
+  /**
+   * Cover this canvas across a rect change, owned by the SDK. Default `'off'` on `addImage` /
+   * `addVideo` / `addScene` (frozen defaults); `'auto'` on `./splat` and `./model`.
+   *
+   * Once the window has woven, a change of the canvas's CSS size, devicePixelRatio or PAGE position
+   * (scrolling the document is not a move) raises a sibling element over the canvas on the frame
+   * the change is seen, and cuts it when {@link TileHandle.rewoven} settles; a further change
+   * while it is up restarts the wait. The cover is a 2D canvas, never a second woven canvas,
+   * placed as the canvas's next sibling (`pointer-events: none`, `data-inline3d-cover`). It is
+   * filled with `color` and, with `snapshot`, the last frame: the left eye, cover-fit to the new
+   * box, captured once at the change with one `drawImage` (never `toDataURL`).
+   *
+   * - `'auto'` — `{ color: '#000', snapshot: true }`.
+   * - `'off'` — nothing; a page that runs its own cover passes this.
+   * - `{ color?, snapshot? }` — `color` any CSS color (default `'#000'`); `snapshot` default true.
+   *
+   * Before the first join nothing is raised: cover a fresh canvas yourself until `firstWoven`
+   * (rule 5). A pure move is seen at the next session frame, so a move made after that frame's
+   * callback can show for one frame.
+   */
+  rectCover?: RectCoverOption;
 }
+
+/** See {@link TileOptions.rectCover}. */
+export type RectCoverOption = 'auto' | 'off' | { color?: string; snapshot?: boolean };
+
+/**
+ * The browser's per-frame report for one layer (`XRDisplayLayer.wovenState`, DisplayXR Browser
+ * builds that carry it; absent elsewhere). A level, never latched.
+ *
+ * - `'pending'` — no presented frame has reported this layer yet (from construction, again after
+ *   close(), and whenever the frame's reply does not list it).
+ * - `'woven'` — the latest swapped frame put this layer's rect into the weave.
+ * - `'withheld'` — it did not; {@link WovenWithheldReason} says why.
+ */
+export type WovenState = 'pending' | 'woven' | 'withheld';
+
+/**
+ * Why a layer reads `'withheld'` (`XRDisplayLayer.withheldReason`). The same tokens the browser
+ * logs; what each means and whose fix it is: `docs/woven-canvas-rules.md` §3. A future browser may
+ * add tokens, so treat an unknown string as "withheld, reason not listed".
+ */
+export type WovenWithheldReason =
+  | 'no-quad'
+  | 'no-identity'
+  | 'no-join'
+  | 'cross-pass:mono'
+  | 'cross-pass:mono(cover,2:1)'
+  | 'resolve-dropped'
+  | (string & {});
 
 /**
  * What {@link TileHandle.firstWoven} resolves to. Settles once and never rejects.
  *
- * - `woven: true, reason: 'hold-elapsed'` — a stereo frame is on a layer that has existed for
- *   `firstWovenHoldMs`. Drop the poster covering the canvas.
- * - `woven: true, reason: 'hold-capped'` — `rewoven()` only: the canvas kept resizing, so it
- *   stopped waiting four holds after the call. Drop the cover; the rect may still be settling.
- * - `woven: false` — the window will not weave (`'layer-failed'`, `'session-ended'`,
- *   `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat (image/video) or
- *   its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
+ * - `woven: true, reason: 'woven'` (`confirmed: true`) — the BROWSER reported the layer woven
+ *   (`XRDisplayLayer.wovenState`), after a stereo frame was drawn. No hold. Drop the poster.
+ * - `woven: true, reason: 'hold-elapsed'` (`confirmed: false`) — a browser without that report:
+ *   a stereo frame is on a layer that has existed for `firstWovenHoldMs`. Drop the poster.
+ * - `woven: true, reason: 'hold-capped'` — `rewoven()`: the canvas kept resizing or moving, so
+ *   it stopped waiting four holds after the call; with the report, also a 'woven' read that never
+ *   qualified (see {@link TileHandle.rewoven}). Drop the cover; the rect may still be settling.
+ * - `woven: false, confirmed: true`, `reason` a {@link WovenWithheldReason} or `'pending'` — the
+ *   browser kept reporting the layer withheld (or never listed it) for the whole cap: four holds,
+ *   at least 4.8 s. A safety release, not a loss: the canvas is NOT taken flat and `rewoven()`
+ *   keeps working. Drop the cover; what shows is what the browser draws for that reason
+ *   (`cross-pass:mono` is flat in place; `no-identity` can be the raw pair).
+ * - `woven: false, confirmed: false` — the window will not weave (`'layer-failed'`,
+ *   `'session-ended'`, `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat
+ *   (image/video) or its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
  */
 export interface FirstWovenResult {
   readonly woven: boolean;
   /**
-   * `true` only when the BROWSER reported the join. Always `false` today: no browser exposes
-   * that, so the result is the SDK's worst-case hold rather than a report.
+   * `true` only when the BROWSER reported the state (`XRDisplayLayer.wovenState`). `false` on a
+   * browser without that report: the result is then the SDK's worst-case hold.
    */
   readonly confirmed: boolean;
-  readonly reason: 'hold-elapsed' | 'hold-capped' | 'layer-failed' | 'session-ended' | 'removed' | 'unsupported';
+  readonly reason:
+    | 'woven'
+    | 'hold-elapsed'
+    | 'hold-capped'
+    | 'layer-failed'
+    | 'session-ended'
+    | 'removed'
+    | 'unsupported'
+    | 'pending'
+    | WovenWithheldReason;
   /** Milliseconds from the add*() call to settling. */
   readonly ms: number;
 }
@@ -289,6 +355,15 @@ export interface SceneOptions extends TileOptions {
    */
   bufferClamped?: boolean;
   onLayerLost?: () => void;
+  /**
+   * Called INSIDE the ResizeObserver callback when the canvas's CSS box or devicePixelRatio
+   * changes — after the frame's animation callbacks, before its paint. Resize your backing store
+   * and draw one frame here (replay your last views) and the old store is never shown stretched
+   * onto the new box, which is what waiting for the next frame shows. Called only on a real
+   * change, never re-entrantly; a throw is caught and warned about once. Default: none, and then
+   * no observer is attached to a scene canvas (unchanged).
+   */
+  onResize?: (box: { width: number; height: number; dpr: number }) => void;
 }
 
 /** The per-frame render callback passed to {@link Inline3D.addScene}. */
@@ -298,7 +373,14 @@ export type SceneFrameCallback = (
   frame: XRFrame,
 ) => void;
 
-/** The handle returned by every add*() call. */
+/**
+ * The handle returned by every add*() call.
+ *
+ * An add*() on a canvas that is still registered (not `remove()`d) on the same manager warns once
+ * per canvas (1.38) and then proceeds as it always has: the layer is closed and rebuilt (a fresh
+ * identity gap), or a subpath puts a second renderer on the context, and the call returns its own
+ * new handle. Change what is in the canvas instead, or `remove()` first.
+ */
 export interface TileHandle {
   /** Remove this window: close its weave layer and stop driving it. */
   remove(): void;
@@ -342,6 +424,19 @@ export interface TileHandle {
   /**
    * The panel this window weaves on, or `null` where there is no glasses-free display.
    *
+   * `null` is returned only once the layer has answered for real or the cap has passed, never for
+   * "not ready yet". Called before this window's layer has delivered its first frame (right after
+   * `add*()`, the natural place), the call waits for the release signal — where the browser
+   * reports {@link TileHandle.wovenState}, the first `'woven'` read (a `'withheld'` read right
+   * after the layer is built does not count: it comes before the weave session can answer);
+   * elsewhere, the layer's first stereo frame; no first-woven hold — and asks then. If the layer
+   * still answers `null` before the cap, that answer is not returned: the call is asked again on
+   * each later release signal (the next `'woven'` read, or the next session frame once a stereo
+   * frame has been drawn) and resolves with the first non-`null` answer. Once a read on this layer
+   * has answered for real, later calls go straight to the layer. The cap is the first-woven cap
+   * (four holds from the layer's construction, never under 4.8 s): past it the layer's `null` is
+   * returned as a real absence. Without a live layer it settles at once, as below.
+   *
    * Rejects with an `Error` on a browser without the display-mode API
    * ({@link inline3dDisplayModesSupported}) or while this window has no live layer (lazy mode,
    * tile off screen).
@@ -354,7 +449,14 @@ export interface TileHandle {
    * The canvas size is read at the call: call again after a resize.
    */
   displayMetrics(): Promise<DisplayMetrics>;
-  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  /**
+   * Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}.
+   *
+   * An empty list is returned only once the cap has passed, never for "not ready yet": like
+   * {@link getDisplayInfo}, a call made before this window's layer has delivered its first frame
+   * waits for the same release signal, an empty answer before the cap is asked again on the next
+   * one, and the cap is the same. Rejects as {@link getDisplayInfo} does.
+   */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /**
    * Ask the runtime to switch the display to `modeIndex`. A thin pass-through — it resolves and
@@ -367,6 +469,10 @@ export interface TileHandle {
    * by the session's `renderingmodechange` event, not by this promise.
    *
    * A `viewCount === 1` mode is requestable and is how a page goes flat.
+   *
+   * Made before this window's layer has delivered its first frame, the request waits for it (the
+   * same release signal and cap as {@link getDisplayInfo}; forwarded once, not retried): before
+   * then the browser has no weave session to forward it to.
    *
    * With the eased transition on (the default — see {@link ModeSwitchOptions}) a going-flat
    * request is HELD while the disparity ramps out, so the promise resolves when the request has
@@ -423,21 +529,44 @@ export interface TileHandle {
    */
   stats(): { frames: number; monoFrames: number };
   /**
+   * The browser's report for this window's layer, read live ({@link WovenState}); `'pending'`
+   * while the window has no live layer; `null` on a browser that does not report it (the
+   * attribute is absent on mac, Linux, Android and Windows builds without it). Diagnostics:
+   * `firstWoven` / `rewoven()` already settle on it.
+   */
+  readonly wovenState: WovenState | null;
+  /** The why-token while {@link TileHandle.wovenState} is `'withheld'`, else `null`. */
+  readonly withheldReason: WovenWithheldReason | null;
+  /**
    * Resolves once, when it is safe to reveal this canvas: see {@link FirstWovenResult}. THE way to
    * release a poster held over a woven canvas — `await Promise.all([ready, handle.firstWoven])`
-   * and cut, never fade. Approximate until a browser reports joins (`confirmed` stays `false`).
+   * and cut, never fade. On a browser that reports `wovenState` it settles on that report
+   * (`confirmed: true`, no hold); elsewhere it is the worst-case hold (`confirmed: false`).
    */
   readonly firstWoven: Promise<FirstWovenResult>;
   /** Callback form of {@link TileHandle.firstWoven}: called once, asynchronously. Returns an unsubscribe. */
   onFirstWoven(cb: (result: FirstWovenResult) => void): () => void;
   /**
    * {@link TileHandle.firstWoven}, measured from NOW. Cover an already-woven canvas across a rect
-   * change (fullscreen, a layout resize), then release on this. A change of the canvas's CSS size
-   * or devicePixelRatio while pending restarts the hold (checked every frame, any window kind; a
-   * move without a resize is not detected). It settles anyway, `woven: true, reason:
+   * change (fullscreen, a layout resize, a move), then release on this ({@link TileOptions.rectCover}
+   * does both for you). A change of the canvas's CSS size, devicePixelRatio or page position (since
+   * 1.38; document scroll excluded) while pending restarts the hold (checked every frame, any
+   * window kind). It settles anyway, `woven: true, reason:
    * 'hold-capped'`, four holds after the call, so a size that never stops animating cannot hold a
    * cover up for good. A second call while pending returns the same promise, restarted. Before the
    * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
+   *
+   * On a browser that reports `wovenState` it settles `confirmed: true, reason: 'woven'` on the
+   * first 'woven' read (with a stereo frame drawn since the call) that either follows a
+   * 'withheld'/'pending' read seen after the call, or comes three session frames after the last
+   * box change seen after the call, or — when no box change is seen after the call, the usual
+   * case of a page that moves the canvas and THEN calls this — comes three session frames after
+   * the call. The report is a live per-frame level trailing the join by 1–3 frames, so a read
+   * three frames on reflects the rect as it was at the call, and a 'woven' from the old rect
+   * never settles it; a read on the frame of the call never does. Expect ~50 ms instead of the
+   * 1.2 s hold.
+   * The cap stays: still 'withheld' four holds after the call (at least 4.8 s), it settles `woven:
+   * false, confirmed: true, reason: <withheldReason>`.
    */
   rewoven(): Promise<FirstWovenResult>;
 }
@@ -455,9 +584,17 @@ export interface Inline3D {
   // The panel is the DOCUMENT's, not a tile's, so the display API lives here; the same names are
   // on every tile handle, routed to whichever window currently holds a live layer.
 
-  /** The panel, or `null` where there is no glasses-free display. See {@link TileHandle.getDisplayInfo}. */
+  /**
+   * The panel, or `null` where there is no glasses-free display — `null` only once the cap has
+   * passed, never for "not ready yet" (a call before the live window has answered waits for its
+   * release signal and is asked again while it answers `null`, capped). See
+   * {@link TileHandle.getDisplayInfo}.
+   */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
-  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  /**
+   * Every rendering mode the display can be put in; an empty list only once the cap has passed,
+   * never for "not ready yet". See {@link TileHandle.getRenderingModes}.
+   */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /** Switch the display to `modeIndex`. See {@link TileHandle.requestRenderingMode}. */
   requestRenderingMode(modeIndex: number): Promise<void>;

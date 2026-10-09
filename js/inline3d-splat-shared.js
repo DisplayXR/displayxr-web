@@ -13,6 +13,23 @@
 // test/splat-playcanvas.test.mjs (values, and a behavioural trace of both viewers side by side).
 
 /**
+ * Double-attach detection around a scene subpath's public entry (`addSplat`, `addModel`).
+ *
+ * The check has to run HERE, at the entry, and not only in the core's addScene: the subpaths build
+ * a renderer on the canvas BEFORE the core window exists (asynchronously, once the engine module
+ * has loaded), so a second `addSplat` during the first one's load would never reach the core's
+ * check in time. `wall._attachGuard` (the core manager) warns once per canvas and claims it; the
+ * call then proceeds exactly as before. A wall without it (no session, an older core) attaches as is.
+ */
+export function guardedAttach(wall, canvas, method, opts, attach) {
+  const g = wall && typeof wall._attachGuard === 'function' ? wall._attachGuard(canvas, method, opts) : null;
+  if (!g) return attach(opts);
+  const out = attach(g.opts);
+  g.own(out);
+  return out;
+}
+
+/**
  * Backstop on total subject depth, as a multiple of the display height. Generous on purpose:
  * depth placement is a z decision (see fitTo), not a scale one, so this only catches the
  * pathological case where a subject is so deep that no placement helps.

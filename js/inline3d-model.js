@@ -38,6 +38,7 @@
 // your own origin (`/draco/`, `/basis/`) and `opts.decoderPath` moves that. See
 // docs/authoring-inline-3d.md#compressed-gltf.
 
+import { guardedAttach } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
@@ -345,6 +346,12 @@ function kindFromMessage(msg) {
  *          `setPose`, `resetPose`, `frame`, and `ready`.
  */
 export function addModel(wall, canvas, src, opts = {}) {
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addModel', opts, (o) => addModelUnguarded(wall, canvas, src, o));
+}
+
+function addModelUnguarded(wall, canvas, src, opts = {}) {
   const {
     virtualDisplayHeight = 0.24,
     frame = null,
@@ -426,6 +433,11 @@ export function addModel(wall, canvas, src, opts = {}) {
       bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
+      // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
+      // preview tier; 'off' for a page that runs its own cover.
+      rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();

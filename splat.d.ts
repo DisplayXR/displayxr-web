@@ -3,7 +3,7 @@
 
 import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult, ViewerEaseOption, DisplayMetrics } from './index.js';
+import type { FirstWovenResult, RectCoverOption, ViewerEaseOption, DisplayMetrics } from './index.js';
 
 /**
  * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
@@ -515,6 +515,13 @@ export interface SplatOptions {
   observe?: Element;
   /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
   firstWovenHoldMs?: number;
+  /**
+   * The SDK's cover across a move or resize of this canvas (see `TileOptions.rectCover`).
+   * **Default `'auto'` here** (the core default is `'off'`): a solid cover showing the last frame,
+   * raised when the canvas's size, dpr or page position changes and cut when `rewoven()` settles.
+   * Pass `'off'` if the page runs its own cover.
+   */
+  rectCover?: RectCoverOption;
   /**
    * Who owns the camera. `'viewer'` (the default): the SDK's orbit, idle spin, auto-fit and focus
    * gestures. `'page'` (`engine: 'playcanvas'` only; throws on Spark): the page drives the camera

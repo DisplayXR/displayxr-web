@@ -7,8 +7,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## 1.38.0 — 2026-10-09
 
-Touches the **preview tier** (`./call`, `./splat`) only: one default and two additive handle
-methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
+Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
+`rewoven()` settle on the browser's `wovenState` report where it exists (the hold path elsewhere,
+byte for byte), the optional `onResize` on `addScene`, a warning on a double attach (the call
+proceeds as before), and the display reads (`getDisplayInfo()` / `getRenderingModes()` /
+`requestRenderingMode()`) waiting for a layer's first frame instead of answering `null` / `[]`
+before it, and asking again while it still answers `null` / `[]`, until the cap. The **preview tier** has one default change, `rectCover: 'auto'` on `./splat` and
+`./model` (the core keeps `'off'`), plus additive handle methods (`finishSwap()`, `rewoven()` on
+the splat handle) and the call's self view following `autoConverge`. New types only
+(`WovenState`, `WovenWithheldReason`, `RectCoverOption`); no export is removed or renamed.
 
 ### `./call` — the stereo self view auto-converges too
 
@@ -31,6 +38,132 @@ methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
   'unsupported' }` at once without a session.
 - Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
   stage queue), vendored there as a local patch first.
+
+### Core: `firstWoven` / `rewoven()` settle on the browser's join report (`.`, additive)
+
+- **`XRDisplayLayer.wovenState`** (`'pending' | 'woven' | 'withheld'`, plus `withheldReason`) is
+  the browser's per-frame report of whether a layer's rect went into the weave (DisplayXR Browser
+  draft PR #258, Windows, feature-flagged). Detected with `'wovenState' in
+  XRDisplayLayer.prototype`. Where it is absent (mac, Linux, Android, Windows builds without it)
+  nothing changes: the hold, `confirmed: false`, byte for byte.
+- Where it is present:
+  - **`firstWoven`** settles `{ woven: true, confirmed: true, reason: 'woven' }` on the first
+    `'woven'` read once a stereo frame is drawn, with no hold.
+  - **`rewoven()`** settles on a `'woven'` read that follows a `'withheld'`/`'pending'` read seen
+    after the call, or three session frames after the last box change seen after the call, or,
+    when no box change is seen after the call, three session frames after the call. The report
+    is a live per-frame level trailing the join by 1–3 frames, so a read three frames on reflects
+    the rect as it was at the call; a `'woven'` from the old rect, or one read on the frame of the
+    call, never settles it. A stereo frame since the call is still required, and the cap stays.
+    - The no-change case is the common one: a page that moves the canvas, then calls
+      `rewoven()`. It used to wait a full hold of steady `'woven'` reads (a kiosk panel run:
+      46/46 calls confirmed, median 1206 ms, the same as the timer path). It now settles about
+      three frames after the call (~50 ms). The timer path (no `wovenState`) is unchanged.
+  - **The cap stays, as a safety.** A layer that never leaves `'withheld'` (a CSS effect on an
+    ancestor) settles `{ woven: false, confirmed: true, reason: <withheldReason> }` (or
+    `'pending'`) four holds after the call, never sooner than 4.8 s. That is a level, not a loss:
+    the canvas is not taken flat and `rewoven()` keeps working.
+- **New read-only `handle.wovenState` / `handle.withheldReason`** on the `TileHandle`, read live
+  (`null` where the browser does not report it, `'pending'` while the window has no layer). Types:
+  `WovenState`, `WovenWithheldReason`; `FirstWovenResult.reason` gains `'woven'`, `'pending'` and
+  the withheld tokens.
+- "Woven" means submitted to the weave. A GPU-stage failure after submit is not reflected.
+
+### Cover across a rect change, owned by the SDK (`rectCover`; core primitive, subpath default)
+
+- **New `rectCover` option on every `add*()`**: `'auto' | 'off' | { color?, snapshot? }`. Once a
+  window has woven, a change of its canvas's CSS size, dpr or page position raises a cover on the
+  frame the change is seen, and cuts it when `rewoven()` settles. A further change while it is up
+  restarts the wait. `remove()` and session end take it out of the DOM.
+  - **What the cover is:** a 2D canvas placed as the canvas's next sibling, never a second woven
+    canvas. It has `pointer-events: none` and `data-inline3d-cover`, and it is filled with `color`
+    (default `#000`).
+  - **The snapshot:** with `snapshot` (the default), the cover also shows the last frame: the left
+    eye, cover-fit to the new box. It is taken once per change, with one `drawImage` into a canvas
+    the size of the CSS box. Never `toDataURL`, never per frame.
+  - **Not before the first join:** cover a fresh canvas yourself until `firstWoven` (rule 5).
+- **Defaults.** `'off'` on the core `addScene` / `addImage` / `addVideo` (frozen tier, unchanged).
+  **`'auto'` on `./splat` and `./model`, all engines.** That is a default change in the preview
+  tier: a page that already runs its own cover passes `rectCover: 'off'`.
+- **`rewoven()` now also restarts on a pure move** (core, timing only). The box it watches gained
+  the canvas's page position (viewport rect plus document scroll, whole CSS px). A canvas moved
+  to another place at the same size goes through the same identity gap. Scrolling the document is
+  not a move. A scroll inside a nested scroller does read as one.
+- From a kiosk demo that keeps one woven canvas and moves it between screens: a black box at the
+  new rect for 0.4–1.2 s, covered by hand on timers until now.
+
+### Resize and draw in the same task (`./splat`, `./model`; core `onResize`, additive)
+
+- **The PlayCanvas viewer** (`./splat` `engine: 'playcanvas'`, `./model`'s default engine) now
+  resizes its backing store and replays the last frame inside the ResizeObserver callback, which
+  runs before the paint. Before, it waited for the next animation frame, and for one paint the
+  old store was shown stretched onto the new box.
+  - **The replay keeps its proportions.** The cached frustum's x row is scaled by the aspect
+    change, until the runtime's next views carry the true one.
+  - **Guards.** A callback that arrives while the viewer is drawing, or re-entrantly while it is
+    resizing, takes the old one-frame debounce instead.
+  - **Not covered:** `./splat` on Spark and `./model` `engine: 'three'` (`SceneViewer`) keep the
+    one-frame debounce for now.
+- **Core `addScene(…, { onResize(box) })`**, optional. It is called in the same ResizeObserver
+  callback with `{ width, height, dpr }`, so a page-drawn window can resize and draw before the
+  paint too. It runs only on a real change, and a throw is caught. Without it, nothing changes:
+  no observer is attached to a scene canvas.
+
+### Display reads wait for the layer's first frame (core `.`, additive, no new API)
+
+- **`getDisplayInfo()` / `getRenderingModes()` / `requestRenderingMode()`**, on a tile handle or
+  the wall, called before the window's layer has delivered its first frame now **wait for it** and
+  ask the layer then. Before, a page calling them right after `add*()` got `null` / `[]` (and a
+  request answered "not forwarded"): the browser only answers once the layer has a weave session,
+  and `null` is documented as "no glasses-free display". Found by the samples panel test (#151),
+  which worked around it page-side with `await handle.firstWoven`; that is no longer needed.
+  - **Released by** the first `'woven'` read where the browser reports `wovenState`, or the
+    layer's first stereo frame elsewhere. No first-woven hold. A `'withheld'` read does not
+    release: the layer reads it right after creation, before the weave session can answer
+    (measured on a Chromium 156 panel build: released on it, `getDisplayInfo()` answered `null`
+    at 1.55 s while the layer only read `'woven'` at ~3.9 s).
+  - **A `null` / `[]` answer before the cap is not returned.** The read is asked again on each
+    later release signal (the next `'woven'` read, or the next session frame once a stereo frame
+    has been drawn) and resolves with the first non-empty answer, on both paths.
+    `requestRenderingMode()` is forwarded once on the release, not retried.
+  - **Capped** at the first-woven cap: four holds from the layer's construction, never under
+    4.8 s. Only past it is the layer's `null` / `[]` returned, as a real absence.
+  - **Unchanged:** once a read on the layer has answered for real, later calls go straight
+    through; no session, no live layer, a failed layer, or a window removed / session ended
+    mid-wait settles at once, as before.
+
+### Double-attach warning (core, and the `./splat` / `./model` entries)
+
+- `addScene` / `addImage` / `addVideo` / `addSplat` / `addModel` on a canvas that is still
+  registered on the same wall (not yet `remove()`d) now **warns**, once per canvas. The warning
+  names the method and the live registration, and says the call is rebuilding the layer (a fresh
+  0.4–1.2 s identity gap) or putting a second renderer on the context.
+- **It is a warning only, so no page changes behavior.** The call proceeds exactly as before: the
+  core closes and rebuilds the layer, the subpaths attach a new renderer, and the call returns its
+  own new handle. A page that re-adds to swap pictures keeps working.
+- To swap content, redraw a source canvas or use `setSource`. To re-register on purpose,
+  `remove()` first.
+- `./splat` and `./model` check at their entry, not only in `addScene`: their renderer exists
+  before their core window, so a second call during the first one's load is caught too.
+- From a kiosk demo that attached its stage twice per screen visit.
+
+### Every session frame presents (`./splat`, `./model`, `./viewer`)
+
+- The viewers behind the scene subpaths now draw on **every** session frame they are handed. This
+  covers the PlayCanvas viewer (`./splat` `engine: 'playcanvas'`, `./model`'s default) and
+  `SceneViewer` (`./splat` on Spark, `./model` `engine: 'three'`, `./viewer`).
+  - **Before the first good frame,** a frame they cannot draw (a short view list, a missing or
+    degenerate viewport) used to draw nothing. It now draws the mono camera into both halves: the
+    subject flat if it is loaded, a cleared frame if not. Afterwards they replay the last good
+    frame, as before.
+  - **No source, or nothing visible,** still draws a frame.
+  - **Before the engine has created its GL context,** nothing can be presented, and creating one
+    early would give it the wrong attributes.
+  - The dark-blink rule holds: no clear without a draw.
+- **Note for `addScene` pages:** the SDK cannot enforce this for a window your page draws. Draw on
+  every `onFrame` ([`woven-canvas-rules.md`](docs/woven-canvas-rules.md), "redraw every frame").
+  A fully transparent woven frame weaves **black**: a browser bug (browser-pvt #255), listed there
+  as a known limitation.
 
 ## 1.37.1 — 2026-10-07
 

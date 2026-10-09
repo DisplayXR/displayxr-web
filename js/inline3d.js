@@ -422,6 +422,70 @@ function nowMs() {
 // report. Per-window override: `firstWovenHoldMs` on any add*() call.
 const FIRST_WOVEN_HOLD_MS = 1200;
 
+// The browser's own join report (DisplayXR Browser PR #258, Windows, behind a feature flag):
+// `XRDisplayLayer.wovenState` — 'pending' (no presented frame has reported this layer yet: from
+// construction, again after close(), and whenever the reply does not list it), 'woven' (the
+// latest swapped frame put this layer's rect into the weave) or 'withheld' (with a why-token in
+// `withheldReason`: no-quad / no-identity / no-join / cross-pass:mono / cross-pass:mono(cover,2:1)
+// / resolve-dropped). It is a per-frame LEVEL, nothing latched, read off the GetLatestViews reply,
+// and the layer is not an EventTarget — so polling it once per session frame is the whole API.
+//
+// Where it exists, firstWoven/rewoven settle on it (`confirmed: true`) instead of on the hold.
+// Where it does not (mac, Linux, Android, and every Windows build without the patch: the
+// attribute is deliberately absent there, so `in` on the prototype is an honest feature test)
+// the hold below is used exactly as before.
+const WOVEN_STATES = new Set(['pending', 'woven', 'withheld']);
+// The report trails the join by 1-3 renderer frames. After a rect change that never reads
+// anything but 'woven' (a move the browser rejoins without a gap), a 'woven' read only means the
+// NEW rect once this many session frames have passed since the change was seen; before that it
+// can still be the old rect's.
+const WOVEN_STATE_LAG_FRAMES = 3;
+
+// The display calls that wait for a layer's first frame (see Inline3D._layerCall). All three
+// answer from the browser's weave session, which only exists once a layer has delivered a frame:
+// before that getDisplayInfo() is null, getRenderingModes() is [] and requestRenderingMode() is
+// `false` ("not forwarded").
+const LAYER_CALLS_AFTER_FIRST_FRAME = new Set(['getDisplayInfo', 'getRenderingModes', 'requestRenderingMode']);
+// The two READS among them. A read that comes back null / empty before the cap is not an answer
+// yet (the weave session can lag the release signal by a few frames): it is asked again on the
+// next release signal. requestRenderingMode resolves void, so it is forwarded once, not retried.
+const LAYER_READS_RETRIED_WHEN_EMPTY = new Set(['getDisplayInfo', 'getRenderingModes']);
+
+/** A display read's "nothing yet" shape: null / undefined, or an empty list. */
+function isEmptyLayerAnswer(r) {
+  return r === null || r === undefined || (Array.isArray(r) && r.length === 0);
+}
+
+/** Does this browser build report `XRDisplayLayer.wovenState`? Feature-tested on the prototype. */
+function hasWovenState() {
+  try {
+    const L = typeof XRDisplayLayer === 'function' ? XRDisplayLayer : null;
+    return !!(L && L.prototype && 'wovenState' in L.prototype);
+  } catch {
+    return false;
+  }
+}
+
+/** This layer's woven state, or null when the read fails or returns something not in the contract. */
+function readWovenState(layer) {
+  try {
+    const s = layer ? layer.wovenState : null;
+    return WOVEN_STATES.has(s) ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The why-token while 'withheld', else null. */
+function readWithheldReason(layer) {
+  try {
+    const r = layer ? layer.withheldReason : null;
+    return typeof r === 'string' && r ? r : null;
+  } catch {
+    return null;
+  }
+}
+
 // The easing option, validated here rather than in the state machine: the sequencer falls back
 // silently (it has no opinion about a caller's config), but a typo in `createInline3D` is worth
 // exactly one warning — a page that asked for 'ease-in-out' and got smoothstep should know.
@@ -693,10 +757,51 @@ function chromeTextPlates(root) {
 /** A pending rewoven() settles anyway ('hold-capped') after this many holds from the call. */
 const REWOVEN_MAX_HOLDS = 4;
 
-/** The CSS size + dpr of a window's canvas: what a pending rewoven() restarts on. */
+/**
+ * The CSS size + dpr + PAGE position of a window's canvas: what a pending rewoven() restarts on,
+ * and what a rect cover goes up on.
+ *
+ * Position joined the key in 1.38: a canvas moved to another place on the page, at the same size,
+ * goes through the same identity gap as a resized one (a kiosk demo moving ONE woven canvas between
+ * screens measured 0.4-1.2 s of black at the new rect). It is measured in PAGE coordinates
+ * (viewport rect + document scroll) so that scrolling the document is not a move: a scrolled
+ * canvas keeps its identity (rule 11). Rounded to whole CSS px so sub-pixel layout jitter is not
+ * a move either. A scroll inside a nested scroller still reads as one; that is the price of one
+ * getBoundingClientRect per frame instead of walking the scroll ancestors.
+ */
 function boxKeyOf(canvas) {
   const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-  return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}`;
+  let pos = '';
+  if (typeof canvas.getBoundingClientRect === 'function') {
+    const r = canvas.getBoundingClientRect() || {};
+    const sx = (typeof window !== 'undefined' && window.scrollX) || 0;
+    const sy = (typeof window !== 'undefined' && window.scrollY) || 0;
+    pos = `+${Math.round((r.left ?? r.x ?? 0) + sx)},${Math.round((r.top ?? r.y ?? 0) + sy)}`;
+  }
+  return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}${pos}`;
+}
+
+/** A scene canvas's CSS box and dpr, as addScene's `onResize` receives it. */
+function sceneBoxOf(canvas) {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  return { width: canvas.clientWidth || 0, height: canvas.clientHeight || 0, dpr };
+}
+
+/**
+ * The `rectCover` option of every add*(): null (off) or `{ color, snapshot }`. Off by default in
+ * the core (frozen defaults); `./splat` and `./model` pass 'auto'. A bad value throws at the call:
+ * a typo here would otherwise silently leave a page without the cover it asked for.
+ */
+function resolveRectCover(v) {
+  if (v === undefined || v === null || v === false || v === 'off') return null;
+  if (v === 'auto' || v === true) return { color: '#000', snapshot: true };
+  if (typeof v === 'object') {
+    if (v.color !== undefined && typeof v.color !== 'string') {
+      throw new TypeError('[inline3d] rectCover.color must be a CSS color string.');
+    }
+    return { color: v.color || '#000', snapshot: v.snapshot !== false };
+  }
+  throw new TypeError(`[inline3d] rectCover: expected 'auto', 'off' or { color?, snapshot? }; got ${JSON.stringify(v)}.`);
 }
 
 class Inline3D {
@@ -709,6 +814,11 @@ class Inline3D {
     this.session = session;
     this.refSpace = refSpace;
     this._windows = new Map(); // canvas -> window record
+    // Double-attach detection. `_claims`: canvases a scene subpath entry (addSplat / addModel) has
+    // taken before its core window exists (canvas -> { token, method }); `_doubleWarned`:
+    // canvases already warned about, so a page calling add*() per render warns once.
+    this._claims = new Map();
+    this._doubleWarned = new WeakSet();
     this._globalOverlays = new Set(); // page-global overlays excluded from EVERY window
     // el -> Set(window) currently excluding it. Isolation (will-change) is a GLOBAL
     // property of the element while exclusion is PER-WINDOW, so the promotion has to
@@ -946,6 +1056,8 @@ class Inline3D {
    * @param {number} [opts.cornerRadius=0]  round each eye's corners in buffer px (CSS
    *        border-radius can't: it would round the packed SBS square's outer corners and
    *        come out lopsided after the eye-split).
+   * @param {'auto'|'off'|{color?:string, snapshot?:boolean}} [opts.rectCover='off']  (every add*())
+   *        cover the canvas across a later move/resize until rewoven() settles; see _rectCoverCheck.
    * @param {number} [opts.feather=0]  fade each eye's outer edges to transparent over this
    *        many buffer px, so the 3D window dissolves into the page instead of ending at a
    *        hard rectangle. Same reason CSS can't do it: a mask/filter on the canvas applies
@@ -954,7 +1066,9 @@ class Inline3D {
    * @returns {{remove():void}}
    */
   addImage(canvas, source, opts = {}) {
+    this._warnDoubleAttach(canvas, 'addImage', opts._dxrClaim);
     const win = this._register(canvas, 'image', opts);
+    win.method = 'addImage';
     win.ready = loadImage(source).then((img) => {
       win.img = img;
       win.repaint();
@@ -970,7 +1084,9 @@ class Inline3D {
    * @returns {{remove():void}}
    */
   addVideo(canvas, video, opts = {}) {
+    this._warnDoubleAttach(canvas, 'addVideo', opts._dxrClaim);
     const win = this._register(canvas, 'video', opts);
+    win.method = 'addVideo';
     win.video = video;
     return this._handle(canvas, win);
   }
@@ -999,6 +1115,10 @@ class Inline3D {
    *        falls back to `virtualDisplayHeight` if one was given (that pair is the one reason
    *        to pass both) — either way the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
+   * @param {(box:{width:number, height:number, dpr:number}) => void} [opts.onResize]  called
+   *        inside the ResizeObserver callback when the canvas's CSS box or dpr changes, i.e.
+   *        before the paint: resize your backing store and draw one frame here and the old store
+   *        is never shown stretched onto the new box. Only on a real change; errors are caught.
    * @param {() => void} [opts.onLayerLost]  called once when this window's weave layer goes away
    *        for good — the session ended, or the layer could not be created. YOU own a scene
    *        canvas's pixels, so this is the SDK's only way to tell you that the side-by-side pair
@@ -1011,14 +1131,86 @@ class Inline3D {
     // The rig and the height describe the same one slot in the layer init, so warn where a
     // caller has said it twice — silently dropping one of two things the page explicitly asked
     // for is how a scene ends up framed at a scale nobody chose.
+    this._warnDoubleAttach(canvas, 'addScene', opts._dxrClaim);
     if (opts.viewRig && opts.virtualDisplayHeight !== undefined) noteRigWinsOverHeight();
     const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
+    win.method = 'addScene';
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
     // The SDK's own renderers (./viewer, ./splat, ./model) clamp their buffers before sizing and
     // say so, so the core never inspects (or creates!) their GL context — see _checkSceneBuffer.
     if (opts.bufferClamped === true) win.warnedBufMismatch = true;
     return this._handle(canvas, win);
+  }
+
+  // ── double-attach detection ───────────────────────────────────────────────────────────
+  //
+  // A second add*() on a canvas that is still registered closes its layer and builds a new one: a
+  // fresh identity gap (rule 2), and for ./splat and ./model a second renderer on the same
+  // context. A kiosk demo attached its stage twice per screen visit this way without noticing.
+  // The SDK says so, once per canvas, and then does exactly what it always did: a WARNING, so no
+  // page changes behavior (a page that re-adds to swap pictures keeps working).
+
+  /** The live registration on `canvas` other than the one `token` belongs to: its method, or null. */
+  _liveRegistration(canvas, token) {
+    const claim = this._claims.get(canvas);
+    if (claim && claim.token !== token) return claim.method;
+    const win = this._windows.get(canvas);
+    return win ? win.method || 'add*' : null;
+  }
+
+  _warnDoubleAttach(canvas, method, token) {
+    const live = this._liveRegistration(canvas, token);
+    if (!live || this._doubleWarned.has(canvas)) return;
+    this._doubleWarned.add(canvas);
+    console.warn(
+      `[inline3d] ${method}() on a canvas that is already registered on this inline-3D session ` +
+        `(by ${live}(), not yet removed). This call is rebuilding the canvas's layer (a fresh ` +
+        '0.4-1.2 s identity gap) or putting a second renderer on its context. Change what is IN ' +
+        'the canvas instead (setSource, your onFrame, a redrawn source canvas), or call ' +
+        'handle.remove() on the first registration first. (Warned once per canvas.)',
+      canvas
+    );
+  }
+
+  /**
+   * For the scene subpath entries (via guardedAttach in ./inline3d-splat-shared.js), which build
+   * their renderer BEFORE the core window exists, so the core's own check would come too late.
+   * Warns on a live registration, then claims the canvas for this call either way: returns
+   * `{ opts, own }` — attach with `opts` (it carries the claim token down to this entry's own
+   * addScene, which then does not warn a second time), then `own(handle)`. A nested entry
+   * (./model's engine:'three' route calls ./model/three's addModel) inherits the claim.
+   */
+  _attachGuard(canvas, method, opts = {}) {
+    const claim = this._claims.get(canvas);
+    if (opts && opts._dxrClaim && claim && claim.token === opts._dxrClaim) return { opts, own: () => {} };
+    this._warnDoubleAttach(canvas, method, null);
+    const token = {};
+    return { opts: { ...opts, _dxrClaim: token }, own: (out) => this._claim(canvas, method, out, token) };
+  }
+
+  /**
+   * Remember that a subpath handle holds `canvas` until that handle's remove() (the latest call
+   * wins). The adapters REASSIGN `out.remove` when their module loads, so the release rides an
+   * accessor that wraps whatever is assigned.
+   */
+  _claim(canvas, method, out, token) {
+    if (!this._running || !out || typeof out !== 'object') return;
+    const claim = { token, method };
+    this._claims.set(canvas, claim);
+    let impl = out.remove;
+    const remove = (...args) => {
+      if (this._claims.get(canvas) === claim) this._claims.delete(canvas);
+      return typeof impl === 'function' ? impl.apply(out, args) : undefined;
+    };
+    Object.defineProperty(out, 'remove', {
+      configurable: true,
+      enumerable: true,
+      get: () => remove,
+      set: (fn) => {
+        impl = fn;
+      },
+    });
   }
 
   /**
@@ -1221,14 +1413,35 @@ class Inline3D {
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
       stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
       /**
+       * The browser's own report for this window's layer, read live: 'pending' | 'woven' |
+       * 'withheld', or null on a browser that does not report it (the attribute is absent: mac,
+       * Linux, Android, Windows builds without it). 'pending' too while the window has no live
+       * layer (lazy, scrolled away), matching what the browser says of a closed layer. For
+       * diagnostics and pages; firstWoven/rewoven already settle on it.
+       */
+      get wovenState() {
+        if (!hasWovenState()) return null;
+        if (!win.layer) return 'pending';
+        return readWovenState(win.layer);
+      },
+      /** The browser's why-token while `wovenState` is 'withheld' (e.g. 'no-identity'), else null. */
+      get withheldReason() {
+        if (!hasWovenState() || !win.layer) return null;
+        return readWovenState(win.layer) === 'withheld' ? readWithheldReason(win.layer) : null;
+      },
+      /**
        * Resolves ONCE, never rejects: `{ woven, confirmed, reason, ms }`.
        *
        * `woven: true` — the window has drawn a stereo frame on a layer that has existed for
        * `firstWovenHoldMs` (default 1200). That is the moment to drop a poster covering the
-       * canvas. `confirmed` is `false` today, always: no browser reports when its compositor
-       * actually joined a canvas, so this is the browser's worst case, measured by the SDK so
-       * pages stop measuring it themselves. It becomes a reported fact (`confirmed: true`, no
-       * hold) when a browser can say so, with no change to the page.
+       * canvas. On a browser without `XRDisplayLayer.wovenState` this is the browser's worst
+       * case, measured by the SDK (`confirmed: false`, reason 'hold-elapsed'). On one that has it,
+       * it is the browser's report: `confirmed: true`, reason 'woven', on the first 'woven' read
+       * once a stereo frame is drawn, with no hold. Same page code on both.
+       *
+       * On the report, a layer that stays 'withheld' still settles after a cap (four holds, at
+       * least 4.8 s): `woven: false, confirmed: true, reason: <withheldReason>` (or 'pending').
+       * That is a level, not a loss: the canvas is NOT taken flat, and `rewoven()` keeps working.
        *
        * `woven: false` — this window will not weave: `reason` is `'layer-failed'`,
        * `'session-ended'` or `'removed'`. The SDK has already taken an image/video canvas flat,
@@ -1264,12 +1477,19 @@ class Inline3D {
        * already woven but whose rect is about to change (fullscreen, a layout resize): the
        * browser re-registers the moved rect and the same identity gap as a fresh canvas
        * applies, so cover the canvas across the change and release on this. A change of the
-       * canvas's CSS size or devicePixelRatio while it is pending restarts the hold (checked every
-       * frame, for every window kind; a move without a resize is not detected), and it settles
+       * canvas's CSS size, devicePixelRatio or page position (since 1.38: a moved canvas goes
+       * through the same gap; document scroll is not a move) while it is pending restarts the
+       * hold (checked every frame, for every window kind), and it settles
        * anyway with `reason: 'hold-capped'` four holds after the call, so a size that never stops
        * animating cannot keep a cover up. Calling it again while pending returns the same
        * promise, restarted. Before the first join it IS `firstWoven`; on a window that will not
        * weave it resolves that `woven: false` result. Same shape, never rejects.
+       *
+       * On a browser with `XRDisplayLayer.wovenState` it settles on the report (`confirmed: true`,
+       * reason 'woven'): on a 'woven' read that follows a 'withheld'/'pending' read seen after the
+       * call, or three session frames after the last box change, so a stale 'woven' from the old
+       * rect never settles it. The cap stays: a layer that never leaves 'withheld' settles `woven:
+       * false, confirmed: true, reason: <withheldReason>` four holds after the call.
        */
       rewoven: () => this._rewoven(win),
     };
@@ -1482,12 +1702,103 @@ class Inline3D {
         )
       );
     }
+    // A layer that has not delivered a frame yet answers getDisplayInfo() with null and
+    // getRenderingModes() with an empty list, and null is documented as "no glasses-free
+    // display". A page that asks right after add*() (the natural place) would be told there is
+    // no display. So wait for this layer's release signal (see _tickLayerFramed) and ask then.
+    // Capped at the first-woven cap, so a layer that never frames still answers (null/empty, as
+    // a real absence). Re-entered after the wait: the layer may have closed (-> the rejection
+    // above) or been rebuilt (-> wait for the new one) meanwhile.
+    const deferred = LAYER_CALLS_AFTER_FIRST_FRAME.has(method);
+    if (deferred && !win.layerFramed && this._layerReadPending(win)) {
+      return this._whenLayerFramed(win).then(() => this._layerCall(win, method, label, args));
+    }
     // Wrapped so a SYNCHRONOUS throw from the browser (requestRenderingMode raises TypeError
     // that way for a non-2-view mode) arrives as a rejection like every other failure.
+    let p;
     try {
-      return Promise.resolve(win.layer[method](...args));
+      p = Promise.resolve(win.layer[method](...args));
     } catch (e) {
       return Promise.reject(e);
+    }
+    if (!LAYER_READS_RETRIED_WHEN_EMPTY.has(method) || !this._layerReadPending(win)) return p;
+    // Released, but not answered for real yet on this layer. The weave session can trail the
+    // release signal, so a null / empty answer before the cap is "not ready", never returned:
+    // wait for the next release signal (the next 'woven' read, or the next stereo frame) and ask
+    // again. The first real answer marks the layer answered, and later calls go straight through.
+    const layer = win.layer;
+    return p.then((r) => {
+      if (win.layer !== layer) return r; // that layer's own answer; the window moved on
+      if (!isEmptyLayerAnswer(r)) {
+        win.lfAnswered = true;
+        return r;
+      }
+      if (!this._layerReadPending(win)) return r; // at the cap: null / [] is a real absence
+      return this._whenLayerFramed(win).then(() => this._layerCall(win, method, label, args));
+    });
+  }
+
+  /** The first-frame wait cap: the first-woven cap (four holds, never under four default holds). */
+  _layerFramedCap(win) {
+    return REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+  }
+
+  /**
+   * Is a display read on `win` still owed a real answer by its current layer — not yet answered
+   * non-empty, and the cap not passed? (Whether it waits for the FIRST release is `layerFramed`.)
+   */
+  _layerReadPending(win) {
+    if (!win.layer || win.lfAnswered || win.lfCapped) return false;
+    if (nowMs() - win.lfAt >= this._layerFramedCap(win)) {
+      win.lfCapped = true;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Resolves once `win`'s current layer has delivered its first frame, when the layer goes away
+   * or is rebuilt, or at the cap (measured from the layer's construction, as firstWoven's is).
+   * Never rejects. The cap is checked per session frame on the same clock as firstWoven, and
+   * backed by a real timer for a session whose frames have stopped altogether.
+   */
+  _whenLayerFramed(win) {
+    return new Promise((resolve) => {
+      const layer = win.layer;
+      const waiter = { resolve, timer: null };
+      const left = Math.max(0, this._layerFramedCap(win) - (nowMs() - win.lfAt));
+      waiter.timer = setTimeout(() => {
+        const i = win.framedWaiters.indexOf(waiter);
+        if (i >= 0) win.framedWaiters.splice(i, 1);
+        if (win.layer === layer) win.lfCapped = true;
+        resolve();
+      }, left);
+      if (waiter.timer && typeof waiter.timer.unref === 'function') waiter.timer.unref();
+      win.framedWaiters.push(waiter);
+    });
+  }
+
+  /**
+   * Per session frame, after the draw, until the current layer has framed and while reads wait.
+   * The release signal: where the browser reports `wovenState`, a 'woven' read (a 'withheld'
+   * read right after construction comes before the weave session can answer, so it does not
+   * count); elsewhere, a frame once this layer has carried a stereo frame (the firstWoven signal,
+   * with no hold). Every such frame releases the waiting reads, so a read that came back empty
+   * is asked again on the next one. Capped at _layerFramedCap from the layer's construction.
+   */
+  _tickLayerFramed(win) {
+    const ws = win.wsLive ? readWovenState(win.layer) : null;
+    if (ws ? ws === 'woven' : win.lfStereo) this._noteLayerFramed(win, true);
+    else if (win.framedWaiters.length && !this._layerReadPending(win)) this._noteLayerFramed(win, false);
+  }
+
+  /** The layer framed (mark = true), or went away / capped (false): release every waiting read. */
+  _noteLayerFramed(win, mark = true) {
+    if (mark) win.layerFramed = true;
+    const ws = win.framedWaiters.splice(0);
+    for (const w of ws) {
+      clearTimeout(w.timer);
+      w.resolve();
     }
   }
 
@@ -2002,6 +2313,12 @@ class Inline3D {
       // therefore already fail to build its layer) inside this call.
       onLayerLost: typeof opts.onLayerLost === 'function' ? opts.onLayerLost : null,
       layerLostSent: false,
+      // Scene windows only (addScene's `onResize`): called inside the ResizeObserver callback, so
+      // a page-drawn window can resize its store and draw before the paint. Read here for the same
+      // reason as onLayerLost: a non-lazy window starts its size watch inside this call.
+      onResize: kind === 'scene' && typeof opts.onResize === 'function' ? opts.onResize : null,
+      resizeBox: null,
+      inResize: false,
       ready: null,
       ownsBuffer: kind !== 'scene',
       cornerRadius: opts.cornerRadius || 0,
@@ -2054,7 +2371,29 @@ class Inline3D {
       // firstWoven's two halves again, counted from the call (and from each later box change).
       rw: null,
       rwGone: null, // the reason this window will never weave again, once one arrived
+      // Whether the CURRENT layer is on a browser that reports `wovenState` (set per layer in
+      // _activate). False keeps firstWoven/rewoven on the hold, exactly as before the report.
+      wsLive: false,
+      // The rect cover (opts.rectCover; see _rectCoverCheck), or null when off.
+      rc: null,
+      // Display reads wait for the current layer's first frame (see _layerCall). `layerFramed`:
+      // its release signal has been seen; `lfAnswered`: a read got a real (non-empty) answer from
+      // it; `lfStereo`: it has carried a stereo frame; `lfAt`: when it was built; `lfCapped`: the
+      // wait cap ran out for it; `framedWaiters`: reads queued meanwhile.
+      layerFramed: false,
+      lfAnswered: false,
+      lfStereo: false,
+      lfAt: 0,
+      lfCapped: false,
+      framedWaiters: [],
     };
+    const rcCfg = resolveRectCover(opts.rectCover);
+    if (rcCfg) {
+      // box: the last key seen (null = not looked yet); el: the cover element, made on first use;
+      // up: showing; snapped/snapWanted: this cycle's one snapshot; waiting: the rewoven promise
+      // that takes it down; w/h: the CSS box at the last look (the snapshot's source aspect).
+      win.rc = { cfg: rcCfg, box: null, el: null, up: false, snapped: false, snapWanted: false, waiting: null, w: 0, h: 0 };
+    }
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
     });
@@ -2074,6 +2413,7 @@ class Inline3D {
     this._deactivate(win);
     this._windows.delete(canvas);
     this._settleFirstWoven(win, false, 'removed');
+    this._dropCover(win);
   }
 
   _onIntersect(entries) {
@@ -2148,6 +2488,14 @@ class Inline3D {
       win.fwLayerAt = nowMs();
       win.fwStereo = false;
     }
+    win.wsLive = hasWovenState();
+    // A new layer has delivered nothing yet (see _layerCall). Reads queued on the previous one
+    // were released by _deactivate and re-enter against this one.
+    win.layerFramed = false;
+    win.lfAnswered = false;
+    win.lfStereo = false;
+    win.lfCapped = false;
+    win.lfAt = nowMs();
     this._restartRewoven(win);
     win.layerLostSent = false; // a live layer again: a future loss is worth reporting again
     // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
@@ -2189,6 +2537,7 @@ class Inline3D {
   }
 
   _deactivate(win) {
+    this._noteLayerFramed(win, false); // queued display reads re-check and fail as before
     this._stopOverlayScan(win);
     this._stopSizeWatch(win);
     if (win.layer) {
@@ -2570,11 +2919,46 @@ class Inline3D {
   _startSizeWatch(win) {
     if (typeof ResizeObserver !== 'function') return;
     if (win.sizeObserver) return;
+    if (win.kind === 'scene') {
+      // The SDK never sizes a scene canvas; it only hands the page the moment to (opts.onResize).
+      if (!win.onResize) return;
+      win.resizeBox = sceneBoxOf(win.canvas);
+      win.sizeObserver = new ResizeObserver(() => this._onSceneResize(win));
+      win.sizeObserver.observe(win.canvas);
+      return;
+    }
     // Scene canvases are the app's (ownsBuffer false) — never touch their width/height.
     // An explicit {width, height} is box-independent by definition, so nothing to watch.
     if (!win.ownsBuffer || (win.reqW && win.reqH)) return;
     win.sizeObserver = new ResizeObserver(() => this._onBoxChange(win));
     win.sizeObserver.observe(win.canvas);
+  }
+
+  /**
+   * addScene's `onResize(box)`, run INSIDE the ResizeObserver callback. That callback runs after
+   * the frame's animation callbacks and before its paint, so a page that resizes its store and
+   * draws here never shows the old backing store stretched onto the new box for a frame — which
+   * is what deferring to the next animation frame shows. Only on a real change of the CSS box or
+   * dpr (an observer fires on plenty that moves neither), never re-entrantly, and a throw is
+   * contained and warned about once: this is a browser callback and must not take the page down.
+   */
+  _onSceneResize(win) {
+    if (!win.layer || !win.onResize || win.inResize) return;
+    const box = sceneBoxOf(win.canvas);
+    const last = win.resizeBox;
+    if (last && last.width === box.width && last.height === box.height && last.dpr === box.dpr) return;
+    win.resizeBox = box;
+    win.inResize = true;
+    try {
+      win.onResize(box);
+    } catch (err) {
+      if (!win.resizeThrewWarned) {
+        win.resizeThrewWarned = true;
+        console.warn("[inline3d] a scene window's onResize threw; further throws from it are silent.", err);
+      }
+    } finally {
+      win.inResize = false;
+    }
   }
 
   _stopSizeWatch(win) {
@@ -2842,6 +3226,8 @@ class Inline3D {
     this._trackBakedStereo(t);
     for (const win of this._windows.values()) {
       if (!win.layer) continue;
+      // Before the draw: a moved/resized canvas is covered before anything else happens to it.
+      if (win.rc) this._rectCoverCheck(win);
       if (win.kind === 'scene') {
         if (views && win.onFrame) {
           // Count the SHORT view lists and hand them over unchanged. Under GPU load the session
@@ -2877,6 +3263,7 @@ class Inline3D {
             // fallback (a mono frame), which is not what a poster is waiting for.
             if (views.length >= 2) {
               win.fwStereo = true;
+              win.lfStereo = true;
               if (!win.warnedBufMismatch) this._checkSceneBuffer(win);
               if (win.rw) win.rw.stereo = true;
             }
@@ -2902,9 +3289,15 @@ class Inline3D {
         // video has never had a frame) the tile holds nothing worth revealing yet.
         if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : !!win.img)) {
           win.fwStereo = true;
+          win.lfStereo = true;
           if (win.rw) win.rw.stereo = true;
         }
       }
+      // After the draw: the one snapshot of this cover cycle reads the frame just committed to
+      // the backing store, in the same task, which is the one moment a WebGL drawing buffer is
+      // guaranteed readable without preserveDrawingBuffer.
+      if (win.rc && win.rc.snapWanted) this._rectCoverSnap(win);
+      if (!win.layerFramed || win.framedWaiters.length) this._tickLayerFramed(win);
       this._tickFirstWoven(win);
     }
   }
@@ -2920,6 +3313,13 @@ class Inline3D {
    * which knows nothing about whether the compositor has matched this canvas yet.
    */
   _tickFirstWoven(win) {
+    // The browser's report, where it has one. An unreadable or out-of-contract value falls back
+    // to the hold for this frame rather than guessing.
+    const ws = win.wsLive && win.layer ? readWovenState(win.layer) : null;
+    if (ws) {
+      this._tickWovenState(win, ws);
+      return;
+    }
     if (win.rw) {
       // Every frame, for every window kind: the ResizeObserver only watches SDK-sized buffers, and
       // no observer sees a dpr-only change.
@@ -2939,16 +3339,70 @@ class Inline3D {
     this._settleFirstWoven(win, true, 'hold-elapsed');
   }
 
-  /** One-shot: the first call wins, later ones are ignored. */
-  _settleFirstWoven(win, woven, reason) {
+  /**
+   * firstWoven / rewoven on the browser's report (`wovenState`, see WOVEN_STATES). Per session
+   * frame, per live window, one attribute read.
+   *
+   * firstWoven: the first 'woven' read once the layer has carried a stereo frame — no hold.
+   *
+   * rewoven(): a 'woven' read is only trusted as the NEW rect's once it follows a 'withheld' or
+   * 'pending' read seen after the call (the rect left the weave and came back), or once
+   * WOVEN_STATE_LAG_FRAMES frames have passed since the last box change seen after the call (a
+   * move rejoined without a gap). A call that sees no box change and no gap settles on a 'woven'
+   * read WOVEN_STATE_LAG_FRAMES session frames after the call: the report is a live per-frame
+   * level trailing the join by at most that many frames, so such a read reflects the rect as it
+   * was at the call (the usual case: the page moved the canvas, THEN called rewoven()). Never on
+   * the frame of the call itself. Either way it needs a stereo frame since the last restart, as
+   * on the hold path.
+   *
+   * The cap stays, as a safety: the report is a level, and a layer that never leaves 'withheld'
+   * (a CSS effect on an ancestor, rule 7) must not hold a cover up for good. Four holds (never
+   * fewer than four default holds, so `firstWovenHoldMs: 0` does not mean "give up at once")
+   * after the call, it settles anyway: `woven: false` with the browser's reason while withheld,
+   * or `'hold-capped'` if the last read was 'woven' but never qualified.
+   */
+  _tickWovenState(win, state) {
+    const t = nowMs();
+    const cap = REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+    if (win.rw) {
+      this._noteRewovenBox(win); // first, so a change seen this frame is not credited to this read
+      const rw = win.rw;
+      if (state !== 'woven') rw.gap = true;
+      else if (
+        rw.stereo &&
+        (rw.gap ||
+          (rw.boxFrame !== null && this._frameCount - rw.boxFrame >= WOVEN_STATE_LAG_FRAMES) ||
+          (rw.boxFrame === null && this._frameCount - rw.callFrame >= WOVEN_STATE_LAG_FRAMES))
+      ) {
+        this._settleRewoven(win, true, 'woven', true);
+      }
+      if (win.rw && t - rw.calledAt >= cap) {
+        if (state === 'woven') this._settleRewoven(win, true, 'hold-capped', true);
+        else this._settleRewoven(win, false, readWithheldReason(win.layer) || state, true);
+      }
+    }
+    if (win.fwResult || win.fwLayerAt === null) return;
+    if (win.fwStereo && state === 'woven') this._settleFirstWoven(win, true, 'woven', true);
+    else if (t - win.fwLayerAt >= cap) {
+      if (state === 'woven') this._settleFirstWoven(win, true, 'hold-capped', true);
+      else this._settleFirstWoven(win, false, readWithheldReason(win.layer) || state, true);
+    }
+  }
+
+  /**
+   * One-shot: the first call wins, later ones are ignored. `confirmed` marks a result read off
+   * the browser's report; a confirmed `woven: false` is a capped 'withheld' level, which can still
+   * recover, so it is NOT a terminal "will not weave" and leaves rewoven() usable.
+   */
+  _settleFirstWoven(win, woven, reason, confirmed = false) {
     // Every "will not weave" path lands here, so a pending rewoven() is released with it, and a
     // later one answers at once (firstWoven may have settled woven:true long before).
-    if (!woven) {
+    if (!woven && !confirmed) {
       if (!win.rwGone) win.rwGone = reason;
       this._settleRewoven(win, false, reason);
     }
     if (win.fwResult) return;
-    win.fwResult = Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - win.fwRegAt) });
+    win.fwResult = Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - win.fwRegAt) });
     win.fwResolve(win.fwResult);
     win.fwResolve = null;
   }
@@ -2956,7 +3410,9 @@ class Inline3D {
   /** handle.rewoven(): see the handle's doc comment. */
   _rewoven(win) {
     if (!win.fwResult) return win.fwPromise; // still on the first join: the same question
-    if (!win.fwResult.woven) return Promise.resolve(win.fwResult);
+    // A terminal no-weave answers at once. A CONFIRMED woven:false (the first join capped while
+    // the browser reported 'withheld') is a level that can recover, so it is measured again.
+    if (!win.fwResult.woven && !win.fwResult.confirmed) return Promise.resolve(win.fwResult);
     if (win.rwGone) return Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: win.rwGone, ms: 0 }));
     if (win.rw) {
       this._restartRewoven(win);
@@ -2967,7 +3423,20 @@ class Inline3D {
       resolve = r;
     });
     const t = nowMs();
-    win.rw = { promise, resolve, calledAt: t, at: t, stereo: false, box: boxKeyOf(win.canvas) };
+    // `gap` / `boxFrame` / `callFrame` are the wovenState path's (see _tickWovenState): a
+    // 'withheld'/'pending' read since the last restart, the session frame of the last box change
+    // (null = none), and the session frame the call was made in.
+    win.rw = {
+      promise,
+      resolve,
+      calledAt: t,
+      at: t,
+      stereo: false,
+      box: boxKeyOf(win.canvas),
+      gap: false,
+      boxFrame: null,
+      callFrame: this._frameCount,
+    };
     return promise;
   }
 
@@ -2986,13 +3455,191 @@ class Inline3D {
     if (!win.rw) return;
     win.rw.at = nowMs();
     win.rw.stereo = false;
+    win.rw.gap = false;
+    win.rw.boxFrame = this._frameCount;
   }
 
-  _settleRewoven(win, woven, reason) {
+  _settleRewoven(win, woven, reason, confirmed = false) {
     const rw = win.rw;
     if (!rw) return;
     win.rw = null;
-    rw.resolve(Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - rw.calledAt) }));
+    rw.resolve(Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - rw.calledAt) }));
+  }
+
+  // ── rect cover (opts.rectCover) ──────────────────────────────────────────────────────
+  //
+  // A canvas that is already woven and then moves or resizes goes back through the identity gap
+  // (rule 11): until the browser rejoins it at the new rect, the screen shows the page's own
+  // raster of it — black, or the squeezed pair. A kiosk demo that moves ONE woven canvas between
+  // screens measured 0.4-1.2 s of that, and every page that hit it hand-rolled the same cover.
+  // This is that cover, owned by the SDK: a sibling element over the canvas (never a second woven
+  // canvas: two 2:1 candidates in one region are refused as ambiguous, rule 6), raised on the
+  // frame the change is seen and cut when rewoven() settles.
+
+  /** Per frame, before the draw: has the box (size, dpr, page position) changed since the last look? */
+  _rectCoverCheck(win) {
+    const rc = win.rc;
+    const key = boxKeyOf(win.canvas);
+    if (key === rc.box) return;
+    const first = rc.box === null;
+    const prevW = rc.w;
+    const prevH = rc.h;
+    rc.box = key;
+    rc.w = win.canvas.clientWidth || 0;
+    rc.h = win.canvas.clientHeight || 0;
+    if (first) return; // the first look is the baseline, not a change
+    if (rc.up) this._placeCover(win); // already up: follow the canvas
+    // Before the first join the page's own poster covers the canvas (rule 5), and a window that
+    // will not weave has nothing to wait for. A confirmed withheld first result still covers.
+    const fw = win.fwResult;
+    if (!fw || win.rwGone || !(fw.woven || fw.confirmed)) return;
+    if (!rc.up) {
+      if (!rc.snapped) rc.aspect = prevH > 0 ? prevW / prevH : 0; // what the eye looked like on screen
+      this._raiseCover(win);
+    }
+    if (rc.cfg.snapshot && !rc.snapped && rc.w > 0 && rc.h > 0) rc.snapWanted = true;
+    let p;
+    if (win.rw) {
+      this._noteRewovenBox(win); // a second change while pending restarts it
+      p = win.rw.promise;
+    } else {
+      p = this._rewoven(win);
+      if (win.rw) win.rw.boxFrame = this._frameCount; // the change was seen THIS frame
+    }
+    if (rc.waiting !== p) {
+      rc.waiting = p;
+      p.then(() => {
+        if (rc.waiting !== p) return;
+        rc.waiting = null;
+        this._lowerCover(win);
+      });
+    }
+  }
+
+  _raiseCover(win) {
+    const rc = win.rc;
+    if (!rc.el) {
+      if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function') return;
+      if (!win.canvas.parentElement) return;
+      const el = document.createElement('canvas');
+      el.setAttribute?.('aria-hidden', 'true');
+      if (el.dataset) el.dataset.inline3dCover = '';
+      const st = el.style;
+      st.position = 'absolute';
+      st.pointerEvents = 'none'; // the canvas under it keeps its input (orbit, clicks)
+      st.margin = '0';
+      st.border = '0';
+      st.padding = '0';
+      st.background = rc.cfg.color;
+      st.display = 'none';
+      // Stack with the canvas, not under it: a canvas the page raised gets the same z-index.
+      try {
+        const z = typeof getComputedStyle === 'function' ? getComputedStyle(win.canvas).zIndex : 'auto';
+        if (z && z !== 'auto') st.zIndex = z;
+      } catch {
+        /* no computed style: DOM order alone puts it on top */
+      }
+      rc.el = el;
+    }
+    this._placeCover(win);
+    rc.el.style.display = 'block';
+    rc.up = true;
+    // Declared through the existing exclusion path. On a draw-order browser that is a no-op and
+    // the cover is crisp 2D anyway (it sits over the tile in draw order). On an older one the
+    // full-tile guard refuses it, on purpose: a congruent plate would stage the CANVAS as the
+    // overlay. Pre-marked as warned so the SDK's own cover does not trip the page-facing warning.
+    this._fullTileWarned.add(rc.el);
+    this._applyExclusion(win, rc.el);
+  }
+
+  /** Put the cover exactly over the canvas, as its next sibling (the canvas may have been re-parented). */
+  _placeCover(win) {
+    const rc = win.rc;
+    const el = rc.el;
+    const c = win.canvas;
+    if (!el) return;
+    const parent = c.parentElement;
+    if (parent && (el.parentElement !== parent || el.previousSibling !== c)) {
+      parent.insertBefore(el, c.nextSibling);
+    }
+    const st = el.style;
+    if (c.offsetParent) {
+      // Same containing block as the canvas (its offsetParent), so offsets are directly usable.
+      st.position = 'absolute';
+      st.left = `${c.offsetLeft}px`;
+      st.top = `${c.offsetTop}px`;
+      st.width = `${c.offsetWidth}px`;
+      st.height = `${c.offsetHeight}px`;
+    } else {
+      // A fixed canvas (no offsetParent): cover its viewport rect.
+      const r = c.getBoundingClientRect();
+      st.position = 'fixed';
+      st.left = `${r.left ?? r.x ?? 0}px`;
+      st.top = `${r.top ?? r.y ?? 0}px`;
+      st.width = `${r.width}px`;
+      st.height = `${r.height}px`;
+    }
+  }
+
+  /**
+   * The last frame, once per cover cycle: the LEFT eye of the side-by-side buffer, cover-fit into a
+   * 2D canvas the size of the new CSS box (CSS px, not device px: it is on screen for about a second
+   * and must not cost a full-resolution copy). The eye's on-screen aspect was the OLD box's (each
+   * eye is stretched to the box by the weave), so the crop is computed from that aspect, not from
+   * the buffer's. Never toDataURL: one drawImage, at this moment only. Any failure (a lost
+   * context, a tainted source) leaves the solid color.
+   */
+  _rectCoverSnap(win) {
+    const rc = win.rc;
+    rc.snapWanted = false;
+    const el = rc.el;
+    const src = win.canvas;
+    if (!el || !rc.up || !(src.width > 1) || !(src.height > 0)) return;
+    const bw = Math.max(1, Math.round(rc.w));
+    const bh = Math.max(1, Math.round(rc.h));
+    const target = bw / bh;
+    // A canvas that was hidden (0x0) before the change has no old box to read: the eye half of the
+    // buffer, still at its old size at this point, has the same aspect.
+    const aspect = rc.aspect > 0 ? rc.aspect : src.width / 2 / src.height;
+    let fw = 1;
+    let fh = 1;
+    if (target > aspect) fh = aspect / target; // wider box: keep the width, crop height
+    else fw = target / aspect; // taller box: keep the height, crop width
+    const sw = (src.width / 2) * fw;
+    const sh = src.height * fh;
+    const sx = (src.width / 2 - sw) / 2;
+    const sy = (src.height - sh) / 2;
+    try {
+      el.width = bw;
+      el.height = bh;
+      const ctx = el.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(src, sx, sy, sw, sh, 0, 0, bw, bh);
+      rc.snapped = true;
+    } catch {
+      /* the solid color stays */
+    }
+  }
+
+  _lowerCover(win) {
+    const rc = win.rc;
+    if (!rc) return;
+    rc.up = false;
+    rc.snapped = false; // the next cycle takes its own snapshot
+    rc.snapWanted = false;
+    if (!rc.el) return;
+    rc.el.style.display = 'none';
+    this._dropExclusion(win, rc.el);
+  }
+
+  /** remove() / session end: the cover leaves the DOM with its window. */
+  _dropCover(win) {
+    const rc = win.rc;
+    if (!rc) return;
+    rc.waiting = null;
+    this._lowerCover(win);
+    if (rc.el && rc.el.parentElement) rc.el.parentElement.removeChild(rc.el);
+    rc.el = null;
   }
 
   // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────
@@ -3127,8 +3774,11 @@ class Inline3D {
       this._paintMono(win);
       this._notifyLayerLost(win);
       this._settleFirstWoven(win, false, 'session-ended');
+      this._dropCover(win);
+      this._noteLayerFramed(win, false);
     }
     this._windows.clear();
+    this._claims.clear();
     // Nobody is tracked through a session that has ended: say so ONCE, before the listeners are
     // dropped, so a page that gated its UI on 'tracking' is released rather than left latched. A
     // browser that never reported one is already 'unknown' and this is silent.
