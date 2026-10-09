@@ -661,11 +661,23 @@ export interface SplatCustomEffect extends SplatEffectTiming {
    * originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale)`, `void
    * modifySplatColor(vec3 center, inout vec4 color)` — world-space centres. `dxrProgress` (0..1)
    * and `dxrTime` (s) are defined; `splat.index` / `splat.uv` are the asset's own file index in
-   * `scope: 'entity'`. Screen-space inputs are refused.
+   * `scope: 'entity'`. Screen-space inputs are refused. Required on a WebGL device; give `glsl`,
+   * `wgsl` or both (a page that may run on either passes both).
    */
-  glsl: string;
+  glsl?: string;
   /** Tile scope only: `void modifySplatColor(vec2 gaussianUV, inout vec4 color)` per fragment. */
   fragmentGlsl?: string;
+  /**
+   * The WGSL twin of `glsl`, required on a WebGPU device: any of `fn modifySplatCenter(center:
+   * ptr<function, vec3f>)`, `fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter:
+   * vec3f, rotation: ptr<function, vec4f>, scale: ptr<function, vec3f>)`, `fn
+   * modifySplatColor(center: vec3f, color: ptr<function, vec4f>)`. Uniforms are declared `uniform
+   * name: f32;` and read as `uniform.name`; `dxrProgress` / `dxrTime` are rewritten for you. Must
+   * be valid in a compute shader too (WebGPU's default renderer runs it in the projector).
+   */
+  wgsl?: string;
+  /** Tile scope only, WebGPU: `fn modifySplatColor(gaussianUV: vec2f, color: ptr<function, vec4f>)`. */
+  fragmentWgsl?: string;
   /** Uniform values, set every frame; a function gets the frame time in ms. */
   uniforms?: Record<string, number | number[] | ((tMs: number) => number | number[])>;
   /** `setEffect` only: hold `dxrProgress` here (default 1). */

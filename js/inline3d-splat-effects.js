@@ -28,6 +28,8 @@
 //
 // Adding an effect = one GLSL body + one registry entry in EFFECTS below: `glsl(P, opts)` defines
 // `P##center`, `P##rs`, `P##color`, and `uniforms(ctx, inst, amount)` returns the values.
+// Plus its WGSL twin (WGSL_BODIES in ./inline3d-splat-effects-wgsl.js, same uniforms): on a
+// WebGPU device the engine compiles only WGSL chunks, and the runner composes from the twins.
 //
 // ── The stereo rule ───────────────────────────────────────────────────────────────────────────
 //

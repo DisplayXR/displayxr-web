@@ -5,6 +5,29 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Splat effects on WebGPU: WGSL twins (`./splat`, `engine: 'playcanvas'`, preview tier, additive)
+
+- **Every splat effect has a WGSL twin**, in the new internal module
+  `js/inline3d-splat-effects-wgsl.js`: the reveals, `pulse`, `grade`, `clip`, setSource's `xfade`,
+  `wavefront` and `wipecull`, the particle reveals in every `order`, and the depth envelope. Each
+  twin has the same uniforms and the same math as its GLSL.
+- **The runner follows the device.** On a PlayCanvas WebGPU device, tile effects go to the WGSL
+  chunk set and entity effects to `setWorkBufferModifier({ wgsl })`. On WebGL the output is byte
+  for byte what it was.
+- **Custom effects take `wgsl` / `fragmentWgsl`** next to `glsl`. `glsl` is now optional, but a
+  call with no body in the device's language is refused.
+- **New for the adapter:** `getEffectChunks(language)`, `composeModifier(instances, language)` and
+  `sharedChunkCode(…, language)`. The module also has WGSL twins of the footprint and quad-extent
+  chunk patches and of the snapshot-overlay and edge-feather ShaderMaterials.
+- **Validation:** naga (`naga-wasm`, a new devDependency) in `npm test`, in vertex, fragment and
+  compute stages. A real-WebGPU e2e: `npm run test:e2e:wgsl`.
+- **Two engine differences on WebGPU's default GPU-sort renderer**, documented in
+  [`docs/splat-effects.md`](docs/splat-effects.md) §WGSL twins:
+  - per-mesh-instance values (`driveShared`) never reach the compute projector;
+  - the projector's size culls hide in-flight particle dots.
+
 ## 1.39.0 — 2026-10-09
 
 Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
