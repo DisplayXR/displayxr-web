@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.39.0 — 2026-10-09
 
 Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
 `rewoven()` settle on the browser's `wovenState` report where it exists (the hold path elsewhere,
@@ -14,7 +14,7 @@ proceeds as before), and the display reads (`getDisplayInfo()` / `getRenderingMo
 `requestRenderingMode()`) waiting for a layer's first frame instead of answering `null` / `[]`
 early. One **preview-tier default** changes: `rectCover` is `'auto'` on `./splat` and `./model`
 (`'off'` in the core). New types only (`WovenState`, `WovenWithheldReason`, `RectCoverOption`);
-nothing removed. These landed after the 1.38.0 tag and ship in the next release.
+nothing removed.
 
 ### Core: `firstWoven` / `rewoven()` settle on the browser's join report (`.`, additive)
 
