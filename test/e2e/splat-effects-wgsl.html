@@ -1,0 +1,295 @@
+<!doctype html>
+<!--
+  The WGSL twins on a REAL PlayCanvas WebGPU device (driven by test/e2e/splat-effects-wgsl.e2e.mjs).
+  Loads samples/splat/assets/butterfly.sog, runs every effect through the SDK's own runner
+  (SplatEffects, language 'wgsl') on both gsplat renderers (RASTER_GPU_SORT: the effect runs in
+  the compute projector; RASTER_CPU_SORT: in the vertex stage), plus the entity-scope work-buffer
+  path, the engine-chunk patches and the overlay/feather ShaderMaterials. Records every GPU
+  validation error / shader compilation error and a lit-pixel count per step in window.__result.
+-->
+<meta charset="utf-8" />
+<title>splat effects WGSL e2e</title>
+<style>
+  html, body { margin: 0; background: #000; }
+  canvas { width: 384px; height: 384px; display: block; }
+</style>
+<canvas id="c" width="384" height="384"></canvas>
+<script type="module">
+  import * as pc from '../../node_modules/playcanvas/build/playcanvas/src/index.js';
+  import { SplatEffects, EFFECTS, getEffectChunks, resolveEffectOptions } from '../../js/inline3d-splat-effects.js';
+
+  const R = { steps: [], errors: [], compileErrors: [], notes: [] };
+  window.__result = R;
+  const canvas = document.getElementById('c');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function main() {
+    if (!navigator.gpu) throw new Error('navigator.gpu missing (WebGPU not exposed)');
+    const device = await pc.createGraphicsDevice(canvas, { deviceTypes: [pc.DEVICETYPE_WEBGPU], alpha: true, antialias: false });
+    if (!device.isWebGPU) throw new Error(`not a WebGPU device: ${device.deviceType}`);
+    R.adapter = device.gpuAdapter?.info ? { vendor: device.gpuAdapter.info.vendor, architecture: device.gpuAdapter.info.architecture } : null;
+    const gpu = device.wgpu;
+    // every validation error the engine did not scope itself
+    gpu.addEventListener('uncapturederror', (e) => R.errors.push({ step: R.cur, msg: String(e.error?.message ?? e.error).slice(0, 2000) }));
+    // and every shader module's own compilation messages
+    const create = gpu.createShaderModule.bind(gpu);
+    gpu.createShaderModule = (desc) => {
+      const mod = create(desc);
+      const step = R.cur;
+      mod.getCompilationInfo?.().then((info) => {
+        for (const m of info.messages) {
+          if (m.type !== 'error') continue;
+          const line = (desc.code || '').split('\n')[m.lineNum - 1] ?? '';
+          R.compileErrors.push({ step, label: desc.label, msg: m.message, lineNum: m.lineNum, line: line.trim().slice(0, 300) });
+        }
+      });
+      return mod;
+    };
+
+    const app = new pc.Application(canvas, { graphicsDevice: device });
+    app.setCanvasResolution(pc.RESOLUTION_FIXED, canvas.width, canvas.height);
+    app.start();
+
+    const cam = new pc.Entity('cam');
+    cam.addComponent('camera', { clearColor: new pc.Color(0, 0, 0, 1), fov: 45, nearClip: 0.01, farClip: 1000, toneMapping: pc.TONEMAP_NONE });
+    app.root.addChild(cam);
+
+    const asset = new pc.Asset('butterfly', 'gsplat', { url: '../../samples/splat/assets/butterfly.sog' });
+    app.assets.add(asset);
+    await new Promise((res, rej) => {
+      asset.once('load', res);
+      asset.once('error', rej);
+      app.assets.load(asset);
+    });
+    const splat = new pc.Entity('splat');
+    splat.addComponent('gsplat', { asset });
+    splat.setLocalEulerAngles(180, 0, 0);
+    app.root.addChild(splat);
+    const aabb = asset.resource.aabb;
+    const C = splat.getWorldTransform().transformPoint(aabb.center, new pc.Vec3());
+    const ext = Math.max(aabb.halfExtents.x, aabb.halfExtents.y, aabb.halfExtents.z) * 2;
+    cam.setPosition(C.x, C.y, C.z + ext * 1.6);
+    cam.lookAt(C);
+    R.splat = { center: [C.x, C.y, C.z], extent: ext, count: asset.resource.numSplats ?? asset.resource.gsplatData?.numSplats };
+
+    // ── readback: lit pixels of the frame just rendered (same task as the render) ──
+    const c2 = document.createElement('canvas');
+    c2.width = canvas.width;
+    c2.height = canvas.height;
+    const g2 = c2.getContext('2d', { willReadFrequently: true });
+    const frame = () =>
+      new Promise((res) =>
+        app.once('frameend', () => {
+          g2.clearRect(0, 0, c2.width, c2.height);
+          g2.drawImage(canvas, 0, 0);
+          const d = g2.getImageData(0, 0, c2.width, c2.height).data;
+          let lit = 0, sum = [0, 0, 0];
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i] + d[i + 1] + d[i + 2] > 24) lit++;
+            sum[0] += d[i]; sum[1] += d[i + 1]; sum[2] += d[i + 2];
+          }
+          const n = d.length / 4;
+          res({ lit, mean: sum.map((s) => +(s / n).toFixed(2)) });
+        }),
+      );
+    const settle = async (n = 6) => {
+      let f;
+      for (let i = 0; i < n; i++) f = await frame();
+      return f;
+    };
+
+    // ── the SDK runner on this app ──
+    const right = cam.right.clone(), up = cam.up.clone(), fwd = cam.forward.clone(), P0 = cam.getPosition().clone();
+    const tanY = Math.tan((45 * Math.PI) / 360);
+    const ctx = {
+      pc: () => pc,
+      app: () => app,
+      now: () => performance.now(),
+      eyes: () => ({ origin: [P0.x, P0.y, P0.z], axis: [fwd.x, fwd.y, fwd.z], right: [right.x, right.y, right.z], up: [up.x, up.y, up.z], tanHalfFovX: tanY, tanHalfFovY: tanY, separation: 0 }),
+      focus: () => [C.x, C.y, C.z],
+      framing: () => ({ center: [C.x, C.y, C.z], extent: [ext, ext, ext] }),
+      pick: () => null,
+      modelToContent: (p) => p,
+      entity: () => splat,
+    };
+    const fx = new SplatEffects(ctx);
+    const step = async (name, fn, frames = 6) => {
+      R.cur = name;
+      const e0 = R.errors.length;
+      let px = null, threw = null;
+      try {
+        await fn();
+        fx.flush();
+        px = await settle(frames);
+      } catch (e) {
+        threw = String(e?.stack || e).slice(0, 600);
+      }
+      await sleep(30); // let getCompilationInfo land
+      R.steps.push({ name, px, threw, newErrors: R.errors.length - e0, compileErrors: R.compileErrors.filter((c) => c.step === name).length });
+      return px;
+    };
+
+    const RENDERERS = [
+      ['gpu-sort', pc.GSPLAT_RENDERER_RASTER_GPU_SORT ?? 2],
+      ['cpu-sort', pc.GSPLAT_RENDERER_RASTER_CPU_SORT ?? 1],
+    ];
+    const transitions = Object.keys(EFFECTS).filter((n) => EFFECTS[n].kind === 'transition' && !EFFECTS[n].internal);
+    for (const [rname, rval] of RENDERERS) {
+      app.scene.gsplat.renderer = rval;
+      await step(`${rname}:baseline`, async () => {}, 10);
+      // every public transition, held mid-way and at its end (amount 1 = the baseline exactly)
+      for (const n of transitions) {
+        const orders = EFFECTS[n].particle ? ['radial', 'noise', 'depth', 'random'] : [null];
+        for (const order of orders) {
+          const o = order ? { order } : {};
+          await step(`${rname}:${n}${order ? '/' + order : ''}@0.5`, async () => fx.set(n, { ...o, progress: 0.5 }));
+          await step(`${rname}:${n}${order ? '/' + order : ''}@1`, async () => fx.set(n, { ...o, progress: 1 }));
+          fx.set(n, null);
+        }
+      }
+      // the GPU-sort projector culls splats under minPixelSize / minContribution BEFORE drawing:
+      // a particle in flight is a ~1 px dot. The same two states with both culls off:
+      {
+        const g = app.scene.gsplat, mp = g.minPixelSize, mc = g.minContribution;
+        g.minPixelSize = 0;
+        g.minContribution = 0;
+        for (const [n, order] of [['assemble', 'depth'], ['dissolve-in', 'noise']]) {
+          await step(`${rname}:${n}/${order}@0.5 (no projector cull)`, async () => fx.set(n, { order, progress: 0.5 }));
+          fx.set(n, null);
+        }
+        g.minPixelSize = mp;
+        g.minContribution = mc;
+      }
+      await step(`${rname}:fade@0`, async () => fx.set('fade', { progress: 0 }));
+      fx.set('fade', null);
+      await step(`${rname}:pulse`, async () => fx.set('pulse', { progress: 0.4 }));
+      fx.set('pulse', null);
+      await step(`${rname}:grade`, async () => fx.set('grade', { saturation: 0, exposure: 1 }));
+      await step(`${rname}:grade+clip`, async () => fx.set('clip', { sphere: { center: [C.x, C.y, C.z], radius: ext * 0.15 } }));
+      fx.set('clip', null);
+      fx.set('grade', null);
+      await step(`${rname}:custom`, async () =>
+        fx.set('custom', {
+          glsl: 'void modifySplatColor(vec3 c, inout vec4 col) { col.rgb *= dxrProgress; }',
+          wgsl: 'fn modifySplatColor(c: vec3f, col: ptr<function, vec4f>) { *col = vec4f((*col).rgb * dxrProgress, (*col).a); }',
+          progress: 0.25,
+        }),
+      );
+      fx.set('custom', null);
+      // setSource's shared bodies at the tile: wavefront + wipecull (render-time) and xfade
+      await step(`${rname}:wavefront+wipecull`, async () => {
+        fx.setInternal('tile', 'wavefront', { ...resolveEffectOptions('wavefront', {}, 'set', { internal: true }), progress: 0.5 });
+        fx.setInternal('tile', 'wipecull', { cull: () => ({ side: 1, edge: -10, views: [{ V: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), X: [1, 0, 0, 0], W: [0, 0, 0, 1], K: [100, 0.01, 1, 0] }] }) });
+      });
+      fx.setInternal('tile', 'wavefront', null);
+      fx.setInternal('tile', 'wipecull', null);
+      // a driveTile sequence body (one photo, tile scope) — what show's sequence transitions use
+      const seq = fx.driveTile('transition', 'dissolve-in', { order: 'noise', vanish: 0.3, density: 0.4 });
+      await step(`${rname}:driveTile dissolve-in@0.5`, async () => seq.set(0.5, 1.0));
+      await step(`${rname}:driveTile dissolve-in@0`, async () => seq.set(0, 0));
+      seq.remove();
+      // entity scope: the work-buffer copy (a FRAGMENT shader on WebGPU)
+      const d = fx.drive(splat, 'dissolve-in', { order: 'noise' });
+      await step(`${rname}:entity dissolve-in@0.5`, async () => d.set(0.5, 1.0));
+      d.remove();
+      const xf = fx;
+      await step(`${rname}:entity xfade k=0.3`, async () => xf.setInternal(splat, 'xfade', { k: 0.3 }));
+      xf.setInternal(splat, 'xfade', null);
+      await step(`${rname}:after`, async () => {}, 10);
+
+      // per-MESH-INSTANCE values (driveShared, the render-time particle transitions): the
+      // material says "untouched", the mesh instance says "hidden" — which one does this renderer
+      // read?
+      const mi = () => {
+        const cd = app.renderer?.gsplatDirector?.camerasMap?.get?.(cam.camera.camera);
+        for (const ld of cd?.layersMap?.values?.() ?? []) if (ld?.gsplatManager?.renderer?.meshInstance) return ld.gsplatManager.renderer.meshInstance;
+        return null;
+      };
+      const shared = fx.driveShared('transition', 'fade', {});
+      const side = shared.side(mi, {});
+      await step(`${rname}:driveShared fade side@0 (mesh-instance param)`, async () => {
+        R.notes.push(`${rname}: mesh instance ${mi() ? 'found' : 'MISSING'}`);
+        side.set(0, 0);
+      });
+      shared.remove();
+      await step(`${rname}:after shared`, async () => {}, 6);
+    }
+
+    // ── engine-chunk patches (CPU-sort raster: gsplatCornerVS / gsplatCommonVS; GPU-sort: gsplatHybridVS) ──
+    const W = getEffectChunks('wgsl');
+    const chunks = pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_WGSL);
+    const corner = W.chunks.gsplatCornerVS(chunks.get('gsplatCornerVS'));
+    const common = W.chunks.gsplatCommonVS(chunks.get('gsplatCommonVS'), 0.75);
+    const hybrid = W.chunks.gsplatHybridVS(chunks.get('gsplatHybridVS'), 0.75);
+    R.patches = { corner: corner.ok, common: common.ok, hybrid: hybrid.ok };
+    if (corner.ok) chunks.set('gsplatCornerVS', corner.src);
+    if (common.ok) chunks.set('gsplatCommonVS', common.src);
+    if (hybrid.ok) chunks.set('gsplatHybridVS', hybrid.src);
+    // the gsplat material caches its variants: a fresh renderer per mode picks the patched chunks up
+    app.scene.gsplat.material.clearVariants?.();
+    for (const [rname, rval] of RENDERERS) {
+      app.scene.gsplat.renderer = rval;
+      await step(`${rname}:patched (footprint + quad extent 0.75)`, async () => app.scene.gsplat.material.update(), 10);
+    }
+
+    // ── the overlay + feather ShaderMaterials ──
+    const quad = new pc.Mesh(device);
+    quad.setPositions(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]));
+    quad.setUvs(0, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]));
+    quad.setIndices([0, 1, 2, 0, 2, 3]);
+    quad.update();
+    const tex = new pc.Texture(device, { width: canvas.width, height: canvas.height, format: pc.PIXELFORMAT_RGBA8, mipmaps: false });
+    const px = tex.lock();
+    for (let i = 0; i < px.length; i += 4) { px[i] = 0; px[i + 1] = 200; px[i + 2] = 0; px[i + 3] = 255; }
+    tex.unlock();
+    const mk = (name, vertex, fragment, attrs, src, dst) => {
+      const m = new pc.ShaderMaterial({ uniqueName: name, attributes: attrs, vertexWGSL: vertex, fragmentWGSL: fragment });
+      m.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, src, dst, pc.BLENDEQUATION_ADD, src, dst);
+      m.depthTest = false;
+      m.depthWrite = false;
+      m.cull = pc.CULLFACE_NONE;
+      return m;
+    };
+    const O = W.overlay;
+    const scale = mk('wgslSnapScale', O.snapshot.vertex, O.snapshot.scale, { vertex_position: pc.SEMANTIC_POSITION }, pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA);
+    const add = mk('wgslSnapAdd', O.snapshot.vertex, O.snapshot.add, { vertex_position: pc.SEMANTIC_POSITION }, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE);
+    const feather = mk('wgslFeather', O.feather.vertex, O.feather.fragment, { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 }, pc.BLENDMODE_ZERO, pc.BLENDMODE_SRC_ALPHA);
+    for (const m of [scale, add]) {
+      m.setParameter('dxrSnap', tex);
+      m.setParameter('dxrSnapInvSize', [1 / canvas.width, 1 / canvas.height]);
+      m.setParameter('dxrSnapAlpha', 1);
+      m.setParameter('dxrSnapWipe', [-2, 0.1, 1]);
+      m.setParameter('dxrSnapOver', 0);
+      m.update();
+    }
+    feather.setParameter('dxrFeatherFx', 0.1);
+    feather.setParameter('dxrFeatherFy', 0.1);
+    feather.update();
+    const mis = [[scale, -2], [add, -1]].map(([m, o]) => {
+      const mi = new pc.MeshInstance(quad, m, new pc.GraphNode());
+      mi.cull = false;
+      mi.drawOrder = o;
+      return mi;
+    });
+    const ui = app.scene.layers.getLayerById(pc.LAYERID_UI);
+    if (!cam.camera.layers.includes(pc.LAYERID_UI)) cam.camera.layers = [...cam.camera.layers, pc.LAYERID_UI];
+    ui.addMeshInstances(mis);
+    R.overlaySnapshot = await step('overlay: snapshot scale+add at alpha 1 (expect the green texture)', async () => {}, 6);
+    for (const m of [scale, add]) {
+      m.setParameter('dxrSnapWipe', [0.5, 0.18, 1]);
+      m.update();
+    }
+    R.overlayWipe = await step('overlay: snapshot wipe at t=0.5', async () => {}, 6);
+    ui.removeMeshInstances(mis);
+    const fmi = new pc.MeshInstance(quad, feather, new pc.GraphNode());
+    fmi.cull = false;
+    ui.addMeshInstances([fmi]);
+    R.feather = await step('overlay: edge feather', async () => {}, 6);
+    ui.removeMeshInstances([fmi]);
+    R.done = true;
+  }
+  main().catch((e) => {
+    R.fatal = String(e?.stack || e);
+    R.done = true;
+  });
+</script>
