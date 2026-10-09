@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebGPU weave probe</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: #0a0a0a; color: #ddd; }
+  /* A checkerboard page background: in alpha=premultiplied mode it must show THROUGH the
+     half-transparent ring, woven; in alpha=opaque it must not. */
+  body.check {
+    background-color: #222;
+    background-image: linear-gradient(45deg, #444 25%, transparent 25%), linear-gradient(-45deg, #444 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #444 75%), linear-gradient(-45deg, transparent 75%, #444 75%);
+    background-size: 40px 40px; background-position: 0 0, 0 20px, 20px -20px, -20px 0;
+  }
+  header { padding: 12px 16px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  /* The woven tile. No CSS border/radius/transform/filter on it — woven-canvas rule. */
+  #stage { display: block; width: min(960px, 92vw); aspect-ratio: 16 / 9; margin: 8px auto; }
+  #log { margin: 8px 16px 24px; padding: 10px 12px; background: rgba(0,0,0,.6); border-radius: 6px;
+         font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+  .ok { color: #7c7; } .bad { color: #f77; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WebGPU weave probe</h1>
+  <div>Does the DisplayXR Browser weave a <b>WebGPU</b> canvas? Query: <code>?api=webgpu|webgl2</code>
+  <code>&amp;alpha=opaque|premultiplied</code> <code>&amp;power=high-performance|low-power</code>
+  <code>&amp;check=1</code> (checkerboard page).</div>
+</header>
+<canvas id="stage"></canvas>
+<pre id="log"></pre>
+<script type="module">
+// WebGPU weave probe — the cheapest possible answer to "does the inline-3D weave take a WebGPU
+// canvas?". No SDK: the same browser surface the SDK uses (an `inline-3d` session, one
+// `new XRDisplayLayer(session, canvas)`, a full-width side-by-side buffer drawn every session
+// frame). `?api=webgl2` draws the IDENTICAL picture with WebGL2 as the control.
+//
+// The picture: left half and right half differ in colour (L = warm, R = cool) and carry a square
+// offset horizontally in opposite directions, so a correct weave shows ONE square floating in
+// front of the screen, while an un-woven / withheld canvas shows the raw side-by-side pair.
+// A half-transparent ring tests alpha (checkerboard page with &check=1).
+const q = new URLSearchParams(location.search);
+const API = q.get('api') === 'webgl2' ? 'webgl2' : 'webgpu';
+const ALPHA = q.get('alpha') === 'opaque' ? 'opaque' : 'premultiplied';
+const POWER = q.get('power') === 'low-power' ? 'low-power' : 'high-performance';
+if (q.get('check') === '1') document.body.classList.add('check');
+
+const logEl = document.getElementById('log');
+const log = (msg, cls) => {
+  const line = `[${(performance.now() / 1000).toFixed(1)}s] ${msg}`;
+  console.log('[webgpu-probe]', line);
+  const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = line + '\n';
+  logEl.appendChild(s);
+};
+log(`api=${API} alpha=${ALPHA} power=${POWER} ua=${navigator.userAgent}`);
+
+const canvas = document.getElementById('stage');
+// Backing store = two eye tiles side by side (the SDK's SBS sizing: width = 2 × eye width).
+function sizeBuffer() {
+  const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  const eyeW = Math.max(16, Math.round(r.width * dpr)), eyeH = Math.max(16, Math.round(r.height * dpr));
+  canvas.width = eyeW * 2; canvas.height = eyeH;
+}
+sizeBuffer();
+log(`canvas css ${Math.round(canvas.getBoundingClientRect().width)}x${Math.round(canvas.getBoundingClientRect().height)} backing ${canvas.width}x${canvas.height} (SBS)`);
+
+// ---------- renderers: identical picture via a fullscreen-triangle fragment shader ----------
+// Uniforms: [eyeW, eyeH, time, disparityPx]
+const WGSL = /* wgsl */`
+struct U { eyeW: f32, eyeH: f32, t: f32, disp: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  var p = array<vec2f, 3>(vec2f(-1.0, -3.0), vec2f(-1.0, 1.0), vec2f(3.0, 1.0));
+  return vec4f(p[i], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
+  let right = fc.x >= u.eyeW;
+  let x = select(fc.x, fc.x - u.eyeW, right);
+  let y = fc.y;
+  let c = vec2f(u.eyeW * 0.5 + select(u.disp, -u.disp, right), u.eyeH * 0.5);
+  var rgb = select(vec3f(0.55, 0.18, 0.10), vec3f(0.10, 0.22, 0.55), right);   // L warm, R cool
+  var a = 1.0;
+  // the half-transparent ring (alpha test), centred, no disparity
+  let d = distance(vec2f(x, y), vec2f(u.eyeW * 0.5, u.eyeH * 0.5));
+  let ringR = min(u.eyeW, u.eyeH) * 0.42;
+  if (abs(d - ringR) < min(u.eyeW, u.eyeH) * 0.04) { rgb = vec3f(0.9, 0.9, 0.9); a = 0.5; }
+  else if (d > ringR) { a = 0.25; }
+  // the floating square (opposite offsets per eye = in front of the screen), slowly bobbing
+  let s = min(u.eyeW, u.eyeH) * 0.14;
+  let bob = sin(u.t * 1.5) * s * 0.3;
+  if (abs(x - c.x) < s && abs(y - (c.y + bob)) < s) { rgb = vec3f(1.0, 0.95, 0.4); a = 1.0; }
+  return vec4f(rgb * a, a);   // premultiplied
+}`;
+
+const GLSL_VS = `#version 300 es
+void main(){ vec2 p[3]=vec2[3](vec2(-1.,-3.),vec2(-1.,1.),vec2(3.,1.)); gl_Position=vec4(p[gl_VertexID],0.,1.); }`;
+const GLSL_FS = `#version 300 es
+precision highp float; uniform vec4 u; out vec4 o;
+void main(){
+  float eyeW=u.x, eyeH=u.y, t=u.z, disp=u.w;
+  vec2 fc=vec2(gl_FragCoord.x, eyeH-gl_FragCoord.y);
+  bool right=fc.x>=eyeW; float x=right?fc.x-eyeW:fc.x; float y=fc.y;
+  vec2 c=vec2(eyeW*.5+(right?-disp:disp), eyeH*.5);
+  vec3 rgb=right?vec3(.10,.22,.55):vec3(.55,.18,.10); float a=1.;
+  float d=distance(vec2(x,y),vec2(eyeW*.5,eyeH*.5)); float ringR=min(eyeW,eyeH)*.42;
+  if(abs(d-ringR)<min(eyeW,eyeH)*.04){rgb=vec3(.9);a=.5;} else if(d>ringR){a=.25;}
+  float s=min(eyeW,eyeH)*.14; float bob=sin(t*1.5)*s*.3;
+  if(abs(x-c.x)<s && abs(y-(c.y+bob))<s){rgb=vec3(1.,.95,.4);a=1.;}
+  o=vec4(rgb*a,a);
+}`;
+
+async function makeWebGPU() {
+  if (!navigator.gpu) throw new Error('navigator.gpu missing (WebGPU not enabled in this build/flags)');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: POWER });
+  if (!adapter) throw new Error('requestAdapter() returned null');
+  const info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {});
+  log(`WebGPU adapter: vendor=${info.vendor || '?'} arch=${info.architecture || '?'} device=${info.device || '?'} desc=${info.description || '?'}`);
+  const device = await adapter.requestDevice();
+  device.lost.then((l) => log(`WebGPU device LOST: ${l.reason} ${l.message}`, 'bad'));
+  const ctx = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: ALPHA });
+  log(`configured format=${format} alphaMode=${ALPHA}`);
+  const mod = device.createShaderModule({ code: WGSL });
+  const pipe = device.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs' },
+    fragment: { module: mod, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
+  const ubuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const bind = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubuf } }] });
+  return (t) => {
+    const eyeW = canvas.width / 2, eyeH = canvas.height;
+    device.queue.writeBuffer(ubuf, 0, new Float32Array([eyeW, eyeH, t, eyeW * 0.03]));
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(),
+      loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+    pass.setPipeline(pipe); pass.setBindGroup(0, bind); pass.draw(3); pass.end();
+    device.queue.submit([enc.finish()]);
+  };
+}
+
+function makeWebGL2() {
+  const gl = canvas.getContext('webgl2', { alpha: ALPHA !== 'opaque', premultipliedAlpha: true, antialias: false,
+    powerPreference: POWER });
+  if (!gl) throw new Error('webgl2 context failed');
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  log(`WebGL2 renderer: ${dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)}`);
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, GLSL_VS));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, GLSL_FS)); gl.linkProgram(prog);
+  const loc = gl.getUniformLocation(prog, 'u'); const vao = gl.createVertexArray();
+  return (t) => {
+    const eyeW = canvas.width / 2, eyeH = canvas.height;
+    gl.viewport(0, 0, canvas.width, canvas.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(prog); gl.bindVertexArray(vao); gl.uniform4f(loc, eyeW, eyeH, t, eyeW * 0.03);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+}
+
+// ---------- weave registration: exactly the SDK's surface ----------
+async function main() {
+  let draw;
+  try { draw = API === 'webgpu' ? await makeWebGPU() : makeWebGL2(); }
+  catch (e) { log(`renderer init FAILED: ${e.message}`, 'bad'); return; }
+
+  if (typeof window.XRDisplayLayer !== 'function' || !navigator.xr) {
+    log('No XRDisplayLayer / navigator.xr: not the DisplayXR Browser. Drawing the raw SBS pair only.', 'bad');
+    const loop = (ms) => { draw(ms / 1000); requestAnimationFrame(loop); }; requestAnimationFrame(loop); return;
+  }
+  let session, layer;
+  try { session = await navigator.xr.requestSession('inline-3d'); }
+  catch (e) { log(`requestSession('inline-3d') FAILED: ${e.message}`, 'bad'); return; }
+  let refSpace = null;
+  try { refSpace = await session.requestReferenceSpace('viewer'); } catch { /* views optional */ }
+  try { layer = new XRDisplayLayer(session, canvas, {}); log('new XRDisplayLayer(session, canvas) OK', 'ok'); }
+  catch (e) { log(`new XRDisplayLayer() FAILED: ${e.name}: ${e.message}`, 'bad'); return; }
+
+  const hasWoven = 'wovenState' in XRDisplayLayer.prototype;   // browser-pvt #258
+  log(hasWoven ? 'XRDisplayLayer.wovenState available' : 'no wovenState on this build (pre-#258): judge by eye + chrome_debug.log');
+  let frames = 0, stereo = 0, lastState = null, t0 = performance.now();
+  const onFrame = (t, f) => {
+    session.requestAnimationFrame(onFrame);
+    frames++;
+    const pose = refSpace ? f.getViewerPose(refSpace) : null;
+    if (pose && pose.views.length >= 2) stereo++;
+    draw(t / 1000);
+    if (hasWoven) {
+      let st; try { st = layer.wovenState; } catch (e) { st = `threw ${e.name}`; }
+      if (st !== lastState) { log(`wovenState → ${st}`, st === 'woven' ? 'ok' : 'bad'); lastState = st; }
+    }
+    if (performance.now() - t0 > 5000) {
+      log(`5s: ${frames} session frames, ${stereo} with ≥2 views (${(frames / 5).toFixed(0)} fps)`);
+      frames = 0; stereo = 0; t0 = performance.now();
+    }
+  };
+  session.requestAnimationFrame(onFrame);
+  session.addEventListener('end', () => log('session ended', 'bad'));
+  window.__probe = { session, layer, api: API, alpha: ALPHA, power: POWER };
+}
+main();
+</script>
+</body>
+</html>
