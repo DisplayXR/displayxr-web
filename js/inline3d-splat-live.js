@@ -381,7 +381,7 @@ export class LiveOutgoing {
     const rvs = this.views;
     if (rvs.length !== entries.length) {
       rvs.length = 0;
-      for (let i = 0; i < entries.length; i++) rvs.push(new pc.RenderView());
+      for (let i = 0; i < entries.length; i++) rvs.push(v.newRenderView ? v.newRenderView() : new pc.RenderView()); // WebGPU: clip-depth conversion
       this.cam.camera.camera.xrViews = rvs.slice();
     }
     // Which views: the pre-sort (and controls:'page', where both photos are the page camera's)
