@@ -5,39 +5,16 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## 1.38.0 — 2026-10-09
+## Unreleased
 
 Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
 `rewoven()` settle on the browser's `wovenState` report where it exists (the hold path elsewhere,
 byte for byte), the optional `onResize` on `addScene`, a warning on a double attach (the call
 proceeds as before), and the display reads (`getDisplayInfo()` / `getRenderingModes()` /
 `requestRenderingMode()`) waiting for a layer's first frame instead of answering `null` / `[]`
-before it, and asking again while it still answers `null` / `[]`, until the cap. The **preview tier** has one default change, `rectCover: 'auto'` on `./splat` and
-`./model` (the core keeps `'off'`), plus additive handle methods (`finishSwap()`, `rewoven()` on
-the splat handle) and the call's self view following `autoConverge`. New types only
-(`WovenState`, `WovenWithheldReason`, `RectCoverOption`); no export is removed or renamed.
-
-### `./call` — the stereo self view auto-converges too
-
-- The call's self view now follows the call's **`autoConverge`** option (default `true`) instead of
-  being hard-wired off, so your own stereo camera feed sits at the display plane like the remote
-  tiles. `autoConverge: false` turns it off for both. (`samples/camera` also starts with
-  auto-convergence on.)
-
-### Splat handle: `finishSwap()` and `rewoven()` (scene subpath `./splat`, additive)
-
-- **`handle.finishSwap()`** ends a running `setSource` transition now: the incoming asset at its
-  end state, the outgoing one gone, in this task. A no-op when none runs. The sequencer already
-  did this internally when a newer swap landed; it is now a page call. Needed by a page that keeps
-  ONE woven canvas across screens and leaves a photo screen mid-crossfade: without it the next
-  screen waited a transition out (about 1 s measured) before it could draw, and the canvas showed
-  nothing meanwhile.
-- **`handle.rewoven()`** forwards the core window's `TileHandle.rewoven()` (1.1x), which the splat
-  handle had left out while forwarding `firstWoven`. Cover the canvas across a rect change (moved
-  into a box, fullscreen, a layout resize) and release on it; `{ woven: false, reason:
-  'unsupported' }` at once without a session.
-- Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
-  stage queue), vendored there as a local patch first.
+early. One **preview-tier default** changes: `rectCover` is `'auto'` on `./splat` and `./model`
+(`'off'` in the core). New types only (`WovenState`, `WovenWithheldReason`, `RectCoverOption`);
+nothing removed. These landed after the 1.38.0 tag and ship in the next release.
 
 ### Core: `firstWoven` / `rewoven()` settle on the browser's join report (`.`, additive)
 
@@ -164,6 +141,33 @@ the splat handle) and the call's self view following `autoConverge`. New types o
   every `onFrame` ([`woven-canvas-rules.md`](docs/woven-canvas-rules.md), "redraw every frame").
   A fully transparent woven frame weaves **black**: a browser bug (browser-pvt #255), listed there
   as a known limitation.
+
+## 1.38.0 — 2026-10-09
+
+Touches the **preview tier** (`./call`, `./splat`) only: one default and two additive handle
+methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
+
+### `./call` — the stereo self view auto-converges too
+
+- The call's self view now follows the call's **`autoConverge`** option (default `true`) instead of
+  being hard-wired off, so your own stereo camera feed sits at the display plane like the remote
+  tiles. `autoConverge: false` turns it off for both. (`samples/camera` also starts with
+  auto-convergence on.)
+
+### Splat handle: `finishSwap()` and `rewoven()` (scene subpath `./splat`, additive)
+
+- **`handle.finishSwap()`** ends a running `setSource` transition now: the incoming asset at its
+  end state, the outgoing one gone, in this task. A no-op when none runs. The sequencer already
+  did this internally when a newer swap landed; it is now a page call. Needed by a page that keeps
+  ONE woven canvas across screens and leaves a photo screen mid-crossfade: without it the next
+  screen waited a transition out (about 1 s measured) before it could draw, and the canvas showed
+  nothing meanwhile.
+- **`handle.rewoven()`** forwards the core window's `TileHandle.rewoven()` (1.1x), which the splat
+  handle had left out while forwarding `firstWoven`. Cover the canvas across a rect change (moved
+  into a box, fullscreen, a layout resize) and release on it; `{ woven: false, reason:
+  'unsupported' }` at once without a session.
+- Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
+  stage queue), vendored there as a local patch first.
 
 ## 1.37.1 — 2026-10-07
 
