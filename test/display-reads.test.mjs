@@ -4,8 +4,10 @@
 // [] / false, and null is documented as "no glasses-free display" — so a page asking right after
 // add*() was told there is no display (found by the samples panel test, web#151). What is pinned:
 //   - a call made before the first frame waits, and is asked only once the layer has framed: the
-//     first stereo frame, or (where the browser reports wovenState) the first non-'pending' read —
-//     no 1200 ms hold either way;
+//     first stereo frame, or (where the browser reports wovenState) the first 'woven' read ('withheld'
+//     right after creation comes before the weave session can answer) — no 1200 ms hold either way;
+//   - a read that answers null / [] after that release, before the cap, is not returned: it is asked
+//     again on each later release signal (woven read / stereo frame) until it answers for real;
 //   - a layer that never frames still answers, at the first-woven cap (4 holds from the layer's
 //     construction), with whatever the layer says then (null / []: a real absence);
 //   - no session, no layer, a failed layer, a removed window: settles at once, as before;
@@ -179,7 +181,7 @@ test('a read made right after add*() waits for the first stereo frame, then gets
   wall.close();
 });
 
-test('with wovenState: released by the first non-pending read, not by a stereo frame while pending', async () => {
+test("with wovenState: 'withheld' right after creation does not release; the first 'woven' read does", async () => {
   clock = 0;
   const env = installEnv({ report: true });
   const wall = await newWall();
@@ -187,11 +189,83 @@ test('with wovenState: released by the first non-pending read, not by a stereo f
   const info = h.getDisplayInfo();
   env.runFrame(2);
   assert.equal(await peek(info), 'pending', "a stereo frame the browser still calls 'pending' does not release");
-  clock = 50;
+  // Measured on the panel: the layer reads 'withheld' right after creation, before the weave
+  // session can answer. Releasing there answered null at 1.55 s; 'woven' came at ~3.9 s.
+  env.report('withheld');
+  for (let i = 0; i < 5; i++) {
+    clock += 16;
+    env.runFrame(2);
+  }
+  assert.equal(await peek(info), 'pending', "'withheld' is not a release");
+  assert.deepEqual(env.layer.calls, [], 'the layer is not asked while it reads withheld');
+  clock += 16;
   env.goLive();
-  env.report('withheld'); // the browser has seen the layer (withheld is not pending)
+  env.report('woven');
+  env.runFrame(2);
+  assert.deepEqual(await info, INFO, 'answered on the first woven read, with the real panel');
+  wall.close();
+});
+
+test("with wovenState: a null on the first 'woven' read is not returned; the read is asked again on later woven reads", async () => {
+  clock = 0;
+  const env = installEnv({ report: true });
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  const info = h.getDisplayInfo();
+  const modes = h.getRenderingModes();
+  clock = 16;
+  env.report('woven'); // woven, but the weave session does not answer yet
+  env.runFrame(2);
+  assert.equal(await peek(info), 'pending', 'a null right after the release is "not ready", not "no display"');
+  assert.equal(await peek(modes), 'pending', 'an empty list likewise');
+  clock = 32;
+  env.runFrame(2);
+  assert.equal(await peek(info), 'pending');
+  clock = 48;
+  env.goLive(); // two frames later the session answers
   env.runFrame(2);
   assert.deepEqual(await info, INFO);
+  assert.deepEqual(await modes, MODES);
+  assert.equal(env.layer.calls.filter(([m]) => m === 'getDisplayInfo').length, 3, 'asked on each woven read until it answered');
+  // Answered for real: a later read goes straight through, synchronously.
+  const before = env.layer.calls.length;
+  const again = h.getDisplayInfo();
+  assert.equal(env.layer.calls.length, before + 1);
+  assert.deepEqual(await again, INFO);
+  wall.close();
+});
+
+test('timer path: a null after the first stereo frame is asked again on the next stereo frame', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  const info = h.getDisplayInfo();
+  clock = 16;
+  env.runFrame(2); // the release, but the layer still answers null
+  assert.equal(await peek(info), 'pending');
+  clock = 32;
+  env.goLive();
+  env.runFrame(2);
+  assert.deepEqual(await info, INFO);
+  wall.close();
+});
+
+test("with wovenState: a layer that stays null after 'woven' resolves null at the cap, not before", async () => {
+  clock = 0;
+  const env = installEnv({ report: true });
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  const info = h.getDisplayInfo();
+  env.report('woven');
+  for (const t of [16, 1000, 3000, 4799]) {
+    clock = t;
+    env.runFrame(2);
+    assert.equal(await peek(info), 'pending', `still waiting at ${t} ms`);
+  }
+  clock = 4800;
+  env.runFrame(2);
+  assert.equal(await info, null, 'past the cap the null is a real absence');
   wall.close();
 });
 

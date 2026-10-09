@@ -424,13 +424,18 @@ export interface TileHandle {
   /**
    * The panel this window weaves on, or `null` where there is no glasses-free display.
    *
-   * `null` is returned only once the layer has answered, never for "not ready yet". Called before
-   * this window's layer has delivered its first frame (right after `add*()`, the natural place),
-   * the call waits for that frame — the first stereo frame, or the first non-`'pending'`
-   * {@link TileHandle.wovenState} read where the browser reports one; no first-woven hold — and asks then.
-   * The wait is capped at the first-woven cap (four holds from the layer's construction, never
-   * under 4.8 s): a layer that never frames still resolves, with whatever it answers then.
-   * Without a live layer it settles at once, as below.
+   * `null` is returned only once the layer has answered for real or the cap has passed, never for
+   * "not ready yet". Called before this window's layer has delivered its first frame (right after
+   * `add*()`, the natural place), the call waits for the release signal — where the browser
+   * reports {@link TileHandle.wovenState}, the first `'woven'` read (a `'withheld'` read right
+   * after the layer is built does not count: it comes before the weave session can answer);
+   * elsewhere, the layer's first stereo frame; no first-woven hold — and asks then. If the layer
+   * still answers `null` before the cap, that answer is not returned: the call is asked again on
+   * each later release signal (the next `'woven'` read, or the next session frame once a stereo
+   * frame has been drawn) and resolves with the first non-`null` answer. Once a read on this layer
+   * has answered for real, later calls go straight to the layer. The cap is the first-woven cap
+   * (four holds from the layer's construction, never under 4.8 s): past it the layer's `null` is
+   * returned as a real absence. Without a live layer it settles at once, as below.
    *
    * Rejects with an `Error` on a browser without the display-mode API
    * ({@link inline3dDisplayModesSupported}) or while this window has no live layer (lazy mode,
@@ -447,9 +452,10 @@ export interface TileHandle {
   /**
    * Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}.
    *
-   * An empty list is returned only once the layer has answered, never for "not ready yet": like
+   * An empty list is returned only once the cap has passed, never for "not ready yet": like
    * {@link getDisplayInfo}, a call made before this window's layer has delivered its first frame
-   * waits for it (same release, same cap) and asks then. Rejects as {@link getDisplayInfo} does.
+   * waits for the same release signal, an empty answer before the cap is asked again on the next
+   * one, and the cap is the same. Rejects as {@link getDisplayInfo} does.
    */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /**
@@ -465,8 +471,8 @@ export interface TileHandle {
    * A `viewCount === 1` mode is requestable and is how a page goes flat.
    *
    * Made before this window's layer has delivered its first frame, the request waits for it (the
-   * same release and cap as {@link getDisplayInfo}): before then the browser has no weave session
-   * to forward it to.
+   * same release signal and cap as {@link getDisplayInfo}; forwarded once, not retried): before
+   * then the browser has no weave session to forward it to.
    *
    * With the eased transition on (the default — see {@link ModeSwitchOptions}) a going-flat
    * request is HELD while the disparity ramps out, so the promise resolves when the request has
@@ -574,14 +580,15 @@ export interface Inline3D {
   // on every tile handle, routed to whichever window currently holds a live layer.
 
   /**
-   * The panel, or `null` where there is no glasses-free display — returned only once the layer
-   * has answered, never for "not ready yet" (a call before the live window's first frame waits
-   * for it, capped). See {@link TileHandle.getDisplayInfo}.
+   * The panel, or `null` where there is no glasses-free display — `null` only once the cap has
+   * passed, never for "not ready yet" (a call before the live window has answered waits for its
+   * release signal and is asked again while it answers `null`, capped). See
+   * {@link TileHandle.getDisplayInfo}.
    */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
   /**
-   * Every rendering mode the display can be put in; an empty list only once the layer has
-   * answered, never for "not ready yet". See {@link TileHandle.getRenderingModes}.
+   * Every rendering mode the display can be put in; an empty list only once the cap has passed,
+   * never for "not ready yet". See {@link TileHandle.getRenderingModes}.
    */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /** Switch the display to `modeIndex`. See {@link TileHandle.requestRenderingMode}. */

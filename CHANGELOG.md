@@ -12,7 +12,7 @@ Core (`.`) changes are **additive**, with every existing default unchanged: `fir
 byte for byte), the optional `onResize` on `addScene`, a warning on a double attach (the call
 proceeds as before), and the display reads (`getDisplayInfo()` / `getRenderingModes()` /
 `requestRenderingMode()`) waiting for a layer's first frame instead of answering `null` / `[]`
-before it. The **preview tier** has one default change, `rectCover: 'auto'` on `./splat` and
+before it, and asking again while it still answers `null` / `[]`, until the cap. The **preview tier** has one default change, `rectCover: 'auto'` on `./splat` and
 `./model` (the core keeps `'off'`), plus additive handle methods (`finishSwap()`, `rewoven()` on
 the splat handle) and the call's self view following `autoConverge`. New types only
 (`WovenState`, `WovenWithheldReason`, `RectCoverOption`); no export is removed or renamed.
@@ -111,13 +111,20 @@ the splat handle) and the call's self view following `autoConverge`. New types o
   request answered "not forwarded"): the browser only answers once the layer has a weave session,
   and `null` is documented as "no glasses-free display". Found by the samples panel test (#151),
   which worked around it page-side with `await handle.firstWoven`; that is no longer needed.
-  - **Released by** the layer's first stereo frame, or, where the browser reports `wovenState`,
-    the first read that is not `'pending'`. No first-woven hold.
+  - **Released by** the first `'woven'` read where the browser reports `wovenState`, or the
+    layer's first stereo frame elsewhere. No first-woven hold. A `'withheld'` read does not
+    release: the layer reads it right after creation, before the weave session can answer
+    (measured on a Chromium 156 panel build: released on it, `getDisplayInfo()` answered `null`
+    at 1.55 s while the layer only read `'woven'` at ~3.9 s).
+  - **A `null` / `[]` answer before the cap is not returned.** The read is asked again on each
+    later release signal (the next `'woven'` read, or the next session frame once a stereo frame
+    has been drawn) and resolves with the first non-empty answer, on both paths.
+    `requestRenderingMode()` is forwarded once on the release, not retried.
   - **Capped** at the first-woven cap: four holds from the layer's construction, never under
-    4.8 s. A layer that never frames still resolves, with whatever it answers then (`null` / `[]`
-    is a real absence).
-  - **Unchanged:** a call after the first frame goes straight through; no session, no live layer,
-    a failed layer, or a window removed / session ended mid-wait settles at once, as before.
+    4.8 s. Only past it is the layer's `null` / `[]` returned, as a real absence.
+  - **Unchanged:** once a read on the layer has answered for real, later calls go straight
+    through; no session, no live layer, a failed layer, or a window removed / session ended
+    mid-wait settles at once, as before.
 
 ### Double-attach warning (core, and the `./splat` / `./model` entries)
 

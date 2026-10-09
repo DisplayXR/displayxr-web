@@ -446,6 +446,15 @@ const WOVEN_STATE_LAG_FRAMES = 3;
 // before that getDisplayInfo() is null, getRenderingModes() is [] and requestRenderingMode() is
 // `false` ("not forwarded").
 const LAYER_CALLS_AFTER_FIRST_FRAME = new Set(['getDisplayInfo', 'getRenderingModes', 'requestRenderingMode']);
+// The two READS among them. A read that comes back null / empty before the cap is not an answer
+// yet (the weave session can lag the release signal by a few frames): it is asked again on the
+// next release signal. requestRenderingMode resolves void, so it is forwarded once, not retried.
+const LAYER_READS_RETRIED_WHEN_EMPTY = new Set(['getDisplayInfo', 'getRenderingModes']);
+
+/** A display read's "nothing yet" shape: null / undefined, or an empty list. */
+function isEmptyLayerAnswer(r) {
+  return r === null || r === undefined || (Array.isArray(r) && r.length === 0);
+}
 
 /** Does this browser build report `XRDisplayLayer.wovenState`? Feature-tested on the prototype. */
 function hasWovenState() {
@@ -1696,20 +1705,37 @@ class Inline3D {
     // A layer that has not delivered a frame yet answers getDisplayInfo() with null and
     // getRenderingModes() with an empty list, and null is documented as "no glasses-free
     // display". A page that asks right after add*() (the natural place) would be told there is
-    // no display. So wait for this layer's first frame (see _tickLayerFramed) and ask then.
+    // no display. So wait for this layer's release signal (see _tickLayerFramed) and ask then.
     // Capped at the first-woven cap, so a layer that never frames still answers (null/empty, as
     // a real absence). Re-entered after the wait: the layer may have closed (-> the rejection
     // above) or been rebuilt (-> wait for the new one) meanwhile.
-    if (LAYER_CALLS_AFTER_FIRST_FRAME.has(method) && this._layerReadPending(win)) {
+    const deferred = LAYER_CALLS_AFTER_FIRST_FRAME.has(method);
+    if (deferred && !win.layerFramed && this._layerReadPending(win)) {
       return this._whenLayerFramed(win).then(() => this._layerCall(win, method, label, args));
     }
     // Wrapped so a SYNCHRONOUS throw from the browser (requestRenderingMode raises TypeError
     // that way for a non-2-view mode) arrives as a rejection like every other failure.
+    let p;
     try {
-      return Promise.resolve(win.layer[method](...args));
+      p = Promise.resolve(win.layer[method](...args));
     } catch (e) {
       return Promise.reject(e);
     }
+    if (!LAYER_READS_RETRIED_WHEN_EMPTY.has(method) || !this._layerReadPending(win)) return p;
+    // Released, but not answered for real yet on this layer. The weave session can trail the
+    // release signal, so a null / empty answer before the cap is "not ready", never returned:
+    // wait for the next release signal (the next 'woven' read, or the next stereo frame) and ask
+    // again. The first real answer marks the layer answered, and later calls go straight through.
+    const layer = win.layer;
+    return p.then((r) => {
+      if (win.layer !== layer) return r; // that layer's own answer; the window moved on
+      if (!isEmptyLayerAnswer(r)) {
+        win.lfAnswered = true;
+        return r;
+      }
+      if (!this._layerReadPending(win)) return r; // at the cap: null / [] is a real absence
+      return this._whenLayerFramed(win).then(() => this._layerCall(win, method, label, args));
+    });
   }
 
   /** The first-frame wait cap: the first-woven cap (four holds, never under four default holds). */
@@ -1717,9 +1743,12 @@ class Inline3D {
     return REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
   }
 
-  /** Does a display read on `win` still have to wait for its current layer's first frame? */
+  /**
+   * Is a display read on `win` still owed a real answer by its current layer — not yet answered
+   * non-empty, and the cap not passed? (Whether it waits for the FIRST release is `layerFramed`.)
+   */
   _layerReadPending(win) {
-    if (!win.layer || win.layerFramed || win.lfCapped) return false;
+    if (!win.layer || win.lfAnswered || win.lfCapped) return false;
     if (nowMs() - win.lfAt >= this._layerFramedCap(win)) {
       win.lfCapped = true;
       return false;
@@ -1750,14 +1779,16 @@ class Inline3D {
   }
 
   /**
-   * Per session frame, after the draw, until the current layer has framed. The release rule:
-   * where the browser reports `wovenState`, the first read that is not 'pending' (it has seen the
-   * layer); elsewhere, the first stereo frame this layer has carried (the firstWoven signal, with
-   * no hold). Either way capped at _layerFramedCap from the layer's construction.
+   * Per session frame, after the draw, until the current layer has framed and while reads wait.
+   * The release signal: where the browser reports `wovenState`, a 'woven' read (a 'withheld'
+   * read right after construction comes before the weave session can answer, so it does not
+   * count); elsewhere, a frame once this layer has carried a stereo frame (the firstWoven signal,
+   * with no hold). Every such frame releases the waiting reads, so a read that came back empty
+   * is asked again on the next one. Capped at _layerFramedCap from the layer's construction.
    */
   _tickLayerFramed(win) {
     const ws = win.wsLive ? readWovenState(win.layer) : null;
-    if (ws ? ws !== 'pending' : win.lfStereo) this._noteLayerFramed(win, true);
+    if (ws ? ws === 'woven' : win.lfStereo) this._noteLayerFramed(win, true);
     else if (win.framedWaiters.length && !this._layerReadPending(win)) this._noteLayerFramed(win, false);
   }
 
@@ -2346,9 +2377,11 @@ class Inline3D {
       // The rect cover (opts.rectCover; see _rectCoverCheck), or null when off.
       rc: null,
       // Display reads wait for the current layer's first frame (see _layerCall). `layerFramed`:
-      // it has delivered one; `lfStereo`: it has carried a stereo frame; `lfAt`: when it was
-      // built; `lfCapped`: the wait cap ran out for it; `framedWaiters`: reads queued meanwhile.
+      // its release signal has been seen; `lfAnswered`: a read got a real (non-empty) answer from
+      // it; `lfStereo`: it has carried a stereo frame; `lfAt`: when it was built; `lfCapped`: the
+      // wait cap ran out for it; `framedWaiters`: reads queued meanwhile.
       layerFramed: false,
+      lfAnswered: false,
       lfStereo: false,
       lfAt: 0,
       lfCapped: false,
@@ -2459,6 +2492,7 @@ class Inline3D {
     // A new layer has delivered nothing yet (see _layerCall). Reads queued on the previous one
     // were released by _deactivate and re-enter against this one.
     win.layerFramed = false;
+    win.lfAnswered = false;
     win.lfStereo = false;
     win.lfCapped = false;
     win.lfAt = nowMs();
@@ -3263,7 +3297,7 @@ class Inline3D {
       // the backing store, in the same task, which is the one moment a WebGL drawing buffer is
       // guaranteed readable without preserveDrawingBuffer.
       if (win.rc && win.rc.snapWanted) this._rectCoverSnap(win);
-      if (!win.layerFramed) this._tickLayerFramed(win);
+      if (!win.layerFramed || win.framedWaiters.length) this._tickLayerFramed(win);
       this._tickFirstWoven(win);
     }
   }
