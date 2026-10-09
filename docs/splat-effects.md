@@ -848,6 +848,12 @@ from where the engine runs them. All were measured by `npm run test:e2e:wgsl` (b
    at the fragment's own pixel. That mapping is the identity on both APIs only if the capture is a
    plain framebuffer copy. A capture that blits with a y-flip needs the flip in the shader.
 
+**What the adapter does about 1, 2 and 5** (`device: 'webgpu'`,
+[`playcanvas-adapter.md` § WebGPU (opt-in)](playcanvas-adapter.md#webgpu-opt-in-device)): setSource's
+particle transitions and wavefront run through the entity scope on WebGPU; `minPixelSize` and
+`minContribution` are held at 0 while a transition, a reveal or a `playEffect` runs; and the
+footprint patch is applied to the final WGSL at `createShaderModule`, which reaches the projector.
+
 **Custom effects on WebGPU** pass `wgsl` (and `fragmentWgsl` for tile scope) next to, or instead
 of, `glsl`. The rules:
 

@@ -7,6 +7,31 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### `device`: opt-in WebGPU for PlayCanvas splat tiles (`./splat`, `engine: 'playcanvas'`, preview tier, additive)
+
+- **`addSplat(…, { engine: 'playcanvas', device })`**, `'webgl2'` (the default: unchanged, byte for
+  byte, no new console line), `'webgpu'` or `'auto'` (WebGPU on Windows in the DisplayXR Browser,
+  WebGL2 elsewhere). A bad value throws at the call; Spark ignores it.
+- **The SDK decides and falls back to WebGL2** with the same handle when there is no
+  `navigator.gpu` / adapter, the session does not deliver exactly 2 views, an option is GLSL-only
+  (`cursor: 'depth'`, `playcanvasViewPath: 'cameras'`), or the engine's WebGPU boot fails. It never
+  lets the engine pick: the request is `['webgpu']` only, and the result is checked.
+- **New handle members:** `device` (`'webgl2' | 'webgpu'`, null until booted) and `deviceInfo`
+  (`{ requested, device, reason, adapter }`), plus one `console.info` boot line when the option is
+  given. New type `SplatDeviceInfo`.
+- **The WebGPU path:** eye projections converted to WebGPU clip depth on every RenderView; the
+  side-by-side footprint patch at `createShaderModule` (reaches the GPU-sort projector); the
+  projector's contribution cull at 0 for WebGL2 parity, and both size culls at 0 during transitions
+  and effects; particle transitions and the wavefront through the entity scope on GPU sort;
+  the snapshot copied in the back buffer's format; a draw-based overlay pre-warm; the store limited
+  by `maxTextureDimension2D`; a warning on device loss. `setVideo` / `makeSbsMaterial` are not
+  available on WebGPU yet (GLSL materials).
+- **When it helps:** camera rotation (orbit, idle spin, a crossfade's new photo): the GPU sort removes
+  the WebGL2 worker-sort lag (panel: JS p95 15.5 → 3.3 ms). **When it does not:** head-tracked
+  look-around (WebGL2 skips the sort there; WebGPU is 5–7 % slower at 2.36M splats). ~1.2 s more
+  init. [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md) § WebGPU (opt-in).
+- `samples/splat/?gpu=webgpu|webgl2|auto`. PlayCanvas stays at 2.22.3.
+
 ### Splat effects on WebGPU: WGSL twins (`./splat`, `engine: 'playcanvas'`, preview tier, additive)
 
 - **Every splat effect has a WGSL twin**, in the new internal module

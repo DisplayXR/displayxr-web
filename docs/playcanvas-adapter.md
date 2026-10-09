@@ -19,7 +19,7 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   `.splat` and `.ksplat` are Spark-only: with `engine: 'playcanvas'`, `addSplat` **throws at call
   time** when it can tell (a URL extension, gzip bytes, a Spark-only `fileType`).
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
-  large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, `zoom` (§Zoom bounds and relax), and `captureFit` (both backends).
+  large canvases, browser-pvt#24), `device` (`'webgl2'` default, `'webgpu'`, `'auto'`; §WebGPU (opt-in)), `orbitMaxDeg` / `orbitEase`, `zoom` (§Zoom bounds and relax), and `captureFit` (both backends).
 - **Extra handle members:** `setSource(src, { fadeMs, resetPose, transition, reveal })` (it throws
   on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `setViewOffset` (§View offset), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
   `setEffect`, `stopEffect`, `effects()` ([`splat-effects.md`](splat-effects.md)).
@@ -953,6 +953,101 @@ with `detail.transition` = `'reassemble(assemble>assemble)'` and the marks `sequ
 `released`, `loaded`, `adopted`, `in-start`; its frozen-image count is 0 by construction. The one
 main-thread cost left (the next file's decode and upload, and the engine's first frame of the new
 asset) lands between `released` and `in-start`, when nothing is drawn.
+
+## WebGPU (opt-in): `device`
+
+```js
+const h = addSplat(wall, canvas, src, { engine: 'playcanvas', device: 'webgpu' }); // or 'auto'
+await h.ready;
+h.device;      // 'webgpu' | 'webgl2': what the tile actually runs on
+h.deviceInfo;  // { requested, device, reason, adapter }
+```
+
+`device` picks the graphics API of the tile's engine. **`'webgl2'` is the default**, and with no
+`device` (or `'webgl2'`) nothing changes: the same device request, byte for byte, and no console
+line. `'webgpu'` asks for WebGPU. `'auto'` asks for it only on Windows in the DisplayXR Browser
+(an inline-3D session with `XRDisplayLayer`), and WebGL2 elsewhere. Spark ignores the option
+(three's `WebGLRenderer`, WebGL2 only). A bad value throws at the call.
+
+**The SDK decides, never the engine.** It asks PlayCanvas for `['webgpu']` only after the rules
+below say yes, and checks what it got (`createGraphicsDevice` silently appends WebGL2 to any list).
+Every other case runs on WebGL2 with the same handle. One `console.info` line at boot, when the
+option was given, names the result:
+
+```
+[inline3d/splat] device=webgpu adapter=nvidia/ampere (requested webgpu)
+[inline3d/splat] device=webgl2 (requested webgpu; fallback: the session has 1 view (WebGPU splat stereo needs exactly 2))
+```
+
+| fallback to WebGL2 when | why |
+|---|---|
+| `navigator.gpu` is absent, or `requestAdapter()` returns null | no WebGPU here |
+| the session's first frame does not carry exactly 2 views (no inline-3D session counts as 0) | PlayCanvas's WebGPU splat stereo is two-view only; other counts take a mono projection |
+| a GLSL-only option: `cursor: 'depth'`, `playcanvasViewPath: 'cameras'` (and `reveal`, only on an effects build without WGSL twins) | no WGSL for its material / the N-camera path's projections never reach the splat projector |
+| the engine's WebGPU boot throws, or comes back as another device | `deviceInfo.reason` quotes it |
+| `'auto'` only: not Windows, or not the DisplayXR Browser | the opt-in is panel-proven there only |
+
+The view count is read from the session's first frame, so a WebGPU request starts the engine
+one session frame later than WebGL2 (bounded at 1.5 s).
+
+**When it helps, and when it does not** (panel, DisplayXR Browser 1.7.1, RTX 3080, Tahoe 1.18M
+SOG, 2 views 3840×1080; both APIs held 60 Hz):
+
+- **Camera rotation: orbit, idle spin, a `setSource` crossfade's new photo.** WebGL2 re-sorts on a
+  worker each time the camera turns, and the picture lags the sort. WebGPU sorts on the GPU every
+  frame. JS frame p95 15.5 → 3.3 ms; on orbit the WebGL2 tile "stutters a bit", the WebGPU one does
+  not (one observer).
+- **Head-tracked look-around: nothing.** The eyes translate without rotating the camera, so WebGL2
+  skips the sort entirely, while WebGPU still sorts every frame. At 2.36M splats WebGPU was 5–7 %
+  slower, with slightly more >20 ms hitches.
+- **Costs:** about 1.2 s more engine init; 2 views only; image parity MAE 0.4/255 against WebGL2
+  (eye 1 reuses eye 0's 2D covariance on the GPU-sort projector).
+
+**What the adapter does differently on WebGPU** (everything else is the WebGL2 path):
+
+- **Clip depth.** The runtime's eye projections are GL clip space (z −1..1), and the engine uses
+  `RenderView` projections as is. Every RenderView the adapter makes (the eyes, the live outgoing
+  camera, the layer-rig cameras) converts them to WebGPU's 0..1 (`toClipWebGpu`). Without it,
+  everything nearer than 2 × near clips.
+- **The footprint fix reaches the GPU-sort projector.** The side-by-side footprint patch is applied
+  to the final WGSL at `device.wgpu.createShaderModule`, the one door both the compute projector
+  (GPU sort, WebGPU's default) and the raster chunk go through (`handle.viewer.footprintStats`
+  counts `{ seen, patched }`). A chunk-level patch reaches only the raster chunk. A device the
+  engine restores after a loss is not re-patched (a warning says so on `device.lost`).
+- **Contribution cull.** The GPU-sort projector also drops splats whose opacity × footprint area is
+  under `minContribution` (3); WebGL2's CPU sort has no such cull, and on a small subject the
+  WebGPU image came out darker and speckled. The WebGL2-parity baseline is 0, as for `perf`'s
+  `minPixelSize` (`perf: false` keeps the engine's defaults). While a transition, a reveal or a
+  `playEffect` runs, `minPixelSize` and `minContribution` are both held at 0 (the particle dots in
+  flight are ~1 px) and restored after.
+- **Transitions on GPU sort.** Values set on a gsplat mesh instance never reach the compute
+  projector, so setSource's render-time paths (the particle transitions' `driveShared`, the
+  wavefront's per-camera values) would draw both photos whole. On WebGPU the adapter drives them
+  through the entity scope (the work-buffer copy), which works there; it rewrites each photo's work
+  buffer per frame, the cost the render-time path avoids on WebGL2. `crossfade` (live outgoing
+  included), `cut`, sequences and every effect run as on WebGL2, with the WGSL twins
+  ([`splat-effects.md` § WGSL twins](splat-effects.md#wgsl-twins-webgpu)).
+- **Snapshot.** setSource's frame snapshot is a texture copy of the back buffer in its own format
+  (bgra8unorm on Windows), submitted in the drawing task.
+- **Pre-warm.** WebGPU builds render pipelines on the first draw, not on the shader request. The
+  dwell pre-warm therefore draws the overlay quads once at weight 0 (no change on screen). Effect
+  chunk variants are compiled ahead as WGSL modules, but their pipelines are still built on the
+  transition's first frame: expect a one-off hitch on the first transition of each kind.
+- **Resize** sizes the canvas as on WebGL2. The engine re-creates its back buffer when the canvas
+  texture changes size; `configure()` is never called again. The store limit is the device's
+  `maxTextureDimension2D`.
+- **One view** (a 2D session mode, the flat frame): the splat projector reads the camera's own
+  projection there, so the view's off-axis shift goes in as the camera's `projectionOffset`.
+- **Covers.** `rectCover`'s snapshot draws the canvas into a 2D canvas in the drawing task, after the
+  engine has submitted the frame. That read is correct on WebGPU (P-W0); after the present it
+  would come back empty.
+
+**Not on WebGPU yet:** `setVideo` (rejects) and `makeSbsMaterial` (throws). Both are GLSL
+materials with no twin. Use `device: 'webgl2'` for them. Neither engine version changes here: the
+pin stays playcanvas 2.22.3.
+
+**The sample:** `samples/splat/?gpu=webgpu|webgl2|auto` passes the parameter as `device` and prints
+the result under the tile. Without the parameter the page is unchanged.
 
 ## `perf` on this engine
 
