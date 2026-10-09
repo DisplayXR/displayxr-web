@@ -37,7 +37,7 @@
     &middot; <a href="https://displayxr.org/browser">displayxr.org/browser</a></p>
   <nav class="toc">
     <a href="#apps">Featured apps</a><a href="#start">Start here</a><a href="#media">Photos &amp; video</a>
-    <a href="#content">3D models &amp; splats</a><a href="#scenes">Scenes &amp; cameras</a>
+    <a href="#content">3D models &amp; splats</a><a href="#scenes">Scenes &amp; cameras</a><a href="#auto">Automatic 3D</a>
     <a href="#calls">Video calls</a><a href="#composition">Page composition</a>
     <a href="#more">More apps</a><a href="#build">Build your own</a>
   </nav>
@@ -158,6 +158,31 @@
        button with the non-2-view modes greyed out, and a live log of the two session events.</p>
   </div>
     </div>
+  </section>
+
+  <section id="auto">
+    <h2>Automatic 3D</h2>
+    <p class="lead">No SDK, no change to the site: the browser converts ordinary WebGL and WebGPU scenes on its own.</p>
+    <div class="grid">
+<div class="card">
+    <h2><a href="https://superspl.at/scene/ca6a4c9b">SuperSplat viewer</a> <span class="tag">public site</span></h2>
+    <p>A Gaussian splat in PlayCanvas&rsquo;s own viewer, rendering through WebGPU. The browser finds
+       the page&rsquo;s renderer and draws it once per eye &mdash; the site was never written for
+       DisplayXR.</p>
+  </div>
+<div class="card">
+    <h2><a href="https://threejs.org/examples/webgpu_loader_gltf.html">three.js glTF on WebGPU</a> <span class="tag">public site</span></h2>
+    <p>The damaged-helmet model on three.js&rsquo;s WebGPU renderer, straight from the three.js
+       examples. Converged on the camera&rsquo;s own look-at target.</p>
+  </div>
+<div class="card">
+    <h2><a href="https://threejs.org/examples/webgl_animation_keyframes.html">three.js Littlest Tokyo</a> <span class="tag">public site</span></h2>
+    <p>An animated glTF city block on WebGL &mdash; the classic three.js keyframes example, in depth,
+       with its animation and orbit controls untouched.</p>
+  </div>
+    </div>
+    <p class="lead">Conversion is on by default from browser v1.2. A page-info toggle turns it off per
+       site, and any page that uses the SDK keeps its own 3D &mdash; the converter stands down.</p>
   </section>
 
   <section id="calls">
