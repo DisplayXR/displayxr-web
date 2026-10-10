@@ -13,7 +13,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   byte, no new console line), `'webgpu'` or `'auto'` (WebGPU on Windows in the DisplayXR Browser,
   WebGL2 elsewhere). A bad value throws at the call; Spark ignores it.
 - **The SDK decides and falls back to WebGL2** with the same handle when there is no
-  `navigator.gpu` / adapter, the session does not deliver exactly 2 views, an option is GLSL-only
+  `navigator.gpu` / adapter, the tile does not render exactly 2 views (the display's active mode, else
+  the session's first stereo view list; 1-view mono-fallback lists do not count), an option is GLSL-only
   (`cursor: 'depth'`, `playcanvasViewPath: 'cameras'`), or the engine's WebGPU boot fails. It never
   lets the engine pick: the request is `['webgpu']` only, and the result is checked.
 - **New handle members:** `device` (`'webgl2' | 'webgpu'`, null until booted) and `deviceInfo`

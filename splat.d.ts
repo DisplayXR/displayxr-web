@@ -341,7 +341,7 @@ export interface SplatOptions {
    *
    * WebGPU is used only when the rules allow it, else the tile runs on WebGL2 with the same handle
    * (`handle.device` / `handle.deviceInfo.reason` say which and why; one console line when the
-   * option is given): `navigator.gpu` and an adapter present; the session delivers exactly 2 views
+   * option is given): `navigator.gpu` and an adapter present; the tile renders exactly 2 views (the display mode, else the first 2+ view list; a 1-view mono-fallback list does not count)
    * (no inline-3D session = WebGL2); no GLSL-only option (`reveal` until WGSL effect chunks exist,
    * `cursor: 'depth'`, `playcanvasViewPath: 'cameras'`); the engine's WebGPU boot succeeds.
    * On a WebGPU tile, setSource plays `'cut'` / `'crossfade'` (live outgoing included) as asked and

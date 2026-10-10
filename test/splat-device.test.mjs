@@ -63,9 +63,9 @@ test('resolveSplatDevice: the rule table', () => {
     [{ ...OK, requested: 'auto' }, 'webgpu', /^auto$/],
     [{ ...OK, requested: 'webgpu', gpu: false }, 'webgl2', /navigator\.gpu is absent/],
     [{ ...OK, requested: 'webgpu', adapter: null }, 'webgl2', /requestAdapter\(\) returned null/],
-    [{ ...OK, requested: 'webgpu', viewCount: 1 }, 'webgl2', /1 view \(WebGPU splat stereo needs exactly 2\)/],
-    [{ ...OK, requested: 'webgpu', viewCount: 4 }, 'webgl2', /4 views/],
-    [{ ...OK, requested: 'webgpu', viewCount: 0 }, 'webgl2', /0 views/],
+    [{ ...OK, requested: 'webgpu', viewCount: 1 }, 'webgl2', /the tile renders 1 view \(WebGPU splat stereo needs exactly 2\)/],
+    [{ ...OK, requested: 'webgpu', viewCount: 4 }, 'webgl2', /the tile renders 4 views/],
+    [{ ...OK, requested: 'webgpu', viewCount: 0 }, 'webgl2', /no stereo view list from the session/],
     [{ ...OK, requested: 'webgpu', inline3d: false, displayxr: false }, 'webgl2', /no inline-3D session/],
     [{ ...OK, requested: 'webgpu', glslOnly: ['reveal'] }, 'webgl2', /GLSL-only option reveal/],
     [{ ...OK, requested: 'webgpu', glslOnly: ['reveal', "cursor:'depth'"] }, 'webgl2', /GLSL-only options reveal, cursor:'depth'/],
@@ -292,16 +292,21 @@ function fakeFlat(n = 1000) {
 }
 
 function frames(count) {
-  const views = [-1, 1].slice(0, count).map((sg) => {
+  const sgs = count === 1 ? [0] : count === 2 ? [-1, 1] : Array.from({ length: count }, (_, i) => -1 + (2 * i) / (count - 1));
+  return sgs.map((sg, i) => {
     const P = Float32Array.from(perspectiveFov(40, 1280 / 720, 0.01, 100));
     P[8] += -sg * 0.1;
-    return { eye: sg < 0 ? 'left' : 'right', projectionMatrix: P, transform: { matrix: Float32Array.from(poseMatrix([sg * 0.032, 0, 0], [0, 0, 0, 1])) } };
+    return { eye: count === 2 ? (i ? 'right' : 'left') : count === 1 ? 'none' : `v${i}`, _i: i, _n: count, projectionMatrix: P, transform: { matrix: Float32Array.from(poseMatrix([sg * 0.032, 0, 0], [0, 0, 0, 1])) } };
   });
-  return views;
 }
 
-/** Boot a tile with a fake session that delivers `viewCount` views per frame. */
-async function boot({ device, viewCount = 2, gpu = true, adapter = true, webgpuBoots = true, extra = {} } = {}) {
+/**
+ * Boot a tile with a fake session that delivers `viewCount` views per frame — or `seq[i]` on frame
+ * i (the last entry repeats). `activeViewCount`: the display's active mode, already read.
+ */
+async function boot({ device, viewCount = 2, seq = null, activeViewCount, gpu = true, adapter = true, webgpuBoots = true, extra = {} } = {}) {
+  let frameNo = 0;
+  const countAt = () => (seq ? seq[Math.min(frameNo++, seq.length - 1)] : viewCount);
   installDom();
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   const nav = { platform: 'Win32' };
@@ -318,6 +323,7 @@ async function boot({ device, viewCount = 2, gpu = true, adapter = true, webgpuB
   const wrec = {};
   const wall = {
     supported: true,
+    ...(activeViewCount ? { _activeViewCount: activeViewCount } : {}),
     addScene: (cv, onFrame) => {
       wrec.onFrame = onFrame;
       return { exclude() {}, unexclude() {}, remove() {}, setViewRig() {} };
@@ -325,17 +331,17 @@ async function boot({ device, viewCount = 2, gpu = true, adapter = true, webgpuB
   };
   const layer = {
     getViewport: (v) => {
-      const half = Math.floor(canvas.width / 2);
-      return { x: v.eye === 'left' ? 0 : half, y: 0, width: half, height: canvas.height };
+      const w = Math.floor(canvas.width / v._n);
+      return { x: v._i * w, y: 0, width: w, height: canvas.height };
     },
   };
   const out = {};
   // The session's frames run while the tile boots (the device choice waits for the first one).
-  const timer = setInterval(() => wrec.onFrame?.(frames(viewCount), layer), 5);
+  const timer = setInterval(() => wrec.onFrame?.(frames(countAt()), layer), 5);
   try {
     await attachPlayCanvasSplat(out, wall, canvas, 'a.sog', { playcanvas: pc, focusInput: false, orbit: false, ...(device ? { device } : {}), ...extra }, []);
     rec.views.length = 0;
-    wrec.onFrame(frames(viewCount), layer);
+    wrec.onFrame(frames(seq ? seq[seq.length - 1] : viewCount), layer);
   } finally {
     clearInterval(timer);
     console.info = info;
@@ -374,7 +380,7 @@ test('webgpu → WebGL2 fallbacks: no navigator.gpu, null adapter, 1 view, GLSL-
   const cases = [
     [{ device: 'webgpu', gpu: false }, /navigator\.gpu is absent/, [['webgl2']]],
     [{ device: 'webgpu', adapter: false }, /requestAdapter\(\) returned null/, [['webgl2']]],
-    [{ device: 'webgpu', viewCount: 1 }, /1 view/, [['webgl2']]],
+    [{ device: 'webgpu', viewCount: 4 }, /the tile renders 4 views/, [['webgl2']]],
     [{ device: 'webgpu', extra: { cursor: 'depth' } }, /GLSL-only option cursor:'depth'/, [['webgl2']]],
     [{ device: 'webgpu', webgpuBoots: false }, /WebGPU boot failed/, [['webgpu']]],
   ];
@@ -387,7 +393,7 @@ test('webgpu → WebGL2 fallbacks: no navigator.gpu, null adapter, 1 view, GLSL-
     const line = logs.find((l) => l.includes('device='));
     assert.match(line, /^\[inline3d\/splat\] device=webgl2 \(requested webgpu; fallback: /);
     // WebGL2 projections are untouched: the same as a default tile's, element for element
-    if ((o.viewCount || 2) === 2) assert.deepEqual(rec.views.map((v) => Array.from(v.proj)), base, JSON.stringify(o));
+    if (!o.viewCount) assert.deepEqual(rec.views.map((v) => Array.from(v.proj)), base, JSON.stringify(o));
   }
 });
 
@@ -397,4 +403,18 @@ test('the WebGPU tile: setVideo rejects and makeSbsMaterial throws (GLSL materia
   assert.equal(logs.filter((l) => /device=webgpu: /.test(l) && !/adapter=/.test(l)).length, 0, 'nothing else said at boot');
   await assert.rejects(out.setVideo('a.mp4'), /setVideo\(\) draws through a GLSL material and is not available on device:'webgpu'/);
   assert.throws(() => out.makeSbsMaterial({}), /makeSbsMaterial\(\) is a GLSL material/);
+});
+
+test('the view gate counts the views the tile RENDERS: 1-view session frames (mono fallback) then 2 → webgpu', async () => {
+  const { out, rec } = await boot({ device: 'webgpu', seq: [1, 1, 1, 1, 2] });
+  assert.equal(out.device, 'webgpu', out.deviceInfo?.reason);
+  assert.deepEqual(rec.devices, [['webgpu']]);
+});
+
+test("the view gate: the display's active mode, when already read, answers without waiting for a frame", async () => {
+  const { out } = await boot({ device: 'webgpu', viewCount: 1, activeViewCount: 2 });
+  assert.equal(out.device, 'webgpu', out.deviceInfo?.reason);
+  const quad = await boot({ device: 'webgpu', viewCount: 4, activeViewCount: 4 });
+  assert.equal(quad.out.device, 'webgl2');
+  assert.match(quad.out.deviceInfo.reason, /the tile renders 4 views/);
 });

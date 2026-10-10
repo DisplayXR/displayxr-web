@@ -15,8 +15,10 @@
 // what it got. Every way to WebGPU falls back to WebGL2 with the same handle API, one console line
 // and `handle.device` saying so:
 //   - `navigator.gpu` absent, or `requestAdapter()` null;
-//   - the session's view count is not exactly 2 (PlayCanvas's WebGPU gsplat stereo projector is
-//     two-view only; 0 = no inline-3D session at all, the flat 2D tier);
+//   - the tile does not render exactly 2 views — its RenderViews: the display's active rendering
+//     mode, else the first stereo (2+) view list the session hands it; a 1-view list is the
+//     session's mono fallback and does not count (PlayCanvas's WebGPU gsplat stereo projector is
+//     two-view only; a 4-view quad would take a mono projection);
 //   - an option the WebGPU path cannot draw (GLSL only, no WGSL twin): see glslOnlyOptions();
 //   - the engine's WebGPU boot throws or comes back as another device;
 //   - `'auto'` only: not Windows, or not the DisplayXR Browser (no XRDisplayLayer / no session).
@@ -68,7 +70,7 @@ export function glslOnlyOptions(opts = {}, { wgslEffects = false } = {}) {
  * @param {boolean} f.displayxr      the DisplayXR Browser (XRDisplayLayer + a session)
  * @param {boolean} f.windows
  * @param {string[]} [f.glslOnly]    glslOnlyOptions()
- * @param {number} [f.viewCount]     views in the session's first frame (0 = none)
+ * @param {number} [f.viewCount]     RenderViews the tile draws in 3D (0 = none found)
  * @param {object|null} [f.adapter]  requestAdapter()'s answer
  */
 export function resolveSplatDevice(f) {
@@ -83,7 +85,8 @@ export function resolveSplatDevice(f) {
   if (f.glslOnly && f.glslOnly.length) return gl(`GLSL-only option${f.glslOnly.length > 1 ? 's' : ''} ${f.glslOnly.join(', ')}`);
   if (!f.inline3d) return gl('no inline-3D session (WebGPU splat stereo needs exactly 2 views)');
   if (f.viewCount === undefined) return { device: null, need: 'views' };
-  if (f.viewCount !== 2) return gl(`the session has ${f.viewCount} view${f.viewCount === 1 ? '' : 's'} (WebGPU splat stereo needs exactly 2)`);
+  if (!(f.viewCount > 0)) return gl('no stereo view list from the session (WebGPU splat stereo needs exactly 2 views)');
+  if (f.viewCount !== 2) return gl(`the tile renders ${f.viewCount} view${f.viewCount === 1 ? '' : 's'} (WebGPU splat stereo needs exactly 2)`);
   if (f.adapter === undefined) return { device: null, need: 'adapter' };
   if (!f.adapter) return gl('requestAdapter() returned null');
   return { device: 'webgpu', reason: requested === 'auto' ? 'auto' : 'requested' };

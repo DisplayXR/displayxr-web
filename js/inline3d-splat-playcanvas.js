@@ -1244,9 +1244,13 @@ export class PlayCanvasSplatViewer {
   /** wall.addScene's frame callback. Validate BEFORE drawing; replay the last good frame else. */
   onFrame(views, layer, frame) {
     if (this._disposed) return;
-    // The device choice waits for this (firstViewCount): how many views the session delivers.
-    this._lastViewCount = views ? views.length : 0;
-    if (this._viewWaiters?.length && this._lastViewCount > 0) for (const w of this._viewWaiters.splice(0)) w(this._lastViewCount);
+    // The device choice waits for this (stereoViewCount): how many views the tile DRAWS in 3D —
+    // the first view list of 2+ (a shorter list is the session's mono fallback, drawn flat by
+    // _replayOrFlat below, never as the rig).
+    if (views && views.length >= 2) {
+      this._stereoViews = views.length;
+      if (this._viewWaiters?.length) for (const w of this._viewWaiters.splice(0)) w(views.length);
+    }
     if (this._mode !== '3d') this.stopMono();
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
     // and the tick below may declare a new one (a focus ease) for the NEXT locate.
@@ -1282,11 +1286,12 @@ export class PlayCanvasSplatViewer {
   }
 
   /**
-   * How many views the session's frames carry: resolves on the first frame with views, or after
-   * `timeoutMs` with what the frames carried meanwhile (0 = none, or no frame at all).
+   * How many views this tile renders in 3D (one RenderView each): the length of the first view
+   * list of 2+ the session hands onFrame. A 1-view list is the session's mono fallback (the tile
+   * draws flat for it) and does not count. Resolves 0 after `timeoutMs` without one.
    */
-  firstViewCount(timeoutMs = 1500) {
-    if (this._lastViewCount > 0) return Promise.resolve(this._lastViewCount);
+  stereoViewCount(timeoutMs = 3000) {
+    if (this._stereoViews > 0) return Promise.resolve(this._stereoViews);
     return new Promise((resolve) => {
       const w = (n) => {
         clearTimeout(timer);
@@ -1295,7 +1300,7 @@ export class PlayCanvasSplatViewer {
       const timer = setTimeout(() => {
         const i = this._viewWaiters.indexOf(w);
         if (i >= 0) this._viewWaiters.splice(i, 1);
-        resolve(this._lastViewCount || 0);
+        resolve(this._stereoViews || 0);
       }, timeoutMs);
       (this._viewWaiters ||= []).push(w);
     });
@@ -4874,7 +4879,17 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const facts = { requested: deviceRequested, ...platformFacts(wall), glslOnly: glslOnlyOptions(opts, { wgslEffects }) };
     let r = resolveSplatDevice(facts);
     if (r.need === 'views') {
-      facts.viewCount = await viewer.firstViewCount();
+      // The RenderViews this tile will draw: known without waiting when the display's active
+      // rendering mode has already been read (wall._activeViewCount: a page's display read, the
+      // mode switch); else the first stereo view list the session hands the tile (a 1-view list
+      // is the mono fallback, not the rig); else, after 3 s of none, the active mode's viewCount.
+      const known = wall?._activeViewCount;
+      facts.viewCount = known >= 2 ? known : await viewer.stereoViewCount();
+      if (!facts.viewCount && handle && typeof handle.getRenderingModes === 'function') {
+        const modes = await Promise.race([handle.getRenderingModes().catch(() => []), new Promise((res) => setTimeout(() => res([]), 1000))]);
+        const active = Array.isArray(modes) ? modes.find((m) => m && m.isActive) : null;
+        facts.viewCount = active && active.viewCount > 0 ? active.viewCount : 0;
+      }
       r = resolveSplatDevice(facts);
     }
     if (r.need === 'adapter') {

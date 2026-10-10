@@ -976,19 +976,20 @@ option was given, names the result:
 
 ```
 [inline3d/splat] device=webgpu adapter=nvidia/ampere (requested webgpu)
-[inline3d/splat] device=webgl2 (requested webgpu; fallback: the session has 1 view (WebGPU splat stereo needs exactly 2))
+[inline3d/splat] device=webgl2 (requested webgpu; fallback: the tile renders 4 views (WebGPU splat stereo needs exactly 2))
 ```
 
 | fallback to WebGL2 when | why |
 |---|---|
 | `navigator.gpu` is absent, or `requestAdapter()` returns null | no WebGPU here |
-| the session's first frame does not carry exactly 2 views (no inline-3D session counts as 0) | PlayCanvas's WebGPU splat stereo is two-view only; other counts take a mono projection |
+| the tile does not render exactly 2 views (its RenderViews: the display's active rendering mode, else the first 2+ view list the session hands it; a 1-view list is the session's mono fallback and does not count; no inline-3D session = WebGL2) | PlayCanvas's WebGPU splat stereo is two-view only; a 4-view quad would take a mono projection |
 | a GLSL-only option: `cursor: 'depth'`, `playcanvasViewPath: 'cameras'` (and `reveal`, only on an effects build without WGSL twins) | no WGSL for its material / the N-camera path's projections never reach the splat projector |
 | the engine's WebGPU boot throws, or comes back as another device | `deviceInfo.reason` quotes it |
 | `'auto'` only: not Windows, or not the DisplayXR Browser | the opt-in is panel-proven there only |
 
-The view count is read from the session's first frame, so a WebGPU request starts the engine
-one session frame later than WebGL2 (bounded at 1.5 s).
+When the display's active rendering mode has already been read (a page's display read, the mode
+switch), the count is known at once. Otherwise a WebGPU request starts the engine on the first
+stereo view list, at most 3 s in, then asks the display's active mode.
 
 **When it helps, and when it does not** (panel, DisplayXR Browser 1.7.1, RTX 3080, Tahoe 1.18M
 SOG, 2 views 3840×1080; both APIs held 60 Hz):
