@@ -1034,6 +1034,15 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   dwell pre-warm therefore draws the overlay quads once at weight 0 (no change on screen). Effect
   chunk variants are compiled ahead as WGSL modules, but their pipelines are still built on the
   transition's first frame: expect a one-off hitch on the first transition of each kind.
+- **Cameras after the eye camera.** On WebGPU each camera with 2+ views gets its own
+  `FramePassMultiView` wrapper. playcanvas 2.22.3 compiles each wrapper with a fresh render-target
+  map, so the eye camera's back-buffer pass never learns that a later camera loads that target.
+  setLayerRig's display / post cameras, or a page's own camera, are such later cameras. With MSAA
+  (`antialias`) the eye camera's colour was resolved and DISCARDED, and the next camera loaded
+  undefined contents: `setLayerRig(…, 'display')` turned the tile **black**, with nothing logged.
+  The adapter re-runs the engine's store rule across the wrappers after every compile
+  (`propagateStoresAcrossCameras`): a pass whose target a later pass loads keeps its colour / depth
+  / stencil. WebGL2 is untouched (no wrappers).
 - **Resize** sizes the canvas as on WebGL2. The engine re-creates its back buffer when the canvas
   texture changes size; `configure()` is never called again. The store limit is the device's
   `maxTextureDimension2D`.

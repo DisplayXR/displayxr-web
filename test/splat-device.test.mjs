@@ -19,6 +19,8 @@ import {
   patchGsplatFootprintWgslModule,
   wrapWgslFootprint,
   gpuBufferLimits,
+  propagateStoresAcrossCameras,
+  wrapFrameGraphStores,
 } from '../js/inline3d-splat-device.js';
 import { getEffectChunks } from '../js/inline3d-splat-effects.js';
 import { attachPlayCanvasSplat, perspectiveFov, poseMatrix } from '../js/inline3d-splat-playcanvas.js';
@@ -219,6 +221,8 @@ function makeFakePc({ webgpuBoots = true } = {}) {
       this.root = new Entity('root', this);
       this.scene = { gsplat: {}, layers: { getLayerById: () => ({ addMeshInstances() {} }) } };
       this.resolutionMode = 'fixed';
+      this.frameGraph = { renderPasses: [], compile() { rec.compiles = (rec.compiles || 0) + 1; } };
+      rec.frameGraph = this.frameGraph;
       this.assets = {
         add() {},
         remove() {},
@@ -417,4 +421,48 @@ test("the view gate: the display's active mode, when already read, answers witho
   const quad = await boot({ device: 'webgpu', viewCount: 4, activeViewCount: 4 });
   assert.equal(quad.out.device, 'webgl2');
   assert.match(quad.out.deviceInfo.reason, /the tile renders 4 views/);
+});
+
+// setLayerRig('display') on WebGPU turned an MSAA tile BLACK: each camera's passes sit in their own
+// FramePassMultiView wrapper, compiled with a fresh render-target map, so the eye pass discarded the
+// back buffer the display camera then loaded.
+const pass = (rt, { clear = false, clearDepth = false } = {}) => ({
+  renderTarget: rt,
+  colorArrayOps: [{ clear, store: false }],
+  depthStencilOps: { clearDepth, clearStencil: clearDepth, storeDepth: false, storeStencil: false },
+});
+
+test('propagateStoresAcrossCameras: a later camera that LOADS the target makes the earlier pass store it, across wrappers', () => {
+  const eye = pass(null, { clear: true, clearDepth: true }); // the eye camera: clears the back buffer
+  const display = pass(null, { clear: false, clearDepth: true }); // setLayerRig display: loads colour, own depth
+  const post = pass(null, { clear: false, clearDepth: false }); // the post run: loads both
+  const live = pass({ id: 'rt' }, { clear: true, clearDepth: true }); // the live outgoing target: its own
+  const wrappers = [{ children: [live] }, { children: [eye] }, { children: [display] }, { children: [post] }];
+  const n = propagateStoresAcrossCameras(wrappers);
+  assert.equal(eye.colorArrayOps[0].store, true, 'eye colour stored for the display camera');
+  assert.equal(eye.depthStencilOps.storeDepth, false, 'the display camera clears depth: nothing to keep');
+  assert.equal(display.colorArrayOps[0].store, true);
+  assert.equal(display.depthStencilOps.storeDepth, true, 'post loads depth');
+  assert.equal(post.colorArrayOps[0].store, false, 'nothing after it');
+  assert.equal(live.colorArrayOps[0].store, false, 'another target is untouched');
+  assert.equal(n, 4);
+  // one camera alone: nothing raised (a single tile without setLayerRig is unchanged)
+  const solo = pass(null, { clear: true, clearDepth: true });
+  assert.equal(propagateStoresAcrossCameras([{ children: [solo] }]), 0);
+  assert.equal(solo.colorArrayOps[0].store, false);
+});
+
+test('wrapFrameGraphStores: runs after the engine compile, once per graph; installed on a WebGPU tile only', async () => {
+  const eye = pass(null, { clear: true, clearDepth: true });
+  const next = pass(null);
+  const g = { renderPasses: [{ children: [eye] }, { children: [next] }], compile() { this.compiled = true; } };
+  assert.equal(wrapFrameGraphStores(g), true);
+  assert.equal(wrapFrameGraphStores(g), false, 'once');
+  g.compile();
+  assert.equal(g.compiled, true);
+  assert.equal(eye.colorArrayOps[0].store, true);
+  const gpu = await boot({ device: 'webgpu' });
+  assert.equal(gpu.rec.frameGraph._dxrStores, true);
+  const gl = await boot();
+  assert.equal(gl.rec.frameGraph._dxrStores, undefined, 'WebGL2: the engine graph is untouched');
 });

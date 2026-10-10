@@ -143,6 +143,7 @@ import {
   toClipWebGpu,
   wrapWgslFootprint,
   gpuBufferLimits,
+  wrapFrameGraphStores,
 } from './inline3d-splat-device.js';
 
 /**
@@ -1466,6 +1467,10 @@ export class PlayCanvasSplatViewer {
     }
     // The SDK's frame drives the engine: no second rAF. `tick` is the engine's own loop body.
     app.requestAnimationFrame = () => {};
+    // WebGPU: a later camera on the same target (setLayerRig's display / post cameras, a page's
+    // own camera) must find the eye camera's colour and depth STORED (propagateStoresAcrossCameras:
+    // without it an MSAA tile goes black the moment a second camera draws).
+    if (this.isWebGPU) wrapFrameGraphStores(app.frameGraph);
     this.app = app;
     // The store may have been sized before the engine existed (from the probed limits, or none):
     // re-check it against THIS context's. A no-op when nothing moves.
@@ -4895,7 +4900,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     if (r.need === 'adapter') {
       let adapter = null;
       try {
-        adapter = await globalThis.navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+        adapter = await globalThis.navigator.gpu.requestAdapter();
       } catch {
         adapter = null;
       }

@@ -230,3 +230,67 @@ export function gpuBufferLimits(gpuDevice) {
   if (!(v > 0)) return null;
   return { maxW: v, maxH: v, nameW: 'maxTextureDimension2D', nameH: 'maxTextureDimension2D', valueW: v, valueH: v };
 }
+
+// ── multi-camera frames on WebGPU ──
+
+/**
+ * After the engine's own FrameGraph.compile, carry "a LATER pass loads this target" back to the
+ * pass before it ACROSS cameras (store color / depth / stencil). Pure, on the compiled pass list.
+ *
+ * Why: on WebGPU every camera with 2+ xrViews gets its own FramePassMultiView wrapper, and
+ * playcanvas 2.22.3 compiles each wrapper's children with a fresh render-target map
+ * (frame-graph.js `_compilePasses` ends in `renderTargetMap.clear()`). So the eye camera's
+ * back-buffer pass never learns that the next camera (setLayerRig's display / post cameras, a
+ * page's own overlay camera) LOADS that target: with MSAA (`antialias`) its multisampled colour is
+ * resolved and DISCARDED (store false), and the next pass loads undefined contents and resolves
+ * them over the canvas — the whole tile black, nothing logged. Without MSAA the colour survives but
+ * the depth is discarded the same way. WebGL2 has no wrappers, so the engine's own pass does it.
+ *
+ * @param {Array<object>} renderPasses  frameGraph.renderPasses after compile()
+ * @returns {number} how many store flags were raised
+ */
+export function propagateStoresAcrossCameras(renderPasses) {
+  const flat = [];
+  for (const p of renderPasses || []) {
+    if (p && Array.isArray(p.children)) flat.push(...p.children);
+    else if (p) flat.push(p);
+  }
+  const last = new Map();
+  let raised = 0;
+  for (const pass of flat) {
+    const rt = pass.renderTarget;
+    if (rt === undefined) continue; // a pass with no target (compute, a marker)
+    const prev = last.get(rt);
+    if (prev && prev !== pass) {
+      const ops = pass.colorArrayOps || [];
+      for (let j = 0; j < ops.length; j++) {
+        const po = prev.colorArrayOps?.[j];
+        if (po && !ops[j].clear && !po.store) {
+          po.store = true;
+          raised++;
+        }
+      }
+      const d = pass.depthStencilOps;
+      const pd = prev.depthStencilOps;
+      if (d && pd) {
+        if (!d.clearDepth && !pd.storeDepth) (pd.storeDepth = true), raised++;
+        if (!d.clearStencil && !pd.storeStencil) (pd.storeStencil = true), raised++;
+      }
+    }
+    last.set(rt, pass);
+  }
+  return raised;
+}
+
+/** Install propagateStoresAcrossCameras after the app's FrameGraph.compile (once per graph). */
+export function wrapFrameGraphStores(frameGraph) {
+  if (!frameGraph || frameGraph._dxrStores || typeof frameGraph.compile !== 'function') return false;
+  const compile = frameGraph.compile;
+  frameGraph.compile = function () {
+    const r = compile.apply(this, arguments);
+    propagateStoresAcrossCameras(this.renderPasses);
+    return r;
+  };
+  frameGraph._dxrStores = true;
+  return true;
+}
