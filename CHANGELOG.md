@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.40.0 — 2026-10-10
 
 Touches the **preview tier** (`./call`, `./camera`) only: one new option, off by default. New type
 `PairCursorOptions`; nothing removed, no default changes.
