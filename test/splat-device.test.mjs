@@ -486,3 +486,21 @@ test("wrapGsplatManagerParams: each manager's update (its projector dispatch) se
   assert.equal(mat.parameters.dxrFx_t_amount.data, 1, 'restored');
   assert.equal(mat.parameters.other.data, 7);
 });
+
+test('wrapGsplatManagerParams in the DWELL: no per-side values on any mesh instance → every projector sees the material at rest, untouched', () => {
+  const rest = { dxrFx_transition_amount: { data: 1 } };
+  const mat = { parameters: { ...rest }, writes: 0, setParameter(k, v) { this.writes++; this.parameters[k] = { data: v }; }, deleteParameter(k) { this.writes++; delete this.parameters[k]; } };
+  const seen = [];
+  const m = { renderer: { meshInstance: { parameters: {} } }, update() { seen.push(mat.parameters.dxrFx_transition_amount.data); } };
+  wrapGsplatManagerParams({ camerasMap: new Map([['eye', { layersMap: new Map([[0, { gsplatManager: m }]]) }]]) }, mat);
+  for (let i = 0; i < 3; i++) m.update();
+  assert.deepEqual(seen, [1, 1, 1], 'the rest value (amount 1 = untouched photo) every frame');
+  assert.equal(mat.writes, 0, 'the material is not written at all between transitions');
+  // a transition's side values, then its removal (driveShared.remove deletes them): back to rest
+  m.renderer.meshInstance.parameters.dxrFx_transition_amount = { data: 0.3 };
+  m.update();
+  delete m.renderer.meshInstance.parameters.dxrFx_transition_amount;
+  m.update();
+  assert.deepEqual(seen.slice(3), [0.3, 1]);
+  assert.equal(mat.parameters.dxrFx_transition_amount.data, 1);
+});

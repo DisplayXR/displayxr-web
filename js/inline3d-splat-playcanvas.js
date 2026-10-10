@@ -1789,46 +1789,6 @@ export class PlayCanvasSplatViewer {
   }
 
   /**
-   * WebGPU pre-warm of the overlay. A shader variant request (what prewarmTransition does for
-   * WebGL2's program link) only creates WGSL modules there; the render PIPELINES are built on the
-   * first draw, which would be the transition's first frame. So draw both quads once, at weight 0
-   * — the scale quad multiplies the frame by 1, the add quad adds 0: nothing changes on screen —
-   * and hide them again on the next tick. A 1×1 texture stands in before the first capture.
-   * Returns false when it did nothing (WebGL2, no overlay yet, or a transition is showing it).
-   */
-  prewarmOverlayDraw() {
-    const s = this._snap;
-    if (!this.isWebGPU || !this.app || !s?.parts || s.parts.some((p) => p.mi.visible)) return false;
-    const pc = this.pc;
-    const device = this.app.graphicsDevice;
-    if (!s.tex && !s.warmTex) {
-      s.warmTex = new pc.Texture(device, {
-        name: 'inline3d-snapshot-warm',
-        width: 1,
-        height: 1,
-        format: device.backBufferFormat ?? pc.PIXELFORMAT_RGBA8,
-        mipmaps: false,
-      });
-    }
-    const tex = s.tex || s.warmTex;
-    for (const p of s.parts) {
-      p.mat.setParameter('dxrSnap', tex);
-      p.mat.setParameter('dxrSnapInvSize', [1 / Math.max(1, s.w || 1), 1 / Math.max(1, s.h || 1)]);
-      p.mat.setParameter('dxrSnapAlpha', 0);
-      p.mat.setParameter('dxrSnapWipe', [-2, 0.1, 1]);
-      p.mat.update();
-      p.mi.visible = true;
-    }
-    let ticks = 0;
-    this._hooks.push(() => {
-      if (++ticks < 2) return true; // the tick before the warm frame renders: keep them up
-      if (!(this._snapState?.alpha > 0)) for (const p of s.parts) p.mi.visible = false;
-      return false;
-    });
-    return true;
-  }
-
-  /**
    * Lerp the snapshot over the scene at `alpha` (0 hides it). Returns false when the canvas buffer
    * no longer matches the capture (resize, 2D/3D switch): the caller ends its fade.
    */
@@ -5423,13 +5383,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           if (v) (made.push(v), issued++);
         }
         if (issued) prewarmed.add('overlay');
-        // WebGPU builds pipelines on the first DRAW, not on the variant request: one invisible
-        // draw of the overlay now (prewarmOverlayDraw). The effect-chunk variants above have no
-        // WebGPU twin yet; their first frame builds its pipeline (a one-off hitch, documented).
-        if (viewer.isWebGPU) viewer.prewarmOverlayDraw();
       }
       await finalizeWhenLinked(made.filter(Boolean));
-      if (viewer.isWebGPU) prewarmEffectDraws(plan);
+      if (viewer.isWebGPU) prewarmLiveOffscreen(plan);
     } catch (err) {
       console.info('[inline3d/splat] transition shader pre-warm skipped', err);
     }
@@ -5437,44 +5393,29 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
 
   /**
-   * WebGPU pre-warm of a transition's EFFECT pipelines (panel: the first WebGPU transition had a
-   * one-off ~308 ms frame — its pipelines built on its first frame). On WebGPU a shader request
-   * builds only the WGSL modules; the projector / raster pipelines are built on the first dispatch
-   * or draw. So the tile variant the transition will install is installed for real for two ticks,
-   * with no per-side values — the material's are the untouched baseline (driveShared's progress 1),
-   * so the picture does not change — then removed. Skipped while a transition runs, or when that
-   * tile slot is in use (never replaced).
+   * WebGPU pre-warm, OFFSCREEN only. WebGPU builds render / compute pipelines synchronously on the
+   * first draw or dispatch, and the live outgoing camera draws into its own RGBA8 target — a
+   * different pipeline from the eye's (back-buffer format, MSAA) that nothing builds before the
+   * transition's first frame. So, in the dwell, the photo on screen is pre-sorted onto the live
+   * camera for a few frames (LiveOutgoing.warm: its target is never shown — the overlay stays
+   * hidden) and the warm is dropped again. Nothing is drawn into the presented canvas. The effect
+   * variants themselves are tile-scope (shared by every camera) and cannot be built offscreen: their
+   * first transition frame still builds them (documented).
    */
-  function prewarmEffectDraws(plan) {
-    if (!fx || !current?.entity || pendingSwap || removed || !plan) return;
-    const list = plan.particles
-      ? [[`${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`, [['transition', plan.particles.in.effect, { order: plan.particles.in.opts.order }]]]]
-      : plan.transition === 'wavefront'
-        ? [['wavefront', [['transition', 'wavefront', {}], ['transition-cull', 'wipecull', {}]]]]
-        : plan.sequence
-          ? [plan.sequence.out, plan.sequence.in].map((side) => [`seq:${side.effect}|${side.opts.order ?? ''}`, [['transition', side.effect, EFFECTS[side.effect]?.particle ? { order: side.opts.order } : {}]]])
-          : [];
-    for (const [key, installs] of list) {
-      if (prewarmed.has(`gpu:${key}`)) continue;
-      if (installs.some(([name]) => fx.scopes.get('tile')?.has(name))) continue;
-      const made = [];
-      try {
-        for (const [name, effect, opts] of installs) made.push(plan.sequence ? fx.driveTile(name, effect, opts) : fx.driveShared(name, effect, opts));
-        if (plan.sequence) for (const d of made) d.set(1);
-      } catch (err) {
-        for (const d of made) d.remove();
-        console.info('[inline3d/splat] WebGPU effect pre-warm skipped', key, err);
-        continue;
-      }
-      prewarmed.add(`gpu:${key}`);
-      let ticks = 0;
-      viewer._hooks.push(() => {
-        if (++ticks < 3 && !pendingSwap) return true; // drawn on the frames between
-        for (const d of made) d.remove();
-        return false;
-      });
-      break; // one variant per dwell frame pair is enough; the rest on the next pre-warm
-    }
+  function prewarmLiveOffscreen(plan) {
+    const ent = current?.entity;
+    const wantsLive = plan && (plan.particles || plan.transition === 'crossfade' || plan.transition === 'wavefront');
+    if (!ent || !wantsLive || pendingSwap || removed || prewarmed.has('gpu:live') || !viewer.canLiveOutgoing) return;
+    if (viewer._live?.warming || viewer._live?.active) return;
+    if (!viewer.warmLiveOutgoing(ent)) return;
+    prewarmed.add('gpu:live');
+    let ticks = 0;
+    viewer._hooks.push(() => {
+      if (pendingSwap || viewer._live?.active) return false; // a transition took it over: its warm now
+      if (++ticks < 4) return true;
+      if (viewer._live?.warming && viewer._live.entity === ent) viewer.cancelLiveWarm();
+      return false;
+    });
   }
 
   /**

@@ -283,7 +283,10 @@ export class LiveOutgoing {
     if (mgr === undefined) return this.frames >= 3;
     const w = mgr?.world;
     const st = w?.getState?.(w.lastWorldStateVersion);
-    return !!st?.sortedBefore && this.frames >= 1;
+    // GPU sort (WebGPU) marks a state sorted on its FIRST update, before the camera has drawn a
+    // finished frame (its work buffer, its pipelines): ask for a few drawn frames there, as the
+    // CPU sort's worker round trip gives WebGL2 for free.
+    return !!st?.sortedBefore && this.frames >= (this.viewer.isWebGPU ? 3 : 1);
   }
 
   /** Drop a pre-sort that did not become a live window: the asset back on only its own layers. */
@@ -358,7 +361,10 @@ export class LiveOutgoing {
     if (mgr === undefined) return this.frames >= 3;
     const w = mgr?.world;
     const st = w?.getState?.(w.lastWorldStateVersion);
-    return !!st?.sortedBefore && this.frames >= 1;
+    // GPU sort (WebGPU) marks a state sorted on its FIRST update, before the camera has drawn a
+    // finished frame (its work buffer, its pipelines): ask for a few drawn frames there, as the
+    // CPU sort's worker round trip gives WebGL2 for free.
+    return !!st?.sortedBefore && this.frames >= (this.viewer.isWebGPU ? 3 : 1);
   }
 
   /** The director's manager for (this camera, this layer): null = none yet, undefined = unknown engine. */

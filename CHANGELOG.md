@@ -25,8 +25,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   projector's contribution cull at 0 for WebGL2 parity, and both size culls at 0 during transitions
   and effects; each gsplat manager's projector given its own mesh-instance effect values (setSource's
   render-time transitions keep the WebGL2 look on GPU sort);
-  the snapshot copied in the back buffer's format; a draw-based pre-warm of the overlay and of the
-  transition's effect pipelines; the engine's pass store rule re-run across cameras (without it
+  the snapshot copied in the back buffer's format; an OFFSCREEN pre-warm of the live outgoing camera in the dwell
+  (nothing drawn into the presented canvas); the engine's pass store rule re-run across cameras (without it
   `setLayerRig(…, 'display')` turned an MSAA tile black); the store limited
   by `maxTextureDimension2D`; a warning on device loss. `setVideo` / `makeSbsMaterial` are not
   available on WebGPU yet (GLSL materials).

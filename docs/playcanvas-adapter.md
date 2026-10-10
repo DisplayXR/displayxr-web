@@ -1041,15 +1041,18 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   ([`splat-effects.md` § WGSL twins](splat-effects.md#wgsl-twins-webgpu)).
 - **Snapshot.** setSource's frame snapshot is a texture copy of the back buffer in its own format
   (bgra8unorm on Windows), submitted in the drawing task.
-- **Pre-warm.** WebGPU builds pipelines on the first draw or dispatch, not on the shader
-  request. So the dwell pre-warm (`prepareSource(…, { transition })`, or a non-prepared
-  `setSource`'s own) DRAWS what the transition will use. It draws the overlay quads once at weight
-  0. It also installs the transition's effect variant for real on the photo on screen, at amount 1
-  (the untouched baseline, so the picture does not change), for two ticks: the tile variant the
-  transition installs. Offline (headless Chrome, RTX 3080,
-  `dust`, 1.18M): the first transition's worst frame was 16.9 ms with the pre-warm and 221.6 ms with
-  `?dxrdiag=nowarm`. On the panel, before this pre-warm, it was ~308 ms. A setSource with no
-  pre-warm, or one superseded inside the dwell, still builds them on its first frame.
+- **Pre-warm: offscreen only.** WebGPU builds pipelines synchronously on the first draw or
+  dispatch. In the dwell (`prepareSource(…, { transition })` or a non-prepared `setSource`'s own
+  pre-warm) the photo on screen is pre-sorted onto the live outgoing camera for a few frames. That
+  camera draws into its own target, which is never shown, and the warm is then dropped. This builds
+  the live camera's pipelines (its RGBA8 target is a different pipeline from the eye's back buffer)
+  before the transition. Nothing is drawn into the presented canvas. (An earlier on-canvas pre-warm,
+  which enabled the effect at its rest value and drew the overlay at weight 0, is gone: on the panel
+  the resting photo must not change during the dwell.) The effect variants are tile scope, shared
+  by every camera, and cannot be built offscreen. The first transition of each kind still builds
+  them on its first frame: a one-off hitch, ~308 ms on the panel, 221.6 ms offline. On GPU sort the
+  live window also waits for 3 drawn frames of the live camera (the engine marks its state sorted on
+  the first update, before a finished frame exists).
 - **Cameras after the eye camera.** On WebGPU each camera with 2+ views gets its own
   `FramePassMultiView` wrapper. playcanvas 2.22.3 compiles each wrapper with a fresh render-target
   map, so the eye camera's back-buffer pass never learns that a later camera loads that target.
