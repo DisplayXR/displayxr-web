@@ -5425,11 +5425,56 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         if (viewer.isWebGPU) viewer.prewarmOverlayDraw();
       }
       await finalizeWhenLinked(made.filter(Boolean));
+      if (viewer.isWebGPU) prewarmEffectDraws(plan);
     } catch (err) {
       console.info('[inline3d/splat] transition shader pre-warm skipped', err);
     }
   }
 
+
+  /**
+   * WebGPU pre-warm of a transition's EFFECT pipelines (panel: the first WebGPU transition had a
+   * one-off ~308 ms frame — its pipelines built on its first frame). On WebGPU a shader request
+   * builds only the WGSL modules; the render / compute / work-buffer pipelines are built on the
+   * first draw or dispatch. So the variant the transition will install is installed for real, on
+   * the photo on screen, at amount 1 — every body returns early there, so the picture is the
+   * baseline exactly — drawn for two ticks, then removed. The scope is the one the WebGPU
+   * transition uses: entity (the work-buffer copy) for the particle kinds and the wavefront, tile
+   * (the projector) for a sequence. It costs one work-buffer pass of the current photo, in the
+   * dwell. Skipped while a transition runs or when the page has that effect on (never replaced).
+   */
+  function prewarmEffectDraws(plan) {
+    const ent = current?.entity;
+    if (!fx || !ent || pendingSwap || removed || !plan) return;
+    const list = plan.particles
+      ? [plan.particles.out, plan.particles.in].map((side) => ({ scope: 'entity', effect: side.effect, opts: side.opts }))
+      : plan.transition === 'wavefront'
+        ? [{ scope: 'entity', effect: 'wavefront', opts: { band: plan.band, ridge: plan.ridge, ridgeMaxDisparity: plan.ridgeMaxDisparity } }]
+        : plan.sequence
+          ? [plan.sequence.out, plan.sequence.in].map((side) => ({ scope: 'tile', effect: side.effect, opts: side.opts }))
+          : [];
+    for (const it of list) {
+      const key = `gpu:${it.scope}:${it.effect}|${it.opts?.order ?? ''}`;
+      if (prewarmed.has(key)) continue;
+      const scopeKey = it.scope === 'tile' ? 'tile' : ent;
+      if (fx.scopes.get(scopeKey)?.has(it.scope === 'tile' ? 'transition' : it.effect)) continue;
+      let d = null;
+      try {
+        d = it.scope === 'tile' ? fx.driveTile('transition', it.effect, it.opts || {}) : fx.drive(ent, it.effect, it.opts || {});
+        d.set(1);
+      } catch (err) {
+        console.info('[inline3d/splat] WebGPU effect pre-warm skipped', it.effect, err);
+        continue;
+      }
+      prewarmed.add(key);
+      let ticks = 0;
+      viewer._hooks.push(() => {
+        if (++ticks < 3 && !pendingSwap) return true; // drawn on the frames between
+        d.remove();
+        return false;
+      });
+    }
+  }
 
   /**
    * Creating a program only ISSUES its compile + link; the browser resolves the link when the

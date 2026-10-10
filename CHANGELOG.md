@@ -24,7 +24,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   side-by-side footprint patch at `createShaderModule` (reaches the GPU-sort projector); the
   projector's contribution cull at 0 for WebGL2 parity, and both size culls at 0 during transitions
   and effects; particle transitions and the wavefront through the entity scope on GPU sort;
-  the snapshot copied in the back buffer's format; a draw-based overlay pre-warm; the engine's pass store rule re-run across cameras (without it
+  the snapshot copied in the back buffer's format; a draw-based pre-warm of the overlay and of the
+  transition's effect pipelines; the engine's pass store rule re-run across cameras (without it
   `setLayerRig(…, 'display')` turned an MSAA tile black); the store limited
   by `maxTextureDimension2D`; a warning on device loss. `setVideo` / `makeSbsMaterial` are not
   available on WebGPU yet (GLSL materials).

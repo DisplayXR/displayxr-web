@@ -1003,6 +1003,13 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   slower, with slightly more >20 ms hitches.
 - **Costs:** about 1.2 s more engine init; 2 views only; image parity MAE 0.4/255 against WebGL2
   (eye 1 reuses eye 0's 2D covariance on the GPU-sort projector).
+- **Inside a transition window** (panel, show's Photos, `dust`, 1.18M; before the effect pre-warm
+  above): the transition starts sooner on WebGPU (`setSource` call → first frame 126 → 53 ms,
+  pre-sort 88 → 21 ms) and the steady p95 is identical. But WebGPU drops more frames inside the
+  window: 6.5 % of frames over 25 ms against 0 % on WebGL2, p95 24 vs 17 ms. That depends on the
+  transition. The entity-scope path rewrites each photo's work buffer every frame. The first WebGPU
+  transition also had a one-off ~308 ms frame (pipeline builds), which the pre-warm now moves into
+  the dwell.
 
 **What the adapter does differently on WebGPU** (everything else is the WebGL2 path):
 
@@ -1030,10 +1037,16 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   ([`splat-effects.md` § WGSL twins](splat-effects.md#wgsl-twins-webgpu)).
 - **Snapshot.** setSource's frame snapshot is a texture copy of the back buffer in its own format
   (bgra8unorm on Windows), submitted in the drawing task.
-- **Pre-warm.** WebGPU builds render pipelines on the first draw, not on the shader request. The
-  dwell pre-warm therefore draws the overlay quads once at weight 0 (no change on screen). Effect
-  chunk variants are compiled ahead as WGSL modules, but their pipelines are still built on the
-  transition's first frame: expect a one-off hitch on the first transition of each kind.
+- **Pre-warm.** WebGPU builds pipelines on the first draw or dispatch, not on the shader
+  request. So the dwell pre-warm (`prepareSource(…, { transition })`, or a non-prepared
+  `setSource`'s own) DRAWS what the transition will use. It draws the overlay quads once at weight
+  0. It also installs the transition's effect variant for real on the photo on screen, at amount 1
+  (every body returns early there, so the picture is the baseline), for two ticks, in the scope the
+  WebGPU transition uses: entity for the particle kinds and the wavefront, tile for a sequence. That
+  costs one work-buffer pass of the current photo, in the dwell. Offline (headless Chrome, RTX 3080,
+  `dust`, 1.18M): the first transition's worst frame was 16.9 ms with the pre-warm and 221.6 ms with
+  `?dxrdiag=nowarm`. On the panel, before this pre-warm, it was ~308 ms. A setSource with no
+  pre-warm, or one superseded inside the dwell, still builds them on its first frame.
 - **Cameras after the eye camera.** On WebGPU each camera with 2+ views gets its own
   `FramePassMultiView` wrapper. playcanvas 2.22.3 compiles each wrapper with a fresh render-target
   map, so the eye camera's back-buffer pass never learns that a later camera loads that target.
