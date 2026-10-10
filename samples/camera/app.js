@@ -75,7 +75,7 @@ say(
   inline3DAvailable() ? 'woven' : 'flat'
 );
 
-const view = addCameraView(wall, /** @type {HTMLCanvasElement} */ (document.getElementById('self')), cam, { mirror: true, autoConverge: true });
+const view = addCameraView(wall, /** @type {HTMLCanvasElement} */ (document.getElementById('self')), cam, { mirror: true, autoConverge: true, cursor: q.get('cursor') === '0' ? undefined : 'depth' });
 $('mirror').addEventListener('change', () => view.setMirror($('mirror').checked));
 $('converge').addEventListener('change', () => view.setAutoConverge($('converge').checked));
 $('depth').addEventListener('input', () => view.setDepth($('depth').valueAsNumber));

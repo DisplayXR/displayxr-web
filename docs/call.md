@@ -97,6 +97,7 @@ the element connects**, or you use `mountCall` directly.
 | `ui="tiles"` | `ui: 'tiles'` | badges and plates only — your bar, the module's per-tile chrome |
 | `auto-join` | `autoJoin` | boolean attribute: skip the lobby |
 | `mono3d` | `mono3D` | `off` to keep 2D callers 2D; default `auto` |
+| `cursor` | `cursor` | `depth`: a depth cursor over the 3D tiles (see [Options](#options)) |
 
 ```html
 <dxr-call accent="violet" layout="speaker" max-peers="3"></dxr-call>
@@ -139,6 +140,7 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `format` | `'mono'` | The format of a page-supplied `MediaStream` (`'sbs'` or `'mono'`). 3D-ness is never guessed from a stream |
 | `audio` | `true` | Microphone, with echo cancellation and noise suppression |
 | `autoConverge` | `true` | Measure the disparity of the point between a stereo peer's eyes and put that person at the display plane. No calibration needed. Also governs your own stereo self view |
+| `cursor` | off | `'depth'` (or `{ height, pointerScope }`): over a 3D tile — a stereo peer or your stereo self view — a crosshair just in front of the person under the pointer replaces the CSS cursor, instead of the flat cursor drawn on the glass behind them (runtime ADR-046). The depth is measured off the tile's two halves, so nothing extra is sent or computed until the pointer is over a 3D tile. Lifted (2D→3D) and flat tiles keep the normal cursor |
 | `mono3D` | `'auto'` | Lift 2D peers to 3D: `'auto'` · `'off'` · a `lift` function (see [`/call/full`](#callfull-vs-call--lift--which-import)) |
 | `liftOptions` | — | Extra `lift()` options, e.g. `{ models }` for where the depth model is served from, plus `max` (default 4): concurrent lifted tiles; further 2D peers stay flat |
 | `maxPeers` | `4` | Participants including you, clamped to 2–4 (full mesh) |

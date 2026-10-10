@@ -97,6 +97,7 @@ interface CallOptions
   CallOptions.autoConverge?: autoConverge?:boolean
   CallOptions.autoJoin?: autoJoin?:boolean
   CallOptions.camera?: camera?:'auto'|'stereo'|'mono'|(string &{})|MediaStream|StereoCamera
+  CallOptions.cursor?: cursor?:'depth'|PairCursorOptions
   CallOptions.debug?: debug?:boolean
   CallOptions.format?: format?:CallFormat
   CallOptions.iceServers?: iceServers?:RTCIceServer[]

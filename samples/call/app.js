@@ -76,6 +76,9 @@ const call = await addCall(wall, document.getElementById('call'), {
   layout: q.get('layout') === 'speaker' ? 'speaker' : 'grid',
   theme: q.get('accent') ? { accent: q.get('accent') } : undefined,
   autoJoin: q.get('autojoin') === '1',
+  // A depth cursor over the 3D tiles (runtime ADR-046): it rises to the person under it instead of
+  // being drawn on the glass behind them. ?cursor=0 keeps the plain cursor.
+  cursor: q.get('cursor') === '0' ? undefined : 'depth',
   // Mono participants are lifted to 3D through @displayxr/inline3d/lift when this copy of the SDK
   // has it (and a native provider or WebGPU is there); otherwise they stay 2D. ?lift=0 turns it
   // off; ?models=<base url> serves the depth model from your own host.

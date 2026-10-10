@@ -39,6 +39,7 @@ import { openCamera as openDevice } from './camera/capture.js';
 import { eyeCropRect, eyeOutputSize, mirrorSwapOps } from './camera/geometry.js';
 import { createConvergence } from './camera/converge.js';
 import { lumaFromRgba, createDisparityTrack, createFocusTracker } from './camera/disparity.js';
+import { resolvePairCursorOption } from './inline3d-cursor-option.js';
 import { buildStereoXmp, jpegWithXmp, webmWithTags, stereoTagEntries, readJpegStereoMeta, readWebmStereoMeta, parseStereoXmp, readJpegXmp } from './camera/metadata.js';
 
 export { readJpegStereoMeta, readWebmStereoMeta, parseStereoXmp, readJpegXmp };
@@ -50,6 +51,8 @@ export const CAMERA_SDK = 'inline3d-camera/1';
 // on a face, a few ms per measurement — the same numbers as the call's remote tiles).
 const AUTO_CONV_INTERVAL_MS = 200;
 const AUTO_CONV_EYE_WIDTH = 240;
+/** While a depth cursor hovers the view, the source is copied this often (it is what the cursor measures). */
+const CURSOR_SAMPLE_MS = 66;
 const FRAME_WAIT_MS = 4000;
 // A self view whose layer the wall could not build (`firstWoven` → `woven:false, 'layer-failed'`)
 // goes flat and re-registers a few times with backoff — the remote tile's rule (web#131).
@@ -521,7 +524,17 @@ class CameraView {
     this._track = createDisparityTrack();
     this._focus = createFocusTracker();
     this._scratch = null;
+    this._luma = null; // the latest grayscale source copy (auto-convergence and the depth cursor read it)
     this.disparityPx = null;
+    // `cursor: 'depth'` (ADR-046 on a pair): validated now, its module loaded only on opt-in.
+    this._cursorOpt = resolvePairCursorOption(o.cursor, '@displayxr/inline3d/camera');
+    /** The depth cursor once its module has loaded; null without `cursor: 'depth'`. */
+    this.cursor = null;
+    if (this._cursorOpt) {
+      import('./camera/pair-cursor.js').then((m) => {
+        if (!this.removed) this.cursor = new m.PairCursor(this.canvas, this._cursorOpt);
+      });
+    }
     this._reroute(false);
     if (this._loop) this._start();
   }
@@ -691,6 +704,7 @@ class CameraView {
   }
 
   _paintFlat(v) {
+    this.cursor?.idle(); // a flat picture has no depth to put a cursor at
     if (!sizeFlat(this.canvas)) return;
     const W = v.videoWidth;
     const H = v.videoHeight;
@@ -726,7 +740,8 @@ class CameraView {
       c.width = 2 * outW;
       c.height = outH;
     }
-    if (this.autoConverge) this._sample(v);
+    const hover = !!(this.cursor && this.cursor.hovering);
+    if (this.autoConverge || hover) this._sample(v, hover);
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
     if (this.mirror) {
@@ -746,15 +761,24 @@ class CameraView {
         g.drawImage(v, eye * eyeW + r.sx, r.sy, r.sw, r.sh, eye * outW, 0, outW, outH);
       }
     }
+    if (this.cursor) {
+      const geo = { rL: eyeCropRect(eyeW, H, A, shift, 0), rR: eyeCropRect(eyeW, H, A, shift, 1), outW, outH, mirror: this.mirror };
+      this.cursor.draw(g, this._luma, geo, performance.now() / 1000);
+    }
   }
 
-  /** Auto-convergence: ~5 Hz, a small grayscale copy of the SOURCE frame (before our shift). */
-  _sample(v) {
+  /**
+   * A small grayscale copy of the SOURCE frame (before our shift): ~5 Hz for auto-convergence,
+   * ~15 Hz while a depth cursor hovers (it measures the same copy under the pointer).
+   */
+  _sample(v, hover = false) {
     const now = performance.now();
-    if (now - this._autoAt < AUTO_CONV_INTERVAL_MS) return;
+    if (now - this._autoAt < (hover ? CURSOR_SAMPLE_MS : AUTO_CONV_INTERVAL_MS)) return;
     this._autoAt = now;
     this._scratch = this._scratch || document.createElement('canvas');
     const g = grabLuma(v, this._scratch);
+    if (g) this._luma = g;
+    if (!this.autoConverge) return;
     const m = g ? this._focus.measure(g.img, g.w, g.h, now) : null;
     const d = this._track.push(m ? m.d / g.scale : null);
     this.conv.measuredPx = d;
@@ -770,6 +794,8 @@ class CameraView {
     clearTimeout(this._layerTimer);
     this._layerTimer = 0;
     this._unregister();
+    this.cursor?.dispose();
+    this.cursor = null;
     this.cam._views?.delete(this);
   }
 }

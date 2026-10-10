@@ -117,6 +117,8 @@ const LIFT_RETRIES = 2;
 // disparity on a face; small enough to stay a few ms per measurement).
 const AUTO_CONV_INTERVAL_MS = 200;
 const AUTO_CONV_EYE_WIDTH = 240;
+// While a depth cursor hovers a stereo tile, its source is copied this often (the cursor measures it).
+const CURSOR_SAMPLE_MS = 66;
 // WebCodecs pixel formats whose plane 0 is luma (Y): read directly, no colour conversion.
 const Y_PLANE_FORMATS = new Set(['I420', 'I420A', 'I422', 'I444', 'NV12']);
 /**
@@ -1306,6 +1308,7 @@ class Tile {
     // Bumped on every stream change and on destroy(): an async copyTo() that resolves after either
     // belongs to a stream this tile no longer shows, and is dropped (review of #92).
     this.autoGen = 0;
+    this.luma = null; // the latest grayscale source copy: auto-convergence and the depth cursor read it
     this.destroyed = false;
     this.conv.depth = call.depth;
     this.hintGate = rateGate(HINT_MAX_HZ);
@@ -1337,6 +1340,14 @@ class Tile {
     }
     call.ui.grid.appendChild(this.el);
     this._renderBadge();
+    /** The depth cursor (`cursor: 'depth'`) once its module has loaded; null otherwise. */
+    this.cursor = null;
+    if (call.o.cursor) {
+      call._pairCursorMod = call._pairCursorMod || import('./camera/pair-cursor.js');
+      call._pairCursorMod.then((m) => {
+        if (!this.destroyed) this.cursor = new m.PairCursor(this.canvas, call.o.cursor);
+      });
+    }
   }
 
   /** How this side shows the participant: `3D` (woven pair) | `2D→3D` (lifted) | `2D` (flat). */
@@ -1366,6 +1377,8 @@ class Tile {
       hello: this.hello,
       quality: this.quality,
       convergencePx: this.conv.current,
+      // The depth cursor's last placement (output px, + = in front of the glass), null when not drawn.
+      cursor: this.cursor ? this.cursor.last : null,
       // Auto-convergence: the measured disparity (source px, null until a lock) and the mean cost of
       // one measurement including the frame readback.
       autoConverge: {
@@ -1672,6 +1685,7 @@ class Tile {
 
   paint() {
     if (!this.route) return;
+    if (this.route !== 'woven-sbs') this.cursor?.idle(); // only a woven pair has depth to measure
     if (this.route === 'woven-sbs') this._paintConv();
     else if (this.route === 'lifted') {
       if (!this.liftLive) paintFlat(this.canvas, this.video); // flat until lift is showing
@@ -1692,13 +1706,16 @@ class Tile {
       c.width = 2 * outW;
       c.height = outH;
     }
-    if (this.call.o.autoConverge) this._sampleDisparity(v, W, H);
+    const hover = !!(this.cursor && this.cursor.hovering);
+    if (this.call.o.autoConverge || hover) this._sampleDisparity(v, W, H, hover);
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
+    const rects = [];
     for (const eye of [0, 1]) {
-      const r = wire.eyeCropRect(eyeW, H, A, shift, eye);
+      const r = (rects[eye] = wire.eyeCropRect(eyeW, H, A, shift, eye));
       g.drawImage(v, eye * eyeW + r.sx, r.sy, r.sw, r.sh, eye * outW, 0, outW, outH);
     }
+    if (this.cursor) this.cursor.draw(g, this.luma, { rL: rects[0], rR: rects[1], outW, outH }, performance.now() / 1000);
   }
 
   /**
@@ -1707,9 +1724,10 @@ class Tile {
    * feedback loop) and hand it to the convergence state, which halves it per eye and low-passes it.
    * A failed measurement holds the last good value.
    */
-  _sampleDisparity(v, W, H) {
+  _sampleDisparity(v, W, H, hover = false) {
     const now = performance.now();
-    if (this.autoPending || now - this.autoAt < AUTO_CONV_INTERVAL_MS) return;
+    // ~15 Hz while a depth cursor hovers: it measures the same copy, under the pointer.
+    if (this.autoPending || now - this.autoAt < (hover ? CURSOR_SAMPLE_MS : AUTO_CONV_INTERVAL_MS)) return;
     this.autoAt = now;
     // Preferred: WebCodecs. `new VideoFrame(video)` + an ASYNC copyTo() of the decoded frame, reading
     // the luma (Y) plane directly: no synchronous GPU->CPU canvas readback on the paint path (that
@@ -1775,6 +1793,8 @@ class Tile {
    */
   _applyMeasurement(img, w, h, s, at, readMs, via) {
     if (this.destroyed) return;
+    if (img) this.luma = { img, w, h, scale: s };
+    if (!this.call.o.autoConverge) return; // the copy was for the depth cursor only
     const t = performance.now();
     const m = img ? this.autoFocus.measure(img, w, h, at) : null;
     const d = this.autoTrack.push(m ? m.d / s : null);
@@ -1800,6 +1820,7 @@ class Tile {
 
   _resetAutoConverge() {
     this.autoGen++;
+    this.luma = null;
     this.autoTrack.reset();
     this.autoFocus.reset();
     this.conv.measuredPx = null;
@@ -1809,6 +1830,8 @@ class Tile {
   destroy() {
     this.destroyed = true;
     this.autoGen++;
+    this.cursor?.dispose();
+    this.cursor = null;
     clearTimeout(this.helloTimer);
     clearTimeout(this.layerTimer);
     clearTimeout(this.leaveTimer);
@@ -1874,6 +1897,7 @@ class SelfTile {
       this.view = addCameraView(wall, this.canvas, cam, {
         mirror: true,
         autoConverge: !!this.call.o.autoConverge, // the call option (default on) governs the self view too
+        cursor: this.call.o.cursor || undefined, // and so does `cursor: 'depth'`
         aspect: this.call.o.tileAspect,
         onRouteChange: (route, st) => {
           if (this.cam !== cam) return; // a view this tile already replaced

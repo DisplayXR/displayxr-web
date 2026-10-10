@@ -5,6 +5,31 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./call`, `./camera`) only: one new option, off by default. New type
+`PairCursorOptions`; nothing removed, no default changes.
+
+### `./call` + `./camera` — a depth cursor on stereo tiles (`cursor: 'depth'`)
+
+- The scene cursor of 1.36.0 (runtime ADR-046) comes to the call and the camera view. Over a 3D
+  tile — a stereo peer, or your own stereo self view — a crosshair just in front of the person
+  under the pointer replaces the CSS cursor. Before, the flat cursor sat on the glass, drawn over a
+  face whose disparity says it is in front: the depth violation ADR-046 is about.
+- A pair has no scene and no depth buffer, so the depth is **measured**: the cursor's footprint is
+  block-matched between the two halves of the tile's own frames (the same matcher auto-convergence
+  uses), the nearest confident match wins, and the crosshair is drawn into both halves with that
+  disparity plus a small margin. Nothing matched → the display plane. Same fast-rise / slow-sink
+  filter as the scene cursor. A mirrored self view flips the pointer, never the disparity.
+- Zero cost when off: the option is validated at the call, and the cursor module is a dynamic
+  import made only on opt-in. When on, it costs nothing until the pointer is over a woven tile,
+  then a ~15 Hz grayscale copy of that tile's source (it shares the auto-convergence copy) and a
+  9-block match when the pointer or the copy changes.
+- `addCall(…, { cursor: 'depth' })`, `<dxr-call cursor="depth">`, `addCameraView(…, { cursor:
+  'depth' })`; `{ height, pointerScope }` tune it (`margin` / `anchor` are scene-only and refused).
+  Lifted (2D→3D) and flat tiles keep the normal cursor. `diagnostics().peers[i].cursor` reads the
+  last placement. The `call`, `call-embed` and `camera` samples turn it on (`?cursor=0` turns it off).
+
 ## 1.39.0 — 2026-10-09
 
 Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
