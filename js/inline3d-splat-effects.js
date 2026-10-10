@@ -28,6 +28,8 @@
 //
 // Adding an effect = one GLSL body + one registry entry in EFFECTS below: `glsl(P, opts)` defines
 // `P##center`, `P##rs`, `P##color`, and `uniforms(ctx, inst, amount)` returns the values.
+// Plus its WGSL twin (WGSL_BODIES in ./inline3d-splat-effects-wgsl.js, same uniforms): on a
+// WebGPU device the engine compiles only WGSL chunks, and the runner composes from the twins.
 //
 // ── The stereo rule ───────────────────────────────────────────────────────────────────────────
 //
@@ -45,6 +47,16 @@
 // order; a custom effect that moves splats far will blend slightly out of order while in flight.
 
 import { coverageExponent, FADE_TRANSMITTANCE_FLOOR } from './inline3d-splat-shared.js';
+import {
+  WGSL_BODIES,
+  customWgsl,
+  composeWgsl,
+  SCREEN_SPACE_WGSL,
+  patchGsplatFootprintWgsl,
+  patchQuadExtentWgsl,
+  OVERLAY_WGSL,
+} from './inline3d-splat-effects-wgsl.js';
+import { patchPlayCanvasQuadExtent } from './inline3d-splat-perf.js';
 
 /** The fixed composition order of a generated chunk. */
 export const STAGE_ORDER = Object.freeze(['grade', 'clip', 'reveal', 'pulse', 'custom', 'envelope', 'cull']);
@@ -1354,20 +1366,24 @@ export function customGlsl(P, glsl) {
 }
 
 function validateCustom(o) {
-  if (typeof o.glsl !== 'string' || !o.glsl.trim()) {
+  const hasWgsl = typeof o.wgsl === 'string' && !!o.wgsl.trim();
+  if ((typeof o.glsl !== 'string' || !o.glsl.trim()) && (o.glsl !== undefined || !hasWgsl)) {
     throw new TypeError("@displayxr/inline3d/splat: the custom effect needs { glsl: '…' } — engine-shaped modifySplatCenter / modifySplatRotationScale / modifySplatColor bodies (docs/splat-effects.md §custom).");
   }
-  for (const [k, s] of [['glsl', o.glsl], ['fragmentGlsl', o.fragmentGlsl]]) {
+  for (const [k, s] of [['glsl', o.glsl], ['fragmentGlsl', o.fragmentGlsl], ['wgsl', o.wgsl], ['fragmentWgsl', o.fragmentWgsl]]) {
     if (s !== undefined && typeof s !== 'string') throw new TypeError(`@displayxr/inline3d/splat: custom ${k} must be a string.`);
-    if (typeof s === 'string' && SCREEN_SPACE.test(s)) {
+    const m = typeof s === 'string' ? s.match(SCREEN_SPACE) || (/wgsl/i.test(k) ? s.match(SCREEN_SPACE_WGSL) : null) : null;
+    if (m) {
       throw new Error(
-        `@displayxr/inline3d/splat: custom ${k} reads a screen-space input (${s.match(SCREEN_SPACE)[1]}). Effects are keyed on ` +
+        `@displayxr/inline3d/splat: custom ${k} reads a screen-space input (${m[1] || m[0]}). Effects are keyed on ` +
           'world position and time only — a screen-keyed decision differs between the two eyes of a woven tile.',
       );
     }
   }
-  if (o.fragmentGlsl !== undefined && o.scope === 'entity') {
-    throw new Error("@displayxr/inline3d/splat: custom fragmentGlsl is tile scope only (the work buffer has no fragment stage).");
+  for (const k of ['fragmentGlsl', 'fragmentWgsl']) {
+    if (o[k] !== undefined && o.scope === 'entity') {
+      throw new Error(`@displayxr/inline3d/splat: custom ${k} is tile scope only (the work buffer has no fragment stage).`);
+    }
   }
   if (o.uniforms !== undefined) {
     if (!o.uniforms || typeof o.uniforms !== 'object') throw new TypeError('@displayxr/inline3d/splat: custom uniforms must be an object.');
@@ -1452,15 +1468,75 @@ const slug = (name) => name.replace(/[^A-Za-z0-9]/g, '_');
 /** Uniform prefix of an effect instance. */
 export const prefixOf = (name) => `dxrFx_${slug(name)}_`;
 
+/** One instance's WGSL body (throws for a custom effect that brought GLSL only). */
+function wgslBodyOf(inst) {
+  const P = prefixOf(inst.name);
+  if (isCustom(inst.name)) {
+    if (typeof inst.opts.wgsl !== 'string' || !inst.opts.wgsl.trim()) throw customNeedsWgsl(inst.name);
+    return customWgsl(P, inst.opts.wgsl);
+  }
+  // driveTile / driveShared name an instance after its role ('transition'), not its effect
+  const body = WGSL_BODIES[EFFECTS[inst.name] === inst.def ? inst.name : effectNameOf(inst.def)];
+  if (!body) throw new Error(`@displayxr/inline3d/splat: effect '${inst.name}' has no WGSL twin.`);
+  return body(P, inst.opts);
+}
+
+/** The registry name of a definition. */
+function effectNameOf(def) {
+  for (const [n, d] of Object.entries(EFFECTS)) if (d === def) return n;
+  return null;
+}
+
+const customNeedsWgsl = (name) =>
+  new Error(
+    `@displayxr/inline3d/splat: '${name}' brought GLSL only, and this tile's engine runs on WebGPU (WGSL). ` +
+      "Pass the engine-shaped bodies as { wgsl: '…' } too (docs/splat-effects.md §WGSL twins).",
+  );
+
+/**
+ * The shader pieces of one shading language, keyed by the engine chunk each one feeds:
+ *   gsplatModifyVS(instances)  → the generated modifier (tile: the material's chunk; entity:
+ *                                setWorkBufferModifier({ [language]: code }))
+ *   gsplatModifyPS(src)        → a custom effect's fragment body, as given
+ *   gsplatCornerVS(src)        → the footprint patch of the engine's chunk ({ src, ok }); null for
+ *                                'glsl' (the adapter keeps its own patchGsplatFootprint)
+ *   gsplatCommonVS(src, k)     → perf.maxStdDev's quad-extent patch ({ src, ok })
+ *   gsplatHybridVS(src, k)     → the same on WebGPU's GPU-sort raster chunk (wgsl only)
+ * plus `overlay` (wgsl: the snapshot-overlay and edge-feather ShaderMaterial sources; glsl: null,
+ * the adapter's inline GLSL) and `bodies` (effect name → (P, opts) => body). The adapter does
+ * `chunks.set(name, …)` on `ShaderChunks.get(device, language)` for whichever the device speaks.
+ */
+export function getEffectChunks(language = 'glsl') {
+  const wgsl = language === 'wgsl';
+  const bodies = {};
+  for (const [n, d] of Object.entries(EFFECTS)) bodies[n] = wgsl ? WGSL_BODIES[n] : d.glsl;
+  return Object.freeze({
+    language: wgsl ? 'wgsl' : 'glsl',
+    chunks: Object.freeze({
+      gsplatModifyVS: (instances) => composeModifier(instances, wgsl ? 'wgsl' : 'glsl').code,
+      gsplatModifyPS: (src) => src,
+      gsplatCornerVS: wgsl ? patchGsplatFootprintWgsl : null,
+      gsplatCommonVS: wgsl ? patchQuadExtentWgsl : patchPlayCanvasQuadExtent,
+      gsplatHybridVS: wgsl ? patchQuadExtentWgsl : null,
+    }),
+    overlay: wgsl ? OVERLAY_WGSL : null,
+    bodies: Object.freeze(bodies),
+  });
+}
+
 /**
  * THE generated modifier: `instances` = [{ name, def, opts }] of one scope, emitted in
  * STAGE_ORDER (ties keep insertion order). Pure — test/splat-effects.test.mjs pins it.
  */
-export function composeModifier(instances) {
+export function composeModifier(instances, language = 'glsl') {
   const list = instances
     .map((inst, i) => ({ inst, i, s: STAGE_ORDER.indexOf(inst.def.stage) }))
     .sort((a, b) => a.s - b.s || a.i - b.i)
     .map((x) => x.inst);
+  if (language === 'wgsl') {
+    const parts = list.map((inst) => ({ name: inst.name, stage: inst.def.stage, P: prefixOf(inst.name), body: wgslBodyOf(inst) }));
+    return { code: composeWgsl(parts), order: list.map((i) => i.name) };
+  }
   let code = '// generated by @displayxr/inline3d/splat (splat effects)\n' + PRELUDE;
   const calls = { center: [], rs: [], color: [] };
   for (const inst of list) {
@@ -1562,6 +1638,7 @@ export class SplatEffects {
    */
   play(name, opts = {}, { gate = null, entity = null, internal = false } = {}) {
     const o = resolveEffectOptions(name, opts, 'play', { internal });
+    this._checkLanguage(name, o);
     if (entity) o.entity = entity;
     const key = this._target(o);
     const inst = this._makeInstance(name, o, 'play');
@@ -1590,6 +1667,7 @@ export class SplatEffects {
       return;
     }
     const o = resolveEffectOptions(name, params, 'set');
+    this._checkLanguage(name, o);
     if (entity) o.entity = entity;
     const key = this._target(o);
     const inst = this._makeInstance(name, o, 'set');
@@ -1792,19 +1870,37 @@ export class SplatEffects {
    * The tile chunk driveShared(name, effect, opts) WOULD install, without installing it — what
    * setSource's shader pre-warm compiles ahead of the transition.
    */
-  sharedChunkCode(name, effect, opts) {
-    return this.sharedChunkCodeFor([[name, effect, opts]]);
+  sharedChunkCode(name, effect, opts, language = 'glsl') {
+    return this.sharedChunkCodeFor([[name, effect, opts]], language);
   }
 
   /** sharedChunkCode for several driveShared bodies at once: [[name, effect, opts], …]. */
-  sharedChunkCodeFor(list) {
+  sharedChunkCodeFor(list, language = 'glsl') {
     const names = new Set(list.map((x) => x[0]));
     const insts = [...(this.scopes.get('tile')?.values() ?? [])].filter((i) => !names.has(i.name));
     for (const [name, effect, opts] of list) {
       const o = resolveEffectOptions(effect, { ...opts, scope: 'tile', direction: 'in', progress: 1 }, 'set', { internal: true });
       insts.push({ name, def: EFFECTS[effect], opts: o });
     }
-    return composeModifier(insts).code;
+    return composeModifier(insts, language).code;
+  }
+
+  /** 'wgsl' when the tile's device is WebGPU (the engine then compiles only WGSL chunks), else 'glsl'. */
+  _language() {
+    const forced = this.ctx.language?.();
+    if (forced === 'wgsl' || forced === 'glsl') return forced;
+    return this.ctx.app?.()?.graphicsDevice?.isWebGPU ? 'wgsl' : 'glsl';
+  }
+
+  /** Refuse (at the call) a custom effect with no body in the device's language. */
+  _checkLanguage(name, o) {
+    if (!isCustom(name)) return;
+    const lang = this._language();
+    const has = (s) => typeof s === 'string' && !!s.trim();
+    if (lang === 'wgsl' && !has(o.wgsl)) throw customNeedsWgsl(name);
+    if (lang === 'glsl' && !has(o.glsl)) {
+      throw new Error(`@displayxr/inline3d/splat: '${name}' brought WGSL only, and this tile's engine runs on WebGL (GLSL). Pass { glsl: '…' } too.`);
+    }
   }
 
   _setupInstance(inst) {
@@ -1969,8 +2065,10 @@ export class SplatEffects {
   _install(key) {
     const m = this.scopes.get(key);
     const insts = m ? [...m.values()] : [];
-    const composed = insts.length ? composeModifier(insts) : null;
-    const fragment = key === 'tile' ? insts.find((i) => i.opts.fragmentGlsl)?.opts.fragmentGlsl ?? null : null;
+    const lang = this._language();
+    const composed = insts.length ? composeModifier(insts, lang) : null;
+    const fragKey = lang === 'wgsl' ? 'fragmentWgsl' : 'fragmentGlsl';
+    const fragment = key === 'tile' ? insts.find((i) => i.opts[fragKey])?.opts[fragKey] ?? null : null;
     const sig = composed ? composed.code + (fragment || '') : '';
     if ((this._installed.get(key) ?? '') === sig) return;
     this._installed.set(key, sig);
@@ -1978,7 +2076,7 @@ export class SplatEffects {
     if (key === 'tile') {
       const mat = this._tileMaterial();
       if (!mat) return;
-      const chunks = mat.getShaderChunks(pc.SHADERLANGUAGE_GLSL);
+      const chunks = mat.getShaderChunks(lang === 'wgsl' ? (pc.SHADERLANGUAGE_WGSL ?? 'wgsl') : pc.SHADERLANGUAGE_GLSL);
       if (composed) chunks.set('gsplatModifyVS', composed.code);
       else chunks.delete('gsplatModifyVS');
       if (fragment) chunks.set('gsplatModifyPS', fragment);
@@ -1991,7 +2089,7 @@ export class SplatEffects {
     const g = key.gsplat;
     if (!g) return;
     if (composed) {
-      g.setWorkBufferModifier?.({ glsl: composed.code });
+      g.setWorkBufferModifier?.(lang === 'wgsl' ? { wgsl: composed.code } : { glsl: composed.code });
       if ('workBufferUpdate' in g) g.workBufferUpdate = pc.WORKBUFFER_UPDATE_ALWAYS ?? 2;
     } else {
       g.setWorkBufferModifier?.(null);

@@ -5,6 +5,58 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### `device`: opt-in WebGPU for PlayCanvas splat tiles (`./splat`, `engine: 'playcanvas'`, preview tier, additive)
+
+- **`addSplat(…, { engine: 'playcanvas', device })`**, `'webgl2'` (the default: unchanged, byte for
+  byte, no new console line), `'webgpu'` or `'auto'` (WebGPU on Windows in the DisplayXR Browser,
+  WebGL2 elsewhere). A bad value throws at the call; Spark ignores it.
+- **The SDK decides and falls back to WebGL2** with the same handle when there is no
+  `navigator.gpu` / adapter, the tile does not render exactly 2 views (the display's active mode, else
+  the session's first stereo view list; 1-view mono-fallback lists do not count), an option is GLSL-only
+  (`cursor: 'depth'`, `playcanvasViewPath: 'cameras'`), or the engine's WebGPU boot fails. It never
+  lets the engine pick: the request is `['webgpu']` only, and the result is checked.
+- **New handle members:** `device` (`'webgl2' | 'webgpu'`, null until booted) and `deviceInfo`
+  (`{ requested, device, reason, adapter }`), plus one `console.info` boot line when the option is
+  given. New type `SplatDeviceInfo`.
+- **The WebGPU path:** eye projections converted to WebGPU clip depth on every RenderView; the
+  side-by-side footprint patch at `createShaderModule` (reaches the GPU-sort projector); the
+  projector's contribution cull at 0 for WebGL2 parity, and both size culls at 0 during transitions
+  and effects; each gsplat manager's projector given its own mesh-instance effect values (setSource's
+  render-time transitions keep the WebGL2 look on GPU sort);
+  the snapshot copied in the back buffer's format; an OFFSCREEN pre-warm of the live outgoing camera in the dwell
+  (nothing drawn into the presented canvas); the engine's pass store rule re-run across cameras (without it
+  `setLayerRig(…, 'display')` turned an MSAA tile black); the store limited
+  by `maxTextureDimension2D`; a warning on device loss. `setVideo` / `makeSbsMaterial` are not
+  available on WebGPU yet (GLSL materials).
+- **When it helps:** camera rotation (orbit, idle spin, a crossfade's new photo): the GPU sort removes
+  the WebGL2 worker-sort lag (panel: JS p95 15.5 → 3.3 ms). **When it does not:** head-tracked
+  look-around (WebGL2 skips the sort there; WebGPU is 5–7 % slower at 2.36M splats). ~1.2 s more
+  init. [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md) § WebGPU (opt-in).
+- `samples/splat/?gpu=webgpu|webgl2|auto`. PlayCanvas stays at 2.22.3.
+
+### Splat effects on WebGPU: WGSL twins (`./splat`, `engine: 'playcanvas'`, preview tier, additive)
+
+- **Every splat effect has a WGSL twin**, in the new internal module
+  `js/inline3d-splat-effects-wgsl.js`: the reveals, `pulse`, `grade`, `clip`, setSource's `xfade`,
+  `wavefront` and `wipecull`, the particle reveals in every `order`, and the depth envelope. Each
+  twin has the same uniforms and the same math as its GLSL.
+- **The runner follows the device.** On a PlayCanvas WebGPU device, tile effects go to the WGSL
+  chunk set and entity effects to `setWorkBufferModifier({ wgsl })`. On WebGL the output is byte
+  for byte what it was.
+- **Custom effects take `wgsl` / `fragmentWgsl`** next to `glsl`. `glsl` is now optional, but a
+  call with no body in the device's language is refused.
+- **New for the adapter:** `getEffectChunks(language)`, `composeModifier(instances, language)` and
+  `sharedChunkCode(…, language)`. The module also has WGSL twins of the footprint and quad-extent
+  chunk patches and of the snapshot-overlay and edge-feather ShaderMaterials.
+- **Validation:** naga (`naga-wasm`, a new devDependency) in `npm test`, in vertex, fragment and
+  compute stages. A real-WebGPU e2e: `npm run test:e2e:wgsl`.
+- **Two engine differences on WebGPU's default GPU-sort renderer**, documented in
+  [`docs/splat-effects.md`](docs/splat-effects.md) §WGSL twins:
+  - per-mesh-instance values (`driveShared`) never reach the compute projector;
+  - the projector's size culls hide in-flight particle dots.
+
 ## 1.39.0 — 2026-10-09
 
 Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and

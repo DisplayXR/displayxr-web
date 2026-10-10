@@ -17,6 +17,7 @@ export {
   AppOptions,
   createGraphicsDevice,
   DEVICETYPE_WEBGL2,
+  DEVICETYPE_WEBGPU, // addSplat device: 'webgpu' (opt-in; the backend is in every createGraphicsDevice build anyway)
   RESOLUTION_FIXED,
   // component systems + resource handlers (PLAYCANVAS_SYSTEMS / PLAYCANVAS_HANDLERS)
   CameraComponentSystem,
@@ -57,6 +58,7 @@ export {
   SEMANTIC_COLOR,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
+  SHADERLANGUAGE_WGSL,
   CHUNKAPI_2_8,
   // setSource's frame snapshot
   RenderTarget,

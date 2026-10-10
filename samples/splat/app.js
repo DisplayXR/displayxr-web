@@ -26,6 +26,13 @@ const url = params.get('url') || DEFAULT_URL;
 const engine = params.get('engine') === 'spark' ? 'spark' : 'playcanvas';
 const engineName = engine === 'spark' ? 'Spark' : 'PlayCanvas';
 
+// ?gpu=webgpu|webgl2|auto — the PlayCanvas tile's graphics API (the SDK's `device` option; WebGL2
+// when absent, exactly as before). WebGPU is an opt-in: the SDK falls back to WebGL2 on its own
+// when it cannot use it (no adapter, not exactly 2 views, an option it cannot draw there) and says
+// why in the line under the tile. See docs/playcanvas-adapter.md § WebGPU (opt-in).
+const GPU = ['webgpu', 'webgl2', 'auto'].includes(params.get('gpu')) ? params.get('gpu') : null;
+const gpuEl = document.getElementById('gpu');
+
 // Turntable. A product scan wants it, a photograph lifted into 3D does not (it has no back, so
 // a turn only shows its stretched edges). So it starts only when the asset gets the display rig,
 // i.e. its .sog carries no capture camera. ?spin=<deg/s> forces a rate, ?spin=0 forces it off.
@@ -61,6 +68,7 @@ try {
   handle = addSplat(wall, canvas, src, {
     // ← 2. add the splat
     engine,
+    ...(GPU ? { device: GPU } : {}),
     idleSpin: 0, // started below once the rig is known
     feather: 24,
     // Half-scale per eye. After the interlace each eye receives roughly half the panel's
@@ -92,6 +100,15 @@ if (handle) {
 
   try {
     await handle.ready;
+    // Beside the tile, never over it (docs/woven-canvas-rules.md rule 8): what device rendered it.
+    if (GPU && handle.deviceInfo) {
+      const d = handle.deviceInfo;
+      gpuEl.textContent =
+        d.device === 'webgpu'
+          ? `device: WebGPU · adapter ${d.adapter} (requested ${d.requested})`
+          : `device: WebGL2 (requested ${d.requested}${d.requested === 'webgl2' ? '' : ` — fallback: ${d.reason}`})`;
+      gpuEl.hidden = false;
+    }
     const n = handle.mesh?.numSplats ?? 0;
     const camRig = handle.rig?.type === 'camera';
     const framing = camRig ? 'opened at its capture camera' : handle.frame ? 'auto-framed' : 'unframed';

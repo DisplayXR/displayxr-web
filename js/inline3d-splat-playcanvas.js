@@ -67,6 +67,7 @@ import {
   SEQUENCE_TRANSITIONS,
   emptyAtZero,
   sequenceSpans,
+  getEffectChunks,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
 import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
@@ -121,6 +122,30 @@ import {
   declareViewRig,
 } from './inline3d-splat-shared.js';
 import { resolveCursorOption } from './inline3d-cursor-option.js';
+
+/**
+ * A ShaderMaterial's source fields for this device: the GLSL as given (WebGL2 — exactly the
+ * descriptor the adapter always built), plus its WGSL twin on WebGPU (the effects module's
+ * `getEffectChunks('wgsl').overlay`, docs/splat-effects.md § WGSL twins).
+ */
+function materialFields(isWebGPU, glsl, wgsl) {
+  const f = { vertexGLSL: glsl.vertex, fragmentGLSL: glsl.fragment };
+  if (isWebGPU) Object.assign(f, { vertexWGSL: wgsl.vertex, fragmentWGSL: wgsl.fragment });
+  return f;
+}
+import {
+  resolveDeviceOption,
+  glslOnlyOptions,
+  resolveSplatDevice,
+  platformFacts,
+  adapterLabel,
+  deviceLogLine,
+  toClipWebGpu,
+  wrapWgslFootprint,
+  gpuBufferLimits,
+  wrapFrameGraphStores,
+  wrapGsplatManagerParams,
+} from './inline3d-splat-device.js';
 
 /**
  * The component systems the tile's `AppBase` registers. Camera + GSplat draw the splat; Render,
@@ -1221,6 +1246,13 @@ export class PlayCanvasSplatViewer {
   /** wall.addScene's frame callback. Validate BEFORE drawing; replay the last good frame else. */
   onFrame(views, layer, frame) {
     if (this._disposed) return;
+    // The device choice waits for this (stereoViewCount): how many views the tile DRAWS in 3D —
+    // the first view list of 2+ (a shorter list is the session's mono fallback, drawn flat by
+    // _replayOrFlat below, never as the rig).
+    if (views && views.length >= 2) {
+      this._stereoViews = views.length;
+      if (this._viewWaiters?.length) for (const w of this._viewWaiters.splice(0)) w(views.length);
+    }
     if (this._mode !== '3d') this.stopMono();
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
     // and the tick below may declare a new one (a focus ease) for the NEXT locate.
@@ -1253,6 +1285,27 @@ export class PlayCanvasSplatViewer {
     // the rig map, the layer rig, the live outgoing photo — reads them.
     (this.viewerEase ||= viewerEaseFor(frame, this._viewerEaseOpt)).apply(this._lastGood.entries, frameTrackingState(frame));
     this._drawEntries(this._lastGood.entries, this._lastGood);
+  }
+
+  /**
+   * How many views this tile renders in 3D (one RenderView each): the length of the first view
+   * list of 2+ the session hands onFrame. A 1-view list is the session's mono fallback (the tile
+   * draws flat for it) and does not count. Resolves 0 after `timeoutMs` without one.
+   */
+  stereoViewCount(timeoutMs = 3000) {
+    if (this._stereoViews > 0) return Promise.resolve(this._stereoViews);
+    return new Promise((resolve) => {
+      const w = (n) => {
+        clearTimeout(timer);
+        resolve(n);
+      };
+      const timer = setTimeout(() => {
+        const i = this._viewWaiters.indexOf(w);
+        if (i >= 0) this._viewWaiters.splice(i, 1);
+        resolve(this._stereoViews || 0);
+      }, timeoutMs);
+      (this._viewWaiters ||= []).push(w);
+    });
   }
 
   startMono() {
@@ -1317,22 +1370,72 @@ export class PlayCanvasSplatViewer {
    *        race on large canvases (browser-pvt#24); off by default, like three's path.
    * @param {object} o.perf  the resolved playcanvasPerfSettings().
    * @param {string} [o.viewPath]  force 'cameras' | 'renderview' (diagnostics).
+   * @param {'webgl2'|'webgpu'} [o.device='webgl2']  the graphics API, ALREADY resolved
+   *        (./inline3d-splat-device.js). 'webgpu' asks the engine for WebGPU ONLY; if it comes
+   *        back as anything else, `this.deviceFallback` says why and the tile runs on that.
    */
-  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true } = {}) {
+  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true, device: deviceType = 'webgl2' } = {}) {
     this.pc = pc;
-    const device = await pc.createGraphicsDevice(this.canvas, {
-      deviceTypes: [pc.DEVICETYPE_WEBGL2],
-      alpha: true,
-      premultipliedAlpha: true,
-      // Off for splats (alpha-blended quads gain nothing from MSAA); ./model turns it on, as
-      // three's SceneViewer has it, because mesh silhouettes alias visibly without it.
-      antialias,
-      xrCompatible: false,
-      preserveDrawingBuffer,
-    });
+    const wantGpu = deviceType === 'webgpu' && !!pc.DEVICETYPE_WEBGPU;
+    this.deviceFallback = deviceType === 'webgpu' && !wantGpu ? 'this engine build has no DEVICETYPE_WEBGPU' : null;
+    let device = null;
+    try {
+      device = await pc.createGraphicsDevice(this.canvas, {
+        // WebGPU ONLY when asked: never ['webgpu','webgl2'] — the SDK decides and logs, the engine
+        // must not choose behind it (createGraphicsDevice still appends WebGL2 + Null itself, so
+        // what came back is checked below).
+        deviceTypes: [wantGpu ? pc.DEVICETYPE_WEBGPU : pc.DEVICETYPE_WEBGL2],
+        // WebGPU: alpha → the canvas is configured `alphaMode: 'premultiplied'`, the same
+        // semantics as WebGL2's premultipliedAlpha (the weave accepted it, P-W0).
+        alpha: true,
+        premultipliedAlpha: true,
+        // Off for splats (alpha-blended quads gain nothing from MSAA); ./model turns it on, as
+        // three's SceneViewer has it, because mesh silhouettes alias visibly without it.
+        // (WebGPU: 4× MSAA.)
+        antialias,
+        xrCompatible: false,
+        preserveDrawingBuffer, // WebGL only; a WebGPU canvas presents a fresh texture per frame
+      });
+    } catch (err) {
+      if (!wantGpu) throw err;
+      device = null;
+      this.deviceFallback = `the engine's WebGPU boot threw (${err?.message || err})`;
+    }
+    if (wantGpu && !device?.isWebGPU) {
+      // The engine fell back on its own (WebGPU init failed), or produced nothing usable.
+      if (device && !this.deviceFallback) this.deviceFallback = "the engine's WebGPU boot failed (it fell back on its own)";
+      if (!device || !device.isWebGL2) {
+        device?.destroy?.();
+        device = this._disposed
+          ? null
+          : await pc.createGraphicsDevice(this.canvas, {
+              deviceTypes: [pc.DEVICETYPE_WEBGL2],
+              alpha: true,
+              premultipliedAlpha: true,
+              antialias,
+              xrCompatible: false,
+              preserveDrawingBuffer,
+            });
+      }
+    }
     if (this._disposed) {
-      device.destroy?.();
+      device?.destroy?.();
       return null;
+    }
+    this.isWebGPU = !!device.isWebGPU;
+    if (this.isWebGPU) {
+      // Footprint fix in WGSL, at the one door every WGSL module goes through — before the first
+      // gsplat shader compiles. The GLSL chunk patch below is WebGL2-only.
+      this.footprintStats = wrapWgslFootprint(device.wgpu);
+      this.gpuAdapter = device.gpuAdapter || null;
+      device.wgpu?.lost?.then?.((info) => {
+        if (this._disposed || info?.reason === 'destroyed') return;
+        console.warn(
+          `${this.logTag} device=webgpu: the GPU device was LOST (${info?.reason || 'unknown'}: ${info?.message || ''}). ` +
+            'The engine restores a new device, but the splat footprint fix is not re-applied to it ' +
+            '(splats draw at half height in the eyes) until the page reloads.',
+        );
+      });
     }
     const opts = new pc.AppOptions();
     opts.graphicsDevice = device;
@@ -1365,6 +1468,10 @@ export class PlayCanvasSplatViewer {
     }
     // The SDK's frame drives the engine: no second rAF. `tick` is the engine's own loop body.
     app.requestAnimationFrame = () => {};
+    // WebGPU: a later camera on the same target (setLayerRig's display / post cameras, a page's
+    // own camera) must find the eye camera's colour and depth STORED (propagateStoresAcrossCameras:
+    // without it an MSAA tile goes black the moment a second camera draws).
+    if (this.isWebGPU) wrapFrameGraphStores(app.frameGraph);
     this.app = app;
     // The store may have been sized before the engine existed (from the probed limits, or none):
     // re-check it against THIS context's. A no-op when nothing moves.
@@ -1375,7 +1482,7 @@ export class PlayCanvasSplatViewer {
     // after it; before any gsplat material compiles.
     // ./model passes patchSplats:false: its subject is a mesh, and a page adding a splat under
     // handle.engine.root on a model tile gets the engine's stock footprint (documented).
-    const chunks = patchSplats ? pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL) : null;
+    const chunks = patchSplats && !this.isWebGPU ? pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL) : null;
     const corner = chunks ? patchGsplatFootprint(chunks.get('gsplatCornerVS')) : { ok: false, skipped: true };
     if (corner.ok) chunks.set('gsplatCornerVS', corner.src);
     else if (!corner.skipped && !warnedFootprint) {
@@ -1387,7 +1494,14 @@ export class PlayCanvasSplatViewer {
           'anchors are in js/inline3d-splat-playcanvas.js.',
       );
     }
-    this.footprintPatched = corner.ok;
+    this.footprintPatched = this.isWebGPU ? null : corner.ok; // WebGPU: footprintStats, per compiled module
+    if (this.isWebGPU && patchSplats && perf?.quadExtent && !warnedQuadExtent) {
+      warnedQuadExtent = true;
+      console.warn(
+        `${this.logTag} device=webgpu: perf.maxStdDev (the quad-extent cap) is a GLSL chunk patch and is not applied ` +
+          'on WebGPU; the quad extent stays at the engine default (everything else in perf applies).',
+      );
+    }
     if (chunks && perf?.quadExtent) {
       const q = patchPlayCanvasQuadExtent(chunks.get('gsplatCommonVS'), perf.quadExtent);
       if (q.ok) chunks.set('gsplatCommonVS', q.src);
@@ -1402,6 +1516,13 @@ export class PlayCanvasSplatViewer {
     for (const [k, v] of Object.entries(perf?.settings || {})) {
       if (k !== 'splatBudget') app.scene.gsplat[k] = v;
     }
+    // WebGPU's GPU-sort projector also CULLS by contribution (opacity × footprint area < 3 by
+    // default); the WebGL2 CPU-sort path has no such cull. On a small subject that drops the fine
+    // splats: the image came out darker and speckled next to WebGL2 (offline A/B, butterfly SOG).
+    // So the WebGL2-parity baseline is 0, the same reasoning as perf's `minPixelSize` baseline;
+    // `perf: false` (the engine's own defaults) keeps the engine's 3; a page that wants the cull
+    // back sets `handle.engine.app.scene.gsplat.minContribution` after `ready`.
+    if (this.isWebGPU && perf?.settings && 'minPixelSize' in perf.settings) app.scene.gsplat.minContribution = 0;
     // The budget goes through setTileBudget: it is a PER-TILE contract, and the N-camera
     // fallback has to split it (SPLAT_BUDGET_MODEL).
     this.setTileBudget(perf?.settings?.splatBudget);
@@ -1448,15 +1569,14 @@ export class PlayCanvasSplatViewer {
     mesh.setUvs(0, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]));
     mesh.setIndices([0, 1, 2, 0, 2, 3]);
     mesh.update();
-    const mat = new pc.ShaderMaterial({
-      uniqueName: 'inline3dEdgeFeather',
-      attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 },
-      vertexGLSL: `
+    // WebGPU: the WGSL twin from the effects module (getEffectChunks('wgsl').overlay.feather).
+    const fields = materialFields(this.isWebGPU, {
+      vertex: `
         attribute vec3 vertex_position;
         attribute vec2 vertex_texCoord0;
         varying vec2 vUv;
         void main() { vUv = vertex_texCoord0; gl_Position = vec4(vertex_position.xy, 0.0, 1.0); }`,
-      fragmentGLSL: `
+      fragment: `
         varying vec2 vUv;
         uniform float dxrFeatherFx;
         uniform float dxrFeatherFy;
@@ -1465,6 +1585,11 @@ export class PlayCanvasSplatViewer {
           float ay = smoothstep(0.0, dxrFeatherFy, vUv.y) * smoothstep(0.0, dxrFeatherFy, 1.0 - vUv.y);
           gl_FragColor = vec4(1.0, 1.0, 1.0, ax * ay);
         }`,
+    }, this.isWebGPU ? getEffectChunks('wgsl').overlay.feather : null);
+    const mat = new pc.ShaderMaterial({
+      uniqueName: 'inline3dEdgeFeather',
+      attributes: { vertex_position: pc.SEMANTIC_POSITION, vertex_texCoord0: pc.SEMANTIC_TEXCOORD0 },
+      ...fields,
     });
     mat.blendState = new pc.BlendState(
       true,
@@ -1555,7 +1680,9 @@ export class PlayCanvasSplatViewer {
           name: 'inline3d-snapshot',
           width: w,
           height: h,
-          format: pc.PIXELFORMAT_RGBA8,
+          // WebGPU copies texture to texture, which needs the back buffer's own format (bgra8unorm
+          // on Windows); WebGL2 blits, any colour format.
+          format: this.isWebGPU && device.backBufferFormat !== undefined ? device.backBufferFormat : pc.PIXELFORMAT_RGBA8,
           mipmaps: false,
           minFilter: pc.FILTER_NEAREST,
           magFilter: pc.FILTER_NEAREST,
@@ -1566,6 +1693,9 @@ export class PlayCanvasSplatViewer {
       }
       // null source = the back buffer, still holding this frame (same task, before compositing).
       ok = device.copyRenderTarget(null, s.rt, true, false) !== false;
+      // WebGPU: the copy is encoded AFTER the engine submitted the frame, and the canvas texture it
+      // reads expires with this task: submit it now.
+      if (ok && this.isWebGPU) device.submit?.();
       if (ok) this._ensureSnapshotOverlay();
     } catch (err) {
       console.warn('[inline3d/splat] frame snapshot failed; the crossfade falls back to one pass', err);
@@ -1601,14 +1731,14 @@ export class PlayCanvasSplatViewer {
     mesh.setPositions(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]));
     mesh.setIndices([0, 1, 2, 0, 2, 3]);
     mesh.update();
-    const part = (name, body, src, dst, drawOrder) => {
-      const mat = new pc.ShaderMaterial({
-        uniqueName: name,
-        attributes: { vertex_position: pc.SEMANTIC_POSITION },
-        vertexGLSL: `
+    const wgsl = this.isWebGPU ? getEffectChunks('wgsl').overlay.snapshot : null;
+    const part = (name, body, src, dst, drawOrder, wgslFragment) => {
+      // WebGPU: the WGSL twin from the effects module (the same uniforms and blend maths).
+      const fields = materialFields(this.isWebGPU, {
+        vertex: `
         attribute vec3 vertex_position;
         void main() { gl_Position = vec4(vertex_position.xy, 0.0, 1.0); }`,
-        fragmentGLSL: `
+        fragment: `
         uniform sampler2D dxrSnap;
         uniform vec2 dxrSnapInvSize;
         uniform float dxrSnapAlpha;
@@ -1623,7 +1753,8 @@ export class PlayCanvasSplatViewer {
           return dxrSnapAlpha * (1.0 - smoothstep(0.0, 1.0, lt));
         }
         void main() { ${body} }`,
-      });
+      }, wgsl ? { vertex: wgsl.vertex, fragment: wgslFragment } : null);
+      const mat = new pc.ShaderMaterial({ uniqueName: name, attributes: { vertex_position: pc.SEMANTIC_POSITION }, ...fields });
       mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, src, dst, pc.BLENDEQUATION_ADD, src, dst);
       mat.depthTest = false;
       mat.depthWrite = false;
@@ -1650,8 +1781,9 @@ export class PlayCanvasSplatViewer {
         pc.BLENDMODE_ZERO,
         pc.BLENDMODE_SRC_ALPHA,
         -2,
+        wgsl?.scale,
       ),
-      part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapWeight();', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1),
+      part('inline3dSnapshotAdd', 'gl_FragColor = texture2D(dxrSnap, gl_FragCoord.xy * dxrSnapInvSize) * dxrSnapWeight();', pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, -1, wgsl?.add),
     ];
     this.app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances(s.parts.map((p) => p.mi));
   }
@@ -2048,7 +2180,7 @@ export class PlayCanvasSplatViewer {
       const rvs = this._views;
       if (rvs.length !== entries.length) {
         rvs.length = 0;
-        for (let i = 0; i < entries.length; i++) rvs.push(new pc.RenderView());
+        for (let i = 0; i < entries.length; i++) rvs.push(this.newRenderView());
         this.eye.camera.camera.xrViews = rvs.slice();
       }
       // The current photo through ITS rig (the last declared): the views are remapped only while
@@ -2070,6 +2202,14 @@ export class PlayCanvasSplatViewer {
       if (key !== this._frustumKey) {
         this._frustumKey = key;
         this.eye.camera.camera.setXrProperties({ ...f, horizontalFov: false });
+      }
+      // WebGPU, one view (the flat frame, a 2D session mode): the engine's splat projector reads
+      // the CAMERA's projection there, not the view's (its stereo projector is the 2-view case),
+      // and that projection is fov/aspect only. The view's off-axis shift goes in as the camera's
+      // projection offset, so the one view keeps its window.
+      if (this.isWebGPU && entries.length !== 2) {
+        const P = entries[0].proj;
+        this.eye.camera.camera.projectionOffset = { x: P[8], y: P[9] };
       }
       // The camera NODE drives the sort direction and LOD distance; the views ignore it (they
       // compose the node's PARENT with their own pose). Park it on the first eye.
@@ -2138,6 +2278,9 @@ export class PlayCanvasSplatViewer {
     this._videoPlane?.beforeDraw(entries, rect);
     // cursor: 'depth' — place the sprite and queue its lines for the tick below (no-op unless opted in).
     this.cursorDepth?.frame(entries);
+    // WebGPU (GPU sort): each manager's projector sees its own mesh instance's effect values
+    // (wrapGsplatManagerParams) — setSource's render-time transitions depend on it.
+    if (this.isWebGPU) wrapGsplatManagerParams(app.renderer?.gsplatDirector, () => app.scene?.gsplat?.material);
     app.tick(now());
     this._afterTick();
     return true;
@@ -2280,7 +2423,7 @@ export class PlayCanvasSplatViewer {
     const c = clampEyeBuffer(
       Math.max(1, Math.round(box.width * dpr)),
       Math.max(1, Math.round(box.height * dpr)),
-      glBufferLimits(this.app?.graphicsDevice?.gl) || probeBufferLimits(),
+      this._deviceLimits(),
       { cols: this._mode === 'mono' ? 1 : 2 },
     );
     this._noteClamp(c);
@@ -2297,6 +2440,31 @@ export class PlayCanvasSplatViewer {
     this._bufScale(); // warns once if the browser clamped anyway
     if (this._mode === 'mono') this._drawMono();
     else this._replayLastGood();
+  }
+
+  /** The store limits of THIS tile's device (WebGPU: maxTextureDimension2D), else the document probe. */
+  _deviceLimits() {
+    const d = this.app?.graphicsDevice;
+    if (d?.isWebGPU) return gpuBufferLimits(d.wgpu) || probeBufferLimits();
+    return glBufferLimits(d?.gl) || probeBufferLimits();
+  }
+
+  /**
+   * A RenderView for this tile's cameras. On WebGPU its `setView` converts the projection to
+   * WebGPU clip depth (toClipWebGpu): the engine uses RenderView projections as is, and the
+   * runtime's are GL clip space. Every RenderView the adapter makes (the eye, the live outgoing
+   * camera, the layer-rig cameras) comes from here.
+   */
+  newRenderView() {
+    const rv = new this.pc.RenderView();
+    if (this.isWebGPU) {
+      const set = rv.setView;
+      const clip = new Float32Array(16);
+      rv.setView = function (proj, viewInv, view) {
+        return set.call(this, toClipWebGpu(proj, clip), viewInv, view);
+      };
+    }
+    return rv;
   }
 
   /** The renderScale in force: the request times the device-limit clamp (SceneViewer's twin). */
@@ -3312,6 +3480,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   const rigOpts = pageMode ? { ...opts, rig: 'camera' } : opts;
 
   const perfResolved = playcanvasPerfSettings(perf);
+  // `device` (./inline3d-splat-device.js): validated at the call (./splat did too); resolved at boot.
+  const deviceRequested = resolveDeviceOption(opts.device);
+  // Does the effects module carry WGSL twins (docs/splat-effects.md § WGSL twins)? Then `reveal`
+  // does not force WebGL2 (glslOnlyOptions).
+  const wgslEffects = !!getEffectChunks('wgsl')?.chunks?.gsplatModifyVS;
   const viewer = new PlayCanvasSplatViewer(canvas, {
     pageCamera: pageMode,
     virtualDisplayHeight,
@@ -3403,6 +3576,10 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   });
   Object.assign(out, {
     backend: 'playcanvas',
+    /** 'webgl2' | 'webgpu' once the engine has booted (the device actually created), else null. */
+    device: null,
+    /** { requested, device, reason, adapter } once booted: why this device (the boot line's data). */
+    deviceInfo: null,
     engine: null, // { app, root, camera } once the engine has booted — see below
     viewer,
     mesh: null,
@@ -3566,6 +3743,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
      */
     makeSbsMaterial(texture, o = {}) {
       if (!viewer.app || !viewer.pc) throw new Error('@displayxr/inline3d/splat: makeSbsMaterial() needs the engine — call it after `await handle.ready`.');
+      if (viewer.isWebGPU) throw new Error("@displayxr/inline3d/splat: makeSbsMaterial() is a GLSL material and is not available on device:'webgpu' yet — use device:'webgl2'.");
       return makeSbsMaterial(viewer.pc, texture, o);
     },
     /**
@@ -3575,7 +3753,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
      */
     playEffect(name, o = {}) {
       validateEffectCall(name, o, 'play');
-      return first.then(() => (fx && !removed ? fx.play(name, o) : { finished: false }));
+      return first.then(() => {
+        if (!fx || removed) return { finished: false };
+        // WebGPU: the projector's size culls hide in-flight particle dots — off while it plays.
+        const restore = cullsOff();
+        const r = fx.play(name, o);
+        Promise.resolve(r).then(restore, restore);
+        return r;
+      });
     },
     /** Set a persistent effect (grade, clip, custom), hold a transition at `progress`, or null to remove. */
     setEffect(name, params) {
@@ -3637,6 +3822,41 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         return false;
       });
     });
+  /**
+   * WebGPU (GPU sort): the compute projector culls splats under `minPixelSize` px and under
+   * `minContribution` before anything is drawn, which hides the ~1 px dots of a particle
+   * transition in flight (817 vs 52,019 lit px measured, docs/splat-effects.md § WGSL twins).
+   * Both go to 0 while a transition or effect plays and come back after (nested calls counted).
+   * A no-op on WebGL2. Returns the restore function.
+   */
+  /** fx.play with the WebGPU culls off until it settles (cullsOff). */
+  function playHeld(name, o, extra) {
+    const restore = cullsOff();
+    const r = fx.play(name, o, extra);
+    Promise.resolve(r).then(restore, restore);
+    return r;
+  }
+  let cullsHeld = 0;
+  let cullsSaved = null;
+  function cullsOff() {
+    const g = viewer.isWebGPU ? viewer.app?.scene?.gsplat : null;
+    if (!g) return () => {};
+    if (cullsHeld++ === 0) {
+      cullsSaved = { minPixelSize: g.minPixelSize, minContribution: g.minContribution };
+      g.minPixelSize = 0;
+      g.minContribution = 0;
+    }
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      if (--cullsHeld === 0 && cullsSaved) {
+        g.minPixelSize = cullsSaved.minPixelSize;
+        g.minContribution = cullsSaved.minContribution;
+        cullsSaved = null;
+      }
+    };
+  }
   function makeEffects(pc) {
     const ctx = {
       pc: () => pc,
@@ -4620,19 +4840,66 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     });
   }
 
+  /**
+   * `device` (./inline3d-splat-device.js): gather the facts the rules need — the session's view
+   * count and an adapter only when the cheaper rules have not already said WebGL2 — and resolve.
+   */
+  async function chooseDevice() {
+    const facts = { requested: deviceRequested, ...platformFacts(wall), glslOnly: glslOnlyOptions(opts, { wgslEffects }) };
+    let r = resolveSplatDevice(facts);
+    if (r.need === 'views') {
+      // The RenderViews this tile will draw: known without waiting when the display's active
+      // rendering mode has already been read (wall._activeViewCount: a page's display read, the
+      // mode switch); else the first stereo view list the session hands the tile (a 1-view list
+      // is the mono fallback, not the rig); else, after 3 s of none, the active mode's viewCount.
+      const known = wall?._activeViewCount;
+      facts.viewCount = known >= 2 ? known : await viewer.stereoViewCount();
+      if (!facts.viewCount && handle && typeof handle.getRenderingModes === 'function') {
+        const modes = await Promise.race([handle.getRenderingModes().catch(() => []), new Promise((res) => setTimeout(() => res([]), 1000))]);
+        const active = Array.isArray(modes) ? modes.find((m) => m && m.isActive) : null;
+        facts.viewCount = active && active.viewCount > 0 ? active.viewCount : 0;
+      }
+      r = resolveSplatDevice(facts);
+    }
+    if (r.need === 'adapter') {
+      let adapter = null;
+      try {
+        adapter = await globalThis.navigator.gpu.requestAdapter();
+      } catch {
+        adapter = null;
+      }
+      facts.adapter = adapter;
+      r = resolveSplatDevice(facts);
+    }
+    return r;
+  }
+
   let pcModule = null;
   const booted = (async () => {
     // Named re-exports, not the package namespace: lets a bundler drop the ~40% of the engine the
     // SDK never touches (./inline3d-playcanvas-engine.js).
     const pc = opts.playcanvas || (await import('./inline3d-playcanvas-engine.js'));
     if (removed) return null;
+    const choice = deviceRequested === 'webgl2' ? { device: 'webgl2', reason: 'requested' } : await chooseDevice();
+    if (removed) return null;
     const app = await viewer.attachEngine(pc, {
       preserveDrawingBuffer,
       perf: perfResolved,
       viewPath: opts.playcanvasViewPath,
       antialias: antialias === true,
+      device: choice.device,
     });
     if (!app || removed) return null;
+    const onGpu = !!viewer.isWebGPU;
+    out.device = onGpu ? 'webgpu' : 'webgl2';
+    out.deviceInfo = Object.freeze({
+      requested: deviceRequested,
+      device: out.device,
+      reason: choice.device === 'webgpu' && !onGpu ? viewer.deviceFallback || 'the engine did not create a WebGPU device' : choice.reason,
+      adapter: onGpu ? adapterLabel(viewer.gpuAdapter) : null,
+    });
+    // One line at boot, for a page that chose (the default, absent, stays silent as before).
+    if (opts.device !== undefined && opts.device !== null) console.info(deviceLogLine(out.deviceInfo));
     pcModule = pc;
     // diag: count the GL calls that can block (compile, link, status queries, readbacks, syncs),
     // from before the first asset's compile on
@@ -4661,7 +4928,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     };
     const kept = applyLoaded(loaded);
     current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
-    fx = makeEffects(pcModule);
+    fx = makeEffects(pcModule); // GLSL or WGSL bodies, by the device (the runner picks)
     syncEnvelope(); // a setDepthEnvelope before the first asset
     // `reveal`: installed at its START state before the asset's first frame, played once the
     // tile is woven (handle.firstWoven — which is immediate in 2D) and the first frames are built.
@@ -4676,7 +4943,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       // not be joined yet (rule 5). Registered after fx.play's own `.then`, so it lands in the
       // same microtask that releases the effect: the clock starts on the frame it first shows.
       entity.enabled = false;
-      fx.play(revealSpec.type, revealSpec.raw, { gate });
+      const restoreCulls = cullsOff(); // WebGPU: the projector's size culls hide the particle dots
+      Promise.resolve(fx.play(revealSpec.type, revealSpec.raw, { gate })).then(restoreCulls, restoreCulls);
       gate.then(() => {
         if (removed || current?.entity !== entity) return;
         // setVideo took the splat off screen meanwhile: its exit restores what it saved.
@@ -4863,6 +5131,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return Promise.resolve(null);
     }
     const r = validateSetVideo(src, o, pageMode);
+    if (viewer.isWebGPU) {
+      return Promise.reject(
+        new Error("@displayxr/inline3d/splat: setVideo() draws through a GLSL material and is not available on device:'webgpu' yet — use device:'webgl2'."),
+      );
+    }
     if (sourceInFlight > 0) {
       throw new Error(
         '@displayxr/inline3d/splat: setVideo() during an in-flight setSource() — await the swap first ' +
@@ -5046,11 +5319,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // sequence's two (its out body, then its in body — one program each, or one when they match).
     const orderOf = (side) => (EFFECTS[side.effect].particle ? { order: side.opts.order } : {});
     const variants = plan?.particles
-      ? [[`${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`, () => fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order })]]
+      ? [[`${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`, (l) => fx.sharedChunkCode('transition', plan.particles.in.effect, { order: plan.particles.in.opts.order }, l)]]
       : plan?.transition === 'wavefront'
-        ? [['wavefront', () => fx.sharedChunkCodeFor([['transition', 'wavefront', {}], ['transition-cull', 'wipecull', {}]])]]
+        ? [['wavefront', (l) => fx.sharedChunkCodeFor([['transition', 'wavefront', {}], ['transition-cull', 'wipecull', {}]], l)]]
         : plan?.sequence
-          ? [plan.sequence.out, plan.sequence.in].map((side) => [`${side.effect}|${side.opts.order ?? ''}`, () => fx.sharedChunkCode('transition', side.effect, orderOf(side))])
+          ? [plan.sequence.out, plan.sequence.in].map((side) => [`${side.effect}|${side.opts.order ?? ''}`, (l) => fx.sharedChunkCode('transition', side.effect, orderOf(side), l)])
           : [];
     const wantChunks = fx ? variants.filter(([k], i) => !prewarmed.has(k) && variants.findIndex((v) => v[0] === k) === i) : [];
     // A sequence draws through no overlay: nothing to warm there.
@@ -5061,9 +5334,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     try {
       const pc = pcModule;
       const made = [];
+      // WebGPU: the WGSL variant on the WGSL chunk set (and a variant request there only creates the
+      // modules: the pipelines are built on the first draw — the one-off hitch docs § WebGPU names).
+      const lang = viewer.isWebGPU ? pc.SHADERLANGUAGE_WGSL : pc.SHADERLANGUAGE_GLSL;
       for (const [chunkKey, codeOf] of fx ? wantChunks : []) {
         const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
-        const code = codeOf();
+        const code = codeOf(viewer.isWebGPU ? 'wgsl' : 'glsl');
         let issued = 0;
         for (const cam of cams) {
           const mi = managerMi(cam, null);
@@ -5073,7 +5349,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           const m = new pc.ShaderMaterial(src.shaderDesc);
           src.defines.forEach((v, k) => m.setDefine(k, v));
           m.shaderChunks.copy(src.shaderChunks);
-          m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
+          m.getShaderChunks(lang).set('gsplatModifyVS', code);
           m.blendState = src.blendState;
           made.push(m.getShaderVariant({
             device: viewer.app.graphicsDevice,
@@ -5109,11 +5385,38 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         if (issued) prewarmed.add('overlay');
       }
       await finalizeWhenLinked(made.filter(Boolean));
+      if (viewer.isWebGPU) prewarmLiveOffscreen(plan);
     } catch (err) {
       console.info('[inline3d/splat] transition shader pre-warm skipped', err);
     }
   }
 
+
+  /**
+   * WebGPU pre-warm, OFFSCREEN only. WebGPU builds render / compute pipelines synchronously on the
+   * first draw or dispatch, and the live outgoing camera draws into its own RGBA8 target — a
+   * different pipeline from the eye's (back-buffer format, MSAA) that nothing builds before the
+   * transition's first frame. So, in the dwell, the photo on screen is pre-sorted onto the live
+   * camera for a few frames (LiveOutgoing.warm: its target is never shown — the overlay stays
+   * hidden) and the warm is dropped again. Nothing is drawn into the presented canvas. The effect
+   * variants themselves are tile-scope (shared by every camera) and cannot be built offscreen: their
+   * first transition frame still builds them (documented).
+   */
+  function prewarmLiveOffscreen(plan) {
+    const ent = current?.entity;
+    const wantsLive = plan && (plan.particles || plan.transition === 'crossfade' || plan.transition === 'wavefront');
+    if (!ent || !wantsLive || pendingSwap || removed || prewarmed.has('gpu:live') || !viewer.canLiveOutgoing) return;
+    if (viewer._live?.warming || viewer._live?.active) return;
+    if (!viewer.warmLiveOutgoing(ent)) return;
+    prewarmed.add('gpu:live');
+    let ticks = 0;
+    viewer._hooks.push(() => {
+      if (pendingSwap || viewer._live?.active) return false; // a transition took it over: its warm now
+      if (++ticks < 4) return true;
+      if (viewer._live?.warming && viewer._live.entity === ent) viewer.cancelLiveWarm();
+      return false;
+    });
+  }
 
   /**
    * Creating a program only ISSUES its compile + link; the browser resolves the link when the
@@ -5301,6 +5604,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       if (gen === sourceGen) diag?.settled(performance.now() - ts);
     };
     pendingSwap = { finish };
+    // WebGPU: the projector's size culls off for the whole window (see cullsOff).
+    if (transition !== 'cut') finishers.push(cullsOff());
 
     if (transition === 'flip') {
       // Phase 1: the outgoing photo flattens onto ITS convergence plane under ITS rig; the new
@@ -5342,7 +5647,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     adopt(entity);
     if (transition === 'cut') {
       release(prev);
-      if (plan.reveal) fx.play(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
+      if (plan.reveal) playHeld(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
       finish();
       return out;
     }
@@ -5360,6 +5665,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         viewer.setSnapshotAlpha(0);
         viewer.releaseSnapshot();
       });
+      // WebGPU (GPU sort): the per-manager values reach each projector through
+      // wrapGsplatManagerParams (docs/splat-effects.md § WGSL twins, GPU-sort difference 1).
       if (fx && managerMi(viewer.eye, null)) {
         playWavefrontRender({ plan, entity, live, finishers, finish, isFinished: () => finished, pumpLive });
         await done;
@@ -5398,7 +5705,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // crossfade — also the wavefront's fallback when no frame could be captured (a hidden tab):
     // the 1.12.1 one-pass fade, over the same duration.
     const fade = plan.durationMs;
-    if (plan.reveal) fx.play(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
+    if (plan.reveal) playHeld(plan.reveal.type, { ...plan.reveal.raw, scope: 'entity' }, { entity, gate: afterTicks(2) });
     if (snapped) {
       if (!live) release(prev); // the snapshot shows it from here on
     } else {
@@ -5797,6 +6104,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // rewrite + a re-sort per asset per frame: correct, but it hitches on a 1.18M photo).
     const eyeMi = () => managerMi(viewer.eye, null);
     const liveMi = () => (live?.active ? managerMi(live.cam, live.layer) : null);
+    // WebGPU (GPU sort): the per-side values reach each manager's projector through
+    // wrapGsplatManagerParams, so the render-time path is the same on both devices.
     const shared = particle.out.effect === particle.in.effect && eyeMi() ? fx.driveShared('transition', particle.in.effect, { order: particle.in.opts.order }) : null;
     // the outgoing side, BEFORE adopt(): its frame (eyes, focus, framing) is the old asset's
     let outFx = null;

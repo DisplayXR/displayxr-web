@@ -779,6 +779,106 @@ half. An index-paired `morph` transition was prototyped on this (the old photo's
 flying to the new photo's gaussian i). It worked, and pairs any two SHARP files, but it was
 dropped on review, along with the texture-uniform path.
 
+## WGSL twins (WebGPU)
+
+On a PlayCanvas **WebGPU** device the engine compiles only its WGSL chunk set, so a GLSL
+`gsplatModifyVS` would silently not apply. Every effect therefore has a WGSL twin in
+`js/inline3d-splat-effects-wgsl.js`, with the same uniform names, the same math and the same early
+outs. The runner picks the language from the device (`app.graphicsDevice.isWebGPU`):
+
+- tile scope goes to the material's WGSL chunk set;
+- entity scope goes to `setWorkBufferModifier({ wgsl })`;
+- on WebGL nothing changes, byte for byte.
+
+**Supported on WebGPU:** everything on this page. That is `inflate`, `deflate`, `sweep`, `fade`,
+`dissolve`, `pulse`, `grade`, `clip`, the four particle reveals (`assemble`, `dissolve-in`,
+`converge`, `shimmer`) in every `order`, setSource's `xfade`, `wavefront` and `wipecull`, the depth
+envelope, and `custom` with a `wgsl` body. The adapter's other shader pieces have twins in the same
+module: the snapshot-overlay and edge-feather ShaderMaterials (`OVERLAY_WGSL`), and the
+footprint and quad-extent patches of the engine's WGSL chunks.
+
+**For the adapter:** call `getEffectChunks(language)` (from `inline3d-splat-effects.js`). It
+returns, keyed by engine chunk name:
+
+- `gsplatModifyVS(instances)`: the generated modifier.
+- `gsplatCornerVS(src)`: the footprint patch. It is `null` for GLSL, where the adapter keeps its own `patchGsplatFootprint`.
+- `gsplatCommonVS(src, k)` and `gsplatHybridVS(src, k)`: the quad-extent cap.
+- `overlay`: the ShaderMaterial sources.
+
+For a WebGPU prewarm, pass the language to `sharedChunkCode(…, 'wgsl')` and set the result on
+`getShaderChunks('wgsl')`.
+
+**Where the engine runs the bodies.** The same chunk is included in three shaders. The WGSL is
+therefore written stage-agnostic: no derivatives, no textures, no builtins. Per-splat state is kept
+in `var<private>`. No body depends on vertex-stage-only state, so all of them are valid in the
+compute projector.
+
+| Inclusion | Stage | When |
+|---|---|---|
+| `gsplatVS` | vertex | `RASTER_CPU_SORT` |
+| the GPU-sort **projector** | compute | `RASTER_GPU_SORT`, which is **WebGPU's default** renderer |
+| `gsplatCopyToWorkbuffer` | fragment | entity scope (the work-buffer copy) |
+
+**Behaviour that differs on the GPU-sort renderer.** None of these comes from the bodies; they come
+from where the engine runs them. All were measured by `npm run test:e2e:wgsl` (below).
+
+1. **The projector reads only the tile material's values.** The projector takes uniforms from
+   `scene.gsplat.material.parameters`. A value set on a gsplat **mesh instance** never reaches it.
+   That breaks `driveShared`: setSource's render-time particle transitions (`swarm`, `burst`,
+   `shimmer-cross`, `dust`) and the wavefront's per-camera values.
+   - Measured, the mesh instance set to "hidden" while the material says "untouched": CPU-sort draws 0 lit px; GPU-sort draws the untouched photo (35,914 px).
+   - Entity scope (`drive`) and tile scope (`driveTile`, `setEffect`) work on both renderers.
+   - Until the adapter handles this, run those transitions on `RASTER_CPU_SORT`, or as entity-scope effects, on WebGPU.
+2. **The projector drops small splats before drawing.** It culls splats below `minPixelSize` and
+   `minContribution` (defaults 2 and 3). A particle in flight is a ~1 px dot by design, so on
+   GPU-sort the swarm mostly disappears.
+   - Measured: `assemble`/`depth` at 0.5 drew 817 lit px on GPU-sort and 52,019 on CPU-sort.
+   - With `app.scene.gsplat.minPixelSize = 0` and `minContribution = 0`, GPU-sort matches CPU-sort within 0.5% (52,245 vs 52,255; `dissolve-in`/`noise` 55,667 vs 55,699).
+   - Lower both while a particle effect runs, or use CPU-sort.
+3. **No alpha clip after `modifySplatColor`.** The projector clips on the ORIGINAL opacity before
+   the colour stage.
+   - A splat that an effect hides with alpha 0 still goes through sort and draw. The picture is the same, but `wipecull` saves nothing on GPU-sort.
+   - A custom body that RAISES alpha cannot bring back a splat that was below `alphaClip`.
+4. **One run per splat for both eyes.** The projector runs once per splat, not once per eye. Every
+   effect is keyed on world position and time (the one rule), so this changes nothing.
+5. **The footprint patch only reaches CPU-sort.** On GPU-sort the covariance comes from the
+   projector's single `focal` (the width), which no chunk reaches. Side-by-side splats therefore
+   keep the half-height footprint on 2.22.3. Engine 2.23.2 fixes this upstream.
+6. **The snapshot overlay assumes a plain copy.** The overlay reads the snapshot with `textureLoad`
+   at the fragment's own pixel. That mapping is the identity on both APIs only if the capture is a
+   plain framebuffer copy. A capture that blits with a y-flip needs the flip in the shader.
+
+**What the adapter does about 1, 2 and 5** (`device: 'webgpu'`,
+[`playcanvas-adapter.md` § WebGPU (opt-in)](playcanvas-adapter.md#webgpu-opt-in-device)): setSource's
+per-manager mesh-instance values reach each manager's projector (`wrapGsplatManagerParams`), so
+the particle transitions and the wavefront keep their render-time path on WebGPU; `minPixelSize` and
+`minContribution` are held at 0 while a transition, a reveal or a `playEffect` runs; and the
+footprint patch is applied to the final WGSL at `createShaderModule`, which reaches the projector.
+
+**Custom effects on WebGPU** pass `wgsl` (and `fragmentWgsl` for tile scope) next to, or instead
+of, `glsl`. The rules:
+
+- Use the engine's WGSL signatures, for example `fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>)`.
+- Declare uniforms as `uniform name: f32;` and read them as `uniform.name`.
+- `dxrProgress` and `dxrTime` are rewritten for you.
+- The body must be valid in a compute shader.
+- A call with no body in the device's language is refused at the call.
+- `pcPosition`, `@builtin` and the screen-space names listed above are refused too.
+
+**Gates.**
+
+- **`npm test`** runs `test/splat-effects-wgsl.test.mjs`. It checks:
+  - every GLSL body has a twin with the same uniform names and types;
+  - every twin, in every particle `order`, composed alone and all together, passes **naga** (`naga-wasm`, a devDependency) in a vertex, a fragment and a compute entry point;
+  - the patches find their anchors in the installed engine.
+- **`npm run test:e2e:wgsl`** runs headless Chrome with WebGPU. It needs Chrome (`CHROME`), `puppeteer-core` and the `playcanvas` peer. On Windows it uses `--use-angle=d3d11 --enable-gpu --ignore-gpu-blocklist`. It loads `butterfly.sog` and runs every effect through the runner on both renderers, plus entity scope, `driveTile`, the patches and the overlays. It gates on:
+  - zero GPU validation and shader-compilation errors;
+  - the splat drawing;
+  - amount 1 drawing the baseline;
+  - GPU-sort matching CPU-sort with the culls off.
+
+  It passed on 2026-10-09 on an NVIDIA Ampere laptop GPU.
+
 ## Adding an effect
 
 One registry entry in `js/inline3d-splat-effects.js` (`EFFECTS`):
@@ -787,6 +887,7 @@ One registry entry in `js/inline3d-splat-effects.js` (`EFFECTS`):
 - `glsl(P, opts)`, defining `P##center`, `P##rs` and `P##color`. Every body returns early at `amount >= 1`, so amount 1 is the baseline exactly. `opts` are the resolved options, for code that depends on them (the particle reveals' `order`).
 - `uniforms(ctx, inst, amount, tMs)`, returning the values.
 - Optionally `start(ctx, inst)`, for geometry fixed at start, and `validate(opts)`.
+- Its WGSL twin, `WGSL_BODIES[name]` in `js/inline3d-splat-effects-wgsl.js`, with the same uniforms. It must be valid in the vertex, fragment and compute stages (see [WGSL twins](#wgsl-twins-webgpu)). `test/splat-effects-wgsl.test.mjs` fails until the twin exists and naga accepts it.
 
 `ctx` gives `eyes()`, `focus()`, `framing()`, `pick()` and `modelToContent()`, all in world space.
 The runner does composition, clocks, gates, removal and uniform upload.

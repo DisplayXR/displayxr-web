@@ -604,7 +604,7 @@ export class LayerRigCameras {
     const rvs = this._rvs[run];
     if (rvs.length !== entries.length) {
       rvs.length = 0;
-      for (let i = 0; i < entries.length; i++) rvs.push(new pc.RenderView());
+      for (let i = 0; i < entries.length; i++) rvs.push(this.viewer.newRenderView ? this.viewer.newRenderView() : new pc.RenderView()); // WebGPU: clip-depth conversion
       cam.camera.camera.xrViews = rvs.slice();
     }
     for (let i = 0; i < entries.length; i++) {

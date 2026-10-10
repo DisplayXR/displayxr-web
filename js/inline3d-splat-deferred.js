@@ -7,6 +7,7 @@
 
 import { normalizeCameraPose } from './inline3d-splat-shared.js';
 import { validateEffectCall } from './inline3d-splat-effects.js';
+import { resolveDeviceOption } from './inline3d-splat-device.js';
 
 /**
  * The `engine: 'playcanvas'` handle, returned SYNCHRONOUSLY like the Spark one.
@@ -30,6 +31,8 @@ function validateSetRigArgs(type, o) {
 }
 
 export function addSplatDeferred(wall, canvas, src, opts) {
+  // A bad `device` is a page bug true of every call: throw at the call (resolved at boot).
+  resolveDeviceOption(opts.device);
   const pending = [];
   const queue = (name) => (...args) => {
     pending.push([name, args]);
@@ -47,6 +50,9 @@ export function addSplatDeferred(wall, canvas, src, opts) {
   let pendingPose = null;
   const out = {
     backend: 'playcanvas',
+    // 'webgl2' | 'webgpu' once the engine has booted (opts.device, resolved): null until then.
+    device: null,
+    deviceInfo: null,
     engine: null,
     viewer: null,
     mesh: null,
