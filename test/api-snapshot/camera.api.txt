@@ -70,6 +70,7 @@ interface CameraView
 interface CameraViewOptions
   CameraViewOptions.aspect?: aspect?:number
   CameraViewOptions.autoConverge?: autoConverge?:boolean
+  CameraViewOptions.cursor?: cursor?:'depth'|PairCursorOptions
   CameraViewOptions.depth?: depth?:number
   CameraViewOptions.mirror?: mirror?:boolean
   CameraViewOptions.onRouteChange?: onRouteChange?:(route:CameraView['route'],state:CameraViewWeaveState)=>void
@@ -84,6 +85,9 @@ interface CapturePhotoOptions
   CapturePhotoOptions.name?: name?:string
   CapturePhotoOptions.quality?: quality?:number
   CapturePhotoOptions.type?: type?:string
+interface PairCursorOptions
+  PairCursorOptions.height?: height?:number
+  PairCursorOptions.pointerScope?: pointerScope?:'canvas'|'window'
 interface RecordOptions
   RecordOptions.audio?: audio?:MediaStream|MediaStreamTrack|null
   RecordOptions.mimeType?: mimeType?:string

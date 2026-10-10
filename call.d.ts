@@ -17,7 +17,7 @@
 // until the snapshot is updated in the same change (`node tools/api-surface.mjs --update`).
 
 import type { Inline3D, Inline3DUnsupported } from './index.js';
-import type { StereoCamera } from './camera.js';
+import type { StereoCamera, PairCursorOptions } from './camera.js';
 
 /** What a participant sends: a side-by-side pair (left eye left) or one flat picture. */
 export type CallFormat = 'sbs' | 'mono';
@@ -215,6 +215,14 @@ export interface CallOptions {
    * at the display plane. No calibration needed. The depth slider stays an offset on top.
    */
   autoConverge?: boolean;
+  /**
+   * `'depth'`: over a 3D (stereo) tile — a peer's or your self view — a crosshair just in front of
+   * the person under the pointer replaces the CSS cursor, instead of the flat cursor drawn on the
+   * glass behind them (runtime ADR-046; the depth is measured off each tile's two halves). Lifted
+   * (2D→3D) and flat tiles keep the normal cursor. Off by default (zero cost).
+   * `<dxr-call cursor="depth">`.
+   */
+  cursor?: 'depth' | PairCursorOptions;
   /** Participants INCLUDING you. Default 4, clamped to 2..4 (full mesh). */
   maxPeers?: number;
   /**

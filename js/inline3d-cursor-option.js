@@ -36,3 +36,21 @@ export function resolveCursorOption(opt, who = '@displayxr/inline3d') {
   }
   return { ...opt };
 }
+
+/** The keys `cursor: { … }` accepts on a stereo PAIR (./camera's addCameraView, ./call's tiles). */
+export const PAIR_CURSOR_OPTION_KEYS = Object.freeze(['height', 'pointerScope']);
+
+/**
+ * `cursor` on a stereo pair — a camera view or a call tile: `'depth'`, or `{ height, pointerScope }`.
+ * A pair has no scene: its depth is MEASURED off the two halves, and the sprite is drawn into them,
+ * so there is no anchor mode (it is always on the line of sight) and the margin is the SDK's. Falsy
+ * is OFF, the zero-cost default.
+ * @returns {null | {height?: number, pointerScope?: string}}
+ */
+export function resolvePairCursorOption(opt, who = '@displayxr/inline3d') {
+  const o = resolveCursorOption(opt, who);
+  if (!o) return null;
+  const unknown = Object.keys(o).filter((k) => !PAIR_CURSOR_OPTION_KEYS.includes(k));
+  if (unknown.length) throw new Error(`${who}: cursor — ${unknown.join(', ')} not supported on a stereo pair; expected ${PAIR_CURSOR_OPTION_KEYS.join(', ')}.`);
+  return o;
+}

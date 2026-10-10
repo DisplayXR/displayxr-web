@@ -184,6 +184,17 @@ export function openCamera(opts?: CameraOptions | CameraPreference): Promise<Ste
 /** Is `x` a {@link StereoCamera}? Duck-typed, so two copies of the SDK interoperate. */
 export function isStereoCamera(x: unknown): x is StereoCamera;
 
+/**
+ * `cursor: { … }` on a stereo pair (an object also means `'depth'`). A pair has no scene: the
+ * depth under the pointer is MEASURED off its two halves, so there is no anchor mode or margin.
+ */
+export interface PairCursorOptions {
+  /** Sprite height as a fraction of the tile height (default 0.06). */
+  height?: number;
+  /** `'window'` (default): the cursor stays while the pointer is over DOM on the tile (a badge). `'canvas'`: only over the canvas itself. */
+  pointerScope?: 'canvas' | 'window';
+}
+
 export interface CameraViewOptions {
   /** Selfie mirroring, done right for a pair (each half mirrored AND swapped). Default true. */
   mirror?: boolean;
@@ -193,6 +204,12 @@ export interface CameraViewOptions {
   depth?: number;
   /** The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
   aspect?: number;
+  /**
+   * `'depth'`: while the pointer is over the woven view, a crosshair just in front of whatever is
+   * under it (runtime ADR-046, measured off the pair's two halves) replaces the CSS cursor, so it
+   * is never drawn on the glass behind a face that sits in front of it. Off by default (zero cost).
+   */
+  cursor?: 'depth' | PairCursorOptions;
   /**
    * Called when the view's route changes — including when the wall says the tile will not weave
    * and the view drops to its flat left eye by itself — and when its `firstWoven` settles. Keep a

@@ -71,6 +71,7 @@ const str = (v) => (v === null || v === undefined || String(v).trim() === '' ? u
  * | `no-audio`           | `audio: false`                           |
  * | `no-self-view`       | `selfView: false`                        |
  * | `no-auto-converge`   | `autoConverge: false`                    |
+ * | `cursor="depth"`     | `cursor: 'depth'`                        |
  * | `tile-aspect`        | `theme.tileAspect` (a number, or `w/h`)  |
  * | `invite-base`        | `invite.base`                            |
  * | `browser-url`        | `landing.browserUrl`                     |
@@ -101,6 +102,7 @@ export function attrsToOpts(source) {
   if (isOn(get('no-audio'))) o.audio = false;
   if (isOn(get('no-self-view'))) o.selfView = false;
   if (isOn(get('no-auto-converge'))) o.autoConverge = false;
+  if (str(get('cursor')) === 'depth') o.cursor = 'depth';
   // The C2 groups (RFC 0003 §2): the attribute names are the C1 ones, the option shapes are new.
   const theme = { accent: str(get('accent')), tileAspect: num(get('tile-aspect')) };
   if (theme.accent !== undefined || theme.tileAspect !== undefined) o.theme = Object.fromEntries(Object.entries(theme).filter(([, v]) => v !== undefined));
