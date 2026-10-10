@@ -21,6 +21,7 @@ import {
   gpuBufferLimits,
   propagateStoresAcrossCameras,
   wrapFrameGraphStores,
+  wrapGsplatManagerParams,
 } from '../js/inline3d-splat-device.js';
 import { getEffectChunks } from '../js/inline3d-splat-effects.js';
 import { attachPlayCanvasSplat, perspectiveFov, poseMatrix } from '../js/inline3d-splat-playcanvas.js';
@@ -465,4 +466,23 @@ test('wrapFrameGraphStores: runs after the engine compile, once per graph; insta
   assert.equal(gpu.rec.frameGraph._dxrStores, true);
   const gl = await boot();
   assert.equal(gl.rec.frameGraph._dxrStores, undefined, 'WebGL2: the engine graph is untouched');
+});
+
+test("wrapGsplatManagerParams: each manager's update (its projector dispatch) sees its mesh instance's dxrFx_* values; the material is restored", () => {
+  const mat = { parameters: { dxrFx_t_amount: { data: 1 }, other: { data: 7 } }, setParameter(k, v) { this.parameters[k] = { data: v }; }, deleteParameter(k) { delete this.parameters[k]; } };
+  const seen = [];
+  const mgr = (amount) => ({
+    renderer: { meshInstance: { parameters: { dxrFx_t_amount: { data: amount }, engineOwn: { data: 99 } } } },
+    update() { seen.push({ amount: mat.parameters.dxrFx_t_amount.data, own: mat.parameters.engineOwn }); return 5; },
+  });
+  const live = mgr(0.25);
+  const eye = mgr(0.75);
+  const director = { camerasMap: new Map([['live', { layersMap: new Map([[1, { gsplatManager: live }]]) }], ['eye', { layersMap: new Map([[0, { gsplatManager: eye }]]) }]]) };
+  assert.equal(wrapGsplatManagerParams(director, () => mat), 2);
+  assert.equal(wrapGsplatManagerParams(director, () => mat), 0, 'once per manager');
+  assert.equal(live.update(), 5);
+  eye.update();
+  assert.deepEqual(seen, [{ amount: 0.25, own: undefined }, { amount: 0.75, own: undefined }], 'only the SDK effect values are carried over');
+  assert.equal(mat.parameters.dxrFx_t_amount.data, 1, 'restored');
+  assert.equal(mat.parameters.other.data, 7);
 });

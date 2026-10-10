@@ -850,7 +850,8 @@ from where the engine runs them. All were measured by `npm run test:e2e:wgsl` (b
 
 **What the adapter does about 1, 2 and 5** (`device: 'webgpu'`,
 [`playcanvas-adapter.md` § WebGPU (opt-in)](playcanvas-adapter.md#webgpu-opt-in-device)): setSource's
-particle transitions and wavefront run through the entity scope on WebGPU; `minPixelSize` and
+per-manager mesh-instance values reach each manager's projector (`wrapGsplatManagerParams`), so
+the particle transitions and the wavefront keep their render-time path on WebGPU; `minPixelSize` and
 `minContribution` are held at 0 while a transition, a reveal or a `playEffect` runs; and the
 footprint patch is applied to the final WGSL at `createShaderModule`, which reaches the projector.
 

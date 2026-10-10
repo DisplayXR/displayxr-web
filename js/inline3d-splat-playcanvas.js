@@ -144,6 +144,7 @@ import {
   wrapWgslFootprint,
   gpuBufferLimits,
   wrapFrameGraphStores,
+  wrapGsplatManagerParams,
 } from './inline3d-splat-device.js';
 
 /**
@@ -2317,6 +2318,9 @@ export class PlayCanvasSplatViewer {
     this._videoPlane?.beforeDraw(entries, rect);
     // cursor: 'depth' — place the sprite and queue its lines for the tick below (no-op unless opted in).
     this.cursorDepth?.frame(entries);
+    // WebGPU (GPU sort): each manager's projector sees its own mesh instance's effect values
+    // (wrapGsplatManagerParams) — setSource's render-time transitions depend on it.
+    if (this.isWebGPU) wrapGsplatManagerParams(app.renderer?.gsplatDirector, () => app.scene?.gsplat?.material);
     app.tick(now());
     this._afterTick();
     return true;
@@ -5435,44 +5439,41 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   /**
    * WebGPU pre-warm of a transition's EFFECT pipelines (panel: the first WebGPU transition had a
    * one-off ~308 ms frame — its pipelines built on its first frame). On WebGPU a shader request
-   * builds only the WGSL modules; the render / compute / work-buffer pipelines are built on the
-   * first draw or dispatch. So the variant the transition will install is installed for real, on
-   * the photo on screen, at amount 1 — every body returns early there, so the picture is the
-   * baseline exactly — drawn for two ticks, then removed. The scope is the one the WebGPU
-   * transition uses: entity (the work-buffer copy) for the particle kinds and the wavefront, tile
-   * (the projector) for a sequence. It costs one work-buffer pass of the current photo, in the
-   * dwell. Skipped while a transition runs or when the page has that effect on (never replaced).
+   * builds only the WGSL modules; the projector / raster pipelines are built on the first dispatch
+   * or draw. So the tile variant the transition will install is installed for real for two ticks,
+   * with no per-side values — the material's are the untouched baseline (driveShared's progress 1),
+   * so the picture does not change — then removed. Skipped while a transition runs, or when that
+   * tile slot is in use (never replaced).
    */
   function prewarmEffectDraws(plan) {
-    const ent = current?.entity;
-    if (!fx || !ent || pendingSwap || removed || !plan) return;
+    if (!fx || !current?.entity || pendingSwap || removed || !plan) return;
     const list = plan.particles
-      ? [plan.particles.out, plan.particles.in].map((side) => ({ scope: 'entity', effect: side.effect, opts: side.opts }))
+      ? [[`${plan.particles.in.effect}|${plan.particles.in.opts.order ?? ''}`, [['transition', plan.particles.in.effect, { order: plan.particles.in.opts.order }]]]]
       : plan.transition === 'wavefront'
-        ? [{ scope: 'entity', effect: 'wavefront', opts: { band: plan.band, ridge: plan.ridge, ridgeMaxDisparity: plan.ridgeMaxDisparity } }]
+        ? [['wavefront', [['transition', 'wavefront', {}], ['transition-cull', 'wipecull', {}]]]]
         : plan.sequence
-          ? [plan.sequence.out, plan.sequence.in].map((side) => ({ scope: 'tile', effect: side.effect, opts: side.opts }))
+          ? [plan.sequence.out, plan.sequence.in].map((side) => [`seq:${side.effect}|${side.opts.order ?? ''}`, [['transition', side.effect, EFFECTS[side.effect]?.particle ? { order: side.opts.order } : {}]]])
           : [];
-    for (const it of list) {
-      const key = `gpu:${it.scope}:${it.effect}|${it.opts?.order ?? ''}`;
-      if (prewarmed.has(key)) continue;
-      const scopeKey = it.scope === 'tile' ? 'tile' : ent;
-      if (fx.scopes.get(scopeKey)?.has(it.scope === 'tile' ? 'transition' : it.effect)) continue;
-      let d = null;
+    for (const [key, installs] of list) {
+      if (prewarmed.has(`gpu:${key}`)) continue;
+      if (installs.some(([name]) => fx.scopes.get('tile')?.has(name))) continue;
+      const made = [];
       try {
-        d = it.scope === 'tile' ? fx.driveTile('transition', it.effect, it.opts || {}) : fx.drive(ent, it.effect, it.opts || {});
-        d.set(1);
+        for (const [name, effect, opts] of installs) made.push(plan.sequence ? fx.driveTile(name, effect, opts) : fx.driveShared(name, effect, opts));
+        if (plan.sequence) for (const d of made) d.set(1);
       } catch (err) {
-        console.info('[inline3d/splat] WebGPU effect pre-warm skipped', it.effect, err);
+        for (const d of made) d.remove();
+        console.info('[inline3d/splat] WebGPU effect pre-warm skipped', key, err);
         continue;
       }
-      prewarmed.add(key);
+      prewarmed.add(`gpu:${key}`);
       let ticks = 0;
       viewer._hooks.push(() => {
         if (++ticks < 3 && !pendingSwap) return true; // drawn on the frames between
-        d.remove();
+        for (const d of made) d.remove();
         return false;
       });
+      break; // one variant per dwell frame pair is enough; the rest on the next pre-warm
     }
   }
 
@@ -5723,10 +5724,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         viewer.setSnapshotAlpha(0);
         viewer.releaseSnapshot();
       });
-      // WebGPU (GPU sort): mesh-instance values never reach the compute projector, so the
-      // render-time path (values per camera manager) would draw both photos whole. The entity
-      // scope below works there (docs/splat-effects.md § WGSL twins, GPU-sort difference 1).
-      if (fx && managerMi(viewer.eye, null) && !viewer.isWebGPU) {
+      // WebGPU (GPU sort): the per-manager values reach each projector through
+      // wrapGsplatManagerParams (docs/splat-effects.md § WGSL twins, GPU-sort difference 1).
+      if (fx && managerMi(viewer.eye, null)) {
         playWavefrontRender({ plan, entity, live, finishers, finish, isFinished: () => finished, pumpLive });
         await done;
         return out;
@@ -6163,9 +6163,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // rewrite + a re-sort per asset per frame: correct, but it hitches on a 1.18M photo).
     const eyeMi = () => managerMi(viewer.eye, null);
     const liveMi = () => (live?.active ? managerMi(live.cam, live.layer) : null);
-    // WebGPU (GPU sort): mesh-instance values never reach the compute projector — the per-side
-    // values would do nothing and both photos would draw whole. The entity scope works there.
-    const shared = particle.out.effect === particle.in.effect && eyeMi() && !viewer.isWebGPU ? fx.driveShared('transition', particle.in.effect, { order: particle.in.opts.order }) : null;
+    // WebGPU (GPU sort): the per-side values reach each manager's projector through
+    // wrapGsplatManagerParams, so the render-time path is the same on both devices.
+    const shared = particle.out.effect === particle.in.effect && eyeMi() ? fx.driveShared('transition', particle.in.effect, { order: particle.in.opts.order }) : null;
     // the outgoing side, BEFORE adopt(): its frame (eyes, focus, framing) is the old asset's
     let outFx = null;
     if (live) {

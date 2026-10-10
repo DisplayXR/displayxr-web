@@ -1007,7 +1007,7 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   above): the transition starts sooner on WebGPU (`setSource` call → first frame 126 → 53 ms,
   pre-sort 88 → 21 ms) and the steady p95 is identical. But WebGPU drops more frames inside the
   window: 6.5 % of frames over 25 ms against 0 % on WebGL2, p95 24 vs 17 ms. That depends on the
-  transition. The entity-scope path rewrites each photo's work buffer every frame. The first WebGPU
+  transition (measured with the entity-scope path this branch no longer uses). The first WebGPU
   transition also had a one-off ~308 ms frame (pipeline builds), which the pre-warm now moves into
   the dwell.
 
@@ -1028,11 +1028,15 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   `minPixelSize` (`perf: false` keeps the engine's defaults). While a transition, a reveal or a
   `playEffect` runs, `minPixelSize` and `minContribution` are both held at 0 (the particle dots in
   flight are ~1 px) and restored after.
-- **Transitions on GPU sort.** Values set on a gsplat mesh instance never reach the compute
-  projector, so setSource's render-time paths (the particle transitions' `driveShared`, the
-  wavefront's per-camera values) would draw both photos whole. On WebGPU the adapter drives them
-  through the entity scope (the work-buffer copy), which works there; it rewrites each photo's work
-  buffer per frame, the cost the render-time path avoids on WebGL2. `crossfade` (live outgoing
+- **Transitions on GPU sort.** setSource's render-time transitions (the particle kinds, the
+  wavefront) put each photo's values on the mesh instance of the gsplat manager that draws it, but
+  WebGPU's GPU-sort compute projector copies only the tile material's parameters. The adapter runs
+  each manager's update (where its projector dispatches) with that mesh instance's `dxrFx_*` values
+  laid over the material, and restores them right after (`wrapGsplatManagerParams`). The
+  transitions then take the same path as on WebGL2. An earlier entity-scope workaround (rewriting
+  each photo's work buffer every frame) dissolved the outgoing photo later and less. Measured
+  offline on `dust`, mean tile luma at raw 0.5 was WebGL2 27, entity path 66, now 37–41. That is
+  what read as "WebGL2's transitions are faster" on the panel. `crossfade` (live outgoing
   included), `cut`, sequences and every effect run as on WebGL2, with the WGSL twins
   ([`splat-effects.md` § WGSL twins](splat-effects.md#wgsl-twins-webgpu)).
 - **Snapshot.** setSource's frame snapshot is a texture copy of the back buffer in its own format
@@ -1041,9 +1045,8 @@ SOG, 2 views 3840×1080; both APIs held 60 Hz):
   request. So the dwell pre-warm (`prepareSource(…, { transition })`, or a non-prepared
   `setSource`'s own) DRAWS what the transition will use. It draws the overlay quads once at weight
   0. It also installs the transition's effect variant for real on the photo on screen, at amount 1
-  (every body returns early there, so the picture is the baseline), for two ticks, in the scope the
-  WebGPU transition uses: entity for the particle kinds and the wavefront, tile for a sequence. That
-  costs one work-buffer pass of the current photo, in the dwell. Offline (headless Chrome, RTX 3080,
+  (the untouched baseline, so the picture does not change), for two ticks: the tile variant the
+  transition installs. Offline (headless Chrome, RTX 3080,
   `dust`, 1.18M): the first transition's worst frame was 16.9 ms with the pre-warm and 221.6 ms with
   `?dxrdiag=nowarm`. On the panel, before this pre-warm, it was ~308 ms. A setSource with no
   pre-warm, or one superseded inside the dwell, still builds them on its first frame.

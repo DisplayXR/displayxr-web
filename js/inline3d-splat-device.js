@@ -294,3 +294,59 @@ export function wrapFrameGraphStores(frameGraph) {
   frameGraph._dxrStores = true;
   return true;
 }
+
+// ── per-camera effect values on the GPU-sort projector ──
+
+/** The SDK's effect uniforms (./inline3d-splat-effects.js prefixOf): the only names carried over. */
+const FX_PARAM = /^dxrFx_/;
+
+/**
+ * Make each gsplat manager's PROJECTOR see the effect values set on that manager's mesh instance.
+ *
+ * Why: setSource's render-time transitions (the particle kinds' driveShared, the wavefront's
+ * per-camera values) put each photo's values on the mesh instance of the manager that draws it —
+ * the eye camera's (incoming) and the live camera's (outgoing). The raster reads mesh-instance
+ * values, but WebGPU's GPU-sort compute projector copies only `scene.gsplat.material`'s parameters
+ * (gsplat-projector.js `dispatch`), so both photos were projected untouched. The entity-scope
+ * workaround that replaced it rewrote each photo's work buffer every frame and, measured offline,
+ * dissolved the outgoing photo later and less than the render-time path (dust at raw 0.5: mean
+ * luma 51–66 vs 27). Here each manager's `update()` — where its projector dispatches and uploads
+ * its uniforms, synchronously — runs with its mesh instance's `dxrFx_*` values laid over the
+ * material, which is restored right after. Wrapped once per manager; new managers (a live camera's)
+ * are picked up on the next call.
+ *
+ * @returns {number} managers newly wrapped
+ */
+export function wrapGsplatManagerParams(director, material) {
+  const cams = director?.camerasMap;
+  if (!cams || typeof cams.values !== 'function') return 0;
+  let n = 0;
+  for (const cd of cams.values()) {
+    const layers = cd?.layersMap;
+    if (!layers || typeof layers.values !== 'function') continue;
+    for (const ld of layers.values()) {
+      const m = ld?.gsplatManager;
+      if (!m || m._dxrMiParams || typeof m.update !== 'function') continue;
+      const update = m.update;
+      m.update = function () {
+        const own = this.renderer?.meshInstance?.parameters;
+        const mat = typeof material === 'function' ? material() : material;
+        const keys = own && mat?.setParameter ? Object.keys(own).filter((k) => FX_PARAM.test(k)) : [];
+        if (!keys.length) return update.apply(this, arguments);
+        const saved = keys.map((k) => [k, mat.parameters?.[k] ? mat.parameters[k].data : undefined]);
+        for (const k of keys) mat.setParameter(k, own[k].data);
+        try {
+          return update.apply(this, arguments);
+        } finally {
+          for (const [k, d] of saved) {
+            if (d === undefined) mat.deleteParameter?.(k);
+            else mat.setParameter(k, d);
+          }
+        }
+      };
+      m._dxrMiParams = true;
+      n++;
+    }
+  }
+  return n;
+}
