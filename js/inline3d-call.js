@@ -1715,7 +1715,7 @@ class Tile {
       const r = (rects[eye] = wire.eyeCropRect(eyeW, H, A, shift, eye));
       g.drawImage(v, eye * eyeW + r.sx, r.sy, r.sw, r.sh, eye * outW, 0, outW, outH);
     }
-    if (this.cursor) this.cursor.draw(g, this.luma, { rL: rects[0], rR: rects[1], outW, outH }, performance.now() / 1000);
+    if (this.cursor) this.cursor.draw(g, this.luma, { rL: rects[0], rR: rects[1], outW, outH, handle: this.handle }, performance.now() / 1000);
   }
 
   /**

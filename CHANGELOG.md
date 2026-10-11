@@ -5,6 +5,18 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./call`, `./camera`) only; no API change.
+
+### Stereo-tile depth cursor: the margin is 2 mm on the glass
+
+- The arrow now floats **2 mm** (of on-screen disparity) in front of content that comes out of the
+  screen, and hands back to the OS arrow under **0.3 mm** — the runtime's 0.03 / 0.005 of the eye
+  baseline, so a stereo tile's cursor and a lifted tile's (runtime #1908) sit identically. 1.40.1
+  used ~1–2 buffer px, which on a small tile was a fraction of a millimetre. Physical units come from
+  the tile's `displayMetrics()` (the panel's pixel pitch); before it answers, the CSS reference px.
+
 ## 1.40.1 — 2026-10-11
 
 Touches the **preview tier** (`./call`, `./camera`) only: how `cursor: 'depth'` looks and moves. No

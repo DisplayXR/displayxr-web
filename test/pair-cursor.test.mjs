@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
-import { pairFootprintDisparity, pairCursorTarget, drawPairArrow, PairCursor, PAIR_CURSOR_MARGIN, PAIR_CURSOR_CLAMP, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
+import { pairFootprintDisparity, pairCursorTarget, pairCursorScale, drawPairArrow, PairCursor, PAIR_CURSOR_MARGIN_M, PAIR_CURSOR_CSS_PX_M, PAIR_CURSOR_CLAMP, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
 import { resolvePairCursorOption } from '../js/inline3d-cursor-option.js';
 import { normalizeCallOptions as normalizeOptions } from '../js/call/options.js';
 import { attrsToOpts } from '../js/call/element.js';
@@ -114,16 +114,25 @@ test('footprint disparity: nothing to match (flat frame, no copy) → null; targ
   const flat = { img: new Uint8Array(2 * E * H).fill(128), w: 2 * E, h: H, scale: 1 };
   assert.equal(pairFootprintDisparity(flat, { rL: full, rR: full, outW: E }, 0.5, 0.5, 0.06, E / H), null);
   assert.equal(pairFootprintDisparity(null, { rL: full, rR: full, outW: E }, 0.5, 0.5, 0.06, E / H), null);
-  assert.equal(pairCursorTarget(null, 640), 0);
+  assert.equal(pairCursorTarget(null, 640, 3), 0);
 });
 
 test('target: in front of content that comes out (plus the margin, capped); never behind the glass', () => {
   const W = 640;
-  assert.equal(pairCursorTarget(10, W), 10 + PAIR_CURSOR_MARGIN * W);
-  assert.equal(pairCursorTarget(500, W), PAIR_CURSOR_CLAMP * W, 'capped');
-  assert.equal(pairCursorTarget(0, W), 0, 'content on the glass: the plane');
-  assert.equal(pairCursorTarget(-3, W), 0, 'content behind the glass: the cursor stays on the plane, never inside');
-  assert.equal(pairCursorTarget(-500, W), 0);
+  assert.equal(pairCursorTarget(10, W, 4), 14);
+  assert.equal(pairCursorTarget(500, W, 4), PAIR_CURSOR_CLAMP * W, 'capped');
+  assert.equal(pairCursorTarget(0, W, 4), 0, 'content on the glass: the plane');
+  assert.equal(pairCursorTarget(-3, W, 4), 0, 'content behind the glass: the cursor stays on the plane, never inside');
+  assert.equal(pairCursorTarget(-500, W, 4), 0);
+});
+
+test('margin: 2 mm on the glass (the runtime 0.03 baseline), through the panel pixel pitch and the tile scale', () => {
+  // A 640-px buffer eye stretched over a 320-CSS-px tile on a panel where 1 CSS px = 0.225 mm:
+  // 2 mm = 8.89 CSS px = 17.8 buffer px.
+  const s = pairCursorScale(640, 320, 0.000225);
+  assert.ok(Math.abs(PAIR_CURSOR_MARGIN_M * s - (0.002 / 0.000225) * 2) < 1e-9);
+  // Unknown pitch → the CSS reference px (1/96 in).
+  assert.equal(pairCursorScale(640, 320, null), 2 / PAIR_CURSOR_CSS_PX_M);
 });
 
 /** A 2D context that records each filled path (the arrow outline). */
@@ -179,7 +188,8 @@ test('PairCursor: the OS arrow on the plane; the drawn arrow only over content t
   const p0b = cur.draw(g, near, geo, 1.2);
   assert.equal(p0b.drawn, true);
   assert.equal(canvas.style.cursor, 'none', 'the drawn arrow replaces the OS arrow');
-  assert.ok(Math.abs(p0b.disparityPx - pairCursorTarget(12, E)) < 0.6, `caught up within ~100 ms (${p0.disparityPx} → ${p0b.disparityPx})`);
+  const marginPx = PAIR_CURSOR_MARGIN_M * pairCursorScale(E, 384, PAIR_CURSOR_CSS_PX_M);
+  assert.ok(Math.abs(p0b.disparityPx - pairCursorTarget(12, E, marginPx)) < 0.6, `caught up within ~100 ms (${p0.disparityPx} → ${p0b.disparityPx})`);
   const tipX = g.ops.at(-2).pts[0][0];
   assert.ok(Math.abs(tipX - (0.5 * E + p0b.disparityPx / 2)) < 1e-9, 'left copy +d/2 about the hotspot');
   const sz = Math.max(...g.ops.at(-2).pts.map((p) => p[1])) - 0.5 * H;
