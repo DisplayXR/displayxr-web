@@ -10,7 +10,7 @@
 // The policy is the one every DisplayXR depth cursor follows (runtime ADR-046 Amendment 2), taken
 // from the shared core (../inline3d-cursor-depth.js), not re-implemented here:
 //  - never behind the glass: only content that comes OUT of the screen moves it, to the margin
-//    (0.03 eye baselines, ~2 mm) in front of that content (cursorTarget);
+//    (0.015 eye baselines, ~1 mm) in front of that content (cursorTarget);
 //  - on the plane it IS the OS cursor: the arrow is drawn into both halves only while the filtered
 //    disparity is past the draw threshold (-0.005 baselines, and >= 0.5 px; cursorShouldDraw), the
 //    OS cursor hidden exactly then;
@@ -109,7 +109,7 @@ export function pairPxPerBaseline(outW, tileCssWidth, metersPerCssPx, eyeSeparat
 /**
  * The arrow's target disparity in output px (+ = in front): the core's policy (cursorTarget) on
  * the content's disparity, converted through `pxPerBaseline`. In front of content that comes OUT
- * of the screen by the margin (0.03 baselines), else the glass — never behind it.
+ * of the screen by the margin (0.015 baselines), else the glass — never behind it.
  */
 export function pairCursorTarget(contentPx, pxPerBaseline, tuning = CURSOR_DEFAULT_TUNING) {
   if (contentPx === null || !Number.isFinite(contentPx) || !(pxPerBaseline > 0)) return 0;

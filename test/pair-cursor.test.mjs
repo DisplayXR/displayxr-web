@@ -5,7 +5,7 @@
 //   - a mirrored view flips the pointer, never the disparity;
 //   - the policy is the shared core's (ADR-046 Amendment 2), not a copy: the target is cursorTarget
 //     on the content's disparity in eye baselines, converted through the panel's pixel pitch
-//     (displayMetrics) × the eye separation; margin 0.03 baselines; the draw threshold
+//     (displayMetrics) × the eye separation; margin 0.015 baselines; the draw threshold
 //     (cursorShouldDraw: −0.005 baselines and ≥ 0.5 px) decides when the arrow is drawn;
 //   - the cursor never goes INSIDE the display: content on or behind the glass → the plane; only
 //     content that comes out moves it;
@@ -123,9 +123,9 @@ test('footprint disparity: nothing to match (flat frame, no copy) → null; targ
   assert.equal(pairCursorTarget(null, 100), 0);
 });
 
-test('target: the core policy in px — content that comes out + 0.03 baselines (clamped); never behind the glass', () => {
+test('target: the core policy in px — content that comes out + 0.015 baselines (clamped); never behind the glass', () => {
   const k = 100; // output px of on-screen disparity per eye baseline
-  assert.ok(Math.abs(pairCursorTarget(10, k) - (10 + 0.03 * k)) < 1e-9, 'the margin is 0.03 baselines');
+  assert.ok(Math.abs(pairCursorTarget(10, k) - (10 + 0.015 * k)) < 1e-9, 'the margin is 0.015 baselines');
   assert.ok(Math.abs(pairCursorTarget(500, k) - -T.minDisparity * k) < 1e-9, 'clamped at the core minDisparity');
   assert.equal(pairCursorTarget(0, k), 0, 'content on the glass: the plane');
   assert.equal(pairCursorTarget(-3, k), 0, 'content behind the glass: the cursor stays on the plane, never inside');
@@ -150,10 +150,10 @@ test('units: baseline ↔ px through the panel pixel pitch (displayMetrics) and 
   const s = pairCursorScale(640, 320, 0.000225);
   assert.ok(Math.abs(0.002 * s - (0.002 / 0.000225) * 2) < 1e-9);
   assert.equal(pairCursorScale(640, 320, null), 2 / PAIR_CURSOR_CSS_PX_M, 'unknown pitch → the CSS reference px');
-  // The margin, 0.03 of a 63 mm eye separation = 1.89 mm on the glass.
+  // The margin, 0.015 of a 63 mm eye separation = 0.945 mm on the glass.
   const k = pairPxPerBaseline(640, 320, 0.000225);
   assert.ok(Math.abs(k - s * DISPLAY_METRICS_DEFAULTS.eyeSeparationM) < 1e-9);
-  assert.ok(Math.abs(pairCursorTarget(1e-9, k) / s - 0.03 * 0.063) < 1e-9, 'margin ≈ 1.9 mm on the glass');
+  assert.ok(Math.abs(pairCursorTarget(1e-9, k) / s - 0.015 * 0.063) < 1e-9, 'margin ≈ 0.95 mm on the glass');
 });
 
 /** A 2D context that records each filled path (the arrow's outline, then its fill). */
@@ -214,7 +214,7 @@ test('PairCursor: the OS arrow on the plane; the drawn arrow only over content t
   const k = pairPxPerBaseline(E, 384, null);
   assert.ok(Math.abs(p0b.pxPerBaseline - k) < 1e-9, 'px ↔ baselines through the tile scale (CSS reference px before displayMetrics answers)');
   assert.ok(Math.abs(p0b.disparityPx - pairCursorTarget(12, k)) < 0.6, `caught up within ~100 ms (${p0.disparityPx} → ${p0b.disparityPx})`);
-  assert.ok(Math.abs(p0b.targetPx - (12 + 0.03 * k)) < 0.6, 'content + 0.03 baselines');
+  assert.ok(Math.abs(p0b.targetPx - (12 + 0.015 * k)) < 0.6, 'content + 0.015 baselines');
   const tipX = g.ops.at(-4).pts[0][0];
   assert.ok(Math.abs(tipX - (0.5 * E + p0b.disparityPx / 2)) < 1e-9, 'left copy +d/2 about the hotspot');
   assert.equal(g.ops.at(-4).pts[0][1], 0.5 * H, 'the TIP is on the hotspot row');

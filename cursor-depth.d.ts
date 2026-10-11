@@ -3,7 +3,7 @@
 // same geometry, same defaults, same numbers. For three.js, ./three's `DepthCursor` wires it up.
 //
 // The policy (ADR-046 Amendment 2), the same for every DisplayXR depth cursor: never behind the
-// glass (`cursorTarget`), margin 0.03 eye baselines, drawn only past the draw threshold
+// glass (`cursorTarget`), margin 0.015 eye baselines, drawn only past the draw threshold
 // (`cursorShouldDraw`; otherwise the OS cursor is the cursor), the classic arrow at the OS cursor's
 // size (`CURSOR_ARROW`, `cursorArrowMesh`, `cursorDefaultHeight`).
 
@@ -24,7 +24,7 @@ export interface CursorTuning {
   stale: number;
 }
 
-/** The defaults: margin 0.03 (~2 mm at a 65 mm IPD), clamp [−0.6, 0], rise 30 ms, sink 250 ms, stale 0.5 s. */
+/** The defaults: margin 0.015 (~1 mm at a 63–65 mm IPD), clamp [−0.6, 0], rise 30 ms, sink 250 ms, stale 0.5 s. */
 export const CURSOR_DEFAULT_TUNING: Readonly<CursorTuning>;
 /** Fallback sprite height, as a fraction of the canvas height (0.03), when the canvas's on-page size is unknown. */
 export const CURSOR_DEFAULT_HEIGHT: number;
@@ -79,7 +79,7 @@ export const CURSOR_ANCHOR_MODES: readonly CursorAnchorMode[];
 export interface CursorOptions {
   /** Sprite height as a fraction of the canvas height (default: the OS arrow's 19 CSS px of the canvas). */
   height?: number;
-  /** How far in front of out-of-screen content it floats, in eye-baseline units (default 0.03). */
+  /** How far in front of out-of-screen content it floats, in eye-baseline units (default 0.015). */
   margin?: number;
   /** Default `'hybrid'`. */
   anchor?: CursorAnchorMode;

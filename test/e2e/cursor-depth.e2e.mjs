@@ -7,7 +7,7 @@
 // viewer two hand-built off-axis views (what the DisplayXR Browser hands addScene) and a scripted
 // pointer. Pass =
 //   model (a unit cube): over the cube the arrow's disparity (its tip) is the cube front's minus the
-//     margin (0.03 baselines — in front of it, by exactly the ADR-046 Amendment 2 policy), and off
+//     margin (0.015 baselines — in front of it, by exactly the ADR-046 Amendment 2 policy), and off
 //     it NOTHING is drawn (the OS cursor is the cursor on the plane);
 //   splat (butterfly.sog; 'three' = the Spark engine): over the subject the arrow is in front of the
 //     glass, off it nothing is drawn;

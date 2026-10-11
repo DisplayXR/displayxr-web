@@ -1073,8 +1073,8 @@ wall.addScene(canvas, (views, layer) => {
   - *On the plane it IS the OS cursor.* Nothing is drawn unless the cursor is at least about
     0.3 mm (0.005 eye baselines, and half a panel pixel) in front of the glass. Otherwise the CSS
     cursor is the cursor, untouched, including any `cursor:` your page set on the canvas.
-  - *Margin.* `margin` (default 0.03 eye baselines, about 2 mm of on-screen disparity at a 65 mm
-    IPD) is how far in front of out-of-screen content it floats.
+  - *Margin.* `margin` (default 0.015 eye baselines, about 1 mm of on-screen disparity at a
+    63–65 mm IPD) is how far in front of out-of-screen content it floats.
 - **What it draws.** The classic arrow (white, dark outline), at the OS cursor's size (19 CSS px of
   the canvas unless you pass `height`), with its tip on the click point. It hit-tests the arrow's
   footprint, not just the tip, so a nearer edge beside the hotspot can't cut through the arrow, and
