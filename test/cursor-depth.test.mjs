@@ -12,6 +12,15 @@ import assert from 'node:assert/strict';
 import {
   CURSOR_DEFAULT_TUNING as T,
   CURSOR_DEFAULT_HEIGHT,
+  CURSOR_ARROW,
+  CURSOR_ARROW_FILL,
+  CURSOR_ARROW_CSS_PX,
+  CURSOR_DRAW_THRESHOLD,
+  CURSOR_DRAW_MIN_PX,
+  cursorArrowMesh,
+  cursorDefaultHeight,
+  cursorModelMatrix,
+  cursorShouldDraw,
   CursorDepthPlacer,
   cursorFilterStep,
   cursorPointDisparity,
@@ -136,7 +145,107 @@ test('cursor-depth: target = content minus margin, clamped; nothing under it = t
   assert.equal(cursorTarget(T, false, -0.4), 0);
   near(cursorTarget(T, true, -0.2), -0.2 - T.margin);
   assert.equal(cursorTarget(T, true, -5), T.minDisparity);
-  assert.equal(cursorTarget(T, true, 0.95), T.maxDisparity);
+  assert.equal(cursorTarget(T, true, 0.95), 0, 'content behind the glass: the cursor stays ON it');
+  assert.equal(T.maxDisparity, 0);
+});
+
+test('policy (ADR-046 A2): never behind the glass — random content ⇒ target ≤ 0; content on/behind ⇒ exactly 0', () => {
+  let s = 11;
+  const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  // Even a tuning that asks for the old +0.6 clamp cannot put it behind the glass.
+  const old = { ...T, maxDisparity: 0.6 };
+  for (let i = 0; i < 2000; i++) {
+    const d = (rnd() - 0.5) * 4;
+    for (const tu of [T, old]) {
+      const t = cursorTarget(tu, true, d);
+      assert.ok(t <= 0, `d=${d} → ${t}`);
+      if (d >= 0) assert.equal(t, 0, `content on/behind the glass (d=${d}) leaves it on the glass`);
+      else assert.equal(t, Math.max(d - tu.margin, tu.minDisparity), `in front: max(d − margin, dMin) (d=${d})`);
+    }
+  }
+  assert.equal(cursorTarget(T, true, 0), 0);
+  assert.equal(cursorTarget(T, true, -0), 0);
+  // Even a NEGATIVE margin (a tuning that asks to sink into the content) is capped at the glass.
+  assert.equal(cursorTarget({ ...T, margin: -0.1 }, true, -0.05), 0);
+  assert.equal(cursorTarget({ ...old, margin: -0.1 }, true, -0.05), 0);
+});
+
+test('policy (ADR-046 A2): the draw threshold — only at or past −0.005 baselines, and ≥ 0.5 px where px are known', () => {
+  assert.equal(CURSOR_DRAW_THRESHOLD, -0.005);
+  assert.equal(CURSOR_DRAW_MIN_PX, 0.5);
+  assert.equal(cursorShouldDraw(-0.0049), false, 'just short of the threshold: the OS cursor');
+  assert.equal(cursorShouldDraw(-0.0051), true, 'just past it: drawn');
+  assert.equal(cursorShouldDraw(0), false);
+  assert.equal(cursorShouldDraw(0.2), false, 'behind the glass: never drawn');
+  assert.equal(cursorShouldDraw(NaN), false);
+  // The pixel floor: 50 px per baseline → 0.5 px is 0.01 baselines.
+  assert.equal(cursorShouldDraw(-0.009, 50), false, 'past the threshold but under 0.5 px');
+  assert.equal(cursorShouldDraw(-0.011, 50), true);
+  assert.equal(cursorShouldDraw(-0.006, 1000), true, 'a fine panel: the threshold rules');
+  assert.equal(cursorShouldDraw(-0.006, null), true, 'px unknown: the threshold alone');
+});
+
+test('CursorDepthPlacer: active = the draw decision — over content behind the glass it is solved but NOT drawn', () => {
+  const a = kooima([-0.032, 0, 0.6]), b = kooima([0.032, 0, 0.6]);
+  const placer = new CursorDepthPlacer();
+  const behind = placer.update([a, b], { u: 0.5, v: 0.5, nearestPoint: [0, 0, -0.1] }, 1);
+  assert.equal(behind.solved, true);
+  assert.equal(behind.active, false, 'the OS cursor is the cursor');
+  assert.equal(behind.targetDisparity, 0);
+  assert.equal(behind.disparity, 0);
+  const nothing = new CursorDepthPlacer().update([a, b], { u: 0.5, v: 0.5, nearestPoint: null }, 1);
+  assert.equal(nothing.active, false, 'nothing under it: nothing drawn (not "drawn at 0")');
+  // The pixel floor, through canvasPx: baseline 0.064 m over a 0.2 m canvas 40 px tall → 12.8 px per
+  // baseline, so content just in front (target −0.035) is 0.45 px: under the floor.
+  const shallow = [0, 0, 0.6 * (1 - 1 / (1 + 0.005))]; // d = −0.005
+  const pFloor = new CursorDepthPlacer().update([a, b], { u: 0.5, v: 0.5, nearestPoint: shallow, canvasPx: 40 }, 1);
+  near(pFloor.pxPerBaseline, (0.064 / H) * 40);
+  near(pFloor.disparity, -0.005 - T.margin);
+  assert.equal(pFloor.active, false, 'under 0.5 px on the panel');
+  assert.equal(new CursorDepthPlacer().update([a, b], { u: 0.5, v: 0.5, nearestPoint: shallow, canvasPx: 400 }, 1).active, true);
+});
+
+test('arrow: the classic 12×19 arrow, TIP at the hotspot; one mesh for every backend', () => {
+  assert.deepEqual([...CURSOR_ARROW[0]], [0, 0], 'vertex 0 is the tip, at the hotspot');
+  const xs = CURSOR_ARROW.map((p) => p[0]), ys = CURSOR_ARROW.map((p) => p[1]);
+  assert.equal(Math.min(...xs), 0, 'nothing left of the tip');
+  assert.equal(Math.min(...ys), 0, 'nothing above the tip');
+  near(Math.max(...ys), 18.6 / 19, 1e-9, 'height');
+  near(Math.max(...xs), 11.7 / 19, 1e-9, 'width (12 px of 19)');
+  const area = (poly) => Math.abs(poly.reduce((a, p, i) => { const q = poly[(i + 1) % poly.length]; return a + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+  const m = cursorArrowMesh();
+  assert.equal(m.count, 30, 'outline (5 triangles) then fill (5 triangles)');
+  // 3D: y UP, the tip at the origin, the body down-right — so the model matrix puts the tip on the placement.
+  near3([m.positions[0], m.positions[1], m.positions[2]], [0, 0, 0], 0);
+  let triArea = 0, fillArea = 0;
+  for (let t = 0; t < 10; t++) {
+    const P = [0, 1, 2].map((k) => [m.positions[(t * 3 + k) * 3], m.positions[(t * 3 + k) * 3 + 1]]);
+    for (const [x, y] of P) assert.ok(x >= -1e-9 && y <= 1e-9, `every vertex right of and below the tip (${x}, ${y})`);
+    const a = Math.abs((P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1])) / 2;
+    if (t < 5) triArea += a; else fillArea += a;
+  }
+  near(triArea, area(CURSOR_ARROW), 1e-6, 'the triangles tile the outline polygon exactly');
+  near(fillArea, area(CURSOR_ARROW_FILL), 1e-6, 'and the fill polygon');
+  assert.ok(fillArea < triArea, 'the fill is inset');
+  // Colours: dark outline first, white fill.
+  assert.deepEqual([...m.colors.slice(0, 3)].map((c) => c < 0.1), [true, true, true]);
+  assert.deepEqual([...m.colors.slice(15 * 4, 15 * 4 + 3)], [1, 1, 1]);
+  // The fill's edges sit one px (1/19) in from the outline's: check the two edges at the tip.
+  const f0 = CURSOR_ARROW_FILL[0];
+  near(f0[0], 1 / 19, 1e-9, 'one px in from the left edge');
+  const [ax, ay] = CURSOR_ARROW[6]; // the tip → right-wing edge
+  near((ay * f0[0] - ax * f0[1]) / Math.hypot(ax, ay) * -1, 1 / 19, 1e-9, 'one px in from the top edge');
+  // The model matrix puts the mesh origin (the tip) at the placement position.
+  const M = cursorModelMatrix({ basis: { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, height: 0.02, position: [0.1, 0.2, 0.3] });
+  assert.deepEqual([M[12], M[13], M[14]], [0.1, 0.2, 0.3]);
+});
+
+test('size: the OS arrow — 19 CSS px of the canvas by default, recomputed for its size', () => {
+  assert.equal(CURSOR_ARROW_CSS_PX, 19);
+  near(cursorDefaultHeight(400), 19 / 400, 1e-12);
+  near(cursorDefaultHeight(950), 0.02, 1e-12);
+  assert.equal(cursorDefaultHeight(20), 0.5, 'capped');
+  assert.equal(cursorDefaultHeight(0), CURSOR_DEFAULT_HEIGHT, 'unknown: the fallback');
 });
 
 test('cursor-depth: the filter rises fast and sinks slowly, and re-primes after a gap', () => {
@@ -225,6 +334,10 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
   assert.ok(p.position[2] > 0.1, 'sprite is in front of the content');
   assert.equal(canvas.style.cursor, 'none');
 
+  // The arrow at the OS cursor's size (19 CSS px of a 200-px canvas), scaled by t; its tip on the placement.
+  near(p.height, (19 / 200) * H * (1 / (1 - p.disparity)), 1e-9);
+  near3([cur.object.matrix.elements[12], cur.object.matrix.elements[13], cur.object.matrix.elements[14]], p.position);
+
   // Off the content (right half): back on the glass.
   cur.setPointer(0.75, 0.5);
   assert.equal(cur.update(views, 1032).targetDisparity, 0);
@@ -232,6 +345,16 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
   // The footprint, not the hotspot: just right of the content edge still sees it.
   cur.setPointer(0.505, 0.5);
   assert.ok(cur.update(views, 1048).targetDisparity < 0, 'a nearer edge within the footprint counts');
+
+  // Settled on the glass: nothing drawn, the CSS cursor (the page's 'crosshair') is back.
+  cur.setPointer(0.75, 0.5);
+  let q;
+  for (let t = 1100; t < 3000; t += 16) q = cur.update(views, t);
+  assert.equal(q.active, false);
+  assert.equal(cur.object.visible, false);
+  assert.equal(canvas.style.cursor, 'crosshair', "the page's cursor, untouched on the plane");
+  cur.setPointer(0.505, 0.5);
+  cur.update(views, 3016);
 
   // 2D (one view): inactive, CSS cursor restored.
   assert.equal(cur.update([views[0]], 1064).active, false);
@@ -267,12 +390,14 @@ test('DepthCursor: raysPerFrame (an expensive hit test) casts N rays a frame and
 
 // ── 1.37: anchor modes, margin, options, pointer scope ─────────────────────────────────────
 
-import { CURSOR_ANCHOR_MODES, resolveCursorOption } from '../js/inline3d-cursor-depth.js';
+import { CURSOR_ANCHOR_MODES, CursorPointer, resolveCursorOption } from '../js/inline3d-cursor-depth.js';
 
 const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 
-test('cursor-depth: the default margin rests on the content (0.005 baseline)', () => {
-  assert.equal(T.margin, 0.005);
+test('cursor-depth: the default margin is 0.03 baseline (~2 mm at 65 mm IPD), clamp [−0.6, 0]', () => {
+  assert.equal(T.margin, 0.03);
+  assert.equal(T.minDisparity, -0.6);
+  assert.equal(T.maxDisparity, 0);
 });
 
 test('anchor hybrid: on the ray while the pointer moves, world-FIXED while it is still', () => {
@@ -417,4 +542,19 @@ test('anchor hybrid: a still pointer + the head moving NEARER keeps the sprite a
   assert.equal(h.anchored, true);
   near(h.position[2], w.position[2], 1e-6); // same distance in front of the glass as the world placement
   assert.ok(h.position[2] > 0.1, 'still in front of the content');
+});
+
+test('CursorPointer: a cursor the page sets while the sprite hides it is not overwritten on restore', () => {
+  const canvas = stubCanvas();
+  canvas.style.cursor = 'grab';
+  const ptr = new CursorPointer(canvas);
+  ptr.hideCss(true);
+  assert.equal(canvas.style.cursor, 'none');
+  ptr.hideCss(false);
+  assert.equal(canvas.style.cursor, 'grab', 'restored');
+  ptr.hideCss(true);
+  canvas.style.cursor = 'grabbing'; // the page changed it meanwhile (a drag began)
+  ptr.hideCss(false);
+  assert.equal(canvas.style.cursor, 'grabbing', "the page's newer cursor is kept");
+  ptr.dispose();
 });

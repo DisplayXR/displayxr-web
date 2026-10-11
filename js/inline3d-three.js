@@ -55,12 +55,13 @@
 import {
   CursorDepthPlacer,
   CursorPointer,
-  cursorCrosshairMesh,
-  cursorFootprint,
+  cursorArrowMesh,
+  cursorArrowFootprint,
+  cursorDefaultHeight,
   cursorModelMatrix,
   cursorViewRay,
-  CURSOR_DEFAULT_HEIGHT,
   CURSOR_DEFAULT_TUNING,
+  CURSOR_OUTLINE_COLOR,
 } from './inline3d-cursor-depth.js';
 
 /**
@@ -451,9 +452,13 @@ export function raycastHitTest(THREE, targets) {
  * A cursor that rises to the depth of the content under it, so it is never drawn behind
  * something that pops out of the glass (a depth violation). The page supplies the content —
  * a hit test — and this does the rest: tracks the pointer over the canvas, hit-tests the
- * cursor FOOTPRINT (not just the hotspot), places a crosshair sprite with the same maths and
- * defaults as the runtime's XR_DXR_cursor_depth (ADR-046), and hides the CSS cursor exactly
- * while the sprite replaces it.
+ * cursor FOOTPRINT (not just the hotspot), places the arrow sprite with the same maths and
+ * policy as the runtime's XR_DXR_cursor_depth (ADR-046 Amendment 2), and hides the CSS cursor
+ * exactly while the sprite replaces it.
+ *
+ * Front-only: the sprite is drawn only while content under it comes OUT of the glass, the margin
+ * in front of it. Over content on or behind the glass nothing is drawn — the CSS/OS cursor is the
+ * cursor, untouched. The sprite is the classic arrow at the OS cursor's size, tip on the hotspot.
  *
  * Opt-in: nothing runs unless you construct one and call update(). In 2D (one view) or with the
  * pointer off the canvas it is inactive, the sprite is hidden and the CSS cursor is back.
@@ -481,10 +486,11 @@ export class DepthCursor {
    * @param {(origin:number[], direction:number[]) => number[]|null} opts.hitTest  nearest
    *        content point along a ray in WORLD space, or null. {@link raycastHitTest} for meshes;
    *        for splats return the renderer's expected depth along the ray (never raycast splats).
-   * @param {number} [opts.height=0.03]  sprite height as a fraction of the canvas height.
-   * @param {number} [opts.color=0xffd61a]  fill colour (the outline is always dark).
-   * @param {number} [opts.margin=0.005]  how far in front of the content it floats, in eye-baseline
-   *        units (0.005 ≈ 1.5 mm at 60 cm: it rests on the content).
+   * @param {number} [opts.height]  sprite height as a fraction of the canvas height. Default: the
+   *        OS arrow's size, 19 CSS px of the canvas's on-page height (re-read every frame).
+   * @param {number} [opts.color=0xffffff]  the arrow's fill colour (the outline is always dark).
+   * @param {number} [opts.margin=0.03]  how far in front of out-of-screen content it floats, in
+   *        eye-baseline units (0.03 ≈ 2 mm of on-screen disparity at a 65 mm IPD).
    * @param {'hybrid'|'screen'|'world'} [opts.anchor='hybrid']  where along that depth: 'hybrid'
    *        follows the pointer exactly while it moves and stays world-fixed (parallaxes with the
    *        content) while it is still; 'screen' never parallaxes; 'world' always does.
@@ -498,12 +504,13 @@ export class DepthCursor {
    */
   constructor(
     THREE,
-    { canvas, hitTest, height = CURSOR_DEFAULT_HEIGHT, color = 0xffd61a, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas' },
+    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas' },
   ) {
     this._THREE = THREE;
     this.canvas = canvas;
     this.hitTest = hitTest;
-    this.height = height;
+    /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
+    this.height = height > 0 && Number.isFinite(height) ? height : null;
     this.viewSpace = viewSpace;
     this.raysPerFrame = raysPerFrame;
     this._ring = []; // amortised mode: the last hit per footprint point (null = a miss)
@@ -514,9 +521,9 @@ export class DepthCursor {
     /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
     this.placement = { active: false };
 
-    // Filled strokes with a dark outline (a 1 px line reads too thin through the lens).
+    // The arrow: a dark outline polygon, the fill inset over it; tip at the origin (the hotspot).
     const fill = [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
-    const m = cursorCrosshairMesh(fill);
+    const m = cursorArrowMesh(fill, CURSOR_OUTLINE_COLOR);
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
     geom.setAttribute('color', new THREE.Float32BufferAttribute(m.colors, 4));
@@ -552,8 +559,9 @@ export class DepthCursor {
     let p = { active: false };
     if (uv && vs.length >= 2) {
       const [u, v] = uv;
-      const nearestPoint = this._footprintHit(vs, u, v);
-      p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: this.height }, nowMs / 1000);
+      const h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
+      const nearestPoint = this._footprintHit(vs, u, v, h);
+      p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: h, canvasPx: this.pointer.panelPx() }, nowMs / 1000);
     }
     this.placement = p;
     this.object.visible = !!p.active;
@@ -575,12 +583,12 @@ export class DepthCursor {
 
   // Nearest content point under the footprint, from the two outer views (or, amortised, from
   // the first eye over the last cycle of footprint points).
-  _footprintHit(views, u, v) {
+  _footprintHit(views, u, v, height) {
     const a = views[0], b = views[views.length - 1];
     const m = a.transformMatrix;
     const fl = Math.hypot(m[8], m[9], m[10]) || 1;
     const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
-    const fp = cursorFootprint(u, v, this.height, this.pointer.aspect());
+    const fp = cursorArrowFootprint(u, v, height, this.pointer.aspect());
     let candidates;
     if (this.raysPerFrame > 0) {
       const ring = this._ring;
