@@ -1066,22 +1066,32 @@ wall.addScene(canvas, (views, layer) => {
 });
 ```
 
-- **What it does.** It hit-tests the cursor's footprint, not just the hotspot, so a nearer edge
-  beside the hotspot can't cut through the crosshair. It places a crosshair just in front of the
-  nearest hit, and hides the CSS cursor while the crosshair is shown.
+- **The policy (ADR-046 Amendment 2, the same for every DisplayXR depth cursor, native and web).**
+  - *Never behind the glass.* The cursor is either on the screen plane or in front of it. It moves
+    only to stay ahead of content that comes **out** of the screen; over content on or behind the
+    glass it stays on the glass.
+  - *On the plane it IS the OS cursor.* Nothing is drawn unless the cursor is at least about
+    0.3 mm (0.005 eye baselines, and half a panel pixel) in front of the glass. Otherwise the CSS
+    cursor is the cursor, untouched, including any `cursor:` your page set on the canvas.
+  - *Margin.* `margin` (default 0.03 eye baselines, about 2 mm of on-screen disparity at a 65 mm
+    IPD) is how far in front of out-of-screen content it floats.
+- **What it draws.** The classic arrow (white, dark outline), at the OS cursor's size (19 CSS px of
+  the canvas unless you pass `height`), with its tip on the click point. It hit-tests the arrow's
+  footprint, not just the tip, so a nearer edge beside the hotspot can't cut through the arrow, and
+  hides the CSS cursor exactly while the arrow is drawn. A custom CSS cursor (`grab`, a `url(…)`
+  image) is still drawn as the arrow while content pops out; mirroring the page's CSS cursor into
+  the sprite is future work (ADR-046 Amendment 2 §C).
 - **Behaviour and placement.** The cursor rises fast and sinks slowly, so it doesn't flicker at
   edges. The placement maths and defaults are the native runtime's (`XR_DXR_cursor_depth`), so web
   and native cursors behave alike.
-- **When it's inactive.** In 2D (one view) and off the canvas the crosshair hides and the normal
-  cursor returns.
-- **Head motion: `anchor`.** By default (`'hybrid'`) the crosshair follows the pointer exactly
+- **When it's inactive.** In 2D (one view), off the canvas, and over anything on or behind the
+  glass, nothing is drawn and the normal cursor is the cursor.
+- **Head motion: `anchor`.** By default (`'hybrid'`) the arrow follows the pointer exactly
   while it moves. While the pointer is still, it stays fixed in the scene, so it parallaxes with
   the content as the viewer looks around. A cursor that never parallaxes reads as being at the
   glass on a head-tracked display, even when its disparity says otherwise. `'screen'` never
   parallaxes, and `'world'` always does (and drifts a few mm off the pointer for an off-axis
   viewer).
-- **Margin.** `margin` (default 0.005 eye baselines, about 1.5 mm at 60 cm) is how far in front of
-  the content it floats. Larger values look detached.
 - **DOM over the canvas.** `pointerScope: 'window'` keeps the cursor active over HTML layered on
   the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
 - **Your `hitTest` must be cheap, and it must cover everything that sticks out.** It runs every
@@ -1092,8 +1102,11 @@ wall.addScene(canvas, (views, layer) => {
 - **Splats.** Supply a `hitTest` that returns the splat renderer's expected depth along the ray.
   Raycasting splats doesn't work.
 - **Attach pattern.** If your eye cameras hang off an app camera, pass `viewSpace: appCamera`.
-- **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths, dependency-free
-  (`CursorDepthPlacer`).
+- **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths and policy,
+  dependency-free: `CursorDepthPlacer`, and the pieces on their own (`cursorTarget`,
+  `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`).
+- **Stereo pairs** (`./call` and `./camera`, `cursor: 'depth'`) follow the same policy and draw the
+  same arrow; their depth is measured off the pair's two halves instead of hit-tested.
 
 ## Rounded corners
 

@@ -157,12 +157,15 @@ export function raycastHitTest(
 /**
  * A cursor that rises to the depth of the content under it, so it is never drawn behind something
  * that pops out of the glass. Same maths and defaults as the runtime's XR_DXR_cursor_depth
- * (ADR-046). Tracks the pointer over `canvas`, hit-tests the cursor FOOTPRINT, places a crosshair
- * (`object`, add it to your scene) and hides the CSS cursor exactly while the crosshair replaces it.
+ * (ADR-046, Amendment 2's policy). Tracks the pointer over `canvas`, hit-tests the cursor FOOTPRINT,
+ * and — only while content under it comes OUT of the glass — draws the classic arrow (`object`, add
+ * it to your scene; tip on the hotspot, the OS cursor's size) the margin in front of it, hiding the
+ * CSS cursor exactly then. Over content on or behind the glass nothing is drawn: the CSS cursor is
+ * the cursor, untouched. Never behind the glass.
  * Opt-in: nothing runs unless you construct one and call `update(views)` each frame.
  *
- * Head motion leaves the crosshair's image on the glass where it is (it stays under the mouse like
- * the OS cursor); only its depth follows the content under that line of sight.
+ * Head motion: while the pointer moves the arrow sits on the line of sight through it; while it is
+ * still, it is held world-fixed (default `anchor: 'hybrid'`), so it parallaxes like content.
  */
 export class DepthCursor {
   constructor(
@@ -172,11 +175,11 @@ export class DepthCursor {
       canvas: HTMLElement;
       /** Nearest content point along a WORLD ray, or null. For splats return the expected depth along the ray. */
       hitTest: (origin: number[], direction: number[]) => number[] | null;
-      /** Sprite height as a fraction of the canvas height (default 0.03). */
+      /** Sprite height as a fraction of the canvas height (default: the OS arrow's 19 CSS px of the canvas, re-read each frame). */
       height?: number;
-      /** Fill colour of the crosshair (default 0xffd61a; the outline is always dark). */
+      /** Fill colour of the arrow (default 0xffffff; the outline is always dark). */
       color?: number;
-      /** How far in front of the content it floats, in eye-baseline units (default 0.005 ≈ 1.5 mm at 60 cm). */
+      /** How far in front of out-of-screen content it floats, in eye-baseline units (default 0.03 ≈ 2 mm at a 65 mm IPD). */
       margin?: number;
       /** Default `'hybrid'`: exact while the pointer moves, world-fixed (parallaxing) while it is still. */
       anchor?: CursorAnchorMode;
@@ -188,7 +191,7 @@ export class DepthCursor {
       viewSpace?: unknown;
     },
   );
-  /** The crosshair (a `THREE.Mesh` of filled, outlined strokes; depth test off, drawn last). Add it to the scene root. */
+  /** The arrow (a `THREE.Mesh`: dark outline, white fill, tip at its origin; depth test off, drawn last). Add it to the scene root. */
   readonly object: unknown;
   /** The last placement, for diagnostics. */
   readonly placement: CursorPlacement | { active: false };

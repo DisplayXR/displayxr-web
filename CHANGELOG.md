@@ -7,15 +7,50 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-Touches the **preview tier** (`./call`, `./camera`) only; no API change.
+Touches the **core** `./three` (`DepthCursor`'s look and two defaults) and the **preview tier**
+(`./model`, `./splat`, `./call`, `./camera`: `cursor: 'depth'`), plus `./cursor-depth` (additive
+exports, one deprecation). **Two deliberate default changes**, per runtime ADR-046 Amendment 2
+("one cursor policy everywhere"): pages that use a depth cursor will see it sit further forward and
+stop going behind the glass.
 
-### Stereo-tile depth cursor: the margin is 2 mm on the glass
+### Depth cursor: one policy everywhere, and the arrow
 
-- The arrow now floats **2 mm** (of on-screen disparity) in front of content that comes out of the
-  screen, and hands back to the OS arrow under **0.3 mm** — the runtime's 0.03 / 0.005 of the eye
-  baseline, so a stereo tile's cursor and a lifted tile's (runtime #1908) sit identically. 1.40.1
-  used ~1–2 buffer px, which on a small tile was a fraction of a millimetre. Physical units come from
-  the tile's `displayMetrics()` (the panel's pixel pitch); before it answers, the CSS reference px.
+- **Never behind the glass (default change).** The target is now `d < 0 ? max(d − margin, −0.6) : 0`:
+  the cursor only comes forward, to stay ahead of content that comes out of the screen. Over content
+  on or behind the glass it stays on the glass. The clamp is `[−0.6, 0]` (was `[−0.6, +0.6]`), and
+  `cursorTarget` never returns more than 0 whatever a tuning's `maxDisparity` says.
+- **Margin 0.005 → 0.03 eye baselines (default change),** about 2 mm of on-screen disparity at a
+  65 mm IPD: the value native apps and the runtime use. `margin` still overrides it.
+- **On the plane it is the OS cursor.** Nothing is drawn unless the filtered disparity is at or past
+  −0.005 baselines (about 0.3 mm) and at least 0.5 panel px. Off the subject the sprite is now
+  **hidden**, not drawn at zero disparity, and the CSS cursor the page set is left alone (a cursor
+  the page changes while the sprite hides it is no longer overwritten on restore).
+- **The arrow replaces the crosshair.** Every depth cursor (three, PlayCanvas, and the stereo-tile
+  cursor on `./call` / `./camera`) draws the same classic arrow: 12 × 19 px proportions, white with a
+  dark outline, its **tip** on the hotspot. Its default size is the OS cursor's, 19 CSS px of the
+  canvas, recomputed as the canvas resizes; `height` still overrides. `DepthCursor`'s `color`
+  default is now white. Mirroring a page's CSS cursor (`grab`, `url(…)`) into the sprite is future
+  work (ADR-046 Amendment 2 §C).
+- **The stereo-tile cursor runs on the shared core.** `./call` / `./camera` take the target, margin,
+  threshold, filter and arrow from `./cursor-depth` instead of their own copies. Tile pixels convert
+  to eye baselines through the tile's `displayMetrics()` (the panel's pixel pitch, × the eye
+  separation; the CSS reference px until it answers).
+  - This subsumes the earlier unreleased change on `main` (#164), which already moved the stereo
+    tile's margin from ~1–2 buffer px to **2 mm** of on-screen disparity (0.3 mm hand-back),
+    converted through `displayMetrics()`. That conversion is kept. The margin and threshold are now
+    the core's 0.03 / 0.005 **eye baselines** (≈1.9 mm / 0.3 mm at the default 63 mm eye
+    separation) rather than fixed millimetres, so stereo tiles, lifted tiles (runtime #1908) and
+    scenes share one rule.
+  - The comfort cap is now the core's −0.6 baselines (it was 8 % of the eye width).
+  - The pair cursor's own constants (`PAIR_CURSOR_MARGIN_M`, `PAIR_CURSOR_SHOW_M`,
+    `PAIR_CURSOR_SHOW_MIN_PX`, `PAIR_CURSOR_CLAMP`; an internal module, not public API) are gone.
+- **`./cursor-depth`, additive:** `cursorShouldDraw`, `CURSOR_DRAW_THRESHOLD`, `CURSOR_DRAW_MIN_PX`,
+  `cursorDefaultHeight`, `CURSOR_ARROW_CSS_PX`, `CURSOR_ARROW`, `CURSOR_ARROW_FILL`,
+  `cursorArrowInset`, `cursorArrowMesh`, `cursorArrowFootprint`, `cursorFootprint` (typed now),
+  `CURSOR_FILL_COLOR` / `CURSOR_OUTLINE_COLOR`. `CursorPlacement` gains `solved` and
+  `pxPerBaseline`, and `active` now means "drawn". `CursorDepthPlacer.update` takes an optional
+  `canvasPx` for the pixel floor. **Deprecated:** `cursorCrosshairMesh` (unused by the SDK; removed
+  in 2.0).
 
 ## 1.40.1 — 2026-10-11
 

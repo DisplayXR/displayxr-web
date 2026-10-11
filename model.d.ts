@@ -50,10 +50,12 @@ export interface ModelOptions {
    */
   viewerEase?: ViewerEaseOption;
   /**
-   * `'depth'`: a cursor that rises to the subject under it instead of being drawn on the glass,
-   * behind content that pops out (ADR-046, same maths as native `XR_DXR_cursor_depth`). A
-   * crosshair just in front of the nearest content under the pointer's footprint; the CSS cursor
-   * is hidden while it shows and comes back in 2D and off the canvas. OPT-IN: without it nothing
+   * `'depth'`: a cursor that is never drawn on the glass behind content that pops out (ADR-046 +
+   * Amendment 2, the same policy as native `XR_DXR_cursor_depth`). While the subject under the
+   * pointer's footprint comes OUT of the screen, the classic arrow (the OS cursor's size, tip on
+   * the hotspot) is drawn the margin (0.03 eye baselines, ~2 mm) in front of it and the CSS cursor
+   * is hidden; over anything on or behind the glass nothing is drawn and the CSS cursor is the
+   * cursor, untouched. Never behind the glass. OPT-IN: without it nothing
    * is loaded or run. PlayCanvas: hit-tested with the engine's depth picker (meshes and splats,
    * one low-res pass every other frame while the pointer is over the tile). three: a raycast
    * against the subject. Pass an object to tune it: `{ margin, anchor, height, pointerScope }`

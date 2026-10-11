@@ -10,8 +10,10 @@
   Drives the REAL ./model PlayCanvas backend with two hand-built off-axis views (what the
   DisplayXR Browser would hand addScene) and a scripted pointer, then checks the depth cursor:
 
-    over the cube  → crosshair disparity ≈ (cube front disparity − margin), i.e. in front of it;
-    off the cube   → crosshair on the glass (disparity 0).
+    over the cube  → the arrow's disparity ≈ (cube front disparity − margin), i.e. in front of it
+                     (margin 0.03 baselines, ADR-046 Amendment 2), its TIP on the placement;
+    off the cube   → NOTHING drawn (the sprite hidden) and the CSS cursor back: on the plane the
+                     OS cursor is the cursor (the policy's draw threshold).
 
   No DisplayXR Browser needed: `wall` is a fake whose addScene hands us viewer.onFrame. Results
   land in <pre id="out"> as JSON (read with `--dump-dom`), plus a snapshot of the SBS frame.
@@ -73,7 +75,7 @@ const handle = kind === 'splat'
   ? addSplat(wall, canvas, '../../../samples/splat/assets/butterfly.sog', { engine: engine === 'three' ? 'spark' : engine, cursor: cursorOpt, idleSpin: 0, orbit: false, ...pcOnly })
   : addModel(wall, canvas, './cube.gltf', { engine, cursor: cursorOpt, idleSpin: 0, orbit: false, ...pcOnly });
 
-// Record the crosshair the cursor queues (PlayCanvas: immediate lines).
+// The sprite the cursor draws (null while hidden).
 let lines = null;
 let frames = 0;
 // A timer, not rAF: headless Chrome throttles rAF to nothing under --dump-dom.
@@ -90,9 +92,8 @@ prog('loading');
 setInterval(() => { if (out.textContent.startsWith('running')) out.textContent = out.textContent.replace(/\(frames \d+\)/, `(frames ${frames})`); }, 200);
 await handle.ready;
 prog('ready');
-// Where the crosshair is, per engine. PlayCanvas: the immediate lines it queues (world space,
-// views carried through the rig node). three: the LineSegments sprite (world space; the views
-// ARE world space there).
+// Where the arrow is, per engine: its node / matrix translation = the TIP = the hotspot, in world
+// space (PlayCanvas: views carried through the rig node; three: the views ARE world space).
 let rig = null;
 let sprite = null;
 let modelWorld = null; // () => column-major world matrix of the cube's root (unit cube, ±0.5)
@@ -107,7 +108,7 @@ if (engine === 'playcanvas') {
   root.traverse((o) => { if (o.name === 'inline3d-cursor') sprite = o; });
   modelWorld = kind === 'splat' ? null : () => handle.model.matrixWorld.elements;
 }
-// The crosshair's world position + its depth-test flag, or null while hidden.
+// The arrow's world position (its tip) + its depth-test flag, or null while hidden.
 const spriteLines = () => {
   if (rig) {
     const app = handle.engine.app;
@@ -181,7 +182,8 @@ async function measure(u, v, settle = SETTLE) {
 const SETTLE = Number(new URLSearchParams(location.search).get('settle') || 240);
 const over = await measure(0.5, 0.5);
 prog('over done ' + JSON.stringify(over));
-// Off the subject the cursor SINKS back to the glass, slowly by design (250 ms time constant).
+// Off the subject the cursor SINKS back to the glass, slowly by design (250 ms time constant), and
+// once it is within the draw threshold of it nothing is drawn: the OS cursor is the cursor.
 const off = await measure(0.05, 0.08, SETTLE * 2);
 canvas.dispatchEvent(new PointerEvent('pointerleave'));
 await wait(5);
@@ -212,13 +214,15 @@ document.getElementById('shot').src = canvas.toDataURL('image/png');
 const margin = CURSOR_DEFAULT_TUNING.margin;
 const expectFixed = (anchor || 'hybrid') !== 'screen';
 const headOk = headMove !== null && (expectFixed ? headMove < 1e-3 : headMove > 1e-3);
+// Off the subject: nothing drawn (not "drawn at 0") and the CSS cursor back.
+const offOk = off.cursorDisparity === null && off.cssCursor !== 'none';
 const depthOk = kind === 'splat'
-  ? over.cursorDisparity !== null && over.cursorDisparity < -0.01 && off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none'
-  : over.cursorDisparity !== null && over.cubeFrontDisparity !== null &&
+  ? over.cursorDisparity !== null && over.cursorDisparity < -0.01 && offOk && over.cssCursor === 'none'
+  : over.cursorDisparity !== null && over.cubeFrontDisparity !== null && over.cubeFrontDisparity < 0 &&
     over.cursorDisparity < over.cubeFrontDisparity && Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.003 &&
-    off.cursorDisparity !== null && Math.abs(off.cursorDisparity) < 0.005 && over.cssCursor === 'none' && over.depthTest === false;
+    offOk && over.cssCursor === 'none' && over.depthTest === false;
 const pass = headOk && depthOk;
-log({ engine, kind, anchor: anchor || 'hybrid', pass, headMove, over, off, afterLeave: left, frames });
+log({ engine, kind, anchor: anchor || 'hybrid', margin, pass, headMove, over, off, afterLeave: left, frames });
 </script>
 </body>
 </html>

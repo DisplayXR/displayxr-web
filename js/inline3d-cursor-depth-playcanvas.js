@@ -14,18 +14,20 @@
 // runtime's one-frame-late app hint.
 //
 // Placement: the same maths as everywhere else (./inline3d-cursor-depth.js, a port of the
-// runtime's u_cursor_depth, ADR-046), solved in WORLD space from this frame's views carried
-// through the rig node. Drawn as a filled mesh (strokes + a dark outline) in the UI layer with
-// depth test off, so every eye camera draws it last and nothing occludes it; the picker skips the
-// UI layer, so the cursor never picks itself.
+// runtime's u_cursor_depth, ADR-046 + Amendment 2's policy), solved in WORLD space from this
+// frame's views carried through the rig node. Drawn — only while content under it comes out of the
+// glass — as the classic arrow (the shared cursorArrowMesh: dark outline, white fill, tip on the
+// hotspot) in the UI layer with depth test off, so every eye camera draws it last and nothing
+// occludes it; the picker skips the UI layer, so the cursor never picks itself. On the plane
+// nothing is drawn and the CSS cursor is the cursor.
 
 import {
   CursorDepthPlacer,
   CursorPointer,
-  CURSOR_DEFAULT_HEIGHT,
   CURSOR_DEFAULT_TUNING,
-  cursorCrosshairMesh,
-  cursorFootprint,
+  cursorArrowMesh,
+  cursorArrowFootprint,
+  cursorDefaultHeight,
   cursorViewRay,
 } from './inline3d-cursor-depth.js';
 
@@ -42,10 +44,11 @@ export class PlayCanvasDepthCursor {
    * @param {object} viewer  the PlayCanvasSplatViewer (app, rigNode, eye are read lazily).
    * @param {{canvas: HTMLElement, height?: number, margin?: number, anchor?: string, pointerScope?: string}} opts
    */
-  constructor(pc, viewer, { canvas, height = CURSOR_DEFAULT_HEIGHT, margin, anchor = 'hybrid', pointerScope = 'canvas' }) {
+  constructor(pc, viewer, { canvas, height, margin, anchor = 'hybrid', pointerScope = 'canvas' }) {
     this.pc = pc;
     this.viewer = viewer;
-    this.height = height > 0 && Number.isFinite(height) ? height : CURSOR_DEFAULT_HEIGHT;
+    /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
+    this.height = height > 0 && Number.isFinite(height) ? height : null;
     this.pointer = new CursorPointer(canvas, { scope: pointerScope });
     const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
     this.placer = new CursorDepthPlacer(tuning, { anchor });
@@ -89,16 +92,17 @@ export class PlayCanvasDepthCursor {
         console.warn('[inline3d] cursor: depth: a PlayCanvas pick did not answer in time; retrying (cursor on the glass meanwhile).');
       }
     }
-    if (this._frame++ % PICK_EVERY === 0 && !this._inFlight) this._pick(app, rig, entries[0], uv);
+    const h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
+    if (this._frame++ % PICK_EVERY === 0 && !this._inFlight) this._pick(app, rig, entries[0], uv, h);
     const now = (globalThis.performance ? globalThis.performance.now() : Date.now()) / 1000;
-    const p = this.placer.update(views, { u: uv[0], v: uv[1], nearestPoint: this.hit, cursorHeight: this.height }, now);
+    const p = this.placer.update(views, { u: uv[0], v: uv[1], nearestPoint: this.hit, cursorHeight: h, canvasPx: this.pointer.panelPx() }, now);
     this.placement = p;
     this.pointer.hideCss(!!p.active);
     const sprite = this._sprite || (p.active ? this._makeSprite(app) : null);
     if (!sprite) return;
     sprite.mi.visible = !!p.active;
     if (!p.active) return;
-    // The unit crosshair in the sprite's XY plane: basis (rotation), height (scale), position.
+    // The unit arrow in the sprite's XY plane, tip at its origin: basis (rotation), height (scale), position = the hotspot.
     const { x, y, z } = p.basis;
     const q = quatFromMatrix([x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, 0, 0, 0, 1]);
     sprite.node.setLocalPosition(p.position[0], p.position[1], p.position[2]);
@@ -114,11 +118,11 @@ export class PlayCanvasDepthCursor {
     this.pointer.hideCss(false);
   }
 
-  // The filled crosshair: one mesh (outline triangles first, fill after — the order a
-  // depth-test-off draw needs), vertex-coloured, alpha-blended, in the UI layer.
+  // The arrow: one mesh (outline triangles first, fill after — the order a depth-test-off draw
+  // needs), vertex-coloured, alpha-blended, in the UI layer.
   _makeSprite(app) {
     const pc = this.pc;
-    const m = cursorCrosshairMesh();
+    const m = cursorArrowMesh();
     const mesh = new pc.Mesh(app.graphicsDevice);
     mesh.setPositions(m.positions);
     mesh.setColors(m.colors);
@@ -179,7 +183,7 @@ export class PlayCanvasDepthCursor {
   }
 
   // Render the pick buffer from the first eye and read the footprint's world points.
-  _pick(app, rig, e, uv) {
+  _pick(app, rig, e, uv, height) {
     const pc = this.pc;
     const aspect = e.width > 0 && e.height > 0 ? e.width / e.height : 1;
     const W = PICK_WIDTH;
@@ -240,7 +244,7 @@ export class PlayCanvasDepthCursor {
     const Mw = view.transformMatrix;
     const f = [-Mw[8], -Mw[9], -Mw[10]];
     const zNear = cam.camera.nearClip, zFar = cam.camera.farClip;
-    const samples = cursorFootprint(uv[0], uv[1], this.height, this.pointer.aspect())
+    const samples = cursorArrowFootprint(uv[0], uv[1], height, this.pointer.aspect())
       .filter(([u, v]) => u >= 0 && u <= 1 && v >= 0 && v <= 1)
       .map(([u, v]) =>
         picker.getPointDepthAsync(Math.min(W - 1, Math.floor(u * W)), Math.min(H - 1, Math.floor(v * H))).then((lin) => {

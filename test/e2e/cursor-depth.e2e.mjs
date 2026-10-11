@@ -6,11 +6,13 @@
 // Runs test/e2e/cursor-depth/ for ./model and ./splat on both engines. Each run hands the real
 // viewer two hand-built off-axis views (what the DisplayXR Browser hands addScene) and a scripted
 // pointer. Pass =
-//   model (a unit cube): over the cube the crosshair's disparity is the cube front's minus the
-//     margin (in front of it, by exactly the policy), and off it the crosshair is on the glass;
-//   splat (butterfly.sog; 'three' = the Spark engine): over the subject the crosshair is in front of the glass, off it on it;
-//   both: the CSS cursor is hidden while the crosshair shows and restored on pointerleave, and the
-//     crosshair draws with depth test off.
+//   model (a unit cube): over the cube the arrow's disparity (its tip) is the cube front's minus the
+//     margin (0.03 baselines — in front of it, by exactly the ADR-046 Amendment 2 policy), and off
+//     it NOTHING is drawn (the OS cursor is the cursor on the plane);
+//   splat (butterfly.sog; 'three' = the Spark engine): over the subject the arrow is in front of the
+//     glass, off it nothing is drawn;
+//   both: the CSS cursor is hidden while the arrow shows and restored when it is not drawn / on
+//     pointerleave, and the arrow draws with depth test off.
 // Stock Chrome has no inline 3D: this proves the hit test and the placement, not the weave — that
 // needs a panel (samples/model/?cursor=depth, samples/splat/?cursor=depth).
 //
