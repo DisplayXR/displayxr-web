@@ -25,8 +25,12 @@ import { matchBlock, MIN_NCC } from './disparity.js';
 export const PAIR_CURSOR_CSS_PX = 19;
 /** Arrow height as a fraction of the tile height when the tile's on-page size is unknown. */
 export const PAIR_CURSOR_HEIGHT = 0.06;
-/** Below this many output px in front of the glass the drawn arrow hands back to the OS cursor. */
-export const PAIR_CURSOR_SHOW_PX = 0.5;
+/**
+ * Below this far in front of the glass (metres of on-screen disparity, ~0.3 mm = 0.005 of the eye
+ * baseline, the runtime's rule) the drawn arrow hands back to the OS cursor. Never under 0.5 px.
+ */
+export const PAIR_CURSOR_SHOW_M = 0.0003;
+export const PAIR_CURSOR_SHOW_MIN_PX = 0.5;
 /**
  * The standard pointer arrow, hotspot at the tip (0, 0), unit = its height, x right, y down: the
  * OS arrow's outline (a 19-px-tall Windows/macOS arrow, normalised).
@@ -34,8 +38,14 @@ export const PAIR_CURSOR_SHOW_PX = 0.5;
 export const PAIR_CURSOR_ARROW = Object.freeze([
   [0, 0], [0, 16 / 19], [4.2 / 19, 12.4 / 19], [6.9 / 19, 18.6 / 19], [9.5 / 19, 17.5 / 19], [6.8 / 19, 11.5 / 19], [11.7 / 19, 11.5 / 19],
 ]);
-/** How far in front of out-of-screen content the arrow floats, as a fraction of the eye width (crossed). */
-export const PAIR_CURSOR_MARGIN = 0.002;
+/**
+ * How far in front of out-of-screen content the arrow floats: 2 mm of on-screen disparity — the
+ * runtime's 0.03 of the eye baseline (ADR-046 / runtime #1908), so a lifted tile's cursor and a
+ * stereo tile's sit the same way. Converted to buffer px through the tile's `displayMetrics()`.
+ */
+export const PAIR_CURSOR_MARGIN_M = 0.002;
+/** One CSS px in metres when the panel cannot say (the CSS reference pixel, 1/96 in). */
+export const PAIR_CURSOR_CSS_PX_M = 0.0254 / 96;
 /** Comfort cap on how far in front the arrow comes, as a fraction of the eye width. */
 export const PAIR_CURSOR_CLAMP = 0.08;
 
@@ -85,10 +95,20 @@ export function pairFootprintDisparity(luma, geo, u, v, height, aspect) {
  * The arrow's target disparity: in front of content that comes OUT of the screen (its disparity
  * plus the margin, clamped), else the glass. Never behind the glass — the cursor does not go inside
  * the display.
+ * @param {number} marginPx  the margin in output px (pairCursorScale × PAIR_CURSOR_MARGIN_M)
  */
-export function pairCursorTarget(contentPx, outW) {
+export function pairCursorTarget(contentPx, outW, marginPx) {
   if (contentPx === null || !Number.isFinite(contentPx) || !(contentPx > 0)) return 0;
-  return Math.min(PAIR_CURSOR_CLAMP * outW, contentPx + PAIR_CURSOR_MARGIN * outW);
+  return Math.min(PAIR_CURSOR_CLAMP * outW, contentPx + marginPx);
+}
+
+/**
+ * Output px of one eye per metre on the glass: the buffer eye is stretched over the tile's CSS
+ * width, and one CSS px is `metersPerCssPx` on the panel.
+ */
+export function pairCursorScale(outW, tileCssWidth, metersPerCssPx) {
+  const m = metersPerCssPx > 0 && Number.isFinite(metersPerCssPx) ? metersPerCssPx : PAIR_CURSOR_CSS_PX_M;
+  return tileCssWidth > 0 ? outW / tileCssWidth / m : outW / (1000 * m);
 }
 
 /**
@@ -133,6 +153,9 @@ export class PairCursor {
     this._luma = null;
     this._uv = null;
     this._content = null;
+    this._metricsFor = null; // the tile handle whose displayMetrics() was asked for
+    /** One CSS px on the panel, metres, once the tile's handle has said (else the CSS reference px). */
+    this.metersPerCssPx = null;
     /** The last frame's placement, for diagnostics: `{ contentPx, targetPx, disparityPx, drawn }` or null. */
     this.last = null;
   }
@@ -146,7 +169,8 @@ export class PairCursor {
    * exactly then); otherwise leaves the buffer alone and the OS arrow shows, on the plane.
    * @param {CanvasRenderingContext2D} g  the woven buffer (2·outW × outH), already painted
    * @param {object|null} luma  the latest grayscale source copy (pairFootprintDisparity)
-   * @param {{rL: object, rR: object, outW: number, outH: number, mirror?: boolean}} geo
+   * @param {{rL: object, rR: object, outW: number, outH: number, mirror?: boolean, handle?: object}} geo
+   *        `handle` = the tile's woven handle: its `displayMetrics()` gives the panel's pixel pitch
    * @param {number} nowSec
    */
   draw(g, luma, geo, nowSec) {
@@ -160,14 +184,28 @@ export class PairCursor {
       this._luma = luma;
       this._uv = uv;
     }
-    const target = pairCursorTarget(this._content, geo.outW);
+    this._askMetrics(geo.handle);
+    const r = this.pointer.canvas.getBoundingClientRect?.();
+    const pxPerM = pairCursorScale(geo.outW, r && r.width, this.metersPerCssPx);
+    const target = pairCursorTarget(this._content, geo.outW, PAIR_CURSOR_MARGIN_M * pxPerM);
     // The shared filter rises fast toward SMALLER values (nearer, in its convention): negate.
     const disparity = -cursorFilterStep(this.filter, CURSOR_DEFAULT_TUNING, -target, nowSec);
-    const drawn = disparity >= PAIR_CURSOR_SHOW_PX;
+    const drawn = disparity >= Math.max(PAIR_CURSOR_SHOW_MIN_PX, PAIR_CURSOR_SHOW_M * pxPerM);
     if (drawn) drawPairArrow(g, geo.outW, geo.outH, u, v, disparity, hf * geo.outH);
     this.pointer.hideCss(drawn); // the OS arrow IS the cursor on the plane
     this.last = { contentPx: this._content, targetPx: target, disparityPx: drawn ? disparity : 0, drawn };
     return this.last;
+  }
+
+  /** Ask the tile's handle once for the panel's pixel pitch; until it answers, the CSS reference px. */
+  _askMetrics(handle) {
+    if (!handle || handle === this._metricsFor || typeof handle.displayMetrics !== 'function') return;
+    this._metricsFor = handle;
+    Promise.resolve(handle.displayMetrics())
+      .then((m) => {
+        if (this._metricsFor === handle && m && m.metersPerCssPx > 0) this.metersPerCssPx = m.metersPerCssPx;
+      })
+      .catch(() => {});
   }
 
   /** The OS arrow's height as a fraction of the tile's on-page height. */

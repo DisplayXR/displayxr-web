@@ -762,7 +762,7 @@ class CameraView {
       }
     }
     if (this.cursor) {
-      const geo = { rL: eyeCropRect(eyeW, H, A, shift, 0), rR: eyeCropRect(eyeW, H, A, shift, 1), outW, outH, mirror: this.mirror };
+      const geo = { rL: eyeCropRect(eyeW, H, A, shift, 0), rR: eyeCropRect(eyeW, H, A, shift, 1), outW, outH, mirror: this.mirror, handle: this.handle };
       this.cursor.draw(g, this._luma, geo, performance.now() / 1000);
     }
   }
