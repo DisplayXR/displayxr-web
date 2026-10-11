@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.42.0 — 2026-10-11
 
 Touches the **core** `./three` (`DepthCursor`) and the **preview tier** (`./model`, `./splat`,
 `./call`, `./camera`: `cursor: 'depth'`), plus `./cursor-depth` (`CURSOR_DEFAULT_TUNING`). **One
