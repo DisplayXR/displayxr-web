@@ -489,8 +489,8 @@ export class DepthCursor {
    * @param {number} [opts.height]  sprite height as a fraction of the canvas height. Default: the
    *        OS arrow's size, 19 CSS px of the canvas's on-page height (re-read every frame).
    * @param {number} [opts.color=0xffffff]  the arrow's fill colour (the outline is always dark).
-   * @param {number} [opts.margin=0.03]  how far in front of out-of-screen content it floats, in
-   *        eye-baseline units (0.03 ≈ 2 mm of on-screen disparity at a 65 mm IPD).
+   * @param {number} [opts.margin=0.015]  how far in front of out-of-screen content it floats, in
+   *        eye-baseline units (0.015 ≈ 1 mm of on-screen disparity at a 63-65 mm IPD).
    * @param {'hybrid'|'screen'|'world'} [opts.anchor='hybrid']  where along that depth: 'hybrid'
    *        follows the pointer exactly while it moves and stays world-fixed (parallaxes with the
    *        content) while it is still; 'screen' never parallaxes; 'world' always does.

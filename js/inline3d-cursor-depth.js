@@ -46,7 +46,7 @@
 // ./camera, which calls the pieces exported here):
 //  - never behind the glass: target = d < 0 ? max(d - margin, dMin) : 0 — it only comes forward,
 //    to stay ahead of content that comes OUT of the screen (cursorTarget);
-//  - margin 0.03 eye baselines (~2 mm of crossed on-screen disparity at a 65 mm IPD);
+//  - margin 0.015 eye baselines (~1 mm of crossed on-screen disparity at a 63-65 mm IPD);
 //  - on the plane it IS the OS cursor: nothing is drawn while the filtered disparity is above
 //    CURSOR_DRAW_THRESHOLD (-0.005, ~0.3 mm) or under CURSOR_DRAW_MIN_PX on the panel
 //    (cursorShouldDraw), and the CSS cursor is left alone;
@@ -99,10 +99,11 @@ export function cursorShouldDraw(disparity, pxPerBaseline) {
  */
 export const CURSOR_DEFAULT_TUNING = Object.freeze({
   /**
-   * How far in front of out-of-screen content the cursor floats: 0.03 eye baselines, ~2 mm of
-   * crossed on-screen disparity at a 65 mm IPD (ADR-046 Amendment 2; the reference app's value).
+   * How far in front of out-of-screen content the cursor floats: 0.015 eye baselines, ~1 mm of
+   * crossed on-screen disparity at a 63-65 mm IPD (ADR-046 Amendment 2 A.2; halved from 0.03 on
+   * 2026-10-11 after a Windows panel check: 0.03 floated visibly off the content).
    */
-  margin: 0.03,
+  margin: 0.015,
   /** Comfort clamp: t >= 0.625, never more than ~3/8 of the way to the eye. */
   minDisparity: -0.6,
   /** Never behind the glass: 0, and cursorTarget never goes above 0 whatever this says. */

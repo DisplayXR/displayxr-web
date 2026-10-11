@@ -394,8 +394,11 @@ import { CURSOR_ANCHOR_MODES, CursorPointer, resolveCursorOption } from '../js/i
 
 const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 
-test('cursor-depth: the default margin is 0.03 baseline (~2 mm at 65 mm IPD), clamp [−0.6, 0]', () => {
-  assert.equal(T.margin, 0.03);
+test('cursor-depth: the default margin is 0.015 baseline (~1 mm at 63–65 mm IPD), clamp [−0.6, 0]', () => {
+  // ADR-046 Amendment 2 A.2, halved from 0.03 on 2026-10-11 after a Windows panel check.
+  assert.equal(T.margin, 0.015);
+  // The behaviour, not just the field: content at d = −0.2 puts the cursor at −0.215.
+  assert.ok(Math.abs(cursorTarget(T, true, -0.2) - -0.215) < 1e-12);
   assert.equal(T.minDisparity, -0.6);
   assert.equal(T.maxDisparity, 0);
 });

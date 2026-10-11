@@ -5,6 +5,20 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **core** `./three` (`DepthCursor`) and the **preview tier** (`./model`, `./splat`,
+`./call`, `./camera`: `cursor: 'depth'`), plus `./cursor-depth` (`CURSOR_DEFAULT_TUNING`). **One
+deliberate default change.**
+
+- **Depth-cursor margin 0.03 → 0.015 eye baselines (default change),** about 1 mm of crossed
+  on-screen disparity at a 63–65 mm IPD instead of about 2 mm. Runtime ADR-046 Amendment 2 A.2 was
+  halved after a Windows panel check, because 0.03 floated visibly off the content. The runtime
+  makes the same change (`U_CURSOR_DEPTH_DEFAULT_MARGIN`), so web and native cursors still agree.
+  Every depth cursor takes the default from `CURSOR_DEFAULT_TUNING`: `DepthCursor`,
+  `cursor: 'depth'` on both engines, and the stereo-tile pair cursor. `margin` still overrides it:
+  pass `margin: 0.03` for the 1.41.0 look.
+
 ## 1.41.0 — 2026-10-11
 
 Touches the **core** `./three` (`DepthCursor`'s look and two defaults) and the **preview tier**
