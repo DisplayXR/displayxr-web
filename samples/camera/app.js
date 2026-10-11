@@ -54,17 +54,48 @@ function syntheticSbs() {
   return c.captureStream(30);
 }
 
+// `?camera=` is 'stereo' | 'mono' | 'synthetic' | a deviceId (what the Camera picker below sets).
 const want = q.get('camera');
 let cam;
 try {
   cam =
     want === 'synthetic'
       ? await openCamera({ prefer: syntheticSbs(), format: 'sbs', calibration: { baselineMm: 63, horizontalFovDeg: 70 }, debug: q.has('debug') })
-      : await openCamera({ prefer: want === 'stereo' || want === 'mono' ? want : 'auto', debug: q.has('debug') });
+      : await openCamera({ prefer: want || 'auto', debug: q.has('debug') });
 } catch (err) {
   say(`No camera: ${err.code} — ${err.message}`, 'flat');
   throw err;
 }
+
+// The Camera picker: every camera this page may use, the browser's 3D cameras first (the DisplayXR
+// Browser lists one "3D Camera (DisplayXR) - <name>" per stereo camera the runtime reports — e.g.
+// one per 3D display). Labels are readable now that the camera is open. Choosing one reloads the
+// page on it: a fresh document, never a remounted woven canvas (docs/woven-canvas-rules.md rule 2).
+const STEREO_LABEL = /^3D Camera \(DisplayXR\)/;
+async function fillCameraPicker() {
+  const sel = $('camsel');
+  const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput' && d.deviceId);
+  devices.sort((a, b) => Number(STEREO_LABEL.test(b.label)) - Number(STEREO_LABEL.test(a.label)));
+  const opts = devices.map((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = (STEREO_LABEL.test(d.label) ? '3D · ' : '') + (d.label || `Camera ${i + 1}`);
+    return o;
+  });
+  const synth = document.createElement('option');
+  synth.value = 'synthetic';
+  synth.textContent = 'Synthetic pair (no camera)';
+  sel.replaceChildren(...opts, synth);
+  sel.value = want === 'synthetic' ? 'synthetic' : cam.deviceId || '';
+  sel.disabled = false;
+}
+fillCameraPicker().catch(() => {});
+navigator.mediaDevices.addEventListener?.('devicechange', () => fillCameraPicker().catch(() => {}));
+$('camsel').addEventListener('change', () => {
+  const u = new URL(location.href);
+  u.searchParams.set('camera', $('camsel').value);
+  location.replace(u.href);
+});
 
 const wall = await sharedInline3D();
 const kind = cam.format === 'sbs' ? `3D (side-by-side, ${cam.width}×${cam.height}${cam.stereo?.rectified ? ', rectified' : ''})` : `2D (${cam.width}×${cam.height})`;

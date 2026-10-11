@@ -27,6 +27,8 @@
   .bar button[data-on="1"]{background:#ff5a5f;border-color:#ff5a5f;color:#fff}
   .bar label{display:flex;align-items:center;gap:6px;font-size:13px;opacity:.9}
   .bar input[type=range]{width:120px;accent-color:#4da3ff}
+  .bar select{font:inherit;font-size:13px;color:inherit;background:#ffffff12;border:1px solid #ffffff2e;border-radius:8px;padding:6px 8px;max-width:22em}
+  .bar select option{color:#000}
   .files{margin:12px 0 0;font-size:13px;line-height:1.9}
   .files a{margin-right:14px}
   footer{margin-top:36px;font-size:13px;opacity:.6;line-height:1.7}
@@ -47,6 +49,7 @@
   <canvas id="self"></canvas>
 
   <div class="bar">
+    <label>Camera <select id="camsel" disabled><option>…</option></select></label>
     <button id="photo" type="button" disabled>Take 3D photo</button>
     <button id="rec" type="button" disabled>Record</button>
     <label><input id="mirror" type="checkbox" checked> Mirror</label>
@@ -58,6 +61,7 @@
 
   <footer>
     URL params: <code>?camera=stereo</code> prefer a pair · <code>?camera=mono</code> · <code>?camera=synthetic</code>
+    · <code>?camera=&lt;deviceId&gt;</code> (what the Camera picker sets)
     a generated side-by-side pair with a known disparity (no camera needed; what the eye-swap check
     uses) · <code>?debug</code> logs. A pair is detected by the DisplayXR Browser's
     <code>displayxrStereo</code> track settings or by a device delivering wider than 2.5:1 frames.
