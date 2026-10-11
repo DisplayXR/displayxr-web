@@ -189,7 +189,7 @@ export function isStereoCamera(x: unknown): x is StereoCamera;
  * depth under the pointer is MEASURED off its two halves, so there is no anchor mode or margin.
  */
 export interface PairCursorOptions {
-  /** Sprite height as a fraction of the tile height (default 0.06). */
+  /** Arrow height as a fraction of the tile height (default: the OS arrow's size, 19 CSS px). */
   height?: number;
   /** `'window'` (default): the cursor stays while the pointer is over DOM on the tile (a badge). `'canvas'`: only over the canvas itself. */
   pointerScope?: 'canvas' | 'window';
@@ -205,9 +205,10 @@ export interface CameraViewOptions {
   /** The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
   aspect?: number;
   /**
-   * `'depth'`: while the pointer is over the woven view, a crosshair just in front of whatever is
-   * under it (runtime ADR-046, measured off the pair's two halves) replaces the CSS cursor, so it
-   * is never drawn on the glass behind a face that sits in front of it. Off by default (zero cost).
+   * `'depth'`: while the pointer is over the woven view and what is under it comes out of the
+   * screen, the normal arrow is drawn just in front of it (runtime ADR-046, measured off the pair's
+   * two halves), so it is never drawn on the glass behind a face that pops out. Otherwise it is the
+   * plain OS arrow on the screen plane; it never goes inside the display. Off by default (zero cost).
    */
   cursor?: 'depth' | PairCursorOptions;
   /**

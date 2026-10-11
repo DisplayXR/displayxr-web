@@ -216,10 +216,11 @@ export interface CallOptions {
    */
   autoConverge?: boolean;
   /**
-   * `'depth'`: over a 3D (stereo) tile — a peer's or your self view — a crosshair just in front of
-   * the person under the pointer replaces the CSS cursor, instead of the flat cursor drawn on the
-   * glass behind them (runtime ADR-046; the depth is measured off each tile's two halves). Lifted
-   * (2D→3D) and flat tiles keep the normal cursor. Off by default (zero cost).
+   * `'depth'`: over a 3D (stereo) tile — a peer's or your self view — the cursor is never
+   * overlapped by what comes out of the screen: where the person under the pointer pops out, the
+   * normal arrow is drawn just in front of them (runtime ADR-046; the depth is measured off each
+   * tile's two halves). Everywhere else it is the plain OS arrow on the screen plane — it never goes
+   * inside the display. Lifted (2D→3D) and flat tiles keep the normal cursor. Off by default (zero cost).
    * `<dxr-call cursor="depth">`.
    */
   cursor?: 'depth' | PairCursorOptions;

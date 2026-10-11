@@ -3,9 +3,11 @@
 //   - the footprint match reads the NEAREST content under the sprite, in the displayed buffer's
 //     pixels: the crop offset of each eye (convergence) is taken out, the output scale applied;
 //   - a mirrored view flips the pointer, never the disparity;
-//   - nothing matched → the display plane; margin + clamp on the target;
-//   - the crosshair's two copies sit ± half the disparity about the pointer, crossed = in front;
-//   - the controller hides the CSS cursor only while it draws, and the filter rises fast;
+//   - the cursor never goes INSIDE the display: content on or behind the glass → the plane; only
+//     content that comes out moves it (margin + cap);
+//   - it is the normal arrow: two copies ± half the disparity about the pointer, crossed = in front;
+//   - on the plane nothing is drawn and the OS cursor shows; it is hidden only while the drawn arrow
+//     replaces it; the filter rises fast and hands back to the OS arrow as the content sinks;
 //   - opt-in: no option → no cursor object, no module import, the CSS cursor untouched.
 
 import test from 'node:test';
@@ -13,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
-import { pairFootprintDisparity, pairCursorTarget, drawPairCrosshair, PairCursor, PAIR_CURSOR_MARGIN, PAIR_CURSOR_CLAMP, PAIR_CURSOR_HEIGHT } from '../js/camera/pair-cursor.js';
+import { pairFootprintDisparity, pairCursorTarget, drawPairArrow, PairCursor, PAIR_CURSOR_MARGIN, PAIR_CURSOR_CLAMP, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
 import { resolvePairCursorOption } from '../js/inline3d-cursor-option.js';
 import { normalizeCallOptions as normalizeOptions } from '../js/call/options.js';
 import { attrsToOpts } from '../js/call/element.js';
@@ -115,67 +117,83 @@ test('footprint disparity: nothing to match (flat frame, no copy) → null; targ
   assert.equal(pairCursorTarget(null, 640), 0);
 });
 
-test('target: content plus the margin (crossed), clamped both ways', () => {
+test('target: in front of content that comes out (plus the margin, capped); never behind the glass', () => {
   const W = 640;
   assert.equal(pairCursorTarget(10, W), 10 + PAIR_CURSOR_MARGIN * W);
-  assert.equal(pairCursorTarget(-3, W), -3 + PAIR_CURSOR_MARGIN * W, 'content behind the glass: the cursor settles onto it');
-  assert.equal(pairCursorTarget(500, W), PAIR_CURSOR_CLAMP * W);
-  assert.equal(pairCursorTarget(-500, W), -PAIR_CURSOR_CLAMP * W);
+  assert.equal(pairCursorTarget(500, W), PAIR_CURSOR_CLAMP * W, 'capped');
+  assert.equal(pairCursorTarget(0, W), 0, 'content on the glass: the plane');
+  assert.equal(pairCursorTarget(-3, W), 0, 'content behind the glass: the cursor stays on the plane, never inside');
+  assert.equal(pairCursorTarget(-500, W), 0);
 });
 
-/** A 2D context that records the crosshair segments' x span per stroke batch. */
+/** A 2D context that records each filled path (the arrow outline). */
 function recordingCtx() {
   const ops = [];
   let path = [];
   return {
     ops,
-    save() {}, restore() {}, rect() {}, clip() {},
+    save() {}, restore() {}, rect() {}, clip() {}, closePath() {}, stroke() {},
     beginPath() { path = []; },
     moveTo(x, y) { path.push([x, y]); },
     lineTo(x, y) { path.push([x, y]); },
-    stroke() { ops.push({ width: this.lineWidth, pts: path.slice() }); },
+    fill() { ops.push({ fill: this.fillStyle, pts: path.slice() }); },
   };
 }
-const centreX = (pts) => (Math.min(...pts.map((p) => p[0])) + Math.max(...pts.map((p) => p[0]))) / 2;
 
-test('crosshair: left copy +d/2, right copy −d/2 about the pointer (crossed = in front); outline then fill', () => {
+test('arrow: the normal pointer arrow, tip at the hotspot; left copy +d/2, right copy −d/2 (crossed = in front)', () => {
   const g = recordingCtx();
-  drawPairCrosshair(g, 400, 300, 0.25, 0.5, 12, 0.1);
-  assert.equal(g.ops.length, 4, 'two eyes × (outline, fill)');
-  const [lo, lf, ro, rf] = g.ops;
-  assert.ok(lo.width > lf.width, 'the dark outline is drawn first and wider');
-  assert.equal(centreX(lf.pts), 100 + 6, 'left eye: 0.25·400 + 6');
-  assert.equal(centreX(rf.pts), 400 + 100 - 6, 'right eye: its half, 0.25·400 − 6');
-  assert.equal(centreX(ro.pts), centreX(rf.pts));
+  drawPairArrow(g, 400, 300, 0.25, 0.5, 12, 19);
+  assert.equal(g.ops.length, 2, 'one arrow per eye');
+  const [l, r] = g.ops;
+  assert.equal(l.fill, '#fff', 'white like the OS arrow (outlined dark)');
+  assert.equal(l.pts.length, PAIR_CURSOR_ARROW.length);
+  assert.deepEqual(l.pts[0], [100 + 6, 150], 'left eye: the tip at 0.25·400 + 6, on the hotspot row');
+  assert.deepEqual(r.pts[0], [400 + 100 - 6, 150], 'right eye: its half, 0.25·400 − 6');
+  const h = Math.max(...l.pts.map((p) => p[1])) - 150;
+  assert.ok(h > 18 && h <= 19, `19 px tall, hanging down from the tip (${h})`);
+  assert.ok(Math.min(...l.pts.map((p) => p[0])) === 106, 'nothing left of the tip: it points up-left like the OS arrow');
 });
 
-test('PairCursor: draws only while hovered, hides the CSS cursor meanwhile, rises fast and sinks slowly', () => {
+test('PairCursor: the OS arrow on the plane; the drawn arrow only over content that comes out; rises fast, sinks back', () => {
   const canvas = doc.createElement('canvas');
-  canvas.style = { cursor: 'crosshair' };
+  canvas.style = { cursor: 'pointer' };
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 384, height: 216 });
   const cur = new PairCursor(canvas, { pointerScope: 'canvas' });
   const geo = { rL: full, rR: full, outW: E, outH: H };
   const near = sbs(E, H, () => 12);
+  const behind = sbs(E, H, () => -6, 5);
   const g = recordingCtx();
   assert.equal(cur.hovering, false);
   assert.equal(cur.draw(g, near, geo, 1), null, 'no pointer → nothing drawn');
   assert.equal(g.ops.length, 0);
-  assert.equal(canvas.style.cursor, 'crosshair', 'the CSS cursor is untouched while not drawing');
+  assert.equal(canvas.style.cursor, 'pointer', 'the CSS cursor is untouched while not drawing');
   cur.pointer.set(0.5, 0.5);
-  const p0 = cur.draw(g, near, geo, 1);
-  assert.equal(g.ops.length, 4);
-  assert.equal(canvas.style.cursor, 'none', 'the sprite replaces the CSS cursor');
-  assert.ok(Math.abs(p0.disparityPx - pairCursorTarget(12, E)) < 0.6, 'the first frame snaps to the target');
-  // Content drops back to the glass: the sprite sinks slowly…
-  const flat = sbs(E, H, () => 0, 3);
-  const p1 = cur.draw(g, flat, geo, 1.05);
-  assert.ok(p1.disparityPx > p1.targetPx + 5, `50 ms later it is still well in front (${p1.disparityPx} vs ${p1.targetPx})`);
-  // …and comes forward fast.
-  const p2 = cur.draw(g, near, geo, 1.1);
-  const p3 = cur.draw(g, near, geo, 1.2);
-  assert.ok(p3.targetPx - p3.disparityPx < 0.2 * (p2.targetPx - p1.disparityPx) + 0.5, 'within ~100 ms it has caught up');
+  // Over content behind the glass: nothing drawn, the OS arrow stays.
+  const pb = cur.draw(g, behind, geo, 1);
+  assert.equal(pb.drawn, false);
+  assert.equal(pb.disparityPx, 0);
+  assert.equal(g.ops.length, 0, 'nothing drawn into the pair');
+  assert.equal(canvas.style.cursor, 'pointer', 'the OS arrow is the cursor on the plane');
+  // Content comes out: the drawn arrow replaces it, in front of that content, within a frame or two.
+  const p0 = cur.draw(g, near, geo, 1.1);
+  const p0b = cur.draw(g, near, geo, 1.2);
+  assert.equal(p0b.drawn, true);
+  assert.equal(canvas.style.cursor, 'none', 'the drawn arrow replaces the OS arrow');
+  assert.ok(Math.abs(p0b.disparityPx - pairCursorTarget(12, E)) < 0.6, `caught up within ~100 ms (${p0.disparityPx} → ${p0b.disparityPx})`);
+  const tipX = g.ops.at(-2).pts[0][0];
+  assert.ok(Math.abs(tipX - (0.5 * E + p0b.disparityPx / 2)) < 1e-9, 'left copy +d/2 about the hotspot');
+  const sz = Math.max(...g.ops.at(-2).pts.map((p) => p[1])) - 0.5 * H;
+  assert.ok(Math.abs(sz - (19 / 216) * H * (18.6 / 19)) < 0.01, `the OS arrow's size: 19 CSS px of a 216-px tile (${sz})`);
+  // Content sinks back behind the glass: the arrow follows slowly, then hands back to the OS arrow.
+  const p1 = cur.draw(g, behind, geo, 1.25);
+  assert.equal(p1.drawn, true, '50 ms later it is still in front (slow sink, no flicker)');
+  let pn = p1;
+  for (let t = 1.3; t < 3.0; t += 0.05) pn = cur.draw(g, behind, geo, t);
+  assert.equal(pn.drawn, false, 'settled: back to the OS arrow on the plane');
+  assert.equal(canvas.style.cursor, 'pointer');
   cur.pointer.set(null);
-  assert.equal(cur.draw(g, near, geo, 1.3), null);
-  assert.equal(canvas.style.cursor, 'crosshair', 'pointer gone → the CSS cursor is back');
+  assert.equal(cur.draw(g, near, geo, 3.1), null);
+  assert.equal(canvas.style.cursor, 'pointer', 'pointer gone → the CSS cursor as it was');
   cur.dispose();
 });
 
