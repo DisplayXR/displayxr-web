@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## 1.40.2 — 2026-10-11
+## 1.41.0 — 2026-10-11
 
 Touches the **core** `./three` (`DepthCursor`'s look and two defaults) and the **preview tier**
 (`./model`, `./splat`, `./call`, `./camera`: `cursor: 'depth'`), plus `./cursor-depth` (additive
@@ -35,7 +35,7 @@ stop going behind the glass.
   threshold, filter and arrow from `./cursor-depth` instead of their own copies. Tile pixels convert
   to eye baselines through the tile's `displayMetrics()` (the panel's pixel pitch, × the eye
   separation; the CSS reference px until it answers).
-  - This subsumes the earlier unreleased change on `main` (#164), which already moved the stereo
+  - This subsumes 1.40.2's change (#164), which already moved the stereo
     tile's margin from ~1–2 buffer px to **2 mm** of on-screen disparity (0.3 mm hand-back),
     converted through `displayMetrics()`. That conversion is kept. The margin and threshold are now
     the core's 0.03 / 0.005 **eye baselines** (≈1.9 mm / 0.3 mm at the default 63 mm eye
@@ -51,6 +51,18 @@ stop going behind the glass.
   `pxPerBaseline`, and `active` now means "drawn". `CursorDepthPlacer.update` takes an optional
   `canvasPx` for the pixel floor. **Deprecated:** `cursorCrosshairMesh` (unused by the SDK; removed
   in 2.0).
+
+## 1.40.2 — 2026-10-11
+
+Touches the **preview tier** (`./call`, `./camera`) only; no API change.
+
+### Stereo-tile depth cursor: the margin is 2 mm on the glass
+
+- The arrow now floats **2 mm** (of on-screen disparity) in front of content that comes out of the
+  screen, and hands back to the OS arrow under **0.3 mm** — the runtime's 0.03 / 0.005 of the eye
+  baseline, so a stereo tile's cursor and a lifted tile's (runtime #1908) sit identically. 1.40.1
+  used ~1–2 buffer px, which on a small tile was a fraction of a millimetre. Physical units come from
+  the tile's `displayMetrics()` (the panel's pixel pitch); before it answers, the CSS reference px.
 
 ## 1.40.1 — 2026-10-11
 
