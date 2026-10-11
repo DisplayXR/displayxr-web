@@ -5,23 +5,38 @@
 // up are all in front), it is drawn on top of pixels that say they are nearer — the depth
 // violation runtime ADR-046 is about. A pair has no scene to raycast and no depth buffer, but its
 // two halves ARE the depth: this is ADR-046 Phase 3b done in the page. Block-match a cursor-sized
-// footprint between the eyes, take the nearest confident match, and draw a crosshair into both
-// halves with that disparity plus a small margin. The browser weaves the pair as usual, so the
-// sprite lands just in front of the content under it.
+// footprint between the eyes and take the nearest confident match.
 //
-// Same policy as the scene cursor (./inline3d-cursor-depth.js): the footprint ring, the fast-rise /
-// slow-sink filter, the display plane when nothing matches. Disparities here are in OUTPUT pixels
-// of one eye of the woven buffer, + = crossed (in front of the glass), the sign the rest of
-// camera/ uses. Loaded only when a page asks for `cursor: 'depth'` — zero cost otherwise.
+// The cursor only ever comes FORWARD (David, 2026-10-10): it never goes inside the display. While
+// what is under it sits at or behind the glass, it is simply the OS arrow, on the screen plane.
+// Only when content comes out of the screen under it is the arrow drawn into both halves, with that
+// content's disparity plus a small margin (the OS cursor hidden meanwhile), so it is never overlapped
+// by what pops out. It is the normal arrow either way, not a special sprite.
+//
+// Same filter as the scene cursor (./inline3d-cursor-depth.js): fast rise, slow sink, the plane when
+// nothing matches. Disparities here are in OUTPUT pixels of one eye of the woven buffer, + = crossed
+// (in front of the glass), the sign the rest of camera/ uses. Loaded only when a page asks for
+// `cursor: 'depth'` — zero cost otherwise.
 
-import { CursorPointer, cursorFootprint, cursorFilterStep, CURSOR_DEFAULT_TUNING, CURSOR_CROSSHAIR, CURSOR_FILL_COLOR, CURSOR_OUTLINE_COLOR } from '../inline3d-cursor-depth.js';
+import { CursorPointer, cursorFootprint, cursorFilterStep, CURSOR_DEFAULT_TUNING } from '../inline3d-cursor-depth.js';
 import { matchBlock, MIN_NCC } from './disparity.js';
 
-/** Sprite height, as a fraction of the tile height (a call tile is small; 3% would be a speck). */
+/** The arrow's height in CSS px — the OS arrow's apparent size, so the swap to the drawn one is seamless. */
+export const PAIR_CURSOR_CSS_PX = 19;
+/** Arrow height as a fraction of the tile height when the tile's on-page size is unknown. */
 export const PAIR_CURSOR_HEIGHT = 0.06;
-/** How far in front of the content the sprite floats, as a fraction of the eye width (crossed). */
+/** Below this many output px in front of the glass the drawn arrow hands back to the OS cursor. */
+export const PAIR_CURSOR_SHOW_PX = 0.5;
+/**
+ * The standard pointer arrow, hotspot at the tip (0, 0), unit = its height, x right, y down: the
+ * OS arrow's outline (a 19-px-tall Windows/macOS arrow, normalised).
+ */
+export const PAIR_CURSOR_ARROW = Object.freeze([
+  [0, 0], [0, 16 / 19], [4.2 / 19, 12.4 / 19], [6.9 / 19, 18.6 / 19], [9.5 / 19, 17.5 / 19], [6.8 / 19, 11.5 / 19], [11.7 / 19, 11.5 / 19],
+]);
+/** How far in front of out-of-screen content the arrow floats, as a fraction of the eye width (crossed). */
 export const PAIR_CURSOR_MARGIN = 0.002;
-/** Comfort clamp on the sprite's disparity, as a fraction of the eye width, either way. */
+/** Comfort cap on how far in front the arrow comes, as a fraction of the eye width. */
 export const PAIR_CURSOR_CLAMP = 0.08;
 
 /**
@@ -33,9 +48,10 @@ export const PAIR_CURSOR_CLAMP = 0.08;
  * @param {{rL: {sx:number, sy:number, sw:number, sh:number}, rR: {sx:number}, outW: number, mirror?: boolean}} geo
  *        each eye's source crop (relative to its half, eyeCropRect) and the output eye width; a
  *        mirrored view (the self view) flips the pointer, never the disparity.
- * @param {number} u  pointer, tile-normalised (0..1, left → right as the viewer sees it)
- * @param {number} v  pointer, tile-normalised (0..1, top → bottom)
- * @param {number} height  sprite height (fraction of the tile height)
+ * @param {number} u  pointer hotspot, tile-normalised (0..1, left → right as the viewer sees it)
+ * @param {number} v  pointer hotspot, tile-normalised (0..1, top → bottom)
+ * @param {number} height  arrow height (fraction of the tile height); the footprint covers the
+ *        arrow's body, which hangs down-right of the hotspot
  * @param {number} aspect  the tile's width / height, for a round footprint
  * @returns {number|null}  output px, + = in front of the glass
  */
@@ -49,7 +65,8 @@ export function pairFootprintDisparity(luma, geo, u, v, height, aspect) {
   const { rL, rR } = geo;
   const k = geo.outW / rL.sw; // output px per source px
   let best = null;
-  for (const [pu, pv] of cursorFootprint(u, v, height, aspect)) {
+  // The ring is centred on the arrow's body, not its tip: that is what content must not overlap.
+  for (const [pu, pv] of cursorFootprint(u + (0.3 * height) / aspect, v + 0.5 * height, height, aspect)) {
     if (!(pu >= 0 && pu <= 1 && pv >= 0 && pv <= 1)) continue;
     const su = geo.mirror ? 1 - pu : pu;
     const x = Math.round((rL.sx + su * rL.sw) * scale - b / 2);
@@ -64,42 +81,39 @@ export function pairFootprintDisparity(luma, geo, u, v, height, aspect) {
   return best;
 }
 
-/** The sprite's target disparity: the content plus the margin, clamped; the glass with nothing under it. */
+/**
+ * The arrow's target disparity: in front of content that comes OUT of the screen (its disparity
+ * plus the margin, clamped), else the glass. Never behind the glass — the cursor does not go inside
+ * the display.
+ */
 export function pairCursorTarget(contentPx, outW) {
-  if (contentPx === null || !Number.isFinite(contentPx)) return 0;
-  const lim = PAIR_CURSOR_CLAMP * outW;
-  return Math.max(-lim, Math.min(lim, contentPx + PAIR_CURSOR_MARGIN * outW));
+  if (contentPx === null || !Number.isFinite(contentPx) || !(contentPx > 0)) return 0;
+  return Math.min(PAIR_CURSOR_CLAMP * outW, contentPx + PAIR_CURSOR_MARGIN * outW);
 }
 
 /**
- * Draw the crosshair into both halves of a woven buffer: the left eye's copy `disparityPx / 2`
- * right of the pointer, the right eye's as far left (crossed = in front). Each copy is clipped to
- * its own half, so a sprite at the edge never bleeds into the other eye.
+ * Draw the arrow into both halves of a woven buffer: the left eye's copy `disparityPx / 2` right of
+ * the pointer, the right eye's as far left (crossed = in front). White with a dark outline, like the
+ * OS arrow. Each copy is clipped to its own half, so an arrow at the edge never bleeds into the other eye.
+ * @param {number} sizePx  arrow height in output px
  */
-export function drawPairCrosshair(g, outW, outH, u, v, disparityPx, height) {
-  const size = height * outH;
+export function drawPairArrow(g, outW, outH, u, v, disparityPx, sizePx) {
   const cy = v * outH;
-  const rgba = (c) => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${c[3]})`;
   for (const eye of [0, 1]) {
     const cx = eye * outW + u * outW + (eye === 0 ? disparityPx / 2 : -disparityPx / 2);
     g.save();
     g.beginPath();
     g.rect(eye * outW, 0, outW, outH);
     g.clip();
-    for (const [width, color, cap] of [
-      [0.15, CURSOR_OUTLINE_COLOR, 'square'],
-      [0.07, CURSOR_FILL_COLOR, 'butt'],
-    ]) {
-      g.lineWidth = width * size;
-      g.lineCap = cap;
-      g.strokeStyle = rgba(color);
-      g.beginPath();
-      for (const [x0, y0, x1, y1] of CURSOR_CROSSHAIR) {
-        g.moveTo(cx + x0 * size, cy + y0 * size);
-        g.lineTo(cx + x1 * size, cy + y1 * size);
-      }
-      g.stroke();
-    }
+    g.beginPath();
+    PAIR_CURSOR_ARROW.forEach(([x, y], k) => (k ? g.lineTo : g.moveTo).call(g, cx + x * sizePx, cy + y * sizePx));
+    g.closePath();
+    g.fillStyle = '#fff';
+    g.fill();
+    g.lineWidth = Math.max(1, sizePx / 19);
+    g.lineJoin = 'miter';
+    g.strokeStyle = '#000';
+    g.stroke();
     g.restore();
   }
 }
@@ -113,12 +127,13 @@ export class PairCursor {
   /** @param {HTMLElement} canvas  the tile — the pointer counts over its box */
   constructor(canvas, { height, pointerScope = 'window' } = {}) {
     this.pointer = new CursorPointer(canvas, { scope: pointerScope });
-    this.height = height > 0 ? height : PAIR_CURSOR_HEIGHT;
+    // A fraction of the tile height when given; by default the OS arrow's size (CSS px → tile).
+    this.height = height > 0 ? height : null;
     this.filter = {};
     this._luma = null;
     this._uv = null;
     this._content = null;
-    /** The last frame's placement, for diagnostics: `{ contentPx, targetPx, disparityPx }` or null. */
+    /** The last frame's placement, for diagnostics: `{ contentPx, targetPx, disparityPx, drawn }` or null. */
     this.last = null;
   }
 
@@ -127,6 +142,8 @@ export class PairCursor {
   }
 
   /**
+   * Draws the arrow only while content in front of the glass is under it (the OS cursor is hidden
+   * exactly then); otherwise leaves the buffer alone and the OS arrow shows, on the plane.
    * @param {CanvasRenderingContext2D} g  the woven buffer (2·outW × outH), already painted
    * @param {object|null} luma  the latest grayscale source copy (pairFootprintDisparity)
    * @param {{rL: object, rR: object, outW: number, outH: number, mirror?: boolean}} geo
@@ -136,19 +153,27 @@ export class PairCursor {
     const uv = this.pointer.uv;
     if (!uv) return this.idle();
     const [u, v] = uv;
+    const hf = this.height ?? this._osArrowFraction();
     // Match only when there is something new to match: a new frame copy or a moved pointer.
     if (luma !== this._luma || !this._uv || this._uv[0] !== u || this._uv[1] !== v) {
-      this._content = pairFootprintDisparity(luma, geo, u, v, this.height, geo.outW / geo.outH);
+      this._content = pairFootprintDisparity(luma, geo, u, v, hf, geo.outW / geo.outH);
       this._luma = luma;
       this._uv = uv;
     }
     const target = pairCursorTarget(this._content, geo.outW);
     // The shared filter rises fast toward SMALLER values (nearer, in its convention): negate.
     const disparity = -cursorFilterStep(this.filter, CURSOR_DEFAULT_TUNING, -target, nowSec);
-    drawPairCrosshair(g, geo.outW, geo.outH, u, v, disparity, this.height);
-    this.pointer.hideCss(true);
-    this.last = { contentPx: this._content, targetPx: target, disparityPx: disparity };
+    const drawn = disparity >= PAIR_CURSOR_SHOW_PX;
+    if (drawn) drawPairArrow(g, geo.outW, geo.outH, u, v, disparity, hf * geo.outH);
+    this.pointer.hideCss(drawn); // the OS arrow IS the cursor on the plane
+    this.last = { contentPx: this._content, targetPx: target, disparityPx: drawn ? disparity : 0, drawn };
     return this.last;
+  }
+
+  /** The OS arrow's height as a fraction of the tile's on-page height. */
+  _osArrowFraction() {
+    const r = this.pointer.canvas.getBoundingClientRect?.();
+    return r && r.height > 0 ? Math.min(0.5, PAIR_CURSOR_CSS_PX / r.height) : PAIR_CURSOR_HEIGHT;
   }
 
   /** Not drawing this frame (pointer away, tile not woven): the CSS cursor comes back. */

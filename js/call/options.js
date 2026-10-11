@@ -90,8 +90,9 @@ export function normalizeCallOptions(opts = {}) {
     // peer's eyes and shift the eyes so it sits at the display plane. The depth slider stays an
     // offset on top. Off = the pair as sent (plus any `hint`).
     autoConverge: opts.autoConverge === undefined ? true : !!opts.autoConverge,
-    // `cursor: 'depth'` (runtime ADR-046 on a pair): a crosshair just in front of the person under
-    // the pointer, measured off each stereo tile's two halves. Off by default (zero cost).
+    // `cursor: 'depth'` (runtime ADR-046 on a pair): the arrow comes in front of a person who pops
+    // out of the screen under it, measured off each stereo tile's two halves; else the plain OS
+    // arrow on the plane. Off by default (zero cost).
     cursor: resolvePairCursorOption(opts.cursor, '@displayxr/inline3d/call'),
     mono3D: normalizeMono3D(opts.mono3D),
     maxPeers: clampMaxPeers(opts.maxPeers === undefined ? DEFAULT_MAX_PEERS : opts.maxPeers),

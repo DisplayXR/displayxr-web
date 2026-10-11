@@ -5,6 +5,24 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./call`, `./camera`) only: how `cursor: 'depth'` looks and moves. No
+API change.
+
+### Stereo-tile depth cursor: the normal arrow, and only ever in front of the screen
+
+- **It never goes inside the display.** 1.40.0 put the cursor at the depth of whatever was under
+  it, so over a background behind the glass it sank behind the glass too. Now the depth only moves
+  to keep content that comes OUT of the screen from overlapping it; over anything on or behind the
+  glass it stays on the screen plane.
+- **It is the normal arrow, not a crosshair.** On the plane nothing is drawn: it is the OS cursor,
+  untouched. Only while the person under it pops out is the arrow drawn into both halves, just in
+  front of them, at the OS arrow's size (19 CSS px; `height` still overrides it), with the OS
+  cursor hidden exactly then. The footprint now covers the arrow's body, not a ring round its tip.
+- Same filter as before: it comes forward fast and hands back to the OS arrow smoothly as the
+  content sinks. Matches the native lifted-content cursor (runtime #1908).
+
 ## 1.40.0 — 2026-10-10
 
 Touches the **preview tier** (`./call`, `./camera`) only: one new option, off by default. New type
