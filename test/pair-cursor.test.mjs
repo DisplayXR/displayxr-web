@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
-import { pairFootprintDisparity, pairCursorTarget, pairCursorScale, pairPxPerBaseline, drawPairArrow, PairCursor, PAIR_CURSOR_CSS_PX_M, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
+import { pairNearestSupported, consistentMatch, pairFootprintDisparity, pairCursorTarget, pairCursorScale, pairPxPerBaseline, drawPairArrow, PairCursor, PAIR_CURSOR_CSS_PX_M, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
 import { CURSOR_DEFAULT_TUNING as T, CURSOR_ARROW, cursorTarget, cursorShouldDraw } from '../js/inline3d-cursor-depth.js';
 import { DISPLAY_METRICS_DEFAULTS } from '../js/inline3d-display-metrics.js';
 import { resolvePairCursorOption } from '../js/inline3d-cursor-option.js';
@@ -291,4 +291,33 @@ test('PairCursor: the panel pixel pitch from the tile handle (displayMetrics) se
   const p1 = cur.draw(g, sbs(E, H, () => 12), geo, 1.016);
   assert.ok(Math.abs(p1.pxPerBaseline - pairPxPerBaseline(E, 384, 0.0002, 0.063)) < 1e-9, 'after: the panel pitch');
   cur.dispose();
+});
+
+test('foreground edge: the footprint reads the subject or the background or nothing — never an in-between depth', () => {
+  // A near object (d = 16) right of left-eye column 126, background d = 4: the classic occlusion
+  // edge where one eye sees the object and the other the background behind it.
+  const luma = sbs(E, H, (x) => (x >= 126 ? 16 : 4));
+  const geo = { rL: full, rR: full, outW: E };
+  for (let u = 0.4; u <= 0.6; u += 0.005) {
+    const d = pairFootprintDisparity(luma, geo, u, 0.5, 0.06, E / H);
+    assert.ok(d === null || Math.abs(d - 16) < 1 || Math.abs(d - 4) < 1, `u=${u.toFixed(3)}: ${d} is neither the object (16) nor the background (4)`);
+  }
+});
+
+test('left-right consistency: a block whose match does not map back is rejected', () => {
+  const luma = sbs(E, H, () => 10);
+  const swp = new Uint8Array(luma.img.length);
+  for (let y = 0; y < H; y++) for (let x = 0; x < E; x++) { swp[y * 2 * E + x] = luma.img[y * 2 * E + E + x]; swp[y * 2 * E + E + x] = luma.img[y * 2 * E + x]; }
+  const d = consistentMatch(luma.img, swp, 2 * E, H, 100, 60, 12, -12, 72);
+  assert.ok(d !== null && Math.abs(d - 10) < 0.6, `a consistent pair maps back: ${d}`);
+  // Scramble the back image: the forward match stands, the back-check cannot confirm it.
+  const noise = swp.map((_, i) => (i * 2654435761) >>> 24);
+  assert.equal(consistentMatch(luma.img, noise, 2 * E, H, 100, 60, 12, -12, 72), null);
+});
+
+test('support: the nearest value counts only when a second sample agrees', () => {
+  assert.equal(pairNearestSupported([40, 5, 6], 2), 6, 'a lone 40 is ignored; 5 and 6 agree');
+  assert.equal(pairNearestSupported([40, 39, 5], 2), 40);
+  assert.equal(pairNearestSupported([40], 2), null, 'one sample alone is never enough');
+  assert.equal(pairNearestSupported([40, 20, 5], 2), null, 'nothing corroborated → the glass');
 });

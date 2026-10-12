@@ -72,21 +72,116 @@ export function pairFootprintDisparity(luma, geo, u, v, height, aspect) {
   const dMin = -Math.round(E * 0.05);
   const { rL, rR } = geo;
   const k = geo.outW / rL.sw; // output px per source px
-  let best = null;
-  // The tip, then a ring centred on the arrow's body: that is what content must not overlap.
+  const swp = swappedHalves(luma);
+  const found = []; // { d, x, y, eye }: a consistent match and WHERE it was taken
+  const seen = new Set();
+  const sample = (su, pv) => {
+    const y = Math.round((rL.sy + pv * rL.sh) * scale - b / 2);
+    if (y < 0 || y + b > h) return;
+    const xl = Math.round((rL.sx + su * rL.sw) * scale - b / 2);
+    const xr = Math.round((rR.sx + su * rR.sw) * scale - b / 2);
+    // The arrow is far smaller than a block (~6 vs 12 copy px at the OS arrow's size), so
+    // neighbouring footprint points land on the SAME block: match each block once.
+    if (!seen.has(`L${xl},${y}`)) {
+      seen.add(`L${xl},${y}`);
+      const dl = consistentMatch(img, swp, w, h, xl, y, b, dMin, dMax);
+      if (dl !== null) found.push({ d: dl, x: xl, y, eye: 0 });
+    }
+    if (!seen.has(`R${xr},${y}`)) {
+      seen.add(`R${xr},${y}`);
+      const dr = consistentMatch(swp, img, w, h, xr, y, b, -dMax, -dMin); // right-anchored: d' = -d
+      if (dr !== null) found.push({ d: -dr, x: xr, y, eye: 1 });
+    }
+  };
+  // The tip, then a ring centred on the arrow's body: that is what content must not overlap. Each
+  // point is sampled from BOTH eyes' images (the pointer's spot in the left eye matched into the
+  // right, and the same spot in the right eye matched into the left), so neither eye is favoured:
+  // at a foreground edge one eye's block can sit on the subject and the other's on the background.
+  // Every match must also pass the left-right consistency check (consistentMatch).
+  let cu = 0, cv = 0, n = 0;
   for (const [pu, pv] of cursorArrowFootprint(u, v, height, aspect)) {
     if (!(pu >= 0 && pu <= 1 && pv >= 0 && pv <= 1)) continue;
-    const su = geo.mirror ? 1 - pu : pu;
-    const x = Math.round((rL.sx + su * rL.sw) * scale - b / 2);
-    const y = Math.round((rL.sy + pv * rL.sh) * scale - b / 2);
-    if (x < 0 || x + b > E || y < 0 || y + b > h) continue;
-    const m = matchBlock(img, w, h, x, y, b, b, { dMin, dMax, dyMax: 2 });
-    if (!m || m.c < MIN_NCC) continue;
-    // Source disparity → displayed: each eye's crop moved its half by its own offset.
-    const d = (m.d / scale - (rL.sx - rR.sx)) * k;
-    if (best === null || d > best) best = d;
+    sample(geo.mirror ? 1 - pu : pu, pv);
+    cu += pu; cv += pv; n++;
   }
-  return best;
+  if (!n) return null;
+  // ...plus four blocks half a block around the footprint's centre, so that real content under
+  // the arrow is seen by more than one distinct block (pairNearestSupported needs that).
+  const du = (b / 2 / scale) / rL.sw, dv = (b / 2 / scale) / rL.sh;
+  for (const [ou, ov] of [[-du, 0], [du, 0], [0, -dv], [0, dv]]) {
+    const pu = cu / n + ou, pv = cv / n + ov;
+    if (pu >= 0 && pu <= 1 && pv >= 0 && pv <= 1) sample(geo.mirror ? 1 - pu : pu, pv);
+  }
+  // Source disparity → displayed: each eye's crop moved its half by its own offset.
+  for (const f of found) f.d = (f.d / scale - (rL.sx - rR.sx)) * k;
+  return pairNearestSupported(found, (PAIR_SUPPORT_COPY_PX / scale) * k, b / 2);
+}
+
+/**
+ * Two consistent footprint matches must agree (within this many px of the grayscale copy) before
+ * the nearest is believed: content that comes out of the screen covers several blocks, a lone
+ * block claiming something nearer than the rest is noise.
+ */
+export const PAIR_SUPPORT_COPY_PX = 1.5;
+
+/** The SBS copy with its halves swapped (cached per copy): matching it is matching right → left. */
+const _swapped = new WeakMap();
+function swappedHalves(luma) {
+  let s = _swapped.get(luma);
+  if (s) return s;
+  const { img, w, h } = luma;
+  const E = w / 2;
+  s = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    for (let x = 0; x < E; x++) {
+      s[o + x] = img[o + E + x];
+      s[o + E + x] = img[o + x];
+    }
+  }
+  _swapped.set(luma, s);
+  return s;
+}
+
+/**
+ * A block of image A's left half matched into its right half, kept only if the matched block,
+ * matched BACK (in B = A with its halves swapped), lands within 1 px of where it started — the
+ * classic left-right consistency check. A block straddling a depth edge (half subject, half
+ * background, each eye seeing a different half) fails it instead of returning a random depth.
+ * @returns {number|null} disparity in A's convention (left x − right x), copy px
+ */
+export function consistentMatch(A, B, w, h, x, y, b, dMin, dMax) {
+  const E = w / 2;
+  if (x < 0 || x + b > E) return null;
+  const m = matchBlock(A, w, h, x, y, b, b, { dMin, dMax, dyMax: 2 });
+  if (!m || m.c < MIN_NCC) return null;
+  const xb = Math.round(x - m.d);
+  const yb = y + m.dy;
+  if (xb < 0 || xb + b > E || yb < 0 || yb + b > h) return null;
+  const back = matchBlock(B, w, h, xb, yb, b, b, { dMin: -Math.ceil(m.d) - 2, dMax: -Math.floor(m.d) + 2, dyMax: 1 });
+  if (!back || back.c < MIN_NCC || Math.abs(-back.d - m.d) > 1) return null;
+  return m.d;
+}
+
+/**
+ * The nearest disparity that an INDEPENDENT second sample corroborates (within `tol`), else null.
+ * Independent = taken from the other eye's image, or from a block at least `minSep` copy px away:
+ * two footprint points inside one block are one witness, not two. (A block straddling a face edge
+ * and a bright window matched at a bogus +49 px, consistently, and its twin counted as support.)
+ * @param {Array<{d:number, x?:number, y?:number, eye?:number}|number>} samples  output px, + = in front
+ * @returns {number|null}
+ */
+export function pairNearestSupported(samples, tol, minSep = 0) {
+  const S = samples.map((s) => (typeof s === 'number' ? { d: s, x: 0, y: 0, eye: -1 } : s));
+  if (S.length < 2) return null;
+  const sorted = [...S].sort((p, q) => q.d - p.d); // nearest first
+  const independent = (p, q) => p.eye === -1 || p.eye !== q.eye || Math.abs(p.x - q.x) + Math.abs(p.y - q.y) >= minSep;
+  for (const p of sorted) {
+    for (const q of sorted) {
+      if (q !== p && Math.abs(p.d - q.d) <= tol && independent(p, q)) return p.d;
+    }
+  }
+  return null;
 }
 
 /**

@@ -144,7 +144,11 @@ export function matchBlock(img, W, H, x0, y0, bw, bh, { dMin, dMax, dyMax = 2, u
 export function blockDisparities(img, W, H, o = {}) {
   const E = W / 2;
   const b = o.block || Math.max(8, Math.round(E / 20));
-  const step = o.step || Math.round(b * 1.5); // sparse grid: half the blocks, same modes
+  // One block per block width. A sparser grid (1.5 b) left a dim, grayscale SR-camera frame with
+  // ~9 matched blocks, 3-4 of them on the face — too few to form a mode — so the background won
+  // and auto-convergence flipped between the two. At 1 b: ~36 blocks, the face every frame, and a
+  // steadier value (±1 px instead of ±4); ~13 ms per full search at 240 px per eye.
+  const step = o.step || b;
   const dMax = o.dMax ?? Math.round(E * 0.3);
   const dMin = o.dMin ?? -Math.round(E * 0.05);
   const x0 = Math.round(E * (o.roiX0 ?? 0.15));
@@ -165,12 +169,17 @@ export function blockDisparities(img, W, H, o = {}) {
  * The subject = the NEAREST strong disparity mode: the largest `d` whose ±`tol` bin holds at least
  * `minFrac` of the matched blocks (and `minBlocks`). Returns its members, or null.
  */
-export function nearestMode(blocks, { tol = 2, minFrac = 0.12, minBlocks = 3 } = {}) {
+export function nearestMode(blocks, { tol = 2, relTol = 0.1, minFrac = 0.12, minBlocks = 3 } = {}) {
   if (!blocks.length) return null;
   const need = Math.max(minBlocks, Math.ceil(blocks.length * minFrac));
   const ds = blocks.map((b) => b.d).sort((a, b) => b - a); // descending: nearest first
   for (const d of ds) {
-    const members = blocks.filter((b) => Math.abs(b.d - d) <= tol);
+    // The bin widens with the disparity: a near subject's own relief spreads its blocks over
+    // ~relTol of its disparity (the spread scales with baseline / distance, as d does), so a
+    // fixed +-2 px split a face from a wide-baseline (120 mm) camera into groups too small to
+    // count, and the flat background won.
+    const t = Math.max(tol, relTol * Math.abs(d));
+    const members = blocks.filter((b) => Math.abs(b.d - d) <= t);
     if (members.length >= need) {
       const md = members.map((b) => b.d).sort((a, b) => a - b);
       return { d: md[md.length >> 1], members };

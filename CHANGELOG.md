@@ -5,6 +5,30 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+Touches the **preview tier** (`./call`, `./camera`) only: auto-convergence and the stereo-tile depth
+cursor are steadier on a wide-baseline camera. No API change.
+
+### Auto-convergence holds the face on a 120 mm-baseline camera
+
+- Found on the SR laptop's built-in stereo camera (120 mm baseline, grayscale): auto-convergence
+  flipped between the face and the background. On a dim frame the sparse block grid (1.5 blocks
+  apart) matched ~9 blocks, 3-4 on the face, too few to form the subject mode, so the background
+  won. The grid is now one block apart (~36 blocks: the face on every frame, ±1 px instead of ±4),
+  and a mode's bin widens with its disparity (10%), so a near face's own relief stays one group.
+- The convergence shift may now reach 20% of the eye width (was 12%): that camera sees a face at
+  0.6 m at ~22% of the eye width, ~11% per eye, which left no room to lean in.
+
+### Stereo-tile depth cursor: steady at foreground edges
+
+- The footprint was matched from the left eye's image only. At a foreground edge the left eye's
+  block can sit on the subject while the right eye's sits on the background, and the arrow jumped
+  out and back frame to frame. Each footprint point is now matched from BOTH eyes, every match must
+  pass a left-right consistency check (matched back, it lands within 1 px of where it started), and
+  the nearest value counts only when a second sample agrees; otherwise the arrow stays on the
+  glass. Over 20 live frames across a face edge: 200 → 35 large jumps.
+
 ## 1.42.0 — 2026-10-11
 
 Touches the **core** `./three` (`DepthCursor`) and the **preview tier** (`./model`, `./splat`,

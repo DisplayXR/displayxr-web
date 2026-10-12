@@ -7,8 +7,12 @@
 /** Low-pass factor for the convergence shift (RFC §3): next = prev + α·(target − prev). */
 export const CONVERGENCE_ALPHA = 0.2;
 
-/** The convergence shift never exceeds this fraction of the per-eye width, either way. */
-export const CONVERGENCE_MAX_FRACTION = 0.12;
+/**
+ * The convergence shift never exceeds this fraction of the per-eye width, either way. 0.2: a
+ * 120 mm-baseline camera (the SR laptop's) sees a face at 0.6 m at ~22% of the eye width, so it
+ * needs ~11% per eye — 0.12 left no room to lean in.
+ */
+export const CONVERGENCE_MAX_FRACTION = 0.2;
 
 /** `setDepth(v)`: v in [-1, 1] adds v times this fraction of the per-eye width to the shift. */
 export const DEPTH_RANGE_FRACTION = 0.05;
