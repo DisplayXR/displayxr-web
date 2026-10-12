@@ -4351,3 +4351,72 @@ test('pick index: an empty cone declines (the full scan owns the nearest-by-angl
   assert.equal(queryPickIndex(ix, xyz, [0, 0, 0.9], [0, 0, -1]), undefined);
   assert.equal(buildPickIndex(new Float32Array([0, 0, 5]), 1, null, [0, 0, 1], [0, 0, -1], [1, 0, 0], [0, 1, 0], 1, 1), null, 'nothing in front');
 });
+
+// ── warmEntity: a glTF's lit programs through the renderer's OWN call, linked off the frame ──
+
+test("warmEntity issues each mesh's forward program via getShaderInstance with exactly the renderer's arguments, skips layers the camera never draws, finalizes when linked, resolves the count", async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const calls = [];
+  let linkPolls = 0;
+  const mkShader = (id) => {
+    const sh = { id, ready: false, failed: false };
+    sh.impl = { isLinked: () => ++linkPolls > 2, finalize: (dev, s) => ((s.ready = true), true) };
+    return sh;
+  };
+  const shaders = new Map();
+  const viewUniformFormat = { vuf: true };
+  const sortedLights = [['sun'], [], []];
+  const layers = new Map([
+    [0, { getLightHash: (c) => (c ? 7 : 42), splitLights: sortedLights }],
+    [5, { getLightHash: () => 99, splitLights: [[], [], []] }],
+  ]);
+  const shaderParams = { hash: 1234 };
+  const mi = (name) => ({
+    mesh: {},
+    shaderPassMask: ~0,
+    material: { prepareForRender() { this.prepared = true; } },
+    ensureMaterial() { this.ensured = true; },
+    getShaderInstance(pass, lightHash, scene, sp, vuf, sl) {
+      calls.push({ name, pass, lightHash, sp, vuf, sl });
+      const key = `${name}|${lightHash}`;
+      if (!shaders.has(key)) shaders.set(key, mkShader(key));
+      return { shader: shaders.get(key) };
+    },
+  });
+  const a = mi('a');
+  const b = mi('b');
+  const hidden = mi('ui'); // in layer 5, which the eye camera does not draw
+  const entity = {
+    findComponents: (t) =>
+      t === 'render'
+        ? [
+            { meshInstances: [a, b], layers: [0] },
+            { meshInstances: [hidden], layers: [5] },
+          ]
+        : [],
+  };
+  const fake = {
+    pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+    app: { graphicsDevice: {}, scene: { clusteredLightingEnabled: false, layers: { getLayerById: (id) => layers.get(id) } }, renderer: { viewUniformFormat } },
+    eye: { camera: { layers: [0], camera: { shaderParams } } },
+    _views: [],
+    _viewPath: 'renderViews',
+    _disposed: false,
+    logTag: '[t]',
+  };
+  const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, entity);
+  assert.equal(n, 2, 'two distinct programs');
+  assert.deepEqual(calls.map((c) => c.name), ['a', 'b'], 'the layer-5 mesh is not warmed for a camera that never draws layer 5');
+  for (const c of calls) {
+    assert.equal(c.pass, 0);
+    assert.equal(c.lightHash, 42, "the layer's light hash (non-clustered)");
+    assert.equal(c.sp, shaderParams, "the camera's LIVE shaderParams object (its hash keys the cache)");
+    assert.equal(c.vuf, viewUniformFormat, "the renderer's viewUniformFormat");
+    assert.equal(c.sl, sortedLights, "the layer's splitLights");
+  }
+  assert.ok(a.ensured && a.material.prepared, 'ensureMaterial + prepareForRender, as the renderer does');
+  assert.ok([...shaders.values()].every((s) => s.ready), 'every issued program finalized');
+  assert.ok(linkPolls > 2, 'waited on isLinked before finalizing');
+  assert.equal(await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: () => [] }), 0, 'nothing to warm');
+});

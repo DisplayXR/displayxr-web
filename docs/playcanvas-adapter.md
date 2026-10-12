@@ -117,7 +117,52 @@ so **`nearClip` / `farClip`** (both optional, `perf`-independent) are a **floor 
 on far**. They never widen the range, and they rewrite only the depth mapping, not the frustum.
 Anything nearer than `nearClip` is clipped, splats included.
 
-## `setRig` — switching between the display rig and the camera rig (#36)
+## `warmEntity` — a glTF's first draw without the freeze
+
+PlayCanvas's forward renderer compiles and links each new lit program **synchronously on its first
+draw** (`asyncCompile = false` in `renderForwardInternal`, PlayCanvas 2.22.3). A car with 13 lit
+materials (clearcoat paint, normal-mapped parts) froze for **0.8–0.95 s** on a Windows panel, on
+every cold session, at the moment it appeared.
+
+```js
+const car = asset.resource.instantiateRenderEntity();
+car.enabled = false;                 // loaded, not shown
+handle.engine.root.addChild(car);
+await handle.warmEntity(car);        // 13 programs compiled + linked in idle time
+car.enabled = true;                  // first draw: no link
+```
+
+`warmEntity` makes the call the renderer itself makes, `MeshInstance.getShaderInstance`, with the
+renderer's exact arguments:
+- the camera's shader pass;
+- the layer's light hash and `splitLights`;
+- `renderer.viewUniformFormat`;
+- each eye camera's **live** `shaderParams`, whose hash keys the cache.
+
+So the program it creates is the one the first draw looks up, cached on the mesh instance. It
+issues the compiles time-sliced (yielding every ~8 ms) and finishes each link with
+`KHR_parallel_shader_compile` before finalizing. Calling `material.getShaderVariant` with
+hand-built params instead gives broken variants (`#include "litMainVS"` unresolved): that is the
+route this avoids.
+
+**Warm in the state you will show in:** the variant is keyed on the layer's lights, fog and the
+camera's render target. Add the lights first. A light added after the warm means a new program on
+the first draw, exactly as without `warmEntity`. The model handle has it too: `addModel`'s
+`h.warmEntity()` warms the model by default.
+
+Measured in headless Chrome (ANGLE/Metal, PlayCanvas 2.22.3), on Khronos `CarConcept` (109 mesh
+instances, **13 programs**, like the panel's car) under a splat tile with a directional light:
+
+| | links when shown | worst frame when shown | worst frame during the warm |
+|---|---|---|---|
+| cold browser | 13 (2.59 s blocked) | 2.69 s | — |
+| shader cache warm | 13 (21 ms) | 102 ms | — |
+| after `warmEntity` | **0** | **20 ms** | 22 ms (100 ms total) |
+
+The rendered frame is pixel-identical to the cold path (0 of 240,000 pixels differ). The real fix
+is upstream: PlayCanvas honouring a per-draw-call `asyncCompile`. Until then this needs no engine
+patch. Not yet run on a Windows panel.
+
 
 A page with one persistent tile (one canvas, one `addSplat` handle for the whole document)
 sometimes has to show something other than the photograph: a glTF product or a bird under

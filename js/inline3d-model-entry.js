@@ -141,7 +141,10 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     remove: queue('remove'),
     exclude: queue('exclude'),
     unexclude: queue('unexclude'),
+    // Before the backend lands: once it has, the backend's own (PlayCanvas); three has none (0).
+    warmEntity: (entity, o) => out.ready.then(() => (out.warmEntity !== stubWarm && typeof out.warmEntity === 'function' ? out.warmEntity(entity, o) : 0)),
   };
+  const stubWarm = out.warmEntity;
   out.firstWoven = new Promise((resolve) => {
     out._resolveFirstWoven = resolve;
   });

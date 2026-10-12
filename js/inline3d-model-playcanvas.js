@@ -515,6 +515,14 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
+    /**
+     * Compile `entity`'s mesh programs off the frame before it is shown (default: the model) —
+     * PlayCanvasSplatViewer.warmEntity. Resolves the number of programs warmed; 0 before `ready`.
+     */
+    async warmEntity(entity, o) {
+      await out.ready?.catch?.(() => null);
+      return removed ? 0 : viewer.warmEntity(entity ?? out.model, o);
+    },
   });
 
   // The per-eye buffer scale in force (the request times the device-limit clamp,

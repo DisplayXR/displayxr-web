@@ -1190,6 +1190,86 @@ export class PlayCanvasSplatViewer {
    * engine's `renderSceneColorMap` setter counts one request per camera. Cameras made later (a
    * view-path switch) inherit it via `_makeCamera`.
    */
+  /**
+   * Compile the forward programs `entity`'s meshes will draw with — through the RENDERER's own
+   * call (MeshInstance.getShaderInstance with the pass, layer light hash, sorted lights, view
+   * uniform format and each eye camera's live shaderParams it will pass), so the variant is the
+   * very one the first draw asks for, cached on the mesh instance — then finish each link in idle
+   * periods (KHR_parallel_shader_compile) instead of on that draw. PlayCanvas's forward renderer
+   * links synchronously on first use (asyncCompile = false): a glTF with ~13 lit materials froze
+   * 0.8–0.95 s on a panel. Calling material.getShaderVariant with hand-built params instead
+   * produces broken variants (`#include "litMainVS"` unresolved) — do not.
+   *
+   * Warm in the state you will draw in: lights, fog, the layer and the camera's render target
+   * key the variant. Needs one frame rendered (the cameras' shaderParams). Resolves the number of
+   * programs warmed (0: nothing to do, or an engine whose internals differ).
+   */
+  async warmEntity(entity, { timeoutMs = 4000 } = {}) {
+    const pc = this.pc;
+    const app = this.app;
+    if (!pc || !app || this._disposed || !entity) return 0;
+    const device = app.graphicsDevice;
+    const scene = app.scene;
+    const renderer = app.renderer;
+    if (!renderer || typeof renderer.viewUniformFormat === 'undefined') return 0;
+    // [meshInstance, the layer ids it draws in] — a render/model component's own `layers`
+    const groups = [];
+    for (const c of [...(entity.findComponents?.('render') || []), ...(entity.findComponents?.('model') || [])]) {
+      if (c.meshInstances?.length) groups.push([c.meshInstances, c.layers?.length ? c.layers : [pc.LAYERID_WORLD]]);
+    }
+    if (!groups.length) return 0;
+    const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : [])]
+      .map((c) => c?.camera)
+      .filter((c) => c?.camera?.shaderParams);
+    const forward = pc.SHADER_FORWARD ?? 0;
+    const shaders = new Set();
+    // Issuing a program compiles its two shaders on THIS thread: 13 lit programs at once were one
+    // 65 ms frame. Time-slice — yield to idle whenever a slice passes SLICE_MS.
+    const SLICE_MS = 8;
+    let slice = now();
+    try {
+      for (const cc of cams) {
+        const shaderParams = cc.camera.shaderParams;
+        // the renderer's own pick (renderForwardLayer): the camera's shader pass, else forward
+        const pass = cc.camera.shaderPassInfo?.index ?? forward;
+        for (const [mis, layerIds] of groups) {
+          for (const layerId of layerIds) {
+            if (cc.layers && !cc.layers.includes(layerId)) continue; // this camera never draws it
+            const layer = scene.layers.getLayerById(layerId);
+            if (!layer) continue;
+            const lightHash = layer.getLightHash?.(scene.clusteredLightingEnabled) ?? 0;
+            for (const mi of mis) {
+              if (!mi?.mesh || !mi.material) continue;
+              if (((mi.shaderPassMask ?? ~0) & (1 << pass)) === 0) continue;
+              mi.ensureMaterial?.(device);
+              mi.material._scene = scene;
+              mi.material.prepareForRender?.(device, scene);
+              const si = mi.getShaderInstance(pass, lightHash, scene, shaderParams, renderer.viewUniformFormat, layer.splitLights);
+              if (si?.shader) shaders.add(si.shader);
+              if (now() - slice > SLICE_MS) {
+                await yieldIdle(50);
+                if (this._disposed) return 0;
+                slice = now();
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.info(`${this.logTag} warmEntity: could not issue the programs (engine internals differ?)`, err);
+      return 0;
+    }
+    const pending = () => [...shaders].filter((x) => !x.ready && !x.failed && x.impl?.finalize);
+    const t0 = now();
+    while (pending().length && now() - t0 < timeoutMs && !this._disposed) {
+      for (const x of pending()) if (x.impl.isLinked?.(device)) x.impl.finalize(device, x) || (x.failed = true);
+      if (pending().length) await yieldIdle(50);
+    }
+    // still linking (or no completion query): finalize now — a block here, not on the first draw
+    for (const x of pending()) x.impl.finalize(device, x) || (x.failed = true);
+    return shaders.size;
+  }
+
   useSceneColor(on = true) {
     this.sceneColor = !!on;
     const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : [])];
@@ -3491,6 +3571,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     },
     prepareSource,
     setRig,
+    /**
+     * Compile `entity`'s mesh programs (content under handle.engine.root) off the frame, before
+     * it is shown — viewer.warmEntity. Resolves the number of programs warmed.
+     */
+    async warmEntity(entity, o) {
+      await booted;
+      await first.catch(() => null);
+      return removed ? 0 : viewer.warmEntity(entity, o);
+    },
     setStereo,
     setDepthEnvelope,
     /**
