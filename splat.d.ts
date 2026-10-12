@@ -870,6 +870,12 @@ export type SplatPrepareOptions = SplatSourceOptions & {
    * resident during the dwell.
    */
   resident?: boolean;
+  /**
+   * Effects to compile during this prepare (after the asset and the transition), for a
+   * `playEffect` you will run once this asset is in — e.g. a reveal after the swap. Names, or
+   * `{ name, opts }` with the opts you will play with. See {@link SplatHandle.warmEffect}.
+   */
+  warmEffects?: Array<Exclude<SplatEffectName, 'grade' | 'clip'> | { name: Exclude<SplatEffectName, 'grade' | 'clip'>; opts?: SplatEffectTiming & Record<string, unknown> }>;
 };
 
 /** setSource's particle transitions (docs/splat-effects.md §Particle transitions). */
@@ -1202,6 +1208,17 @@ export interface SplatHandle {
     name: Exclude<SplatEffectName, 'grade' | 'clip'>,
     opts?: SplatEffectTiming & Record<string, unknown>,
   ): Promise<{ finished: boolean }>;
+  /**
+   * `engine: 'playcanvas'` only (throws on Spark). Compile the program `playEffect(name, opts)`
+   * will need NOW, finishing the link in idle periods (KHR_parallel_shader_compile), so the
+   * effect's first frame does not stall on it — a particle reveal (`'assemble'`) links for
+   * 250–300 ms on a panel otherwise. Keyed on the chunk the play would install with the tile
+   * effects on at the time: warm in the state you will play from. Resolves `true` once warm,
+   * `false` when nothing could be warmed (an entity-scope effect, a custom fragment stage); the
+   * effect then compiles on its first frame, as before. Validated at the call.
+   * docs/splat-effects.md §Warming an effect.
+   */
+  warmEffect(name: Exclude<SplatEffectName, 'grade' | 'clip'>, opts?: SplatEffectTiming & Record<string, unknown>): Promise<boolean>;
   /**
    * `engine: 'playcanvas'` only. Set a persistent effect (`grade`, `clip`, `custom`), hold a
    * transition at `{ progress }`, or pass `null` to remove it (the exact baseline).

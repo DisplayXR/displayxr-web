@@ -3025,6 +3025,20 @@ export function validateDepthEnvelope(o, prev) {
 }
 
 /**
+ * prepareSource's `warmEffects`: an array of effect names, or of { name, opts } (validated as a
+ * playEffect call, at prepareSource's own line). Returns [{ name, opts }].
+ */
+export function validateWarmEffects(list) {
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) throw new TypeError('@displayxr/inline3d/splat: prepareSource warmEffects must be an array of effect names or { name, opts }.');
+  return list.map((w) => {
+    const e = typeof w === 'string' ? { name: w, opts: {} } : { name: w?.name, opts: w?.opts ?? {} };
+    validateEffectCall(e.name, e.opts, 'play');
+    return e;
+  });
+}
+
+/**
  * handle.setStereo's argument, validated and merged onto the current override (throws at the
  * call). Returns the new override, or null when nothing is overridden.
  */
@@ -3577,6 +3591,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       validateEffectCall(name, o, 'play');
       return first.then(() => (fx && !removed ? fx.play(name, o) : { finished: false }));
     },
+    warmEffect,
     /** Set a persistent effect (grade, clip, custom), hold a transition at `progress`, or null to remove. */
     setEffect(name, params) {
       validateEffectCall(name, params, 'set');
@@ -4966,7 +4981,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    */
   async function prepareSource(src, po = {}) {
     if (po === null || typeof po !== 'object') throw new TypeError('@displayxr/inline3d/splat: prepareSource options must be an object.');
-    const warm = po.transition !== undefined ? resolveSwap(po) : null; // the setSource options it will get; throws on a bad one
+    const warmList = validateWarmEffects(po.warmEffects);
+    const swapOpts = po.warmEffects === undefined ? po : Object.fromEntries(Object.entries(po).filter(([k]) => k !== 'warmEffects'));
+    const warm = po.transition !== undefined ? resolveSwap(swapOpts) : null; // the setSource options it will get; throws on a bad one
     const app = await booted;
     await first.catch(() => null);
     if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
@@ -4995,6 +5012,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     diag?.mark('prepared', { ms: Math.round(performance.now() - t0), fetchOnly });
     // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
     await prewarmTransition(warm); // null (no transition declared): the overlay only
+    // And the effects the page will play once this asset is in (a reveal after the swap).
+    for (const w of warmList) await warmEffect(w.name, w.opts);
     const entry = { loaded, source, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
@@ -5062,32 +5081,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       const pc = pcModule;
       const made = [];
       for (const [chunkKey, codeOf] of fx ? wantChunks : []) {
-        const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
-        const code = codeOf();
-        let issued = 0;
-        for (const cam of cams) {
-          const mi = managerMi(cam, null);
-          const src = mi?.material;
-          const camera = cam.camera?.camera;
-          if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
-          const m = new pc.ShaderMaterial(src.shaderDesc);
-          src.defines.forEach((v, k) => m.setDefine(k, v));
-          m.shaderChunks.copy(src.shaderChunks);
-          m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
-          m.blendState = src.blendState;
-          made.push(m.getShaderVariant({
-            device: viewer.app.graphicsDevice,
-            scene: viewer.app.scene,
-            objDefs: mi._shaderDefs,
-            cameraShaderParams: camera.shaderParams,
-            pass: 0, // SHADER_FORWARD
-            sortedLights: [],
-            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
-            vertexFormat: mi.mesh?.vertexBuffer?.format,
-          }));
-          issued++;
-        }
-        if (issued) prewarmed.add(chunkKey);
+        const got = issueChunkVariants(pc, codeOf());
+        made.push(...got);
+        if (got.length) prewarmed.add(chunkKey);
       }
       const cam = viewer.eye?.camera?.camera;
       if (wantOverlay && cam?.shaderParams) {
@@ -5114,6 +5110,76 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
   }
 
+
+  /**
+   * Issue (compile + link, not wait for) the gsplat render variant with `code` as its tile
+   * `gsplatModifyVS` chunk, on every eye camera's splat material: a throwaway material with the
+   * renderer's own description, defines and chunks asks the engine's program library for the
+   * variant the renderer will ask for (the library keys on the generated source + processing
+   * options, not on the material). Returns the issued shaders, for finalizeWhenLinked.
+   */
+  function issueChunkVariants(pc, code) {
+    const made = [];
+    for (const cam of [viewer.eye, viewer._live?.cam].filter(Boolean)) {
+      const mi = managerMi(cam, null);
+      const src = mi?.material;
+      const camera = cam.camera?.camera;
+      if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
+      const m = new pc.ShaderMaterial(src.shaderDesc);
+      src.defines.forEach((v, k) => m.setDefine(k, v));
+      m.shaderChunks.copy(src.shaderChunks);
+      m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
+      m.blendState = src.blendState;
+      const v = m.getShaderVariant({
+        device: viewer.app.graphicsDevice,
+        scene: viewer.app.scene,
+        objDefs: mi._shaderDefs,
+        cameraShaderParams: camera.shaderParams,
+        pass: 0, // SHADER_FORWARD
+        sortedLights: [],
+        viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+        vertexFormat: mi.mesh?.vertexBuffer?.format,
+      });
+      if (v) made.push(v);
+    }
+    return made;
+  }
+
+  /**
+   * handle.warmEffect(name, opts) — compile the program playEffect(name, opts) will need, now,
+   * finishing the link in idle periods (KHR_parallel_shader_compile), so the effect's first frame
+   * does not block on it (a particle reveal's link: 250–300 ms on a panel). Keyed on the chunk
+   * the play would install with the tile effects on NOW — warm in the state you will play from.
+   * Resolves `true` once warm (or already warm), `false` where nothing could be warmed (an
+   * entity-scope effect, a custom fragment stage, no engine yet, an engine whose internals
+   * differ: it then compiles on its first frame, as before). Never throws after validation.
+   */
+  async function warmEffect(name, o = {}) {
+    validateEffectCall(name, o, 'play');
+    await first.catch(() => null);
+    if (removed || !fx || !pcModule || diag?.has('nowarm')) return false;
+    let code;
+    try {
+      code = fx.playChunkCode(name, o);
+    } catch {
+      return false;
+    }
+    if (!code) return false;
+    const key = `play|${code}`;
+    if (prewarmed.has(key)) return true;
+    await yieldIdle();
+    if (removed) return false;
+    try {
+      const made = issueChunkVariants(pcModule, code);
+      if (!made.length) return false;
+      await finalizeWhenLinked(made);
+      prewarmed.add(key);
+      return true;
+    } catch (err) {
+      console.info('[inline3d/splat] warmEffect skipped', err);
+      return false;
+    }
+  }
 
   /**
    * Creating a program only ISSUES its compile + link; the browser resolves the link when the

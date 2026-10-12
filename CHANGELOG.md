@@ -5,6 +5,19 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### `./splat` (PlayCanvas) — `warmEffect`: no frozen frame when a reveal first plays
+
+- **`handle.warmEffect(name, opts)`** compiles the program `playEffect(name, opts)` will need and
+  links it in idle time (`KHR_parallel_shader_compile`), so the effect's first frame no longer
+  blocks on the link. On a Windows panel `'assemble'` froze for 250–300 ms on every cold session.
+  Resolves `true` once warm, `false` when nothing could be warmed (entity scope, custom fragment
+  stage). It is also on the deferred handle, so it can be called right after `addSplat`.
+- **`prepareSource(src, { warmEffects: [...] })`** warms effects you will play once that asset is
+  in (names or `{ name, opts }`), after its load and its transition pre-warm.
+- docs/splat-effects.md §Warming an effect.
+
 ## 1.42.1 — 2026-10-12
 
 Touches the **preview tier** (`./call`, `./camera`) only: auto-convergence and the stereo-tile depth
