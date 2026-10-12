@@ -18,6 +18,18 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   in (names or `{ name, opts }`), after its load and its transition pre-warm.
 - docs/splat-effects.md §Warming an effect.
 
+### `./splat` + `./model` (PlayCanvas) — `warmEntity`: a glTF's first draw without the freeze
+
+- **`handle.warmEntity(entity)`** (splat handle: content under `handle.engine.root`; model
+  handle: defaults to the model) compiles the entity's lit programs in idle time through the
+  renderer's own `MeshInstance.getShaderInstance`, with its exact pass, light hash, lights, view
+  format and the eye cameras' live shader params. It then links them off the frame
+  (`KHR_parallel_shader_compile`, time-sliced issuing), so the first draw no longer blocks.
+  PlayCanvas links every new lit program synchronously on first draw: a 13-material car froze
+  0.8–0.95 s on a panel. On Khronos CarConcept (13 programs), headless: 0 links on show (from 13),
+  worst frame 20 ms (from 102 ms with the shader cache warm, 2.69 s cold), pixel-identical. Spark
+  and three resolve 0. docs/playcanvas-adapter.md §warmEntity.
+
 ## 1.42.1 — 2026-10-12
 
 Touches the **preview tier** (`./call`, `./camera`) only: auto-convergence and the stereo-tile depth

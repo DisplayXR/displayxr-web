@@ -222,6 +222,14 @@ export interface ModelHandle {
 
   remove(): void;
   exclude(el: Element): void;
+  /**
+   * PlayCanvas only (resolves 0 on three). Compile the lit programs `entity` (default: the model)
+   * will draw with, in idle time, through the renderer's own shader lookup, and finish their links
+   * off the frame (KHR_parallel_shader_compile), so its first draw does not freeze. Warm while it
+   * is hidden, in the lighting it will be shown in. Resolves the number of programs warmed.
+   * docs/playcanvas-adapter.md §warmEntity.
+   */
+  warmEntity(entity?: unknown, opts?: { timeoutMs?: number }): Promise<number>;
   unexclude(el: Element): void;
   /**
    * The core window's `TileHandle.firstWoven`: when it is safe to reveal the canvas. Resolves

@@ -1097,6 +1097,17 @@ export interface SplatHandle {
    * display rig; a value set meanwhile applies when the video exits. `handle.rig.ipdFactor` /
    * `parallaxFactor` read what is in force. The 2D↔3D mode-switch ramp still multiplies on top.
    */
+  /**
+   * `engine: 'playcanvas'` only (resolves 0 on Spark). Compile the lit programs of `entity` — your
+   * content under `handle.engine.root`, e.g. a glTF — in idle time, through the renderer's own
+   * shader lookup (MeshInstance.getShaderInstance with its exact pass, light hash, lights, view
+   * format and the eye cameras' live shader params), and finish each link off the frame
+   * (KHR_parallel_shader_compile). PlayCanvas's forward renderer otherwise links every new program
+   * synchronously on its first draw: a 13-material car froze 0.8–0.95 s on a panel. Warm it while
+   * it is hidden (`entity.enabled = false` is fine), with the lights it will be shown under; show
+   * it after this resolves. Resolves the number of programs warmed. docs/playcanvas-adapter.md §warmEntity.
+   */
+  warmEntity(entity: unknown, opts?: { timeoutMs?: number }): Promise<number>;
   setStereo(opts: SplatStereoOptions | null): SplatHandle;
   /** This tile in physical units — the core `TileHandle.displayMetrics()`, on the splat handle. Never rejects. */
   displayMetrics(): Promise<DisplayMetrics>;

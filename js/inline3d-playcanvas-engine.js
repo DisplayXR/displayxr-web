@@ -37,6 +37,7 @@ export {
   Vec4,
   Quat,
   LAYERID_SKYBOX,
+  LAYERID_WORLD,
   LAYERID_UI,
   LAYERID_IMMEDIATE,
   // cursor: 'depth' (./inline3d-cursor-depth-playcanvas.js, loaded only on opt-in)
@@ -57,6 +58,7 @@ export {
   SEMANTIC_COLOR,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
+  SHADER_FORWARD,
   CHUNKAPI_2_8,
   // setSource's frame snapshot
   RenderTarget,

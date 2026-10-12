@@ -437,6 +437,8 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     warmEffect() {
       throw effectsNotOnSpark('warmEffect()');
     },
+    /** PlayCanvas-backend feature (its renderer links synchronously); nothing to warm here. */
+    warmEntity: () => Promise.resolve(0),
     stopEffect() {
       throw effectsNotOnSpark('stopEffect()');
     },
