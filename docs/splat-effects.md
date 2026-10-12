@@ -725,6 +725,39 @@ what the runtime weaves under a tracked, off-axis viewer is unmeasured, so treat
 starting point. The rule assumes the browser window sits on the panel at native resolution, which
 is the only place a tile weaves.
 
+## Warming an effect
+
+The first time an effect plays, its program compiles and links on that frame. For a particle
+reveal like `'assemble'` the link takes **250–300 ms on a Windows panel** (ANGLE/D3D11), every cold
+session: a frozen frame exactly when the reveal should start. `warmEffect` moves that work into
+idle time:
+
+```js
+await h.warmEffect('assemble', { durationMs: 1800 });   // compile now, link off the frame
+// … later …
+h.playEffect('assemble', { durationMs: 1800 });          // no link on its first frame
+
+// or with the next asset, after its load and its transition:
+const next = await h.prepareSource(url, { transition: 'crossfade', warmEffects: ['assemble'] });
+```
+
+It builds the exact tile chunk `playEffect(name, opts)` would install, given the tile effects on
+at that moment (the same name replaced in place, as a play does). It asks the engine's program
+library for that variant through a throwaway material with the eye renderer's own description, and
+finishes the link in idle periods with `KHR_parallel_shader_compile`, the same path
+`setSource`'s transition pre-warm uses. **Warm in the state you will play from:** turning a
+persistent effect (grade, clip, the depth envelope) on or off in between changes the program.
+
+It resolves `true` once warm, and `false` when there is nothing it can warm: an entity-scope
+effect (its program is the asset's work-buffer modifier), a custom `fragmentGlsl`, or an engine
+whose internals differ. In those cases the effect compiles on its first frame, as before.
+
+Measured in headless Chrome (ANGLE/Metal, PlayCanvas 2.22.3, the butterfly SOG): with
+`warmEffect` first, `playEffect('assemble')` makes **0** `linkProgram` calls and **0**
+`LINK_STATUS` queries, against 1 link that blocked 526 ms in a cold browser. The warm took 34 ms
+of idle with no frame over 17.6 ms. `test/splat-effects.test.mjs` pins that the warmed chunk is
+byte-for-byte what the play installs. It has not yet been run on a Windows panel.
+
 ## Custom GLSL
 
 ```js

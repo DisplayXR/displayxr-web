@@ -1789,6 +1789,22 @@ export class SplatEffects {
   }
 
   /**
+   * The tile chunk play(name, opts) WOULD install right now — the tile effects already on, with
+   * this one added (or replacing its namesake, in place, as _replace does) — without installing
+   * it: what handle.warmEffect compiles ahead of the play. Null for an entity-scope effect (its
+   * program is the asset's work-buffer modifier, not the tile chunk) or a custom fragment stage.
+   */
+  playChunkCode(name, opts = {}) {
+    const o = resolveEffectOptions(name, opts, 'play');
+    if ((o.scope ?? 'tile') !== 'tile' || o.fragmentGlsl) return null;
+    const inst = { name, def: defOf(name), opts: o };
+    const m = this.scopes.get('tile');
+    const list = m ? [...m.values()].map((i) => (i.name === name ? inst : i)) : [];
+    if (!m?.has(name)) list.push(inst);
+    return composeModifier(list).code;
+  }
+
+  /**
    * The tile chunk driveShared(name, effect, opts) WOULD install, without installing it — what
    * setSource's shader pre-warm compiles ahead of the transition.
    */

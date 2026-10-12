@@ -439,3 +439,29 @@ test('wipecull bound: every corner of the engine’s quad lies within the margin
   }
   assert.ok(worst > 0.2, `the test exercised real extents (worst ${worst})`);
 });
+
+// ── warmEffect's key: the chunk a play WOULD install ─────────────────────────────────────────
+
+test('playChunkCode(name, opts) is byte-for-byte the tile chunk play(name, opts) then installs — alone, over other tile effects, and replacing its namesake; null for entity scope', () => {
+  const w = fakeWorld();
+  const predicted = w.fx.playChunkCode('assemble', { durationMs: 1800 });
+  w.fx.play('assemble', { durationMs: 1800 });
+  assert.equal(w.chunks.get('gsplatModifyVS'), predicted, 'alone');
+  // over a persistent grade already on the tile
+  const v = fakeWorld();
+  v.fx.set('grade', { saturation: 0.5 });
+  const over = v.fx.playChunkCode('sweep', {});
+  assert.notEqual(over, v.chunks.get('gsplatModifyVS'), 'the grade-only chunk is not the warm target');
+  v.fx.play('sweep', {});
+  assert.equal(v.chunks.get('gsplatModifyVS'), over, 'grade + sweep');
+  // replacing its namesake keeps the composition order
+  const again = v.fx.playChunkCode('sweep', { band: 0.2 });
+  v.fx.play('sweep', { band: 0.2 });
+  assert.equal(v.chunks.get('gsplatModifyVS'), again, 'replace in place');
+  // entity scope compiles into the asset's work buffer, not the tile chunk: nothing to warm here
+  assert.equal(w.fx.playChunkCode('inflate', { scope: 'entity' }), null);
+  // and asking never installs anything
+  const u = fakeWorld();
+  u.fx.playChunkCode('assemble', {});
+  assert.equal(u.chunks.get('gsplatModifyVS'), undefined);
+});

@@ -117,6 +117,11 @@ export function addSplatDeferred(wall, canvas, src, opts) {
       validateEffectCall(name, o, 'play');
       return out.ready.then(() => out.playEffect(name, o));
     },
+    // Warm before the adapter has loaded: validated now, warmed once the first asset is on screen.
+    warmEffect: (name, o) => {
+      validateEffectCall(name, o, 'play');
+      return out.ready.then(() => out.warmEffect(name, o));
+    },
     setEffect: (name, params) => {
       validateEffectCall(name, params, 'set');
       pending.push(['setEffect', [name, params]]);

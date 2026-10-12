@@ -434,6 +434,9 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     setEffect() {
       throw effectsNotOnSpark('setEffect()');
     },
+    warmEffect() {
+      throw effectsNotOnSpark('warmEffect()');
+    },
     stopEffect() {
       throw effectsNotOnSpark('stopEffect()');
     },
