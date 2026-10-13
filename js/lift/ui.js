@@ -28,6 +28,10 @@ const CSS = `
   transition:opacity .15s ease,visibility 0s linear .15s}
 .label{white-space:nowrap;padding-right:4px;font-variant-numeric:tabular-nums}
 .label[hidden]{display:none}
+.label.waiting::before{content:"";display:inline-block;width:9px;height:9px;margin-right:6px;
+  vertical-align:-1px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+  animation:dxrspin .8s linear infinite}
+@keyframes dxrspin{to{transform:rotate(360deg)}}
 .chip:has(.label[hidden]){padding-left:4px}
 button{all:unset;cursor:pointer;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.16)}
 button:hover{background:rgba(255,255,255,.3)}
@@ -35,6 +39,9 @@ button:focus-visible{outline:2px solid #7cb7ff;outline-offset:1px}
 button[hidden]{display:none}
 button[disabled]{opacity:.6;cursor:progress}
 `;
+
+/** The chip's label while a native lift waits for the runtime's converter (2D source shown). */
+export const WAITING_LABEL = 'Starting 3D…';
 
 const LABELS = {
   idle: '3D',
@@ -143,16 +150,19 @@ export function createAutoHide(o) {
  *   still (a picture — it converts straight to explore): ↓ SOG + Exit only; no Explore / Resume and
  *     no "3D" label; the label appears only while busy (progress / provider note) or on error.
  *     Exit is offered while it converts too.
+ *   waiting (native, the browser's converter not READY yet): the label (with a spinner) + Exit; no
+ *     Explore until the converter is up (explore would need the in-page converter).
  * @param {string} state
- * @param {{kind:'video'|'still', canDownload?:boolean}} o
+ * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean}} o
  * @returns {{label:boolean, explore:boolean, sog:boolean, resume:boolean, exit:boolean}}
  */
 export function chipLayout(state, o) {
   const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
   const still = o.kind === 'still';
+  const wait = !!o.waiting && state === 'live';
   return {
-    label: still ? busy || state === 'error' : true,
-    explore: !still && state === 'live',
+    label: still ? busy || state === 'error' || wait : true,
+    explore: !still && state === 'live' && !wait,
     sog: state === 'explore' && !!o.canDownload,
     resume: !still && state === 'explore',
     exit: still ? state !== 'disposed' && state !== 'idle' : state === 'explore' || state === 'error' || state === 'live',
@@ -202,11 +212,14 @@ export function createChip(root, actions, opts = {}) {
   let progress = null;
   let saving = false;
   let note = null; // a provider's own status ("Lifting with SHARP… 7s"), shown instead of the % while busy
+  let waiting = false; // native: the browser's converter is not READY yet (2D source + spinner)
   const render = () => {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
-    label.textContent = busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
-    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload });
+    const wait = waiting && state === 'live';
+    label.textContent = wait ? WAITING_LABEL : busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
+    label.classList.toggle('waiting', wait);
+    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting });
     label.hidden = !L.label;
     bExplore.hidden = !L.explore;
     bSog.hidden = !L.sog;
@@ -283,6 +296,14 @@ export function createChip(root, actions, opts = {}) {
     setBusy(what, on) {
       if (what === 'download') saving = !!on;
       render();
+    },
+    /** Native: the browser's converter is warming (true) or READY (false) — a spinner, not an error. */
+    setWaiting(on) {
+      const v = !!on;
+      if (v === waiting) return;
+      waiting = v;
+      render();
+      if (auto.enabled) auto.poke();
     },
     /** A status line that replaces the percentage while busy (null clears it). */
     setNote(text) {

@@ -150,3 +150,11 @@ test('chip: a video keeps the vetted layout (live: Explore + Exit; explore: ↓ 
   assert.deepEqual(on(chipLayout('lifting', { kind: 'video', canDownload: true })), []);
   assert.equal(chipLayout('live', { kind: 'video' }).label, true);
 });
+
+test('chipLayout: a native lift waiting for the converter shows the label (spinner) + Exit, no Explore', () => {
+  const on = (L) => Object.keys(L).filter((k) => L[k]).sort();
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true, waiting: true })), ['exit', 'label']);
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true, waiting: false })), ['exit', 'explore', 'label']);
+  // waiting only matters while live
+  assert.deepEqual(on(chipLayout('explore', { kind: 'video', canDownload: true, waiting: true })), on(chipLayout('explore', { kind: 'video', canDownload: true })));
+});

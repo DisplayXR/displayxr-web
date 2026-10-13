@@ -1163,6 +1163,13 @@ export async function lift(element, opts = {}) {
   syncBacking(true);
   if (!native) attachRenderer();
 
+  // Native, not READY yet (runtime conversion-providers §7.4): the browser shows the element's own
+  // 2D frame until its converter is up, and the chip says so with a spinner. This is a wait, never a
+  // switch to the in-page converter; the browser pushes state changes (setLiftState) and lifts the
+  // element by itself once its module is READY.
+  let liftState = native ? (caps && caps.liftState) || (caps && caps.state === 'activating' ? 'waiting' : 'ready') : null;
+  if (chip && chip.setWaiting) chip.setWaiting(liftState === 'waiting');
+
   /** @type {LiftHandle} */
   const handle = {
     get state() {
@@ -1178,6 +1185,20 @@ export async function lift(element, opts = {}) {
     native,
     /** The capabilities native mode was decided on (null when not queried). */
     caps,
+    /** Native only: the browser's coarse `waiting | ready | unavailable`; null on the web path. */
+    get liftState() {
+      return liftState;
+    },
+    /**
+     * Native only: the browser's coarse lift state changed (`waiting | ready | unavailable`). While
+     * `waiting` the chip shows a spinner over the element's own 2D frame. No-op on the web path.
+     */
+    setLiftState(s) {
+      if (!native || !['waiting', 'ready', 'unavailable'].includes(s) || s === liftState) return;
+      liftState = s;
+      if (chip && chip.setWaiting) chip.setWaiting(s === 'waiting');
+      emit('liftstatechange', { liftState: s });
+    },
     /** Live timings: fps (frames drawn), modelLoadMs, liveDepthMs (last video estimate),
      *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
      *  splats. Read-only snapshot. */
