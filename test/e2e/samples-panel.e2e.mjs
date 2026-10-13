@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // test/e2e/samples-panel.e2e.mjs — the published samples, one by one, in the REAL DisplayXR
-// Browser on a 3D panel (LOXR-826: the 3D scene samples; LOXR-827: media, call and shop):
+// Browser on a 3D panel (LOXR-826: 3D scene samples; LOXR-827: media, call and shop; LOXR-828:
+// layout samples + `links`, every link on the index page):
 //
 //   node test/e2e/samples-panel.e2e.mjs                 # all samples in SAMPLES
 //   node test/e2e/samples-panel.e2e.mjs hello-cube      # just these
@@ -249,6 +250,114 @@ const SAMPLES = {
     woven: () => document.getElementById('status')?.classList.contains('woven') === true && !!document.querySelector('#call canvas'),
     input: null,
   },
+  // ── LOXR-828: layout samples ────────────────────────────────────────────────────────────────
+  composition: {
+    path: 'samples/composition/',
+    minRects: 1, // only case 01's tile is in view
+    // At the top of the page every tile is below the fold (the browser rightly weaves nothing):
+    // scroll case 01's tile into the middle of the window first.
+    before: async (page) => {
+      await page.$eval('[data-tile="01"]', (c) => c.scrollIntoView({ block: 'center' }));
+      await sleep(2000);
+      return { ok: true, detail: 'case 01 tile scrolled into view' };
+    },
+    canvas: 'canvas.tile',
+    woven: () => document.getElementById('status')?.classList.contains('woven') === true,
+    input: async (page) => {
+      // The sample marks the cases it knows are broken in this browser (TOC class "broken").
+      const broken = await page.$$eval('section.case.is-broken', (ss) => ss.map((x) => x.dataset.case));
+      // Header mode cycles frosted -> solid -> opaque -> frosted.
+      const modes = [await text(page, '#headermode')];
+      for (let i = 0; i < 3; i++) { await page.click('#headermode'); modes.push(await text(page, '#headermode')); }
+      const cycled = modes[1] !== modes[0] && modes[2] !== modes[1] && modes[3] === modes[0];
+      // Case 05: a page-DOM modal over a tile opens and dismisses.
+      await page.click('#open05');
+      await sleep(400);
+      const open = await page.$eval('#scrim05', (el) => !el.hidden);
+      await page.click('#close05');
+      await sleep(300);
+      const closed = await page.$eval('#scrim05', (el) => el.hidden);
+      return {
+        ok: cycled && open && closed,
+        detail: `header ${modes.map((m) => m.replace('header: ', '')).join(' -> ')}; case-05 modal ${open ? 'opened' : 'did NOT open'}, ${closed ? 'dismissed' : 'did NOT dismiss'}` +
+          `; cases the sample marks broken: ${broken.length ? broken.join(', ') : 'none'}`,
+      };
+    },
+  },
+  'wall-3d': {
+    path: 'samples/wall-3d/',
+    canvas: 'canvas.pic',
+    minRects: 2,
+    woven: () => /woven \(visible\) layers live/.test(document.getElementById('status')?.textContent || ''),
+    // Fast-scroll stress: the wall weaves only what is visible and promises a fast scroll never
+    // reveals a raw un-woven tile. Scroll hard, then the newly visible tiles must weave, with
+    // real stereo, and the screen must not show a raw pair.
+    input: async (page, _rect, { dir }) => {
+      const live = async () => +((await text(page, '#status')).match(/(\d+) woven/) || [])[1] || 0;
+      const before = await live();
+      const y0 = await page.evaluate(() => scrollY);
+      for (let i = 0; i < 10; i++) { await page.mouse.wheel({ deltaY: 700 }); await sleep(40); }
+      // Smooth scrolling keeps going after the last wheel: wait until scrollY holds still.
+      let y1 = await page.evaluate(() => scrollY);
+      for (let i = 0; i < 20; i++) { await sleep(150); const y = await page.evaluate(() => scrollY); if (y === y1) break; y1 = y; }
+      const after = await live();
+      // 1. The promise: no fully visible tile shows a raw un-woven pair, right after the scroll.
+      //    Page px -> screen px through the offset of a tile woven before the scroll.
+      const tiles = await page.$$eval('canvas.pic', (cs) => cs.map((c) => {
+        const r = c.getBoundingClientRect(), d = devicePixelRatio || 1;
+        return r.top >= 0 && r.bottom <= innerHeight ? { x: r.left * d, y: r.top * d, w: Math.round(r.width * d), h: Math.round(r.height * d) } : null;
+      }).filter(Boolean));
+      const off = wallOffset;
+      const raw = [];
+      if (off) for (const t of tiles.slice(0, 15)) {
+        const img = grayRegion(null, { x: Math.round(t.x + off.x), y: Math.round(t.y + off.y), w: t.w, h: t.h }, 128);
+        if (img && !screenTileVerdict(img).ok) raw.push(`${Math.round(t.x + off.x)},${Math.round(t.y + off.y)}`);
+      }
+      // 2. Let the lazy layers arm, then the woven tiles must hold real stereo pairs.
+      await sleep(2500);
+      const sd = join(dir, 'after-scroll');
+      mkdirSync(sd, { recursive: true });
+      const sub2 = await weaveSubmitRects(Date.now() - 50, sd, (i) => page.evaluate((d) => window.scrollBy(0, d), i % 4 === 1 ? 1 : -1), join(sd, 'screen_at_dump.png'));
+      const sizes = await page.$$eval('canvas.pic', (cs) => cs.map((c) => {
+        const r = c.getBoundingClientRect(), d = devicePixelRatio || 1;
+        return r.top >= 0 && r.bottom <= innerHeight ? { w: Math.round(r.width * d), h: Math.round(r.height * d) } : null;
+      }).filter(Boolean));
+      const full = sub2?.rects.find((r) => sizes.some((c) => Math.abs(r.w - c.w) <= 4 && Math.abs(r.h - c.h) <= 4));
+      const eyes = sub2 ? eyePairCheck(sub2, {}) : { ok: false, detail: 'no weave submit after the scroll' };
+      const scr = full ? screenTileCheck(full, sd, sub2.files?.input, join(sd, 'screen_at_dump.png')) : { ok: false, detail: 'no fully visible woven tile after the scroll' };
+      return {
+        ok: y1 > y0 && after > 0 && !!off && raw.length === 0 && !!sub2 && sub2.rects.length >= 2 && eyes.ok && scr.ok,
+        detail: `scrolled ${y0} -> ${y1}px; live layers ${before} -> ${after}; ` +
+          `right after the scroll ${tiles.length} tiles fully visible, ${off ? `${raw.length} showing a raw pair or black${raw.length ? ' at ' + raw.join(' ') : ''}` : 'NOT checked (no screen offset)'}; ` +
+          `2.5 s later: ${sub2 ? sub2.rects.length : 0} rects woven; ` +
+          `eyes [${eyes.detail}]; screen [${scr.detail}]`,
+      };
+    },
+  },
+  windows: {
+    path: 'samples/windows/',
+    stereo: 'mixed', liveRects: 1, // five stereo photos + a stereo video + ONE live three.js scene
+    canvas: '#scene, #movie, #photos canvas',
+    minRects: 7, // 1 scene + 5 photos + 1 video
+    woven: () => document.getElementById('status')?.classList.contains('woven') === true,
+    // The video window is live: its area on screen keeps changing, where a photo's does not.
+    input: async (page, _rect, { sub }) => {
+      const size = async (sel) => page.$eval(sel, (c) => {
+        const r = c.getBoundingClientRect(), d = devicePixelRatio || 1;
+        return { w: Math.round((Math.min(r.right, innerWidth) - Math.max(r.left, 0)) * d), h: Math.round((Math.min(r.bottom, innerHeight) - Math.max(r.top, 0)) * d) };
+      });
+      const find = (c) => sub?.rects.find((r) => Math.abs(r.w - c.w) <= 4 && Math.abs(r.h - c.h) <= 4);
+      const movie = find(await size('#movie')), photo = find(await size('#photos canvas'));
+      if (!movie) return { ok: false, detail: 'no weave rect for the video window (scrolled out of view?)' };
+      const a = grabRegion(movie); await sleep(1000); const b = grabRegion(movie);
+      const pa = photo ? grabRegion(photo) : null; await sleep(1000); const pb = photo ? grabRegion(photo) : null;
+      const moving = meanAbsDiff(a, b), still = photo ? meanAbsDiff(pa, pb) : NaN;
+      return {
+        ok: moving > 2 && (!photo || moving > 3 * Math.max(still, 0.3)),
+        detail: `video window change over 1 s ${moving.toFixed(1)} vs a photo window ${Number.isNaN(still) ? 'n/a' : still.toFixed(1)}`,
+      };
+    },
+  },
 };
 
 // A 4 s side-by-side test video (two crops of testsrc2, 40 px apart) for Chrome's fake camera,
@@ -332,25 +441,38 @@ const logTime = (s) => {
 // One weave-input dump: the next weave submit logs its rect list, and the service writes what the
 // browser submitted (input), the per-eye pair handed to the weaver (sbs) and the woven result
 // (output). Returns the rects, and copies the PNGs into keepDir so they can be analysed and kept.
-async function weaveSubmitRects(since, keepDir) {
+async function weaveSubmitRects(since, keepDir, nudge = null, screenFile = null) {
+  // The service always writes the same three file names, so a copy left from an earlier dump (or
+  // another tool) would be taken for this one: clear them first, and below wait for the service's
+  // own "wrote …" line for each file of THIS submit rather than for a file to exist.
+  for (const f of readdirSync(TEMP).filter((f) => /^dxr73_weave_.*\.png$/.test(f))) rmSync(join(TEMP, f), { force: true });
   writeFileSync(join(TEMP, 'dxr_weave_dump_trigger'), '');
+  // The screen at the same moment as the dumped submit (within ~0.5 s), so an animated page (a
+  // spinning model, a moving test pattern) can be compared with what was submitted.
+  if (screenFile) grabScreen(screenFile);
+  const readLines = () => serviceLogs()
+    .flatMap((f) => readFileSync(f, 'utf8').split(/\r?\n/))
+    .filter((l) => l.includes('#73 diag') && logTime(l) >= since);
   for (let i = 0; i < 24; i++) {
     await sleep(250);
-    const lines = serviceLogs()
-      .flatMap((f) => readFileSync(f, 'utf8').split(/\r?\n/))
-      .filter((l) => l.includes('#73 diag') && logTime(l) >= since);
+    // A page with nothing moving may not submit a frame at all: nudge it (CDP input, not the mouse).
+    if (nudge && i % 2 === 1) await nudge(i).catch(() => {});
+    let lines = readLines();
     const submit = lines.find((l) => /#73 diag: submit n=/.test(l));
     if (submit) {
-      // The three PNGs land ~0.6 / ~1.6 / ~2.3 s after the submit: wait for the last one.
-      for (let j = 0; j < 40 && !existsSync(join(TEMP, 'dxr73_weave_output.png')); j++) await sleep(250);
-      await sleep(500);
+      // input / sbs / output land ~0.6 / ~1.6 / ~2.3 s after the submit: wait for all three lines.
+      const t = logTime(submit);
+      const wrote = (kind) => lines.some((l) => logTime(l) >= t && l.includes(`wrote `) && l.includes(`dxr73_weave_${kind}.png`));
+      for (let j = 0; j < 60 && !['input', 'sbs', 'output'].every(wrote); j++) { await sleep(250); lines = readLines(); }
+      await sleep(300);
       const files = {};
-      for (const f of readdirSync(TEMP).filter((f) => /^dxr73_weave_(input|sbs|output)\.png$/.test(f))) {
-        const kind = f.match(/_(input|sbs|output)\.png$/)[1];
-        if (keepDir) copyFileSync(join(TEMP, f), (files[kind] = join(keepDir, `weave_${kind}.png`)));
+      for (const kind of ['input', 'sbs', 'output']) {
+        const f = join(TEMP, `dxr73_weave_${kind}.png`);
+        if (keepDir && wrote(kind) && existsSync(f)) copyFileSync(f, (files[kind] = join(keepDir, `weave_${kind}.png`)));
       }
       const size = submit.match(/input=(\d+)x(\d+)/);
       const rects = lines
+        .filter((l) => logTime(l) >= t && logTime(l) <= t + 50) // logged right with the submit line (can be 1 ms later)
         .map((l) => l.match(/rect\[\d+\] = (-?\d+),(-?\d+) (\d+)x(\d+)/))
         .filter(Boolean)
         .map((m) => ({ x: +m[1], y: +m[2], w: +m[3], h: +m[4] }));
@@ -435,6 +557,12 @@ function edges(img, x0 = 0, x1 = img.w) {
   return { px: out, w, h };
 }
 
+function mirrorX(img) {
+  const out = new Float64Array(img.px.length);
+  for (let y = 0; y < img.h; y++) for (let x = 0; x < img.w; x++) out[y * img.w + x] = img.px[y * img.w + img.w - 1 - x];
+  return out;
+}
+
 function corr(a, b) {
   const n = a.length;
   let ma = 0, mb = 0;
@@ -488,6 +616,9 @@ function eyePairCheck(sub, spec) {
   if (!sub.files?.input) return { ok: false, detail: 'no weave_input.png dump to analyse' };
   const out = [];
   let ok = true;
+  // A mixed page (stereo pictures + live-rendered windows): unattended, up to spec.liveRects rects
+  // may come back with identical eyes (the live ones); with VIEWER=present none may.
+  let liveAllowance = spec.stereo === 'mixed' && !VIEWER_PRESENT ? spec.liveRects || 0 : 0;
   for (const r of sub.rects.slice(0, 8)) {
     const hw = Math.floor(r.w / 2);
     const Lr = { ...r, w: hw }, Rr = { ...r, x: r.x + hw, w: hw }, fw = Math.min(hw, 456);
@@ -495,7 +626,11 @@ function eyePairCheck(sub, spec) {
     const Lf = grayRegion(sub.files.input, Lr, fw), Rf = grayRegion(sub.files.input, Rr, fw);
     if (!L || !R || !Lf || !Rf) { ok = false; out.push(`${r.w}x${r.h}: could not read`); continue; }
     const needStereo = spec.stereo === 'tracked' ? VIEWER_PRESENT : spec.stereo !== false;
-    const v = eyePairVerdict(L, R, needStereo, Lf, Rf);
+    let v = eyePairVerdict(L, R, needStereo, Lf, Rf);
+    if (!v.ok && liveAllowance > 0 && / -> both eyes identical \(no stereo\)$/.test(v.text)) {
+      liveAllowance--;
+      v = { ok: true, text: v.text.replace(' -> both eyes identical (no stereo)', ' (identical: a live-rendered window with nobody tracked)') };
+    }
     ok = ok && v.ok;
     const untracked = spec.stereo === 'tracked' && !VIEWER_PRESENT && / 0\.0\d% of pixels/.test(v.text);
     out.push(`${r.w}x${r.h}: ${v.text}${untracked ? ' (identical: expected with nobody tracked; VIEWER=present checks stereo)' : ''}`);
@@ -514,16 +649,20 @@ function eyePairCheck(sub, spec) {
 // region is a black tile. The region is saved as screen_tile.png.
 export function screenTileVerdict(img, pair = null, eye = null) {
   const half = Math.floor(img.w / 2);
-  const pairScore = bestShiftCorr(edges(img, 0, half), edges(img, half, 2 * half), 8);
+  const El = edges(img, 0, half), Er = edges(img, half, 2 * half);
+  const pairScore = bestShiftCorr(El, Er, 8);
+  const mirror = bestShiftCorr(El, { ...Er, px: mirrorX(Er) }, 8);
   const st = stats(img);
   const cPair = pair ? corr(img.px, pair.px) : null, cEye = eye ? corr(img.px, eye.px) : null;
   const refs = cPair !== null && cEye !== null;
   const covered = refs && Math.max(cPair, cEye) < 0.3;
-  const double = !covered && pairScore > 0.5;
+  // A raw pair's halves are a SHIFTED copy (8 Oct doubles: +0.64..+0.72 over the mirror); a
+  // symmetric subject (a crate face-on) matches as a MIRROR at least as well (-0.04).
+  const double = !covered && pairScore > 0.5 && pairScore - mirror > 0.3;
   const black = !covered && st.mean < 12 && st.std < 4;
   return {
     ok: !double && !black && !covered,
-    text: `halves edge match ${pairScore.toFixed(2)} (double if > 0.5)` +
+    text: `halves: shifted copy ${pairScore.toFixed(2)}, mirror ${mirror.toFixed(2)} (double if copy > 0.5 and > mirror + 0.3)` +
       (refs ? `; looks like raw pair ${cPair.toFixed(2)} / one eye ${cEye.toFixed(2)}` : '') +
       `; mean ${st.mean.toFixed(0)} std ${st.std.toFixed(0)}` +
       (covered ? ' -> the screen does not show this canvas (another window on top?)' : '') +
@@ -541,17 +680,18 @@ function raiseWindow(title) {
   }
 }
 
-function screenTileCheck(r, dir, inputFile) {
-  const img = grayRegion(null, r, 256);
+function screenTileCheck(r, dir, inputFile, screenFile = null) {
+  const img = grayRegion(screenFile && existsSync(screenFile) ? screenFile : null, r, 256);
   if (!img) return { ok: false, detail: 'could not grab the screen' };
   const pair = inputFile ? grayRegion(inputFile, r, 256) : null;
   const hw = Math.floor(r.w / 2);
   const eye = inputFile ? grayRegionTo(inputFile, { ...r, w: hw }, img.w, img.h) : null;
   const v = screenTileVerdict(img, pair, eye);
   try {
-    execFileSync(FFMPEG, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
-      `ddagrab=output_idx=0:framerate=10:offset_x=${r.x}:offset_y=${r.y}:video_size=${r.w & ~1}x${r.h & ~1}`,
-      '-vf', 'hwdownload,format=bgra', '-frames:v', '1', join(dir, 'screen_tile.png')], { timeout: 15000 });
+    const src = screenFile && existsSync(screenFile)
+      ? ['-i', screenFile, '-vf', `crop=${r.w}:${r.h}:${r.x}:${r.y}`]
+      : ['-f', 'lavfi', '-i', `ddagrab=output_idx=0:framerate=10:offset_x=${r.x}:offset_y=${r.y}:video_size=${r.w & ~1}x${r.h & ~1}`, '-vf', 'hwdownload,format=bgra'];
+    execFileSync(FFMPEG, ['-loglevel', 'error', '-y', ...src, '-frames:v', '1', join(dir, 'screen_tile.png')], { timeout: 15000 });
   } catch {
     /* the numbers stand without the picture */
   }
@@ -591,6 +731,8 @@ function grabScreen(file) {
 }
 
 // ── one sample ──────────────────────────────────────────────────────────────────────────────
+let wallOffset = null; // page px -> screen px for the current sample, once a woven rect is matched
+
 async function runSample(puppeteer, name, spec) {
   const url = `${BASE}/${spec.path}`;
   const dir = join(OUT, name);
@@ -635,7 +777,10 @@ async function runSample(puppeteer, name, spec) {
     // Every canvas on the page: a weave rect may belong to any of them (a call page also has a
     // QR-code canvas, which is never woven).
     const all = await page.$$eval(spec.canvas, (cs, fn) => cs.map((c) => new Function(`return (${fn})`)()(c)), visible.toString());
-    const sub = await weaveSubmitRects(Date.now() - 50, dir);
+    const nudge = (i) => page.evaluate((d) => window.scrollBy(0, d), i % 4 === 1 ? 1 : -1);
+    raiseWindow(await page.title());
+    await sleep(500);
+    const sub = await weaveSubmitRects(Date.now() - 50, dir, nudge, join(dir, 'screen_at_dump.png'));
     const match = sub?.rects.find((r) => all.some((c) => Math.abs(r.w - c.w) <= 4 && Math.abs(r.h - c.h) <= 4));
     const minRects = spec.minRects || 1;
     res.checks.weaveSubmit = {
@@ -643,21 +788,31 @@ async function runSample(puppeteer, name, spec) {
       detail: sub ? `${sub.submit}; rects ${sub.rects.map((r) => `${r.x},${r.y} ${r.w}x${r.h}`).join(' | ')}; canvas ${all.map((c) => `${c.w}x${c.h}`).join(', ') || `${cr.w}x${cr.h}`}${minRects > 1 ? `; needs >= ${minRects} rects` : ''}` : 'no weave submit seen within 6 s',
     };
 
+    // page -> screen offset, from a woven canvas whose rect we know (used by the wall's scroll test)
+    wallOffset = null;
+    if (match) {
+      const box = await page.$$eval(spec.canvas, (cs, m) => {
+        const d = devicePixelRatio || 1;
+        for (const c of cs) {
+          const r = c.getBoundingClientRect();
+          if (r.top >= 0 && r.bottom <= innerHeight && Math.abs(r.width * d - m.w) <= 4 && Math.abs(r.height * d - m.h) <= 4) return { x: r.left * d, y: r.top * d };
+        }
+        return null;
+      }, match);
+      if (box) wallOffset = { x: match.x - box.x, y: match.y - box.y };
+    }
+
     // A. what was woven: the per-eye pair the weaver got, for every rect of this page
     if (sub) res.checks.eyePair = eyePairCheck(sub, spec);
     // B. what the screen shows over the canvas: one picture, not a raw side-by-side pair, not a
     //    flat dark tile
-    if (match) {
-      raiseWindow(await page.title());
-      await sleep(700);
-      res.checks.screenTile = screenTileCheck(match, dir, sub.files?.input);
-    }
+    if (match) res.checks.screenTile = screenTileCheck(match, dir, sub.files?.input, join(dir, 'screen_at_dump.png'));
 
     // sample-specific checks
     if (spec.extra) Object.assign(res.checks, await spec.extra(page).catch((e) => ({ extra: { ok: false, detail: `threw: ${e.message}` } })));
 
     // 3. input
-    if (spec.input) res.checks.input = await spec.input(page, match).catch((e) => ({ ok: false, detail: `threw: ${e.message}` }));
+    if (spec.input) res.checks.input = await spec.input(page, match, { sub, dir }).catch((e) => ({ ok: false, detail: `threw: ${e.message}` }));
     else res.checks.input = { ok: true, detail: 'n/a: no controls (head tracking only)' };
 
     // 4. review grab
@@ -691,15 +846,41 @@ async function runSample(puppeteer, name, spec) {
   return res;
 }
 
+
+// ── links ───────────────────────────────────────────────────────────────────────────────────
+// `links` as a sample name: every link on the samples index page must open (HTTP 200 after
+// redirects). No browser and no panel: plain fetches. In-page anchors (#...) are skipped.
+async function checkLinks() {
+  const index = `${BASE}/`;
+  const html = await (await fetch(index)).text();
+  const hrefs = [...new Set([...html.matchAll(/href="([^"#][^"]*)"/g)].map((m) => new URL(m[1], index).href))];
+  const rows = await Promise.all(hrefs.map(async (u) => {
+    let code = 0;
+    try {
+      code = (await fetch(u, { method: 'HEAD', redirect: 'follow' })).status;
+      if (code === 405 || code === 403) code = (await fetch(u, { redirect: 'follow' })).status; // some hosts refuse HEAD
+    } catch {
+      code = 0;
+    }
+    return { url: u, code };
+  }));
+  const bad = rows.filter((r) => r.code !== 200);
+  return {
+    name: 'links', url: index, pass: bad.length === 0,
+    checks: { links: { ok: bad.length === 0, detail: `${rows.length} links; ${bad.length ? 'NOT 200: ' + bad.map((r) => `${r.url} ${r.code}`).join(', ') : 'all 200'}` } },
+    all: rows,
+  };
+}
+
 async function main() {
   if (!existsSync(BROWSER)) throw new Error(`DisplayXR Browser not found at ${BROWSER} (set BROWSER)`);
   const names = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(SAMPLES);
-  for (const n of names) if (!SAMPLES[n]) throw new Error(`unknown sample ${n}; known: ${Object.keys(SAMPLES).join(', ')}`);
+  for (const n of names) if (!SAMPLES[n] && n !== 'links') throw new Error(`unknown sample ${n}; known: ${Object.keys(SAMPLES).join(', ')}, links`);
   mkdirSync(OUT, { recursive: true });
   const puppeteer = await loadPuppeteer();
   const results = [];
   for (const n of names) {
-    const r = await runSample(puppeteer, n, SAMPLES[n]);
+    const r = n === 'links' ? await checkLinks() : await runSample(puppeteer, n, SAMPLES[n]);
     results.push(r);
     console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${n}`);
     for (const [k, c] of Object.entries(r.checks)) console.log(`      ${c.ok ? 'ok  ' : 'FAIL'} ${k}: ${typeof c.detail === 'string' ? c.detail : JSON.stringify(c.detail)}`);
