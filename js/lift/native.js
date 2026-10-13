@@ -42,15 +42,24 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
 
 // ── capabilities ─────────────────────────────────────────────────────────────────────────────
 
+/** The coarse lift state the browser exposes (never provider identity): one of these three. */
+export const LIFT_STATES = Object.freeze(['waiting', 'ready', 'unavailable']);
+
 /**
  * Normalise the browser's caps JSON. Unknown modes are dropped; `native` is true only when the
  * browser says so AND the module is not `unavailable` (an `activating` module counts: the browser
- * queues the conversion until it is ready).
+ * converts once it is ready, and the element shows its own 2D frame meanwhile).
+ *
+ * `liftState` is the coarse `waiting | ready | unavailable` the browser derives (its `liftState`
+ * field; an older browser's `state` is mapped: activating → waiting). `waiting` is a reason to WAIT,
+ * never a reason to take the in-page path (runtime conversion-providers §7.4); only `unavailable`
+ * (no lift in the runtime, or an old runtime whose module never came up) is.
  */
 export function parseNativeCaps(json) {
   const j = json && typeof json === 'object' ? json : {};
   const state = ['ready', 'activating', 'unavailable'].includes(j.state) ? j.state : j.native ? 'ready' : 'unavailable';
-  const out = { native: j.native === true && state !== 'unavailable', state };
+  const liftState = LIFT_STATES.includes(j.liftState) ? j.liftState : state === 'activating' ? 'waiting' : state;
+  const out = { native: j.native === true && liftState !== 'unavailable', state, liftState };
   if (typeof j.provider === 'string' && j.provider) out.provider = j.provider;
   out.modes = Array.isArray(j.modes) ? j.modes.filter((m) => MODES.has(m)) : [];
   if (Number.isFinite(j.maxStreams) && j.maxStreams >= 0) out.maxStreams = Math.floor(j.maxStreams);
@@ -58,15 +67,12 @@ export function parseNativeCaps(json) {
   return out;
 }
 
-/** Per-document cache: document → { native: Promise, web: Map<ModelSource|'auto', Promise> }. */
-let cache = new WeakMap();
-const NO_DOC = {};
-const docKey = () => (typeof document !== 'undefined' && document) || NO_DOC;
-
-/** Test hook: forget every cached answer. */
-export function _resetLiftCapabilities() {
-  cache = new WeakMap();
-}
+/**
+ * Kept for API compatibility: there is no cache any more. Every liftCapabilities() call asks the
+ * browser afresh — a cached non-READY answer is exactly how a cold-booted runtime used to latch the
+ * in-page converter for the whole session (runtime conversion-providers §8.1, fix 1).
+ */
+export function _resetLiftCapabilities() {}
 
 async function queryNative(fetchImpl, signal, timeoutMs) {
   const ctl = new AbortController();
@@ -78,11 +84,11 @@ async function queryNative(fetchImpl, signal, timeoutMs) {
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetchImpl(NATIVE_CAPS_URL, { signal: ctl.signal, cache: 'no-store' });
-    if (!r || !r.ok) return { native: false, state: 'unavailable', modes: [] };
+    if (!r || !r.ok) return { native: false, state: 'unavailable', liftState: 'unavailable', modes: [] };
     return parseNativeCaps(await r.json());
   } catch (e) {
     if (signal && signal.aborted) throw e; // the CALLER aborted: not an answer
-    return { native: false }; // the scheme does not resolve here → not the DXR Browser's lift world
+    return { native: false, liftState: 'unavailable' }; // the scheme does not resolve here → not the DXR Browser's lift world
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
@@ -121,18 +127,21 @@ async function queryWeb({ models, nav, signal, quality = 'medium' }) {
 }
 
 /**
- * What 2D→3D this document can do, before any lift. Cheap and async; cached per document (pass
- * `refresh: true` to re-ask, e.g. after `state: 'activating'`).
+ * What 2D→3D this document can do, right now. Cheap and async, and NEVER cached: the runtime's
+ * module warms up after a cold boot, so an answer is only good for the moment it was given. A
+ * caller that waits polls this at ≤ 2 Hz (or, in the browser's built-in, takes the browser's
+ * state pushes) — it must not keep a non-READY answer beyond one poll interval.
  *
  *   native       the browser's vendor module is reachable from here (the lift world of the
  *                DisplayXR Browser) and not `unavailable` — it supersedes the web path;
+ *   liftState    `waiting | ready | unavailable` (waiting: create anyway, show the 2D source);
  *   provider/modes/maxStreams/approxMsPerConvert/state   as the browser reports them;
  *   webFallback  the open web path: `webgpu` (a WebGPU adapter), `video` / `still` (that path's
  *                default depth model is reachable through the model source without downloading).
  *
  * @param {object} [o]
  * @param {AbortSignal} [o.signal]
- * @param {boolean} [o.refresh=false]
+ * @param {boolean} [o.refresh]  ignored (every call re-asks); kept for compatibility.
  * @param {boolean} [o.webFallback=true]  false skips the model probes (webFallback all false).
  * @param {'auto'|string|object} [o.models='auto']  the ModelSource to probe (as lift()'s `models`).
  * @param {'low'|'medium'|'high'} [o.quality='medium']  which still-model tier to probe.
@@ -141,25 +150,10 @@ async function queryWeb({ models, nav, signal, quality = 'medium' }) {
 export async function liftCapabilities(o = {}) {
   const fetchImpl = o.fetch || ((...a) => globalThis.fetch(...a));
   const nav = 'navigator' in o ? o.navigator : typeof navigator !== 'undefined' ? navigator : undefined;
-  const key = docKey();
-  let c = cache.get(key);
-  if (!c || o.refresh) cache.set(key, (c = { native: null, web: new Map() }));
-  if (!c.native) {
-    const p = queryNative(fetchImpl, o.signal, o.timeoutMs || CAPS_TIMEOUT_MS);
-    c.native = p;
-    p.catch(() => { if (c.native === p) c.native = null; }); // an abort is not cached
-  }
-  const nativeCaps = await c.native;
+  const nativeCaps = await queryNative(fetchImpl, o.signal, o.timeoutMs || CAPS_TIMEOUT_MS);
   let web = { video: false, still: false, webgpu: false };
   if (o.webFallback !== false) {
-    const mk = o.models || 'auto';
-    let wp = c.web.get(mk);
-    if (!wp) {
-      wp = queryWeb({ models: mk, nav, signal: o.signal, quality: o.quality });
-      c.web.set(mk, wp);
-      wp.catch(() => { if (c.web.get(mk) === wp) c.web.delete(mk); });
-    }
-    web = await wp;
+    web = await queryWeb({ models: o.models || 'auto', nav, signal: o.signal, quality: o.quality });
   }
   return { ...nativeCaps, webFallback: { ...web } };
 }

@@ -186,6 +186,10 @@ export interface LiftHandle {
   readonly native: boolean;
   /** The capabilities native mode was decided on (null when not queried, e.g. a `<canvas>`). */
   readonly caps: LiftCapabilities | null;
+  /** Native only: the browser's coarse lift state (`waiting` = the element's 2D frame + a spinner until the converter is READY); null on the web path. */
+  readonly liftState: 'waiting' | 'ready' | 'unavailable' | null;
+  /** Native only: the browser reports a new coarse lift state. No-op on the web path. */
+  setLiftState(s: 'waiting' | 'ready' | 'unavailable'): void;
   /** Native live: `dxr-lift-priority`. Returns false for an unknown value; a no-op on the web path. */
   setPriority(p: LiftPriority): boolean;
   readonly priority: LiftPriority;
@@ -193,6 +197,7 @@ export interface LiftHandle {
   readonly stats: LiftStats;
   on(type: 'statechange', cb: (d: { state: LiftState; from: LiftState; reason: string }) => void): () => void;
   on(type: 'progress', cb: (d: LiftProgress) => void): () => void;
+  on(type: 'liftstatechange', cb: (d: { liftState: 'waiting' | 'ready' | 'unavailable' }) => void): () => void;
   on(type: 'error', cb: (d: { error: unknown; fatal: boolean; phase?: string }) => void): () => void;
   off(type: string, cb: (...a: any[]) => void): void;
   /** Freeze the current frame and lift it (a video pauses). No-op outside `live`. */
@@ -458,18 +463,24 @@ export interface LiftCapabilities {
   maxStreams?: number;
   approxMsPerConvert?: number;
   state?: 'ready' | 'activating' | 'unavailable';
+  /**
+   * The coarse state to act on: `waiting` (the runtime's converter is warming — create anyway and
+   * show the 2D source, never switch to the in-page path), `ready`, or `unavailable` (no runtime
+   * conversion here: the in-page path is the answer).
+   */
+  liftState?: 'waiting' | 'ready' | 'unavailable';
   /** The open web path: a WebGPU adapter, and whether its default video / still depth model is reachable without a download attempt. */
   webFallback: { video: boolean; still: boolean; webgpu: boolean };
 }
 
 /**
- * What 2D→3D this document can do — cheap, async, cached per document; call it before any lift
- * (e.g. to badge convertible media). `native` comes from `GET displayxr-lift://caps`, which only
+ * What 2D→3D this document can do right now — cheap, async, never cached (a warming runtime
+ * module changes the answer; poll at ≤ 2 Hz while `liftState` is `waiting`). `native` comes from `GET displayxr-lift://caps`, which only
  * resolves inside the DisplayXR Browser's lift world; anywhere else the fetch rejects → `native: false`.
  */
 export declare function liftCapabilities(o?: {
   signal?: AbortSignal;
-  /** Re-ask (e.g. after `state: 'activating'`). */
+  /** Ignored: every call re-asks. Kept for compatibility. */
   refresh?: boolean;
   /** false skips the model probes (webFallback all false). Default true. */
   webFallback?: boolean;

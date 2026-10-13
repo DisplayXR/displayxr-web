@@ -7,7 +7,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   liftCapabilities,
-  _resetLiftCapabilities,
   parseNativeCaps,
   createNativeLiveAttrs,
   normalizePriority,
@@ -47,8 +46,7 @@ const noGpu = { gpu: undefined };
 
 // ── liftCapabilities ──────────────────────────────────────────────────────────────────────
 
-test('liftCapabilities inside the browser: native caps, cached per document, refresh re-asks', async () => {
-  _resetLiftCapabilities();
+test('liftCapabilities inside the browser: native caps, asked afresh on EVERY call (no cache)', async () => {
   const calls = [];
   const fetch = browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse(CAPS) }, calls);
   const c = await liftCapabilities({ fetch, navigator: noGpu });
@@ -59,14 +57,43 @@ test('liftCapabilities inside the browser: native caps, cached per document, ref
   assert.equal(c.approxMsPerConvert, 18);
   assert.equal(c.state, 'ready');
   assert.deepEqual(c.webFallback, { video: false, still: false, webgpu: false });
+  assert.equal(c.liftState, 'ready');
   await liftCapabilities({ fetch, navigator: noGpu });
-  assert.equal(calls.filter((x) => x.url === NATIVE_CAPS_URL).length, 1, 'cached');
-  await liftCapabilities({ fetch, navigator: noGpu, refresh: true });
-  assert.equal(calls.filter((x) => x.url === NATIVE_CAPS_URL).length, 2, 'refresh re-queries');
+  assert.equal(calls.filter((x) => x.url === NATIVE_CAPS_URL).length, 2, 'not cached: a second call re-asks');
+});
+
+// The named failure (runtime conversion-providers §8.1): the first query came before the runtime's
+// module was READY and its answer was kept for the whole document, so the session stayed on the
+// in-page converter. A later query must see the module come up.
+test('liftCapabilities: a cold-boot non-READY answer is never latched — the next call sees READY', async () => {
+  let state = 'unavailable';
+  const fetch = browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse({ ...CAPS, native: state !== 'unavailable', state }) });
+  let c = await liftCapabilities({ fetch, navigator: noGpu, webFallback: false });
+  assert.equal(c.native, false);
+  assert.equal(c.liftState, 'unavailable');
+  state = 'activating';
+  c = await liftCapabilities({ fetch, navigator: noGpu, webFallback: false });
+  assert.equal(c.native, true, 'warming is native (wait, do not switch paths)');
+  assert.equal(c.liftState, 'waiting');
+  state = 'ready';
+  c = await liftCapabilities({ fetch, navigator: noGpu, webFallback: false });
+  assert.equal(c.liftState, 'ready');
+});
+
+test('parseNativeCaps: liftState is the coarse waiting | ready | unavailable', () => {
+  assert.equal(parseNativeCaps({ ...CAPS, state: 'activating' }).liftState, 'waiting');
+  assert.equal(parseNativeCaps({ ...CAPS, state: 'ready' }).liftState, 'ready');
+  assert.equal(parseNativeCaps({ ...CAPS, state: 'unavailable' }).liftState, 'unavailable');
+  // the browser's own coarse field wins over the mapped one
+  const w = parseNativeCaps({ ...CAPS, state: 'unavailable', liftState: 'waiting' });
+  assert.equal(w.liftState, 'waiting');
+  assert.equal(w.native, true, 'waiting is native even when the raw state says unavailable');
+  const u = parseNativeCaps({ ...CAPS, state: 'activating', liftState: 'unavailable' });
+  assert.equal(u.native, false, 'unavailable is the only answer that is not native');
+  assert.equal(parseNativeCaps({ ...CAPS, liftState: 'bogus' }).liftState, 'ready');
 });
 
 test('liftCapabilities outside the browser: fetch rejects → native:false', async () => {
-  _resetLiftCapabilities();
   const c = await liftCapabilities({ fetch: outsideFetch, navigator: noGpu });
   assert.equal(c.native, false);
   assert.equal(c.provider, undefined);
@@ -74,7 +101,6 @@ test('liftCapabilities outside the browser: fetch rejects → native:false', asy
 });
 
 test('liftCapabilities: an unavailable module or a non-OK answer is not native; an abort is not cached', async () => {
-  _resetLiftCapabilities();
   let c = await liftCapabilities({ fetch: browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse({ ...CAPS, state: 'unavailable' }) }), navigator: noGpu });
   assert.equal(c.native, false);
   assert.equal(c.state, 'unavailable');
@@ -84,16 +110,14 @@ test('liftCapabilities: an unavailable module or a non-OK answer is not native; 
   assert.equal(parseNativeCaps({ ...CAPS, state: 'activating' }).native, true);
   assert.deepEqual(parseNativeCaps({ native: true, modes: ['depth', 'bogus'] }).modes, ['depth']);
 
-  _resetLiftCapabilities();
   const ac = new AbortController();
   ac.abort();
   await assert.rejects(liftCapabilities({ fetch: browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse(CAPS) }), navigator: noGpu, signal: ac.signal }));
   c = await liftCapabilities({ fetch: browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse(CAPS) }), navigator: noGpu });
-  assert.equal(c.native, true, 'the aborted query was not cached');
+  assert.equal(c.native, true, 'an aborted query leaves nothing behind');
 });
 
 test('liftCapabilities webFallback: WebGPU adapter + model reachability through the model source', async () => {
-  _resetLiftCapabilities();
   const probed = [];
   const models = {
     ready: async () => {},

@@ -36,8 +36,10 @@ the vendor module and nothing is lifted until the chip's *Explore* — and a **p
 so a stream may start for the instant before the bundle removes it — not pre-setting it for
 `<img>` would avoid even that.
 
-**Vendor module first.** Each `convertAt` asks `liftCapabilities()` (`GET displayxr-lift://caps`,
-cached per document). When the runtime's 2D→3D module is there (`native`) and the pick is a
+**Vendor module first.** The browser's menu decides native vs web and passes it as `convertAt`'s 4th
+argument `{native, liftState}` (browser patch 0331); with no 4th argument (an older browser)
+`convertAt` asks `liftCapabilities()` itself — afresh on every pick, **never cached**. When the
+runtime converts (`native`) and the pick is a
 `<video>`/`<img>`, the bundle does **not** load ORT or any model: `lift()` sets `dxr-lift="auto"`
 (+ strength/convergence/priority) on the element, the browser converts + weaves it in place, and the
 chip offers *Explore / Exit* (*↓ SOG* in explore). Native lifts pass **`ownLiftAttr: true`**: the
@@ -50,6 +52,18 @@ still model load only on an Explore, and only if the module's `lift/depth` fails
 use ORT while live, so up to `caps.maxStreams` of them coexist (oldest evicted); a web lift is still
 exclusive and replaces them. `convertAt` resolves `mode: 'native' | 'web'`; `status()` adds `caps`
 and each lift's `native`. Without the module (or for a `<canvas>`) nothing changes.
+
+**Waiting is not a fallback.** The browser's coarse lift state is `waiting | ready | unavailable`
+(never a provider name). `waiting` — the runtime's converter is warming, e.g. right after a cold boot
+— still takes the **native** path: the element keeps its own 2D frame, the chip's label shows a
+spinner ("Starting 3D…", no *Explore* yet), and the browser converts the element by itself the moment
+its converter is READY. The browser pushes every change into the lift world as
+`__dxrLift.setLiftState(state)`, which forwards it to each native handle (`handle.setLiftState`,
+event `liftstatechange`). Only `unavailable` takes the in-page path: the browser reports it when the
+runtime has no lift at all, or when an old runtime (lift spec ≤ 3, or one with no provider) has not
+come up within the browser's wait budget; a native lift that never reached READY is then redone on
+the in-page path. This replaces the per-document caps cache, which latched the in-page converter
+for the whole session whenever the first pick came before the module was up.
 
 ## Browser hosting
 

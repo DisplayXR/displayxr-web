@@ -97,20 +97,27 @@ explore, ↓ SOG). The two POST endpoints and `caps` answer **only inside the br
 world** (where the built-in runs); on any ordinary page the scheme does not resolve, `fetch` rejects,
 and that rejection is the feature detection.
 
-**`liftCapabilities({signal, refresh, webFallback, models, quality})`** — cheap, async, cached per
-document, callable before any lift (a 3D-calling element uses it to badge its peers):
+**`liftCapabilities({signal, webFallback, models, quality})`** — cheap, async, **never cached** (every
+call asks the browser afresh; `refresh` is accepted and ignored), callable before any lift (a
+3D-calling element uses it to badge its peers):
 
 ```js
 { native: true, provider: 'neurd-directml', modes: ['depth','sbs','nview','gaussians'],
   maxStreams: 2, approxMsPerConvert: 18, state: 'ready',          // as GET displayxr-lift://caps says
+  liftState: 'ready',                                              // waiting | ready | unavailable
   webFallback: { video: true, still: true, webgpu: true } }        // the open path, probed here
 ```
 
-`native` is true only when the browser says so **and** `state !== 'unavailable'` (`activating`
-counts: the browser queues the conversion). `webFallback.webgpu` = a WebGPU adapter exists;
+`native` is true only when the browser says so **and** `liftState !== 'unavailable'`. `liftState` is
+the browser's coarse readiness (an older browser's `state: 'activating'` maps to `waiting`).
+**`waiting` is a reason to wait, never a reason to switch paths:** create the lift anyway (the
+element shows its own 2D frame, the chip a spinner, until the browser's converter is READY) and do
+not keep a `waiting` answer beyond one poll interval (≤ 2 Hz) — a cached non-READY answer is how
+a cold-booted runtime used to latch the in-page converter for a whole session. Only `unavailable`
+means the in-page path. `webFallback.webgpu` = a WebGPU adapter exists;
 `video`/`still` = that path's default depth model is reachable through the model source **without
 downloading it** (`ModelSource.probe`: a HEAD on the native store, a verified Cache API stamp, else a
-HEAD on the download URL). `webFallback: false` skips the probes. An aborted query is not cached.
+HEAD on the download URL). `webFallback: false` skips the probes.
 
 **What `lift()` does in native mode.** It mounts the placement host (hidden canvas + chip) but not
 into the inline-3D session; the element stays visible and gets the attributes below. Loading pulls in
