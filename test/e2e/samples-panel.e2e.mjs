@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // test/e2e/samples-panel.e2e.mjs — the published samples, one by one, in the REAL DisplayXR
 // Browser on a 3D panel (LOXR-826: 3D scene samples; LOXR-827: media, call and shop; LOXR-828:
-// layout samples + `links`, every link on the index page):
+// layout samples + `links`, every link on the index page; LOXR-829: the external live apps the
+// index links to, each judged only on "opens and weaves in 3D"):
 //
 //   node test/e2e/samples-panel.e2e.mjs                 # all samples in SAMPLES
 //   node test/e2e/samples-panel.e2e.mjs hello-cube      # just these
@@ -358,6 +359,19 @@ const SAMPLES = {
       };
     },
   },
+  // ── LOXR-829: external live apps linked from the index ─────────────────────────────────────────
+  // Not ours, so no page-side "woven" signal to read and no controls to drive: each must open
+  // without errors and the runtime must get a weave submit whose rect is one of the page's canvases
+  // (and, like every sample, a real stereo pair on screen).
+  ...Object.fromEntries([
+    ['arcade-tetris', 'https://azbleia.github.io/arcade/tetris3d/'],
+    ['arcade-dino', 'https://azbleia.github.io/arcade/dino3d/'],
+    ['arcade-gems', 'https://azbleia.github.io/arcade/gems3d/'],
+    ['f1000', 'https://dfattal.github.io/F1000/'],
+    ['gallery', 'https://displayxr-gallery.vercel.app/', { stereo: true }], // stereo photos
+    ['ride', 'https://displayxr-ride.vercel.app/', { settleMs: 20000 }], // map tiles + car load first
+    ['shop', 'https://displayxr-shop.vercel.app/'],
+  ].map(([name, url, more]) => [name, { url, external: true, stereo: 'tracked', canvas: 'canvas', woven: null, input: null, ...more }])),
 };
 
 // A 4 s side-by-side test video (two crops of testsrc2, 40 px apart) for Chrome's fake camera,
@@ -734,7 +748,7 @@ function grabScreen(file) {
 let wallOffset = null; // page px -> screen px for the current sample, once a woven rect is matched
 
 async function runSample(puppeteer, name, spec) {
-  const url = `${BASE}/${spec.path}`;
+  const url = spec.url || `${BASE}/${spec.path}`;
   const dir = join(OUT, name);
   mkdirSync(dir, { recursive: true });
   const res = { name, url, checks: {}, pass: false };
@@ -744,10 +758,10 @@ async function runSample(puppeteer, name, spec) {
   let browser;
   try {
     await waitForCdp();
-    await sleep(SETTLE_MS); // let the page start and weave with nothing attached
+    await sleep(spec.settleMs || SETTLE_MS); // let the page start and weave with nothing attached
     browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null });
     const attachedAt = Date.now();
-    const target = await browser.waitForTarget((t) => t.type() === 'page' && t.url().startsWith(url), { timeout: 10000 });
+    const target = await browser.waitForTarget((t) => t.type() === 'page' && t.url().startsWith(spec.external ? new URL(url).origin : url), { timeout: 10000 });
     const page = await target.page();
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(e.message));
@@ -757,11 +771,12 @@ async function runSample(puppeteer, name, spec) {
     if (spec.before) res.checks.start = await spec.before(page).catch((e) => ({ ok: false, detail: `threw: ${e.message}` }));
 
     // 2. the sample's own woven signal
-    const woven = await page.waitForFunction(spec.woven, { timeout: 20000 }).then(() => true, () => false);
+    // (an external app has none: its 3D is judged by the runtime's weave submit below)
+    const woven = spec.woven ? await page.waitForFunction(spec.woven, { timeout: 20000 }).then(() => true, () => false) : true;
     const status = await page.evaluate(() =>
       (document.getElementById('status')?.textContent || document.getElementById('note')?.textContent ||
         ['noteA', 'noteB', 'noteC'].map((id) => document.getElementById(id)?.textContent || '').join(' | ')).trim());
-    res.checks.wovenSignal = { ok: woven, detail: status.slice(0, 200) };
+    res.checks.wovenSignal = spec.woven ? { ok: woven, detail: status.slice(0, 200) } : { ok: true, detail: 'n/a: external app (judged by the weave submit)' };
 
     // 2b. the runtime got a weave submit whose rect is this canvas
     // The weave rect is the canvas's VISIBLE part: a tile taller than the window is woven only
@@ -773,7 +788,7 @@ async function runSample(puppeteer, name, spec) {
       const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
       return { w: Math.round(Math.max(0, w) * d), h: Math.round(Math.max(0, h) * d) };
     };
-    const cr = await page.$eval(spec.canvas, visible);
+    const cr = await page.$eval(spec.canvas, visible).catch(() => ({ w: 0, h: 0 }));
     // Every canvas on the page: a weave rect may belong to any of them (a call page also has a
     // QR-code canvas, which is never woven).
     const all = await page.$$eval(spec.canvas, (cs, fn) => cs.map((c) => new Function(`return (${fn})`)()(c)), visible.toString());
@@ -813,7 +828,7 @@ async function runSample(puppeteer, name, spec) {
 
     // 3. input
     if (spec.input) res.checks.input = await spec.input(page, match, { sub, dir }).catch((e) => ({ ok: false, detail: `threw: ${e.message}` }));
-    else res.checks.input = { ok: true, detail: 'n/a: no controls (head tracking only)' };
+    else res.checks.input = { ok: true, detail: spec.external ? 'n/a: external app (open + weave only)' : 'n/a: no controls (head tracking only)' };
 
     // 4. review grab
     await sleep(1000);
