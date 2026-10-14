@@ -1218,7 +1218,11 @@ export class PlayCanvasSplatViewer {
       if (c.meshInstances?.length) groups.push([c.meshInstances, c.layers?.length ? c.layers : [pc.LAYERID_WORLD]]);
     }
     if (!groups.length) return 0;
-    const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : [])]
+    // Every camera that may draw it: the eye(s), and the layer rig's display/post cameras (a layer on
+    // the display rig — Home's round stage — is drawn ONLY by those, with their own shaderParams;
+    // warming through the eye camera alone missed it and issued a variant nobody draws).
+    const rig = this.layerRigs?.cams;
+    const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : []), ...(rig?.display || []), ...(rig?.post || [])]
       .map((c) => c?.camera)
       .filter((c) => c?.camera?.shaderParams);
     const forward = pc.SHADER_FORWARD ?? 0;
