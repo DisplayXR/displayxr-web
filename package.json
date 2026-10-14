@@ -79,6 +79,7 @@
     "js/inline3d-cursor-depth-playcanvas.js",
     "js/inline3d-cursor-perf.js",
     "js/inline3d-cursor-bvh.js",
+    "js/inline3d-cursor-shape.js",
     "js/vendor/",
     "js/inline3d-viewer.js",
     "js/inline3d-splat.js",

@@ -7,6 +7,12 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## 1.45.0 — 2026-10-13
 
+### Packaging
+
+- `js/inline3d-cursor-shape.js` (new in this release, imported by `./cursor-depth` and so by
+  `./three`) is now in the published file set. A new unit test fails whenever a published module
+  imports a file the package does not ship.
+
 ### Depth cursor: the sprite is the page's CSS cursor — any keyword, and `url()` images (ADR-046 §C, page side)
 
 Touches `./cursor-depth`, `./three` (`DepthCursor`) and the preview tier (`./model`, `./splat`,
