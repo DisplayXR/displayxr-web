@@ -4420,3 +4420,33 @@ test("warmEntity issues each mesh's forward program via getShaderInstance with e
   assert.ok(linkPolls > 2, 'waited on isLinked before finalizing');
   assert.equal(await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: () => [] }), 0, 'nothing to warm');
 });
+
+test('warmEntity also warms through the layer rig cameras: a mesh on a display-rig layer is drawn ONLY by them, with their own shaderParams', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const seen = [];
+  const eyeParams = { hash: 1 };
+  const rigParams = { hash: 2 };
+  const mi = {
+    mesh: {},
+    material: { prepareForRender() {} },
+    getShaderInstance(pass, lh, scene, sp) {
+      seen.push(sp);
+      return { shader: { ready: false, failed: false, impl: { isLinked: () => true, finalize: (d, s) => ((s.ready = true), true) } } };
+    },
+  };
+  const fake = {
+    pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+    app: { graphicsDevice: {}, scene: { layers: { getLayerById: () => ({ getLightHash: () => 0, splitLights: [[], [], []] }) } }, renderer: { viewUniformFormat: {} } },
+    eye: { camera: { layers: [0], camera: { shaderParams: eyeParams } } }, // the eye no longer draws layer 9 (moved to the rig)
+    layerRigs: { cams: { display: [{ camera: { layers: [9], camera: { shaderParams: rigParams } } }], post: [] } },
+    _views: [],
+    _viewPath: 'renderViews',
+    _disposed: false,
+    logTag: '[t]',
+  };
+  const entity = { findComponents: (t) => (t === 'render' ? [{ meshInstances: [mi], layers: [9] }] : []) };
+  const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, entity);
+  assert.equal(n, 1);
+  assert.deepEqual(seen, [rigParams], "warmed with the RIG camera's shaderParams only — the eye never draws layer 9");
+});
