@@ -348,22 +348,30 @@ function asView(v) {
 export class CursorPointer {
   /**
    * @param {HTMLElement} canvas
-   * @param {{scope?: 'canvas'|'window'}} [opts]  'canvas' (default): the pointer counts only while
+   * @param {{scope?: 'canvas'|'window', keepCss?: boolean}} [opts]  'canvas' (default): the pointer counts only while
    *        it is over the canvas element itself. 'window': while it is inside the canvas's BOX,
    *        even over DOM layered on top of it (overlay buttons, labels) — and the CSS cursor is then
    *        hidden page-wide while the sprite shows, since the overlay has its own cursor.
+   *        `keepCss`: never hide the CSS cursor (`cursor: { debug: 'both' }`, the latency check
+   *        that films the sprite next to the OS cursor).
    */
-  constructor(canvas, { scope = 'canvas' } = {}) {
+  constructor(canvas, { scope = 'canvas', keepCss = false } = {}) {
     if (scope !== 'canvas' && scope !== 'window') {
       throw new Error(`@displayxr/inline3d: cursor pointerScope "${scope}" — expected 'canvas' or 'window'.`);
     }
     this.canvas = canvas;
     this.scope = scope;
-    /** `[u, v]` while the pointer is over the canvas, else null. */
-    this.uv = null;
+    this.keepCss = !!keepCss;
+    this._uv = null;
+    /** Time (event timeStamp, ms) of the newest pointer sample; 0 before the first. */
+    this.sampleTime = 0;
+    /** Pointer samples received so far (diagnostics). */
+    this.samples = 0;
     this._hidden = false;
     this._prev = '';
     this._onMove = (e) => {
+      this.samples++;
+      this.sampleTime = e.timeStamp > 0 ? e.timeStamp : globalThis.performance ? globalThis.performance.now() : Date.now();
       const r = canvas.getBoundingClientRect();
       if (!(r.width > 0 && r.height > 0)) return void (this.uv = null);
       const u = (e.clientX - r.left) / r.width;
@@ -385,6 +393,15 @@ export class CursorPointer {
     } else {
       canvas.addEventListener('pointerleave', this._onLeave);
     }
+  }
+
+  /** `[u, v]` while the pointer is over the canvas, else null. */
+  get uv() {
+    return this._uv;
+  }
+
+  set uv(x) {
+    this._uv = x;
   }
 
   /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */
@@ -417,6 +434,7 @@ export class CursorPointer {
    * the browser feeding the computed CSS cursor to the runtime; today the sprite is the arrow.)
    */
   hideCss(hide) {
+    if (this.keepCss) hide = false;
     if (hide === this._hidden) return;
     if (this.scope === 'window') {
       pageCursorHidden(hide);

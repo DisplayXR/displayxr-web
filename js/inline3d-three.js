@@ -63,6 +63,7 @@ import {
   CURSOR_DEFAULT_TUNING,
   CURSOR_OUTLINE_COLOR,
 } from './inline3d-cursor-depth.js';
+import { CursorDebugStats, cursorDebugMode } from './inline3d-cursor-perf.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with
@@ -501,14 +502,31 @@ export class DepthCursor {
    *        points). N > 0 = an EXPENSIVE hit test (e.g. a gaussian-splat raycast, ~8 ms a ray):
    *        cast N rays a frame from the first eye, cycling through the footprint, and take the
    *        nearest of the most recent full cycle.
+   * @param {boolean|'both'} [opts.debug=false]  true: log update() cost, rays a frame and the frame
+   *        interval (rolling stats, at most once a second; `cursor.debugStats.last` holds the newest).
+   *        'both': that, and the OS cursor stays visible beside the sprite (the latency check).
    */
   constructor(
     THREE,
-    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas' },
+    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false },
   ) {
     this._THREE = THREE;
     this.canvas = canvas;
     this.hitTest = hitTest;
+    const debugMode = cursorDebugMode(debug);
+    /** `cursor: { debug }` only: the rolling stats (null otherwise — nothing is measured). */
+    this.debugStats = null;
+    if (debugMode) {
+      this.debugStats = new CursorDebugStats();
+      this._rays = 0;
+      this._seenSamples = 0;
+      this._seenTime = 0;
+      const inner = hitTest;
+      this.hitTest = (o, d) => {
+        this._rays++;
+        return inner(o, d);
+      };
+    }
     /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
     this.height = height > 0 && Number.isFinite(height) ? height : null;
     this.viewSpace = viewSpace;
@@ -517,7 +535,7 @@ export class DepthCursor {
     this._next = 0;
     const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
     this.placer = new CursorDepthPlacer(tuning, { anchor });
-    this.pointer = new CursorPointer(canvas, { scope: pointerScope });
+    this.pointer = new CursorPointer(canvas, { scope: pointerScope, keepCss: debugMode === 'both' });
     /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
     this.placement = { active: false };
 
@@ -554,6 +572,27 @@ export class DepthCursor {
    * @param {number} [nowMs=performance.now()]
    */
   update(views, nowMs = globalThis.performance ? globalThis.performance.now() : Date.now()) {
+    if (this.debugStats) return this._updateMeasured(views, nowMs);
+    return this._update(views, nowMs);
+  }
+
+  // `cursor: { debug }`: the same update, timed. Off, update() never reaches this.
+  _updateMeasured(views, nowMs) {
+    const clock = () => (globalThis.performance ? globalThis.performance.now() : Date.now());
+    this._rays = 0;
+    const t0 = clock();
+    const p = this._update(views, nowMs);
+    const t1 = clock();
+    const ptr = this.pointer;
+    const fresh = ptr.samples !== this._seenSamples && ptr.sampleTime > 0 && ptr.sampleTime !== this._seenTime;
+    const samples = ptr.samples - this._seenSamples;
+    this._seenSamples = ptr.samples;
+    this._seenTime = ptr.sampleTime;
+    this.debugStats.frame(t1 - t0, this._rays, t0, fresh ? t0 - ptr.sampleTime : null, samples);
+    return p;
+  }
+
+  _update(views, nowMs) {
     const vs = this._worldViews(views);
     const uv = this.pointer.uv;
     let p = { active: false };

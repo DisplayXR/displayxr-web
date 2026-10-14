@@ -85,6 +85,13 @@ export interface CursorOptions {
   anchor?: CursorAnchorMode;
   /** `'window'`: keep the cursor over DOM layered on the canvas, and hide the CSS cursor page-wide meanwhile. Default `'canvas'`. */
   pointerScope?: 'canvas' | 'window';
+  /**
+   * Diagnostics, off by default and free when off. `true`: log the cursor's per-frame cost
+   * (update ms, rays a frame, frame interval, pointer-sample age) as rolling stats, at most once a
+   * second. `'both'`: that, and the OS cursor stays visible beside the sprite, for filming the lag
+   * between them on a panel. three.js backend (./model `engine: 'three'`, ./splat on Spark).
+   */
+  debug?: boolean | 'both';
 }
 export const CURSOR_OPTION_KEYS: readonly (keyof CursorOptions)[];
 /** `cursor` as ./model and ./splat accept it: null = off; throws on a bad value. */

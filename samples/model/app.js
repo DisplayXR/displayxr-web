@@ -9,7 +9,9 @@ import { addSplat, measureSplatBounds } from '@displayxr/inline3d/splat';
 // Khronos DamagedHelmet (glTF-Sample-Assets, pinned commit; credit on the page and in
 // THIRD_PARTY_NOTICES.md), the same file the DisplayXR model-viewer demo bundles. Served from
 // jsDelivr with CORS, so it is fetched cross-origin exactly as a catalogue CDN asset would be.
-const GLB = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+const DEFAULT_GLB = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+// ?glb=<url> swaps tile A's model — e.g. a heavy one to check the depth cursor's cost (?cursor=depth&cursorDebug).
+const GLB = new URLSearchParams(location.search).get('glb') || DEFAULT_GLB;
 // The splat sample's butterfly (World Labs, used with permission; see samples/splat/).
 const SPLAT = new URL('../splat/assets/butterfly.sog', import.meta.url).href;
 const DRACO_GLTF = './assets/glTF-Draco/Duck.gltf';
@@ -29,6 +31,7 @@ const onThree = ENGINE === 'three' || ENGINE === 'spark';
 const engineOpt = onThree ? { engine: 'three' } : ENGINE ? { engine: ENGINE } : {};
 // ?cursor=depth — the depth-aware cursor on every tile (opt-in; see docs/authoring-inline-3d.md).
 // Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
+// &cursorDebug (cost stats in the console) &cursorDebug=both (+ the OS cursor beside the sprite)
 const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(pageParams) } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
@@ -103,7 +106,7 @@ function mixedPlayCanvas() {
     // The splat framed itself. The helmet is sized RELATIVE TO IT (SPLAT_H, as on the Spark
     // path) and stands to its left. The two assets are in
     // unrelated unit systems, so both sizes come from measured bounds, never from a guess.
-    const asset = new pc.Asset('helmet', 'container', { url: new URL(GLB, import.meta.url).href });
+    const asset = new pc.Asset('helmet', 'container', { url: new URL(DEFAULT_GLB, import.meta.url).href });
     app.assets.add(asset);
     await new Promise((resolve, reject) => {
       asset.ready(resolve);
@@ -159,7 +162,7 @@ function mixedPlayCanvas() {
 }
 
 function mixedSpark() {
-  const h = addModel(wall, tileB, GLB, { ...TILE_OPTS, engine: 'three' }); // reaches into h.viewer.scene
+  const h = addModel(wall, tileB, DEFAULT_GLB, { ...TILE_OPTS, engine: 'three' }); // reaches into h.viewer.scene
   // addModel/addSplat each own a viewer, but the viewer's `scene` and `content` are public on
   // purpose: composing beyond what the two wrappers do is meant to be a few lines, not a fork.
   const ready = h.ready.then(async () => {
@@ -327,11 +330,16 @@ Promise.allSettled([a.ready, mixed]).then(applyFit);
 
 Object.assign(window, { __model: a, __mixed: b, __mixedEngine: mixedEngine, __THREE: THREE }); // debug hooks, as in other samples
 
-/** ?cursor=depth plus optional &anchor= &margin= &scope= → addModel/addSplat's `cursor` option. */
+/**
+ * ?cursor=depth plus optional &anchor= &margin= &scope= &cursorDebug → addModel/addSplat's `cursor`
+ * option. &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
+ * &cursorDebug=both also keeps the OS cursor visible beside the sprite, to film the lag between them.
+ */
 function sampleCursorOptions(p) {
   const o = {};
   if (p.get('anchor')) o.anchor = p.get('anchor');
   if (p.get('margin')) o.margin = Number(p.get('margin'));
   if (p.get('scope')) o.pointerScope = p.get('scope');
+  if (p.has('cursorDebug')) o.debug = p.get('cursorDebug') === 'both' ? 'both' : true;
   return Object.keys(o).length ? o : 'depth';
 }
