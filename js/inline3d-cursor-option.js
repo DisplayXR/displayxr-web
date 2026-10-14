@@ -8,18 +8,20 @@
 export const CURSOR_ANCHOR_MODES = Object.freeze(['hybrid', 'screen', 'world']);
 
 /** The keys `cursor: { … }` accepts on ./model and ./splat. */
-export const CURSOR_OPTION_KEYS = Object.freeze(['height', 'margin', 'anchor', 'pointerScope']);
+export const CURSOR_OPTION_KEYS = Object.freeze(['height', 'margin', 'anchor', 'pointerScope', 'debug']);
 
 /**
  * `cursor` as ./model and ./splat accept it: `'depth'`, or an options object (which also means
  * depth). Anything falsy is OFF — the zero-cost default. Validated here, at the call.
- * @returns {null | {height?: number, margin?: number, anchor?: string, pointerScope?: string}}
+ * `debug`: true logs the cursor's per-frame cost (rolling stats, at most once a second); 'both' also
+ * keeps the OS cursor visible beside the sprite (the latency check). Off by default, and free.
+ * @returns {null | {height?: number, margin?: number, anchor?: string, pointerScope?: string, debug?: boolean|'both'}}
  */
 export function resolveCursorOption(opt, who = '@displayxr/inline3d') {
   if (opt === undefined || opt === null || opt === false) return null;
   if (opt === 'depth' || opt === true) return {};
   if (typeof opt !== 'object') {
-    throw new Error(`${who}: cursor ${JSON.stringify(opt)} — expected 'depth' or { height, margin, anchor, pointerScope }.`);
+    throw new Error(`${who}: cursor ${JSON.stringify(opt)} — expected 'depth' or { height, margin, anchor, pointerScope, debug }.`);
   }
   const unknown = Object.keys(opt).filter((k) => !CURSOR_OPTION_KEYS.includes(k));
   if (unknown.length) throw new Error(`${who}: cursor — unknown option(s) ${unknown.join(', ')}; expected ${CURSOR_OPTION_KEYS.join(', ')}.`);
@@ -28,6 +30,9 @@ export function resolveCursorOption(opt, who = '@displayxr/inline3d') {
   }
   if (opt.pointerScope !== undefined && opt.pointerScope !== 'canvas' && opt.pointerScope !== 'window') {
     throw new Error(`${who}: cursor.pointerScope "${opt.pointerScope}" — expected 'canvas' or 'window'.`);
+  }
+  if (opt.debug !== undefined && typeof opt.debug !== 'boolean' && opt.debug !== 'both') {
+    throw new Error(`${who}: cursor.debug ${JSON.stringify(opt.debug)} — expected true, false or 'both'.`);
   }
   for (const k of ['height', 'margin']) {
     if (opt[k] !== undefined && !(typeof opt[k] === 'number' && opt[k] > 0 && Number.isFinite(opt[k]))) {

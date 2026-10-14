@@ -63,6 +63,7 @@ import {
   CURSOR_DEFAULT_TUNING,
   CURSOR_OUTLINE_COLOR,
 } from './inline3d-cursor-depth.js';
+import { CursorAmortisedPick, CursorDebugStats, cursorDebugMode } from './inline3d-cursor-perf.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with
@@ -497,27 +498,46 @@ export class DepthCursor {
    * @param {'canvas'|'window'} [opts.pointerScope='canvas']  'window' keeps the cursor over DOM
    *        layered on the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
    * @param {object} [opts.viewSpace]  Object3D whose world matrix maps view transforms to world.
-   * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 9
-   *        points). N > 0 = an EXPENSIVE hit test (e.g. a gaussian-splat raycast, ~8 ms a ray):
-   *        cast N rays a frame from the first eye, cycling through the footprint, and take the
-   *        nearest of the most recent full cycle.
+   * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 10
+   *        points), synchronously. N > 0 = amortised: N rays a frame, cycling the footprint
+   *        (alternating eyes), each point's last hit kept until the pointer moves away from where it
+   *        was cast. The sprite still follows the NEWEST pointer position every frame, at the depth
+   *        the pick has so far; the depth filter absorbs the cadence. ./model passes 3, ./splat 1
+   *        (a gaussian-splat raycast costs ~8 ms a ray).
+   * @param {boolean|'both'} [opts.debug=false]  true: log update() cost, rays a frame and the frame
+   *        interval (rolling stats, at most once a second; `cursor.debugStats.last` holds the newest).
+   *        'both': that, and the OS cursor stays visible beside the sprite (the latency check).
    */
   constructor(
     THREE,
-    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas' },
+    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false },
   ) {
     this._THREE = THREE;
     this.canvas = canvas;
     this.hitTest = hitTest;
+    const debugMode = cursorDebugMode(debug);
+    /** `cursor: { debug }` only: the rolling stats (null otherwise — nothing is measured). */
+    this.debugStats = null;
+    if (debugMode) {
+      this.debugStats = new CursorDebugStats({ info: typeof hitTest.info === 'function' ? hitTest.info : null });
+      this._rays = 0;
+      this._seenSamples = 0;
+      this._seenTime = 0;
+      const inner = hitTest;
+      this.hitTest = (o, d) => {
+        this._rays++;
+        return inner(o, d);
+      };
+    }
     /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
     this.height = height > 0 && Number.isFinite(height) ? height : null;
     this.viewSpace = viewSpace;
     this.raysPerFrame = raysPerFrame;
-    this._ring = []; // amortised mode: the last hit per footprint point (null = a miss)
-    this._next = 0;
+    this._pick = null; // amortised mode (raysPerFrame > 0): a CursorAmortisedPick, built on first use
     const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
     this.placer = new CursorDepthPlacer(tuning, { anchor });
-    this.pointer = new CursorPointer(canvas, { scope: pointerScope });
+    this.pointer = new CursorPointer(canvas, { scope: pointerScope, keepCss: debugMode === 'both' });
+    if (this.debugStats) this.debugStats.source = this.pointer.source;
     /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
     this.placement = { active: false };
 
@@ -554,6 +574,27 @@ export class DepthCursor {
    * @param {number} [nowMs=performance.now()]
    */
   update(views, nowMs = globalThis.performance ? globalThis.performance.now() : Date.now()) {
+    if (this.debugStats) return this._updateMeasured(views, nowMs);
+    return this._update(views, nowMs);
+  }
+
+  // `cursor: { debug }`: the same update, timed. Off, update() never reaches this.
+  _updateMeasured(views, nowMs) {
+    const clock = () => (globalThis.performance ? globalThis.performance.now() : Date.now());
+    this._rays = 0;
+    const t0 = clock();
+    const p = this._update(views, nowMs);
+    const t1 = clock();
+    const ptr = this.pointer;
+    const fresh = ptr.samples !== this._seenSamples && ptr.sampleTime > 0 && ptr.sampleTime !== this._seenTime;
+    const samples = ptr.samples - this._seenSamples;
+    this._seenSamples = ptr.samples;
+    this._seenTime = ptr.sampleTime;
+    this.debugStats.frame(t1 - t0, this._rays, t0, fresh ? t0 - ptr.sampleTime : null, samples);
+    return p;
+  }
+
+  _update(views, nowMs) {
     const vs = this._worldViews(views);
     const uv = this.pointer.uv;
     let p = { active: false };
@@ -589,23 +630,21 @@ export class DepthCursor {
     const fl = Math.hypot(m[8], m[9], m[10]) || 1;
     const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
     const fp = cursorArrowFootprint(u, v, height, this.pointer.aspect());
-    let candidates;
     if (this.raysPerFrame > 0) {
-      const ring = this._ring;
-      ring.length = fp.length;
-      for (let i = 0; i < this.raysPerFrame; i++) {
-        const k = this._next++ % fp.length;
-        const ray = cursorViewRay(a, fp[k][0], fp[k][1]);
-        ring[k] = this.hitTest(ray.origin, ray.direction);
-      }
-      candidates = ring;
-    } else {
-      candidates = [];
-      for (const [su, sv] of fp) {
-        for (const view of [a, b]) {
-          const ray = cursorViewRay(view, su, sv);
-          candidates.push(this.hitTest(ray.origin, ray.direction));
-        }
+      // Amortised: N rays a frame over the (point, eye) slots; the newest pointer position is
+      // placed this frame regardless, with the depth the pick has so far (CursorAmortisedPick).
+      const pick = (this._pick ||= new CursorAmortisedPick(this.raysPerFrame));
+      const eyes = [a, b];
+      return pick.step(fp, 2, (e, su, sv) => {
+        const ray = cursorViewRay(eyes[e], su, sv);
+        return this.hitTest(ray.origin, ray.direction);
+      }, f, this.pointer.aspect(), height);
+    }
+    const candidates = [];
+    for (const [su, sv] of fp) {
+      for (const view of [a, b]) {
+        const ray = cursorViewRay(view, su, sv);
+        candidates.push(this.hitTest(ray.origin, ray.direction));
       }
     }
     let best = Infinity, nearest = null;

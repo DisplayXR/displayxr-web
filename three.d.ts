@@ -145,6 +145,18 @@ export class EdgeFeather {
 
 import type { CursorAnchorMode, CursorPlacement, CursorView } from './cursor-depth.js';
 
+/** One second of `debug` stats: each figure as `{ mean, p95, max, n }`. */
+export interface CursorDebugSummary {
+  frames: number;
+  seconds: number;
+  updateMs: { mean: number; p95: number; max: number; n: number };
+  rays: { mean: number; p95: number; max: number; n: number };
+  frameMs: { mean: number; p95: number; max: number; n: number };
+  /** Age of the pointer sample a frame used, on frames where it was new. */
+  pointerAgeMs: { mean: number; p95: number; max: number; n: number };
+  samplesPerFrame: number;
+}
+
 /**
  * A hit test for {@link DepthCursor} that raycasts three.js objects (recursively): the first hit
  * along the ray as a world point, or null.
@@ -185,12 +197,16 @@ export class DepthCursor {
       anchor?: CursorAnchorMode;
       /** `'window'`: keep the cursor over DOM layered on the canvas; hides the CSS cursor page-wide meanwhile. */
       pointerScope?: 'canvas' | 'window';
-      /** An EXPENSIVE hit test: N rays a frame from the first eye, cycling the footprint (0 = all). */
+      /** 0 (default): the whole footprint every frame. N: amortised — N rays a frame cycling the footprint (both eyes); the arrow still follows the newest pointer each frame. */
       raysPerFrame?: number;
       /** Attach pattern: the Object3D the eye cameras hang off; its world matrix carries the views to world. */
       viewSpace?: unknown;
+      /** `true`: log update() cost, rays a frame and the frame interval once a second; `'both'`: also keep the OS cursor visible. */
+      debug?: boolean | 'both';
     },
   );
+  /** With `debug` only (else null): the rolling stats; `last` is the newest one-second summary, `history` the last 120. */
+  readonly debugStats: { last: CursorDebugSummary | null; history: CursorDebugSummary[] } | null;
   /** The arrow (a `THREE.Mesh`: dark outline, white fill, tip at its origin; depth test off, drawn last). Add it to the scene root. */
   readonly object: unknown;
   /** The last placement, for diagnostics. */

@@ -104,11 +104,16 @@ if (handle) {
   }
 }
 
-/** ?cursor=depth plus optional &anchor= &margin= &scope= → addModel/addSplat's `cursor` option. */
+/**
+ * ?cursor=depth plus optional &anchor= &margin= &scope= &cursorDebug → addModel/addSplat's `cursor`
+ * option. &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
+ * &cursorDebug=both also keeps the OS cursor visible beside the sprite, to film the lag between them.
+ */
 function sampleCursorOptions(p) {
   const o = {};
   if (p.get('anchor')) o.anchor = p.get('anchor');
   if (p.get('margin')) o.margin = Number(p.get('margin'));
   if (p.get('scope')) o.pointerScope = p.get('scope');
+  if (p.has('cursorDebug')) o.debug = p.get('cursorDebug') === 'both' ? 'both' : true;
   return Object.keys(o).length ? o : 'depth';
 }

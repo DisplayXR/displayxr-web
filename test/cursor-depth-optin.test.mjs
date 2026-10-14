@@ -37,3 +37,22 @@ test('PlayCanvasSplatViewer: no cursor option → no cursor, and its module is o
   // The option is validated by the tiny option module, never by importing the cursor itself.
   assert.match(src, /^import \{ resolveCursorOption \} from '\.\/inline3d-cursor-option\.js';$/m);
 });
+
+test('./model (three.js): the BVH pick and its vendored three-mesh-bvh load only on opt-in, dynamically', () => {
+  const read = (f) => readFileSync(new URL(`../js/${f}`, import.meta.url), 'utf8');
+  const model = read('inline3d-model.js');
+  // Never statically: not from ./model, not from the viewer, not from ./three (every three page loads those).
+  for (const [f, src] of [['inline3d-model.js', model], ['inline3d-viewer.js', read('inline3d-viewer.js')], ['inline3d-three.js', read('inline3d-three.js')]]) {
+    assert.ok(!/^\s*import\s[^;]*(inline3d-cursor-bvh|three-mesh-bvh)/m.test(src), `${f}: no static import of the BVH pick`);
+  }
+  // One literal dynamic import, inside cursorHitTest, which is reached only through the option.
+  assert.equal((model.match(/import\('\.\/inline3d-cursor-bvh\.js'\)/g) || []).length, 1);
+  assert.match(model, /function cursorHitTest\(content\) \{[^]*?import\('\.\/inline3d-cursor-bvh\.js'\)/);
+  const uses = model.match(/\bcursorHitTest\b/g) || [];
+  assert.equal(uses.length, 2, 'defined once, used once');
+  assert.match(model, /if \(cursorOpts\) viewer\.useDepthCursor\(DepthCursor, cursorHitTest,/);
+  // The vendored slice is the only thing that imports three-mesh-bvh, and it ships in the package.
+  assert.match(read('inline3d-cursor-bvh.js'), /^import \{ MeshBVH \} from '\.\/vendor\/three-mesh-bvh\.js';$/m);
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  for (const f of ['js/inline3d-cursor-bvh.js', 'js/vendor/', 'js/inline3d-cursor-perf.js']) assert.ok(pkg.files.includes(f), `package.json "files" lists ${f}`);
+});

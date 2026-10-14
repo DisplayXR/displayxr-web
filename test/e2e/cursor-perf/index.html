@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cursor: 'depth' — cost harness</title>
+<style>html,body{margin:0;background:#111;color:#ddd;font:12px monospace}canvas{display:block;width:800px;height:600px}</style>
+</head>
+<body>
+<!--
+  The depth cursor's per-frame COST on the REAL ./model three.js viewer, with a heavy glTF:
+  `cursor: { debug: true }` reports update() ms, rays a frame and the frame interval. The pointer is
+  driven from outside (puppeteer's real mouse, so the browser's own pointermove / pointerrawupdate
+  fire); `wall` is a fake whose addScene hands us viewer.onFrame, called from requestAnimationFrame
+  with two hand-built off-axis views (what the DisplayXR Browser hands addScene).
+
+    ?glb=<url>     the model (default: Khronos CarConcept, 213k triangles, 97 meshes)
+    ?noraw=1       hide pointerrawupdate (pointermove only), for an A/B
+    ?parity=1      also compare the BVH hit test against three's plain raycast on 400 rays
+  Results: window.__perf (read by test/e2e/cursor-perf.e2e.mjs).
+-->
+<canvas id="c" width="1600" height="600"></canvas>
+<pre id="out">running</pre>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@displayxr/inline3d/model": "../../../js/inline3d-model-entry.js"
+} }
+</script>
+<script>
+  // ?noraw=1: hide pointerrawupdate from the SDK (A/B against pointermove only).
+  if (new URLSearchParams(location.search).get('noraw')) for (const P of [HTMLElement.prototype, Window.prototype]) delete P.onpointerrawupdate;
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { addModel } from '@displayxr/inline3d/model';
+import { raycastHitTest } from '../../../js/inline3d-three.js';
+import { cursorViewRay } from '../../../js/inline3d-cursor-depth.js';
+
+const q = new URLSearchParams(location.search);
+const GLB = q.get('glb') || 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/CarConcept/glTF-Binary/CarConcept.glb';
+const out = document.getElementById('out');
+const canvas = document.getElementById('c');
+const perf = (window.__perf = { state: 'loading' });
+window.onerror = (m) => ((perf.state = 'error'), (perf.error = String(m)));
+
+// Two off-axis views (display rig: the canvas is vH tall at z = 0, the viewer 0.6 m out).
+const vH = 0.24, aspect = 800 / 600, s = vH / 0.2;
+const W = vH * aspect;
+function kooima(ex, ey, ez) {
+  const l = (-W / 2 - ex) / ez, r = (W / 2 - ex) / ez, u = (vH / 2 - ey) / ez, d = (-vH / 2 - ey) / ez;
+  const n = 0.01, f = 100;
+  return {
+    projectionMatrix: new Float32Array([2 / (r - l), 0, 0, 0, 0, 2 / (u - d), 0, 0, (r + l) / (r - l), (u + d) / (u - d), -(f + n) / (f - n), -1, 0, 0, (-2 * f * n) / (f - n), 0]),
+    transform: { matrix: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ex, ey, ez, 1]) },
+  };
+}
+const views = [kooima(-0.032 * s, 0, 0.6 * s), kooima(0.032 * s, 0, 0.6 * s)];
+const layer = { getViewport: (v) => ({ x: views.indexOf(v) * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height }) };
+let onFrame = null;
+const wall = {
+  supported: true,
+  addScene(_c, cb) {
+    onFrame = cb;
+    return new Proxy({ firstWoven: new Promise(() => {}) }, { get: (t, k) => (k in t ? t[k] : () => {}) });
+  },
+};
+const handle = addModel(wall, canvas, GLB, { engine: 'three', cursor: { debug: true }, idleSpin: 0, orbit: false });
+const raf = () => {
+  if (onFrame) onFrame(views, layer, null);
+  requestAnimationFrame(raf);
+};
+requestAnimationFrame(raf);
+await handle.ready;
+const cur = (window.__perfCursor = handle.viewer.cursorDepth);
+let tris = 0, meshes = 0;
+handle.model.traverse((o) => {
+  if (!o.isMesh) return;
+  meshes++;
+  const g = o.geometry;
+  tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+});
+perf.model = { url: GLB, triangles: tris, meshes };
+perf.raysPerFrame = cur.raysPerFrame;
+perf.state = 'ready';
+out.textContent = JSON.stringify(perf);
+
+// Parity: the cursor's hit test (BVH once it has loaded and built) vs three's plain raycast.
+if (q.get('parity')) {
+  perf.state = 'parity';
+  const plain = raycastHitTest(THREE, [handle.viewer.content]);
+  const fast = cur.hitTest;
+  const t0 = performance.now();
+  // Let the BVH load and build: sweep rays over the canvas until no mesh is left to build.
+  const info = () => (cur.debugStats && cur.debugStats.info ? cur.debugStats.info() : { mode: 'plain' });
+  let prevBuilt = -1;
+  while (performance.now() - t0 < 30000) {
+    for (let k = 0; k < 50; k++) {
+      const v = views[k % 2];
+      const r = cursorViewRay({ projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix }, Math.random(), Math.random());
+      fast(r.origin, r.direction);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    const i = info();
+    if (i.mode === 'bvh' && i.built === prevBuilt) break;
+    if (i.mode === 'bvh') prevBuilt = i.built;
+  }
+  perf.pickInfo = info();
+  let rng = 7;
+  const rnd = () => ((rng = (rng * 16807) % 2147483647) / 2147483647);
+  let both = 0, misses = 0, mismatch = 0, worst = 0, tPlain = 0, tFast = 0;
+  for (let i = 0; i < 400; i++) {
+    // Rays the cursor itself would cast: from either eye through a point of the canvas's middle.
+    const v = views[i % 2];
+    const ray = cursorViewRay({ projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix }, 0.15 + 0.7 * rnd(), 0.15 + 0.7 * rnd());
+    const o = ray.origin, d = ray.direction;
+    let t = performance.now();
+    const a = plain(o, d);
+    tPlain += performance.now() - t;
+    t = performance.now();
+    const b = fast(o, d);
+    tFast += performance.now() - t;
+    if (!a && !b) misses++;
+    else if (a && b) {
+      both++;
+      const e = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      worst = Math.max(worst, e);
+      if (e > 1e-5) mismatch++;
+    } else mismatch++;
+  }
+  perf.parity = { rays: 400, hits: both, misses, mismatch, worstErr: worst, plainMsPerRay: tPlain / 400, fastMsPerRay: tFast / 400, bvh: info().mode === 'bvh' };
+  perf.state = 'ready';
+}
+out.textContent = JSON.stringify(perf);
+</script>
+</body>
+</html>

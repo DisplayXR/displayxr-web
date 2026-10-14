@@ -42,10 +42,37 @@ import { guardedAttach } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
+import { CURSOR_MODEL_RAYS_PER_FRAME } from './inline3d-cursor-perf.js';
 import { SceneViewer } from './inline3d-viewer.js';
 // Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
 // is the default lighting path, so deferring it would only add a frame of unlit content.
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/**
+ * `cursor: 'depth'`'s hit test over the model: three's plain raycast at once, then the
+ * BVH-accelerated one (./inline3d-cursor-bvh.js, with its vendored three-mesh-bvh slice) as soon as
+ * that module arrives. Called on opt-in ONLY — the one place the module is imported, dynamically,
+ * so a page without the cursor never downloads it (ADR-046 §0). If it cannot load, the plain
+ * raycast simply stays.
+ */
+function cursorHitTest(content) {
+  const plain = raycastHitTest(THREE, [content]);
+  let fast = null;
+  let failed = false;
+  import('./inline3d-cursor-bvh.js').then(
+    (m) => {
+      fast = m.bvhHitTest(THREE, [content]);
+    },
+    (err) => {
+      failed = true;
+      console.warn('[inline3d/model] cursor: depth: the BVH pick could not load; using the plain raycast.', err);
+    },
+  );
+  const hitTest = (origin, direction) => (fast ? fast(origin, direction) : plain(origin, direction));
+  /** Diagnostics (`cursor: { debug }`): which pick is answering. */
+  hitTest.info = () => (fast ? fast.info() : { mode: failed ? 'plain (bvh failed to load)' : 'plain (bvh loading)' });
+  return hitTest;
+}
 
 /** Cached across calls so a grid of models resolves the loader module once. */
 let _GLTFLoader = null;
@@ -391,7 +418,9 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     viewerEase: opts.viewerEase,
   }).useEyeCamera(EyeCamera, EdgeFeather);
   const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/model');
-  if (cursorOpts) viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), cursorOpts);
+  // Amortised pick (a few rays a frame): the sprite follows the newest pointer position every
+  // frame and the pick only refreshes its depth, so a heavy mesh never stretches the frame.
+  if (cursorOpts) viewer.useDepthCursor(DepthCursor, cursorHitTest, { raysPerFrame: CURSOR_MODEL_RAYS_PER_FRAME, ...cursorOpts });
 
   if (envMap) viewer.scene.environment = envMap;
   else if (environment === 'room') addRoomEnvironment(viewer);
