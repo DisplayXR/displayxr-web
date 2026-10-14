@@ -86,10 +86,21 @@ if (q.get('parity')) {
   const plain = raycastHitTest(THREE, [handle.viewer.content]);
   const fast = cur.hitTest;
   const t0 = performance.now();
-  while (performance.now() - t0 < 20000 && !(cur._bvhReady && cur._bvhReady())) {
-    fast([0, 0, 1], [0, 0, -1]);
-    await new Promise((r) => setTimeout(r, 30));
+  // Let the BVH load and build: sweep rays over the canvas until no mesh is left to build.
+  const info = () => (cur.debugStats && cur.debugStats.info ? cur.debugStats.info() : { mode: 'plain' });
+  let prevBuilt = -1;
+  while (performance.now() - t0 < 30000) {
+    for (let k = 0; k < 50; k++) {
+      const v = views[k % 2];
+      const r = cursorViewRay({ projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix }, Math.random(), Math.random());
+      fast(r.origin, r.direction);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    const i = info();
+    if (i.mode === 'bvh' && i.built === prevBuilt) break;
+    if (i.mode === 'bvh') prevBuilt = i.built;
   }
+  perf.pickInfo = info();
   let rng = 7;
   const rnd = () => ((rng = (rng * 16807) % 2147483647) / 2147483647);
   let both = 0, misses = 0, mismatch = 0, worst = 0, tPlain = 0, tFast = 0;
@@ -112,7 +123,7 @@ if (q.get('parity')) {
       if (e > 1e-5) mismatch++;
     } else mismatch++;
   }
-  perf.parity = { rays: 400, hits: both, misses, mismatch, worstErr: worst, plainMsPerRay: tPlain / 400, fastMsPerRay: tFast / 400, bvh: !!(cur._bvhReady && cur._bvhReady()) };
+  perf.parity = { rays: 400, hits: both, misses, mismatch, worstErr: worst, plainMsPerRay: tPlain / 400, fastMsPerRay: tFast / 400, bvh: info().mode === 'bvh' };
   perf.state = 'ready';
 }
 out.textContent = JSON.stringify(perf);

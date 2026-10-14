@@ -1,13 +1,15 @@
 # Third-party notices — `@displayxr/inline3d`
 
-`@displayxr/inline3d` is Apache-2.0 (see `LICENSE`). It bundles no third-party code, but parts of
-it are adapted from, or run on, the MIT-licensed projects below. Their notices follow.
+`@displayxr/inline3d` is Apache-2.0 (see `LICENSE`). It bundles one piece of third-party code —
+a slice of three-mesh-bvh, below — and parts of it are adapted from, or run on, the MIT-licensed
+projects below. Their notices follow.
 
 | Project | Version | How it is used |
 |---|---|---|
 | [PlayCanvas engine](https://github.com/playcanvas/engine) | 2.22.3 | Optional peer (`playcanvas`): the default splat backend and the `./model` backend. Shader code in this package is **adapted** from it: the non-square-pixel footprint rewrite of `src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatCorner.js` (`js/inline3d-splat-playcanvas.js`), the quad-extent cap in `gsplatCommon.js` (`js/inline3d-splat-perf.js`), and the dissolve effect and its hash/noise/fbm helpers from `scripts/esm/gsplat/shader-effect-dissolve.mjs` (`js/inline3d-splat-effects.js`). Each adapted site carries a provenance comment. |
 | [three.js](https://github.com/mrdoob/three.js) | ≥ 0.150 | Optional peer (`three`): the `./three` helpers, the Spark splat path, `./model`'s `engine: 'three'`. The PlayCanvas backend's `environment: 'room'` is **adapted** from `examples/jsm/environments/RoomEnvironment.js` (its scene numbers, re-rendered by ray casting in `js/inline3d-model-playcanvas.js`, `ROOM_ENVIRONMENT`). |
 | [Spark](https://github.com/sparkjsdev/spark) | ≥ 2.0 | Optional peer (`@sparkjsdev/spark`): the Spark splat backend. |
+| [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) | 0.9.15 | **Bundled**: `js/vendor/three-mesh-bvh.js` is its `MeshBVH`, minified by `tools/vendor/three-mesh-bvh.mjs` (three stays external). Loaded only when a page opts into `cursor: 'depth'` on `./model`'s three.js engine, for the cursor's BVH pick (`js/inline3d-cursor-bvh.js`). |
 
 ## PlayCanvas engine — MIT
 
@@ -74,6 +76,28 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## three-mesh-bvh — MIT
+
+Copyright (c) 2018 Garrett Johnson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## Sample assets (repo samples only, not in the npm package)
 

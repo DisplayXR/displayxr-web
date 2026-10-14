@@ -111,6 +111,11 @@ const max = (a) => (a.length ? Math.max(...a) : 0);
 const stat = (a) => ({ mean: mean(a), p95: quantile(a, 0.95), max: max(a), n: a.length });
 const f = (x, d = 2) => x.toFixed(d);
 
+function describePick(p) {
+  if (p.mode !== 'bvh') return p.mode;
+  return `bvh (${p.built} built in ${f(p.buildMs, 1)} ms${p.refits ? `, ${p.refits} refits` : ''}${p.failed ? `, ${p.failed} failed` : ''}, ${p.plainCasts} plain casts)`;
+}
+
 /**
  * Rolling per-frame stats for `cursor: { debug }`, summarised and logged at most once per
  * `periodMs` — never per frame. `history` keeps the last 120 summaries (two minutes) for a
@@ -118,10 +123,12 @@ const f = (x, d = 2) => x.toFixed(d);
  */
 export class CursorDebugStats {
   /**
-   * @param {{tag?: string, periodMs?: number, log?: (line: string) => void}} [opts]
+   * @param {{tag?: string, periodMs?: number, log?: (line: string) => void, info?: (() => object)|null}} [opts]
+   *        `info`: the hit test's own diagnostics (which pick answers), copied into each summary as `pick`.
    */
-  constructor({ tag = '[inline3d] cursor', periodMs = 1000, log } = {}) {
+  constructor({ tag = '[inline3d] cursor', periodMs = 1000, log, info = null } = {}) {
     this.tag = tag;
+    this.info = info;
     this.periodMs = periodMs;
     this.log = log || ((line) => console.info(line));
     /** @type {object|null} */
@@ -168,6 +175,7 @@ export class CursorDebugStats {
       frameMs: stat(this._frame),
       pointerAgeMs: stat(this._age),
       samplesPerFrame: this._update.length ? this._samples / this._update.length : 0,
+      pick: this.info ? this.info() : null,
     };
     this.last = s;
     this.history.push(s);
@@ -180,7 +188,8 @@ export class CursorDebugStats {
         ` · rays ${f(s.rays.mean, 1)}/frame (max ${s.rays.max})` +
         ` · frame ${f(s.frameMs.mean, 1)} ms avg / ${f(s.frameMs.p95, 1)} p95 / ${f(s.frameMs.max, 1)} max` +
         (s.pointerAgeMs.n ? ` · pointer age ${f(s.pointerAgeMs.mean, 1)} ms avg / ${f(s.pointerAgeMs.max, 1)} max` : '') +
-        ` · ${f(s.samplesPerFrame, 1)} pointer samples/frame`,
+        ` · ${f(s.samplesPerFrame, 1)} pointer samples/frame` +
+        (s.pick ? ` · pick ${describePick(s.pick)}` : ''),
     );
     return s;
   }

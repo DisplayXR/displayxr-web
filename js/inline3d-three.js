@@ -519,7 +519,7 @@ export class DepthCursor {
     /** `cursor: { debug }` only: the rolling stats (null otherwise — nothing is measured). */
     this.debugStats = null;
     if (debugMode) {
-      this.debugStats = new CursorDebugStats();
+      this.debugStats = new CursorDebugStats({ info: typeof hitTest.info === 'function' ? hitTest.info : null });
       this._rays = 0;
       this._seenSamples = 0;
       this._seenTime = 0;
