@@ -652,7 +652,6 @@ export class DepthCursor {
 
   _update(views, nowMs) {
     if (this.runtime.bind(this.layer)) return this._updateRuntime(views, nowMs);
-    this.runtime.withdraw(); // a target that stopped drawing (a new layer still asking): no stale depth
     const vs = this._worldViews(views);
     const uv = this.pointer.uv;
     let p = { active: false };

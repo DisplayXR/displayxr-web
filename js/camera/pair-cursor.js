@@ -394,7 +394,6 @@ export class PairCursor {
     }
     const r = this.pointer.canvas.getBoundingClientRect?.();
     if (runtime) return this._drawRuntime(u, v, r, geo);
-    this.runtime.withdraw();
     this._askMetrics(geo.handle);
     const pxPerBaseline = pairPxPerBaseline(geo.outW, r && r.width, this.metersPerCssPx, this.eyeSeparationM);
     // The core's policy and filter, in its units (eye baselines, < 0 = in front).

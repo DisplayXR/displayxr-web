@@ -761,3 +761,33 @@ test('undockUrl builds the v=1 protocol URL, percent-encoded and with no vh', ()
   assert.ok(!/[?&]vh=/.test(url), 'vh is deliberately never sent — it disables the viewer auto-fit');
   installEnv();
 });
+
+// ── runtime ADR-046 Amendment 4: the tile handle forwards the cursor depth to its live layer ──
+
+test('handle.setCursorDepth / getCursorDepthSupport forward to the LIVE layer; no layer or no API → false / "none"', async () => {
+  const env = installEnv();
+  const { handle, layer } = await quietInfo(() => makeWall(env));
+  // A browser without the Amendment 4 methods: nothing to forward to.
+  assert.equal(handle.setCursorDepth({ u: 0.5, v: 0.5, disparityPx: -4 }), false);
+  assert.equal(await handle.getCursorDepthSupport(), 'none');
+  // With them (on this layer instance):
+  const calls = [];
+  layer.setCursorDepth = (...a) => calls.push(a);
+  layer.getCursorDepthSupport = async () => 'runtime';
+  assert.equal(handle.setCursorDepth({ u: 0.25, v: 0.5, disparityPx: -4 }), true);
+  assert.equal(handle.setCursorDepth(null), true);
+  assert.equal(handle.setCursorDepth(), true);
+  assert.deepEqual(calls, [[{ u: 0.25, v: 0.5, disparityPx: -4 }], [], []], 'null / nothing → the no-argument withdrawal');
+  assert.equal(await handle.getCursorDepthSupport(), 'runtime');
+  layer.getCursorDepthSupport = async () => 'something-new';
+  assert.equal(await handle.getCursorDepthSupport(), 'none', 'anything but "runtime" is "none"');
+  layer.getCursorDepthSupport = () => Promise.reject(new Error('gone'));
+  assert.equal(await handle.getCursorDepthSupport(), 'none', 'never rejects');
+  layer.setCursorDepth = () => {
+    throw new Error('closed');
+  };
+  assert.equal(handle.setCursorDepth({ u: 0, v: 0 }), false, 'never throws');
+  handle.remove();
+  assert.equal(handle.setCursorDepth({ u: 0, v: 0 }), false, 'no live layer');
+  assert.equal(await handle.getCursorDepthSupport(), 'none');
+});

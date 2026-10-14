@@ -111,7 +111,6 @@ export class PlayCanvasDepthCursor {
       this.inactive();
       return;
     }
-    if (!runtime) this.runtime.withdraw();
     const R = rig.getWorldTransform().data;
     const views = entries.map((e) => ({ projectionMatrix: e.proj, transformMatrix: mul4(R, e.pose) }));
     const t = globalThis.performance ? globalThis.performance.now() : Date.now();
