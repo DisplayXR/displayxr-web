@@ -146,6 +146,45 @@ export interface CursorPlacement {
   targetDisparity: number;
   /** Hybrid: true while the pointer is still and the sprite is held world-fixed. */
   anchored?: boolean;
+  /** The RAW content disparity under the footprint (baselines, < 0 in front), before the policy; null = nothing under it. */
+  contentDisparity?: number | null;
+  /** `contentDisparity` in device px between the outermost views (what `setCursorDepth` takes); null when unknown. */
+  contentDisparityPx?: number | null;
+  /** True when the runtime drew the cursor this frame (ADR-046 Amendment 4): `active` is then false — the SDK drew nothing. */
+  runtime?: boolean;
+}
+
+// ── The runtime draws the web cursor (runtime ADR-046 Amendment 4) ───────────────────────────
+
+/** Re-ask a target that answered "none" at most this often (ms) while the cursor runs. */
+export const CURSOR_RUNTIME_RETRY_MS: number;
+/** At most this many support probes per target. */
+export const CURSOR_RUNTIME_PROBES: number;
+/** Does `target` (an XRDisplayLayer, or a tile handle) have `setCursorDepth` + `getCursorDepthSupport`? */
+export function cursorRuntimeCapable(target: unknown): boolean;
+/** Baseline-unit content disparity → device px between the outermost views (`d × pxPerBaseline`); null when either is unknown. */
+export function cursorDisparityPx(contentDisparity: number | null | undefined, pxPerBaseline: number | null | undefined): number | null;
+/** Anything a depth can be handed to: an XRDisplayLayer, or a tile handle that forwards to one. */
+export interface CursorDepthTarget {
+  setCursorDepth(depth?: { disparityPx?: number | null; u: number; v: number } | null): unknown;
+  getCursorDepthSupport(): Promise<string>;
+}
+/**
+ * The page half of a runtime-drawn cursor, used by every backend: per frame `bind(target)` (true =
+ * the runtime draws: draw no sprite, leave the CSS cursor alone), then `report(u, v, disparityPx)`
+ * while the pointer is over the element, `withdraw()` when not.
+ */
+export class CursorRuntimeLink {
+  constructor();
+  readonly target: CursorDepthTarget | null;
+  /** The last depth sent (diagnostics), null after a withdrawal. */
+  readonly last: { u: number; v: number; disparityPx: number | null } | null;
+  readonly support: 'runtime' | 'none' | 'pending';
+  readonly drawing: boolean;
+  bind(target: CursorDepthTarget | null | undefined): boolean;
+  report(u: number, v: number, disparityPx: number | null): boolean;
+  withdraw(): void;
+  dispose(): void;
 }
 
 /** The whole pipeline with its filter state: one per cursor. Inactive with fewer than two views. */

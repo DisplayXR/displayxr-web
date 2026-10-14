@@ -26,9 +26,15 @@
 // buffer px per metre = outW / tileCssWidth / metersPerCssPx (the tile handle's displayMetrics()),
 // times the eye separation (displayMetrics' default, 63 mm). Loaded only when a page asks for
 // `cursor: 'depth'` — zero cost otherwise.
+//
+// Where the browser and the runtime draw the web cursor (runtime ADR-046 Amendment 4: the tile's
+// layer answers getCursorDepthSupport() "runtime"), nothing is drawn into the buffer: the matched
+// content disparity goes to the layer RAW, in device px (−contentPx × device px per output px), and
+// the runtime draws the browser's own cursor with the one policy. Elsewhere: the arrow, as above.
 
 import {
   CursorPointer,
+  CursorRuntimeLink,
   CursorShapeSelector,
   cursorArrowFootprint,
   cursorShapePolys,
@@ -357,6 +363,8 @@ export class PairCursor {
     this.eyeSeparationM = DISPLAY_METRICS_DEFAULTS.eyeSeparationM;
     /** The last frame's placement, for diagnostics: `{ contentPx, targetPx, disparityPx, filteredPx, drawn, pxPerBaseline, soften }` (output px, + = in front) or null. */
     this.last = null;
+    /** The runtime-drawn cursor (ADR-046 Amendment 4), bound to the tile's handle each frame. */
+    this.runtime = new CursorRuntimeLink();
   }
 
   get hovering() {
@@ -373,6 +381,7 @@ export class PairCursor {
    * @param {number} nowSec
    */
   draw(g, luma, geo, nowSec) {
+    const runtime = this.runtime.bind(geo && geo.handle);
     const uv = this.pointer.uv;
     if (!uv) return this.idle();
     const [u, v] = uv;
@@ -383,8 +392,10 @@ export class PairCursor {
       this._luma = luma;
       this._uv = uv;
     }
-    this._askMetrics(geo.handle);
     const r = this.pointer.canvas.getBoundingClientRect?.();
+    if (runtime) return this._drawRuntime(u, v, r, geo);
+    this.runtime.withdraw();
+    this._askMetrics(geo.handle);
     const pxPerBaseline = pairPxPerBaseline(geo.outW, r && r.width, this.metersPerCssPx, this.eyeSeparationM);
     // The core's policy and filter, in its units (eye baselines, < 0 = in front).
     const content = this._content === null ? null : -this._content / pxPerBaseline;
@@ -416,6 +427,20 @@ export class PairCursor {
     return this.last;
   }
 
+  // The runtime draws (ADR-046 Amendment 4): the matched content disparity, RAW, in device px
+  // between the two views (the two halves), < 0 crossed: one output px of an eye spans
+  // (tile CSS width × dpr) / outW device px. Nothing drawn into the buffer, the CSS cursor alone.
+  _drawRuntime(u, v, r, geo) {
+    this.pointer.hideCss(false);
+    this.filter = {};
+    const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1;
+    const k = r && r.width > 0 && geo.outW > 0 ? (r.width * dpr) / geo.outW : null;
+    const px = this._content === null || k === null ? null : -this._content * k;
+    this.runtime.report(u, v, px);
+    this.last = { contentPx: this._content, targetPx: 0, disparityPx: 0, filteredPx: 0, drawn: false, runtime: true, runtimeDisparityPx: px, pxPerBaseline: null, soften: null, shape: null };
+    return this.last;
+  }
+
   /** Ask the tile's handle once for the panel's pixel pitch; until it answers, the CSS reference px. */
   _askMetrics(handle) {
     if (!handle || handle === this._metricsFor || typeof handle.displayMetrics !== 'function') return;
@@ -438,6 +463,7 @@ export class PairCursor {
 
   /** Not drawing this frame (pointer away, tile not woven): the CSS cursor comes back. */
   idle() {
+    this.runtime.withdraw();
     this.pointer.hideCss(false);
     this.filter = {};
     this._uv = null;
@@ -446,6 +472,7 @@ export class PairCursor {
   }
 
   dispose() {
+    this.runtime.dispose();
     this.pointer.dispose();
     this.shapes.dispose();
   }

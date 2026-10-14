@@ -450,6 +450,14 @@ export interface TileHandle {
    */
   displayMetrics(): Promise<DisplayMetrics>;
   /**
+   * Runtime ADR-046 Amendment 4: hand this window's depth under the pointer to its live layer
+   * (`XRDisplayLayer.setCursorDepth`); nothing / null withdraws. Returns whether a live layer took
+   * it. `cursor: 'depth'` calls this for you; a page drawing its own pair cursor can too.
+   */
+  setCursorDepth(depth?: XRCursorDepthInit | null): boolean;
+  /** "runtime" when the browser and the runtime draw this window's cursor; "none" otherwise (incl. no live layer yet). Never rejects. */
+  getCursorDepthSupport(): Promise<'runtime' | 'none'>;
+  /**
    * Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}.
    *
    * An empty list is returned only once the cap has passed, never for "not ready yet": like
@@ -992,5 +1000,28 @@ export interface XRDisplayLayer {
   /** Undock this layer's asset into the floating native viewer. Optional; same probe rule. */
   undock?(init: UndockOptions): Promise<unknown>;
   getUndockCapabilities?(): Promise<UndockCapabilities>;
+  /**
+   * Runtime ADR-046 Amendment 4: the depth under the pointer, per animation frame while it is over
+   * this layer's element; no argument / null / `{}` withdraws. Optional; same probe rule.
+   */
+  setCursorDepth?(depth?: XRCursorDepthInit | null): void;
+  /** "runtime" when the browser and the runtime draw this page's cursor; else "none". Optional; same probe rule. */
+  getCursorDepthSupport?(): Promise<'runtime' | 'none'>;
   close(): void;
+}
+
+/**
+ * What a page passes to `setCursorDepth` (runtime ADR-046 Amendment 4). The runtime does the rest:
+ * the pointer (read at draw time), the policy, the anchor, the look (the browser's own cursor).
+ */
+export interface XRCursorDepthInit {
+  /**
+   * On-screen disparity in DEVICE px between the two outermost rendered views, of the nearest
+   * content under the cursor footprint; < 0 = crossed = in front of the glass. RAW content
+   * disparity, not a target. Absent / null = over the element, nothing 3D under it.
+   */
+  disparityPx?: number | null;
+  /** Where it was sampled: element-normalised, v down. */
+  u: number;
+  v: number;
 }

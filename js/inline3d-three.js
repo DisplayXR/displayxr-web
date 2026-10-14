@@ -55,6 +55,7 @@
 import {
   CursorDepthPlacer,
   CursorPointer,
+  CursorRuntimeLink,
   cursorArrowFootprint,
   cursorDefaultHeight,
   cursorModelMatrix,
@@ -569,6 +570,13 @@ export class DepthCursor {
     this.shapes = new CursorShapeSelector(this.pointer, { shape, shapeFor });
     this._tex = null; // { geometry, material } — the textured quad, built on the first non-arrow sprite
     this._textures = new Map(); // sprite key → THREE texture
+    /**
+     * The runtime-drawn cursor (runtime ADR-046 Amendment 4): when the frame's layer says
+     * "runtime", the depth goes to the browser and no sprite is drawn. Inert without a layer.
+     */
+    this.runtime = new CursorRuntimeLink();
+    /** The XRDisplayLayer this canvas weaves through; `update(views, { layer })` sets it per frame. */
+    this.layer = null;
 
     // The arrow: a dark outline polygon, the fill inset over it; tip at the origin (the hotspot).
     const fill = [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
@@ -606,10 +614,22 @@ export class DepthCursor {
 
   /**
    * Place the sprite for this frame. Call with the views you are about to render.
+   *
+   * Pass the frame's `layer` (the second argument of wall.addScene's callback) as
+   * `update(views, { layer })`: where the browser and the runtime draw the web cursor
+   * (`layer.getCursorDepthSupport()` → "runtime", runtime ADR-046 Amendment 4) the depth under the
+   * pointer is handed to the layer and no sprite is drawn — the browser's own cursor, lifted by
+   * the runtime. Without a layer, or where it says "none", the sprite is drawn as always.
    * @param {ArrayLike<XRView|{projectionMatrix:ArrayLike<number>,transformMatrix:ArrayLike<number>}>} views
-   * @param {number} [nowMs=performance.now()]
+   * @param {number|{nowMs?: number, layer?: object|null}} [opts]  the time (ms), or `{ nowMs, layer }`.
    */
-  update(views, nowMs = globalThis.performance ? globalThis.performance.now() : Date.now()) {
+  update(views, opts) {
+    let nowMs = opts;
+    if (opts && typeof opts === 'object') {
+      if ('layer' in opts) this.layer = opts.layer || null;
+      nowMs = opts.nowMs;
+    }
+    if (!(typeof nowMs === 'number' && Number.isFinite(nowMs))) nowMs = globalThis.performance ? globalThis.performance.now() : Date.now();
     if (this.debugStats) return this._updateMeasured(views, nowMs);
     return this._update(views, nowMs);
   }
@@ -631,6 +651,8 @@ export class DepthCursor {
   }
 
   _update(views, nowMs) {
+    if (this.runtime.bind(this.layer)) return this._updateRuntime(views, nowMs);
+    this.runtime.withdraw(); // a target that stopped drawing (a new layer still asking): no stale depth
     const vs = this._worldViews(views);
     const uv = this.pointer.uv;
     let p = { active: false };
@@ -659,6 +681,27 @@ export class DepthCursor {
     this.object.visible = visible;
     this.pointer.hideCss(!!p.active);
     return p;
+  }
+
+  // The runtime draws (ADR-046 Amendment 4): the same pick and the same placement maths, but the
+  // RAW content disparity goes to the layer in device px, and nothing is drawn or hidden here.
+  _updateRuntime(views, nowMs) {
+    this.object.visible = false;
+    this.softening = null;
+    this.pointer.hideCss(false);
+    const uv = this.pointer.uv;
+    const vs = uv && views && views.length >= 2 ? this._worldViews(views) : null;
+    if (!vs) {
+      this.placer.update(null); // forget the hybrid anchor
+      this.runtime.withdraw();
+      return (this.placement = { active: false, runtime: true });
+    }
+    const [u, v] = uv;
+    const h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
+    const nearestPoint = this._footprintHit(vs, u, v, h);
+    const p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: h, canvasPx: this.pointer.panelPx() }, nowMs / 1000);
+    this.runtime.report(u, v, p.solved ? p.contentDisparityPx : null);
+    return (this.placement = { ...p, active: false, runtime: true });
   }
 
   // Crisp frames draw the arrow mesh exactly as without softening; softened ones swap in a quad
@@ -804,6 +847,7 @@ export class DepthCursor {
 
   /** Remove listeners, give the CSS cursor back, free the sprite's GPU resources. */
   dispose() {
+    this.runtime.dispose();
     this.pointer.dispose();
     this.shapes.dispose();
     this.object.visible = false;
