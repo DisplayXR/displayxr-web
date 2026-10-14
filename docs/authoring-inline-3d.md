@@ -1063,10 +1063,25 @@ import { DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
 const cursor = new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [model]) });
 scene.add(cursor.object);
 wall.addScene(canvas, (views, layer) => {
-  cursor.update(views);          // first, with THIS frame's views
+  cursor.update(views, { layer }); // first, with THIS frame's views (and its layer, see below)
   // ... render every view as usual ...
 });
 ```
+
+**Where the browser draws the cursor, the SDK only measures.** In a DisplayXR Browser whose runtime
+can draw the web cursor (runtime ADR-046 Amendment 4: Windows, `XR_DXR_cursor_depth` spec 8 or
+later), `layer.getCursorDepthSupport()` answers `"runtime"`. Every depth cursor here (`./model`,
+`./splat` on both engines, `DepthCursor` given `{ layer }`, the stereo-pair cursor on `./call` and
+`./camera`) then draws **no sprite** and never hides the CSS cursor. Each frame it hands the layer the
+**raw** disparity of the content under the pointer, `layer.setCursorDepth({ disparityPx, u, v })`, in
+device pixels between the outermost views (negative = in front of the glass), and withdraws it
+(`setCursorDepth()`) when the pointer leaves or the tile goes 2D. The runtime reads the pointer
+itself at draw time, applies the one policy (margin, clamp, threshold, filter, anchor), and draws
+**the browser's own cursor**: your `grab`, `pointer` or `url(…)` cursor, lifted, at the display's
+frame rate. `margin`, `anchor`, `height`, `soften` and `shape` are then the runtime's, not these
+options. Anywhere else (`"none"`, an older browser, any other browser) the SDK draws its sprite
+exactly as described below. Tile handles forward the same two methods (`handle.setCursorDepth`,
+`handle.getCursorDepthSupport`) for a page with its own cursor.
 
 - **The policy (ADR-046 Amendment 2, the same for every DisplayXR depth cursor, native and web).**
   - *Never behind the glass.* The cursor is either on the screen plane or in front of it. It moves

@@ -15,6 +15,12 @@
     off the cube   → NOTHING drawn (the sprite hidden) and the CSS cursor back: on the plane the
                      OS cursor is the cursor (the policy's draw threshold).
 
+  runtime=1: the fake layer also has runtime ADR-046 Amendment 4's setCursorDepth +
+  getCursorDepthSupport() → "runtime" (the browser draws the cursor). Then NO sprite may be drawn,
+  the CSS cursor is never hidden, and the depth handed to the layer over the cube is the cube
+  front's RAW disparity (no margin) in device px; off it, no disparityPx; on pointerleave, a
+  withdrawal.
+
   No DisplayXR Browser needed: `wall` is a fake whose addScene hands us viewer.onFrame. Results
   land in <pre id="out"> as JSON (read with `--dump-dom`), plus a snapshot of the SBS frame.
   Serve the repo root and open test/e2e/cursor-depth/?engine=playcanvas (or three).
@@ -59,6 +65,12 @@ let headX = 0;
 const makeViews = () => [kooima(headX - 0.032 * s, 0, 0.6 * s), kooima(headX + 0.032 * s, 0, 0.6 * s)];
 let views = makeViews();
 const layer = { getViewport: (v) => ({ x: views.indexOf(v) * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height }) };
+const runtime = new URLSearchParams(location.search).get('runtime') === '1';
+const depthCalls = []; // runtime=1: every setCursorDepth call's arguments
+if (runtime) {
+  layer.setCursorDepth = (...a) => depthCalls.push(a.map((d) => ({ ...d })));
+  layer.getCursorDepthSupport = async () => 'runtime';
+}
 const anchor = new URLSearchParams(location.search).get('anchor') || undefined;
 const soften = new URLSearchParams(location.search).get('soften') || undefined;
 const cursorOpt = anchor || soften ? { ...(anchor ? { anchor } : {}), ...(soften ? { soften } : {}) } : 'depth';
@@ -224,7 +236,12 @@ async function measure(u, v, settle = SETTLE) {
     const c = [0, 1, 2].map((i) => { let x = 0; for (let k = 0; k < n; k++) x += P[k * 3 + i]; return x / n; });
     cursor = cursorPointDisparity(g, c);
   }
-  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, soft: lines?.soft ?? null, cssCursor: getComputedStyle(canvas).cursor };
+  // runtime=1: the depth the layer was handed last, and what the cube front's RAW disparity is in
+  // device px (eye-baseline units × the outer views' baseline / canvas height × canvas device px).
+  const sent = runtime ? depthCalls.at(-1) ?? null : undefined;
+  const ra = g && worldViews()[0].transformMatrix, rb = g && worldViews()[1].transformMatrix;
+  const pxPerBaseline = g ? (Math.hypot(ra[12] - rb[12], ra[13] - rb[13], ra[14] - rb[14]) / g.canvasHeight) * canvas.getBoundingClientRect().height * devicePixelRatio : null;
+  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, soft: lines?.soft ?? null, cssCursor: getComputedStyle(canvas).cursor, sent, pxPerBaseline };
 }
 // Frames to settle: the picker's readback is async and, under headless virtual time, slow.
 const SETTLE = Number(new URLSearchParams(location.search).get('settle') || 240);
@@ -235,7 +252,20 @@ prog('over done ' + JSON.stringify(over));
 const off = await measure(0.05, 0.08, SETTLE * 2);
 canvas.dispatchEvent(new PointerEvent('pointerleave'));
 await wait(5);
-const left = { cssCursor: getComputedStyle(canvas).cursor, linesQueued: !!spriteLines() };
+const left = { cssCursor: getComputedStyle(canvas).cursor, linesQueued: !!spriteLines(), sent: runtime ? depthCalls.at(-1) ?? null : undefined };
+if (runtime) {
+  // The runtime draws: no sprite, no CSS hide; the RAW depth (the cube front's, no margin) in device px.
+  const pxOk = kind === 'splat'
+    ? over.sent?.[0]?.disparityPx < -0.01 * over.pxPerBaseline
+    : over.cubeFrontDisparity < 0 && Math.abs(over.sent?.[0]?.disparityPx - over.cubeFrontDisparity * over.pxPerBaseline) < 0.003 * over.pxPerBaseline;
+  const uvOk = Math.abs(over.sent?.[0]?.u - 0.5) < 1e-3 && Math.abs(over.sent?.[0]?.v - 0.5) < 1e-3;
+  const offOk = kind === 'splat' || (off.sent?.length === 1 && !('disparityPx' in off.sent[0]));
+  const leaveOk = left.sent?.length === 0;
+  const neverDrawn = over.cursorDisparity === null && off.cursorDisparity === null && over.cssCursor !== 'none' && off.cssCursor !== 'none';
+  const pass = !!(pxOk && uvOk && offOk && leaveOk && neverDrawn);
+  log({ engine, kind, runtime: true, pass, pxOk, uvOk, offOk, leaveOk, neverDrawn, calls: depthCalls.length, over, off, afterLeave: left, frames });
+  await new Promise(() => {}); // stop here: the head-move and softening checks are about the SDK sprite
+}
 // Head motion with the pointer STILL: hybrid (default) and world keep the sprite fixed in the
 // world (it parallaxes like the content); screen keeps it on the line of sight (it slides).
 for (let i = 0; i < 3; i++) { point(0.5, 0.5); await wait(5); }
