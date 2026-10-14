@@ -42,6 +42,7 @@ import { guardedAttach } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
+import { CURSOR_MODEL_RAYS_PER_FRAME } from './inline3d-cursor-perf.js';
 import { SceneViewer } from './inline3d-viewer.js';
 // Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
 // is the default lighting path, so deferring it would only add a frame of unlit content.
@@ -391,7 +392,9 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     viewerEase: opts.viewerEase,
   }).useEyeCamera(EyeCamera, EdgeFeather);
   const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/model');
-  if (cursorOpts) viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), cursorOpts);
+  // Amortised pick (a few rays a frame): the sprite follows the newest pointer position every
+  // frame and the pick only refreshes its depth, so a heavy mesh never stretches the frame.
+  if (cursorOpts) viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), { raysPerFrame: CURSOR_MODEL_RAYS_PER_FRAME, ...cursorOpts });
 
   if (envMap) viewer.scene.environment = envMap;
   else if (environment === 'room') addRoomEnvironment(viewer);
