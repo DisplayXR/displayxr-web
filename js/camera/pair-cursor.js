@@ -15,7 +15,11 @@
 //    disparity is past the draw threshold (-0.005 baselines, and >= 0.5 px; cursorShouldDraw), the
 //    OS cursor hidden exactly then;
 //  - the same filter (fast rise, slow sink) and the same arrow (CURSOR_ARROW, tip = hotspot, the
-//    OS arrow's 19 CSS px).
+//    OS arrow's 19 CSS px);
+//  - the same crosstalk softening (Amendment 2 §B.7, cursorSoften): a lifted arrow is blurred by
+//    0.1 × its ghost offset (here: its disparity, the two halves being the two views) and faded
+//    toward 0.5, both zero on the glass. Rasterised into the buffer from the core's 13-tap kernel
+//    (cursorSoftArrowRaster) — inside the woven pixels, never a CSS filter or CSS opacity.
 // What is specific to a pair: it has no 3D views, so it works in tile PIXEL disparity — OUTPUT
 // pixels of one eye of the woven buffer, + = crossed (in front of the glass), the sign the rest of
 // camera/ uses — and converts to the core's eye-baseline units through the panel's pixel pitch:
@@ -30,7 +34,10 @@ import {
   cursorDefaultHeight,
   cursorFilterStep,
   cursorShouldDraw,
+  cursorSoften,
+  cursorSoftArrowRaster,
   cursorTarget,
+  resolveCursorSoften,
   CURSOR_ARROW,
   CURSOR_ARROW_CSS_PX,
   CURSOR_DEFAULT_TUNING,
@@ -251,6 +258,53 @@ export function drawPairArrow(g, outW, outH, u, v, disparityPx, sizePx) {
   }
 }
 
+// A scratch 2D canvas for the softened arrow (drawImage blends and honours the clip; putImageData
+// would do neither). Null where no canvas can be made — then the crisp arrow is drawn.
+let _scratch = null;
+function scratchCanvas(w, h) {
+  if (!_scratch || (typeof OffscreenCanvas === 'function' && !(_scratch instanceof OffscreenCanvas))) {
+    try {
+      if (typeof OffscreenCanvas === 'function') _scratch = new OffscreenCanvas(1, 1);
+      else if (globalThis.document && document.createElement) _scratch = document.createElement('canvas');
+    } catch {
+      _scratch = null;
+    }
+  }
+  if (!_scratch || typeof _scratch.getContext !== 'function') return null;
+  if (_scratch.width < w) _scratch.width = w;
+  if (_scratch.height < h) _scratch.height = h;
+  return _scratch.getContext('2d');
+}
+
+/**
+ * The SOFTENED arrow into both halves (ADR-046 Amendment 2 §B.7): as drawPairArrow — same
+ * placement, same tip, same clip to each half — but rasterised from the core's 13-tap blur of the
+ * arrow with `radius` (arrow heights) and `alpha` (opacity). Returns false (nothing drawn) when no
+ * scratch canvas is available, so the caller can fall back to the crisp arrow.
+ */
+export function drawPairArrowSoft(g, outW, outH, u, v, disparityPx, sizePx, radius, alpha) {
+  const cy = v * outH;
+  const fill = arrowFill(sizePx);
+  const polys = [CURSOR_ARROW, fill];
+  const rasters = [0, 1].map((eye) => {
+    const cx = eye * outW + u * outW + (eye === 0 ? disparityPx / 2 : -disparityPx / 2);
+    return cursorSoftArrowRaster(cx, cy, sizePx, radius, alpha, [1, 1, 1, 1], [0, 0, 0, 1], polys);
+  });
+  const sg = scratchCanvas(Math.max(rasters[0].width, rasters[1].width), Math.max(rasters[0].height, rasters[1].height));
+  if (!sg || typeof sg.putImageData !== 'function' || typeof ImageData !== 'function') return false;
+  for (const eye of [0, 1]) {
+    const r = rasters[eye];
+    sg.putImageData(new ImageData(r.data, r.width, r.height), 0, 0);
+    g.save();
+    g.beginPath();
+    g.rect(eye * outW, 0, outW, outH);
+    g.clip();
+    g.drawImage(sg.canvas, 0, 0, r.width, r.height, r.x0, r.y0, r.width, r.height);
+    g.restore();
+  }
+  return true;
+}
+
 /**
  * One cursor over one woven pair. The owner calls `draw()` after painting the pair each frame
  * (`idle()` on any frame it does not paint a woven pair), and hands it the latest grayscale copy
@@ -258,8 +312,10 @@ export function drawPairArrow(g, outW, outH, u, v, disparityPx, sizePx) {
  */
 export class PairCursor {
   /** @param {HTMLElement} canvas  the tile — the pointer counts over its box */
-  constructor(canvas, { height, pointerScope = 'window' } = {}) {
+  constructor(canvas, { height, pointerScope = 'window', soften } = {}) {
     this.pointer = new CursorPointer(canvas, { scope: pointerScope });
+    /** Crosstalk softening parameters (resolveCursorSoften). */
+    this.soften = resolveCursorSoften(soften, '@displayxr/inline3d pair cursor');
     // A fraction of the tile height when given; by default the OS arrow's size (CSS px → tile).
     this.height = height > 0 ? height : null;
     this.filter = {};
@@ -271,7 +327,7 @@ export class PairCursor {
     this.metersPerCssPx = null;
     /** The eye separation (metres) the baseline units convert with: displayMetrics' (a default today). */
     this.eyeSeparationM = DISPLAY_METRICS_DEFAULTS.eyeSeparationM;
-    /** The last frame's placement, for diagnostics: `{ contentPx, targetPx, disparityPx, filteredPx, drawn, pxPerBaseline }` (output px, + = in front) or null. */
+    /** The last frame's placement, for diagnostics: `{ contentPx, targetPx, disparityPx, filteredPx, drawn, pxPerBaseline, soften }` (output px, + = in front) or null. */
     this.last = null;
   }
 
@@ -308,9 +364,22 @@ export class PairCursor {
     const d = cursorFilterStep(this.filter, CURSOR_DEFAULT_TUNING, target, nowSec);
     const drawn = cursorShouldDraw(d, pxPerBaseline);
     const disparity = -d * pxPerBaseline; // output px, + = in front
-    if (drawn) drawPairArrow(g, geo.outW, geo.outH, u, v, disparity, hf * geo.outH);
+    let soften = null;
+    if (drawn) {
+      // Softening in PANEL px: one output px of an eye spans (tile CSS width × dpr) / outW of them.
+      // The ghost offset of a pair IS its disparity (the two halves are the two views).
+      const sizePx = hf * geo.outH;
+      const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1;
+      const k = r && r.width > 0 ? (r.width * dpr) / geo.outW : 1;
+      const spritePx = r && r.height > 0 ? hf * r.height * dpr : sizePx;
+      const s = cursorSoften(d, disparity * k, spritePx, this.soften);
+      soften = { blurPx: s.blurPx, alpha: s.alpha, ghostPx: Math.abs(disparity * k), spritePx, radius: spritePx > 0 ? s.blurPx / spritePx : 0, soft: s.blurPx > 0 || s.alpha < 1 };
+      if (!soften.soft || !drawPairArrowSoft(g, geo.outW, geo.outH, u, v, disparity, sizePx, soften.radius, s.alpha)) {
+        drawPairArrow(g, geo.outW, geo.outH, u, v, disparity, sizePx);
+      }
+    }
     this.pointer.hideCss(drawn); // the OS arrow IS the cursor on the plane
-    this.last = { contentPx: this._content, targetPx: -target * pxPerBaseline || 0, disparityPx: drawn ? disparity : 0, filteredPx: disparity || 0, drawn, pxPerBaseline };
+    this.last = { contentPx: this._content, targetPx: -target * pxPerBaseline || 0, disparityPx: drawn ? disparity : 0, filteredPx: disparity || 0, drawn, pxPerBaseline, soften };
     return this.last;
   }
 

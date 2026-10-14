@@ -143,7 +143,7 @@ export class EdgeFeather {
   ): void;
 }
 
-import type { CursorAnchorMode, CursorPlacement, CursorView } from './cursor-depth.js';
+import type { CursorAnchorMode, CursorPlacement, CursorSoftenOption, CursorSoftenParams, CursorSoftening, CursorView } from './cursor-depth.js';
 
 /** One second of `debug` stats: each figure as `{ mean, p95, max, n }`. */
 export interface CursorDebugSummary {
@@ -191,7 +191,7 @@ export class DepthCursor {
       height?: number;
       /** Fill colour of the arrow (default 0xffffff; the outline is always dark). */
       color?: number;
-      /** How far in front of out-of-screen content it floats, in eye-baseline units (default 0.03 ≈ 2 mm at a 65 mm IPD). */
+      /** How far in front of out-of-screen content it floats, in eye-baseline units (default 0.015 ≈ 1 mm at a 63-65 mm IPD). */
       margin?: number;
       /** Default `'hybrid'`: exact while the pointer moves, world-fixed (parallaxing) while it is still. */
       anchor?: CursorAnchorMode;
@@ -199,6 +199,12 @@ export class DepthCursor {
       pointerScope?: 'canvas' | 'window';
       /** 0 (default): the whole footprint every frame. N: amortised — N rays a frame cycling the footprint (both eyes); the arrow still follows the newest pointer each frame. */
       raysPerFrame?: number;
+      /**
+       * Crosstalk softening of the LIFTED arrow (runtime ADR-046 Amendment 2 §B.7), in the arrow's own
+       * shader: blur = 0.1 × its ghost offset (capped at 6% of its height, 8 px), opacity easing to
+       * 0.5 over 0.03 baselines of lift; both zero on the glass. Default `'both'`; `'off'` = the crisp arrow.
+       */
+      soften?: CursorSoftenOption;
       /** Attach pattern: the Object3D the eye cameras hang off; its world matrix carries the views to world. */
       viewSpace?: unknown;
       /** `true`: log update() cost, rays a frame and the frame interval once a second; `'both'`: also keep the OS cursor visible. */
@@ -207,10 +213,17 @@ export class DepthCursor {
   );
   /** With `debug` only (else null): the rolling stats; `last` is the newest one-second summary, `history` the last 120. */
   readonly debugStats: { last: CursorDebugSummary | null; history: CursorDebugSummary[] } | null;
-  /** The arrow (a `THREE.Mesh`: dark outline, white fill, tip at its origin; depth test off, drawn last). Add it to the scene root. */
+  /**
+   * The arrow (a `THREE.Mesh`: dark outline, white fill, tip at its origin; depth test off, drawn last). Add it to the scene root.
+   * While it is softened its geometry and material are a padded quad and the soft-arrow shader; otherwise the crisp mesh.
+   */
   readonly object: unknown;
   /** The last placement, for diagnostics. */
   readonly placement: CursorPlacement | { active: false };
+  /** The resolved softening parameters. */
+  readonly soften: CursorSoftenParams;
+  /** The last drawn frame's softening (diagnostics); null while nothing is drawn. */
+  readonly softening: CursorSoftening | null;
   /** Place the sprite for this frame — call with the views you are about to render, before rendering. */
   update(views: ArrayLike<XRView | CursorView>, nowMs?: number): CursorPlacement | { active: false };
   /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */

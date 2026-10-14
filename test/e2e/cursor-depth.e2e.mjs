@@ -12,7 +12,10 @@
 //   splat (butterfly.sog; 'three' = the Spark engine): over the subject the arrow is in front of the
 //     glass, off it nothing is drawn;
 //   both: the CSS cursor is hidden while the arrow shows and restored when it is not drawn / on
-//     pointerleave, and the arrow draws with depth test off.
+//     pointerleave, and the arrow draws with depth test off;
+//   softening (ADR-046 Amendment 2 §B.7): the lifted arrow draws with the soft material by default
+//     and the crisp mesh with soften 'off', and no shader fails to compile. (Pixels: see
+//     tools/cursor-soften-capture.)
 // Stock Chrome has no inline 3D: this proves the hit test and the placement, not the weave — that
 // needs a panel (samples/model/?cursor=depth, samples/splat/?cursor=depth).
 //
@@ -40,6 +43,9 @@ const CASES = [
   // An app pc.ShaderMaterial behind the subject: the depth pick pass must not draw it (WebGL
   // rejects a one-output shader into the picker's two colour targets) — zero GL errors.
   { engine: 'playcanvas', kind: 'model', backdrop: true },
+  // Crosstalk softening off: the crisp arrow mesh, exactly as before (ADR-046 Amendment 2 §B.7).
+  { engine: 'playcanvas', kind: 'model', soften: 'off' },
+  { engine: 'three', kind: 'model', soften: 'off' },
 ];
 
 async function loadPuppeteer() {
@@ -85,24 +91,33 @@ async function main() {
   const results = [];
   try {
     for (const c of CASES) {
-      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}`;
+      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.soften ? `/soften=${c.soften}` : ''}`;
       if (only.length && !only.includes(tag)) continue;
       const page = await browser.newPage();
       page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
+      // Any GL error fails the run, and so does a shader that fails to compile (the softened arrow's).
       let glErrors = 0;
+      const shaderErrors = [];
       page.on('console', (m) => {
-        if (/GL_INVALID|WebGL: too many errors/.test(m.text())) glErrors++;
-        if (/inline3d|Uncaught/i.test(m.text())) console.log(`  [page:${m.type()}] ${m.text().slice(0, 200)}`);
+        const t = m.text();
+        if (/GL_INVALID|WebGL: too many errors/.test(t)) glErrors++;
+        if (/Shader Error|Failed to compile|WebGLProgram/i.test(t)) shaderErrors.push(t.slice(0, 300));
+        if (/inline3d|Uncaught|Shader|WebGL/i.test(t)) console.log(`  [page:${m.type()}] ${t.slice(0, 200)}`);
       });
       const t0 = Date.now();
-      await page.goto(`${url}/test/e2e/cursor-depth/?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}`, { waitUntil: 'load' });
+      await page.goto(`${url}/test/e2e/cursor-depth/?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}`, { waitUntil: 'load' });
       await page.waitForFunction(() => !document.getElementById('out').textContent.startsWith('running'), { timeout: TIMEOUT_MS, polling: 250 });
       const r = JSON.parse(await page.evaluate(() => document.getElementById('out').textContent));
       await page.close();
+      if (shaderErrors.length) {
+        r.pass = false;
+        r.error = `shader error: ${shaderErrors[0]}`;
+      }
       const fmt = (x) => (x === null || x === undefined ? 'null' : x.toFixed(4));
       console.log(`e2e: ${tag} ${r.pass ? 'PASS' : 'FAIL'} in ${Date.now() - t0} ms — over: cursor ${fmt(r.over?.cursorDisparity)}` +
         `${r.over?.cubeFrontDisparity !== null && r.over?.cubeFrontDisparity !== undefined ? ` (front ${fmt(r.over.cubeFrontDisparity)})` : ''}, off: ${fmt(r.off?.cursorDisparity)}` +
         `, head move ${r.headMove === null || r.headMove === undefined ? 'null' : r.headMove.toFixed(4)} (${r.anchor})` +
+        `, arrow ${r.over?.soft ? 'soft' : 'crisp'} (soften ${r.soften})` +
         `, GL errors ${glErrors}${r.error ? ` — ${r.error}` : ''}`);
       results.push(!!r.pass && glErrors === 0);
     }

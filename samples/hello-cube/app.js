@@ -64,11 +64,12 @@ scene.add(cube);
 // Opt-in depth-aware cursor (?cursor=depth): the pointer rises to the cube instead of being drawn
 // on the glass behind the half of it that pops out. Hit-tests the cube and, while the cube under it
 // comes out of the screen, draws the arrow just in front of it (hiding the CSS cursor meanwhile). See "A cursor that respects depth" in docs/authoring-inline-3d.md.
+// &soften=both|off|alpha|blur A/Bs the crosstalk softening of the lifted arrow (default both).
 // &cursorDebug logs its per-frame cost once a second; &cursorDebug=both also keeps the OS cursor visible.
 const cubeParams = new URLSearchParams(location.search);
 const cursorDebug = cubeParams.has('cursorDebug') ? (cubeParams.get('cursorDebug') === 'both' ? 'both' : true) : false;
 const depthCursor = cubeParams.get('cursor') === 'depth'
-  ? new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [cube]), debug: cursorDebug })
+  ? new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [cube]), debug: cursorDebug, soften: cubeParams.get('soften') || undefined })
   : null;
 if (depthCursor) scene.add(depthCursor.object);
 

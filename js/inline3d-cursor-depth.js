@@ -53,11 +53,23 @@
 //    CURSOR_DRAW_THRESHOLD (-0.005, ~0.3 mm) or under CURSOR_DRAW_MIN_PX on the panel
 //    (cursorShouldDraw), and the CSS cursor is left alone;
 //  - the look: the classic arrow (CURSOR_ARROW, tip = hotspot), at the OS cursor's size
-//    (CURSOR_ARROW_CSS_PX tall on the page, cursorDefaultHeight).
+//    (CURSOR_ARROW_CSS_PX tall on the page, cursorDefaultHeight);
+//  - crosstalk softening (Amendment 2 §B.7): a LIFTED arrow is blurred by k × its ghost offset and
+//    faded toward alphaMin with its lift, both exactly zero on the glass (cursorSoften and below).
 
 import { CURSOR_ANCHOR_MODES } from './inline3d-cursor-option.js';
 
-export { CURSOR_ANCHOR_MODES, CURSOR_OPTION_KEYS, resolveCursorOption } from './inline3d-cursor-option.js';
+export {
+  CURSOR_ANCHOR_MODES,
+  CURSOR_OPTION_KEYS,
+  CURSOR_SOFTEN_DEFAULTS,
+  CURSOR_SOFTEN_KEYS,
+  CURSOR_SOFTEN_PRESETS,
+  parseCursorSoften,
+  resolveCursorOption,
+  resolveCursorSoften,
+} from './inline3d-cursor-option.js';
+import { CURSOR_SOFTEN_DEFAULTS } from './inline3d-cursor-option.js';
 
 /**
  * Fallback sprite height, as a fraction of the canvas height, when the canvas's on-page size is
@@ -487,6 +499,13 @@ export class CursorPointer {
     return this.cssHeight() * (globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1);
   }
 
+  /** The canvas's `[width, height]` in panel (device) pixels, `[0, 0]` when unknown. */
+  panelSize() {
+    const r = this.canvas.getBoundingClientRect();
+    const k = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1;
+    return r.width > 0 && r.height > 0 ? [r.width * k, r.height * k] : [0, 0];
+  }
+
   /**
    * Hide (true) or restore (false) the CSS cursor; idempotent. Only ever while a sprite replaces
    * it: whatever cursor the page set (`pointer`, `grab`, a `url(…)` image) is the cursor the rest of
@@ -676,4 +695,283 @@ export function cursorModelMatrix(placement, out = new Array(16)) {
   out[8] = z[0] * h; out[9] = z[1] * h; out[10] = z[2] * h; out[11] = 0;
   out[12] = e[0]; out[13] = e[1]; out[14] = e[2]; out[15] = 1;
   return out;
+}
+
+
+// ── Crosstalk softening of the lifted cursor (runtime ADR-046 Amendment 2 §B.7) ─────────────
+//
+// A port of the runtime's u_cursor_draw_soften_sized / u_cursor_draw_ghost_px and its 13-tap
+// kernel (comp_metal_compositor.m `cursor_fragment_soft`, the same on every backend). The blur
+// and the fade live in the CURSOR'S OWN material: a quad whose fragment shader evaluates the arrow
+// analytically at the kernel's 13 taps (cursorSoftArrowGLSL), or, on a 2D pair, the same function
+// rasterised in JS (cursorSoftArrowRaster). Never a CSS filter or CSS opacity. A frame whose
+// softening is (0 px, 1.0) draws the crisp arrow mesh exactly as before.
+
+/**
+ * One frame's softening (u_cursor_draw_soften_sized): the blur radius in panel px and the opacity,
+ * for a cursor drawn at filtered disparity `d` (eye baselines) whose neighbouring views sit
+ * `ghostPx` panel px apart. Blur = blurK × |ghost|, capped at blurMaxPx and — when `spritePx`, the
+ * drawn arrow's height in panel px, is known — at blurMaxFrac × spritePx. Opacity eases 1 → alphaMin
+ * by a smoothstep over |d| up to fullD. Both are (0, 1) on the glass; non-finite input = none.
+ * @param {number} d
+ * @param {number} ghostPx
+ * @param {number} [spritePx]
+ * @param {object} [params=CURSOR_SOFTEN_DEFAULTS]  resolveCursorSoften's result.
+ * @returns {{blurPx: number, alpha: number}}
+ */
+export function cursorSoften(d, ghostPx, spritePx, params = CURSOR_SOFTEN_DEFAULTS) {
+  const s = { blurPx: 0, alpha: 1 };
+  const p = params;
+  if (!p) return s;
+  if (p.blur && Number.isFinite(ghostPx) && p.blurK > 0 && p.blurMaxPx > 0) {
+    let cap = p.blurMaxPx;
+    if (p.blurMaxFrac > 0 && Number.isFinite(spritePx) && spritePx > 0) {
+      const rel = p.blurMaxFrac * spritePx; // proportional to the drawn cursor
+      cap = rel < cap ? rel : cap;
+    }
+    const b = p.blurK * Math.abs(ghostPx);
+    s.blurPx = b < cap ? b : cap;
+  }
+  if (p.alpha && Number.isFinite(d) && p.fullD > 0) {
+    let x = Math.abs(d) / p.fullD;
+    x = x < 1 ? x : 1;
+    const ease = x * x * (3 - 2 * x); // smoothstep(0, fullD, |d|)
+    const amin = p.alphaMin < 0 ? 0 : p.alphaMin > 1 ? 1 : p.alphaMin;
+    s.alpha = 1 - (1 - amin) * ease;
+  }
+  return s;
+}
+
+/**
+ * The ghost offset (u_cursor_draw_ghost_px): the largest distance, in panel px, between the
+ * hotspot's positions in two NEIGHBOURING views (i, i + 1) — what crosstalk leaks.
+ * @param {ArrayLike<ArrayLike<number>|null>} origins  the hotspot per view, canvas-normalised [u, v]
+ * @param {number} pxW  panel px that 0..1 of u spans (the canvas width)
+ * @param {number} pxH  panel px that 0..1 of v spans
+ */
+export function cursorGhostPx(origins, pxW, pxH) {
+  if (!origins || !(pxW > 0) || !(pxH > 0)) return 0;
+  let ghost = 0;
+  for (let i = 0; i + 1 < origins.length; i++) {
+    const a = origins[i], b = origins[i + 1];
+    if (!a || !b) continue;
+    const g = Math.hypot((b[0] - a[0]) * pxW, (b[1] - a[1]) * pxH);
+    if (Number.isFinite(g) && g > ghost) ghost = g;
+  }
+  return ghost;
+}
+
+/**
+ * Where a world point lands on the canvas in one view: canvas-normalised [u, v] (v down), or null
+ * when it is not in front of the view. The view's transform may carry a parent scale.
+ */
+export function cursorProjectToCanvas(view, point) {
+  const v = asView(view);
+  const m = v.transformMatrix, p = v.projectionMatrix;
+  // Inverse of the transform's 3×3 (cofactors) applied to (point − origin).
+  const a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], k = m[10];
+  const A = e * k - f * h, B = -(d * k - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (!(Math.abs(det) > 1e-30)) return null;
+  const x = point[0] - m[12], y = point[1] - m[13], z = point[2] - m[14];
+  const lx = (A * x + (c * h - b * k) * y + (b * f - c * e) * z) / det;
+  const ly = (B * x + (a * k - c * g) * y + (c * d - a * f) * z) / det;
+  const lz = (C * x + (b * g - a * h) * y + (a * e - b * d) * z) / det;
+  const cx = p[0] * lx + p[4] * ly + p[8] * lz + p[12];
+  const cy = p[1] * lx + p[5] * ly + p[9] * lz + p[13];
+  const cw = p[3] * lx + p[7] * ly + p[11] * lz + p[15];
+  if (!(cw > 0)) return null;
+  const out = [(cx / cw + 1) / 2, (1 - cy / cw) / 2];
+  return Number.isFinite(out[0]) && Number.isFinite(out[1]) ? out : null;
+}
+
+/**
+ * The softening for a placement (CursorDepthPlacer.update's result) drawn with `views` on a canvas
+ * `panelW` × `panelH` panel px, the arrow `heightFraction` of the canvas tall. The ghost offset is
+ * measured from where the placement's hotspot lands in each view — right for every rig and view
+ * count. Inactive placements are never softened.
+ * @returns {{blurPx: number, alpha: number, ghostPx: number, spritePx: number, radius: number, aa: number, soft: boolean}}
+ *   `radius` / `aa`: the blur radius and one panel px in ARROW units (its height = 1), for the
+ *   material; `soft`: false = draw the crisp arrow (bit-identical to the unsoftened draw).
+ */
+export function cursorPlacementSoften(placement, views, panelW, panelH, heightFraction, params = CURSOR_SOFTEN_DEFAULTS) {
+  const none = { blurPx: 0, alpha: 1, ghostPx: 0, spritePx: 0, radius: 0, aa: 0, soft: false };
+  if (!placement || !placement.active || !placement.position || !views) return none;
+  const origins = Array.from(views, (v) => cursorProjectToCanvas(v, placement.position));
+  const ghostPx = cursorGhostPx(origins, panelW, panelH);
+  const spritePx = heightFraction > 0 && panelH > 0 ? heightFraction * panelH : 0;
+  const s = cursorSoften(placement.disparity, ghostPx, spritePx, params);
+  const soft = s.blurPx > 0 || s.alpha < 1;
+  return {
+    blurPx: s.blurPx,
+    alpha: s.alpha,
+    ghostPx,
+    spritePx,
+    radius: spritePx > 0 ? s.blurPx / spritePx : 0,
+    aa: spritePx > 0 ? 1 / spritePx : 0,
+    soft,
+  };
+}
+
+/**
+ * The runtime's blur kernel, in units of the radius: `[dx, dy, weight]` — the centre, 4 taps at
+ * r/2 and 8 at r (a Gaussian, sigma ≈ 0.6 r). Taps outside the arrow read as transparent.
+ */
+export const CURSOR_SOFTEN_KERNEL = Object.freeze([
+  Object.freeze([0, 0, 1]),
+  ...[[0.5, 0], [-0.5, 0], [0, 0.5], [0, -0.5]].map(([x, y]) => Object.freeze([x, y, 0.7066])),
+  ...Array.from({ length: 8 }, (_, k) => {
+    const a = 0.3927 + 0.7854 * k;
+    return Object.freeze([Math.cos(a), Math.sin(a), 0.2494]);
+  }),
+]);
+
+/** The arrow's extent in its own units (height = 1, x right, y down from the tip). */
+export const CURSOR_ARROW_SIZE = Object.freeze([
+  Math.max(...CURSOR_ARROW.map((p) => p[0])),
+  Math.max(...CURSOR_ARROW.map((p) => p[1])),
+]);
+
+/**
+ * The softened arrow's quad in arrow units (y down, the tip = the hotspot at the origin): the
+ * arrow's box padded by the blur radius (plus one AA width) on every side, so the soft edge is not
+ * clipped. The hotspot does not move — the box only grows around it.
+ * @returns {[number, number, number, number]}  [x0, y0, x1, y1]
+ */
+export function cursorSoftArrowBox(radius, aa = 0) {
+  const pad = (radius > 0 && Number.isFinite(radius) ? radius : 0) + (aa > 0 && Number.isFinite(aa) ? aa : 0);
+  return [-pad, -pad, CURSOR_ARROW_SIZE[0] + pad, CURSOR_ARROW_SIZE[1] + pad];
+}
+
+/** Signed distance to a polygon (negative inside), any winding — the crossing-number form. */
+export function cursorPolygonSd(poly, x, y) {
+  let d = (x - poly[0][0]) ** 2 + (y - poly[0][1]) ** 2;
+  let s = 1;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i++) {
+    const vi = poly[i], vj = poly[j];
+    const ex = vj[0] - vi[0], ey = vj[1] - vi[1];
+    const wx = x - vi[0], wy = y - vi[1];
+    const t = Math.min(1, Math.max(0, (wx * ex + wy * ey) / (ex * ex + ey * ey)));
+    const bx = wx - ex * t, by = wy - ey * t;
+    d = Math.min(d, bx * bx + by * by);
+    const c1 = y >= vi[1], c2 = y < vj[1], c3 = ex * wy > ey * wx;
+    if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) s = -s;
+  }
+  return s * Math.sqrt(d);
+}
+
+const coverage = (sd, aa) => (aa > 0 ? Math.min(1, Math.max(0, 0.5 - sd / aa)) : sd < 0 ? 1 : 0);
+
+/**
+ * The softened arrow at point (x, y) of its own units — the reference the shader mirrors: the
+ * kernel's 13 taps of the crisp arrow (dark outline, the fill over it, each edge anti-aliased over
+ * `aa`), accumulated PREMULTIPLIED, so clear taps add no colour. `radius` 0 = the centre tap only.
+ * @returns {[number, number, number, number]}  straight RGB and alpha (before the opacity)
+ */
+export function cursorSoftArrowSample(x, y, radius, aa, fill = CURSOR_FILL_COLOR, outline = CURSOR_OUTLINE_COLOR, polys = [CURSOR_ARROW, CURSOR_ARROW_FILL]) {
+  let r = 0, g = 0, b = 0, a = 0, ws = 0;
+  const taps = radius > 0 ? CURSOR_SOFTEN_KERNEL : CURSOR_SOFTEN_KERNEL.slice(0, 1);
+  for (const [dx, dy, w] of taps) {
+    const px = x + dx * radius, py = y + dy * radius;
+    const co = coverage(cursorPolygonSd(polys[0], px, py), aa);
+    const cf = co > 0 ? coverage(cursorPolygonSd(polys[1], px, py), aa) : 0;
+    r += w * (outline[0] * co + (fill[0] - outline[0]) * cf);
+    g += w * (outline[1] * co + (fill[1] - outline[1]) * cf);
+    b += w * (outline[2] * co + (fill[2] - outline[2]) * cf);
+    a += w * co;
+    ws += w;
+  }
+  a /= ws;
+  if (!(a > 1e-5)) return [0, 0, 0, 0];
+  return [r / ws / a, g / ws / a, b / ws / a, a];
+}
+
+const glf = (v) => {
+  const s = (+v).toPrecision(9);
+  return /[.eE]/.test(s) ? s : `${s}.0`;
+};
+
+/**
+ * GLSL (ES 1.00 and 3.00 alike: no arrays, no loops) for the softened arrow, generated from the
+ * same polygons and kernel as cursorSoftArrowSample:
+ *
+ *   vec4 inline3dSoftArrow(vec2 p, float radius, float aa, vec3 fill, vec3 outline)
+ *
+ * `p` in arrow units (height 1, y down, tip at the origin). Returns straight RGB and alpha; the
+ * caller multiplies the alpha by the opacity.
+ */
+export function cursorSoftArrowGLSL(polys = [CURSOR_ARROW, CURSOR_ARROW_FILL]) {
+  const v2 = (q) => `vec2(${glf(q[0])}, ${glf(q[1])})`;
+  const sdFn = (name, poly) => {
+    const lines = [`float ${name}(vec2 p) {`, `  float d = dot(p - ${v2(poly[0])}, p - ${v2(poly[0])});`, '  float s = 1.0;'];
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i++) lines.push(`  i3dCursorEdge(p, ${v2(poly[i])}, ${v2(poly[j])}, d, s);`);
+    lines.push('  return s * sqrt(d);', '}');
+    return lines.join('\n');
+  };
+  const taps = CURSOR_SOFTEN_KERNEL.slice(1)
+    .map(([dx, dy, w]) => `    acc += ${glf(w)} * i3dCursorTap(p + vec2(${glf(dx)}, ${glf(dy)}) * radius, aa, fill, outline);`)
+    .join('\n');
+  const wsum = CURSOR_SOFTEN_KERNEL.slice(1).reduce((t, k) => t + k[2], 0);
+  return `
+void i3dCursorEdge(vec2 p, vec2 vi, vec2 vj, inout float d, inout float s) {
+  vec2 e = vj - vi;
+  vec2 w = p - vi;
+  vec2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+  d = min(d, dot(b, b));
+  bool c1 = p.y >= vi.y;
+  bool c2 = p.y < vj.y;
+  bool c3 = e.x * w.y > e.y * w.x;
+  if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) s = -s;
+}
+${sdFn('i3dCursorSdOutline', polys[0])}
+${sdFn('i3dCursorSdFill', polys[1])}
+float i3dCursorCov(float sd, float aa) {
+  return aa > 0.0 ? clamp(0.5 - sd / aa, 0.0, 1.0) : (sd < 0.0 ? 1.0 : 0.0);
+}
+vec4 i3dCursorTap(vec2 p, float aa, vec3 fill, vec3 outline) {
+  float co = i3dCursorCov(i3dCursorSdOutline(p), aa);
+  float cf = i3dCursorCov(i3dCursorSdFill(p), aa);
+  return vec4(outline * co + (fill - outline) * cf, co);
+}
+vec4 inline3dSoftArrow(vec2 p, float radius, float aa, vec3 fill, vec3 outline) {
+  vec4 acc = i3dCursorTap(p, aa, fill, outline);
+  float wsum = 1.0;
+  if (radius > 0.0) {
+${taps}
+    wsum += ${glf(wsum)};
+  }
+  acc /= wsum;
+  return vec4(acc.a > 1e-5 ? acc.rgb / acc.a : vec3(0.0), acc.a);
+}
+`;
+}
+
+/**
+ * The softened arrow rasterised for a 2D canvas (the stereo-pair cursor): pixel (i, j) of the
+ * result covers canvas px (x0 + i, y0 + j), sampled at its centre, with the arrow `sizePx` tall and
+ * its tip at canvas point (cx, cy). Straight-alpha RGBA bytes (ImageData layout), the opacity
+ * applied. One canvas px is the AA width.
+ * @returns {{x0: number, y0: number, width: number, height: number, data: Uint8ClampedArray}}
+ */
+export function cursorSoftArrowRaster(cx, cy, sizePx, radius, alpha, fill = CURSOR_FILL_COLOR, outline = CURSOR_OUTLINE_COLOR, polys = [CURSOR_ARROW, CURSOR_ARROW_FILL]) {
+  const size = sizePx > 0 && Number.isFinite(sizePx) ? sizePx : 1;
+  const aa = 1 / size;
+  const [bx0, by0, bx1, by1] = cursorSoftArrowBox(radius, aa);
+  const x0 = Math.floor(cx + bx0 * size), y0 = Math.floor(cy + by0 * size);
+  const width = Math.max(1, Math.ceil(cx + bx1 * size) - x0), height = Math.max(1, Math.ceil(cy + by1 * size) - y0);
+  const data = new Uint8ClampedArray(width * height * 4);
+  const op = alpha >= 0 && alpha <= 1 ? alpha : 1;
+  for (let j = 0; j < height; j++) {
+    const y = (y0 + j + 0.5 - cy) / size;
+    for (let i = 0; i < width; i++) {
+      const c = cursorSoftArrowSample((x0 + i + 0.5 - cx) / size, y, radius, aa, fill, outline, polys);
+      if (!(c[3] > 0)) continue;
+      const o = (j * width + i) * 4;
+      data[o] = Math.round(c[0] * 255);
+      data[o + 1] = Math.round(c[1] * 255);
+      data[o + 2] = Math.round(c[2] * 255);
+      data[o + 3] = Math.round(c[3] * op * 255);
+    }
+  }
+  return { x0, y0, width, height, data };
 }

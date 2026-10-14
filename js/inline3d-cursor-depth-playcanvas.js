@@ -19,7 +19,9 @@
 // glass — as the classic arrow (the shared cursorArrowMesh: dark outline, white fill, tip on the
 // hotspot) in the UI layer with depth test off, so every eye camera draws it last and nothing
 // occludes it; the picker skips the UI layer, so the cursor never picks itself. On the plane
-// nothing is drawn and the CSS cursor is the cursor.
+// nothing is drawn and the CSS cursor is the cursor. A LIFTED arrow is softened against crosstalk
+// (ADR-046 Amendment 2 §B.7): the mesh instance swaps to a quad whose shader blurs and fades the
+// arrow (cursorSoftArrowGLSL); a (0 px, 1.0) frame draws the crisp mesh exactly as before.
 
 import {
   CursorDepthPlacer,
@@ -28,7 +30,13 @@ import {
   cursorArrowMesh,
   cursorArrowFootprint,
   cursorDefaultHeight,
+  cursorPlacementSoften,
+  cursorSoftArrowBox,
+  cursorSoftArrowGLSL,
   cursorViewRay,
+  resolveCursorSoften,
+  CURSOR_FILL_COLOR,
+  CURSOR_OUTLINE_COLOR,
 } from './inline3d-cursor-depth.js';
 
 /** Pick-buffer width in pixels (height follows the eye's aspect). */
@@ -42,9 +50,9 @@ export class PlayCanvasDepthCursor {
   /**
    * @param {object} pc  the PlayCanvas namespace the adapter renders with.
    * @param {object} viewer  the PlayCanvasSplatViewer (app, rigNode, eye are read lazily).
-   * @param {{canvas: HTMLElement, height?: number, margin?: number, anchor?: string, pointerScope?: string}} opts
+   * @param {{canvas: HTMLElement, height?: number, margin?: number, anchor?: string, pointerScope?: string, soften?: string|object}} opts
    */
-  constructor(pc, viewer, { canvas, height, margin, anchor = 'hybrid', pointerScope = 'canvas' }) {
+  constructor(pc, viewer, { canvas, height, margin, anchor = 'hybrid', pointerScope = 'canvas', soften }) {
     this.pc = pc;
     this.viewer = viewer;
     /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
@@ -54,6 +62,10 @@ export class PlayCanvasDepthCursor {
     this.placer = new CursorDepthPlacer(tuning, { anchor });
     /** The last placement (diagnostics). */
     this.placement = { active: false };
+    /** Crosstalk softening parameters (resolveCursorSoften). */
+    this.soften = resolveCursorSoften(soften, '@displayxr/inline3d cursor');
+    /** The last frame's softening (diagnostics), null while nothing is drawn. */
+    this.softening = null;
     /** The last picked world point under the footprint, or null (nothing under it). */
     this.hit = null;
     this._picker = null;
@@ -99,9 +111,12 @@ export class PlayCanvasDepthCursor {
     this.placement = p;
     this.pointer.hideCss(!!p.active);
     const sprite = this._sprite || (p.active ? this._makeSprite(app) : null);
+    this.softening = null;
     if (!sprite) return;
     sprite.mi.visible = !!p.active;
     if (!p.active) return;
+    const [pw, ph] = this.pointer.panelSize();
+    this._useSoft(app, sprite, (this.softening = cursorPlacementSoften(p, views, pw, ph, h, this.soften)));
     // The unit arrow in the sprite's XY plane, tip at its origin: basis (rotation), height (scale), position = the hotspot.
     const { x, y, z } = p.basis;
     const q = quatFromMatrix([x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, 0, 0, 0, 1]);
@@ -113,6 +128,7 @@ export class PlayCanvasDepthCursor {
   /** Mono / no pointer / no views: no sprite, the CSS cursor back. */
   inactive() {
     if (this.placement.active) this.placement = { active: false };
+    this.softening = null;
     this.placer.update(null); // forget the hybrid anchor
     if (this._sprite) this._sprite.mi.visible = false;
     this.pointer.hideCss(false);
@@ -161,8 +177,72 @@ export class PlayCanvasDepthCursor {
     mi.pick = false;
     mi.drawOrder = 1e9;
     app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances([mi]);
-    this._sprite = { mi, node, mat };
+    this._sprite = { mi, node, mat, mesh, soft: null };
     return this._sprite;
+  }
+
+  // Crisp: the arrow mesh and material as built above. Softened: a quad over the padded arrow box,
+  // its shader the runtime's 13-tap blur of the arrow, times the opacity.
+  _useSoft(app, sprite, s) {
+    const mi = sprite.mi;
+    if (!s.soft) {
+      if (mi.mesh !== sprite.mesh) mi.mesh = sprite.mesh;
+      if (mi.material !== sprite.mat) mi.material = sprite.mat;
+      return;
+    }
+    const soft = sprite.soft || (sprite.soft = this._makeSoft(app));
+    soft.mat.setParameter('inline3dCursorBox', cursorSoftArrowBox(s.radius, s.aa));
+    soft.mat.setParameter('inline3dCursorSoft', [s.radius, s.alpha, s.aa, 0]);
+    if (mi.mesh !== soft.mesh) mi.mesh = soft.mesh;
+    if (mi.material !== soft.mat) mi.material = soft.mat;
+  }
+
+  _makeSoft(app) {
+    const pc = this.pc;
+    const mesh = new pc.Mesh(app.graphicsDevice);
+    // A unit quad; the vertex shader spreads it over the padded arrow box (arrow units, y down).
+    mesh.setPositions(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]));
+    mesh.update();
+    const mat = new pc.ShaderMaterial({
+      uniqueName: 'inline3dDepthCursorSoft',
+      attributes: { vertex_position: pc.SEMANTIC_POSITION },
+      vertexGLSL: `
+        attribute vec3 vertex_position;
+        uniform mat4 matrix_model;
+        uniform mat4 matrix_viewProjection;
+        uniform vec4 inline3dCursorBox;
+        varying vec2 vArrow;
+        void main() {
+          vArrow = vec2(mix(inline3dCursorBox.x, inline3dCursorBox.z, vertex_position.x), mix(inline3dCursorBox.y, inline3dCursorBox.w, vertex_position.y));
+          gl_Position = matrix_viewProjection * matrix_model * vec4(vArrow.x, -vArrow.y, 0.0, 1.0);
+        }`,
+      fragmentGLSL: `
+        uniform vec4 inline3dCursorSoft; // radius, opacity, aa (arrow units)
+        uniform vec3 inline3dCursorFill;
+        uniform vec3 inline3dCursorOutline;
+        varying vec2 vArrow;
+        ${cursorSoftArrowGLSL()}
+        void main() {
+          vec4 c = inline3dSoftArrow(vArrow, inline3dCursorSoft.x, inline3dCursorSoft.z, inline3dCursorFill, inline3dCursorOutline);
+          gl_FragColor = vec4(c.rgb, c.a * inline3dCursorSoft.y);
+        }`,
+    });
+    mat.setParameter('inline3dCursorFill', CURSOR_FILL_COLOR.slice(0, 3));
+    mat.setParameter('inline3dCursorOutline', CURSOR_OUTLINE_COLOR.slice(0, 3));
+    mat.blendState = new pc.BlendState(
+      true,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_SRC_ALPHA,
+      pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_ONE,
+      pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+    );
+    mat.depthTest = false;
+    mat.depthWrite = false;
+    mat.cull = pc.CULLFACE_NONE;
+    mat.update();
+    return { mesh, mat };
   }
 
   dispose() {
@@ -172,6 +252,8 @@ export class PlayCanvasDepthCursor {
       if (this._sprite) {
         this.viewer.app?.scene?.layers?.getLayerById(this.pc.LAYERID_UI)?.removeMeshInstances?.([this._sprite.mi]);
         this._sprite.node.destroy?.();
+        this._sprite.soft?.mat.destroy?.();
+        this._sprite.soft?.mesh.destroy?.();
       }
       this._picker?.destroy?.();
       this._pickCam?.destroy?.();

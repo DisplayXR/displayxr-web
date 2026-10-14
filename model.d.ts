@@ -58,7 +58,7 @@ export interface ModelOptions {
    * cursor, untouched. Never behind the glass. OPT-IN: without it nothing
    * is loaded or run. PlayCanvas: hit-tested with the engine's depth picker (meshes and splats,
    * one low-res pass every other frame while the pointer is over the tile). three: a raycast
-   * against the subject. Pass an object to tune it: `{ margin, anchor, height, pointerScope }`
+   * against the subject. Pass an object to tune it: `{ margin, anchor, height, pointerScope, soften }`
    * (any object also means depth).
    */
   cursor?: 'depth' | CursorOptions;

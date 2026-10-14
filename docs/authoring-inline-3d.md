@@ -1045,7 +1045,7 @@ from the views.
 ## A cursor that respects depth
 
 **On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
-(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope, debug }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
+(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope, debug, soften }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
 cheap pass. three raycasts the subject: on `./model` through a bounds tree (a BVH, loaded only with
 the option) at three rays a frame, on Spark splats one ray a frame. Either way the arrow follows the
 newest pointer position every frame and the pick only refreshes its depth, so a heavy model never
@@ -1083,6 +1083,25 @@ wall.addScene(canvas, (views, layer) => {
   hides the CSS cursor exactly while the arrow is drawn. A custom CSS cursor (`grab`, a `url(…)`
   image) is still drawn as the arrow while content pops out; mirroring the page's CSS cursor into
   the sprite is future work (ADR-046 Amendment 2 §C).
+- **Crosstalk softening (`soften`, default `'both'`).** On a lenticular panel a little of each
+  view leaks into its neighbours, so a lifted, white, sharp-edged arrow shows a faint copy one
+  disparity away (ghosting); how visible it is scales with contrast × edge sharpness. On the glass
+  the views coincide and there is no ghost. So the lifted arrow is softened by its lift, exactly as
+  the native runtime does it (ADR-046 Amendment 2 §B.7), and both effects are zero on the glass:
+  - *Edge blur:* radius = 0.1 × the ghost offset (the on-screen distance between neighbouring
+    views' copies of the tip, in panel px), capped at 6% of the arrow's drawn height (about 1 px
+    for the 19 CSS px arrow at DPR 1, about 4 px on a 64 px arrow) and at 8 px.
+  - *Opacity:* eases from 1 to 0.5 with a smoothstep over the first 0.03 eye baselines of lift
+    (the lift over typical content), then holds.
+
+  The tip (the click point) never moves: the arrow's quad grows by the blur radius around it. It
+  is drawn in the arrow's own shader (the runtime's 13-tap kernel, evaluated on an analytic arrow),
+  inside your rendered views; nothing is done with CSS `filter` or `opacity`. A frame with nothing
+  to soften draws the crisp arrow exactly as before. Presets: `'both'`, `'off'` (the crisp arrow),
+  `'alpha'`, `'blur'`. Or tune it: `soften: { mode, blurK, blurMaxPx, blurMaxFrac, alphaMin, fullD }`
+  (defaults 0.1, 8, 0.06, 0.5, 0.03, each over the runtime's default). The same option exists on
+  `DepthCursor`, and on `./call` / `./camera` stereo pairs, where the softened arrow is drawn into
+  the woven pixels. The samples take `&soften=` next to `?cursor=depth` for an A/B on a panel.
 - **Behaviour and placement.** The cursor rises fast and sinks slowly, so it doesn't flicker at
   edges. The placement maths and defaults are the native runtime's (`XR_DXR_cursor_depth`), so web
   and native cursors behave alike.
@@ -1115,9 +1134,12 @@ wall.addScene(canvas, (views, layer) => {
   contexts), so a frame reads the newest position rather than one a frame old.
 - **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths and policy,
   dependency-free: `CursorDepthPlacer`, and the pieces on their own (`cursorTarget`,
-  `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`).
+  `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`; for the softening,
+  `cursorPlacementSoften`, `cursorSoften`, `cursorSoftArrowGLSL` for your own shader and
+  `cursorSoftArrowRaster` for a 2D canvas).
 - **Stereo pairs** (`./call` and `./camera`, `cursor: 'depth'`) follow the same policy and draw the
-  same arrow; their depth is measured off the pair's two halves instead of hit-tested.
+  same arrow, softened the same way; their depth is measured off the pair's two halves instead of
+  hit-tested.
 
 ## Rounded corners
 

@@ -7,6 +7,32 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+Touches the **core** `./three` (`DepthCursor`), `./cursor-depth`, and the **preview tier** (`./model`,
+`./splat`, `./call`, `./camera`: `cursor: 'depth'`). **One deliberate look change:** a LIFTED depth
+cursor is now softened by default. On the glass nothing changes (nothing is drawn there).
+
+### Depth cursor: crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7 parity)
+
+- On a lenticular panel a lifted, white, sharp-edged arrow ghosts: crosstalk leaks a copy one
+  disparity away, and its visibility scales with contrast × edge sharpness. The runtime softens its
+  cursor by lift; every web depth cursor now does the same, constant for constant, so web and
+  native cursors look alike: an edge blur of 0.1 × the ghost offset (the neighbouring views' split,
+  panel px), capped at 6% of the arrow's drawn height and 8 px, and an opacity easing from 1 to 0.5
+  with a smoothstep over 0.03 eye baselines of lift. Both are exactly zero on the glass, and the
+  tip (the click point) never moves. Defaults tuned on a Windows Leia panel and confirmed on a Mac.
+- **`cursor.soften`** on `./model`, `./splat`, `./call`, `./camera`, and `soften` on `DepthCursor`:
+  `'both'` (default), `'off'` (the crisp arrow, pixel-identical to 1.43), `'alpha'`, `'blur'`, or
+  `{ mode, blurK, blurMaxPx, blurMaxFrac, alphaMin, fullD }` over the defaults. Validated at the call.
+- Drawn in the cursor's own material: a quad padded by the blur radius whose fragment shader
+  evaluates the arrow analytically at the runtime's 13 blur taps (three and PlayCanvas), or the
+  same function rasterised into the woven buffer (stereo pairs). Never a CSS `filter` or `opacity`.
+  A frame with nothing to soften draws the crisp mesh as before; zero cost without `cursor: 'depth'`.
+- `./cursor-depth` exports the pieces: `cursorSoften`, `cursorGhostPx`, `cursorProjectToCanvas`,
+  `cursorPlacementSoften`, `cursorSoftArrowGLSL`, `cursorSoftArrowRaster`, `cursorSoftArrowSample`,
+  `resolveCursorSoften`, `parseCursorSoften`, `CURSOR_SOFTEN_DEFAULTS`, `CURSOR_SOFTEN_KERNEL`, and
+  more. The samples take `&soften=both|off|alpha|blur` next to `?cursor=depth`.
+- docs/authoring-inline-3d.md §A cursor that respects depth.
+
 ### Fixed — `cursor: 'depth'` (PlayCanvas): no GL error storm from an app's own `ShaderMaterial`
 
 - The depth pick pass renders into two colour targets (pick id + pick depth). A mesh whose
