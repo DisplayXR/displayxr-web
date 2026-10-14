@@ -92,6 +92,26 @@ prog('loading');
 setInterval(() => { if (out.textContent.startsWith('running')) out.textContent = out.textContent.replace(/\(frames \d+\)/, `(frames ${frames})`); }, 200);
 await handle.ready;
 prog('ready');
+// backdrop=1 (playcanvas): a plane behind the cube with an app-style pc.ShaderMaterial whose
+// fragment shader writes ONE output — the kind of mesh the depth picker's two-target pass used to
+// draw (and WebGL reject, GL_INVALID_OPERATION per draw). The harness fails on any GL error.
+if (new URLSearchParams(location.search).get('backdrop') === '1' && engine === 'playcanvas') {
+  const pc = await import('playcanvas');
+  const app = handle.engine.app;
+  const mat = new pc.ShaderMaterial({
+    uniqueName: 'e2e-backdrop',
+    vertexGLSL: 'attribute vec3 vertex_position; uniform mat4 matrix_model; uniform mat4 matrix_viewProjection; void main(void) { gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0); }',
+    fragmentGLSL: 'void main(void) { gl_FragColor = vec4(0.2, 0.3, 0.4, 1.0); }',
+    attributes: { vertex_position: pc.SEMANTIC_POSITION },
+  });
+  mat.update();
+  const plane = new pc.Entity('e2e-backdrop', app);
+  plane.addComponent('render', { type: 'plane', material: mat });
+  plane.setLocalScale(40, 1, 40);
+  plane.setLocalEulerAngles(90, 0, 0);
+  plane.setLocalPosition(0, 0, -6);
+  app.root.addChild(plane);
+}
 // Where the arrow is, per engine: its node / matrix translation = the TIP = the hotspot, in world
 // space (PlayCanvas: views carried through the rig node; three: the views ARE world space).
 let rig = null;

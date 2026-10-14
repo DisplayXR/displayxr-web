@@ -37,6 +37,9 @@ const CASES = [
   // Anchor modes on the real viewer: 'screen' must SLIDE with a head move, 'world' must not.
   { engine: 'playcanvas', kind: 'model', anchor: 'screen' },
   { engine: 'three', kind: 'model', anchor: 'world' },
+  // An app pc.ShaderMaterial behind the subject: the depth pick pass must not draw it (WebGL
+  // rejects a one-output shader into the picker's two colour targets) — zero GL errors.
+  { engine: 'playcanvas', kind: 'model', backdrop: true },
 ];
 
 async function loadPuppeteer() {
@@ -82,13 +85,17 @@ async function main() {
   const results = [];
   try {
     for (const c of CASES) {
-      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}`;
+      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}`;
       if (only.length && !only.includes(tag)) continue;
       const page = await browser.newPage();
       page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
-      page.on('console', (m) => /inline3d|Uncaught/i.test(m.text()) && console.log(`  [page:${m.type()}] ${m.text().slice(0, 200)}`));
+      let glErrors = 0;
+      page.on('console', (m) => {
+        if (/GL_INVALID|WebGL: too many errors/.test(m.text())) glErrors++;
+        if (/inline3d|Uncaught/i.test(m.text())) console.log(`  [page:${m.type()}] ${m.text().slice(0, 200)}`);
+      });
       const t0 = Date.now();
-      await page.goto(`${url}/test/e2e/cursor-depth/?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}`, { waitUntil: 'load' });
+      await page.goto(`${url}/test/e2e/cursor-depth/?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}`, { waitUntil: 'load' });
       await page.waitForFunction(() => !document.getElementById('out').textContent.startsWith('running'), { timeout: TIMEOUT_MS, polling: 250 });
       const r = JSON.parse(await page.evaluate(() => document.getElementById('out').textContent));
       await page.close();
@@ -96,8 +103,8 @@ async function main() {
       console.log(`e2e: ${tag} ${r.pass ? 'PASS' : 'FAIL'} in ${Date.now() - t0} ms — over: cursor ${fmt(r.over?.cursorDisparity)}` +
         `${r.over?.cubeFrontDisparity !== null && r.over?.cubeFrontDisparity !== undefined ? ` (front ${fmt(r.over.cubeFrontDisparity)})` : ''}, off: ${fmt(r.off?.cursorDisparity)}` +
         `, head move ${r.headMove === null || r.headMove === undefined ? 'null' : r.headMove.toFixed(4)} (${r.anchor})` +
-        `${r.error ? ` — ${r.error}` : ''}`);
-      results.push(!!r.pass);
+        `, GL errors ${glErrors}${r.error ? ` — ${r.error}` : ''}`);
+      results.push(!!r.pass && glErrors === 0);
     }
   } finally {
     await browser.close().catch(() => {});
