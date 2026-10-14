@@ -561,3 +561,112 @@ test('CursorPointer: a cursor the page sets while the sprite hides it is not ove
   assert.equal(canvas.style.cursor, 'grabbing', "the page's newer cursor is kept");
   ptr.dispose();
 });
+
+// ── hybrid is DISPLAY-space: the rig moving under a still pointer must not carry the sprite ──
+
+/** A rig orbiting a pivot `dist` m behind the glass by `deg` about Y, with uniform scale `s`. */
+function orbitRig(deg, dist = 0.5, s = 1) {
+  const a = (deg * Math.PI) / 180;
+  const q = [0, Math.sin(a / 2), 0, Math.cos(a / 2)];
+  const r = transform(q, [0, 0, 0], s);
+  // Rotate about the pivot at display-space (0, 0, -dist): p = pivot - R·pivot.
+  const pv = apply(r, [0, 0, -dist]);
+  return transform(q, [-pv[0], -pv[1], -dist - pv[2]], s);
+}
+const invRigid = (m) => (p) => {
+  // Inverse of a rotation+uniform-scale+translation, column-major.
+  const d = [p[0] - m[12], p[1] - m[13], p[2] - m[14]];
+  const s2 = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+  return [
+    (m[0] * d[0] + m[1] * d[1] + m[2] * d[2]) / s2,
+    (m[4] * d[0] + m[5] * d[1] + m[6] * d[2]) / s2,
+    (m[8] * d[0] + m[9] * d[1] + m[10] * d[2]) / s2,
+  ];
+};
+/** Where a display-space point projects onto the glass (z = 0) from display-space eye e, in canvas u/v. */
+const toUV = (e, p) => {
+  const k = e[2] / (e[2] - p[2]);
+  return [(e[0] + (p[0] - e[0]) * k + W / 2) / W, (H / 2 - (e[1] + (p[1] - e[1]) * k)) / H];
+};
+
+test('anchor hybrid: the RIG orbiting under a still pointer + still head keeps the sprite on the pointer (idle spin)', () => {
+  const eye = [0.03, 0.04, 0.6]; // slightly off-axis viewer, still
+  const views = (deg) => {
+    const w = orbitRig(deg);
+    return [kooima([eye[0] - 0.032, eye[1], eye[2]], w), kooima([eye[0] + 0.032, eye[1], eye[2]], w)];
+  };
+  const hybrid = new CursorDepthPlacer();
+  const hint = { u: 0.62, v: 0.41, nearestPoint: null };
+  let p;
+  // 8 s of 8 deg/s idle spin at 60 fps, pointer and head still. Content (in front of the glass,
+  // fixed in DISPLAY space here so the depth is steady) keeps the sprite drawn.
+  for (let i = 0; i <= 480; i++) {
+    const deg = (8 * i) / 60;
+    const w = orbitRig(deg);
+    const contentPt = apply(w, [0, 0, 0.1]);
+    p = hybrid.update(views(deg), { ...hint, nearestPoint: contentPt }, 1.0 + i / 60);
+    if (i > 2) assert.equal(p.anchored, true, `frame ${i} anchored`);
+    // The sprite, back in DISPLAY space, projected from the (still) eye, lands on the pointer.
+    const local = invRigid(w)(p.position);
+    const uv = toUV(eye, local);
+    near(uv[0], hint.u, 1e-4, `u at frame ${i}`);
+    near(uv[1], hint.v, 1e-4, `v at frame ${i}`);
+  }
+  assert.ok(p.active && p.disparity < -0.05, 'it was drawn, off the glass');
+});
+
+test('anchor hybrid: still pointer, rig orbited AND head moved → same display-space parallax as without the orbit', () => {
+  const head = (x, w) => [kooima([x - 0.032, 0, 0.6], w), kooima([x + 0.032, 0, 0.6], w)];
+  const hint = (w) => ({ u: 0.4, v: 0.5, nearestPoint: apply(w, [0, 0, 0.1]) });
+  const ref = new CursorDepthPlacer();
+  const orb = new CursorDepthPlacer();
+  const w0 = orbitRig(0);
+  ref.update(head(0, w0), hint(w0), 1.0);
+  orb.update(head(0, w0), hint(w0), 1.0);
+  let r, o, w;
+  for (let i = 1; i <= 30; i++) {
+    w = orbitRig(i, 0.5, 1 + i * 0.01); // orbit 30 deg and zoom 30 % meanwhile
+    r = ref.update(head(0.08 * (i / 30), w0), hint(w0), 1.0 + i * 0.016);
+    o = orb.update(head(0.08 * (i / 30), w), hint(w), 1.0 + i * 0.016);
+  }
+  assert.equal(o.anchored, true);
+  // Display-space position identical: the head move still parallaxes the sprite exactly as before.
+  near3(invRigid(w)(o.position), r.position, 1e-6);
+  // And it did parallax: from the moved head it is no longer exactly over the pointer.
+  const uv = toUV([0.08, 0, 0.6], r.position);
+  assert.ok(Math.abs(uv[0] - 0.4) > 1e-3, 'head motion still parallaxes');
+});
+
+test('anchor hybrid: a canvas whose SHAPE changes under a still pointer re-anchors on the ray (#1951 rule)', () => {
+  const wide = (x) => {
+    // Same eyes, canvas 20 % wider: the projection's horizontal extent changes.
+    const v = kooima([x, 0, 0.6]);
+    const p = v.projectionMatrix.slice();
+    p[0] /= 1.2;
+    p[8] /= 1.2; // keep the frustum symmetric-equivalent for x = ±0.032 enough for the solve
+    return { projectionMatrix: p, transformMatrix: v.transformMatrix };
+  };
+  const hint = { u: 0.4, v: 0.5, nearestPoint: [0, 0, 0.1] };
+  const placer = new CursorDepthPlacer();
+  placer.update([kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])], hint, 1.0);
+  const still = placer.update([kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])], hint, 1.016);
+  assert.equal(still.anchored, true);
+  const resized = placer.update([wide(-0.032), wide(0.032)], hint, 1.032);
+  assert.equal(resized.anchored, false, 'a resized canvas is a new canvas: back on the ray');
+  const screen = new CursorDepthPlacer(T, { anchor: 'screen' });
+  screen.update([wide(-0.032), wide(0.032)], hint, 1.0);
+  near3(resized.position, screen.update([wide(-0.032), wide(0.032)], hint, 1.016).position, 1e-3);
+});
+
+test('anchor hybrid: the head pulling back past the anchor eye re-anchors instead of placing the sprite behind it', () => {
+  const at = (z) => [kooima([-0.032, 0, z]), kooima([0.032, 0, z])];
+  // Content halfway to the eye: clamped to the comfort limit, lift = 0.375 × eyeToCanvas.
+  const hint = (z) => ({ u: 0.45, v: 0.5, nearestPoint: [0, 0, 0.5 * z] });
+  const placer = new CursorDepthPlacer();
+  placer.update(at(0.6), hint(0.6), 1.0);
+  let p = placer.update(at(0.6), hint(0.6), 1.016);
+  assert.equal(p.anchored, true);
+  p = placer.update(at(1.8), hint(1.8), 1.032); // 3× farther: s = 1 - 0.375 × 3 < 0
+  assert.equal(p.anchored, false);
+  assert.ok(p.position[2] > 0 && p.position[2] < 1.8, `in front of the glass, before the eye: ${p.position[2]}`);
+});
