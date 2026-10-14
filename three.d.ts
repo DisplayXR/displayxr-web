@@ -197,7 +197,7 @@ export class DepthCursor {
       anchor?: CursorAnchorMode;
       /** `'window'`: keep the cursor over DOM layered on the canvas; hides the CSS cursor page-wide meanwhile. */
       pointerScope?: 'canvas' | 'window';
-      /** An EXPENSIVE hit test: N rays a frame from the first eye, cycling the footprint (0 = all). */
+      /** 0 (default): the whole footprint every frame. N: amortised — N rays a frame cycling the footprint (both eyes); the arrow still follows the newest pointer each frame. */
       raysPerFrame?: number;
       /** Attach pattern: the Object3D the eye cameras hang off; its world matrix carries the views to world. */
       viewSpace?: unknown;
