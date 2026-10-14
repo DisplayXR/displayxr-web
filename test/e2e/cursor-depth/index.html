@@ -85,7 +85,9 @@ setInterval(() => {
   frames++;
 }, 16);
 
-const point = (u, v) => canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: u * 600, clientY: v * 400, bubbles: true }));
+// touch=1: every pointer event is a finger — the browser shows no cursor, so nothing may be drawn.
+const touch = new URLSearchParams(location.search).get('touch') === '1';
+const point = (u, v) => canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: u * 600, clientY: v * 400, bubbles: true, ...(touch ? { pointerType: 'touch', buttons: 1 } : {}) }));
 const wait = (n) => new Promise((res) => { const f0 = frames; const t = () => (frames - f0 >= n ? res() : setTimeout(t, 16)); t(); });
 
 const prog = (m) => (out.textContent = `running: ${m} (frames ${frames})`);
@@ -270,8 +272,11 @@ const depthOk = kind === 'splat'
 // Crosstalk softening (ADR-046 Amendment 2 §B.7): the lifted arrow draws with the soft material
 // by default, the crisp mesh with soften 'off'.
 const softOk = over.soft === (soften !== 'off');
-const pass = headOk && depthOk && softOk;
-log({ engine, kind, anchor: anchor || 'hybrid', soften: soften || 'both', margin, pass, headMove, softOk, over, off, afterLeave: left, frames });
+const hiddenAttr = canvas.hasAttribute('data-inline3d-cursor-hidden') || document.documentElement.hasAttribute('data-inline3d-cursor-hidden');
+// touch: no sprite anywhere (over the subject too), the CSS cursor never hidden.
+const touchOk = over.cursorDisparity === null && off.cursorDisparity === null && headMove === null && !hiddenAttr;
+const pass = touch ? touchOk : headOk && depthOk && softOk;
+log({ engine, kind, touch, anchor: anchor || 'hybrid', soften: soften || 'both', margin, pass, headMove, softOk, over, off, afterLeave: left, frames });
 </script>
 </body>
 </html>

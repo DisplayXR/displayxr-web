@@ -5,6 +5,20 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.45.1 — 2026-10-13
+
+### Fixed — `cursor: 'depth'` showed up under a finger (touch)
+
+- On a touch device, dragging a finger over a scene drew the 3D cursor, though the browser shows no
+  cursor there. Since 1.44.0 the pointer took every `pointermove` / `pointerrawupdate` whatever
+  its `pointerType`. Now only a **mouse** or a **hovering pen** places the cursor. A touch or a pen
+  in contact clears it, including a tap that never moves (so no stale mouse hover stays up), and
+  the CSS cursor is never hidden for them. This covers every backend (three.js `./model`,
+  PlayCanvas `./model` / `./splat`, the `./call` / `./camera` pair cursor). They all share
+  `CursorPointer`.
+- New `cursorPointerHovers(e)` in `./cursor-depth`. An event with no `pointerType` (synthetic)
+  counts as a mouse, as before.
+
 ## 1.45.0 — 2026-10-13
 
 ### Packaging
