@@ -45,6 +45,26 @@ Touches `./cursor-depth`, `./three` (`DepthCursor`) and the preview tier (`./mod
   (keywords, a `data:` url() image, `none`), hotspot stability and the Shop grab → grabbing → grab
   sequence, failing on any GL error; the samples take `&shape=`.
 
+### Fixed — `cursor: 'depth'` (PlayCanvas) over a layer on the display rig (#185)
+
+- A layer moved with `handle.setLayerRig(name, 'display')` is drawn by the layer rig's cameras, not
+  the eye camera, so the pick never saw it and the cursor stayed on the glass over it (a round
+  stage, a map tile under a camera-rig photo). The layer rig's post run, and its display run when
+  it is not rounded, now join the eye pick. A ROUNDED display run (a camera rig, gain ≠ 1) gets a
+  second low-res pick pass through the same round views, and each hit becomes the point the photo
+  views show at the same pixels in both eyes, so the placement (unchanged) puts the arrow in front
+  of the stage as the panel shows it. The two passes merge by the nearest point. Same cadence and
+  readback as before (every other frame, asynchronous); the second pass exists only while a layer
+  is on the display rig, and nothing at all without `cursor: 'depth'`.
+
+### Added — a `pc.ShaderMaterial` can take part in the depth pick
+
+- `CURSOR_DEPTH_PICK_GLSL` and `CURSOR_DEPTH_PICK_WGSL` (`./cursor-depth`): `{ declarations, output }`
+  snippets that write the pick id and, under `DEPTH_PICK_PASS`, the pick depth with the engine's own
+  `pickPS` chunk. Since 1.44.0 the pick pass leaves out a ShaderMaterial that does not write the
+  depth target; with these it is hit like any engine material. docs/authoring-inline-3d.md §A cursor
+  that respects depth.
+
 ## 1.44.0 — 2026-10-13
 
 Touches the **core** `./three` (`DepthCursor`), `./cursor-depth`, and the **preview tier** (`./model`,
