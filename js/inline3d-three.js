@@ -537,6 +537,7 @@ export class DepthCursor {
     const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
     this.placer = new CursorDepthPlacer(tuning, { anchor });
     this.pointer = new CursorPointer(canvas, { scope: pointerScope, keepCss: debugMode === 'both' });
+    if (this.debugStats) this.debugStats.source = this.pointer.source;
     /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
     this.placement = { active: false };
 

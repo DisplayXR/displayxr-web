@@ -129,6 +129,8 @@ export class CursorDebugStats {
   constructor({ tag = '[inline3d] cursor', periodMs = 1000, log, info = null } = {}) {
     this.tag = tag;
     this.info = info;
+    /** Which event feeds the pointer ('pointerrawupdate' / 'pointermove'), when the owner knows. */
+    this.source = null;
     this.periodMs = periodMs;
     this.log = log || ((line) => console.info(line));
     /** @type {object|null} */
@@ -175,6 +177,7 @@ export class CursorDebugStats {
       frameMs: stat(this._frame),
       pointerAgeMs: stat(this._age),
       samplesPerFrame: this._update.length ? this._samples / this._update.length : 0,
+      pointerSource: this.source,
       pick: this.info ? this.info() : null,
     };
     this.last = s;
@@ -188,7 +191,7 @@ export class CursorDebugStats {
         ` · rays ${f(s.rays.mean, 1)}/frame (max ${s.rays.max})` +
         ` · frame ${f(s.frameMs.mean, 1)} ms avg / ${f(s.frameMs.p95, 1)} p95 / ${f(s.frameMs.max, 1)} max` +
         (s.pointerAgeMs.n ? ` · pointer age ${f(s.pointerAgeMs.mean, 1)} ms avg / ${f(s.pointerAgeMs.max, 1)} max` : '') +
-        ` · ${f(s.samplesPerFrame, 1)} pointer samples/frame` +
+        ` · ${f(s.samplesPerFrame, 1)} pointer samples/frame${s.pointerSource ? ` (${s.pointerSource})` : ''}` +
         (s.pick ? ` · pick ${describePick(s.pick)}` : ''),
     );
     return s;

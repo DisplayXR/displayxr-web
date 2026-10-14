@@ -14,6 +14,7 @@
   with two hand-built off-axis views (what the DisplayXR Browser hands addScene).
 
     ?glb=<url>     the model (default: Khronos CarConcept, 213k triangles, 97 meshes)
+    ?noraw=1       hide pointerrawupdate (pointermove only), for an A/B
     ?parity=1      also compare the BVH hit test against three's plain raycast on 400 rays
   Results: window.__perf (read by test/e2e/cursor-perf.e2e.mjs).
 -->
@@ -25,6 +26,10 @@
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
   "@displayxr/inline3d/model": "../../../js/inline3d-model-entry.js"
 } }
+</script>
+<script>
+  // ?noraw=1: hide pointerrawupdate from the SDK (A/B against pointermove only).
+  if (new URLSearchParams(location.search).get('noraw')) for (const P of [HTMLElement.prototype, Window.prototype]) delete P.onpointerrawupdate;
 </script>
 <script type="module">
 import * as THREE from 'three';

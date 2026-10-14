@@ -369,20 +369,22 @@ export class CursorPointer {
     this.samples = 0;
     this._hidden = false;
     this._prev = '';
-    this._onMove = (e) => {
-      this.samples++;
-      this.sampleTime = e.timeStamp > 0 ? e.timeStamp : globalThis.performance ? globalThis.performance.now() : Date.now();
-      const r = canvas.getBoundingClientRect();
-      if (!(r.width > 0 && r.height > 0)) return void (this.uv = null);
-      const u = (e.clientX - r.left) / r.width;
-      const v = (e.clientY - r.top) / r.height;
-      this.uv = u >= 0 && u <= 1 && v >= 0 && v <= 1 ? [u, v] : null;
-    };
+    this._cx = 0;
+    this._cy = 0;
+    this._pending = false; // a sample not yet resolved to uv (resolved once, on the next read)
+    this._onMove = (e) => this._sample(e);
     this._onLeave = () => {
       this.uv = null;
     };
     this._target = scope === 'window' ? globalThis : canvas;
+    // Freshest pointer: `pointerrawupdate` (Chromium, secure contexts) fires as each input arrives,
+    // not once per frame, so the frame reads the newest position instead of one up to a frame old.
+    // `pointermove` stays as the fallback (and for synthetic events) — a sample older than one
+    // already held is ignored, so the two never fight.
+    /** Which event feeds the position: 'pointerrawupdate' where supported, else 'pointermove'. */
+    this.source = supportsRawUpdate(this._target) ? 'pointerrawupdate' : 'pointermove';
     this._target.addEventListener('pointermove', this._onMove);
+    if (this.source === 'pointerrawupdate') this._target.addEventListener('pointerrawupdate', this._onMove);
     if (scope === 'window') {
       // Leaving the window (relatedTarget null) or losing focus mid-hover: nothing to hover.
       this._onOut = (e) => {
@@ -397,11 +399,37 @@ export class CursorPointer {
 
   /** `[u, v]` while the pointer is over the canvas, else null. */
   get uv() {
+    if (this._pending) {
+      this._pending = false;
+      const r = this.canvas.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) {
+        this._uv = null;
+      } else {
+        const u = (this._cx - r.left) / r.width;
+        const v = (this._cy - r.top) / r.height;
+        this._uv = u >= 0 && u <= 1 && v >= 0 && v <= 1 ? [u, v] : null;
+      }
+    }
     return this._uv;
   }
 
   set uv(x) {
+    this._pending = false;
     this._uv = x;
+  }
+
+  // One pointer event: keep its NEWEST coalesced sample (getCoalescedEvents(), last entry), unless
+  // a newer one is already held. No layout read here — uv resolves on the next read, once a frame.
+  _sample(e) {
+    const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+    const s = list && list.length ? list[list.length - 1] : e;
+    const t = s.timeStamp > 0 ? s.timeStamp : e.timeStamp > 0 ? e.timeStamp : globalThis.performance ? globalThis.performance.now() : Date.now();
+    if (t < this.sampleTime) return;
+    this.samples++;
+    this.sampleTime = t;
+    this._cx = s.clientX;
+    this._cy = s.clientY;
+    this._pending = true;
   }
 
   /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */
@@ -449,6 +477,7 @@ export class CursorPointer {
 
   dispose() {
     this._target.removeEventListener('pointermove', this._onMove);
+    if (this.source === 'pointerrawupdate') this._target.removeEventListener('pointerrawupdate', this._onMove);
     if (this.scope === 'window') {
       globalThis.removeEventListener('pointerout', this._onOut);
       globalThis.removeEventListener('blur', this._onLeave);
@@ -457,6 +486,11 @@ export class CursorPointer {
     }
     this.hideCss(false);
   }
+}
+
+/** Does `target` dispatch `pointerrawupdate`? (Chromium; only in a secure context.) */
+export function supportsRawUpdate(target) {
+  return !!target && 'onpointerrawupdate' in target && globalThis.isSecureContext !== false;
 }
 
 // pointerScope 'window': the overlay DOM has its own cursor, so hiding it on the canvas alone is

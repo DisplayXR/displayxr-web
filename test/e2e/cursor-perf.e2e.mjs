@@ -4,6 +4,7 @@
 //   npm run test:e2e:cursor-perf                 # Khronos CarConcept (213k triangles, 97 meshes)
 //   npm run test:e2e:cursor-perf -- --glb=<url>  # any other model
 //   CURSOR_PERF_SECONDS=10 npm run test:e2e:cursor-perf
+//   npm run test:e2e:cursor-perf -- --noraw        # A/B: hide pointerrawupdate (pointermove only)
 //
 // Opens test/e2e/cursor-perf/ (the REAL ./model three.js viewer with `cursor: { debug: true }`, a
 // fake wall, two off-axis views a frame from requestAnimationFrame), moves the REAL mouse in a
@@ -79,7 +80,7 @@ async function main() {
     await page.setViewport({ width: 900, height: 700 });
     page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
     page.on('console', (m) => /inline3d/i.test(m.text()) && console.log(`  [page] ${m.text().slice(0, 260)}`));
-    const q = `?parity=1${GLB ? `&glb=${encodeURIComponent(GLB)}` : ''}`;
+    const q = `?parity=1${GLB ? `&glb=${encodeURIComponent(GLB)}` : ''}${process.argv.includes('--noraw') ? '&noraw=1' : ''}`;
     await page.goto(`${url}/test/e2e/cursor-perf/${q}`, { waitUntil: 'load' });
     await page.waitForFunction(() => window.__perf && window.__perf.state !== 'loading', { timeout: 120000, polling: 250 });
     let perf = await page.evaluate(() => window.__perf);
@@ -97,12 +98,18 @@ async function main() {
     await page.mouse.move(400, 300);
     await new Promise((r) => setTimeout(r, 1500)); // warm-up: first picks (and any lazy BVH builds)
     const skip = await page.evaluate(() => window.__perfCursor.debugStats.history.length);
+    // Input at ~500 Hz like a gaming mouse: CDP mouse events fired without awaiting each one
+    // (page.mouse.move awaits a round trip, which caps the rate at about one per frame).
+    const cdp = await page.createCDPSession();
     const t0 = Date.now();
-    while (Date.now() - t0 < SECONDS * 1000) {
-      const a = ((Date.now() - t0) / 1000) * 2 * Math.PI;
-      await page.mouse.move(400 + 160 * Math.cos(a), 300 + 140 * Math.sin(a));
-      await new Promise((r) => setTimeout(r, 4));
-    }
+    await new Promise((done) => {
+      const timer = setInterval(() => {
+        const el = Date.now() - t0;
+        if (el >= SECONDS * 1000) return void (clearInterval(timer), done());
+        const a = (el / 1000) * 2 * Math.PI;
+        cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 400 + 160 * Math.cos(a), y: 300 + 140 * Math.sin(a) }).catch(() => {});
+      }, 2);
+    });
     const hist = await page.evaluate(() => {
       const c = document.querySelector('canvas') && window.__perf && window.__perfCursor;
       return c ? c.debugStats.history : null;
@@ -113,7 +120,7 @@ async function main() {
     console.log(`update(): ${f(median(pick('updateMs', 'mean')), 3)} ms mean · ${f(median(pick('updateMs', 'p95')), 3)} p95 · ${f(Math.max(...pick('updateMs', 'max')), 3)} max ` +
       `(median of ${h.length} one-second windows; max over all)`);
     console.log(`rays/frame: ${f(median(pick('rays', 'mean')), 1)} · frame interval ${f(median(pick('frameMs', 'mean')), 1)} ms mean, ${f(median(pick('frameMs', 'p95')), 1)} p95, ${f(Math.max(...pick('frameMs', 'max')), 1)} max`);
-    console.log(`pointer: ${f(median(h.map((x) => x.samplesPerFrame)), 1)} samples/frame · age at use ${f(median(pick('pointerAgeMs', 'mean')), 1)} ms mean`);
+    console.log(`pointer: ${h[0].pointerSource || '?'} · ${f(median(h.map((x) => x.samplesPerFrame)), 1)} samples/frame · age at use ${f(median(pick('pointerAgeMs', 'mean')), 1)} ms mean`);
     console.log(`JSON ${JSON.stringify({ model: perf.model, raysPerFrame: perf.raysPerFrame, parity: perf.parity, history: h })}`);
   } finally {
     await browser.close().catch(() => {});
