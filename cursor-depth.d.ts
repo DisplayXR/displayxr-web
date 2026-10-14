@@ -66,7 +66,9 @@ export function placeCursor(g: CursorGeometry, disparity: number, heightFraction
 /**
  * Where along the cursor's depth the sprite goes.
  * - `'hybrid'` (default): on the line of sight while the pointer MOVES (exactly over it), and
- *   world-FIXED while it is still, so it parallaxes with the content as the head moves.
+ *   fixed relative to the DISPLAY while it is still, so it parallaxes with the content as the head
+ *   moves. Anchored in the display's frame, not the scene's: a rig that orbits, pans or zooms
+ *   (an idle spin, a damped drag, a scripted camera) does not move a still cursor off the pointer.
  * - `'screen'`: always on the line of sight. Never parallaxes; on a head-tracked display it can
  *   read as "at the glass".
  * - `'world'`: always straight in front of the pointer's canvas point. Parallaxes; drifts ~mm off

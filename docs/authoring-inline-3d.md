@@ -1089,8 +1089,9 @@ wall.addScene(canvas, (views, layer) => {
 - **When it's inactive.** In 2D (one view), off the canvas, and over anything on or behind the
   glass, nothing is drawn and the normal cursor is the cursor.
 - **Head motion: `anchor`.** By default (`'hybrid'`) the arrow follows the pointer exactly
-  while it moves. While the pointer is still, it stays fixed in the scene, so it parallaxes with
-  the content as the viewer looks around. A cursor that never parallaxes reads as being at the
+  while it moves. While the pointer is still, it stays fixed relative to the display, so it
+  parallaxes with the content as the viewer looks around, and a camera that keeps moving (an idle
+  spin, a damped orbit, a scripted fly-through) does not carry it off the pointer. A cursor that never parallaxes reads as being at the
   glass on a head-tracked display, even when its disparity says otherwise. `'screen'` never
   parallaxes, and `'world'` always does (and drifts a few mm off the pointer for an off-axis
   viewer).

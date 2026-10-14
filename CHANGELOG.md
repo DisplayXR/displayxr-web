@@ -17,6 +17,18 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   changes. Materials that handle `DEPTH_PICK_PASS`, followed through their `#include`s (the
   engine's gsplat material included), stay in.
 
+### Fixed — the depth cursor drifted off a still pointer while the camera moved
+
+- With `cursor: 'depth'` and the default `anchor: 'hybrid'`, a still pointer's arrow was pinned in
+  the SCENE, so anything that moved the camera rig under it carried it away: `./model`'s idle
+  turntable (8°/s) put it ~0.26 of the canvas off the pointer within ~6 s, and a damped drag or a
+  scripted camera did the same. The kept line of sight now lives in the display's frame (relative
+  to the canvas, in canvas heights), as in the runtime's `u_cursor_depth`, which works in display
+  space: a rig orbit, pan or zoom leaves the arrow on the pointer, and a head move still
+  parallaxes it like content. A canvas whose shape changes under a still pointer (a resize)
+  re-anchors, as does the head pulling back past the anchor eye. `'screen'` and `'world'` are
+  unchanged (neither keeps state across frames).
+
 ## 1.43.1 — 2026-10-13
 
 ### Fixed — `warmEntity` on a display-rig layer

@@ -33,12 +33,14 @@
 //                 on a head-tracked display reads as "at the glass";
 //      'world'  — C = S - f (1 - t) eyeToCanvas, straight in front of the pointer's canvas point:
 //                 parallaxes like content, drifts ~mm off the pointer from an off-axis viewer;
-//      'hybrid' (default) — 'screen' while the pointer moves (exact aim), and world-FIXED while it
-//                 is still (correct parallax): the line of sight at the last pointer move (E0 → S0)
-//                 is kept, and the sprite sits on it at the current depth — the point whose
+//      'hybrid' (default) — 'screen' while the pointer moves (exact aim), and DISPLAY-fixed while
+//                 it is still (correct parallax): the line of sight at the last pointer move
+//                 (E0 → S0) is kept, IN THE DISPLAY'S FRAME (relative to the canvas, in canvas
+//                 heights), and the sprite sits on it at the current depth — the point whose
 //                 distance in front of the glass is (1 - t) eyeToCanvas. A head move leaves it
 //                 put; a depth change slides it along that line, so it stays on the click point
-//                 for the viewer who placed it. Continuous at the stop frame.
+//                 for the viewer who placed it; a rig move (orbit, pan, zoom) carries it with the
+//                 canvas, so it stays on the pointer. Continuous at the stop frame.
 //    The height is scaled by t either way, so the apparent size is constant.
 //
 // THE POLICY (ADR-046 Amendment 2, the same for every DisplayXR depth cursor — this module, ./three's
@@ -183,7 +185,9 @@ export function solveCursorGeometry(viewA, viewB, u, v) {
   const canvasHeight = dot(sub(canvasPoint, p1), forward) * (2 / viewA.projectionMatrix[5]);
   if (!(eyeToCanvas > 0) || !(canvasHeight > 0) || !Number.isFinite(canvasHeight)) return null;
 
-  return { eye, canvasPoint, forward, eyeToCanvas, canvasHeight, basis: orthonormalBasis(ma) };
+  // Canvas aspect (width / height) from the same frustum: (2 / a) / (2 / b).
+  const aspect = viewA.projectionMatrix[5] / viewA.projectionMatrix[0];
+  return { eye, canvasPoint, forward, eyeToCanvas, canvasHeight, aspect, basis: orthonormalBasis(ma) };
 }
 
 /** The view's rotation as unit X/Y/Z columns (a transform with parent scale still works). */
@@ -249,6 +253,8 @@ export function placeCursor(g, disparity, heightFraction) {
 
 /** A pointer moving less than this (canvas-normalised) between frames counts as still. */
 const POINTER_STILL_EPS = 1e-4;
+/** The runtime's U_CURSOR_DEPTH_ANCHOR_PLANE_EPS: a canvas whose shape moves more than this re-anchors. */
+const CURSOR_ANCHOR_PLANE_EPS = 1e-3;
 
 /**
  * The whole pipeline with its state: one per cursor.
@@ -313,15 +319,42 @@ export class CursorDepthPlacer {
       position = addScaled(g.canvasPoint, fw, out);
     } else if (this.anchor === 'hybrid') {
       const last = this._last;
-      const moved =
+      let moved =
         reprimed || !this._line || !last || Math.abs(hint.u - last[0]) > POINTER_STILL_EPS || Math.abs(hint.v - last[1]) > POINTER_STILL_EPS;
+      // The kept line lives in the DISPLAY's frame, never the scene's: origin S (the canvas point
+      // under the pointer — the same canvas point while the pointer is still), axes the canvas's
+      // (g.basis), unit the canvas height. A rig that orbits, pans or zooms the scene (./model's
+      // idle spin, damped drag, a scripted camera) moves the views and the canvas together, so in
+      // this frame nothing changed and the sprite stays on the pointer; a head move changes the
+      // eye's position relative to the canvas, so it still parallaxes like content. (The runtime's
+      // u_cursor_depth gets this for free: it works in display space.)
+      let k = 0;
+      let L = this._line;
+      if (!moved) {
+        // #1951's rule: the line means something only on the canvas it was taken against. In the
+        // display frame a rig move is not a change; a canvas whose SHAPE changed (resize) is.
+        moved = !(Math.abs(g.aspect / L.aspect - 1) <= CURSOR_ANCHOR_PLANE_EPS);
+      }
+      if (!moved) {
+        // On the kept line E0 → S0, the point (1 - t)·eyeToCanvas in front of the glass, all in
+        // canvas heights: s = 1 - lift / D0, C = S0 + (1 - s)(E0 - S0) = S0 + k E0.
+        const lift = ((1 - t) * g.eyeToCanvas) / g.canvasHeight;
+        k = lift / L.D;
+        // s <= 0 (the head moved back past E0): never place it at or behind the anchor eye.
+        if (!(k < 1) || !Number.isFinite(k)) moved = true;
+      }
       if (moved) {
-        this._line = { E: g.eye, S: g.canvasPoint, D: g.eyeToCanvas };
+        const e = sub(g.eye, g.canvasPoint);
+        const h = g.canvasHeight;
+        const B = g.basis;
+        L = this._line = { E: [dot(e, B.x) / h, dot(e, B.y) / h, dot(e, B.z) / h], D: g.eyeToCanvas / h, aspect: g.aspect };
       } else {
-        // On the kept line E0 → S0, the point (1 - t)·eyeToCanvas in front of the glass.
-        const L = this._line;
-        const k = 1 - ((1 - t) * g.eyeToCanvas) / L.D;
-        position = addScaled(L.E, sub(L.S, L.E), k);
+        const B = g.basis;
+        const h = g.canvasHeight * k;
+        position = g.canvasPoint;
+        position = addScaled(position, B.x, L.E[0] * h);
+        position = addScaled(position, B.y, L.E[1] * h);
+        position = addScaled(position, B.z, L.E[2] * h);
         anchored = true;
       }
     }
