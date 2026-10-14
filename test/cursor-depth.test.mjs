@@ -280,6 +280,10 @@ function stubTHREE() {
     Float32BufferAttribute: class { constructor(a, n) { this.array = a; this.itemSize = n; } },
     LineBasicMaterial: Mat,
     MeshBasicMaterial: Mat,
+    ShaderMaterial: Mat,
+    ShaderChunk: { colorspace_fragment: '' },
+    Vector3: class { constructor(...a) { this.v = a; } set(...a) { this.v = a; return this; } },
+    Vector4: class { constructor(...a) { this.v = a; } set(...a) { this.v = a; return this; } },
     DoubleSide: 2,
     Mesh: class {
       constructor(geometry, material) {

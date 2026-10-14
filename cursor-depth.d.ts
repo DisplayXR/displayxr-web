@@ -94,6 +94,8 @@ export interface CursorOptions {
    * between them on a panel. three.js backend (./model `engine: 'three'`, ./splat on Spark).
    */
   debug?: boolean | 'both';
+  /** Crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7). Default `'both'`. */
+  soften?: CursorSoftenOption;
 }
 export const CURSOR_OPTION_KEYS: readonly (keyof CursorOptions)[];
 /** `cursor` as ./model and ./splat accept it: null = off; throws on a bad value. */
@@ -161,3 +163,115 @@ export class CursorDepthPlacer {
     nowSec: number,
   ): CursorPlacement;
 }
+
+// ── Crosstalk softening of the lifted cursor (runtime ADR-046 Amendment 2 §B.7) ─────────────
+
+/**
+ * `'both'` (default): edge blur AND opacity easing; `'off'`: neither (the crisp arrow, exactly as
+ * before 1.44); `'alpha'` / `'blur'`: one of them (A/B presets).
+ */
+export type CursorSoftenPreset = 'both' | 'off' | 'alpha' | 'blur';
+/** The tuning knobs, each over the runtime's default (U_CURSOR_SOFTEN_DEFAULT_*). */
+export interface CursorSoftenTuning {
+  /** Which effects; default `'both'`. */
+  mode?: CursorSoftenPreset;
+  /** Panel px of blur per panel px of ghost offset (the views' on-screen split). Default 0.1; >= 0. */
+  blurK?: number;
+  /** Hard ceiling on the blur radius, panel px. Default 8; [0, 8]. */
+  blurMaxPx?: number;
+  /** Blur cap as a fraction of the drawn arrow's height. Default 0.06; [0, 0.5] (0 = off). */
+  blurMaxFrac?: number;
+  /** Opacity at full lift. Default 0.5; [0, 1]. */
+  alphaMin?: number;
+  /** |disparity| (eye baselines) at which the opacity reaches alphaMin. Default 0.03; > 0. */
+  fullD?: number;
+}
+/** `cursor.soften`: a preset, a tuning object, `true` (= default) or `false` (= `'off'`). */
+export type CursorSoftenOption = CursorSoftenPreset | CursorSoftenTuning | boolean;
+/** The resolved parameter set. */
+export interface CursorSoftenParams {
+  blur: boolean;
+  alpha: boolean;
+  blurK: number;
+  blurMaxPx: number;
+  blurMaxFrac: number;
+  alphaMin: number;
+  fullD: number;
+}
+export const CURSOR_SOFTEN_PRESETS: readonly CursorSoftenPreset[];
+export const CURSOR_SOFTEN_DEFAULTS: Readonly<CursorSoftenParams>;
+export const CURSOR_SOFTEN_KEYS: readonly (keyof CursorSoftenTuning)[];
+/** `cursor.soften` resolved over the defaults; throws on a bad value. */
+export function resolveCursorSoften(opt: unknown, who?: string): CursorSoftenParams;
+/**
+ * The runtime's lenient string parse (u_cursor_soften_params_parse), e.g. for URL parameters: a
+ * value that does not parse or is out of range keeps its default. `changed`: any knob was set.
+ */
+export function parseCursorSoften(
+  mode?: string | null,
+  blurK?: string | null,
+  blurMaxPx?: string | null,
+  blurMaxFrac?: string | null,
+  alphaMin?: string | null,
+  fullD?: string | null,
+): { params: CursorSoftenParams; changed: boolean };
+/**
+ * One frame's softening (u_cursor_draw_soften_sized): blur radius (panel px) = blurK × |ghostPx|,
+ * capped at blurMaxPx and blurMaxFrac × `spritePx`; opacity eases 1 → alphaMin by a smoothstep
+ * over |d| up to fullD. (0, 1) on the glass.
+ */
+export function cursorSoften(d: number, ghostPx: number, spritePx?: number, params?: CursorSoftenParams | null): { blurPx: number; alpha: number };
+/** Largest panel-px distance between the hotspot in NEIGHBOURING views (canvas-normalised origins). */
+export function cursorGhostPx(origins: ArrayLike<ArrayLike<number> | null> | null, pxW: number, pxH: number): number;
+/** Canvas-normalised [u, v] (v down) of a point seen from a view, or null when not in front of it. */
+export function cursorProjectToCanvas(view: CursorView | XRView, point: ArrayLike<number>): [number, number] | null;
+/** A placement's softening; `radius` / `aa` in arrow heights; `soft` false = draw the crisp arrow. */
+export interface CursorSoftening {
+  blurPx: number;
+  alpha: number;
+  ghostPx: number;
+  spritePx: number;
+  radius: number;
+  aa: number;
+  soft: boolean;
+}
+/** The softening for a placement drawn with `views` on a `panelW` × `panelH` px canvas, the arrow `heightFraction` of it tall. */
+export function cursorPlacementSoften(
+  placement: CursorPlacement | { active: false } | null,
+  views: ArrayLike<CursorView | XRView>,
+  panelW: number,
+  panelH: number,
+  heightFraction: number,
+  params?: CursorSoftenParams,
+): CursorSoftening;
+/** The runtime's 13-tap blur kernel, `[dx, dy, weight]` in units of the radius. */
+export const CURSOR_SOFTEN_KERNEL: ReadonlyArray<readonly [number, number, number]>;
+/** The arrow's [width, height] in its own units (height 1). */
+export const CURSOR_ARROW_SIZE: readonly [number, number];
+/** The arrow's box padded by `radius` (+ `aa`), arrow units, y down, tip at the origin: [x0, y0, x1, y1]. */
+export function cursorSoftArrowBox(radius: number, aa?: number): [number, number, number, number];
+/** Signed distance to a polygon (negative inside). */
+export function cursorPolygonSd(poly: ReadonlyArray<readonly [number, number]>, x: number, y: number): number;
+/** The softened arrow at (x, y) of arrow units: straight RGB + alpha (before opacity). The shader's reference. */
+export function cursorSoftArrowSample(
+  x: number,
+  y: number,
+  radius: number,
+  aa: number,
+  fill?: readonly number[],
+  outline?: readonly number[],
+  polys?: ReadonlyArray<ReadonlyArray<readonly [number, number]>>,
+): [number, number, number, number];
+/** GLSL defining `vec4 inline3dSoftArrow(vec2 p, float radius, float aa, vec3 fill, vec3 outline)`. */
+export function cursorSoftArrowGLSL(polys?: ReadonlyArray<ReadonlyArray<readonly [number, number]>>): string;
+/** The softened arrow rasterised for a 2D canvas, its tip at (cx, cy), `sizePx` tall: straight-alpha RGBA bytes. */
+export function cursorSoftArrowRaster(
+  cx: number,
+  cy: number,
+  sizePx: number,
+  radius: number,
+  alpha: number,
+  fill?: readonly number[],
+  outline?: readonly number[],
+  polys?: ReadonlyArray<ReadonlyArray<readonly [number, number]>>,
+): { x0: number; y0: number; width: number; height: number; data: Uint8ClampedArray };

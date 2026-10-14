@@ -12,6 +12,7 @@
 // until the snapshot is updated in the same change (`node tools/api-surface.mjs --update`).
 
 import type { Inline3D, Inline3DUnsupported, TileHandle } from './index.js';
+import type { CursorSoftenOption } from './cursor-depth.js';
 
 /** What the camera delivers: a side-by-side pair (left eye left) or one flat picture. */
 export type CameraFormat = 'sbs' | 'mono';
@@ -193,6 +194,8 @@ export interface PairCursorOptions {
   height?: number;
   /** `'window'` (default): the cursor stays while the pointer is over DOM on the tile (a badge). `'canvas'`: only over the canvas itself. */
   pointerScope?: 'canvas' | 'window';
+  /** Crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7), drawn into the woven pixels. Default `'both'`. */
+  soften?: CursorSoftenOption;
 }
 
 export interface CameraViewOptions {

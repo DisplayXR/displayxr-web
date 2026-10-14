@@ -60,7 +60,8 @@ const makeViews = () => [kooima(headX - 0.032 * s, 0, 0.6 * s), kooima(headX + 0
 let views = makeViews();
 const layer = { getViewport: (v) => ({ x: views.indexOf(v) * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height }) };
 const anchor = new URLSearchParams(location.search).get('anchor') || undefined;
-const cursorOpt = anchor ? { anchor } : 'depth';
+const soften = new URLSearchParams(location.search).get('soften') || undefined;
+const cursorOpt = anchor || soften ? { ...(anchor ? { anchor } : {}), ...(soften ? { soften } : {}) } : 'depth';
 
 let onFrame = null;
 const wall = {
@@ -137,11 +138,12 @@ const spriteLines = () => {
     const mi = node && (ui.meshInstances || []).find((m) => m.node === node);
     if (!mi || !mi.visible) return null;
     const p = node.getPosition();
-    return { pts: [p.x, p.y, p.z], depthTest: mi.material.depthTest };
+    const desc = mi.material.shaderDesc || mi.material._shaderDesc || {};
+    return { pts: [p.x, p.y, p.z], depthTest: mi.material.depthTest, soft: desc.uniqueName === 'inline3dDepthCursorSoft' };
   }
   if (!sprite || !sprite.visible) return null;
   const e = sprite.matrix.elements;
-  return { pts: [e[12], e[13], e[14]], depthTest: sprite.material.depthTest };
+  return { pts: [e[12], e[13], e[14]], depthTest: sprite.material.depthTest, soft: !!(sprite.material.uniforms && sprite.material.uniforms.inline3dCursorSoft) };
 };
 const worldViews = () => {
   if (!rig) return views.map((v) => ({ projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix }));
@@ -196,7 +198,7 @@ async function measure(u, v, settle = SETTLE) {
     const c = [0, 1, 2].map((i) => { let x = 0; for (let k = 0; k < n; k++) x += P[k * 3 + i]; return x / n; });
     cursor = cursorPointDisparity(g, c);
   }
-  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, cssCursor: canvas.style.cursor };
+  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, soft: lines?.soft ?? null, cssCursor: canvas.style.cursor };
 }
 // Frames to settle: the picker's readback is async and, under headless virtual time, slow.
 const SETTLE = Number(new URLSearchParams(location.search).get('settle') || 240);
@@ -241,8 +243,11 @@ const depthOk = kind === 'splat'
   : over.cursorDisparity !== null && over.cubeFrontDisparity !== null && over.cubeFrontDisparity < 0 &&
     over.cursorDisparity < over.cubeFrontDisparity && Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.003 &&
     offOk && over.cssCursor === 'none' && over.depthTest === false;
-const pass = headOk && depthOk;
-log({ engine, kind, anchor: anchor || 'hybrid', margin, pass, headMove, over, off, afterLeave: left, frames });
+// Crosstalk softening (ADR-046 Amendment 2 §B.7): the lifted arrow draws with the soft material
+// by default, the crisp mesh with soften 'off'.
+const softOk = over.soft === (soften !== 'off');
+const pass = headOk && depthOk && softOk;
+log({ engine, kind, anchor: anchor || 'hybrid', soften: soften || 'both', margin, pass, headMove, softOk, over, off, afterLeave: left, frames });
 </script>
 </body>
 </html>

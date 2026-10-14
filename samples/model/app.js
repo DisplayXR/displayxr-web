@@ -331,8 +331,8 @@ Promise.allSettled([a.ready, mixed]).then(applyFit);
 Object.assign(window, { __model: a, __mixed: b, __mixedEngine: mixedEngine, __THREE: THREE }); // debug hooks, as in other samples
 
 /**
- * ?cursor=depth plus optional &anchor= &margin= &scope= &cursorDebug → addModel/addSplat's `cursor`
- * option. &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
+ * ?cursor=depth plus optional &anchor= &margin= &scope= &soften= &cursorDebug → addModel/addSplat's `cursor`
+ * option. &soften=both|off|alpha|blur A/Bs the crosstalk softening. &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
  * &cursorDebug=both also keeps the OS cursor visible beside the sprite, to film the lag between them.
  */
 function sampleCursorOptions(p) {
@@ -341,5 +341,6 @@ function sampleCursorOptions(p) {
   if (p.get('margin')) o.margin = Number(p.get('margin'));
   if (p.get('scope')) o.pointerScope = p.get('scope');
   if (p.has('cursorDebug')) o.debug = p.get('cursorDebug') === 'both' ? 'both' : true;
+  if (p.get('soften')) o.soften = p.get('soften'); // both | off | alpha | blur (crosstalk softening A/B)
   return Object.keys(o).length ? o : 'depth';
 }

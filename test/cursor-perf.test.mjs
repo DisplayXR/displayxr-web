@@ -32,6 +32,10 @@ function stubTHREE() {
     BufferGeometry: Geom,
     Float32BufferAttribute: class { constructor(a, n) { this.array = a; this.itemSize = n; } },
     MeshBasicMaterial: Mat,
+    ShaderMaterial: Mat, // the softened arrow (ADR-046 Amendment 2 §B.7)
+    ShaderChunk: { colorspace_fragment: '' },
+    Vector3: class { constructor(...a) { this.v = a; } set(...a) { this.v = a; return this; } },
+    Vector4: class { constructor(...a) { this.v = a; } set(...a) { this.v = a; return this; } },
     DoubleSide: 2,
     Mesh: class {
       constructor(geometry, material) {

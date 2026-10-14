@@ -59,7 +59,11 @@ import {
   cursorArrowFootprint,
   cursorDefaultHeight,
   cursorModelMatrix,
+  cursorPlacementSoften,
+  cursorSoftArrowBox,
+  cursorSoftArrowGLSL,
   cursorViewRay,
+  resolveCursorSoften,
   CURSOR_DEFAULT_TUNING,
   CURSOR_OUTLINE_COLOR,
 } from './inline3d-cursor-depth.js';
@@ -497,6 +501,11 @@ export class DepthCursor {
    *        content) while it is still; 'screen' never parallaxes; 'world' always does.
    * @param {'canvas'|'window'} [opts.pointerScope='canvas']  'window' keeps the cursor over DOM
    *        layered on the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
+   * @param {'both'|'off'|'alpha'|'blur'|object} [opts.soften='both']  crosstalk softening of the
+   *        LIFTED arrow (runtime ADR-046 Amendment 2 §B.7): an edge blur of 0.1 × its ghost offset
+   *        (capped at 6% of its height, 8 px) and an opacity easing to 0.5 over 0.03 baselines of
+   *        lift, both zero on the glass. A preset, or `{ mode, blurK, blurMaxPx, blurMaxFrac,
+   *        alphaMin, fullD }` over the defaults. Drawn in the arrow's own shader.
    * @param {object} [opts.viewSpace]  Object3D whose world matrix maps view transforms to world.
    * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 10
    *        points), synchronously. N > 0 = amortised: N rays a frame, cycling the footprint
@@ -510,7 +519,7 @@ export class DepthCursor {
    */
   constructor(
     THREE,
-    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false },
+    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false, soften },
   ) {
     this._THREE = THREE;
     this.canvas = canvas;
@@ -540,9 +549,15 @@ export class DepthCursor {
     if (this.debugStats) this.debugStats.source = this.pointer.source;
     /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
     this.placement = { active: false };
+    /** Crosstalk softening parameters (resolveCursorSoften). */
+    this.soften = resolveCursorSoften(soften, '@displayxr/inline3d/three DepthCursor');
+    /** The last frame's softening (diagnostics): `{blurPx, alpha, ghostPx, spritePx, radius, aa, soft}`. */
+    this.softening = null;
+    this._soft = null; // { geometry, material } — built on the first softened frame
 
     // The arrow: a dark outline polygon, the fill inset over it; tip at the origin (the hotspot).
     const fill = [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
+    this._fill = fill;
     const m = cursorArrowMesh(fill, CURSOR_OUTLINE_COLOR);
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
@@ -561,6 +576,7 @@ export class DepthCursor {
     this.object.frustumCulled = false;
     this.object.renderOrder = 1e9; // last: never occluded, it is in front by construction
     this.object.visible = false;
+    this._crisp = { geometry: geom, material: mat };
   }
 
   /** Set the pointer position directly (canvas-normalised, v down), or null — for scripted input. */
@@ -598,9 +614,10 @@ export class DepthCursor {
     const vs = this._worldViews(views);
     const uv = this.pointer.uv;
     let p = { active: false };
+    let h = 0;
     if (uv && vs.length >= 2) {
       const [u, v] = uv;
-      const h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
+      h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
       const nearestPoint = this._footprintHit(vs, u, v, h);
       p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: h, canvasPx: this.pointer.panelPx() }, nowMs / 1000);
     }
@@ -609,17 +626,83 @@ export class DepthCursor {
     if (p.active) {
       this.object.matrix.fromArray(cursorModelMatrix(p));
       this.object.matrixWorldNeedsUpdate = true;
+      const [pw, ph] = this.pointer.panelSize();
+      const s = (this.softening = cursorPlacementSoften(p, vs, pw, ph, h, this.soften));
+      this._useSoft(s);
+    } else {
+      this.softening = null;
     }
     this.pointer.hideCss(!!p.active);
     return p;
+  }
+
+  // Crisp frames draw the arrow mesh exactly as without softening; softened ones swap in a quad
+  // whose shader evaluates the arrow at the runtime's 13 blur taps, times the opacity.
+  _useSoft(s) {
+    if (!s.soft) {
+      this.object.geometry = this._crisp.geometry;
+      this.object.material = this._crisp.material;
+      return;
+    }
+    const soft = this._soft || (this._soft = this._makeSoft());
+    const u = soft.material.uniforms;
+    const [x0, y0, x1, y1] = cursorSoftArrowBox(s.radius, s.aa);
+    u.inline3dCursorBox.value.set(x0, y0, x1, y1);
+    u.inline3dCursorSoft.value.set(s.radius, s.alpha, s.aa, 0);
+    this.object.geometry = soft.geometry;
+    this.object.material = soft.material;
+  }
+
+  _makeSoft() {
+    const THREE = this._THREE;
+    const geometry = new THREE.BufferGeometry();
+    // A unit quad; the vertex shader spreads it over the padded arrow box (arrow units, y down).
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], 3));
+    // three >= 0.154 names the output-transform chunk colorspace_fragment; 0.150-0.153 encodings_fragment.
+    const chunk = THREE.ShaderChunk && THREE.ShaderChunk.colorspace_fragment !== undefined ? 'colorspace_fragment' : 'encodings_fragment';
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        inline3dCursorBox: { value: new THREE.Vector4() },
+        inline3dCursorSoft: { value: new THREE.Vector4(0, 1, 0, 0) },
+        inline3dCursorFill: { value: new THREE.Vector3(this._fill[0], this._fill[1], this._fill[2]) },
+        inline3dCursorOutline: { value: new THREE.Vector3(CURSOR_OUTLINE_COLOR[0], CURSOR_OUTLINE_COLOR[1], CURSOR_OUTLINE_COLOR[2]) },
+      },
+      vertexShader: `
+        uniform vec4 inline3dCursorBox;
+        varying vec2 vArrow;
+        void main() {
+          vArrow = vec2(mix(inline3dCursorBox.x, inline3dCursorBox.z, position.x), mix(inline3dCursorBox.y, inline3dCursorBox.w, position.y));
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(vArrow.x, -vArrow.y, 0.0, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec4 inline3dCursorSoft; // radius, opacity, aa (arrow units)
+        uniform vec3 inline3dCursorFill;
+        uniform vec3 inline3dCursorOutline;
+        varying vec2 vArrow;
+        ${cursorSoftArrowGLSL()}
+        void main() {
+          vec4 c = inline3dSoftArrow(vArrow, inline3dCursorSoft.x, inline3dCursorSoft.z, inline3dCursorFill, inline3dCursorOutline);
+          gl_FragColor = vec4(c.rgb, c.a * inline3dCursorSoft.y);
+          #include <${chunk}>
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    return { geometry, material };
   }
 
   /** Remove listeners, give the CSS cursor back, free the sprite's GPU resources. */
   dispose() {
     this.pointer.dispose();
     this.object.visible = false;
-    this.object.geometry.dispose();
-    this.object.material.dispose();
+    for (const r of [this._crisp, this._soft]) {
+      if (!r) continue;
+      r.geometry.dispose();
+      r.material.dispose();
+    }
   }
 
   // Nearest content point under the footprint, from the two outer views (or, amortised, from

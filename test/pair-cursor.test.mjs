@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
-import { pairNearestSupported, consistentMatch, pairFootprintDisparity, pairCursorTarget, pairCursorScale, pairPxPerBaseline, drawPairArrow, PairCursor, PAIR_CURSOR_CSS_PX_M, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
+import { pairNearestSupported, consistentMatch, pairFootprintDisparity, pairCursorTarget, pairCursorScale, pairPxPerBaseline, drawPairArrow, drawPairArrowSoft, PairCursor, PAIR_CURSOR_CSS_PX_M, PAIR_CURSOR_HEIGHT, PAIR_CURSOR_ARROW } from '../js/camera/pair-cursor.js';
 import { CURSOR_DEFAULT_TUNING as T, CURSOR_ARROW, cursorTarget, cursorShouldDraw } from '../js/inline3d-cursor-depth.js';
 import { DISPLAY_METRICS_DEFAULTS } from '../js/inline3d-display-metrics.js';
 import { resolvePairCursorOption } from '../js/inline3d-cursor-option.js';
@@ -320,4 +320,93 @@ test('support: the nearest value counts only when a second sample agrees', () =>
   assert.equal(pairNearestSupported([40, 39, 5], 2), 40);
   assert.equal(pairNearestSupported([40], 2), null, 'one sample alone is never enough');
   assert.equal(pairNearestSupported([40, 20, 5], 2), null, 'nothing corroborated → the glass');
+});
+
+// ── Crosstalk softening (runtime ADR-046 Amendment 2 §B.7) on the pair ─────────────────────
+
+/** A fake OffscreenCanvas + ImageData, so the softened raster path runs under node. */
+function withFakeOffscreen(fn) {
+  const puts = [];
+  const savedOC = globalThis.OffscreenCanvas, savedID = globalThis.ImageData;
+  globalThis.ImageData = class { constructor(data, w, h) { Object.assign(this, { data, width: w, height: h }); } };
+  globalThis.OffscreenCanvas = class {
+    constructor(w, h) { this.width = w; this.height = h; }
+    getContext() { const canvas = this; return { canvas, putImageData: (img, x, y) => puts.push({ img, x, y }) }; }
+  };
+  try {
+    return fn(puts);
+  } finally {
+    globalThis.OffscreenCanvas = savedOC;
+    globalThis.ImageData = savedID;
+  }
+}
+function drawingCtx() {
+  const g = recordingCtx();
+  g.clips = [];
+  g.draws = [];
+  g.rect = (x, y, w, h) => g.clips.push([x, y, w, h]);
+  g.drawImage = (src, sx, sy, sw, sh, dx, dy, dw, dh) => g.draws.push({ sw, sh, dx, dy, dw, dh });
+  return g;
+}
+
+test('pair arrow, softened: one raster per eye, clipped to its half, tip still on the hotspot ± d/2', () => {
+  withFakeOffscreen((puts) => {
+    const g = drawingCtx();
+    assert.equal(drawPairArrowSoft(g, 400, 300, 0.25, 0.5, 12, 19, 0.06, 0.5), true);
+    assert.equal(g.draws.length, 2);
+    assert.deepEqual(g.clips, [[0, 0, 400, 300], [400, 0, 400, 300]], 'each copy clipped to its own half');
+    assert.equal(g.ops.length, 0, 'no crisp polygons');
+    // The padded raster starts the pad (radius + one px AA) up-left of each tip: 106 and 494.
+    const pad = (0.06 + 1 / 19) * 19;
+    assert.equal(g.draws[0].dx, Math.floor(106 - pad));
+    assert.equal(g.draws[1].dx, Math.floor(494 - pad));
+    assert.equal(g.draws[0].dy, Math.floor(150 - pad));
+    // The opacity is in the pixels (straight alpha), not in any canvas or CSS state.
+    const a = puts[0].img.data;
+    let maxA = 0;
+    for (let i = 3; i < a.length; i += 4) maxA = Math.max(maxA, a[i]);
+    assert.equal(maxA, 128);
+    assert.equal(g.globalAlpha, undefined);
+    assert.equal(g.filter, undefined);
+  });
+  // No canvas to rasterise into: false, so the caller draws the crisp arrow.
+  assert.equal(drawPairArrowSoft(drawingCtx(), 400, 300, 0.25, 0.5, 12, 19, 0.06, 0.5), false);
+});
+
+test('PairCursor: softened over content that comes out (ghost = its disparity); soften off = the crisp arrow, unchanged', () => {
+  withFakeOffscreen(() => {
+    const geo = { rL: full, rR: full, outW: E, outH: H };
+    const near = sbs(E, H, () => 12);
+    const run = (opt) => {
+      const canvas = doc.createElement('canvas');
+      canvas.style = { cursor: 'pointer' };
+      canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 384, height: 216 });
+      const cur = new PairCursor(canvas, { pointerScope: 'canvas', ...opt });
+      cur.pointer.set(0.5, 0.5);
+      const g = drawingCtx();
+      let p;
+      for (let t = 1; t < 1.5; t += 0.02) p = cur.draw(g, near, geo, t);
+      cur.dispose();
+      return { p, g };
+    };
+    const soft = run({});
+    assert.equal(soft.p.drawn, true);
+    assert.equal(soft.p.soften.soft, true);
+    const k = 384 / E; // panel px per output px (DPR 1)
+    assert.ok(Math.abs(soft.p.soften.ghostPx - soft.p.disparityPx * k) < 1e-9, 'the ghost offset of a pair is its disparity, in panel px');
+    assert.ok(Math.abs(soft.p.soften.spritePx - 19) < 1e-9, 'the OS arrow: 19 panel px at DPR 1');
+    assert.ok(Math.abs(soft.p.soften.blurPx - Math.min(0.1 * soft.p.soften.ghostPx, 0.06 * 19)) < 1e-9);
+    assert.ok(soft.p.soften.alpha < 1 && soft.p.soften.alpha >= 0.5);
+    assert.ok(soft.g.draws.length >= 2 && soft.g.ops.length === 0, 'drawn as the soft raster');
+
+    const crisp = run({ soften: 'off' });
+    assert.equal(crisp.p.drawn, true);
+    assert.equal(crisp.p.soften.soft, false);
+    assert.equal(crisp.g.draws.length, 0);
+    // Exactly drawPairArrow's polygons for the same frame.
+    const ref = recordingCtx();
+    drawPairArrow(ref, E, H, 0.5, 0.5, crisp.p.disparityPx, (19 / 216) * H);
+    assert.deepEqual(crisp.g.ops.slice(-4), ref.ops);
+  });
+  assert.throws(() => new PairCursor(doc.createElement('canvas'), { soften: 'nope' }), /cursor\.soften/);
 });
