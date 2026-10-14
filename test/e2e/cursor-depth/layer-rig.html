@@ -30,7 +30,7 @@
 <script type="module">
 import * as pc from 'playcanvas';
 import { attachPlayCanvasSplat } from '../../../js/inline3d-splat-playcanvas.js';
-import { solveCursorGeometry, cursorPointDisparity, cursorViewRay, CURSOR_DEFAULT_TUNING, CURSOR_DEPTH_PICK_GLSL } from '../../../js/inline3d-cursor-depth.js';
+import { solveCursorGeometry, cursorPointDisparity, cursorViewRay, cursorArrowFootprint, cursorDefaultHeight, CURSOR_DEFAULT_TUNING, CURSOR_DEPTH_PICK_GLSL } from '../../../js/inline3d-cursor-depth.js';
 
 const out = document.getElementById('out');
 const canvas = document.getElementById('c');
@@ -170,12 +170,18 @@ const mat = new pc.ShaderMaterial({
     }`,
 });
 mat.update();
-const POP = 0.04, BOX_S = 0.12; // out of the glass (front ~0.2 baselines: inside the clamp), off the butterfly
+const POP = 0.12, BOX_S = 0.12; // out of the glass (front ~0.4 baselines: inside the clamp, far enough off the window plane that the shear matters), off the butterfly
 const BOX_C = at(-0.28, 0.22, POP);
 const node = new pc.GraphNode('e2e-stage-box');
 rigNode.addChild(node);
 node.setLocalPosition(...BOX_C);
-node.setLocalRotation(q[0], q[1], q[2], q[3]);
+// Turned (35° about up, 25° about right): a face that is NOT parallel to the window, so the pick
+// depth through the round views differs from the photo views' (a face parallel to the window maps
+// to itself under the window shear and would hide a wrong projection).
+const qmul = (a, b) => [a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0], a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+const QB = qmul(q, qmul([0, Math.sin(0.305), 0, Math.cos(0.305)], [Math.sin(0.218), 0, 0, Math.cos(0.218)]));
+const AX = [rot(QB, [1, 0, 0]), rot(QB, [0, 1, 0]), rot(QB, [0, 0, 1])];
+node.setLocalRotation(QB[0], QB[1], QB[2], QB[3]);
 node.setLocalScale(BOX_S, BOX_S, BOX_S);
 const mi = new pc.MeshInstance(pc.Mesh.fromGeometry(app.graphicsDevice, new pc.BoxGeometry()), mat, node);
 mi.cull = false;
@@ -187,20 +193,36 @@ const state = handle.layerRigState ? handle.layerRigState() : null;
 // ── the oracle: where the panel shows the box front under the pointer ──
 const R = () => rigNode.getWorldTransform().data;
 const round = EYES.map((e) => displayView(e, roundRig(rig)));
-const c0 = ndc(round[0], at(-0.28, 0.22, POP + BOX_S / 2)); // the box front's centre, round eye 0
+const c0 = ndc(round[0], BOX_C); // the pointer over the box's centre, as round eye 0 shows it
 const u = (c0[0] + 1) / 2, v = (1 - c0[1]) / 2;
-function boxFront() {
-  const ray = cursorViewRay(asView(round[0]), u, v); // rig space
-  const loc = (X) => { const d = [X[0] - BOX_C[0], X[1] - BOX_C[1], X[2] - BOX_C[2]]; return [right, up, toward].map((ax) => (ax[0] * d[0] + ax[1] * d[1] + ax[2] * d[2]) / BOX_S); };
+// The cursor hit-tests the arrow's FOOTPRINT (a turned face is nearer on one side), sampled in a
+// 160-px-wide pick buffer: each sample's depth is the face's at its pick PIXEL's centre, laid along
+// the sample's own ray — mirrored here, through the oracle's views (not the SDK's shear).
+const PICK_W = 160, PICK_H = Math.round(PICK_W / (300 / 400)); // the cursor's pick buffer: 160 wide, one eye's aspect
+function boxHit(ray) {
+  const loc = (X) => { const d = [X[0] - BOX_C[0], X[1] - BOX_C[1], X[2] - BOX_C[2]]; return AX.map((ax) => (ax[0] * d[0] + ax[1] * d[1] + ax[2] * d[2]) / BOX_S); };
   const o = loc(ray.origin), e = loc(ray.origin.map((x, i) => x + ray.direction[i])), d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]];
   let t0 = -Infinity, t1 = Infinity;
   for (let i = 0; i < 3; i++) { let a = (-0.5 - o[i]) / d[i], b = (0.5 - o[i]) / d[i]; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); }
-  if (!(t0 <= t1) || t1 < 0) return null;
-  const X = ray.origin.map((x, i) => x + t0 * ray.direction[i]); // rig space, the stage's own geometry
-  // Round pixels of X in both eyes → the PHOTO rays through them → the point the photo views put there.
+  return !(t0 <= t1) || t1 < 0 ? null : t0; // the round eye's view distance (direction has z = −1 in eye space)
+}
+function boxFront(g) {
   const photo = located();
-  const rays = [0, 1].map((i) => { const p = ndc(round[i], X); return cursorViewRay(asView(photo[i]), (p[0] + 1) / 2, (1 - p[1]) / 2); });
-  return ap(R(), triangulate(rays[0], rays[1]));
+  const H = PICK_H;
+  let best = null;
+  for (const [su, sv] of cursorArrowFootprint(u, v, cursorDefaultHeight(400), 600 / 400)) {
+    if (!(su >= 0 && su <= 1 && sv >= 0 && sv <= 1)) continue;
+    const pu = (Math.min(PICK_W - 1, Math.floor(su * PICK_W)) + 0.5) / PICK_W, pv = (Math.min(H - 1, Math.floor(sv * H)) + 0.5) / H;
+    const dist = boxHit(cursorViewRay(asView(round[0]), pu, pv));
+    if (dist === null) continue;
+    const ray = cursorViewRay(asView(round[0]), su, sv);
+    const X = ray.origin.map((x, i) => x + dist * ray.direction[i]); // rig space
+    // Round pixels of X in both eyes → the PHOTO rays through them → the point the photo views put there.
+    const rays = [0, 1].map((i) => { const p = ndc(round[i], X); return cursorViewRay(asView(photo[i]), (p[0] + 1) / 2, (1 - p[1]) / 2); });
+    const dsp = cursorPointDisparity(g, ap(R(), triangulate(rays[0], rays[1])));
+    if (best === null || dsp < best) best = dsp;
+  }
+  return best;
 }
 const worldViews = () => located().map((v) => ({ projectionMatrix: v.proj, transformMatrix: mul(R(), v.pose) }));
 const spriteTip = () => {
@@ -222,8 +244,7 @@ async function measure(uu, vv, settle) {
   return { u: uu, v: vv, cursorDisparity: tip ? cursorPointDisparity(g, tip.pts) : null, depthTest: tip?.depthTest ?? null, soft: tip?.soft ?? null, cssCursor: canvas.style.cursor, g };
 }
 const over = await measure(u, v, SETTLE);
-const front = boxFront();
-over.cubeFrontDisparity = front ? cursorPointDisparity(over.g, front) : null;
+over.cubeFrontDisparity = boxFront(over.g);
 delete over.g;
 const margin = CURSOR_DEFAULT_TUNING.margin;
 const pass = !!state?.engaged && over.cursorDisparity !== null && over.cubeFrontDisparity !== null && over.cubeFrontDisparity < -0.01 &&
