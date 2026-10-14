@@ -241,7 +241,7 @@ async function measure(uu, vv, settle) {
   const wv = worldViews();
   const g = solveCursorGeometry(wv[0], wv[1], uu, vv);
   const tip = spriteTip();
-  return { u: uu, v: vv, cursorDisparity: tip ? cursorPointDisparity(g, tip.pts) : null, depthTest: tip?.depthTest ?? null, soft: tip?.soft ?? null, cssCursor: canvas.style.cursor, g };
+  return { u: uu, v: vv, cursorDisparity: tip ? cursorPointDisparity(g, tip.pts) : null, depthTest: tip?.depthTest ?? null, soft: tip?.soft ?? null, cssCursor: getComputedStyle(canvas).cursor, g };
 }
 const over = await measure(u, v, SETTLE);
 over.cubeFrontDisparity = boxFront(over.g);
