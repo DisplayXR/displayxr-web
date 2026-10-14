@@ -190,7 +190,9 @@ test('PairCursor: the OS arrow on the plane; the drawn arrow only over content t
   const canvas = doc.createElement('canvas');
   canvas.style = { cursor: 'pointer' };
   canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 384, height: 216 });
-  const cur = new PairCursor(canvas, { pointerScope: 'canvas' });
+  // shape 'arrow': this test pins the arrow's geometry (the page's `pointer` would draw the hand).
+  const cur = new PairCursor(canvas, { pointerScope: 'canvas', shape: 'arrow' });
+  const hidden = () => canvas.hasAttribute('data-inline3d-cursor-hidden');
   const geo = { rL: full, rR: full, outW: E, outH: H };
   const near = sbs(E, H, () => 12);
   const behind = sbs(E, H, () => -6, 5);
@@ -198,19 +200,21 @@ test('PairCursor: the OS arrow on the plane; the drawn arrow only over content t
   assert.equal(cur.hovering, false);
   assert.equal(cur.draw(g, near, geo, 1), null, 'no pointer → nothing drawn');
   assert.equal(g.ops.length, 0);
-  assert.equal(canvas.style.cursor, 'pointer', 'the CSS cursor is untouched while not drawing');
+  assert.equal(hidden(), false, 'the CSS cursor is untouched while not drawing');
   cur.pointer.set(0.5, 0.5);
   // Over content behind the glass: nothing drawn, the OS arrow stays.
   const pb = cur.draw(g, behind, geo, 1);
   assert.equal(pb.drawn, false);
   assert.equal(pb.disparityPx, 0);
   assert.equal(g.ops.length, 0, 'nothing drawn into the pair');
-  assert.equal(canvas.style.cursor, 'pointer', 'the OS arrow is the cursor on the plane');
+  assert.equal(hidden(), false, 'the OS arrow is the cursor on the plane');
   // Content comes out: the drawn arrow replaces it, in front of that content, within a frame or two.
   const p0 = cur.draw(g, near, geo, 1.1);
   const p0b = cur.draw(g, near, geo, 1.2);
   assert.equal(p0b.drawn, true);
-  assert.equal(canvas.style.cursor, 'none', 'the drawn arrow replaces the OS arrow');
+  assert.equal(hidden(), true, 'the drawn arrow replaces the OS arrow');
+  assert.equal(canvas.style.cursor, 'pointer', "the page's inline cursor is never written");
+  assert.equal(p0b.shape, 'arrow');
   const k = pairPxPerBaseline(E, 384, null);
   assert.ok(Math.abs(p0b.pxPerBaseline - k) < 1e-9, 'px ↔ baselines through the tile scale (CSS reference px before displayMetrics answers)');
   assert.ok(Math.abs(p0b.disparityPx - pairCursorTarget(12, k)) < 0.6, `caught up within ~100 ms (${p0.disparityPx} → ${p0b.disparityPx})`);
@@ -233,10 +237,11 @@ test('PairCursor: the OS arrow on the plane; the drawn arrow only over content t
   }
   assert.ok(belowButOut > 0, 'still slightly in front, but under the threshold: not drawn');
   assert.equal(pn.drawn, false, 'settled: back to the OS arrow on the plane');
-  assert.equal(canvas.style.cursor, 'pointer');
+  assert.equal(hidden(), false);
   cur.pointer.set(null);
   assert.equal(cur.draw(g, near, geo, 3.1), null);
-  assert.equal(canvas.style.cursor, 'pointer', 'pointer gone → the CSS cursor as it was');
+  assert.equal(hidden(), false, 'pointer gone → the CSS cursor as it was');
+  assert.equal(canvas.style.cursor, 'pointer');
   cur.dispose();
 });
 

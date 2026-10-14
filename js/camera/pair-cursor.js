@@ -29,13 +29,16 @@
 
 import {
   CursorPointer,
+  CursorShapeSelector,
   cursorArrowFootprint,
-  cursorArrowInset,
+  cursorShapePolys,
+  cursorShapeRaster,
+  cursorSoftenPixels,
+  drawCursorShape2D,
   cursorDefaultHeight,
   cursorFilterStep,
   cursorShouldDraw,
   cursorSoften,
-  cursorSoftArrowRaster,
   cursorTarget,
   resolveCursorSoften,
   CURSOR_ARROW,
@@ -218,42 +221,38 @@ export function pairCursorTarget(contentPx, pxPerBaseline, tuning = CURSOR_DEFAU
   return -cursorTarget(tuning, true, -contentPx / pxPerBaseline) * pxPerBaseline || 0;
 }
 
-/** The arrow's fill, inset by one output px (at least 1/19 of its height), cached per size. */
-const _fillBySize = new Map();
-function arrowFill(sizePx) {
+/** The shape's outline + fill inset by one output px (at least 1/19 of its height), cached per size. */
+const _polysBySize = new Map();
+function shapePolys(name, sizePx) {
   const d = sizePx > 0 ? Math.max(1 / 19, 1 / sizePx) : 1 / 19;
-  const key = Math.round(d * 1e4);
-  let f = _fillBySize.get(key);
+  const key = `${name}:${Math.round(d * 1e4)}`;
+  let f = _polysBySize.get(key);
   if (!f) {
-    if (_fillBySize.size > 32) _fillBySize.clear();
-    _fillBySize.set(key, (f = cursorArrowInset(d)));
+    if (_polysBySize.size > 64) _polysBySize.clear();
+    _polysBySize.set(key, (f = cursorShapePolys(name, d)));
   }
   return f;
 }
 
 /**
- * Draw the arrow into both halves of a woven buffer: the left eye's copy `disparityPx / 2` right of
- * the pointer, the right eye's as far left (crossed = in front). The shared arrow: its dark outline
- * polygon, then the white fill inset by a px; the tip on the hotspot. Each copy is clipped to its
- * own half, so an arrow at the edge never bleeds into the other eye.
- * @param {number} sizePx  arrow height in output px
+ * Draw the cursor into both halves of a woven buffer: the left eye's copy `disparityPx / 2` right of
+ * the pointer, the right eye's as far left (crossed = in front). The shared sprite (the arrow by
+ * default, or `shape`): its dark outline, then the white fill inset by a px; the hotspot on the
+ * pointer. Each copy is clipped to its own half, so a sprite at the edge never bleeds into the
+ * other eye.
+ * @param {number} sizePx  sprite height (one arrow height) in output px
+ * @param {string} [shape='arrow']  a CURSOR_SHAPES name
  */
-export function drawPairArrow(g, outW, outH, u, v, disparityPx, sizePx) {
+export function drawPairArrow(g, outW, outH, u, v, disparityPx, sizePx, shape = 'arrow') {
   const cy = v * outH;
-  const fill = arrowFill(sizePx);
+  const polys = shapePolys(shape, sizePx);
   for (const eye of [0, 1]) {
     const cx = eye * outW + u * outW + (eye === 0 ? disparityPx / 2 : -disparityPx / 2);
     g.save();
     g.beginPath();
     g.rect(eye * outW, 0, outW, outH);
     g.clip();
-    for (const [poly, style] of [[CURSOR_ARROW, '#000'], [fill, '#fff']]) {
-      g.beginPath();
-      poly.forEach(([x, y], k) => (k ? g.lineTo : g.moveTo).call(g, cx + x * sizePx, cy + y * sizePx));
-      g.closePath();
-      g.fillStyle = style;
-      g.fill();
-    }
+    drawCursorShape2D(g, shape, cx, cy, sizePx, polys);
     g.restore();
   }
 }
@@ -282,13 +281,12 @@ function scratchCanvas(w, h) {
  * arrow with `radius` (arrow heights) and `alpha` (opacity). Returns false (nothing drawn) when no
  * scratch canvas is available, so the caller can fall back to the crisp arrow.
  */
-export function drawPairArrowSoft(g, outW, outH, u, v, disparityPx, sizePx, radius, alpha) {
+export function drawPairArrowSoft(g, outW, outH, u, v, disparityPx, sizePx, radius, alpha, shape = 'arrow') {
   const cy = v * outH;
-  const fill = arrowFill(sizePx);
-  const polys = [CURSOR_ARROW, fill];
+  const polys = shapePolys(shape, sizePx);
   const rasters = [0, 1].map((eye) => {
     const cx = eye * outW + u * outW + (eye === 0 ? disparityPx / 2 : -disparityPx / 2);
-    return cursorSoftArrowRaster(cx, cy, sizePx, radius, alpha, [1, 1, 1, 1], [0, 0, 0, 1], polys);
+    return cursorShapeRaster(shape, cx, cy, sizePx, radius, alpha, [1, 1, 1, 1], [0, 0, 0, 1], polys);
   });
   const sg = scratchCanvas(Math.max(rasters[0].width, rasters[1].width), Math.max(rasters[0].height, rasters[1].height));
   if (!sg || typeof sg.putImageData !== 'function' || typeof ImageData !== 'function') return false;
@@ -306,14 +304,44 @@ export function drawPairArrowSoft(g, outW, outH, u, v, disparityPx, sizePx, radi
 }
 
 /**
+ * A url() image cursor into both halves: at its CSS size (one sprite unit = `sizePx` output px per
+ * 19 CSS px), its hotspot on the pointer, softened in the PIXELS (cursorSoftenPixels: `radiusPx`
+ * blur, `alpha` opacity) — never a CSS filter or opacity. Returns false when no scratch canvas.
+ */
+export function drawPairImage(g, outW, outH, u, v, disparityPx, sizePx, sprite, radiusPx, alpha) {
+  const k = sizePx / 19; // output px per CSS px
+  const w = Math.max(1, Math.round(sprite.width * k)), h = Math.max(1, Math.round(sprite.height * k));
+  const sg = scratchCanvas(w + 2 * (Math.ceil(radiusPx) + 2), h + 2 * (Math.ceil(radiusPx) + 2));
+  if (!sg || typeof sg.getImageData !== 'function' || typeof ImageData !== 'function') return false;
+  sg.clearRect(0, 0, sg.canvas.width, sg.canvas.height);
+  sg.drawImage(sprite.entry.image, 0, 0, w, h);
+  const soft = cursorSoftenPixels(sg.getImageData(0, 0, w, h).data, w, h, radiusPx, alpha);
+  sg.clearRect(0, 0, sg.canvas.width, sg.canvas.height);
+  sg.putImageData(new ImageData(soft.data, soft.width, soft.height), 0, 0);
+  const cy = v * outH - sprite.hotspot[1] * k - soft.pad;
+  for (const eye of [0, 1]) {
+    const cx = eye * outW + u * outW + (eye === 0 ? disparityPx / 2 : -disparityPx / 2) - sprite.hotspot[0] * k - soft.pad;
+    g.save();
+    g.beginPath();
+    g.rect(eye * outW, 0, outW, outH);
+    g.clip();
+    g.drawImage(sg.canvas, 0, 0, soft.width, soft.height, Math.round(cx), Math.round(cy), soft.width, soft.height);
+    g.restore();
+  }
+  return true;
+}
+
+/**
  * One cursor over one woven pair. The owner calls `draw()` after painting the pair each frame
  * (`idle()` on any frame it does not paint a woven pair), and hands it the latest grayscale copy
  * of the source when it has one; `hovering` says when that copy is worth grabbing more often.
  */
 export class PairCursor {
   /** @param {HTMLElement} canvas  the tile — the pointer counts over its box */
-  constructor(canvas, { height, pointerScope = 'window', soften } = {}) {
+  constructor(canvas, { height, pointerScope = 'window', soften, shape = 'auto', shapeFor = null } = {}) {
     this.pointer = new CursorPointer(canvas, { scope: pointerScope });
+    /** Which sprite (CSS mirror / fixed / shapeFor); `.current` = the one drawn last. */
+    this.shapes = new CursorShapeSelector(this.pointer, { shape, shapeFor });
     /** Crosstalk softening parameters (resolveCursorSoften). */
     this.soften = resolveCursorSoften(soften, '@displayxr/inline3d pair cursor');
     // A fraction of the tile height when given; by default the OS arrow's size (CSS px → tile).
@@ -365,6 +393,7 @@ export class PairCursor {
     const drawn = cursorShouldDraw(d, pxPerBaseline);
     const disparity = -d * pxPerBaseline; // output px, + = in front
     let soften = null;
+    let shape = null;
     if (drawn) {
       // Softening in PANEL px: one output px of an eye spans (tile CSS width × dpr) / outW of them.
       // The ghost offset of a pair IS its disparity (the two halves are the two views).
@@ -373,13 +402,17 @@ export class PairCursor {
       const k = r && r.width > 0 ? (r.width * dpr) / geo.outW : 1;
       const spritePx = r && r.height > 0 ? hf * r.height * dpr : sizePx;
       const s = cursorSoften(d, disparity * k, spritePx, this.soften);
+      const sprite = this.shapes.pick({ u, v, point: null }, nowSec * 1000);
+      shape = this.shapes.current;
       soften = { blurPx: s.blurPx, alpha: s.alpha, ghostPx: Math.abs(disparity * k), spritePx, radius: spritePx > 0 ? s.blurPx / spritePx : 0, soft: s.blurPx > 0 || s.alpha < 1 };
-      if (!soften.soft || !drawPairArrowSoft(g, geo.outW, geo.outH, u, v, disparity, sizePx, soften.radius, s.alpha)) {
-        drawPairArrow(g, geo.outW, geo.outH, u, v, disparity, sizePx);
-      }
+      if (sprite.kind === 'image') {
+        drawPairImage(g, geo.outW, geo.outH, u, v, disparity, sizePx, sprite, soften.soft ? soften.radius * sizePx : 0, soften.soft ? s.alpha : 1);
+      } else if (sprite.kind === 'shape' && (!soften.soft || !drawPairArrowSoft(g, geo.outW, geo.outH, u, v, disparity, sizePx, soften.radius, s.alpha, shape))) {
+        drawPairArrow(g, geo.outW, geo.outH, u, v, disparity, sizePx, shape);
+      } // 'none': the page hides its cursor; draw nothing (the OS cursor stays hidden)
     }
     this.pointer.hideCss(drawn); // the OS arrow IS the cursor on the plane
-    this.last = { contentPx: this._content, targetPx: -target * pxPerBaseline || 0, disparityPx: drawn ? disparity : 0, filteredPx: disparity || 0, drawn, pxPerBaseline, soften };
+    this.last = { contentPx: this._content, targetPx: -target * pxPerBaseline || 0, disparityPx: drawn ? disparity : 0, filteredPx: disparity || 0, drawn, pxPerBaseline, soften, shape };
     return this.last;
   }
 
@@ -414,5 +447,6 @@ export class PairCursor {
 
   dispose() {
     this.pointer.dispose();
+    this.shapes.dispose();
   }
 }

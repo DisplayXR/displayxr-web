@@ -105,8 +105,8 @@ if (handle) {
 }
 
 /**
- * ?cursor=depth plus optional &anchor= &margin= &scope= &soften= &cursorDebug → addModel/addSplat's `cursor`
- * option. &soften=both|off|alpha|blur A/Bs the crosstalk softening. &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
+ * ?cursor=depth plus optional &anchor= &margin= &scope= &soften= &shape= &cursorDebug → addModel/addSplat's `cursor`
+ * option. &soften=both|off|alpha|blur A/Bs the crosstalk softening; &shape= fixes the sprite (default: the page's CSS cursor). &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
  * &cursorDebug=both also keeps the OS cursor visible beside the sprite, to film the lag between them.
  */
 function sampleCursorOptions(p) {
@@ -116,5 +116,6 @@ function sampleCursorOptions(p) {
   if (p.get('scope')) o.pointerScope = p.get('scope');
   if (p.has('cursorDebug')) o.debug = p.get('cursorDebug') === 'both' ? 'both' : true;
   if (p.get('soften')) o.soften = p.get('soften'); // both | off | alpha | blur (crosstalk softening A/B)
+  if (p.get('shape')) o.shape = p.get('shape'); // auto (mirror the page's CSS cursor) | arrow | pointer | grab | grabbing | move
   return Object.keys(o).length ? o : 'depth';
 }

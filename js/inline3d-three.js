@@ -55,13 +55,18 @@
 import {
   CursorDepthPlacer,
   CursorPointer,
-  cursorArrowMesh,
   cursorArrowFootprint,
   cursorDefaultHeight,
   cursorModelMatrix,
   cursorPlacementSoften,
+  cursorArrowMesh,
   cursorSoftArrowBox,
   cursorSoftArrowGLSL,
+  CursorShapeSelector,
+  cursorShapeTexture,
+  cursorSpriteBox,
+  cursorSpriteGLSL,
+  cursorSpriteRect,
   cursorViewRay,
   resolveCursorSoften,
   CURSOR_DEFAULT_TUNING,
@@ -506,6 +511,12 @@ export class DepthCursor {
    *        (capped at 6% of its height, 8 px) and an opacity easing to 0.5 over 0.03 baselines of
    *        lift, both zero on the glass. A preset, or `{ mode, blurK, blurMaxPx, blurMaxFrac,
    *        alphaMin, fullD }` over the defaults. Drawn in the arrow's own shader.
+   * @param {string} [opts.shape='auto']  the sprite: 'auto' mirrors the page's CSS cursor under the
+   *        pointer — every standard keyword has a sprite (`grab` the open hand, `text` the I-beam,
+   *        the resize arrows, …), `url(…)` images are drawn as images, `none` draws nothing; a
+   *        CURSOR_SHAPES name (or 'none') fixes it. (`color` tints the arrow only.)
+   * @param {(hit: {u: number, v: number, point: number[]|null, css: string|null, cssValue: string|null}) => string|null|undefined} [opts.shapeFor]
+   *        per-frame override while the sprite draws: return a shape name, or nothing for `shape`'s.
    * @param {object} [opts.viewSpace]  Object3D whose world matrix maps view transforms to world.
    * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 10
    *        points), synchronously. N > 0 = amortised: N rays a frame, cycling the footprint
@@ -519,7 +530,7 @@ export class DepthCursor {
    */
   constructor(
     THREE,
-    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false, soften },
+    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false, soften, shape = 'auto', shapeFor = null },
   ) {
     this._THREE = THREE;
     this.canvas = canvas;
@@ -554,6 +565,10 @@ export class DepthCursor {
     /** The last frame's softening (diagnostics): `{blurPx, alpha, ghostPx, spritePx, radius, aa, soft}`. */
     this.softening = null;
     this._soft = null; // { geometry, material } — built on the first softened frame
+    /** Which sprite (the page's CSS cursor / fixed / shapeFor); `.shape` = the one drawn last. */
+    this.shapes = new CursorShapeSelector(this.pointer, { shape, shapeFor });
+    this._tex = null; // { geometry, material } — the textured quad, built on the first non-arrow sprite
+    this._textures = new Map(); // sprite key → THREE texture
 
     // The arrow: a dark outline polygon, the fill inset over it; tip at the origin (the hotspot).
     const fill = [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
@@ -577,6 +592,11 @@ export class DepthCursor {
     this.object.renderOrder = 1e9; // last: never occluded, it is in front by construction
     this.object.visible = false;
     this._crisp = { geometry: geom, material: mat };
+  }
+
+  /** The sprite drawn last: a CURSOR_SHAPES name, 'none' or 'image'. */
+  get shape() {
+    return this.shapes.current;
   }
 
   /** Set the pointer position directly (canvas-normalised, v down), or null — for scripted input. */
@@ -615,23 +635,28 @@ export class DepthCursor {
     const uv = this.pointer.uv;
     let p = { active: false };
     let h = 0;
+    let nearestPoint = null;
     if (uv && vs.length >= 2) {
       const [u, v] = uv;
       h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
-      const nearestPoint = this._footprintHit(vs, u, v, h);
+      nearestPoint = this._footprintHit(vs, u, v, h);
       p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: h, canvasPx: this.pointer.panelPx() }, nowMs / 1000);
     }
     this.placement = p;
-    this.object.visible = !!p.active;
+    let visible = !!p.active;
     if (p.active) {
       this.object.matrix.fromArray(cursorModelMatrix(p));
       this.object.matrixWorldNeedsUpdate = true;
       const [pw, ph] = this.pointer.panelSize();
       const s = (this.softening = cursorPlacementSoften(p, vs, pw, ph, h, this.soften));
-      this._useSoft(s);
+      const sprite = this.shapes.pick({ u: uv[0], v: uv[1], point: nearestPoint }, nowMs);
+      if (sprite.kind === 'none') visible = false; // the page hides its cursor: so do we (and the OS one stays hidden)
+      else if (sprite.kind === 'shape' && sprite.name === 'arrow') this._useSoft(s);
+      else this._useSprite(s, sprite);
     } else {
       this.softening = null;
     }
+    this.object.visible = visible;
     this.pointer.hideCss(!!p.active);
     return p;
   }
@@ -694,15 +719,101 @@ export class DepthCursor {
     return { geometry, material };
   }
 
+  // Every sprite but the arrow: a texture (a keyword shape rasterised once, or a url() image) on
+  // one soft quad — the same 13-tap blur and opacity, crisp at radius 0. One program for all.
+  _useSprite(s, sprite) {
+    const tex = this._texture(sprite);
+    const q = this._tex || (this._tex = this._makeTex());
+    const u = q.material.uniforms;
+    const radius = s.soft ? s.radius : 0;
+    const [x0, y0, x1, y1] = cursorSpriteBox(sprite, radius, s.aa);
+    const r = cursorSpriteRect(sprite);
+    u.inline3dCursorBox.value.set(x0, y0, x1, y1);
+    u.inline3dCursorRect.value.set(r[0], r[1], r[2], r[3]);
+    u.inline3dCursorSoft.value.set(radius, s.soft ? s.alpha : 1, 0, 0);
+    u.inline3dCursorTex.value = tex;
+    this.object.geometry = q.geometry;
+    this.object.material = q.material;
+  }
+
+  _texture(sprite) {
+    let t = this._textures.get(sprite.key);
+    if (t) return t;
+    const THREE = this._THREE;
+    if (sprite.kind === 'image') {
+      t = new THREE.Texture(sprite.entry.image);
+    } else {
+      const d = cursorShapeTexture(sprite.name);
+      t = new THREE.DataTexture(d.data, d.width, d.height, THREE.RGBAFormat);
+    }
+    t.flipY = false; // row 0 = the sprite's top, as the shader reads it
+    t.generateMipmaps = false;
+    t.minFilter = THREE.LinearFilter;
+    t.magFilter = THREE.LinearFilter;
+    if (THREE.ClampToEdgeWrapping !== undefined) t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    // The bytes are sRGB: decode on sampling, so the output transform does not encode them twice.
+    if ('colorSpace' in t && THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding;
+    t.needsUpdate = true;
+    if (this._textures.size > 32) {
+      for (const old of this._textures.values()) old.dispose?.();
+      this._textures.clear();
+    }
+    this._textures.set(sprite.key, t);
+    return t;
+  }
+
+  _makeTex() {
+    const THREE = this._THREE;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], 3));
+    const chunk = THREE.ShaderChunk && THREE.ShaderChunk.colorspace_fragment !== undefined ? 'colorspace_fragment' : 'encodings_fragment';
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        inline3dCursorBox: { value: new THREE.Vector4() },
+        inline3dCursorRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+        inline3dCursorSoft: { value: new THREE.Vector4(0, 1, 0, 0) },
+        inline3dCursorTex: { value: null },
+      },
+      vertexShader: `
+        uniform vec4 inline3dCursorBox;
+        varying vec2 vSprite;
+        void main() {
+          vSprite = vec2(mix(inline3dCursorBox.x, inline3dCursorBox.z, position.x), mix(inline3dCursorBox.y, inline3dCursorBox.w, position.y));
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(vSprite.x, -vSprite.y, 0.0, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec4 inline3dCursorRect; // the area the texture covers (sprite units, y down)
+        uniform vec4 inline3dCursorSoft; // radius (sprite units), opacity
+        uniform sampler2D inline3dCursorTex;
+        varying vec2 vSprite;
+        ${cursorSpriteGLSL()}
+        void main() {
+          vec4 c = inline3dSoftSprite(inline3dCursorTex, vSprite, inline3dCursorRect, inline3dCursorSoft.x);
+          gl_FragColor = vec4(c.rgb, c.a * inline3dCursorSoft.y);
+          #include <${chunk}>
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    return { geometry, material };
+  }
+
   /** Remove listeners, give the CSS cursor back, free the sprite's GPU resources. */
   dispose() {
     this.pointer.dispose();
+    this.shapes.dispose();
     this.object.visible = false;
-    for (const r of [this._crisp, this._soft]) {
+    for (const r of [this._crisp, this._soft, this._tex]) {
       if (!r) continue;
       r.geometry.dispose();
       r.material.dispose();
     }
+    for (const t of this._textures.values()) t.dispose?.();
+    this._textures.clear();
   }
 
   // Nearest content point under the footprint, from the two outer views (or, amortised, from

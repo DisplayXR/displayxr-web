@@ -5,6 +5,46 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Depth cursor: the sprite is the page's CSS cursor — any keyword, and `url()` images (ADR-046 §C, page side)
+
+Touches `./cursor-depth`, `./three` (`DepthCursor`) and the preview tier (`./model`, `./splat`,
+`./call`, `./camera`), all only under `cursor: 'depth'`.
+
+- The lifted cursor was always the arrow, so over a model whose page cursor is `grab` it showed an
+  arrow. It now draws what the browser would show: the page's computed CSS cursor under the pointer.
+  - **Every standard keyword** has a procedural sprite in the arrow's style (white fill, dark
+    outline, the OS cursor's 19 CSS px, its hotspot at its natural point): `pointer`, `grab`,
+    `grabbing`, `move` / `all-scroll`, `text` / `vertical-text`, `crosshair`, `not-allowed` /
+    `no-drop`, `help`, `wait`, `progress`, `copy`, `alias`, `context-menu`, `cell`, every resize
+    cursor (`n/s/e/w/ne/nw/se/sw-resize`, `ns/ew/nesw/nwse-resize`, `col-resize`, `row-resize`),
+    `zoom-in`, `zoom-out`; `auto` / `default` and anything unknown → the arrow.
+  - **`none`** draws nothing and keeps the OS cursor hidden: a page that hides its cursor on purpose
+    stays that way.
+  - **`url(a) x y, url(b), fallback`**: the first url that loads as an image (crossOrigin
+    'anonymous' — same-origin and `data:` always do; cross-origin without CORS falls to the next
+    item), at its natural CSS size capped at 128 px; hotspot = the explicit `x y`, else a `.cur`
+    file's own, else 0 0. Loaded async and cached per URL; the keyword fallback is drawn until it is
+    ready.
+  - All of it softened like the arrow, in the cursor's own material (keyword sprites and images are
+    textures on one soft quad: one shader program, the same 13-tap blur and opacity). No CSS filter,
+    no CSS opacity.
+- **`cursor: { shape }`**: `'auto'` (default, mirror the CSS), `'none'`, or a sprite name
+  (`CURSOR_SHAPES`) to fix it. **`cursor: { shapeFor(hit) }`**: decide per drawn frame
+  (`{ u, v, point, css, cssValue }` → a name, or nothing for `shape`'s answer).
+- **Behaviour change — the CSS hide.** The cursor no longer writes `canvas.style.cursor = 'none'`
+  while it draws: it sets a `data-inline3d-cursor-hidden` attribute (on the canvas, or on `<html>`
+  for `pointerScope: 'window'`, replacing the `inline3d-cursor-hidden` class) plus one injected
+  `cursor: none !important` rule. The page's own cursor value is never touched, so it can be read
+  back (the attribute is lifted for the read and put back in the same task, so nothing paints).
+  Reads happen only on frames that draw the sprite, after pointer moves (at most every 100 ms) and
+  at once on pointerdown / pointerup. A page that checked `style.cursor === 'none'` should check
+  the attribute (or `getComputedStyle(canvas).cursor`).
+- `tools/cursor-shape-capture/run.mjs`: headless per-sprite captures over the lifted model sample
+  (keywords, a `data:` url() image, `none`), hotspot stability and the Shop grab → grabbing → grab
+  sequence, failing on any GL error; the samples take `&shape=`.
+
 ## 1.44.0 — 2026-10-13
 
 Touches the **core** `./three` (`DepthCursor`), `./cursor-depth`, and the **preview tier** (`./model`,

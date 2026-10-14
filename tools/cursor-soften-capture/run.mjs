@@ -213,7 +213,7 @@ async function main() {
           // Settled = the sprite has replaced the CSS cursor (over) / given it back (glass), plus
           // 1.5 s more for the filter. Assets arrive from CDNs, so allow up to 45 s for the first.
           await page
-            .waitForFunction((sel, over) => (document.querySelector(sel).style.cursor === 'none') === over, { timeout: 45000, polling: 100 }, smp.canvas, spot === 'over')
+            .waitForFunction((sel, over) => document.querySelector(sel).hasAttribute('data-inline3d-cursor-hidden') === over, { timeout: 45000, polling: 100 }, smp.canvas, spot === 'over')
             .catch(() => console.log(`  (${smp.name}/${preset}/${spot}: the cursor never ${spot === 'over' ? 'lifted' : 'settled on the glass'})`));
           await new Promise((r) => setTimeout(r, 1500));
           const shoot = () =>
@@ -233,7 +233,7 @@ async function main() {
           }, smp.canvas);
           await new Promise((r) => setTimeout(r, 100));
           const without = await shoot();
-          const css = await page.evaluate((sel) => document.querySelector(sel).style.cursor, smp.canvas);
+          const css = await page.evaluate((sel) => getComputedStyle(document.querySelector(sel)).cursor, smp.canvas);
           const m = await page.evaluate(measure, withCursor.png, without.png);
           for (const [i, e] of m.eyes.entries()) {
             if (e.crop) await writeFile(join(OUT, `${smp.name}-${spot}-${preset}-eye${i}.png`), Buffer.from(e.crop.split(',')[1], 'base64'));

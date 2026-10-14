@@ -8,7 +8,20 @@
 export const CURSOR_ANCHOR_MODES = Object.freeze(['hybrid', 'screen', 'world']);
 
 /** The keys `cursor: { … }` accepts on ./model and ./splat. */
-export const CURSOR_OPTION_KEYS = Object.freeze(['height', 'margin', 'anchor', 'pointerScope', 'debug', 'soften']);
+export const CURSOR_OPTION_KEYS = Object.freeze(['height', 'margin', 'anchor', 'pointerScope', 'debug', 'soften', 'shape', 'shapeFor']);
+
+/**
+ * The procedural sprites the depth cursor can draw (see ./inline3d-cursor-shape.js): one per
+ * standard CSS cursor keyword (aliases such as `n-resize` → `ns-resize` share one).
+ */
+export const CURSOR_SHAPES = Object.freeze([
+  'arrow', 'pointer', 'grab', 'grabbing', 'move', 'text', 'vertical-text', 'crosshair', 'not-allowed',
+  'help', 'wait', 'progress', 'copy', 'alias', 'context-menu', 'cell', 'ns-resize', 'ew-resize',
+  'nesw-resize', 'nwse-resize', 'col-resize', 'row-resize', 'zoom-in', 'zoom-out',
+]);
+
+/** `cursor.shape` values: a sprite, `'none'` (draw nothing), or `'auto'` (default) — mirror the page's CSS cursor. */
+export const CURSOR_SHAPE_OPTIONS = Object.freeze(['auto', 'none', ...CURSOR_SHAPES]);
 
 // ── Crosstalk softening (runtime ADR-046 Amendment 2 §B.7) ─────────────────────────────────────
 // On a lenticular panel a little of every view leaks into its neighbours. A LIFTED cursor's leaked
@@ -124,13 +137,13 @@ export function parseCursorSoften(mode, blurK, blurMaxPx, blurMaxFrac, alphaMin,
  * depth). Anything falsy is OFF — the zero-cost default. Validated here, at the call.
  * `debug`: true logs the cursor's per-frame cost (rolling stats, at most once a second); 'both' also
  * keeps the OS cursor visible beside the sprite (the latency check). Off by default, and free.
- * @returns {null | {height?: number, margin?: number, anchor?: string, pointerScope?: string, debug?: boolean|'both', soften?: string | object}}
+ * @returns {null | {height?: number, margin?: number, anchor?: string, pointerScope?: string, debug?: boolean|'both', soften?: string | object, shape?: string, shapeFor?: Function}}
  */
 export function resolveCursorOption(opt, who = '@displayxr/inline3d') {
   if (opt === undefined || opt === null || opt === false) return null;
   if (opt === 'depth' || opt === true) return {};
   if (typeof opt !== 'object') {
-    throw new Error(`${who}: cursor ${JSON.stringify(opt)} — expected 'depth' or { height, margin, anchor, pointerScope, debug, soften }.`);
+    throw new Error(`${who}: cursor ${JSON.stringify(opt)} — expected 'depth' or { ${CURSOR_OPTION_KEYS.join(', ')} }.`);
   }
   const unknown = Object.keys(opt).filter((k) => !CURSOR_OPTION_KEYS.includes(k));
   if (unknown.length) throw new Error(`${who}: cursor — unknown option(s) ${unknown.join(', ')}; expected ${CURSOR_OPTION_KEYS.join(', ')}.`);
@@ -149,14 +162,20 @@ export function resolveCursorOption(opt, who = '@displayxr/inline3d') {
     }
   }
   if (opt.soften !== undefined) resolveCursorSoften(opt.soften, who); // validate at the call
+  if (opt.shape !== undefined && !CURSOR_SHAPE_OPTIONS.includes(opt.shape)) {
+    throw new Error(`${who}: cursor.shape ${JSON.stringify(opt.shape)} — expected ${CURSOR_SHAPE_OPTIONS.map((m) => `'${m}'`).join(' | ')}.`);
+  }
+  if (opt.shapeFor !== undefined && opt.shapeFor !== null && typeof opt.shapeFor !== 'function') {
+    throw new Error(`${who}: cursor.shapeFor must be a function (hit) => shape.`);
+  }
   return { ...opt };
 }
 
 /** The keys `cursor: { … }` accepts on a stereo PAIR (./camera's addCameraView, ./call's tiles). */
-export const PAIR_CURSOR_OPTION_KEYS = Object.freeze(['height', 'pointerScope', 'soften']);
+export const PAIR_CURSOR_OPTION_KEYS = Object.freeze(['height', 'pointerScope', 'soften', 'shape', 'shapeFor']);
 
 /**
- * `cursor` on a stereo pair — a camera view or a call tile: `'depth'`, or `{ height, pointerScope, soften }`.
+ * `cursor` on a stereo pair — a camera view or a call tile: `'depth'`, or `{ height, pointerScope, soften, shape, shapeFor }`.
  * A pair has no scene: its depth is MEASURED off the two halves, and the sprite is drawn into them,
  * so there is no anchor mode (it is always on the line of sight) and the margin is the SDK's. Falsy
  * is OFF, the zero-cost default.

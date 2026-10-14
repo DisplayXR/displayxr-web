@@ -63,6 +63,7 @@ export {
   CHUNKAPI_2_8,
   // setSource's frame snapshot
   RenderTarget,
+  FILTER_LINEAR,
   FILTER_NEAREST,
   // setSource's live outgoing asset (./inline3d-splat-live.js)
   Layer,

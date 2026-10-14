@@ -198,7 +198,7 @@ async function measure(u, v, settle = SETTLE) {
     const c = [0, 1, 2].map((i) => { let x = 0; for (let k = 0; k < n; k++) x += P[k * 3 + i]; return x / n; });
     cursor = cursorPointDisparity(g, c);
   }
-  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, soft: lines?.soft ?? null, cssCursor: canvas.style.cursor };
+  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, soft: lines?.soft ?? null, cssCursor: getComputedStyle(canvas).cursor };
 }
 // Frames to settle: the picker's readback is async and, under headless virtual time, slow.
 const SETTLE = Number(new URLSearchParams(location.search).get('settle') || 240);
@@ -209,7 +209,7 @@ prog('over done ' + JSON.stringify(over));
 const off = await measure(0.05, 0.08, SETTLE * 2);
 canvas.dispatchEvent(new PointerEvent('pointerleave'));
 await wait(5);
-const left = { cssCursor: canvas.style.cursor, linesQueued: !!spriteLines() };
+const left = { cssCursor: getComputedStyle(canvas).cursor, linesQueued: !!spriteLines() };
 // Head motion with the pointer STILL: hybrid (default) and world keep the sprite fixed in the
 // world (it parallaxes like the content); screen keeps it on the line of sight (it slides).
 for (let i = 0; i < 3; i++) { point(0.5, 0.5); await wait(5); }

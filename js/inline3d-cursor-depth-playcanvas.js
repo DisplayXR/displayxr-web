@@ -27,12 +27,17 @@ import {
   CursorDepthPlacer,
   CursorPointer,
   CURSOR_DEFAULT_TUNING,
-  cursorArrowMesh,
   cursorArrowFootprint,
   cursorDefaultHeight,
   cursorPlacementSoften,
+  cursorArrowMesh,
   cursorSoftArrowBox,
   cursorSoftArrowGLSL,
+  CursorShapeSelector,
+  cursorShapeTexture,
+  cursorSpriteBox,
+  cursorSpriteGLSL,
+  cursorSpriteRect,
   cursorViewRay,
   resolveCursorSoften,
   CURSOR_FILL_COLOR,
@@ -50,9 +55,9 @@ export class PlayCanvasDepthCursor {
   /**
    * @param {object} pc  the PlayCanvas namespace the adapter renders with.
    * @param {object} viewer  the PlayCanvasSplatViewer (app, rigNode, eye are read lazily).
-   * @param {{canvas: HTMLElement, height?: number, margin?: number, anchor?: string, pointerScope?: string, soften?: string|object}} opts
+   * @param {{canvas: HTMLElement, height?: number, margin?: number, anchor?: string, pointerScope?: string, soften?: string|object, shape?: string, shapeFor?: Function}} opts
    */
-  constructor(pc, viewer, { canvas, height, margin, anchor = 'hybrid', pointerScope = 'canvas', soften }) {
+  constructor(pc, viewer, { canvas, height, margin, anchor = 'hybrid', pointerScope = 'canvas', soften, shape = 'auto', shapeFor = null }) {
     this.pc = pc;
     this.viewer = viewer;
     /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
@@ -76,6 +81,13 @@ export class PlayCanvasDepthCursor {
     this._frame = 0;
     this._disposed = false;
     this._sprite = null; // { mi, node, mat } — built on first use
+    /** Which sprite (CSS mirror / fixed / shapeFor); `.current` = the one drawn last. */
+    this.shapes = new CursorShapeSelector(this.pointer, { shape, shapeFor });
+  }
+
+  /** The sprite drawn last: a CURSOR_SHAPES name, 'none' or 'image'. */
+  get shape() {
+    return this.shapes.current;
   }
 
   /**
@@ -116,7 +128,11 @@ export class PlayCanvasDepthCursor {
     sprite.mi.visible = !!p.active;
     if (!p.active) return;
     const [pw, ph] = this.pointer.panelSize();
-    this._useSoft(app, sprite, (this.softening = cursorPlacementSoften(p, views, pw, ph, h, this.soften)));
+    const s = (this.softening = cursorPlacementSoften(p, views, pw, ph, h, this.soften));
+    const chosen = this.shapes.pick({ u: uv[0], v: uv[1], point: this.hit }, t);
+    if (chosen.kind === 'none') sprite.mi.visible = false; // the page hides its cursor: so do we (the OS one stays hidden)
+    else if (chosen.kind === 'shape' && chosen.name === 'arrow') this._useSoft(app, sprite, s);
+    else this._useSprite(app, sprite, s, chosen);
     // The unit arrow in the sprite's XY plane, tip at its origin: basis (rotation), height (scale), position = the hotspot.
     const { x, y, z } = p.basis;
     const q = quatFromMatrix([x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, 0, 0, 0, 1]);
@@ -177,7 +193,7 @@ export class PlayCanvasDepthCursor {
     mi.pick = false;
     mi.drawOrder = 1e9;
     app.scene.layers.getLayerById(pc.LAYERID_UI).addMeshInstances([mi]);
-    this._sprite = { mi, node, mat, mesh, soft: null };
+    this._sprite = { mi, node, mat, mesh, soft: null, tex: null, textures: new Map() };
     return this._sprite;
   }
 
@@ -245,15 +261,110 @@ export class PlayCanvasDepthCursor {
     return { mesh, mat };
   }
 
+  // Every sprite but the arrow: a texture (a keyword shape rasterised once, or a url() image) on
+  // one soft quad — the same 13-tap blur and opacity, crisp at radius 0. One program for all.
+  _useSprite(app, sprite, s, chosen) {
+    const mi = sprite.mi;
+    const q = sprite.tex || (sprite.tex = this._makeTex(app));
+    const radius = s.soft ? s.radius : 0;
+    q.mat.setParameter('inline3dCursorTex', this._texture(app, sprite, chosen));
+    q.mat.setParameter('inline3dCursorBox', cursorSpriteBox(chosen, radius, s.aa));
+    q.mat.setParameter('inline3dCursorRect', cursorSpriteRect(chosen));
+    q.mat.setParameter('inline3dCursorSoft', [radius, s.soft ? s.alpha : 1, 0, 0]);
+    if (mi.mesh !== q.mesh) mi.mesh = q.mesh;
+    if (mi.material !== q.mat) mi.material = q.mat;
+  }
+
+  _texture(app, sprite, chosen) {
+    let t = sprite.textures.get(chosen.key);
+    if (t) return t;
+    const pc = this.pc;
+    const opts = {
+      name: `inline3d-cursor-${chosen.kind}`,
+      format: pc.PIXELFORMAT_RGBA8,
+      mipmaps: false,
+      minFilter: pc.FILTER_LINEAR,
+      magFilter: pc.FILTER_LINEAR,
+      addressU: pc.ADDRESS_CLAMP_TO_EDGE,
+      addressV: pc.ADDRESS_CLAMP_TO_EDGE,
+      flipY: false, // row 0 = the sprite's top, as the shader reads it
+    };
+    if (chosen.kind === 'image') {
+      const img = chosen.entry.image;
+      t = new pc.Texture(app.graphicsDevice, { ...opts, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height });
+      t.setSource(img);
+    } else {
+      const d = cursorShapeTexture(chosen.name);
+      t = new pc.Texture(app.graphicsDevice, { ...opts, width: d.width, height: d.height });
+      t.lock().set(d.data);
+      t.unlock();
+    }
+    if (sprite.textures.size > 32) {
+      for (const old of sprite.textures.values()) old.destroy?.();
+      sprite.textures.clear();
+    }
+    sprite.textures.set(chosen.key, t);
+    return t;
+  }
+
+  _makeTex(app) {
+    const pc = this.pc;
+    const mesh = new pc.Mesh(app.graphicsDevice);
+    mesh.setPositions(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]));
+    mesh.update();
+    const mat = new pc.ShaderMaterial({
+      uniqueName: 'inline3dDepthCursorSprite',
+      attributes: { vertex_position: pc.SEMANTIC_POSITION },
+      vertexGLSL: `
+        attribute vec3 vertex_position;
+        uniform mat4 matrix_model;
+        uniform mat4 matrix_viewProjection;
+        uniform vec4 inline3dCursorBox;
+        varying vec2 vSprite;
+        void main() {
+          vSprite = vec2(mix(inline3dCursorBox.x, inline3dCursorBox.z, vertex_position.x), mix(inline3dCursorBox.y, inline3dCursorBox.w, vertex_position.y));
+          gl_Position = matrix_viewProjection * matrix_model * vec4(vSprite.x, -vSprite.y, 0.0, 1.0);
+        }`,
+      fragmentGLSL: `
+        uniform vec4 inline3dCursorRect; // the area the texture covers (sprite units, y down)
+        uniform vec4 inline3dCursorSoft; // radius (sprite units), opacity
+        uniform sampler2D inline3dCursorTex;
+        varying vec2 vSprite;
+        ${cursorSpriteGLSL()}
+        void main() {
+          vec4 c = inline3dSoftSprite(inline3dCursorTex, vSprite, inline3dCursorRect, inline3dCursorSoft.x);
+          gl_FragColor = vec4(c.rgb, c.a * inline3dCursorSoft.y);
+        }`,
+    });
+    mat.blendState = new pc.BlendState(
+      true,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_SRC_ALPHA,
+      pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+      pc.BLENDEQUATION_ADD,
+      pc.BLENDMODE_ONE,
+      pc.BLENDMODE_ONE_MINUS_SRC_ALPHA,
+    );
+    mat.depthTest = false;
+    mat.depthWrite = false;
+    mat.cull = pc.CULLFACE_NONE;
+    mat.update();
+    return { mesh, mat };
+  }
+
   dispose() {
     this._disposed = true;
     this.pointer.dispose();
+    this.shapes.dispose();
     try {
       if (this._sprite) {
         this.viewer.app?.scene?.layers?.getLayerById(this.pc.LAYERID_UI)?.removeMeshInstances?.([this._sprite.mi]);
         this._sprite.node.destroy?.();
         this._sprite.soft?.mat.destroy?.();
         this._sprite.soft?.mesh.destroy?.();
+        this._sprite.tex?.mat.destroy?.();
+        this._sprite.tex?.mesh.destroy?.();
+        for (const t of this._sprite.textures.values()) t.destroy?.();
       }
       this._picker?.destroy?.();
       this._pickCam?.destroy?.();

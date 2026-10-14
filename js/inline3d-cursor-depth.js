@@ -53,7 +53,8 @@
 //    CURSOR_DRAW_THRESHOLD (-0.005, ~0.3 mm) or under CURSOR_DRAW_MIN_PX on the panel
 //    (cursorShouldDraw), and the CSS cursor is left alone;
 //  - the look: the classic arrow (CURSOR_ARROW, tip = hotspot), at the OS cursor's size
-//    (CURSOR_ARROW_CSS_PX tall on the page, cursorDefaultHeight);
+//    (CURSOR_ARROW_CSS_PX tall on the page, cursorDefaultHeight) — or, mirroring the page's CSS
+//    cursor: every CSS keyword and url() images (./inline3d-cursor-shape.js);
 //  - crosstalk softening (Amendment 2 §B.7): a LIFTED arrow is blurred by k × its ghost offset and
 //    faded toward alphaMin with its lift, both exactly zero on the glass (cursorSoften and below).
 
@@ -70,6 +71,43 @@ export {
   resolveCursorSoften,
 } from './inline3d-cursor-option.js';
 import { CURSOR_SOFTEN_DEFAULTS } from './inline3d-cursor-option.js';
+import { CURSOR_HIDDEN_ATTR, ensureCursorHiddenRule } from './inline3d-cursor-shape.js';
+
+// Which sprite: the page's CSS cursor mirrored (shapes, read-back) — its own module, re-exported.
+export {
+  CURSOR_CSS_KEYWORDS,
+  CURSOR_CSS_READ_MS,
+  CURSOR_HIDDEN_ATTR,
+  CURSOR_HIDDEN_RULE,
+  CURSOR_IMAGE_MAX_PX,
+  CURSOR_SHAPES,
+  CURSOR_SHAPE_OPTIONS,
+  CURSOR_SHAPE_TEXTURE_PX,
+  CursorCssReader,
+  CursorImageCache,
+  CursorShapeSelector,
+  cssCursorToShape,
+  cssKeywordToShape,
+  curFileHotspot,
+  cursorImageCache,
+  cursorPickShape,
+  cursorShape,
+  cursorShapeBox,
+  cursorShapePolys,
+  cursorShapeRaster,
+  cursorShapeSample,
+  cursorShapeTexture,
+  cursorSoftenPixels,
+  cursorSpriteBox,
+  cursorSpriteGLSL,
+  cursorSpriteRect,
+  drawCursorShape2D,
+  ensureCursorHiddenRule,
+  parseCssCursor,
+  readPageCursor,
+  resolveCursorSprite,
+  spriteForName,
+} from './inline3d-cursor-shape.js';
 
 /**
  * Fallback sprite height, as a fraction of the canvas height, when the canvas's on-page size is
@@ -413,7 +451,6 @@ export class CursorPointer {
     /** Pointer samples received so far (diagnostics). */
     this.samples = 0;
     this._hidden = false;
-    this._prev = '';
     this._cx = 0;
     this._cy = 0;
     this._pending = false; // a sample not yet resolved to uv (resolved once, on the next read)
@@ -508,21 +545,24 @@ export class CursorPointer {
 
   /**
    * Hide (true) or restore (false) the CSS cursor; idempotent. Only ever while a sprite replaces
-   * it: whatever cursor the page set (`pointer`, `grab`, a `url(…)` image) is the cursor the rest of
-   * the time, and a cursor the page changes while it is hidden is not overwritten on restore.
-   * (Mirroring the page's CSS cursor INTO the drawn sprite is future work — ADR-046 Amendment 2 C,
-   * the browser feeding the computed CSS cursor to the runtime; today the sprite is the arrow.)
+   * it. The hide is a data attribute (CURSOR_HIDDEN_ATTR) on the canvas — on <html> for
+   * pointerScope 'window' — plus one injected `cursor: none !important` rule for it: the page's
+   * own cursor (`pointer`, `grab`, a `url(…)` image, inline or from a stylesheet) is never
+   * written, so it is what shows the rest of the time, and what the sprite mirrors (CursorCssReader
+   * lifts the attribute for its read).
    */
   hideCss(hide) {
     if (this.keepCss) hide = false;
     if (hide === this._hidden) return;
     if (this.scope === 'window') {
       pageCursorHidden(hide);
-    } else if (hide) {
-      this._prev = this.canvas.style.cursor || '';
-      this.canvas.style.cursor = 'none';
-    } else if (this.canvas.style.cursor === 'none') {
-      this.canvas.style.cursor = this._prev; // only if it is still ours
+    } else if (this.canvas.setAttribute) {
+      if (hide) {
+        ensureCursorHiddenRule();
+        this.canvas.setAttribute(CURSOR_HIDDEN_ATTR, '');
+      } else {
+        this.canvas.removeAttribute(CURSOR_HIDDEN_ATTR);
+      }
     }
     this._hidden = hide;
   }
@@ -546,20 +586,17 @@ export function supportsRawUpdate(target) {
 }
 
 // pointerScope 'window': the overlay DOM has its own cursor, so hiding it on the canvas alone is
-// not enough. A class on <html> plus one injected rule hides it everywhere while any depth cursor
-// shows; a count keeps two tiles from un-hiding each other.
+// not enough. The attribute on <html> (the injected rule covers its descendants) hides it
+// everywhere while any depth cursor shows; a count keeps two tiles from un-hiding each other.
 let _pageHides = 0;
 function pageCursorHidden(hide) {
   const doc = globalThis.document;
   if (!doc || !doc.documentElement) return;
-  if (hide && !doc.getElementById('inline3d-cursor-style')) {
-    const st = doc.createElement('style');
-    st.id = 'inline3d-cursor-style';
-    st.textContent = 'html.inline3d-cursor-hidden, html.inline3d-cursor-hidden * { cursor: none !important; }';
-    (doc.head || doc.documentElement).appendChild(st);
-  }
+  if (hide) ensureCursorHiddenRule(doc);
   _pageHides = Math.max(0, _pageHides + (hide ? 1 : -1));
-  doc.documentElement.classList.toggle('inline3d-cursor-hidden', _pageHides > 0);
+  const el = doc.documentElement;
+  if (_pageHides > 0) el.setAttribute?.(CURSOR_HIDDEN_ATTR, '');
+  else el.removeAttribute?.(CURSOR_HIDDEN_ATTR);
 }
 
 /**
