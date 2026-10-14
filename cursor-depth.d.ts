@@ -96,6 +96,10 @@ export interface CursorOptions {
   debug?: boolean | 'both';
   /** Crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7). Default `'both'`. */
   soften?: CursorSoftenOption;
+  /** The sprite. Default `'auto'`: mirror the page's CSS cursor under the pointer (`grab` → the open hand, …). */
+  shape?: CursorShapeOption;
+  /** Per-frame override while the sprite draws: a shape name, or nothing for `shape`'s answer. */
+  shapeFor?: (hit: CursorShapeHit) => CursorShape | 'auto' | null | undefined;
 }
 export const CURSOR_OPTION_KEYS: readonly (keyof CursorOptions)[];
 /** `cursor` as ./model and ./splat accept it: null = off; throws on a bad value. */
@@ -162,6 +166,121 @@ export class CursorDepthPlacer {
     },
     nowSec: number,
   ): CursorPlacement;
+}
+
+// ── The sprite: the page's CSS cursor, mirrored (ADR-046 Amendment 2 §C, page side) ─────────
+
+/** The sprites: the arrow, the pointing hand, the open hand, the closed hand, the four-way arrow. */
+export type CursorShape = 'arrow' | 'pointer' | 'grab' | 'grabbing' | 'move';
+/** `cursor.shape`: a sprite, or `'auto'` (default) — the page's computed CSS cursor under the pointer. */
+export type CursorShapeOption = 'auto' | CursorShape;
+/** What `shapeFor` is handed each drawn frame. */
+export interface CursorShapeHit {
+  /** Canvas-normalised pointer, v down. */
+  u: number;
+  v: number;
+  /** The nearest content point under the footprint (the views' / world space), null on a pair or a miss. */
+  point: number[] | null;
+  /** The page's CSS cursor as a sprite name (`shape: 'auto'` only; null otherwise). */
+  css: CursorShape | null;
+}
+/** In shader-index order. */
+export const CURSOR_SHAPES: readonly CursorShape[];
+export const CURSOR_SHAPE_OPTIONS: readonly CursorShapeOption[];
+/** The data attribute that hides the CSS cursor while the sprite draws (on the canvas; on <html> for pointerScope 'window'). */
+export const CURSOR_HIDDEN_ATTR: string;
+/** The one rule injected for it: `cursor: none !important` on the attribute's element and its descendants. */
+export const CURSOR_HIDDEN_RULE: string;
+/** Pointer moves re-read the CSS cursor at most this often, ms (100); press/release re-read at once. */
+export const CURSOR_CSS_READ_MS: number;
+/** A computed CSS `cursor` value → its sprite: auto/default → arrow, pointer, grab, grabbing, move/all-scroll → move; url(…) and everything else → arrow. */
+export function cssCursorToShape(css: string | null | undefined): CursorShape;
+/** `shapeFor`'s answer if it names a sprite, else the fixed `shape`, else (`'auto'`) the CSS one, else the arrow. */
+export function cursorPickShape(shape: CursorShapeOption | undefined, fromShapeFor: unknown, css: CursorShape | null | undefined): CursorShape;
+/** A sprite's geometry in arrow units (y down, hotspot at the origin): outline parts (convex; the arrow: one polygon), fills inset by 1/19, extent. */
+export interface CursorShapeGeometry {
+  readonly name: CursorShape;
+  /** Its CURSOR_SHAPES index (the shader's selector). */
+  readonly index: number;
+  readonly parts: ReadonlyArray<ReadonlyArray<readonly [number, number]>>;
+  readonly fill: ReadonlyArray<ReadonlyArray<readonly [number, number]>>;
+  readonly box: readonly [number, number, number, number];
+}
+export function cursorShape(name: CursorShape | string): CursorShapeGeometry;
+/** The outline parts and the fill inset by `d` arrow units (default 1/19). */
+export function cursorShapePolys(
+  name: CursorShape | string,
+  d?: number,
+): { outline: ReadonlyArray<ReadonlyArray<readonly [number, number]>>; fill: ReadonlyArray<ReadonlyArray<readonly [number, number]>> };
+/** The shape's extent padded by `radius` (+ `aa`), arrow units, hotspot at the origin: [x0, y0, x1, y1]. */
+export function cursorShapeBox(name: CursorShape | string, radius: number, aa?: number): [number, number, number, number];
+/** The crisp shape as a 3D mesh (y UP, hotspot at the origin): outline then fill; the arrow = cursorArrowMesh. */
+export function cursorShapeMesh(
+  name: CursorShape | string,
+  fill?: readonly number[],
+  outline?: readonly number[],
+): { positions: Float32Array; colors: Float32Array; count: number };
+/** The softened shape at (x, y) of arrow units (straight RGB + alpha); for the arrow, exactly cursorSoftArrowSample. */
+export function cursorShapeSample(
+  name: CursorShape | string,
+  x: number,
+  y: number,
+  radius: number,
+  aa: number,
+  fill?: readonly number[],
+  outline?: readonly number[],
+  polys?: ReturnType<typeof cursorShapePolys>,
+): [number, number, number, number];
+/** The softened shape rasterised for a 2D canvas, the hotspot at (cx, cy), one arrow height = `sizePx`. */
+export function cursorShapeRaster(
+  name: CursorShape | string,
+  cx: number,
+  cy: number,
+  sizePx: number,
+  radius: number,
+  alpha: number,
+  fill?: readonly number[],
+  outline?: readonly number[],
+  polys?: ReturnType<typeof cursorShapePolys>,
+): { x0: number; y0: number; width: number; height: number; data: Uint8ClampedArray };
+/** The crisp shape drawn with a 2D context (outline dark, fill white), the hotspot at (cx, cy). */
+export function drawCursorShape2D(
+  g: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  name: CursorShape | string,
+  cx: number,
+  cy: number,
+  sizePx: number,
+  polys?: ReturnType<typeof cursorShapePolys>,
+  fillStyle?: string,
+  outlineStyle?: string,
+): void;
+/** GLSL defining `vec4 inline3dSoftCursor(vec2 p, float radius, float aa, vec3 fill, vec3 outline, float shape)`, every shape in one program. */
+export function cursorShapeGLSL(): string;
+/** Inject CURSOR_HIDDEN_RULE once; false without a document. */
+export function ensureCursorHiddenRule(doc?: Document): boolean;
+/** The page's computed cursor at `el` with the depth cursor's hide lifted (synchronously) off `holders`; null if unreadable. */
+export function readPageCursor(el: Element, holders: ReadonlyArray<Element | null | undefined>): string | null;
+/** Tracks the page's CSS cursor under the pointer: listeners mark it stale; `shape()` re-reads (moves throttled, press/release at once). */
+export class CursorCssReader {
+  constructor(pointer: { canvas: Element; scope: 'canvas' | 'window' }, opts?: { throttleMs?: number });
+  /** The last computed CSS cursor read, or null. */
+  readonly css: string | null;
+  /** Reads performed (diagnostics). */
+  readonly reads: number;
+  throttleMs: number;
+  shape(nowMs?: number): CursorShape;
+  read(nowMs?: number): CursorShape;
+  dispose(): void;
+}
+/** Per-cursor shape state: the option, `shapeFor`, and a reader only for `'auto'`. */
+export class CursorShapeSelector {
+  constructor(pointer: { canvas: Element; scope: 'canvas' | 'window' }, opts?: { shape?: CursorShapeOption; shapeFor?: ((hit: CursorShapeHit) => unknown) | null });
+  readonly option: CursorShapeOption;
+  readonly reader: CursorCssReader | null;
+  /** The sprite picked last. */
+  readonly current: CursorShape;
+  pick(hit: { u: number; v: number; point: number[] | null }, nowMs?: number): CursorShape;
+  dispose(): void;
 }
 
 // ── Crosstalk softening of the lifted cursor (runtime ADR-046 Amendment 2 §B.7) ─────────────

@@ -1045,7 +1045,7 @@ from the views.
 ## A cursor that respects depth
 
 **On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
-(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope, debug, soften }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
+(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope, debug, soften, shape }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
 cheap pass. three raycasts the subject: on `./model` through a bounds tree (a BVH, loaded only with
 the option) at three rays a frame, on Spark splats one ray a frame. Either way the arrow follows the
 newest pointer position every frame and the pick only refreshes its depth, so a heavy model never
@@ -1116,6 +1116,17 @@ wall.addScene(canvas, (views, layer) => {
   viewer).
 - **DOM over the canvas.** `pointerScope: 'window'` keeps the cursor active over HTML layered on
   the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
+- **The sprite is your CSS cursor.** By default (`shape: 'auto'`) the drawn cursor is what the
+  browser would show: the page's computed CSS cursor under the pointer. Every standard keyword has a
+  sprite (`pointer` a pointing hand, `grab` / `grabbing` open and closed hands, `text` an I-beam,
+  the resize arrows, `not-allowed`, `help`, `wait`, `zoom-in`, …), `url(…)` images are drawn as
+  images (the first that loads with CORS; their hotspot and size as the browser uses them), and
+  `none` draws nothing. So a model with `cursor: grab` that switches to `grabbing` while dragging
+  shows the same hands when the cursor is lifted. Fix it with `shape: 'grab'` (etc.), or decide per
+  frame with `shapeFor: ({ u, v, point, css }) => name`. The SDK hides the CSS cursor with a
+  `data-inline3d-cursor-hidden` attribute and one injected rule, never by writing `style.cursor`,
+  so set your cursor however you like (inline, a class, a stylesheet). It is re-read after pointer
+  moves (at most every 100 ms) and at once on press and release.
 - **Your `hitTest` must be cheap, and it must cover everything that sticks out.** By default it runs
   every frame over the whole footprint (two eyes × 10 points); `raysPerFrame: N` spreads that over
   frames instead (N rays a frame, the arrow still placed at the newest pointer each frame). A stock
@@ -1136,9 +1147,10 @@ wall.addScene(canvas, (views, layer) => {
   dependency-free: `CursorDepthPlacer`, and the pieces on their own (`cursorTarget`,
   `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`; for the softening,
   `cursorPlacementSoften`, `cursorSoften`, `cursorSoftArrowGLSL` for your own shader and
-  `cursorSoftArrowRaster` for a 2D canvas).
+  `cursorSoftArrowRaster` for a 2D canvas; the sprites: `cursorShapeMesh`, `cssCursorToShape`,
+  `CursorCssReader`).
 - **Stereo pairs** (`./call` and `./camera`, `cursor: 'depth'`) follow the same policy and draw the
-  same arrow, softened the same way; their depth is measured off the pair's two halves instead of
+  same sprites (the arrow, or your CSS cursor's), softened the same way; their depth is measured off the pair's two halves instead of
   hit-tested.
 
 ## Rounded corners

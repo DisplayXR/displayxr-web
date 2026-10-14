@@ -302,16 +302,40 @@ function stubTHREE() {
   };
 }
 
+// handlers[k] dispatches to every listener of k (the pointer AND the CSS reader listen to moves).
+function stubListeners(target, handlers = {}) {
+  const lists = {};
+  target.addEventListener = (k, f) => {
+    (lists[k] ||= []).push(f);
+    handlers[k] = (e) => (lists[k] || []).slice().forEach((g) => g(e));
+  };
+  target.removeEventListener = (k, f) => {
+    lists[k] = (lists[k] || []).filter((g) => g !== f);
+    if (!lists[k].length) delete handlers[k];
+  };
+  return handlers;
+}
+function stubAttrs(target) {
+  const attrs = new Map();
+  target.setAttribute = (k, v) => attrs.set(k, String(v));
+  target.removeAttribute = (k) => attrs.delete(k);
+  target.hasAttribute = (k) => attrs.has(k);
+  target.getAttribute = (k) => (attrs.has(k) ? attrs.get(k) : null);
+  return target;
+}
 function stubCanvas() {
   const handlers = {};
-  return {
+  const c = stubAttrs({
+    nodeType: 1,
     style: { cursor: 'crosshair' },
     handlers,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 200 }),
-    addEventListener(k, f) { handlers[k] = f; },
-    removeEventListener(k) { delete handlers[k]; },
-  };
+  });
+  stubListeners(c, handlers);
+  return c;
 }
+/** The depth cursor's hide: the data attribute — the page's inline cursor is never written. */
+const cssHidden = (el) => el.hasAttribute('data-inline3d-cursor-hidden');
 
 test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and gives it back', () => {
   const canvas = stubCanvas();
@@ -327,7 +351,7 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
 
   // No pointer yet: inactive, CSS cursor untouched.
   assert.equal(cur.update(views, 1000).active, false);
-  assert.equal(canvas.style.cursor, 'crosshair');
+  assert.equal(cssHidden(canvas), false);
 
   // Over the content: in front of z = 0.1 by the margin, CSS cursor hidden.
   canvas.handlers.pointermove({ clientX: 75, clientY: 100 }); // u = 0.25
@@ -336,7 +360,8 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
   assert.equal(cur.object.visible, true);
   near(p.targetDisparity, 1 - 0.6 / 0.5 - T.margin);
   assert.ok(p.position[2] > 0.1, 'sprite is in front of the content');
-  assert.equal(canvas.style.cursor, 'none');
+  assert.equal(cssHidden(canvas), true);
+  assert.equal(canvas.style.cursor, 'crosshair', "the page's inline cursor is never written");
 
   // The arrow at the OS cursor's size (19 CSS px of a 200-px canvas), scaled by t; its tip on the placement.
   near(p.height, (19 / 200) * H * (1 / (1 - p.disparity)), 1e-9);
@@ -356,14 +381,14 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
   for (let t = 1100; t < 3000; t += 16) q = cur.update(views, t);
   assert.equal(q.active, false);
   assert.equal(cur.object.visible, false);
-  assert.equal(canvas.style.cursor, 'crosshair', "the page's cursor, untouched on the plane");
+  assert.equal(cssHidden(canvas), false, "the page's cursor, untouched on the plane");
   cur.setPointer(0.505, 0.5);
   cur.update(views, 3016);
 
   // 2D (one view): inactive, CSS cursor restored.
   assert.equal(cur.update([views[0]], 1064).active, false);
   assert.equal(cur.object.visible, false);
-  assert.equal(canvas.style.cursor, 'crosshair');
+  assert.equal(cssHidden(canvas), false);
 
   // Leaving the canvas deactivates; dispose removes listeners and restores the cursor.
   cur.update(views, 1080);
@@ -371,6 +396,7 @@ test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and g
   assert.equal(cur.update(views, 1096).active, false);
   cur.dispose();
   assert.equal(canvas.handlers.pointermove, undefined);
+  assert.equal(cssHidden(canvas), false);
   assert.equal(canvas.style.cursor, 'crosshair');
 });
 
@@ -468,12 +494,11 @@ test('resolveCursorOption: off by default, depth or an options object, validated
 test('DepthCursor: margin option + pointerScope window (over overlay DOM, page-wide CSS hide)', () => {
   const winHandlers = {};
   const realAdd = globalThis.addEventListener, realRemove = globalThis.removeEventListener;
-  globalThis.addEventListener = (k, f) => (winHandlers[k] = f);
-  globalThis.removeEventListener = (k) => delete winHandlers[k];
-  const classes = new Set();
+  stubListeners(globalThis, winHandlers);
+  const html = stubAttrs({ nodeType: 1 });
   const styles = [];
   globalThis.document = {
-    documentElement: { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) } },
+    documentElement: html,
     head: { appendChild: (el) => styles.push(el) },
     getElementById: () => (styles.length ? styles[0] : null),
     createElement: () => ({}),
@@ -491,12 +516,13 @@ test('DepthCursor: margin option + pointerScope window (over overlay DOM, page-w
     const p = cur.update(views, 1000);
     assert.equal(p.active, true);
     near(p.targetDisparity, 1 - 0.6 / 0.5 - 0.002);
-    assert.ok(classes.has('inline3d-cursor-hidden'), 'page-wide hide while it shows');
+    assert.ok(cssHidden(html), 'page-wide hide while it shows');
     assert.equal(styles.length, 1);
+    assert.equal(styles[0].textContent, '[data-inline3d-cursor-hidden],[data-inline3d-cursor-hidden] *{cursor:none!important}');
     // Outside the canvas box: inactive, page cursor back.
     winHandlers.pointermove({ clientX: 900, clientY: 100 });
     assert.equal(cur.update(views, 1016).active, false);
-    assert.ok(!classes.has('inline3d-cursor-hidden'));
+    assert.ok(!cssHidden(html));
     cur.dispose();
     assert.equal(winHandlers.pointermove, undefined);
   } finally {
@@ -551,19 +577,22 @@ test('anchor hybrid: a still pointer + the head moving NEARER keeps the sprite a
   assert.ok(h.position[2] > 0.1, 'still in front of the content');
 });
 
-test('CursorPointer: a cursor the page sets while the sprite hides it is not overwritten on restore', () => {
+test('CursorPointer: the hide is an attribute — the page\'s inline cursor is never written, so a change made meanwhile stands', () => {
   const canvas = stubCanvas();
   canvas.style.cursor = 'grab';
   const ptr = new CursorPointer(canvas);
   ptr.hideCss(true);
-  assert.equal(canvas.style.cursor, 'none');
+  assert.equal(cssHidden(canvas), true);
+  assert.equal(canvas.style.cursor, 'grab', 'inline value intact while hidden');
   ptr.hideCss(false);
-  assert.equal(canvas.style.cursor, 'grab', 'restored');
+  assert.equal(cssHidden(canvas), false, 'restored');
   ptr.hideCss(true);
   canvas.style.cursor = 'grabbing'; // the page changed it meanwhile (a drag began)
   ptr.hideCss(false);
   assert.equal(canvas.style.cursor, 'grabbing', "the page's newer cursor is kept");
+  ptr.hideCss(true);
   ptr.dispose();
+  assert.equal(cssHidden(canvas), false, 'dispose gives it back');
 });
 
 // ── hybrid is DISPLAY-space: the rig moving under a still pointer must not carry the sprite ──
