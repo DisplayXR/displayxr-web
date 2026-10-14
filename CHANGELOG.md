@@ -5,7 +5,13 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.45.0 — 2026-10-13
+
+### Packaging
+
+- `js/inline3d-cursor-shape.js` (new in this release, imported by `./cursor-depth` and so by
+  `./three`) is now in the published file set. A new unit test fails whenever a published module
+  imports a file the package does not ship.
 
 ### Depth cursor: the sprite is the page's CSS cursor — any keyword, and `url()` images (ADR-046 §C, page side)
 
