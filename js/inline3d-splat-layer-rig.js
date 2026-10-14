@@ -570,6 +570,9 @@ export class LayerRigCameras {
     L.planeM = plane;
     L.photoConvergenceM = frame ? frame.D : null;
     const round = hasRun && frame ? roundViews(entries, frame, k, this._round, plane) : null;
+    // cursor: 'depth' picks the display run through these exact views (./inline3d-cursor-depth-playcanvas.js).
+    this.lastEntries = hasRun ? entries : null;
+    this.lastRound = round;
     let reason = null;
     if (!hasRun) reason = this._syncReason;
     else if (entries.length < 2) reason = 'mono (one view): nothing to round — identical to the photo rig';

@@ -75,6 +75,8 @@ export class PlayCanvasDepthCursor {
     this.hit = null;
     this._picker = null;
     this._pickCam = null;
+    this._picker2 = null; // the display-rig pass (handle.setLayerRig), made on first use
+    this._pickCam2 = null;
     this._inFlight = false;
     this._pickId = 0;
     this._pickStart = 0;
@@ -368,14 +370,23 @@ export class PlayCanvasDepthCursor {
       }
       this._picker?.destroy?.();
       this._pickCam?.destroy?.();
+      this._picker2?.destroy?.();
+      this._pickCam2?.destroy?.();
     } catch {
       // the app may already be gone with its device
     }
     this._picker = null;
     this._pickCam = null;
+    this._picker2 = null;
+    this._pickCam2 = null;
   }
 
-  // Render the pick buffer from the first eye and read the footprint's world points.
+  // Render the pick buffer from the first eye and read the footprint's world points. Layers moved
+  // to the display rig (handle.setLayerRig) are drawn by the layer rig's own cameras, not the eye:
+  // with the rig ROUNDED (a camera rig, gain != 1) they take a second pass through the round
+  // views, and each of their hits becomes the world point the PHOTO views see at the same pixels
+  // in both eyes, so the placer (which solves against the photo views) puts the arrow where the
+  // stage appears. Otherwise they draw through the photo views and simply join the eye pass.
   _pick(app, rig, e, uv, height) {
     const pc = this.pc;
     const aspect = e.width > 0 && e.height > 0 ? e.width / e.height : 1;
@@ -383,59 +394,27 @@ export class PlayCanvasDepthCursor {
     const H = Math.max(1, Math.round(W / aspect));
     if (!this._picker) {
       this._picker = new pc.Picker(app, W, H, true);
-      const cam = new pc.Entity('inline3d-cursor-pick', app);
-      // frustumCulling off: this camera never renders on its own (disabled — the picker drives
-      // it), so nothing keeps its culling frustum current, and a stale one culls everything.
-      cam.addComponent('camera', { clearColor: new pc.Color(0, 0, 0, 0), frustumCulling: false });
-      cam.camera.enabled = false;
-      cam._dxrProj = new Float64Array(16);
-      cam.camera.calculateProjection = (out) => out.set(cam._dxrProj);
-      rig.addChild(cam);
-      this._pickCam = cam;
+      this._pickCam = this._makePickCam(app, rig, 'inline3d-cursor-pick');
     }
     const cam = this._pickCam;
-    cam._dxrProj.set(e.proj);
     // The picker linearises depth with the COMPONENT's near/far, and reconstructs through the
     // projection: keep the two in agreement (GL-style projection: m10 = -(f+n)/(f-n), m14 = -2fn/(f-n)).
     const m10 = e.proj[10], m14 = e.proj[14];
     const near = m14 / (m10 - 1);
     const far = m14 / (m10 + 1);
-    if (near > 0 && far > near) {
-      cam.camera.nearClip = near;
-      cam.camera.farClip = far;
-    }
-    if (cam.camera.camera) cam.camera.camera._projMatDirty = true;
-    const q = quatFromMatrix(e.pose);
-    cam.setLocalPosition(e.pose[12], e.pose[13], e.pose[14]);
-    cam.setLocalRotation(q[0], q[1], q[2], q[3]);
+    placePickCam(cam, e.proj, e.pose, near, far);
     const eye = this.viewer.eye?.camera;
-    const skip = new Set([pc.LAYERID_UI, pc.LAYERID_IMMEDIATE, pc.LAYERID_SKYBOX]);
-    const ids = (eye && Array.isArray(eye.layers) ? eye.layers : cam.camera.layers).filter((id) => !skip.has(id));
-    const layers = ids.map((id) => app.scene.layers.getLayerById(id)).filter(Boolean);
+    const plan = cursorPickPlan(
+      eye && Array.isArray(eye.layers) ? eye.layers : cam.camera.layers,
+      this.viewer.layerRigs,
+      [pc.LAYERID_UI, pc.LAYERID_IMMEDIATE, pc.LAYERID_SKYBOX],
+    );
+    const layers = plan.eye.map((id) => app.scene.layers.getLayerById(id)).filter(Boolean);
+    setCamLayers(cam, plan.eye);
 
     const picker = this._picker;
     picker.resize(W, H);
-    // The depth picker draws into TWO colour targets (pick id + pick depth). The engine's lit and
-    // gsplat shaders write both under DEPTH_PICK_PASS; an app's own pc.ShaderMaterial usually
-    // writes only the first, and WebGL rejects every such draw with GL_INVALID_OPERATION ("Active
-    // draw buffers with missing fragment shader outputs") — one per mesh per pick, so a page with
-    // a custom-shader backdrop logged hundreds a second. Those draws never reached the pick buffer
-    // anyway: leave them out of the pass, exactly as if they were not pickable.
-    const muted = muteDepthlessPicks(pc, layers, app.graphicsDevice);
-    try {
-      // Enabled only for the synchronous pick pass: a disabled camera is not in its layers'
-      // camera lists, so the picker would render nothing; enabled outside it, the camera would
-      // render a frame of its own on every app.tick.
-      cam.camera.enabled = true;
-      picker.prepare(cam.camera, app.scene, layers);
-    } catch (err) {
-      console.warn('[inline3d] cursor: depth: the PlayCanvas picker failed; cursor stays on the glass.', err);
-      this.hit = null;
-      return;
-    } finally {
-      cam.camera.enabled = false;
-      for (const mi of muted) mi.pick = true;
-    }
+    if (!this._prepare(picker, cam, app, layers)) return;
     // The picker stores LINEAR depth: (viewDist - near) / (far - near), viewDist = 1/gl_FragCoord.w.
     // Rebuild the point ourselves along the exact off-axis ray (getWorldPointAsync would unproject
     // with the component's symmetric projection, not this one). PlayCanvas's view matrix is built
@@ -445,33 +424,31 @@ export class PlayCanvasDepthCursor {
     const Mw = view.transformMatrix;
     const f = [-Mw[8], -Mw[9], -Mw[10]];
     const zNear = cam.camera.nearClip, zFar = cam.camera.farClip;
-    const samples = cursorArrowFootprint(uv[0], uv[1], height, this.pointer.aspect())
-      .filter(([u, v]) => u >= 0 && u <= 1 && v >= 0 && v <= 1)
-      .map(([u, v]) =>
-        picker.getPointDepthAsync(Math.min(W - 1, Math.floor(u * W)), Math.min(H - 1, Math.floor(v * H))).then((lin) => {
-          if (lin === null || !(lin >= 0 && lin < 1)) return null;
-          const z = zNear + lin * (zFar - zNear);
-          const ray = cursorViewRay(view, u, v);
-          return { x: ray.origin[0] + ray.direction[0] * z, y: ray.origin[1] + ray.direction[1] * z, z: ray.origin[2] + ray.direction[2] * z };
-        }),
-      );
+    const footprint = cursorArrowFootprint(uv[0], uv[1], height, this.pointer.aspect()).filter(([u, v]) => u >= 0 && u <= 1 && v >= 0 && v <= 1);
+    const read = (pk, u, v, toWorld) =>
+      pk.getPointDepthAsync(Math.min(W - 1, Math.floor(u * W)), Math.min(H - 1, Math.floor(v * H))).then((lin) => {
+        if (lin === null || !(lin >= 0 && lin < 1)) return null;
+        return toWorld(u, v, zNear + lin * (zFar - zNear));
+      });
+    const samples = footprint.map(([u, v]) =>
+      read(picker, u, v, (uu, vv, z) => {
+        const ray = cursorViewRay(view, uu, vv);
+        return { x: ray.origin[0] + ray.direction[0] * z, y: ray.origin[1] + ray.direction[1] * z, z: ray.origin[2] + ray.direction[2] * z };
+      }),
+    );
+    // The display run, rounded: a second pass, only while such a layer exists (zero cost otherwise).
+    if (plan.display.length) {
+      const lr = this.viewer.layerRigs;
+      const pass = this._pickDisplay(app, rig, e, lr, plan.display, near, far, W, H);
+      if (pass) for (const [u, v] of footprint) samples.push(read(pass.picker, u, v, pass.toWorld));
+    }
     this._inFlight = true;
     const id = ++this._pickId;
     this._pickStart = globalThis.performance ? globalThis.performance.now() : Date.now();
     Promise.all(samples)
       .then((pts) => {
         if (this._disposed || id !== this._pickId) return;
-        let best = Infinity;
-        let nearest = null;
-        for (const p of pts) {
-          if (!p) continue;
-          const d = p.x * f[0] + p.y * f[1] + p.z * f[2];
-          if (d < best) {
-            best = d;
-            nearest = [p.x, p.y, p.z];
-          }
-        }
-        this.hit = nearest;
+        this.hit = nearestPickPoint(pts, f);
       })
       .catch(() => {
         if (id === this._pickId) this.hit = null;
@@ -480,6 +457,217 @@ export class PlayCanvasDepthCursor {
         if (id === this._pickId) this._inFlight = false;
       });
   }
+
+  // The pick camera: a child of the rig node, DISABLED except around prepare() (a disabled camera
+  // is in no layer's camera list, so the picker would render nothing; an enabled one would render
+  // a frame of its own on every app.tick), with a projection override.
+  _makePickCam(app, rig, name) {
+    const pc = this.pc;
+    const cam = new pc.Entity(name, app);
+    // frustumCulling off: this camera never renders on its own, so nothing keeps its culling
+    // frustum current, and a stale one culls everything.
+    cam.addComponent('camera', { clearColor: new pc.Color(0, 0, 0, 0), frustumCulling: false });
+    cam.camera.enabled = false;
+    cam._dxrProj = new Float64Array(16);
+    cam.camera.calculateProjection = (out) => out.set(cam._dxrProj);
+    rig.addChild(cam);
+    return cam;
+  }
+
+  // One synchronous pick pass. The depth picker draws into TWO colour targets (pick id + pick
+  // depth). The engine's lit and gsplat shaders write both under DEPTH_PICK_PASS; an app's own
+  // pc.ShaderMaterial usually writes only the first, and WebGL rejects every such draw with
+  // GL_INVALID_OPERATION ("Active draw buffers with missing fragment shader outputs") — one per
+  // mesh per pick, so a page with a custom-shader backdrop logged hundreds a second. Those draws
+  // never reached the pick buffer anyway: leave them out of the pass, exactly as if they were not
+  // pickable. (A ShaderMaterial opts in with CURSOR_DEPTH_PICK_GLSL / _WGSL.)
+  _prepare(picker, cam, app, layers) {
+    const muted = muteDepthlessPicks(this.pc, layers, app.graphicsDevice);
+    try {
+      cam.camera.enabled = true;
+      picker.prepare(cam.camera, app.scene, layers);
+      return true;
+    } catch (err) {
+      console.warn('[inline3d] cursor: depth: the PlayCanvas picker failed; cursor stays on the glass.', err);
+      this.hit = null;
+      return false;
+    } finally {
+      cam.camera.enabled = false;
+      for (const mi of muted) mi.pick = true;
+    }
+  }
+
+  // The display-rig pass: its own picker + camera, drawn with exactly what the layer rig's display
+  // camera draws, proj · view_round · rig⁻¹ (PlayCanvas composes RenderViews with the rig node's
+  // world transform, scale included). The camera's own view is undone in the projection override,
+  // as the layer rig's N-camera path does. Null (no pass) when the rig has no round views this frame.
+  _pickDisplay(app, rig, e, lr, ids, near, far, W, H) {
+    const round = lr?.lastRound;
+    const poses = lr?.lastEntries;
+    if (!round || !poses || round.length < 2 || poses.length !== round.length) return null;
+    const pc = this.pc;
+    if (!this._picker2) {
+      this._picker2 = new pc.Picker(app, W, H, true);
+      this._pickCam2 = this._makePickCam(app, rig, 'inline3d-cursor-pick-display');
+    }
+    const cam = this._pickCam2;
+    placePickCam(cam, e.proj, e.pose, near, far);
+    const R = rig.getWorldTransform().data;
+    const Rinv = invert4(R);
+    if (!Rinv) return null;
+    cam._dxrProj.set(mul4(e.proj, mul4(round[0].view, mul4(Rinv, unscaled(cam.getWorldTransform().data)))));
+    if (cam.camera.camera) cam.camera.camera._projMatDirty = true;
+    setCamLayers(cam, ids);
+    const layers = ids.map((id) => app.scene.layers.getLayerById(id)).filter(Boolean);
+    const picker = this._picker2;
+    picker.resize(W, H);
+    if (!this._prepare(picker, cam, app, layers)) return null;
+    const solve = displayRigPickSolver(e.proj, round, poses.map((p) => p.pose), R);
+    if (!solve) return null;
+    return { picker, toWorld: (u, v, dist) => solve(u, v, dist) };
+  }
+}
+
+/**
+ * Which layers each pick pass draws. `eyeLayers` the eye camera's list; `layerRigs` the viewer's
+ * LayerRigCameras (or null); `skip` the ids never picked (UI, immediate, skybox).
+ *   eye      — the eye's layers, plus the layer rig's post run and (when the rig is not rounded this
+ *              frame) its display run: all drawn through the photo views.
+ *   display  — the display run, when it is rounded: picked through the round views.
+ * @returns {{ eye: number[], display: number[] }}
+ */
+export function cursorPickPlan(eyeLayers, layerRigs, skip = []) {
+  const no = new Set(skip);
+  const eye = (eyeLayers || []).filter((id) => !no.has(id));
+  const moved = layerRigs && layerRigs.active !== false ? layerRigs.moved : null;
+  if (!moved || (!moved.display?.length && !moved.post?.length)) return { eye, display: [] };
+  const rounded = !!(layerRigs.lastRound && layerRigs.lastRound.length >= 2);
+  const add = (list, ids) => {
+    for (const id of ids || []) if (!no.has(id) && !list.includes(id)) list.push(id);
+  };
+  const display = [];
+  if (rounded) add(display, moved.display);
+  else add(eye, moved.display);
+  add(eye, moved.post);
+  return { eye, display: display.filter((id) => !eye.includes(id)) };
+}
+
+/**
+ * The picked point nearest the viewer: the smallest distance along the eye's forward `f` (world),
+ * i.e. the most crossed disparity. `pts` are {x, y, z} or [x, y, z] (null = nothing there).
+ * @returns {number[]|null} [x, y, z], or null when nothing was hit.
+ */
+export function nearestPickPoint(pts, f) {
+  let best = Infinity;
+  let nearest = null;
+  for (const p of pts || []) {
+    if (!p) continue;
+    const x = Array.isArray(p) ? p[0] : p.x, y = Array.isArray(p) ? p[1] : p.y, z = Array.isArray(p) ? p[2] : p.z;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    const d = x * f[0] + y * f[1] + z * f[2];
+    if (d < best) {
+      best = d;
+      nearest = [x, y, z];
+    }
+  }
+  return nearest;
+}
+
+/**
+ * Turn a display-rig pick into the WORLD point the PHOTO views show at the same place.
+ *
+ * The pick was drawn from round eye 0 (`rounds[i].view` maps rig space to round eye i); a sample at
+ * canvas (u, v) with view distance `dist` is the round-space point X. Each round eye i shows X at
+ * the pixel where the PHOTO eye i (pose `poses[i]`, rig space) sees P_i · view_round_i · X, so the
+ * point the photo views put at both eyes' pixels is where the photo rays of the first and last eye
+ * through those points meet (their closest approach, as solveCursorGeometry does). Mapped to world
+ * by the rig node's transform `R`. With no rounding (round view = photo view) it is X itself.
+ * @returns {((u: number, v: number, dist: number) => number[]|null)|null}
+ */
+export function displayRigPickSolver(proj, rounds, poses, R) {
+  const L = rounds.length - 1;
+  if (L < 1 || poses.length <= L) return null;
+  const T0 = mul4(poses[0], mul4(rounds[0].view, rounds[0].viewInv));
+  const TL = mul4(poses[L], mul4(rounds[L].view, rounds[0].viewInv));
+  const E0 = [poses[0][12], poses[0][13], poses[0][14]];
+  const EL = [poses[L][12], poses[L][13], poses[L][14]];
+  return (u, v, dist) => {
+    if (!(dist > 0)) return null;
+    // Round eye 0's view space: the direction through NDC (x, y) is ((x + c)/a, (y + d)/b, -1).
+    const x = 2 * u - 1, y = 1 - 2 * v;
+    const Xe = [((x + proj[8]) / proj[0]) * dist, ((y + proj[9]) / proj[5]) * dist, -dist];
+    const Q0 = apply(T0, Xe), QL = apply(TL, Xe);
+    const P = closestApproach(E0, sub3(Q0, E0), EL, sub3(QL, EL)) || Q0;
+    const w = apply(R, P);
+    return Number.isFinite(w[0]) && Number.isFinite(w[1]) && Number.isFinite(w[2]) ? w : null;
+  };
+}
+
+function sub3(a, b) {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+/** Column-major 4x4 × point (w = 1, affine). */
+function apply(m, p) {
+  return [0, 1, 2].map((r) => m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r]);
+}
+
+/** Midpoint of the closest approach of p1 + s·d1 and p2 + r·d2; null when (near) parallel. */
+function closestApproach(p1, d1, p2, d2) {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const w0 = sub3(p1, p2);
+  const aa = dot(d1, d1), bb = dot(d1, d2), cc = dot(d2, d2), dd = dot(d1, w0), ee = dot(d2, w0);
+  const den = aa * cc - bb * bb;
+  if (!(den > 1e-12 * aa * cc)) return null;
+  const s = (bb * ee - cc * dd) / den;
+  const r = (aa * ee - bb * dd) / den;
+  return [0, 1, 2].map((i) => (p1[i] + s * d1[i] + p2[i] + r * d2[i]) / 2);
+}
+
+/** Point a pick camera along a view: its projection override, near/far, and rig-space pose. */
+function placePickCam(cam, proj, pose, near, far) {
+  cam._dxrProj.set(proj);
+  if (near > 0 && far > near) {
+    cam.camera.nearClip = near;
+    cam.camera.farClip = far;
+  }
+  if (cam.camera.camera) cam.camera.camera._projMatDirty = true;
+  const q = quatFromMatrix(pose);
+  cam.setLocalPosition(pose[12], pose[13], pose[14]);
+  cam.setLocalRotation(q[0], q[1], q[2], q[3]);
+}
+
+/** The picker draws only sublayers whose camera list holds the camera: give it these layers (on change only). */
+function setCamLayers(cam, ids) {
+  const key = ids.join(',');
+  if (cam._dxrLayersKey === key) return;
+  cam._dxrLayersKey = key;
+  cam.camera.layers = ids.slice();
+}
+
+/** General column-major 4x4 inverse (cofactors); null when singular. */
+function invert4(m) {
+  const a = m, o = new Array(16);
+  o[0] = a[5]*a[10]*a[15]-a[5]*a[11]*a[14]-a[9]*a[6]*a[15]+a[9]*a[7]*a[14]+a[13]*a[6]*a[11]-a[13]*a[7]*a[10];
+  o[4] = -a[4]*a[10]*a[15]+a[4]*a[11]*a[14]+a[8]*a[6]*a[15]-a[8]*a[7]*a[14]-a[12]*a[6]*a[11]+a[12]*a[7]*a[10];
+  o[8] = a[4]*a[9]*a[15]-a[4]*a[11]*a[13]-a[8]*a[5]*a[15]+a[8]*a[7]*a[13]+a[12]*a[5]*a[11]-a[12]*a[7]*a[9];
+  o[12] = -a[4]*a[9]*a[14]+a[4]*a[10]*a[13]+a[8]*a[5]*a[14]-a[8]*a[6]*a[13]-a[12]*a[5]*a[10]+a[12]*a[6]*a[9];
+  o[1] = -a[1]*a[10]*a[15]+a[1]*a[11]*a[14]+a[9]*a[2]*a[15]-a[9]*a[3]*a[14]-a[13]*a[2]*a[11]+a[13]*a[3]*a[10];
+  o[5] = a[0]*a[10]*a[15]-a[0]*a[11]*a[14]-a[8]*a[2]*a[15]+a[8]*a[3]*a[14]+a[12]*a[2]*a[11]-a[12]*a[3]*a[10];
+  o[9] = -a[0]*a[9]*a[15]+a[0]*a[11]*a[13]+a[8]*a[1]*a[15]-a[8]*a[3]*a[13]-a[12]*a[1]*a[11]+a[12]*a[3]*a[9];
+  o[13] = a[0]*a[9]*a[14]-a[0]*a[10]*a[13]-a[8]*a[1]*a[14]+a[8]*a[2]*a[13]+a[12]*a[1]*a[10]-a[12]*a[2]*a[9];
+  o[2] = a[1]*a[6]*a[15]-a[1]*a[7]*a[14]-a[5]*a[2]*a[15]+a[5]*a[3]*a[14]+a[13]*a[2]*a[7]-a[13]*a[3]*a[6];
+  o[6] = -a[0]*a[6]*a[15]+a[0]*a[7]*a[14]+a[4]*a[2]*a[15]-a[4]*a[3]*a[14]-a[12]*a[2]*a[7]+a[12]*a[3]*a[6];
+  o[10] = a[0]*a[5]*a[15]-a[0]*a[7]*a[13]-a[4]*a[1]*a[15]+a[4]*a[3]*a[13]+a[12]*a[1]*a[7]-a[12]*a[3]*a[5];
+  o[14] = -a[0]*a[5]*a[14]+a[0]*a[6]*a[13]+a[4]*a[1]*a[14]-a[4]*a[2]*a[13]-a[12]*a[1]*a[6]+a[12]*a[2]*a[5];
+  o[3] = -a[1]*a[6]*a[11]+a[1]*a[7]*a[10]+a[5]*a[2]*a[11]-a[5]*a[3]*a[10]-a[9]*a[2]*a[7]+a[9]*a[3]*a[6];
+  o[7] = a[0]*a[6]*a[11]-a[0]*a[7]*a[10]-a[4]*a[2]*a[11]+a[4]*a[3]*a[10]+a[8]*a[2]*a[7]-a[8]*a[3]*a[6];
+  o[11] = -a[0]*a[5]*a[11]+a[0]*a[7]*a[9]+a[4]*a[1]*a[11]-a[4]*a[3]*a[9]-a[8]*a[1]*a[7]+a[8]*a[3]*a[5];
+  o[15] = a[0]*a[5]*a[10]-a[0]*a[6]*a[9]-a[4]*a[1]*a[10]+a[4]*a[2]*a[9]+a[8]*a[1]*a[6]-a[8]*a[2]*a[5];
+  const det = a[0]*o[0]+a[1]*o[4]+a[2]*o[8]+a[3]*o[12];
+  if (!det || !Number.isFinite(det)) return null;
+  for (let i = 0; i < 16; i++) o[i] /= det;
+  return o;
 }
 
 /** A copy of a column-major transform with unit rotation columns (scale removed). */
