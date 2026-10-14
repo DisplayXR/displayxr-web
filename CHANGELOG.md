@@ -5,11 +5,24 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.44.0 — 2026-10-13
 
 Touches the **core** `./three` (`DepthCursor`), `./cursor-depth`, and the **preview tier** (`./model`,
 `./splat`, `./call`, `./camera`: `cursor: 'depth'`). **One deliberate look change:** a LIFTED depth
 cursor is now softened by default. On the glass nothing changes (nothing is drawn there).
+
+### Depth cursor responsiveness (`./model`, three.js)
+
+- The arrow follows the **newest** pointer position every frame, and the pick is amortised (3 rays a
+  frame) instead of casting the whole footprint synchronously.
+- BVH pick: three-mesh-bvh 0.9.15 (MeshBVH only, MIT) is vendored at `js/vendor/three-mesh-bvh.js`
+  and loaded **only** with `cursor: 'depth'`. Nothing on the page is mutated. Skinned, morphing,
+  instanced and batched meshes, and partial draw ranges, keep three's own raycast.
+- The pointer comes from `pointerrawupdate` (coalesced samples) where the browser has it.
+- CarConcept, headless: `update()` 8.2 → 0.16 ms mean, 50.6 → 0.5 ms max.
+- New `cursor: { debug: true | 'both' }`: rolling cost stats; `'both'` keeps the OS cursor visible
+  beside the sprite (the latency check).
+- If you vendor the SDK, copy `js/vendor/` too. The BVH slice imports bare `three`.
 
 ### Depth cursor: crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7 parity)
 
