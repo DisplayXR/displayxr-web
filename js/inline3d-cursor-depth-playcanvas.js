@@ -580,8 +580,10 @@ export function nearestPickPoint(pts, f) {
  * canvas (u, v) with view distance `dist` is the round-space point X. Each round eye i shows X at
  * the pixel where the PHOTO eye i (pose `poses[i]`, rig space) sees P_i · view_round_i · X, so the
  * point the photo views put at both eyes' pixels is where the photo rays of the first and last eye
- * through those points meet (their closest approach, as solveCursorGeometry does). Mapped to world
- * by the rig node's transform `R`. With no rounding (round view = photo view) it is X itself.
+ * through those points meet. Taken ON eye 0's ray (the pixel that was sampled stays exact) at its
+ * closest approach to the last eye's (exact whenever the rays meet: eyes level with each other).
+ * Mapped to world by the rig node's transform `R`. With no rounding (round view = photo view) it
+ * is X itself.
  * @returns {((u: number, v: number, dist: number) => number[]|null)|null}
  */
 export function displayRigPickSolver(proj, rounds, poses, R) {
@@ -612,7 +614,7 @@ function apply(m, p) {
   return [0, 1, 2].map((r) => m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r]);
 }
 
-/** Midpoint of the closest approach of p1 + s·d1 and p2 + r·d2; null when (near) parallel. */
+/** The point of p1 + s·d1 closest to the line p2 + r·d2; null when (near) parallel. */
 function closestApproach(p1, d1, p2, d2) {
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const w0 = sub3(p1, p2);
@@ -620,8 +622,7 @@ function closestApproach(p1, d1, p2, d2) {
   const den = aa * cc - bb * bb;
   if (!(den > 1e-12 * aa * cc)) return null;
   const s = (bb * ee - cc * dd) / den;
-  const r = (aa * ee - bb * dd) / den;
-  return [0, 1, 2].map((i) => (p1[i] + s * d1[i] + p2[i] + r * d2[i]) / 2);
+  return [0, 1, 2].map((i) => p1[i] + s * d1[i]);
 }
 
 /** Point a pick camera along a view: its projection override, near/far, and rig-space pose. */
