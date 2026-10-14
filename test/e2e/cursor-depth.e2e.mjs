@@ -48,6 +48,10 @@ const CASES = [
   { engine: 'playcanvas', kind: 'model', backdrop: true },
   // issue #185: an app pc.ShaderMaterial that opts in with CURSOR_DEPTH_PICK_GLSL is hit.
   { engine: 'playcanvas', kind: 'model', shadermat: true },
+  // A finger: the browser shows no cursor, so neither does the SDK (both engines, model + splat).
+  { engine: 'playcanvas', kind: 'model', touch: true },
+  { engine: 'three', kind: 'model', touch: true },
+  { engine: 'playcanvas', kind: 'splat', touch: true },
   // issue #185: a layer moved to the DISPLAY rig (handle.setLayerRig) on a camera-rig splat — the
   // rounded stage gets its own pick pass; the arrow lifts in front of the box as the panel shows it.
   { engine: 'playcanvas', kind: 'layerrig', page: 'layer-rig.html' },
@@ -99,7 +103,7 @@ async function main() {
   const results = [];
   try {
     for (const c of CASES) {
-      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.shadermat ? '/shadermat' : ''}${c.soften ? `/soften=${c.soften}` : ''}`;
+      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.shadermat ? '/shadermat' : ''}${c.soften ? `/soften=${c.soften}` : ''}${c.touch ? '/touch' : ''}`;
       if (only.length && !only.includes(tag)) continue;
       const page = await browser.newPage();
       page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
@@ -113,7 +117,7 @@ async function main() {
         if (/inline3d|Uncaught|Shader|WebGL/i.test(t)) console.log(`  [page:${m.type()}] ${t.slice(0, 200)}`);
       });
       const t0 = Date.now();
-      await page.goto(`${url}/test/e2e/cursor-depth/${c.page || ''}?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.shadermat ? '&shadermat=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}`, { waitUntil: 'load' });
+      await page.goto(`${url}/test/e2e/cursor-depth/${c.page || ''}?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.shadermat ? '&shadermat=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}${c.touch ? '&touch=1' : ''}`, { waitUntil: 'load' });
       await page.waitForFunction(() => !document.getElementById('out').textContent.startsWith('running'), { timeout: TIMEOUT_MS, polling: 250 });
       const r = JSON.parse(await page.evaluate(() => document.getElementById('out').textContent));
       await page.close();

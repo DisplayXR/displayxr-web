@@ -458,6 +458,11 @@ export class CursorPointer {
     this._onLeave = () => {
       this.uv = null;
     };
+    // A touch (or a pen in contact) shows no cursor in the browser, so it must never drive the
+    // sprite: clear it on contact too, so a tap without a move cannot leave the last mouse hover up.
+    this._onDown = (e) => {
+      if (!cursorPointerHovers(e)) this.uv = null;
+    };
     this._target = scope === 'window' ? globalThis : canvas;
     // Freshest pointer: `pointerrawupdate` (Chromium, secure contexts) fires as each input arrives,
     // not once per frame, so the frame reads the newest position instead of one up to a frame old.
@@ -467,6 +472,7 @@ export class CursorPointer {
     this.source = supportsRawUpdate(this._target) ? 'pointerrawupdate' : 'pointermove';
     this._target.addEventListener('pointermove', this._onMove);
     if (this.source === 'pointerrawupdate') this._target.addEventListener('pointerrawupdate', this._onMove);
+    this._target.addEventListener('pointerdown', this._onDown);
     if (scope === 'window') {
       // Leaving the window (relatedTarget null) or losing focus mid-hover: nothing to hover.
       this._onOut = (e) => {
@@ -503,6 +509,12 @@ export class CursorPointer {
   // One pointer event: keep its NEWEST coalesced sample (getCoalescedEvents(), last entry), unless
   // a newer one is already held. No layout read here — uv resolves on the next read, once a frame.
   _sample(e) {
+    // Only a pointer the browser draws a cursor for: a mouse, or a pen hovering. A touch drag (or a
+    // pen stroke) clears the sprite — the browser shows no cursor there, so neither do we.
+    if (!cursorPointerHovers(e)) {
+      this.uv = null;
+      return;
+    }
     const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
     const s = list && list.length ? list[list.length - 1] : e;
     const t = s.timeStamp > 0 ? s.timeStamp : e.timeStamp > 0 ? e.timeStamp : globalThis.performance ? globalThis.performance.now() : Date.now();
@@ -570,6 +582,7 @@ export class CursorPointer {
   dispose() {
     this._target.removeEventListener('pointermove', this._onMove);
     if (this.source === 'pointerrawupdate') this._target.removeEventListener('pointerrawupdate', this._onMove);
+    this._target.removeEventListener('pointerdown', this._onDown);
     if (this.scope === 'window') {
       globalThis.removeEventListener('pointerout', this._onOut);
       globalThis.removeEventListener('blur', this._onLeave);
@@ -578,6 +591,20 @@ export class CursorPointer {
     }
     this.hideCss(false);
   }
+}
+
+/**
+ * Does this pointer event come from a pointer the browser shows a cursor for? A mouse, or a pen
+ * hovering in range (no buttons pressed). A touch never; a pen in contact neither. An event with
+ * no `pointerType` (a synthetic `new PointerEvent('pointermove')`, an old engine) counts as a mouse.
+ * Coalesced samples belong to their parent event, so the parent is what is tested.
+ * @param {{pointerType?: string, buttons?: number}} e
+ */
+export function cursorPointerHovers(e) {
+  const t = e && e.pointerType;
+  if (!t || t === 'mouse') return true;
+  if (t === 'pen') return !(e.buttons > 0);
+  return false;
 }
 
 /** Does `target` dispatch `pointerrawupdate`? (Chromium; only in a secure context.) */

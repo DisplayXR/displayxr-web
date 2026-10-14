@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { CursorAmortisedPick, CursorDebugStats, cursorDebugMode, CURSOR_MODEL_RAYS_PER_FRAME } from '../js/inline3d-cursor-perf.js';
-import { CursorPointer, supportsRawUpdate, resolveCursorOption, CURSOR_DEFAULT_TUNING as T } from '../js/inline3d-cursor-depth.js';
+import { CursorPointer, supportsRawUpdate, cursorPointerHovers, resolveCursorOption, CURSOR_DEFAULT_TUNING as T } from '../js/inline3d-cursor-depth.js';
 import { DepthCursor } from '../js/inline3d-three.js';
 
 const W = 0.3, H = 0.2;
@@ -386,4 +386,69 @@ test('CursorPointer keepCss: hideCss never hides', () => {
   assert.equal(canvas.style.cursor, 'crosshair');
   q.hideCss(false);
   assert.equal(hidden(), false);
+});
+
+// ── Touch never drives the cursor (the browser shows none) ─────────────────────────────────
+
+const ev = (pointerType, x, y, extra = {}) => ({ pointerType, clientX: x, clientY: y, timeStamp: (ev.t = (ev.t || 0) + 1), ...extra });
+
+test('cursorPointerHovers: mouse and a hovering pen yes; touch and a pen in contact no; untyped (synthetic) counts as mouse', () => {
+  assert.equal(cursorPointerHovers({ pointerType: 'mouse' }), true);
+  assert.equal(cursorPointerHovers({ pointerType: 'mouse', buttons: 1 }), true, 'a mouse drag still shows the cursor');
+  assert.equal(cursorPointerHovers({ pointerType: 'pen', buttons: 0 }), true);
+  assert.equal(cursorPointerHovers({ pointerType: 'pen', buttons: 1 }), false);
+  assert.equal(cursorPointerHovers({ pointerType: 'touch' }), false);
+  assert.equal(cursorPointerHovers({ pointerType: 'touch', buttons: 0 }), false);
+  assert.equal(cursorPointerHovers({ pointerType: '' }), true);
+  assert.equal(cursorPointerHovers({}), true);
+});
+
+test('CursorPointer: a touch drag sets no pointer and CLEARS a mouse hover; a touch tap clears too; the mouse comes back', () => {
+  for (const raw of [false, true]) {
+    const canvas = stubCanvas({ raw });
+    const p = new CursorPointer(canvas);
+    const move = canvas.handlers[raw ? 'pointerrawupdate' : 'pointermove'];
+    move(ev('touch', 150, 100));
+    assert.equal(p.uv, null, 'a touch move never places it');
+    move(ev('mouse', 150, 100));
+    assert.deepEqual(p.uv, [0.5, 0.5]);
+    move(ev('touch', 30, 40));
+    assert.equal(p.uv, null, 'a touch drag clears the mouse hover');
+    move(ev('mouse', 75, 50));
+    assert.deepEqual(p.uv, [0.25, 0.25]);
+    canvas.handlers.pointerdown(ev('touch', 75, 50));
+    assert.equal(p.uv, null, 'a tap (no move) clears it');
+    move(ev('pen', 150, 100, { buttons: 1 }));
+    assert.equal(p.uv, null, 'a pen stroke: no cursor');
+    move(ev('pen', 150, 100, { buttons: 0 }));
+    assert.deepEqual(p.uv, [0.5, 0.5], 'a hovering pen: the cursor');
+    canvas.handlers.pointerdown(ev('mouse', 150, 100, { buttons: 1 }));
+    assert.deepEqual(p.uv, [0.5, 0.5], 'a mouse press leaves it');
+    p.dispose();
+    assert.equal(canvas.handlers.pointerdown, undefined);
+  }
+});
+
+test('DepthCursor: a touch drag over content draws nothing; the same drag with a mouse draws', () => {
+  // Every listener of a type (the CSS-cursor reader also listens to pointermove on the canvas).
+  const canvas = stubCanvas();
+  const all = {};
+  canvas.addEventListener = (k, f) => (all[k] ||= []).push(f);
+  canvas.removeEventListener = (k, f) => (all[k] = (all[k] || []).filter((g) => g !== f));
+  canvas.handlers = { pointermove: (e) => (all.pointermove || []).forEach((f) => f(e)) };
+  const cur = new DepthCursor(stubTHREE(), { canvas, hitTest: leftPlane, raysPerFrame: 3 });
+  let t = 1000;
+  const run = (type) => {
+    let p;
+    // a move onto the content (left half), then the pointer held there while the pick settles
+    for (let i = 0; i < 12; i++) {
+      if (i < 3) canvas.handlers.pointermove(ev(type, 70 + i, 100));
+      p = cur.update(VIEWS, (t += 16));
+    }
+    return p;
+  };
+  assert.equal(run('touch').active, false, 'touch: no sprite');
+  assert.equal(run('mouse').active, true, 'mouse over the same content: the sprite');
+  assert.equal(run('touch').active, false, 'touch again: gone');
+  cur.dispose();
 });
