@@ -139,6 +139,8 @@ test('parseCssCursor: url list (quotes, commas inside data: URLs, hotspots), ima
   assert.equal(parseCssCursor('url(a.png)').keyword, 'auto', 'no keyword → auto');
   assert.deepEqual(parseCssCursor('url("q\\"x.png") 0 0, move').images[0], { url: 'q"x.png', hotspot: [0, 0] });
   assert.equal(parseCssCursor(null).keyword, 'auto');
+  // A quoted URL may hold an unbalanced paren: the split must not count it.
+  assert.deepEqual(parseCssCursor('url("a(b.png") 1 2, move'), { images: [{ url: 'a(b.png', hotspot: [1, 2] }], keyword: 'move' });
   assert.equal(parseCssCursor('url(a.png) 2 3, auto'), parseCssCursor('url(a.png) 2 3, auto'), 'memoised');
 });
 

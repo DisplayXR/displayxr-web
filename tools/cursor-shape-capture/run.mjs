@@ -22,7 +22,7 @@ import { readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join, extname } from 'node:path';
-import { cursorShape } from '../../js/inline3d-cursor-shape.js';
+import { cursorShapeTexture } from '../../js/inline3d-cursor-shape.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -32,15 +32,19 @@ const OVER = [0.5, 0.45];
 // SOFTEN=off: crisp sprites, for the hotspot geometry (a blurred tip fades under the diff threshold
 // and biases the bbox estimate); default = the shipping softened sprite.
 const SOFTEN = process.env.SOFTEN || '';
+// A url() image: a 24×24 SVG (magenta with a dark centre) as a data: URL, hotspot 12 12 explicit.
+const SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='%23e0f'/%3E%3Crect x='10' y='10' width='4' height='4' fill='%23111'/%3E%3C/svg%3E";
 const CASES = [
-  ['auto', 'arrow'],
-  ['pointer', 'pointer'],
-  ['grab', 'grab'],
-  ['grabbing', 'grabbing'],
-  ['move', 'move'],
-  ['all-scroll', 'move'],
-  ['text', 'arrow'],
-  ['url("data:image/png;base64,iVBORw0KGgo=") 4 4, grab', 'arrow'],
+  ['auto', 'arrow'], ['default', 'arrow'], ['wobble', 'arrow'],
+  ['pointer', 'pointer'], ['grab', 'grab'], ['grabbing', 'grabbing'], ['move', 'move'], ['all-scroll', 'move'],
+  ['text', 'text'], ['vertical-text', 'vertical-text'], ['crosshair', 'crosshair'], ['not-allowed', 'not-allowed'],
+  ['no-drop', 'not-allowed'], ['help', 'help'], ['wait', 'wait'], ['progress', 'progress'], ['copy', 'copy'],
+  ['alias', 'alias'], ['context-menu', 'context-menu'], ['cell', 'cell'], ['n-resize', 'ns-resize'],
+  ['ew-resize', 'ew-resize'], ['ne-resize', 'nesw-resize'], ['nwse-resize', 'nwse-resize'], ['col-resize', 'col-resize'],
+  ['row-resize', 'row-resize'], ['zoom-in', 'zoom-in'], ['zoom-out', 'zoom-out'],
+  [`url("${SVG}") 12 12, pointer`, 'image'],
+  ['url("missing-cursor.png") 3 3, grab', 'grab'], // a url that never loads: the keyword fallback
+  ['none', 'none'],
 ];
 
 async function loadPuppeteer() {
@@ -202,7 +206,7 @@ async function main() {
       const errors = [];
       page.on('pageerror', (e) => errors.push(e.message));
       // A missing favicon is not an error of the page; any other failed load is.
-      page.on('response', (r) => r.status() >= 400 && !/favicon\.ico$/.test(r.url()) && errors.push(`HTTP ${r.status()} ${r.url()}`));
+      page.on('response', (r) => r.status() >= 400 && !/favicon\.ico$|missing-cursor\.png$/.test(r.url()) && errors.push(`HTTP ${r.status()} ${r.url()}`));
       page.on('console', (m) => ((m.type() === 'error' && !/Failed to load resource/.test(m.text())) || /Shader|WebGL|GL_INVALID|GL ERROR/i.test(m.text())) && errors.push(m.text().slice(0, 300)));
       await page.evaluateOnNewDocument(pageHooks);
       await page.goto(`${url}/samples/model/?cursor=depth&anchor=screen${SOFTEN ? `&soften=${SOFTEN}` : ''}${engine === 'three' ? '&engine=three' : ''}`, { waitUntil: 'load' });
@@ -227,7 +231,8 @@ async function main() {
       const drawn = () => page.evaluate(() => {
         const v = globalThis.__dxrModel?.a?.viewer || globalThis.__model?.viewer;
         const c = v?.cursorDepth;
-        return c ? { shape: c.shape, active: !!c.placement?.active, css: c.shapes?.reader?.css ?? null } : null;
+        const sp = c?.shapes?.sprite;
+        return c ? { shape: c.shape, active: !!c.placement?.active, css: c.shapes?.reader?.css?.slice(0, 80) ?? null, image: sp && sp.kind === 'image' ? { width: sp.width, height: sp.height, hotspot: sp.hotspot } : null } : null;
       });
       // One capture: settle, freeze, with/without, measure; hotspot from the bbox + the shape's box.
       const capture = async (tag) => {
@@ -247,7 +252,10 @@ async function main() {
         await new Promise((r) => setTimeout(r, 100));
         const without = await shoot();
         const m = await page.evaluate(measure, withCursor.png, without.png);
-        const box = cursorShape(d?.shape || 'arrow').box;
+        // The sprite's own rect (sprite units around the hotspot): a texture's, or an image's CSS box.
+        const box = d?.image
+          ? [-d.image.hotspot[0] / 19, -d.image.hotspot[1] / 19, (d.image.width - d.image.hotspot[0]) / 19, (d.image.height - d.image.hotspot[1]) / 19]
+          : cursorShapeTexture(d?.shape === 'none' ? 'arrow' : d?.shape || 'arrow').rect;
         const eyes = m.eyes.map((e, i) => {
           if (e.crop) writeFile(join(OUT, `${engine}-${tag}-eye${i}.png`), Buffer.from(e.crop.split(',')[1], 'base64'));
           if (!e.bbox) return { touched: 0 };
@@ -264,28 +272,32 @@ async function main() {
       const hot = [];
       for (const [css, want] of CASES) {
         await page.evaluate((sel, css) => { document.querySelector(sel).style.cursor = css; }, sel, css);
-        const r = await capture(`css-${want}-${css.replace(/[^a-z-]/gi, '').slice(0, 12)}`);
-        const ok = r.drawn && r.drawn.shape === want && r.eyes.every((e) => e.touched > 0);
+        const r = await capture(`css-${want}-${css.startsWith('url("data') ? 'dataurl' : css.replace(/[^a-z-]/gi, '').slice(0, 14)}`);
+        // none: nothing drawn, and the OS cursor still hidden (the page asked for no cursor).
+        const hidden = await page.evaluate((sel) => getComputedStyle(document.querySelector(sel)).cursor, sel);
+        const ok = r.drawn && r.drawn.shape === want && (want === 'none' ? r.eyes.every((e) => e.touched === 0) : r.eyes.every((e) => e.touched > 0));
         fail += !ok;
-        if (ok) hot.push(r.eyes.map((e) => e.hotspot));
-        report.cases.push({ engine, css, want, ...r, ok });
+        if (ok && want !== 'none') hot.push(r.eyes.map((e) => e.hotspot));
+        report.cases.push({ engine, css: css.slice(0, 80), want, ...r, cssAfter: hidden, ok });
         console.log(`${engine.padEnd(10)} css ${JSON.stringify(css).slice(0, 34).padEnd(36)} → ${String(r.drawn?.shape).padEnd(9)} ${ok ? 'PASS' : 'FAIL'}  hotspot L ${r.eyes[0].hotspot} R ${r.eyes[1].hotspot}  touched ${r.eyes.map((e) => e.touched).join('/')}`);
       }
-      // The hotspot pixel per eye must be the same for every shape. The noise floor is the ARROW
-      // drawn three times (auto / text / url): same sprite, so its spread is the estimator's own
-      // (bbox thresholding, the filter's last sub-px) — a shape may not add more than 1 px to it.
+      // The hotspot must be the same pixel for every sprite. Per eye, x also carries the sprite's
+      // DISPARITY, which moves between captures (the model idles while each case settles, so the
+      // depth under the pointer differs); the cyclopean hotspot — the eyes' midpoint, and y — does
+      // not. The noise floor is the arrow drawn three times (auto / default / an unknown keyword);
+      // a sprite may add at most 1 px to it crisp, 2 px softened (a blurred tip fades under the
+      // diff threshold and shifts the bbox estimate itself).
       const spreadOf = (pts) => Math.max(Math.max(...pts.map((p) => p[0])) - Math.min(...pts.map((p) => p[0])), Math.max(...pts.map((p) => p[1])) - Math.min(...pts.map((p) => p[1])));
-      const arrows = CASES.map(([, w], i) => (w === 'arrow' ? i : -1)).filter((i) => i >= 0 && hot[i]);
-      for (const eye of [0, 1]) {
-        const all = spreadOf(hot.map((h) => h[eye]));
-        const floor = spreadOf(arrows.map((i) => hot[i][eye]));
-        // Softened, a blurred tip (the fingertip, the arrowheads) fades under the diff threshold and
-        // shifts the bbox estimate itself by up to ~1.5 px; crisp (SOFTEN=off) holds the 1 px bound.
-        const ok = hot.length === CASES.length && all <= floor + (SOFTEN === 'off' ? 1 : 2);
-        fail += !ok;
-        report.cases.push({ engine, eye, hotspotSpreadPx: all, arrowRepeatSpreadPx: floor, ok });
-        console.log(`${engine.padEnd(10)} eye ${eye}: hotspot spread over ${hot.length} shapes = ${all.toFixed(1)} px (arrow-vs-arrow floor ${floor.toFixed(1)} px) ${ok ? 'PASS' : 'FAIL'}`);
-      }
+      const cyc = hot.map(([l, r]) => [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2]);
+      const all = spreadOf(cyc);
+      const floor = spreadOf([0, 1, 2].map((i) => cyc[i]));
+      const disp = hot.map(([l, r]) => l[0] - r[0]);
+      // The floor is at least 0.5 px: bit-identical arrow repeats give 0, but the bbox estimate is
+      // integer-quantised per edge (±0.5 px) whatever the sprite.
+      const okHot = hot.length === CASES.length - 1 && all <= Math.max(floor, 0.5) + (SOFTEN === 'off' ? 1 : 2);
+      fail += !okHot;
+      report.cases.push({ engine, cyclopeanHotspotSpreadPx: all, arrowRepeatSpreadPx: floor, disparityRangePx: [Math.min(...disp), Math.max(...disp)], ok: okHot });
+      console.log(`${engine.padEnd(10)} cyclopean hotspot spread over ${hot.length} sprites = ${all.toFixed(1)} px (arrow-vs-arrow floor ${floor.toFixed(1)} px; per-eye disparity ${Math.min(...disp).toFixed(1)}..${Math.max(...disp).toFixed(1)} px) ${okHot ? 'PASS' : 'FAIL'}`);
 
       // 2) The Shop case: stylesheet grab, a class to grabbing on pointerdown, off on pointerup.
       await page.evaluate((sel) => {
