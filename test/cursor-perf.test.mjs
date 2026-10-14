@@ -373,12 +373,17 @@ test('CursorPointer: no layout read per event — the position resolves once, on
 
 test('CursorPointer keepCss: hideCss never hides', () => {
   const canvas = stubCanvas();
+  // The hide is a data attribute (the page's inline cursor is never written).
+  const attrs = new Map();
+  Object.assign(canvas, { setAttribute: (k, v) => attrs.set(k, v), removeAttribute: (k) => attrs.delete(k), hasAttribute: (k) => attrs.has(k) });
+  const hidden = () => attrs.has('data-inline3d-cursor-hidden');
   const p = new CursorPointer(canvas, { keepCss: true });
   p.hideCss(true);
-  assert.equal(canvas.style.cursor, 'crosshair');
+  assert.equal(hidden(), false);
   const q = new CursorPointer(canvas);
   q.hideCss(true);
-  assert.equal(canvas.style.cursor, 'none');
-  q.hideCss(false);
+  assert.equal(hidden(), true);
   assert.equal(canvas.style.cursor, 'crosshair');
+  q.hideCss(false);
+  assert.equal(hidden(), false);
 });

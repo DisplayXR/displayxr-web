@@ -507,7 +507,17 @@ function designs() {
     },
     wait: { hot: [9.5, 9.5], parts: hourglass() },
     // Arrow + a small hourglass (busy, still usable).
-    progress: { hot: [0, 0], parts: [...xf(ARROW_PX(), 0.8), ...xf(hourglass(), 0.5, 9.4, 9.4)] },
+    // (A mini hourglass drawn at its own size: half the big one's bars are too thin for the rim.)
+    progress: {
+      hot: [0, 0],
+      parts: [
+        ...xf(ARROW_PX(), 0.8),
+        box(10.6, 9.0, 18.8, 11.6),
+        box(10.6, 16.4, 18.8, 19.0),
+        tri([11.4, 10.2], [18.0, 10.2], [14.7, 14.4]),
+        tri([14.7, 13.6], [18.0, 17.8], [11.4, 17.8]),
+      ],
+    },
     // Arrow + a + badge.
     copy: {
       hot: [0, 0],
@@ -528,8 +538,9 @@ function designs() {
     },
     'ns-resize': { hot: [9.5, 9.5], parts: doubleArrow() },
     'ew-resize': { hot: [9.5, 9.5], parts: rot(doubleArrow(), 90, 9.5, 9.5) },
-    'nesw-resize': { hot: [9.5, 9.5], parts: rot(doubleArrow(), 45, 9.5, 9.5) },
-    'nwse-resize': { hot: [9.5, 9.5], parts: rot(doubleArrow(), -45, 9.5, 9.5) },
+    // Diagonals: rotated, then grown 1.2× so the box is the OS cursor's ~16 px, not 13.
+    'nesw-resize': { hot: [9.5, 9.5], parts: xf(rot(doubleArrow(), 45, 9.5, 9.5), 1.2, -1.9, -1.9) },
+    'nwse-resize': { hot: [9.5, 9.5], parts: xf(rot(doubleArrow(), -45, 9.5, 9.5), 1.2, -1.9, -1.9) },
     'col-resize': { hot: [9.5, 9.5], parts: splitter() },
     'row-resize': { hot: [9.5, 9.5], parts: rot(splitter(), 90, 9.5, 9.5) },
     // A magnifier with + / −; the hotspot at the lens centre.

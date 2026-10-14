@@ -89,7 +89,7 @@ interface PairCursorOptions
   PairCursorOptions.height?: height?:number
   PairCursorOptions.pointerScope?: pointerScope?:'canvas'|'window'
   PairCursorOptions.shape?: shape?:CursorShapeOption
-  PairCursorOptions.shapeFor?: shapeFor?:(hit:CursorShapeHit)=>CursorShape|'auto'|null|undefined
+  PairCursorOptions.shapeFor?: shapeFor?:(hit:CursorShapeHit)=>CursorShape|'none'|'auto'|null|undefined
   PairCursorOptions.soften?: soften?:CursorSoftenOption
 interface RecordOptions
   RecordOptions.audio?: audio?:MediaStream|MediaStreamTrack|null

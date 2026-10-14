@@ -22,8 +22,18 @@ import {
   cursorPolygonSd,
   cursorShape,
   cursorShapeBox,
-  cursorShapeGLSL,
-  cursorShapeMesh,
+  cursorShapeTexture,
+  cursorSpriteGLSL,
+  cursorSpriteRect,
+  cursorSpriteBox,
+  CURSOR_CSS_KEYWORDS,
+  CURSOR_IMAGE_MAX_PX,
+  CursorImageCache,
+  cssKeywordToShape,
+  curFileHotspot,
+  parseCssCursor,
+  resolveCursorSprite,
+  spriteForName,
   cursorShapePolys,
   cursorShapeRaster,
   cursorShapeSample,
@@ -35,6 +45,8 @@ import {
 import { resolvePairCursorOption, CURSOR_OPTION_KEYS } from '../js/inline3d-cursor-option.js';
 import { DepthCursor } from '../js/inline3d-three.js';
 import { PairCursor, drawPairArrow } from '../js/camera/pair-cursor.js';
+import { CURSOR_OPTION_KEYS as KEYS } from '../js/inline3d-cursor-option.js';
+void KEYS;
 
 // ── A tiny DOM: elements with attributes, listeners, a parent chain, and a cascade where the
 // hide rule (on the element or an ancestor) beats everything, as `!important` does.
@@ -89,36 +101,159 @@ function uninstall() {
 
 // ── The map ──────────────────────────────────────────────────────────────────────────────────
 
-test('cssCursorToShape: the keywords with a twin, and the arrow for everything else', () => {
+test('cssCursorToShape: EVERY standard CSS cursor keyword → its sprite; none → none; unknown → the arrow', () => {
   const table = {
-    auto: 'arrow',
-    default: 'arrow',
-    pointer: 'pointer',
-    grab: 'grab',
-    '-webkit-grab': 'grab',
-    grabbing: 'grabbing',
-    '-webkit-grabbing': 'grabbing',
-    move: 'move',
-    'all-scroll': 'move',
-    text: 'arrow',
-    crosshair: 'arrow',
-    'ns-resize': 'arrow',
-    'nwse-resize': 'arrow',
-    'col-resize': 'arrow',
-    wait: 'arrow',
-    'not-allowed': 'arrow',
-    none: 'arrow',
-    '  GRAB ': 'grab',
-    'url("hand.png") 4 4, grab': 'arrow', // an image cursor has no procedural twin
-    'url(a.cur), url(b.png) 2 2, pointer': 'arrow',
-    'image-set("a.png" 1x) 4 4, pointer': 'arrow',
-    'grab, pointer': 'grab',
-    '': 'arrow',
+    auto: 'arrow', default: 'arrow', none: 'none',
+    pointer: 'pointer', grab: 'grab', '-webkit-grab': 'grab', grabbing: 'grabbing', '-webkit-grabbing': 'grabbing',
+    move: 'move', 'all-scroll': 'move', text: 'text', 'vertical-text': 'vertical-text', crosshair: 'crosshair',
+    'not-allowed': 'not-allowed', 'no-drop': 'not-allowed', help: 'help', wait: 'wait', progress: 'progress',
+    copy: 'copy', alias: 'alias', 'context-menu': 'context-menu', cell: 'cell',
+    'n-resize': 'ns-resize', 's-resize': 'ns-resize', 'ns-resize': 'ns-resize',
+    'e-resize': 'ew-resize', 'w-resize': 'ew-resize', 'ew-resize': 'ew-resize',
+    'ne-resize': 'nesw-resize', 'sw-resize': 'nesw-resize', 'nesw-resize': 'nesw-resize',
+    'nw-resize': 'nwse-resize', 'se-resize': 'nwse-resize', 'nwse-resize': 'nwse-resize',
+    'col-resize': 'col-resize', 'row-resize': 'row-resize',
+    'zoom-in': 'zoom-in', '-webkit-zoom-in': 'zoom-in', 'zoom-out': 'zoom-out', '-webkit-zoom-out': 'zoom-out',
   };
-  for (const [css, want] of Object.entries(table)) assert.equal(cssCursorToShape(css), want, JSON.stringify(css));
-  assert.equal(cssCursorToShape(null), 'arrow');
-  assert.equal(cssCursorToShape(undefined), 'arrow');
-  assert.equal(cssCursorToShape(42), 'arrow');
+  for (const [css, want] of Object.entries(table)) assert.equal(cssCursorToShape(css), want, css);
+  // The map covers exactly that list, and every sprite is reachable from some keyword.
+  assert.deepEqual([...CURSOR_CSS_KEYWORDS].sort(), Object.keys(table).sort());
+  for (const shape of CURSOR_SHAPES) assert.ok(Object.values(table).includes(shape), `${shape} unreachable`);
+  for (const [css, want] of [['  GRAB ', 'grab'], ['wobble', 'arrow'], ['', 'arrow'], ['url(a.png), grab', 'grab'], ['url("x,y.png") 3 4, text', 'text']]) {
+    assert.equal(cssCursorToShape(css), want, JSON.stringify(css));
+  }
+  for (const v of [null, undefined, 42]) assert.equal(cssCursorToShape(v), 'arrow');
+  assert.equal(cssKeywordToShape('NOT-ALLOWED'), 'not-allowed');
+});
+
+test('parseCssCursor: url list (quotes, commas inside data: URLs, hotspots), image-set skipped, the keyword fallback', () => {
+  const p = parseCssCursor('url("data:image/png;base64,AA,BB") 4 5, url(\'b c.cur\'), url(plain.png) 1, -webkit-image-set(url(x.png) 1x) 2 2, pointer');
+  assert.deepEqual(p.images, [
+    { url: 'data:image/png;base64,AA,BB', hotspot: [4, 5] },
+    { url: 'b c.cur', hotspot: null },
+    { url: 'plain.png', hotspot: null }, // one number is not a hotspot
+  ]);
+  assert.equal(p.keyword, 'pointer');
+  assert.deepEqual(parseCssCursor('grab'), { images: [], keyword: 'grab' });
+  assert.deepEqual(parseCssCursor('url(a.png)').images, [{ url: 'a.png', hotspot: null }]);
+  assert.equal(parseCssCursor('url(a.png)').keyword, 'auto', 'no keyword → auto');
+  assert.deepEqual(parseCssCursor('url("q\\"x.png") 0 0, move').images[0], { url: 'q"x.png', hotspot: [0, 0] });
+  assert.equal(parseCssCursor(null).keyword, 'auto');
+  assert.equal(parseCssCursor('url(a.png) 2 3, auto'), parseCssCursor('url(a.png) 2 3, auto'), 'memoised');
+});
+
+function fakeImages(states) {
+  // { url: {state, width, height, curHotspot} }
+  const asked = [];
+  return {
+    asked,
+    get(url) {
+      asked.push(url);
+      return { url, image: { naturalWidth: 0 }, width: 32, height: 32, curHotspot: null, state: 'loading', ...(states[url] || {}) };
+    },
+  };
+}
+
+test('resolveCursorSprite: the first READY image; failed → next; loading → the keyword fallback; none; hotspot + 128-px cap', () => {
+  let r = resolveCursorSprite('url(a.png) 3 4, url(b.png), grab', fakeImages({ 'a.png': { state: 'ready' } }));
+  assert.equal(r.kind, 'image');
+  assert.equal(r.key, 'a.png');
+  assert.deepEqual(r.hotspot, [3, 4], 'explicit hotspot');
+  assert.deepEqual(cursorSpriteRect(r), [-3 / 19, -4 / 19, 29 / 19, 28 / 19], 'CSS px → sprite units around the hotspot');
+  r = resolveCursorSprite('url(a.png) 3 4, url(b.png), grab', fakeImages({ 'a.png': { state: 'failed' }, 'b.png': { state: 'ready' } }));
+  assert.equal(r.key, 'b.png', 'a failed (e.g. no CORS) url falls to the next');
+  assert.deepEqual(r.hotspot, [0, 0], 'no hotspot, not a .cur → 0 0');
+  const imgs = fakeImages({});
+  r = resolveCursorSprite('url(a.png), url(b.png), grab', imgs);
+  assert.deepEqual(r, spriteForName('grab'), 'still loading → the keyword fallback');
+  assert.deepEqual(imgs.asked, ['a.png'], 'and the next url is not fetched while the first may still load');
+  r = resolveCursorSprite('url(a.png), url(b.png), grab', fakeImages({ 'a.png': { state: 'failed' }, 'b.png': { state: 'failed' } }));
+  assert.equal(r.name, 'grab', 'all failed → the keyword');
+  r = resolveCursorSprite('url(a.cur), auto', fakeImages({ 'a.cur': { state: 'ready', curHotspot: [7, 9] } }));
+  assert.deepEqual(r.hotspot, [7, 9], "a .cur file's own hotspot");
+  r = resolveCursorSprite('url(big.png) 100 50, auto', fakeImages({ 'big.png': { state: 'ready', width: 256, height: 200 } }));
+  assert.deepEqual([r.width, r.height], [CURSOR_IMAGE_MAX_PX, 100], 'capped at 128 CSS px, aspect kept');
+  assert.deepEqual(r.hotspot, [50, 25], 'the hotspot scales with it');
+  assert.deepEqual(resolveCursorSprite('none'), { kind: 'none' });
+  assert.deepEqual(resolveCursorSprite('url(x.png), none', fakeImages({ 'x.png': { state: 'failed' } })), { kind: 'none' });
+  assert.deepEqual(resolveCursorSprite('wobble'), spriteForName('arrow'));
+  const b = cursorSpriteBox(spriteForName('grab'), 0.1, 0.01), t = cursorSpriteRect(spriteForName('grab'));
+  b.forEach((v, i) => assert.ok(Math.abs(v - (t[i] + (i < 2 ? -0.11 : 0.11))) < 1e-12));
+});
+
+test('curFileHotspot: reads a .cur header (the entry matching the width, else the first); not a cursor → null', () => {
+  const cur = (entries) => {
+    const b = new ArrayBuffer(6 + 16 * entries.length);
+    const v = new DataView(b);
+    v.setUint16(0, 0, true);
+    v.setUint16(2, 2, true);
+    v.setUint16(4, entries.length, true);
+    entries.forEach(([w, x, y], i) => {
+      v.setUint8(6 + 16 * i, w);
+      v.setUint16(6 + 16 * i + 4, x, true);
+      v.setUint16(6 + 16 * i + 6, y, true);
+    });
+    return b;
+  };
+  assert.deepEqual(curFileHotspot(cur([[32, 5, 6]])), [5, 6]);
+  assert.deepEqual(curFileHotspot(cur([[16, 1, 2], [32, 10, 12]]), 32), [10, 12]);
+  assert.deepEqual(curFileHotspot(cur([[16, 1, 2], [32, 10, 12]]), 48), [1, 2]);
+  const ico = cur([[32, 5, 6]]);
+  new DataView(ico).setUint16(2, 1, true); // type 1 = an .ico: no hotspot
+  assert.equal(curFileHotspot(ico), null);
+  assert.equal(curFileHotspot(new ArrayBuffer(4)), null);
+  assert.equal(curFileHotspot(null), null);
+});
+
+test('CursorImageCache: crossOrigin anonymous, cached per URL, ready on load, failed on error (no CORS), .cur hotspot fetched', async () => {
+  const made = [];
+  class FakeImage {
+    constructor() {
+      made.push(this);
+    }
+    set src(v) {
+      this._src = v;
+    }
+  }
+  const fetched = [];
+  const curBytes = (() => {
+    const b = new ArrayBuffer(22);
+    const v = new DataView(b);
+    v.setUint16(2, 2, true);
+    v.setUint16(4, 1, true);
+    v.setUint8(6, 32);
+    v.setUint16(10, 3, true);
+    v.setUint16(12, 4, true);
+    return b;
+  })();
+  const c = new CursorImageCache({ ImageCtor: FakeImage, fetchFn: async (u, o) => (fetched.push([u, o]), { ok: true, arrayBuffer: async () => curBytes }) });
+  const a = c.get('a.png');
+  assert.equal(c.get('a.png'), a, 'one entry per URL');
+  assert.equal(made.length, 1);
+  assert.equal(made[0].crossOrigin, 'anonymous');
+  assert.equal(made[0]._src, 'a.png');
+  assert.equal(a.state, 'loading');
+  Object.assign(made[0], { naturalWidth: 24, naturalHeight: 20 });
+  made[0].onload();
+  assert.equal(a.state, 'ready');
+  assert.deepEqual([a.width, a.height], [24, 20]);
+  assert.equal(fetched.length, 0, 'a .png is not fetched for a hotspot');
+  const b = c.get('https://x.example/b.png');
+  made[1].onerror(); // a cross-origin image without CORS fails to load with crossOrigin set
+  assert.equal(b.state, 'failed');
+  const k = c.get('hand.cur');
+  Object.assign(made[2], { naturalWidth: 32, naturalHeight: 32 });
+  made[2].onload();
+  assert.equal(k.state, 'loading', 'a .cur waits for its hotspot');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(k.state, 'ready');
+  assert.deepEqual(k.curHotspot, [3, 4]);
+  assert.deepEqual(fetched[0], ['hand.cur', { mode: 'cors' }]);
+  const zero = c.get('zero.png');
+  Object.assign(made[3], { naturalWidth: 0, naturalHeight: 0 });
+  made[3].onload();
+  assert.equal(zero.state, 'failed', 'a 0×0 image is not a cursor');
+  assert.equal(new CursorImageCache({ ImageCtor: undefined }).get('a.png').state, 'failed', 'no Image (a worker, node): failed, the keyword is drawn');
 });
 
 test('cursorPickShape: shapeFor wins when it names a sprite, then a fixed shape, then the CSS, then the arrow', () => {
@@ -130,7 +265,10 @@ test('cursorPickShape: shapeFor wins when it names a sprite, then a fixed shape,
   assert.equal(cursorPickShape('pointer', 'grab', null), 'grab');
   assert.equal(cursorPickShape('auto', null, null), 'arrow');
   assert.equal(cursorPickShape(undefined, undefined, 'bogus'), 'arrow');
-  assert.deepEqual([...CURSOR_SHAPE_OPTIONS], ['auto', ...CURSOR_SHAPES]);
+  assert.equal(cursorPickShape('auto', undefined, 'none'), 'none', "the page's none");
+  assert.equal(cursorPickShape('none', undefined, 'grab'), 'none');
+  assert.equal(cursorPickShape('auto', 'none', 'grab'), 'none');
+  assert.deepEqual([...CURSOR_SHAPE_OPTIONS], ['auto', 'none', ...CURSOR_SHAPES]);
 });
 
 // ── The sprites ──────────────────────────────────────────────────────────────────────────────
@@ -152,7 +290,7 @@ test('shapes: the arrow is the arrow — same polygons, same mesh, same soft sam
   const a = cursorShape('arrow');
   assert.equal(a.parts[0], CURSOR_ARROW);
   assert.equal(a.fill[0], CURSOR_ARROW_FILL);
-  assert.deepEqual(cursorShapeMesh('arrow'), cursorArrowMesh());
+  void cursorArrowMesh;
   assert.deepEqual(cursorShapeBox('arrow', 0.05, 0.01), cursorSoftArrowBox(0.05, 0.01));
   for (const [x, y] of [[0.02, 0.05], [0.2, 0.5], [0.3, 0.75], [0.05, 0.6], [-0.01, 0.2], [0.4, 0.95]]) {
     for (const r of [0, 0.06]) {
@@ -164,42 +302,49 @@ test('shapes: the arrow is the arrow — same polygons, same mesh, same soft sam
   assert.equal(cursorShape('bogus').name, 'arrow', 'unknown names draw the arrow');
 });
 
-test('shapes: convex parts, a 1/19 fill inside the outline, the OS cursor size, the hotspot at the natural point', () => {
+test('shapes: valid 1/19 fills inside the outline, the OS cursor size, the hotspot at the natural point', () => {
+  const area = (p) => p.reduce((t, q, i) => t + q[0] * p[(i + 1) % p.length][1] - p[(i + 1) % p.length][0] * q[1], 0);
   for (const name of CURSOR_SHAPES) {
     const s = cursorShape(name);
-    assert.equal(s.index, CURSOR_SHAPES.indexOf(name));
     assert.equal(s.parts.length, s.fill.length);
-    if (name !== 'arrow') {
-      for (const p of s.parts) assert.ok(convex(p), `${name}: a part is not convex`);
-      // The inset must keep every edge: a chamfer too big for the width flips one (a bow-tie fill).
-      for (const f of s.fill) assert.ok(convex(f), `${name}: a fill part is not convex (edge flipped by the inset)`);
-    }
-    // Every fill vertex is inside the outline by ~1/19 (the dark rim).
-    for (const f of s.fill) for (const [x, y] of f) assert.ok(unionSd(s.parts, x, y) < -0.04, `${name}: fill at ${x},${y} not inset`);
+    s.parts.forEach((p, i) => {
+      // The inset keeps every edge: same winding, and every fill vertex ~1 px inside ITS part (a
+      // chamfer too big for the width flips an edge and pushes a vertex out).
+      assert.equal(Math.sign(area(s.fill[i])), Math.sign(area(p)), `${name}: part ${i} fill flipped`);
+      for (const [x, y] of s.fill[i]) assert.ok(cursorPolygonSd(p, x, y) < -0.04, `${name}: part ${i} fill vertex ${x},${y} not inset`);
+    });
+    // Detail marks sit on the white fill.
+    for (const d of s.detail) for (const [x, y] of d) assert.ok(unionSd(s.fill, x, y) < 0.01, `${name}: detail off the fill`);
     const [x0, y0, x1, y1] = s.box;
-    const tall = name === 'grabbing' ? 0.65 : 0.85; // the fist is shorter: its fingers are curled
-    assert.ok(y1 - y0 > tall && y1 - y0 <= 1.0001, `${name}: about one arrow tall (${y1 - y0})`);
-    assert.ok(x1 - x0 <= 1.0001, `${name}: no wider than tall`);
+    const big = Math.max(x1 - x0, y1 - y0);
+    assert.ok(big > (name === 'grabbing' ? 0.6 : 0.8) && big <= 1.0001, `${name}: about one arrow (${big})`);
   }
-  // The arrow's and the pointing hand's hotspots are their TIPS: the topmost point, on the outline.
-  for (const name of ['arrow', 'pointer']) {
+  // Tips: the arrow, the pointing hand, and every arrow-with-a-badge have their hotspot on the tip.
+  for (const name of ['arrow', 'pointer', 'help', 'progress', 'copy', 'alias', 'context-menu']) {
     const s = cursorShape(name);
-    assert.equal(s.box[1], 0, `${name}: nothing above the hotspot`);
+    assert.ok(Math.abs(s.box[1]) < 1e-9, `${name}: nothing above the hotspot`);
     assert.ok(Math.abs(unionSd(s.parts, 0, 0)) < 0.03, `${name}: the hotspot is on the tip`);
   }
-  // The pointing hand: the hotspot over the index finger, the hand hanging below it.
-  const ptr = cursorShape('pointer');
-  assert.ok(ptr.box[0] < -0.3 && ptr.box[2] > 0.4, 'the hand spreads both ways under the fingertip');
-  // The hands' hotspots sit in the palm (white), the four-way arrow's at its centre (white).
-  for (const name of ['grab', 'grabbing', 'move']) {
-    const s = cursorShape(name);
-    assert.ok(unionSd(s.fill, 0, 0) < -0.02, `${name}: the hotspot is inside the white fill`);
-    const c = cursorShapeSample(name, 0, 0, 0, 0);
-    assert.deepEqual(c, [1, 1, 1, 1], `${name}: white at the hotspot`);
+  // Centred cursors: the hotspot at the centre of the box.
+  for (const name of ['move', 'text', 'vertical-text', 'crosshair', 'cell', 'not-allowed', 'wait', 'ns-resize', 'ew-resize', 'nesw-resize', 'nwse-resize', 'col-resize', 'row-resize']) {
+    const b = cursorShape(name).box;
+    assert.ok(Math.abs(b[0] + b[2]) < 0.03 && Math.abs(b[1] + b[3]) < 0.03, `${name}: centred on its hotspot (${b})`);
   }
-  const mv = cursorShape('move').box;
-  for (let i = 0; i < 2; i++) assert.ok(Math.abs(mv[i] + mv[i + 2]) < 1e-9, 'the four-way arrow is centred on its hotspot');
+  // The hands: in the palm (white); the magnifiers: the lens centre (white, inside the + / −'s gap or on it).
+  for (const name of ['grab', 'grabbing']) assert.deepEqual(cursorShapeSample(name, 0, 0, 0, 0), [1, 1, 1, 1], `${name}: white at the hotspot`);
+  for (const name of ['zoom-in', 'zoom-out']) assert.ok(unionSd(cursorShape(name).fill, 0, 0) < -0.2, `${name}: hotspot deep in the lens`);
   assert.ok(cursorShape('grab').box[1] < cursorShape('grabbing').box[1] - 0.15, 'the open hand reaches higher than the fist');
+  // Orientation: the horizontal ones are wide, the vertical ones tall.
+  const wh = (n) => { const b = cursorShape(n).box; return (b[2] - b[0]) / (b[3] - b[1]); };
+  for (const n of ['ew-resize', 'vertical-text']) assert.ok(wh(n) > 1.5, `${n} is horizontal`);
+  for (const n of ['ns-resize', 'text']) assert.ok(wh(n) < 0.67, `${n} is vertical`);
+  assert.ok(wh('col-resize') > 1 && wh('row-resize') < 1, 'the splitters point across their bar');
+  // The detail marks are drawn dark: the + of zoom-in at the lens centre, not on zoom-out's vertical.
+  assert.ok(cursorShapeSample('zoom-in', 0, -2 / 19, 0, 0)[0] < 0.1, 'zoom-in: the + is dark');
+  assert.deepEqual(cursorShapeSample('zoom-out', 0, -2 / 19, 0, 0), [1, 1, 1, 1], 'zoom-out: no vertical stroke');
+  assert.ok(cursorShapeSample('not-allowed', 0, 0, 0, 0)[0] > 0.9, 'not-allowed: the slash is white at the centre');
+  assert.equal(cursorShapeSample('not-allowed', 0, -6 / 19, 0, 0)[3], 1, 'the ring is drawn');
+  assert.equal(cursorShapeSample('not-allowed', -2.5 / 19, 2.5 / 19, 0, 0)[3], 0, 'and its inside (off the slash) is clear');
 });
 
 test('shapes: the hands show dark seams between fingers (abutting parts), and one white palm (overlapping parts)', () => {
@@ -223,18 +368,24 @@ test('shapes: the hands show dark seams between fingers (abutting parts), and on
   assert.ok(c[0] < 0.1, 'the rim is the dark outline');
 });
 
-test('shapes: the crisp mesh is the outline then the fill, all triangles, hotspot at the origin (y up)', () => {
+test('cursorShapeTexture: every keyword sprite as a crisp texture covering its box, row 0 = the top, built once', () => {
   for (const name of CURSOR_SHAPES) {
-    const m = cursorShapeMesh(name, [1, 1, 1, 1], [0, 0, 0, 1]);
-    assert.equal(m.count % 3, 0);
-    assert.equal(m.positions.length, m.count * 3);
-    const firstWhite = Array.from({ length: m.count }, (_, i) => m.colors[i * 4]).indexOf(1);
-    assert.ok(firstWhite > 0, `${name}: outline triangles first`);
-    for (let i = firstWhite; i < m.count; i++) assert.equal(m.colors[i * 4], 1, `${name}: then only fill`);
-    const ys = Array.from({ length: m.count }, (_, i) => m.positions[i * 3 + 1]);
-    const b = cursorShape(name).box;
-    assert.ok(Math.abs(Math.max(...ys) + b[1]) < 1e-6, `${name}: y flipped (up) about the hotspot`);
+    const t = cursorShapeTexture(name);
+    assert.equal(cursorShapeTexture(name), t, 'cached');
+    assert.equal(t.data.length, t.width * t.height * 4);
+    const [r0, r1, r2, r3] = t.rect, b = cursorShape(name).box;
+    assert.ok(r0 <= b[0] && r1 <= b[1] && r2 >= b[2] && r3 >= b[3], `${name}: the texture covers the shape`);
+    assert.ok(Math.abs((r2 - r0) * 64 - t.width) < 1e-9 && Math.abs((r3 - r1) * 64 - t.height) < 1e-9, `${name}: 64 texels per unit`);
+    let opaque = 0;
+    for (let i = 3; i < t.data.length; i += 4) opaque += t.data[i] === 255;
+    assert.ok(opaque > 200, `${name}: drawn (${opaque} opaque texels)`);
+    assert.deepEqual(cursorSpriteRect(spriteForName(name)), [...t.rect]);
   }
+  // Row 0 is the top: the arrow's tip texel (top-left) is opaque, its bottom-left corner is clear.
+  const a = cursorShapeTexture('arrow');
+  const at = (x, y) => a.data[(y * a.width + x) * 4 + 3];
+  assert.ok(at(1, 1) > 0, 'tip at the top-left');
+  assert.equal(at(1, a.height - 2), 0);
 });
 
 test('shapes: the soft box grows around the hotspot only; the raster puts the hotspot where asked', () => {
@@ -245,8 +396,12 @@ test('shapes: the soft box grows around the hotspot only; the raster puts the ho
     // A 64-px sprite with its hotspot at (100.5, 80.5): the pixel there is opaque for the filled shapes.
     const r = cursorShapeRaster(name, 100.5, 80.5, 64, 0, 1);
     assert.ok(r.x0 <= 100 && r.y0 <= 80 && r.x0 + r.width > 100 && r.y0 + r.height > 80);
-    if (name !== 'arrow' && name !== 'pointer') {
-      const o = ((80 - r.y0) * r.width + (100 - r.x0)) * 4;
+    // A centred cursor's hotspot pixel is ON it (opaque); a tip's is at its edge.
+    const o = ((80 - r.y0) * r.width + (100 - r.x0)) * 4;
+    if (['grab', 'grabbing', 'move', 'text', 'vertical-text', 'crosshair', 'cell', 'not-allowed', 'ns-resize', 'ew-resize', 'nesw-resize', 'nwse-resize', 'col-resize', 'row-resize', 'zoom-in', 'zoom-out'].includes(name)) {
+      assert.equal(r.data[o + 3], 255, `${name}: hotspot pixel on the sprite`);
+    }
+    if (['grab', 'grabbing', 'move', 'text', 'crosshair', 'cell'].includes(name)) {
       assert.deepEqual(Array.from(r.data.slice(o, o + 4)), [255, 255, 255, 255], `${name}: hotspot pixel white`);
     }
   }
@@ -262,23 +417,14 @@ test('shapes: the soft box grows around the hotspot only; the raster puts the ho
   assert.ok(checked > 100);
 });
 
-test('cursorShapeGLSL: one program, every shape, a uniform selects it; no loops or arrays (ES 1.00)', () => {
-  const src = cursorShapeGLSL();
-  assert.match(src, /vec4 inline3dSoftCursor\(vec2 p, float radius, float aa, vec3 fill, vec3 outline, float shape\)/);
-  for (let k = 0; k < CURSOR_SHAPES.length; k++) {
-    assert.match(src, new RegExp(`float i3dShapeSdO${k}\\(vec2 p\\)`));
-    assert.match(src, new RegExp(`float i3dShapeSdF${k}\\(vec2 p\\)`));
-  }
-  assert.match(src, /if \(shape < 0\.5\)/);
-  assert.match(src, /else if \(shape < 3\.50*\)/);
+test('cursorSpriteGLSL: one textured program for every non-arrow sprite; the 13-tap kernel; no loops or arrays (ES 1.00)', () => {
+  const src = cursorSpriteGLSL();
+  assert.match(src, /vec4 inline3dSoftSprite\(sampler2D tex, vec2 p, vec4 rect, float radius\)/);
+  assert.equal(src.match(/acc \+= /g).length, 12, '12 off-centre taps + the centre');
+  assert.match(src, /texture2D\(tex, uv\)/);
+  assert.match(src, /uv\.x < 0\.0 \|\| uv\.y < 0\.0 \|\| uv\.x > 1\.0 \|\| uv\.y > 1\.0/, 'taps off the texture are transparent');
+  assert.match(src, /c\.rgb \* c\.a/, 'premultiplied accumulation');
   assert.doesNotMatch(src, /\bfor\s*\(|\bwhile\s*\(|\[\s*\d+\s*\]/);
-  // Each union function has one r = min(...) per part.
-  const fn = (k, kind) => src.split(`float i3dShapeSd${kind}${k}(vec2 p) {`)[1].split('\n}')[0];
-  for (let k = 0; k < CURSOR_SHAPES.length; k++) {
-    const parts = cursorShape(CURSOR_SHAPES[k]).parts.length;
-    assert.equal(fn(k, 'O').match(/r = min/g).length, parts);
-    assert.equal(fn(k, 'F').match(/r = min/g).length, parts);
-  }
 });
 
 // ── The read-back ────────────────────────────────────────────────────────────────────────────
@@ -376,31 +522,36 @@ test('CursorCssReader: reads on the FRAME, never in the listener; moves throttle
   }
 });
 
-test('CursorShapeSelector: no reader (no listeners) unless something may read the CSS; shapeFor overrides', () => {
+test('CursorShapeSelector: no reader (no listeners) unless something may read the CSS; shapeFor overrides; none', () => {
   const canvas = el('grab');
   installCascade(el('auto'));
   try {
     const fixed = new CursorShapeSelector({ canvas, scope: 'canvas' }, { shape: 'move' });
     assert.equal(fixed.reader, null);
     assert.equal(canvas.listeners('pointermove'), 0, 'a fixed shape adds no listener');
-    assert.equal(fixed.pick({ u: 0.5, v: 0.5, point: null }, 0), 'move');
+    assert.deepEqual(fixed.pick({ u: 0.5, v: 0.5, point: null }, 0), spriteForName('move'));
     const auto = new CursorShapeSelector({ canvas, scope: 'canvas' });
-    assert.equal(auto.pick({ u: 0.5, v: 0.5, point: null }, 0), 'grab');
+    assert.equal(auto.pick({ u: 0.5, v: 0.5, point: null }, 0).name, 'grab');
+    assert.equal(auto.current, 'grab');
     let seen;
     const sf = new CursorShapeSelector({ canvas, scope: 'canvas' }, { shapeFor: (h) => ((seen = h), h.point ? 'pointer' : undefined) });
-    assert.equal(sf.pick({ u: 0.2, v: 0.3, point: [0, 0, 1] }, 0), 'pointer');
-    assert.deepEqual(seen, { u: 0.2, v: 0.3, point: [0, 0, 1], css: 'grab' });
-    assert.equal(sf.pick({ u: 0.2, v: 0.3, point: null }, 1), 'grab', 'nothing from shapeFor → the CSS');
+    assert.equal(sf.pick({ u: 0.2, v: 0.3, point: [0, 0, 1] }, 0).name, 'pointer');
+    assert.deepEqual(seen, { u: 0.2, v: 0.3, point: [0, 0, 1], css: 'grab', cssValue: 'grab' });
+    assert.equal(sf.pick({ u: 0.2, v: 0.3, point: null }, 1).name, 'grab', 'nothing from shapeFor → the CSS');
     const warn = console.warn;
     console.warn = () => {};
     try {
       const bad = new CursorShapeSelector({ canvas, scope: 'canvas' }, { shapeFor: () => { throw new Error('x'); } });
-      assert.equal(bad.pick({ u: 0, v: 0, point: null }, 0), 'grab', 'a throwing shapeFor falls back');
+      assert.equal(bad.pick({ u: 0, v: 0, point: null }, 0).name, 'grab', 'a throwing shapeFor falls back');
     } finally {
       console.warn = warn;
     }
+    canvas.cursorRule = 'none';
+    const none = new CursorShapeSelector({ canvas, scope: 'canvas' });
+    assert.deepEqual(none.pick({ u: 0, v: 0, point: null }, 0), { kind: 'none' }, "the page's none");
+    assert.equal(none.current, 'none');
     assert.throws(() => new CursorShapeSelector({ canvas, scope: 'canvas' }, { shape: 'hand' }), /cursor\.shape "hand"/);
-    for (const s of [fixed, auto, sf]) s.dispose();
+    for (const s of [fixed, auto, sf, none]) s.dispose();
   } finally {
     uninstall();
   }
@@ -414,7 +565,8 @@ test('options: shape / shapeFor accepted on scenes and pairs, validated at the c
   assert.deepEqual(resolvePairCursorOption({ shape: 'pointer' }), { shape: 'pointer' });
   for (const s of CURSOR_SHAPE_OPTIONS) assert.doesNotThrow(() => resolveCursorOption({ shape: s }));
   assert.throws(() => resolveCursorOption({ shape: 'hand' }), /cursor\.shape "hand"/);
-  assert.throws(() => resolveCursorOption({ shape: 'text' }), /expected 'auto'/);
+  assert.throws(() => resolveCursorOption({ shape: 'wobble' }), /expected 'auto'/);
+  assert.doesNotThrow(() => resolveCursorOption({ shape: 'none' }));
   assert.throws(() => resolveCursorOption({ shapeFor: 'grab' }), /shapeFor must be a function/);
   assert.throws(() => resolvePairCursorOption({ shapeFor: 3 }), /shapeFor must be a function/);
 });
@@ -460,7 +612,22 @@ function stubTHREE() {
       this.matrix = { elements: new Array(16), fromArray(a) { this.elements = a; return this; } };
     }
   }
-  return { BufferGeometry: Geo, Float32BufferAttribute: Attr, MeshBasicMaterial: Mat, ShaderMaterial: Mat, Vector4: V4, Vector3: V3, Mesh, DoubleSide: 2, ShaderChunk: { colorspace_fragment: '' } };
+  class Tex {
+    constructor(image) {
+      this.image = image;
+      this.colorSpace = '';
+    }
+    dispose() {
+      this.disposed = true;
+    }
+  }
+  class DataTex extends Tex {
+    constructor(data, width, height) {
+      super({ data, width, height });
+    }
+  }
+  return { BufferGeometry: Geo, Float32BufferAttribute: Attr, MeshBasicMaterial: Mat, ShaderMaterial: Mat, Vector4: V4, Vector3: V3, Mesh, DoubleSide: 2, ShaderChunk: { colorspace_fragment: '' },
+    Texture: Tex, DataTexture: DataTex, RGBAFormat: 1023, LinearFilter: 1006, ClampToEdgeWrapping: 1001, SRGBColorSpace: 'srgb' };
 }
 function kooima(eye, w = 0.3, h = 0.2) {
   const n = 0.01, f = 100;
@@ -492,7 +659,7 @@ test('DepthCursor (three): the Shop case — CSS grab → grabbing on press → 
       const p = cur.update(views, (t += 16));
       assert.equal(p.active, true);
       const u = cur.object.material.uniforms;
-      seq.push([cur.shape, u ? u.inline3dCursorSoft.value.v[3] : null]);
+      seq.push([cur.shape, u && u.inline3dCursorTex ? u.inline3dCursorTex.value : null]);
     };
     canvas.dispatch('pointermove', { clientX: 150, clientY: 100 });
     frame();
@@ -503,7 +670,14 @@ test('DepthCursor (three): the Shop case — CSS grab → grabbing on press → 
     canvas.dispatch('pointerup', { clientX: 152, clientY: 100 });
     frame();
     assert.deepEqual(seq.map((s) => s[0]), ['grab', 'grabbing', 'grabbing', 'grab']);
-    assert.deepEqual(seq.map((s) => s[1]), [2, 3, 3, 2], "the soft shader's shape uniform follows");
+    const tex = seq.map((s) => s[1]);
+    assert.ok(tex.every(Boolean), 'drawn by the textured quad');
+    assert.equal(tex[0], tex[3], 'one texture per sprite, reused');
+    assert.notEqual(tex[0], tex[1]);
+    assert.deepEqual(tex[0].image.data, cursorShapeTexture('grab').data);
+    assert.deepEqual(tex[1].image.data, cursorShapeTexture('grabbing').data);
+    assert.equal(tex[0].flipY, false, 'row 0 = the top');
+    assert.equal(tex[0].colorSpace, 'srgb', 'sRGB bytes, decoded once');
     assert.equal(canvas.hasAttribute(CURSOR_HIDDEN_ATTR), true, 'OS cursor hidden while the sprite draws');
     assert.equal(canvas.style.cursor, undefined, 'the inline style is never written');
     cur.dispose();
@@ -512,19 +686,44 @@ test('DepthCursor (three): the Shop case — CSS grab → grabbing on press → 
   }
 });
 
-test('DepthCursor (three): a fixed shape and crisp frames swap the mesh to that shape', () => {
-  const canvas = el('grab');
-  const hitTest = (o, d) => {
-    const t = (0.1 - o[2]) / d[2];
-    return [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
-  };
-  const cur = new DepthCursor(stubTHREE(), { canvas, hitTest, shape: 'move', soften: 'off' });
-  assert.equal(cur.shapes.reader, null, "a fixed shape builds no reader");
-  cur.setPointer(0.5, 0.5);
-  cur.update([kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])], 1000);
-  assert.equal(cur.shape, 'move');
-  assert.deepEqual(cur.object.geometry.position.array, cursorShapeMesh('move', [1, 1, 1, 1]).positions);
-  cur.dispose();
+test('DepthCursor (three): crisp frames keep the arrow mesh; other sprites use the textured quad at radius 0; none hides the sprite but not the hide', () => {
+  const html = el('auto');
+  const canvas = el('crosshair', html);
+  installCascade(html);
+  try {
+    const hitTest = (o, d) => {
+      const t = (0.1 - o[2]) / d[2];
+      return [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
+    };
+    const views = [kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])];
+    const fixed = new DepthCursor(stubTHREE(), { canvas, hitTest, shape: 'move', soften: 'off' });
+    assert.equal(fixed.shapes.reader, null, 'a fixed shape builds no reader');
+    fixed.setPointer(0.5, 0.5);
+    fixed.update(views, 1000);
+    assert.equal(fixed.shape, 'move');
+    const u = fixed.object.material.uniforms;
+    assert.equal(u.inline3dCursorSoft.value.v[0], 0, 'crisp: radius 0');
+    assert.equal(u.inline3dCursorSoft.value.v[1], 1, 'crisp: opaque');
+    assert.deepEqual(u.inline3dCursorRect.value.v, [...cursorShapeTexture('move').rect]);
+    fixed.dispose();
+    const arrow = new DepthCursor(stubTHREE(), { canvas, hitTest, shape: 'arrow', soften: 'off' });
+    arrow.setPointer(0.5, 0.5);
+    arrow.update(views, 1000);
+    assert.equal(arrow.object.material.vertexColors, true, 'the arrow keeps its crisp mesh (pixel-identical to before)');
+    arrow.dispose();
+    // The page says none: nothing drawn, but the OS cursor stays hidden while lifted.
+    canvas.cursorRule = 'none';
+    const none = new DepthCursor(stubTHREE(), { canvas, hitTest });
+    none.setPointer(0.5, 0.5);
+    const p = none.update(views, 1000);
+    assert.equal(p.active, true);
+    assert.equal(none.shape, 'none');
+    assert.equal(none.object.visible, false, 'no sprite');
+    assert.equal(canvas.hasAttribute(CURSOR_HIDDEN_ATTR), true, 'and no OS cursor either');
+    none.dispose();
+  } finally {
+    uninstall();
+  }
 });
 
 test('PairCursor: draws the page cursor\'s shape into both halves', () => {

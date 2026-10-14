@@ -206,13 +206,13 @@ export class DepthCursor {
        */
       soften?: CursorSoftenOption;
       /**
-       * The sprite. Default `'auto'`: mirror the page's CSS cursor under the pointer — `pointer` the
-       * pointing hand, `grab` the open hand, `grabbing` the closed one, `move`/`all-scroll` the
-       * four-way arrow, anything else the arrow. A name fixes it.
+       * The sprite. Default `'auto'`: what the browser would show — the page's computed CSS cursor
+       * under the pointer: every standard keyword has a sprite, `url(…)` images are drawn as
+       * images, `none` draws nothing. A sprite name (or `'none'`) fixes it. `color` tints the arrow only.
        */
       shape?: CursorShapeOption;
       /** Per-frame override while the sprite draws: a shape name, or nothing for `shape`'s answer. */
-      shapeFor?: (hit: CursorShapeHit) => CursorShape | 'auto' | null | undefined;
+      shapeFor?: (hit: CursorShapeHit) => CursorShape | 'none' | 'auto' | null | undefined;
       /** Attach pattern: the Object3D the eye cameras hang off; its world matrix carries the views to world. */
       viewSpace?: unknown;
       /** `true`: log update() cost, rays a frame and the frame interval once a second; `'both'`: also keep the OS cursor visible. */
@@ -232,8 +232,8 @@ export class DepthCursor {
   readonly soften: CursorSoftenParams;
   /** The last drawn frame's softening (diagnostics); null while nothing is drawn. */
   readonly softening: CursorSoftening | null;
-  /** The sprite drawn last. */
-  readonly shape: CursorShape;
+  /** The sprite drawn last: a name, 'none' or 'image'. */
+  readonly shape: CursorShape | 'none' | 'image';
   /** Place the sprite for this frame — call with the views you are about to render, before rendering. */
   update(views: ArrayLike<XRView | CursorView>, nowMs?: number): CursorPlacement | { active: false };
   /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */

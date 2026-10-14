@@ -196,10 +196,10 @@ export interface PairCursorOptions {
   pointerScope?: 'canvas' | 'window';
   /** Crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7), drawn into the woven pixels. Default `'both'`. */
   soften?: CursorSoftenOption;
-  /** The sprite. Default `'auto'`: mirror the page's CSS cursor over the tile (`grab` → the open hand, …). */
+  /** The sprite. Default `'auto'`: the page's CSS cursor over the tile (any keyword, url() images, `none`). */
   shape?: CursorShapeOption;
   /** Per-frame override while the sprite draws (`point` is null on a pair): a shape name, or nothing for `shape`'s. */
-  shapeFor?: (hit: CursorShapeHit) => CursorShape | 'auto' | null | undefined;
+  shapeFor?: (hit: CursorShapeHit) => CursorShape | 'none' | 'auto' | null | undefined;
 }
 
 export interface CameraViewOptions {
