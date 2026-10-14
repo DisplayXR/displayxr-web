@@ -222,6 +222,13 @@ export class PlayCanvasDepthCursor {
 
     const picker = this._picker;
     picker.resize(W, H);
+    // The depth picker draws into TWO colour targets (pick id + pick depth). The engine's lit and
+    // gsplat shaders write both under DEPTH_PICK_PASS; an app's own pc.ShaderMaterial usually
+    // writes only the first, and WebGL rejects every such draw with GL_INVALID_OPERATION ("Active
+    // draw buffers with missing fragment shader outputs") — one per mesh per pick, so a page with
+    // a custom-shader backdrop logged hundreds a second. Those draws never reached the pick buffer
+    // anyway: leave them out of the pass, exactly as if they were not pickable.
+    const muted = muteDepthlessPicks(pc, layers, app.graphicsDevice);
     try {
       // Enabled only for the synchronous pick pass: a disabled camera is not in its layers'
       // camera lists, so the picker would render nothing; enabled outside it, the camera would
@@ -234,6 +241,7 @@ export class PlayCanvasDepthCursor {
       return;
     } finally {
       cam.camera.enabled = false;
+      for (const mi of muted) mi.pick = true;
     }
     // The picker stores LINEAR depth: (viewDist - near) / (far - near), viewDist = 1/gl_FragCoord.w.
     // Rebuild the point ourselves along the exact off-axis ray (getWorldPointAsync would unproject
@@ -282,6 +290,62 @@ export class PlayCanvasDepthCursor {
 }
 
 /** A copy of a column-major transform with unit rotation columns (scale removed). */
+// Does this material's pick shader write the depth-pick output (the second colour target)? Engine
+// materials do; a pc.ShaderMaterial does when its fragment code, with its #includes followed
+// through the material's and the engine's chunk maps, handles DEPTH_PICK_PASS — the engine's own
+// gsplat material is a ShaderMaterial whose whole fragment is `#include "gsplatPS"`.
+const writesPickDepth = new WeakMap();
+const PICK_DEPTH_RE = /DEPTH_PICK_PASS|pcFragColor1/;
+function materialWritesPickDepth(pc, mat, device) {
+  if (!mat || !pc.ShaderMaterial || !(mat instanceof pc.ShaderMaterial)) return true;
+  let v = writesPickDepth.get(mat);
+  if (v !== undefined) return v;
+  v = true; // can't tell: leave it in the pass, as before
+  try {
+    const wgsl = !!device?.isWebGPU;
+    const d = mat.shaderDesc || {};
+    const root = wgsl ? d.fragmentWGSL : d.fragmentGLSL ?? d.fragmentCode;
+    if (typeof root === 'string') {
+      const lang = wgsl ? pc.SHADERLANGUAGE_WGSL : pc.SHADERLANGUAGE_GLSL;
+      const own = mat.hasShaderChunks ? (wgsl ? mat.shaderChunks.wgsl : mat.shaderChunks.glsl) : null;
+      const engine = pc.ShaderChunks?.get ? pc.ShaderChunks.get(device, lang) : null;
+      const chunk = (name) => own?.get?.(name) ?? engine?.get?.(name);
+      const seen = new Set();
+      const scan = (code, depth) => {
+        if (PICK_DEPTH_RE.test(code)) return true;
+        if (depth > 8) return false;
+        for (const [, name] of code.matchAll(/#include\s+"(\w+)"/g)) {
+          if (seen.has(name)) continue;
+          seen.add(name);
+          const c = chunk(name);
+          if (typeof c === 'string' && scan(c, depth + 1)) return true;
+        }
+        return false;
+      };
+      v = scan(root, 0);
+    }
+  } catch {
+    v = true;
+  }
+  writesPickDepth.set(mat, v);
+  return v;
+}
+
+// Clear `pick` on the layers' mesh instances whose shader cannot write pick depth; returns them so
+// the caller restores the flag right after the (synchronous) pick pass.
+function muteDepthlessPicks(pc, layers, device) {
+  const muted = [];
+  for (const layer of layers) {
+    for (const mi of layer.meshInstances || []) {
+      if (mi.pick && !materialWritesPickDepth(pc, mi.material, device)) {
+        mi.pick = false;
+        muted.push(mi);
+      }
+    }
+  }
+  return muted;
+}
+
 function unscaled(m) {
   const o = Array.from(m);
   for (const c of [0, 4, 8]) {

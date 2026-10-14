@@ -5,6 +5,18 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — `cursor: 'depth'` (PlayCanvas): no GL error storm from an app's own `ShaderMaterial`
+
+- The depth pick pass renders into two colour targets (pick id + pick depth). A mesh whose
+  `pc.ShaderMaterial` writes only one output (a custom backdrop, frame or chrome quad) had every
+  pick draw rejected with `GL_INVALID_OPERATION: Active draw buffers with missing fragment shader
+  outputs` — hundreds a second on a panel, until Chromium stopped reporting them. Such meshes are now
+  left out of the pick pass (they never reached the pick buffer anyway), so nothing the cursor sees
+  changes. Materials that handle `DEPTH_PICK_PASS`, followed through their `#include`s (the
+  engine's gsplat material included), stay in.
+
 ## 1.43.1 — 2026-10-13
 
 ### Fixed — `warmEntity` on a display-rig layer
