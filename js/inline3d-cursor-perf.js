@@ -166,7 +166,7 @@ export class CursorDebugStats {
     this._prev = nowMs;
     this._update.push(updateMs);
     this._rays.push(rays);
-    if (pointerAgeMs !== null && pointerAgeMs >= 0 && Number.isFinite(pointerAgeMs)) this._age.push(pointerAgeMs);
+    if (Number.isFinite(pointerAgeMs) && pointerAgeMs >= 0) this._age.push(pointerAgeMs); // null (no new sample) is not finite
     this._samples += samples;
     if (nowMs - this._start < this.periodMs) return null;
     const s = {

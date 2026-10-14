@@ -114,7 +114,9 @@ async function main() {
       const c = document.querySelector('canvas') && window.__perf && window.__perfCursor;
       return c ? c.debugStats.history : null;
     });
-    const h = (hist || []).slice(skip + 1); // only whole seconds of steady motion
+    // Only whole seconds of steady motion (the window straddling the start is dropped when there is more).
+    const all = (hist || []).slice(skip);
+    const h = all.length > 1 ? all.slice(1) : all;
     if (!h.length) throw new Error('no debug stats — is the cursor running?');
     const pick = (k, s) => h.map((x) => x[k][s]);
     console.log(`update(): ${f(median(pick('updateMs', 'mean')), 3)} ms mean · ${f(median(pick('updateMs', 'p95')), 3)} p95 · ${f(Math.max(...pick('updateMs', 'max')), 3)} max ` +

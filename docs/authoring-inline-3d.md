@@ -1045,9 +1045,11 @@ from the views.
 ## A cursor that respects depth
 
 **On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
-(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
-cheap pass. three raycasts the subject, and on Spark splats that is amortised to one ray a frame.
-Without the option nothing is built or loaded. For your own three.js scene, use `DepthCursor`
+(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope, debug }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
+cheap pass. three raycasts the subject: on `./model` through a bounds tree (a BVH, loaded only with
+the option) at three rays a frame, on Spark splats one ray a frame. Either way the arrow follows the
+newest pointer position every frame and the pick only refreshes its depth, so a heavy model never
+stretches the frame. Without the option nothing is built or loaded. For your own three.js scene, use `DepthCursor`
 directly:
 
 The mouse cursor is drawn ON the glass (zero disparity). Over content that pops out of the glass it
@@ -1094,14 +1096,22 @@ wall.addScene(canvas, (views, layer) => {
   viewer).
 - **DOM over the canvas.** `pointerScope: 'window'` keeps the cursor active over HTML layered on
   the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
-- **Your `hitTest` must be cheap, and it must cover everything that sticks out.** It runs every
-  frame, over a footprint of several rays (two eyes × 9 points). A stock raycast through a
-  million-triangle mesh is too slow, so use a heightfield march, a BVH, or proxies. Anything you
+- **Your `hitTest` must be cheap, and it must cover everything that sticks out.** By default it runs
+  every frame over the whole footprint (two eyes × 10 points); `raysPerFrame: N` spreads that over
+  frames instead (N rays a frame, the arrow still placed at the newest pointer each frame). A stock
+  raycast through a million-triangle mesh is too slow, so use a heightfield march, a BVH, or proxies. Anything you
   leave out (a small spinning icon, a label) is something the cursor sinks behind; bounding boxes
   are fine for small parts.
 - **Splats.** Supply a `hitTest` that returns the splat renderer's expected depth along the ray.
   Raycasting splats doesn't work.
 - **Attach pattern.** If your eye cameras hang off an app camera, pass `viewSpace: appCamera`.
+- **Measuring it: `debug`.** `cursor: { debug: true }` (or `DepthCursor`'s `debug`) logs, at most
+  once a second, what the cursor costs a frame (`update()` ms, rays, frame interval, the pointer
+  sample's age, which pick answered). `debug: 'both'` also keeps the OS cursor visible beside the
+  arrow: move the mouse steadily, film the panel at 240 fps, and the lag is the distance between the
+  two over the speed. The samples take it from the URL: `?cursor=depth&cursorDebug` (`=both`).
+  The pointer itself comes from `pointerrawupdate` where the browser has it (Chromium, secure
+  contexts), so a frame reads the newest position rather than one a frame old.
 - **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths and policy,
   dependency-free: `CursorDepthPlacer`, and the pieces on their own (`cursorTarget`,
   `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`).

@@ -141,8 +141,18 @@ test('amortised pick: a slot cast from where the pointer no longer is (beyond re
     return pk;
   };
   const moved = [[0.5, 0.6], [0.5, 0.6]];
-  assert.deepEqual(primed().step(moved, 1, () => null, FWD, 1, 0.1 + 1e-12), [0, 0, 0.2]);
-  assert.equal(primed().step(moved, 1, () => null, FWD, 1, 0.0999), null);
+  const dist = Math.abs(0.5 - 0.6);
+  assert.deepEqual(primed().step(moved, 1, () => null, FWD, 1, dist), [0, 0, 0.2], 'exactly at reach: kept');
+  assert.equal(primed().step(moved, 1, () => null, FWD, 1, dist * 0.999), null);
+});
+
+test('amortised pick: staleness is judged by the HOTSPOT a slot was cast from, not by its footprint point', () => {
+  // A still pointer whose far footprint point (0.4 heights below the tip, beyond reach) is over content.
+  const fp = [[0.5, 0.5], [0.5, 0.9]];
+  const cast = (e, u, v) => (v > 0.8 ? [0, 0, 0.25] : null);
+  const pick = new CursorAmortisedPick(1);
+  pick.step(fp, 1, cast, FWD, 1, 0.05);
+  assert.deepEqual(pick.step(fp, 1, cast, FWD, 1, 0.05), [0, 0, 0.25]);
 });
 
 test('amortised pick: a footprint of a different size restarts the sweep', () => {
@@ -178,6 +188,17 @@ test('DepthCursor amortised: placed at the NEWEST pointer every frame, 3 rays a 
   const r = cur.update(VIEWS, (t += 16));
   assert.equal(r.targetDisparity, 0);
   near(r.geometry.canvasPoint[0], (0.8 - 0.5) * W, 1e-9);
+  cur.dispose();
+});
+
+test('DepthCursor amortised: both eyes are cast — content only one eye sees is found', () => {
+  // Content only along rays from the RIGHT eye (origin x > 0).
+  const rightOnly = (o, d) => (o[0] > 0 ? leftPlane([o[0] - 0.064, o[1], o[2]], d) || [0, 0, 0.1] : null);
+  const cur = new DepthCursor(stubTHREE(), { canvas: stubCanvas(), hitTest: rightOnly, raysPerFrame: 3 });
+  cur.setPointer(0.25, 0.5);
+  let p;
+  for (let i = 0; i < 8; i++) p = cur.update(VIEWS, 1000 + i * 16);
+  assert.ok(p.targetDisparity < 0, 'the right eye\'s hits count');
   cur.dispose();
 });
 
