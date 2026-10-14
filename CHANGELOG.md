@@ -5,27 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## 1.45.1 — 2026-10-13
-
-### Fixed — `cursor: 'depth'` showed up under a finger (touch)
-
-- On a touch device, dragging a finger over a scene drew the 3D cursor, though the browser shows no
-  cursor there. Since 1.44.0 the pointer took every `pointermove` / `pointerrawupdate` whatever
-  its `pointerType`. Now only a **mouse** or a **hovering pen** places the cursor. A touch or a pen
-  in contact clears it, including a tap that never moves (so no stale mouse hover stays up), and
-  the CSS cursor is never hidden for them. This covers every backend (three.js `./model`,
-  PlayCanvas `./model` / `./splat`, the `./call` / `./camera` pair cursor). They all share
-  `CursorPointer`.
-- New `cursorPointerHovers(e)` in `./cursor-depth`. An event with no `pointerType` (synthetic)
-  counts as a mouse, as before.
-
-## 1.45.0 — 2026-10-13
-
-### Packaging
-
-- `js/inline3d-cursor-shape.js` (new in this release, imported by `./cursor-depth` and so by
-  `./three`) is now in the published file set. A new unit test fails whenever a published module
-  imports a file the package does not ship.
+## Unreleased
 
 ### Depth cursor: when the runtime draws the web cursor, hand it the depth (runtime ADR-046 Amendment 4)
 
@@ -53,6 +33,29 @@ Touches `./cursor-depth`, `./three` (`DepthCursor`), the core tile handle, and t
   `DepthCursor.update`'s second argument may now be `{ nowMs, layer }` (a number still works).
 - Needs DisplayXR Browser with page API patch 0409 (browser-pvt #285) and runtime spec 8 (runtime
   #2088); safe to ship earlier, since it only activates on `"runtime"`.
+
+
+## 1.45.1 — 2026-10-13
+
+### Fixed — `cursor: 'depth'` showed up under a finger (touch)
+
+- On a touch device, dragging a finger over a scene drew the 3D cursor, though the browser shows no
+  cursor there. Since 1.44.0 the pointer took every `pointermove` / `pointerrawupdate` whatever
+  its `pointerType`. Now only a **mouse** or a **hovering pen** places the cursor. A touch or a pen
+  in contact clears it, including a tap that never moves (so no stale mouse hover stays up), and
+  the CSS cursor is never hidden for them. This covers every backend (three.js `./model`,
+  PlayCanvas `./model` / `./splat`, the `./call` / `./camera` pair cursor). They all share
+  `CursorPointer`.
+- New `cursorPointerHovers(e)` in `./cursor-depth`. An event with no `pointerType` (synthetic)
+  counts as a mouse, as before.
+
+## 1.45.0 — 2026-10-13
+
+### Packaging
+
+- `js/inline3d-cursor-shape.js` (new in this release, imported by `./cursor-depth` and so by
+  `./three`) is now in the published file set. A new unit test fails whenever a published module
+  imports a file the package does not ship.
 
 ### Depth cursor: the sprite is the page's CSS cursor — any keyword, and `url()` images (ADR-046 §C, page side)
 

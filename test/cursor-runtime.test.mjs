@@ -469,3 +469,84 @@ test('policy stays in the runtime: the SDK never sends a margin-shifted or clamp
   assert.ok(p.contentDisparity < T.minDisparity, 'beyond the comfort clamp');
   near(p.contentDisparityPx, oracleDisparityPx(far), 1e-6, 'sent unclamped');
 });
+
+// ── touch (1.45.1): a finger or a pen in contact is no hover → uv null → the runtime depth is withdrawn ──
+
+test('touch on the runtime path: a finger (move or bare tap) or a pen in contact withdraws the depth; a mouse brings it back', async () => {
+  const layer = fakeLayer('runtime');
+  const canvas = stubCanvas();
+  const cur = new DepthCursor(stubTHREE(), { canvas, hitTest });
+  cur.update(VIEWS, { nowMs: 1000, layer });
+  await flush();
+  const mouse = (x) => canvas.handlers.pointermove({ clientX: x, clientY: 100, pointerType: 'mouse' });
+  const sent = () => layer.calls.at(-1);
+  mouse(50);
+  cur.update(VIEWS, { nowMs: 1016, layer });
+  near(sent()[0].disparityPx, -12.8, 1e-6, 'mouse over the content: depth sent');
+  let t = 1032;
+  for (const ev of [
+    ['pointermove', { clientX: 60, clientY: 100, pointerType: 'touch', buttons: 1 }],
+    ['pointerdown', { clientX: 50, clientY: 100, pointerType: 'touch', buttons: 1 }], // a tap that never moves
+    ['pointermove', { clientX: 50, clientY: 100, pointerType: 'pen', buttons: 1 }],
+  ]) {
+    const n = layer.calls.length;
+    canvas.handlers[ev[0]](ev[1]);
+    cur.update(VIEWS, { nowMs: (t += 16), layer });
+    assert.deepEqual(sent(), [], `${ev[1].pointerType} ${ev[0]}: setCursorDepth() — withdrawn`);
+    assert.equal(layer.calls.length, n + 1, 'exactly one withdrawal');
+    cur.update(VIEWS, { nowMs: (t += 16), layer });
+    assert.equal(layer.calls.length, n + 1, 'and nothing more while the finger is down');
+    assert.equal(cur.object.visible, false);
+    assert.equal(cssHidden(canvas), false);
+    mouse(50);
+    cur.update(VIEWS, { nowMs: (t += 16), layer });
+    near(sent()[0].disparityPx, -12.8, 1e-6, 'a mouse again: the depth is back');
+  }
+  // A HOVERING pen (no buttons) counts as a pointer, like the mouse.
+  canvas.handlers.pointermove({ clientX: 50, clientY: 100, pointerType: 'pen', buttons: 0 });
+  cur.update(VIEWS, { nowMs: (t += 16), layer });
+  near(sent()[0].disparityPx, -12.8, 1e-6);
+  cur.dispose();
+});
+
+test('touch on the runtime path: PlayCanvas and pair cursors withdraw too (they share CursorPointer)', async () => {
+  // PlayCanvas
+  const layer = fakeLayer('runtime');
+  const { cur, canvas, entries } = pcCursor();
+  cur.frame(entries, layer);
+  await flush();
+  canvas.handlers.pointermove({ clientX: 50, clientY: 100, pointerType: 'mouse' });
+  cur.hit = [-0.1, 0, PLANE_Z];
+  cur.frame(entries, layer);
+  assert.ok(layer.calls.at(-1)[0].disparityPx < 0);
+  canvas.handlers.pointerdown({ clientX: 50, clientY: 100, pointerType: 'touch', buttons: 1 });
+  cur.frame(entries, layer);
+  assert.deepEqual(layer.calls.at(-1), []);
+  // Pair
+  const E = 240, Hh = 135;
+  const full = { sx: 0, sy: 0, sw: E, sh: Hh };
+  const pc2 = doc.createElement('canvas');
+  pc2.style = {};
+  pc2.getBoundingClientRect = () => ({ left: 0, top: 0, width: 384, height: 216 });
+  const handlers = {};
+  const lists = {};
+  pc2.addEventListener = (k, f) => {
+    (lists[k] ||= []).push(f);
+    handlers[k] = (e) => lists[k].forEach((g) => g(e));
+  };
+  pc2.removeEventListener = () => {};
+  const handle = fakeLayer('runtime');
+  const pair = new PairCursor(pc2, { pointerScope: 'canvas', shape: 'arrow', soften: 'off' });
+  const geo = { rL: full, rR: full, outW: E, outH: Hh, handle };
+  const g = recordingCtx();
+  const luma = uniformPair(E, Hh, 12);
+  pair.draw(g, luma, geo, 1);
+  await flush();
+  handlers.pointermove({ clientX: 192, clientY: 108, pointerType: 'mouse' });
+  pair.draw(g, luma, geo, 1.1);
+  assert.ok(handle.calls.at(-1)[0].disparityPx < 0);
+  handlers.pointermove({ clientX: 192, clientY: 108, pointerType: 'touch', buttons: 1 });
+  pair.draw(g, luma, geo, 1.2);
+  assert.deepEqual(handle.calls.at(-1), []);
+  assert.equal(g.ops.length, 0);
+});
