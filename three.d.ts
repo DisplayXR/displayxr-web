@@ -143,6 +143,7 @@ export class EdgeFeather {
   ): void;
 }
 
+import type { CursorRuntimeLink } from './cursor-depth.js';
 import type { CursorAnchorMode, CursorPlacement, CursorShape, CursorShapeHit, CursorShapeOption, CursorSoftenOption, CursorSoftenParams, CursorSoftening, CursorView } from './cursor-depth.js';
 
 /** One second of `debug` stats: each figure as `{ mean, p95, max, n }`. */
@@ -234,8 +235,17 @@ export class DepthCursor {
   readonly softening: CursorSoftening | null;
   /** The sprite drawn last: a name, 'none' or 'image'. */
   readonly shape: CursorShape | 'none' | 'image';
-  /** Place the sprite for this frame — call with the views you are about to render, before rendering. */
-  update(views: ArrayLike<XRView | CursorView>, nowMs?: number): CursorPlacement | { active: false };
+  /** The runtime-drawn cursor link (runtime ADR-046 Amendment 4). */
+  readonly runtime: CursorRuntimeLink;
+  /** The layer this canvas weaves through, as last passed to `update(views, { layer })`. */
+  layer: unknown;
+  /**
+   * Place the sprite for this frame — call with the views you are about to render, before rendering.
+   * Pass `{ layer }` (addScene's second callback argument): where it says "runtime" (ADR-046
+   * Amendment 4) the depth goes to the layer and the browser's own cursor is lifted by the runtime;
+   * no sprite is drawn. A number is the time in ms, as before.
+   */
+  update(views: ArrayLike<XRView | CursorView> | null, opts?: number | { nowMs?: number; layer?: unknown }): CursorPlacement | { active: false; runtime?: boolean };
   /** Set the pointer directly (canvas-normalised, v down), or null — for scripted input. */
   setPointer(u: number | null, v?: number): void;
   /** Remove listeners, restore the CSS cursor, free the sprite's GPU resources. */

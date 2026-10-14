@@ -740,7 +740,8 @@ export class SceneViewer {
     // cursor: 'depth' (ADR-046) — only when a page opted in; null otherwise.
     if (this.cursorDepth) {
       this.scene.updateMatrixWorld(); // the hit test reads THIS frame's subject pose
-      this.cursorDepth.update(g.entries.map((e) => ({ projectionMatrix: e.proj, transformMatrix: e.pose })));
+      // The layer too: where the runtime draws the web cursor (ADR-046 Amendment 4) the depth goes to it.
+      this.cursorDepth.update(g.entries.map((e) => ({ projectionMatrix: e.proj, transformMatrix: e.pose })), { layer });
     }
     const r = this.renderer;
     // getViewport() splits canvas.width; a drawing buffer the browser clamped behind our back

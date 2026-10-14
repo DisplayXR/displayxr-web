@@ -415,7 +415,12 @@ export class CursorDepthPlacer {
     const baseline = Math.hypot(ra[12] - rb[12], ra[13] - rb[13], ra[14] - rb[14]);
     const pxPerBaseline = hint.canvasPx > 0 ? (baseline / g.canvasHeight) * hint.canvasPx : null;
     const active = cursorShouldDraw(disparity, pxPerBaseline);
-    return { active, solved: true, position, basis: g.basis, height, disparity, targetDisparity: target, anchored, geometry: g, pxPerBaseline };
+    // The RAW content disparity, before the policy (ADR-046 Amendment 4 sends this, in device px).
+    const contentDisparityPx = cursorDisparityPx(content, pxPerBaseline);
+    return {
+      active, solved: true, position, basis: g.basis, height, disparity, targetDisparity: target, anchored, geometry: g, pxPerBaseline,
+      contentDisparity: content, contentDisparityPx,
+    };
   }
 }
 
@@ -625,6 +630,153 @@ function pageCursorHidden(hide) {
   if (_pageHides > 0) el.setAttribute?.(CURSOR_HIDDEN_ATTR, '');
   else el.removeAttribute?.(CURSOR_HIDDEN_ATTR);
 }
+
+// ── The runtime draws the cursor (runtime ADR-046 Amendment 4) ──────────────────────────────
+//
+// In a DisplayXR Browser whose runtime can draw the web cursor (Windows, XR_DXR_cursor_depth
+// spec >= 8), the page supplies ONLY the depth under the pointer: `layer.setCursorDepth({
+// disparityPx, u, v })` per animation frame while the pointer is over the layer's element, and
+// `layer.setCursorDepth()` to withdraw. The runtime reads the pointer itself at weave time,
+// applies the one policy (margin, clamp, threshold, filter, hybrid anchor), draws the BROWSER's
+// own cursor (so `grab`, `pointer`, `url(…)` look exactly as they would) with the B.7 softening,
+// and the browser hides the OS cursor over what it drew. The SDK then draws no sprite and never
+// touches the CSS cursor. Anywhere else (`getCursorDepthSupport()` says "none", or the methods do
+// not exist) every backend keeps drawing its own sprite exactly as before — the fallback ladder.
+
+/** Re-ask a target that answered "none" at most this often (ms) while the cursor runs… */
+export const CURSOR_RUNTIME_RETRY_MS = 2000;
+/** …and at most this many times per target. The browser answers "none" until its weave session is live. */
+export const CURSOR_RUNTIME_PROBES = 6;
+
+/**
+ * Does `target` (an XRDisplayLayer, or a tile handle that forwards to one) take a cursor depth?
+ * Method presence only — never reads an attribute off a prototype (the `Illegal invocation` trap).
+ */
+export function cursorRuntimeCapable(target) {
+  return !!target && typeof target.setCursorDepth === 'function' && typeof target.getCursorDepthSupport === 'function';
+}
+
+/**
+ * Content disparity in eye-baseline units (< 0 in front) → on-screen device px between the two
+ * outermost rendered views (< 0 crossed), the unit `setCursorDepth` takes: `d × pxPerBaseline`.
+ * @returns {number|null}  null when either is unknown (nothing under the pointer, canvas size unknown).
+ */
+export function cursorDisparityPx(contentDisparity, pxPerBaseline) {
+  if (contentDisparity === null || contentDisparity === undefined || !Number.isFinite(contentDisparity)) return null;
+  if (!(pxPerBaseline > 0) || !Number.isFinite(pxPerBaseline)) return null;
+  const px = contentDisparity * pxPerBaseline;
+  return Number.isFinite(px) ? px : null;
+}
+
+// What each target answered, shared by every link (one support probe per layer, not per cursor).
+const _runtimeSupport = new WeakMap();
+
+/**
+ * The page half of a runtime-drawn cursor, shared by every backend. Per frame: `bind(target)` with
+ * the layer the cursor's element weaves through (true = the runtime draws, so draw NO sprite and
+ * leave the CSS cursor alone), then either `report(u, v, disparityPx)` while the pointer is over
+ * the element or `withdraw()` when it is not. Constructing one costs nothing; a cursor builds it
+ * only under `cursor: 'depth'` (ADR-046 §0).
+ */
+export class CursorRuntimeLink {
+  constructor() {
+    /** The target bound last (an XRDisplayLayer or a tile handle), or null. */
+    this.target = null;
+    this._sent = false;
+    /** The last depth sent (diagnostics): `{ u, v, disparityPx }`, or null after a withdrawal. */
+    this.last = null;
+  }
+
+  /** "runtime" | "none" | "pending" for the bound target. */
+  get support() {
+    const t = this.target;
+    if (!cursorRuntimeCapable(t)) return 'none';
+    const s = _runtimeSupport.get(t);
+    return s ? s.state : 'pending';
+  }
+
+  /** True while the bound target's runtime draws the cursor. */
+  get drawing() {
+    return this.support === 'runtime';
+  }
+
+  /**
+   * This frame's target. A new target withdraws the depth from the old one. Starts (or re-tries,
+   * rate-limited) the support probe. Returns `drawing`.
+   */
+  bind(target) {
+    const t = target || null;
+    if (t !== this.target) {
+      this.withdraw();
+      this.target = t;
+    }
+    if (!cursorRuntimeCapable(t)) return false;
+    let s = _runtimeSupport.get(t);
+    if (!s) _runtimeSupport.set(t, (s = { state: 'pending', probes: 0, inFlight: false, at: 0 }));
+    if (s.state === 'runtime' || s.inFlight) return s.state === 'runtime';
+    const now = globalThis.performance ? globalThis.performance.now() : Date.now();
+    if (s.probes < CURSOR_RUNTIME_PROBES && (s.probes === 0 || now - s.at >= CURSOR_RUNTIME_RETRY_MS)) {
+      s.probes++;
+      s.at = now;
+      s.inFlight = true;
+      let p;
+      try {
+        p = Promise.resolve(t.getCursorDepthSupport());
+      } catch (e) {
+        p = Promise.reject(e);
+      }
+      p.then(
+        (r) => {
+          s.inFlight = false;
+          s.state = r === 'runtime' ? 'runtime' : 'none';
+        },
+        () => {
+          s.inFlight = false;
+          s.state = 'none';
+        },
+      );
+    }
+    return s.state === 'runtime';
+  }
+
+  /**
+   * The depth under the pointer at element-normalised (u, v), v down: `disparityPx` in device px
+   * between the outermost views (< 0 = in front), RAW — the runtime applies the policy — or null
+   * for "over the element, nothing 3D under it". A no-op unless the runtime draws.
+   */
+  report(u, v, disparityPx) {
+    if (!this.drawing) return false;
+    const d = { u: clamp01(u), v: clamp01(v) };
+    if (disparityPx !== null && disparityPx !== undefined && Number.isFinite(disparityPx)) d.disparityPx = disparityPx;
+    try {
+      this.target.setCursorDepth(d);
+    } catch {
+      return false;
+    }
+    this._sent = true;
+    this.last = { u: d.u, v: d.v, disparityPx: d.disparityPx ?? null };
+    return true;
+  }
+
+  /** Withdraw the depth (pointer off the element, 2D, teardown). Idempotent: one call per withdrawal. */
+  withdraw() {
+    this.last = null;
+    if (!this._sent) return;
+    this._sent = false;
+    try {
+      this.target?.setCursorDepth();
+    } catch {
+      /* a closed layer: its depth went with it */
+    }
+  }
+
+  dispose() {
+    this.withdraw();
+    this.target = null;
+  }
+}
+
+const clamp01 = (x) => (x > 0 ? (x < 1 ? x : 1) : 0);
 
 /**
  * A footprint ring: the point (u, v) plus 8 points on a circle of radius 0.75 × the sprite

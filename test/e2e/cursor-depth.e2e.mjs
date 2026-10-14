@@ -58,6 +58,12 @@ const CASES = [
   // Crosstalk softening off: the crisp arrow mesh, exactly as before (ADR-046 Amendment 2 §B.7).
   { engine: 'playcanvas', kind: 'model', soften: 'off' },
   { engine: 'three', kind: 'model', soften: 'off' },
+  // Runtime ADR-046 Amendment 4: a fake layer whose browser draws the cursor — no sprite, no CSS
+  // hide; the cube front's RAW disparity handed over in device px, a withdrawal on leave.
+  { engine: 'playcanvas', kind: 'model', runtime: true },
+  { engine: 'three', kind: 'model', runtime: true },
+  { engine: 'playcanvas', kind: 'splat', runtime: true },
+  { engine: 'three', kind: 'splat', runtime: true },
 ];
 
 async function loadPuppeteer() {
@@ -103,7 +109,7 @@ async function main() {
   const results = [];
   try {
     for (const c of CASES) {
-      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.shadermat ? '/shadermat' : ''}${c.soften ? `/soften=${c.soften}` : ''}${c.touch ? '/touch' : ''}`;
+      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.shadermat ? '/shadermat' : ''}${c.soften ? `/soften=${c.soften}` : ''}${c.touch ? '/touch' : ''}${c.runtime ? '/runtime' : ''}`;
       if (only.length && !only.includes(tag)) continue;
       const page = await browser.newPage();
       page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
@@ -117,7 +123,7 @@ async function main() {
         if (/inline3d|Uncaught|Shader|WebGL/i.test(t)) console.log(`  [page:${m.type()}] ${t.slice(0, 200)}`);
       });
       const t0 = Date.now();
-      await page.goto(`${url}/test/e2e/cursor-depth/${c.page || ''}?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.shadermat ? '&shadermat=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}${c.touch ? '&touch=1' : ''}`, { waitUntil: 'load' });
+      await page.goto(`${url}/test/e2e/cursor-depth/${c.page || ''}?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.shadermat ? '&shadermat=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}${c.touch ? '&touch=1' : ''}${c.runtime ? '&runtime=1' : ''}`, { waitUntil: 'load' });
       await page.waitForFunction(() => !document.getElementById('out').textContent.startsWith('running'), { timeout: TIMEOUT_MS, polling: 250 });
       const r = JSON.parse(await page.evaluate(() => document.getElementById('out').textContent));
       await page.close();
@@ -126,6 +132,14 @@ async function main() {
         r.error = `shader error: ${shaderErrors[0]}`;
       }
       const fmt = (x) => (x === null || x === undefined ? 'null' : x.toFixed(4));
+      if (r.runtime) {
+        const px = r.over?.sent?.[0]?.disparityPx;
+        console.log(`e2e: ${tag} ${r.pass ? 'PASS' : 'FAIL'} in ${Date.now() - t0} ms — sprite never drawn ${r.neverDrawn}, sent ${px === undefined ? 'none' : px.toFixed(2)} px` +
+          `${r.over?.cubeFrontDisparity != null ? ` (raw front ${(r.over.cubeFrontDisparity * r.over.pxPerBaseline).toFixed(2)} px)` : ''}, off ${JSON.stringify(r.off?.sent)}, leave ${JSON.stringify(r.afterLeave?.sent)}` +
+          `, ${r.calls} calls, GL errors ${glErrors}${r.error ? ` — ${r.error}` : ''}`);
+        results.push(!!r.pass && glErrors === 0);
+        continue;
+      }
       console.log(`e2e: ${tag} ${r.pass ? 'PASS' : 'FAIL'} in ${Date.now() - t0} ms — over: cursor ${fmt(r.over?.cursorDisparity)}` +
         `${r.over?.cubeFrontDisparity !== null && r.over?.cubeFrontDisparity !== undefined ? ` (front ${fmt(r.over.cubeFrontDisparity)})` : ''}, off: ${fmt(r.off?.cursorDisparity)}` +
         `, head move ${r.headMove === null || r.headMove === undefined ? 'null' : r.headMove.toFixed(4)} (${r.anchor})` +

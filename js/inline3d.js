@@ -1275,6 +1275,42 @@ class Inline3D {
         return this._pushViewRig(win);
       },
       /**
+       * Runtime ADR-046 Amendment 4: the depth under the pointer for THIS window, forwarded to its
+       * live layer's `setCursorDepth` — `{ disparityPx, u, v }` (device px between the outermost
+       * views, < 0 in front, RAW content disparity; u/v element-normalised, v down; no
+       * `disparityPx` = nothing 3D there), or nothing / null to withdraw. Returns whether a live
+       * layer took it. The depth cursors call this for you under `cursor: 'depth'`.
+       */
+      setCursorDepth: (depth) => {
+        const layer = win.layer;
+        if (!layer || typeof layer.setCursorDepth !== 'function') return false;
+        try {
+          if (depth) layer.setCursorDepth(depth);
+          else layer.setCursorDepth();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      /**
+       * "runtime" when the browser AND the runtime draw this window's cursor (the page then supplies
+       * only the depth, setCursorDepth); "none" otherwise — including no live layer yet, so ask
+       * again later. Never rejects.
+       * @returns {Promise<'runtime'|'none'>}
+       */
+      getCursorDepthSupport: () => {
+        const layer = win.layer;
+        if (!layer || typeof layer.getCursorDepthSupport !== 'function') return Promise.resolve('none');
+        try {
+          return Promise.resolve(layer.getCursorDepthSupport()).then(
+            (s) => (s === 'runtime' ? 'runtime' : 'none'),
+            () => 'none',
+          );
+        } catch {
+          return Promise.resolve('none');
+        }
+      },
+      /**
        * The panel this window is weaving on: physical size in metres, pixel size, and the view
        * scale the runtime RECOMMENDS. Resolves null on a machine with no glasses-free display.
        *

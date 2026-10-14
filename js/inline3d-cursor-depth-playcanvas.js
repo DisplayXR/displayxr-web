@@ -26,6 +26,7 @@
 import {
   CursorDepthPlacer,
   CursorPointer,
+  CursorRuntimeLink,
   CURSOR_DEFAULT_TUNING,
   cursorArrowFootprint,
   cursorDefaultHeight,
@@ -85,6 +86,8 @@ export class PlayCanvasDepthCursor {
     this._sprite = null; // { mi, node, mat } — built on first use
     /** Which sprite (CSS mirror / fixed / shapeFor); `.current` = the one drawn last. */
     this.shapes = new CursorShapeSelector(this.pointer, { shape, shapeFor });
+    /** The runtime-drawn cursor (runtime ADR-046 Amendment 4): the depth goes to the frame's layer when it says "runtime". */
+    this.runtime = new CursorRuntimeLink();
   }
 
   /** The sprite drawn last: a CURSOR_SHAPES name, 'none' or 'image'. */
@@ -96,11 +99,14 @@ export class PlayCanvasDepthCursor {
    * One 3D frame, before app.tick: schedule a pick, place the sprite, queue its lines.
    * @param {Array<{proj: ArrayLike<number>, pose: ArrayLike<number>, width: number, height: number}>} entries
    *        this frame's views, poses in RIG space (the eye cameras' parent).
+   * @param {object|null} [layer]  the frame's XRDisplayLayer: where it says "runtime" (ADR-046
+   *        Amendment 4) the raw depth goes to it and no sprite is drawn.
    */
-  frame(entries) {
+  frame(entries, layer = null) {
     const app = this.viewer.app;
     const rig = this.viewer.rigNode;
     const uv = this.pointer.uv;
+    const runtime = this.runtime.bind(layer);
     if (this._disposed || !app || !rig || !uv || !entries || entries.length < 2) {
       this.inactive();
       return;
@@ -122,6 +128,16 @@ export class PlayCanvasDepthCursor {
     if (this._frame++ % PICK_EVERY === 0 && !this._inFlight) this._pick(app, rig, entries[0], uv, h);
     const now = (globalThis.performance ? globalThis.performance.now() : Date.now()) / 1000;
     const p = this.placer.update(views, { u: uv[0], v: uv[1], nearestPoint: this.hit, cursorHeight: h, canvasPx: this.pointer.panelPx() }, now);
+    if (runtime) {
+      // The runtime draws the browser's own cursor at this depth: the raw content disparity in
+      // device px; no sprite, no CSS hide (the browser hides the OS cursor over what it drew).
+      this.runtime.report(uv[0], uv[1], p.solved ? p.contentDisparityPx : null);
+      this.placement = { ...p, active: false, runtime: true };
+      this.softening = null;
+      this.pointer.hideCss(false);
+      if (this._sprite) this._sprite.mi.visible = false;
+      return;
+    }
     this.placement = p;
     this.pointer.hideCss(!!p.active);
     const sprite = this._sprite || (p.active ? this._makeSprite(app) : null);
@@ -145,7 +161,8 @@ export class PlayCanvasDepthCursor {
 
   /** Mono / no pointer / no views: no sprite, the CSS cursor back. */
   inactive() {
-    if (this.placement.active) this.placement = { active: false };
+    this.runtime.withdraw();
+    if (this.placement.active || this.placement.runtime) this.placement = { active: false };
     this.softening = null;
     this.placer.update(null); // forget the hybrid anchor
     if (this._sprite) this._sprite.mi.visible = false;
@@ -356,6 +373,7 @@ export class PlayCanvasDepthCursor {
 
   dispose() {
     this._disposed = true;
+    this.runtime.dispose();
     this.pointer.dispose();
     this.shapes.dispose();
     try {

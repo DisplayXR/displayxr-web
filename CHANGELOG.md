@@ -5,6 +5,36 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Depth cursor: when the runtime draws the web cursor, hand it the depth (runtime ADR-046 Amendment 4)
+
+Touches `./cursor-depth`, `./three` (`DepthCursor`), the core tile handle, and the preview tier
+(`./model`, `./splat`, `./call`, `./camera`), all only under `cursor: 'depth'`.
+
+- In a DisplayXR Browser whose runtime draws the web cursor (`XRDisplayLayer.getCursorDepthSupport()`
+  → `"runtime"`: Windows, `XR_DXR_cursor_depth` spec ≥ 8), the depth cursor draws **no sprite** and
+  never hides the CSS cursor. Each frame it calls `layer.setCursorDepth({ disparityPx, u, v })` with
+  the **raw** content disparity under the footprint in **device px between the outermost views**
+  (< 0 = in front; no margin, clamp or filter: the runtime applies the one policy), `{ u, v }` with no
+  `disparityPx` over the element with nothing 3D under it, and `setCursorDepth()` once to withdraw
+  (pointer off the element, 2D, teardown). The runtime draws the browser's own cursor (`grab`,
+  `pointer`, `url(…)`), lifted, softened and late-latched.
+- `"none"`, an older browser, or any other browser: unchanged — the SDK sprite, its softening and
+  CSS-shape mirroring, exactly as before. The browser answers `"none"` until its weave session is
+  live, so a `"none"` is re-asked every 2 s, at most 6 times per layer.
+- Covered: `DepthCursor` (pass `update(views, { layer })`; `./model`/`./splat` on three do it),
+  the PlayCanvas cursor (`./model`, `./splat`), and the stereo-pair cursor (`./call`, `./camera`,
+  through the tile handle; its matched output-px disparity → device px).
+- New: `CursorRuntimeLink`, `cursorRuntimeCapable`, `cursorDisparityPx`, `CURSOR_RUNTIME_RETRY_MS`,
+  `CURSOR_RUNTIME_PROBES` (`./cursor-depth`); `CursorPlacement.contentDisparity` /
+  `contentDisparityPx` / `runtime`; tile handle `setCursorDepth()` / `getCursorDepthSupport()`;
+  `XRDisplayLayer.setCursorDepth?` / `getCursorDepthSupport?` and `XRCursorDepthInit` in the types.
+  `DepthCursor.update`'s second argument may now be `{ nowMs, layer }` (a number still works).
+- Needs DisplayXR Browser with page API patch 0409 (browser-pvt #285) and runtime spec 8 (runtime
+  #2088); safe to ship earlier, since it only activates on `"runtime"`.
+
+
 ## 1.45.1 — 2026-10-13
 
 ### Fixed — `cursor: 'depth'` showed up under a finger (touch)

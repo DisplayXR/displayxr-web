@@ -1306,6 +1306,8 @@ export class PlayCanvasSplatViewer {
   onFrame(views, layer, frame) {
     if (this._disposed) return;
     if (this._mode !== '3d') this.stopMono();
+    // cursor: 'depth' hands its depth to this layer where the runtime draws the web cursor (ADR-046 Amendment 4).
+    this._frameLayer = layer || null;
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
     // and the tick below may declare a new one (a focus ease) for the NEXT locate.
     if (this.layerRigs?.active) {
@@ -1348,6 +1350,7 @@ export class PlayCanvasSplatViewer {
       this._monoRaf = requestAnimationFrame(loop);
       this._beforeFrame?.(null);
       if (this._disposed || this._mode !== 'mono') return; // the callback removed or re-wove us
+      this._frameLayer = null;
       this.cursorDepth?.inactive(); // 2D: the normal cursor
       this._tick();
       this._drawMono();
@@ -2221,7 +2224,7 @@ export class PlayCanvasSplatViewer {
     // handle.setVideo's plane: size, eye split, and a new frame's upload (./inline3d-splat-video.js).
     this._videoPlane?.beforeDraw(entries, rect);
     // cursor: 'depth' — place the sprite and queue its lines for the tick below (no-op unless opted in).
-    this.cursorDepth?.frame(entries);
+    this.cursorDepth?.frame(entries, this._frameLayer);
     app.tick(now());
     this._afterTick();
     return true;
