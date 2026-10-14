@@ -13,6 +13,9 @@
 //     glass, off it nothing is drawn;
 //   both: the CSS cursor is hidden while the arrow shows and restored when it is not drawn / on
 //     pointerleave, and the arrow draws with depth test off;
+//   a layer on the display rig (handle.setLayerRig, #185; cursor-depth/layer-rig.html): over the
+//     rounded stage box the arrow is in front of it as the panel shows it, and an app ShaderMaterial
+//     that opts in with CURSOR_DEPTH_PICK_GLSL is hit (shadermat, and the stage box);
 //   softening (ADR-046 Amendment 2 §B.7): the lifted arrow draws with the soft material by default
 //     and the crisp mesh with soften 'off', and no shader fails to compile. (Pixels: see
 //     tools/cursor-soften-capture.)
@@ -43,6 +46,11 @@ const CASES = [
   // An app pc.ShaderMaterial behind the subject: the depth pick pass must not draw it (WebGL
   // rejects a one-output shader into the picker's two colour targets) — zero GL errors.
   { engine: 'playcanvas', kind: 'model', backdrop: true },
+  // issue #185: an app pc.ShaderMaterial that opts in with CURSOR_DEPTH_PICK_GLSL is hit.
+  { engine: 'playcanvas', kind: 'model', shadermat: true },
+  // issue #185: a layer moved to the DISPLAY rig (handle.setLayerRig) on a camera-rig splat — the
+  // rounded stage gets its own pick pass; the arrow lifts in front of the box as the panel shows it.
+  { engine: 'playcanvas', kind: 'layerrig', page: 'layer-rig.html' },
   // Crosstalk softening off: the crisp arrow mesh, exactly as before (ADR-046 Amendment 2 §B.7).
   { engine: 'playcanvas', kind: 'model', soften: 'off' },
   { engine: 'three', kind: 'model', soften: 'off' },
@@ -91,7 +99,7 @@ async function main() {
   const results = [];
   try {
     for (const c of CASES) {
-      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.soften ? `/soften=${c.soften}` : ''}`;
+      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.shadermat ? '/shadermat' : ''}${c.soften ? `/soften=${c.soften}` : ''}`;
       if (only.length && !only.includes(tag)) continue;
       const page = await browser.newPage();
       page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
@@ -105,7 +113,7 @@ async function main() {
         if (/inline3d|Uncaught|Shader|WebGL/i.test(t)) console.log(`  [page:${m.type()}] ${t.slice(0, 200)}`);
       });
       const t0 = Date.now();
-      await page.goto(`${url}/test/e2e/cursor-depth/?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}`, { waitUntil: 'load' });
+      await page.goto(`${url}/test/e2e/cursor-depth/${c.page || ''}?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.shadermat ? '&shadermat=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}`, { waitUntil: 'load' });
       await page.waitForFunction(() => !document.getElementById('out').textContent.startsWith('running'), { timeout: TIMEOUT_MS, polling: 250 });
       const r = JSON.parse(await page.evaluate(() => document.getElementById('out').textContent));
       await page.close();

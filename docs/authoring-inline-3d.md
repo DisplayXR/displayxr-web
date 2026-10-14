@@ -1143,6 +1143,42 @@ wall.addScene(canvas, (views, layer) => {
   two over the speed. The samples take it from the URL: `?cursor=depth&cursorDebug` (`=both`).
   The pointer itself comes from `pointerrawupdate` where the browser has it (Chromium, secure
   contexts), so a frame reads the newest position rather than one a frame old.
+- **PlayCanvas: layers on the display rig.** A layer moved with `handle.setLayerRig(name, 'display')`
+  (a round stage, a map tile under a camera-rig photo) is drawn by the layer rig's own cameras, not
+  the eye camera, and the pick follows it: when the layer rig rounds those layers (a camera rig,
+  gain ≠ 1) they get a second low-res pick pass through the same round views, and each hit is
+  turned into the point the photo's views show at the same pixels, so the arrow sits in front of
+  the stage as the panel shows it. The nearest hit of the two passes wins. The second pass exists
+  only while such a layer is on the display rig.
+- **PlayCanvas: your own `pc.ShaderMaterial`.** The pick pass draws into two colour targets (a pick
+  id, then the pick depth). A ShaderMaterial that writes only `gl_FragColor` is left out of the pass
+  (WebGL would reject the draw), so the cursor never rises over it. To make it pickable, write both
+  under the engine's pick defines. `@displayxr/inline3d/cursor-depth` exports the two pieces, which
+  use the engine's own `pickPS` chunk:
+
+  ```js
+  import { CURSOR_DEPTH_PICK_GLSL } from '@displayxr/inline3d/cursor-depth';
+
+  const material = new pc.ShaderMaterial({
+    uniqueName: 'my-stage',
+    attributes: { vertex_position: pc.SEMANTIC_POSITION },
+    vertexGLSL: myVertexGLSL,
+    fragmentGLSL: `${CURSOR_DEPTH_PICK_GLSL.declarations}
+      void main(void) {
+        #ifdef PICK_PASS
+          ${CURSOR_DEPTH_PICK_GLSL.output}
+        #else
+          gl_FragColor = vec4(0.9, 0.5, 0.1, 1.0);
+        #endif
+      }`,
+  });
+  ```
+
+  Spelled out, that is: inside `#ifdef PICK_PASS`, `pcFragColor0 = getPickOutput();` and, inside
+  `#ifdef DEPTH_PICK_PASS`, `pcFragColor1 = getPickDepth();`, with `#include "pickPS"` declared
+  above `main`. Keep any `discard` your shader does, so the pick sees the same silhouette. For a
+  WGSL material (`fragmentWGSL`, WebGPU) use `CURSOR_DEPTH_PICK_WGSL`, whose `output` writes
+  `output.color` and `output.color1`.
 - **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths and policy,
   dependency-free: `CursorDepthPlacer`, and the pieces on their own (`cursorTarget`,
   `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`; for the softening,

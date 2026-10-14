@@ -113,6 +113,30 @@ if (new URLSearchParams(location.search).get('backdrop') === '1' && engine === '
   plane.setLocalPosition(0, 0, -6);
   app.root.addChild(plane);
 }
+// shadermat=1 (playcanvas): the cube drawn with an app pc.ShaderMaterial that OPTS IN to the depth
+// pick (CURSOR_DEPTH_PICK_GLSL, issue #185). Without the opt-in the pick pass leaves such a material
+// out (#182) and the cursor would stay on the glass over the cube; with it the cube is hit as before.
+if (new URLSearchParams(location.search).get('shadermat') === '1' && engine === 'playcanvas') {
+  const pc = await import('playcanvas');
+  const { CURSOR_DEPTH_PICK_GLSL } = await import('../../../js/inline3d-cursor-depth.js');
+  const mat = new pc.ShaderMaterial({
+    uniqueName: 'e2e-optin',
+    vertexGLSL: 'attribute vec3 vertex_position; uniform mat4 matrix_model; uniform mat4 matrix_viewProjection; void main(void) { gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0); }',
+    fragmentGLSL: `${CURSOR_DEPTH_PICK_GLSL.declarations}
+      void main(void) {
+        #ifdef PICK_PASS
+          ${CURSOR_DEPTH_PICK_GLSL.output}
+        #else
+          gl_FragColor = vec4(0.8, 0.4, 0.2, 1.0);
+        #endif
+      }`,
+    attributes: { vertex_position: pc.SEMANTIC_POSITION },
+  });
+  mat.update();
+  let n = 0;
+  for (const r of handle.engine.root.findComponents('render')) for (const mi of r.meshInstances || []) { mi.material = mat; n++; }
+  if (!n) throw new Error('shadermat: no mesh instance to swap');
+}
 // Where the arrow is, per engine: its node / matrix translation = the TIP = the hotspot, in world
 // space (PlayCanvas: views carried through the rig node; three: the views ARE world space).
 let rig = null;

@@ -1,0 +1,255 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cursor: 'depth' over a setLayerRig display layer — e2e harness</title>
+<style>html,body{margin:0;background:#111;color:#ddd;font:12px monospace}canvas{display:block;width:600px;height:400px}</style>
+</head>
+<body>
+<!--
+  issue #185: `cursor: 'depth'` (PlayCanvas) must pick a layer moved to the DISPLAY rig with
+  handle.setLayerRig(name, 'display'). The page plays the runtime for a CAMERA rig (the photo's,
+  as tools/layer-rig-capture does: displayxr-common's dxr_camera3d_compute_view), so the layer rig
+  ROUNDS the stage (gain D/(m·n) != 1) and the cursor needs its second, display-rig pick pass.
+
+  The stage is a box on a "Stage" layer, out of the glass, drawn with an app pc.ShaderMaterial that
+  opts into the depth pick with CURSOR_DEPTH_PICK_GLSL (without it the pick pass leaves the
+  material out, #182). Pass = over the box the arrow's disparity is the box front's (as the panel
+  shows it: the runtime's display rig, factors 1) minus the margin, i.e. in front of it.
+
+  Oracle, independent of the SDK's shear: the box front under the pointer is found along the ray
+  of the ROUND rig's eye 0 (the runtime's display rig), projected into both round eyes, and the
+  PHOTO views' rays through those two pixels are triangulated — the point the cursor's own views
+  must put the arrow (just) in front of.
+-->
+<canvas id="c"></canvas>
+<pre id="out">running</pre>
+<script type="importmap">
+{ "imports": { "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs" } }
+</script>
+<script type="module">
+import * as pc from 'playcanvas';
+import { attachPlayCanvasSplat } from '../../../js/inline3d-splat-playcanvas.js';
+import { solveCursorGeometry, cursorPointDisparity, cursorViewRay, cursorArrowFootprint, cursorDefaultHeight, CURSOR_DEFAULT_TUNING, CURSOR_DEPTH_PICK_GLSL } from '../../../js/inline3d-cursor-depth.js';
+
+const out = document.getElementById('out');
+const canvas = document.getElementById('c');
+const log = (o) => (out.textContent = JSON.stringify(o, null, 1));
+window.onerror = (m) => log({ error: String(m) });
+const Q = new URLSearchParams(location.search);
+const SETTLE = Number(Q.get('settle') || 240);
+
+// ── the runtime's two rigs (as tools/layer-rig-capture/layerrig.js) ──
+const N = 0.6, IPD = 0.064, SCREEN = { w: 0.3, h: 0.2 };
+const EYES = [[-IPD / 2, 0, N], [IPD / 2, 0, N]];
+function rot(q, v) {
+  const [x, y, z, w] = q;
+  const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+  return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
+}
+function pose(p, q) {
+  const [x, y, z, w] = q;
+  const m = new Float32Array(16);
+  m[0] = 1 - 2 * (y * y + z * z); m[1] = 2 * (x * y + w * z); m[2] = 2 * (x * z - w * y);
+  m[4] = 2 * (x * y - w * z); m[5] = 1 - 2 * (x * x + z * z); m[6] = 2 * (y * z + w * x);
+  m[8] = 2 * (x * z + w * y); m[9] = 2 * (y * z - w * x); m[10] = 1 - 2 * (x * x + y * y);
+  m[12] = p[0]; m[13] = p[1]; m[14] = p[2]; m[15] = 1;
+  return m;
+}
+function projT(l, r, d, u, n = 0.05, f = 500) {
+  const P = new Float32Array(16);
+  P[0] = 2 / (l + r); P[8] = (r - l) / (l + r); P[5] = 2 / (u + d); P[9] = (u - d) / (u + d);
+  P[10] = -(f + n) / (f - n); P[11] = -1; P[14] = (-2 * f * n) / (f - n);
+  return P;
+}
+const qOf = (o) => [o.x, o.y, o.z, o.w];
+function cameraView(e, rig) {
+  const m = rig.metersToVirtual || 1, invd = rig.convergenceDiopters;
+  const t = Math.tan(rig.verticalFov / 2), ro = t * (SCREEN.w / SCREEN.h), uo = t;
+  const el = [m * e[0], m * e[1], m * (e[2] - N)];
+  const q = qOf(rig.orientation);
+  const w = rot(q, el);
+  const s = [el[0] * invd, el[1] * invd, el[2] * invd], den = 1 + s[2];
+  return { pose: pose([rig.position.x + w[0], rig.position.y + w[1], rig.position.z + w[2]], q), proj: projT((ro + s[0]) / den, (ro - s[0]) / den, (uo + s[1]) / den, (uo - s[1]) / den) };
+}
+function displayView(e, rig) {
+  const m2v = rig.virtualDisplayHeight / SCREEN.h, es = (rig.perspectiveFactor ?? 1) * m2v;
+  const ez = [e[0] * es, e[1] * es, e[2] * es], W = SCREEN.w * m2v, H = SCREEN.h * m2v;
+  const q = rig.orientation ? qOf(rig.orientation) : [0, 0, 0, 1], p = rig.position ? [rig.position.x, rig.position.y, rig.position.z] : [0, 0, 0];
+  const w = rot(q, ez);
+  return { pose: pose([p[0] + w[0], p[1] + w[1], p[2] + w[2]], q), proj: projT((W / 2 + ez[0]) / ez[2], (W / 2 - ez[0]) / ez[2], (H / 2 + ez[1]) / ez[2], (H / 2 - ez[1]) / ez[2]) };
+}
+/** The display rig the runtime's rig conversion says a camera rig IS, with ipd = parallax = 1. */
+function roundRig(rig) {
+  const D = 1 / rig.convergenceDiopters, t = Math.tan(rig.verticalFov / 2), q = qOf(rig.orientation), f = rot(q, [0, 0, -1]);
+  return { virtualDisplayHeight: 2 * D * t, perspectiveFactor: SCREEN.h / (2 * N) / t, position: { x: rig.position.x + D * f[0], y: rig.position.y + D * f[1], z: rig.position.z + D * f[2] }, orientation: rig.orientation };
+}
+const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let x = 0; for (let k = 0; k < 4; k++) x += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = x; } return o; };
+const ap = (m, X) => [0, 1, 2].map((r) => m[r] * X[0] + m[4 + r] * X[1] + m[8 + r] * X[2] + m[12 + r]);
+function ndc(view, X) {
+  const V = view.pose, P = view.proj;
+  // eye space = pose⁻¹ · X (rigid)
+  const d = [X[0] - V[12], X[1] - V[13], X[2] - V[14]];
+  const e = [0, 1, 2].map((c) => V[c * 4] * d[0] + V[c * 4 + 1] * d[1] + V[c * 4 + 2] * d[2]);
+  const w = -e[2];
+  return [(P[0] * e[0] + P[8] * e[2]) / w, (P[5] * e[1] + P[9] * e[2]) / w];
+}
+const asView = (v) => ({ projectionMatrix: v.proj, transformMatrix: v.pose });
+function triangulate(r1, r2) {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const p1 = r1.origin, d1 = r1.direction, p2 = r2.origin, d2 = r2.direction;
+  const w0 = [p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2]];
+  const a = dot(d1, d1), b = dot(d1, d2), c = dot(d2, d2), d = dot(d1, w0), e = dot(d2, w0), den = a * c - b * b;
+  const s = (b * e - c * d) / den, t = (a * e - b * d) / den;
+  return [0, 1, 2].map((i) => (p1[i] + s * d1[i] + p2[i] + t * d2[i]) / 2);
+}
+
+// ── the fake session ──
+let declared = null;
+let onFrame = null;
+const wall = {
+  supported: true,
+  addScene(cv, cb, o) {
+    onFrame = cb;
+    declared = o.viewRig ? JSON.parse(JSON.stringify(o.viewRig)) : { type: 'display', virtualDisplayHeight: 0.24 };
+    return new Proxy({ firstWoven: new Promise(() => {}), setViewRig(r) { declared = JSON.parse(JSON.stringify(r)); return true; } }, { get: (t, k) => (k in t ? t[k] : () => {}) });
+  },
+};
+const located = () => EYES.map((e) => (declared.type === 'camera' ? cameraView(e, declared) : displayView(e, declared)));
+const layer = { getViewport: (v) => v._vp };
+function locate() {
+  return located().map((v, i) => ({ projectionMatrix: v.proj, transform: { matrix: v.pose }, _vp: { x: i * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height } }));
+}
+let frames = 0;
+setInterval(() => { if (onFrame && declared) onFrame(locate(), layer, null); frames++; }, 16); // a timer: headless rAF is throttled
+const wait = (n) => new Promise((res) => { const f0 = frames; const t = () => (frames - f0 >= n ? res() : setTimeout(t, 16)); t(); });
+const prog = (m) => (out.textContent = `running: ${m} (frames ${frames})`);
+
+const handle = {};
+const ready = attachPlayCanvasSplat(handle, wall, canvas, '../../../samples/splat/assets/butterfly.sog', {
+  playcanvas: pc, rig: 'camera', convergence: 2,
+  intrinsics: { fx: 600, fy: 600, cx: 300, cy: 200, width: 600, height: 400 },
+  focusInput: false, orbit: false, idleSpin: 0, preserveDrawingBuffer: true, cursor: 'depth',
+}, []);
+prog('loading');
+await ready;
+await wait(30);
+prog('ready');
+const app = handle.engine.app;
+const rigNode = handle.viewer.rigNode;
+if (declared.type !== 'camera') throw new Error(`expected a camera rig declared, got ${declared.type}`);
+
+// The stage layer after World, drawn by the eye camera (what the app does), then moved to the display rig.
+const comp = app.scene.layers;
+const stage = new pc.Layer({ name: 'Stage' });
+const wi = comp.getTransparentIndex(comp.getLayerById(pc.LAYERID_WORLD));
+comp.insertOpaque(stage, wi + 1);
+comp.insertTransparent(stage, wi + 2);
+handle.engine.camera.camera.layers = [...handle.engine.camera.camera.layers, stage.id];
+
+const rig = JSON.parse(JSON.stringify(declared));
+const D = 1 / rig.convergenceDiopters, q = qOf(rig.orientation), fwd = rot(q, [0, 0, -1]);
+const right = rot(q, [1, 0, 0]), up = rot(q, [0, 1, 0]), toward = [-fwd[0], -fwd[1], -fwd[2]];
+const Wc = [rig.position.x + D * fwd[0], rig.position.y + D * fwd[1], rig.position.z + D * fwd[2]];
+const winH = 2 * D * Math.tan(rig.verticalFov / 2);
+/** window coords (a right, b up in window heights; c toward the viewer, world units) → rig space */
+const at = (a, b, c) => [0, 1, 2].map((i) => Wc[i] + a * winH * right[i] + b * winH * up[i] + c * toward[i]);
+
+// An app ShaderMaterial that OPTS IN to the depth pick (CURSOR_DEPTH_PICK_GLSL).
+const mat = new pc.ShaderMaterial({
+  uniqueName: 'e2e-stage-optin',
+  attributes: { vertex_position: pc.SEMANTIC_POSITION },
+  vertexGLSL: 'attribute vec3 vertex_position; uniform mat4 matrix_model; uniform mat4 matrix_viewProjection; void main(void) { gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0); }',
+  fragmentGLSL: `${CURSOR_DEPTH_PICK_GLSL.declarations}
+    void main(void) {
+      #ifdef PICK_PASS
+        ${CURSOR_DEPTH_PICK_GLSL.output}
+      #else
+        gl_FragColor = vec4(0.9, 0.5, 0.1, 1.0);
+      #endif
+    }`,
+});
+mat.update();
+const POP = 0.12, BOX_S = 0.12; // out of the glass (front ~0.4 baselines: inside the clamp, far enough off the window plane that the shear matters), off the butterfly
+const BOX_C = at(-0.28, 0.22, POP);
+const node = new pc.GraphNode('e2e-stage-box');
+rigNode.addChild(node);
+node.setLocalPosition(...BOX_C);
+// Turned (35° about up, 25° about right): a face that is NOT parallel to the window, so the pick
+// depth through the round views differs from the photo views' (a face parallel to the window maps
+// to itself under the window shear and would hide a wrong projection).
+const qmul = (a, b) => [a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0], a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+const QB = qmul(q, qmul([0, Math.sin(0.305), 0, Math.cos(0.305)], [Math.sin(0.218), 0, 0, Math.cos(0.218)]));
+const AX = [rot(QB, [1, 0, 0]), rot(QB, [0, 1, 0]), rot(QB, [0, 0, 1])];
+node.setLocalRotation(QB[0], QB[1], QB[2], QB[3]);
+node.setLocalScale(BOX_S, BOX_S, BOX_S);
+const mi = new pc.MeshInstance(pc.Mesh.fromGeometry(app.graphicsDevice, new pc.BoxGeometry()), mat, node);
+mi.cull = false;
+stage.addMeshInstances([mi]);
+handle.setLayerRig('Stage', 'display', { viewerDistance: N });
+await wait(20);
+const state = handle.layerRigState ? handle.layerRigState() : null;
+
+// ── the oracle: where the panel shows the box front under the pointer ──
+const R = () => rigNode.getWorldTransform().data;
+const round = EYES.map((e) => displayView(e, roundRig(rig)));
+const c0 = ndc(round[0], BOX_C); // the pointer over the box's centre, as round eye 0 shows it
+const u = (c0[0] + 1) / 2, v = (1 - c0[1]) / 2;
+// The cursor hit-tests the arrow's FOOTPRINT (a turned face is nearer on one side), sampled in a
+// 160-px-wide pick buffer: each sample's depth is the face's at its pick PIXEL's centre, laid along
+// the sample's own ray — mirrored here, through the oracle's views (not the SDK's shear).
+const PICK_W = 160, PICK_H = Math.round(PICK_W / (300 / 400)); // the cursor's pick buffer: 160 wide, one eye's aspect
+function boxHit(ray) {
+  const loc = (X) => { const d = [X[0] - BOX_C[0], X[1] - BOX_C[1], X[2] - BOX_C[2]]; return AX.map((ax) => (ax[0] * d[0] + ax[1] * d[1] + ax[2] * d[2]) / BOX_S); };
+  const o = loc(ray.origin), e = loc(ray.origin.map((x, i) => x + ray.direction[i])), d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]];
+  let t0 = -Infinity, t1 = Infinity;
+  for (let i = 0; i < 3; i++) { let a = (-0.5 - o[i]) / d[i], b = (0.5 - o[i]) / d[i]; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); }
+  return !(t0 <= t1) || t1 < 0 ? null : t0; // the round eye's view distance (direction has z = −1 in eye space)
+}
+function boxFront(g) {
+  const photo = located();
+  const H = PICK_H;
+  let best = null;
+  for (const [su, sv] of cursorArrowFootprint(u, v, cursorDefaultHeight(400), 600 / 400)) {
+    if (!(su >= 0 && su <= 1 && sv >= 0 && sv <= 1)) continue;
+    const pu = (Math.min(PICK_W - 1, Math.floor(su * PICK_W)) + 0.5) / PICK_W, pv = (Math.min(H - 1, Math.floor(sv * H)) + 0.5) / H;
+    const dist = boxHit(cursorViewRay(asView(round[0]), pu, pv));
+    if (dist === null) continue;
+    const ray = cursorViewRay(asView(round[0]), su, sv);
+    const X = ray.origin.map((x, i) => x + dist * ray.direction[i]); // rig space
+    // Round pixels of X in both eyes → the PHOTO rays through them → the point the photo views put there.
+    const rays = [0, 1].map((i) => { const p = ndc(round[i], X); return cursorViewRay(asView(photo[i]), (p[0] + 1) / 2, (1 - p[1]) / 2); });
+    const dsp = cursorPointDisparity(g, ap(R(), triangulate(rays[0], rays[1])));
+    if (best === null || dsp < best) best = dsp;
+  }
+  return best;
+}
+const worldViews = () => located().map((v) => ({ projectionMatrix: v.proj, transformMatrix: mul(R(), v.pose) }));
+const spriteTip = () => {
+  const n = app.root.findByName('inline3d-cursor');
+  const ui = app.scene.layers.getLayerById(pc.LAYERID_UI);
+  const m = n && (ui.meshInstances || []).find((x) => x.node === n);
+  if (!m || !m.visible) return null;
+  const p = n.getPosition();
+  const desc = m.material.shaderDesc || {};
+  return { pts: [p.x, p.y, p.z], depthTest: m.material.depthTest, soft: desc.uniqueName === 'inline3dDepthCursorSoft' };
+};
+const point = (uu, vv) => canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: uu * 600, clientY: vv * 400, bubbles: true }));
+async function measure(uu, vv, settle) {
+  for (let i = 0; i < 3; i++) { point(uu, vv); await wait(5); }
+  await wait(settle);
+  const wv = worldViews();
+  const g = solveCursorGeometry(wv[0], wv[1], uu, vv);
+  const tip = spriteTip();
+  return { u: uu, v: vv, cursorDisparity: tip ? cursorPointDisparity(g, tip.pts) : null, depthTest: tip?.depthTest ?? null, soft: tip?.soft ?? null, cssCursor: getComputedStyle(canvas).cursor, g };
+}
+const over = await measure(u, v, SETTLE);
+over.cubeFrontDisparity = boxFront(over.g);
+delete over.g;
+const margin = CURSOR_DEFAULT_TUNING.margin;
+const pass = !!state?.engaged && over.cursorDisparity !== null && over.cubeFrontDisparity !== null && over.cubeFrontDisparity < -0.01 &&
+  Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.003 && over.cssCursor === 'none' && over.depthTest === false;
+log({ engine: 'playcanvas', kind: 'layerrig', anchor: 'hybrid', soften: 'both', margin, pass, layerRig: state && { engaged: state.engaged, gain: state.gain, reason: state.reason }, over, off: null, headMove: null, frames });
+</script>
+</body>
+</html>

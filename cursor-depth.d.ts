@@ -413,3 +413,16 @@ export function cursorSoftArrowRaster(
   outline?: readonly number[],
   polys?: ReadonlyArray<ReadonlyArray<readonly [number, number]>>,
 ): { x0: number; y0: number; width: number; height: number; data: Uint8ClampedArray };
+
+/** A shader snippet pair for a PlayCanvas `pc.ShaderMaterial`: `declarations` above `main`, `output` inside `#ifdef PICK_PASS`. */
+export interface CursorDepthPickSnippet {
+  readonly declarations: string;
+  readonly output: string;
+}
+/**
+ * PlayCanvas ShaderMaterial opt-in to `cursor: 'depth'`'s pick (GLSL): writes the pick id to
+ * `pcFragColor0` and, under `DEPTH_PICK_PASS`, the pick depth to `pcFragColor1` (the engine's `pickPS`).
+ */
+export const CURSOR_DEPTH_PICK_GLSL: CursorDepthPickSnippet;
+/** The WGSL twin of CURSOR_DEPTH_PICK_GLSL: writes `output.color` / `output.color1`. */
+export const CURSOR_DEPTH_PICK_WGSL: CursorDepthPickSnippet;

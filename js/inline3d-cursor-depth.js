@@ -1012,3 +1012,37 @@ export function cursorSoftArrowRaster(cx, cy, sizePx, radius, alpha, fill = CURS
   }
   return { x0, y0, width, height, data };
 }
+
+/**
+ * PlayCanvas `pc.ShaderMaterial` opt-in to the depth cursor's pick (`cursor: 'depth'` on ./model
+ * and ./splat). The pick pass draws into TWO colour targets — the pick id, then the pick depth — and
+ * leaves out any ShaderMaterial whose fragment code does not write the second under
+ * DEPTH_PICK_PASS (WebGL would reject the draw), so such a mesh is never under the cursor. Paste
+ * `declarations` above `main` and `output` inside `#ifdef PICK_PASS … #else <your colour> #endif`:
+ *
+ *   fragmentGLSL: `${CURSOR_DEPTH_PICK_GLSL.declarations}
+ *     void main() {
+ *       #ifdef PICK_PASS
+ *         ${CURSOR_DEPTH_PICK_GLSL.output}
+ *       #else
+ *         gl_FragColor = vec4(0.2, 0.3, 0.4, 1.0);
+ *       #endif
+ *     }`
+ *
+ * The engine's own `pickPS` chunk does the work (getPickOutput / getPickDepth), so the id and the
+ * linear depth match its lit and gsplat materials exactly. Discard where your shader discards.
+ */
+export const CURSOR_DEPTH_PICK_GLSL = Object.freeze({
+  declarations: '#ifdef PICK_PASS\n#include "pickPS"\n#endif\n',
+  output: 'pcFragColor0 = getPickOutput();\n#ifdef DEPTH_PICK_PASS\npcFragColor1 = getPickDepth();\n#endif\n',
+});
+
+/**
+ * The WGSL twin of CURSOR_DEPTH_PICK_GLSL (a ShaderMaterial with `fragmentWGSL`, WebGPU): `output`
+ * writes `output.color` / `output.color1` of the engine's `FragmentOutput`, inside
+ * `#ifdef PICK_PASS … #else … #endif` in `fragmentMain`.
+ */
+export const CURSOR_DEPTH_PICK_WGSL = Object.freeze({
+  declarations: '#ifdef PICK_PASS\n#include "pickPS"\n#endif\n',
+  output: 'output.color = getPickOutput();\n#ifdef DEPTH_PICK_PASS\noutput.color1 = getPickDepth();\n#endif\n',
+});
