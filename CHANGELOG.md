@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.46.0 — 2026-10-14
 
 ### Depth cursor: when the runtime draws the web cursor, hand it the depth (runtime ADR-046 Amendment 4)
 
@@ -22,12 +22,15 @@ Touches `./cursor-depth`, `./three` (`DepthCursor`), the core tile handle, and t
   `pointer`, `url(…)`), lifted, softened and late-latched.
 - `"none"`, an older browser, or any other browser: unchanged — the SDK sprite, its softening and
   CSS-shape mirroring, exactly as before. The browser answers `"none"` until its weave session is
-  live, so a `"none"` is re-asked every 2 s, at most 6 times per layer.
+  live, so a `"none"` is re-asked (below).
+- The support probe: a `"none"` is re-asked every 2 s for the first 6 asks, then every 10 s with no
+  cap (`CURSOR_RUNTIME_SLOW_RETRY_MS`), so a weave session that reports late (tens of seconds on a
+  cold GPU) still hands the cursor to the runtime. A browser without the API is never probed.
 - Covered: `DepthCursor` (pass `update(views, { layer })`; `./model`/`./splat` on three do it),
   the PlayCanvas cursor (`./model`, `./splat`), and the stereo-pair cursor (`./call`, `./camera`,
   through the tile handle; its matched output-px disparity → device px).
 - New: `CursorRuntimeLink`, `cursorRuntimeCapable`, `cursorDisparityPx`, `CURSOR_RUNTIME_RETRY_MS`,
-  `CURSOR_RUNTIME_PROBES` (`./cursor-depth`); `CursorPlacement.contentDisparity` /
+  `CURSOR_RUNTIME_PROBES`, `CURSOR_RUNTIME_SLOW_RETRY_MS` (`./cursor-depth`); `CursorPlacement.contentDisparity` /
   `contentDisparityPx` / `runtime`; tile handle `setCursorDepth()` / `getCursorDepthSupport()`;
   `XRDisplayLayer.setCursorDepth?` / `getCursorDepthSupport?` and `XRCursorDepthInit` in the types.
   `DepthCursor.update`'s second argument may now be `{ nowMs, layer }` (a number still works).

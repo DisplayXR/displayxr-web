@@ -160,6 +160,8 @@ export interface CursorPlacement {
 export const CURSOR_RUNTIME_RETRY_MS: number;
 /** At most this many support probes per target. */
 export const CURSOR_RUNTIME_PROBES: number;
+/** After the fast probes, a "none" is re-asked this often, without a cap (a late weave session). */
+export const CURSOR_RUNTIME_SLOW_RETRY_MS: number;
 /** Does `target` (an XRDisplayLayer, or a tile handle) have `setCursorDepth` + `getCursorDepthSupport`? */
 export function cursorRuntimeCapable(target: unknown): boolean;
 /** Baseline-unit content disparity → device px between the outermost views (`d × pxPerBaseline`); null when either is unknown. */
