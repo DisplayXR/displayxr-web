@@ -18,6 +18,7 @@ import {
   CURSOR_DEFAULT_TUNING as T,
   CURSOR_RUNTIME_PROBES,
   CURSOR_RUNTIME_RETRY_MS,
+  CURSOR_RUNTIME_SLOW_RETRY_MS,
   CursorDepthPlacer,
   CursorRuntimeLink,
   cursorDisparityPx,
@@ -200,7 +201,7 @@ test('link: pending → "runtime"; the depth shape; one withdrawal; a new layer 
   assert.equal(b.calls.length, 0, 'nothing was sent to b, so nothing to withdraw');
 });
 
-test('link: "none" is re-asked at most every CURSOR_RUNTIME_RETRY_MS, CURSOR_RUNTIME_PROBES times; a rejection is "none"', async () => {
+test('link: "none" is re-asked at most every CURSOR_RUNTIME_RETRY_MS, CURSOR_RUNTIME_PROBES times, then every CURSOR_RUNTIME_SLOW_RETRY_MS; a rejection is "none"', async () => {
   let now = 1000;
   const realPerf = globalThis.performance;
   Object.defineProperty(globalThis, 'performance', { value: { now: () => now }, configurable: true, writable: true });
@@ -216,12 +217,30 @@ test('link: "none" is re-asked at most every CURSOR_RUNTIME_RETRY_MS, CURSOR_RUN
       link.bind(a);
     }
     assert.equal(a.probes, 1, 'not re-asked inside the retry window');
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < CURSOR_RUNTIME_PROBES + 3; i++) {
+      if (a.probes === CURSOR_RUNTIME_PROBES) break;
       now += CURSOR_RUNTIME_RETRY_MS;
       link.bind(a);
       await flush();
     }
-    assert.equal(a.probes, CURSOR_RUNTIME_PROBES, 'bounded');
+    assert.equal(a.probes, CURSOR_RUNTIME_PROBES, 'fast probes bounded');
+    // After the fast probes: the slow re-ask, so a weave session that reports late is still taken.
+    now += CURSOR_RUNTIME_SLOW_RETRY_MS - 1;
+    link.bind(a);
+    assert.equal(a.probes, CURSOR_RUNTIME_PROBES, 'not before the slow interval');
+    now += 1;
+    link.bind(a);
+    await flush();
+    assert.equal(a.probes, CURSOR_RUNTIME_PROBES + 1, 'slow re-ask');
+    answer = 'runtime';
+    const late = fakeLayer(() => Promise.resolve(late.probes > CURSOR_RUNTIME_PROBES + 2 ? 'runtime' : 'none'));
+    const ll = new CursorRuntimeLink();
+    for (let i = 0; i < 40 && !ll.drawing; i++) {
+      now += CURSOR_RUNTIME_SLOW_RETRY_MS;
+      ll.bind(late);
+      await flush();
+    }
+    assert.equal(ll.bind(late), true, 'a "runtime" after the fast probes is still taken');
     // The browser answers "none" until its weave session is live: a later "runtime" is taken.
     answer = 'runtime';
     const c = fakeLayer(() => Promise.resolve(answer === 'runtime' && c.probes > 1 ? 'runtime' : 'none'));

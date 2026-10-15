@@ -645,8 +645,14 @@ function pageCursorHidden(hide) {
 
 /** Re-ask a target that answered "none" at most this often (ms) while the cursor runs… */
 export const CURSOR_RUNTIME_RETRY_MS = 2000;
-/** …and at most this many times per target. The browser answers "none" until its weave session is live. */
+/** …this many times per target. The browser answers "none" until its weave session is live. */
 export const CURSOR_RUNTIME_PROBES = 6;
+/**
+ * After those, a "none" is still re-asked this often, without a cap: the weave session can take tens
+ * of seconds to report (a cold GPU, a slow first frame), longer than the fast probes cover. Only a
+ * browser that HAS the API and says "none" is ever asked; one without it is never probed at all.
+ */
+export const CURSOR_RUNTIME_SLOW_RETRY_MS = 10000;
 
 /**
  * Does `target` (an XRDisplayLayer, or a tile handle that forwards to one) take a cursor depth?
@@ -715,7 +721,8 @@ export class CursorRuntimeLink {
     if (!s) _runtimeSupport.set(t, (s = { state: 'pending', probes: 0, inFlight: false, at: 0 }));
     if (s.state === 'runtime' || s.inFlight) return s.state === 'runtime';
     const now = globalThis.performance ? globalThis.performance.now() : Date.now();
-    if (s.probes < CURSOR_RUNTIME_PROBES && (s.probes === 0 || now - s.at >= CURSOR_RUNTIME_RETRY_MS)) {
+    const wait = s.probes < CURSOR_RUNTIME_PROBES ? CURSOR_RUNTIME_RETRY_MS : CURSOR_RUNTIME_SLOW_RETRY_MS;
+    if (s.probes === 0 || now - s.at >= wait) {
       s.probes++;
       s.at = now;
       s.inFlight = true;
