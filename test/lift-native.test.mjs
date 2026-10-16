@@ -1,7 +1,7 @@
 // Tests for js/lift/native.js — the DisplayXR Browser's vendor 2D→3D module seen from the SDK:
 // liftCapabilities (inside / outside the browser's lift world), the dxr-lift attribute controller
-// (native live mode), the `native` depth provider (parsing + ORT fallback), the `native-gaussians`
-// lift provider and its selection over the local generator.
+// (native live mode), the `native` depth provider (parsing, no fallback), the `native-gaussians`
+// lift provider and its selection.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -56,7 +56,7 @@ test('liftCapabilities inside the browser: native caps, asked afresh on EVERY ca
   assert.equal(c.maxStreams, 2);
   assert.equal(c.approxMsPerConvert, 18);
   assert.equal(c.state, 'ready');
-  assert.deepEqual(c.webFallback, { video: false, still: false, webgpu: false });
+  assert.equal(c.webFallback, undefined, 'there is no web path to report');
   assert.equal(c.liftState, 'ready');
   await liftCapabilities({ fetch, navigator: noGpu });
   assert.equal(calls.filter((x) => x.url === NATIVE_CAPS_URL).length, 2, 'not cached: a second call re-asks');
@@ -68,15 +68,15 @@ test('liftCapabilities inside the browser: native caps, asked afresh on EVERY ca
 test('liftCapabilities: a cold-boot non-READY answer is never latched — the next call sees READY', async () => {
   let state = 'unavailable';
   const fetch = browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse({ ...CAPS, native: state !== 'unavailable', state }) });
-  let c = await liftCapabilities({ fetch, navigator: noGpu, webFallback: false });
+  let c = await liftCapabilities({ fetch, navigator: noGpu });
   assert.equal(c.native, false);
   assert.equal(c.liftState, 'unavailable');
   state = 'activating';
-  c = await liftCapabilities({ fetch, navigator: noGpu, webFallback: false });
+  c = await liftCapabilities({ fetch, navigator: noGpu });
   assert.equal(c.native, true, 'warming is native (wait, do not switch paths)');
   assert.equal(c.liftState, 'waiting');
   state = 'ready';
-  c = await liftCapabilities({ fetch, navigator: noGpu, webFallback: false });
+  c = await liftCapabilities({ fetch, navigator: noGpu });
   assert.equal(c.liftState, 'ready');
 });
 
@@ -97,7 +97,6 @@ test('liftCapabilities outside the browser: fetch rejects → native:false', asy
   const c = await liftCapabilities({ fetch: outsideFetch, navigator: noGpu });
   assert.equal(c.native, false);
   assert.equal(c.provider, undefined);
-  assert.deepEqual(c.webFallback, { video: false, still: false, webgpu: false });
 });
 
 test('liftCapabilities: an unavailable module or a non-OK answer is not native; an abort is not cached', async () => {
@@ -115,23 +114,6 @@ test('liftCapabilities: an unavailable module or a non-OK answer is not native; 
   await assert.rejects(liftCapabilities({ fetch: browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse(CAPS) }), navigator: noGpu, signal: ac.signal }));
   c = await liftCapabilities({ fetch: browserFetch({ [NATIVE_CAPS_URL]: () => jsonResponse(CAPS) }), navigator: noGpu });
   assert.equal(c.native, true, 'an aborted query leaves nothing behind');
-});
-
-test('liftCapabilities webFallback: WebGPU adapter + model reachability through the model source', async () => {
-  const probed = [];
-  const models = {
-    ready: async () => {},
-    resolveName: (n, role) => (role === 'depth-video' ? 'vda-s' : 'moge3-m'),
-    probe: async (name) => (probed.push(name), name === 'vda-s'),
-  };
-  const nav = { gpu: { requestAdapter: async () => ({}) } };
-  const c = await liftCapabilities({ fetch: outsideFetch, navigator: nav, models });
-  assert.deepEqual(c.webFallback, { video: true, still: false, webgpu: true });
-  assert.deepEqual(probed.sort(), ['moge3-m', 'vda-s']);
-  const c2 = await liftCapabilities({ fetch: outsideFetch, navigator: { gpu: { requestAdapter: async () => null } }, models: {}, refresh: true });
-  assert.deepEqual(c2.webFallback, { video: false, still: false, webgpu: false });
-  const c3 = await liftCapabilities({ fetch: outsideFetch, navigator: nav, models, webFallback: false, refresh: true });
-  assert.deepEqual(c3.webFallback, { video: false, still: false, webgpu: false });
 });
 
 // ── native live: the attributes ───────────────────────────────────────────────────────────
@@ -454,53 +436,36 @@ test('parseNativeDepthResponse: binary + headers, JSON base64 / array, semantics
   await assert.rejects(parseNativeDepthResponse(jsonResponse({ w: 2, h: 2, semantics: 'metric', data: [1, 2, 3] })), { code: 'format' });
 });
 
-test('native depth provider: POSTs the frame, no model load; falls back to ORT on error, sticks after 404', async () => {
+test('native depth provider: POSTs the frame; an error rejects (no in-page fallback), 404 sticks', async () => {
   const calls = [];
   let status = 200;
   const fetch = browserFetch({
     [NATIVE_DEPTH_URL]: () =>
       status === 200 ? jsonResponse({ w: 1, h: 1, semantics: 'metric', data: [2], focalPx: 1 }) : new Response('no', { status }),
   }, calls);
-  const fbCalls = { load: 0, estimate: 0 };
-  let fbOpts = null;
-  const fallback = (o) => {
-    fbOpts = o;
-    return {
-      id: 'ort-webgpu', kind: 'still',
-      load: async () => { fbCalls.load++; },
-      estimate: async () => (fbCalls.estimate++, { data: new Float32Array([7]), w: 1, h: 1, space: 'disparity' }),
-      reset() {}, dispose() {},
-    };
-  };
-  let ortLoads = 0;
-  const p = createNativeDepthProvider({ kind: 'still', fetch, fallback, loadOrt: async () => (ortLoads++, { fake: 'ort' }), modelSource: {} });
+  const p = createNativeDepthProvider({ kind: 'still', fetch });
   await p.load();
-  assert.equal(fbCalls.load, 0, 'no model at load');
   let d = await p.estimate({ source: frame });
   assert.equal(d.space, 'metric');
   assert.equal(p.info.source, 'native');
   assert.equal(calls[0].method, 'POST');
-  status = 500; // a transient error → this frame falls back, the next one tries native again
-  d = await p.estimate({ source: frame });
-  assert.equal(d.space, 'disparity');
-  assert.equal(fbCalls.load, 1);
-  assert.equal(ortLoads, 1, 'onnxruntime loaded lazily, only for the fallback');
-  assert.deepEqual(fbOpts.ort, { fake: 'ort' });
+  status = 500; // a transient error rejects this frame; the next one tries the module again
+  await assert.rejects(p.estimate({ source: frame }), (e) => e.name === 'NativeLiftError');
+  assert.equal(p.info.unsupported, false);
+  assert.match(p.info.lastError, /500/);
   status = 200;
   d = await p.estimate({ source: frame });
   assert.equal(d.space, 'metric', 'native again after a transient error');
   status = 404;
-  await p.estimate({ source: frame });
+  await assert.rejects(p.estimate({ source: frame }));
   assert.equal(p.info.unsupported, true);
   const n = calls.length;
   status = 200;
-  d = await p.estimate({ source: frame });
+  await assert.rejects(p.estimate({ source: frame }), (e) => e.code === 'unsupported');
   assert.equal(calls.length, n, 'after a 404 the module is not asked again');
-  assert.equal(d.space, 'disparity');
-  assert.equal(fbCalls.load, 1, 'fallback loaded once');
 });
 
-test('native depth: registered at priority 100 for stills only and wins over ORT for model names', () => {
+test('native depth: registered at priority 100 for stills only and wins for model names', () => {
   const r = getRegistry();
   const offOrt = r.registerDepthProvider('t-ort', () => ({ id: 't-ort' }), { priority: 0 });
   try {
@@ -589,4 +554,21 @@ test('gaussians provider selection: native-gaussians is the default only when th
   // no gaussians mode → not registered
   assert.deepEqual(ensureNativeProviders({ ...CAPS, modes: ['depth'] }, { registry: r }), ['native']);
   r.registerDepthProvider('native', () => null, {})();
+});
+
+// ── no in-page converter ──────────────────────────────────────────────────────────────────
+
+test('lift(): with no converter (runtime not native, no providers.lift) it rejects with NativeLiftError "unavailable"', async () => {
+  const { lift } = await import('../js/lift/lift.js');
+  const { NativeLiftError } = await import('../js/lift/native.js');
+  const el = { nodeType: 1, tagName: 'VIDEO' };
+  await assert.rejects(
+    lift(el, { native: false }),
+    (e) => e instanceof NativeLiftError && e.code === 'unavailable',
+  );
+  const asked = [];
+  await assert.rejects(
+    lift(el, { native: { native: false, liftState: 'unavailable', modes: [] } }),
+    (e) => e instanceof NativeLiftError && e.code === 'unavailable' && asked.length === 0,
+  );
 });

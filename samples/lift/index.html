@@ -34,13 +34,11 @@
   <h1>lift — Convert to 3D</h1>
   <p class="sub">Any <code>&lt;video&gt;</code>, <code>&lt;img&gt;</code> or <code>&lt;canvas&gt;</code>, lifted in place:
     live 3D while a video plays, an explorable 3D scene when it pauses (drag to orbit). Alt-click any media to lift it
-    (<code>resolveMediaAt</code>). Backend: <b id="backend">…</b>.
-    Query: <code>providers=real|stub</code>, <code>models=</code> (model tree base URL, default <code>/_scratch/models</code>),
-    <code>ort=</code> (onnxruntime-web dist URL, default <code>/_scratch/ort/</code> else jsDelivr),
-    <code>mode=auto|live|explore</code> (default: the SDK's — <code>live</code> in native mode, <code>auto</code> otherwise),
-    <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>, <code>inpaint=1</code>,
-    <code>params={…}</code> (lift-gen overrides, JSON), <code>explore={…}</code> (explore view: <code>comfort</code>,
-    <code>pivotTargetM</code>, <code>eyes</code>).
+    (<code>resolveMediaAt</code>). The conversion is the runtime's: in the DisplayXR Browser the lift is native
+    (<b id="backend">…</b>); anywhere else <code>lift()</code> rejects (<code>unavailable</code>) unless a lift provider is given.
+    Query: <code>mode=auto|live|explore</code> (default: the SDK's — <code>live</code> for a video),
+    <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>,
+    <code>explore={…}</code> (explore view: <code>comfort</code>, <code>pivotTargetM</code>, <code>eyes</code>).
     <b>Remote SHARP (demo only):</b> <code>lift=remote-sharp</code> lifts pauses/stills on the SHARP worker
     (<code>sharp=</code> endpoint, default the same-origin proxy <code>/api/sharp/predict</code> of
     <code>serve.py --sharp</code>; <code>auth=google</code> [+ <code>login=</code>] for a hosted endpoint's popup sign-in).
@@ -84,27 +82,17 @@
 import { lift, resolveMediaAt } from '../../js/lift/lift.js';
 
 const q = new URLSearchParams(location.search);
-const MODELS = (q.get('models') || '/_scratch/models').replace(/\/$/, '');
-const reachable = (u) => fetch(u, { method: 'HEAD' }).then((r) => r.ok, () => false);
-
-// Real models by default when the model tree answers; the stubs otherwise (or with providers=stub).
-let backend = q.get('providers');
-if (backend !== 'real' && backend !== 'stub') {
-  backend = (await reachable(`${MODELS}/vda/vda_s_stream_364x210_w16.onnx`)) ? 'real' : 'stub';
-}
-// A local onnxruntime-web dist if there is one, else loadOrt's pinned jsDelivr build.
-let ORT = q.get('ort') || '/_scratch/ort/';
-if (backend === 'real' && !q.get('ort') && !(await reachable(ORT + 'ort.webgpu.min.mjs'))) ORT = undefined;
-
-document.getElementById('backend').textContent = backend + (backend === 'real' ? ` (models ${MODELS}, ort ${ORT || 'jsDelivr'})` : '');
+import { liftCapabilities } from '../../js/lift/native.js';
+const caps = await liftCapabilities();
+document.getElementById('backend').textContent = caps.native ? `native: ${caps.provider || 'runtime'}, ${caps.liftState}` : 'no converter here';
 const vid = document.getElementById('vid');
-// Default clip is the in-repo asset; the dev tree's pan.mp4 is opt-in via ?video= (setup-models.mjs does not fetch it).
+// Default clip is the in-repo asset.
 vid.src = q.get('video') || 'assets/synthetic-720p.webm';  // VP9: the DisplayXR Browser ships no H.264/HEVC
 vid.addEventListener('error', () => log(`video: failed to load ${vid.currentSrc || vid.src} (MediaError code ${vid.error?.code}) — check the path is under the served repo root`));
 for (const id of ['img', 'cov']) document.getElementById(id).src = q.get('image') || 'assets/still.jpg';
 
 // Remote SHARP (DEMO ONLY — Apple research-licence weights): ?lift=remote-sharp[&sharp=URL][&auth=google[&login=URL]]
-const LIFT = q.get('lift') || 'local';
+const LIFT = q.get('lift') || 'native';
 let liftProvider = LIFT;
 if (LIFT === 'remote-sharp') {
   const { createRemoteSharpLift } = await import('../../js/lift/providers/lift-remote-sharp.js');
@@ -121,19 +109,15 @@ if (LIFT === 'remote-sharp') {
     btn.onclick = () => liftProvider.signIn().then(() => { btn.textContent = 'Signed in ✓'; log('sharp: signed in'); }, (e) => log(`sharp: sign-in failed: ${e.message}`));
   }
   document.getElementById('liftprov').textContent = `remote-sharp → ${endpoint}${auth ? ' (google sign-in)' : ''}`;
-} else document.getElementById('liftprov').textContent = 'local';
+} else document.getElementById('liftprov').textContent = LIFT === 'native' ? 'the runtime (native-gaussians)' : LIFT;
 
 const opts = {
-  backend,
-  // undefined = the SDK default: native → 'live' (pause never lifts; Explore does), web → 'auto'.
+  // undefined = the SDK default: a video is 'live' (pause never lifts; Explore does), a picture goes to explore.
   mode: new URLSearchParams(location.search).get('mode') || undefined,
   quality: q.get('quality') || 'auto',
-  ...(backend === 'real' ? { models: MODELS, ort: ORT } : {}),
   ...(q.get('exploreDpr') ? { exploreMaxDpr: +q.get('exploreDpr') } : {}),
   ...(q.get('maxAngle') ? { orbit: { maxAngleDeg: +q.get('maxAngle') } } : {}),
-  providers: { ...(q.get('inpaint') === '1' ? { inpaint: 'light-inpaint-v1' } : {}), ...(LIFT !== 'local' ? { lift: liftProvider } : {}) },
-  ...(q.get('params') ? { genParams: JSON.parse(q.get('params')) } : {}),
-  ...(q.get('lookAround') ? { live: { lookAround: +q.get('lookAround') } } : {}),
+  providers: LIFT !== 'native' ? { lift: liftProvider } : {},
   // explore view A/B: explore={"comfort":"off"} | {"pivotTargetM":2.5} | {"eyes":"tracked"}
   ...(q.get('explore') ? { explore: JSON.parse(q.get('explore')) } : {}),
 };
@@ -150,7 +134,13 @@ window.__liftHandles = handles; // dev hook: handle.capture() / handle.stats fro
 
 async function doLift(id, el = document.getElementById(id)) {
   if (handles.has(id)) return handles.get(id);
-  const h = await lift(el, opts);
+  let h;
+  try {
+    h = await lift(el, opts);
+  } catch (e) {
+    log(`${id}: ${e && e.code === 'unavailable' ? 'no converter here (open this page in the DisplayXR Browser, or pass ?lift=remote-sharp for a still)' : e.message}`);
+    return null;
+  }
   handles.set(id, h);
   h.on('statechange', ({ state, from, reason }) => {
     log(`${id}: ${from} → ${state} (${reason})`);
@@ -167,17 +157,17 @@ async function doLift(id, el = document.getElementById(id)) {
   return h;
 }
 
-// Status line: state · fps · depth ms · lift ms (4 Hz).
+// Status line: state · fps · lift ms (4 Hz).
 setInterval(() => {
   for (const id of ['vid', 'img', 'cov']) {
     const el = document.getElementById('st-' + id), h = handles.get(id);
     if (!h) { el.textContent = '—'; continue; }
     const s = h.stats;
     el.textContent =
-      `${s.state} · ${s.fps} fps · depth live ${s.liveDepthMs} ms / still ${s.stillDepthMs} ms · ` +
+      `${s.state} · ${s.fps} fps · ` +
       `lift ${s.generateMs} ms (${(s.splats / 1e3).toFixed(0)} k splats) + load ${s.exploreLoadMs} ms · ` +
-      `pause→explore ${s.pauseToExploreMs} ms · models ${s.modelLoadMs} ms · lift by ${s.liftSource}` +
-      (s.remoteMs ? ` (${s.remoteMs} ms round trip)` : '') + (s.liftFallback ? ` · fell back: ${s.liftFallback}` : '');
+      `pause→explore ${s.pauseToExploreMs} ms · lift by ${s.liftSource || '—'}` +
+      (s.remoteMs ? ` (${s.remoteMs} ms round trip)` : '');
   }
 }, 250);
 
@@ -206,7 +196,7 @@ document.addEventListener('click', (e) => {
   doLift(el.id || 'media-' + Math.random().toString(36).slice(2, 6), el);
 }, true);
 
-window.__lift = { handles, doLift, log, backend, opts };
+window.__lift = { handles, doLift, log, caps, opts };
 </script>
 </body>
 </html>

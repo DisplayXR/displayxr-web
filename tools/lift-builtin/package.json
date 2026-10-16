@@ -5,7 +5,6 @@
   "type": "module",
   "devDependencies": {
     "esbuild": "0.28.2",
-    "onnxruntime-web": "1.31.0-dev.20260918-bc8e7ed75",
     "playcanvas": "2.22.3",
     "puppeteer-core": "25.12.0"
   }

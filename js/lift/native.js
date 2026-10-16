@@ -1,16 +1,15 @@
 // lift/native.js — the DisplayXR Browser's VENDOR 2D→3D module, seen from the SDK.
 //
-// THE SUPERSEDE RULE (docs/lift.md § Vendor modules): when the runtime carries a vendor 2D→3D
-// module (e.g. a DirectML/NPU converter) and the browser exposes it, it SUPERSEDES the SDK's open
-// default for everything it covers:
+// THE RUNTIME CONVERTS (ADR-053; docs/lift.md § Vendor modules): the runtime's conversion stack
+// (an open provider by default, a vendor module when one is installed) is exposed by the browser,
+// and it is this SDK's ONLY provider. There is no in-page converter to fall back to:
 //   live      the browser converts + weaves the <video>/<img> IN PLACE (the `dxr-lift` attribute);
-//             the SDK mounts no DIBR, loads no model, runs no JS per frame;
-//   depth     the paused frame's depth comes from `POST displayxr-lift://lift/depth` (the `native`
-//             DepthProvider, priority 100) — the ORT still model is only the fallback;
+//             the SDK mounts no canvas, loads no model, runs no JS per frame;
+//   depth     the paused frame's depth, if a caller wants it, comes from
+//             `POST displayxr-lift://lift/depth` (the `native` DepthProvider);
 //   gaussians when the module lists `gaussians`, the explore scene comes from
-//             `POST displayxr-lift://lift/gaussians` (the `native-gaussians` LiftProvider) — the
-//             local generator is only the fallback.
-// Anything the module does not cover, or any error it returns, falls back to the open default.
+//             `POST displayxr-lift://lift/gaussians` (the `native-gaussians` LiftProvider).
+// Anything the module does not cover, or any error it returns, is an error the caller sees.
 //
 // The browser exposes it ONLY to its lift isolated world (where the built-in runs, and where an
 // extension-style content script would):
@@ -95,67 +94,27 @@ async function queryNative(fetchImpl, signal, timeoutMs) {
   }
 }
 
-async function webGpuAdapter(nav) {
-  try {
-    if (!nav || !nav.gpu || typeof nav.gpu.requestAdapter !== 'function') return false;
-    return !!(await nav.gpu.requestAdapter());
-  } catch {
-    return false;
-  }
-}
-
-async function queryWeb({ models, nav, signal, quality = 'medium' }) {
-  const webgpu = await webGpuAdapter(nav);
-  if (!webgpu) return { video: false, still: false, webgpu: false };
-  let src = models;
-  if (!src || src === 'auto' || typeof src === 'string') {
-    const M = await import('./providers/models.js');
-    src = M.createModelSource(typeof src === 'string' && src !== 'auto' ? { baseUrl: src } : {});
-  }
-  if (!src || typeof src.probe !== 'function') return { video: false, still: false, webgpu };
-  try {
-    await src.ready();
-    const [video, still] = await Promise.all([
-      src.probe(src.resolveName('vda-small', 'depth-video', 'medium'), { signal }),
-      src.probe(src.resolveName('moge3', 'depth-still', quality), { signal }),
-    ]);
-    return { video: !!video, still: !!still, webgpu };
-  } catch (e) {
-    if (signal && signal.aborted) throw e;
-    return { video: false, still: false, webgpu };
-  }
-}
-
 /**
  * What 2D→3D this document can do, right now. Cheap and async, and NEVER cached: the runtime's
  * module warms up after a cold boot, so an answer is only good for the moment it was given. A
  * caller that waits polls this at ≤ 2 Hz (or, in the browser's built-in, takes the browser's
  * state pushes) — it must not keep a non-READY answer beyond one poll interval.
  *
- *   native       the browser's vendor module is reachable from here (the lift world of the
- *                DisplayXR Browser) and not `unavailable` — it supersedes the web path;
+ *   native       the browser's conversion stack is reachable from here (the lift world of the
+ *                DisplayXR Browser) and not `unavailable`;
  *   liftState    `waiting | ready | unavailable` (waiting: create anyway, show the 2D source);
- *   provider/modes/maxStreams/approxMsPerConvert/state   as the browser reports them;
- *   webFallback  the open web path: `webgpu` (a WebGPU adapter), `video` / `still` (that path's
- *                default depth model is reachable through the model source without downloading).
+ *   provider/modes/maxStreams/approxMsPerConvert/state   as the browser reports them.
+ *
+ * There is no web fallback to probe: this SDK carries no model of its own.
  *
  * @param {object} [o]
  * @param {AbortSignal} [o.signal]
  * @param {boolean} [o.refresh]  ignored (every call re-asks); kept for compatibility.
- * @param {boolean} [o.webFallback=true]  false skips the model probes (webFallback all false).
- * @param {'auto'|string|object} [o.models='auto']  the ModelSource to probe (as lift()'s `models`).
- * @param {'low'|'medium'|'high'} [o.quality='medium']  which still-model tier to probe.
- * @param {Function} [o.fetch] [o.navigator]  injectable for tests.
+ * @param {Function} [o.fetch]  injectable for tests.
  */
 export async function liftCapabilities(o = {}) {
   const fetchImpl = o.fetch || ((...a) => globalThis.fetch(...a));
-  const nav = 'navigator' in o ? o.navigator : typeof navigator !== 'undefined' ? navigator : undefined;
-  const nativeCaps = await queryNative(fetchImpl, o.signal, o.timeoutMs || CAPS_TIMEOUT_MS);
-  let web = { video: false, still: false, webgpu: false };
-  if (o.webFallback !== false) {
-    web = await queryWeb({ models: o.models || 'auto', nav, signal: o.signal, quality: o.quality });
-  }
-  return { ...nativeCaps, webFallback: { ...web } };
+  return queryNative(fetchImpl, o.signal, o.timeoutMs || CAPS_TIMEOUT_MS);
 }
 
 /** Which lift provider lift() should default to for these caps (`null` = its own default). */
@@ -349,7 +308,7 @@ function b64ToBytes(s) {
  *           `X-DXR-Depth-FocalPx` (in pixels of the w×h grid);
  *   json    `{ w, h, semantics, focalPx?, data }` — data a base64 float32 string or a number array.
  * `semantics` 'metric' (metres; 0 = invalid) or 'disparity' (relative inverse depth, bigger = nearer).
- * Anything else throws NativeLiftError('format') — the caller falls back to the ORT still model.
+ * Anything else throws NativeLiftError('format').
  */
 export async function parseNativeDepthResponse(r) {
   const ct = ((r.headers && r.headers.get('content-type')) || '').toLowerCase();
@@ -383,87 +342,46 @@ export async function parseNativeDepthResponse(r) {
 }
 
 /**
- * The `native` DepthProvider (still frames only): POST the frame to `lift/depth`. On ANY failure it
- * falls back — for that frame and, after a 404/501, for the rest of the session — to `opts.fallback`
- * (default: the registry's `'ort'` provider with the same options, its model loaded on first use).
+ * The `native` DepthProvider (still frames only): POST the frame to `lift/depth`. A failure rejects
+ * with a NativeLiftError (after a 404/501 the module is marked unsupported for the session).
  *
- * @param {object} opts  the createDepthProvider options, plus:
+ * @param {object} opts
  * @param {Function} [opts.fetch]
- * @param {() => Promise<any>} [opts.loadOrt]  lazy onnxruntime for the fallback (native mode never loads it up front)
- * @param {(o:object) => object} [opts.fallback]  factory for the fallback DepthProvider
  * @param {string} [opts.provider]  the module's name from caps (diagnostics)
  */
 export function createNativeDepthProvider(opts = {}) {
   const fetchImpl = opts.fetch || ((...a) => globalThis.fetch(...a));
-  const info = { backend: 'native', provider: opts.provider || null, calls: 0, fallbacks: 0, lastError: null, lastMs: 0, unsupported: false };
-  let fb = null;
-  let fbLoading = null;
+  const info = { backend: 'native', provider: opts.provider || null, calls: 0, lastError: null, lastMs: 0, unsupported: false };
   let disposed = false;
-
-  async function fallback() {
-    if (fb) return fb;
-    if (!fbLoading) {
-      fbLoading = (async () => {
-        let o2 = { ...opts, kind: 'still' };
-        delete o2.fallback;
-        if (!o2.ort && typeof opts.loadOrt === 'function') o2 = { ...o2, ort: await opts.loadOrt() };
-        const p = opts.fallback ? opts.fallback(o2) : getRegistry().getDepthProvider('ort', o2);
-        await p.load({ signal: opts.signal });
-        fb = p;
-        return p;
-      })();
-      fbLoading.catch(() => { fbLoading = null; });
-    }
-    return fbLoading;
-  }
-
-  async function nativeEstimate(source, signal) {
-    const blob = await encodeFrame(source);
-    const t0 = now();
-    const r = await post(fetchImpl, NATIVE_DEPTH_URL, blob, signal);
-    const d = await parseNativeDepthResponse(r);
-    info.lastMs = Math.round(now() - t0);
-    return d;
-  }
 
   return {
     id: 'native',
     kind: 'still',
     info,
-    /** Nothing to load: the module lives in the runtime. (The fallback loads on first use.) */
+    /** Nothing to load: the module lives in the runtime. */
     async load() {},
-    async estimate({ source, t, signal } = {}) {
+    /** Rejects with a NativeLiftError when the module cannot answer: there is no in-page fallback. */
+    async estimate({ source, signal } = {}) {
       if (disposed) throw new Error('native depth: disposed');
-      if (!info.unsupported) {
-        info.calls++;
-        try {
-          const d = await nativeEstimate(source, signal);
-          info.source = 'native';
-          return d;
-        } catch (e) {
-          if (e && e.code === 'aborted') throw e;
-          info.lastError = (e && e.message) || String(e);
-          if (e && e.code === 'unsupported') info.unsupported = true;
-        }
+      if (info.unsupported) throw new NativeLiftError('native depth: not supported by this module', 'unsupported');
+      info.calls++;
+      try {
+        const blob = await encodeFrame(source);
+        const t0 = now();
+        const r = await post(fetchImpl, NATIVE_DEPTH_URL, blob, signal);
+        const d = await parseNativeDepthResponse(r);
+        info.lastMs = Math.round(now() - t0);
+        info.source = 'native';
+        return d;
+      } catch (e) {
+        info.lastError = (e && e.message) || String(e);
+        if (e && e.code === 'unsupported') info.unsupported = true;
+        throw e;
       }
-      info.fallbacks++;
-      info.source = 'fallback';
-      const p = await fallback();
-      return p.estimate({ source, t });
     },
-    reset() {
-      if (fb) fb.reset();
-    },
+    reset() {},
     dispose() {
       disposed = true;
-      if (fb) {
-        try {
-          fb.dispose();
-        } catch {
-          /* ignore */
-        }
-      }
-      fb = null;
     },
   };
 }
@@ -481,7 +399,7 @@ export function sniffSplatFormat(u8) {
  * interfaces): `{ id, needsDepth:false, generateLift({rgb, signal, onProgress}) → {sog} | {ply, meta} }`.
  * A `.sog` carries its own camera block v2 (explore reads the rig off it); a `.ply` must come with
  * an `X-DXR-Lift-Meta` JSON header ({focalPx, pivotZ, w, h, …} — the generator's meta shape), else
- * it is a `format` error. Every error but an abort has `fallback: true` → lift.js lifts locally.
+ * it is a `format` error.
  */
 export function createNativeGaussiansLift(opts = {}) {
   const fetchImpl = opts.fetch || ((...a) => globalThis.fetch(...a));
