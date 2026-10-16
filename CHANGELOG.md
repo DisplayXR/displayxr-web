@@ -7,6 +7,21 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased — proposed 1.25.0 (minor: a new experimental subpath)
 
+### Removed (ADR-053 P4: the runtime converts)
+
+- **lift: the in-page converter is gone.** `@displayxr/inline3d/lift` carries no model, no ONNX
+  Runtime, no depth-image-based live renderer and no local lift generator: the DisplayXR runtime's
+  conversion stack does the work (live conversion in place, Gaussians for Explore) and
+  `js/lift/native.js` is the SDK's only provider. Deleted: `providers/{depth-ort,inpaint-ort,ort,models,preprocess,still-post,index}.js`,
+  `models.json`, `live-dibr.js` + `shaders/`, `gen/`, `stubs/`, and most of `lift.js`. `lift()`
+  rejects with a `NativeLiftError` (`code: 'unavailable'`) where no converter exists (and no
+  `providers.lift` was given); a `<canvas>` is not converted. Options removed: `models`, `ort`,
+  `backend`, `prefetch`, `genParams`, `providers.{video,still,inpaint}`; `liftCapabilities()` no longer
+  reports `webFallback`; `createModelSource` / `loadOrt` are no longer exported; the `native` depth
+  provider rejects instead of falling back. The built-in bundle shrinks from 1.4 MB + 16.5 MB of ORT
+  wasm to one 1.4 MB file. Explore for a still or a paused frame needs a converter that lists
+  `gaussians` (or a caller-supplied lift provider such as the remote SHARP demo).
+
 Adds a **preview-tier** subpath; nothing existing changes.
 
 ### Added

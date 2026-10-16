@@ -155,22 +155,20 @@ Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-
 
 ## Convert to 3D (`./lift`, experimental)
 
-`lift(element)` turns an ordinary `<video>`, `<img>` or `<canvas>` into 3D in place: a playing video
-is re-projected live from per-frame monocular depth; when it pauses (or for a still) the frame is
-lifted once into a two-layer Gaussian scene you can orbit by dragging. Woven on a DisplayXR display,
-a mono 2D view everywhere else.
+`lift(element)` turns an ordinary `<video>` or `<img>` into 3D in place: a playing video is
+converted live by the DisplayXR runtime (through the DisplayXR Browser); on *Explore* (or for a still)
+the frame is lifted once into a Gaussian scene you can orbit by dragging. The conversion is the
+runtime's: the SDK carries no model, no ONNX Runtime and no in-page converter, and `lift()` rejects
+(`NativeLiftError`, `unavailable`) where the runtime offers none.
 
 ```js
 import { lift } from '@displayxr/inline3d/lift';
-const h = await lift(document.querySelector('video'), { models: 'https://my.cdn/lift-models' });
+const h = await lift(document.querySelector('video'));
 ```
 
-Depth runs on onnxruntime-web (WebGPU), loaded at runtime and never bundled; the models (58 MB
-video, ~715 MB still) are fetched, sha256-verified and cached, or come from the DisplayXR Browser's
-own store. The explore view needs the optional peer `playcanvas` (the PlayCanvas splat viewer), and a
-lifted scene downloads as a `.sog` with its camera block (`handle.downloadSog()`). Everything —
-options, providers, the model manifest, measured timings and known issues — is in
-[`docs/lift.md`](docs/lift.md).
+The explore view needs the optional peer `playcanvas` (the PlayCanvas splat viewer), and a lifted
+scene downloads as a `.sog` with its camera block (`handle.downloadSog()`). Everything — options,
+the provider contract, the runtime wire formats and known issues — is in [`docs/lift.md`](docs/lift.md).
 
 ## What's here
 
@@ -184,7 +182,7 @@ samples/
   splat/              a 3D Gaussian splat in a tile (PlayCanvas; ?engine=spark), with a 2D plate over it
   model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF (PlayCanvas; ?engine=three)
   lift/               "Convert to 3D": a video lifted live, and explorable when paused; a photo lifted
-                      to an explorable scene (real depth models; see docs/lift.md for the local setup)
+                      to an explorable scene (the runtime converts: open it in the DisplayXR Browser)
   composition/        the 14-case 2D/3D overlap matrix — demo AND standing hardware regression
                       surface; red cases ship red (see samples/README.md)
 vendor/draco/         three's Draco decoder, served for samples/model (compressed glTF needs it)
@@ -206,7 +204,7 @@ js/
   inline3d-splat-effects.js     splat shader effects: the runner, the effect registry (PlayCanvas)
   inline3d-splat-live.js        setSource's live outgoing photo: its own camera, layer and target (PlayCanvas)
                       from what the asset declares (you serve the decoder files — see the guide)
-  lift/               experimental: lift() — "Convert to 3D" (./lift): providers/, live-dibr, gen/, explore
+  lift/               experimental: lift() — "Convert to 3D" (./lift): native.js (the runtime's converter), providers/, explore
 docs/
   authoring-inline-3d.md   the authoring guide
   authoring-motion-and-effects.md
