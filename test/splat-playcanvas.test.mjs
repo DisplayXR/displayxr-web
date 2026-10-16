@@ -4421,6 +4421,64 @@ test("warmEntity issues each mesh's forward program via getShaderInstance with e
   assert.equal(await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: () => [] }), 0, 'nothing to warm');
 });
 
+test('yieldFrame: resolves on the next animation frame, or after maxMs when no frame comes (hidden tab)', async () => {
+  const { yieldFrame } = await import('../js/inline3d-splat-live.js');
+  const realRaf = globalThis.requestAnimationFrame;
+  try {
+    let queued = null;
+    globalThis.requestAnimationFrame = (cb) => ((queued = cb), 1);
+    let done = false;
+    const p = yieldFrame(1000).then(() => (done = true));
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(done, false, 'waits for the frame');
+    queued();
+    await p;
+    assert.equal(done, true, 'the frame resolves it');
+    globalThis.requestAnimationFrame = () => 1; // a frame that never comes
+    const t0 = Date.now();
+    await yieldFrame(30);
+    assert.ok(Date.now() - t0 >= 25, 'the timeout resolves it');
+  } finally {
+    globalThis.requestAnimationFrame = realRaf;
+  }
+});
+
+test('warmEntity polls the link once a FRAME, never through requestIdleCallback (a live stage has no idle time)', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const realRaf = globalThis.requestAnimationFrame;
+  const realRic = globalThis.requestIdleCallback;
+  let frames = 0;
+  let idles = 0;
+  globalThis.requestAnimationFrame = (cb) => setTimeout(() => (frames++, cb()), 1);
+  // a page that renders every frame: idle callbacks only ever fire at their timeout
+  globalThis.requestIdleCallback = (cb, o) => (idles++, setTimeout(cb, o?.timeout ?? 50));
+  try {
+    let polls = 0;
+    const sh = { ready: false, failed: false, impl: { isLinked: () => ++polls > 3, finalize: (d, s) => ((s.ready = true), true) } };
+    const mi = { mesh: {}, shaderPassMask: ~0, material: {}, getShaderInstance: () => ({ shader: sh }) };
+    const fake = {
+      pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+      app: { graphicsDevice: {}, scene: { layers: { getLayerById: () => ({ splitLights: [] }) } }, renderer: { viewUniformFormat: null } },
+      eye: { camera: { layers: [0], camera: { shaderParams: {} } } },
+      _views: [],
+      _viewPath: 'renderViews',
+      _disposed: false,
+      logTag: '[t]',
+    };
+    const t0 = Date.now();
+    const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: (t) => (t === 'render' ? [{ meshInstances: [mi], layers: [0] }] : []) });
+    assert.equal(n, 1);
+    assert.ok(sh.ready, 'finalized');
+    assert.equal(idles, 0, 'no idle-callback waits');
+    assert.ok(frames >= 3, `polled across frames (${frames})`);
+    assert.ok(Date.now() - t0 < 100, `done in ~frames, not 50 ms idle timeouts (${Date.now() - t0} ms)`);
+  } finally {
+    globalThis.requestAnimationFrame = realRaf;
+    globalThis.requestIdleCallback = realRic;
+  }
+});
+
 test('warmEntity also warms through the layer rig cameras: a mesh on a display-rig layer is drawn ONLY by them, with their own shaderParams', async () => {
   installDom();
   const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');

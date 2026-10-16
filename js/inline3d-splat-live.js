@@ -75,6 +75,27 @@ export function yieldIdle(timeout = 200) {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+/**
+ * Wait for the next frame (requestAnimationFrame), or `maxMs` if no frame comes (a hidden tab
+ * throttles rAF to nothing). For POLLS that must not stall behind a page that renders every frame:
+ * on such a page idle periods are scarce, so `yieldIdle(50)` waits its full timeout on every turn
+ * (warmEntity's link poll added ~55 ms to a glTF's load on Shop). A frame is the natural cadence
+ * for "is the link done yet" — the browser's own frame work runs in between.
+ */
+export function yieldFrame(maxMs = 100) {
+  return new Promise((r) => {
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      r();
+    };
+    const t = setTimeout(go, maxMs);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
+  });
+}
+
 // ── small matrix helpers (column-major 4×4), kept local: no import cycle with the adapter ──
 
 function mul(a, b, out = new Float64Array(16)) {

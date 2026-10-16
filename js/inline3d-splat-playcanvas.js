@@ -68,7 +68,7 @@ import {
   emptyAtZero,
   sequenceSpans,
 } from './inline3d-splat-effects.js';
-import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
+import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle, yieldFrame } from './inline3d-splat-live.js';
 import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
 import { LayerRigCameras, validateLayerRig, validateLayerRigOptions, DEFAULT_VIEWER_DISTANCE_M } from './inline3d-splat-layer-rig.js';
@@ -1194,8 +1194,8 @@ export class PlayCanvasSplatViewer {
    * Compile the forward programs `entity`'s meshes will draw with — through the RENDERER's own
    * call (MeshInstance.getShaderInstance with the pass, layer light hash, sorted lights, view
    * uniform format and each eye camera's live shaderParams it will pass), so the variant is the
-   * very one the first draw asks for, cached on the mesh instance — then finish each link in idle
-   * periods (KHR_parallel_shader_compile) instead of on that draw. PlayCanvas's forward renderer
+   * very one the first draw asks for, cached on the mesh instance — then finish each link off the
+   * frame (KHR_parallel_shader_compile, polled once a frame) instead of on that draw. PlayCanvas's forward renderer
    * links synchronously on first use (asyncCompile = false): a glTF with ~13 lit materials froze
    * 0.8–0.95 s on a panel. Calling material.getShaderVariant with hand-built params instead
    * produces broken variants (`#include "litMainVS"` unresolved) — do not.
@@ -1228,7 +1228,8 @@ export class PlayCanvasSplatViewer {
     const forward = pc.SHADER_FORWARD ?? 0;
     const shaders = new Set();
     // Issuing a program compiles its two shaders on THIS thread: 13 lit programs at once were one
-    // 65 ms frame. Time-slice — yield to idle whenever a slice passes SLICE_MS.
+    // 65 ms frame. Time-slice — yield a frame whenever a slice passes SLICE_MS (not an idle period:
+    // a page that renders every frame has almost none, and each wait ran to its 50 ms timeout).
     const SLICE_MS = 8;
     let slice = now();
     try {
@@ -1251,7 +1252,7 @@ export class PlayCanvasSplatViewer {
               const si = mi.getShaderInstance(pass, lightHash, scene, shaderParams, renderer.viewUniformFormat, layer.splitLights);
               if (si?.shader) shaders.add(si.shader);
               if (now() - slice > SLICE_MS) {
-                await yieldIdle(50);
+                await yieldFrame();
                 if (this._disposed) return 0;
                 slice = now();
               }
@@ -1267,7 +1268,7 @@ export class PlayCanvasSplatViewer {
     const t0 = now();
     while (pending().length && now() - t0 < timeoutMs && !this._disposed) {
       for (const x of pending()) if (x.impl.isLinked?.(device)) x.impl.finalize(device, x) || (x.failed = true);
-      if (pending().length) await yieldIdle(50);
+      if (pending().length) await yieldFrame(); // poll once a frame (idle periods are scarce on a live stage)
     }
     // still linking (or no completion query): finalize now — a block here, not on the first draw
     for (const x of pending()) x.impl.finalize(device, x) || (x.failed = true);
@@ -5281,16 +5282,20 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * Creating a program only ISSUES its compile + link; the browser resolves the link when the
    * program is first queried — the engine's first draw, blocking (the 35–50 ms GetProgramiv the
    * trace shows, even for a program created seconds earlier). So finish the engine's own
-   * finalize here, in the dwell: wait (in idle periods, not blocking) for the link to complete
+   * finalize here, in the dwell: wait (polled once a frame, not blocking) for the link to complete
    * where the browser reports it (KHR_parallel_shader_compile), then finalize.
    */
   async function finalizeWhenLinked(shaders) {
     const dev = viewer.app?.graphicsDevice;
     if (!dev) return;
     const pending = () => shaders.filter((x) => x && !x.ready && !x.failed && x.impl?.finalize);
-    for (let i = 0; i < 40 && pending().length; i++) {
+    // Polled once a frame, up to LINK_WAIT_MS (it was 40 idle periods: on a stage that renders
+    // every frame each one ran to its 50 ms timeout, so a link done in 5 ms was seen 50 ms late).
+    const LINK_WAIT_MS = 2000;
+    const t0 = now();
+    while (pending().length && now() - t0 < LINK_WAIT_MS) {
       for (const x of pending()) if (x.impl.isLinked?.(dev)) x.impl.finalize(dev, x) || (x.failed = true);
-      if (pending().length) await yieldIdle(50);
+      if (pending().length) await yieldFrame();
       if (removed) return;
     }
     // still linking (or no completion query): finalize now — a block in the dwell, not on the

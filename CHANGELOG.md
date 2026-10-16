@@ -5,6 +5,20 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — `warmEntity` / `warmEffect` delayed a glTF's first draw on a page that renders every frame
+
+- The warm path waited for each program's link with `requestIdleCallback(…, { timeout: 50 })`. On a
+  stage that renders every frame there is almost no idle time, so every wait ran to its 50 ms
+  timeout: a link done in 5 ms was seen 50 ms late. On Show's shop rail this added ~55 ms after the
+  GLB arrived (median product switch 142 → 177 ms headless). The link poll and the compile
+  time-slicing now wait **one animation frame** instead (or 100 ms if no frame comes, e.g. a hidden
+  tab). `finalizeWhenLinked` (warmEffect, transition pre-warm) is bounded by time (2 s) rather than
+  40 idle periods. The warm itself is unchanged — its value is on the D3D11 panel path (worst frame
+  833 → 167 ms).
+- New export `yieldFrame(maxMs)` in `inline3d-splat-live.js` (internal module).
+
 ## 1.46.0 — 2026-10-14
 
 ### Depth cursor: when the runtime draws the web cursor, hand it the depth (runtime ADR-046 Amendment 4)
