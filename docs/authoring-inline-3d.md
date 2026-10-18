@@ -541,6 +541,44 @@ also the one camera rig with no display-rig equivalent at all — a display rig'
 plane *is* its screen, at a finite distance, so it cannot express "zero disparity at infinity". A
 camera rig simply has one degree of freedom more than a display rig, and this is where you see it.
 
+### Making a subject shallower: keep it rigid
+
+A subject too deep for the display (a room, a diorama, a long product turned side-on) has to lose
+depth somehow. **Do not do it by scaling only the display's `z` after the subject has been turned
+or tilted.** A per-axis scale applied *after* a rotation is a shear, not a squash: right angles
+collapse. The 2D view still looks correct, because the scale runs almost along the line of sight.
+Stereo and head-tracked parallax then show a slanted slab, and viewers describe the scene as
+"looking off" without being able to say why.
+
+A room tilted 36° toward the viewer and turned 45° (an isometric diorama), with a parent group
+scaling display `z`:
+
+| `scale.z` on the parent | floor-to-wall angle | walls tilted back from the glass |
+|---|---|---|
+| 1.0 | 90° | 35.5° |
+| 0.5 | 55° | 20° |
+| 0.3 | 35° | 12° |
+
+What to do instead, in order of preference:
+
+1. **Change the subject's orientation.** A more top-down tilt or a face-on turn lowers the subject's
+   natural depth while keeping it rigid. For the diorama above, going from 36° to 57° tilt halves
+   its depth (1.17 → 0.62 display heights).
+2. **Scale uniformly.** This is what `SceneViewer.fitTo()` does: the subject gets smaller on the
+   screen, but it keeps its shape, and on a display rig its depth scales with it.
+3. **If you really need a per-axis scale, apply it in the subject's own frame, *before* the
+   rotation** (a model that is genuinely too thick), never on a parent of the rotated subject.
+
+Lowering a display rig's `ipdFactor` is the other depth dial, and it works on the cues rather than
+the geometry. On its own it compresses depth in **stereo only**, while head-tracked parallax still
+shows the full depth, so the two cues disagree. The usual practice is to lower `ipdFactor` and
+`parallaxFactor` **together**, so that when the stereo depth shrinks, the look-around shrinks with
+it. Splitting them is legitimate when you want that effect, but it is your call, not a default. Know
+what the dials do, though: they leave the geometry and the 2D view untouched, but they compress
+*perceived* depth along the display's `z` for the whole scene. So a strongly tilted subject's angles
+flatten for the viewer much as they do under a `scale.z`. A rigid, re-oriented subject is still the
+way to keep its shape.
+
 ### Reading back where the subject is — `getSubjectBounds()`
 
 *(`@displayxr/inline3d/viewer`; added 1.6.0.)*
@@ -1607,6 +1645,9 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
 - **Round corners / draw decoration in the canvas buffer, not CSS.**
 - **Scenes: author at ~0.24 m virtual height and `fitToElement` every frame;** put focused
   content at `z=0`.
+- **Shallower = rigid:** never fit depth by scaling display `z` on a parent of a turned or tilted
+  subject. That shears it: right angles collapse in stereo while the 2D view looks fine. Re-orient
+  or scale uniformly ([Making a subject shallower](#making-a-subject-shallower-keep-it-rigid)).
 - **A rig set this frame drives NEXT frame's views** — the browser locates before your rAF. Fine
   for a slider; for a moving camera use the [attach pattern](#the-latency-caveat-and-the-attach-pattern)
   rather than predicting the camera forward.
