@@ -573,9 +573,11 @@ Lowering a display rig's `ipdFactor` is the other depth dial, and it works on th
 the geometry. On its own it compresses depth in **stereo only**, while head-tracked parallax still
 shows the full depth, so the two cues disagree. The usual practice is to lower `ipdFactor` and
 `parallaxFactor` **together**, so that when the stereo depth shrinks, the look-around shrinks with
-it. Splitting them is legitimate when you want that effect, but it is your call, not a default. Either
-way it scales the whole scene's depth equally: it does not shear a tilted subject, and it does not
-change what is in the 2D view.
+it. Splitting them is legitimate when you want that effect, but it is your call, not a default. Know
+what the dials do, though: they leave the geometry and the 2D view untouched, but they compress
+*perceived* depth along the display's `z` for the whole scene. So a strongly tilted subject's angles
+flatten for the viewer much as they do under a `scale.z`. A rigid, re-oriented subject is still the
+way to keep its shape.
 
 ### Reading back where the subject is — `getSubjectBounds()`
 
