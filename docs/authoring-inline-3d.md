@@ -569,10 +569,13 @@ What to do instead, in order of preference:
 3. **If you really need a per-axis scale, apply it in the subject's own frame, *before* the
    rotation** (a model that is genuinely too thick), never on a parent of the rotated subject.
 
-Lowering a display rig's `ipdFactor` is not a free substitute. It compresses depth in **stereo
-only**, while head-tracked parallax (`parallaxFactor`) still shows the full depth, so the two cues
-disagree. It is right as a comfort dial, but it does not replace fitting the subject to the depth
-budget.
+Lowering a display rig's `ipdFactor` is the other depth dial, and it works on the cues rather than
+the geometry. On its own it compresses depth in **stereo only**, while head-tracked parallax still
+shows the full depth, so the two cues disagree. The usual practice is to lower `ipdFactor` and
+`parallaxFactor` **together**, so that when the stereo depth shrinks, the look-around shrinks with
+it. Splitting them is legitimate when you want that effect, but it is your call, not a default. Either
+way it scales the whole scene's depth equally: it does not shear a tilted subject, and it does not
+change what is in the 2D view.
 
 ### Reading back where the subject is — `getSubjectBounds()`
 
