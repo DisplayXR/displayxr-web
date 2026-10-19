@@ -1,36 +1,35 @@
 // lift/lift.js — "Convert to 3D": lift any <video>, <img> or <canvas> on a page into 3D, in place.
 //
-//   const h = await lift(videoEl);            // live 3D while it plays, explorable 3D when paused
+//   const h = await lift(videoEl);            // 3D while it plays (the browser converts), explorable when paused
 //   h.on('statechange', ({ state }) => …);
 //   h.setDepth(1.3); h.explore(); h.resume(); h.remove();
 //
-// Two presentations, one canvas:
-//   LIVE     — per-frame monocular depth (a video depth provider) + depth-image-based rendering:
-//              every view is re-projected from the current frame. Cheap, always in sync.
-//   EXPLORE  — the paused/ended frame (or a still) is lifted ONCE into a small 3D Gaussian scene
-//              (still-depth provider → lift generator, with inpainting behind edges) and shown with a
-//              bounded orbit. Expensive, so it only runs when the media stops.
-// state.js decides which one is showing and when; this file wires it to the DOM, the providers and
-// the inline-3D session.
+// The conversion is the RUNTIME's (ADR-053 conversion providers): the DisplayXR Browser hands the
+// page's video / picture to whatever the runtime's conversion stack offers. This SDK owns none:
+// no model, no ONNX Runtime, no in-page depth or view synthesis. Two presentations, one element:
+//   LIVE     — the browser converts and weaves the element IN PLACE (`dxr-lift="auto"`); the SDK
+//              mounts no canvas, loads no model, runs no JS per frame.
+//   EXPLORE  — the paused/ended frame (or a still) is lifted ONCE into a 3D Gaussian scene by the
+//              runtime (`displayxr-lift://lift/gaussians`) — or by a LiftProvider the caller passes
+//              (the remote SHARP demo) — and shown with a bounded orbit. state.js decides which
+//              one is showing; this file wires it to the DOM, the provider and the inline-3D session.
+// Where there is no converter (`liftCapabilities().native` false and no LiftProvider given) lift()
+// rejects with a NativeLiftError (code 'unavailable'): the page keeps its own 2D element.
 //
 // ── The session ──────────────────────────────────────────────────────────────────────────────
 // One inline-3D session per document (inline3d.js warns on a second one: the element-rect channel
 // is a whole-widget setter). So: pass `wall` to join the page's existing manager; otherwise every
 // lift() in the document shares ONE private manager, closed when its last lift is removed. The
-// lifted canvas is an ordinary addScene() window. On a browser without inline-3D the same render
+// explore canvas is an ordinary addScene() window. On a browser without inline-3D the same render
 // path runs off requestAnimationFrame with a single mono view and a full-canvas viewport — the 2D
-// fallback — so the page still gets the converted picture (the stubs wobble it so you can tell).
-//
-// ── Providers ────────────────────────────────────────────────────────────────────────────────
-// Depth / model source / live-DIBR / lift generator / explore renderer are separate modules with
-// fixed contracts (docs/lift.md). `backend: 'stub'` swaps in js/lift/stubs/* — same contracts,
-// no models — so the state machine and the sample run end-to-end without any ML.
+// fallback — so the page still gets the converted picture.
 
 import { createInline3D } from '../inline3d.js';
 import { createLiftMachine, STATES, resolveLiftMode } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
 import { createChip, shieldInput } from './ui.js';
-import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority } from './native.js';
+import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority, NativeLiftError } from './native.js';
+import { getRegistry } from './providers/registry.js';
 
 export { resolveMediaAt, STATES };
 
@@ -64,34 +63,10 @@ export function exploreBudgetGain(meta, budget) {
   return spread > budget ? budget / spread : 1;
 }
 
-// Literal import() calls (not a computed path) so bundlers can see and split them.
-const BACKENDS = {
-  real: {
-    depth: () => import('./providers/depth-ort.js'),
-    // index.js re-exports createModelSource + loadOrt + getRegistry and, by importing depth-ort.js /
-    // inpaint-ort.js, registers the ORT providers in the shared registry.
-    models: () => import('./providers/index.js'),
-    dibr: () => import('./live-dibr.js'),
-    gen: () => import('./gen/lift-gen.js'),
-    explore: () => import('./explore.js'),
-  },
-  stub: {
-    depth: () => import('./stubs/depth.js'),
-    models: () => import('./stubs/models.js'),
-    dibr: () => import('./stubs/live-dibr.js'),
-    gen: () => import('./stubs/lift-gen.js'),
-    explore: () => import('./stubs/explore.js'),
-  },
-};
+/// A literal import() so bundlers can see and split it: the explore renderer (the PlayCanvas
+// engine, the SDK's optional peer) loads on the first explore.
+const loadExplore = () => import('./explore.js');
 
-async function loadBackend(name, parts = ['depth', 'models', 'dibr', 'gen', 'explore']) {
-  const b = BACKENDS[name];
-  if (!b) throw new TypeError(`lift: unknown backend '${name}' (expected 'real' or 'stub')`);
-  const mods = await Promise.all(parts.map((k) => b[k]()));
-  return Object.fromEntries(parts.map((k, i) => [k, mods[i]]));
-}
-
-// ── the document's shared private manager ──────────────────────────────────────────────────
 let shared = null; // { refs, promise }
 
 async function acquireWall(given) {
@@ -145,32 +120,32 @@ const MONO_VIEW = Object.freeze({
 /**
  * Lift `element` into 3D in place.
  *
+ * Rejects with a {@link NativeLiftError} (`code: 'unavailable'`) when nothing can convert it: the
+ * runtime has no converter for this element (`liftCapabilities().native` false) and no
+ * `providers.lift` was given. There is no in-page fallback.
+ *
  * @param {HTMLVideoElement|HTMLImageElement|HTMLCanvasElement|Element} element  media, or any element
  *        at/near media (resolved the same way resolveMediaAt resolves a click).
  * @param {object} [opts]
- * @param {'auto'|'live'|'explore'} [opts.mode]  default 'auto' on the web path, 'live' in NATIVE mode
- *        (pause never auto-lifts there; explore() is explicit). A stated mode is honoured (resolveLiftMode).
- * @param {number} [opts.depth=1]  depth strength multiplier.
- * @param {'auto'|number} [opts.convergence='auto']  zero-disparity depth; passed to live-DIBR as given.
- * @param {'auto'|'low'|'medium'|'high'} [opts.quality='auto']
+ * @param {'auto'|'live'|'explore'} [opts.mode]  default 'live' for a video (pause never auto-lifts;
+ *        explore() is explicit) and 'explore' for a picture. A stated mode is honoured (resolveLiftMode).
+ * @param {number} [opts.depth=1]  depth strength multiplier (`dxr-lift-strength`; explore's depth gain).
+ * @param {'auto'|number} [opts.convergence='auto']  zero-disparity depth (`dxr-lift-convergence`).
+ * @param {'auto'|'low'|'medium'|'high'} [opts.quality='auto']  handed to the lift provider.
  * @param {object} [opts.wall]  an existing createInline3D() manager to join.
  * @param {{maxAngleDeg?:number, relax?:boolean}} [opts.orbit]
- * @param {'auto'|object} [opts.models='auto']  a ModelSource, or 'auto' for the default one.
- * @param {{video?:string, still?:string, inpaint?:string, lift?:string|object}} [opts.providers]
- *        `lift`: the stage that turns the frozen frame into a Gaussian scene — omitted/'local' = the
- *        local generator; a registered lift provider name (e.g. 'remote-sharp', DEMO ONLY); or a
- *        LiftProvider instance. A provider failure falls back to the local lift (logged once).
+ * @param {{lift?:string|object}} [opts.providers]
+ *        `lift`: the stage that turns the frozen frame into a Gaussian scene — omitted = the
+ *        runtime's `native-gaussians` (when its caps list `gaussians`); a registered lift provider
+ *        name (e.g. 'remote-sharp', DEMO ONLY); or a LiftProvider instance.
  * @param {object} [opts.remote]  options for a named lift provider's factory (remote-sharp:
  *        `{ endpoint, auth, timeoutMs, mode, getAuthHeaders, fields }`).
  * @param {'builtin'|'none'} [opts.ui='builtin']
  * @param {AbortSignal} [opts.signal]  aborting it removes the lift.
- * @param {'real'|'stub'} [opts.backend='real']  'stub' = js/lift/stubs/* (no models; dev/demo).
- * @param {object} [opts.genParams]  DEV: overrides for lift-gen's LIFT_DEFAULTS (docs/lift-gen.md).
- * @param {'auto'|boolean|object} [opts.native='auto']  the browser's vendor 2D→3D module
+ * @param {'auto'|boolean|object} [opts.native='auto']  the browser's conversion stack
  *        (docs/lift.md § Vendor modules). 'auto': use it when liftCapabilities() says `native` and
  *        the element is a <video>/<img> — the browser then converts + weaves the element IN PLACE
- *        (`dxr-lift="auto"`), no DIBR canvas, no model until pause. false: never. A caps object
- *        (from liftCapabilities()) skips the query. Ignored with backend 'stub'.
+ *        (`dxr-lift="auto"`). false: never. A caps object (from liftCapabilities()) skips the query.
  * @param {boolean} [opts.ownLiftAttr=false]  native: the caller owns the element's `dxr-lift*`
  *        attributes — remove()/exit REMOVES them instead of restoring their pre-lift values (the
  *        browser's built-in: its menu pre-sets `dxr-lift="auto"`).
@@ -196,25 +171,13 @@ export async function lift(element, opts = {}) {
     convergence: opts.convergence ?? 'auto',
     quality: resolveQuality(opts.quality || 'auto'),
     orbit: { maxAngleDeg: 15, relax: true, ...(opts.orbit || {}) },
-    // What the caller asked for: the video provider keeps 'auto' (A2's warm-up picks 364×210 vs
-    // 518×294 by measured frame time), everything else gets the concrete tier.
-    qualityAsked: opts.quality || 'auto',
-    models: opts.models || 'auto',
-    ort: opts.ort || null,
-    prefetch: !!opts.prefetch,
     exploreMaxDpr: Number.isFinite(opts.exploreMaxDpr) ? opts.exploreMaxDpr : null,
-    // inpaint defaults OFF (integration, 2026-09-25; re-tested after lift-gen's far-side fill the
-    // same day): the whole-object copies are gone with or without the net, but light_inpaint_v1
-    // still leaves textured seams on wide masks and costs 1.3–1.5 s per lift; the net-free fill was
-    // cleaner on every photo tried. `providers: { inpaint: 'light-inpaint-v1' }` turns it on.
-    providers: { video: 'vda-small', still: 'moge3', inpaint: 'none', ...(opts.providers || {}) },
+    providers: { ...(opts.providers || {}) },
     // `remoteSharp` is an alias (the gallery relay's docs use it)
     remote: [opts.remote, opts.remoteSharp].find((x) => x && typeof x === 'object') || {},
     ui: opts.ui === 'none' ? 'none' : 'builtin',
     // `ui: { autoHideMs }` — the builtin chip with options. null = the mode's default (see below).
     uiAutoHideMs: opts.ui && typeof opts.ui === 'object' && Number.isFinite(opts.ui.autoHideMs) ? Math.max(0, opts.ui.autoHideMs) : null,
-    backend: opts.backend || 'real',
-    genParams: opts.genParams && typeof opts.genParams === 'object' ? opts.genParams : null,
     native: opts.native === undefined ? 'auto' : opts.native,
     priority: normalizePriority(opts.priority) || 'normal',
     explore: {
@@ -227,28 +190,34 @@ export async function lift(element, opts = {}) {
     },
   };
 
-  // ── native (vendor) module: supersedes the web path for <video>/<img> (docs/lift.md § Vendor modules)
+  // ── the runtime's conversion stack (docs/lift.md § Vendor modules) ─────────────────────────────
   let caps = null;
-  if (o.backend === 'real' && o.native !== false && (el.tagName === 'VIDEO' || el.tagName === 'IMG')) {
+  if (o.native !== false && (el.tagName === 'VIDEO' || el.tagName === 'IMG')) {
     if (o.native && typeof o.native === 'object') caps = o.native;
     else if (o.native === true) caps = { native: true, state: 'ready', modes: [] };
-    else caps = await liftCapabilities({ signal: opts.signal, webFallback: false }).catch(() => null);
+    else caps = await liftCapabilities({ signal: opts.signal }).catch(() => null);
   }
   const native = !!(caps && caps.native);
-  // Register the module's providers in the shared registry now (depth `native` at priority 100,
-  // `native-gaussians` when it lifts), before any provider is resolved.
+  // Register the module's `native-gaussians` lift provider in the shared registry now, before any
+  // provider is resolved.
   if (native) ensureNativeProviders(caps);
-  // Native defaults (resolveLiftMode): a VIDEO is 'live' (pause never auto-lifts; explore is
-  // explicit); a PICTURE goes straight to explore — no native live conversion of a still.
-  const machineMode = resolveLiftMode({ native, kind, mode: opts.mode });
-  // Only a native still the caller explicitly keeps 'live' behaves like a paused video (the
-  // browser converts it in place; explore/resume toggle). Otherwise a still is a still.
-  const machineKind = native && kind === 'still' && machineMode === 'live' ? 'video' : kind;
-  const nativeStillExplore = native && kind === 'still' && machineMode === 'explore';
   if (native && !o.providers.lift) {
     const lp = defaultLiftProviderFor(caps, o.providers);
-    if (lp) o.providers.lift = lp; // native-gaussians over the local generator (a registered LiftProvider)
+    if (lp) o.providers.lift = lp; // native-gaussians (a registered LiftProvider)
   }
+  // Nothing can convert this element: no runtime converter and no provider the caller brought.
+  // (A page that wants a still lifted without a runtime module passes `providers.lift`, e.g. the
+  // remote SHARP demo; that is explore-only, there is no in-page live conversion.)
+  if (!native && !o.providers.lift) {
+    throw new NativeLiftError('lift: no converter is available for this element (the runtime offers none)', 'unavailable');
+  }
+  // Defaults (resolveLiftMode): a VIDEO is 'live' (pause never auto-lifts; explore is explicit); a
+  // PICTURE goes straight to explore — no live conversion of a still.
+  const machineMode = resolveLiftMode({ native: true, kind, mode: opts.mode });
+  // Only a still the caller explicitly keeps 'live' behaves like a paused video (the browser
+  // converts it in place; explore/resume toggle). Otherwise a still is a still.
+  const machineKind = native && kind === 'still' && machineMode === 'live' ? 'video' : kind;
+  const nativeStillExplore = kind === 'still' && machineMode === 'explore';
   // ownLiftAttr: the caller (the browser's built-in) owns the element's dxr-lift* state, so exit
   // REMOVES them rather than restoring a value its own menu pre-set (see createNativeLiveAttrs).
   const nativeLive = native
@@ -257,7 +226,7 @@ export async function lift(element, opts = {}) {
   // A picture never gets a native live stream. The browser's menu pre-sets dxr-lift="auto" before
   // lift() runs; when we own the attributes, take it away NOW so the browser stops (or never
   // starts) converting the still — the explore view is all it gets. (A page-set value is left.)
-  if (nativeStillExplore && opts.ownLiftAttr) nativeLive.drop();
+  if (nativeLive && nativeStillExplore && opts.ownLiftAttr) nativeLive.drop();
   let nativeDetachPending = false;
 
   // ── listeners ─────────────────────────────────────────────────────────────────────────
@@ -283,31 +252,21 @@ export async function lift(element, opts = {}) {
   if (o.exploreMaxDpr === null) o.exploreMaxDpr = wall && o.quality !== 'high' ? 1 : Infinity;
   const placement = mountCanvas(el);
   const canvas = placement.canvas;
-  if (native) {
-    // The browser weaves the element itself while live: keep it visible, the canvas hidden (and
-    // out of the inline-3D session) until explore needs it.
-    placement.setSourceHidden(false);
-    canvas.style.visibility = 'hidden';
-  }
+  // The browser converts + weaves the element itself while live: keep it visible, the canvas
+  // hidden (and out of the inline-3D session) until explore needs it.
+  placement.setSourceHidden(false);
+  canvas.style.visibility = 'hidden';
   let chip = null;
 
   // ── runtime state ─────────────────────────────────────────────────────────────────────
-  let impl = null;
-  let modelSource = null;
-  let ort = null;
-  let registry = null;
-  let dibr = null;
   let exploreGain = 1; // exploreBudgetGain of the current explore scene (1 = as generated)
-  let videoProv = null;
-  let stillProv = null;
-  let stillLoading = null;
-  // The lift provider (null = the local generator). `ownLiftProv`: we created it, so we dispose it.
+  // The lift provider (native-gaussians, a registered one, or the caller's). `ownLiftProv`: we
+  // created it, so we dispose it.
   let liftProv = null;
   let ownLiftProv = false;
-  let liftFallbackWarned = false;
   let explore = null;
   let pendingExplore = null;
-  // The generator's output behind the explore scene — { ply, meta } — kept for exportSog(). The
+  // The provider's output behind the explore scene — { ply|sog, meta } — kept for exportSog(). The
   // pending one becomes current on enterExplore; the current one survives a resume (it is still
   // the last lifted scene) until the next lift replaces it or the handle is removed.
   let pendingLifted = null;
@@ -321,25 +280,17 @@ export async function lift(element, opts = {}) {
     sogAbort = null;
   };
   let loadAbort = new AbortController();
-  let frozen = null; // { bitmap, depth }
-  let liveGen = 0; // bumps on provider reset: stale live depth is dropped
-  let inferBusy = false;
-  let inferP = Promise.resolve(); // the in-flight live estimate (never rejects)
-  let liveHold = false; // ORT is busy creating a session: no live estimates
-  let ortBusy = 0; // still depth / inpainting in flight (a resume mid-lift must not overlap them)
-  let lastT = -1;
+  let frozen = null; // { bitmap, t }
   let suspended = false;
   let disposed = false;
   let sceneHandle = null;
   let fallbackRaf = 0;
   let lastDpr = 0;
   let crop = null; // { canvas, ctx } when object-fit crops the media
-  let dibrSource = null;
-  let liveErrorWarned = false;
 
-  const params = { depth: o.depth, convergence: o.convergence, dilate: 0, ...(o.live?.lookAround !== undefined ? { lookAround: +o.live.lookAround } : {}) };
-  // Providers report progress in their own shapes: a number, {loaded,total} (model download) or
-  // {stage,progress} (lift-gen). Normalise to 0..1.
+  const params = { depth: o.depth, convergence: o.convergence };
+  // Providers report progress in their own shapes: a number, {loaded,total} or
+  // {stage,progress}. Normalise to 0..1.
   const frac = (v) => {
     const x =
       typeof v === 'number' ? v : v && v.total > 0 ? v.loaded / v.total : v && Number.isFinite(v.progress) ? v.progress : 0;
@@ -348,25 +299,23 @@ export async function lift(element, opts = {}) {
   /** Timings (ms) the page can show: see LiftHandle.stats. */
   const stats = {
     fps: 0,
-    modelLoadMs: 0,
-    liveDepthMs: 0,
-    stillDepthMs: 0,
+    loadMs: 0,
     generateMs: 0,
     exploreLoadMs: 0,
     pauseToExploreMs: 0,
     splats: 0,
     // explore's comfort normalisation: the uniform scale applied about the camera (1 = none)
     exploreScale: 1,
-    // 'native': the browser's vendor module converts live (and supplies depth/gaussians on pause);
-    // 'web': the SDK's own pipeline. `provider`: the module's name from caps (native only).
-    mode: native ? 'native' : 'web',
+    // 'native': the runtime's conversion stack (converts live, supplies the Gaussians on pause);
+    // 'provider': only a caller-supplied lift provider (explore, no live conversion).
+    // `provider`: the module's name from caps (native only).
+    mode: native ? 'native' : 'provider',
     provider: (native && caps.provider) || null,
-    // which stage produced the explore scene: 'local' or the provider id (e.g. 'remote-sharp')
-    liftSource: 'local',
-    // a lift provider's round trip (ms) and its own timings; why the last one fell back (or null)
+    // which stage produced the explore scene: the provider id ('native-gaussians', 'remote-sharp', ...)
+    liftSource: null,
+    // a lift provider's round trip (ms) and its own timings
     remoteMs: 0,
     remoteTimings: null,
-    liftFallback: null,
   };
   let fpsFrames = 0;
   let fpsT0 = 0;
@@ -390,7 +339,7 @@ export async function lift(element, opts = {}) {
 
   // ── sizing ────────────────────────────────────────────────────────────────────────────
   // Explore draws ~1 M Gaussians per view; o.exploreMaxDpr (see above) caps the backing store while
-  // the lifted scene is up. Live DIBR (a ~1 ms full-screen pass) always keeps full dpr.
+  // the lifted scene is up; live (the browser's own weave of the element) is unaffected.
   function effectiveDpr() {
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     return explore ? Math.min(dpr, o.exploreMaxDpr) : dpr;
@@ -423,7 +372,7 @@ export async function lift(element, opts = {}) {
     } else crop = null;
   }
 
-  /** What the providers and the DIBR read: the element, or a crop of its visible part. */
+  /** What a freeze reads: the element, or a crop of its visible part. */
   function currentSource() {
     if (!crop) return el;
     const f = placement.fit;
@@ -444,15 +393,7 @@ export async function lift(element, opts = {}) {
     }
     syncBacking(false);
     const st = machine.state;
-    if ((!dibr && !native) || st === STATES.IDLE || st === STATES.LOADING || st === STATES.SUSPENDED || st === STATES.ERROR) return;
-    if (dibr) {
-      const src = currentSource();
-      if (src !== dibrSource) {
-        dibr.setSource(src);
-        dibrSource = src;
-      }
-      if (kind === 'video' && st === STATES.LIVE && !suspended) maybeInfer(src);
-    }
+    if (st === STATES.IDLE || st === STATES.LOADING || st === STATES.SUSPENDED || st === STATES.ERROR) return;
     const ctx = { views, layer, session };
     const now = performance.now();
     if (!fpsT0) fpsT0 = now;
@@ -463,7 +404,6 @@ export async function lift(element, opts = {}) {
     }
     const fadingOut = explore && fadeOutUntil > 0;
     const showExplore = explore && (st === STATES.EXPLORE || fadingOut);
-    if (dibr && (!showExplore || now < fadeInUntil || fadingOut)) dibr.render(ctx);
     // The 2D fallback has no tracked eyes: explore's own flat path (one eye at the rest head, the
     // whole canvas) is `views: null` — handing it the single MONO_VIEW would read as the load-time
     // mono blip and replay nothing.
@@ -482,9 +422,8 @@ export async function lift(element, opts = {}) {
   function flushCapture() {
     const waiters = captureWaiters.splice(0);
     try {
-      // Native mode has no DIBR: explore's engine created the canvas's context, and getContext
-      // hands back that same one.
-      const gl = (dibr && dibr.gl) || (explore ? canvas.getContext('webgl2') : null);
+      // Explore's engine created the canvas's context, and getContext hands back that same one.
+      const gl = explore ? canvas.getContext('webgl2') : null;
       if (!gl) throw new Error('no GL context yet');
       const w = canvas.width, h = canvas.height;
       const px = new Uint8Array(w * h * 4);
@@ -501,31 +440,6 @@ export async function lift(element, opts = {}) {
     } catch (error) {
       waiters.forEach((x) => x.reject(error));
     }
-  }
-
-  function maybeInfer(src) {
-    if (inferBusy || liveHold || ortBusy || !videoProv || el.readyState < 2) return;
-    if (el.currentTime === lastT) return;
-    lastT = el.currentTime;
-    inferBusy = true;
-    const g = liveGen;
-    const t0 = performance.now();
-    inferP = Promise.resolve()
-      .then(() => videoProv.estimate({ source: src, t: el.currentTime }))
-      .then((d) => {
-        stats.liveDepthMs = +(performance.now() - t0).toFixed(1);
-        if (!disposed && g === liveGen && d) dibr.setDepth(d);
-      })
-      .catch((error) => {
-        if (!liveErrorWarned) {
-          liveErrorWarned = true;
-          emit('error', { error, fatal: false, phase: 'live' });
-        }
-      })
-      .finally(() => {
-        inferBusy = false;
-      })
-      .catch(() => {});
   }
 
   /** Put the canvas into the inline-3D session (or the 2D-fallback loop). Native mode does this only
@@ -561,61 +475,17 @@ export async function lift(element, opts = {}) {
   }
 
   // ── providers ─────────────────────────────────────────────────────────────────────────
-  function makeProvider(which, name) {
-    const quality = which === 'video' && o.qualityAsked === 'auto' ? 'auto' : o.quality;
-    const popts = { kind: which, modelSource, ort, quality, model: name, loadOrt: ensureOrt };
-    // registry.getDepthProvider(name, opts) returns an INSTANCE: `name` is a registered provider
-    // ('ort', 'native', …) or a model family / manifest name handed to the best provider as `model`.
-    if (registry && typeof registry.getDepthProvider === 'function') {
-      const p = registry.getDepthProvider(name, popts);
-      if (p) return p;
-    }
-    return impl.depth.createDepthProvider(popts);
-  }
-
-  /** onnxruntime, now or lazily: native mode loads it only if a native provider falls back. */
-  let ortLoader = null;
-  function ensureOrt() {
-    if (ort) return Promise.resolve(ort);
-    if (!ortLoader) return Promise.reject(new Error('lift: onnxruntime not configured'));
-    const p = ortLoader().then((x) => (ort = x));
-    p.catch(() => {});
-    return p;
-  }
-
-  /** The inpainter, loaded lazily on the first lift; any failure → none (push-pull colour). */
-  let inpainterP = null;
-  function ensureInpainter(signal) {
-    const name = o.providers.inpaint;
-    if (!name || name === 'none' || !registry || typeof registry.getInpainter !== 'function') return Promise.resolve(undefined);
-    if (!inpainterP) {
-      inpainterP = (async () => {
-        if (!ort && native) await ensureOrt();
-        const ip = registry.getInpainter(name === 'iw3-light' ? 'light-inpaint-v1' : name, { modelSource, ort, quality: o.quality });
-        if (ip && typeof ip.load === 'function') await ip.load({ signal });
-        return ip || undefined;
-      })().catch((error) => {
-        emit('error', { error, fatal: false, phase: 'inpaint' });
-        return undefined;
-      });
-    }
-    return inpainterP;
-  }
-
-  /** The lift provider for `providers.lift` (null = local). Unknown names are non-fatal → local. */
+  /** The lift provider for `providers.lift`: a registered name or a LiftProvider instance. */
   async function resolveLiftProvider() {
     const want = o.providers.lift;
-    if (!want || want === 'local') return null;
+    if (!want) return null;
     if (typeof want === 'object' && typeof want.generateLift === 'function') return want;
     if (typeof want !== 'string') throw new TypeError('lift: providers.lift must be a name or a LiftProvider');
-    let p = null;
-    if (registry && typeof registry.getLiftProvider === 'function') p = registry.getLiftProvider(want, o.remote);
-    else if (want === 'remote-sharp') {
-      // A registry without lift providers (the stub backend): the module is still importable.
-      const m = await import('./providers/lift-remote-sharp.js');
-      p = m.createRemoteSharpLift(o.remote);
-    } else throw new Error(`lift: no lift provider registered as ${JSON.stringify(want)}`);
-    ownLiftProv = !!p;
+    // The demo provider registers itself when its module loads (js/lift/index.js imports it too).
+    if (want === 'remote-sharp') await import('./providers/lift-remote-sharp.js');
+    const p = getRegistry().getLiftProvider(want, o.remote);
+    if (!p) throw new Error(`lift: no lift provider registered as ${JSON.stringify(want)}`);
+    ownLiftProv = true;
     return p;
   }
 
@@ -630,27 +500,6 @@ export async function lift(element, opts = {}) {
       const cached = p && p.cacheHit === true ? ' (cached)' : '';
       chip.setNote(stage === 'downloading' ? `Downloading ${who} scene${cached}…${secs}` : `Lifting with ${who}…${secs}`);
     }
-  }
-
-  function ensureStill(signal, base = 0, span = 1, quiet = false) {
-    if (stillProv) return Promise.resolve(stillProv);
-    if (!stillLoading) {
-      const p = makeProvider('still', o.providers.still);
-      const onProgress = quiet ? undefined : (v) => progress('models', v, base, span);
-      stillLoading = Promise.resolve(p.load({ signal, onProgress })).then(
-        () => (stillProv = p),
-        (e) => {
-          stillLoading = null;
-          try {
-            p.dispose();
-          } catch {
-            /* ignore */
-          }
-          throw e;
-        }
-      );
-    }
-    return stillLoading;
   }
 
   function mediaReady() {
@@ -673,33 +522,11 @@ export async function lift(element, opts = {}) {
   async function doLoad() {
     const signal = loadAbort.signal;
     try {
-      // Native live needs only the model/registry module; the rest loads on the first pause.
-      impl = await loadBackend(o.backend, native ? ['models'] : undefined);
-      const M = impl.models;
       const tLoad = performance.now();
-      modelSource =
-        o.models === 'auto'
-          ? M.createModelSource({})
-          : typeof o.models === 'string'
-            ? M.createModelSource({ baseUrl: o.models })
-            : o.models;
-      if (o.ort && typeof o.ort.InferenceSession === 'function') ort = o.ort; // a module
-      else if (typeof o.ort === 'function') ortLoader = o.ort; // a lazy loader: () => Promise<ort>
-      else if (typeof M.loadOrt === 'function') {
-        const ortOpts = typeof o.ort === 'string' ? { baseUrl: o.ort } : o.ort || {};
-        ortLoader = () => M.loadOrt(ortOpts);
-      }
-      // Native live runs no ORT until a native provider falls back (ensureOrt then).
-      if (!native && !ort && ortLoader) {
-        try {
-          await ensureOrt();
-        } catch (e) {
-          ort = null; // a provider that needs it will fail its own load() with a better message
-        }
-      }
-      registry = typeof M.getRegistry === 'function' ? M.getRegistry() : null;
       if (disposed) return;
-      // Before the native branch: a native module's `native-gaussians` is a lift provider too.
+      // The lift provider is resolved (and loaded) now so a bad name fails the lift up front. The
+      // runtime's `native-gaussians` was registered above; there is nothing else to load: no model,
+      // no ONNX Runtime, no view synthesis. The `dxr-lift` attributes go on at `startLive`.
       try {
         liftProv = await resolveLiftProvider();
         if (liftProv && typeof liftProv.load === 'function') await liftProv.load({ signal });
@@ -707,51 +534,11 @@ export async function lift(element, opts = {}) {
         liftProv = null;
         emit('error', { error, fatal: false, phase: 'lift-provider' });
       }
-      if (native) {
-        // The vendor module supersedes the web path (its providers are registered above): load NO
-        // model, mount NO DIBR. The `dxr-lift` attributes go on at `startLive`.
-        await mediaReady();
-        if (disposed) return;
-        stats.modelLoadMs = Math.round(performance.now() - tLoad);
-        syncBacking(true);
-        machine.send('loaded');
-        return;
-      }
-      dibr = impl.dibr.createLiveDibr({ canvas });
-      dibr.setParams(params);
-      if (kind === 'video') {
-        videoProv = makeProvider('video', o.providers.video);
-        await videoProv.load({ signal, onProgress: (v) => progress('models', v) });
-      } else if (!(liftProv && liftProv.needsDepth === false)) {
-        // A provider that needs no local depth (remote SHARP) lets a still skip the 715 MB still
-        // model; it is loaded only if that provider fails and the lift falls back.
-        await ensureStill(signal);
-      }
       await mediaReady();
       if (disposed) return;
-      stats.modelLoadMs = Math.round(performance.now() - tLoad);
+      stats.loadMs = Math.round(performance.now() - tLoad);
       syncBacking(true);
       machine.send('loaded');
-      // `prefetch: true`: load the still model (and inpainter) right after live starts, so the first
-      // pause does not pay MoGe-3's ~3-5 s session creation. onnxruntime-web must NOT create a
-      // session while another one runs (measured: wasm `Aborted()` / `unreachable` / OOB, and the
-      // ORT instance is dead afterwards), so live inference is HELD meanwhile — DIBR keeps drawing
-      // with the last depth map, which lags a moving video for those seconds. Off by default.
-      if (kind === 'video' && o.prefetch) {
-        setTimeout(async () => {
-          if (disposed) return;
-          liveHold = true;
-          await inferP;
-          try {
-            await ensureStill(loadAbort.signal, 0, 1, true);
-            await ensureInpainter(loadAbort.signal);
-          } catch {
-            /* the pause path retries and reports */
-          } finally {
-            liveHold = false;
-          }
-        }, 500);
-      }
     } catch (error) {
       if (!disposed) machine.send('fail', { error });
     }
@@ -768,133 +555,52 @@ export async function lift(element, opts = {}) {
 
   async function doFreeze(gen) {
     abort = new AbortController();
-    const signal = abort.signal;
     freezeT0 = performance.now();
     try {
-      if (native && !impl.explore) impl = { ...impl, ...(await loadBackend(o.backend, ['depth', 'gen', 'explore'])) };
+      // Explore needs a stage that makes Gaussians: the runtime's `native-gaussians` (the module's
+      // caps list `gaussians`) or a provider the caller passed. Without one there is nothing to show.
+      if (!liftProv) {
+        throw new NativeLiftError(
+          'explore needs a converter that produces Gaussians (the runtime offers none for this element)',
+          'unsupported',
+        );
+      }
+      loadExplore().catch(() => {}); // warm the engine while the frame is grabbed and lifted
       await mediaReady();
       if (isStale(gen)) return;
       const t = kind === 'video' ? el.currentTime : 0;
       const bitmap = await createImageBitmap(currentSource());
       if (dropped(gen, 'frame')) return bitmap.close && bitmap.close();
-      // A lift provider that needs no local depth (remote SHARP) skips the still model here; the
-      // depth is computed in doLift only if that provider fails and the lift falls back.
-      let depth = null;
-      if (!(liftProv && liftProv.needsDepth === false)) {
-        depth = await stillDepthFor(bitmap, t, signal, gen);
-        if (!depth) return bitmap.close && bitmap.close();
-      }
       if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
-      frozen = { bitmap, depth, t };
+      frozen = { bitmap, t };
       machine.send('frozen', { gen });
     } catch (error) {
       if (!dropped(gen, 'freeze error')) machine.send('lift-failed', { gen, error });
     }
   }
 
-  /**
-   * The still model's depth for a frozen frame (null when the freeze went stale meanwhile). Focal
-   * comes back rescaled to pixels of `bitmap`; the live view gets the better depth too.
-   */
-  async function stillDepthFor(bitmap, t, signal, gen) {
-    // One ORT session at a time: let a live estimate still in flight finish before the still model
-    // is created/run (see the prefetch note in doLoad).
-    await inferP;
-    let depth;
-    ortBusy++;
-    try {
-      await ensureStill(signal, 0, 0.25);
-      if (isStale(gen)) return null;
-      progress('depth', 0, 0.25, 0.1);
-      const tDepth = performance.now();
-      depth = await stillProv.estimate({ source: bitmap, t, signal });
-      stats.stillDepthMs = Math.round(performance.now() - tDepth);
-    } finally {
-      ortBusy--;
-    }
-    if (dropped(gen, 'still depth')) return null;
-    progress('depth', 1, 0.25, 0.1);
-    // Depth comes back at MODEL resolution (e.g. 770×434) and MoGe's focalPx is in that grid;
-    // lift-gen wants focalPx in pixels of the RGB it is given (it rescales to its own raster).
-    const fp = depth && depth.intrinsics && depth.intrinsics.focalPx;
-    if (fp > 0 && depth.w > 0 && bitmap.width > 0 && depth.w !== bitmap.width) {
-      depth = { ...depth, intrinsics: { ...depth.intrinsics, focalPx: (fp * bitmap.width) / depth.w, focalGridW: bitmap.width } };
-    }
-    // The frozen frame's better (still-model) depth also improves the live view shown meanwhile.
-    if (dibr) dibr.setDepth(depth);
-    return depth;
-  }
-
   async function doLift(gen) {
     const signal = abort ? abort.signal : undefined;
     try {
-      let res = null;
-      let source = 'local';
       const tGen = performance.now();
-      // ── a lift provider first (remote SHARP, …); any failure but an abort falls back ──
-      if (liftProv) {
-        const tR = performance.now();
-        try {
-          res = await liftProv.generateLift({
-            rgb: frozen.bitmap,
-            depth: frozen.depth || undefined,
-            quality: o.quality,
-            params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
-            signal,
-            onProgress: providerProgress,
-          });
-          if (!res || !(res.sog || res.ply)) throw new Error('lift provider returned neither sog nor ply');
-          source = liftProv.id || 'provider';
-          stats.remoteMs = Math.round(performance.now() - tR);
-          stats.remoteTimings = (res.meta && res.meta.timings) ? { ...res.meta.timings, cacheHit: res.meta.cacheHit ?? null, serverMs: res.meta.serverMs ?? null } : null;
-          stats.liftFallback = null;
-        } catch (error) {
-          if (isStale(gen) || (signal && signal.aborted) || (error && error.fallback === false)) return;
-          res = null;
-          stats.liftFallback = (error && error.code) || 'error';
-          if (!liftFallbackWarned) {
-            liftFallbackWarned = true;
-            console.warn(`[inline3d/lift] ${liftProv.id || 'lift provider'} failed — falling back to the local lift:`, (error && error.message) || error);
-          }
-          emit('error', { error, fatal: false, phase: 'lift-provider', fallback: 'local' });
-          if (chip && chip.setNote) {
-            const who = liftProv.id === 'remote-sharp' ? 'SHARP' : 'Remote lift';
-            const why = { forbidden: 'account not allowed', quota: 'quota reached', auth: 'not signed in', timeout: 'timed out', 'popup-blocked': 'sign-in blocked' }[error && error.code] || 'unavailable';
-            chip.setNote(`${who} ${why} — lifting locally`);
-          }
-        } finally {
-          if (chip && chip.setNote && res) chip.setNote(null);
-        }
-      }
-      if (!res) {
-        if (!frozen.depth) {
-          const depth = await stillDepthFor(frozen.bitmap, frozen.t || 0, signal, gen);
-          if (!depth) return;
-          frozen.depth = depth;
-        }
-        ortBusy++;
-        try {
-          const inpainter = await ensureInpainter(signal);
-          if (isStale(gen)) return;
-          res = await impl.gen.generateLift({
-            rgb: frozen.bitmap,
-            depth: frozen.depth,
-            inpainter,
-            quality: o.quality,
-            // the hidden layer + outpaint border are sized for the orbit the explore view allows
-            params: { maxOrbitDeg: o.orbit.maxAngleDeg, ...(o.genParams || {}) },
-            signal,
-            onProgress: (v) => progress('lift', v, 0.35, 0.65),
-          });
-        } finally {
-          ortBusy--;
-        }
-      }
+      const res = await liftProv.generateLift({
+        rgb: frozen.bitmap,
+        quality: o.quality,
+        // the orbit the explore view allows (a provider may size its hidden layer for it)
+        params: { maxOrbitDeg: o.orbit.maxAngleDeg },
+        signal,
+        onProgress: providerProgress,
+      });
+      if (!res || !(res.sog || res.ply)) throw new Error('lift provider returned neither sog nor ply');
+      const source = liftProv.id || 'provider';
       stats.liftSource = source;
-      stats.generateMs = Math.round(performance.now() - tGen);
+      stats.remoteMs = Math.round(performance.now() - tGen);
+      stats.remoteTimings = res.meta && res.meta.timings ? { ...res.meta.timings, cacheHit: res.meta.cacheHit ?? null, serverMs: res.meta.serverMs ?? null } : null;
+      if (chip && chip.setNote) chip.setNote(null);
+      stats.generateMs = stats.remoteMs;
       stats.splats = (res.meta && res.meta.splatCount) || 0;
-      // Diagnostics for A/B against other lifters: the intrinsics the generator used (output-raster
-      // px, OpenCV convention), the pivot depth and the horizontal FOV they imply.
+      // Diagnostics: the intrinsics the provider used (output-raster px, OpenCV convention), the
+      // pivot depth and the horizontal FOV they imply.
       if (res.meta && res.meta.intrinsics) {
         const it = res.meta.intrinsics;
         stats.intrinsics = { ...it };
@@ -902,17 +608,17 @@ export async function lift(element, opts = {}) {
         if (it.fx && it.w) stats.fovXDeg = +(2 * Math.atan(it.w / (2 * it.fx)) * 180 / Math.PI).toFixed(2);
       }
       stats.genTimings = (res.meta && res.meta.timings) || null;
-      if (dropped(gen, 'generator result')) return;
+      if (dropped(gen, 'lift result')) return;
       const tEx = performance.now();
-      // Same canvas, same WebGL2 context: explore wraps live-DIBR's `gl` (never getContext itself).
-      // lift-gen writes the OpenCV camera frame (meta.convention); explore defaults to OpenGL.
+      // Explore creates its own WebGL2 context on the canvas (the engine). A PLY from the runtime
+      // is the OpenCV camera frame (meta.convention / axes); explore defaults to OpenGL.
       const meta = res.meta || {};
       exploreGain = exploreBudgetGain(meta, o.explore.depthBudget);
       stats.exploreDepthGain = +exploreGain.toFixed(4);
-      const ex = await impl.explore.createExplore({
+      const exploreMod = await loadExplore();
+      const ex = await exploreMod.createExplore({
         canvas,
-        gl: dibr && dibr.gl,
-        // a local lift is a PLY; a remote one a .sog whose camera block is the rig (meta too)
+        // a PLY from the runtime, or a .sog whose camera block is the rig (meta too)
         ...(res.sog ? { sog: res.sog } : { ply: res.ply }),
         meta,
         axes: meta.axes || meta.convention || undefined,
@@ -921,7 +627,7 @@ export async function lift(element, opts = {}) {
         // the page's depth strength carries into explore (setDepth), times the budget gain that
         // brings the scene's natural spread down to the live path's (exploreBudgetGain)
         depthGain: params.depth * exploreGain,
-        space: (frozen.depth && frozen.depth.space) || meta.space,
+        space: meta.space,
         comfort: { mode: o.explore.comfort, target: o.explore.pivotTargetM },
         eyes: o.explore.eyes,
       });
@@ -947,7 +653,7 @@ export async function lift(element, opts = {}) {
       }
     }
     explore = null;
-    if (native && nativeDetachPending) {
+    if (nativeDetachPending) {
       // Native: explore is gone and the browser converts the element again — leave the session.
       nativeDetachPending = false;
       detachRenderer();
@@ -989,8 +695,7 @@ export async function lift(element, opts = {}) {
         doLoad();
         break;
       case 'startLive':
-        if (native) nativeLive.apply(); // dxr-lift="auto": the browser converts + weaves in place
-        else canvas.style.visibility = '';
+        if (nativeLive) nativeLive.apply(); // dxr-lift="auto": the browser converts + weaves in place
         break;
       case 'freeze':
         doFreeze(p.gen);
@@ -999,14 +704,12 @@ export async function lift(element, opts = {}) {
         doLift(p.gen);
         break;
       case 'enterExplore':
-        if (native) {
-          // Explore owns the pixels now: the browser stops converting, the canvas joins the session.
-          nativeDetachPending = false;
-          nativeLive.setOff(true);
-          placement.setSourceHidden(true);
-          canvas.style.visibility = '';
-          attachRenderer();
-        }
+        // Explore owns the pixels now: the browser stops converting, the canvas joins the session.
+        nativeDetachPending = false;
+        if (nativeLive) nativeLive.setOff(true);
+        placement.setSourceHidden(true);
+        canvas.style.visibility = '';
+        attachRenderer();
         if (chip && chip.setNote) chip.setNote(null);
         if (explore) disposeExplore();
         explore = pendingExplore;
@@ -1021,13 +724,11 @@ export async function lift(element, opts = {}) {
       case 'exitExplore':
         cancelSogExport(); // a .sog export in flight must not hold up (or jank) the return to live
         placement.setInteractive(false);
-        if (native) {
-          // The element comes back converted by the browser at once; the canvas fades out over it
-          // and leaves the session when explore is disposed.
-          nativeDetachPending = true;
-          placement.setSourceHidden(false);
-          nativeLive.setOff(false);
-        }
+        // The element comes back converted by the browser at once; the canvas fades out over it
+        // and leaves the session when explore is disposed.
+        nativeDetachPending = true;
+        placement.setSourceHidden(false);
+        if (nativeLive) nativeLive.setOff(false);
         if (explore && p.crossfade && typeof explore.fadeOut === 'function') {
           explore.fadeOut(FADE_MS);
           fadeOutUntil = performance.now() + FADE_MS;
@@ -1035,7 +736,7 @@ export async function lift(element, opts = {}) {
         break;
       case 'cancelLift':
         // Abandon, never await: the generation bump already made every late result stale (dropped());
-        // the abort just stops the fetches / worker / ORT waits early.
+        // the abort just stops the fetches / waits early.
         if (abort) abort.abort();
         abort = null;
         if (pendingExplore) {
@@ -1045,10 +746,7 @@ export async function lift(element, opts = {}) {
         pendingLifted = null;
         break;
       case 'resetProvider':
-        liveGen++;
-        lastT = -1;
-        if (videoProv) videoProv.reset();
-        break;
+        break; // nothing temporal to reset: the runtime keeps the stream state
       case 'suspend':
         suspended = true;
         if (nativeLive) nativeLive.hold('paused');
@@ -1124,7 +822,7 @@ export async function lift(element, opts = {}) {
     if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
     detachRenderer();
     if (nativeLive) nativeLive.clear();
-    for (const x of [pendingExplore, explore, dibr, videoProv, stillProv, ownLiftProv ? liftProv : null]) {
+    for (const x of [pendingExplore, explore, ownLiftProv ? liftProv : null]) {
       if (!x) continue;
       try {
         x.dispose();
@@ -1132,7 +830,7 @@ export async function lift(element, opts = {}) {
         /* ignore */
       }
     }
-    pendingExplore = explore = dibr = videoProv = stillProv = liftProv = null;
+    pendingExplore = explore = liftProv = null;
     lifted = pendingLifted = null;
     if (frozen && frozen.bitmap && frozen.bitmap.close) frozen.bitmap.close();
     frozen = null;
@@ -1161,7 +859,6 @@ export async function lift(element, opts = {}) {
     );
   }
   syncBacking(true);
-  if (!native) attachRenderer();
 
   // Native, not READY yet (runtime conversion-providers §7.4): the browser shows the element's own
   // 2D frame until its converter is up, and the chip says so with a spinner. This is a wait, never a
@@ -1199,11 +896,10 @@ export async function lift(element, opts = {}) {
       if (chip && chip.setWaiting) chip.setWaiting(s === 'waiting');
       emit('liftstatechange', { liftState: s });
     },
-    /** Live timings: fps (frames drawn), modelLoadMs, liveDepthMs (last video estimate),
-     *  stillDepthMs, generateMs (lift-gen), exploreLoadMs (PLY parse + upload), pauseToExploreMs,
-     *  splats. Read-only snapshot. */
-    /** Diagnostics only (not API): the live renderers. */
-    _internals: () => ({ explore, dibr, videoProv, stillProv, liftProv, frozen, lifted, chip }),
+    /** Timings: fps (explore frames drawn), loadMs, generateMs (the lift provider's round trip),
+     *  exploreLoadMs (PLY parse + upload), pauseToExploreMs, splats. Read-only snapshot. */
+    /** Diagnostics only (not API): the live explore + provider. */
+    _internals: () => ({ explore, liftProv, frozen, lifted, chip }),
     get stats() {
       return { ...stats, state: machine.state };
     },
@@ -1237,18 +933,16 @@ export async function lift(element, opts = {}) {
     setOrbit(yaw, pitch = 0) {
       if (explore && typeof explore.setTarget === 'function') explore.setTarget(+yaw || 0, +pitch || 0);
     },
-    /** Depth strength: live DIBR's multiplier, and in explore the lifted scene's depth about its
+    /** Depth strength: `dxr-lift-strength` for the live conversion, and in explore the lifted scene's depth about its
      *  pivot plane (explore setDepthGain: the pivot stays on the glass, only disparity scales). */
     setDepth(x) {
       if (!Number.isFinite(x)) return;
       params.depth = x;
       if (nativeLive) nativeLive.setStrength(x);
-      if (dibr) dibr.setParams(params);
       if (explore && typeof explore.setDepthGain === 'function') explore.setDepthGain(x * exploreGain);
     },
     setConvergence(x) {
       params.convergence = x === 'auto' || Number.isFinite(x) ? x : 'auto';
-      if (dibr) dibr.setParams(params);
       if (nativeLive) nativeLive.setConvergence(params.convergence);
     },
     /** Native live: how eagerly the browser converts this element (`dxr-lift-priority`). Returns

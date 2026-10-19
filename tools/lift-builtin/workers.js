@@ -8,10 +8,9 @@
 // emulation:
 //   - PlayCanvas's gsplat SORT worker (the explore renderer's one worker) → `mainThreadWorker()`
 //     running the SAME function, passed in at build time (build.mjs transformPcSorter — no eval,
-//     the world's CSP has no 'unsafe-eval');
-//   - lift-gen's PLY emit worker → lift-gen's own in-thread path (`emitLiftSplats`).
+//     the world's CSP has no 'unsafe-eval').
 // Everything here is worker-FREE when the probe fails; the cost is main-thread time (the sort on
-// orbit, the ~100–300 ms PLY emit), not correctness.
+// orbit), not correctness.
 //
 // (Until 2026-09 the explore renderer was Spark, whose workers also fetched their wasm from data:
 // URLs; the probe tested that too and this file answered data: fetches locally. PlayCanvas's sort

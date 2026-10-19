@@ -31,50 +31,34 @@ export type LiftQuality = 'low' | 'medium' | 'high';
 
 export interface LiftOptions {
   /**
-   * `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still
-   * does). `explore`: lift once the models are in. Default `auto` on the web path. Native mode:
-   * a **video** defaults to **`live`** (the browser keeps the paused frame woven 3D, so lifting on
-   * pause is wasted work — the splat is built only on an explicit Explore); a **picture** defaults to
-   * **`explore`** (straight to the splat view, no native live conversion of the still; chip = ↓ SOG
-   * + Exit). A mode you pass is honoured (native `auto` on a video lifts on pause again; `live` on a
-   * picture keeps the browser's in-place conversion; `auto` on a picture = `explore`).
+   * A **video** defaults to **`live`** (the browser converts it in place; pause never lifts — the
+   * Gaussian scene is built only on an explicit Explore); a **picture** defaults to **`explore`**
+   * (straight to the splat view; chip = ↓ SOG + Exit). A mode you pass is honoured (`auto` on a
+   * video lifts on pause; `live` on a picture keeps the browser's in-place conversion).
    */
   mode?: 'auto' | 'live' | 'explore';
-  /** Depth strength multiplier: live DIBR, and the explore scene's depth about its pivot. Default 1. */
+  /** Depth strength multiplier (`dxr-lift-strength`), and the explore scene's depth about its pivot. Default 1. */
   depth?: number;
-  /** Zero-disparity plane for live DIBR: normalised disparity 0..1, or `auto` (default). */
+  /** Zero-disparity plane for the live conversion (`dxr-lift-convergence`): normalised disparity 0..1, or `auto` (default). */
   convergence?: 'auto' | number;
   /**
-   * `auto` (default) resolves to `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, `low` otherwise
-   * or on a small phone; never `high`. The video depth model alone keeps `auto` (a warm-up picks its
-   * resolution by measured frame time).
+   * Handed to the lift provider. `auto` (default) resolves to `medium` on a desktop with ≥ 4 GB and
+   * ≥ 4 cores, `low` otherwise or on a small phone; never `high`.
    */
   quality?: 'auto' | LiftQuality;
   /** An existing `createInline3D()` manager to join. Pass it if the page already has one. */
   wall?: Inline3D;
   /** Explore orbit: cap in degrees (default 15) and whether a release springs back (default true). */
   orbit?: { maxAngleDeg?: number; relax?: boolean; gain?: number };
-  /** A {@link ModelSource}; a base URL string (`createModelSource({ baseUrl })`); or `auto` (default). */
-  models?: 'auto' | string | ModelSource;
-  /** onnxruntime-web: the module itself, a dist base URL, or `loadOrt` options. Default: jsDelivr, pinned. */
-  ort?: unknown | string | LoadOrtOptions;
   /**
-   * Model / provider names. `video` default `vda-small`; `still` default `moge3` (also `da3`,
-   * `da2-small`, a manifest name, or a registered provider name); `inpaint` default `none`
-   * (`light-inpaint-v1` enables the net).
+   * The lift stage (frozen frame → Gaussian scene). Omitted = the runtime's `native-gaussians`
+   * (when its caps list `gaussians`). A registered name — `remote-sharp` is the DEMO-ONLY remote
+   * SHARP provider (Apple research-licence weights; docs/lift.md § Remote SHARP) — or a
+   * {@link LiftProvider} instance. There is no in-page fallback: when the runtime offers no
+   * converter and no provider is given, `lift()` rejects with a {@link NativeLiftError}
+   * (`code: 'unavailable'`).
    */
-  providers?: {
-    video?: string;
-    still?: string;
-    inpaint?: string;
-    /**
-     * The lift stage (frozen frame → Gaussian scene). Omitted / `local` = the local generator
-     * (still depth + lift-gen). A registered name — `remote-sharp` is the DEMO-ONLY remote SHARP
-     * provider (Apple research-licence weights; docs/lift.md § Remote SHARP) — or a
-     * {@link LiftProvider} instance. Any provider failure but an abort falls back to local.
-     */
-    lift?: 'local' | 'remote-sharp' | (string & {}) | LiftProvider;
-  };
+  providers?: { lift?: 'remote-sharp' | (string & {}) | LiftProvider };
   /** Factory options for a NAMED lift provider (`providers.lift`), e.g. remote-sharp's endpoint/auth. */
   remote?: RemoteSharpLiftOptions;
   /** Alias of `remote`. */
@@ -92,13 +76,6 @@ export interface LiftOptions {
   ui?: 'builtin' | 'none' | { autoHideMs?: number };
   /** Aborting removes the lift. */
   signal?: AbortSignal;
-  /** `stub` swaps in js/lift/stubs/* (same contracts, no ML) — development and demos only. Default `real`. */
-  backend?: 'real' | 'stub';
-  /**
-   * Load the still model while live runs so the first pause is faster. Live depth is HELD while it
-   * compiles (onnxruntime-web cannot create a session while another runs). Default false.
-   */
-  prefetch?: boolean;
   /** Cap on devicePixelRatio for the canvas while explore is up. Default 1 on a woven (SBS) store unless quality is `high`, else uncapped. */
   exploreMaxDpr?: number;
   /**
@@ -110,10 +87,10 @@ export interface LiftOptions {
    */
   explore?: { pivotTargetM?: number; comfort?: 'auto' | 'always' | 'off'; eyes?: 'nominal' | 'tracked' };
   /**
-   * The browser's vendor 2D→3D module (docs/lift.md § Vendor modules). `auto` (default): when
+   * The browser's conversion stack (docs/lift.md § Vendor modules). `auto` (default): when
    * {@link liftCapabilities} reports `native` and the element is a `<video>`/`<img>`, the BROWSER
-   * converts + weaves it in place (`dxr-lift="auto"`): no DIBR canvas, no model until a pause.
-   * `false`: never. A caps object skips the query. Ignored with `backend: 'stub'`.
+   * converts + weaves it in place (`dxr-lift="auto"`): no canvas, no model, no per-frame JS.
+   * `false`: never. A caps object skips the query.
    */
   native?: 'auto' | boolean | LiftCapabilities;
   /** Native live: how eagerly the browser converts this element (`dxr-lift-priority`). Default `normal`. */
@@ -130,7 +107,7 @@ export interface LiftOptions {
 }
 
 export interface LiftProgress {
-  phase: 'models' | 'depth' | 'lift';
+  phase: 'lift';
   /** 0..1 within the phase. */
   value: number;
   /** A lift provider's own stage (remote SHARP: encoding | uploading | waiting | downloading). */
@@ -144,13 +121,9 @@ export interface LiftStats {
   state: LiftState;
   /** Frames drawn per second (the addScene callback or the 2D-fallback rAF). */
   fps: number;
-  /** Load: backend + first depth model + media ready, ms. */
-  modelLoadMs: number;
-  /** Last live (video) depth estimate, ms. */
-  liveDepthMs: number;
-  /** Last still-model depth estimate, ms. */
-  stillDepthMs: number;
-  /** Last lift generation (incl. inpainting when enabled), ms. */
+  /** Load: provider resolved + media ready, ms. */
+  loadMs: number;
+  /** The lift provider's round trip (the runtime's native-gaussians, or a remote one), ms. */
   generateMs: number;
   /** PLY parse + GPU upload for the explore renderer, ms. */
   exploreLoadMs: number;
@@ -160,18 +133,16 @@ export interface LiftStats {
   splats: number;
   /** The explore comfort scale applied about the camera (1 = none). */
   exploreScale: number;
-  /** `native`: the browser's vendor module converts live; `web`: the SDK's own pipeline. */
-  mode: 'native' | 'web';
+  /** `native`: the runtime's conversion stack converts live; `provider`: only a caller-supplied lift provider (explore, no live conversion). */
+  mode: 'native' | 'provider';
   /** The vendor module's name (native mode), else null. */
   provider: string | null;
-  /** What produced the explore scene: `local`, or the lift provider's id (e.g. `remote-sharp`). */
-  liftSource: string;
+  /** What produced the explore scene: the lift provider's id (`native-gaussians`, `remote-sharp`), or null before the first lift. */
+  liftSource: string | null;
   /** The lift provider's round trip, ms (0 without one). */
   remoteMs: number;
   /** The provider's own timings (remote SHARP: encodeMs, requestMs, downloadMs, totalMs, bytes). */
   remoteTimings: Record<string, number> | null;
-  /** Why the last provider lift fell back to local (a RemoteLiftError code), or null. */
-  liftFallback: string | null;
 }
 
 export interface LiftHandle {
@@ -184,13 +155,13 @@ export interface LiftHandle {
   readonly woven: boolean;
   /** True when the browser's vendor module converts this element (native live mode). */
   readonly native: boolean;
-  /** The capabilities native mode was decided on (null when not queried, e.g. a `<canvas>`). */
+  /** The capabilities the lift was decided on (null when not queried). */
   readonly caps: LiftCapabilities | null;
-  /** Native only: the browser's coarse lift state (`waiting` = the element's 2D frame + a spinner until the converter is READY); null on the web path. */
+  /** Native only: the browser's coarse lift state (`waiting` = the element's 2D frame + a spinner until the converter is READY); null without a runtime converter. */
   readonly liftState: 'waiting' | 'ready' | 'unavailable' | null;
-  /** Native only: the browser reports a new coarse lift state. No-op on the web path. */
+  /** Native only: the browser reports a new coarse lift state. No-op without a runtime converter. */
   setLiftState(s: 'waiting' | 'ready' | 'unavailable'): void;
-  /** Native live: `dxr-lift-priority`. Returns false for an unknown value; a no-op on the web path. */
+  /** Native live: `dxr-lift-priority`. Returns false for an unknown value. */
   setPriority(p: LiftPriority): boolean;
   readonly priority: LiftPriority;
   /** Snapshot of timings. */
@@ -203,8 +174,7 @@ export interface LiftHandle {
   /** Freeze the current frame and lift it (a video pauses). No-op outside `live`. */
   explore(): void;
   /** Leave explore (or an in-flight lift) for the live view of the PAUSED frame, in the same tick —
-   *  native: `dxr-lift="auto"` again; in-flight explore work (depth fetch, generator, remote lift,
-   *  .sog export) is abandoned, never awaited, and its late results are dropped. It never plays the
+   *  native: `dxr-lift="auto"` again; in-flight explore work (lift request, .sog export) is abandoned, never awaited, and its late results are dropped. It never plays the
    *  video: playback starts only on an explicit play (the page's controls, or {@link play}). */
   resume(): void;
   /** Start playback of a `<video>` (an explicit play; resolves false if refused, or for an image).
@@ -212,7 +182,7 @@ export interface LiftHandle {
   play(): Promise<boolean>;
   /** Explore: turn the lifted scene to (yaw, pitch) degrees, clamped to the orbit cap. */
   setOrbit(yaw: number, pitch?: number): void;
-  /** Depth strength: live DIBR and, in explore, the lifted scene's depth about its pivot. */
+  /** Depth strength: `dxr-lift-strength` for the live conversion and, in explore, the lifted scene's depth about its pivot. */
   setDepth(x: number): void;
   setConvergence(x: 'auto' | number): void;
   /**
@@ -280,17 +250,15 @@ export interface Inpainter {
 
 export interface ProviderFactoryOptions {
   kind?: 'video' | 'still';
-  modelSource: ModelSource;
-  ort?: unknown;
   quality?: 'auto' | LiftQuality;
-  /** A model family (`vda-small`, `moge3`, `da3`, `da2-small`, `light-inpaint-v1`) or manifest name. */
+  /** A model family or manifest name, for a registered third-party provider. */
   model?: string;
 }
 
-/** The lift stage: frozen frame (+ optional still depth) → a Gaussian scene. docs/lift.md § LiftProvider. */
+/** The lift stage: frozen frame → a Gaussian scene. docs/lift.md § LiftProvider. */
 export interface LiftProvider {
   readonly id?: string;
-  /** false: lift.js skips the still depth model (a remote provider); it runs only on fallback. */
+  /** false: the provider takes only the frame (the runtime's, a remote one). */
   readonly needsDepth?: boolean;
   load?(o?: { signal?: AbortSignal }): Promise<unknown>;
   generateLift(o: {
@@ -386,7 +354,7 @@ export interface LiftRegistry {
     factory: (o: RemoteSharpLiftOptions & Record<string, unknown>) => LiftProvider,
     o?: { priority?: number; optIn?: boolean; available?: () => boolean },
   ): () => void;
-  /** By name, or (null / `auto`) the best non-opt-in one; null = use the local generator. */
+  /** By name, or (null / `auto`) the best non-opt-in one; null = none registered. */
   getLiftProvider(name: string | null, opts?: Record<string, unknown>): LiftProvider | null;
   listLiftProviders(): Array<{ name: string; priority: number; kinds: string[] }>;
   /** Register (or replace, by name) a depth provider; the highest priority available one wins. */
@@ -406,55 +374,13 @@ export interface LiftRegistry {
 /** The page-wide provider registry (shared by every copy of the SDK on the page). */
 export declare function getRegistry(): LiftRegistry;
 
-export interface ModelSource {
-  ready(): Promise<unknown>;
-  /** Download URL: baseUrl + path, else an absolute per-file url, else `${blobBaseUrl}/${sha256}.${format}`. */
-  url(name: string): string;
-  get(name: string, o?: { signal?: AbortSignal; onProgress?: (p: { loaded: number; total: number }) => void }): Promise<{ stream: ReadableStream<Uint8Array>; size: number; sha256: string; source: string }>;
-  getBytes(name: string, o?: { signal?: AbortSignal; onProgress?: (p: { loaded: number; total: number }) => void }): Promise<{ bytes: Uint8Array; size: number; sha256: string; source: string }>;
-  /** Is `name` in the manifest (after `ready()`)? */
-  has(name: string): boolean;
-  /** The manifest entry (io descriptor, role, files, …) for a model. */
-  entry(name: string): Record<string, any>;
-  readonly manifest: Record<string, any> | null;
-  resolveName(nameOrFamily: string | null | undefined, role: 'depth-video' | 'depth-still' | 'inpaint', quality?: 'auto' | LiftQuality): string;
-  /** Obtainable without a download? (native store HEAD, a verified cache stamp, else a HEAD on the URL.) Never rejects. */
-  probe?(name: string, o?: { signal?: AbortSignal }): Promise<boolean>;
-  clear(): Promise<void>;
-}
-
-export interface ModelSourceOptions {
-  /** Where the model files live (joined with each manifest `path`). Omit to use the manifest's public blob store. */
-  baseUrl?: string;
-  /** A manifest object, or its URL. Default: the SDK's js/lift/models.json. */
-  manifest?: string | object;
-  /** Prefer the DisplayXR Browser's native model store. Default: auto-detected. */
-  native?: boolean;
-  /** sha256-verify network downloads. Default true. */
-  verify?: boolean;
-  /** Cache API bucket; `null` disables caching. */
-  cacheName?: string | null;
-}
-
-export declare function createModelSource(o?: ModelSourceOptions): ModelSource;
-
-export interface LoadOrtOptions {
-  /** onnxruntime-web `dist/` URL. Default: jsDelivr, pinned to the tested build. */
-  baseUrl?: string;
-  /** `auto` picks the JSPI build when the browser has WebAssembly JSPI. */
-  bundle?: 'auto' | 'jspi' | 'webgpu';
-}
-
-/** Import onnxruntime-web at runtime (never bundled). Memoised per URL. */
-export declare function loadOrt(o?: LoadOrtOptions): Promise<any>;
-
 // ── Vendor modules (native mode) ─────────────────────────────────────────────────────────────
 
 export type LiftPriority = 'high' | 'normal' | 'low' | 'paused';
 
 /** What {@link liftCapabilities} reports (docs/lift.md § Vendor modules). */
 export interface LiftCapabilities {
-  /** The browser's vendor 2D→3D module is reachable from this world and not `unavailable`: it supersedes the web path. */
+  /** The browser's conversion stack is reachable from this world and not `unavailable`. */
   native: boolean;
   /** The module's name, e.g. `neurd-directml`. */
   provider?: string;
@@ -465,12 +391,10 @@ export interface LiftCapabilities {
   state?: 'ready' | 'activating' | 'unavailable';
   /**
    * The coarse state to act on: `waiting` (the runtime's converter is warming — create anyway and
-   * show the 2D source, never switch to the in-page path), `ready`, or `unavailable` (no runtime
-   * conversion here: the in-page path is the answer).
+   * show the 2D source), `ready`, or `unavailable` (no runtime conversion here: the element stays
+   * the page's own 2D element; `lift()` rejects).
    */
   liftState?: 'waiting' | 'ready' | 'unavailable';
-  /** The open web path: a WebGPU adapter, and whether its default video / still depth model is reachable without a download attempt. */
-  webFallback: { video: boolean; still: boolean; webgpu: boolean };
 }
 
 /**
@@ -482,12 +406,6 @@ export declare function liftCapabilities(o?: {
   signal?: AbortSignal;
   /** Ignored: every call re-asks. Kept for compatibility. */
   refresh?: boolean;
-  /** false skips the model probes (webFallback all false). Default true. */
-  webFallback?: boolean;
-  /** The ModelSource to probe, as lift()'s `models`. Default `auto`. */
-  models?: 'auto' | string | ModelSource;
-  /** Still-model tier to probe. Default `medium`. */
-  quality?: LiftQuality;
   timeoutMs?: number;
 }): Promise<LiftCapabilities>;
 
@@ -500,20 +418,20 @@ export declare const LIFT_ATTRS: Readonly<{
 }>;
 export declare const LIFT_PRIORITIES: ReadonlyArray<LiftPriority>;
 
-/** A native-module failure; `fallback` is true for everything but an abort. */
+/** A native-module failure; `unavailable` = `lift()` found no converter at all. */
 export declare class NativeLiftError extends Error {
-  code: 'http' | 'unsupported' | 'format' | 'encode' | 'network' | 'aborted';
+  code: 'http' | 'unsupported' | 'unavailable' | 'format' | 'encode' | 'network' | 'aborted';
   fallback: boolean;
   status?: number;
 }
 
 /**
- * The `native` DepthProvider (stills): `POST displayxr-lift://lift/depth`. Falls back per frame to
- * the ORT still provider on any error (for the rest of the session after a 404/501). Registered at
- * priority 100 by lift() when the module is present.
+ * The `native` DepthProvider (stills): `POST displayxr-lift://lift/depth`. Rejects with a
+ * {@link NativeLiftError} on any error (no in-page fallback; after a 404/501 the module is marked
+ * unsupported for the session). Registered at priority 100 by lift() when the module is present.
  */
 export declare function createNativeDepthProvider(
-  o?: ProviderFactoryOptions & { fetch?: typeof fetch; loadOrt?: () => Promise<unknown>; fallback?: (o: ProviderFactoryOptions) => DepthProvider; provider?: string },
+  o?: ProviderFactoryOptions & { fetch?: typeof fetch; provider?: string },
 ): DepthProvider & { readonly info: Record<string, unknown> };
 
 /**

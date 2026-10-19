@@ -1,25 +1,32 @@
 # lift — Convert to 3D
 
 **EXPERIMENTAL** — the `./lift` subpath is preview tier (docs/sdk-stability.md). This page is the
-overview and the integration contract; each module has its own page:
-[models + providers](lift-models.md) · [live DIBR](lift-dibr.md) · [lift generator](lift-gen.md) ·
+overview and the integration contract; the explore renderer has its own page:
 [explore renderer](lift-explore.md).
 
-`lift(element, opts)` turns an ordinary `<video>`, `<img>` or `<canvas>` on a page into 3D **in place**:
-a video plays as **live** 3D (per-frame monocular depth + depth-image-based rendering), and when it
-pauses or ends the frame is **lifted** into a small 3D Gaussian scene you can **explore** with a
-bounded orbit. A still goes straight to explore. On the DisplayXR Browser the canvas weaves
-glasses-free; everywhere else it renders the same pipeline as a single mono view (the 2D fallback).
+> **The runtime converts (ADR-053, P4).** This SDK carries no model, no ONNX Runtime, no in-page
+> depth, no depth-image-based renderer and no lift generator. The conversion is done by the
+> DisplayXR runtime's conversion stack (an open provider by default, a vendor module when one is
+> installed) and reached through the DisplayXR Browser; [`native.js`](../js/lift/native.js) is the
+> SDK's only provider. Where there is no converter (`liftCapabilities().native` is false), `lift()`
+> rejects with a `NativeLiftError` (`code: 'unavailable'`) and the page keeps its own 2D element.
+> The in-page pipeline (`depth-ort`, `inpaint-ort`, `live-dibr`, `lift-gen`, `models.json`, the
+> stubs) and its pages (`lift-models.md`, `lift-dibr.md`, `lift-gen.md`) were removed with it.
+
+`lift(element, opts)` turns an ordinary `<video>` or `<img>` on a page into 3D **in place**:
+a video plays as **live** 3D (the browser converts and weaves the element itself), and on an explicit
+*Explore* the paused frame is **lifted** by the runtime into a small 3D Gaussian scene you can
+**explore** with a bounded orbit. A still goes straight to explore.
 
 ```js
 import { lift, resolveMediaAt } from '@displayxr/inline3d/lift';
 
-const h = await lift(document.querySelector('video'));
+const h = await lift(document.querySelector('video'));   // rejects (unavailable) without a converter
 h.on('statechange', ({ state, from, reason }) => console.log(from, '→', state, reason));
-h.on('progress', ({ phase, value }) => {});   // phase: 'models' | 'depth' | 'lift', value 0..1
-h.on('error', ({ error, fatal }) => {});      // fatal=false: live/lift hiccup, still usable
+h.on('progress', ({ phase, value }) => {});   // phase: 'lift', value 0..1
+h.on('error', ({ error, fatal }) => {});      // fatal=false: a lift hiccup, still usable
 h.setDepth(1.4);
-h.stats;       // { state, fps, modelLoadMs, liveDepthMs, stillDepthMs, generateMs, exploreLoadMs, pauseToExploreMs, splats }
+h.stats;       // { state, fps, loadMs, generateMs, exploreLoadMs, pauseToExploreMs, splats, ... }
 h.setOrbit(8); // explore: turn the lifted scene (degrees, clamped to the orbit cap)
 h.explore();   // freeze + lift now (pauses a playing video)
 h.resume();    // back to the live view of the PAUSED frame at once (abandons any in-flight lift; never plays)
@@ -32,41 +39,34 @@ addEventListener('click', (e) => { if (e.altKey) { const el = resolveMediaAt(e.c
 
 The explore renderer needs the SDK's optional peer `playcanvas` (≥ 2.22.3 < 3), resolvable as a bare
 specifier (an import map or a bundler), exactly like `addSplat(…, { engine: 'playcanvas' })` — it is the
-PlayCanvas splat viewer (docs/lift-explore.md; it replaced three + Spark in 2026-09). The models are
-never bundled: see [Models](#models-and-onnx-runtime).
+PlayCanvas splat viewer (docs/lift-explore.md; it replaced three + Spark in 2026-09).
 
-Sample: [`samples/lift/`](../samples/lift/) — runs the real models when its model tree answers
-(`?providers=real|stub` to force). Locally:
+Sample: [`samples/lift/`](../samples/lift/) — open it in the DisplayXR Browser (the runtime converts).
+Locally:
 
 ```sh
-mkdir -p _scratch
-ln -sfn ~/dxr-2d3d-exports/models _scratch/models                          # vda/ still/ da2/ inpaint/ dev/
-ln -sfn /path/to/node_modules/onnxruntime-web/dist _scratch/ort           # optional; else jsDelivr
-python3 -m http.server 8812 --bind 127.0.0.1
-open 'http://127.0.0.1:8812/samples/lift/index.html?image=/_scratch/photos/office.png'
+python3 samples/lift/serve.py        # no-store cache headers, correct MIME
+open 'http://127.0.0.1:8812/samples/lift/index.html'
 ```
+
 
 ## Options
 
 | option | default | |
 |---|---|---|
-| `mode` | `'auto'` (**native default: `'live'` for a video, `'explore'` for a picture**) | `auto`: live while playing, lift on pause/end. `live`: never lifts by itself (`explore()` still does). `explore`: lift as soon as the models are in. Native **video**: the default is `live` — the vendor module keeps the paused frame woven 3D, so a pause never builds a splat (no depth fetch, no generator, no `.sog`); only Explore does. Native **picture** (`<img>`): the default is `explore` — straight to the splat view, never a native live conversion of the still (no `dxr-lift` attribute, no stream). Native ignores nothing you state: an explicit `'auto'` on a video lifts on pause as before; an explicit `'live'` on a picture keeps the browser's in-place conversion (Explore / Resume toggle); `'auto'` on a picture = `'explore'`. The web path is unchanged (a still lifts at once there anyway). |
-| `depth` | `1` | depth strength multiplier: live DIBR, and in explore the lifted scene's depth about its pivot (`setDepth()` drives both). |
-| `convergence` | `'auto'` | zero-disparity depth; handed to live-DIBR as given. |
-| `quality` | `'auto'` | `low`/`medium`/`high`; `auto` picks `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, else `low` — **never `high`** (MoGe-3 1022×574 is 2.8 s vs 1.3 s, and a 1536-wide lift is ~1.2 M splats). The still model, generator and inpainter get the concrete tier; the video model keeps `auto` (its warm-up picks 364×210 vs 518×294 by measured frame time). |
+| `mode` | `'live'` for a video, `'explore'` for a picture | `live`: the browser converts the element in place; a pause never builds a splat (no lift request, no `.sog`); only Explore does. `auto`: also lifts on pause/end. `explore`: lift as soon as the element is ready — the default for a picture (straight to the splat view, no `dxr-lift` attribute, no stream). A stated mode is honoured: `'auto'` on a video lifts on pause; `'live'` on a picture keeps the browser's in-place conversion (Explore / Resume toggle). |
+| `depth` | `1` | depth strength multiplier: `dxr-lift-strength` for the live conversion, and in explore the lifted scene's depth about its pivot (`setDepth()` drives both). |
+| `convergence` | `'auto'` | zero-disparity depth (`dxr-lift-convergence`). |
+| `quality` | `'auto'` | `low`/`medium`/`high`, handed to the lift provider; `auto` picks `medium` on a desktop with ≥ 4 GB and ≥ 4 cores, else `low` — **never `high`**. |
 | `wall` | — | an existing `createInline3D()` manager to join. **Pass it if the page already has one** — one inline-3D session per document. |
 | `orbit` | `{ maxAngleDeg: 15, relax: true }` | explore orbit bounds; `relax` springs back to centre on release. |
-| `models` | `'auto'` | a `ModelSource`; a base URL string (= `createModelSource({ baseUrl })`); or `'auto'` (`createModelSource({})`: the native store in the DisplayXR Browser, else the public blob store). |
-| `ort` | — | onnxruntime-web: the module, its `dist/` URL, or `loadOrt` options. Default: `loadOrt()` (jsDelivr, pinned). |
-| `providers` | `{ video: 'vda-small', still: 'moge3', inpaint: 'none' }` | `still` also accepts `'da3'`, `'da2-small'`, a manifest name or a registered provider name. `inpaint: 'light-inpaint-v1'` enables the net (off by default: see *Known issues*). `lift`: the lift stage — omitted/`'local'` = the local generator, `'remote-sharp'` = the **demo-only** remote SHARP provider (see *Remote SHARP*), or a `LiftProvider` instance. |
+| `providers` | `{}` | `lift`: the lift stage — omitted = the runtime's `native-gaussians` (when its caps list `gaussians`); `'remote-sharp'` = the **demo-only** remote SHARP provider (see *Remote SHARP*); or a `LiftProvider` instance. With no runtime converter and no `providers.lift`, `lift()` rejects (`unavailable`). |
 | `remote` (alias `remoteSharp`) | `{}` | factory options for a named `providers.lift`: remote-sharp's `{ endpoint, auth, timeoutMs, mode, getAuthHeaders, fields, maxBytes }`. |
-| `prefetch` | `false` | load the still model as soon as live runs. Live depth is **held** while it compiles (see *One ORT session at a time*). |
 | `exploreMaxDpr` | 1 woven / ∞ flat | dpr cap on the canvas while explore is up. 1 on the woven SBS store unless `quality: 'high'`. |
 | `explore` | `{ comfort: 'auto', pivotTargetM: 2.0, eyes: 'nominal' }` | the explore view. `comfort: 'auto'` scales a **metric** lift about the camera so its pivot lands at `pivotTargetM` when it is > 25 % off (neutral image unchanged, parallax × pivot/target — the paused-CG-video "too flat" fix); `'always'` / `'off'` for A/B. `eyes: 'tracked'` takes the runtime's eye positions as metres instead of normalising their separation to 63 mm. docs/lift-explore.md § Comfort. |
-| `ui` | `'builtin'` | a small chip (progress %, Explore / **↓ SOG** / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. `{ autoHideMs }` = the builtin chip with options: it fades out after that many ms without pointer activity over the element (**default 2500 in native mode**, 0 = always visible on the web path; see *Chrome over the tile*). |
+| `ui` | `'builtin'` | a small chip (progress %, Explore / **↓ SOG** / Resume / Exit) in the element's corner; `'none'` = drive the handle yourself. `{ autoHideMs }` = the builtin chip with options: it fades out after that many ms without pointer activity over the element (**default 2500 with a runtime converter**, 0 = always visible otherwise; see *Chrome over the tile*). |
 | `signal` | — | `AbortSignal`; aborting removes the lift. |
-| `backend` | `'real'` | `'stub'` swaps in `js/lift/stubs/*` (same contracts, no ML) — development and demos only. |
-| `native` | `'auto'` | the browser's vendor 2D→3D module ([Vendor modules](#vendor-modules-native-mode)). `auto`: used for a `<video>`/`<img>` when `liftCapabilities()` says `native`; `false`: never; a caps object skips the query. |
+| `native` | `'auto'` | the browser's conversion stack ([Vendor modules](#vendor-modules-native-mode)). `auto`: used for a `<video>`/`<img>` when `liftCapabilities()` says `native`; `false`: never; a caps object skips the query. |
 | `priority` | `'normal'` | native live: `dxr-lift-priority` (`high`/`normal`/`low`/`paused`). |
 
 Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRatio`/`overlay`),
@@ -75,37 +75,37 @@ Handle: `state`, `element`, `canvas`, `layout` (`standard`/`picture`/`aspectRati
 `exportSog({camera?}) → Promise<Blob>`, `downloadSog(filename?) → Promise<boolean>`, `canExport`,
 `capture() → Promise<Blob>` (the next drawn frame as a PNG, read back in the same task as the draw —
 the canvas has `preserveDrawingBuffer: false`, so a page screenshot between frames can show it empty),
-`remove()`. `stats` adds `exploreScale` (the comfort scale applied), `mode` (`native`/`web`) and
+`remove()`. `stats` adds `exploreScale` (the comfort scale applied), `mode` (`native`/`provider`) and
 `provider` (the vendor module's name). Native mode adds `native`, `caps`, `setPriority(p)` and
 `priority`. Types: [`lift.d.ts`](../lift.d.ts).
 
 ## Vendor modules (native mode)
 
-**The supersede rule.** When the runtime carries a vendor 2D→3D module (e.g. a DirectML/NPU
-converter) and the DisplayXR Browser exposes it, it **supersedes** the SDK's open default for
-everything it covers; anything it does not cover, or any error it returns, falls back to the open
-default. Concretely:
+**The runtime converts.** The DisplayXR runtime's conversion stack — an open provider by default,
+a vendor module when one is installed — is exposed by the DisplayXR Browser, and it is this SDK's
+**only** provider. Concretely:
 
-| | module present (`native`) | fallback |
-|---|---|---|
-| live `<video>` / `<img>` | the **browser** converts + weaves the element **in place** (`dxr-lift="auto"`): no DIBR canvas, no video model, no ORT, no JS per frame | — (a `<canvas>` always takes the web path) |
-| paused-frame depth | `native` DepthProvider → `POST displayxr-lift://lift/depth` (registered at priority 100, stills only, so it wins over `'ort'` for any model name) | the ORT still model (MoGe-3), loaded **on first failure**, per frame; after a 404/501 for the rest of the session |
-| explore scene | `native-gaussians` LiftProvider → `POST displayxr-lift://lift/gaussians`, the default `providers.lift` when `modes` includes `gaussians` | the local generator on the frame's depth (a 404 sticks) |
+| | the runtime's converter (`native`) |
+|---|---|
+| live `<video>` / `<img>` | the **browser** converts + weaves the element **in place** (`dxr-lift="auto"`): no canvas, no model, no JS per frame |
+| paused-frame depth (optional) | `native` DepthProvider → `POST displayxr-lift://lift/depth` (registered at priority 100, stills only) |
+| explore scene | `native-gaussians` LiftProvider → `POST displayxr-lift://lift/gaussians`, the default `providers.lift` when `modes` includes `gaussians` (a 404 sticks). Without `gaussians` there is no explore scene: `explore()` is a lift error |
 
-Everything else about pause → explore is as on the web path (freeze → depth → generator → PlayCanvas
-explore, ↓ SOG). The two POST endpoints and `caps` answer **only inside the browser's lift isolated
-world** (where the built-in runs); on any ordinary page the scheme does not resolve, `fetch` rejects,
-and that rejection is the feature detection.
+There is **no fallback**: an error from the module is the lift's error, and a `<canvas>` is not
+converted. Pause → explore is freeze → `lift/gaussians` → PlayCanvas explore, ↓ SOG. The two POST
+endpoints and `caps` answer **only inside the browser's lift isolated world** (where the built-in
+runs); on any ordinary page the scheme does not resolve, `fetch` rejects, and that rejection is the
+feature detection.
 
-**`liftCapabilities({signal, webFallback, models, quality})`** — cheap, async, **never cached** (every
+
+**`liftCapabilities({signal})`** — cheap, async, **never cached** (every
 call asks the browser afresh; `refresh` is accepted and ignored), callable before any lift (a
 3D-calling element uses it to badge its peers):
 
 ```js
 { native: true, provider: 'neurd-directml', modes: ['depth','sbs','nview','gaussians'],
   maxStreams: 2, approxMsPerConvert: 18, state: 'ready',          // as GET displayxr-lift://caps says
-  liftState: 'ready',                                              // waiting | ready | unavailable
-  webFallback: { video: true, still: true, webgpu: true } }        // the open path, probed here
+  liftState: 'ready' }                                             // waiting | ready | unavailable
 ```
 
 `native` is true only when the browser says so **and** `liftState !== 'unavailable'`. `liftState` is
@@ -113,16 +113,12 @@ the browser's coarse readiness (an older browser's `state: 'activating'` maps to
 **`waiting` is a reason to wait, never a reason to switch paths:** create the lift anyway (the
 element shows its own 2D frame, the chip a spinner, until the browser's converter is READY) and do
 not keep a `waiting` answer beyond one poll interval (≤ 2 Hz) — a cached non-READY answer is how
-a cold-booted runtime used to latch the in-page converter for a whole session. Only `unavailable`
-means the in-page path. `webFallback.webgpu` = a WebGPU adapter exists;
-`video`/`still` = that path's default depth model is reachable through the model source **without
-downloading it** (`ModelSource.probe`: a HEAD on the native store, a verified Cache API stamp, else a
-HEAD on the download URL). `webFallback: false` skips the probes.
+a cold-booted runtime once latched the wrong path for a whole session. Only `unavailable` ends the
+lift: the element stays the page's own 2D element.
 
-**What `lift()` does in native mode.** It mounts the placement host (hidden canvas + chip) but not
-into the inline-3D session; the element stays visible and gets the attributes below. Loading pulls in
-only the model/registry module — the generator, explore renderer and (only if a native provider
-falls back) onnxruntime load on the first explore. A `<video>` is **live** (browser-converted)
+**What `lift()` does.** It mounts the placement host (hidden canvas + chip) but not into the
+inline-3D session; the element stays visible and gets the attributes below. Loading pulls in
+nothing: the explore renderer loads on the first explore. A `<video>` is **live** (browser-converted)
 until `explore()` — the default mode is `live` for a native video, so a paused video stays woven 3D
 by the vendor module and nothing is lifted until *Explore*; *Resume* goes back to the paused frame.
 A **picture** goes **straight to explore**: `loading → freezing → lifting → explore`, no live phase,
@@ -158,7 +154,7 @@ update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
   `X-DXR-Depth-FocalPx` (in pixels of the `w×h` grid) — or **JSON** `{w, h, semantics, focalPx?, data}`
   (`data` base64 float32 or a number array). `semantics`: `metric` (metres, 0 = invalid) or
   `disparity` (relative inverse depth, bigger = nearer; aliases `inverse-depth`,
-  `relative-disparity`). Anything else is a `format` error → fallback.
+  `relative-disparity`). Anything else is a `format` error.
 - `POST displayxr-lift://lift/gaussians`, same body. Answer a `.sog` (sniffed `PK\x03\x04`; its camera
   block v2 is the rig) or a `.ply` (sniffed `ply\n`) **with** an `X-DXR-Lift-Meta` JSON header
   (`{focalPx, w, h, pivotZ?, axes?}`, the generator's meta shape). The PLY is in the generator's
@@ -167,16 +163,15 @@ update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
   `pivotZ` (default 2) the depth that sits on the glass. A header without `axes`/`convention` is
   read as `axes: 'opencv'` (`'opengl'` = looking −z, y up, if the module says so). A scene at
   `z ≤ 0` is behind/at the camera and draws nothing. 404/501 = not supported.
-- Errors are `NativeLiftError` with `code` `http | unsupported | format | encode | network | aborted`
-  and `fallback` (true for all but `aborted`).
+- Errors are `NativeLiftError` with `code` `http | unsupported | unavailable | format | encode | network | aborted`
+  (`unavailable`: `lift()` found no converter at all).
 
 **The built-in** (docs/lift-builtin.md) asks `liftCapabilities()` first and, when native, only sets the
 attributes and mounts the chip — up to `caps.maxStreams` native conversions side by side.
 
-Browser harness (not `npm test`): `node test/lift-native.run.mjs` runs the real `lift()` on an `<img>`
-and a `<video>` with `displayxr-lift://` faked in `window.fetch` (2026-09-25, M1 Pro headless: image
-live → explore via native depth in 0.7–1.9 s, 0.33 M splats; no ORT/model fetched until a native
-depth POST failed).
+Browser harness (not `npm test`, needs a GPU browser; not re-run since the P4 deletions):
+`node test/lift-native.run.mjs` runs the real `lift()` on an `<img>` and a `<video>` with
+`displayxr-lift://` faked in `window.fetch`.
 
 ## Download SOG (`js/lift/sog-export.js`)
 
@@ -276,7 +271,7 @@ such as YouTube's `.html5-video-player` to its `<video>`), then falls back to th
 absolute/fixed/transformed media, z-index + 1). The host matches the element's **content box**, holds
 the canvas in a **closed shadow root**, and the canvas matches the visible media pixels per CSS
 `object-fit` / `object-position` (a video's letterbox comes from `videoWidth/Height`). When object-fit
-crops (`cover`, `none`), the providers and the DIBR read a crop of the visible part. `pointer-events`
+crops (`cover`, `none`), the lift provider reads a crop of the visible part. `pointer-events`
 is `none` in live (page and player controls keep working) and `auto` in explore (drag to orbit).
 The element itself is never modified; `unmount()` removes the host.
 
@@ -285,143 +280,40 @@ The element itself is never modified; `unmount()` removes the host.
 All lifts in a document share **one** `createInline3D()` manager — the page's (`opts.wall`) or a
 private one created on first use and closed when the last lift is removed. The canvas is a normal
 `addScene()` window: the SDK calls back with `(views, layer, frame)` and lift forwards
-`{ views, layer, session }` to live-DIBR / explore. The backing store is SBS (2 × width) while a
+`{ views, layer, session }` to explore. The backing store is SBS (2 × width) while a
 session is live. Without inline-3D, the same frame function runs from `requestAnimationFrame` with one
 mono view and a full-canvas `getViewport` — the 2D fallback. If the session ends (`onLayerLost`), the
 lift continues on the fallback loop. The builtin chip is registered with the window's `exclude()`.
 
 ## Provider interfaces
 
-These are fixed; each module is built against them independently.
-
-- `js/lift/providers/depth-ort.js`: `createDepthProvider({kind:'video'|'still', modelSource, ort?, quality}) → DepthProvider` with `id, kind, load({signal,onProgress}), estimate({source: HTMLVideoElement|HTMLImageElement|HTMLCanvasElement|VideoFrame|ImageBitmap, t}) → Promise<{data: Float32Array /*row-major h×w*/, w, h, space:'disparity'|'metric', intrinsics?:{focalPx}}>, reset(), dispose()`. Disparity is relative, larger = nearer, un-normalised.
-- `js/lift/providers/models.js`: `createModelSource({baseUrl?, manifest?}) → { get(name) → Promise<{stream, size, sha256}>, url(name) }`, plus `loadOrt({baseUrl}) → ort` and `getRegistry()` with `registerDepthProvider(name, factory, {priority})`.
-- `js/lift/live-dibr.js`: `createLiveDibr({canvas /*WebGL2*/}) → { setSource(el|VideoFrame), setDepth({data,w,h,space}), setParams({depth, convergence, dilate}), render({views, layer, session}) /* draws every view into layer.getViewport(view), same convention as addScene callbacks */, dispose() }`.
-- `js/lift/gen/lift-gen.js`: `generateLift({rgb: ImageBitmap|HTMLCanvasElement, depth:{data,w,h,space,intrinsics}, inpainter?, quality, signal, onProgress}) → Promise<{ply: ArrayBuffer /*binary 3DGS PLY*/, meta:{focalPx, pivotZ, w, h, layers:2}}>`.
-- `js/lift/explore.js`: `createExplore({canvas, gl?, ply, meta, axes?, clearAlpha?, orbit:{maxAngleDeg, relax}, depthGain?, space?, comfort?, eyes?}) → Promise<{ render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), fadeOut(ms), setDepthGain(x), dispose() }>` (async: the PlayCanvas engine parses the PLY; on `gl` it adopts the DIBR's context).
+- `js/lift/explore.js`: `createExplore({canvas, ply|sog, meta, axes?, clearAlpha?, orbit:{maxAngleDeg, relax}, depthGain?, space?, comfort?, eyes?}) → Promise<{ render({views, layer, session}), onPointerDown/Move/Up(ev), setTarget(yaw,pitch), fadeIn(ms), fadeOut(ms), setDepthGain(x), dispose() }>` (async: the PlayCanvas engine parses the scene and owns the canvas's WebGL2 context).
 - `js/lift/sog-export.js`: `exportSog({ply|splats, meta, camera?}) → Promise<Blob>` (a `.sog` with the camera block v2; see *Download SOG*).
-- `js/lift/native.js`: `liftCapabilities()`, `createNativeDepthProvider(opts)` (a DepthProvider; extra opts `fetch`, `loadOrt`, `fallback`), `createNativeGaussiansLift()` (a LiftProvider: `{id:'native-gaussians', needsDepth:false, generateLift({rgb,signal,onProgress}) → {sog} | {ply, meta}}`), `ensureNativeProviders(caps)` — see *Vendor modules*.
-- `ModelSource.probe(name, {signal}) → Promise<boolean>`: reachable without a download (never rejects).
-- **LiftProvider** (optional; `js/lift/providers/registry.js` `registerLiftProvider(name, factory, {priority, optIn})` / `getLiftProvider(name, opts)`): `{ id, needsDepth, load?(), generateLift({rgb, depth?, quality, params, signal, onProgress}) → Promise<{ply?: ArrayBuffer, sog?: ArrayBuffer, meta}>, signIn?(), dispose?() }`. `meta` is the generator's shape (`focalPx, pivotZ, w, h, layers, splatCount, source`). A provider may return **`sog`** instead of `ply`; `createExplore({sog})` then reads the rig from the file's camera block v2 (`js/lift/sog-input.js`: `intrinsics` → focalPx/w/h, `focus.point[2]` → pivotZ, OpenCV axes), so the neutral view is the photo. `needsDepth: false` lets lift.js skip the still depth model. Selection: `providers.lift` by name; with no name the highest-priority non-`optIn` registration, else the local generator. **Any provider error but a caller abort falls back to the local lift** (still depth + generator), logged once (`console.warn`) and emitted as a non-fatal `error` with `phase: 'lift-provider'`.
-- Inpainter (`js/lift/providers/inpaint-ort.js`): `createInpainter({modelSource, ort?, quality, model?}) → { load(), inpaintTwoSided(rgbChw, maskRight, maskLeft, W, H) }`.
+- `js/lift/native.js`: `liftCapabilities()`, `createNativeDepthProvider(opts)` (a DepthProvider; extra opt `fetch`; rejects on error), `createNativeGaussiansLift()` (a LiftProvider: `{id:'native-gaussians', needsDepth:false, generateLift({rgb,signal,onProgress}) → {sog} | {ply, meta}}`), `ensureNativeProviders(caps)` — see *Vendor modules*.
+- **LiftProvider** (`js/lift/providers/registry.js` `registerLiftProvider(name, factory, {priority, optIn})` / `getLiftProvider(name, opts)`): `{ id, needsDepth, load?(), generateLift({rgb, quality, params, signal, onProgress}) → Promise<{ply?: ArrayBuffer, sog?: ArrayBuffer, meta}>, signIn?(), dispose?() }`. `meta` carries `focalPx, pivotZ, w, h, layers, splatCount, source`. A provider may return **`sog`** instead of `ply`; `createExplore({sog})` then reads the rig from the file's camera block v2 (`js/lift/sog-input.js`: `intrinsics` → focalPx/w/h, `focus.point[2]` → pivotZ, OpenCV axes), so the neutral view is the photo. Selection: `providers.lift` by name; with no name the runtime's `native-gaussians`. A provider error ends the lift (`lift-failed`, a non-fatal `error` with `phase: 'lift'`): there is no local lift to fall back to.
 
 ### How lift.js uses them (the parts the contracts leave open)
 
-- **One canvas, one WebGL2 context.** Live-DIBR and explore are both created on the same canvas, so
-  `getContext('webgl2')` returns the same context to both. Each must set the GL state it needs on
-  every `render()` (program, VAO, textures, blend, viewport) and must not assume the other left it
-  clean. While explore fades in, lift renders DIBR first and explore on top — so explore must **not
-  clear** while its fade alpha is < 1 (the stub clears only at full opacity).
+- **One canvas, one WebGL2 context.** Explore creates the canvas's context (the engine); `capture()` reads the same one back.
 - **Optional `fadeOut(ms)`** on the explore renderer is used for the explore → live crossfade when
   present; without it the switch is a cut.
-- **Provider selection.** `registry.getDepthProvider(name, {kind, modelSource, ort, quality, model})`
-  returns an **instance**: `name` is a registered provider (`'ort'`, a native one) or a model family /
-  manifest name handed to the best provider as `model`. Without a registry lift falls back to
-  `createDepthProvider`. The ORT providers register themselves when `providers/index.js` loads.
-- **Inpainter.** `registry.getInpainter(providers.inpaint, {modelSource, ort, quality})`, `load()`ed
-  lazily on the first lift; any failure is a non-fatal `error` (`phase: 'inpaint'`) and the lift
-  continues with the generator's push-pull fill. `'none'` (the default) skips it.
-- **Focal.** The still depth arrives at model resolution (e.g. 770×434) and MoGe's
-  `intrinsics.focalPx` is in that grid. `generateLift` wants it in pixels of the RGB it is given
-  (it rescales to its own raster, and `meta.focalPx` is in output-raster px), so lift multiplies by
-  `bitmap.width / depth.w` first. Depth maps themselves go to live-DIBR and the generator at model
-  resolution; both upsample (bilinear `R16F` / joint-bilateral).
-- **Axes.** The generator writes the OpenCV camera frame (`meta.convention` / `meta.axes =
+- **Axes.** A PLY from the runtime is the OpenCV camera frame (`meta.convention` / `meta.axes =
   'opencv'`); explore defaults to OpenGL, so lift passes `axes: meta.axes || meta.convention`.
-- **Pivot.** `meta.pivotZ = min(convergenceZ, subjectZ)` — the gallery's Spatial View rule. `subjectZ`
-  is the median layer-0 depth of the central box; `convergenceZ` the depth at the mean normalised
-  disparity of the central 60 %. The median alone landed on the background whenever the frame's
-  centre is sky/wall between near objects, and the whole foreground then swung under the orbit.
 - **Opaque explore.** Explore clears opaque black (`clearAlpha: 1`). With a transparent clear, every
   pixel the splat sheet did not fully cover showed the page's own flat `<img>`/`<video>` underneath —
   a ghost double of the foreground under the orbit.
-- **One ORT session at a time.** onnxruntime-web must not create or run a second session while one
-  is running (measured: wasm `Aborted()` / `unreachable` / out-of-bounds, after which the ORT
-  instance is dead). lift awaits the in-flight live estimate before the still model is loaded or
-  run, holds live inference while still depth / inpainting run, and `prefetch` holds it while the
-  still model compiles. The video provider's `reset()` is serialised behind its queue.
-- **Convergence** is passed to `setParams` as given (`'auto'` or a number); live-DIBR resolves `'auto'`.
-- **Live inference** runs at most one `estimate()` at a time, only on a new video frame, and depth
-  that arrives after a `reset()` is discarded. The frozen frame's still-model depth is also pushed to
-  live-DIBR, so the paused frame looks its best while the lift runs.
-- **Progress.** The chip shows one bar per phase group: models 0–25 %, depth 25–35 %, lift 35–100 %.
-  Providers report `{loaded,total}` (downloads) or `{stage,progress}` (generator); lift normalises.
-- **dpr.** Live DIBR always renders at full dpr. While explore is up the canvas is capped at
-  `exploreMaxDpr` (default 1 on the woven SBS store; the mono 2D fallback held 60 fps at dpr 2).
-- **Shared GL.** Live-DIBR creates the canvas's WebGL2 context and exposes it as `dibr.gl`; explore
-  wraps it (`gl` option) and calls `resetState()` before each draw; DIBR sets its full state every
-  `render()`. During the 350 ms fade both draw in one callback (DIBR first).
+- **Progress.** The chip shows the provider's progress (`{stage,progress}`); lift normalises.
+- **dpr.** While explore is up the canvas is capped at `exploreMaxDpr` (default 1 on the woven SBS
+  store; the mono 2D fallback held 60 fps at dpr 2).
 
-## Models and ONNX Runtime
-
-Models are never bundled. `js/lift/models.json` (schema 1) names every file with its size and
-sha256; [`lift-models.md`](lift-models.md) has the families, sizes, licences and measurements.
-A file's URL is, in order: the page's `baseUrl` + the file's `path`; an absolute per-file `url`;
-else the public content-addressed store `${blobBaseUrl}/${sha256}.${format}`
-(`blobBaseUrl` = `https://github.com/DisplayXR/displayxr-models/releases/download/blobs`). Each
-entry's `installer: true|false` marks the default set the DisplayXR Browser's Windows installer
-provisions (false only for the two DA3Mono-L files). **The browser installer carries a
-byte-identical copy of this manifest** (`displayxr-browser-pvt` `installer/models.json`, spec
-`docs/model-distribution.md` there), so a change here is a change to what the installer
-downloads — bump `generated` and re-sync the copy. Inside the DisplayXR Browser the models come from
-its native store (`displayxr-lift://models/<name>`) instead of the network.
-
-## Measured end-to-end (M1 Pro, Chrome headless `--use-angle=metal --enable-unsafe-webgpu`, 2026-09-25)
-
-`samples/lift/`, the synthetic 1280×720 pan (`dev/pan.mp4`) and the office photo (1022×574), models
-from localhost, the local ORT 1.31 dev build (JSPI), `quality: 'auto'` (→ medium), no inpainting.
-GPU idle (< 10 % for 6 s) before each run; the numbers are one run each — expect ±15 %.
-
-| | 2D fallback, dpr 1 | 2D fallback, dpr 2 | mock woven session (SBS), dpr 1 |
-|---|---|---|---|
-| video: `lift()` → live (VDA-S, `auto` warm-up → 364×210) | 3.4 s | 3.0 s | 3.4 s |
-| live: page fps / depth per frame | 60 / 77 ms (13 Hz) | 60 / 79 ms | 60 / 79 ms |
-| 1st pause → explore, **cold** Cache API (MoGe download + sha256 + session, depth 1.5 s, generate 0.37 s, PLY parse 0.2 s) | 8.2–9.0 s | 6.5 s | 7.5–8.1 s |
-| 2nd pause → explore (model resident) | 1.8–2.9 s | 1.8 s | — |
-| explore fps, orbit spinning (0.76–0.86 M splats) | 60 (p95 16.7 ms) | 60 (1600×900, p95 16.8 ms) | 60 |
-| image (1022×574): `lift()` → explore, MoGe from a **warm** Cache API (load 1.1 s) | 3.1 s | | 3.2 s |
-
-Each harness run is a fresh Chrome profile, so the video's first pause always paid the 715 MB
-download + hash from localhost; with a warm cache (a returning visitor, or the DisplayXR Browser's
-native store) the first pause is ≈ 1.1 s load + 1.5 s depth + 0.6 s ≈ 3 s.
-
-`quality: 'high'` at dpr 2: live depth 147 ms/frame (518×294), pause → explore 9.7 s / 3.7 s, 1.2 M
-splats, explore still 60 fps in the mono fallback. With `inpaint: 'light-inpaint-v1'` add 1.0–1.5 s to
-every lift.
 
 ## Known issues
 
-- **Hidden-layer residue (after the quality pass, 2026-09-25).** The object-shaped ghosts behind
-  foreground (chair back, mountain ridge, the synthetic spheres) are gone: the hidden layer now takes
-  its depth and colour from the background found *past* each silhouette (lift-gen `farside`), and
-  whole foreground objects no longer seed its fill. What remains: a faint (~3/255) crescent where the
-  band meets the wall on flat synthetic backgrounds; a 1-px outline where the photo itself has a glow
-  round an object (the background-side mixed pixels are opaque layer-0); horizontal streaks of floor
-  texture under objects that stand on it; a thin dark sliver where the depth map fades an object into
-  its background with no step (no edge ⇒ no hidden layer). See docs/lift-gen.md.
-- **Inpainting net: still off.** Re-tested after the fix on office / Big Sur Road / Shore Rocks: the
-  whole-object duplicates are gone with the net too, but it adds 1.3–1.5 s per lift and on wide masks
-  still leaves textured seams (a ragged dark streak under the Big Sur ridge, faint lamp/desk remnants in
-  the office) where the net-free fill is clean. `inpaint: 'none'` stays the default.
-- **Frame edges.** The outpaint border is now sized per side to what a 15° orbit can reveal there
-  (mirrored continuation of the frame), so office / rocks / spheres show no black strip at ±10°. It is
-  capped at 12 % of the width: a metric-depth landscape with near ground at the bottom (Big Sur Road:
-  ~890 px needed against a 28 m pivot) still shows black at the corners and bottom.
-- **First pause latency** is dominated by creating the 715 MB MoGe-3 session (~4.5 s).
-  `prefetch: true` moves it to just after live starts, at the price of held live depth meanwhile.
 - **Explore load is ~0.3 s slower than on Spark** (the engine parses the PLY on the main thread:
   `exploreLoadMs` ~520 ms vs ~220 ms for 0.9 M splats). Rendering is faster and stall-free
   (docs/lift-explore.md § Performance).
-- **Comfort scaling applies to metric photos too.** MoGe-3 stills are metric, so a photo whose pivot is
-  more than 25 % from 2 m gets scaled (the office photo: 0.69, i.e. 1.46× the parallax it had). Needs a
-  panel check; `explore: { comfort: 'off' }` restores the previous view.
-
-## Stubs (`js/lift/stubs/`)
-
-Same contracts, no ML: a luminance + bottom-is-nearer ramp for depth, a one-pass backward-warp DIBR,
-a point-grid PLY generator (two layers, INRIA property layout), and a point-sprite explore renderer.
-In the mono 2D fallback the DIBR and explore stubs sway slowly so the page visibly shows the pipeline
-running. Use `backend: 'stub'`.
+- **Comfort scaling applies to metric lifts.** A scene whose pivot is more than 25 % from 2 m gets
+  scaled; needs a panel check; `explore: { comfort: 'off' }` restores the unscaled view.
 
 
 ## Media codecs
@@ -432,12 +324,7 @@ The DisplayXR Browser is built without proprietary codecs: `<video>` sources mus
 
 Anything the lift draws over its own woven tile must use a **near-solid background and no `backdrop-filter`** (the authoring guide's config C3). A frosted element over a tile makes the DisplayXR Browser send that tile raw — the panel shows side-by-side instead of 3D — until the element leaves the tile. This was hit on the first panel test with the builtin chip.
 
-**Native mode: the chip is inside the lift crop, so it gets woven.** In native mode the browser — not the SDK — converts the element: it crops the element's whole on-screen rect out of the page raster, converts it and weaves the vendor's SBS result back into the same rect. Every pixel inside that rect is treated as video content, so the builtin chip (top-right corner, inside the rect) is converted and woven with it — seen on the panel. Until the browser splits planes for lift rects, the chip **auto-hides in native mode** (`ui: { autoHideMs }`, default 2500 ms): it fades out (~150 ms, then `visibility:hidden`, so it never intercepts the pointer while hidden) after that long without a `pointermove`/`pointerdown` over the element or the chip; any move or press over them shows it again and restarts the timer; keyboard focus on a chip button keeps it up; progress and provider notes (*Lifting with SHARP… 7s*) and state changes re-show it briefly. The web path is unchanged (the SDK weaves its own canvas and `exclude()`s the chip), so its default is 0 — always visible. A page with its own UI can pass `ui: 'none'`.
-
-
-## Live look-around
-
-`lift(el, { live: { lookAround: 0..1 } })` — with a real inline tile the source camera sits at the centroid of the current eye pair (stereo only, default `0`); `lookAround > 0` lets head motion produce transient parallax that re-centres over ~1 s. See `docs/lift-dibr.md`.
+**Native mode: the chip is inside the lift crop, so it gets woven.** In native mode the browser — not the SDK — converts the element: it crops the element's whole on-screen rect out of the page raster, converts it and weaves the vendor's SBS result back into the same rect. Every pixel inside that rect is treated as video content, so the builtin chip (top-right corner, inside the rect) is converted and woven with it — seen on the panel. Until the browser splits planes for lift rects, the chip **auto-hides in native mode** (`ui: { autoHideMs }`, default 2500 ms): it fades out (~150 ms, then `visibility:hidden`, so it never intercepts the pointer while hidden) after that long without a `pointermove`/`pointerdown` over the element or the chip; any move or press over them shows it again and restarts the timer; keyboard focus on a chip button keeps it up; progress and provider notes (*Lifting with SHARP… 7s*) and state changes re-show it briefly. With no runtime converter (a caller-supplied provider only) nothing is woven under the chip, so its default is 0 — always visible. A page with its own UI can pass `ui: 'none'`.
 
 
 ## Remote SHARP (demo only)
@@ -495,10 +382,10 @@ explored in the same PlayCanvas explore view (the file's own camera block is the
 - **Explore from a `.sog` on the lift canvas** needed two engine fixes (`js/lift/explore.js`):
   `TextureHandler` registered (a `.sog`'s webp planes are texture sub-assets — without it every
   `.sog` explored BLACK), and the GL state re-adopted around the load, which issues a GPU pass
-  (the sort centres) and immediate texture uploads from async continuations between the live DIBR's
-  frames (it mis-sorted into a translucent, smeared foreground). `test/lift-sog-explore.run.mjs`
-  (GPU browser, not `npm test`) gates both: `.sog` vs PLY explore of the same lift on the DIBR's
-  context, MAE < 0.4/255.
+  (the sort centres) and immediate texture uploads from async continuations between the live conversion's
+  frames (it mis-sorted into a translucent, smeared foreground). The GPU gate that compared a `.sog` with a
+  PLY explore of the same lift (`test/lift-sog-explore.run.mjs`) built its PLY with the removed local
+  generator and went with it.
 
 **Running it locally** — the proxy is in the dev server; the values stay in your shell:
 
