@@ -281,7 +281,7 @@ function dxrThree(core) {
         coordinateSystem: ready(st) ? st.r.coordinateSystem : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].projectionMatrix.elements) : null, // what three draws eye 0 with
         eyeCoord0: st.eyes ? st.eyes[0].coordinateSystem : null,
-        gpuChain: st.gpuChain ? { passes: st.gpuPasses, passSize: st.gpuPassSize || null, via: st.gpuVia || null } : null, // eye passes drawn with an eye camera
+        gpuChain: st.gpuChain ? { passes: st.gpuPasses, passSize: st.gpuPassSize || null, via: st.gpuVia || null, history: st.gpuHistory.length, historySwaps: st.gpuHistSwaps, historyDepthFix: st.gpuHistDepthFix || 0 } : null, // eye passes drawn with an eye camera
       } : undefined,
     }),
   };
@@ -301,7 +301,8 @@ function dxrThree(core) {
       nestPersp: null, gpuPostfx: false, clearPath: null,
       // ... and that chain run once per eye: its screen quad, the eye being drawn (-1 none, -2 an eye
       // half with no eye camera yet), its size-taking nodes, wrapped once each.
-      gpuChain: null, gpuEye: -1, gpuRoot: null, gpuSized: new WeakSet(), gpuFrame: 0, gpuPasses: 0,
+      gpuChain: null, gpuEye: -1, gpuRoot: null, gpuSized: new WeakSet(), gpuPasses: 0, gpuLastId: -1,
+      gpuHistory: [], gpuHist: new Map(), gpuHistSwaps: 0,
       L: { w: 0, h: 0, pr: 1, vp: [0, 0, 0, 0], sc: [0, 0, 0, 0], scTest: false }, // what the PAGE believes
       eyes: null, eyesFor: null, m4: null,
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
@@ -550,8 +551,8 @@ function dxrThree(core) {
   // effect node (bloom, blur, SMAA, AO …) works on that target the same way. The WebGL driver's
   // twin-target logic does not transfer to TSL node chains, so the WHOLE chain runs once per eye:
   //   - the screen quad is drawn twice, into each eye's half (viewport + scissor), the pair as one
-  //     renderer frame; for eye 1 the node frame id is moved to a fresh value so the chain's FRAME
-  //     updates (the scene pass, the effect passes) run again, and put back after;
+  //     renderer frame; for eye 1 the node frame id advances by one (and stays: the next frame
+  //     counts on from it), so the chain's FRAME updates (the scene pass, the effect passes) run again;
   //   - inside an eye, a nested render of the page camera (or a clone of it: same pose and fov) into a
   //     target draws with that eye's camera instead; other nested renders (shadows, reflections,
   //     PMREM) are untouched;
@@ -623,6 +624,7 @@ function dxrThree(core) {
         if (!n || !n.isNode || seen.has(n)) continue;
         seen.add(n);
         if (typeof n.setSize === 'function' && typeof n.updateBefore === 'function' && !st.gpuSized.has(n)) sizeToEye(st, n);
+        if (n._historyRenderTarget && n._historyRenderTarget.isRenderTarget && !st.gpuHistory.includes(n)) st.gpuHistory.push(n); // TRAA: per-eye history (swapHistory)
         if (!st.gpuRTClass && n.renderTarget && n.renderTarget.isRenderTarget) st.gpuRTClass = n.renderTarget.constructor; // three's own RenderTarget, for the eye target
         if (typeof n.getChildren === 'function') for (const c of n.getChildren()) stack.push(c);
       }
@@ -689,6 +691,48 @@ struct O { @builtin(position) p: vec4f };
     pass.end();
     dev.queue.submit([enc.finish()]);
   }
+  // A temporal node (three's TRAANode) keeps last frame's picture in its own history target, which its
+  // shader samples. Shared by the two eyes, each eye would blend against the OTHER eye's view every
+  // frame: flicker. The history target stays the one the shader is bound to; its CONTENTS are swapped
+  // per eye with GPU copies: after eye `from` it is saved into that eye's copy, and the eye `to`'s copy
+  // (once it has one) is loaded back. Colour and depth (TRAA's previous depth) both.
+  // The history target is resized when the chain goes eye-sized, but three (r186) does not re-create
+  // the GPU texture behind its DepthTexture: it stays the mono size, and TRAA's own depth copy into it
+  // then fails WebGPU validation every frame. Its image size is stale too: set from the target, then
+  // disposed, three re-creates it at the target's size.
+  function fixHistoryDepth(st) {
+    const b = st.r.backend;
+    if (!b || !b.isWebGPUBackend || typeof b.get !== 'function') return;
+    for (const n of st.gpuHistory) {
+      const h = n._historyRenderTarget, d = h && h.depthTexture;
+      const g = d && b.get(d).texture;
+      if (g && (g.width !== h.width || g.height !== h.height)) { if (d.image) { d.image.width = h.width; d.image.height = h.height; } d.dispose(); st.gpuHistDepthFix = (st.gpuHistDepthFix || 0) + 1; }
+    }
+  }
+  function swapHistory(st, from, to) {
+    const r = st.r;
+    fixHistoryDepth(st);
+    if (!st.gpuHistory.length || typeof r.copyTextureToTexture !== 'function' || core.T.gpuHistory === false) return;
+    for (const n of st.gpuHistory) {
+      const h = n._historyRenderTarget;
+      if (!h || !(h.width > 1 && h.height > 1)) continue;
+      let s = st.gpuHist.get(n);
+      if (!s) st.gpuHist.set(n, (s = [null, null]));
+      for (const i of [from, to]) {
+        if (!s[i]) { s[i] = { rt: h.clone(), valid: false }; }
+        const c = s[i].rt;
+        if (c.width !== h.width || c.height !== h.height) { c.setSize(h.width, h.height); s[i].valid = false; }
+        if (typeof r.initRenderTarget === 'function') r.initRenderTarget(c);
+      }
+      const copy = (a, b) => {
+        r.copyTextureToTexture(a.texture, b.texture);
+        if (a.depthTexture && b.depthTexture) r.copyTextureToTexture(a.depthTexture, b.depthTexture);
+      };
+      copy(h, s[from].rt); s[from].valid = true;
+      if (s[to].valid) copy(s[to].rt, h); // a first frame keeps the other eye's history: one frame, then each its own
+      st.gpuHistSwaps++;
+    }
+  }
   function renderGpuChain(st, quad, ortho) {
     const cam = st.mainCam;
     wrapChainSizes(st, quad);
@@ -702,7 +746,6 @@ struct O { @builtin(position) p: vec4f };
     st.gpuVia = eyeRT ? 'target' : 'viewport';
     const cp = eyeRT ? null : clearPathFor(st);
     const nf = st.r._nodes && st.r._nodes.nodeFrame;
-    const f0 = nf ? nf.frameId : 0;
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     const prevRT = eyeRT ? st.call('getRenderTarget') : null;
@@ -711,8 +754,14 @@ struct O { @builtin(position) p: vec4f };
     try {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
-        if (i === 1 && nf) nf.frameId = --st.gpuFrame; // never a real id (those count up from 0)
+        // Eye 1 is the NEXT frame id, and it is kept: the next real frame counts on from it. Ids stay
+        // whole and increasing (a node may index by frameId % n: GTAO's noise rotation). Eye 0 moves
+        // on too when three's own count has not since the last pair (a replay, or a page that stopped
+        // three's animation loop): reusing eye 1's id would skip eye 0's whole chain.
+        if (nf && (i === 1 || nf.frameId <= st.gpuLastId)) nf.frameId++;
+        if (nf && i === 1) st.gpuLastId = nf.frameId;
         if (i === 1 && sm) sm.autoUpdate = false;
+        if (i === 1 && stereo) swapHistory(st, 0, 1);
         st.gpuEye = stereo ? i : -2;
         if (eyeRT) {
           st.call('setRenderTarget', eyeRT);
@@ -728,6 +777,7 @@ struct O { @builtin(position) p: vec4f };
           st.call('render', quad, ortho);
         }
       }
+      if (stereo) swapHistory(st, 1, 0);
     } catch (e) {
       // The target path failed (an API this revision lacks): the viewport path from the next frame.
       if (!eyeRT) throw e;
@@ -736,7 +786,6 @@ struct O { @builtin(position) p: vec4f };
     } finally {
       st.gpuEye = -1;
       st.inEye = false;
-      if (nf) nf.frameId = f0;
       if (eyeRT) st.call('setRenderTarget', prevRT);
       eyeEnd(st);
       endFrame(fi, fr);

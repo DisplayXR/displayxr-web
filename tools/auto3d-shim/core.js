@@ -87,6 +87,7 @@ function dxrCore(cfg, cap, S) {
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     gpuPostfx: true,     // TEST ONLY (A/B): false leaves a three.js WebGPU PostProcessing / RenderPipeline chain UNSPLIT: flat with the reason (the v0.6.1 behaviour)
     gpuPostfxTarget: true, // TEST ONLY (A/B): false draws each eye of a split WebGPU chain straight into its half (viewport) instead of an eye target copied in
+    gpuHistory: true,    // TEST ONLY (A/B): false lets the two eyes of a split WebGPU chain share a temporal node's (TRAA) history
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame

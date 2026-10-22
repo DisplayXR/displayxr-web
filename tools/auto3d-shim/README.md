@@ -1008,8 +1008,20 @@ chain runs once per eye:
   come after it or have other shapes). That camera qualifies the canvas; the quad is the chain
   (`gpuChain` in `state()`). A page that turns a chain on while converted is split from its next frame.
 - **Two draws of the quad**, one per eye, the pair one renderer frame. Before eye 1 the node frame id
-  (`renderer._nodes.nodeFrame.frameId`) is set to a fresh negative value, so the chain's FRAME-scoped
-  updates run again for it; it is put back after (real ids count up from 0, so none is reused).
+  (`renderer._nodes.nodeFrame.frameId`) advances by one, so the chain's FRAME-scoped updates run again
+  for it, and it stays advanced: the next frame counts on from it, so ids stay whole and increasing.
+  Eye 0 advances it too when three's own count has not moved since the last pair (a replay, or a page
+  that stopped three's animation loop), or it would reuse eye 1's id and skip its whole chain. (A
+  fresh negative id, the first version, broke GTAO: it picks its noise rotation by `frameId % 6`, and a
+  negative index read `undefined`, so eye 1's AO was garbage, the eye dark, and the uniform sometimes
+  failed to compile: `Uniform "null" not implemented`.)
+- **Temporal history per eye.** A node with a history target (three's `TRAANode`) would blend each
+  eye against the other eye's last frame: flicker (seen on the panel on `webgpu_postprocessing_ao`).
+  The history target stays the one its shader samples; its contents are swapped per eye with GPU
+  copies (colour and depth), saved after one eye and loaded before the other. And three (r186) does
+  not re-create the GPU texture behind the history's `DepthTexture` when TRAA resizes it to the eye:
+  TRAA's own depth copy then failed validation every frame. Its image size is corrected and it is
+  disposed once, and three re-creates it at the eye size.
 - **The eye camera inside.** During an eye, a nested render into a target of the page camera, or of a
   copy of it (same fov, aspect and world matrix: threejspunk renders its rain layer with
   `camera.clone()`), draws with that eye's camera instead. Other nested renders (shadow cameras,
