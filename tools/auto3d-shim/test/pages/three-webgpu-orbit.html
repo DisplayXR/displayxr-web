@@ -17,6 +17,8 @@
                   WebGPU's clip z 0..1 (in GL clip z it is at -0.33). window.__nearBox = true.
        ?postfx=1  three's PostProcessing (TSL pass(scene, camera) as the output node): a full-screen quad
                   with an orthographic camera on screen, the scene drawn into a target inside it.
+       ?postfx=vig  the same, with a vignette on the quad's uv: darker at the edges of whatever the quad covers.
+                  Split per eye, each half is dark at its own edges (the seam too); unsplit, only the outer edges.
        ?pr=N      setPixelRatio(N) instead of devicePixelRatio: the page's mono store (N x the CSS size)
                   differs from the side-by-side store, so three's own size reads must see the real one.
        ?live=1    never stops the loop.
@@ -72,7 +74,9 @@ controls.update(); // camera.lookAt(target): the camera now looks at (0, 1, 3)
 let post = null;
 if (postfx) {
   post = new THREE.PostProcessing(renderer);
-  post.outputNode = THREE.TSL.pass(scene, camera);
+  const { pass, uv, float, vec4 } = THREE.TSL;
+  const p = pass(scene, camera);
+  post.outputNode = q.get('postfx') === 'vig' ? vec4(p.getTextureNode().rgb.mul(float(1).sub(uv().sub(0.5).length().mul(1.3)).clamp(0, 1)), 1) : p;
 }
 const render = () => (post ? post.render() : renderer.render(scene, camera));
 try { renderer.render(scene, camera); } catch (e) { /* r182+: throws before init */ } // before init(): three forwards it to renderAsync

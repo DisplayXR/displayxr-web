@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.6.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.6.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -408,7 +408,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.6.2'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.6.3'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -442,6 +442,8 @@ function dxrCore(cfg, cap, S) {
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
+    gpuPostfx: true,     // TEST ONLY (A/B): false leaves a three.js WebGPU PostProcessing / RenderPipeline chain UNSPLIT: flat with the reason (the v0.6.1 behaviour)
+    gpuPostfxTarget: true, // TEST ONLY (A/B): false draws each eye of a split WebGPU chain straight into its half (viewport) instead of an eye target copied in
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
@@ -2254,6 +2256,12 @@ function dxrThree(core) {
         st.lastOps = ops;
         return;
       }
+      if (st.gpuChain) {
+        const ops = [['render', st.gpuChain.quad, st.gpuChain.ortho, false, 'gpu']];
+        replay(st, ops);
+        st.lastOps = ops;
+        return;
+      }
       renderFlat(st, st.lastScene, st.mainCam); // repaint NOW: the resize just cleared the store
       st.lastOps = [['render', st.lastScene, st.mainCam, true]];
     },
@@ -2284,6 +2292,7 @@ function dxrThree(core) {
       const last = st.lastOps;
       st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
       disposeChain(st);
+      if (st.gpuEyeRT) { try { st.gpuEyeRT.dispose(); } catch (e) { /* ignore */ } st.gpuEyeRT = null; }
       core.unvirtualizeCanvas(st);
       if (wasLive) {
         try {
@@ -2315,7 +2324,11 @@ function dxrThree(core) {
       const prevRT = st.call('getRenderTarget');
       if (prevRT !== null) st.call('setRenderTarget', null);
       try {
-        for (const op of ops) { if (op[0] === 'clear') r.clear(op[1], op[2], op[3]); else r.render(op[1], op[2]); }
+        for (const op of ops) {
+          if (op[0] === 'clear') r.clear(op[1], op[2], op[3]);
+          else if (isChainQuad(st, op[1])) chainOutput(st, () => r.render(op[1], op[2]));
+          else r.render(op[1], op[2]);
+        }
       } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
     },
     target(st) {
@@ -2337,6 +2350,7 @@ function dxrThree(core) {
         coordinateSystem: ready(st) ? st.r.coordinateSystem : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].projectionMatrix.elements) : null, // what three draws eye 0 with
         eyeCoord0: st.eyes ? st.eyes[0].coordinateSystem : null,
+        gpuChain: st.gpuChain ? { passes: st.gpuPasses, passSize: st.gpuPassSize || null, via: st.gpuVia || null } : null, // eye passes drawn with an eye camera
       } : undefined,
     }),
   };
@@ -2351,6 +2365,7 @@ function dxrThree(core) {
     Object.assign(st, {
       r, depth: 0, orig: {}, common,
       nestPersp: null, gpuPostfx: false, clearPath: null,
+      gpuChain: null, gpuEye: -1, gpuRoot: null, gpuSized: new WeakSet(), gpuFrame: 0, gpuPasses: 0,
       L: { w: 0, h: 0, pr: 1, vp: [0, 0, 0, 0], sc: [0, 0, 0, 0], scTest: false }, // what the PAGE believes
       eyes: null, eyesFor: null, m4: null,
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
@@ -2410,6 +2425,7 @@ function dxrThree(core) {
     W('getSize', (t) => {
       const inner = real();
       const out = st.call('getSize', t);
+      if (inner && st.gpuInEyeRT && out && typeof out.set === 'function') { out.set(st.R.eyeW, st.R.eyeH); return out; }
       if (st.active && out && !inner) { if (typeof out.set === 'function') out.set(st.L.w, st.L.h); else { out.width = st.L.w; out.height = st.L.h; } }
       return out;
     });
@@ -2417,6 +2433,7 @@ function dxrThree(core) {
     W('getDrawingBufferSize', (t) => {
       const inner = real();
       const out = st.call('getDrawingBufferSize', t);
+      if (inner && st.gpuInEyeRT && out && typeof out.set === 'function') { out.set(st.R.eyeW, st.R.eyeH); return out; }
       if (st.active && out && typeof out.set === 'function' && !inner) {
         if (sparkIn > 0 && st.inEye && st.R) out.set(st.R.eyeW, st.R.eyeH);
         else out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
@@ -2461,7 +2478,14 @@ function dxrThree(core) {
       forEyes(st, () => st.call('clear', color, depth, stencil));
     });
     W('render', (scene, camera) => {
-      if (st.common && !top()) { noteNested(st, camera); return st.call('render', scene, camera); }
+      if (st.common && !top()) {
+        if (st.gpuEye !== -1 && st.acc !== undefined && st.call('getRenderTarget') !== null) {
+          const acc = r.autoClearColor;
+          r.autoClearColor = st.acc;
+          try { return nestedRender(st, scene, camera); } finally { r.autoClearColor = acc; }
+        }
+        return nestedRender(st, scene, camera);
+      }
       if (!top() || !scene || !camera) return st.call('render', scene, camera);
       if (st.common && !ready(st)) return st.call('render', scene, camera);
       if (st.common) st.nestPersp = null;
@@ -2481,6 +2505,14 @@ function dxrThree(core) {
             hookLookAt(camera); // fallback for a page that built no Scene before its camera (rare)
             if (st.armed) flip(st, scene, camera);
             else { st.qualifyCam = camera; core.considerActivation(st); }
+          } else if (st.common && st.nestPersp && (st.gpuChain || !st.sawPersp) && core.T.gpuPostfx !== false) {
+            const np = st.nestPersp;
+            noteChain(st, scene, camera);
+            st.sawPersp = true;
+            st.lastMono = { scene: np.scene, camera: np.camera };
+            hookLookAt(np.camera);
+            if (st.armed) flip(st, np.scene, np.camera);
+            else { st.qualifyCam = np.camera; core.considerActivation(st); }
           } else if (st.common && ((st.nestPersp && !st.sawPersp) || (st.seedTask && !st.seedTask.direct))) {
             gpuPostfx(st); // WebGPURenderer + a post-processing chain: flat with the reason, not split
           } else if (st.seedTask && !st.seedTask.direct) {
@@ -2506,6 +2538,13 @@ function dxrThree(core) {
         return st.call('render', scene, camera); // shadow / picking / other targets: untouched, mono
       }
       st.frame.drew = true;
+      if (st.gpuChain && scene === st.gpuChain.quad) {
+        noteChain(st, scene, camera);
+        st.frame.ops.push(['render', scene, camera, false, 'gpu']);
+        const out = renderGpuChain(st, scene, camera);
+        takeCover(st);
+        return out;
+      }
       if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
         st.frame.ops.push(['render', scene, camera, false, true]);
         const out = renderPostScreen(st, scene, camera);
@@ -2516,7 +2555,10 @@ function dxrThree(core) {
       st.frame.ops.push(['render', scene, camera, stereo]);
       const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
-      if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) { gpuPostfx(st); core.stand(st, WHY_GPU_POSTFX); }
+      if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) {
+        if (core.T.gpuPostfx !== false) noteChain(st, scene, camera);
+        else { gpuPostfx(st); core.stand(st, WHY_GPU_POSTFX); }
+      }
       return out;
     });
     if (st.common) {
@@ -2535,8 +2577,173 @@ function dxrThree(core) {
     core.flip(st);
   }
   const WHY_GPU_POSTFX = 'WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)';
-  function noteNested(st, camera) {
-    if (camera && camera.isPerspectiveCamera && !camera.isArrayCamera && st.call('getRenderTarget') !== null) st.nestPersp = { camera };
+  function noteNested(st, scene, camera) {
+    if (st.nestPersp || !camera || !camera.isPerspectiveCamera || camera.isArrayCamera) return;
+    const rt = st.call('getRenderTarget');
+    if (rt === null || !(rt.width >= 64 && rt.height >= 64) || !(st.L.w > 0 && st.L.h > 0)) return;
+    const a = st.L.w / st.L.h, near = (x) => Math.abs(x - a) / a < 0.1;
+    if (near(rt.width / rt.height) && near(camera.aspect || a)) st.nestPersp = { scene, camera };
+  }
+  function noteChain(st, quad, ortho) {
+    const c = st.gpuChain;
+    if (c && c.quad === quad) { c.ortho = ortho; return; }
+    if (c && c.quad !== quad) st.gpuRoot = null;
+    st.gpuChain = { quad, ortho, tm: st.r.toneMapping, cs: st.r.outputColorSpace };
+    info('three.js canvas', desc(st.canvas), 'has a WebGPU post-processing chain: it runs once per eye');
+  }
+  const isChainQuad = (st, obj) => !!(st.gpuChain && obj === st.gpuChain.quad);
+  function chainOutput(st, fn) {
+    const r = st.r, c = st.gpuChain, tm = r.toneMapping, cs = r.outputColorSpace;
+    r.toneMapping = c.tm; r.outputColorSpace = c.cs;
+    try { return fn(); } finally { r.toneMapping = tm; r.outputColorSpace = cs; }
+  }
+  function chainCam(st, camera) {
+    const m = st.mainCam;
+    if (!m || !camera || !camera.isPerspectiveCamera || camera.isArrayCamera) return false;
+    if (camera === m) return true;
+    if (Math.abs((camera.fov || 0) - (m.fov || 0)) > 1e-3 || Math.abs((camera.aspect || 0) - (m.aspect || 0)) > 1e-3) return false;
+    if (camera.parent === null && camera.matrixWorldAutoUpdate !== false) camera.updateMatrixWorld();
+    const a = camera.matrixWorld.elements, b = m.matrixWorld.elements;
+    for (let k = 0; k < 16; k++) if (Math.abs(a[k] - b[k]) > 1e-4 * (1 + Math.abs(b[k]))) return false;
+    return true;
+  }
+  function nestedRender(st, scene, camera) {
+    if (st.gpuEye >= 0 && st.call('getRenderTarget') !== null && chainCam(st, camera)) return renderChainPass(st, scene, camera);
+    noteNested(st, scene, camera);
+    return st.call('render', scene, camera);
+  }
+  function renderChainPass(st, scene, camera) {
+    st.gpuPasses++;
+    const rt = st.call('getRenderTarget');
+    if (rt) st.gpuPassSize = [rt.width, rt.height];
+    return st.call('render', scene, aimEye(st, camera, eyeCameras(st, st.mainCam), st.gpuEye, false));
+  }
+  function wrapChainSizes(st, quad) {
+    const m = quad.material, root = m && (m.fragmentNode || m.outputNode);
+    if (!root || root === st.gpuRoot) return;
+    st.gpuRoot = root;
+    const seen = new Set(), stack = [root];
+    try {
+      while (stack.length) {
+        const n = stack.pop();
+        if (!n || !n.isNode || seen.has(n)) continue;
+        seen.add(n);
+        if (typeof n.setSize === 'function' && typeof n.updateBefore === 'function' && !st.gpuSized.has(n)) sizeToEye(st, n);
+        if (!st.gpuRTClass && n.renderTarget && n.renderTarget.isRenderTarget) st.gpuRTClass = n.renderTarget.constructor; // three's own RenderTarget, for the eye target
+        if (typeof n.getChildren === 'function') for (const c of n.getChildren()) stack.push(c);
+      }
+    } catch (e) { warnOnce('gpu-chain', 'could not walk the WebGPU post-processing chain; its targets keep the side-by-side size', e); }
+  }
+  function sizeToEye(st, n) {
+    st.gpuSized.add(n);
+    const f = n.setSize;
+    n.setSize = function (w, h, ...a) {
+      const R = st.R;
+      if (st.gpuEye !== -1 && R && Math.abs(w - R.W) < 1 && Math.abs(h - R.H) < 1) { w = R.eyeW; h = R.eyeH; }
+      return f.call(this, w, h, ...a);
+    };
+  }
+  function chainTarget(st) {
+    const R = st.R, r = st.r;
+    if (core.T.gpuPostfxTarget === false || !R || !r.backend || !r.backend.isWebGPUBackend) return null;
+    let rt = st.gpuEyeRT;
+    if (!rt) {
+      const C = st.gpuRTClass;
+      if (!C) return null;
+      try { rt = st.gpuEyeRT = new C(R.eyeW, R.eyeH, { depthBuffer: false }); } catch (e) { warnOnce('gpu-rt', 'could not make an eye target for the WebGPU chain; drawing into the halves', e); st.gpuRTClass = null; return null; }
+    }
+    if (rt.width !== R.eyeW || rt.height !== R.eyeH) rt.setSize(R.eyeW, R.eyeH);
+    return rt;
+  }
+  const BLIT_WGSL = `@group(0) @binding(0) var t: texture_2d<f32>;
+struct O { @builtin(position) p: vec4f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> O { var q = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); var o: O; o.p = vec4f(q[i], 0, 1); return o; }
+@group(0) @binding(1) var<uniform> off: vec4f;
+@fragment fn fs(o: O) -> @location(0) vec4f { return textureLoad(t, vec2i(o.p.xy - off.xy), 0); }`;
+  function gpuBlit(st, rt, i) {
+    const r = st.r, dev = r.backend.device, ctx = r.getContext();
+    const tex = r.backend.get(rt.texture).texture;
+    if (!dev || !ctx || !tex) throw new Error('no device, canvas context or eye texture');
+    const cfg = typeof ctx.getConfiguration === 'function' ? ctx.getConfiguration() : null;
+    const format = (cfg && cfg.format) || navigator.gpu.getPreferredCanvasFormat();
+    let B = st.gpuBlitter;
+    if (!B || B.dev !== dev || B.format !== format) {
+      const mod = dev.createShaderModule({ code: BLIT_WGSL });
+      B = st.gpuBlitter = {
+        dev, format,
+        pipe: dev.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs' }, fragment: { module: mod, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } }),
+        off: [0, 1].map(() => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })),
+        groups: new WeakMap(),
+      };
+    }
+    const R = st.R, x = i * R.eyeW;
+    dev.queue.writeBuffer(B.off[i], 0, new Float32Array([x, 0, 0, 0]));
+    let g = B.groups.get(tex);
+    if (!g) { g = [0, 1].map((k) => dev.createBindGroup({ layout: B.pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: tex.createView() }, { binding: 1, resource: { buffer: B.off[k] } }] })); B.groups.set(tex, g); }
+    const enc = dev.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'load', storeOp: 'store' }] });
+    pass.setPipeline(B.pipe);
+    pass.setBindGroup(0, g[i]);
+    pass.setViewport(x, 0, R.eyeW, R.eyeH, 0, 1);
+    pass.draw(3);
+    pass.end();
+    dev.queue.submit([enc.finish()]);
+  }
+  function renderGpuChain(st, quad, ortho) {
+    const cam = st.mainCam;
+    wrapChainSizes(st, quad);
+    const stereo = !!(st.haveViews && cam);
+    if (stereo) {
+      if (typeof cam.updateWorldMatrix === 'function') cam.updateWorldMatrix(true, false);
+      else if (cam.parent === null) cam.updateMatrixWorld();
+      eyeCameras(st, cam);
+    } else if (st.stats.twoView > 0) st.stats.flatAfterEyes++;
+    const eyeRT = chainTarget(st);
+    st.gpuVia = eyeRT ? 'target' : 'viewport';
+    const cp = eyeRT ? null : clearPathFor(st);
+    const nf = st.r._nodes && st.r._nodes.nodeFrame;
+    const f0 = nf ? nf.frameId : 0;
+    const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    const fi = frameInfo(st);
+    const prevRT = eyeRT ? st.call('getRenderTarget') : null;
+    let fr = null;
+    st.inEye = true;
+    try {
+      for (let i = 0; i < 2; i++) {
+        fr = eyeFrame(fi, i, fr);
+        if (i === 1 && nf) nf.frameId = --st.gpuFrame; // never a real id (those count up from 0)
+        if (i === 1 && sm) sm.autoUpdate = false;
+        st.gpuEye = stereo ? i : -2;
+        if (eyeRT) {
+          st.call('setRenderTarget', eyeRT);
+          st.call('setViewport', 0, 0, st.R.eyeW, st.R.eyeH);
+          st.call('setScissorTest', false);
+          st.gpuInEyeRT = true;
+          try { st.call('render', quad, ortho); } finally { st.gpuInEyeRT = false; }
+          st.call('setRenderTarget', prevRT);
+          gpuBlit(st, eyeRT, i);
+        } else {
+          setEyeViewport(st, i);
+          eyeBegin(st, i, cp);
+          st.call('render', quad, ortho);
+        }
+      }
+    } catch (e) {
+      if (!eyeRT) throw e;
+      warnOnce('gpu-blit', 'the WebGPU chain\'s eye target could not be copied to the canvas; drawing into the halves', e);
+      st.gpuRTClass = null; st.gpuEyeRT = null;
+    } finally {
+      st.gpuEye = -1;
+      st.inEye = false;
+      if (nf) nf.frameId = f0;
+      if (eyeRT) st.call('setRenderTarget', prevRT);
+      eyeEnd(st);
+      endFrame(fi, fr);
+      if (sm) sm.autoUpdate = smAuto;
+      st.call('setScissorTest', false);
+    }
+    if (stereo) st.stats.stereo++; else st.stats.flat++;
+    core.drew(st);
   }
   function gpuPostfx(st) {
     if (st.gpuPostfx) return;
@@ -2557,7 +2764,11 @@ function dxrThree(core) {
     const prevRT = st.call('getRenderTarget');
     if (prevRT !== null) st.call('setRenderTarget', null);
     try {
-      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else st.call('render', op[1], op[2]); }
+      for (const op of ops) {
+        if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]);
+        else if (isChainQuad(st, op[1])) chainOutput(st, () => st.call('render', op[1], op[2]));
+        else st.call('render', op[1], op[2]);
+      }
     } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
   }
 
@@ -2756,6 +2967,7 @@ function dxrThree(core) {
     try {
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
+        else if (isChainQuad(st, op[1])) chainOutput(st, () => renderGpuChain(st, op[1], op[2]));
         else if (op[4]) renderPostScreen(st, op[1], op[2]);
         else if (op[3]) renderStereo(st, op[1], op[2]);
         else renderFlat(st, op[1], op[2]);
