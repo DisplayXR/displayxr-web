@@ -444,6 +444,7 @@ function dxrCore(cfg, cap, S) {
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     gpuPostfx: true,     // TEST ONLY (A/B): false leaves a three.js WebGPU PostProcessing / RenderPipeline chain UNSPLIT: flat with the reason (the v0.6.1 behaviour)
     gpuPostfxTarget: true, // TEST ONLY (A/B): false draws each eye of a split WebGPU chain straight into its half (viewport) instead of an eye target copied in
+    gpuHistory: true,    // TEST ONLY (A/B): false lets the two eyes of a split WebGPU chain share a temporal node's (TRAA) history
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
@@ -2350,7 +2351,7 @@ function dxrThree(core) {
         coordinateSystem: ready(st) ? st.r.coordinateSystem : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].projectionMatrix.elements) : null, // what three draws eye 0 with
         eyeCoord0: st.eyes ? st.eyes[0].coordinateSystem : null,
-        gpuChain: st.gpuChain ? { passes: st.gpuPasses, passSize: st.gpuPassSize || null, via: st.gpuVia || null } : null, // eye passes drawn with an eye camera
+        gpuChain: st.gpuChain ? { passes: st.gpuPasses, passSize: st.gpuPassSize || null, via: st.gpuVia || null, history: st.gpuHistory.length, historySwaps: st.gpuHistSwaps, historyDepthFix: st.gpuHistDepthFix || 0 } : null, // eye passes drawn with an eye camera
       } : undefined,
     }),
   };
@@ -2365,7 +2366,8 @@ function dxrThree(core) {
     Object.assign(st, {
       r, depth: 0, orig: {}, common,
       nestPersp: null, gpuPostfx: false, clearPath: null,
-      gpuChain: null, gpuEye: -1, gpuRoot: null, gpuSized: new WeakSet(), gpuFrame: 0, gpuPasses: 0,
+      gpuChain: null, gpuEye: -1, gpuRoot: null, gpuSized: new WeakSet(), gpuPasses: 0, gpuLastId: -1,
+      gpuHistory: [], gpuHist: new Map(), gpuHistSwaps: 0,
       L: { w: 0, h: 0, pr: 1, vp: [0, 0, 0, 0], sc: [0, 0, 0, 0], scTest: false }, // what the PAGE believes
       eyes: null, eyesFor: null, m4: null,
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
@@ -2629,6 +2631,7 @@ function dxrThree(core) {
         if (!n || !n.isNode || seen.has(n)) continue;
         seen.add(n);
         if (typeof n.setSize === 'function' && typeof n.updateBefore === 'function' && !st.gpuSized.has(n)) sizeToEye(st, n);
+        if (n._historyRenderTarget && n._historyRenderTarget.isRenderTarget && !st.gpuHistory.includes(n)) st.gpuHistory.push(n); // TRAA: per-eye history (swapHistory)
         if (!st.gpuRTClass && n.renderTarget && n.renderTarget.isRenderTarget) st.gpuRTClass = n.renderTarget.constructor; // three's own RenderTarget, for the eye target
         if (typeof n.getChildren === 'function') for (const c of n.getChildren()) stack.push(c);
       }
@@ -2689,6 +2692,39 @@ struct O { @builtin(position) p: vec4f };
     pass.end();
     dev.queue.submit([enc.finish()]);
   }
+  function fixHistoryDepth(st) {
+    const b = st.r.backend;
+    if (!b || !b.isWebGPUBackend || typeof b.get !== 'function') return;
+    for (const n of st.gpuHistory) {
+      const h = n._historyRenderTarget, d = h && h.depthTexture;
+      const g = d && b.get(d).texture;
+      if (g && (g.width !== h.width || g.height !== h.height)) { if (d.image) { d.image.width = h.width; d.image.height = h.height; } d.dispose(); st.gpuHistDepthFix = (st.gpuHistDepthFix || 0) + 1; }
+    }
+  }
+  function swapHistory(st, from, to) {
+    const r = st.r;
+    fixHistoryDepth(st);
+    if (!st.gpuHistory.length || typeof r.copyTextureToTexture !== 'function' || core.T.gpuHistory === false) return;
+    for (const n of st.gpuHistory) {
+      const h = n._historyRenderTarget;
+      if (!h || !(h.width > 1 && h.height > 1)) continue;
+      let s = st.gpuHist.get(n);
+      if (!s) st.gpuHist.set(n, (s = [null, null]));
+      for (const i of [from, to]) {
+        if (!s[i]) { s[i] = { rt: h.clone(), valid: false }; }
+        const c = s[i].rt;
+        if (c.width !== h.width || c.height !== h.height) { c.setSize(h.width, h.height); s[i].valid = false; }
+        if (typeof r.initRenderTarget === 'function') r.initRenderTarget(c);
+      }
+      const copy = (a, b) => {
+        r.copyTextureToTexture(a.texture, b.texture);
+        if (a.depthTexture && b.depthTexture) r.copyTextureToTexture(a.depthTexture, b.depthTexture);
+      };
+      copy(h, s[from].rt); s[from].valid = true;
+      if (s[to].valid) copy(s[to].rt, h); // a first frame keeps the other eye's history: one frame, then each its own
+      st.gpuHistSwaps++;
+    }
+  }
   function renderGpuChain(st, quad, ortho) {
     const cam = st.mainCam;
     wrapChainSizes(st, quad);
@@ -2702,7 +2738,6 @@ struct O { @builtin(position) p: vec4f };
     st.gpuVia = eyeRT ? 'target' : 'viewport';
     const cp = eyeRT ? null : clearPathFor(st);
     const nf = st.r._nodes && st.r._nodes.nodeFrame;
-    const f0 = nf ? nf.frameId : 0;
     const sm = st.r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
     const fi = frameInfo(st);
     const prevRT = eyeRT ? st.call('getRenderTarget') : null;
@@ -2711,8 +2746,10 @@ struct O { @builtin(position) p: vec4f };
     try {
       for (let i = 0; i < 2; i++) {
         fr = eyeFrame(fi, i, fr);
-        if (i === 1 && nf) nf.frameId = --st.gpuFrame; // never a real id (those count up from 0)
+        if (nf && (i === 1 || nf.frameId <= st.gpuLastId)) nf.frameId++;
+        if (nf && i === 1) st.gpuLastId = nf.frameId;
         if (i === 1 && sm) sm.autoUpdate = false;
+        if (i === 1 && stereo) swapHistory(st, 0, 1);
         st.gpuEye = stereo ? i : -2;
         if (eyeRT) {
           st.call('setRenderTarget', eyeRT);
@@ -2728,6 +2765,7 @@ struct O { @builtin(position) p: vec4f };
           st.call('render', quad, ortho);
         }
       }
+      if (stereo) swapHistory(st, 1, 0);
     } catch (e) {
       if (!eyeRT) throw e;
       warnOnce('gpu-blit', 'the WebGPU chain\'s eye target could not be copied to the canvas; drawing into the halves', e);
@@ -2735,7 +2773,6 @@ struct O { @builtin(position) p: vec4f };
     } finally {
       st.gpuEye = -1;
       st.inEye = false;
-      if (nf) nf.frameId = f0;
       if (eyeRT) st.call('setRenderTarget', prevRT);
       eyeEnd(st);
       endFrame(fi, fr);
