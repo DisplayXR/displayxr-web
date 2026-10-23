@@ -1163,12 +1163,13 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
 ## Verified, and what is not
 
 **Headless, v0.6.3 (three.js WebGPU post-processing), Windows, ANGLE D3D11 + WebGPU (NVIDIA Blackwell):**
-114 cases (110 + 4 new: `three-webgpu-chain`, `three-webgpu-chain-vig`, `three-webgpu-chain-vp`,
-`p-three-webgpu-chain`; `three-webgpu-postfx` is now the `gpuPostfx: false` control). The full suite ran
-green before the last sizing change (110 run, 2 skipped: `c` / `d`, no `ports_25.sog`); the twelve
-three.js WebGPU cases ran green after it. Live probe: threejspunk.vercel.app (r186) live, `via: 'target'`,
-its scene pass at the eye size times its own 0.85 render scale (544 x 612 for a 640 x 720 eye). **Not
-seen on the panel yet.**
+113 cases (109 + 4 new: `three-webgpu-chain`, `three-webgpu-chain-vig`, `three-webgpu-chain-vp`,
+`p-three-webgpu-chain`; `three-webgpu-postfx` is now the `gpuPostfx: false` control), one full pass on the
+final commit: 111 run, 111 green, 2 skipped (`c` / `d`, no `ports_25.sog`). Coverage (`corpus/sites-three.json`,
+63 three.js pages, before = `main`'s 0.6.2 bundle): 33 -> 44 pages 3D (52 % -> 70 %); threejs.org WebGPU
+examples 6 / 15 -> 15 / 15 (`corpus/results/2026-10-22-three-coverage.md`). **Panel:** the harness's WebGPU
+page with a per-eye vignette chain weaves 3D; `webgpu_postprocessing_ao` flickered, fixed (per-eye TRAA
+history, eye frame ids), re-check on the panel pending. bruno-simon.com converts at 7 fps (60 in 2D): open.
 
 **Headless, v0.6.2 (PlayCanvas CameraFrame, P-W1c), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere):** 109
 cases (98 + 11 new: `pc-cf-kill`, `pc-cf-webgpu-kill`, `pc-cf`, `pc-cf-webgpu`, `pc-cf-unsplit-ctl`,
