@@ -15,7 +15,12 @@
 //   three-webgpu-fallback   forceWebGL: the same driver on the WebGL2 backend, a WebGL surface, GL clip.
 //   three-webgpu-near(-ctl) a box at 1.5 x near visible in both eyes; clipped without the conversion.
 //   three-webgpu-kill       Ctrl+Alt+3 off: the out-cover is the GPU read-back of the left eye.
-//   three-webgpu-postfx     PostProcessing (TSL pass()): flat with the reason, nothing converted.
+//   three-webgpu-chain      PostProcessing (TSL pass()): the whole chain once per eye (v0.6.3), the scene
+//                           pass with the eye cameras into an eye-sized target, each eye drawn into an eye
+//                           target and copied into its half.
+//   three-webgpu-chain-vig  a uv() vignette in the chain: dark at each half's own edges, the seam too.
+//   p-three-webgpu-chain    product mode: the PostProcessing page goes live.
+//   three-webgpu-postfx     control, gpuPostfx: false (the v0.6.1 behaviour): flat with the reason.
 //   p-three-webgpu          product mode: the real WebGPURenderer page reports live.
 import { toClip, near, magenta, RECORD_IN_COVER } from './webgpu.mjs';
 
@@ -39,7 +44,8 @@ export default function cases({ P, NEW, productShim }) {
     t(`WebGPURenderer driven on its ${backend} backend (surface ${gpu ? 'webgpu' : 'webgl'}), page backend agrees`,
       R.renderer === 'WebGPURenderer' && R.backend === backend && R.surface === (gpu ? 'webgpu' : 'webgl') && (!r.probe || r.probe.backend === backend),
       `renderer ${R.renderer}, backend ${R.backend}, surface ${R.surface}, page backend ${r.probe && r.probe.backend}`);
-    t(`clear path '${clearPath}'`, R.clearPath === clearPath, `clearPath ${R.clearPath}`);
+    if (clearPath !== 'target') t(`clear path '${clearPath}'`, R.clearPath === clearPath, `clearPath ${R.clearPath}`);
+    else t('the chain drew each eye into an eye target, copied into its half', !!R.gpuChain && R.gpuChain.via === 'target', JSON.stringify(R.gpuChain));
     t(`eye cameras carry the renderer's coordinateSystem (${gpu ? 'WebGPU' : 'WebGL'})`, R.coordinateSystem === (gpu ? WEBGPU_CS : WEBGL_CS) && R.eyeCoord0 === R.coordinateSystem,
       `renderer ${R.coordinateSystem}, eye 0 ${R.eyeCoord0}`);
     const P0 = R.eyeProj0, G = r.probe && r.probe.glProj0;
@@ -148,8 +154,74 @@ export default function cases({ P, NEW, productShim }) {
       },
     })),
     {
-      id: 'three-webgpu-postfx', name: 'product mode: three.js WebGPURenderer + PostProcessing (TSL pass()) reports flat with the reason, converts nothing', webgpu: true,
+      // The chain runs once per eye: the generic checks (halves differ, right = left shifted 0.1 x eye)
+      // only pass when the scene pass drew each eye's camera; the pass target is eye-sized.
+      id: 'three-webgpu-chain', name: 'three.js WebGPURenderer + PostProcessing (TSL pass()): the whole chain runs once per eye, eye-sized targets', webgpu: true,
+      url: P + 'three-webgpu-orbit.html?postfx=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', probe: glProbe,
+      alsoCheck(r, t, h, R) {
+        gpuChecks('webgpu', 'target')(r, t, h, R);
+        const C = R.gpuChain, s = r.state && r.state.renderers.find((x) => x.active);
+        t('the chain\'s scene pass drew with the eye cameras', !!C && C.passes > 0, JSON.stringify(C));
+        const eye = s && s.R ? [s.R.eyeW, s.R.eyeH] : [r.pixels.w / 2, r.pixels.h];
+        t('the scene pass target is eye-sized', !!C && !!C.passSize && C.passSize[0] === eye[0] && C.passSize[1] === eye[1], `pass ${C && C.passSize}, eye ${eye}`);
+      },
+    },
+    {
+      // A vignette on the quad's uv: per eye, each half is dark at its own left and right edges, the
+      // seam included; one quad over the pair would be bright at the seam.
+      id: 'three-webgpu-chain-vig', name: 'three.js WebGPU PostProcessing with a uv vignette: the effect is applied per eye (dark at the seam)', webgpu: true,
+      url: P + 'three-webgpu-orbit.html?postfx=vig&live=1', shim: NEW,
+      async run(page) {
+        await page.waitForFunction(settled(60), { timeout: 60000, polling: 200 });
+        const g = await page.evaluate(() => window.__grabFrame());
+        const px = Buffer.from(g.b64, 'base64'), ew = g.w / 2;
+        if (process.env.KEEP) { const fs = await import('node:fs'); fs.mkdirSync('out', { recursive: true }); fs.writeFileSync('out/three-webgpu-chain-vig.png', Buffer.from(g.png.split(',')[1], 'base64')); }
+        const col =(x0) => { let s = 0, n = 0; for (let y = g.h / 4; y < (3 * g.h) / 4; y += 2) for (let x = x0; x < x0 + 8; x++) { const i = (y * g.w + x) * 4; s += px[i] + px[i + 1] + px[i + 2]; n++; } return s / n; };
+        return { edgeL: col(0), seamL: col(ew - 8), seamR: col(ew), edgeR: col(g.w - 8), midL: col(ew / 2 - 4), midR: col(ew + ew / 2 - 4) };
+      },
+      check(r, t) {
+        t('converted', r.ok, r.error);
+        const dark = (v, mid) => v < 0.35 * mid;
+        t('each half is dark at both its edges and bright in its middle', r.ok && dark(r.edgeL, r.midL) && dark(r.seamL, r.midL) && dark(r.seamR, r.midR) && dark(r.edgeR, r.midR),
+          `luma sums: edge ${r.edgeL | 0} | seam ${r.seamL | 0} · ${r.seamR | 0} | edge ${r.edgeR | 0}; middles ${r.midL | 0}, ${r.midR | 0}`);
+      },
+    },
+    {
+      // The same chain on the viewport path (the WebGL2 fallback's): the quad drawn straight into each
+      // half. uv() is the half's, so the vignette is per eye here too.
+      id: 'three-webgpu-chain-vp', name: 'three.js WebGPU PostProcessing on the viewport path (gpuPostfxTarget: false): uv() effects still per eye', webgpu: true,
+      url: P + 'three-webgpu-orbit.html?postfx=vig&live=1', shim: NEW, cfg: { gpuPostfxTarget: false },
+      async run(page) {
+        await page.waitForFunction(settled(60), { timeout: 60000, polling: 200 });
+        const g = await page.evaluate(() => window.__grabFrame());
+        const px = Buffer.from(g.b64, 'base64'), ew = g.w / 2;
+        const col = (x0) => { let s = 0, n = 0; for (let y = g.h / 4; y < (3 * g.h) / 4; y += 2) for (let x = x0; x < x0 + 8; x++) { const i = (y * g.w + x) * 4; s += px[i] + px[i + 1] + px[i + 2]; n++; } return s / n; };
+        const st = await page.evaluate(() => window.__dxrAuto3D.state().renderers.find((x) => x.active));
+        return { via: st && st.gpuChain && st.gpuChain.via, edgeL: col(0), seamL: col(ew - 8), seamR: col(ew), edgeR: col(g.w - 8), midL: col(ew / 2 - 4), midR: col(ew + ew / 2 - 4) };
+      },
+      check(r, t) {
+        t('converted on the viewport path', r.ok && r.via === 'viewport', r.error || `via ${r.via}`);
+        const dark = (v, mid) => v < 0.35 * mid;
+        t('each half is dark at both its edges and bright in its middle', r.ok && dark(r.edgeL, r.midL) && dark(r.seamL, r.midL) && dark(r.seamR, r.midR) && dark(r.edgeR, r.midR),
+          `luma sums: edge ${r.edgeL | 0} | seam ${r.seamL | 0} · ${r.seamR | 0} | edge ${r.edgeR | 0}; middles ${r.midL | 0}, ${r.midR | 0}`);
+      },
+    },
+    {
+      id: 'p-three-webgpu-chain', name: 'product mode (fake host): a three.js WebGPU PostProcessing page goes live', webgpu: true,
       url: P + 'three-webgpu-orbit.html?postfx=1', shim: productShim({ decision: 'allow' }),
+      async run(page) {
+        await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(window.__frozen && H && H.reports.some((r) => r.status === 'live') && window.__fakeXR.frames > 60); })()", { timeout: 30000, polling: 100 });
+        return { P: await page.evaluate(() => ({ reports: window.__dxrFakeHost.reports.map(({ status, engine, reason }) => ({ status, engine: engine || null, reason: reason || null })), layers: window.__fakeXR.layers.length })) };
+      },
+      check(r, t) {
+        const R = (r.P && r.P.reports) || [];
+        t('went live (engine three.js), one layer', r.ok && R.some((x) => x.status === 'live' && x.engine === 'three.js') && r.P.layers === 1, r.error || JSON.stringify(R));
+        t('never flat', !R.some((x) => x.status === 'flat'), JSON.stringify(R));
+      },
+    },
+    {
+      id: 'three-webgpu-postfx', name: 'control: with the split off (gpuPostfx: false) PostProcessing reports flat with the reason, converts nothing', webgpu: true,
+      url: P + 'three-webgpu-orbit.html?postfx=1', shim: productShim({ decision: 'allow', dev: true, test: { gpuPostfx: false } }),
       async run(page, h) {
         await page.waitForFunction('window.__frozen', { timeout: 30000, polling: 100 });
         await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((r) => r.status === 'flat')); })()", { timeout: 10000, polling: 100 }).catch(() => {});

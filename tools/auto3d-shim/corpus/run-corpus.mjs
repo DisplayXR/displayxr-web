@@ -42,8 +42,14 @@ const KEEP = flag('--keep') || !!process.env.KEEP;
 const GROUP = opt('--group', null);
 const ONLY = opt('--only', '').split(',').filter(Boolean);
 const BUDGET_MS = Number(opt('--budget-ms', 30000)); // navigation budget per load
+// --sites <file>: another site list next to this one (sites-three.json: the three.js coverage list).
+// --bundle <dir>: read dist/ + VENDOR.json from <dir> instead of this checkout (an older release, for
+// a before / after run). --label <name>: appended to the results tag.
+const SITES = opt('--sites', 'sites.json');
+const BUNDLE = opt('--bundle', null);
+const LABEL = opt('--label', '');
 // How long to watch a page after load, per group (engines: detection + the 1.2 s switch + frames).
-const SETTLE_MS = { plain: 6000, engine: 12000, sdk: 10000 };
+const SETTLE_MS = { plain: 6000, engine: Number(opt('--engine-watch-ms', 12000)), sdk: 10000 }; // --engine-watch-ms: heavy sites (threejspunk) draw only after ~20 s
 
 // ------------------------------------------------------------ the §3.3 budget
 const BUDGET = {
@@ -58,7 +64,7 @@ const OURS = /dxr-auto3d-(sentinel|core)\.js/; // the sourceURLs given to the tw
 const OURS_LOOSE = /dxr-auto3d|auto3d|\bdxr[A-Z]\w*/; // + part-function names (every part is `function dxr…`)
 
 // ------------------------------------------------------------ injected scripts
-const read = (p) => readFileSync(join(shimDir, p), 'utf8');
+const read = (p) => readFileSync(join(BUNDLE || shimDir, p), 'utf8');
 const SENTINEL = read('dist/auto3d-sentinel.js');
 const CORE = read('dist/auto3d-core.js');
 const VENDOR = JSON.parse(read('VENDOR.json'));
@@ -242,7 +248,8 @@ function judge(site, C, I) {
   const { outcome, engine } = outcomeOf(P);
   const webgl = (P.webgl || 0) > 0 || (Q && Q.webgl > 0);
   // A WebGPU page (three.js WebGPURenderer: threejs-journey, bruno-simon) is a graphics page: the
-  // core may load there (three announced itself); the expected outcome is flat/standdown, not live.
+  // core may load there (three announced itself); since v0.6.3 it may convert (WebGPU post-processing
+  // included), or be flat / standdown with a reason.
   const webgpu = (P.webgpu || 0) > 0 || (Q && Q.webgpu > 0);
   const gpu = webgl || webgpu;
   const H = P.host || {};
@@ -314,7 +321,6 @@ function judge(site, C, I) {
     if (/^flat$|^standdown$/.test(outcome)) review.push(`${outcome} without a reason`);
     if (outcome === 'offer') review.push('offer under decision allow');
     if (live && C.fps && I.fps && I.fps < 0.5 * C.fps) review.push(`fps ${I.fps} converted vs ${C.fps} control`);
-    if (webgpu && !webgl && live) review.push('converted on a WebGPU-only page (expected flat / standdown)');
   }
   if (I.nav.partial) review.push('load event did not fire in budget (judged on the partial page)');
   row.ourLogs = I.ourLogs.slice(0, 6);
@@ -322,12 +328,12 @@ function judge(site, C, I) {
 }
 
 // ------------------------------------------------------------ main
-const all = JSON.parse(readFileSync(join(here, 'sites.json'), 'utf8')).sites;
+const all = JSON.parse(readFileSync(join(here, SITES), 'utf8')).sites;
 const sites = all.filter((s) => (!SAMPLE || s.sample) && (!GROUP || s.group === GROUP) && (!ONLY.length || ONLY.includes(s.id)));
 if (!sites.length) { console.error('no sites selected'); process.exit(2); }
 if (!existsSync(CHROME)) { console.error(`FAILED: no Chrome at ${CHROME} — set CHROME=<binary>`); process.exit(2); }
 const date = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
-const tag = date + (SAMPLE ? '-sample' : GROUP ? `-${GROUP}` : ONLY.length ? '-only' : '');
+const tag = date + (SITES !== 'sites.json' ? '-' + SITES.replace(/^sites-|.json$/g, '') : '') + (SAMPLE ? '-sample' : GROUP ? `-${GROUP}` : ONLY.length ? '-only' : '') + (LABEL ? '-' + LABEL : '');
 const resDir = join(here, 'results');
 mkdirSync(resDir, { recursive: true });
 if (KEEP) mkdirSync(join(resDir, tag), { recursive: true });

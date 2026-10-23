@@ -1,0 +1,4044 @@
+{
+  "date": "2026-10-22",
+  "tag": "2026-10-22-three-v062-main",
+  "verdict": "HARM FOUND: 2 site(s) FAIL the §3.3 budget",
+  "counts": {
+    "PASS": 57,
+    "REVIEW": 4,
+    "FAIL": 2,
+    "ERROR": 0
+  },
+  "bundle": {
+    "version": "0.6.2",
+    "sourceCommit": "9cb07fbf4f5660b76d0c95d8a12e077dc5eab965"
+  },
+  "chrome": "Chrome/156.0.8078.47",
+  "totalSeconds": 3283,
+  "secondsPerSite": 52,
+  "estimatedFullRunMinutes": 55,
+  "budget": {
+    "sentinelMs": 0.5,
+    "allowedProto": [
+      "HTMLCanvasElement.getContext (changed)"
+    ],
+    "allowedKeys": [
+      "__THREE_DEVTOOLS__"
+    ],
+    "allowedKeysWebGL": [
+      "__THREE_DEVTOOLS__",
+      "pc"
+    ]
+  },
+  "rows": [
+    {
+      "id": "ex-keyframes",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_animation_keyframes.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 1.4,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@2125",
+        "converting:three.js@5163",
+        "live:three.js@5532"
+      ],
+      "title": "three.js webgl - animation - keyframes",
+      "finalUrl": "https://threejs.org/examples/webgl_animation_keyframes.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.2,
+        0.2,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 9,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 9.52 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 45984
+    },
+    {
+      "id": "ex-teapot",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_geometry_teapot.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@1337",
+        "converting:three.js@1386",
+        "live:three.js@1953"
+      ],
+      "title": "three.js webgl - teapot buffer geometry",
+      "finalUrl": "https://threejs.org/examples/webgl_geometry_teapot.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 1.55e+3 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 41612
+    },
+    {
+      "id": "ex-shadowmap",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_shadowmap.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@3848",
+        "converting:three.js@3882",
+        "live:three.js@4208"
+      ],
+      "title": "three.js webgl - shadow map",
+      "finalUrl": "https://threejs.org/examples/webgl_shadowmap.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 2.01e+3 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 43017
+    },
+    {
+      "id": "ex-gltf",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_loader_gltf.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.4,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@821",
+        "converting:three.js@842",
+        "live:three.js@1251"
+      ],
+      "title": "three.js webgl - GLTFloader",
+      "finalUrl": "https://threejs.org/examples/webgl_loader_gltf.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.6,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 3.47 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "REVIEW",
+      "reasons": [
+        "page text 53 chars vs 2626 in control"
+      ],
+      "ms": 40247
+    },
+    {
+      "id": "ex-instancing",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_instancing_performance.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 2,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@623",
+        "converting:three.js@660",
+        "live:three.js@993"
+      ],
+      "title": "three.js webgl - instancing - performance",
+      "finalUrl": "https://threejs.org/examples/webgl_instancing_performance.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 30.0 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 49018
+    },
+    {
+      "id": "ex-points-waves",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_points_waves.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.7,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 6,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@544",
+        "converting:three.js@569",
+        "live:three.js@900"
+      ],
+      "title": "three.js webgl - particles - waves",
+      "finalUrl": "https://threejs.org/examples/webgl_points_waves.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 1.00e+3 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40395
+    },
+    {
+      "id": "ex-camera",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_camera.html",
+      "outcome": "converting (never live)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@1402",
+        "converting:three.js@1433"
+      ],
+      "title": "three.js webgl - cameras",
+      "finalUrl": "https://threejs.org/examples/webgl_camera.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 719 units (estimator), depth 0.5"
+      ],
+      "verdict": "REVIEW",
+      "reasons": [
+        "stuck: converting (never live)"
+      ],
+      "ms": 67839
+    },
+    {
+      "id": "ex-multiple-views",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_multiple_views.html",
+      "outcome": "converting (never live)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@600",
+        "converting:three.js@636"
+      ],
+      "title": "three.js webgl - multiple views",
+      "finalUrl": "https://threejs.org/examples/webgl_multiple_views.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 1.82e+3 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "REVIEW",
+      "reasons": [
+        "stuck: converting (never live)"
+      ],
+      "ms": 66151
+    },
+    {
+      "id": "ex-taa",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_postprocessing_taa.html",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@1615"
+      ],
+      "title": "three.js webgl - postprocessing manual taa and ssaa",
+      "finalUrl": "https://threejs.org/examples/webgl_postprocessing_taa.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 41,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] not converting canvas yet: the screen camera is not a PerspectiveCamera (a post-processing chain, or an ortho-only scene)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 70623
+    },
+    {
+      "id": "ex-ocean",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_shaders_ocean.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@695",
+        "converting:three.js@769",
+        "live:three.js@1103"
+      ],
+      "title": "three.js webgl - shaders - ocean",
+      "finalUrl": "https://threejs.org/examples/webgl_shaders_ocean.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 106 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 39934
+    },
+    {
+      "id": "ex-rectarealight",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_lights_rectarealight.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@1279",
+        "converting:three.js@1325",
+        "live:three.js@1656"
+      ],
+      "title": "three.js webgl - lights - rect area light",
+      "finalUrl": "https://threejs.org/examples/webgl_lights_rectarealight.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 15.0 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 65927
+    },
+    {
+      "id": "ex-skinning",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_animation_skinning_blending.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "moCalls": 5,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@649",
+        "converting:three.js@1325",
+        "live:three.js@1652"
+      ],
+      "title": "three.js webgl - animation - skinning",
+      "finalUrl": "https://threejs.org/examples/webgl_animation_skinning_blending.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 5,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 3.33 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 39485
+    },
+    {
+      "id": "ex-dof2",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_postprocessing_dof2.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@3434",
+        "converting:three.js@3496",
+        "live:three.js@3820"
+      ],
+      "title": "three.js webgl - postprocessing - depth-of-field",
+      "finalUrl": "https://threejs.org/examples/webgl_postprocessing_dof2.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 494 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 44217
+    },
+    {
+      "id": "ex-bloom",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@816",
+        "converting:three.js@2715",
+        "live:three.js@3068"
+      ],
+      "title": "three.js webgl - postprocessing - unreal bloom",
+      "finalUrl": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at arm (dxr-auto3d-sentinel.js:181:5)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 6.60 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40876
+    },
+    {
+      "id": "ex-anaglyph",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_effects_anaglyph.html",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@1077"
+      ],
+      "title": "three.js webgl - effects - anaglyph",
+      "finalUrl": "https://threejs.org/examples/webgl_effects_anaglyph.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 41,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] not converting canvas yet: the screen camera is not a PerspectiveCamera (a post-processing chain, or an ortho-only scene)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 67768
+    },
+    {
+      "id": "ex-css3d",
+      "group": "engine",
+      "url": "https://threejs.org/examples/css3d_periodictable.html",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@593"
+      ],
+      "title": "three.js css3d - periodic table",
+      "finalUrl": "https://threejs.org/examples/css3d_periodictable.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) "
+      ],
+      "verdict": "FAIL",
+      "reasons": [
+        "core loaded on a page with no WebGL / WebGPU"
+      ],
+      "ms": 66214
+    },
+    {
+      "id": "ex-terrain",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_geometry_terrain.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@659",
+        "converting:three.js@756",
+        "live:three.js@1115"
+      ],
+      "title": "three.js webgl - geometry - terrain + fog",
+      "finalUrl": "https://threejs.org/examples/webgl_geometry_terrain.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 2.00 units (fixed: open scene), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 38533
+    },
+    {
+      "id": "ex-envmaps-hdr",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_materials_envmaps_hdr.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@638",
+        "converting:three.js@711",
+        "live:three.js@1031"
+      ],
+      "title": "threejs webgl - materials - hdr environment mapping",
+      "finalUrl": "https://threejs.org/examples/webgl_materials_envmaps_hdr.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 120 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 38984
+    },
+    {
+      "id": "ex-editor",
+      "group": "engine",
+      "url": "https://threejs.org/editor/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 27,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@1523",
+        "converting:three.js@1607",
+        "live:three.js@1968"
+      ],
+      "title": "three.js editor",
+      "finalUrl": "https://threejs.org/editor/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 930x648 (eye 465x648), rig camera, convergence 1.00 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 42598
+    },
+    {
+      "id": "gpu-gltf",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_loader_gltf.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 57
+      },
+      "moMs": 0.2,
+      "moCalls": 7,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@782",
+        "converting:three.js@962",
+        "live:three.js@1410"
+      ],
+      "title": "three.js webgpu - gltf loader",
+      "finalUrl": "https://threejs.org/examples/webgpu_loader_gltf.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 0,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186 (WebGPURenderer, webgpu))",
+        "[warn] [dxr-auto3d] could not read the mono frame back from WebGPU — the 2D->3D cover may be blank"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40137
+    },
+    {
+      "id": "gpu-bloom",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_bloom.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.4,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 0.4,
+      "moCalls": 14,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@789",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@1970"
+      ],
+      "title": "three.js webgpu - postprocessing - bloom",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_bloom.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40174
+    },
+    {
+      "id": "gpu-dof",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_dof.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.3,
+      "moCalls": 14,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@887",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@1051"
+      ],
+      "title": "three.js webgpu - postprocessing dof",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_dof.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40241
+    },
+    {
+      "id": "gpu-galaxy",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_tsl_galaxy.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 7,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@743",
+        "converting:three.js@932",
+        "live:three.js@1298"
+      ],
+      "title": "three.js webgpu - galaxy",
+      "finalUrl": "https://threejs.org/examples/webgpu_tsl_galaxy.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.2,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 0,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186 (WebGPURenderer, webgpu))",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 6.71 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 39269
+    },
+    {
+      "id": "gpu-compute-particles",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_compute_particles.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.4,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 7,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@1690",
+        "converting:three.js@1895",
+        "live:three.js@2302"
+      ],
+      "title": "three.js webgpu - compute particles",
+      "finalUrl": "https://threejs.org/examples/webgpu_compute_particles.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 0,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186 (WebGPURenderer, webgpu))",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 23.9 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40339
+    },
+    {
+      "id": "gpu-ao",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_ao.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 15,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@722",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@1078"
+      ],
+      "title": "three.js webgpu - ambient occlusion",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_ao.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 39610
+    },
+    {
+      "id": "gpu-ssr",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_ssr.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 0.3,
+      "moCalls": 14,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@833",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@1085"
+      ],
+      "title": "three.js webgpu - postprocessing - Screen Space Reflections (SSR)",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_ssr.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 39408
+    },
+    {
+      "id": "gpu-traa",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_traa.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 0.2,
+      "moCalls": 15,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@518",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@680"
+      ],
+      "title": "three.js webgpu - postprocessing traa",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_traa.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40725
+    },
+    {
+      "id": "gpu-shadowmap",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_shadowmap.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.4,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 7,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@793",
+        "converting:three.js@1007",
+        "live:three.js@2084"
+      ],
+      "title": "three.js webgpu - shadow map",
+      "finalUrl": "https://threejs.org/examples/webgpu_shadowmap.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.3,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 1,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186 (WebGPURenderer, webgpu))",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 21.5 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40345
+    },
+    {
+      "id": "gpu-backdrop-water",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_backdrop_water.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 15,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@706",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@887"
+      ],
+      "title": "three.js webgpu - backdrop water",
+      "finalUrl": "https://threejs.org/examples/webgpu_backdrop_water.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 38852
+    },
+    {
+      "id": "gpu-ocean",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_ocean.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.5,
+      "moCalls": 15,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@1228",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@1444"
+      ],
+      "title": "three.js webgpu - ocean",
+      "finalUrl": "https://threejs.org/examples/webgpu_ocean.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40006
+    },
+    {
+      "id": "gpu-sobel",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_sobel.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.4,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.4,
+      "moCalls": 14,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@3447",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@5889"
+      ],
+      "title": "three.js webgpu - postprocessing sobel",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_sobel.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 43331
+    },
+    {
+      "id": "gpu-skinning",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_skinning.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.4,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 58
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@3179",
+        "converting:three.js@3326",
+        "live:three.js@3704"
+      ],
+      "title": "three.js webgpu - skinning",
+      "finalUrl": "https://threejs.org/examples/webgpu_skinning.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 0,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186 (WebGPURenderer, webgpu))",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 3.32 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 41673
+    },
+    {
+      "id": "gpu-motion-blur",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_postprocessing_motion_blur.html",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.4,
+      "moCalls": 16,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [
+        "idle@840",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@1018"
+      ],
+      "title": "three.js webgpu - motion blur",
+      "finalUrl": "https://threejs.org/examples/webgpu_postprocessing_motion_blur.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40323
+    },
+    {
+      "id": "gpu-flames",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgpu_tsl_vfx_flames.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 7,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@1600",
+        "converting:three.js@1796",
+        "live:three.js@2214"
+      ],
+      "title": "three.js webgpu - vfx flames",
+      "finalUrl": "https://threejs.org/examples/webgpu_tsl_vfx_flames.html",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 1,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186 (WebGPURenderer, webgpu))",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 3.32 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40447
+    },
+    {
+      "id": "bruno-simon",
+      "group": "engine",
+      "url": "https://bruno-simon.com/",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r183"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 5,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@2884",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@5742"
+      ],
+      "title": "Bruno's",
+      "finalUrl": "https://bruno-simon.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r183 WebGPURenderer found on canvas.js-canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas.js-canvas.experience stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 50382
+    },
+    {
+      "id": "threejs-journey",
+      "group": "engine",
+      "url": "https://threejs-journey.com/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.4,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r185"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.8,
+      "moCalls": 12,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [
+        "idle@9671",
+        "converting:three.js@9819",
+        "live:three.js@10203"
+      ],
+      "title": "Three.js Journey — Learn WebGL with Three.js",
+      "finalUrl": "https://threejs-journey.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 2,
+        "pending": 0,
+        "where": [
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r185 WebGPURenderer found on canvas.js-canvas.canvas",
+        "[info] [dxr-auto3d] converting canvas.js-canvas.canvas (three r185 (WebGPURenderer, webgpu))",
+        "[info] [dxr-auto3d] live on canvas.js-canvas.canvas: SBS 860x692 (eye 430x692), rig camera, convergence 2.00 units (fixed: open scene), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 64167
+    },
+    {
+      "id": "my-room-in-3d",
+      "group": "engine",
+      "url": "https://my-room-in-3d.vercel.app/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r130"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 3,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@1504",
+        "converting:three.js@1544",
+        "live:three.js@1878"
+      ],
+      "title": "My Room in 3D",
+      "finalUrl": "https://my-room-in-3d.vercel.app/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r130 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r130)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 5.00 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 53560
+    },
+    {
+      "id": "lusion",
+      "group": "engine",
+      "url": "https://lusion.co/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r158"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 8.8,
+      "moCalls": 1472,
+      "moMaxMs": 0.3,
+      "warmErrors": [],
+      "reports": [
+        "idle@2834",
+        "converting:three.js@25682",
+        "live:three.js@26027"
+      ],
+      "title": "Lusion - Award Winning 3D and Interactive Web Studio",
+      "finalUrl": "https://lusion.co/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 43,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r158 renderer found on canvas#canvas",
+        "[info] [dxr-auto3d] converting canvas#canvas (three r158)",
+        "[info] [dxr-auto3d] live on canvas#canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 62.4 units (estimator), depth 0.5"
+      ],
+      "verdict": "REVIEW",
+      "reasons": [
+        "our MutationObserver spent 8.8 ms in 1472 callback(s), longest 0.3 ms"
+      ],
+      "ms": 65978
+    },
+    {
+      "id": "igloo",
+      "group": "engine",
+      "url": "https://www.igloo.inc/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 2,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r165"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "moCalls": 7,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@880",
+        "converting:three.js@13845",
+        "live:three.js@14180"
+      ],
+      "title": "Igloo Inc.",
+      "finalUrl": "https://www.igloo.inc/",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 43,
+        "pending": 2,
+        "where": [
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at arm (dxr-auto3d-sentinel.js:181:5)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r165 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r165)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 6.00 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 52881
+    },
+    {
+      "id": "activetheory",
+      "group": "engine",
+      "url": "https://activetheory.net/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 2,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 112,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Active Theory · Creative Digital Experiences",
+      "finalUrl": "https://activetheory.net/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 42,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] a WebGL canvas (canvas) but no supported engine found — left 2D. A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its canvas "
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 66805
+    },
+    {
+      "id": "threejspunk",
+      "group": "engine",
+      "url": "https://threejspunk.vercel.app/",
+      "outcome": "flat (WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 9,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@846",
+        "flat:three.js(WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D))@28296"
+      ],
+      "title": "Threejs-Punk Drive | Cyberpunk driving game in WebGPU & Three.js by Anderson Mancini and Sunag",
+      "finalUrl": "https://threejspunk.vercel.app/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.4,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)",
+        "[info] [dxr-auto3d] not converting canvas yet: the screen camera is not a PerspectiveCamera (a post-processing chain, or an ortho-only scene)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 77069
+    },
+    {
+      "id": "slowroads",
+      "group": "engine",
+      "url": "https://slowroads.io/",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.6,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r155"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 8,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@1485"
+      ],
+      "title": " s l o w  r o a d s",
+      "finalUrl": "https://slowroads.io/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [
+        "Failed to load resource: net::ERR_CONNECTION_CLOSED"
+      ],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) "
+      ],
+      "verdict": "FAIL",
+      "reasons": [
+        "core loaded on a page with no WebGL / WebGPU",
+        "1 console error(s) not in the control load (unattributed; re-run to rule out network noise)"
+      ],
+      "controlLoads": 2,
+      "ms": 100898
+    },
+    {
+      "id": "coastalworld",
+      "group": "engine",
+      "url": "https://coastalworld.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0,
+      "coreEvalMs": 0,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 1.4,
+      "moCalls": 64,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Coastal Community Bank | Business Banking",
+      "finalUrl": "https://www.coastalbank.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "jQuery371056422270492700741"
+      ],
+      "keysNoise": [
+        "jQuery371056422270492700741"
+      ],
+      "ourTimers": {
+        "created": 41,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 9999.90000000596 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] a WebGL canvas (canvas) but no supported engine found — left 2D. A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its canvas "
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 81245
+    },
+    {
+      "id": "heraclos",
+      "group": "engine",
+      "url": "https://heraclosgame.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0,
+      "coreEvalMs": 0,
+      "webglContexts": 2,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 1.1,
+      "moCalls": 188,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Heraclos, and the quest he never ever asked for",
+      "finalUrl": "https://heraclosgame.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.3,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 42,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] a WebGL canvas (canvas) but no supported engine found — left 2D. A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its canvas "
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 90897
+    },
+    {
+      "id": "globe-gl",
+      "group": "engine",
+      "url": "https://globe.gl/example/world-cities/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.8,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r185"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 6,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@3313",
+        "converting:three.js@3457",
+        "live:three.js@4128"
+      ],
+      "title": "",
+      "finalUrl": "https://globe.gl/example/world-cities/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 0,
+        "where": [
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at arm (dxr-auto3d-sentinel.js:181:5)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r185 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r185)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 350 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 44447
+    },
+    {
+      "id": "force-graph-3d",
+      "group": "engine",
+      "url": "https://vasturiano.github.io/3d-force-graph/example/large-graph/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r186"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 5,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@733",
+        "converting:three.js@762",
+        "live:three.js@1187"
+      ],
+      "title": "",
+      "finalUrl": "https://vasturiano.github.io/3d-force-graph/example/large-graph/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r186 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r186)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 1.00e+3 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 39601
+    },
+    {
+      "id": "model-viewer",
+      "group": "engine",
+      "url": "https://modelviewer.dev/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.4,
+      "webglContexts": 3,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r183"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 12,
+      "moMaxMs": 0.1,
+      "warmErrors": [
+        "Failed to load resource: the server responded with a status of # ()"
+      ],
+      "reports": [
+        "idle@905",
+        "converting:three.js@8468",
+        "live:three.js@8817"
+      ],
+      "title": "<model-viewer>",
+      "finalUrl": "https://modelviewer.dev/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.2,
+        0,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 28,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r183 renderer found on canvas#webgl-canvas.show",
+        "[info] [dxr-auto3d] not converting canvas#webgl-canvas.show yet: canvas is not in the document",
+        "[info] [dxr-auto3d] converting canvas#webgl-canvas.show (three r183)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 52761
+    },
+    {
+      "id": "gltf-viewer",
+      "group": "engine",
+      "url": "https://gltf-viewer.donmccurdy.com/",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r176"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@710"
+      ],
+      "title": "glTF Viewer",
+      "finalUrl": "https://gltf-viewer.donmccurdy.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 41,
+        "pending": 0,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) "
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 67677
+    },
+    {
+      "id": "spline",
+      "group": "engine",
+      "url": "https://spline.design/",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 3,
+      "engineOracle": [
+        "three.js r185"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 1.3,
+      "moCalls": 70,
+      "moMaxMs": 0.2,
+      "warmErrors": [
+        "Load failed, error in settings",
+        "No visitor ID available. Load may have failed."
+      ],
+      "reports": [
+        "idle@1726"
+      ],
+      "title": "Spline - 3D Design tool in the browser with real-time collaboration",
+      "finalUrl": "https://spline.design/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r185 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js r185 WebGPURenderer found on canvas",
+        "[info] [dxr-auto3d] three.js r185 WebGPURenderer found on canvas"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 107284
+    },
+    {
+      "id": "aframe-hello",
+      "group": "engine",
+      "url": "https://aframe.io/examples/showcase/helloworld/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 13,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Hello WebVR – A-Frame",
+      "finalUrl": "https://aframe.io/examples/showcase/helloworld/",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 69915
+    },
+    {
+      "id": "ykob-sketches",
+      "group": "engine",
+      "url": "https://ykob.github.io/sketch-threejs/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r128"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 4,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@593",
+        "converting:three.js@658",
+        "live:three.js@1010"
+      ],
+      "title": "sketch of three.js",
+      "finalUrl": "https://ykob.github.io/sketch-threejs/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r128 renderer found on canvas#canvas-webgl.p-canvas-webgl",
+        "[info] [dxr-auto3d] converting canvas#canvas-webgl.p-canvas-webgl (three r128)",
+        "[info] [dxr-auto3d] live on canvas#canvas-webgl.p-canvas-webgl: SBS 1280x720 (eye 640x720), rig camera, convergence 50.0 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 41640
+    },
+    {
+      "id": "messenger",
+      "group": "engine",
+      "url": "https://messenger.abeto.co/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 1.4,
+      "webglContexts": 2,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r180"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.2,
+      "moCalls": 14,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@623",
+        "converting:three.js@2648",
+        "live:three.js@2982"
+      ],
+      "title": "Messenger",
+      "finalUrl": "https://messenger.abeto.co/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.7,
+      "sentinelMsWarm": [
+        0.1,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 16,
+        "pending": 3,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r180 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r180)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 6.00 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 41136
+    },
+    {
+      "id": "david-hckh",
+      "group": "engine",
+      "url": "https://david-hckh.com/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r181"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.3,
+      "moCalls": 10,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@604",
+        "converting:three.js@1928",
+        "live:three.js@2265"
+      ],
+      "title": "David Heckhoff - Web Developer (WebGL & Node.js)",
+      "finalUrl": "https://david-hckh.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0,
+        0.2,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 4,
+        "pending": 0,
+        "where": [
+          "timeout 9562.40000000596 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at onContext (dxr-auto3d-sentinel.js:297:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r181 renderer found on canvas.three-canvas",
+        "[info] [dxr-auto3d] converting canvas.three-canvas (three r181)",
+        "[info] [dxr-auto3d] live on canvas.three-canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 10.4 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 41774
+    },
+    {
+      "id": "jesse-zhou",
+      "group": "engine",
+      "url": "https://jesse-zhou.com/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.6,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r139"
+      ],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 0.1,
+      "moCalls": 49,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@873",
+        "converting:three.js@5100",
+        "live:three.js@5440"
+      ],
+      "title": "Jesse's Ramen",
+      "finalUrl": "https://www.jesse-zhou.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.2,
+      "sentinelMsWarm": [
+        0.2,
+        0,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 12,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r139 renderer found on canvas.webgl",
+        "[info] [dxr-auto3d] converting canvas.webgl (three r139)",
+        "[info] [dxr-auto3d] live on canvas.webgl: SBS 1280x720 (eye 640x720), rig camera, convergence 20.2 units (target: camera.lookAt), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 47186
+    },
+    {
+      "id": "henryheffernan",
+      "group": "engine",
+      "url": "https://henryheffernan.com/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0,
+      "coreEvalMs": 1.5,
+      "webglContexts": 3,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r137"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.7,
+      "moCalls": 30,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@2113",
+        "converting:three.js@2152",
+        "live:three.js@2479"
+      ],
+      "title": "Henry Heffernan - Portfolio 2022",
+      "finalUrl": "https://henryheffernan.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 15,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r137 renderer found on canvas",
+        "[info] [dxr-auto3d] three.js r137 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r137)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 45823
+    },
+    {
+      "id": "pmndrs",
+      "group": "engine",
+      "url": "https://pmnd.rs/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0,
+      "moCalls": 31,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Poimandres",
+      "finalUrl": "https://pmnd.rs/",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.2,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 67868
+    },
+    {
+      "id": "holtsetio-aurelia",
+      "group": "engine",
+      "url": "https://holtsetio.com/lab/aurelia/",
+      "outcome": "flat (WebGPURenderer r176 — the driver is verified on r178–r186 only)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r176"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 52
+      },
+      "moMs": 0.2,
+      "moCalls": 8,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@7454",
+        "flat:three.js(WebGPURenderer r176 — the driver is verified on r178–r186 only)@7462"
+      ],
+      "title": "Aurelia - ThreeJS WebGPU Experiment - holtsetio.com",
+      "finalUrl": "https://holtsetio.com/lab/aurelia/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.6,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPURenderer r176 — the driver is verified on r178–r186 only"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 53706
+    },
+    {
+      "id": "holtsetio-breeze",
+      "group": "engine",
+      "url": "https://holtsetio.com/lab/breeze/",
+      "outcome": "flat (WebGPURenderer r176 — the driver is verified on r178–r186 only)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r176"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@3839",
+        "flat:three.js(WebGPURenderer r176 — the driver is verified on r178–r186 only)@3848"
+      ],
+      "title": "Breeze - ThreeJS WebGPU Experiment - holtsetio.com",
+      "finalUrl": "https://holtsetio.com/lab/breeze/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.2,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 9,
+        "pending": 2,
+        "where": [
+          "timeout 9989.300000011921 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at arm (dxr-auto3d-sentinel.js:181:5)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at poll (dxr-auto3d-sentinel.js:235:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:21:147)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPURenderer r176 — the driver is verified on r178–r186 only",
+        "[info] [dxr-auto3d] three.js r176 renderer found on canvas"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 51810
+    },
+    {
+      "id": "holtsetio-ballet",
+      "group": "engine",
+      "url": "https://holtsetio.com/lab/chromeBallet/",
+      "outcome": "idle",
+      "engine": null,
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.3,
+      "moCalls": 25,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [
+        "idle@2940"
+      ],
+      "title": "Chrome Ballet - ThreeJS WebGPU Experiment - holtsetio.com",
+      "finalUrl": "https://holtsetio.com/lab/chromeBallet/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) "
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 71492
+    },
+    {
+      "id": "holtsetio-softbodies",
+      "group": "engine",
+      "url": "https://holtsetio.com/lab/softbodies/",
+      "outcome": "flat (WebGPURenderer r176 — the driver is verified on r178–r186 only)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r176"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 44
+      },
+      "moMs": 0,
+      "moCalls": 5,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@6083",
+        "flat:three.js(WebGPURenderer r176 — the driver is verified on r178–r186 only)@6134"
+      ],
+      "title": "Softbodies - ThreeJS WebGPU Experiment - holtsetio.com",
+      "finalUrl": "https://holtsetio.com/lab/softbodies/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPURenderer r176 — the driver is verified on r178–r186 only"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 51598
+    },
+    {
+      "id": "holtsetio-tetris",
+      "group": "engine",
+      "url": "https://holtsetio.com/lab/tetris/",
+      "outcome": "flat (WebGPURenderer r176 — the driver is verified on r178–r186 only)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r176"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@2836",
+        "flat:three.js(WebGPURenderer r176 — the driver is verified on r178–r186 only)@2845"
+      ],
+      "title": "Softbody Tetris - ThreeJS WebGPU Experiment - holtsetio.com",
+      "finalUrl": "https://holtsetio.com/lab/tetris/",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPURenderer r176 — the driver is verified on r178–r186 only"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 44132
+    },
+    {
+      "id": "holtsetio-flow",
+      "group": "engine",
+      "url": "https://holtsetio.com/lab/flow/",
+      "outcome": "flat (WebGPURenderer r176 — the driver is verified on r178–r186 only)",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.9,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [
+        "three.js r176"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 42
+      },
+      "moMs": 0.2,
+      "moCalls": 7,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [
+        "idle@2742",
+        "flat:three.js(WebGPURenderer r176 — the driver is verified on r178–r186 only)@2750"
+      ],
+      "title": "Flow - ThreeJS WebGPU Experiment - holtsetio.com",
+      "finalUrl": "https://holtsetio.com/lab/flow/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js canvas canvas stays 2D: WebGPURenderer r176 — the driver is verified on r178–r186 only"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 44348
+    },
+    {
+      "id": "spark-hello",
+      "group": "engine",
+      "url": "https://sparkjs.dev/examples/hello-world/",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 1.5,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r180"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0,
+      "moCalls": 4,
+      "moMaxMs": 0,
+      "warmErrors": [],
+      "reports": [
+        "idle@1308",
+        "converting:three.js@1377",
+        "live:three.js@1714"
+      ],
+      "title": "Spark • Hello World",
+      "finalUrl": "https://sparkjs.dev/examples/hello-world/",
+      "partialLoad": false,
+      "sentinelMsCold": 1,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 108,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at startPoll (dxr-auto3d-sentinel.js:228:13) < at onContext (dxr-auto3d-sentinel.js:298:7)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at scheduleSweep (dxr-auto3d-sentinel.js:197:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:322:9)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at activate (dxr-auto3d-core.js:250:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at expandFor (dxr-auto3d-core.js:1523:19) < at refresh (dxr-auto3d-core.js:1507:9)",
+          "timeout 1 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:21:171) < at current (https://sparkjs.dev/dist/spark.module.js:12591:58) < at new Promise (<anonymous>)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.6.2)",
+        "[info] [dxr-auto3d] core armed (v0.6.2) ",
+        "[info] [dxr-auto3d] three.js r180 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r180)",
+        "[info] [dxr-auto3d] live on canvas: SBS 1280x720 (eye 640x720), rig camera, convergence 5.00 units (estimator), depth 0.5"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 40003
+    }
+  ]
+}
