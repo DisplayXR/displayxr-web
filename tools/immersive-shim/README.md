@@ -16,7 +16,7 @@ built. It is not a product and must not ship as one.
 3. Open a stock WebXR page and click its Enter VR button.
 
 The console prints `[dxr-immersive-shim] armed` on every page; during a converted session a HUD
-(top-right) shows the live rig plus F11 / Exit VR buttons (Tab toggles it). `window.__dxrImmersiveShim` exposes `cfg`, `set(k,v)`, `preset(name)`, `log()`, `session`.
+(top-right) shows `3D active`, the live rig and F11 / Exit 3D buttons (Tab toggles it). `window.__dxrImmersiveShim` exposes `cfg`, `set(k,v)`, `preset(name)`, `log()`, `session`.
 
 ## In-session controls (the runtime's qwerty device, mirrored 1:1)
 
@@ -51,7 +51,7 @@ The rig is always the legacy qwerty camera rig (2 m convergence, 36° vFOV) — 
 | ; / ' | parallaxFactor −/+ 0.1 |
 | P | toggle fullscreen / in-place presentation (takes effect on the next session) |
 | Q | qwerty emulation on/off |
-| X | **exit VR**: ends the session and reloads the page, so it comes back in its pre-Enter-VR state (the landing page). Ctrl+Alt+Shift+X = soft exit (ends the session only; the page shows its own 2D fallback) |
+| X | **exit 3D**: ends the session and reloads the page, so it comes back in its pre-Enter-VR state (the landing page). Ctrl+Alt+Shift+X = soft exit (ends the session only; the page shows its own 2D fallback) |
 | F | Flatten toggle (rendering mode viewCount 1 ↔ 2, needs a 0128 browser) |
 | L | dump the feature-detect log as a table |
 | H | toggle the HUD |

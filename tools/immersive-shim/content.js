@@ -837,7 +837,7 @@
       const mkBtn = (label, title, onClick) => { const b = document.createElement('button'); b.textContent = label; b.title = title; Object.assign(b.style, { pointerEvents: 'auto', cursor: 'pointer', font: '12px monospace', color: '#fff', background: 'rgba(255,255,255,.15)', border: '1px solid rgba(255,255,255,.4)', borderRadius: '3px', padding: '2px 8px' }); b.addEventListener('pointerdown', e => e.stopPropagation()); b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); onClick(); }); return b; };
       const box = document.createElement('span'); Object.assign(box.style, { display: 'flex', gap: '6px' });
       box.appendChild(mkBtn('⛶ F11', 'Toggle fullscreen (F11)', toggleFullscreen));
-      box.appendChild(mkBtn('✕ Exit VR', 'Exit VR: end the session and return to the page as it was before Enter VR (Ctrl+Alt+X)', () => exitVR(false)));
+      box.appendChild(mkBtn('✕ Exit 3D', 'Exit 3D: end the 3D session and return to the page as it was before its Enter VR button (Ctrl+Alt+X)', () => exitVR(false)));
       hudEl.appendChild(box); document.body.appendChild(hudEl);
     }
     const q = QW; const f = x => (+x).toFixed(2);
@@ -845,7 +845,7 @@
       ? `CAMERA conv=${f(q.cam.conv)}dp vfov=${(2 * Math.atan(q.cam.halfTanVfov) * 180 / Math.PI).toFixed(0)}° ipd=${f(q.cam.spread)} par=${f(q.cam.parallax)}`
       : `DISPLAY vH=${f(q.disp.vH)}m ipd=${f(q.disp.spread)} par=${f(q.disp.parallax)} persp=${f(q.disp.persp)}`;
     const ramp = QW.ipdOverride !== null ? ` ramp ipd=${(+QW.ipdOverride).toFixed(2)}` : '';
-    hudText.textContent = `DXR ${active ? '3D' : 'idle'}${active && active._oneView() ? ' [2D]' : ''}${ramp} | ${rigLine}`;
+    hudText.textContent = `DXR ${active ? '3D active' : 'idle'}${active && active._oneView() ? ' [2D]' : ''}${ramp} | ${rigLine}`;
   }
   window.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey && e.altKey)) return; let hit = true;
