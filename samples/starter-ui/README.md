@@ -9,12 +9,14 @@ rule 4 (no HTML over content that comes out of the glass: the only label over th
 empty background), rule 6 (text and controls are HTML at the glass; plain `rgba()` backgrounds; no
 `filter`, `backdrop-filter`, `opacity` or animated `transform` on, around or over the canvas),
 rule 7 (cover until `firstWoven`, one canvas), rule 8 (one slider value `k` →
-`displayRig({ ipdFactor: k, parallaxFactor: k })` via `handle.setViewRig`), rule 9
-(`handle.setStereoEnabled()` with a fallback to the slider at 0 when the display has no flat mode;
-the button shows what `renderingmodechange` reports; the same layout in an ordinary browser), plus
-rules 1–3 and 5 as in [starter-scene](../starter-scene/README.md).
+`displayRig({ ipdFactor: k, parallaxFactor: k })` via `handle.setViewRig`), rule 9 (the switch on
+the tile handle, written so it cannot invert — `await handle.setStereoEnabled(!in3D)`, `in3D` set
+only from `renderingmodechange` — with a fallback to the slider at 0 when the display has no flat
+mode; the same layout in an ordinary browser), plus rules 1–3 and 5 as in
+[starter-scene](../starter-scene/README.md). The chart faces the glass square (yaw spends depth)
+and its bar heights are normalised to the largest value, so any data set frames the same.
 
-Measured by the headless stereo judge: front p2 −0.5 %, behind p98 +0.9 % of the tile width
+Measured by the headless stereo judge: front p2 +0.1 %, behind p98 +0.8 % of the tile width
 (comfortable: ≥ −0.6 % / ≤ 1.5 %).
 
 ## Adapt it

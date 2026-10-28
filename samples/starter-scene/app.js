@@ -4,7 +4,8 @@
 //
 // RIG (guide §1): the user LOOKS AT a thing; nobody walks through it. So a display rig: the canvas
 // is a portal onto a virtual display VDH metres tall, and SceneViewer scales the subject into it
-// (so its depth does not depend on how big you modelled it).
+// (so its depth does not depend on how big you modelled it). Near/far are set on the session by
+// the page (no SDK viewer does it), and the ground is scene, not subject (see below).
 //
 // SCREEN PLANE (§2): through the subject — SceneViewer centres it on the glass — then nudged back
 // with depthOffset so that the comfortable budget's larger "behind" half is used too.
@@ -12,7 +13,7 @@
 // DEPTH (§3): depthFit shrinks the subject UNIFORMLY until its nearest point is ≤ FRONT and its
 // farthest ≤ BACK tile heights from the glass. 0.1 h ≈ 0.6 % and 0.27 h ≈ 1.5 % of the width on a
 // 16:9 tile (the comfortable column; on another shape multiply both by aspect / 1.78).
-// Measured by the headless stereo judge: front p2 ≈ −0.3 %, behind p98 ≈ +1.0 % of the width.
+// Measured by the headless stereo judge: front p2 ≈ −0.2 %, behind p98 ≈ +1.0 % of the width.
 
 import * as THREE from 'three';
 import { createInline3D } from '@displayxr/inline3d';
@@ -54,7 +55,7 @@ function speckle(base, contrast = 0.25) {     // irregular texture: stereo match
 }
 const steel = speckle('#c9ced6', 0.15);
 const R = 1, SEATS = 12;
-const set = new THREE.Group();               // the whole set piece, turned to a 3/4 view
+const set = new THREE.Group();               // the whole set piece
 const wheel = new THREE.Group();             // the part that turns
 wheel.position.y = 0.2;
 for (const z of [-0.15, 0.15]) {
@@ -88,19 +89,29 @@ for (const z of [-0.3, 0.3]) for (const s of [-1, 1]) {        // the A-frame st
   leg.rotation.z = s * 0.43;
   set.add(leg);
 }
-const deck = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.75), speckle('#6b5a45', 0.35));
-deck.position.y = -1.18;
-set.add(deck);
-set.rotation.set(THREE.MathUtils.degToRad(12), THREE.MathUtils.degToRad(-20), 0); // seen from a little above
+// Square to the glass (yaw spends depth: turned 45°, this wide, shallow wheel would be as deep as it
+// is wide and the fit would shrink it), tilted a little to show the hub. Head tracking does the
+// looking around.
+set.rotation.x = THREE.MathUtils.degToRad(8);
 viewer.content.add(set);
 const sun = new THREE.DirectionalLight(0xfff1dd, 2.2);
 sun.position.set(1, 2, 3);
 viewer.scene.add(sun, new THREE.HemisphereLight(0xa8c4ff, 0x302418, 1.1));
 
-// Frame on the box the subject really occupies (after the 3/4 turn), so depthFit sees its true depth.
+// Frame on the box the subject really occupies (after its tilt), so depthFit sees its true depth.
 viewer.depthOffset = -((BACK - FRONT) / 2) * VDH;   // centre 0.085 h behind the glass: both ends at budget
 const box = new THREE.Box3().setFromObject(viewer.content);
 viewer.fitTo(box.getCenter(new THREE.Vector3()), box.getSize(new THREE.Vector3()));
+
+// The ground is NOT the subject: it lives in viewer.scene (display metres, glass at z = 0), so
+// depthFit sizes the wheel alone. Budget it by hand: under the wheel, spanning the depth budget.
+const fit = viewer.getSubjectBounds();
+const deck = new THREE.Mesh(
+  new THREE.BoxGeometry(fit.extent.x * 1.4, 0.004, (FRONT + BACK) * VDH * 0.9),
+  speckle('#6b5a45', 0.35),
+);
+deck.position.set(0, -fit.extent.y / 2 - 0.002, viewer.depthOffset);
+viewer.scene.add(deck);
 
 // ---- animation: SceneViewer calls onTick once per drawn frame, woven or flat ----------------------
 let lastT = 0;

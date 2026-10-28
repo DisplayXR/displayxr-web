@@ -6,7 +6,7 @@
 // SCREEN PLANE (§2): through the chart, nudged back (depthOffset) to use the "behind" budget too.
 // DEPTH (§3): depthFit to the comfortable column, 0.1 h in front / 0.27 h behind on this 16:9
 // tile (≈ 0.6 % / 1.5 % of the width). Measured by the headless stereo judge:
-//   front p2 ≈ −0.5 %, behind p98 ≈ +0.9 % of the width.
+//   front p2 ≈ +0.1 % (the face-on chart sits just behind the glass), behind p98 ≈ +0.8 %.
 // 2D UI (§4, §6): the title, legend and controls are HTML OUTSIDE the tile; the one label over it
 // (units, top-left) sits over empty background, where nothing comes out of the glass. Plain
 // rgba() backgrounds only: no filter, backdrop-filter, opacity or animated transform.
@@ -41,7 +41,7 @@ const viewer = new SceneViewer(THREE, canvas, {
   orbit: false,                        // a fixed view keeps the legend and labels true
 }).useEyeCamera(EyeCamera);
 
-// ---- the chart: bars on a base, modelled in "chart units" (one bar = 1 wide) ----------------------
+// ---- the chart, modelled in "chart units" ---------------------------------------------------------
 let seed = 11;
 const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
 function speckle(base, contrast = 0.18) {   // a fine irregular grain: stereo matching needs detail
@@ -58,26 +58,31 @@ function speckle(base, contrast = 0.18) {   // a fine irregular grain: stereo ma
   t.colorSpace = THREE.SRGBColorSpace;
   return new THREE.MeshStandardMaterial({ map: t, roughness: 0.7 });
 }
+// FACE-ON, square to the glass. Yaw spends depth: a wide, shallow chart turned 45° becomes deep,
+// and the fit would then have to shrink it. Heights are NORMALISED (the tallest bar = 4 units),
+// so any data set frames the same. Grouped bars in one row: nothing hides behind anything.
 const chart = new THREE.Group();
-const COLS = SERIES[0].values.length;
-const base = new THREE.Mesh(new THREE.BoxGeometry(COLS * 1.4 + 0.3, 0.15, SERIES.length * 1.1 + 0.3), speckle('#c8ccd4'));
-base.position.y = -0.075;
-chart.add(base);
-SERIES.forEach((s, row) => {
-  const m = speckle(s.color);
-  s.values.forEach((v, col) => {
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1, v, 0.8), m);
-    bar.position.set((col - (COLS - 1) / 2) * 1.4, v / 2, (row - (SERIES.length - 1) / 2) * 1.1);
+const COLS = SERIES[0].values.length, N = SERIES.length;
+const MAX = Math.max(...SERIES.flatMap((x) => x.values));
+SERIES.forEach((ser, i) => {
+  const m = speckle(ser.color);
+  ser.values.forEach((v, col) => {
+    const h = (v / MAX) * 4;
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.7, h, 0.7), m);
+    bar.position.set((col - (COLS - 1) / 2) * 3 + (i - (N - 1) / 2) * 0.8, h / 2, 0);
     chart.add(bar);
   });
 });
-chart.rotation.set(THREE.MathUtils.degToRad(14), THREE.MathUtils.degToRad(-20), 0); // a 3/4 view from a little above
+const axis = new THREE.Mesh(new THREE.BoxGeometry(COLS * 3, 0.06, 0.7), speckle('#9aa0ad'));
+axis.position.y = -0.03;
+chart.add(axis);
+chart.rotation.x = THREE.MathUtils.degToRad(8);   // a hint of the tops; the face stays square
 viewer.content.add(chart);
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
 sun.position.set(-2, 4, 3);
 viewer.scene.add(sun, new THREE.HemisphereLight(0xffffff, 0x8890a0, 1.2));
 
-// Frame on the box the chart really occupies after the turn, so depthFit sees its true depth.
+// Frame on the box the chart really occupies after the tilt, so depthFit sees its true depth.
 viewer.depthOffset = -((BACK - FRONT) / 2) * VDH;
 const box = new THREE.Box3().setFromObject(viewer.content);
 viewer.fitTo(box.getCenter(new THREE.Vector3()), box.getSize(new THREE.Vector3()));
@@ -94,30 +99,35 @@ if (!wall.supported) {
 } else {
   const rig = (k) => displayRig({ virtualDisplayHeight: VDH, ipdFactor: k, parallaxFactor: k });
   const handle = wall.addScene(canvas, viewer.onFrame, { viewRig: rig(1), onLayerLost: viewer.onLayerLost });
+  // Near and far are the page's: no SDK viewer calls updateRenderState.
   wall.session.updateRenderState({ depthNear: 0.01, depthFar: 20 });
 
   // Depth slider: ONE value k moves BOTH factors (stereo and look-around shrink together). On a
   // display rig 1 is what the display does naturally; below 1 only makes it shallower.
   depth.addEventListener('input', () => handle.setViewRig(rig(Number(depth.value))));
 
-  // 2D/3D switch. The label follows what the display REPORTS (renderingmodechange), not the click.
-  let flat = false;
+  // 2D/3D switch on the TILE HANDLE (this is an addScene tile). `in3D` is what the display REPORTS
+  // (renderingmodechange) and nothing else, so the button can never invert.
+  let in3D = true;
   const show = () => {
+    const flat = !in3D || Number(depth.value) === 0;
     modeBtn.textContent = flat ? 'Show in 3D' : 'Show in 2D';
     modeBtn.setAttribute('aria-pressed', String(flat));
   };
   handle.on('renderingmodechange', (e) => {
-    if (e.viewCount) { flat = e.viewCount === 1; show(); }
+    if (e.viewCount) { in3D = e.viewCount !== 1; show(); }
   });
-  modeBtn.addEventListener('click', () => {
-    handle.setStereoEnabled(flat).catch(() => {
+  modeBtn.addEventListener('click', async () => {
+    try {
+      await handle.setStereoEnabled(!in3D);
+    } catch {
       // No flat mode on this display (nothing changed): the depth slider at 0 is flat anywhere.
-      flat = !flat;
-      depth.value = flat ? 0 : 1;
+      depth.value = Number(depth.value) === 0 ? 1 : 0;
       handle.setViewRig(rig(Number(depth.value)));
       show();
-    });
+    }
   });
+  depth.addEventListener('input', show);
   show();
   await handle.firstWoven;             // cover until the first woven frame
   cover.remove();                      // cut, never fade

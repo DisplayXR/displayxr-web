@@ -12,7 +12,8 @@
 // angle, its nearest point is ≤ 0.1 tile heights in front of the glass and its farthest ≤ 0.27 h
 // behind. On this 16:9 tile that is ≈ 0.6 % / 1.6 % of the width: the comfortable column (on
 // another tile shape multiply both by aspect / 1.78). Centred, the front binds first.
-// Measured by the headless stereo judge: front p2 ≈ −0.2 %, behind p98 ≈ +0.8 % of the width.
+// Measured by the headless stereo judge: front p2 ≈ −0.2 %, behind p98 ≈ +0.8 % of the width;
+// zoomed to the 1.3x cap −0.4 % / +0.8 %.
 // (The fit budgets the box the model sweeps as it turns, so a rounded model measures inside it.)
 //
 // 2D UI (§4, §6): the title, price and buttons live BESIDE the tile (index.html), never over the
@@ -27,7 +28,7 @@ const depth = document.getElementById('depth');
 const modeBtn = document.getElementById('mode');
 const modeNote = document.getElementById('modeNote');
 
-const MODEL = './assets/Duck.gltf';
+const MODEL = './assets/Duck.glb';  // uncompressed: no decoder files to serve
 const VDH = 0.16;                      // virtual display height, metres (the zoom knob)
 const FRONT = 0.1, BACK = 0.27;        // depth budget, tile heights (16:9, comfortable)
 const BG = '#e9e6df';                  // == the page colour behind the tile (index.html)
@@ -38,9 +39,12 @@ const model = addModel(wall, canvas, MODEL, {
   clearColor: BG,                      // OPAQUE clear: alpha-0 pixels weave as stale/black
   depthFit: { front: FRONT, back: BACK },
   idleSpin: 14,                        // degrees/s once idle; drag to turn, wheel to zoom
-  // Draco-compressed asset: the decoder files must be served by your site. Delete this line for
-  // an uncompressed glTF/GLB.
-  decoderPath: { draco: new URL('../../vendor/draco/', import.meta.url).pathname },
+  // ZOOM SPENDS DEPTH: depthFit is applied when the model is framed, not again when it is zoomed,
+  // and the depth grows with the zoom. Capped at 1.3x, the comfortable fit (0.1 h in front) stays
+  // inside the strong column (≈ 0.13 h ≈ 0.8 % of the width). (PlayCanvas, the default engine.)
+  zoom: { max: 1.3 },
+  // A Draco / KTX2-compressed asset also needs `decoderPath` pointing at decoder files YOUR site
+  // serves (see samples/model/); this uncompressed GLB needs none.
   // no `feather`: it fades to transparent, which needs an alpha clear (guide §5)
 });
 
@@ -63,26 +67,32 @@ depth.addEventListener('input', () => {
   model.setStereo({ ipdFactor: k, parallaxFactor: k });
 });
 
-// ---- 2D/3D switch: ask the display for its flat mode; show the state the display REPORTS ----------
-let flat = false;                      // what the display last reported, never what we asked for
-function showMode() {
+// ---- 2D/3D switch, on `wall` (addModel has no tile handle of its own) ------------------------------
+// `in3D` is what the display REPORTS (renderingmodechange) and nothing else, so the button can
+// never invert: a click asks for the opposite of the reported state.
+let in3D = true;
+const showMode = () => {
+  const flat = !in3D || Number(depth.value) === 0;
   modeBtn.textContent = flat ? 'Show in 3D' : 'Show in 2D';
   modeBtn.setAttribute('aria-pressed', String(flat));
-}
+};
 if (wall.supported) {
+  // Near and far are the page's: no SDK viewer calls updateRenderState.
+  wall.session.updateRenderState({ depthNear: 0.01, depthFar: 20 });
   wall.on('renderingmodechange', (e) => {
-    if (e.viewCount) { flat = e.viewCount === 1; showMode(); }
+    if (e.viewCount) { in3D = e.viewCount !== 1; showMode(); }
   });
-  modeBtn.addEventListener('click', () => {
-    wall.setStereoEnabled(flat).catch(() => {
-      // This display lists no flat mode (the call changed nothing): fall back to the slider,
-      // which gives a flat image on any display.
-      flat = !flat;
-      depth.value = flat ? 0 : 1;
+  modeBtn.addEventListener('click', async () => {
+    try {
+      await wall.setStereoEnabled(!in3D);
+    } catch {
+      // This display lists no flat mode (nothing changed): the depth slider at 0 is flat anywhere.
+      depth.value = Number(depth.value) === 0 ? 1 : 0;
       depth.dispatchEvent(new Event('input'));
       showMode();
-    });
+    }
   });
+  depth.addEventListener('input', showMode);
   showMode();
 } else {
   // An ordinary browser: the same page, already flat. Keep the layout; say why the controls rest.

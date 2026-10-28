@@ -8,16 +8,21 @@ rule 1 (an object the user turns → display rig), rule 2 (screen plane through 
 rule 3 (`depthFit` to the comfortable budget, then `depthOffset` so the cheaper "behind" half is
 used too), rule 4 (no HTML over pop-out: the UI sits beside the tile), rule 5 (opaque
 `clearColor` matching the page, no feather), rule 7 (cover until `firstWoven`, cut), rules 8–9
-(depth slider moving `ipdFactor` and `parallaxFactor` together; 2D/3D switch with a fallback and
-the state read from `renderingmodechange`; a finished page in an ordinary browser).
+(depth slider moving `ipdFactor` and `parallaxFactor` together; a 2D/3D switch on `wall` written
+so it cannot invert — `await wall.setStereoEnabled(!in3D)`, `in3D` set only from
+`renderingmodechange` — with a fallback to the slider at 0; a finished page in an ordinary browser).
 
-Measured by the headless stereo judge: front p2 −0.2 %, behind p98 +0.8 % of the tile width
-(comfortable: ≥ −0.6 % / ≤ 1.5 %).
+Measured by the headless stereo judge: front p2 −0.2 %, behind p98 +0.8 % of the tile width at
+the start, −0.4 % / +0.8 % wheel-zoomed to the cap (comfortable: ≥ −0.6 % / ≤ 1.5 %). Near and far
+are set on `wall.session` by the page: no SDK viewer does it.
 
 ## Adapt it
 
-- **Your model:** change `MODEL`. For a Draco-compressed asset keep `decoderPath` and serve three's
-  Draco decoder files; for an uncompressed glTF/GLB delete that line.
+- **Your model:** change `MODEL`. This one is an uncompressed GLB, so nothing else is needed. A
+  Draco- or KTX2-compressed asset also needs `decoderPath` pointing at decoder files your own site
+  serves (`samples/model/` shows it); a path relative to this repo will not exist in your copy.
+- **Zoom:** capped at `zoom: { max: 1.3 }` because zoom spends depth (the fit is not redone when
+  the user zooms). Raise it only with the strong column in mind, or set `max: 1` to turn zoom off.
 - **Your page colour:** change `BG` in `app.js` and the `background` in `index.html` together.
 - **Tile shape:** the budget is in tile heights for a 16:9 tile. On another shape multiply `FRONT`
   and `BACK` by `aspect / 1.78` (a square tile: 0.056 / 0.15), because disparity is a share of the

@@ -2,25 +2,33 @@
 // flythrough, an editor or a ported WebXR scene. Rules: docs/making-3d-look-right.md.
 //
 // RIG (guide §1): the user moves THROUGH a world, so a camera rig — the app owns its camera and
-// the runtime turns it into two eyes. The world is authored in metres; eye separation 63 mm.
+// the runtime turns it into two eyes. The world is authored in metres.
 //
-// SCREEN PLANE (§2): FIXED, FINITE convergence at the nearest content that touches a frame edge.
-// Standing at eye height EYE_H with a level camera, that is the floor at the bottom edge,
-// EYE_H / tan(fov/2) ahead. We converge a little nearer (×0.9), so the floor, walls and ceiling
-// at every edge are just behind the glass and the room reads as a view through a window. It is a
-// constant on purpose: never driven by gaze or the cursor (the world would breathe), never 0
-// (infinity puts the whole room in front of the glass).
+// SCREEN PLANE (§2): ONE fixed, finite convergence for the room. It is not driven by gaze or the
+// cursor (the world would breathe) and never 0 (infinity puts the whole room in front of the
+// glass). It must keep everything in the outer ~10 % of EVERY edge (floor, walls, ceiling,
+// furniture against the walls) at or behind the glass at EVERY pose the visitor can reach, so
+// three knobs are set together:
+//   CONVERGENCE 1.6 m · walls and furniture kept CLEAR = 2.5 m away · pitch limited to ±30°.
+// Why the clearance is not "half the convergence": a wall you face squarely is all at its
+// distance, and the frame's corner rays reach a wall seen at an angle sooner than that — at worst
+// 1/√(1 + tan²(hfov/2) + tan²(vfov/2)) ≈ 0.65 of it on this 16:9, 60° frame. So the clearance
+// must be ≥ CONVERGENCE / 0.65 ≈ 2.5 m. The floor at the pitch limit sits at
+// EYE_H / (sin 30° + tan 30° · cos 30°) = 1.6 m: on the glass.
 //
-// DEPTH (§3, full-frame column). Measured by the headless stereo judge at the start pose:
-//   front p2 ≈ +0.2 % (nothing in front), behind p98 ≈ +0.9 % of the tile width (comfortable:
-//   ≥ −0.3 % / ≤ 1.0 %).
-// Budget the far end: behind (% of width) = 100·0.063·(1/D − 1/z) / (2·tan(fov/2)·aspect) is
-// 0.84 % for the far wall 8 m away. Keep the room CLOSED (no window onto infinity: 1.2 % here) and
-// furniture in the centre ≥ 2 m away at the start (anything nearer comes out of the glass).
+// DEPTH (§3, full-frame column). With the plane that near, the far end is the budget:
+// behind (% of width) = 100·0.063·IPD·(1/D − 1/z) / (2·tan(fov/2)·aspect), which at IPD 1 is
+// 1.9 % at infinity. IPD = 0.5 halves it: ≤ 0.96 % for anything, however far.
+// `checkReachablePoses()` below verifies all of it with cameraRigDisparityPct() (open the page
+// with ?check: nearest edge content 0.00 %, farthest +0.83 %). Measured by the headless stereo
+// judge: start pose front p2 +0.5 % / behind p98 +0.8 %; walked into the far-left corner, turned to
+// the wall and looking down at the limit +0.05 % / +0.6 %; facing the sofa wall +0.3 % / +0.5 %
+// (full-frame comfortable: ≥ −0.3 % / ≤ 1.0 %, and ≈ 0 or behind at the edges).
 
 import * as THREE from 'three';
 import { createInline3D } from '@displayxr/inline3d';
 import { EyeCamera, cameraRigFromCamera } from '@displayxr/inline3d/three';
+import { cameraRigDisparityPct } from '@displayxr/inline3d/depth';
 
 const canvas = document.getElementById('world');
 const cover = document.getElementById('cover');
@@ -28,8 +36,14 @@ const hud = document.getElementById('hud');
 
 const FOV = 60;                       // full vertical angle, degrees
 const EYE_H = 1.6;                    // eye height, metres
-const CONVERGENCE = 0.9 * EYE_H / Math.tan(THREE.MathUtils.degToRad(FOV / 2)); // ≈ 2.49 m
-const ROOM = { w: 6, h: 3.2, near: 1, far: -9 };   // x ∈ ±3, y ∈ [0, 3.2], z ∈ [−9, 1]
+const CONVERGENCE = 1.6;              // metres, fixed for this room (see SCREEN PLANE)
+const IPD = 0.5;                      // eye separation factor, ABSOLUTE on a camera rig (1 = 63 mm)
+const CLEAR = 2.5;                    // metres kept between the eye and any wall or furniture face
+const PITCH_MAX = THREE.MathUtils.degToRad(30);
+const ROOM = { w: 9, h: 3.6, near: 1, far: -12 };  // x ∈ ±4.5, y ∈ [0, 3.6], z ∈ [−12, 1]
+const BAND = 0.9;                     // furniture stands in a 0.9 m band along the walls
+// Where the eye may go: the room minus the wall band, minus the clearance.
+const WALK = { x: ROOM.w / 2 - BAND - CLEAR, zMin: ROOM.far + BAND + CLEAR, zMax: ROOM.near - CLEAR };
 const BG = 0x15171c;
 
 // ---- renderer + camera -------------------------------------------------------------------------
@@ -41,7 +55,7 @@ const scene = new THREE.Scene();
 // The app camera. IN the scene: the eye cameras hang under it (the attach pattern), and three only
 // composes a parented camera's world matrix through a scene traversal.
 const cam = new THREE.PerspectiveCamera(FOV, 16 / 9, 0.05, 30);
-cam.position.set(0, EYE_H, 0);
+cam.position.set(0, EYE_H, WALK.zMax);
 scene.add(cam);
 
 // ---- the room: procedural, irregular textures (the eyes need detail to fuse; repeats confuse them)
@@ -94,33 +108,30 @@ plane(L, ROOM.h, wallMat, [-ROOM.w / 2, ROOM.h / 2, MZ], [0, Math.PI / 2, 0]);
 plane(L, ROOM.h, wallMat, [ROOM.w / 2, ROOM.h / 2, MZ], [0, -Math.PI / 2, 0]);
 plane(ROOM.w, ROOM.h, wallMat, [0, ROOM.h / 2, ROOM.far], [0, 0, 0]);
 plane(ROOM.w, ROOM.h, wallMat, [0, ROOM.h / 2, ROOM.near], [0, Math.PI, 0]);
-// Furniture. Everything in the centre of the start view is ≥ 2 m away (see DEPTH above).
-plane(3, 2, mat('#7a2e2e', { spots: 900, contrast: 0.35 }), [0, 0.005, -4.6], [-Math.PI / 2, 0, 0]); // rug
+// Furniture stands only in the BAND along the walls; the middle is open floor (a rug). A table in
+// the middle would need the same clearance as a wall all round it.
+plane(3, 4, mat('#7a2e2e', { spots: 900, contrast: 0.35 }), [0, 0.005, -5.5], [-Math.PI / 2, 0, 0]); // rug
 const wood = mat('#6b4a2e', { planks: 6, contrast: 0.2 });
-box(1.6, 0.06, 0.9, 0, 0.75, -4.6, wood);                                         // table
-for (const [x, z] of [[-0.72, -4.2], [0.72, -4.2], [-0.72, -5], [0.72, -5]]) box(0.06, 0.72, 0.06, x, 0.36, z, wood);
-for (const z of [-3.85, -5.35]) {                                                 // two chairs
-  box(0.45, 0.05, 0.45, 0, 0.46, z, wood);
-  box(0.45, 0.5, 0.05, 0, 0.72, z + (z > -4.6 ? 0.2 : -0.2), wood);
-}
 const fabric = mat('#3d5a7a', { spots: 900, contrast: 0.3 });
-box(0.9, 0.45, 2.2, 2.5, 0.22, -6, fabric);                                       // sofa
-box(0.25, 0.5, 2.2, 2.85, 0.6, -6, fabric);
-const shelf = box(2.4, 2.2, 0.35, 0, 1.1, ROOM.far + 0.18, wood);                 // bookshelf
+const R = ROOM.w / 2;
+box(0.9, 0.45, 2.4, R - 0.45, 0.22, -6, fabric);                                  // sofa (right wall)
+box(0.25, 0.5, 2.4, R - 0.12, 0.6, -6, fabric);
+box(0.5, 0.8, 1.8, -R + 0.25, 0.4, -4, wood);                                      // sideboard (left wall)
+const shelf = box(2.4, 2.2, 0.35, 0, 1.1, ROOM.far + 0.18, wood);                 // bookshelf (far wall)
 for (let r = 0; r < 4; r++) for (let x = -1.1; x < 1.05; x += 0.05 + rnd() * 0.06) {
   const h = 0.3 + rnd() * 0.18;
   box(0.045, h, 0.25, x, 0.15 + r * 0.52 + h / 2, shelf.position.z + 0.05,
     new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(rnd(), 0.45, 0.25 + rnd() * 0.35) }));
 }
-for (const [z, c] of [[-3.5, '#3f6b4f'], [-6.5, '#a0663a']]) {                    // two paintings
-  plane(1.2, 0.8, mat(c, { spots: 1500, contrast: 0.5 }), [-ROOM.w / 2 + 0.01, 1.7, z], [0, Math.PI / 2, 0]);
+for (const [z, c] of [[-7, '#3f6b4f'], [-9.5, '#a0663a']]) {                      // two paintings
+  plane(1.2, 0.8, mat(c, { spots: 1500, contrast: 0.5 }), [-R + 0.01, 1.7, z], [0, Math.PI / 2, 0]);
 }
-const lampLight = new THREE.PointLight(0xffd9a0, 6, 8, 1.5);                      // floor lamp
-lampLight.position.set(-2.3, 1.7, -7.2);
+const lampLight = new THREE.PointLight(0xffd9a0, 8, 10, 1.5);                     // floor lamp
+lampLight.position.set(-R + 0.4, 1.7, -10.5);
 scene.add(lampLight);
-box(0.05, 1.6, 0.05, -2.3, 0.8, -7.2, wood);
+box(0.05, 1.6, 0.05, -R + 0.4, 0.8, -10.5, wood);
 const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.25, 0.3, 24, 1, true), mat('#e8d9b0', { contrast: 0.1 }));
-shade.position.set(-2.3, 1.7, -7.2);
+shade.position.set(-R + 0.4, 1.7, -10.5);
 shade.material.side = THREE.DoubleSide;
 scene.add(shade);
 scene.add(new THREE.HemisphereLight(0xfff4e0, 0x403028, 1.6));
@@ -135,7 +146,7 @@ canvas.addEventListener('pointerup', () => { drag = null; });
 canvas.addEventListener('pointermove', (e) => {
   if (!drag) return;
   yaw -= (e.clientX - drag[0]) * 0.004;
-  pitch = Math.max(-1.2, Math.min(1.2, pitch - (e.clientY - drag[1]) * 0.004));
+  pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitch - (e.clientY - drag[1]) * 0.004));
   drag = [e.clientX, e.clientY];
 });
 let lastT = 0;
@@ -147,9 +158,47 @@ function move(now) {
   const v = 1.6 * dt;                // walking speed, m/s
   cam.position.x += (-Math.sin(yaw) * f + Math.cos(yaw) * s) * v;
   cam.position.z += (-Math.cos(yaw) * f - Math.sin(yaw) * s) * v;
-  cam.position.x = Math.max(-ROOM.w / 2 + 0.4, Math.min(ROOM.w / 2 - 0.4, cam.position.x));
-  cam.position.z = Math.max(ROOM.far + 0.6, Math.min(ROOM.near - 0.4, cam.position.z));
+  cam.position.x = Math.max(-WALK.x, Math.min(WALK.x, cam.position.x));        // the clearance
+  cam.position.z = Math.max(WALK.zMin, Math.min(WALK.zMax, cam.position.z));
   cam.rotation.set(pitch, yaw, 0, 'YXZ');
+}
+
+// ---- verify the depth at the reachable extremes (?check) ------------------------------------------
+// Casts rays through the outer 10 % of every edge and the middle of the frame, takes each hit's
+// distance along the view axis, and turns it into disparity with the SAME rig numbers the runtime
+// gets. Front of the glass is negative. Run it after changing the room, CONVERGENCE, CLEAR or PITCH.
+const ray = new THREE.Raycaster();
+function poseDisparity() {
+  cam.updateMatrixWorld();
+  const o = { convergence: CONVERGENCE, ipdFactor: IPD, verticalFov: THREE.MathUtils.degToRad(FOV), aspect: cam.aspect };
+  let edge = Infinity, far = -Infinity;
+  for (let i = 0; i <= 20; i++) for (let j = 0; j <= 20; j++) {
+    const u = i / 10 - 1, v = j / 10 - 1, inEdge = Math.abs(u) >= 0.8 || Math.abs(v) >= 0.8;
+    ray.setFromCamera({ x: u, y: v }, cam);
+    const hit = ray.intersectObjects(scene.children, false)[0];
+    if (!hit) continue;
+    const z = -hit.point.clone().applyMatrix4(cam.matrixWorldInverse).z;
+    const d = cameraRigDisparityPct({ z, ...o });
+    if (inEdge) edge = Math.min(edge, d);
+    far = Math.max(far, d);
+  }
+  return { edge, far };
+}
+function checkReachablePoses() {
+  const save = [cam.position.clone(), yaw, pitch];
+  let worst = { edge: Infinity, far: -Infinity };
+  for (const x of [-WALK.x, 0, WALK.x]) for (const z of [WALK.zMin, WALK.zMax]) {
+    for (let a = 0; a < 360; a += 15) for (const p of [-PITCH_MAX, 0, PITCH_MAX]) {
+      cam.position.set(x, EYE_H, z);
+      cam.rotation.set(p, THREE.MathUtils.degToRad(a), 0, 'YXZ');
+      const r = poseDisparity();
+      if (r.edge < worst.edge) worst = { ...worst, edge: r.edge, at: [x, z, a, p] };
+      worst.far = Math.max(worst.far, r.far);
+    }
+  }
+  [cam.position.x, cam.position.y, cam.position.z] = save[0].toArray();
+  console.info(`[starter-world] reachable poses: nearest edge content ${worst.edge.toFixed(2)} % ` +
+    `(at x,z,yaw,pitch ${worst.at.map((n) => +n.toFixed(2))}), farthest ${worst.far.toFixed(2)} % of the width`);
 }
 
 // ---- backing store: 2x wide woven, 1:1 flat. Sized BEFORE registering, then only in onResize ------
@@ -215,7 +264,7 @@ if (wall.supported) {
   sbs = true;
   sizeStore();                                   // size BEFORE registering
   const handle = wall.addScene(canvas, onXRFrame, {
-    viewRig: cameraRigFromCamera(THREE, cam, { convergence: CONVERGENCE, attach: true }),
+    viewRig: cameraRigFromCamera(THREE, cam, { convergence: CONVERGENCE, ipdFactor: IPD, attach: true }),
     onResize,
   });
   // Each eye's projection is built from the session's near/far: give it the camera's.
@@ -230,3 +279,4 @@ if (wall.supported) {
   hud.textContent = 'WASD / arrows to walk · drag to look · 2D (open in the DisplayXR Browser for 3D)';
   requestAnimationFrame(onMonoFrame);
 }
+if (new URLSearchParams(location.search).has('check')) checkReachablePoses();
