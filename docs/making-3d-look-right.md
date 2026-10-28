@@ -135,10 +135,27 @@ so 0.1 h is 0.6 % on a 16:9 tile but 1 % on a square one.
 The SDK viewers fit the subject's **height** to `margin` of the tile (0.8 by default) and centre
 it on the glass, so a subject as deep as it is tall reaches about **0.4 h in front**: beyond the
 strong column, close to the human limit. Fit by depth too. With `addModel`, `addSplat` or
-`SceneViewer` pass `depthFit: { front: 0.1, back: 0.27 }` (tile heights; it shrinks the subject
-uniformly until its nearest and farthest points fit, never growing it). On an older SDK without
-`depthFit`, lower `margin` or use `depthOffset` (negative pushes the subject back). Read the
-live placement with `getSubjectBounds()` (`front`/`back` in virtual-display units; divide by
+`SceneViewer` pass `depthFit: { front, back }` in tile heights; it shrinks the subject uniformly
+until its nearest and farthest points fit, never growing it.
+
+- **Scale the numbers by the tile's shape.** For the comfortable column on a 16:9 tile use
+  `{ front: 0.1, back: 0.27 }`; on any other tile multiply both by `(width / height) / 1.78`
+  (a square tile: `{ front: 0.056, back: 0.15 }`). The budget is a share of the tile's width, so
+  a wide tile holds more depth than a narrow one.
+- **Use the behind budget too.** Centred on the glass, the front limit binds first and the room
+  behind goes unused. Push the subject back a little (`depthOffset` < 0, about half the gap
+  between `back` and `front`) and fit again; the subject then gets larger for the same comfort.
+  `addModel` has no `depthOffset` option: set `handle.viewer.depthOffset` after `ready` and
+  refit, as `samples/starter-model/` does.
+- **A turntable costs size.** `depthFit` budgets the box the subject sweeps as it turns, so a
+  spinning subject comes out smaller than a still one (about 0.3 h tall inside the comfortable
+  column). That is the trade: accept it, use the strong column for a hero moment, or stop the
+  spin.
+- **Pitch is not included.** The fit accounts for yaw; if the subject is tilted, fit on the
+  turned object's own box (`samples/starter-scene/` shows how).
+
+On an older SDK without `depthFit`, lower `margin` or use `depthOffset`. Read the live placement
+with `getSubjectBounds()` (`front`/`back` in virtual-display units; divide by
 `virtualDisplayHeight` for tile heights), or `handle.depthReport()` where available.
 
 On a **camera rig**, a point `z` world units from the camera, with convergence `D`, lands at
