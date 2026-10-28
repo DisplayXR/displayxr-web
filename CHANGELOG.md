@@ -5,6 +5,59 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Making 3D look right: opt-in depth helpers, measurements and one-time warnings
+
+Touches the core (`.`: new pure exports, console warnings only), `./three` (re-exports, one
+warning), the new `./depth` subpath, and the preview tier (`./viewer`, `./model`, `./splat`), all
+opt-in. **Nothing clamps, refuses or overrides what a page asks for**: without the new options
+every page renders exactly as on 1.46.0; the only default change is the console warnings below.
+
+- **The depth budget, as numbers** (`./depth`, also on the root; the pure helpers on `./three`):
+  `DEPTH_BUDGET` (in front ≤ 0.6 % of the tile width comfortable, ≤ 1.1 % strong; behind ≤ 1.5 % /
+  ≤ 2.3 %; hard limit 3.3 %, with the display-rig depth in tile heights each maps to on a 16:9
+  tile), `disparityPct({ depthH, aspect, viewerM, heightM, ipdFactor })` (display rig:
+  `e·z/(V∓z)` over the tile width, the small-depth limit without `heightM`),
+  `cameraRigDisparityPct({ z, convergence, ipdFactor, metersToVirtual, verticalFov, aspect })`
+  (`100·b·(1/D − 1/z)/(2·tan(fov/2)·aspect)`, + behind, − in front), `depthBudgetClass`,
+  `depthBudgetFromBounds`. Pure; for a raw `addScene` page or an agent checking its numbers.
+- **`handle.depthReport()`** on `addModel` (both engines) and `addSplat` (both backends):
+  `{ frontH, backH, frontPct, backPct, budget, basis }` for the framed subject under the live pose
+  (orbit and zoom move it), with the display's nominal viewer distance once `getDisplayInfo()`
+  answers (else 0.6 m), the tile's real aspect and physical height, and the declared rig's
+  `ipdFactor`. A measurement; null on a camera rig and under `controls: 'page'`.
+- **`depthFit: { front, back }`** (tile heights, e.g. `{ front: 0.1, back: 0.27 }`) on
+  `SceneViewer` / `addModel` / `addSplat` (display rig): the auto-frame additionally scales the
+  subject DOWN, uniformly and never above the size fit, so its nearest point is at most `front`
+  in front of the glass and its farthest at most `back` behind, under the current `depthOffset`
+  and at every yaw (with `fitSweep`). Applied at each fit; a later zoom is the user's and is not
+  refitted (web#200's continuous refit is not this). A placement that alone breaks the budget keeps
+  the size fit, with one warning. Malformed values throw at the call.
+- **`clearColor`** on `SceneViewer` / `addModel` / `addSplat` (three and PlayCanvas):
+  `[r, g, b, a]` in 0..1 or a CSS colour. Unset = the transparent clear, as before. An opaque clear
+  avoids the stale / black pixels the weave can show where it reads alpha 0 (web#198); match the
+  page colour behind the canvas.
+- **`ModelHandle.setStereo({ ipdFactor, parallaxFactor } | null)`** (both engines), mirroring
+  `SplatHandle.setStereo`: a depth slider. RELATIVE on the display rig (1 = by construction), sticky,
+  `null` restores; `ipdScale` / `parallaxScale` accepted. Re-declares the display rig explicitly
+  from the first call (nothing is declared before it). `handle.rig` reads the values in force;
+  under `controls: 'page'` the page's camera rig takes them, absolute.
+- **One-time console warnings** (`[inline3d]`, once per handle, the rig still sent as given): a
+  camera rig with `convergenceDiopters` 0 / unset ("convergence at infinity puts the whole scene in
+  front of the glass …"; also once per page from `cameraRigFromCamera` / `cameraRigFromPose` at
+  convergence 0, not repeated by `setViewRig` for that descriptor), a display rig with
+  `ipdFactor` or `parallaxFactor` above 1, a camera rig whose `verticalFov` is above π (degrees).
+  And a layer the browser keeps `'withheld'` until `firstWoven` / `rewoven()` settles on it now
+  logs its `withheldReason` once, with a hint (`cross-pass:*` / `no-quad`: a `filter`,
+  `opacity < 1`, `mask`, `clip-path`, `mix-blend-mode` or `backdrop-filter` on the canvas or an
+  ancestor). A transient withheld (a move, a resize) says nothing. `withheldReasonHint` is exported.
+- **Docs corrected**: the camera-rig comfort note said N ≈ 0.5 m and "the runtime clamps". The
+  nominal viewer is 0.6 m on a desktop panel, and the runtime does NOT comfort-clamp an
+  app-declared rig (XR_DXR_view_rig §3); it clamps only values outside a field's sanity range.
+- Internal: `validateSetStereo` moved to `js/inline3d-splat-shared.js` (still exported from the
+  PlayCanvas splat module); new `js/inline3d-depth-budget.js` is in the published file set.
+
 ## 1.46.0 — 2026-10-14
 
 ### Depth cursor: when the runtime draws the web cursor, hand it the depth (runtime ADR-046 Amendment 4)

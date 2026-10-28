@@ -73,6 +73,8 @@ import {
   mismatchWarning,
 } from './inline3d-buffer-limit.js';
 import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
+import { parseClearColor } from './inline3d-splat-shared.js';
+import { applyDepthFit, validateDepthFit } from './inline3d-depth-budget.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 // NaN/Infinity into a transform silently blanks the tile — three propagates it into the
@@ -269,6 +271,15 @@ export class SceneViewer {
    * @param {number} [opts.feather=0]  edge fade in buffer px (needs ./three's EdgeFeather).
    * @param {number[]} [opts.pitchLimit=[-60,60]]  degrees; stops the viewer rolling under the
    *        subject, which reads as broken rather than as a feature.
+   * @param {number[]|string} [opts.clearColor]  OPT-IN eye clear, `[r,g,b,a]` in 0..1 or a CSS
+   *        colour. Unset: the transparent clear (0,0,0,0), exactly as before. An opaque clear
+   *        avoids stale / black pixels on the weave (web#198); match the page colour behind the
+   *        canvas.
+   * @param {{front?:number, back?:number}} [opts.depthFit]  OPT-IN depth budget for fitTo(), in
+   *        TILE HEIGHTS: the subject is also scaled DOWN (uniformly, never past the size fit) so
+   *        its nearest point is at most `front` in front of the glass and its farthest at most
+   *        `back` behind, under the current depthOffset (and every yaw, with fitSweep). Unset:
+   *        today's fit, exactly. See ./inline3d-depth-budget.js.
    */
   constructor(THREE, canvas, opts = {}) {
     const {
@@ -307,11 +318,21 @@ export class SceneViewer {
     this.logTag = opts.logTag || '[inline3d/viewer]';
     this.pitchLimit = pitchLimit;
     this.idleSpin = idleSpin;
+    // Opt-in (null = off, and then nothing below differs from before they existed).
+    this.clearColor = parseClearColor(opts.clearColor, this.logTag);
+    this.depthFit = validateDepthFit(opts.depthFit, this.logTag === '[inline3d/model]' ? '@displayxr/inline3d/model' : this.logTag === '[inline3d/splat]' ? '@displayxr/inline3d/splat' : '@displayxr/inline3d/viewer');
+    this._warnedDepthFit = false;
 
     // alpha + a zero-alpha clear so the tile can dissolve into the page rather than ending at
     // a hard rectangle. An opaque scene.background would defeat both this and the feather.
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setClearColor(0x000000, 0);
+    // clearColor (opt-in) replaces that clear. three reads a hex as sRGB, as a CSS colour is.
+    if (this.clearColor) {
+      const [r, g, b, a] = this.clearColor;
+      const hex = (Math.round(r * 255) << 16) | (Math.round(g * 255) << 8) | Math.round(b * 255);
+      this.renderer.setClearColor(hex, a);
+    }
     // MUST be 1. layer.getViewport() reports BACKING-STORE px, but three.js multiplies whatever
     // you pass setViewport()/setScissor() by the renderer's pixelRatio — so any other value
     // silently scales every eye viewport (at dpr 2 the left eye covers the whole canvas). It
@@ -496,6 +517,9 @@ export class SceneViewer {
       if (sz < s) s = sz;
       this._fitScale = s;
     }
+    // depthFit (opt-in): additionally scale DOWN to the page's depth budget — uniformly, and never
+    // above the size fit just computed. Absent, this line is a no-op and the fit is the one above.
+    if (this.depthFit) this._fitScale = applyDepthFit(this, this._fitScale, this._subjectHalf);
     this._applyTransform();
     // Frame the mono camera on the same subject. Distance to make the frustum exactly vH tall
     // at z=0; the subject is vH×margin tall after the fit, so it lands with an even border.

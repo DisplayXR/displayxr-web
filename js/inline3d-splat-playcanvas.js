@@ -119,7 +119,11 @@ import {
   normalizeCameraPose,
   coverageExponent,
   declareViewRig,
+  parseClearColor,
+  validateSetStereo,
+  stereoScalarOf,
 } from './inline3d-splat-shared.js';
+import { applyDepthFit, validateDepthFit, makeDepthReport } from './inline3d-depth-budget.js';
 import { resolveCursorOption } from './inline3d-cursor-option.js';
 
 /**
@@ -827,6 +831,14 @@ export class PlayCanvasSplatViewer {
       cursor = null,
     } = opts;
     this.canvas = canvas;
+    // `clearColor` (opt-in): the eye cameras' clear, [r,g,b,a] in 0..1, or null = the transparent
+    // clear every tile had before it existed. An OPAQUE clear avoids stale / black pixels where the
+    // weave reads an alpha-0 hole (web#198).
+    this.clearColor = parseClearColor(opts.clearColor, opts.logTag || '[inline3d/splat]');
+    // `depthFit` (opt-in): fitTo also scales the subject DOWN to a depth budget in tile heights
+    // (./inline3d-depth-budget.js). Null = today's fit, exactly.
+    this.depthFit = validateDepthFit(opts.depthFit, opts.logTag === '[inline3d/model]' ? '@displayxr/inline3d/model' : '@displayxr/inline3d/splat');
+    this._warnedDepthFit = false;
     // `cursor: 'depth'` (ADR-046): the depth-aware cursor. OPT-IN AND FREE OTHERWISE — its module
     // is imported only when asked for (attachEngine), and every per-frame hook is an optional call
     // on `cursorDepth`, which stays null without it.
@@ -1049,6 +1061,8 @@ export class PlayCanvasSplatViewer {
       fitSweep: this.fitSweep,
       depthLimit: this.depthLimit,
     });
+    // depthFit (opt-in): never larger than the size fit above; absent, a no-op.
+    if (this.depthFit) this._fitScale = applyDepthFit(this, this._fitScale, this._subjectHalf);
     this._applyTransform();
     this._placeMonoForFit();
   }
@@ -1984,7 +1998,7 @@ export class PlayCanvasSplatViewer {
     const pc = this.pc;
     const e = new pc.Entity(name, this.app);
     e.addComponent('camera', {
-      clearColor: new pc.Color(0, 0, 0, 0),
+      clearColor: this.clearColor ? new pc.Color(this.clearColor[0], this.clearColor[1], this.clearColor[2], this.clearColor[3]) : new pc.Color(0, 0, 0, 0),
       nearClip: MONO_NEAR,
       farClip: MONO_FAR,
       fov: MONO_FOV,
@@ -3125,41 +3139,9 @@ export function validateWarmEffects(list) {
   });
 }
 
-/**
- * handle.setStereo's argument, validated and merged onto the current override (throws at the
- * call). Returns the new override, or null when nothing is overridden.
- */
-export function validateSetStereo(o, prev) {
-  if (o === null) return null;
-  if (typeof o !== 'object') throw new TypeError('@displayxr/inline3d/splat: setStereo takes an object or null.');
-  // Absolute (…Factor) or RELATIVE to the asset's own (…Scale); per scalar, the last one given wins.
-  const pairs = [
-    ['ipdFactor', 'ipdScale'],
-    ['parallaxFactor', 'parallaxScale'],
-  ];
-  const keys = pairs.flat();
-  const unknown = Object.keys(o).filter((k) => !keys.includes(k));
-  if (unknown.length) throw new Error(`@displayxr/inline3d/splat: setStereo — unknown option(s) ${unknown.join(', ')}.`);
-  for (const [a, b] of pairs) {
-    if (o[a] != null && o[b] != null) throw new Error(`@displayxr/inline3d/splat: setStereo — ${a} and ${b} are exclusive.`);
-  }
-  const next = { ...(prev || {}) };
-  for (const [a, b] of pairs) {
-    for (const k of [a, b]) {
-      if (!(k in o) || o[k] === undefined) continue;
-      if (o[k] === null) {
-        delete next[k];
-        continue;
-      }
-      if (typeof o[k] !== 'number' || !Number.isFinite(o[k]) || o[k] < 0) {
-        throw new RangeError(`@displayxr/inline3d/splat: setStereo — ${k} must be a finite number >= 0 (got ${o[k]}).`);
-      }
-      next[k] = o[k];
-      delete next[k === a ? b : a];
-    }
-  }
-  return Object.keys(next).length ? next : null;
-}
+// validateSetStereo lives in ./inline3d-splat-shared.js now (./model's setStereo shares it); it is
+// re-exported from here so every name this module exported before still resolves.
+export { validateSetStereo };
 
 /**
  * handle.setRig's arguments, validated and resolved (throws at the call, before anything runs).
@@ -3434,6 +3416,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     sky: opts.sky,
     viewerEase: opts.viewerEase,
     cursor: opts.cursor,
+    // Opt-in; undefined = the viewer's own defaults (transparent clear, size fit only).
+    clearColor: opts.clearColor,
+    depthFit: opts.depthFit,
   });
 
   let handle = null;
@@ -3490,6 +3475,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // copy a getter's value once.
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+  // handle.depthReport(): the framed subject's depth budget on a display rig (a measurement only);
+  // null on a camera rig, under controls:'page' and while a video holds the rig.
+  out.depthReport = makeDepthReport(viewer, {
+    canvas,
+    getTile: () => handle,
+    ipdFactor: () => (out.viewRig?.type === 'display' ? out.viewRig.ipdFactor ?? 1 : 1),
+    available: () => !pageMode && !vid?.on && out.rig?.type === 'display',
+  });
   // setVideo's current element: the <video> the plane is SHOWING (not one still waiting for its first
   // frame), else null. Read-only. A player attached to this handle (./player attachPlayer) reads it
   // to notice another setVideo taking the slot, which no event reports.
@@ -4452,10 +4445,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
   /** One scalar under setStereo: its absolute value, else `base` × its scale, else `base`. */
   function stereoScalar(base, k) {
-    const o = stereoOverride;
-    if (o?.[`${k}Factor`] != null) return o[`${k}Factor`];
-    if (o?.[`${k}Scale`] != null) return base * o[`${k}Scale`];
-    return base;
+    return stereoScalarOf(stereoOverride, base, k);
   }
 
   /**

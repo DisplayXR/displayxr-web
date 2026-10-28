@@ -127,7 +127,10 @@ const env = installEnv();
 const { createInline3D, inline3dViewRigSupported } = await import('../js/inline3d.js');
 const { EyeCamera, cameraRigFromCamera, displayRig } = await import('../js/inline3d-three.js');
 
-const CAM_RIG = { type: 'camera', position: { x: 0, y: 0, z: 0 }, verticalFov: 0.8 };
+// Converged at 1 world unit: a camera rig left at infinity (convergenceDiopters 0 / unset) now
+// draws its own one-time console warning (test/depth-budget.test.mjs), which these warning counts
+// are not about.
+const CAM_RIG = { type: 'camera', position: { x: 0, y: 0, z: 0 }, verticalFov: 0.8, convergenceDiopters: 1 };
 
 // ── 1. capability gating ────────────────────────────────────────────────────────────────
 
@@ -370,4 +373,40 @@ test('setFromView still composes the world pose itself (the unparented path is u
   const pose = new Float32Array(16).map((_, i) => 7 + i);
   eye.setFromView({ projectionMatrix: new Float32Array(16), transform: { matrix: pose } });
   assert.deepEqual(Array.from(eye.camera.matrixWorld.elements), Array.from(pose));
+});
+
+// ── one-time rig warnings (read only: the rig still goes out as given) ──────────────────────
+
+test('setViewRig: a camera rig at infinity warns ONCE per handle and is still sent unchanged', async () => {
+  const e = installEnv({ viewRig: true });
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  const a = wall.addScene(makeCanvas(), () => {});
+  const b = wall.addScene(makeCanvas(), () => {});
+  const inf = { type: 'camera', position: { x: 0, y: 0, z: 0 }, verticalFov: 0.8, convergenceDiopters: 0 };
+  const warns = withCapturedWarnings(() => {
+    for (let i = 0; i < 5; i++) assert.equal(a.setViewRig(inf), true);
+    b.setViewRig(inf);
+  });
+  assert.equal(warns.length, 2, 'once per handle, not per frame');
+  assert.match(warns[0], /convergence at infinity puts the whole scene in front of the glass; set convergence to the subject's distance/);
+  assert.deepEqual(e.created[0].rigs.at(-1), inf, 'the descriptor is not reshaped');
+  assert.equal(e.created[0].rigs.at(-1).convergenceDiopters, 0);
+  wall.close();
+});
+
+test('setViewRig: display factors above 1 and a degrees-looking verticalFov warn once each; addScene({ viewRig }) too', async () => {
+  const e = installEnv({ viewRig: true });
+  const wall = await createInline3D({ lazy: false, autoChrome: false });
+  let h;
+  const warns = withCapturedWarnings(() => {
+    h = wall.addScene(makeCanvas(), () => {}, { viewRig: { ...CAM_RIG, verticalFov: 45 } });
+    h.setViewRig({ type: 'display', virtualDisplayHeight: 0.24, ipdFactor: 1.5 });
+    h.setViewRig({ type: 'display', virtualDisplayHeight: 0.24, ipdFactor: 2, parallaxFactor: 3 });
+    h.setViewRig({ type: 'display', virtualDisplayHeight: 0.24, ipdFactor: 1, parallaxFactor: 1 });
+  });
+  assert.equal(warns.length, 2, warns.join('\n'));
+  assert.match(warns[0], /verticalFov 45 .*DEGREES/);
+  assert.match(warns[1], /ipdFactor 1.5 .*Sent as given/);
+  assert.equal(e.created[0].rigs.at(-2).ipdFactor, 2, 'sent exactly as asked');
+  wall.close();
 });

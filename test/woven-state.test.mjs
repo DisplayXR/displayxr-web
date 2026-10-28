@@ -357,3 +357,37 @@ test('rewoven: removal still settles woven:false, unconfirmed (the terminal path
   assert.deepEqual({ ...(await peek(p)) }, { woven: false, confirmed: false, reason: 'removed', ms: 0 });
   assert.equal(h.wovenState, 'pending', 'no live layer reads pending');
 });
+
+test('a layer settled withheld logs its reason ONCE, with the hint — and the window behaves exactly as before', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const canvas = makeCanvas();
+  const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 100 });
+  const warns = [];
+  const real = console.warn;
+  console.warn = (...a) => warns.push(a);
+  try {
+    env.report('withheld', 'cross-pass:mono');
+    env.runFrame(2);
+    clock = 1000;
+    env.runFrame(2);
+    assert.equal(warns.length, 0, 'a transient withheld (a move, a resize) says nothing');
+    clock = 4800;
+    env.runFrame(2);
+    assert.deepEqual({ ...(await peek(h.firstWoven)) }, { woven: false, confirmed: true, reason: 'cross-pass:mono', ms: 4800 });
+    assert.equal(warns.length, 1);
+    assert.match(String(warns[0][0]), /^\[inline3d\] the browser withheld this canvas from the weave \(cross-pass:mono\): .*filter, opacity < 1.*backdrop-filter/);
+    assert.equal(warns[0][1], canvas, 'the canvas, for the devtools link');
+    // A rewoven() that caps withheld again: still the one line.
+    const p = h.rewoven();
+    env.runFrame(2);
+    clock = 4800 + 4800;
+    env.runFrame(2);
+    assert.equal((await peek(p)).woven, false);
+    assert.equal(warns.length, 1, 'once per window');
+  } finally {
+    console.warn = real;
+  }
+  wall.close();
+});

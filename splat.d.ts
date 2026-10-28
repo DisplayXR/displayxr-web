@@ -4,6 +4,7 @@
 import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
 import type { FirstWovenResult, RectCoverOption, ViewerEaseOption, DisplayMetrics } from './index.js';
+import type { DepthFitOption, DepthReport } from './depth.js';
 
 /**
  * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
@@ -409,6 +410,25 @@ export interface SplatOptions {
   margin?: number;
   /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
+  /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
+  /**
+   * OPT-IN depth budget for the auto-frame, in TILE HEIGHTS, e.g. `{ front: 0.1, back: 0.27 }`
+   * (the comfortable budget — see `DEPTH_BUDGET`). On top of the size fit, the subject is scaled
+   * DOWN uniformly (never non-uniformly, never above the size fit) so its nearest point sits at
+   * most `front` in front of the glass and its farthest at most `back` behind, under the current
+   * `depthOffset` (and every yaw, with `fitSweep`). Applied at each fit; a later zoom or
+   * `depthOffset` is the page's and is not refitted (read `handle.depthReport()`). Display rig only (a camera rig never auto-frames). Unset: today's
+   * fit, exactly. A placement that alone breaks the budget keeps the size fit (one warning).
+   */
+  depthFit?: DepthFitOption;
   /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
@@ -1109,6 +1129,15 @@ export interface SplatHandle {
    */
   warmEntity(entity: unknown, opts?: { timeoutMs?: number }): Promise<number>;
   setStereo(opts: SplatStereoOptions | null): SplatHandle;
+  /**
+   * How deep the framed subject is right now, on a display rig — a measurement, nothing more:
+   * nearest / farthest points in tile heights and the estimated disparity in % of the tile width
+   * (the display's nominal viewer distance once `getDisplayInfo()` has answered, else 0.6 m; the
+   * tile's real aspect and physical height; the declared rig's ipdFactor), plus the budget tier.
+   * Cheap enough per frame (orbit and zoom change it). Null before the subject is framed, on a
+   * camera rig and under `controls: 'page'`.
+   */
+  depthReport(): DepthReport | null;
   /** This tile in physical units — the core `TileHandle.displayMetrics()`, on the splat handle. Never rejects. */
   displayMetrics(): Promise<DisplayMetrics>;
   /**
