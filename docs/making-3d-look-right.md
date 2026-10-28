@@ -77,9 +77,23 @@ and its nearest point is inside the table.
 walls and the ceiling always reach the edges of the frame, and anything that touches an edge must
 not be in front of the glass ([§4](#4-composition-the-cinematic-rules)). So:
 
-- Set `convergence` to about the distance of the **nearest content that touches an edge** of the
-  frame (usually the floor at the bottom edge, 1–2 m ahead at standing height), or a little nearer.
-  Everything else is then behind the glass, like a view through a window.
+- Set `convergence` to about the distance of the **nearest content in the outer ~10 % of any
+  edge** of the frame: the floor at the bottom edge, but also walls, furniture against the walls,
+  the ceiling, and the near end of anything that runs out of the frame. Everything else is then
+  behind the glass, like a view through a window.
+- That has to hold at **every pose the visitor can reach**, not just the start. Check the worst
+  ones: standing against a wall, against the furniture, looking down at the pitch limit. If they
+  break it, trade between three knobs: keep the visitor further from walls (a clearance of about
+  half the convergence distance), limit how far they can look down, or lower convergence for
+  that room. Convergence may change with **where** the visitor is (a new room, a corridor), slowly;
+  never with where they look. `cameraRigDisparityPct()` (`@displayxr/inline3d/depth`) gives the
+  disparity of any point, so you can check a pose in code.
+- Objects that **pass close to the camera** (a ring you fly through, a projectile, a branch) will
+  come out of the glass and usually cross an edge. Keep them small, fast and away from the edges
+  where you can, or fade them out before they reach the near side.
+- **Open worlds and flight**: the horizon and the sky are the farthest content. Their disparity is
+  the "behind" number; keep it inside §3 with fog or a lower `ipdFactor`, not by pulling the
+  convergence in.
 - Only an object that comes close **in the centre** of the frame may come out of the glass.
 - Keep `convergence` fixed, or change it slowly with the scene (entering a new room). **Never**
   drive it from what is under the cursor or the centre of the view in first person: the depth
@@ -153,10 +167,21 @@ until its nearest and farthest points fit, never growing it.
   spin.
 - **Pitch is not included.** The fit accounts for yaw; if the subject is tilted, fit on the
   turned object's own box (`samples/starter-scene/` shows how).
+- **Zoom spends depth.** `depthFit` is applied when the subject is framed, not again when the user
+  zooms in, and every 2× of zoom doubles the depth. Cap it: `zoom: { max }` on `addModel`/`addSplat`
+  (a max of about 1.3 keeps a comfortable fit inside the strong column), or turn zoom off.
+- **Yaw spends depth too.** A wide, shallow subject (a chart, a car side-on, a shelf) turned 45°
+  becomes deep. Face it square to the glass by default, and let the user turn it rather than
+  starting it turned.
+- **Backdrops are not the subject.** Put floors, skies and backdrops in the scene around the
+  subject (`viewer.scene`, not `viewer.content`), or `depthFit` shrinks the subject to fit them.
+- For a **sphere** (a globe, a planet) the farthest point you see is its rim, not its back; budget
+  the "behind" number on the rim.
 
 On an older SDK without `depthFit`, lower `margin` or use `depthOffset`. Read the live placement
 with `getSubjectBounds()` (`front`/`back` in virtual-display units; divide by
-`virtualDisplayHeight` for tile heights), or `handle.depthReport()` where available.
+`virtualDisplayHeight` for tile heights), or with `handle.depthReport()` on an `addModel` or
+`addSplat` handle (not on a bare `SceneViewer`).
 
 On a **camera rig**, a point `z` world units from the camera, with convergence `D`, lands at
 
@@ -205,8 +230,9 @@ rig, [`starter-world`](../samples/starter-world/) on a camera rig):
   your own three.js loop), and set the page colour behind the canvas to match it. The edge fades
   (`feather`, `EdgeFeather`) fade to **transparent**, so they need an alpha clear: leave them off
   unless you have checked the result on a panel.
-- The SDK viewers already size the canvas, handle resizes and pass near/far; the rules below are
-  for your own loop. Don't lower `renderScale` to fix a performance problem without checking the
+- The SDK viewers already size the canvas and handle resizes; the rules below are for your own
+  loop. **Near and far are always yours:** no SDK viewer calls `updateRenderState`, so set
+  `depthNear`/`depthFar` on `wall.session` whatever you build with. Don't lower `renderScale` to fix a performance problem without checking the
   result on a panel: a soft image ghosts differently.
 - **Pixel ratio 1** on the renderer: the SDK sizes the canvas; don't multiply it again.
 - Size the canvas **before** you register it, and resize only in the SDK's `onResize`.
@@ -258,10 +284,13 @@ Never implement a depth slider by scaling the scene's `z`: on anything rotated i
 geometry. Splitting the two factors (stereo without look-around, or the reverse) is legitimate when
 you want that effect; make it a deliberate choice.
 
-**2D/3D switch.** `handle.setStereoEnabled(false)` asks the display for its flat mode and collapses
-the eyes; `true` returns to 3D. It rejects where the display lists no such mode (and changes
-nothing), so catch it and fall back: setting the depth slider to 0 gives a flat image on any
-display. Show the real state from the `renderingmodechange` event, not from the button.
+**2D/3D switch.** `setStereoEnabled(false)` asks the display for its flat mode and collapses the
+eyes; `true` returns to 3D. Call it on the tile handle from `addScene`, or on `wall` (the object
+`createInline3D()` returns) with `addModel`/`addSplat`. It rejects where the display lists no flat
+mode (and changes nothing), so catch it and fall back: a depth slider at 0 gives a flat image on
+any display. Write the toggle so it cannot invert: `await wall.setStereoEnabled(!in3D)`, and set
+`in3D` only from the `renderingmodechange` event, never from the button. In 2D the browser may
+still hand your loop two views: keep drawing every view you get.
 
 **The ordinary browser.** `createInline3D()` resolves `{ supported: false }` in a browser without
 the 3D API. The SDK viewers then render a normal 2D view on their own; with `addScene`, draw one
