@@ -175,7 +175,8 @@ the table.
 
 **Prefer the SDK's own viewers** (`addModel`, `addSplat`, `addImage`, `addPlayer`, `SceneViewer`):
 they render each eye correctly and handle the mono fallback. Write your own loop only when you need
-to, and then follow [the starter template](../samples/starter-scene/) exactly:
+to, and then follow a template's loop exactly ([`hello-cube`](../samples/hello-cube/) on a display
+rig, [`starter-world`](../samples/starter-world/) on a camera rig):
 
 - Draw **every view** with **its own** `projectionMatrix` and `transform`, into **its own**
   `layer.getViewport(view)`. In three.js use `EyeCamera`. Using your own camera for both eyes gives

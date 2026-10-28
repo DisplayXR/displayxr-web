@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>starter-scene — DisplayXR inline-3D template</title>
+<link rel="icon" href="data:,">
+<style>
+  /* The page colour behind the canvas == the scene's clearColor (BG in app.js). */
+  html,body{margin:0;background:#0d1626;color:#e6e8ee;font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:26px;margin:0 0 4px}
+  p{color:#a9b4c8;margin:0 0 18px}
+  a{color:#6aa8ff}
+  /* Visually bare canvas: no border/radius/shadow/filter/opacity/animated transform on it, its
+     ancestors or anything over it. */
+  .stage{position:relative}
+  #scene{display:block;width:100%;aspect-ratio:16/9}
+  /* Cover until handle.firstWoven, removed in one step (never faded). */
+  #cover{position:absolute;inset:0;background:#0d1626}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>A wheel on a tabletop</h1>
+  <p>An animated three.js set piece on a display rig. It sits mostly behind the glass; its nearest
+     parts come just out of it. Move your head to look around it.</p>
+  <div class="stage">
+    <canvas id="scene"></canvas>
+    <div id="cover"></div>
+  </div>
+  <p style="margin-top:18px">← <a href="../README.md">Starter templates</a> ·
+     <a href="../../docs/making-3d-look-right.md">Making 3D that looks right</a></p>
+</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "@displayxr/inline3d": "../../js/inline3d.js",
+  "@displayxr/inline3d/three": "../../js/inline3d-three.js",
+  "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
