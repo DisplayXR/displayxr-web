@@ -1,6 +1,11 @@
 # AGENTS.md
 
-**Before touching any page that hosts a woven canvas, read
+**Building or fixing a page? Read [`docs/making-3d-look-right.md`](docs/making-3d-look-right.md)
+first.** It is the short path: which rig, where the screen plane goes, the depth budget, 2D UI,
+the depth slider and 2D/3D switch, starter templates, and a checklist. Start from a
+`samples/starter-*` template rather than from scratch.
+
+**Before touching any page that hosts a woven canvas, also read
 [`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md)** (including §5, pitfalls found on
 hardware). Most "3D is broken" reports on a DisplayXR panel are one of those rules, not a browser
 or runtime bug: a raw side-by-side flash, a black picture, a flat tile, a stall that looks like lost

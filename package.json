@@ -67,6 +67,9 @@
     "./dist/*.js"
   ],
   "files": [
+    "llms.txt",
+    "docs/making-3d-look-right.md",
+    "docs/woven-canvas-rules.md",
     "js/inline3d.js",
     "js/inline3d-undock.js",
     "js/inline3d-display-metrics.js",

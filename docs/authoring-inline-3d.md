@@ -520,20 +520,22 @@ depth breathe every time the user reconverged.
 **Comfort** — the runtime's own rule (`dxr_view_math.h`):
 
 ```
-comfort = ipdFactor × metersToVirtual × convergenceDiopters × N     (N ≈ 0.5 m, nominal viewing distance)
+comfort = ipdFactor × metersToVirtual × convergenceDiopters × N     (N = the display's nominal viewing distance)
 ```
 
 It is your eye scale divided by the eye scale a display rig would use for a screen at your
 convergence distance. At `1` the viewer's eyes are parallel on infinitely distant content; **past 1
 they diverge**, and nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1,
-`metersToVirtual` 1) it reduces to "keep convergence past about 0.5 world units".
+`metersToVirtual` 1) it reduces to "keep convergence past about N world units" — 0.6 m on desktop
+panels (`XRDisplayInfo.nominalViewerPosition.z`), shorter on tablets.
 
 So comfort bounds where the budget *sits*, not how big it is — it guards the background against
 divergence. A **low** comfort number therefore means "my convergence is far", **not** "my scene is
 flat": a flat window is a budget problem and comfort will not report it. (The two co-vary in a
 naive orbit viewer, where convergence is set to the framing distance, which is how the two get
-confused.) Nothing in this SDK enforces either; the runtime clamps the *convergence* knob — never
-`ipdFactor` — when comfort exceeds 1. `samples/camera-rig/` prints comfort live.
+confused.) Nothing enforces either: neither this SDK nor the runtime clamps a rig the page declares (the
+runtime's convergence clamp applies only to legacy-profile and keyboard-driven rigs). Keep comfort
+≤ 1 yourself; the budget numbers are in [making-3d-look-right.md § 3](making-3d-look-right.md#3-stay-inside-the-depth-budget). `samples/camera-rig/` prints comfort live.
 
 **Convergence at infinity** (`convergence: 0`) is legal and keeps a perfectly finite budget; it
 just puts the entire scene in front of the glass, which is comfortable for almost nothing. It is
@@ -616,10 +618,11 @@ function onFrame(views, layer) {
 ```
 
 **Placing the subject: `depthOffset`.** The companion setter slides the whole subject along the
-depth axis, in display metres, `+` toward the viewer:
+depth axis, in **virtual-display** metres (the units of `virtualDisplayHeight`, not centimetres on
+the panel), `+` toward the viewer:
 
 ```js
-viewer.depthOffset = -0.05;   // push it 5 cm behind the glass
+viewer.depthOffset = -0.05;   // push it back by 0.05 / virtualDisplayHeight tile heights (0.21 h at 0.24)
 ```
 
 It survives `fitTo()` — reframing a subject should not silently discard where you put it — and
@@ -1068,7 +1071,8 @@ import { SceneViewer } from '@displayxr/inline3d/viewer';
 
 const viewer = new SceneViewer(THREE, canvas, { virtualDisplayHeight: 0.18 });
 viewer.useEyeCamera(EyeCamera);
-wall.addScene(canvas, viewer.onFrame, { onLayerLost: viewer.onLayerLost });
+// the SAME virtualDisplayHeight on both, or the framing and the rig disagree
+wall.addScene(canvas, viewer.onFrame, { virtualDisplayHeight: 0.18, onLayerLost: viewer.onLayerLost });
 
 wall.on('trackingstatechange', (state) => {
   if (state === 'searching') viewer.startMono();  // one centred camera
@@ -1643,8 +1647,9 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
   a concern if you build buffers by hand.
 - **Detect with `createInline3D`, never `isSessionSupported`.**
 - **Round corners / draw decoration in the canvas buffer, not CSS.**
-- **Scenes: author at ~0.24 m virtual height and `fitToElement` every frame;** put focused
-  content at `z=0`.
+- **Scenes: author at ~0.24 virtual height (pass the same `virtualDisplayHeight` to the viewer and
+  to `addScene`);** put focused content at `z=0`, and keep its depth inside the
+  [budget](making-3d-look-right.md#3-stay-inside-the-depth-budget).
 - **Shallower = rigid:** never fit depth by scaling display `z` on a parent of a turned or tilted
   subject. That shears it: right angles collapse in stereo while the 2D view looks fine. Re-orient
   or scale uniformly ([Making a subject shallower](#making-a-subject-shallower-keep-it-rigid)).

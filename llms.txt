@@ -1,0 +1,22 @@
+# @displayxr/inline3d — DisplayXR inline-3D web SDK
+
+> Glasses-free 3D for web pages on a DisplayXR spatial display: you render one image per eye into a
+> canvas, the DisplayXR Browser weaves them for the panel; an ordinary browser shows the page in 2D.
+
+Read first: docs/making-3d-look-right.md — the 10 rules, rig choice, screen-plane placement, the
+relative depth budget, 2D UI rules, depth slider and 2D/3D switch, starter templates, checklist.
+
+## Start from a template
+- samples/starter-model/ — product / object viewer (glTF) with addModel
+- samples/starter-scene/ — three.js object scene (diorama, chart) with SceneViewer on a display rig
+- samples/starter-world/ — first-person world on a camera rig (EyeCamera + cameraRigFromCamera)
+- samples/starter-ui/ — HTML UI over 3D, depth slider, 2D/3D switch
+- samples/splat/ — Gaussian splat with addSplat
+
+## Reference
+- docs/authoring-inline-3d.md — every API, both view rigs, comfort maths
+- docs/woven-canvas-rules.md — what the browser does to a woven canvas; CSS, remount and cover rules
+- docs/porting-three-js-apps.md — moving an existing three.js app over
+- docs/authoring-motion-and-effects.md, docs/splat-effects.md — motion, reveals, depth envelopes
+- index.d.ts, three.d.ts, viewer.d.ts, model.d.ts, splat.d.ts — the public API with JSDoc
+- CHANGELOG.md — what changed per release
