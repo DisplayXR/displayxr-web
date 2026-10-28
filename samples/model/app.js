@@ -22,6 +22,11 @@ const DECODER_PATH = { draco: new URL('../../vendor/draco/', import.meta.url).pa
 
 const wall = await createInline3D({ lazy: false });
 const woven = wall.supported;
+// docs/making-3d-look-right.md §3/§5: an OPAQUE clear in the page's own colour (index.html sets
+// `background: Canvas`, so it follows light/dark), and the subject fitted to the depth budget —
+// tile heights on these SQUARE tiles, where 0.1 h in front is ~1 % of the width (the guide's
+// "strong" column) and 0.2 h behind ~2 %. No `feather`: it fades to transparent.
+const LOOK = { clearColor: getComputedStyle(document.documentElement).backgroundColor, depthFit: { front: 0.1, back: 0.2 } };
 // Which engine renders the page. Unset is the SDK default (PlayCanvas, from 1.12) for every tile.
 // `?engine=three` (or `?engine=spark`) is the three.js twin: tiles A and C on the 1.11 three
 // renderer, tile B as a three scene with a Spark splat in it.
@@ -38,8 +43,8 @@ const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: sampleCursorO
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
   virtualDisplayHeight: 0.16,
   idleSpin: 12,
-  feather: 24,
   renderScale: 0.6,
+  ...LOOK,
   ...engineOpt,
   ...cursorOpt,
 });
@@ -67,7 +72,7 @@ const mixedEngine = onThree ? 'spark' : 'playcanvas';
 // vH, so a different value does not change how big anything looks — but it does change the
 // world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
 // them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
-const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6, ...cursorOpt };
+const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, renderScale: 0.6, ...LOOK, ...cursorOpt };
 // Layout of the pair, the same on both paths: the splat stands SPLAT_H of the mesh's height,
 // to the mesh's right, GAP of the mesh's width apart, bases level. The gap has to cover the
 // turntable: both subjects turn about the union's centre, so a box's corners swing wider than
@@ -216,8 +221,8 @@ function mixedSpark() {
 const c = addModel(wall, document.getElementById('tileC'), DRACO_GLTF, {
   virtualDisplayHeight: 0.16,
   idleSpin: 12,
-  feather: 24,
   renderScale: 0.6,
+  ...LOOK,
   ...cursorOpt,
   decoderPath: DECODER_PATH,
   ...engineOpt,

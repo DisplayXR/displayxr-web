@@ -62,7 +62,11 @@ try {
     // ← 2. add the splat
     engine,
     idleSpin: 0, // started below once the rig is known
-    feather: 24,
+    // docs/making-3d-look-right.md §3/§5: an OPAQUE clear in the page's colour (index.html sets
+    // `background: Canvas`), and the subject fitted to the depth budget in tile heights. No
+    // `feather`: it fades to transparent. (A capture camera's own rig is not auto-framed.)
+    clearColor: getComputedStyle(document.documentElement).backgroundColor,
+    depthFit: { front: 0.1, back: 0.2 },
     // Half-scale per eye. After the interlace each eye receives roughly half the panel's
     // samples anyway, so the detail beyond this is rendered and then discarded.
     renderScale: 0.6,

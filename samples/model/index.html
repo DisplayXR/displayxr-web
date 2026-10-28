@@ -6,7 +6,7 @@
 <title>model — DisplayXR inline-3D sample</title>
 <style>
   :root { color-scheme: light dark; }
-  html,body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}
+  html,body{margin:0;background:Canvas;color:CanvasText;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}
   .wrap{max-width:860px;margin:0 auto;padding:36px 20px 72px}
   a{color:#3b82f6}
   h1{font-size:28px;margin:0 0 4px}
@@ -23,7 +23,7 @@
   .cell h2{margin-bottom:8px}
   .stage{position:relative}
   /* Bare, as every woven canvas must be — the weave halves this rect, so spatially-varying CSS
-     lands on one eye. Decoration belongs in the buffer (the viewer's `feather`). */
+     lands on one eye. Decoration belongs in the buffer. The page colour here is the tiles' clearColor. */
   canvas.tile{display:block;width:100%;aspect-ratio:1/1;cursor:grab}
   canvas.tile:active{cursor:grabbing}
   .plate{position:absolute;left:14px;bottom:14px;display:flex;gap:10px;align-items:center;

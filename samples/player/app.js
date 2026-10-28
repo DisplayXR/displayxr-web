@@ -1,4 +1,4 @@
-// player — one media title, two ways: a real stereo pair (default) and a deliberately flat one
+// player — one media title, two ways: a real stereo pair (default) and its 2D edition
 // (format:'mono'), both driven by the SDK transport. See docs/authoring-inline-3d.md#2b-player.
 
 import { createInline3D } from '@displayxr/inline3d';
@@ -14,6 +14,12 @@ import { addPlayer, PLAYER_ACCENTS } from '@displayxr/inline3d/player';
 const SRC = [
   { src: '../windows/assets/flymetothemoon_2x1.mp4', type: 'video/mp4; codecs="avc1.640028, mp4a.40.2"' },
   { src: '../windows/assets/flymetothemoon_sbs.webm', type: 'video/webm; codecs="vp9"' },
+];
+// The flat tile gets a genuinely 2D title: the same trailer's left eye, re-encoded (assets/). A
+// side-by-side file told it is 'mono' is painted whole — both eyes squeezed into one picture.
+const SRC_2D = [
+  { src: './assets/flymetothemoon_2d.mp4', type: 'video/mp4; codecs="avc1.64001E, mp4a.40.2"' },
+  { src: './assets/flymetothemoon_2d.webm', type: 'video/webm; codecs="vp9"' },
 ];
 const POSTER = undefined; // no poster asset shipped with this sample; the first frame paints itself.
 
@@ -36,7 +42,7 @@ const sbsPlayer = addPlayer(wall, document.getElementById('tile-sbs'), SRC, {
   poster: POSTER,
 });
 
-const monoPlayer = addPlayer(wall, document.getElementById('tile-mono'), SRC, {
+const monoPlayer = addPlayer(wall, document.getElementById('tile-mono'), SRC_2D, {
   format: 'mono',
   loop: true,
   poster: POSTER,

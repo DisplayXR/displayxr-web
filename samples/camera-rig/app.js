@@ -117,16 +117,16 @@ canvas.addEventListener('pointercancel', endDrag);
 // 2:1 buffer into the 16:9 CSS box IS the side-by-side squeeze the weave un-squeezes. Mono stays
 // 1:1 — the flat fallback draws the whole canvas.
 let sbsMode = false;
-function sizeToCanvas() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round((canvas.clientWidth || 640) * dpr);
-  const h = Math.round((canvas.clientHeight || 360) * dpr);
+function sizeToCanvas(cssW = canvas.clientWidth || 640, cssH = canvas.clientHeight || 360, dpr = window.devicePixelRatio || 1) {
+  const w = Math.round(cssW * dpr);
+  const h = Math.round(cssH * dpr);
   renderer.setSize(sbsMode ? w * 2 : w, h, false);
   appCam.aspect = w / h;
   appCam.updateProjectionMatrix();
 }
-window.addEventListener('resize', sizeToCanvas);
 sizeToCanvas();
+// Woven, the store is resized ONLY in the SDK's onResize (inside its ResizeObserver, before paint,
+// with a redraw — see onResize below). The flat fallback watches the box itself (boot).
 
 // ---- the two eye cameras ---------------------------------------------------------------------
 // One EyeCamera per eye rather than one reused twice, because the attach pattern PARENTS them:
@@ -184,30 +184,51 @@ function pushRig() {
   handle.setViewRig(currentRig());
 }
 
+// The last frame actually drawn, as COPIES (an XRView is valid only inside its own frame).
+let last = null;
+
 function onXRFrame(views, layer) {
   // Validate BEFORE clearing. renderer.clear() is the point of no return: under load the session
-  // can hand back a short view list or a null viewport, and an empty buffer is what the weave
-  // then consumes — one dark tile, nothing thrown, nothing logged (web#12).
-  if (!views || views.length < 2 || !layer) return;
-  const vps = views.map((v) => layer.getViewport(v));
-  if (vps.some((vp) => !vp || vp.width <= 0 || vp.height <= 0)) return;
-
+  // can hand back a short view list or a null viewport. Then REDRAW the last good frame rather
+  // than skipping the frame (a skipped commit can leave the weave reading a stale buffer) or
+  // clearing it (one dark tile, nothing thrown, nothing logged — web#12).
+  const vps = views && views.length >= 2 && layer ? views.map((v) => layer.getViewport(v)) : null;
+  if (vps && vps.every((vp) => vp && vp.width > 0 && vp.height > 0)) {
+    last = views.slice(0, 2).map((v, i) => ({
+      proj: Array.from(v.projectionMatrix), pose: Array.from(v.transform.matrix),
+      vp: { x: vps[i].x, y: vps[i].y, width: vps[i].width, height: vps[i].height },
+    }));
+  }
   pushRig();   // drives the views delivered NEXT frame — Blink locates before the page's rAF
+  drawEyes();
+  updateReadout();
+}
 
+function drawEyes() {
+  if (!last) return;
   renderer.clear();
   renderer.setScissorTest(true);
   for (let i = 0; i < 2; i++) {
-    const vp = vps[i];
+    const { vp, proj, pose } = last[i];
     renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
     renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
     // The only difference the attach pattern makes on the render side: whether the reported eye
     // pose is world or rig-local. Everything else — projection, viewport, draw — is identical.
-    if (S.cameraRig && S.attach) eyes[i].setLocalFromView(views[i]);
-    else eyes[i].setFromView(views[i]);
+    if (S.cameraRig && S.attach) eyes[i].setLocalFromMatrices(proj, pose);
+    else eyes[i].setFromMatrices(proj, pose);
     renderer.render(scene, eyes[i].camera);
   }
   renderer.setScissorTest(false);
-  updateReadout();
+}
+
+// The SDK calls this inside its ResizeObserver, before paint: resize and redraw at once, so the
+// old store is never shown stretched onto the new box. The new store's eye halves are its halves.
+function onResize({ width, height, dpr }) {
+  sizeToCanvas(width, height, dpr);
+  if (!last) return;
+  const w = canvas.width / 2;
+  last.forEach((e, i) => { e.vp = { x: i * w, y: 0, width: w, height: canvas.height }; });
+  drawEyes();
 }
 
 // ---- 2D fallback ------------------------------------------------------------------------------
@@ -299,15 +320,18 @@ function updateReadout() {
     statusEl.innerHTML = '<b>2D fallback</b> — open in the ' +
       '<a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a> on a ' +
       'DisplayXR display for glasses-free 3D. Drag still orbits.';
+    new ResizeObserver(() => sizeToCanvas()).observe(canvas);
     requestAnimationFrame(onMonoFrame);
     return;
   }
   sbsMode = true;
-  sizeToCanvas();
+  sizeToCanvas();   // size BEFORE registering
   // The FIRST rig is passed at construction rather than pushed after: the layer's very first
   // located frame is then already on the app's camera, so the scene never shows one frame of
   // default framing on the way in.
-  handle = wall.addScene(canvas, onXRFrame, { viewRig: currentRig() });
+  handle = wall.addScene(canvas, onXRFrame, { viewRig: currentRig(), onResize });
+  // Each eye's projection is built from the session's near/far: give it the app camera's.
+  wall.session.updateRenderState({ depthNear: appCam.near, depthFar: appCam.far });
   setAttach(S.cameraRig && S.attach);
   statusEl.className = 'status woven';
   statusEl.innerHTML = RIG_OK
