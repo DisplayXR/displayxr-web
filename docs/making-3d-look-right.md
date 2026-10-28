@@ -12,9 +12,10 @@ If you have a reason to break a rule, break it on purpose and check the result o
 
 1. **Choose the rig by what the user moves.** They turn an object → **display rig**. They move
    through a world → **camera rig**. ([§1](#1-choose-the-rig))
-2. **Put the screen plane on the subject.** If there is a clear subject, zero disparity goes
-   through it, with about a third of it in front of the glass. No single subject → put the plane
-   so about a fifth of the frame is in front. ([§2](#2-put-the-screen-plane-on-the-subject))
+2. **Put the screen plane on the subject.** A clear subject → zero disparity goes through it
+   (centred by default). A world you move through → it sits at or behind the glass. A captured
+   shot with no single subject → about a fifth of the frame in front.
+   ([§2](#2-put-the-screen-plane-on-the-subject))
 3. **Stay inside the depth budget:** about **0.6 % of the tile's width** of disparity in front of
    the glass and **1.5 %** behind, near **0** at the frame edges. ([§3](#3-stay-inside-the-depth-budget))
 4. **Nothing in front of the glass touches a frame edge or sits under 2D UI.**
@@ -65,27 +66,41 @@ Long form: [authoring-inline-3d.md § Which rig](authoring-inline-3d.md#which-ri
 
 ## 2. Put the screen plane on the subject
 
-**If there is a clear subject or focus, zero disparity goes on it.** On a display rig that means the
-subject sits at `z = 0` in display space (the SDK viewers do this for you). On a camera rig it
-means `convergence` = the distance from the camera to the subject.
+**An object scene (display rig) with a clear subject: zero disparity goes through the subject.**
+The SDK viewers centre the subject on the glass (`z = 0`), and that is the right default: the
+glass is the sharpest plane, and on hardware a centred subject reads better than one pushed out.
+If the subject's front then exceeds the budget in [§3](#3-stay-inside-the-depth-budget), shrink it
+or move it back a little (`depthFit`, or `depthOffset` < 0), so that at most half of it is in front
+and its nearest point is inside the table.
 
-- Let the subject **straddle** the glass: about a third of its depth in front, two thirds behind.
-  The glass is the sharpest plane, so the part the eye lands on should be near it.
-- Keep convergence **on the subject** as it moves. Change it smoothly; a jump reads as a cut.
-- **No single subject** (a wide shot, a room, a landscape, a photo without a hero)? Use the film
-  rule: put the screen plane so **about 20 % of the frame is in front of the glass** and the rest
-  behind. Stereographers on native-stereo feature films put zero disparity at roughly the 78th
-  percentile of nearness (centre-weighted), measured over 2,121 shots of 19 titles.
-- **Never** put everything in front of the glass. On a camera rig, `convergence: 0` (infinity) does
-  exactly that: the whole scene floats out. Always set a finite convergence.
-- Don't let a big flat background decide the plane. A sky or a far wall is not the subject.
+**A world you move through (camera rig): the world sits at or behind the glass.** The floor, the
+walls and the ceiling always reach the edges of the frame, and anything that touches an edge must
+not be in front of the glass ([§4](#4-composition-the-cinematic-rules)). So:
+
+- Set `convergence` to about the distance of the **nearest content that touches an edge** of the
+  frame (usually the floor at the bottom edge, 1–2 m ahead at standing height), or a little nearer.
+  Everything else is then behind the glass, like a view through a window.
+- Only an object that comes close **in the centre** of the frame may come out of the glass.
+- Keep `convergence` fixed, or change it slowly with the scene (entering a new room). **Never**
+  drive it from what is under the cursor or the centre of the view in first person: the depth
+  then changes with every glance, and the world appears to breathe.
+- **Never** `convergence: 0` (infinity): the whole scene floats in front of the glass.
+
+**A captured photo or video with no single subject** (a wide shot, a landscape): use the film rule.
+Put the screen plane so **about 20 % of the frame is in front of the glass** and the rest behind.
+Stereographers on native-stereo feature films put zero disparity at roughly the 78th percentile of
+nearness (centre-weighted), measured over 2,121 shots of 19 titles. Don't let a big flat background
+(a sky, a far wall) decide the plane.
+
+In all three cases, move the plane smoothly (a second or more, no overshoot) or cut; never jump it.
 
 ## 3. Stay inside the depth budget
 
-Budgets are **relative**: disparity as a percentage of the tile's width, and, on a display rig,
-the equivalent depth in **tile heights** (`h` = the canvas's height on the glass). These hold for
-any tile size. They are provisional and come from shipped apps and on-panel measurements. When a
-panel disagrees with this table, trust the panel.
+Budgets are **relative**: disparity as a percentage of the tile's width (the number that holds
+for any tile). The tile-height column (`h` = the canvas's height on the glass) is the same budget
+for a **16:9 tile**, the easiest one to apply on a display rig; for another shape convert with
+the formula below. The numbers are provisional and come from shipped apps and on-panel
+measurements. When a panel disagrees with this table, trust the panel.
 
 | Where | Comfortable (aim here) | Strong (a hero object, briefly) | Never beyond |
 |---|---|---|---|
@@ -111,12 +126,20 @@ Read it like this:
 
 ### Converting to your scene
 
-On a **display rig** the subject's depth in tile heights is direct: the viewers fit the subject's
-**height** to `margin` of the tile (0.8 by default), so a subject as deep as it is tall spans about
-±0.4 h, which is the **strong** column, not the comfortable one. For a calm default, fit by depth
-too: scale so the subject's depth is at most ~0.4 h, with ~0.1 h of it in front. In the SDK
-viewers, read the live placement with `getSubjectBounds()` (`front`/`back` in display metres;
-divide by `virtualDisplayHeight` for tile heights).
+On a **display rig**, depth `d` in tile heights (in front or behind) gives roughly
+
+    disparity (% of width) ≈ 10 × d × (tile height / tile width)        (viewer at ~0.6 m)
+
+so 0.1 h is 0.6 % on a 16:9 tile but 1 % on a square one.
+
+The SDK viewers fit the subject's **height** to `margin` of the tile (0.8 by default) and centre
+it on the glass, so a subject as deep as it is tall reaches about **0.4 h in front**: beyond the
+strong column, close to the human limit. Fit by depth too. With `addModel`, `addSplat` or
+`SceneViewer` pass `depthFit: { front: 0.1, back: 0.27 }` (tile heights; it shrinks the subject
+uniformly until its nearest and farthest points fit, never growing it). On an older SDK without
+`depthFit`, lower `margin` or use `depthOffset` (negative pushes the subject back). Read the
+live placement with `getSubjectBounds()` (`front`/`back` in virtual-display units; divide by
+`virtualDisplayHeight` for tile heights), or `handle.depthReport()` where available.
 
 On a **camera rig**, a point `z` world units from the camera, with convergence `D`, lands at
 
@@ -160,7 +183,13 @@ to, and then follow [the starter template](../samples/starter-scene/) exactly:
 - **Check the views before clearing**: if a frame has fewer views than you expect, keep the last
   good frame on screen instead of clearing or skipping.
 - **Clear opaque.** A transparent clear shows stale or black pixels on the weave. Give the scene a
-  background colour, and set the page colour behind the canvas to match it.
+  background colour (`clearColor` on `addModel`/`addSplat`/`SceneViewer`, `setClearColor(c, 1)` in
+  your own three.js loop), and set the page colour behind the canvas to match it. The edge fades
+  (`feather`, `EdgeFeather`) fade to **transparent**, so they need an alpha clear: leave them off
+  unless you have checked the result on a panel.
+- The SDK viewers already size the canvas, handle resizes and pass near/far; the rules below are
+  for your own loop. Don't lower `renderScale` to fix a performance problem without checking the
+  result on a panel: a soft image ghosts differently.
 - **Pixel ratio 1** on the renderer: the SDK sizes the canvas; don't multiply it again.
 - Size the canvas **before** you register it, and resize only in the SDK's `onResize`.
 - Give the session your camera's near and far planes once it is up:
@@ -173,8 +202,11 @@ to, and then follow [the starter template](../samples/starter-scene/) exactly:
   at or behind the glass ([§4](#4-composition-the-cinematic-rules)).
 - **No render-surface CSS on, around or over the canvas:** no `filter` (including on hover), no
   `backdrop-filter`, no `opacity` below 1, no `mix-blend-mode`, no animated `transform`, on the
-  canvas, any ancestor, or anything drawn over it. Any of these takes the canvas out of the weave
-  and it goes flat. A plain translucent `rgba()` background on UI is fine; a blur is not.
+  canvas, any ancestor, or anything drawn over it (HUD text included). Any of these can take the
+  canvas out of the weave, and it goes flat. A plain translucent `rgba()` colour on UI is fine; an
+  `opacity` property, a blur or a filter is not.
+- **A HUD over a world goes where the world is behind the glass.** In a walk-through the floor at
+  the bottom of the frame is the nearest content; keep the HUD at the top, or in a side column.
 - **One canvas for the whole page.** Don't remount or recreate it between screens; change what is in
   it.
 - **Cover the canvas until it is woven.** Keep a cover over it until `handle.firstWoven` resolves
@@ -235,8 +267,9 @@ and change the content, not the plumbing.
 On a laptop, no 3D display needed:
 
 - [ ] Rig chosen by the §1 table, and written down in a comment.
-- [ ] Screen plane on the subject (or the ~20 %-in-front rule), and on a camera rig a **finite**
-      `convergence`.
+- [ ] Screen plane per §2: through the subject (object scene); at the nearest edge-touching
+      content (world, camera rig, **finite** `convergence`, not driven by gaze); ~20 % in front
+      (captured shot with no subject).
 - [ ] The scene's nearest and farthest visible points inside the §3 table, with your numbers in a
       comment next to the settings.
 - [ ] Nothing in front of the glass within ~10 % of a frame edge or under HTML.
@@ -258,6 +291,7 @@ On a 3D display:
 
 - Use one camera for both eyes, or ignore `views[i]`.
 - Set a camera rig's `convergence` to 0, or leave it unset, and hope.
+- Drive convergence from what is under the cursor or the centre of the view in first person.
 - Fit depth with `scale.z` (or any per-axis scale) on a rotated subject.
 - Put HTML over content that comes out of the glass.
 - Put `filter`, `backdrop-filter`, `opacity` or a CSS animation on or over the canvas.
