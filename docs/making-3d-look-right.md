@@ -83,9 +83,14 @@ not be in front of the glass ([§4](#4-composition-the-cinematic-rules)). So:
   behind the glass, like a view through a window.
 - That has to hold at **every pose the visitor can reach**, not just the start. Check the worst
   ones: standing against a wall, against the furniture, looking down at the pitch limit. If they
-  break it, trade between three knobs: keep the visitor further from walls (a clearance of about
-  half the convergence distance), limit how far they can look down, or lower convergence for
-  that room. Convergence may change with **where** the visitor is (a new room, a corridor), slowly;
+  break it, trade between three knobs: keep the visitor further from walls, limit how far they
+  can look down, or lower convergence for that room. The rule of thumb: **convergence at most
+  about 0.6 × the closest the visitor can get to a wall or to furniture** (a wall faced squarely is
+  all at that distance; seen at an angle, the frame's corners reach it sooner). With walls kept
+  2.5 m away, converge at 1.6 m or nearer.
+- Expect a world to be **shallow** on this kind of display: a window onto a room, mostly behind the
+  glass, with a lowered `ipdFactor` (the walk-through starter uses 0.5). That is the price of
+  having content at every edge; spend pop-out on objects in the middle of the frame. Convergence may change with **where** the visitor is (a new room, a corridor), slowly;
   never with where they look. `cameraRigDisparityPct()` (`@displayxr/inline3d/depth`) gives the
   disparity of any point, so you can check a pose in code.
 - Objects that **pass close to the camera** (a ring you fly through, a projectile, a branch) will
