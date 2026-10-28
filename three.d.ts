@@ -3,6 +3,7 @@
 // bundles three.js (it is an optional peer dependency).
 
 import type { XRViewRigInit } from './index.js';
+export { DEPTH_BUDGET, disparityPct, cameraRigDisparityPct, depthBudgetClass, depthBudgetFromBounds } from './depth.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with your
@@ -88,8 +89,12 @@ export interface DisplayRigOptions {
  * (so a camera parented under a dolly still reports world space) unless `attach` is set, which
  * emits identity instead.
  *
- * Comfort rule, from the runtime: `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1`
- * (N ≈ 0.5 m nominal viewing distance). Nothing here enforces it; the runtime clamps.
+ * Comfort rule: `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1` (N = the nominal
+ * viewer distance the display reports, 0.6 m on a desktop panel). Nothing enforces it: the
+ * runtime applies an app-declared camera rig's gain as given (XR_DXR_view_rig §3) and clamps only
+ * values outside a field's sanity range. `convergence` 0 / unset (infinity: the whole scene in
+ * front of the glass) logs one console warning per page; the descriptor is built as asked.
+ * {@link cameraRigDisparityPct} measures the disparity a rig gives.
  *
  * @param THREE your imported three.js module namespace.
  * @param camera a `THREE.PerspectiveCamera` (`.fov` degrees, `.matrixWorld`).

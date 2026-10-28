@@ -5,6 +5,7 @@ import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
 import type { FirstWovenResult, RectCoverOption, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
+import type { DepthFitOption, DepthReport } from './depth.js';
 
 export interface ModelOptions {
   /**
@@ -30,6 +31,25 @@ export interface ModelOptions {
   margin?: number;
   /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
+  /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
+  /**
+   * OPT-IN depth budget for the auto-frame, in TILE HEIGHTS, e.g. `{ front: 0.1, back: 0.27 }`
+   * (the comfortable budget — see `DEPTH_BUDGET`). On top of the size fit, the subject is scaled
+   * DOWN uniformly (never non-uniformly, never above the size fit) so its nearest point sits at
+   * most `front` in front of the glass and its farthest at most `back` behind, under the current
+   * `depthOffset` (and every yaw, with `fitSweep`). Applied at each fit; a later zoom or
+   * `depthOffset` is the page's and is not refitted (read `handle.depthReport()`). Unset: today's
+   * fit, exactly. A placement that alone breaks the budget keeps the size fit (one warning).
+   */
+  depthFit?: DepthFitOption;
   /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
@@ -203,6 +223,35 @@ export interface ModelHandle {
   /** Resolves once the model has loaded and been framed; rejects if the load failed. */
   readonly ready: Promise<ModelHandle>;
 
+  /**
+   * Live stereo strength — a depth slider, mirroring `SplatHandle.setStereo`. On the display rig
+   * (the default) the values are RELATIVE: 1 = what the display shows by construction, below 1 a
+   * comfort dial, 0 flat (above 1 exaggerates; sent as given, with a one-time warning). A key given
+   * replaces, a key set to `null` returns to 1, `setStereo(null)` clears both. `ipdScale` /
+   * `parallaxScale` are accepted too (a model's own values are 1, so they agree). Sticky; applied
+   * from the next frame with no cut (pose and framing stay). Re-declares the display rig
+   * explicitly (`handle.viewRig`); nothing is declared before the first call. Under
+   * `controls: 'page'` (PlayCanvas) the page's camera rig takes them, ABSOLUTE.
+   */
+  setStereo(opts: { ipdFactor?: number | null; parallaxFactor?: number | null; ipdScale?: number | null; parallaxScale?: number | null } | null): ModelHandle;
+  /** The rig's stereo in force (read back; `setStereo` writes it). Null until the backend has loaded. */
+  readonly rig: {
+    readonly type: 'display' | 'camera';
+    readonly ipdFactor: number;
+    readonly parallaxFactor: number;
+    readonly stereoDefault: { readonly ipdFactor: number; readonly parallaxFactor: number };
+  } | null;
+  /** The view-rig descriptor last declared by `setStereo` (or `controls: 'page'`), if any. */
+  readonly viewRig?: object;
+  /**
+   * How deep the framed subject is right now, on a display rig — a measurement, nothing more:
+   * nearest / farthest points in tile heights and the estimated disparity in % of the tile width
+   * (the display's nominal viewer distance once `getDisplayInfo()` has answered, else 0.6 m; the
+   * tile's real aspect and physical height; the declared rig's ipdFactor), plus the budget tier.
+   * Cheap enough per frame (orbit and zoom change it). Null before the subject is framed, on a
+   * camera rig and under `controls: 'page'`.
+   */
+  depthReport(): DepthReport | null;
   /** Throws on `controls: 'page'`. */
   setPose(pose?: OrbitPose): void;
   /** Throws on `controls: 'page'`. */

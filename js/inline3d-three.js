@@ -74,6 +74,16 @@ import {
   CURSOR_OUTLINE_COLOR,
 } from './inline3d-cursor-depth.js';
 import { CursorAmortisedPick, CursorDebugStats, cursorDebugMode } from './inline3d-cursor-perf.js';
+import { noteBuiltCameraRig } from './inline3d-depth-budget.js';
+// The depth-budget helpers, for a page that renders its own scene with these rigs: what disparity
+// a camera rig or a display-rig depth gives, as % of the tile width. Pure; see the module.
+export {
+  DEPTH_BUDGET,
+  disparityPct,
+  cameraRigDisparityPct,
+  depthBudgetClass,
+  depthBudgetFromBounds,
+} from './inline3d-depth-budget.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with
@@ -202,14 +212,19 @@ function scratch(THREE) {
  * glass; everything nearer pops out, everything further recedes. Point it at whatever the viewer
  * is meant to be looking at (the subject's centre, a hit-tested surface) — with a moving camera
  * that is usually just the distance to it. Left at 0 it means infinity, which puts the entire
- * scene in front of the display and is comfortable for almost nothing.
+ * scene in front of the display and is comfortable for almost nothing — so a 0 / unset
+ * convergence logs one console warning per page (the descriptor is still built as asked).
  *
- * COMFORT. The runtime's rule is `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1`
- * (N = nominal viewing distance, ~0.5 m): at 1 the viewer's eyes are parallel on infinitely far
- * content, and past it they diverge, which no one can fuse. With the defaults (factors 1,
- * metersToVirtual 1) that is `convergence >= ~0.5` world units. Nothing here enforces it — the
- * runtime clamps out-of-range values itself, once, with a warning — but a scene authored in
- * centimetres with a 0.1-unit convergence is the shape of the mistake.
+ * COMFORT. The rule is `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1` (N = the
+ * nominal viewer distance the display reports — 0.6 m on a desktop panel): at 1 the viewer's
+ * eyes are parallel on infinitely far content, and past it they diverge, which no one can fuse.
+ * With the defaults (factors 1, metersToVirtual 1) that is `convergence >= ~0.6` world units.
+ * NOTHING ENFORCES IT for a rig the app declares: the runtime takes the gain
+ * `metersToVirtual × convergenceDiopters × N` as given (XR_DXR_view_rig §3 — only a legacy
+ * camera profile is comfort-clamped) and clamps only values outside a field's sanity range
+ * (e.g. convergenceDiopters to [0, 20], verticalFov to [0.01, 3.13] rad), once, with a warning.
+ * A scene authored in centimetres with a 0.1-unit convergence is the shape of the mistake;
+ * `cameraRigDisparityPct` measures what a rig gives.
  *
  * COMFORT IS NOT A DEPTH METER. It bounds where the depth budget SITS (it guards the background
  * against divergence), not how big the budget is. The budget is
@@ -300,6 +315,8 @@ function fillCameraRig(out, verticalFovRad, opts) {
   out.convergenceDiopters = convergence > 0 ? 1 / convergence : 0;
   out.verticalFov = verticalFovRad;
   out.metersToVirtual = metersToVirtual;
+  // Infinity is almost never what was meant: say so once per page. The descriptor is unchanged.
+  if (!(out.convergenceDiopters > 0)) noteBuiltCameraRig(out);
   return out;
 }
 
@@ -315,9 +332,11 @@ function fillCameraRig(out, verticalFovRad, opts) {
  * The factors are RELATIVE here (unlike a camera rig, where ipd/parallax are absolute):
  * `ipdFactor` and `parallaxFactor` are [0,1] multipliers on what the display would naturally do
  * — 1 is correct-by-construction, 0 is flat/frozen, and the values between are a comfort dial,
- * not a correctness one. `perspectiveFactor` is [0.1,10] and exaggerates or flattens the
- * off-axis skew; it is the one knob with no physical justification, so treat it as an effect.
- * The runtime clamps anything out of range (once, with a warning) rather than refusing the rig.
+ * not a correctness one. Above 1 exaggerates depth past what the display shows by construction:
+ * the runtime accepts it (it clamps ipd/parallax only to [0, 10000]) and `handle.setViewRig` logs
+ * one console warning. `perspectiveFactor` is [0.1,10] (the runtime clamps it there, once, with a
+ * warning) and exaggerates or flattens the off-axis skew; it is the one knob with no physical
+ * justification, so treat it as an effect.
  *
  * @param {object} [opts]
  * @param {number} [opts.virtualDisplayHeight=0.24]  metres of virtual display (the zoom knob).

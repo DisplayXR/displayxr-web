@@ -563,3 +563,141 @@ export function declareViewRig(handle, rig) {
   }
   return false;
 }
+
+/**
+ * The `clearColor` option of SceneViewer / addModel / addSplat, as `[r, g, b, a]` in 0..1 — or
+ * null when absent (the viewer then keeps its transparent clear, exactly as before). Takes
+ * `[r, g, b]` / `[r, g, b, a]` (0..1; alpha defaults to 1) or a CSS colour string: `#rgb`,
+ * `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()` / `rgba()` (comma or space syntax, `/ alpha`),
+ * `transparent`, and — where a DOM is present — any other CSS colour the browser can parse.
+ * Something it cannot read warns once per call (with `tag`) and returns null: the default clear
+ * stays.
+ */
+export function parseClearColor(v, tag = '[inline3d]') {
+  if (v === undefined || v === null) return null;
+  const bad = () => {
+    console.warn(`${tag} clearColor ${JSON.stringify(v)} is not a colour this SDK can read ([r,g,b,a] in 0..1, or a CSS colour); the default (transparent) clear is kept.`);
+    return null;
+  };
+  if (Array.isArray(v) || ArrayBuffer.isView(v)) {
+    if (v.length < 3 || v.length > 4) return bad();
+    const c = [v[0], v[1], v[2], v.length === 4 ? v[3] : 1];
+    if (!c.every((x) => typeof x === 'number' && Number.isFinite(x))) return bad();
+    return c.map((x) => clamp(x, 0, 1));
+  }
+  if (typeof v !== 'string') return bad();
+  const s = v.trim().toLowerCase();
+  if (s === 'transparent') return [0, 0, 0, 0];
+  let m = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s);
+  if (m) {
+    let h = m[1];
+    if (h.length <= 4) h = [...h].map((ch) => ch + ch).join('');
+    const n = (i) => parseInt(h.slice(i, i + 2), 16) / 255;
+    return [n(0), n(2), n(4), h.length === 8 ? n(6) : 1];
+  }
+  m = /^rgba?\(\s*([^)]*)\)$/.exec(s);
+  if (m) {
+    const parts = m[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
+    if (parts.length < 3 || parts.length > 4) return bad();
+    const ch = (p) => (p.endsWith('%') ? parseFloat(p) / 100 : parseFloat(p) / 255);
+    const al = (p) => (p.endsWith('%') ? parseFloat(p) / 100 : parseFloat(p));
+    const c = [ch(parts[0]), ch(parts[1]), ch(parts[2]), parts.length === 4 ? al(parts[3]) : 1];
+    if (!c.every(Number.isFinite)) return bad();
+    return c.map((x) => clamp(x, 0, 1));
+  }
+  // Any other CSS colour (a name, hsl(), …): let the browser normalise it, where there is one.
+  // A 2D context's fillStyle reads back as #rrggbb or rgba(…), both handled above.
+  try {
+    const ctx = globalThis.document?.createElement?.('canvas')?.getContext?.('2d');
+    if (ctx) {
+      ctx.fillStyle = '#010203';
+      ctx.fillStyle = v;
+      const out = String(ctx.fillStyle);
+      if (out !== '#010203') return parseClearColor(out, tag);
+    }
+  } catch {
+    /* no DOM */
+  }
+  return bad();
+}
+
+/**
+ * `handle.setStereo`'s argument, validated and merged onto the current override (throws at the
+ * call). Returns the new override, or null when nothing is overridden. Shared by `./splat`
+ * (PlayCanvas) and `./model` (both engines); `tag` names the subpath in the errors.
+ */
+export function validateSetStereo(o, prev, tag = '@displayxr/inline3d/splat') {
+  if (o === null) return null;
+  if (typeof o !== 'object') throw new TypeError(`${tag}: setStereo takes an object or null.`);
+  // Absolute (…Factor) or RELATIVE to the asset's own (…Scale); per scalar, the last one given wins.
+  const pairs = [
+    ['ipdFactor', 'ipdScale'],
+    ['parallaxFactor', 'parallaxScale'],
+  ];
+  const keys = pairs.flat();
+  const unknown = Object.keys(o).filter((k) => !keys.includes(k));
+  if (unknown.length) throw new Error(`${tag}: setStereo — unknown option(s) ${unknown.join(', ')}.`);
+  for (const [a, b] of pairs) {
+    if (o[a] != null && o[b] != null) throw new Error(`${tag}: setStereo — ${a} and ${b} are exclusive.`);
+  }
+  const next = { ...(prev || {}) };
+  for (const [a, b] of pairs) {
+    for (const k of [a, b]) {
+      if (!(k in o) || o[k] === undefined) continue;
+      if (o[k] === null) {
+        delete next[k];
+        continue;
+      }
+      if (typeof o[k] !== 'number' || !Number.isFinite(o[k]) || o[k] < 0) {
+        throw new RangeError(`${tag}: setStereo — ${k} must be a finite number >= 0 (got ${o[k]}).`);
+      }
+      next[k] = o[k];
+      delete next[k === a ? b : a];
+    }
+  }
+  return Object.keys(next).length ? next : null;
+}
+
+/** One scalar under a setStereo override: its absolute value, else `base` × its scale, else `base`. */
+export function stereoScalarOf(o, base, k) {
+  if (o?.[`${k}Factor`] != null) return o[`${k}Factor`];
+  if (o?.[`${k}Scale`] != null) return base * o[`${k}Scale`];
+  return base;
+}
+
+/**
+ * `./model`'s `handle.setStereo` + `handle.rig`, for both engines: `out` the model handle,
+ * `getTile()` the core window handle (null without a session), `vH` the tile's
+ * virtualDisplayHeight, `makeDisplayRig` ./three's displayRig. A model has no stereo of its own,
+ * so the "asset's own" values are 1 and 1 — `ipdScale` and `ipdFactor` agree.
+ *
+ * The rig is the display rig addModel declared with its `virtualDisplayHeight` shorthand; a value
+ * set here re-declares it as an explicit display rig with those factors (RELATIVE: 1 = what the
+ * display shows by construction). `setStereo(null)` declares the plain rig again — the exact
+ * equivalent of the shorthand. Nothing is sent before the first call: a page that never calls it
+ * declares exactly what it did before. Under `controls: 'page'` the camera rig the page drives
+ * takes the values instead, from its next tick.
+ */
+export function attachModelStereo(out, { getTile, vH, makeDisplayRig, page = false, tag = '@displayxr/inline3d/model' }) {
+  let override = null;
+  let declared = false;
+  // controls:'page' declares its own camera rig every tick and reads rig.ipdFactor / parallaxFactor
+  // there (ABSOLUTE on a camera rig, as addSplat's); nothing is declared from here.
+  const rig = { type: page ? 'camera' : 'display', ipdFactor: 1, parallaxFactor: 1, stereoDefault: Object.freeze({ ipdFactor: 1, parallaxFactor: 1 }) };
+  out.rig = rig;
+  const declare = () => {
+    const tile = getTile();
+    if (page || !tile || (!override && !declared)) return;
+    declared = true;
+    out.viewRig = makeDisplayRig({ virtualDisplayHeight: vH, ipdFactor: rig.ipdFactor, parallaxFactor: rig.parallaxFactor, out: out.viewRig || {} });
+    declareViewRig(tile, out.viewRig);
+  };
+  out.setStereo = (o) => {
+    override = validateSetStereo(o, override, tag);
+    rig.ipdFactor = stereoScalarOf(override, 1, 'ipd');
+    rig.parallaxFactor = stereoScalarOf(override, 1, 'parallax');
+    declare();
+    return out;
+  };
+  return { redeclare: declare, get override() { return override; } };
+}

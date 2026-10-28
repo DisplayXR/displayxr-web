@@ -108,6 +108,8 @@ export function addSplatDeferred(wall, canvas, src, opts) {
       return out;
     },
     displayMetrics: () => out.ready.then(() => out.displayMetrics()),
+    // Nothing is framed before the adapter has loaded (it replaces this).
+    depthReport: () => null,
     // A video before the first asset has landed: controls:'page' throws at the call's own line,
     // the rest is validated by the adapter's setVideo, which runs once the asset is on screen.
     setVideo: page ? pageOnly('setVideo') : (src, o) => out.ready.then(() => out.setVideo(src, o)),

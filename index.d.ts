@@ -125,8 +125,13 @@ export interface FirstWovenResult {
  *   `verticalFov`, offsets the eyes, and skews each frustum so `convergenceDiopters` lands on
  *   the zero-disparity plane.
  *
- * Every field is optional; the runtime **clamps** an out-of-range value (once, with a warning)
- * rather than rejecting the rig. A descriptor applies per-locate, so animating one means sending
+ * Every field is optional; the runtime **clamps** a value outside a field's sanity range (once,
+ * with a warning — e.g. `convergenceDiopters` to `[0, 20]`, `verticalFov` to `[0.01, 3.13]` rad,
+ * `perspectiveFactor` to `[0.1, 10]`, ipd/parallax to `[0, 10000]`) rather than rejecting the rig.
+ * It does **not** enforce comfort: a camera rig's gain and a display rig's factors above 1 are
+ * applied as given. `handle.setViewRig` logs a one-time console warning for the usual mistakes
+ * (a camera rig converged at infinity, a `verticalFov` that looks like degrees, display-rig
+ * factors above 1) and still sends the rig unchanged. A descriptor applies per-locate, so animating one means sending
  * new values each frame — see {@link TileHandle.setViewRig} for the one-frame latency that
  * implies. Build one with `cameraRigFromCamera` / `displayRig` from
  * `@displayxr/inline3d/three`, or by hand.
@@ -140,7 +145,7 @@ export interface XRViewRigInit {
   orientation?: DOMPointInit;
   /** **Display rig.** Metres of virtual display; `m2v = this / the element's physical height`. */
   virtualDisplayHeight?: number;
-  /** Eye separation — display rig: relative `[0,1]`; camera rig: absolute `>= 0`. */
+  /** Eye separation — display rig: relative, 1 = correct, `[0,1]` a comfort dial (above 1 exaggerates); camera rig: absolute `>= 0`. */
   ipdFactor?: number;
   /** Head-tracking response — display rig: `[0,1]`; camera rig: absolute `>= 0`. */
   parallaxFactor?: number;
@@ -204,6 +209,19 @@ export interface DisplayMetrics {
 }
 
 /** What {@link TileHandle.displayMetrics} fills in when the display cannot say. */
+// The depth budget (also `@displayxr/inline3d/depth`): pure measurements, see depth.d.ts.
+export {
+  DEPTH_BUDGET,
+  DEPTH_EYE_SEPARATION_M,
+  DEPTH_DEFAULT_VIEWER_M,
+  disparityPct,
+  cameraRigDisparityPct,
+  depthBudgetClass,
+  depthBudgetFromBounds,
+  withheldReasonHint,
+} from './depth.js';
+export type { DepthReport, DepthReportBasis, DepthBudgetName, DepthBudgetTier, DepthFitOption } from './depth.js';
+
 export const DISPLAY_METRICS_DEFAULTS: Readonly<{
   displaySizeM: readonly [number, number];
   displayPixels: readonly [number, number];

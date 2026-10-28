@@ -36,6 +36,19 @@ import { setSessionViewerEase } from './inline3d-viewer-ease.js';
 export { ViewerEase, resolveViewerEaseOption, frameTrackingState, VIEWER_EASE_DEFAULT_MS } from './inline3d-viewer-ease.js';
 export { DISPLAY_METRICS_DEFAULTS, displayMetricsFrom } from './inline3d-display-metrics.js';
 import { displayMetricsFrom } from './inline3d-display-metrics.js';
+// The depth budget: pure measurements (how deep is this scene, in % of the tile width) and the
+// one-time rig warnings. Never a behaviour change — see ./inline3d-depth-budget.js.
+export {
+  DEPTH_BUDGET,
+  DEPTH_EYE_SEPARATION_M,
+  DEPTH_DEFAULT_VIEWER_M,
+  disparityPct,
+  cameraRigDisparityPct,
+  depthBudgetClass,
+  depthBudgetFromBounds,
+  withheldReasonHint,
+} from './inline3d-depth-budget.js';
+import { warnViewRigOnce, withheldReasonHint } from './inline3d-depth-budget.js';
 
 // The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
 // `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
@@ -1272,6 +1285,9 @@ class Inline3D {
       },
       setViewRig: (rig) => {
         win.viewRig = rig || null;
+        // One-time console warnings for a rig that looks like a mistake (convergence at infinity,
+        // factors > 1, a FOV in degrees). Read only: the rig goes out exactly as given.
+        if (rig) warnViewRigOnce(win.rigWarned, rig);
         return this._pushViewRig(win);
       },
       /**
@@ -2367,6 +2383,10 @@ class Inline3D {
       // and rebuilds layers behind the page's back: a tile that scrolls away and back would
       // otherwise silently revert to the default display rig mid-scene.
       viewRig: opts.viewRig || null,
+      // Which one-time rig warnings this window has given (setViewRig / opts.viewRig), and
+      // whether its 'withheld' reason has been logged. Diagnostics only.
+      rigWarned: new Set(),
+      warnedWithheld: false,
       // The automatic 1-view collapse (the latch itself is manager-wide — the mode is the
       // display's, not this window's). `stereoSaved` records the factors in force when the panel
       // went flat, for diagnostics; the restore just re-pushes `viewRig`, which the flattening
@@ -2433,6 +2453,7 @@ class Inline3D {
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
     });
+    if (win.viewRig) warnViewRigOnce(win.rigWarned, win.viewRig); // as handle.setViewRig: read only
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
       this._observer.observe(win.observeEl);
@@ -3430,7 +3451,19 @@ class Inline3D {
    * the browser's report; a confirmed `woven: false` is a capped 'withheld' level, which can still
    * recover, so it is NOT a terminal "will not weave" and leaves rewoven() usable.
    */
+  /**
+   * The browser REPORTED this layer withheld long enough to settle a firstWoven / rewoven on it:
+   * say why, once per window (the reason is otherwise only in the settled result). A console line,
+   * nothing else — the window keeps doing exactly what it did.
+   */
+  _noteWithheld(win, woven, reason, confirmed) {
+    if (woven || !confirmed || win.warnedWithheld || !reason || reason === 'pending' || reason === 'hold-capped') return;
+    win.warnedWithheld = true;
+    console.warn(`[inline3d] the browser withheld this canvas from the weave (${reason}): ${withheldReasonHint(reason)}.`, win.canvas);
+  }
+
   _settleFirstWoven(win, woven, reason, confirmed = false) {
+    this._noteWithheld(win, woven, reason, confirmed);
     // Every "will not weave" path lands here, so a pending rewoven() is released with it, and a
     // later one answers at once (firstWoven may have settled woven:true long before).
     if (!woven && !confirmed) {
@@ -3498,6 +3531,7 @@ class Inline3D {
   _settleRewoven(win, woven, reason, confirmed = false) {
     const rw = win.rw;
     if (!rw) return;
+    this._noteWithheld(win, woven, reason, confirmed);
     win.rw = null;
     rw.resolve(Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - rw.calledAt) }));
   }
