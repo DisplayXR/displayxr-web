@@ -92,22 +92,18 @@ scene.add(key);
 // Three bars at three depths. Depth is the point of this page: when a 1-view mode goes active the
 // SDK flattens the rig and they collapse onto one plane, which is what "the stereo faded to zero"
 // looks like from the couch — and it happens with no change to the render code below.
-// The depths stay inside the guide's budget (docs/making-3d-look-right.md §3) on the 0.3 m virtual
-// display: the nearest cube's spinning corners reach ~0.08 tile heights in front of the glass, the
-// farthest cube and the floor grid ~0.3 h behind it.
 const bars = [];
 for (let i = 0; i < 3; i++) {
   const bar = new THREE.Mesh(
-    new THREE.BoxGeometry(0.04, 0.04, 0.04),
+    new THREE.BoxGeometry(0.05, 0.05, 0.05),
     new THREE.MeshStandardMaterial({ color: [0xd8823a, 0x4ea3d8, 0x7ee2a4][i], roughness: 0.5 }),
   );
-  bar.position.set((i - 1) * 0.075, 0, (i - 1) * 0.025 - 0.035);
+  bar.position.set((i - 1) * 0.075, 0, (i - 1) * 0.06);
   scene.add(bar);
   bars.push(bar);
 }
-const grid = new THREE.GridHelper(0.24, 8, 0x4d5a80, 0x2b3350);
-grid.scale.z = 0.5;                  // 0.24 wide, 0.12 deep: from 0.025 in front to 0.095 behind
-grid.position.set(0, -0.05, -0.035);
+const grid = new THREE.GridHelper(0.6, 12, 0x4d5a80, 0x2b3350);
+grid.position.y = -0.06;
 scene.add(grid);
 
 const eyes = [new EyeCamera(THREE), new EyeCamera(THREE)];
@@ -134,31 +130,22 @@ function sizeToCanvas() {
 window.addEventListener('resize', () => sizeToCanvas());
 
 // ---- render loops -----------------------------------------------------------------------------
-// The last frame drawn, as COPIES of its matrices (an XRView is valid only inside its own frame).
-let last = null;
-
 function onXRFrame(views, layer) {
+  // Validate BEFORE clearing. renderer.clear() is the point of no return: under load the session
+  // can hand back a short view list or a null viewport, and an empty buffer is what the weave then
+  // consumes — one dark tile, nothing thrown, nothing logged.
+  if (!views || views.length < 2 || !layer) return;
+  const vps = views.map((v) => layer.getViewport(v));
+  if (vps.some((vp) => !vp || vp.width <= 0 || vp.height <= 0)) return;
   const t = performance.now() * 0.0006;
   for (let i = 0; i < bars.length; i++) bars[i].rotation.set(t * 0.7, t + i, 0);
-  // Validate BEFORE clearing. renderer.clear() is the point of no return: under load the session
-  // can hand back a short view list or a null viewport. Then REDRAW the last good frame (into the
-  // two halves of the store) instead of skipping it — a skipped commit can leave the weave reading
-  // a stale buffer, and a cleared one is a dark tile.
-  let vps = views && views.length >= 2 && layer ? views.slice(0, 2).map((v) => layer.getViewport(v)) : null;
-  if (vps && vps.every((vp) => vp && vp.width > 0 && vp.height > 0)) {
-    last = views.slice(0, 2).map((v) => ({ proj: Array.from(v.projectionMatrix), pose: Array.from(v.transform.matrix) }));
-  } else {
-    const w = canvas.width / 2;
-    vps = [0, 1].map((i) => ({ x: i * w, y: 0, width: w, height: canvas.height }));
-  }
-  if (!last) return;   // nothing good drawn yet: nothing to replay
   renderer.clear();
   renderer.setScissorTest(true);
   for (let i = 0; i < 2; i++) {
     const vp = vps[i];
     renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
     renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
-    eyes[i].setFromMatrices(last[i].proj, last[i].pose);
+    eyes[i].setFromView(views[i]);
     renderer.render(scene, eyes[i].camera);
   }
   renderer.setScissorTest(false);
@@ -341,13 +328,12 @@ async function toggleStereo() {
       '<b>2D fallback</b> — open in the ' +
       '<a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a> on a ' +
       'DisplayXR display. The scene below still runs flat; the display controls need the browser.';
-    sizeToCanvas();   // the flat store: 1:1 with the CSS box (it was the 300x150 default)
     requestAnimationFrame(onMonoFrame);
     return;
   }
   sbsMode = true;
   sizeToCanvas();
-  handle = wall.addScene(canvas, onXRFrame, { virtualDisplayHeight: 0.3 });
+  handle = wall.addScene(canvas, onXRFrame, { virtualDisplayHeight: 0.24 });
   statusEl.className = 'status woven';
 
   if (!MODES_OK) {
