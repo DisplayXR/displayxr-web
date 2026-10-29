@@ -1,9 +1,9 @@
 # AGENTS.md
 
 **Building or fixing a page? Read [`docs/making-3d-look-right.md`](docs/making-3d-look-right.md)
-first.** It is the short path: which rig, where the screen plane goes, the depth budget, 2D UI,
-the depth slider and 2D/3D switch, starter templates, and a checklist. Start from a
-`samples/starter-*` template rather than from scratch.
+first.** It is the short path: which rig, keep the object-viewer defaults, where the screen plane
+goes in a world, background and contrast, 2D UI, the depth slider and the 2D/3D switch. Start
+from the sample that matches your case rather than from scratch.
 
 **Before touching any page that hosts a woven canvas, also read
 [`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md)** (including §5, pitfalls found on

@@ -7,24 +7,10 @@ anywhere. The landing page that lists them — and that the browser opens at sta
 repo's root [`index.html`](../index.html), published at
 <https://displayxr.github.io/displayxr-web/>.
 
-**Start here.** Read [Making 3D that looks right](../docs/making-3d-look-right.md), then copy the
-starter that matches what you are building and change the content, not the plumbing. Each one
-follows every rule in that guide and passes the headless stereo check inside its *comfortable*
-depth budget; the measured numbers are in a comment next to its depth settings.
-
-| Starter | You are building | Rig |
-|---|---|---|
-| [`starter-model/`](starter-model/) | A product or object viewer: a glTF beside its title, price and buttons, with a depth slider and a 2D/3D switch (`addModel`). | display |
-| [`starter-scene/`](starter-scene/) | Your own three.js object scene: a diorama, an animated set piece (`SceneViewer` + `EyeCamera`). | display |
-| [`starter-world/`](starter-world/) | A first-person world: walk-through, game, flythrough (`addScene` + `EyeCamera` + `cameraRigFromCamera`, the attach pattern). | camera |
-| [`starter-ui/`](starter-ui/) | HTML title, legend and controls around a 3D chart, with a depth slider and a 2D/3D switch. | display |
-
-The other samples each show one feature of the SDK.
-
 | Sample | What it shows |
 |---|---|
-| [`hello-cube/`](hello-cube/) | The minimum complete page: one rotating three.js cube in a woven canvas, drawn by the guide's rules (opaque clear, its own view per eye, last good frame replayed, cover until woven). |
-| [`camera-rig/`](camera-rig/) | The **camera rig** mechanics: the page sends its own orbiting camera each frame instead of a virtual-display height. Convergence, comfort, the `attach` pattern, and <kbd>C</kbd> to A/B it against a display rig. An orbit around one subject is really a display-rig case; for a world you move through, start from `starter-world/`. |
+| [`hello-cube/`](hello-cube/) | The minimum complete page: one rotating three.js cube in a woven canvas. Append `?debug` for a bring-up HUD (physical-pixel readout) and tap-to-toggle fullscreen; both are off by default. |
+| [`camera-rig/`](camera-rig/) | The **camera rig**: the page sends its own orbiting camera each frame instead of a virtual-display height. Convergence, comfort, the `attach` pattern, and <kbd>C</kbd> to A/B it against a display rig. |
 | [`display-modes/`](display-modes/) | Reading the **display** and changing it: `getDisplayInfo()`, the `getRenderingModes()` table (non-2-view modes listed but greyed &mdash; the browser is fixed at two), `requestRenderingMode()`, and a 2D/3D lens toggle via `setStereoEnabled()` (lens **and** rig, because the lens alone shows the woven atlas flat). Every action logs a greppable `[display-modes]` line. |
 | [`windows/`](windows/) | Mixed producers — still photos, a live side-by-side video and a real-time three.js scene, all on one session. |
 | [`wall-3d/`](wall-3d/) | A long lazy-loading scrolling wall: layers created as tiles near the viewport, closed as they leave. |
@@ -33,11 +19,11 @@ The other samples each show one feature of the SDK.
 | [`composition/`](composition/) | **The 15-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
 | [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, rendered with the PlayCanvas engine (`?engine=spark` for Spark), with a 2D plate over it. Default: Spark's butterfly (`assets/butterfly.sog`, © World Labs, used with permission; SH bands kept) on a turntable; a `.sog` that records its capture camera opens at it. `?url=` takes your own `.sog` / `.ply` or a Streamed SOG's `lod-meta.json`. |
 | [`model/`](model/) | `addModel()`: a glTF mesh (Khronos DamagedHelmet), a mesh + splat sharing one PlayCanvas scene, and a Draco-compressed glTF. PlayCanvas by default; `?engine=three` is the three.js + Spark twin. |
-| [`player/`](player/) | `addPlayer()`: a media player with SDK transport (play/pause/seek/mute), built on `addVideo`. The stereo title (SBS) and its 2D edition (`format:'mono'`) side by side. |
+| [`player/`](player/) | `addPlayer()`: a media player with SDK transport (play/pause/seek/mute), built on `addVideo`. Default (SBS) and `format:'mono'` side by side. |
 | [`call/`](call/) | `addCall()`: a peer-to-peer 3D video call (up to 4) — invite link + QR, a stereo camera woven with convergence, everyone else flat. `?signal=ws://localhost:8787` for `node signaling/dev-server.mjs`, `?signal=peerjs` for the demo PeerJS broker (the sample's own `peerjs-cloud.js`, not part of the package), `?camera=synthetic` for a test pair. |
 | [`camera/`](camera/) | The 3D camera as a primitive (`/camera`): a correctly mirrored 3D self view, "Take 3D photo" (`_2x1.jpg` with the stereo record as XMP), "Record" (`_2x1.webm` + a 2D copy). `?camera=synthetic` is the eye-swap check. |
 | [`call-embed/`](call-embed/) | The one-line embed: a bare `<dxr-call>` element on the hosted server (2D everywhere, 3D on the DisplayXR Browser) with a visible copy-this-snippet box — the CDN `dist/call.js` form, the attributes form, and the npm `mountCall` form. Guide: [`docs/call.md`](../docs/call.md). |
-| [`shopify/`](shopify/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
+| [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
 | [`overlay-test/`](overlay-test/) | A minimal diagnostic repro for the 2D-overlay aspect path — a probe, not a showcase. |
 
 ## `composition/` — the composition showcase

@@ -13,8 +13,7 @@ anywhere.
 
 > **New here, or an AI coding agent? Read [Making 3D that looks right](docs/making-3d-look-right.md)
 > first** — the short path to a page that looks good on the first try: which view rig, where the
-> screen plane goes, the depth budget, 2D UI, a depth slider and a 2D/3D switch, and starter
-> templates in `samples/starter-*`.
+> screen plane goes, background and contrast, 2D UI, a depth slider and a 2D/3D switch.
 
 ## Install
 
