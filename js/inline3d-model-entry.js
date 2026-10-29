@@ -21,7 +21,7 @@
 // engine import fails, one warning names what to install, and the tile renders on three. With
 // neither, `ready` rejects naming both. An explicit `engine` never falls back.
 
-import { guardedAttach, validateSetStereo } from './inline3d-splat-shared.js';
+import { guardedAttach, validateSetStereo, resolveDepthOption } from './inline3d-splat-shared.js';
 /** The engines `addModel` renders with; the first is the default. */
 export const MODEL_ENGINES = Object.freeze(['playcanvas', 'three']);
 
@@ -71,6 +71,7 @@ export function validateModelCall(canvas, src, opts, route) {
   if (opts.orbitStyle !== undefined && opts.orbitStyle !== 'turntable' && opts.orbitStyle !== 'tilt') {
     throw new Error(`@displayxr/inline3d/model: orbitStyle must be 'turntable' or 'tilt' (got ${String(opts.orbitStyle)}).`);
   }
+  resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
   if (route.engine === 'three' && route.explicit) {
     const bad = PLAYCANVAS_ONLY.filter((k) => opts[k] !== undefined && !(k === 'controls' && opts[k] === 'viewer'));
     if (bad.length) {
@@ -148,6 +149,8 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
       return out;
     },
     rig: null,
+    // The `depth` option's comfort factor in force (1 until measured, and always without it).
+    depthFactor: 1,
     // Before the backend lands: once it has, the backend's own (PlayCanvas); three has none (0).
     warmEntity: (entity, o) => out.ready.then(() => (out.warmEntity !== stubWarm && typeof out.warmEntity === 'function' ? out.warmEntity(entity, o) : 0)),
   };
@@ -240,7 +243,7 @@ async function attachThree(out, wall, canvas, src, opts, pending, mod) {
   }
   out.backend = 'three';
   out.engine = null;
-  for (const k of ['rig', 'viewRig']) {
+  for (const k of ['rig', 'viewRig', 'depthFactor']) {
     Object.defineProperty(out, k, { get: () => inner[k], enumerable: true, configurable: true });
   }
   out.setStereo = (o) => (inner.setStereo(o), out);

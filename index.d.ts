@@ -216,9 +216,12 @@ export {
   disparityPct,
   cameraRigDisparityPct,
   depthBudgetFromBounds,
+  comfortZone,
+  comfortDepthFactor,
+  cameraRigComfortFactor,
   withheldReasonHint,
 } from './depth.js';
-export type { DepthReport, DepthReportBasis } from './depth.js';
+export type { DepthReport, DepthReportBasis, ComfortZoneName, ComfortZoneReport } from './depth.js';
 
 export const DISPLAY_METRICS_DEFAULTS: Readonly<{
   displaySizeM: readonly [number, number];

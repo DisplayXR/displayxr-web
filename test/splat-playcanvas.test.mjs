@@ -4450,3 +4450,88 @@ test('warmEntity also warms through the layer rig cameras: a mesh on a display-r
   assert.equal(n, 1);
   assert.deepEqual(seen, [rigParams], "warmed with the RIG camera's shaderParams only — the eye never draws layer 9");
 });
+
+// ── depth: 'auto' (opt-in comfort depth) on the PlayCanvas splat ────────────────────────────
+
+import { comfortDepthFactor } from '../js/inline3d-depth-budget.js';
+import { framedSubjectBounds } from '../js/inline3d-splat-shared.js';
+
+/** rigWall plus displayMetrics: a small, close panel (H 0.12 m, nominal viewer 0.3 m). */
+function metricsRigWall() {
+  const pushed = [];
+  const counts = { metrics: 0 };
+  return {
+    pushed,
+    counts,
+    wall: {
+      supported: true,
+      addScene: () => ({
+        exclude() {},
+        unexclude() {},
+        remove() {},
+        setViewRig: (r) => pushed.push(JSON.parse(JSON.stringify(r))),
+        displayMetrics: async () => {
+          counts.metrics++;
+          return { canvasSizeM: [0.21, 0.12], nominalViewerM: 0.3, source: { size: 'display', viewer: 'display', eyeSeparation: 'default' } };
+        },
+      }),
+    },
+  };
+}
+const tickOnce = () => new Promise((r) => setTimeout(r, 0));
+
+test("depth absent on a display-rig splat: the shorthand stays the only declaration, nothing measured", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeFlat(600, 0);
+  const { wall, pushed, counts } = metricsRigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  await tickOnce();
+  assert.equal(out.rig.type, 'display');
+  assert.equal(pushed.length, 0);
+  assert.equal(counts.metrics, 0);
+  assert.equal(out.depthFactor, 1);
+  out.remove();
+});
+
+test("depth on a display-rig splat: the declared rig's factors = k, × setStereo's; a camera rig ignores it (one warning)", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeFlat(600, 0);
+  const { wall, pushed } = metricsRigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, depth: { zone: 0.05 } }, []);
+  await tickOnce();
+  const b = framedSubjectBounds(out.viewer);
+  const k = comfortDepthFactor({ frontH: b.front / 0.24, backH: -b.back / 0.24, tileHeightM: 0.12, viewerM: 0.3, zone: 0.05 });
+  assert.ok(k < 1, String(k));
+  near(out.depthFactor, k, 1e-12);
+  assert.equal(pushed.at(-1).type, 'display');
+  near(pushed.at(-1).ipdFactor, k, 1e-12);
+  near(pushed.at(-1).parallaxFactor, k, 1e-12);
+  out.setStereo({ ipdFactor: 0.5 });
+  near(pushed.at(-1).ipdFactor, 0.5 * k, 1e-12);
+  near(pushed.at(-1).parallaxFactor, k, 1e-12);
+  out.remove();
+
+  // A camera-rig asset: ignored, said once, the rig sent as declared.
+  const fake2 = makeFakePc();
+  fake2.rec.resource = camFlat();
+  const w2 = metricsRigWall();
+  const warns = [];
+  const real = console.warn;
+  console.warn = (...a) => warns.push(a.map(String).join(' '));
+  const cam = {};
+  try {
+    await attachPlayCanvasSplat(cam, w2.wall, makeCanvas(320, 180), 'a.sog', { playcanvas: fake2.pc, focusInput: false, depth: 'auto' }, []);
+    await tickOnce();
+  } finally {
+    console.warn = real;
+  }
+  assert.equal(cam.rig.type, 'camera');
+  assert.equal(cam.depthFactor, 1);
+  assert.equal(warns.filter((w) => /depth: 'auto' applies to the display rig only/.test(w)).length, 1);
+  assert.equal(w2.pushed.at(-1).ipdFactor, 1, 'the camera rig untouched');
+  cam.remove();
+});

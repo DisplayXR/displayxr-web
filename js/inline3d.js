@@ -44,6 +44,9 @@ export {
   disparityPct,
   cameraRigDisparityPct,
   depthBudgetFromBounds,
+  comfortZone,
+  comfortDepthFactor,
+  cameraRigComfortFactor,
   withheldReasonHint,
 } from './inline3d-depth-budget.js';
 import { warnViewRigOnce, withheldReasonHint } from './inline3d-depth-budget.js';

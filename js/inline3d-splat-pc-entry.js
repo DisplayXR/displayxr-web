@@ -16,7 +16,7 @@
 // Not here: measureSplatBounds (it measures a Spark mesh — import it from ./splat).
 
 import { resolveRevealOption } from './inline3d-splat-effects.js';
-import { CAPTURE_FITS, guardedAttach, playcanvasCannotRead, resolveControls } from './inline3d-splat-shared.js';
+import { CAPTURE_FITS, guardedAttach, playcanvasCannotRead, resolveControls, resolveDepthOption } from './inline3d-splat-shared.js';
 import { addSplatDeferred } from './inline3d-splat-deferred.js';
 
 export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
@@ -44,6 +44,7 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     );
   }
   resolveControls(opts);
+  resolveDepthOption(opts.depth);
   resolveRevealOption(opts.reveal);
   const why = playcanvasCannotRead(src, opts);
   if (why) throw new Error(`@displayxr/inline3d/splat: ${why}`);
