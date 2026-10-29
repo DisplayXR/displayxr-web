@@ -12,7 +12,7 @@ them in 3D; in any other browser the pages render as a normal 2D fallback, so th
 anywhere.
 
 > **New here, or an AI coding agent? Read [Depth and comfort on a 3D display](docs/making-3d-look-right.md)
-> first:** six rules from real panels; the SDK's defaults do the rest.
+> first:** nine rules from real panels; the SDK's defaults do the rest.
 
 ## Install
 

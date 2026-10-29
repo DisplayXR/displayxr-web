@@ -419,19 +419,69 @@ three.js `Fog(color, near, far)`, distance-based LOD, distance fades. An aquariu
 `Fog(bg, 0.6, 0.9)` from its 2D camera at 0.6 m fogged the whole tank to the background colour in
 3D. Key such effects to the scene's own depth (distance behind the glass, `-z`), or leave them off.
 
-**Depth ranges measured on a panel** (viewer at about 60 cm, a random-block textured backdrop;
-`h` = the canvas's height on the glass, % = disparity as a share of the canvas width on a 16:9
-tile). These are reference points, not limits the SDK applies:
+**Comfort is set in diopters, so it depends on the viewing distance.** The eyes converge on a
+point at distance `z` while they focus on the glass at distance `V`; comfort is about the
+mismatch `ΔD = 1/V − 1/z` in diopters (positive behind the glass). On the glass that point lands
+with a disparity
 
-| Where | Comfortable | Usable | Brief "wow" moments | Uncomfortable |
+    p = e · V · ΔD        (e ≈ 0.063 m, the eye separation)
+
+so the same diopter bound allows more on-screen disparity for a viewer further away, and a
+larger share of a small canvas than of a large one (`% of canvas width = 100 · p / canvas width`).
+A percentage measured on one canvas does not carry over to another size or another distance;
+diopters do. Three published bounds, as on-screen disparity:
+
+| Viewing distance | Percival (±⅓ D) | Shibata et al. 2011, front / behind | Legacy Leia plugins, front / behind |
+|---|---|---|---|
+| 0.45 m | 9.4 mm | 15.6 mm (0.55 D) / 19.7 mm (0.70 D) | 12.6 / 10.5 mm |
+| 0.60 m | 12.6 mm | 21.5 mm (0.57 D) / 23.9 mm (0.63 D) | 12.6 / 10.5 mm |
+| 0.90 m | 18.9 mm | 33.4 mm (0.59 D) / 32.3 mm (0.57 D) | 12.6 / 10.5 mm |
+
+Shibata ("The zone of comfort", J. Vision 2011) puts the near limit at a vergence of
+`Dv/1.035 + 0.626` and the far limit at `Dv/1.129 − 0.442` (`Dv = 1/V`). The Leia Unity and Unreal
+plugins drew a comfort-zone gizmo from 0.83 V to 1.2 V, a constant e/5 in front and e/6 behind on
+the glass. These zones are necessary, not sufficient: the panel's crosstalk can make a bright
+subject ghost well inside them, which is what rule 5 of
+[making-3d-look-right.md](making-3d-look-right.md) is about.
+
+**What viewers reported on a panel** (about 60 cm, a 16:9 canvas of roughly 17 cm wide; the
+diopter values depend on that width, so treat them as approximate). People differ a lot; follow
+the less tolerant viewer:
+
+| | In front of the glass | Behind the glass |
+|---|---|---|
+| Less tolerant viewer | uncomfortable from about 0.55 h (3.1 %, ≈ 0.14 D) | comfortable to 0.6 h (3.4 %, ≈ 0.15 D), usable to 1.0 h (5.6 %, ≈ 0.25 D), past 1.6 h uncomfortable |
+| More tolerant viewer | slight fatigue from about 3.8 % (≈ 0.17 D), moving objects uncomfortable past about 3.5 % | fine to 2.0 h (11 %, ≈ 0.49 D) |
+
+Pop-out tolerates about half the depth that recession does, and moving objects less than still
+ones. The viewers' default fit puts the front of a typical subject near the stricter front limit,
+which is why rule 1 there is "keep the placement", not "come further out".
+
+**The same content on different devices.** On a display rig at real proportions, depth in tile
+heights is `d · H` metres (`H` = the canvas's physical height), so the vergence load goes roughly
+as `d · H / V²`. Devices are sized for their distance, which keeps it in a narrow band, but close
+devices carry more. A subject 0.5 h in front and 1.0 h behind, full screen, at the nominal distance:
+
+| Device | Distance | Real depth, front / behind | Load, front / behind | Shibata zone |
 |---|---|---|---|---|
-| Behind the glass | up to 0.6 h (≈ 3.4 %) | up to 1.0 h (≈ 5.6 %) | up to 1.5 h (≈ 8.4 %) | past 1.6 h (≈ 9 %) |
-| In front of the glass | | | | from about 0.55 h (≈ 3.1 %) |
+| 32" monitor | 80 cm | 19.9 / 39.8 cm | 0.41 / 0.42 D | 0.58 / 0.58 D |
+| 15.6" laptop | 60 cm | 9.7 / 19.4 cm | 0.32 / 0.41 D | 0.57 / 0.63 D |
+| 11" tablet | 40 cm | 7.4 / 14.8 cm | 0.57 / 0.68 D | 0.54 / 0.73 D |
+| 6.7" phone, landscape | 30 cm | 3.5 / 7.0 cm | 0.44 / 0.63 D | 0.51 / 0.82 D |
 
-Pop-out tolerates about half the depth that recession does. The viewers' default fit puts the
-front of a typical subject near that front limit, which is why rule 1 of
-[making-3d-look-right.md](making-3d-look-right.md) is "keep the placement", not "come further
-out". Ghosting, not depth, is usually the first thing to go wrong: see rule 3 there.
+Small, close devices also put more of the canvas width into disparity for the same load (about
+6.7 % on the phone against 3.5 % on the laptop), which is what crosstalk follows. So scale depth
+down on small, close devices if anything, and never up on large ones: a display rig's `ipdFactor`
+above 1 distorts shapes, and real proportions on a 32" monitor already give 20 cm of pop-out.
+`getDisplayInfo()` reports the device's nominal viewer distance and `displayMetrics()` the
+canvas's physical size. The `./depth` helpers do this arithmetic: `comfortZone({ viewerM, zone })`
+gives the zone in diopters and on-glass mm; `comfortDepthFactor(...)` the display-rig factor
+(never above 1) that keeps a subject inside it; `cameraRigComfortFactor(...)` the camera-rig
+eye-separation multiplier (uncapped) that fits a scene's nearest and farthest points into it. On
+`addModel` / `addSplat`, the opt-in `depth: 'auto'` (or `{ zone: 'percival' }`) applies the
+display-rig factor from the nominal distance and the canvas size, once per framing, resize or
+display change, never on zoom or orbit; `handle.depthFactor` reads it. Without the option nothing
+changes.
 
 **Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses by
 `virtualDisplayHeight / the element's physical height`, so the depth you get does not depend on how
@@ -514,6 +564,13 @@ that goes with that, for a scene not authored in metres: a scene built in centim
 otherwise get a 63 mm eye separation measured in *its* units. It is a unit fix, not a depth dial —
 if you are reaching for it to make a scene look deeper, read the section below and then the
 [rig choice](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera) again.
+
+So on a camera rig `ipdFactor: 1` is **not** "correct" by default: it means real eye separation
+only when the world is in metres at real-world scale. In arbitrary units, or for a scene framed
+small or far from the camera, 1 is just a number and often gives almost no depth. There is no
+cap: scale the eye separation to the scene, so that its nearest and farthest visible points land
+inside the comfort zone at the device's viewing distance (see *Comfort is set in diopters*
+below). Only on a display rig is 1 the natural value and anything above it an exaggeration.
 
 ### Which way is out
 
