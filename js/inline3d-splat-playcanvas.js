@@ -3983,6 +3983,10 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // three looks down −z; convergence is the focus's distance along that axis (the PLANE).
     const fwd = [-pose[8], -pose[9], -pose[10]];
     const d = (f.x - pose[12]) * fwd[0] + (f.y - pose[13]) * fwd[1] + (f.z - pose[14]) * fwd[2];
+    // A focus at or behind the camera has no zero-disparity plane in front of it: a transient
+    // before the first focus lands, or a focus moved behind the camera. Keep the rig as declared;
+    // convergence at infinity would put the whole scene in front of the glass.
+    if (!(d > 0)) return;
     if (!force && Math.abs(d - lastConvergence) < 1e-3) return;
     lastConvergence = d;
     out.rig.convergence = d;
@@ -3996,7 +4000,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         fov: viewer.mono.fov,
       },
       {
-        convergence: d > 0 ? d : 0,
+        convergence: d,
         ipdFactor: out.rig.ipdFactor,
         parallaxFactor: out.rig.parallaxFactor,
         out: camRigObj,
