@@ -1,6 +1,10 @@
 # AGENTS.md
 
-**Before touching any page that hosts a woven canvas, read
+**Building or fixing a page? Read [`docs/making-3d-look-right.md`](docs/making-3d-look-right.md)
+first:** six depth and comfort rules from real panels. The samples show how the API works, not
+how a page should look.
+
+**Before touching any page that hosts a woven canvas, also read
 [`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md)** (including §5, pitfalls found on
 hardware). Most "3D is broken" reports on a DisplayXR panel are one of those rules, not a browser
 or runtime bug: a raw side-by-side flash, a black picture, a flat tile, a stall that looks like lost

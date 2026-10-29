@@ -11,6 +11,9 @@ live demos.
 them in 3D; in any other browser the pages render as a normal 2D fallback, so they're safe to view
 anywhere.
 
+> **New here, or an AI coding agent? Read [Depth and comfort on a 3D display](docs/making-3d-look-right.md)
+> first:** six rules from real panels; the SDK's defaults do the rest.
+
 ## Install
 
 The SDK is published as **[`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d)**

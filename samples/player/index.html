@@ -85,17 +85,18 @@
     <div>
       <h2><code>format:'mono'</code></h2>
       <div class="stage"><canvas id="tile-mono"></canvas></div>
-      <p class="cap">The SAME stereo file, told it is flat — so it is painted whole, and you see
-         both eyes side by side, squeezed. That is correct: <code>'mono'</code> is for genuinely 2D
-         titles (a trailer, a 2D entry in a mixed catalogue), where "whole" is the picture. This
-         sample has no 2D asset, so it shows what the mode does rather than what it is for.</p>
+      <p class="cap">A genuinely 2D title — the same trailer's left eye, re-encoded
+         (<code>assets/flymetothemoon_2d.*</code>) — painted whole and never split into eyes, so it
+         stays flat even on a 3D display. That is what <code>'mono'</code> is for: a 2D entry in a
+         mixed catalogue. (Hand it a side-by-side file and you would see both eyes, squeezed.)</p>
     </div>
   </div>
 
   <footer>
     Assets: <code>../windows/assets/flymetothemoon_2x1.mp4</code> (H.264 + AAC, with sound;
     DisplayXR Browser 1.0.6+) and, for browsers without H.264, the silent
-    <code>flymetothemoon_sbs.webm</code> that <a href="../windows/">samples/windows/</a> ships.
+    <code>flymetothemoon_sbs.webm</code> that <a href="../windows/">samples/windows/</a> ships;
+    the flat tile plays their 2D edition, <code>assets/flymetothemoon_2d.mp4</code> / <code>.webm</code>.
     The player picks the first one this browser can play; both start muted, so unmute from the
     controls. Built on
     <a href="../../docs/authoring-inline-3d.md#2b-player--addplayercanvas-src-opts">the player

@@ -264,7 +264,10 @@ A scroll is not a resize. The canvas keeps its size and its identity, and nothin
   before the first good one: the mono camera into both halves, the subject if it is loaded, or a
   cleared frame if it is not. The only undrawn frames left are the ones before the engine has
   created its context. The SDK cannot enforce this for an `addScene` window your page draws: draw
-  something on every `onFrame`, even with no content yet.
+  something on every `onFrame`, even with no content yet. When you keep the last good frame,
+  copy the viewport's and view's fields **by name**: `XRViewport` and `XRView` fields are
+  prototype getters, so `Object.assign` and spread copy nothing and the replay draws into a 0×0
+  viewport, which weaves black ([details](authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
   - **Known limitation: a transparent canvas weaves black.** A cleared (fully transparent) woven
     frame comes out black on the panel, not see-through: a browser bug (browser-pvt #255), not
     the SDK's. Until it is fixed, a frame with nothing to show is drawn but dark. If the page

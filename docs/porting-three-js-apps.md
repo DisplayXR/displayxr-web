@@ -192,19 +192,19 @@ camera's transform twice. Flip them together, in one function, or you will flip 
 The runtime's own rule:
 
 ```
-ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1        (N ≈ 0.5 m, nominal viewing distance)
+ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1        (N = the display's nominal viewing distance, 0.6 m on desktop panels)
 ```
 
 At `1` the viewer's eyes are parallel on infinitely distant content; **past 1 they diverge**, and
 nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1, `metersToVirtual` 1) it reduces
-to *keep convergence past about 0.5 world units*.
+to *keep convergence past about N world units* (0.6 on a desktop panel).
 
 Which is why **the units your scene is authored in are now load-bearing**. On a camera rig
 `ipdFactor` and `metersToVirtual` are **absolute**, in your world units — a scene built in
 centimetres, or in "1 unit = 1 tile", sails past the comfort limit at every plausible convergence
 and there is no clue in the code that anything is wrong. Either author at metre scale, or set
-`metersToVirtual` to your units-per-metre and leave it there. Nothing in the SDK enforces the rule
-(the runtime clamps its own inputs, once, with a warning); `samples/camera-rig/` prints it live, and
+`metersToVirtual` to your units-per-metre and leave it there. Nothing enforces the rule (neither the SDK
+nor the runtime clamps a rig the page declares); `samples/camera-rig/` prints it live, and
 is the fastest way to develop an intuition for it.
 
 ### Capability gate and fallback
