@@ -25,8 +25,11 @@ on real panels; everything else about how your scene looks is your call.
 5. **Low contrast between the subject and what is behind it.** The display's crosstalk correction
    works only within the range of the image, so a bright edge on black ghosts first. A light or
    mid-tone, low-contrast background works best: a real texture or a soft gradient, not generated
-   noise. A dark grey is the minimum, and pure black is the worst case; keep the subject's darkest
-   faces above the background. Soften high-contrast detail far from the glass in the colours and
+   noise. A dark grey is the minimum (a bright orange beak still ghosts against it), and pure
+   black is the worst case; keep the subject's darkest faces above the background. In front of
+   the glass, contrast matters more than the depth number: the same pop-out read fine on a
+   mid-tone globe and ghosted on a dark one. Keep bright subjects off near-black backgrounds,
+   above all the ones that come closest. Soften high-contrast detail far from the glass in the colours and
    materials, not with fog, since camera-distance fog follows the viewer's head.
 6. **Text: flat HTML near the glass, at a readable size.** Text drawn in the 3D scene, especially
    white on dark, ghosts. Put titles, labels and values in HTML, or keep in-scene labels close to
@@ -39,9 +42,14 @@ on real panels; everything else about how your scene looks is your call.
 8. **No detail finer than a few pixels.** Thin lines, single-pixel stars and fine repeating
    patterns alias and shimmer as the head moves. Draw them thicker, softer or as sprites, and size
    textures to their surfaces instead of stretching them.
-9. **A cover over the canvas must always come off.** If you hide the canvas until `firstWoven`,
-   also remove the cover after a few seconds and if your setup throws. Otherwise a missed signal
-   leaves the page with its UI and no scene.
+9. **A cover over the canvas must always come off, and only a lost layer means flat.** If you
+   hide the canvas until `firstWoven`, also remove the cover after a few seconds and if your setup
+   throws; otherwise a missed signal leaves the page with its UI and no scene. A `firstWoven` of
+   `woven: false` is not "no 3D here": drop the cover and keep drawing both eyes (the layer can
+   still join). Go flat only on `onLayerLost` or with no session. And never draw one full-width
+   flat picture into a canvas the browser is still weaving: it splits it, so each eye sees a
+   different half of the room. To show a flat picture on purpose, remove the scene first, or call
+   `setStereoEnabled(false)` and keep drawing every view you are given.
 
 The mechanics (one view per eye, CSS that breaks the weave, the 2D/3D switch) are in
 [woven-canvas-rules.md](woven-canvas-rules.md) and [authoring-inline-3d.md](authoring-inline-3d.md),
