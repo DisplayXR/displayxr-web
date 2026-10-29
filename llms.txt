@@ -3,10 +3,11 @@
 > Glasses-free 3D for web pages on a DisplayXR spatial display: you render one image per eye into a
 > canvas, the DisplayXR Browser weaves them for the panel; an ordinary browser shows the page in 2D.
 
-Read first: docs/making-3d-look-right.md — six depth and comfort rules from real panels
-(keep the viewers' object placement, fixed convergence and no near geometry in worlds, low
-contrast behind the subject, text as HTML near the glass, no sub-pixel detail, a cover that always
-comes off). The SDK's defaults do the rest.
+Read first: docs/making-3d-look-right.md — nine depth and comfort rules from real panels
+(keep the viewers' object placement and frame the first view, lay flat arrangements back into
+depth, keep moving things' forward swing small, fixed convergence and no near geometry in worlds,
+low contrast behind the subject, text as HTML near the glass, no coplanar surfaces, no sub-pixel
+detail, a cover that always comes off). The SDK's defaults do the rest.
 
 ## Samples (they show the API, not a look to copy)
 - samples/model/, samples/splat/, samples/hello-cube/, samples/camera-rig/, samples/display-modes/
