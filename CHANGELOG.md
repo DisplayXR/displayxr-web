@@ -5,7 +5,12 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.47.0 — 2026-10-29
+
+The look-right release: a short guide for people and coding agents (`docs/making-3d-look-right.md`,
+`llms.txt`), depth measurements and comfort-zone helpers, and opt-in `clearColor`, `setStereo` on
+`./model` and `depth: 'auto'`. Every addition is opt-in: without the new options a page renders
+exactly as on 1.46.0; the only default change is a few one-time console warnings.
 
 ### Comfort depth: zone-of-comfort helpers and an opt-in `depth` option
 
