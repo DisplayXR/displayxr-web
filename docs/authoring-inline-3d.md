@@ -474,7 +474,14 @@ Small, close devices also put more of the canvas width into disparity for the sa
 down on small, close devices if anything, and never up on large ones: a display rig's `ipdFactor`
 above 1 distorts shapes, and real proportions on a 32" monitor already give 20 cm of pop-out.
 `getDisplayInfo()` reports the device's nominal viewer distance and `displayMetrics()` the
-canvas's physical size.
+canvas's physical size. The `./depth` helpers do this arithmetic: `comfortZone({ viewerM, zone })`
+gives the zone in diopters and on-glass mm; `comfortDepthFactor(...)` the display-rig factor
+(never above 1) that keeps a subject inside it; `cameraRigComfortFactor(...)` the camera-rig
+eye-separation multiplier (uncapped) that fits a scene's nearest and farthest points into it. On
+`addModel` / `addSplat`, the opt-in `depth: 'auto'` (or `{ zone: 'percival' }`) applies the
+display-rig factor from the nominal distance and the canvas size, once per framing, resize or
+display change, never on zoom or orbit; `handle.depthFactor` reads it. Without the option nothing
+changes.
 
 **Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses by
 `virtualDisplayHeight / the element's physical height`, so the depth you get does not depend on how
