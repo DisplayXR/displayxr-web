@@ -121,7 +121,7 @@ poster.remove();                                       // cut, never fade
 |---|---|---|
 | `woven: true`, `reason: 'woven'`, `confirmed: true` | the browser reported the layer woven (`XRDisplayLayer.wovenState`), after a real stereo frame | drop the cover |
 | `woven: true`, `reason: 'hold-elapsed'` | a browser without that report: the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
-| `woven: false`, `confirmed: true`, `reason` a withheld token (or `'pending'`) | the browser kept reporting the layer withheld for the whole safety cap (four holds, at least 4.8 s). The canvas is not taken flat | drop the cover, then read the token in §3: it names the page fix |
+| `woven: false`, `confirmed: true`, `reason` a withheld token (or `'pending'`) | the browser kept reporting the layer withheld for the whole safety cap (four holds, at least 4.8 s). The canvas is not taken flat, and the layer can still join | drop the cover and **keep drawing both eyes**, then read the token in §3: it names the page fix. Do not switch to a flat full-width picture: the browser is still weaving the canvas and would give each eye a different half of it |
 | `woven: false`, `reason: 'layer-failed'` / `'session-ended'` / `'removed'` | this window will not weave. An image or video canvas has already been painted flat, and a scene's `onLayerLost` has already run | drop the cover onto the 2D fallback |
 | `woven: false`, `reason: 'unsupported'` (`addSplat` / `addModel` only) | no inline-3D session: the viewer is on its mono path | same |
 
