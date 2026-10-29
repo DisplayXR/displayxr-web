@@ -53,6 +53,8 @@ export function addSplatDeferred(wall, canvas, src, opts) {
     frame: null,
     camera: null,
     rig: null,
+    // The `depth` option's comfort factor in force (1 until measured, and always without it).
+    depthFactor: 1,
     perf: null,
     setPose: page ? pageOnly('setPose') : queue('setPose'),
     resetPose: page ? pageOnly('resetPose') : queue('resetPose'),

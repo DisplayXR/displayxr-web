@@ -38,7 +38,7 @@
 //       └── eye camera, N RenderViews, TONEMAP_NEUTRAL, no sky layer
 
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
-import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo } from './inline3d-splat-shared.js';
+import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo, attachComfortDepth, resolveDepthOption, framedSubjectBounds } from './inline3d-splat-shared.js';
 import { displayRig } from './inline3d-three.js';
 import {
   NEUTRAL_STUDIO,
@@ -441,6 +441,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   } = opts;
   const ctl = validatePlayCanvasModelOptions(opts);
   const pageMode = ctl.page;
+  const depthOption = resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
   if (pageMode && ctl.ignored.length) {
     console.info(`${TAG} controls:'page' — the page owns the camera, so ${ctl.ignored.join(', ')} ${ctl.ignored.length === 1 ? 'is' : 'are'} ignored.`);
   }
@@ -513,6 +514,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     },
     remove() {
       removed = true;
+      depth.dispose();
       handle?.remove();
       viewer.dispose(); // app.destroy(): the model, its textures and any page entities go with it
     },
@@ -534,7 +536,19 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
   // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
-  attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig, page: pageMode });
+  const stereo = attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig, page: pageMode });
+  // `depth: 'auto'` (opt-in): the comfort factor under setStereo's, on the same display rig.
+  // Without it, inert: `depthFactor` reads 1 and nothing is measured or declared.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.frame ? framedSubjectBounds(viewer) : null),
+    getVH: () => virtualDisplayHeight,
+    apply: (k) => stereo.setBase(k),
+    tag: TAG,
+  });
+  if (pageMode) depth.ignore("controls:'page' (the page's camera rig)");
 
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {
@@ -676,6 +690,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     if (bounds) {
       out.frame = bounds;
       viewer.fitTo(bounds.center, bounds.extent);
+      depth.refresh();
     }
     return out;
   })();

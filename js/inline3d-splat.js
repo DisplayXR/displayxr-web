@@ -20,7 +20,7 @@
 
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
-import { EyeCamera, EdgeFeather, cameraRigFromCamera, DepthCursor, raycastHitTest } from './inline3d-three.js';
+import { EyeCamera, EdgeFeather, cameraRigFromCamera, DepthCursor, raycastHitTest, displayRig } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
@@ -40,6 +40,9 @@ import {
   resolveControls,
   declareViewRig,
   guardedAttach,
+  attachComfortDepth,
+  resolveDepthOption,
+  framedSubjectBounds,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -178,6 +181,8 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
   // WHO OWNS THE CAMERA. Validated here, synchronously, for both engines (an unknown `controls`
   // or a comfortDepth out of range is a page bug true of every call).
   const { page: pageControls } = resolveControls(opts);
+  // Opt-in comfort depth, both engines: a bad value is a page bug, thrown at the call.
+  const depthOption = resolveDepthOption(opts.depth);
   // WHICH ENGINE. Unset (or 'spark') is everything below, untouched. 'playcanvas' goes to
   // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
   // resolves `playcanvas` — see addSplatDeferred.
@@ -358,6 +363,7 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     remove() {
       unbindFocusInput?.();
       viewer.onFocusChange = null;
+      depth.dispose();
       handle?.remove();
       viewer.dispose();
       out.mesh?.dispose?.();
@@ -512,6 +518,23 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
   }
   // The core handle's `firstWoven`, forwarded; a page with no session is told so at once.
   out.firstWoven = handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 }));
+
+  // `depth: 'auto'` (opt-in, display rig only): Spark has no setStereo, so the comfort factor is
+  // the display rig's whole ipdFactor / parallaxFactor, declared explicitly when it moves off 1
+  // (and back to the plain rig — the shorthand's exact equivalent — if it returns to 1).
+  // Without the option: inert, `depthFactor` 1, the shorthand stays the only declaration.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.frame && out.rig?.type === 'display' ? framedSubjectBounds(viewer) : null),
+    getVH: () => virtualDisplayHeight,
+    apply: (k) => {
+      out.viewRig = displayRig({ virtualDisplayHeight, ipdFactor: k, parallaxFactor: k, out: out.viewRig || {} });
+      declareViewRig(handle, out.viewRig);
+    },
+    tag: '[inline3d/splat]',
+  });
 
 
   // ── focus: declaring it, and the two gestures that change it ──────────────────────────
@@ -669,6 +692,7 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
       out.frame = bounds;
 
       if (resolved.type === 'camera') {
+        depth.ignore('a camera rig (this asset carries a capture camera)');
         // A turntable on a photograph is nonsense, so the default spin stops here — but only the
         // DEFAULT: a page that asked for one still gets it.
         if (!('idleSpin' in opts)) viewer.idleSpin = 0;
@@ -681,8 +705,10 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
         });
         pushViewRig(true);
       } else {
-        if (bounds) viewer.fitTo(bounds.center, bounds.extent);
-        else {
+        if (bounds) {
+          viewer.fitTo(bounds.center, bounds.extent);
+          depth.refresh();
+        } else {
           // Unframed means drawn at raw MODEL scale, which for a typical capture is several
           // times the tile. Say so: silence here is what made the same condition read as a fit
           // bug.

@@ -122,6 +122,9 @@ import {
   parseClearColor,
   validateSetStereo,
   stereoScalarOf,
+  attachComfortDepth,
+  resolveDepthOption,
+  framedSubjectBounds,
 } from './inline3d-splat-shared.js';
 import { resolveCursorOption } from './inline3d-cursor-option.js';
 
@@ -3378,6 +3381,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // an advanced caller may reach this function directly.
   const ctl = resolveControls(opts);
   const pageMode = ctl.page;
+  const depthOption = resolveDepthOption(opts.depth);
   if (pageMode && ctl.ignored.length) {
     console.info(
       `[inline3d/splat] controls:'page' — the page owns the camera, so ${ctl.ignored.join(', ')} ` +
@@ -3415,6 +3419,21 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
 
   let handle = null;
   let unbindFocusInput = null;
+  // `depth: 'auto'` (opt-in): the comfort factor, multiplied under setStereo's on the DISPLAY rig
+  // declareDisplay sends (camera rigs and setVideo's own rig never carry it). Without the option:
+  // inert, `depthFactor` 1, nothing measured, nothing declared.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.rig && out.rig.type !== 'camera' && !vid?.on ? framedSubjectBounds(viewer) : null),
+    getVH: () => viewer.vH,
+    apply: () => {
+      if (!pageMode && !vid?.on && out.rig?.type !== 'camera' && lastDisplayBase) declareDisplay(lastDisplayBase);
+    },
+    tag: '[inline3d/splat]',
+  });
+  if (pageMode) depth.ignore("controls:'page' (the page's camera rig)");
 
   // ── diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ──
   const diagCfg = resolveDiag(opts.diag);
@@ -3682,6 +3701,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     effects: () => (fx ? fx.list() : []),
     remove() {
       removed = true;
+      depth.dispose();
       dropVideo(); // before the app goes: the plane's rVFC, and a <video> this handle made
       current = null;
       for (const p of [...livePrepared]) p.dispose();
@@ -4346,9 +4366,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // raw: setVideo's own display rig — not the page's rig, so neither setStereo's factors nor
     // the base setStereo re-declares from.
     if (!raw) lastDisplayBase = base;
+    // The `depth` option's comfort factor (1 without it), × setStereo's: never on setVideo's rig.
+    const kd = raw ? 1 : depth.factor;
     const f =
-      stereoOverride && !raw
-        ? { ...base, ipdFactor: stereoScalar(base.ipdFactor ?? 1, 'ipd'), parallaxFactor: stereoScalar(base.parallaxFactor ?? 1, 'parallax') }
+      (stereoOverride || kd !== 1) && !raw
+        ? { ...base, ipdFactor: stereoScalar(base.ipdFactor ?? 1, 'ipd') * kd, parallaxFactor: stereoScalar(base.parallaxFactor ?? 1, 'parallax') * kd }
         : base;
     const key = `${f.vH}|${f.ipdFactor ?? 1}|${f.parallaxFactor ?? 1}|${f.perspectiveFactor ?? 1}`;
     if (declaredDisplay === key) return;
@@ -4384,6 +4406,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: false });
       lastConvergence = Number.NaN;
       pushViewRig(true);
+      depth.ignore('a camera rig');
       return;
     }
     if (viewer.mono.capture) viewer.useDisplayCamera();
@@ -4402,6 +4425,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       resolved.focusDefaultSource = 'frame';
       resolved.frame = target;
       declareDisplay(disp);
+      depth.resume();
       return;
     }
     // The splat itself, as a display-rig addSplat frames it (the load-time path).
@@ -4414,6 +4438,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     if (disp) resolved.frame = bounds ? { center: bounds.center.slice(), extent: bounds.extent.slice(), source: 'splat' } : null;
     declareDisplay(disp || { vH: bootFraming.vH });
+    if (bounds) depth.resume();
   }
 
   // ── handle.setStereo: live stereo strength on whatever rig is declared ──
@@ -4917,6 +4942,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     lastConvergence = s.lastConvergence;
     state.on = false;
     if (stereoOverride !== state.stereoAtEnter) redeclareStereo(); // a setStereo made while the video held the rig
+    depth.refresh(); // the `depth` option holds still under a video; measure again (no-op without it)
 
   }
 

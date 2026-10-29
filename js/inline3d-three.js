@@ -81,6 +81,9 @@ export {
   disparityPct,
   cameraRigDisparityPct,
   depthBudgetFromBounds,
+  comfortZone,
+  comfortDepthFactor,
+  cameraRigComfortFactor,
 } from './inline3d-depth-budget.js';
 
 /**
