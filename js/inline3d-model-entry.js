@@ -22,7 +22,6 @@
 // neither, `ready` rejects naming both. An explicit `engine` never falls back.
 
 import { guardedAttach, validateSetStereo } from './inline3d-splat-shared.js';
-import { validateDepthFit } from './inline3d-depth-budget.js';
 /** The engines `addModel` renders with; the first is the default. */
 export const MODEL_ENGINES = Object.freeze(['playcanvas', 'three']);
 
@@ -108,7 +107,6 @@ export function addModel(wall, canvas, src, opts = {}) {
 function addModelUnguarded(wall, canvas, src, opts = {}) {
   const route = resolveModelEngine(opts);
   validateModelCall(canvas, src, opts, route);
-  validateDepthFit(opts.depthFit, '@displayxr/inline3d/model'); // throws at the call, not in ready
   if (route.engine === 'playcanvas') {
     // The backend's own call-time checks (environment, envMap, controls, three loaders). Imported
     // lazily below, so this is the cheap pure copy that lives there — see validatePlayCanvasModelOptions.
@@ -150,8 +148,6 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
       return out;
     },
     rig: null,
-    // Nothing is framed before the backend lands.
-    depthReport: () => null,
     // Before the backend lands: once it has, the backend's own (PlayCanvas); three has none (0).
     warmEntity: (entity, o) => out.ready.then(() => (out.warmEntity !== stubWarm && typeof out.warmEntity === 'function' ? out.warmEntity(entity, o) : 0)),
   };
@@ -248,7 +244,6 @@ async function attachThree(out, wall, canvas, src, opts, pending, mod) {
     Object.defineProperty(out, k, { get: () => inner[k], enumerable: true, configurable: true });
   }
   out.setStereo = (o) => (inner.setStereo(o), out);
-  out.depthReport = inner.depthReport;
   out.setPose = inner.setPose;
   out.resetPose = inner.resetPose;
   out.remove = inner.remove;

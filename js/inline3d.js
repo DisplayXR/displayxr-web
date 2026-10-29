@@ -39,12 +39,10 @@ import { displayMetricsFrom } from './inline3d-display-metrics.js';
 // The depth budget: pure measurements (how deep is this scene, in % of the tile width) and the
 // one-time rig warnings. Never a behaviour change — see ./inline3d-depth-budget.js.
 export {
-  DEPTH_BUDGET,
   DEPTH_EYE_SEPARATION_M,
   DEPTH_DEFAULT_VIEWER_M,
   disparityPct,
   cameraRigDisparityPct,
-  depthBudgetClass,
   depthBudgetFromBounds,
   withheldReasonHint,
 } from './inline3d-depth-budget.js';

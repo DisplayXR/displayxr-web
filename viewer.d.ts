@@ -2,7 +2,6 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { ViewerEaseOption } from './index.js';
-import type { DepthFitOption } from './depth.js';
 
 /** Model-space bounds of the subject a viewer frames on. */
 export interface SubjectBounds {
@@ -58,16 +57,6 @@ export interface SceneViewerOptions {
    * the default clear stays.
    */
   clearColor?: [number, number, number] | [number, number, number, number] | string;
-  /**
-   * OPT-IN depth budget for the auto-frame, in TILE HEIGHTS, e.g. `{ front: 0.1, back: 0.27 }`
-   * (the comfortable budget — see `DEPTH_BUDGET`). On top of the size fit, the subject is scaled
-   * DOWN uniformly (never non-uniformly, never above the size fit) so its nearest point sits at
-   * most `front` in front of the glass and its farthest at most `back` behind, under the current
-   * `depthOffset` (and every yaw, with `fitSweep`). Applied at each fit; a later zoom or
-   * `depthOffset` is the page's and is not refitted (read `handle.depthReport()`). Unset: today's
-   * fit, exactly. A placement that alone breaks the budget keeps the size fit (one warning).
-   */
-  depthFit?: DepthFitOption;
 }
 
 export interface OrbitPose {
@@ -139,10 +128,7 @@ export declare class SceneViewer {
 
   /** The `clearColor` option, parsed (`[r,g,b,a]`), or null = the transparent clear. */
   readonly clearColor: number[] | null;
-  /** The `depthFit` option, validated (a missing side = Infinity), or null = off. */
-  depthFit: { front: number; back: number } | null;
-
-  /** Centre the subject on the zero-disparity plane and scale it to the tile (and to `depthFit`, when set). */
+  /** Centre the subject on the zero-disparity plane and scale it to the tile. */
   fitTo(
     center: number[] | { x: number; y: number; z: number },
     extent: number[] | { x: number; y: number; z: number },

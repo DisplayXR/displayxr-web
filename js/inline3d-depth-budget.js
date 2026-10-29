@@ -1,20 +1,14 @@
 // inline3d-depth-budget.js — how deep is this scene, in the units a 3D display cares about.
 //
 // Pure functions, dependency-free, re-exported by ./inline3d.js (the root), ./three and the
-// `./depth` subpath. NOTHING HERE CHANGES A PIXEL: these are measurements and opt-in fits. The SDK
-// never clamps, refuses or overrides a depth a page asked for; a page that wants a budget asks for
-// one (`depthFit`) or reads one (`depthReport()`, the helpers below) and decides for itself.
+// `./depth` subpath. NOTHING HERE CHANGES A PIXEL: these are measurements, plus one-time warnings.
+// The SDK never clamps, refuses or overrides a depth a page asked for.
 //
-// THE BUDGET is relative, which is what makes it portable across panels: disparity as a percentage
-// of the TILE's width, or depth in TILE HEIGHTS on a display rig (where the canvas is a portal and
-// world depth / virtualDisplayHeight equals physical depth / the tile's physical height).
-//
-//                     in FRONT of the glass        BEHIND the glass
-//   comfortable       <= 0.6 % (~0.1 h)             <= 1.5 % (~0.27 h)
-//   strong            <= 1.1 % (~0.18 h)            <= 2.3 % (~0.45 h)
-//   hard human limit  ~3.3 % either way (~0.3 D of vergence at 0.6 m)
-//
-// and ~0 near the frame edges (a subject cut by the frame while in front of it reads as broken).
+// The units are relative, which is what makes them portable across panels: disparity as a
+// percentage of the TILE's width, or depth in TILE HEIGHTS on a display rig (where the canvas is a
+// portal and world depth / virtualDisplayHeight equals physical depth / the tile's physical
+// height). Depth ranges measured on a panel are in docs/authoring-inline-3d.md; they are reference
+// points, not limits this module applies.
 //
 // The conversion on a display rig: physical depth z = depthH · h (h = the tile's physical height),
 // on-screen disparity p = e · z / (V ∓ z) (e = 0.063 m, V = the nominal viewer distance, − in
@@ -26,17 +20,6 @@ export const DEPTH_EYE_SEPARATION_M = 0.063;
 
 /** The viewer distance used when the display does not report its nominal viewer (desktop panel). */
 export const DEPTH_DEFAULT_VIEWER_M = 0.6;
-
-/**
- * The relative depth budget, as disparity in % of the tile width (`*Pct`) and the display-rig
- * depth it corresponds to in tile heights (`*H`, on a 16:9 tile at 0.6 m — the `%` is the budget,
- * the `H` its usual translation). `limitPct` is the hard human fusion limit.
- */
-export const DEPTH_BUDGET = Object.freeze({
-  comfortable: Object.freeze({ frontPct: 0.6, backPct: 1.5, frontH: 0.1, backH: 0.27 }),
-  strong: Object.freeze({ frontPct: 1.1, backPct: 2.3, frontH: 0.18, backH: 0.45 }),
-  limitPct: 3.3,
-});
 
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 
@@ -87,17 +70,6 @@ export function cameraRigDisparityPct({ z, convergence, convergenceDiopters, ipd
   return (100 * b * (invD - 1 / z)) / (2 * Math.tan(verticalFov / 2) * aspect);
 }
 
-/** 'comfortable' | 'strong' | 'beyond' for disparity magnitudes (%) in front and behind. */
-export function depthBudgetClass(frontPct, backPct) {
-  const f = Math.abs(frontPct) || 0;
-  const b = Math.abs(backPct) || 0;
-  const C = DEPTH_BUDGET.comfortable;
-  const S = DEPTH_BUDGET.strong;
-  if (f <= C.frontPct && b <= C.backPct) return 'comfortable';
-  if (f <= S.frontPct && b <= S.backPct) return 'strong';
-  return 'beyond';
-}
-
 /**
  * A depth report from a display-rig subject box (SceneViewer.getSubjectBounds' `front` / `back`,
  * display space: +z toward the viewer, glass at 0, units of the virtual display).
@@ -126,7 +98,6 @@ export function depthBudgetFromBounds({ front, back, virtualDisplayHeight, aspec
     backH,
     frontPct,
     backPct,
-    budget: Number.isNaN(frontPct) || Number.isNaN(backPct) ? 'beyond' : depthBudgetClass(frontPct, backPct),
     basis: {
       rig: 'display',
       aspect,
@@ -135,134 +106,6 @@ export function depthBudgetFromBounds({ front, back, virtualDisplayHeight, aspec
       ipdFactor,
       eyeSeparationM: DEPTH_EYE_SEPARATION_M,
     },
-  };
-}
-
-// ── depthFit (SceneViewer / the PlayCanvas viewer, opt-in) ────────────────────────────────────
-
-/**
- * The `depthFit` option, validated. Null / undefined = off (today's fit, exactly). Otherwise
- * `{ front, back }` in TILE HEIGHTS, each a finite number >= 0; a side left out is unbounded.
- * Throws a TypeError on anything else, at the call.
- */
-export function validateDepthFit(v, tag = '@displayxr/inline3d/viewer') {
-  if (v === undefined || v === null) return null;
-  if (typeof v !== 'object') throw new TypeError(`${tag}: depthFit must be { front, back } in tile heights, or null.`);
-  const out = { front: Infinity, back: Infinity };
-  for (const k of ['front', 'back']) {
-    if (v[k] === undefined || v[k] === null) continue;
-    if (!num(v[k]) || v[k] < 0) throw new TypeError(`${tag}: depthFit.${k} must be a finite number >= 0 (tile heights), got ${v[k]}.`);
-    out[k] = v[k];
-  }
-  return out;
-}
-
-/**
- * The largest uniform scale that keeps a subject of half-depth `halfDepth` (model units), centred
- * at `depthOffset` (display units, + toward the viewer), within `front` tile heights in front of
- * the glass and `back` behind it. Infinity when nothing binds; null when the placement alone
- * (`depthOffset`) is already past a bound, so no scale can satisfy it — the caller then keeps its
- * size fit (never scales to nothing).
- */
-export function depthFitScale({ halfDepth, virtualDisplayHeight, depthOffset = 0, front = Infinity, back = Infinity }) {
-  const hd = Math.max(halfDepth, 1e-9);
-  const vH = virtualDisplayHeight;
-  const d = num(depthOffset) ? depthOffset : 0;
-  let s = Infinity;
-  if (front !== Infinity) {
-    const room = front * vH - d;
-    if (!(room > 0)) return null;
-    s = Math.min(s, room / hd);
-  }
-  if (back !== Infinity) {
-    const room = back * vH + d;
-    if (!(room > 0)) return null;
-    s = Math.min(s, room / hd);
-  }
-  return s;
-}
-
-/**
- * The depth-axis half-extent a fit must budget for: with `sweep` (the viewer's `fitSweep`, i.e.
- * the subject will turn about Y) the worst over every yaw, hypot(hx, hz) — the same bound the
- * width fit uses; otherwise hz.
- */
-export function fitHalfDepth(half, sweep) {
-  return sweep ? Math.hypot(half[0], half[2]) : half[2];
-}
-
-/**
- * Apply `depthFit` to a size-fit scale `s` for a viewer (SceneViewer or the PlayCanvas viewer):
- * the result is never larger than `s`. Warns once per viewer when the placement alone breaks the
- * budget (and then leaves `s` alone).
- */
-export function applyDepthFit(viewer, s, half) {
-  const df = viewer.depthFit;
-  if (!df) return s;
-  const cap = depthFitScale({
-    halfDepth: fitHalfDepth(half, viewer.fitSweep),
-    virtualDisplayHeight: viewer.vH,
-    depthOffset: viewer._depthOffset,
-    front: df.front,
-    back: df.back,
-  });
-  if (cap === null) {
-    if (!viewer._warnedDepthFit) {
-      viewer._warnedDepthFit = true;
-      console.warn(
-        `${viewer.logTag || '[inline3d]'} depthFit: depthOffset ${viewer._depthOffset} alone puts the subject past ` +
-          `the budget (front ${df.front} h, back ${df.back} h); the size fit is kept as is.`,
-      );
-    }
-    return s;
-  }
-  return cap < s ? cap : s;
-}
-
-// ── depthReport (the scene handles) ───────────────────────────────────────────────────────────
-
-/**
- * A `handle.depthReport()` for a viewer with getSubjectBounds(). `getTile()` → the core TileHandle
- * (or null without a session), `ipdFactor()` → the declared display rig's ipdFactor, `available()`
- * → false while there is nothing display-rig to report (a camera rig, `controls: 'page'`): the
- * report is then null. Display info is read once, lazily: the first report uses the defaults
- * (`basis.viewerSource: 'default'`, the small-depth formula), later ones the display's own.
- */
-export function makeDepthReport(viewer, { canvas, getTile = () => null, ipdFactor = () => 1, available = () => true }) {
-  let info = null;
-  let asked = false;
-  return function depthReport() {
-    if (!viewer || typeof viewer.getSubjectBounds !== 'function' || !available()) return null;
-    // Asked once a window exists; asked again later if it answered nothing (no frame yet).
-    const tile = asked || info ? null : getTile();
-    if (tile && typeof tile.getDisplayInfo === 'function') {
-      asked = true;
-      try {
-        const p = tile.getDisplayInfo();
-        if (p && typeof p.then === 'function') p.then((i) => ((info = i || null), (asked = !!i)), () => {});
-      } catch {
-        /* no display API: the defaults */
-      }
-    }
-    const b = viewer.getSubjectBounds();
-    const box = canvas?.getBoundingClientRect?.() || { width: 0, height: 0 };
-    const aspect = box.height > 0 ? box.width / box.height : 1;
-    const z = info?.nominalViewerPosition?.z;
-    const viewerOk = num(z) && z > 0.1;
-    const okSize = info && info.displayHeightMeters > 0 && info.displayPixelHeight > 0;
-    const dpr = (typeof globalThis.devicePixelRatio === 'number' && globalThis.devicePixelRatio) || globalThis.window?.devicePixelRatio || 1;
-    const heightM = okSize && box.height > 0 ? (box.height * dpr * info.displayHeightMeters) / info.displayPixelHeight : undefined;
-    const r = depthBudgetFromBounds({
-      front: b.front,
-      back: b.back,
-      virtualDisplayHeight: viewer.vH,
-      aspect,
-      viewerM: viewerOk ? z : DEPTH_DEFAULT_VIEWER_M,
-      heightM,
-      ipdFactor: ipdFactor(),
-    });
-    r.basis.viewerSource = viewerOk ? 'display' : 'default';
-    return r;
   };
 }
 

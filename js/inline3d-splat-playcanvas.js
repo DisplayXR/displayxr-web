@@ -123,7 +123,6 @@ import {
   validateSetStereo,
   stereoScalarOf,
 } from './inline3d-splat-shared.js';
-import { applyDepthFit, validateDepthFit, makeDepthReport } from './inline3d-depth-budget.js';
 import { resolveCursorOption } from './inline3d-cursor-option.js';
 
 /**
@@ -835,10 +834,6 @@ export class PlayCanvasSplatViewer {
     // clear every tile had before it existed. An OPAQUE clear avoids stale / black pixels where the
     // weave reads an alpha-0 hole (web#198).
     this.clearColor = parseClearColor(opts.clearColor, opts.logTag || '[inline3d/splat]');
-    // `depthFit` (opt-in): fitTo also scales the subject DOWN to a depth budget in tile heights
-    // (./inline3d-depth-budget.js). Null = today's fit, exactly.
-    this.depthFit = validateDepthFit(opts.depthFit, opts.logTag === '[inline3d/model]' ? '@displayxr/inline3d/model' : '@displayxr/inline3d/splat');
-    this._warnedDepthFit = false;
     // `cursor: 'depth'` (ADR-046): the depth-aware cursor. OPT-IN AND FREE OTHERWISE — its module
     // is imported only when asked for (attachEngine), and every per-frame hook is an optional call
     // on `cursorDepth`, which stays null without it.
@@ -1061,8 +1056,6 @@ export class PlayCanvasSplatViewer {
       fitSweep: this.fitSweep,
       depthLimit: this.depthLimit,
     });
-    // depthFit (opt-in): never larger than the size fit above; absent, a no-op.
-    if (this.depthFit) this._fitScale = applyDepthFit(this, this._fitScale, this._subjectHalf);
     this._applyTransform();
     this._placeMonoForFit();
   }
@@ -3416,9 +3409,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     sky: opts.sky,
     viewerEase: opts.viewerEase,
     cursor: opts.cursor,
-    // Opt-in; undefined = the viewer's own defaults (transparent clear, size fit only).
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
     clearColor: opts.clearColor,
-    depthFit: opts.depthFit,
   });
 
   let handle = null;
@@ -3475,14 +3467,6 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // copy a getter's value once.
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
-  // handle.depthReport(): the framed subject's depth budget on a display rig (a measurement only);
-  // null on a camera rig, under controls:'page' and while a video holds the rig.
-  out.depthReport = makeDepthReport(viewer, {
-    canvas,
-    getTile: () => handle,
-    ipdFactor: () => (out.viewRig?.type === 'display' ? out.viewRig.ipdFactor ?? 1 : 1),
-    available: () => !pageMode && !vid?.on && out.rig?.type === 'display',
-  });
   // setVideo's current element: the <video> the plane is SHOWING (not one still waiting for its first
   // frame), else null. Read-only. A player attached to this handle (./player attachPlayer) reads it
   // to notice another setVideo taking the slot, which no event reports.

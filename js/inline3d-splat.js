@@ -23,7 +23,6 @@ import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { EyeCamera, EdgeFeather, cameraRigFromCamera, DepthCursor, raycastHitTest } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
-import { makeDepthReport } from './inline3d-depth-budget.js';
 import { readSogCamera } from './inline3d-sog.js';
 import { resolveRevealOption, effectsNotOnSpark } from './inline3d-splat-effects.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
@@ -256,9 +255,8 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     feather,
     logTag: '[inline3d/splat]',
     viewerEase: opts.viewerEase,
-    // Opt-in; undefined = the viewer's own defaults (transparent clear, size fit only).
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
     clearColor: opts.clearColor,
-    depthFit: opts.depthFit,
   }).useEyeCamera(EyeCamera, EdgeFeather);
   // A gaussian-splat raycast is ~8 ms a ray on Spark: one ray a frame, cycling the footprint.
   // (engine:'playcanvas' hit-tests with the engine's depth picker instead, which is far cheaper.)
@@ -452,9 +450,6 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
   // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
-  // handle.depthReport(): the framed subject's depth budget on a display rig (a measurement only);
-  // null on a camera rig, which frames nothing.
-  out.depthReport = makeDepthReport(viewer, { canvas, getTile: () => handle, available: () => out.rig?.type === 'display' });
 
   // `src` may be a URL or the bytes themselves.
   //

@@ -211,16 +211,14 @@ export interface DisplayMetrics {
 /** What {@link TileHandle.displayMetrics} fills in when the display cannot say. */
 // The depth budget (also `@displayxr/inline3d/depth`): pure measurements, see depth.d.ts.
 export {
-  DEPTH_BUDGET,
   DEPTH_EYE_SEPARATION_M,
   DEPTH_DEFAULT_VIEWER_M,
   disparityPct,
   cameraRigDisparityPct,
-  depthBudgetClass,
   depthBudgetFromBounds,
   withheldReasonHint,
 } from './depth.js';
-export type { DepthReport, DepthReportBasis, DepthBudgetName, DepthBudgetTier, DepthFitOption } from './depth.js';
+export type { DepthReport, DepthReportBasis } from './depth.js';
 
 export const DISPLAY_METRICS_DEFAULTS: Readonly<{
   displaySizeM: readonly [number, number];

@@ -40,7 +40,6 @@
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
 import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo } from './inline3d-splat-shared.js';
 import { displayRig } from './inline3d-three.js';
-import { makeDepthReport } from './inline3d-depth-budget.js';
 import {
   NEUTRAL_STUDIO,
   neutralStudioRadiance,
@@ -470,9 +469,8 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     sky: false,
     viewerEase: opts.viewerEase,
     cursor: opts.cursor,
-    // Opt-in; undefined = the viewer's own defaults (transparent clear, size fit only).
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
     clearColor: opts.clearColor,
-    depthFit: opts.depthFit,
     // Each environment's own look: 'room' is three's (untonemapped), the rest the Sample Viewer's.
     toneMapping: envMap ? 'neutral' : ENVIRONMENT_TONE_MAPPING[environment] || 'neutral',
   });
@@ -535,10 +533,8 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
-  // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called) and
-  // handle.depthReport() (a measurement; null under controls:'page', which frames nothing).
+  // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
   attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig, page: pageMode });
-  out.depthReport = makeDepthReport(viewer, { canvas, getTile: () => handle, ipdFactor: () => out.rig.ipdFactor, available: () => !pageMode });
 
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {
