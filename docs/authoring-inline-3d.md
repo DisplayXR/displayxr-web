@@ -344,6 +344,19 @@ the last good `projectionMatrix` / `transform.matrix` per eye to replay from —
 itself, which is only valid inside the callback that delivered it — and feed the copies back with
 `EyeCamera.setFromMatrices(proj, transform)`.
 
+**Copy fields by name, never the object.** `XRViewport` and `XRView` are native objects whose
+fields are getters on the prototype, so `Object.assign`, spread (`{ ...vp }`) and `JSON` copy
+**nothing** from them. A page that kept `Object.assign(last.vp, layer.getViewport(view))` drew
+every eye into a 0×0 viewport and showed a black canvas on the real browser, while working in a
+test harness that returned plain objects. Copy explicitly:
+
+```js
+const vp = layer.getViewport(view);
+last.vp = { x: vp.x, y: vp.y, width: vp.width, height: vp.height };
+last.proj.set(view.projectionMatrix);
+last.xf.set(view.transform.matrix);
+```
+
 `./viewer` (and so `./splat` and `./model`) does all of this for you; use it unless you have your
 own loop. `handle.stats()` reports `{ frames, monoFrames }` per scene window if you want to see
 how often the fallback is firing on real hardware.
