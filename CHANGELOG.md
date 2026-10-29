@@ -7,33 +7,21 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
-### Making 3D look right: opt-in depth helpers, measurements and one-time warnings
+### Making 3D look right: depth measurements, opt-in helpers and one-time warnings
 
 Touches the core (`.`: new pure exports, console warnings only), `./three` (re-exports, one
 warning), the new `./depth` subpath, and the preview tier (`./viewer`, `./model`, `./splat`), all
 opt-in. **Nothing clamps, refuses or overrides what a page asks for**: without the new options
 every page renders exactly as on 1.46.0; the only default change is the console warnings below.
 
-- **The depth budget, as numbers** (`./depth`, also on the root; the pure helpers on `./three`):
-  `DEPTH_BUDGET` (in front ≤ 0.6 % of the tile width comfortable, ≤ 1.1 % strong; behind ≤ 1.5 % /
-  ≤ 2.3 %; hard limit 3.3 %, with the display-rig depth in tile heights each maps to on a 16:9
-  tile), `disparityPct({ depthH, aspect, viewerM, heightM, ipdFactor })` (display rig:
-  `e·z/(V∓z)` over the tile width, the small-depth limit without `heightM`),
+- **Depth measurements** (`./depth`, also on the root; the pure helpers on `./three`):
+  `disparityPct({ depthH, aspect, viewerM, heightM, ipdFactor })` (display rig: `e·z/(V∓z)` over
+  the tile width, the small-depth limit without `heightM`),
   `cameraRigDisparityPct({ z, convergence, ipdFactor, metersToVirtual, verticalFov, aspect })`
-  (`100·b·(1/D − 1/z)/(2·tan(fov/2)·aspect)`, + behind, − in front), `depthBudgetClass`,
-  `depthBudgetFromBounds`. Pure; for a raw `addScene` page or an agent checking its numbers.
-- **`handle.depthReport()`** on `addModel` (both engines) and `addSplat` (both backends):
-  `{ frontH, backH, frontPct, backPct, budget, basis }` for the framed subject under the live pose
-  (orbit and zoom move it), with the display's nominal viewer distance once `getDisplayInfo()`
-  answers (else 0.6 m), the tile's real aspect and physical height, and the declared rig's
-  `ipdFactor`. A measurement; null on a camera rig and under `controls: 'page'`.
-- **`depthFit: { front, back }`** (tile heights, e.g. `{ front: 0.1, back: 0.27 }`) on
-  `SceneViewer` / `addModel` / `addSplat` (display rig): the auto-frame additionally scales the
-  subject DOWN, uniformly and never above the size fit, so its nearest point is at most `front`
-  in front of the glass and its farthest at most `back` behind, under the current `depthOffset`
-  and at every yaw (with `fitSweep`). Applied at each fit; a later zoom is the user's and is not
-  refitted (web#200's continuous refit is not this). A placement that alone breaks the budget keeps
-  the size fit, with one warning. Malformed values throw at the call.
+  (`100·b·(1/D − 1/z)/(2·tan(fov/2)·aspect)`, + behind, − in front), and `depthBudgetFromBounds`
+  (a `getSubjectBounds()` box → tile heights and % of the tile width). Pure; for a raw `addScene`
+  page or an agent checking its numbers. No budget tiers are built in: depth ranges measured on a
+  panel are in `docs/authoring-inline-3d.md`, as reference points.
 - **`clearColor`** on `SceneViewer` / `addModel` / `addSplat` (three and PlayCanvas):
   `[r, g, b, a]` in 0..1 or a CSS colour. Unset = the transparent clear, as before. An opaque clear
   avoids the stale / black pixels the weave can show where it reads alpha 0 (web#198); match the

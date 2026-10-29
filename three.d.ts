@@ -3,7 +3,7 @@
 // bundles three.js (it is an optional peer dependency).
 
 import type { XRViewRigInit } from './index.js';
-export { DEPTH_BUDGET, disparityPct, cameraRigDisparityPct, depthBudgetClass, depthBudgetFromBounds } from './depth.js';
+export { disparityPct, cameraRigDisparityPct, depthBudgetFromBounds } from './depth.js';
 
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with your

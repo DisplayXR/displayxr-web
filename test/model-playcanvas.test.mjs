@@ -712,7 +712,6 @@ test('setStereo: queued before load, then a display rig with those RELATIVE fact
   const { wall, rec } = fakeWall();
   const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, virtualDisplayHeight: 0.3 });
   assert.equal(h.rig, null, 'null until the backend has loaded');
-  assert.equal(h.depthReport(), null, 'nothing framed yet');
   assert.throws(() => h.setStereo({ ipdFactor: 'more' }), /@displayxr\/inline3d\/model: setStereo — ipdFactor/);
   assert.equal(h.setStereo({ ipdFactor: 0.4 }), h);
   await h.ready;
@@ -724,33 +723,18 @@ test('setStereo: queued before load, then a display rig with those RELATIVE fact
   h.remove();
 });
 
-test('clearColor reaches the eye camera; depthFit fits the model to the budget; depthReport measures it', async () => {
+test('clearColor reaches the eye camera; absent = the transparent clear', async () => {
   installDom();
-  const { pc } = makeFakePc({ aabbs: [{ c: [0, 0, 0], h: [0.2, 0.2, 0.6] }] }); // a deep model
+  const { pc } = makeFakePc({ aabbs: [{ c: [0, 0, 0], h: [0.2, 0.2, 0.6] }] });
   installFetch(glb());
   const a = fakeWall();
   const base = addModel(a.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0 });
   await base.ready;
   assert.deepEqual({ ...base.viewer.eye.camera.clearColor }, { r: 0, g: 0, b: 0, a: 0 }, 'absent: the transparent clear');
   const b = fakeWall();
-  const fitted = addModel(b.wall, makeCanvas(400, 300), 'https://x/a.glb', {
-    playcanvas: pc,
-    idleSpin: 0,
-    clearColor: '#203040',
-    depthFit: { front: 0.1, back: 0.27 },
-  });
-  await fitted.ready;
-  assert.deepEqual({ ...fitted.viewer.eye.camera.clearColor }, { r: 0x20 / 255, g: 0x30 / 255, b: 0x40 / 255, a: 1 });
-  assert.ok(fitted.viewer._fitScale < base.viewer._fitScale, 'scaled down onto the budget');
-  const r = fitted.depthReport();
-  assert.ok(r.frontH <= 0.1 + 1e-9, `frontH ${r.frontH}`);
-  assert.ok(r.backH <= 0.27 + 1e-9, `backH ${r.backH}`);
-  // The H budget is the % budget on a 16:9 tile; this tile is 4:3, so the same depth is a little
-  // more of its width — the tier is whatever the % says.
-  assert.ok(['comfortable', 'strong'].includes(r.budget), r.budget);
-  const r0 = base.depthReport();
-  assert.ok(r0.frontH > r.frontH, 'the unfitted one is deeper');
-  assert.throws(() => addModel(null, makeCanvas(), 'a.glb', { playcanvas: pc, depthFit: { back: -1 } }), /@displayxr\/inline3d\/model: depthFit.back/);
+  const opaque = addModel(b.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0, clearColor: '#203040' });
+  await opaque.ready;
+  assert.deepEqual({ ...opaque.viewer.eye.camera.clearColor }, { r: 0x20 / 255, g: 0x30 / 255, b: 0x40 / 255, a: 1 });
   base.remove();
-  fitted.remove();
+  opaque.remove();
 });

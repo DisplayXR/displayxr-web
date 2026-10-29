@@ -78,10 +78,8 @@ import { noteBuiltCameraRig } from './inline3d-depth-budget.js';
 // The depth-budget helpers, for a page that renders its own scene with these rigs: what disparity
 // a camera rig or a display-rig depth gives, as % of the tile width. Pure; see the module.
 export {
-  DEPTH_BUDGET,
   disparityPct,
   cameraRigDisparityPct,
-  depthBudgetClass,
   depthBudgetFromBounds,
 } from './inline3d-depth-budget.js';
 

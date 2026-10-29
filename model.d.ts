@@ -5,7 +5,6 @@ import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
 import type { FirstWovenResult, RectCoverOption, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
-import type { DepthFitOption, DepthReport } from './depth.js';
 
 export interface ModelOptions {
   /**
@@ -40,16 +39,6 @@ export interface ModelOptions {
    * the default clear stays.
    */
   clearColor?: [number, number, number] | [number, number, number, number] | string;
-  /**
-   * OPT-IN depth budget for the auto-frame, in TILE HEIGHTS, e.g. `{ front: 0.1, back: 0.27 }`
-   * (the comfortable budget — see `DEPTH_BUDGET`). On top of the size fit, the subject is scaled
-   * DOWN uniformly (never non-uniformly, never above the size fit) so its nearest point sits at
-   * most `front` in front of the glass and its farthest at most `back` behind, under the current
-   * `depthOffset` (and every yaw, with `fitSweep`). Applied at each fit; a later zoom or
-   * `depthOffset` is the page's and is not refitted (read `handle.depthReport()`). Unset: today's
-   * fit, exactly. A placement that alone breaks the budget keeps the size fit (one warning).
-   */
-  depthFit?: DepthFitOption;
   /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
@@ -243,15 +232,6 @@ export interface ModelHandle {
   } | null;
   /** The view-rig descriptor last declared by `setStereo` (or `controls: 'page'`), if any. */
   readonly viewRig?: object;
-  /**
-   * How deep the framed subject is right now, on a display rig — a measurement, nothing more:
-   * nearest / farthest points in tile heights and the estimated disparity in % of the tile width
-   * (the display's nominal viewer distance once `getDisplayInfo()` has answered, else 0.6 m; the
-   * tile's real aspect and physical height; the declared rig's ipdFactor), plus the budget tier.
-   * Cheap enough per frame (orbit and zoom change it). Null before the subject is framed, on a
-   * camera rig and under `controls: 'page'`.
-   */
-  depthReport(): DepthReport | null;
   /** Throws on `controls: 'page'`. */
   setPose(pose?: OrbitPose): void;
   /** Throws on `controls: 'page'`. */

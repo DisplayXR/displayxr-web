@@ -1,6 +1,5 @@
-// Tests for the depth budget (js/inline3d-depth-budget.js) and the opt-in helpers built on it:
-// `depthFit` on the viewers, `clearColor`, `handle.depthReport()`, `./model`'s setStereo, and the
-// one-time rig warnings.
+// Tests for the depth measurements (js/inline3d-depth-budget.js) and the opt-in helpers next to
+// them: `clearColor`, `./model`'s setStereo, and the one-time rig warnings.
 //
 // The product rule these pin as much as the arithmetic: the SDK never clamps, refuses or
 // silently overrides what a page asked for. So every opt-in is tested twice — ON, it does what it
@@ -13,14 +12,9 @@ import { installDom, makeCanvas, makeTHREE } from './stubs.mjs';
 
 installDom();
 const {
-  DEPTH_BUDGET,
   disparityPct,
   cameraRigDisparityPct,
-  depthBudgetClass,
   depthBudgetFromBounds,
-  depthFitScale,
-  validateDepthFit,
-  makeDepthReport,
   viewRigWarnings,
   warnViewRigOnce,
   withheldReasonHint,
@@ -46,7 +40,7 @@ function withWarnings(fn) {
 
 // ── 1. the pure helpers ──────────────────────────────────────────────────────────────────────
 
-test('disparityPct: the guide budget — 0.1 h in front ≈ 0.6 %, 0.27 h behind ≈ 1.5 % on a 16:9 tile at 0.6 m', () => {
+test('disparityPct: 0.1 h in front ≈ 0.6 %, 0.27 h behind ≈ 1.5 % on a 16:9 tile at 0.6 m', () => {
   const aspect = 16 / 9;
   // Small-depth limit (no physical height): 100 · e · depthH / (aspect · V).
   near(disparityPct({ depthH: 0.1, aspect }), (-100 * 0.063 * 0.1) / (aspect * 0.6), 1e-12);
@@ -96,14 +90,7 @@ test('cameraRigDisparityPct: 100·b·(1/D − 1/z)/(2·tan(fov/2)·aspect), + be
   assert.ok(Number.isNaN(cameraRigDisparityPct({ ...o, z: 1, verticalFov: undefined })));
 });
 
-test('depthBudgetClass and depthBudgetFromBounds', () => {
-  assert.equal(depthBudgetClass(0.6, 1.5), 'comfortable');
-  assert.equal(depthBudgetClass(0.61, 0), 'strong');
-  assert.equal(depthBudgetClass(0, 2.3), 'strong');
-  assert.equal(depthBudgetClass(1.2, 0), 'beyond');
-  assert.equal(depthBudgetClass(0, 2.31), 'beyond');
-  assert.equal(DEPTH_BUDGET.limitPct, 3.3);
-
+test('depthBudgetFromBounds', () => {
   // A box from getSubjectBounds: vH 0.2, front at +0.02 (0.1 h), back at −0.054 (0.27 h).
   const r = depthBudgetFromBounds({ front: 0.02, back: -0.054, virtualDisplayHeight: 0.2, aspect: 16 / 9 });
   near(r.frontH, 0.1, 1e-12);
@@ -111,128 +98,12 @@ test('depthBudgetClass and depthBudgetFromBounds', () => {
   near(r.frontPct, Math.abs(disparityPct({ depthH: 0.1, aspect: 16 / 9 })), 1e-12);
   near(r.backPct, disparityPct({ depthH: -0.27, aspect: 16 / 9 }), 1e-12);
   assert.ok(r.frontPct >= 0 && r.backPct >= 0, 'magnitudes');
-  assert.equal(r.budget, 'strong', 'the linear form puts 0.27 h a hair past 1.5 %');
   assert.deepEqual(r.basis, { rig: 'display', aspect: 16 / 9, viewerM: 0.6, heightM: null, ipdFactor: 1, eyeSeparationM: 0.063 });
   // Entirely behind the glass: nothing in front.
   const b = depthBudgetFromBounds({ front: -0.01, back: -0.03, virtualDisplayHeight: 0.2, aspect: 1 });
   assert.equal(b.frontH, 0);
   assert.equal(b.frontPct, 0);
   near(b.backH, 0.15, 1e-12);
-});
-
-// ── 2. depthFit ──────────────────────────────────────────────────────────────────────────────
-
-test('validateDepthFit: null/undefined = off; a missing side is unbounded; malformed throws at the call', () => {
-  assert.equal(validateDepthFit(undefined), null);
-  assert.equal(validateDepthFit(null), null);
-  assert.deepEqual(validateDepthFit({ front: 0.1, back: 0.27 }), { front: 0.1, back: 0.27 });
-  assert.deepEqual(validateDepthFit({ front: 0.1 }), { front: 0.1, back: Infinity });
-  assert.throws(() => validateDepthFit({ front: -1 }), /depthFit.front/);
-  assert.throws(() => validateDepthFit({ back: NaN }), /depthFit.back/);
-  assert.throws(() => validateDepthFit(0.1), /depthFit must be/);
-});
-
-test('depthFitScale: the tighter side binds; depthOffset shifts the room; a placement past the budget is null', () => {
-  // half-depth 1, vH 0.2: front 0.1 h = 0.02 → s ≤ 0.02; back 0.27 h = 0.054 → s ≤ 0.054.
-  near(depthFitScale({ halfDepth: 1, virtualDisplayHeight: 0.2, front: 0.1, back: 0.27 }), 0.02, 1e-15);
-  // Slid back 0.01: front room 0.03, back room 0.044.
-  near(depthFitScale({ halfDepth: 1, virtualDisplayHeight: 0.2, depthOffset: -0.01, front: 0.1, back: 0.27 }), 0.03, 1e-15);
-  assert.equal(depthFitScale({ halfDepth: 1, virtualDisplayHeight: 0.2 }), Infinity);
-  assert.equal(depthFitScale({ halfDepth: 1, virtualDisplayHeight: 0.2, depthOffset: 0.05, front: 0.1 }), null);
-});
-
-function sceneViewer(opts = {}, box = [400, 200]) {
-  const { THREE, log } = makeTHREE();
-  const v = new SceneViewer(THREE, makeCanvas(...box), { orbit: false, virtualDisplayHeight: 0.2, ...opts });
-  return { v, log };
-}
-
-test('SceneViewer depthFit ABSENT: the fit is bit-identical to a viewer without the option', () => {
-  for (const fit of ['contain', 'height', 'cover', 'none']) {
-    const a = sceneViewer({ fit }).v;
-    const b = sceneViewer({ fit, depthFit: undefined }).v;
-    const c = sceneViewer({ fit, depthFit: null }).v;
-    for (const v of [a, b, c]) v.fitTo([1, 2, 3], [0.4, 0.3, 0.9]);
-    assert.equal(b._fitScale, a._fitScale, fit);
-    assert.equal(c._fitScale, a._fitScale, fit);
-    assert.deepEqual(b.getSubjectBounds(), a.getSubjectBounds(), fit);
-  }
-});
-
-test('SceneViewer depthFit: a deep subject is scaled DOWN uniformly onto the budget, at every yaw', () => {
-  const ext = [0.4, 0.3, 0.9];
-  const base = sceneViewer().v;
-  base.fitTo([0, 0, 0], ext);
-  const { v } = sceneViewer({ depthFit: { front: 0.1, back: 0.27 } });
-  v.fitTo([0, 0, 0], ext);
-  assert.ok(v._fitScale < base._fitScale, 'scaled down');
-  // One scalar: the pivot's scale is uniform.
-  const sc = v._pivot.scale;
-  assert.equal(sc.x, sc.y);
-  assert.equal(sc.y, sc.z);
-  // On the budget at the worst yaw (fitSweep: the subject turns), within it at every yaw.
-  let worstFront = 0;
-  for (let yaw = 0; yaw < 360; yaw += 5) {
-    v.setPose({ yaw });
-    const r = v.getSubjectBounds();
-    assert.ok(r.front <= 0.1 * 0.2 + 1e-12, `front ${r.front} at yaw ${yaw}`);
-    assert.ok(-r.back <= 0.27 * 0.2 + 1e-12, `back ${r.back} at yaw ${yaw}`);
-    worstFront = Math.max(worstFront, r.front);
-  }
-  near(worstFront, 0.1 * 0.2, 2e-4, 'the binding side reaches its bound');
-});
-
-test('SceneViewer depthFit never scales UP: a shallow subject keeps its size fit', () => {
-  // fitSweep off: with it on, a wide subject's width IS depth once it turns, and would bind.
-  const ext = [0.5, 0.5, 0.01];
-  const a = sceneViewer({ fitSweep: false }).v;
-  a.fitTo([0, 0, 0], ext);
-  const b = sceneViewer({ depthFit: { front: 0.1, back: 0.27 }, fitSweep: false }).v;
-  b.fitTo([0, 0, 0], ext);
-  assert.equal(b._fitScale, a._fitScale);
-});
-
-test('SceneViewer depthFit respects the depthOffset placement; a placement alone past the budget keeps the fit and warns once', () => {
-  const ext = [0.4, 0.3, 0.9];
-  const { v } = sceneViewer({ depthFit: { front: 0.1, back: 0.27 }, fitSweep: false });
-  v.depthOffset = -0.02; // the page slid it back 0.1 h: more room in front, less behind
-  v.fitTo([0, 0, 0], ext);
-  const r = v.getSubjectBounds();
-  assert.ok(r.front <= 0.02 + 1e-12 && -r.back <= 0.054 + 1e-12);
-  near(-r.back, 0.054, 1e-12, 'behind binds now');
-
-  const base = sceneViewer({ fitSweep: false }).v;
-  base.depthOffset = 0.05; // 0.25 h out: past front 0.1 h whatever the scale
-  base.fitTo([0, 0, 0], ext);
-  const w = sceneViewer({ depthFit: { front: 0.1 }, fitSweep: false }).v;
-  w.depthOffset = 0.05;
-  const warns = withWarnings(() => {
-    w.fitTo([0, 0, 0], ext);
-    w.fitTo([0, 0, 0], ext);
-  });
-  assert.equal(w._fitScale, base._fitScale, 'never scaled to nothing, never overridden');
-  assert.equal(w.depthOffset, 0.05, "the page's placement stands");
-  assert.equal(warns.length, 1);
-  assert.match(warns[0], /depthFit/);
-});
-
-test('SceneViewer validates depthFit at construction', () => {
-  assert.throws(() => sceneViewer({ depthFit: { front: 'a lot' } }), /@displayxr\/inline3d\/viewer: depthFit.front/);
-});
-
-test('PlayCanvasSplatViewer depthFit: same budget, same scale as SceneViewer; absent = unchanged', () => {
-  const ext = [0.4, 0.3, 0.9];
-  const df = { front: 0.1, back: 0.27 };
-  const pcA = new PlayCanvasSplatViewer(makeCanvas(400, 200), { orbit: false, virtualDisplayHeight: 0.2 });
-  const pcB = new PlayCanvasSplatViewer(makeCanvas(400, 200), { orbit: false, virtualDisplayHeight: 0.2, depthFit: df });
-  const sv = sceneViewer({ depthFit: df }).v;
-  const sv0 = sceneViewer().v;
-  for (const v of [pcA, pcB, sv, sv0]) v.fitTo([0, 0, 0], ext);
-  assert.equal(pcA._fitScale, sv0._fitScale, 'absent: the existing fit');
-  near(pcB._fitScale, sv._fitScale, 1e-15, 'the two backends agree');
-  assert.ok(pcB._fitScale < pcA._fitScale);
-  pcA.dispose();
-  pcB.dispose();
 });
 
 // ── 3. clearColor ────────────────────────────────────────────────────────────────────────────
@@ -317,39 +188,6 @@ test('PlayCanvasSplatViewer clearColor reaches the eye camera; absent = (0,0,0,0
     v.rigNode = null;
     v.dispose();
   }
-});
-
-// ── 4. depthReport ───────────────────────────────────────────────────────────────────────────
-
-test('makeDepthReport: tile heights from the live subject box, the display viewer once getDisplayInfo answers', async () => {
-  const { v } = sceneViewer({ fit: 'none' }, [320, 180]);
-  v.fitTo([0, 0, 0], [0.1, 0.1, 0.04]); // fit none: half-depth 0.02 = 0.1 h at vH 0.2
-  let calls = 0;
-  const tile = {
-    getDisplayInfo: async () => {
-      calls++;
-      return { nominalViewerPosition: { x: 0, y: 0, z: 0.5 }, displayHeightMeters: 0.2, displayPixelHeight: 1000 };
-    },
-  };
-  const report = makeDepthReport(v, { canvas: v.canvas, getTile: () => tile, ipdFactor: () => 1 });
-  const r1 = report();
-  near(r1.frontH, 0.1, 1e-12);
-  near(r1.backH, 0.1, 1e-12);
-  assert.equal(r1.basis.viewerSource, 'default');
-  assert.equal(r1.basis.viewerM, 0.6);
-  near(r1.basis.aspect, 320 / 180, 1e-12);
-  await new Promise((res) => setTimeout(res, 0));
-  const r2 = report();
-  assert.equal(calls, 1, 'asked once');
-  assert.equal(r2.basis.viewerSource, 'display');
-  assert.equal(r2.basis.viewerM, 0.5);
-  near(r2.basis.heightM, (180 * 0.2) / 1000, 1e-12, 'CSS height × dpr × the panel pitch');
-  assert.ok(r2.frontPct > r1.frontPct, 'nearer viewer, more disparity');
-  // It follows the pose: zoom doubles the depth.
-  v.setPose({ zoom: 2 });
-  near(report().frontH, 0.2, 1e-12);
-  // Unavailable (a camera rig, page controls) = null.
-  assert.equal(makeDepthReport(v, { canvas: v.canvas, available: () => false })(), null);
 });
 
 // ── 5. ./model setStereo ─────────────────────────────────────────────────────────────────────
