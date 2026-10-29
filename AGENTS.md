@@ -1,7 +1,7 @@
 # AGENTS.md
 
 **Building or fixing a page? Read [`docs/making-3d-look-right.md`](docs/making-3d-look-right.md)
-first:** four depth and comfort rules from real panels. The samples show how the API works, not
+first:** six depth and comfort rules from real panels. The samples show how the API works, not
 how a page should look.
 
 **Before touching any page that hosts a woven canvas, also read

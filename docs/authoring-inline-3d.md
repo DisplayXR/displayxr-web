@@ -419,6 +419,20 @@ three.js `Fog(color, near, far)`, distance-based LOD, distance fades. An aquariu
 `Fog(bg, 0.6, 0.9)` from its 2D camera at 0.6 m fogged the whole tank to the background colour in
 3D. Key such effects to the scene's own depth (distance behind the glass, `-z`), or leave them off.
 
+**Depth ranges measured on a panel** (viewer at about 60 cm, a random-block textured backdrop;
+`h` = the canvas's height on the glass, % = disparity as a share of the canvas width on a 16:9
+tile). These are reference points, not limits the SDK applies:
+
+| Where | Comfortable | Usable | Brief "wow" moments | Uncomfortable |
+|---|---|---|---|---|
+| Behind the glass | up to 0.6 h (≈ 3.4 %) | up to 1.0 h (≈ 5.6 %) | up to 1.5 h (≈ 8.4 %) | past 1.6 h (≈ 9 %) |
+| In front of the glass | | | | from about 0.55 h (≈ 3.1 %) |
+
+Pop-out tolerates about half the depth that recession does. The viewers' default fit puts the
+front of a typical subject near that front limit, which is why rule 1 of
+[making-3d-look-right.md](making-3d-look-right.md) is "keep the placement", not "come further
+out". Ghosting, not depth, is usually the first thing to go wrong: see rule 3 there.
+
 **Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses by
 `virtualDisplayHeight / the element's physical height`, so the depth you get does not depend on how
 big the subject is in world units — a 15 cm figurine and a 50 m airliner land on the same virtual
