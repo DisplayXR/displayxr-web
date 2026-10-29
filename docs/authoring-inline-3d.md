@@ -410,6 +410,15 @@ correctly and still looks flat.
   editor, a ported VR app. **Camera rig.** The viewpoint is state the app owns, and a portal has
   no camera to follow you.
 
+**On a display rig the eye is wherever the viewer's head is.** The eye poses are the tracked
+head, scaled into scene units by `virtualDisplayHeight / the element's physical height`, so the
+camera's distance from the glass is not a constant you chose: it changes as the viewer moves, and
+it is usually well beyond the nominal 0.6 m once scaled (about 1 m in scene units for a 0.24
+virtual display on a 17 cm tall element). Anything keyed to **camera distance** breaks there:
+three.js `Fog(color, near, far)`, distance-based LOD, distance fades. An aquarium that set
+`Fog(bg, 0.6, 0.9)` from its 2D camera at 0.6 m fogged the whole tank to the background colour in
+3D. Key such effects to the scene's own depth (distance behind the glass, `-z`), or leave them off.
+
 **Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses by
 `virtualDisplayHeight / the element's physical height`, so the depth you get does not depend on how
 big the subject is in world units — a 15 cm figurine and a 50 m airliner land on the same virtual
