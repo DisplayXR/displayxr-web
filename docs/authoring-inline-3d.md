@@ -558,6 +558,13 @@ otherwise get a 63 mm eye separation measured in *its* units. It is a unit fix, 
 if you are reaching for it to make a scene look deeper, read the section below and then the
 [rig choice](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera) again.
 
+So on a camera rig `ipdFactor: 1` is **not** "correct" by default: it means real eye separation
+only when the world is in metres at real-world scale. In arbitrary units, or for a scene framed
+small or far from the camera, 1 is just a number and often gives almost no depth. There is no
+cap: scale the eye separation to the scene, so that its nearest and farthest visible points land
+inside the comfort zone at the device's viewing distance (see *Comfort is set in diopters*
+below). Only on a display rig is 1 the natural value and anything above it an exaggeration.
+
 ### Which way is out
 
 **`+z` is toward the viewer, out of the glass. `−z` is behind the glass.** The glass — the
