@@ -7,6 +7,35 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Comfort depth: zone-of-comfort helpers and an opt-in `depth` option
+
+Touches the core (`.`: new pure exports), `./three` and `./depth` (the same pure exports), and the
+preview tier (`./model`, `./splat`: one new opt-in option, one read-only handle field). Without
+`depth`, every page renders exactly as before: no rig is declared that was not, nothing is measured.
+
+- **`comfortZone({ viewerM = 0.6, zone = 'shibata' })`** → `{ zone, viewerM, frontD, behindD,
+  frontMm, behindMm }`: the vergence–accommodation comfort zone at a viewing distance, in diopters
+  and on-screen mm. `'shibata'` (Shibata et al. 2011: ≈ 0.57 D in front / 0.63 D behind at 0.6 m;
+  behind unbounded once the far limit passes infinity), `'percival'` (±1/3 D), or a number.
+- **`comfortDepthFactor({ frontH, backH, tileHeightM, viewerM, zone })`** → the largest `k ≤ 1` that
+  puts a display-rig subject (depth in tile heights) inside the zone, from the exact geometry at
+  real proportions. Only ever lowers depth; 1 on missing / invalid input.
+- **`cameraRigComfortFactor({ zNear, zFar, convergence | convergenceDiopters, verticalFov, aspect,
+  tileHeightM, viewerM, zone, ipdFactor, metersToVirtual })`** → the multiplier on a camera rig's
+  eye separation that puts its nearest / farthest points at the zone's edge. A measurement, **no
+  cap**: a camera rig's ipdFactor 1 is only physical in metre-scale worlds, so this may be well
+  above 1. Infinity with nothing off the plane, NaN on bad input. No warning is added for camera
+  factors above 1.
+- **`depth: 'auto' | { zone }`** on `addModel` (both engines) and `addSplat` (Spark and
+  PlayCanvas), display rig only: the framed subject's depth (zoom 1, no orbit), the canvas's
+  physical height (`displayMetrics()`) and the display's NOMINAL viewer distance (0.6 m when it
+  reports none) give `k = comfortDepthFactor(…)`, applied to the display rig's `ipdFactor` and
+  `parallaxFactor` together, multiplied with `setStereo`'s values (Spark, which has no setStereo:
+  the whole factor). Re-measured on first framing, a canvas resize, the first weave and a display
+  event; never on zoom, orbit or per frame; re-declared only when k changes. Ignored with one
+  warning on a camera rig / `controls: 'page'`; an invalid value throws at the call.
+  `handle.depthFactor` reads the factor in force (1 without the option).
+
 ### Making 3D look right: depth measurements, opt-in helpers and one-time warnings
 
 Touches the core (`.`: new pure exports, console warnings only), `./three` (re-exports, one

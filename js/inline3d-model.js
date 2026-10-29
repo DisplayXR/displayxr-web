@@ -38,7 +38,7 @@
 // your own origin (`/draco/`, `/basis/`) and `opts.decoderPath` moves that. See
 // docs/authoring-inline-3d.md#compressed-gltf.
 
-import { guardedAttach, attachModelStereo } from './inline3d-splat-shared.js';
+import { guardedAttach, attachModelStereo, attachComfortDepth, resolveDepthOption, framedSubjectBounds } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
 import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest, displayRig } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
@@ -403,6 +403,8 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
 
   const paths = normalizeDecoderPath(decoderPath);
   const injected = { draco: injectedDraco, ktx2: injectedKtx2, meshopt: injectedMeshopt };
+  // Opt-in comfort depth; a bad value throws here, at the call.
+  const depthOption = resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
 
   const viewer = new SceneViewer(THREE, canvas, {
     virtualDisplayHeight,
@@ -438,6 +440,7 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     setPose: (p) => viewer.setPose(p),
     resetPose: () => viewer.resetPose(),
     remove() {
+      depth.dispose();
       handle?.remove();
       viewer.dispose();
       if (out.model) disposeTree(out.model);
@@ -453,7 +456,18 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
   // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
-  attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig });
+  const stereo = attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig });
+  // `depth: 'auto'` (opt-in): the comfort factor under setStereo's, on the same display rig.
+  // Without it, inert: `depthFactor` reads 1 and nothing is measured or declared.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.frame ? framedSubjectBounds(viewer) : null),
+    getVH: () => virtualDisplayHeight,
+    apply: (k) => stereo.setBase(k),
+    tag: '[inline3d/model]',
+  });
 
   // Window first, content when it lands — same reasoning as ./splat: a grid should not appear
   // one tile at a time in download order.
@@ -533,6 +547,7 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     if (bounds) {
       out.frame = bounds;
       viewer.fitTo(bounds.center, bounds.extent);
+      depth.refresh();
     }
     return out;
   })().catch((err) => {

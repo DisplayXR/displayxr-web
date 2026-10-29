@@ -2,7 +2,9 @@
 //
 // Pure functions, dependency-free, re-exported by ./inline3d.js (the root), ./three and the
 // `./depth` subpath. NOTHING HERE CHANGES A PIXEL: these are measurements, plus one-time warnings.
-// The SDK never clamps, refuses or overrides a depth a page asked for.
+// The SDK never clamps, refuses or overrides a depth a page asked for. The one consumer that acts
+// on a number from here is the OPT-IN `depth` option of ./model and ./splat, which feeds
+// comfortDepthFactor's result into the display rig it declares (only ever lowering depth).
 //
 // The units are relative, which is what makes them portable across panels: disparity as a
 // percentage of the TILE's width, or depth in TILE HEIGHTS on a display rig (where the canvas is a
@@ -14,6 +16,12 @@
 // on-screen disparity p = e · z / (V ∓ z) (e = 0.063 m, V = the nominal viewer distance, − in
 // front, + behind), as a percentage of the tile width w = aspect · h. When h is unknown the
 // small-depth limit p ≈ e · z / V is used, in which h cancels: pct ≈ 100 · e · depthH / (aspect · V).
+//
+// Comfort zones (vergence–accommodation conflict) are in DIOPTERS of vergence away from the glass:
+// ΔD = 1/V − 1/z (> 0 behind, < 0 in front), and the on-screen disparity is p = e · V · ΔD. A zone
+// is a max |ΔD| on each side; comfortZone() states it, comfortDepthFactor() says how much a display
+// rig's depth would have to shrink for a subject to sit inside it (never more than 1: no zone here
+// ever ADDS depth).
 
 /** The eye separation every estimate here assumes (no browser surface reports a real one). */
 export const DEPTH_EYE_SEPARATION_M = 0.063;
@@ -107,6 +115,154 @@ export function depthBudgetFromBounds({ front, back, virtualDisplayHeight, aspec
       eyeSeparationM: DEPTH_EYE_SEPARATION_M,
     },
   };
+}
+
+// ── comfort zones ─────────────────────────────────────────────────────────────────────────────
+
+/** The comfort zones comfortZone() knows by name; a positive number is a symmetric |ΔD| bound. */
+const COMFORT_ZONES = Object.freeze(['shibata', 'percival']);
+
+/** A `zone` comfortZone() accepts: a known name, or a finite number of diopters > 0. */
+export function isComfortZone(zone) {
+  return COMFORT_ZONES.includes(zone) || (num(zone) && zone > 0);
+}
+
+/**
+ * The comfort zone for a viewer at `viewerM`: the largest vergence change, in diopters, that is
+ * comfortable in front of the glass (`frontD`) and behind it (`behindD`), and the matching
+ * on-screen disparity magnitudes in mm (`e · V · ΔD`).
+ *
+ * - `'shibata'` (default): Shibata et al. 2011, "The zone of comfort" (J. Vision 11(8):11). The
+ *   near vergence limit is `Dv/1.035 + 0.626`, the far `Dv/1.129 − 0.442` (Dv = 1/V), so
+ *   `frontD = (Dv/1.035 + 0.626) − Dv` and `behindD = Dv − (Dv/1.129 − 0.442)`. A far limit at or
+ *   below 0 D (a distant viewer) leaves behind unbounded: `Infinity`. At 0.6 m: 0.57 D / 0.63 D.
+ * - `'percival'`: Percival's zone, ±1/3 D on both sides.
+ * - a number: a symmetric |ΔD| bound, diopters.
+ *
+ * @param {object} [o]
+ * @param {number} [o.viewerM=0.6]  viewing distance, metres.
+ * @param {'shibata'|'percival'|number} [o.zone='shibata']
+ * @returns {{zone:'shibata'|'percival'|number, viewerM:number, frontD:number, behindD:number,
+ *           frontMm:number, behindMm:number}}  NaN fields on bad input.
+ */
+export function comfortZone({ viewerM = DEPTH_DEFAULT_VIEWER_M, zone = 'shibata' } = {}) {
+  let frontD = NaN;
+  let behindD = NaN;
+  if (num(viewerM) && viewerM > 0 && isComfortZone(zone)) {
+    const Dv = 1 / viewerM;
+    if (zone === 'shibata') {
+      frontD = Dv / 1.035 + 0.626 - Dv;
+      const far = Dv / 1.129 - 0.442;
+      behindD = far > 0 ? Dv - far : Infinity;
+    } else if (zone === 'percival') {
+      frontD = behindD = 1 / 3;
+    } else {
+      frontD = behindD = zone;
+    }
+  }
+  const mm = (d) => DEPTH_EYE_SEPARATION_M * viewerM * d * 1000;
+  return { zone, viewerM, frontD, behindD, frontMm: mm(frontD), behindMm: mm(behindD) };
+}
+
+/**
+ * How much a DISPLAY rig's depth would have to shrink for a subject to sit inside a comfort zone:
+ * the largest `k ≤ 1` such that the subject's disparities scaled by `k` (a display rig's
+ * ipdFactor, with parallaxFactor moved with it) stay within {@link comfortZone}. 1 = it already
+ * fits; never above 1 — this only ever says "less".
+ *
+ * Exact geometry, at real proportions: the nearest point is `frontH` tile heights in front of the
+ * glass, physically `frontH · tileHeightM`, so at `z = V − frontH · tileHeightM` from the viewer;
+ * the farthest at `z = V + backH · tileHeightM`. Each side's `|ΔD| = |1/V − 1/z|` against the
+ * zone's bound on that side gives `k = min(1, frontD/|ΔD_front|, behindD/ΔD_behind)` (a side with
+ * no depth does not count). The SAME subject in tile heights asks more of a small, close screen —
+ * a tablet at 0.4 m carries more vergence per tile height than a laptop at 0.6 m — which is the
+ * whole reason this depends on the panel and not just on the scene.
+ *
+ * Returns 1 (no change) for any missing or invalid input — a non-finite depth, a height or
+ * viewer distance ≤ 0, an unknown zone — and when the front reaches the viewer (no finite
+ * disparity to scale): a measurement that cannot be made must never be read as "flatten it".
+ *
+ * @param {object} o
+ * @param {number} o.frontH  MAGNITUDE, tile heights in front of the glass (0 = nothing in front).
+ * @param {number} o.backH  MAGNITUDE, tile heights behind it.
+ * @param {number} o.tileHeightM  the tile's (canvas's) physical height, metres.
+ * @param {number} [o.viewerM=0.6]  NOMINAL viewer distance, metres.
+ * @param {'shibata'|'percival'|number} [o.zone='shibata']
+ * @returns {number} in (0, 1].
+ */
+export function comfortDepthFactor({ frontH, backH, tileHeightM, viewerM = DEPTH_DEFAULT_VIEWER_M, zone = 'shibata' } = {}) {
+  if (!num(frontH) || !num(backH) || !num(tileHeightM) || !(tileHeightM > 0)) return 1;
+  const z = comfortZone({ viewerM, zone });
+  if (!num(z.frontD) || Number.isNaN(z.behindD)) return 1;
+  const V = viewerM;
+  const zf = V - Math.max(0, frontH) * tileHeightM;
+  const zb = V + Math.max(0, backH) * tileHeightM;
+  if (!(zf > 0)) return 1;
+  const dFront = 1 / zf - 1 / V;
+  const dBehind = 1 / V - 1 / zb;
+  let k = 1;
+  if (dFront > 0) k = Math.min(k, z.frontD / dFront);
+  if (dBehind > 0) k = Math.min(k, z.behindD / dBehind);
+  return k > 0 ? k : 1;
+}
+
+/**
+ * The CAMERA-rig counterpart of {@link comfortDepthFactor}: the multiplier `m` on the eye
+ * separation (the rig's ipdFactor) that puts the scene's nearest point (`zNear`) and farthest
+ * (`zFar`, may be Infinity) at the edge of the comfort zone, at the given viewing distance.
+ *
+ * Measurement only; the page decides whether to apply it. Unlike the display-rig factor it can
+ * exceed 1, because a camera rig's 1 is only physical in metre-scale worlds: `ipdFactor` 1 is
+ * 63 mm × metersToVirtual in scene units, which is right for a real-sized room and far too little
+ * for a scene authored in large units (it renders nearly flat).
+ *
+ * Method: the on-screen disparity as a fraction of the tile width is
+ * `f = b · (1/D − 1/z) / (2 · tan(verticalFov/2) · aspect)` (b = 0.063 · ipdFactor ·
+ * metersToVirtual; {@link cameraRigDisparityPct} / 100), physically `p = f · aspect · tileHeightM`
+ * on the glass, which is `ΔD = p / (0.063 · V)` diopters of vergence. `m` = the smallest of
+ * zone side / |ΔD side| over the sides with content (in front: z < D, behind: z > D).
+ * Convergence 0 / unset is infinity: everything is in front.
+ *
+ * @param {object} o
+ * @param {number} o.zNear  nearest scene point along the view axis, world units (> 0).
+ * @param {number} o.zFar  farthest, world units (≥ zNear; Infinity allowed).
+ * @param {number} [o.convergence]  zero-disparity distance, world units (0 = infinity).
+ * @param {number} [o.convergenceDiopters]  or 1/distance; wins over `convergence`.
+ * @param {number} o.verticalFov  FULL vertical angle, RADIANS.
+ * @param {number} o.aspect  the tile's width / height.
+ * @param {number} o.tileHeightM  the tile's physical height, metres.
+ * @param {number} [o.viewerM=0.6] [o.zone='shibata'] [o.ipdFactor=1] [o.metersToVirtual=1]
+ * @returns {number} > 0, no upper bound; Infinity when nothing is off the plane; NaN on bad input.
+ */
+export function cameraRigComfortFactor({
+  zNear,
+  zFar,
+  convergence,
+  convergenceDiopters,
+  verticalFov,
+  aspect,
+  tileHeightM,
+  viewerM = DEPTH_DEFAULT_VIEWER_M,
+  zone = 'shibata',
+  ipdFactor = 1,
+  metersToVirtual = 1,
+} = {}) {
+  const farOk = num(zFar) || zFar === Infinity;
+  if (!num(zNear) || !(zNear > 0) || !farOk || !(zFar >= zNear)) return NaN;
+  if (!num(verticalFov) || !(verticalFov > 0) || !num(aspect) || !(aspect > 0) || !num(tileHeightM) || !(tileHeightM > 0)) return NaN;
+  if (!num(ipdFactor) || !(ipdFactor > 0) || !num(metersToVirtual) || !(metersToVirtual > 0)) return NaN;
+  const cz = comfortZone({ viewerM, zone });
+  if (!num(cz.frontD)) return NaN;
+  const invD = num(convergenceDiopters) ? Math.max(0, convergenceDiopters) : num(convergence) && convergence > 0 ? 1 / convergence : 0;
+  const b = DEPTH_EYE_SEPARATION_M * ipdFactor * metersToVirtual;
+  // ΔD of a point at z (+ behind, − in front): f · aspect · H / (e · V), the aspect cancelling.
+  const dD = (z) => (b * (invD - 1 / z) * tileHeightM) / (2 * Math.tan(verticalFov / 2) * DEPTH_EYE_SEPARATION_M * viewerM);
+  let m = Infinity;
+  const front = -dD(zNear);
+  const behind = dD(zFar);
+  if (front > 0) m = Math.min(m, cz.frontD / front);
+  if (behind > 0) m = Math.min(m, cz.behindD / behind);
+  return m;
 }
 
 // ── one-time warnings (never a behaviour change) ──────────────────────────────────────────────

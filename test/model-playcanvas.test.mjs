@@ -738,3 +738,77 @@ test('clearColor reaches the eye camera; absent = the transparent clear', async 
   base.remove();
   opaque.remove();
 });
+
+// ── depth: 'auto' (opt-in comfort depth) ────────────────────────────────────────────────────
+
+import { comfortDepthFactor } from '../js/inline3d-depth-budget.js';
+import { framedSubjectBounds } from '../js/inline3d-splat-shared.js';
+
+/** fakeWall plus displayMetrics: a small, close panel (H 0.12 m, nominal viewer 0.3 m). */
+function metricsWall() {
+  const { wall, rec } = fakeWall();
+  rec.rigs = [];
+  rec.metricsCalls = 0;
+  const addScene = wall.addScene;
+  wall.addScene = (...a) => {
+    const h = addScene(...a);
+    h.setViewRig = (r) => rec.rigs.push(JSON.parse(JSON.stringify(r)));
+    h.displayMetrics = async () => {
+      rec.metricsCalls++;
+      return { canvasSizeM: [0.16, 0.12], nominalViewerM: 0.3, source: { size: 'display', viewer: 'display', eyeSeparation: 'default' } };
+    };
+    return h;
+  };
+  return { wall, rec };
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test("depth absent: no rig declared, no metrics read, depthFactor 1 — exactly as before", async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const { wall, rec } = metricsWall();
+  const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc });
+  assert.equal(h.depthFactor, 1, 'on the synchronous handle');
+  await h.ready;
+  await settle();
+  assert.equal(h.depthFactor, 1);
+  assert.equal(rec.rigs.length, 0, 'no setViewRig call');
+  assert.equal(rec.metricsCalls, 0, 'no async work');
+  assert.equal(rec.opts.virtualDisplayHeight, 0.24, 'the shorthand, as before');
+  h.remove();
+});
+
+test("depth on: the display rig's ipdFactor and parallaxFactor = k (× setStereo's); the framed box, the nominal viewer", async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const { wall, rec } = metricsWall();
+  const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, depth: { zone: 0.1 } });
+  await h.ready;
+  await settle();
+  const b = framedSubjectBounds(h.viewer);
+  const k = comfortDepthFactor({ frontH: b.front / 0.24, backH: -b.back / 0.24, tileHeightM: 0.12, viewerM: 0.3, zone: 0.1 });
+  assert.ok(k < 1, String(k));
+  near(h.depthFactor, k, 1e-12);
+  const r = rec.rigs.at(-1);
+  assert.equal(r.type, 'display');
+  near(r.ipdFactor, k, 1e-12);
+  near(r.parallaxFactor, k, 1e-12);
+  const n = rec.rigs.length;
+  h.setPose({ zoom: 1.5, yaw: 60 });
+  await settle();
+  assert.equal(rec.rigs.length, n, 'zoom / orbit never re-measure');
+  h.setStereo({ ipdFactor: 0.5 });
+  near(rec.rigs.at(-1).ipdFactor, 0.5 * k, 1e-12);
+  near(rec.rigs.at(-1).parallaxFactor, k, 1e-12);
+  h.remove();
+});
+
+test('depth: an invalid value throws at the call, on either engine', () => {
+  installDom();
+  for (const engine of [undefined, 'three']) {
+    assert.throws(() => addModel(null, makeCanvas(), 'a.glb', { engine, depth: 'max' }), /@displayxr\/inline3d\/model: depth must be 'auto'/);
+    assert.throws(() => addModel(null, makeCanvas(), 'a.glb', { engine, depth: { zone: -1 } }), /depth.zone must be/);
+  }
+});

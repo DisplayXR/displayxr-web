@@ -419,6 +419,24 @@ export interface SplatOptions {
    */
   clearColor?: [number, number, number] | [number, number, number, number] | string;
   /**
+   * OPT-IN comfort depth (display rig only). `'auto'` (the Shibata zone of comfort) or
+   * `{ zone: 'shibata' | 'percival' | <diopters> }`. The SDK measures the framed subject's depth
+   * (tile heights in front of / behind the glass), the canvas's physical height
+   * (`displayMetrics()`) and the display's NOMINAL viewer distance (`getDisplayInfo()`, 0.6 m when
+   * it reports none — never the live head distance), and multiplies the display rig's `ipdFactor`
+   * and `parallaxFactor` (together) by `comfortDepthFactor()` of those, on top of
+   * `setStereo`'s values (Spark has no setStereo: the factor is the rig's whole ipdFactor / parallaxFactor). It ONLY EVER LOWERS DEPTH (the factor is ≤ 1), because the same depth in
+   * tile heights carries more vergence load on a small or close device (a tablet at 0.4 m) than on
+   * a laptop at 0.6 m: where the subject already fits, nothing changes.
+   *
+   * Measured when the subject is first framed, when the canvas resizes and when the display
+   * reports a change — NOT on zoom or orbit (those are framing choices the developer owns; the box
+   * is the framed one at zoom 1), and not per frame. Read the factor in force from `depthFactor`.
+   * Ignored, with one console warning, on a camera rig (an asset with a capture camera, `rig: 'camera'`) or under `controls: 'page'`. Anything else
+   * throws at the call. Unset: nothing is measured or declared — the tile is exactly as before.
+   */
+  depth?: 'auto' | { zone?: 'shibata' | 'percival' | number };
+  /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
    */
@@ -1118,6 +1136,12 @@ export interface SplatHandle {
    */
   warmEntity(entity: unknown, opts?: { timeoutMs?: number }): Promise<number>;
   setStereo(opts: SplatStereoOptions | null): SplatHandle;
+  /**
+   * The `depth` option's comfort factor in force, in (0, 1]: what the display rig's ipdFactor and
+   * parallaxFactor are multiplied by (under `setStereo`'s values). 1 without the option, before
+   * the first measurement, and on a rig it does not apply to.
+   */
+  readonly depthFactor: number;
   /** This tile in physical units — the core `TileHandle.displayMetrics()`, on the splat handle. Never rejects. */
   displayMetrics(): Promise<DisplayMetrics>;
   /**
