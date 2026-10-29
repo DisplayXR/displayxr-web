@@ -31,6 +31,15 @@ export interface ModelOptions {
   /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
   /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
+  /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
    */
@@ -203,6 +212,26 @@ export interface ModelHandle {
   /** Resolves once the model has loaded and been framed; rejects if the load failed. */
   readonly ready: Promise<ModelHandle>;
 
+  /**
+   * Live stereo strength — a depth slider, mirroring `SplatHandle.setStereo`. On the display rig
+   * (the default) the values are RELATIVE: 1 = what the display shows by construction, below 1 a
+   * comfort dial, 0 flat (above 1 exaggerates; sent as given, with a one-time warning). A key given
+   * replaces, a key set to `null` returns to 1, `setStereo(null)` clears both. `ipdScale` /
+   * `parallaxScale` are accepted too (a model's own values are 1, so they agree). Sticky; applied
+   * from the next frame with no cut (pose and framing stay). Re-declares the display rig
+   * explicitly (`handle.viewRig`); nothing is declared before the first call. Under
+   * `controls: 'page'` (PlayCanvas) the page's camera rig takes them, ABSOLUTE.
+   */
+  setStereo(opts: { ipdFactor?: number | null; parallaxFactor?: number | null; ipdScale?: number | null; parallaxScale?: number | null } | null): ModelHandle;
+  /** The rig's stereo in force (read back; `setStereo` writes it). Null until the backend has loaded. */
+  readonly rig: {
+    readonly type: 'display' | 'camera';
+    readonly ipdFactor: number;
+    readonly parallaxFactor: number;
+    readonly stereoDefault: { readonly ipdFactor: number; readonly parallaxFactor: number };
+  } | null;
+  /** The view-rig descriptor last declared by `setStereo` (or `controls: 'page'`), if any. */
+  readonly viewRig?: object;
   /** Throws on `controls: 'page'`. */
   setPose(pose?: OrbitPose): void;
   /** Throws on `controls: 'page'`. */

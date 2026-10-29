@@ -695,3 +695,46 @@ test('the default model path imports neither three nor playcanvas statically (bo
 function near(a, b, eps, what = '') {
   assert.ok(Math.abs(a - b) < eps, `${what} ${a} !~= ${b}`);
 }
+
+// ── look-right helpers (opt-in; absent = byte-identical) ────────────────────────────────────
+
+test('setStereo: queued before load, then a display rig with those RELATIVE factors; none = no rig declared', async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const plain = fakeWall();
+  const h0 = addModel(plain.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc });
+  await h0.ready;
+  assert.equal(plain.rec.rig, undefined, 'a page that never calls setStereo declares nothing new');
+  assert.equal(h0.rig.ipdFactor, 1);
+  h0.remove();
+
+  const { wall, rec } = fakeWall();
+  const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, virtualDisplayHeight: 0.3 });
+  assert.equal(h.rig, null, 'null until the backend has loaded');
+  assert.throws(() => h.setStereo({ ipdFactor: 'more' }), /@displayxr\/inline3d\/model: setStereo — ipdFactor/);
+  assert.equal(h.setStereo({ ipdFactor: 0.4 }), h);
+  await h.ready;
+  assert.equal(h.rig.ipdFactor, 0.4);
+  assert.deepEqual({ ...rec.rig }, { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, virtualDisplayHeight: 0.3, ipdFactor: 0.4, parallaxFactor: 1, perspectiveFactor: 1 });
+  h.setStereo(null);
+  assert.equal(rec.rig.ipdFactor, 1);
+  assert.equal(rec.rig.virtualDisplayHeight, 0.3, 'the plain rig, the shorthand made explicit');
+  h.remove();
+});
+
+test('clearColor reaches the eye camera; absent = the transparent clear', async () => {
+  installDom();
+  const { pc } = makeFakePc({ aabbs: [{ c: [0, 0, 0], h: [0.2, 0.2, 0.6] }] });
+  installFetch(glb());
+  const a = fakeWall();
+  const base = addModel(a.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0 });
+  await base.ready;
+  assert.deepEqual({ ...base.viewer.eye.camera.clearColor }, { r: 0, g: 0, b: 0, a: 0 }, 'absent: the transparent clear');
+  const b = fakeWall();
+  const opaque = addModel(b.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0, clearColor: '#203040' });
+  await opaque.ready;
+  assert.deepEqual({ ...opaque.viewer.eye.camera.clearColor }, { r: 0x20 / 255, g: 0x30 / 255, b: 0x40 / 255, a: 1 });
+  base.remove();
+  opaque.remove();
+});

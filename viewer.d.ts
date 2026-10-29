@@ -48,6 +48,15 @@ export interface SceneViewerOptions {
    * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
    */
   viewerEase?: ViewerEaseOption;
+  /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
 }
 
 export interface OrbitPose {
@@ -117,6 +126,8 @@ export declare class SceneViewer {
    */
   readonly effectiveRenderScale: number;
 
+  /** The `clearColor` option, parsed (`[r,g,b,a]`), or null = the transparent clear. */
+  readonly clearColor: number[] | null;
   /** Centre the subject on the zero-disparity plane and scale it to the tile. */
   fitTo(
     center: number[] | { x: number; y: number; z: number },

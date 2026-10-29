@@ -21,7 +21,7 @@
 // engine import fails, one warning names what to install, and the tile renders on three. With
 // neither, `ready` rejects naming both. An explicit `engine` never falls back.
 
-import { guardedAttach } from './inline3d-splat-shared.js';
+import { guardedAttach, validateSetStereo } from './inline3d-splat-shared.js';
 /** The engines `addModel` renders with; the first is the default. */
 export const MODEL_ENGINES = Object.freeze(['playcanvas', 'three']);
 
@@ -141,6 +141,13 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     remove: queue('remove'),
     exclude: queue('exclude'),
     unexclude: queue('unexclude'),
+    // Validated now (a bad argument throws at the call, as once the backend is in), replayed then.
+    setStereo(o) {
+      validateSetStereo(o, null, '@displayxr/inline3d/model');
+      pending.push(['setStereo', [o]]);
+      return out;
+    },
+    rig: null,
     // Before the backend lands: once it has, the backend's own (PlayCanvas); three has none (0).
     warmEntity: (entity, o) => out.ready.then(() => (out.warmEntity !== stubWarm && typeof out.warmEntity === 'function' ? out.warmEntity(entity, o) : 0)),
   };
@@ -233,6 +240,10 @@ async function attachThree(out, wall, canvas, src, opts, pending, mod) {
   }
   out.backend = 'three';
   out.engine = null;
+  for (const k of ['rig', 'viewRig']) {
+    Object.defineProperty(out, k, { get: () => inner[k], enumerable: true, configurable: true });
+  }
+  out.setStereo = (o) => (inner.setStereo(o), out);
   out.setPose = inner.setPose;
   out.resetPose = inner.resetPose;
   out.remove = inner.remove;

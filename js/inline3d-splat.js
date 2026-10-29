@@ -255,6 +255,8 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     feather,
     logTag: '[inline3d/splat]',
     viewerEase: opts.viewerEase,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
   }).useEyeCamera(EyeCamera, EdgeFeather);
   // A gaussian-splat raycast is ~8 ms a ray on Spark: one ray a frame, cycling the footprint.
   // (engine:'playcanvas' hit-tests with the engine's depth picker instead, which is far cheaper.)

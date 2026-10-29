@@ -19,6 +19,10 @@
       "types": "./cursor-depth.d.ts",
       "import": "./js/inline3d-cursor-depth.js"
     },
+    "./depth": {
+      "types": "./depth.d.ts",
+      "import": "./js/inline3d-depth-budget.js"
+    },
     "./viewer": {
       "types": "./viewer.d.ts",
       "import": "./js/inline3d-viewer.js"
@@ -70,6 +74,7 @@
     "js/inline3d.js",
     "js/inline3d-undock.js",
     "js/inline3d-display-metrics.js",
+    "js/inline3d-depth-budget.js",
     "js/inline3d-mode-switch.js",
     "js/inline3d-buffer-limit.js",
     "js/inline3d-viewer-ease.js",
@@ -111,6 +116,7 @@
     "dist/",
     "index.d.ts",
     "three.d.ts",
+    "depth.d.ts",
     "cursor-depth.d.ts",
     "viewer.d.ts",
     "splat.d.ts",

@@ -410,6 +410,15 @@ export interface SplatOptions {
   /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
   /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
+  /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
    */

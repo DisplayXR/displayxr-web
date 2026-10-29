@@ -38,9 +38,9 @@
 // your own origin (`/draco/`, `/basis/`) and `opts.decoderPath` moves that. See
 // docs/authoring-inline-3d.md#compressed-gltf.
 
-import { guardedAttach } from './inline3d-splat-shared.js';
+import { guardedAttach, attachModelStereo } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
-import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from './inline3d-three.js';
+import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest, displayRig } from './inline3d-three.js';
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { CURSOR_MODEL_RAYS_PER_FRAME } from './inline3d-cursor-perf.js';
 import { SceneViewer } from './inline3d-viewer.js';
@@ -416,6 +416,8 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     feather,
     logTag: '[inline3d/model]',
     viewerEase: opts.viewerEase,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
   }).useEyeCamera(EyeCamera, EdgeFeather);
   const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/model');
   // Amortised pick (a few rays a frame): the sprite follows the newest pointer position every
@@ -449,6 +451,9 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
   // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+
+  // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
+  attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig });
 
   // Window first, content when it lands — same reasoning as ./splat: a grid should not appear
   // one tile at a time in download order.

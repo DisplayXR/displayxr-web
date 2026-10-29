@@ -38,7 +38,8 @@
 //       └── eye camera, N RenderViews, TONEMAP_NEUTRAL, no sky layer
 
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
-import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig } from './inline3d-splat-shared.js';
+import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo } from './inline3d-splat-shared.js';
+import { displayRig } from './inline3d-three.js';
 import {
   NEUTRAL_STUDIO,
   neutralStudioRadiance,
@@ -468,6 +469,8 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     sky: false,
     viewerEase: opts.viewerEase,
     cursor: opts.cursor,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
     // Each environment's own look: 'room' is three's (untonemapped), the rest the Sample Viewer's.
     toneMapping: envMap ? 'neutral' : ENVIRONMENT_TONE_MAPPING[environment] || 'neutral',
   });
@@ -530,6 +533,9 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
   Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
+  // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
+  attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig, page: pageMode });
+
   if (wall && wall.supported) {
     handle = wall.addScene(canvas, viewer.onFrame, {
       ...(pageMode
@@ -574,7 +580,11 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
         const dm = (c[0] - ax.origin[0]) * ax.forward[0] + (c[1] - ax.origin[1]) * ax.forward[1] + (c[2] - ax.origin[2]) * ax.forward[2];
         if (dm > 0) d = dm / (ax.scale || 1);
       }
-      out.viewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: d ?? 2, comfortDepth: ctl.comfortDepth }, out.viewRig || {});
+      // setStereo's values, ABSOLUTE on this camera rig (1 and 1 until it is called: as before).
+      out.viewRig = pageViewRig(
+        { verticalFovDeg: viewer.page.fov, convergence: d ?? 2, comfortDepth: ctl.comfortDepth, ipdFactor: out.rig.ipdFactor, parallaxFactor: out.rig.parallaxFactor },
+        out.viewRig || {},
+      );
       declareViewRig(handle, out.viewRig);
     };
     if (typeof opts.onBeforeFrame === 'function') {
