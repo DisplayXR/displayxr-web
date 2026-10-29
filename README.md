@@ -11,9 +11,8 @@ live demos.
 them in 3D; in any other browser the pages render as a normal 2D fallback, so they're safe to view
 anywhere.
 
-> **New here, or an AI coding agent? Read [Making 3D that looks right](docs/making-3d-look-right.md)
-> first** — the short path to a page that looks good on the first try: which view rig, where the
-> screen plane goes, background and contrast, 2D UI, a depth slider and a 2D/3D switch.
+> **New here, or an AI coding agent? Read [Depth and comfort on a 3D display](docs/making-3d-look-right.md)
+> first:** four rules from real panels; the SDK's defaults do the rest.
 
 ## Install
 

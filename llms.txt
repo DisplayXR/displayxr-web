@@ -3,15 +3,12 @@
 > Glasses-free 3D for web pages on a DisplayXR spatial display: you render one image per eye into a
 > canvas, the DisplayXR Browser weaves them for the panel; an ordinary browser shows the page in 2D.
 
-Read first: docs/making-3d-look-right.md — the rules: rig choice, keep the object-viewer defaults,
-fixed convergence for worlds, dark grey not black, 2D UI and cover rules, depth slider, 2D/3D switch.
+Read first: docs/making-3d-look-right.md — four depth and comfort rules from real panels
+(keep the viewers' object placement, fixed convergence in worlds, dark grey not black, a cover
+that always comes off). The SDK's defaults do the rest.
 
-## Start from a sample
-- samples/model/ — product / object viewer (glTF) with addModel
-- samples/hello-cube/ — your own three.js loop on a display rig (EyeCamera)
-- samples/camera-rig/ — a camera rig (cameraRigFromCamera, the attach pattern)
-- samples/display-modes/ — 2D/3D switch with setStereoEnabled
-- samples/splat/ — Gaussian splat with addSplat
+## Samples (they show the API, not a look to copy)
+- samples/model/, samples/splat/, samples/hello-cube/, samples/camera-rig/, samples/display-modes/
 
 ## Reference
 - docs/authoring-inline-3d.md — every API, both view rigs, comfort maths
