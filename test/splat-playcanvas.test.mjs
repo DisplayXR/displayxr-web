@@ -4535,3 +4535,23 @@ test("depth on a display-rig splat: the declared rig's factors = k, × setStereo
   assert.equal(w2.pushed.at(-1).ipdFactor, 1, 'the camera rig untouched');
   cam.remove();
 });
+
+test('a camera-rig focus at or behind the camera never declares convergence at infinity (keeps the last rig)', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.viewer._tick();
+  const good = pushed.filter((r) => r.type === 'camera');
+  assert.ok(good.length > 0 && good.every((r) => r.convergenceDiopters > 0), 'a finite convergence first');
+  const n = pushed.length;
+  // A focus far behind the camera, along +z of the content frame (three looks down −z).
+  const pose = out.viewer.mono.pose;
+  out.viewer.setFocus([pose[12] + 10 * pose[8], pose[13] + 10 * pose[9], pose[14] + 10 * pose[10]], { snap: true });
+  out.viewer._tick();
+  const after = pushed.slice(n).filter((r) => r.type === 'camera');
+  assert.ok(after.every((r) => r.convergenceDiopters > 0), `no convergence-0 rig after the focus went behind (got ${after.map((r) => r.convergenceDiopters)})`);
+  out.remove();
+});

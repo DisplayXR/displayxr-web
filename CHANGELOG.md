@@ -5,6 +5,19 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.47.1 — 2026-10-29
+
+### Fixed — a splat on a camera rig briefly declared convergence at infinity (`./splat`, PlayCanvas)
+
+Touches the preview tier (`./splat` on PlayCanvas) only.
+
+- When a camera-rig splat's focus sat at or behind its camera — in practice the first push, before
+  the first focus has landed — the adapter declared `convergence: 0` (infinity), which asks for
+  the whole scene in front of the glass, for one push. It now keeps the rig as declared until the
+  focus is in front of the camera. Seen on a panel as one such rig in the first 0.3–2 s of each
+  page of an app built on 1.47.0 (and silently in earlier versions); 1.47.0's one-time
+  convergence-0 warning is what surfaced it, and it no longer fires from the SDK's own rigs.
+
 ## 1.47.0 — 2026-10-29
 
 The look-right release: a short guide for people and coding agents (`docs/making-3d-look-right.md`,
