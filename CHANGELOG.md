@@ -5,6 +5,24 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — before camera permission, `openCamera` opened a phone's front (head-tracker) lens (`./camera`, `./call`)
+
+Touches `./camera` (`openCamera`'s `auto` / `stereo` probe) and so `./call`'s camera. With camera
+permission already granted, nothing changes.
+
+- Without permission the device labels are empty, so the probe used to open the platform default
+  camera just to get them: on a phone that is the front lens the head tracker holds, and opening
+  it coincided with every camera dropping out for about 2.4 s. It now primes permission on an
+  environment-facing camera (`facingMode: { ideal: 'environment' }`), reads the list again, and
+  opens a camera that names itself stereo **by id before the default**. A desktop webcam that
+  reports no facing is opened once and kept as the mono fallback (no extra camera start); a phone
+  with no pair still falls back to the default (front) camera for a self view.
+- `camera-busy` now reads "camera unavailable: in use by another app (e.g. eye tracking) or unable
+  to deliver a picture". A 3D camera that is listed but cannot deliver also fails with
+  `NotReadableError`, so "every camera is in use" was wrong for it.
+
 ## 1.47.3 — 2026-10-31
 
 ### Fixed — a rear 3D camera's view was mirrored (`./camera`, `./call`)
