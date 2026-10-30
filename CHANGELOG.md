@@ -5,6 +5,22 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.47.2 — 2026-10-30
+
+### Docs only — two more panel findings in the shipped guide
+
+No code change. `docs/making-3d-look-right.md` and `docs/woven-canvas-rules.md` (both in the
+package):
+
+- **Rule 9:** a `firstWoven` of `woven: false` is not "no 3D here". Drop the cover and keep drawing
+  both eyes, since the layer can still join, and go flat only on `onLayerLost` or with no session.
+  Never draw one full-width flat picture into a canvas the browser is still weaving: each eye
+  would see a different half of it. To show a flat picture on purpose, remove the scene, or call
+  `setStereoEnabled(false)` and keep drawing every view.
+- **Rule 5:** in front of the glass, contrast matters more than the depth number. Keep bright
+  subjects off near-black backgrounds, above all the ones that come closest; dark grey is the
+  minimum, not the target.
+
 ## 1.47.1 — 2026-10-29
 
 ### Fixed — a splat on a camera rig briefly declared convergence at infinity (`./splat`, PlayCanvas)
