@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.47.3 — 2026-10-31
 
 ### Fixed — a rear 3D camera's view was mirrored (`./camera`, `./call`)
 
