@@ -424,3 +424,54 @@ test('addCameraView mirrors a camera facing the user by default, not one facing 
   assert.equal(addCameraView(flat, doc.createElement('canvas'), rear, { mirror: true, _loop: false }).mirror, true, 'an explicit mirror wins');
   assert.equal(addCameraView(flat, doc.createElement('canvas'), front, { mirror: false, _loop: false }).mirror, false);
 });
+
+// A device list whose labels stay hidden until the first getUserMedia succeeds, as before permission.
+function permissionMedia(cams) {
+  let granted = false;
+  const opens = [];
+  return {
+    opens,
+    async getUserMedia({ video }) {
+      const id = video.deviceId ? video.deviceId.exact : null;
+      const facing = video.facingMode ? video.facingMode.ideal : null;
+      const cam = id ? cams.find((c) => c.id === id) : cams.find((c) => facing && c.facing === facing) || cams[0];
+      opens.push(id ? `id:${id}` : facing ? `facing:${facing}` : 'default');
+      granted = true;
+      const track = Object.assign(new FakeTrack('video'), { label: cam.label, getSettings: () => ({ width: cam.w, height: cam.h, deviceId: cam.id, ...(cam.facing ? { facingMode: cam.facing } : {}), ...(cam.stereo ? { displayxrStereo: cam.stereo } : {}) }) });
+      return new FakeStream([track]);
+    },
+    async enumerateDevices() {
+      return cams.map((c) => ({ kind: 'videoinput', deviceId: granted ? c.id : '', label: granted ? c.label : '' }));
+    },
+  };
+}
+
+test('openCamera without permission: primes on the rear camera, then opens the 3D camera by id, never the front (tracker) lens', async () => {
+  const md = permissionMedia([
+    { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'rear', label: 'camera 0, facing back', facing: 'environment', w: 1280, h: 720 },
+    { id: 'pair', label: '3D Camera, rear (DisplayXR)', facing: 'environment', w: 2560, h: 720, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 30, horizontalFovDeg: 64 } },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['facing:environment', 'id:pair']);
+  assert.ok(!md.opens.includes('default') && !md.opens.includes('id:front'), 'the front lens is never opened');
+});
+
+test('openCamera without permission on a desktop: one webcam, opened once and kept as the mono fallback', async () => {
+  const md = permissionMedia([{ id: 'webcam', label: 'FaceTime HD Camera', w: 1280, h: 720 }]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'mono');
+  assert.deepEqual(md.opens, ['facing:environment'], 'no second camera start');
+});
+
+test('openCamera without permission on a phone with no pair: the self view still falls back to the default (front) camera', async () => {
+  const md = permissionMedia([
+    { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'rear', label: 'camera 0, facing back', facing: 'environment', w: 1280, h: 720 },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'mono');
+  assert.equal(cam.deviceId, 'front');
+});

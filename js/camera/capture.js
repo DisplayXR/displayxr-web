@@ -9,8 +9,11 @@
 //  - On some laptops the stereo camera is held EXCLUSIVELY by the eye tracker, so opening it
 //    fails with NotReadableError ("Device in use"). That device is skipped silently — a call must
 //    never fail because an optional camera is busy.
-//  - Labels are empty until one getUserMedia has succeeded, so the default camera is opened first
-//    (which is also the fallback), then the others are probed one at a time.
+//  - Labels are empty until one getUserMedia has succeeded. Without them, permission is primed on
+//    an environment-facing camera where there is one (a phone's front lens is the head tracker's,
+//    and opening it while the tracker holds it can reset the whole camera stack), then the list
+//    is read again and a stereo device is opened by id BEFORE the default. The default is the
+//    fallback.
 //
 // RECTIFICATION is not done here (P2): it needs the camera's calibration (intrinsics/extrinsics
 // for the ACTIVE device), which comes from a plug-in or the runtime. P1 sends the raw pair with
@@ -136,14 +139,16 @@ export async function openCamera(want = 'auto', o = {}) {
   // camera start can take seconds (a busy capture stack took 7-20 s per start on a field box), and
   // the default-first probe below costs two or three of them before it reaches the pair.
   const tried = new Set();
-  if (want !== 'mono') {
-    let early = [];
+  const listCameras = async () => {
     try {
-      early = (await md.enumerateDevices()).filter((d) => d.kind === 'videoinput' && d.deviceId && stereoLabelHint(d.label));
+      return (await md.enumerateDevices()).filter((d) => d.kind === 'videoinput');
     } catch {
-      /* no enumeration yet: the normal path below */
+      return []; // no enumeration: the paths below still work
     }
-    for (const d of early) {
+  };
+  const tryNamedPairs = async (list) => {
+    for (const d of list) {
+      if (!d.deviceId || !stereoLabelHint(d.label) || tried.has(d.deviceId)) continue;
       tried.add(d.deviceId);
       let r = null;
       try {
@@ -154,18 +159,46 @@ export async function openCamera(want = 'auto', o = {}) {
       }
       if (looksSbs(r.width, r.height)) {
         log('camera-sbs', { label: r.label, width: r.width, height: r.height, direct: true });
-        return result(r, 'sbs');
+        return r;
       }
       stop(r);
     }
+    return null;
+  };
+  let mono = null;
+  if (want !== 'mono') {
+    const listed = await listCameras();
+    const pair = await tryNamedPairs(listed);
+    if (pair) return result(pair, 'sbs');
+    // No labels yet (no permission). Prime it on an environment-facing camera, so a phone does not
+    // open its front lens (the head tracker's) just to learn the names; then open a pair by id.
+    if (listed.length && listed.every((d) => !d.label)) {
+      let primed = null;
+      try {
+        primed = await open({ ...MONO_CONSTRAINTS, facingMode: { ideal: 'environment' } });
+      } catch (err) {
+        skip('default', err);
+      }
+      if (primed && looksSbs(primed.width, primed.height)) return result(primed, 'sbs');
+      const named = await tryNamedPairs(await listCameras());
+      if (named) {
+        stop(primed);
+        return result(named, 'sbs');
+      }
+      // A camera that faces the user (or does not say: a desktop webcam) is the fallback as is; a
+      // rear one is not what a self view falls back to, so the default is opened below instead.
+      if (primed && primed.track?.getSettings?.().facingMode !== 'environment') mono = primed;
+      else stop(primed);
+    }
   }
 
-  // The default camera first: permission, labels, and the fallback.
-  let mono = null;
-  try {
-    mono = await open(MONO_CONSTRAINTS);
-  } catch (err) {
-    skip('default', err);
+  // The default camera: the fallback (and, with labels already visible, also the probe base).
+  if (!mono) {
+    try {
+      mono = await open(MONO_CONSTRAINTS);
+    } catch (err) {
+      skip('default', err);
+    }
   }
   if (want === 'mono' && mono) return result(mono, 'mono');
   if (mono && looksSbs(mono.width, mono.height)) return result(mono, 'sbs'); // the default IS the pair
@@ -202,7 +235,7 @@ export async function openCamera(want = 'auto', o = {}) {
   }
   const code = noCameraCode(skipped);
   throw Object.assign(
-    new Error(code === 'camera-busy' ? 'every camera is in use by another app (e.g. eye tracking)' : code === 'permission-denied' ? 'camera access was denied' : 'no camera could be opened'),
+    new Error(code === 'camera-busy' ? 'camera unavailable: in use by another app (e.g. eye tracking) or unable to deliver a picture' : code === 'permission-denied' ? 'camera access was denied' : 'no camera could be opened'),
     { code, skipped }
   );
 }
