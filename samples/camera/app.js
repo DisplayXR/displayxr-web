@@ -106,7 +106,9 @@ say(
   inline3DAvailable() ? 'woven' : 'flat'
 );
 
-const view = addCameraView(wall, /** @type {HTMLCanvasElement} */ (document.getElementById('self')), cam, { mirror: true, autoConverge: true, cursor: q.get('cursor') === '0' ? undefined : 'depth' });
+// Mirror by default only for a camera facing the user (a rear 3D camera shows the world as is).
+const view = addCameraView(wall, /** @type {HTMLCanvasElement} */ (document.getElementById('self')), cam, { autoConverge: true, cursor: q.get('cursor') === '0' ? undefined : 'depth' });
+$('mirror').checked = view.mirror;
 $('mirror').addEventListener('change', () => view.setMirror($('mirror').checked));
 $('converge').addEventListener('change', () => view.setAutoConverge($('converge').checked));
 $('depth').addEventListener('input', () => view.setDepth($('depth').valueAsNumber));

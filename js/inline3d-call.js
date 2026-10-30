@@ -1895,7 +1895,7 @@ class SelfTile {
       // onRouteChange: the view drops to its flat left eye by itself when the wall says the tile
       // will not weave (firstWoven → woven:false, web#131), and the badge must follow it.
       this.view = addCameraView(wall, this.canvas, cam, {
-        mirror: true,
+        // mirror: unset — a selfie camera mirrors, a rear ('environment') camera does not.
         autoConverge: !!this.call.o.autoConverge, // the call option (default on) governs the self view too
         cursor: this.call.o.cursor || undefined, // and so does `cursor: 'depth'`
         aspect: this.call.o.tileAspect,

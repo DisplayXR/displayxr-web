@@ -407,3 +407,20 @@ async function tick0() {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+test('addCameraView mirrors a camera facing the user by default, not one facing the environment', async () => {
+  installCallDom();
+  const camFacing = (facingMode) => openCamera({ prefer: new FakeStream([Object.assign(new FakeTrack('video'), { getSettings: () => ({ width: 2560, height: 720, ...(facingMode ? { facingMode } : {}) }) })]), format: 'sbs' });
+  const flat = { supported: false };
+  const rear = await camFacing('environment');
+  assert.equal(rear.facing, 'environment');
+  const vRear = addCameraView(flat, doc.createElement('canvas'), rear, { _loop: false });
+  assert.equal(vRear.mirror, false, 'a rear 3D camera shows the world as it is');
+  const front = await camFacing('user');
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), front, { _loop: false }).mirror, true, 'a selfie camera mirrors');
+  const unknown = await camFacing(null);
+  assert.equal(unknown.facing, null);
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), unknown, { _loop: false }).mirror, true, 'an unknown facing is a webcam pointed at the viewer');
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), rear, { mirror: true, _loop: false }).mirror, true, 'an explicit mirror wins');
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), front, { mirror: false, _loop: false }).mirror, false);
+});
