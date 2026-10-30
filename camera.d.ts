@@ -157,6 +157,8 @@ export interface StereoCamera {
   readonly eyeWidth: number;
   readonly deviceId: string | null;
   readonly label: string;
+  /** The track's `facingMode`: 'user', 'environment', 'left', 'right', or null when the browser does not say. */
+  readonly facing: 'user' | 'environment' | 'left' | 'right' | (string & {}) | null;
   /** True when this module opened the device (and `close()` stops it); false for a page-supplied stream. */
   readonly owned: boolean;
   /** Devices tried and not used (busy, denied, not a pair) — the clue a `'camera-busy'` report carries. */
@@ -203,7 +205,10 @@ export interface PairCursorOptions {
 }
 
 export interface CameraViewOptions {
-  /** Selfie mirroring, done right for a pair (each half mirrored AND swapped). Default true. */
+  /**
+   * Selfie mirroring, done right for a pair (each half mirrored AND swapped). Default: true unless
+   * the camera faces the environment ({@link StereoCamera.facing} `'environment'`, a rear camera).
+   */
   mirror?: boolean;
   /** Measure the face's disparity ~5×/s and converge on it (the face at the display plane). Default false. */
   autoConverge?: boolean;

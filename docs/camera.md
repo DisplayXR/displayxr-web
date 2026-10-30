@@ -95,7 +95,7 @@ import { openCamera, addCameraView } from '@displayxr/inline3d/camera';
 
 const cam = await openCamera();
 const view = addCameraView(await sharedInline3D(), document.querySelector('canvas'), cam, {
-  mirror: true,          // selfie mirroring, done right for a pair (default true)
+  mirror: true,          // selfie mirroring, done right for a pair (default: true unless cam.facing is 'environment')
   autoConverge: true,    // the face at the display plane (default false)
   depth: 0,              // [-1, 1], + = push back — an offset on top of the convergence
   aspect: 16 / 9,        // the tile's aspect = the woven buffer's per-eye aspect

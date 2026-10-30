@@ -5,6 +5,23 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — a rear 3D camera's view was mirrored (`./camera`, `./call`)
+
+Touches `./camera` (`addCameraView`, new read-only `StereoCamera.facing`) and `./call` (its self
+tile). Front cameras and webcams behave exactly as before.
+
+- `addCameraView`'s `mirror` now defaults to true **unless the track faces the environment**
+  (`getSettings().facingMode === 'environment'`, a rear camera). Mirroring is right for a self view
+  and wrong for a camera pointed at the world: on a tablet's rear 3D camera the scene came out
+  mirrored (each half flipped and the eyes swapped). An unknown facing (most desktop webcams) still
+  mirrors; an explicit `mirror` still wins.
+- `StereoCamera.facing`: the track's `facingMode` (`'user'`, `'environment'`, `'left'`, `'right'`)
+  or null when the browser does not say.
+- `./call`'s self tile uses the same default (it passed `mirror: true`), and `samples/camera`
+  initialises its Mirror checkbox from the view.
+
 ## 1.47.2 — 2026-10-30
 
 ### Docs only — two more panel findings in the shipped guide

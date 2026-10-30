@@ -105,6 +105,7 @@ interface StereoCamera
   StereoCamera.on: on<K extends keyof CameraEvents>(type:K,cb:(e:CameraEvents[K])=>void):()=>void
   StereoCamera.readonly deviceId: readonly deviceId:string|null
   StereoCamera.readonly eyeWidth: readonly eyeWidth:number
+  StereoCamera.readonly facing: readonly facing:'user'|'environment'|'left'|'right'|(string &{})|null
   StereoCamera.readonly format: readonly format:CameraFormat
   StereoCamera.readonly height: readonly height:number
   StereoCamera.readonly label: readonly label:string

@@ -167,6 +167,20 @@ class StereoCamera {
     for (const t of this.stream.getVideoTracks()) t.addEventListener?.('ended', this._onEnded);
   }
 
+  /**
+   * Which way the camera faces, from the track's settings: 'user' (a selfie / front camera),
+   * 'environment' (a rear camera), 'left' / 'right', or null when the browser does not say (most
+   * desktop webcams).
+   */
+  get facing() {
+    try {
+      const f = this.stream.getVideoTracks()[0]?.getSettings?.().facingMode;
+      return typeof f === 'string' && f ? f : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Source width of ONE eye (the whole frame for mono). */
   get eyeWidth() {
     return this.format === 'sbs' ? this.width / 2 : this.width;
@@ -499,7 +513,9 @@ class CameraView {
     this.wall = wall || null;
     this.canvas = canvas;
     this.cam = cam;
-    this.mirror = o.mirror === undefined ? true : !!o.mirror;
+    // A self view mirrors; a rear camera shows the world as it is. Unset: mirror unless the track
+    // says it faces the environment (an unknown facing is a webcam pointed at the viewer).
+    this.mirror = o.mirror === undefined ? cam.facing !== 'environment' : !!o.mirror;
     this.aspect = typeof o.aspect === 'number' && o.aspect > 0.3 && o.aspect < 4 ? o.aspect : 16 / 9;
     this.autoConverge = !!o.autoConverge;
     this.conv = createConvergence();
