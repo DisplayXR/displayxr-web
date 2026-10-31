@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.47.4 — 2026-10-31
+
 ### Fixed — a declared 3D camera with portrait eyes was dropped for a plain one (`./camera`, `./call`)
 
 - `openCamera` kept a device as a pair only if it was wider than 2.5:1. A phone's front pair with
