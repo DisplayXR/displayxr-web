@@ -104,6 +104,9 @@ export async function openCamera(want = 'auto', o = {}) {
     log('camera-skip', { label, error: err.name });
   };
   const stop = (r) => r && r.stream.getTracks().forEach((t) => t.stop());
+  // A track that declares itself a side-by-side pair IS one, whatever its aspect (a phone's portrait
+  // eyes make a 1440x1280 pair). Shape is only the guess for an unknown device, e.g. a USB pair.
+  const isPair = (r) => !!r && (!!r.stereo || looksSbs(r.width, r.height));
   const result = (r, format) => ({
     stream: r.stream, format, width: r.width, height: r.height, deviceId: r.deviceId, label: r.label, owned: true, skipped,
     calibration: {
@@ -129,7 +132,7 @@ export async function openCamera(want = 'auto', o = {}) {
       skip(want, err);
       throw Object.assign(new Error(`camera unavailable: ${err.message}`), { code: noCameraCode(skipped), skipped });
     }
-    if (looksSbs(r.width, r.height)) return result(r, 'sbs');
+    if (isPair(r)) return result(r, 'sbs');
     stop(r);
     return result(await open({ deviceId: { exact: want }, ...MONO_CONSTRAINTS }), 'mono');
   }
@@ -157,7 +160,7 @@ export async function openCamera(want = 'auto', o = {}) {
         skip(d.label, err);
         continue;
       }
-      if (looksSbs(r.width, r.height)) {
+      if (isPair(r)) {
         log('camera-sbs', { label: r.label, width: r.width, height: r.height, direct: true });
         return r;
       }
@@ -179,7 +182,7 @@ export async function openCamera(want = 'auto', o = {}) {
       } catch (err) {
         skip('default', err);
       }
-      if (primed && looksSbs(primed.width, primed.height)) return result(primed, 'sbs');
+      if (primed && isPair(primed)) return result(primed, 'sbs');
       const named = await tryNamedPairs(await listCameras());
       if (named) {
         stop(primed);
@@ -201,7 +204,7 @@ export async function openCamera(want = 'auto', o = {}) {
     }
   }
   if (want === 'mono' && mono) return result(mono, 'mono');
-  if (mono && looksSbs(mono.width, mono.height)) return result(mono, 'sbs'); // the default IS the pair
+  if (mono && isPair(mono)) return result(mono, 'sbs'); // the default IS the pair
 
   let devices = [];
   try {
@@ -222,7 +225,7 @@ export async function openCamera(want = 'auto', o = {}) {
       skip(d.label, err);
       continue;
     }
-    if (looksSbs(r.width, r.height)) {
+    if (isPair(r)) {
       stop(mono);
       log('camera-sbs', { label: r.label, width: r.width, height: r.height });
       return result(r, 'sbs');
