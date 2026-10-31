@@ -7,6 +7,17 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — the camera permission prime could open a phone lens and crash its camera (`./camera`, `./call`)
+
+Before camera permission, `openCamera('auto')` primed on `{1280x720, facingMode: 'environment'}`.
+On a phone whose lenses all report the same facing, that picked camera 0, one lens of the 3D
+camera's pair, and on some phones a plain open of that lens, or its teardown, crashes the camera
+service. The prime now asks for the default camera with no constraints. The DisplayXR Browser lists
+its 3D camera first, so the prime opens the pair directly and no lens is opened. A desktop webcam is
+still opened once and kept, and is then asked for the usual 1280x720 mode without a second start.
+With labels visible but no 3D camera listed, the list is read once more before the fallback, since
+a runtime 3D camera can appear late after a runtime restart.
+
 ## 1.47.4 — 2026-10-31
 
 ### Fixed — a declared 3D camera with portrait eyes was dropped for a plain one (`./camera`, `./call`)
