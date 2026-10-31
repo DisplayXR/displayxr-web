@@ -7,6 +7,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — a declared 3D camera with portrait eyes was dropped for a plain one (`./camera`, `./call`)
+
+- `openCamera` kept a device as a pair only if it was wider than 2.5:1. A phone's front pair with
+  portrait eyes (720x1280 each, so a 1440x1280 frame) failed that test: the SDK stopped the
+  "3D Camera (DisplayXR)" track and fell back to the plain default camera. A track whose settings
+  say `displayxrStereo.layout === 'side-by-side'` is now a pair whatever its aspect, so the SDK no
+  longer falls back once the browser offers a stereo track. Shape is still the guess for devices
+  that say nothing (USB pairs).
+
 ### Fixed — before camera permission, `openCamera` opened a phone's front (head-tracker) lens (`./camera`, `./call`)
 
 Touches `./camera` (`openCamera`'s `auto` / `stereo` probe) and so `./call`'s camera. With camera

@@ -475,3 +475,19 @@ test('openCamera without permission on a phone with no pair: the self view still
   assert.equal(cam.format, 'mono');
   assert.equal(cam.deviceId, 'front');
 });
+
+test('openCamera: a track that declares side-by-side is a pair whatever its aspect (portrait phone eyes, 1440x1280)', async () => {
+  const md = permissionMedia([
+    { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.equal(cam.eyeWidth, 720);
+  assert.ok(!md.opens.includes('default'), 'never falls back to a plain camera once the pair is offered');
+  // With labels visible, the declared pair is kept by the fast path too.
+  const again = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(again.format, 'sbs');
+  assert.equal(again.deviceId, 'pair');
+});
