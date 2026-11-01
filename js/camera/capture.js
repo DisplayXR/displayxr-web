@@ -10,10 +10,11 @@
 //    fails with NotReadableError ("Device in use"). That device is skipped silently — a call must
 //    never fail because an optional camera is busy.
 //  - Labels are empty until one getUserMedia has succeeded. Without them, permission is primed on
-//    an environment-facing camera where there is one (a phone's front lens is the head tracker's,
-//    and opening it while the tracker holds it can reset the whole camera stack), then the list
-//    is read again and a stereo device is opened by id BEFORE the default. The default is the
-//    fallback.
+//    the DEFAULT camera with no constraints: in the DisplayXR Browser the runtime's 3D camera is
+//    listed first, so the prime opens the pair itself and no phone lens is opened at all (a plain
+//    open of one lens of the pair, or its teardown, crashes some phones' camera HAL; any facing or
+//    size constraint lets the engine pick a lens instead). Then the list is read again and a
+//    stereo device is opened by id BEFORE falling back. The primed default is the fallback.
 //
 // RECTIFICATION is not done here (P2): it needs the camera's calibration (intrinsics/extrinsics
 // for the ACTIVE device), which comes from a plug-in or the runtime. P1 sends the raw pair with
@@ -104,6 +105,17 @@ export async function openCamera(want = 'auto', o = {}) {
     log('camera-skip', { label, error: err.name });
   };
   const stop = (r) => r && r.stream.getTracks().forEach((t) => t.stop());
+  // Ask an open camera for another mode without a second start; keep it as it is if it refuses.
+  const withMode = async (r, constraints) => {
+    try {
+      await r.track.applyConstraints(constraints);
+      const st = r.track.getSettings();
+      if (st.width > 0 && st.height > 0) return { ...r, width: st.width, height: st.height };
+    } catch {
+      /* keep the mode it opened in */
+    }
+    return r;
+  };
   // A track that declares itself a side-by-side pair IS one, whatever its aspect (a phone's portrait
   // eyes make a 1440x1280 pair). Shape is only the guess for an unknown device, e.g. a USB pair.
   const isPair = (r) => !!r && (!!r.stereo || looksSbs(r.width, r.height));
@@ -170,15 +182,23 @@ export async function openCamera(want = 'auto', o = {}) {
   };
   let mono = null;
   if (want !== 'mono') {
-    const listed = await listCameras();
-    const pair = await tryNamedPairs(listed);
+    let listed = await listCameras();
+    let pair = await tryNamedPairs(listed);
     if (pair) return result(pair, 'sbs');
-    // No labels yet (no permission). Prime it on an environment-facing camera, so a phone does not
-    // open its front lens (the head tracker's) just to learn the names; then open a pair by id.
+    // Labels visible but no stereo-named device: a runtime 3D camera can join the list late (after
+    // a runtime restart), so read it once more before falling back.
+    if (listed.some((d) => d.label) && !listed.some((d) => stereoLabelHint(d.label))) {
+      listed = await listCameras();
+      pair = await tryNamedPairs(listed);
+      if (pair) return result(pair, 'sbs');
+    }
+    // No labels yet (no permission). Prime it on the default camera with NO constraints: in the
+    // DisplayXR Browser that is the 3D camera (listed first), so no phone lens is opened; a facing
+    // or size constraint would let the engine pick a lens instead. Then open a pair by id.
     if (listed.length && listed.every((d) => !d.label)) {
       let primed = null;
       try {
-        primed = await open({ ...MONO_CONSTRAINTS, facingMode: { ideal: 'environment' } });
+        primed = await open(true);
       } catch (err) {
         skip('default', err);
       }
@@ -188,10 +208,8 @@ export async function openCamera(want = 'auto', o = {}) {
         stop(primed);
         return result(named, 'sbs');
       }
-      // A camera that faces the user (or does not say: a desktop webcam) is the fallback as is; a
-      // rear one is not what a self view falls back to, so the default is opened below instead.
-      if (primed && primed.track?.getSettings?.().facingMode !== 'environment') mono = primed;
-      else stop(primed);
+      // The primed default is the fallback as is (one camera start); ask it for the usual mode.
+      if (primed) mono = await withMode(primed, MONO_CONSTRAINTS);
     }
   }
 

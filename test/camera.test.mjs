@@ -446,24 +446,71 @@ function permissionMedia(cams) {
   };
 }
 
-test('openCamera without permission: primes on the rear camera, then opens the 3D camera by id, never the front (tracker) lens', async () => {
+test('openCamera without permission in the DisplayXR Browser: the bare prime opens the 3D camera (listed first) and no lens', async () => {
+  const md = permissionMedia([
+    { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } },
+    { id: 'cam0', label: 'camera 0, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'cam1', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['default'], 'one start, no constraint that could pick a lens');
+  assert.ok(!md.opens.some((o) => o.startsWith('facing:')), 'never primes by facing');
+});
+
+test('openCamera without permission, pair not listed first: the default primes, then the 3D camera is opened by id', async () => {
   const md = permissionMedia([
     { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
-    { id: 'rear', label: 'camera 0, facing back', facing: 'environment', w: 1280, h: 720 },
     { id: 'pair', label: '3D Camera, rear (DisplayXR)', facing: 'environment', w: 2560, h: 720, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 30, horizontalFovDeg: 64 } },
   ]);
   const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
   assert.equal(cam.format, 'sbs');
   assert.equal(cam.deviceId, 'pair');
-  assert.deepEqual(md.opens, ['facing:environment', 'id:pair']);
-  assert.ok(!md.opens.includes('default') && !md.opens.includes('id:front'), 'the front lens is never opened');
+  assert.deepEqual(md.opens, ['default', 'id:pair']);
 });
 
-test('openCamera without permission on a desktop: one webcam, opened once and kept as the mono fallback', async () => {
-  const md = permissionMedia([{ id: 'webcam', label: 'FaceTime HD Camera', w: 1280, h: 720 }]);
+test('openCamera without permission on a desktop: one webcam, opened once and kept as the mono fallback in the usual mode', async () => {
+  const md = permissionMedia([{ id: 'webcam', label: 'FaceTime HD Camera', w: 640, h: 480 }]);
+  const applied = [];
+  const gum = md.getUserMedia.bind(md);
+  md.getUserMedia = async (c) => {
+    const s = await gum(c);
+    const t = s.getVideoTracks()[0];
+    const base = t.getSettings();
+    let mode = null;
+    t.applyConstraints = async (k) => {
+      applied.push(k);
+      mode = { width: k.width.ideal, height: k.height.ideal };
+    };
+    t.getSettings = () => ({ ...base, ...(mode || {}) });
+    return s;
+  };
   const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
   assert.equal(cam.format, 'mono');
-  assert.deepEqual(md.opens, ['facing:environment'], 'no second camera start');
+  assert.deepEqual(md.opens, ['default'], 'no second camera start');
+  assert.equal(applied.length, 1);
+  assert.equal(cam.width, 1280);
+  assert.equal(cam.height, 720);
+});
+
+test('openCamera with labels visible: a 3D camera that joins the list late is found by a second read', async () => {
+  const md = permissionMedia([
+    { id: 'cam0', label: 'camera 0, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } },
+  ]);
+  await md.getUserMedia({ video: { deviceId: { exact: 'cam0' } } }); // grant: labels now visible
+  md.opens.length = 0;
+  const all = md.enumerateDevices.bind(md);
+  let reads = 0;
+  md.enumerateDevices = async () => {
+    const list = await all();
+    return reads++ === 0 ? list.filter((d) => d.deviceId !== 'pair') : list;
+  };
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['id:pair'], 'camera 0 is never opened');
 });
 
 test('openCamera without permission on a phone with no pair: the self view still falls back to the default (front) camera', async () => {
@@ -485,7 +532,7 @@ test('openCamera: a track that declares side-by-side is a pair whatever its aspe
   assert.equal(cam.format, 'sbs');
   assert.equal(cam.deviceId, 'pair');
   assert.equal(cam.eyeWidth, 720);
-  assert.ok(!md.opens.includes('default'), 'never falls back to a plain camera once the pair is offered');
+  assert.deepEqual(md.opens, ['default', 'id:pair'], 'the prime is let go for the pair, never kept as the camera');
   // With labels visible, the declared pair is kept by the fast path too.
   const again = await openCamera({ prefer: 'auto', mediaDevices: md });
   assert.equal(again.format, 'sbs');
