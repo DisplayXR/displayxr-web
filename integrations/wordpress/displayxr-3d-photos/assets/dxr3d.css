@@ -1,0 +1,72 @@
+/*
+ * DisplayXR 3D Photos.
+ *
+ * Every browser: the stage crops the side-by-side picture to ONE eye (the image is 200% wide in
+ * an overflow:hidden box), so the page shows a normal photo at the right shape.
+ *
+ * DisplayXR Browser (`.dxr3d-on`, set by dxr3d.js): a woven canvas sits under the flat photo,
+ * which stays on top as a cover until the browser reports the canvas woven (`.dxr3d-woven`), then
+ * is removed in one cut. Never fade it, and never put CSS effects (filter, opacity, border-radius,
+ * box-shadow, mask, backdrop-filter) on the canvas or anything around it: they stop the 3D.
+ */
+.dxr3d-box {
+	margin-left: auto;
+	margin-right: auto;
+	max-width: 100%;
+}
+
+.dxr3d-stage {
+	position: relative;
+	overflow: hidden;
+	width: 100%;
+}
+
+.dxr3d .dxr3d-flat {
+	display: block;
+	width: 200% !important;
+	max-width: none !important;
+	height: auto !important;
+	margin: 0 !important;
+	padding: 0 !important;
+	border: 0 !important;
+	box-shadow: none !important;
+	border-radius: 0 !important;
+}
+
+/* Cross-eyed pairs keep the LEFT eye on the right half: show that one. */
+.dxr3d-cross .dxr3d-flat {
+	margin-left: -100% !important;
+}
+
+/* DisplayXR Browser: canvas underneath, the flat photo on top as the cover. */
+.dxr3d-canvas {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	display: block;
+	z-index: 1;
+	/* Its own compositing layer from the first paint (woven-canvas rule 4). */
+	will-change: transform;
+	transform: translateZ(0);
+}
+
+.dxr3d-on .dxr3d-flat {
+	position: absolute;
+	top: 0;
+	left: 0;
+	height: 100% !important;
+	z-index: 2;
+}
+
+/* Woven: cut the cover (rule 5: a hard cut, never a fade). */
+.dxr3d-woven .dxr3d-flat {
+	display: none !important;
+}
+
+.dxr3d-caption {
+	margin-top: 0.5em;
+	text-align: center;
+	font-size: 0.9em;
+}
