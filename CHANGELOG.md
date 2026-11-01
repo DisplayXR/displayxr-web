@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.47.5 — 2026-11-01
+
 ### Fixed — the camera permission prime could open a phone lens and crash its camera (`./camera`, `./call`)
 
 Before camera permission, `openCamera('auto')` primed on `{1280x720, facingMode: 'environment'}`.
