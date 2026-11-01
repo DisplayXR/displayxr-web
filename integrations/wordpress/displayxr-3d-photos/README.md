@@ -52,11 +52,23 @@ With every option:
 
 | option | what it does | example |
 |---|---|---|
-| `src` | **Required.** The address of the side-by-side photo. | `src="https://…/canyon_2x1.jpg"` |
+| `src` | **Required**, unless you use `left` and `right`. The address of the side-by-side photo. | `src="https://…/canyon_2x1.jpg"` |
+| `left`, `right` | The two eye pictures, when each is its own file. Use both, instead of `src`. | `left="https://…/canyon_L.jpg" right="https://…/canyon_R.jpg"` |
 | `layout` | `parallel` (the default: left eye on the left) or `cross` (cross-eyed pairs: right eye on the left). If the 3D looks inside-out, switch it. | `layout="cross"` |
 | `alt` | A description for people who cannot see the photo. Photos from your media library use their library "Alternative Text" when you leave this out. | `alt="Sunrise over the canyon"` |
 | `caption` | Text shown under the photo. | `caption="Grand Canyon"` |
 | `width` | The largest the photo may be. A number is pixels; `%` is a share of the text column. Without it, the photo fills the text column. | `width="600"`, `width="80%"` |
+
+**Left and right as separate files.** If your pairs are stored as two pictures, one per eye (as many
+stereo galleries keep them), use `left` and `right` instead of `src`. No need to join them first:
+
+```
+[dxr3d left="https://your-site.com/wp-content/uploads/2026/10/canyon_L.jpg" right="https://your-site.com/wp-content/uploads/2026/10/canyon_R.jpg" caption="Grand Canyon"]
+```
+
+Visitors without a 3D display see the left picture. Both pictures should be the same size; `layout`
+is not needed. If you give only one of the two, only you (while logged in) see a reminder. The
+3D Photo block takes one side-by-side picture only, so use the shortcode for separate files.
 
 You can put as many 3D photos on one page as you like.
 
