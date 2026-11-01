@@ -25,6 +25,27 @@ function loaded(img) {
   });
 }
 
+// left= right=: two separate eye files. Join them once into a side-by-side canvas the SDK paints
+// from, the right eye scaled to the left one's size so a slightly different export still pairs.
+function joined(left, right) {
+  const w = left.naturalWidth;
+  const h = left.naturalHeight;
+  const c = document.createElement('canvas');
+  c.width = w * 2;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(left, 0, 0, w, h);
+  ctx.drawImage(right, w, 0, w, h);
+  return c;
+}
+
+function fetchImage(src) {
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = src;
+  return loaded(img);
+}
+
 // layout="cross": the left half holds the RIGHT eye. Swap the halves once into a canvas the SDK
 // paints from (addImage accepts a canvas source), so the woven pair is always left | right.
 function swapped(img) {
@@ -44,10 +65,14 @@ async function weave(wall, fig) {
   const stage = fig.querySelector('.dxr3d-stage');
   const img = fig.querySelector('img.dxr3d-flat');
   if (!stage || !img) return;
+  const pair = fig.dataset.dxrLayout === 'pair';
+  let right = null;
   try {
     await loaded(img);
+    // The right eye is never shown flat, so it is only fetched where the 3D can happen.
+    if (pair) right = await fetchImage(fig.dataset.dxrRight);
   } catch {
-    console.warn('[dxr3d] could not load', fig.dataset.dxrSrc, '- left as is');
+    console.warn('[dxr3d] could not load', pair ? fig.dataset.dxrRight : fig.dataset.dxrSrc, '- left as is');
     return;
   }
   const w = img.naturalWidth;
@@ -55,7 +80,7 @@ async function weave(wall, fig) {
   if (!w || !h) return;
 
   // Fix the box to one eye's shape before the photo leaves the flow.
-  if (!stage.style.aspectRatio) stage.style.aspectRatio = `${w / 2} / ${h}`;
+  if (!stage.style.aspectRatio) stage.style.aspectRatio = `${pair ? w : w / 2} / ${h}`;
 
   const canvas = document.createElement('canvas');
   canvas.className = 'dxr3d-canvas';
@@ -69,7 +94,7 @@ async function weave(wall, fig) {
 
   let handle;
   try {
-    const source = fig.dataset.dxrLayout === 'cross' ? swapped(img) : img;
+    const source = pair ? joined(img, right) : fig.dataset.dxrLayout === 'cross' ? swapped(img) : img;
     handle = wall.addImage(canvas, source, { rectCover: 'auto' });
   } catch (e) {
     console.warn('[dxr3d] 3D unavailable for', fig.dataset.dxrSrc, e);

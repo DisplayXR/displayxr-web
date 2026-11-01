@@ -33,6 +33,11 @@
 	border-radius: 0 !important;
 }
 
+/* A pair of separate eye files: the flat photo is the left eye, whole, not a half to crop. */
+.dxr3d.dxr3d-pair .dxr3d-flat {
+	width: 100% !important;
+}
+
 /* Cross-eyed pairs keep the LEFT eye on the right half: show that one. */
 .dxr3d-cross .dxr3d-flat {
 	margin-left: -100% !important;

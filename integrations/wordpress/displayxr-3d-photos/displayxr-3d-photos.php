@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       DisplayXR 3D Photos
  * Plugin URI:        https://github.com/DisplayXR/displayxr-web/tree/main/integrations/wordpress
- * Description:       Show side-by-side stereo photos in glasses-free 3D on a 3D display (DisplayXR Browser). Everyone else sees a normal photo. Use the [dxr3d src="..."] shortcode or the "3D Photo" block.
- * Version:           0.1.0
+ * Description:       Show stereo photos in glasses-free 3D on a 3D display (DisplayXR Browser). Everyone else sees a normal photo. Use the [dxr3d src="..."] shortcode (or left="..." right="..." for a pair of separate files) or the "3D Photo" block.
+ * Version:           0.1.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            DisplayXR
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'DXR3D_VERSION', '0.1.0' );
+define( 'DXR3D_VERSION', '0.1.1' );
 
 /*
  * The DisplayXR web SDK (@displayxr/inline3d), pinned to an exact published version on jsDelivr.
@@ -104,6 +104,19 @@ function dxr3d_css_width( $width ) {
 }
 
 /**
+ * What a 3D photo with a missing or unusable picture renders: a reminder for editors, nothing for visitors.
+ *
+ * @param string $message The reminder, already translated.
+ * @return string HTML.
+ */
+function dxr3d_missing( $message ) {
+	if ( current_user_can( 'edit_posts' ) ) {
+		return '<p class="dxr3d-error" style="border:1px dashed #c00;padding:.5em 1em;color:#c00;">' . esc_html( $message ) . '</p>';
+	}
+	return '<!-- dxr3d: missing src -->';
+}
+
+/**
  * Render one 3D photo. Shared by the shortcode and the block.
  *
  * Markup: a <figure> whose stage crops the side-by-side image to ONE eye with plain CSS (the
@@ -111,7 +124,9 @@ function dxr3d_css_width( $width ) {
  * browser shows, with or without JavaScript. In the DisplayXR Browser, dxr3d.js adds a woven
  * canvas under it and removes the flat photo once the browser reports the canvas woven.
  *
- * @param array $args { src, layout, alt, caption, width, id }.
+ * A pair given as two files (left, right) skips the crop: the flat photo is the left eye.
+ *
+ * @param array $args { src, left, right, layout, alt, caption, width, id }.
  * @return string HTML.
  */
 function dxr3d_render( $args ) {
@@ -119,6 +134,8 @@ function dxr3d_render( $args ) {
 		$args,
 		array(
 			'src'     => '',
+			'left'    => '',
+			'right'   => '',
 			'layout'  => 'parallel',
 			'alt'     => '',
 			'caption' => '',
@@ -127,26 +144,39 @@ function dxr3d_render( $args ) {
 		)
 	);
 
-	$src = trim( (string) $args['src'] );
-	$id  = absint( $args['id'] );
-	if ( '' === $src && $id ) {
-		$src = (string) wp_get_attachment_url( $id );
+	// Only http(s) URLs or site-relative paths; anything else (javascript:, data:, typos) is "missing".
+	$left  = esc_url_raw( trim( (string) $args['left'] ), array( 'http', 'https' ) );
+	$right = esc_url_raw( trim( (string) $args['right'] ), array( 'http', 'https' ) );
+	if ( '' !== trim( (string) $args['left'] . (string) $args['right'] ) && ( '' === $left || '' === $right ) ) {
+		// Half a pair: say which half, rather than showing one eye as if it were the whole photo.
+		return dxr3d_missing( __( 'DisplayXR 3D Photo: a pair needs both files. Add left="https://…/left.jpg" and right="https://…/right.jpg" (only you see this message).', 'displayxr-3d-photos' ) );
+	}
+	// Two separate eye files (left= right=) instead of one side-by-side picture: the flat photo
+	// is the left eye, shown whole, and dxr3d.js joins the two for the 3D.
+	$pair = '' !== $left;
+
+	$id = absint( $args['id'] );
+	if ( $pair ) {
+		$src = $left;
+		$id  = 0;
+	} else {
+		$src = trim( (string) $args['src'] );
+		if ( '' === $src && $id ) {
+			$src = (string) wp_get_attachment_url( $id );
+		}
+		$src = esc_url_raw( $src, array( 'http', 'https' ) );
 	}
 
-	// Only http(s) URLs or site-relative paths; anything else (javascript:, data:, typos) is "missing".
-	$src = esc_url_raw( $src, array( 'http', 'https' ) );
-
 	if ( '' === $src ) {
-		if ( current_user_can( 'edit_posts' ) ) {
-			return '<p class="dxr3d-error" style="border:1px dashed #c00;padding:.5em 1em;color:#c00;">'
-				. esc_html__( 'DisplayXR 3D Photo: no picture yet. Add src="https://…/photo.jpg" to the shortcode (only you see this message).', 'displayxr-3d-photos' )
-				. '</p>';
-		}
-		return '<!-- dxr3d: missing src -->';
+		return dxr3d_missing( __( 'DisplayXR 3D Photo: no picture yet. Add src="https://…/photo.jpg" to the shortcode (only you see this message).', 'displayxr-3d-photos' ) );
 	}
 
 	$layout = strtolower( trim( (string) $args['layout'] ) );
 	$layout = in_array( $layout, array( 'cross', 'crossed', 'crosseyed', 'rl' ), true ) ? 'cross' : 'parallel';
+	if ( $pair ) {
+		// The files already say which eye is which; a layout only describes a side-by-side picture.
+		$layout = 'pair';
+	}
 
 	// A picture from this site's media library: use its stored size (no layout shift) and its alt text.
 	if ( ! $id ) {
@@ -158,7 +188,7 @@ function dxr3d_render( $args ) {
 		$meta = wp_get_attachment_metadata( $id );
 		if ( is_array( $meta ) && ! empty( $meta['width'] ) && ! empty( $meta['height'] ) ) {
 			// The file's own size: attachment_url_to_postid() matches the original upload, never a resized copy.
-			$aspect = ( (int) $meta['width'] / 2 ) . ' / ' . (int) $meta['height'];
+			$aspect = ( $pair ? (int) $meta['width'] : (int) $meta['width'] / 2 ) . ' / ' . (int) $meta['height'];
 		}
 		if ( '' === $alt ) {
 			$alt = (string) get_post_meta( $id, '_wp_attachment_image_alt', true );
@@ -177,11 +207,14 @@ function dxr3d_render( $args ) {
 	}
 	$stage_style = 'position:relative;overflow:hidden;' . ( '' !== $aspect ? 'aspect-ratio:' . $aspect . ';' : '' );
 	// Critical crop inline, so a theme's "img { max-width:100% }" can never show the squeezed pair.
-	$img_style = 'display:block;width:200%;max-width:none;height:auto;margin:0;' . ( 'cross' === $layout ? 'margin-left:-100%;' : '' );
+	$img_style = 'display:block;width:' . ( $pair ? '100%' : '200%' ) . ';max-width:none;height:auto;margin:0;' . ( 'cross' === $layout ? 'margin-left:-100%;' : '' );
 
 	$html  = '<figure class="dxr3d dxr3d-' . esc_attr( $layout ) . '"';
 	$html .= ' data-dxr-src="' . esc_url( $src ) . '"';
 	$html .= ' data-dxr-layout="' . esc_attr( $layout ) . '"';
+	if ( $pair ) {
+		$html .= ' data-dxr-right="' . esc_url( $right ) . '"';
+	}
 	$html .= ' data-dxr-sdk="' . esc_url( DXR3D_SDK_URL ) . '"';
 	$html .= '>';
 	$html .= '<div class="dxr3d-box" style="' . esc_attr( $box_style ) . '">';
@@ -243,6 +276,7 @@ function dxr3d_straighten_atts( $atts ) {
 
 /**
  * [dxr3d src="https://…/pair.jpg" layout="parallel|cross" alt="…" caption="…" width="600"]
+ * [dxr3d left="https://…/left.jpg" right="https://…/right.jpg" alt="…" caption="…" width="600"]
  *
  * @param array|string $atts Shortcode attributes.
  * @return string
@@ -252,6 +286,8 @@ function dxr3d_shortcode( $atts ) {
 	$atts = shortcode_atts(
 		array(
 			'src'     => '',
+			'left'    => '',
+			'right'   => '',
 			'layout'  => 'parallel',
 			'alt'     => '',
 			'caption' => '',

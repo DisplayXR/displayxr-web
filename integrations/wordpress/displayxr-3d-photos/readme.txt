@@ -2,9 +2,9 @@
 Contributors: displayxr
 Tags: 3d, stereo, stereoscopic, photography, side-by-side
 Requires at least: 5.8
-Tested up to: 6.8
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.1.1
 License: Apache-2.0
 License URI: https://www.apache.org/licenses/LICENSE-2.0
 
@@ -22,10 +22,15 @@ Use the shortcode:
 
 or add the **3D Photo** block in the block editor and pick the picture from your media library.
 
+If each eye is its own file (a left and a right picture), give both instead of `src`:
+
+`[dxr3d left="https://example.com/wp-content/uploads/2026/10/canyon_L.jpg" right="https://example.com/wp-content/uploads/2026/10/canyon_R.jpg"]`
+
 Attributes:
 
-* `src` (required): the address of the side-by-side JPEG/PNG. Pictures from your own media library work best.
-* `layout`: `parallel` (default, left eye on the left) or `cross` (cross-eyed pairs, right eye on the left).
+* `src` (required unless you use `left` and `right`): the address of the side-by-side JPEG/PNG. Pictures from your own media library work best.
+* `left` and `right`: the addresses of two separate eye pictures, used instead of `src`. Visitors without a 3D display see the left one. Both should be the same size.
+* `layout`: `parallel` (default, left eye on the left) or `cross` (cross-eyed pairs, right eye on the left). Not needed with `left` and `right`.
 * `alt`: a description for screen readers. For media-library pictures, the alt text from the library is used when this is empty.
 * `caption`: text shown under the photo.
 * `width`: maximum width, e.g. `600` (pixels) or `80%`. Default: the full width of your content column.
@@ -73,7 +78,8 @@ JavaScript combining, minifying and delaying. The script is an ES module and mus
 
 == Changelog ==
 
-= Unreleased =
+= 0.1.1 =
+* `left` and `right`: show a stereo pair kept as two separate files, no joining needed.
 * Shortcodes pasted with curly quotes (from email or a word processor) now work.
 * Notes for sites on the Classic Editor / SiteOrigin Page Builder, and for lightbox plugins.
 
