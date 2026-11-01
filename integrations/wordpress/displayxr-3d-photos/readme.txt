@@ -50,12 +50,32 @@ That is expected in every browser except the DisplayXR Browser running on a 3D d
 It usually works, but some sites block their images from being shown on other sites ("hotlink
 protection"). If the picture does not appear at all, upload it to your own media library instead.
 
+= I cannot find the 3D Photo block =
+
+Your site opens posts in the Classic Editor (SiteOrigin Page Builder does this for new posts and
+pages by default). Use the shortcode instead: type it into the post, or into a SiteOrigin Editor or
+Text widget in a Page Builder layout.
+
+= The photo does not show, or I see a red "no picture yet" box =
+
+Check the quotes around the values. Typed quotes are straight (`"`). If you pasted the shortcode
+from an email or a word processor, curly quotes (`“ ”`) are now understood too.
+
+= Can the photo open in a lightbox (FooBox and similar) when clicked? =
+
+Do not link the 3D photo to its file. A lightbox, or the file itself, shows the whole
+side-by-side pair, squeezed. Leave the 3D photo unlinked.
+
 = I use a caching or "optimize JavaScript" plugin =
 
 If 3D stops working, exclude `displayxr-3d-photos/assets/dxr3d.js` and `cdn.jsdelivr.net` from
 JavaScript combining, minifying and delaying. The script is an ES module and must keep `type="module"`.
 
 == Changelog ==
+
+= Unreleased =
+* Shortcodes pasted with curly quotes (from email or a word processor) now work.
+* Notes for sites on the Classic Editor / SiteOrigin Page Builder, and for lightbox plugins.
 
 = 0.1.0 =
 * First version: `[dxr3d]` shortcode and 3D Photo block.

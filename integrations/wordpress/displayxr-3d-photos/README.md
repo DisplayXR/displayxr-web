@@ -60,6 +60,14 @@ With every option:
 
 You can put as many 3D photos on one page as you like.
 
+**Classic Editor / SiteOrigin Page Builder.** If your editor has no blue **+** button, your site
+uses the Classic Editor (SiteOrigin Page Builder turns it on for new posts and pages by default), and
+there is no 3D Photo block. Type the shortcode into the post instead, or, in a Page Builder layout,
+into a **SiteOrigin Editor** or **Text** widget. Both were checked on a Vantage + Page Builder site.
+
+Type the quotes as plain straight quotes (`"`). A shortcode pasted from an email or a word processor
+often has curly quotes (`“ ”`); those are understood too.
+
 If you forget `src`, visitors see nothing, and only you (while logged in) see a red reminder box.
 
 ## Good to know
@@ -77,6 +85,9 @@ If you forget `src`, visitors see nothing, and only you (while logged in) see a 
   The photos still show normally either way.
 - **The 3D code comes from jsDelivr**, a free public code server, and only on pages with a 3D
   photo. If a visitor's network blocks it, they simply see the normal photo.
+- **Don't link the 3D photo to its file**, and don't put it in a lightbox gallery (FooBox,
+  FooGallery and the like). Clicking would open the whole side-by-side pair, squeezed. Lightbox
+  plugins leave an unlinked 3D photo alone.
 - **Don't add effects to the photo** with your theme or page builder (rounded corners, shadows,
   fades, filters, animations). They stop the 3D. A plain photo is what works.
 
