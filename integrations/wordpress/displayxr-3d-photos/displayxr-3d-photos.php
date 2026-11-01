@@ -196,12 +196,59 @@ function dxr3d_render( $args ) {
 }
 
 /**
+ * Re-read shortcode attributes that were typed with curly ("smart") quotes.
+ *
+ * A shortcode pasted from an email, a word processor or a formatted web page arrives as
+ * src=“https://…/pair.jpg” caption=“Grand Canyon”. WordPress only understands straight quotes, so
+ * it splits that at every space and keeps the curly quotes in the values: the photo silently
+ * disappears (editors who use the Classic Editor, which SiteOrigin Page Builder turns on for new
+ * posts, are the most likely to paste it this way). shortcode_parse_atts() keeps the original
+ * order of named and positional pieces, so join them back, straighten the quotes, and parse again.
+ *
+ * @param array|string $atts Attributes as WordPress parsed them.
+ * @return array|string Re-parsed attributes, or the input untouched when no curly quote is present.
+ */
+function dxr3d_straighten_atts( $atts ) {
+	if ( ! is_array( $atts ) || ! $atts ) {
+		return $atts;
+	}
+	$curly = array( "\u{201C}", "\u{201D}", "\u{201E}", "\u{2033}", '&#8220;', '&#8221;', '&#8222;', '&#8243;', '&ldquo;', '&rdquo;' );
+	$found = false;
+	foreach ( $atts as $value ) {
+		if ( str_replace( $curly, '', (string) $value ) !== (string) $value ) {
+			$found = true;
+			break;
+		}
+	}
+	if ( ! $found ) {
+		return $atts;
+	}
+	// Rebuild the text between [dxr3d and ]: loose words and curly-quoted values go back exactly
+	// as typed (src=“https://…”, the stray word Canyon”), other values re-quoted as they were.
+	$pieces = array();
+	foreach ( $atts as $key => $value ) {
+		$value = (string) $value;
+		if ( is_int( $key ) ) {
+			$pieces[] = $value; // A word split off a curly-quoted value: back as typed.
+		} elseif ( str_replace( $curly, '', $value ) !== $value ) {
+			$pieces[] = $key . '=' . $value;
+		} else {
+			$q        = false === strpos( $value, '"' ) ? '"' : "'";
+			$pieces[] = $key . '=' . $q . $value . $q;
+		}
+	}
+	$parsed = shortcode_parse_atts( str_replace( $curly, '"', implode( ' ', $pieces ) ) );
+	return is_array( $parsed ) ? $parsed : $atts;
+}
+
+/**
  * [dxr3d src="https://…/pair.jpg" layout="parallel|cross" alt="…" caption="…" width="600"]
  *
  * @param array|string $atts Shortcode attributes.
  * @return string
  */
 function dxr3d_shortcode( $atts ) {
+	$atts = dxr3d_straighten_atts( $atts );
 	$atts = shortcode_atts(
 		array(
 			'src'     => '',
