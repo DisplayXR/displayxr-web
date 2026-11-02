@@ -447,6 +447,8 @@ function addSplatUnguarded(wall, canvas, src, opts = {}) {
     },
     /** PlayCanvas-backend feature (its renderer links synchronously); nothing to warm here. */
     warmEntity: () => Promise.resolve(0),
+    /** PlayCanvas-backend feature: three.js content is the page's to dispose (docs/content-lifecycle-rules.md). */
+    releaseEntity: () => ({ programs: 0, container: null }),
     stopEffect() {
       throw effectsNotOnSpark('stopEffect()');
     },

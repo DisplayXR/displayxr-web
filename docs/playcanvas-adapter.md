@@ -58,6 +58,34 @@ anchor that warns once and renders unpatched if the engine moves the line:
 `remove()` destroys the app and everything under `root` with it. This is advanced and not
 covered by the semver promise.
 
+**Swapping what you added: `handle.releaseEntity(entity, { asset })`.** `entity.destroy()` and
+`asset.unload()` free meshes, textures and materials, but not the shader programs those materials
+linked: PlayCanvas caches every program for the device's life, and `Material.destroy()` does not
+destroy one. A page that swaps glTFs under `root` (a product carousel) therefore keeps every program
+it ever showed, about 5 MB each in the GPU process on one Linux driver. `releaseEntity` collects the
+entity's programs, destroys it, unloads its container `asset` unless something else in the tile
+still draws from it, and destroys each collected program nothing left still uses. It returns
+`{ programs, container }` (`container`: `'unloaded'`, `'in-use'` or `null`). The SDK also makes
+the engine delete a compiled shader once the last program using it is destroyed (otherwise kept
+until the device dies). Rules, engine facts and measurements:
+[content lifecycle rules](content-lifecycle-rules.md).
+
+```js
+let shown = null;
+async function showProduct(url) {
+  const asset = new pc.Asset(url, 'container', { url });
+  app.assets.add(asset);
+  await new Promise((ok) => { asset.ready(ok); app.assets.load(asset); });
+  const entity = asset.resource.instantiateRenderEntity();
+  entity.enabled = false;
+  handle.engine.root.addChild(entity);
+  await handle.warmEntity(entity);                  // its programs, linked off the frame
+  if (shown) handle.releaseEntity(shown.entity, { asset: shown.asset });
+  entity.enabled = true;
+  shown = { entity, asset };
+}
+```
+
 **What the app registers (1.9.1).**
 - Component systems: `Camera` and `GSplat` for the splat, plus `Render`, `Light` and `Anim`.
 - Resource handlers: `Texture` and `GSplat`, plus `Container` (`.glb` / `.gltf`).
@@ -948,6 +976,18 @@ The diag reports it on the panel as `MAIN-THREAD gap`.
 | `nooverlay` | records, logs and dumps, no overlay | the overlay's own cost |
 | `oldpick` | `handle.pick()` always runs the full scan over every centre, no pick index (the 1.21.1 path) | "the page's own picks block the main thread at the swap's end" |
 | `oldrig` | no rig tracking: the views are drawn as the runtime located them, and a live outgoing photo goes back on the pre-1.24 node chain | "the outgoing photo jumps when the incoming photo's rig is declared" (§ Each photo through its own rig) |
+| `keepshaders` | the engine's compiled-shader cache as it ships: no shader deleted before the device dies (page-wide: the engine class is shared) | "the compiled shaders, not the programs, are what grows" ([content lifecycle](content-lifecycle-rules.md) rule 5) |
+
+**Live GL objects and the leak watch.** The overlay's third line is
+`gl programs N live (+created −deleted)  shaders N live (…)  cache <state>`, counted on the tile's
+context since diag attached (`glObjects` in the dump; `cache` is the shader-cache fix's state:
+`patched`, `already`, or `skipped: <why>`). At every content swap the SDK can see (a `setSource`, a
+glTF container loaded into the tile's registry, a `handle.releaseEntity`) it samples the live
+program count, and warns once in the console when that count has not dropped across the last 10
+swaps of one kind and rose at more than 60% of them: something each swap replaces is not released.
+The model handle (`addModel`, PlayCanvas) records the same with `?dxrdiag`. One more switch:
+`keepshaders` leaves the engine's compiled-shader cache as it ships (page-wide, so put it on the
+URL). [Content lifecycle rules](content-lifecycle-rules.md) §4.
 
 The recipe on the panel: run the Photos show with `?dxrdiag=1` for three or four transitions and
 read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same way; paste

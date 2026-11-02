@@ -40,6 +40,7 @@
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
 import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo, attachComfortDepth, resolveDepthOption, framedSubjectBounds } from './inline3d-splat-shared.js';
 import { displayRig } from './inline3d-three.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, watchContent } from './inline3d-splat-diag.js';
 import {
   NEUTRAL_STUDIO,
   neutralStudioRadiance,
@@ -479,6 +480,11 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   let handle = null;
   let removed = false;
   let lastPagePose = null;
+  // `?dxrdiag` (or `diag`): the splat handle's recorder, for what a model tile can show — frame
+  // cadence, and the live GL objects + content-swap leak watch (./inline3d-splat-diag.js).
+  const diagCfg = resolveDiag(opts.diag);
+  const diag = diagCfg.on ? new DiagRecorder({ switches: diagCfg.switches, label: 'model' }) : null;
+  let diagLoop = null;
 
   Object.assign(out, {
     backend: 'playcanvas',
@@ -514,6 +520,8 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     },
     remove() {
       removed = true;
+      diagLoop?.remove();
+      diag?.dispose();
       depth.dispose();
       handle?.remove();
       viewer.dispose(); // app.destroy(): the model, its textures and any page entities go with it
@@ -527,6 +535,14 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     async warmEntity(entity, o) {
       await out.ready?.catch?.(() => null);
       return removed ? 0 : viewer.warmEntity(entity ?? out.model, o);
+    },
+    /**
+     * Destroy `entity` (content a page added under handle.engine.root) and release the programs
+     * its materials linked, and its container `asset` when nothing else draws from it —
+     * PlayCanvasSplatViewer.releaseEntity. Returns { programs, container }.
+     */
+    releaseEntity(entity, o) {
+      return removed ? { programs: 0, container: null } : viewer.releaseEntity(entity, o);
     },
   });
 
@@ -550,8 +566,15 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   });
   if (pageMode) depth.ignore("controls:'page' (the page's camera rig)");
 
+  const onFrame = diag
+    ? (views, layer, frame) => {
+        const t = performance.now();
+        viewer.onFrame(views, layer, frame);
+        diag.frame(views, t);
+      }
+    : viewer.onFrame;
   if (wall && wall.supported) {
-    handle = wall.addScene(canvas, viewer.onFrame, {
+    handle = wall.addScene(canvas, onFrame, {
       ...(pageMode
         ? { viewRig: pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth }) }
         : { virtualDisplayHeight }),
@@ -573,6 +596,12 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
       handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })),
     );
     delete out._resolveFirstWoven;
+  }
+
+  if (diag) {
+    diagLoop = startDiagLoop(diag, { overlay: !diag.has('nooverlay') && !!handle });
+    if (diagLoop?.el) handle?.exclude?.(diagLoop.el);
+    registerDiag(diag);
   }
 
   for (const [name, args] of pending) {
@@ -637,8 +666,11 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     }
     const wanted = PC_DECODER_KINDS.filter((k) => (k === 'meshopt' && meshoptDecoder) || (declared ? declared.has(PC_DECODERS[k].ext) : false));
 
-    const app = await viewer.attachEngine(pc, { preserveDrawingBuffer, antialias, patchSplats: false });
+    // `?dxrdiag=keepshaders`: the engine's shader cache as it ships (A/B; see ./inline3d-pc-shader-cache.js).
+    const shaderCacheRelease = !diag?.has('keepshaders');
+    const app = await viewer.attachEngine(pc, { preserveDrawingBuffer, antialias, patchSplats: false, shaderCacheRelease });
     if (!app || removed) return out;
+    if (diag) watchContent(diag, app, viewer);
     out.engine = Object.freeze({ app, root: viewer.content, camera: viewer.eye || null });
 
     // Lighting before the model, so the first frame the model is in is lit.

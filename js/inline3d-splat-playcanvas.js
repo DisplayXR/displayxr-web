@@ -73,7 +73,7 @@ import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
 import { LayerRigCameras, validateLayerRig, validateLayerRigOptions, DEFAULT_VIEWER_DISTANCE_M } from './inline3d-splat-layer-rig.js';
 import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
-import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, watchContent, DIAG_SWITCHES } from './inline3d-splat-diag.js';
 import {
   glBufferLimits,
   probeBufferLimits,
@@ -127,6 +127,8 @@ import {
   framedSubjectBounds,
 } from './inline3d-splat-shared.js';
 import { resolveCursorOption } from './inline3d-cursor-option.js';
+import { installShaderCacheRelease } from './inline3d-pc-shader-cache.js';
+import { releaseEntity as releaseEntityIn } from './inline3d-pc-release.js';
 
 /**
  * The component systems the tile's `AppBase` registers. Camera + GSplat draw the splat; Render,
@@ -1284,6 +1286,18 @@ export class PlayCanvasSplatViewer {
     return shaders.size;
   }
 
+  /**
+   * Destroy `entity` (content a page added under `engine.root`) and release the programs its
+   * materials linked, plus its glTF container (`asset`) when nothing else draws from it —
+   * ./inline3d-pc-release.js, docs/content-lifecycle-rules.md. Returns { programs, container }.
+   */
+  releaseEntity(entity, { asset = null } = {}) {
+    if (!this.app || this._disposed) return { programs: 0, container: null };
+    const r = releaseEntityIn(this.app, entity, { asset });
+    this.onContentReleased?.(r);
+    return r;
+  }
+
   useSceneColor(on = true) {
     this.sceneColor = !!on;
     const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : [])];
@@ -1415,7 +1429,7 @@ export class PlayCanvasSplatViewer {
    * @param {object} o.perf  the resolved playcanvasPerfSettings().
    * @param {string} [o.viewPath]  force 'cameras' | 'renderview' (diagnostics).
    */
-  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true } = {}) {
+  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true, shaderCacheRelease = true } = {}) {
     this.pc = pc;
     const device = await pc.createGraphicsDevice(this.canvas, {
       deviceTypes: [pc.DEVICETYPE_WEBGL2],
@@ -1431,6 +1445,11 @@ export class PlayCanvasSplatViewer {
       device.destroy?.();
       return null;
     }
+    // The engine keeps every compiled shader until the device dies, even once its program is
+    // destroyed: count them per program and free the last one out (./inline3d-pc-shader-cache.js).
+    // `?dxrdiag=keepshaders` leaves the engine's cache as it ships (A/B; page-wide, first tile wins).
+    if (shaderCacheRelease) installShaderCacheRelease(device);
+    else device.__dxrShaderCache ??= 'off (keepshaders)';
     const opts = new pc.AppOptions();
     opts.graphicsDevice = device;
     // No xr (AppBase constructs XrManager only when asked, and XrManager is what probes and
@@ -3583,6 +3602,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       await first.catch(() => null);
       return removed ? 0 : viewer.warmEntity(entity, o);
     },
+    /**
+     * Destroy `entity` (content under handle.engine.root) and release the programs its materials
+     * linked, and its container `asset` when nothing else draws from it — viewer.releaseEntity.
+     * Returns { programs, container }.
+     */
+    releaseEntity(entity, o) {
+      return removed ? { programs: 0, container: null } : viewer.releaseEntity(entity, o);
+    },
     setStereo,
     setDepthEnvelope,
     /**
@@ -4745,12 +4772,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       perf: perfResolved,
       viewPath: opts.playcanvasViewPath,
       antialias: antialias === true,
+      shaderCacheRelease: !diag?.has('keepshaders'),
     });
     if (!app || removed) return null;
     pcModule = pc;
     // diag: count the GL calls that can block (compile, link, status queries, readbacks, syncs),
     // from before the first asset's compile on
-    if (diag) diag.instrumentGl(app.graphicsDevice?.gl);
+    // + the live program / shader counts and the content-swap leak watch
+    if (diag) watchContent(diag, app, viewer);
     /**
      * ADVANCED, not covered by the semver promise: the engine objects behind this window.
      * `app` is the tile's `pc.AppBase`; `root` the content root, in the splat's content space
@@ -5335,6 +5364,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const gen = ++sourceGen;
     if (diag) {
       rigLockArmed = true;
+      diag.contentSwap('setSource'); // the previous swap's outgoing asset is released by now
       diag.setPhase('swap', {
         transition: plan.sequence ? `${plan.sequence.name}(${plan.sequence.out.effect}>${plan.sequence.in.effect})` : plan.transition,
         outgoing: plan.sequence ? 'none (one splat)' : plan.outgoing || 'default',

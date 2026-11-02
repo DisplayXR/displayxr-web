@@ -34,6 +34,17 @@
 //              located them, and a live outgoing photo goes back on the pre-1.24 node chain (which
 //              scales its disparity by the two rigs' window ratio at the swap). A/B for "the
 //              outgoing photo jumps when the incoming rig is declared".
+//   keepshaders — leave the engine's compiled-shader cache as it ships (no per-program release,
+//              ./inline3d-pc-shader-cache.js). Page-wide: the engine's shader class is shared.
+//
+// LIVE GL OBJECTS (docs/content-lifecycle-rules.md): programs and shaders created / deleted on the
+// tile's context since diag attached, and the live difference, on the overlay and in the dump.
+// Sampled at every content swap the SDK can see: each setSource, each glTF container the tile's
+// asset registry loads (a page swapping meshes under handle.engine.root), each
+// handle.releaseEntity. When the live program count has not dropped across the last LEAK_SWAPS
+// swaps of one kind and rose at more than 60% of them, one console warning says so. A page that
+// releases what a swap replaces goes up and down, or plateaus once its own transitions are
+// compiled (a few rises, then flat); one that leaks climbs.
 //
 // Per frame, `rigAt` / `rigIn` / `rigOut` say which declared rig the views were located for
 // (the tracker's id; null = none matched), which rig the current photo was drawn through
@@ -53,7 +64,25 @@
 //     after it (the page's continuation of `await setSource`).
 
 /** The switches `diag` / `?dxrdiag` understand, besides the plain on values. */
-export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig']);
+export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig', 'keepshaders']);
+/**
+ * The leak watch's window: content swaps of one kind with no drop in live programs, more than 60%
+ * of them a rise. Wide enough that a first pass through the transitions (each compiles its own
+ * programs once: four rises for cut / crossfade / wavefront / flip) does not trip it.
+ */
+export const LEAK_SWAPS = 10;
+
+/** The leak watch's rule on one kind's samples (oldest first): the warning's condition. */
+export function looksLikeLeak(samples, n = LEAK_SWAPS) {
+  if (samples.length < n + 1) return false;
+  const w = samples.slice(-(n + 1));
+  let rises = 0;
+  for (let i = 1; i < w.length; i++) {
+    if (w[i] < w[i - 1]) return false;
+    if (w[i] > w[i - 1]) rises++;
+  }
+  return rises > n * 0.6;
+}
 const ON_TOKENS = new Set(['1', 'on', 'true', 'yes']);
 
 /**
@@ -207,6 +236,11 @@ export class DiagRecorder {
     this._listeners = new Set();
     this._lafo = null;
     this._gl = null; // the wrapped context + its originals, for dispose()
+    /** GL object counts on the tile's context (instrumentGl): programs / shaders created + deleted. */
+    this.glObjects = { programs: { created: 0, deleted: 0 }, shaders: { created: 0, deleted: 0 } };
+    this.shaderCacheState = null; // () => the engine shader-cache patch state (./inline3d-pc-shader-cache.js)
+    this._swapLive = new Map(); // kind → live programs at each content swap of that kind (the leak watch)
+    this._leakWarned = false;
     this._burst = null; // the pick burst of the current task
   }
 
@@ -266,6 +300,25 @@ export class DiagRecorder {
    */
   instrumentGl(gl) {
     if (!gl || this._gl) return;
+    // Object counts first (no timing): what a content swap leaves behind.
+    const objs = this.glObjects;
+    const counters = {
+      createProgram: (r) => r && objs.programs.created++,
+      deleteProgram: (r, a) => a[0] && objs.programs.deleted++,
+      createShader: (r) => r && objs.shaders.created++,
+      deleteShader: (r, a) => a[0] && objs.shaders.deleted++,
+    };
+    const counted = [];
+    for (const [name, count] of Object.entries(counters)) {
+      const orig = gl[name];
+      if (typeof orig !== 'function') continue;
+      gl[name] = function (...a) {
+        const r = orig.apply(this, a);
+        count(r, a);
+        return r;
+      };
+      counted.push(name);
+    }
     const LINK = 0x8b82;
     const COMPLETION = 0x91b1;
     const kinds = {
@@ -294,7 +347,37 @@ export class DiagRecorder {
       };
       saved.push(name);
     }
-    this._gl = { gl, saved };
+    this._gl = { gl, saved: [...counted, ...saved] };
+  }
+
+  /** Live programs / shaders on the tile's context since instrumentGl (created − deleted). */
+  liveGl() {
+    const { programs: p, shaders: s } = this.glObjects;
+    return { programs: p.created - p.deleted, shaders: s.created - s.deleted };
+  }
+
+  /**
+   * A content swap happened (`kind`: 'setSource' at its start, 'container' at a glTF load,
+   * 'release' after a releaseEntity): sample the live program count, and warn once when the
+   * samples of that kind look like a leak (looksLikeLeak).
+   */
+  contentSwap(kind) {
+    if (!this._gl) return null;
+    const live = this.liveGl();
+    let w = this._swapLive.get(kind);
+    if (!w) this._swapLive.set(kind, (w = []));
+    w.push(live.programs);
+    if (w.length > LEAK_SWAPS + 1) w.shift();
+    this._event('swap', { kind, ...live }, this.now());
+    if (!this._leakWarned && looksLikeLeak(w)) {
+      this._leakWarned = true;
+      console.warn(
+        `[inline3d/${this.label.split('#')[0]}] diag: live WebGL programs never dropped across the last ${LEAK_SWAPS} content swaps ` +
+          `and rose at most of them (${kind}: ${w.join(' → ')}). Something each swap replaces is not released — see docs/content-lifecycle-rules.md ` +
+          '(handle.releaseEntity for content under handle.engine.root). Warned once.',
+      );
+    }
+    return live;
   }
 
   /** One GL call of `kind` that took `ms`, at `t` (instrumentGl's wrappers; tests call it directly). */
@@ -578,6 +661,7 @@ export class DiagRecorder {
       label: this.label,
       switches: [...this.switches],
       rigLocked: this.rigLocked,
+      glObjects: { ...this.glObjects, live: this.liveGl(), shaderCache: safe(() => this.shaderCacheState?.()) ?? null },
       transitions: this.transitions,
       events: this.events,
       frames: this.frames,
@@ -794,7 +878,8 @@ export function startDiagLoop(rec, { overlay = true, doc = typeof document !== '
       `dxr-diag ${rec.label}  phase ${rec.phase}` +
       (Number.isFinite(rec.callAt) ? `  +${Math.round(now - rec.callAt)} ms since setSource` : '') +
       (rec.switches.size ? `  [${[...rec.switches].join(',')}]` : '') +
-      (last ? `\nframe dt ${last.dt} ms  held ${last.held ? 'YES' : 'no'}  img ${last.img}${last.img !== 'none' ? ' ' + last.imgW : ''}` : '');
+      (last ? `\nframe dt ${last.dt} ms  held ${last.held ? 'YES' : 'no'}  img ${last.img}${last.img !== 'none' ? ' ' + last.imgW : ''}` : '') +
+      (rec._gl ? `\n${glObjectsLine(rec)}` : '');
     strip(rec.frames, 0, now - WINDOW_MS, now, rec.callAt);
     if (frozen && g) {
       strip(frozen.window.map((f) => ({ ...f })), STRIP_H + 18, -PRE_MS, WINDOW_MS - PRE_MS, 0);
@@ -819,6 +904,25 @@ export function startDiagLoop(rec, { overlay = true, doc = typeof document !== '
 }
 
 /**
+ * The live-GL-object watch on a PlayCanvas tile: count the context's programs and shaders, show
+ * the engine shader-cache patch state, and sample at the content swaps the SDK can see (a
+ * container load in the tile's registry, a releaseEntity). setSource samples itself.
+ */
+export function watchContent(rec, app, viewer) {
+  rec.instrumentGl(app?.graphicsDevice?.gl);
+  rec.shaderCacheState = () => app?.graphicsDevice?.__dxrShaderCache ?? null;
+  if (viewer) viewer.onContentReleased = () => rec.contentSwap('release');
+  app?.assets?.on?.('load', (a) => a?.type === 'container' && rec.contentSwap('container'));
+}
+
+/** The overlay's GL objects line: live programs and shaders (created / deleted), the cache patch. */
+export function glObjectsLine(rec) {
+  const { programs: p, shaders: s } = rec.glObjects;
+  const cache = safe(() => rec.shaderCacheState?.());
+  return `gl programs ${p.created - p.deleted} live (+${p.created} −${p.deleted})  shaders ${s.created - s.deleted} live (+${s.created} −${s.deleted})` + (cache ? `  cache ${cache}` : '');
+}
+
+/**
  * `window.__dxrDiag`: every diag tile on the page. `dump()` is the JSON to paste back;
  * `last` the most recent tile's recorder; `transitions` every tile's transition summaries.
  */
@@ -839,7 +943,7 @@ export function registerDiag(rec) {
       },
     };
   }
-  rec.label = `splat#${g.tiles.length + 1}`;
+  rec.label = `${rec.label || 'splat'}#${g.tiles.length + 1}`;
   g.tiles.push(rec);
   const dispose = rec.dispose.bind(rec);
   rec.dispose = () => {

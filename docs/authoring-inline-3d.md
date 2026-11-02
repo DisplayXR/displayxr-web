@@ -382,6 +382,12 @@ scaling**. A bigger `virtualDisplayHeight` shows a larger slice of the world in 
 This mirrors the native reference apps (`cube_handle`): the app supplies one scale number and
 consumes render-ready views — it never re-derives the projection or scales the scene.
 
+**Swapping content in a scene: dispose what you take out.** The renderer is yours, so is its
+memory. Removing a three.js object from the scene frees nothing on the GPU: call
+`geometry.dispose()`, `material.dispose()` and `dispose()` on each texture it used, and check that
+`renderer.info.programs.length` levels off across swaps.
+[Content lifecycle rules](content-lifecycle-rules.md), rule 6.
+
 ## View rigs: display vs camera
 
 `virtualDisplayHeight` is one number out of a whole descriptor. The runtime locates every frame's
@@ -1034,6 +1040,12 @@ if (wall.supported) {
 Call `handle.remove()` (returned by each `add*`) to drop one window, or `wall.close()` to
 end the session and release everything.
 
+`remove()` drops a window. It is not how to swap what a window shows: keep the window and change
+its content, and release what each swap replaces (on `addModel` / `addSplat`'s PlayCanvas tiles,
+`handle.releaseEntity`; on an `addScene` renderer, `dispose()`). A page that only destroys the
+outgoing object keeps every shader program it ever linked, and the browser's GPU process grows
+for the life of the page. [Content lifecycle rules](content-lifecycle-rules.md).
+
 **Navigation and resize are handled for you.** A window's rect reaches the compositor from the
 session's own animation frames, so a page that stops running frames leaves its last rects
 weaving — which is what a back-navigation into the bfcache used to do (ghost 3D windows on the
@@ -1581,6 +1593,11 @@ is almost never uncompressed. A bare `GLTFLoader` does not *degrade* on these �
 (`"No DRACOLoader instance provided."`) — so "your existing 3D assets already work here" is a claim
 about whether the decoders are wired, not about the loader.
 
+A page that shows one model after another in the same tile (a carousel, a catalogue) adds each
+under `handle.engine.root` and hands the outgoing one to `handle.releaseEntity(entity, { asset })`:
+its programs, textures and container go with it. `handle.remove()` frees everything the tile
+holds. [Content lifecycle rules](content-lifecycle-rules.md).
+
 `addModel` reads the asset's `extensionsUsed` / `extensionsRequired` **before** parsing and attaches
 exactly the decoders it declares. Nothing is imported or constructed for an asset that declares
 none, and the inspection replaces the loader's own fetch rather than adding a second one.
@@ -1740,6 +1757,8 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
   a concern if you build buffers by hand.
 - **Detect with `createInline3D`, never `isSessionSupported`.**
 - **Round corners / draw decoration in the canvas buffer, not CSS.**
+- **Release what a content swap replaces,** programs included: destroying an entity does not free
+  the programs its materials linked ([content lifecycle rules](content-lifecycle-rules.md)).
 - **Scenes: author at ~0.24 virtual height (pass the same `virtualDisplayHeight` to the viewer and
   to `addScene`);** put focused content at `z=0`, and keep its depth inside the
   [budget](making-3d-look-right.md#3-stay-inside-the-depth-budget).

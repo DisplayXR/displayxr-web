@@ -153,6 +153,9 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     depthFactor: 1,
     // Before the backend lands: once it has, the backend's own (PlayCanvas); three has none (0).
     warmEntity: (entity, o) => out.ready.then(() => (out.warmEntity !== stubWarm && typeof out.warmEntity === 'function' ? out.warmEntity(entity, o) : 0)),
+    // PlayCanvas replaces this once it has loaded; before that (and on three) there is nothing of
+    // the engine's to release.
+    releaseEntity: () => ({ programs: 0, container: null }),
   };
   const stubWarm = out.warmEntity;
   out.firstWoven = new Promise((resolve) => {

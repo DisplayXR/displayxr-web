@@ -166,7 +166,8 @@ No projection math lands in your page or in the SDK — the off-axis frustum sta
 Full API + authoring guidance: [`docs/authoring-inline-3d.md`](docs/authoring-inline-3d.md).
 Before you ship a page that navigates or remounts, read
 [`docs/woven-canvas-rules.md`](docs/woven-canvas-rules.md): how to avoid a raw side-by-side
-flash, and releasing a poster on `handle.firstWoven`.
+flash, and releasing a poster on `handle.firstWoven`. A page that swaps content in a window (a
+carousel, a catalogue): [`docs/content-lifecycle-rules.md`](docs/content-lifecycle-rules.md).
 Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-three.js).
 
 ## What's here
@@ -198,6 +199,8 @@ js/
   inline3d-model-entry.js       experimental: addModel() — picks the engine (PlayCanvas default)
   inline3d-model-playcanvas.js  the PlayCanvas model backend (Sample-Viewer lighting, engine decoders)
   inline3d-pc-look.js           PlayCanvas look helpers for both adapters (environments, transmission)
+  inline3d-pc-release.js        handle.releaseEntity: content under engine.root out, its programs + container released
+  inline3d-pc-shader-cache.js   engine fix: a compiled shader is deleted with the last program using it
   inline3d-model.js             the three.js model backend (engine:'three'; ./model/three)
   inline3d-playcanvas-engine.js named playcanvas imports for both PlayCanvas adapters (tree-shaking)
   inline3d-splat-effects.js     splat shader effects: the runner, the effect registry (PlayCanvas)
@@ -215,6 +218,9 @@ docs/
                            the WebXR→inline-3d mapping table and the whole render loop
   woven-canvas-rules.md    never show a raw side-by-side frame: the join, the rules,
                            handle.firstWoven / rewoven(), reading the browser's `withheld` log line
+  content-lifecycle-rules.md
+                           release what a content swap replaces (programs included):
+                           handle.releaseEntity, engine facts, the hook-and-plateau pass test
   camera.md                The 3D camera primitive (/camera): openCamera, the mirrored self view,
                            capturePhoto / record with the stereo record inside the file.
   call.md                  3D video calls: the <dxr-call> / mountCall() one-line embed, options,

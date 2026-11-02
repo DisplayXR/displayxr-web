@@ -283,6 +283,18 @@ export interface ModelHandle {
    * docs/playcanvas-adapter.md §warmEntity.
    */
   warmEntity(entity?: unknown, opts?: { timeoutMs?: number }): Promise<number>;
+  /**
+   * `engine: 'playcanvas'` only (a no-op returning `{ programs: 0, container: null }` on three).
+   * Destroy `entity` — content you added under `handle.engine.root` — and release what it held on
+   * the GPU: the shader programs its materials linked (PlayCanvas never frees a program by itself:
+   * its ProgramLibrary caches every variant for the device's life, and `Material.destroy()` does
+   * not destroy them), and, with `asset`, the glTF container it was instantiated from (unloaded
+   * and taken out of the registry unless something else in the tile still draws from it). A
+   * program another material still uses is kept. Call it for whatever a content swap replaces.
+   * Returns the number of programs destroyed and what happened to the container.
+   * docs/content-lifecycle-rules.md.
+   */
+  releaseEntity(entity: unknown, opts?: { asset?: unknown }): { programs: number; container: 'unloaded' | 'in-use' | null };
   unexclude(el: Element): void;
   /**
    * The core window's `TileHandle.firstWoven`: when it is safe to reveal the canvas. Resolves

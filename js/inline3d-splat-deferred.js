@@ -126,6 +126,8 @@ export function addSplatDeferred(wall, canvas, src, opts) {
     },
     // Mesh-program warm before the adapter has loaded: runs once it has (it needs the engine).
     warmEntity: (entity, o) => out.ready.then(() => out.warmEntity(entity, o)),
+    // Nothing a page added can exist before the engine has: nothing to release yet.
+    releaseEntity: () => ({ programs: 0, container: null }),
     setEffect: (name, params) => {
       validateEffectCall(name, params, 'set');
       pending.push(['setEffect', [name, params]]);
