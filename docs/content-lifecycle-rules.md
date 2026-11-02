@@ -186,7 +186,7 @@ tile loads). Details: [PlayCanvas adapter § Diagnosing transition stalls](playc
 
 ## 5. Measured: the SDK's own paths
 
-DisplayXR Browser on Linux (Chromium 156, Mesa, Intel iGPU), PlayCanvas 2.22.3, the hook of §4,
+DisplayXR Browser on Linux (Chromium 156, Mesa, integrated graphics), PlayCanvas 2.22.3, the hook of §4,
 Khronos glTF sample models. "Live" is `created − deleted` after each step.
 
 | path | before this release | with this release |
