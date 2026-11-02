@@ -109,6 +109,7 @@
     "js/inline3d-model-entry.js",
     "js/inline3d-model-playcanvas.js",
     "js/inline3d-pc-look.js",
+    "js/inline3d-pc-auto-release.js",
     "js/inline3d-pc-release.js",
     "js/inline3d-pc-shader-cache.js",
     "js/inline3d-playcanvas-engine.js",
