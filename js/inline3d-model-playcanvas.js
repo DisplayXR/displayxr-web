@@ -668,7 +668,9 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
 
     // `?dxrdiag=keepshaders`: the engine's shader cache as it ships (A/B; see ./inline3d-pc-shader-cache.js).
     const shaderCacheRelease = !diag?.has('keepshaders');
-    const app = await viewer.attachEngine(pc, { preserveDrawingBuffer, antialias, patchSplats: false, shaderCacheRelease });
+    // `?dxrdiag=keepprograms`: destroyed materials keep their programs (A/B; ./inline3d-pc-auto-release.js).
+    const programRelease = !diag?.has('keepprograms');
+    const app = await viewer.attachEngine(pc, { preserveDrawingBuffer, antialias, patchSplats: false, shaderCacheRelease, programRelease });
     if (!app || removed) return out;
     if (diag) watchContent(diag, app, viewer);
     out.engine = Object.freeze({ app, root: viewer.content, camera: viewer.eye || null });
