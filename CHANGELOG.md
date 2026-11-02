@@ -7,6 +7,23 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
+
+Preview tier. When a page destroys a material on a PlayCanvas tile the SDK created, either
+directly or through a glTF container's `asset.unload()`, the SDK now destroys the programs that
+material linked, one frame later, when no mesh instance in the app, no material asset in the
+registry and no still-alive material holds them. A page that follows the engine's own teardown
+(`entity.destroy()` plus destroying or unloading what it drew with) is bounded without calling
+`handle.releaseEntity`. Measured on macOS, 24 swaps of distinct products under one tile: 2 live
+programs (25 created, 23 deleted), against 25 (none deleted) before. A kiosk app with one
+persistent stage had reached 170 live programs over 28 screen changes.
+
+Content shown again after its material was destroyed recompiles on its first draw
+(`handle.warmEntity` hides that). A material the page keeps alive keeps its programs.
+`?dxrdiag=keepprograms` turns the release off for an A/B, and the overlay shows
+`release patched (−N)`. It installs only on PlayCanvas 2.22.x's `Material` shape and otherwise
+reports `release skipped: …`. `docs/content-lifecycle-rules.md` rule 1 and §6 are updated.
+
 ### Added — `handle.releaseEntity`: swap content in a PlayCanvas tile without leaking its programs (`./splat`, `./model`)
 
 Preview tier. PlayCanvas never frees a shader program by itself: its `ProgramLibrary` caches every
