@@ -467,6 +467,12 @@ are offset from it by a few ipd × m2v.
 extension loads the committed `dist/auto3d-dev.js`; after editing a source file run
 `node build.mjs` here, then reload the extension.
 
+A browser that ships its own auto-3D injects that copy first, and the first injector wins
+(`Symbol.for('dxr.auto3d')`). The extension then does nothing on the page. You can tell from the
+console: `auto3d-core.js … core armed (v<the browser's>)` is the browser's copy, and
+`auto3d-dev.js … core armed (v<manifest.json>)` is this one. To test this copy, start the browser
+with `--disable-auto-3d`, or use B.
+
 **B — a separate profile.** Close **every** DisplayXR Browser window first: a second browser
 instance gets no weave slot and stays 2D forever
 ([displayxr-browser#162](https://github.com/DisplayXR/displayxr-browser/issues/162)). Then run
