@@ -67,8 +67,17 @@ entity and its materials, and the engine kept every program those materials had 
 
 A swap replaces five things: the **entity**, its **materials**, the **programs** those materials
 linked, their **textures**, and the **container** they came from. Destroying the entity releases
-the first. Unloading the container releases the textures, meshes and materials. The programs are
-released by nobody unless the page does it.
+the first. Unloading the container releases the textures, meshes and materials. The engine
+releases the programs for nobody.
+
+**On a PlayCanvas tile the SDK created, it releases the programs for you** (from the release
+after 1.47.5): when the page destroys a material, directly or through the container's
+`asset.unload()`, the SDK destroys the programs that material linked one frame later, when
+nothing still in the app uses them (rules 2 and 3, done automatically; see §6). So the page's
+part is the engine's own teardown: **destroy the entity, and destroy or unload what it drew
+with.** `entity.destroy()` alone is not enough. A container that stays loaded keeps its
+materials alive, and a live material keeps its programs on purpose, because the page may show it
+again.
 
 On a PlayCanvas tile, content you add under `handle.engine.root` is released in one call:
 
@@ -77,8 +86,10 @@ const prev = shown;                                    // { entity, asset } of t
 const { programs, container } = handle.releaseEntity(prev.entity, { asset: prev.asset });
 ```
 
-`releaseEntity` (new, on `addSplat(…, { engine: 'playcanvas' })` and PlayCanvas `addModel`
-handles) does rules 2 to 4 for you, and the SDK does rule 5 on its own devices. On a three.js scene, traverse and dispose (§2, three.js).
+`releaseEntity` (on `addSplat(…, { engine: 'playcanvas' })` and PlayCanvas `addModel`
+handles) does rules 2 to 4 in that call, including the container's last-user check of rule 4,
+and the SDK does rule 5 on its own devices. Without it, the page unloads the container itself
+(rule 4) and the automatic release above covers the programs. On a three.js scene, traverse and dispose (§2, three.js).
 
 ### 2. Collect the programs before you destroy anything
 
@@ -182,7 +193,8 @@ see (a `setSource`, a glTF container loaded into the tile's registry, a `release
 the live program count. When the count has not dropped across the last 10 swaps of one kind and
 rose at more than 60% of them, it warns once in the console. It costs nothing when diag is off.
 `?dxrdiag=keepshaders` turns rule 5 off for an A/B (page-wide; set it on the URL before the first
-tile loads). Details: [PlayCanvas adapter § Diagnosing transition stalls](playcanvas-adapter.md#diagnosing-transition-stalls-diag--dxrdiag-36).
+tile loads). The overlay also shows `release patched (−N)`: programs the automatic release of
+rule 1 destroyed. `?dxrdiag=keepprograms` turns that off for an A/B (per tile). Details: [PlayCanvas adapter § Diagnosing transition stalls](playcanvas-adapter.md#diagnosing-transition-stalls-diag--dxrdiag-36).
 
 ## 5. Measured: the SDK's own paths
 
@@ -197,6 +209,20 @@ Khronos glTF sample models. "Live" is `created − deleted` after each step.
 | the same, `?dxrdiag=keepshaders` (rule 5 off) | n/a | programs bounded (5–16), shaders 10 → 91: the engine's compiled-shader cache alone |
 | `setSource` × 12–16 on one splat (cut, crossfade, wavefront, flip in turn) | +6 programs over the first pass of the four transitions, then flat | same |
 | `setVideo(src)` / `setVideo(null)` × 6 | +1 program on the first, then flat | same |
+
+**The automatic program release (rule 1), measured.** DisplayXR Browser on macOS (Chromium 156,
+Apple silicon), PlayCanvas 2.22.3, the hook of §4. A PlayCanvas `addModel` tile; each swap adds a
+product with its own material options (a distinct program) under `handle.engine.root`, and
+destroys the outgoing entity and its material: the engine's own teardown, no `releaseEntity`.
+
+| 24 swaps | live programs (created) | live shaders |
+|---|---|---|
+| automatic release (default) | 2 (25 created, 23 deleted) | 4 |
+| `?dxrdiag=keepprograms` (the engine as it ships) | 25 (25 created, 0 deleted) | 50 |
+
+The same pattern in a production kiosk app (one persistent PlayCanvas stage, content swapped per
+screen, entities, materials and textures destroyed, no program ever released) went from 0 to 170
+live programs over 28 screen changes before this release.
 
 So the SDK's own swaps (`setSource`, `setVideo`, `prepareSource().dispose()`, `remove()`) release
 what they replace, and content a page adds under `handle.engine.root` is the page's, with
@@ -213,7 +239,8 @@ with live programs and shaders steady and every product still rendering when it 
 | `setSource` | the outgoing asset (entity destroyed, asset unloaded a few frames later); its own transition programs are compiled once and reused | nothing |
 | `setVideo(null)`, `prepareSource().dispose()` | the plane / the prepared asset | nothing |
 | compiled shaders (rule 5) | on every PlayCanvas device the SDK creates | a PlayCanvas app the page creates itself |
-| content under `handle.engine.root` | `handle.releaseEntity(entity, { asset })` when the page calls it | calling it (or rules 2–4 by hand) for whatever a swap replaces |
+| programs of a material the page destroys (rule 1) | on every PlayCanvas app the SDK creates, a frame after the destroy, when nothing else uses them | a PlayCanvas app the page creates itself (rules 2–3 by hand) |
+| content under `handle.engine.root` | `handle.releaseEntity(entity, { asset })` when the page calls it | destroying the entity and destroying or unloading what it drew with (or calling `releaseEntity`) |
 | `addScene` (three.js or raw WebGL) | nothing: the renderer is the page's | rule 6 |
 
 **How the shader-cache fix rides along with the engine.** PlayCanvas is the page's own peer
@@ -226,3 +253,18 @@ reports why in `?dxrdiag` (`cache skipped: …`). On an engine bump: re-read `we
 still never deletes a compiled shader before device destroy, keep the fix and update its shape
 check and `test/pc-shader-cache.test.mjs` (a copy of the 2.22.3 class shape). If upstream releases
 shaders itself, the check makes the fix a no-op, and it can be deleted.
+
+**How the program release rides along with the engine.** `js/inline3d-pc-auto-release.js` wraps
+two methods on the engine's `Material` prototype, once: `getShaderVariant` (the one place a
+material links a program) records the material weakly on its device, and `destroy` collects the
+material's programs before the engine empties `variants`. Both act only on devices the SDK
+created; a PlayCanvas app the page runs itself is untouched. At the app's next `frameend` (a
+timer backs that up for a stopped app) it destroys each collected program that no mesh instance
+in the app, no material asset in the registry and **no still-alive material** holds. The last
+condition is what makes it safe: the library hands one `Shader` to every material with the same
+key, and a material the page keeps off-scene to show again still has it in its `variants`.
+`Shader.destroy()` also drops the program from the library, so content shown again recompiles on
+its first draw (`handle.warmEntity` hides that). It installs only on the 2.22.x shape (a
+`getShaderVariant` and a `destroy` that clears `variants`) and otherwise reports
+`release skipped: …` in `?dxrdiag`. On an engine bump: re-read `material.js` and
+`mesh-instance.js`'s `getShaderInstance`; keep `test/pc-auto-release.test.mjs` in step.
