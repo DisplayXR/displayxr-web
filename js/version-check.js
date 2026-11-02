@@ -126,18 +126,19 @@ function hasDisplayXRBrand(fullVersionList) {
 
 /**
  * navigator.userAgentData.platform -> feed platform key. "Windows" -> "windows",
- * "Android" -> "android", "Linux" -> "linux"; anything else (or nothing) -> null.
+ * "Android" -> "android", "Linux" -> "linux", "macOS" -> "macos"; anything else (or nothing)
+ * -> null. macOS must map: a null key falls back to the legacy `latest` (the Windows .exe).
  */
 export function platformKey(platform) {
   if (typeof platform !== 'string') return null;
   const p = platform.trim().toLowerCase();
-  return p === 'windows' || p === 'android' || p === 'linux' ? p : null;
+  return p === 'windows' || p === 'android' || p === 'linux' || p === 'macos' ? p : null;
 }
 
 /**
  * The feed entry for a platform key. `platforms[key]` wins; the legacy top-level `latest`
- * (a Windows entry) is used ONLY for windows or an unknown platform, so an Android or Linux
- * browser is never offered the .exe. Null means "no entry for this platform: say nothing".
+ * (a Windows entry) is used ONLY for windows or an unknown platform, so an Android, Linux or
+ * macOS browser is never offered the .exe. Null means "no entry for this platform: say nothing".
  */
 export function selectFeedEntry(feed, key) {
   if (!feed || typeof feed !== 'object') return null;
