@@ -17,8 +17,8 @@ measured against this SDK's own swap paths (§5).
 
 Every distinct material set a page draws makes the engine **link a WebGL program**: one per
 material variant (lighting, skinning, maps, pass). A linked program is not just a handle. The
-driver keeps its compiled form for as long as the program exists. On one Linux driver (Mesa, an
-Intel iGPU) that was **about 5 MB per live program**, measured with an allocation tracer on the
+driver keeps its compiled form for as long as the program exists. On one Linux driver (Mesa, integrated
+graphics) that was **about 5 MB per live program**, measured with an allocation tracer on the
 browser's GPU process: the outstanding allocations were the linked program's IR, freed only by
 `glDeleteProgram`. The production page linked about four new programs per product and deleted
 none, so each product it showed left 15–25 MB behind for the life of the page.
