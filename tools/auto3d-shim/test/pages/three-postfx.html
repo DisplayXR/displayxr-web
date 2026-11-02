@@ -15,6 +15,11 @@
              scene pass only and cleared after it, sub-pixel offsets: SSAA / TAA). A persistent view
              adds an unlit magenta marker at (0, 1.5, 3) and exposes its projection, window.__expectNdcY.
      ?chain=0  the scene straight to the screen (no chain), then the HUD.
+     ?mirror=1 the composite flips the picture left-right (texture2D(…, vec2(1.0 - vUv.x, vUv.y)), as
+             visual-learning.app/sandworm's chain does), and a pillar stands off centre at x -3.2.
+     ?overlay=1 after the scene, two more scenes of one child each (points behind the camera: nothing
+             in view) are drawn with the page camera into canvas-shaped targets of their own, and
+             composited. Three seeds per frame, the last one blank: sandworm's frame on the panel.
      ?rtScale=  the scene target's size as a fraction of the canvas (0.25: too small to be a seed). -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three post-processing (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
@@ -24,7 +29,7 @@
 import * as THREE from 'three';
 const FREEZE = 60;
 const q = new URLSearchParams(location.search);
-const VIEW = q.get('view'), DIRECT = q.get('chain') === '0', RT_SCALE = +(q.get('rtScale') || 1);
+const VIEW = q.get('view'), DIRECT = q.get('chain') === '0', RT_SCALE = +(q.get('rtScale') || 1), MIRROR = q.get('mirror') === '1', OVERLAY = q.get('overlay') === '1';
 window.__expectedConvergence = 8;
 const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -57,6 +62,11 @@ const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
 mk(box, 0x2fb4ff, 1.8, 0, 0); mk(box, 0x2fb4ff, -1.8, 0, 0);
 const ball = new THREE.SphereGeometry(0.35, 32, 16);
 mk(ball, 0x9dff4a, 0, 0, 1.8); mk(ball, 0x9dff4a, 0, 0, -1.8);
+if (MIRROR) { // static, off centre: the picture is clearly not its own mirror image
+  const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.8, 4, 0.8), new THREE.MeshStandardMaterial({ color: 0xf2f2f2 }));
+  pillar.position.set(-3.2, 2, 0); pillar.castShadow = true;
+  scene.add(pillar);
+}
 
 // ---- the page camera's view window (?view=)
 const FRAMED = VIEW === 'identity' || VIEW === 'shift' || VIEW === 'crop';
@@ -82,6 +92,15 @@ const JITTER = [[0.25, -0.25], [-0.25, 0.25], [0.125, 0.375], [-0.375, -0.125]];
 const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 const rtW = Math.round(size.x * RT_SCALE), rtH = Math.round(size.y * RT_SCALE);
 const rtScene = new THREE.WebGLRenderTarget(rtW, rtH, { depthTexture: new THREE.DepthTexture(rtW, rtH) });
+// ?overlay=1: two overlay scenes, one child each, nothing in view (points 5 units behind the camera)
+const overlays = OVERLAY ? [0, 1].map(() => {
+  const s = new THREE.Scene();
+  const pts = new Float32Array(300 * 3);
+  for (let i = 0; i < pts.length; i += 3) { pts[i] = (i % 7) - 3; pts[i + 1] = 1 + (i % 5) * 0.2; pts[i + 2] = 13; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  s.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0xffffff, size: 3, sizeAttenuation: false })));
+  return { scene: s, rt: new THREE.WebGLRenderTarget(rtW, rtH) };
+}) : [];
 const rtA = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1);
 const rtB = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1);
 const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -94,10 +113,14 @@ const blurMat = new THREE.ShaderMaterial({ // ONE material, both blur passes
   depthTest: false, depthWrite: false,
 });
 const compMat = new THREE.ShaderMaterial({
-  uniforms: { base: { value: rtScene.texture }, glow: { value: rtB.texture }, depthTex: { value: rtScene.depthTexture } },
+  uniforms: { base: { value: rtScene.texture }, glow: { value: rtB.texture }, depthTex: { value: rtScene.depthTexture }, mirror: { value: MIRROR ? 1 : 0 },
+    ov0: { value: OVERLAY ? overlays[0].rt.texture : null }, ov1: { value: OVERLAY ? overlays[1].rt.texture : null }, ovK: { value: OVERLAY ? 1 : 0 } },
   vertexShader: vs,
-  fragmentShader: `varying vec2 vUv; uniform sampler2D base; uniform sampler2D glow; uniform sampler2D depthTex;
-    void main(){ float d = texture2D(depthTex, vUv).r; vec4 c = texture2D(base, vUv) + 0.35 * texture2D(glow, vUv);
+  fragmentShader: `varying vec2 vUv; uniform sampler2D base; uniform sampler2D glow; uniform sampler2D depthTex; uniform float mirror;
+    uniform sampler2D ov0; uniform sampler2D ov1; uniform float ovK;
+    void main(){ vec2 uv = mix(vUv, vec2(1.0 - vUv.x, vUv.y), mirror);
+      float d = texture2D(depthTex, uv).r; vec4 c = texture2D(base, uv) + 0.35 * texture2D(glow, uv);
+      if (ovK > 0.5) c += 0.5 * (texture2D(ov0, uv) + texture2D(ov1, uv));
       gl_FragColor = vec4(c.rgb * (0.9 + 0.1 * d), 1.0); }`,
   depthTest: false, depthWrite: false,
 });
@@ -136,6 +159,7 @@ function frame() {
   if (VIEW === 'jitter') { const j = JITTER[n % JITTER.length]; camera.setViewOffset(size.x, size.y, j[0], j[1], size.x, size.y); }
   renderer.setRenderTarget(rtScene); renderer.clear(); renderer.render(scene, camera);
   if (VIEW === 'jitter') camera.clearViewOffset();
+  for (const o of overlays) { renderer.setRenderTarget(o.rt); renderer.clear(); renderer.render(o.scene, camera); }
   // 2. blur, one material, uniforms rewritten between the passes
   quad.material = blurMat;
   blurMat.uniforms.tex.value = rtScene.texture; blurMat.uniforms.dir.value.set(1 / rtA.width, 0);

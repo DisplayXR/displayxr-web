@@ -25,13 +25,36 @@ function framed(r, t, h, R) {
     `left eye ${m.y.toFixed(3)} (${m.n} px), page ${typeof exp === 'number' ? exp.toFixed(3) : exp}`);
 }
 
+// The chain's mirror probe (probeMirror), as state() reports it.
+const mirrorIs = (want) => (r, t, h, R) => t(`mirror probe: the chain is ${want ? '' : 'NOT '}taken as mirrored`, R.chainMirror === want, `chainMirror ${R.chainMirror}, r [as drawn, mirrored] ${JSON.stringify(R.mirrorCorr)}`);
+// Real parallax (the fake's eyeX 0.1, eyes 0.2 apart): skew 64 px minus the eyes' parallax at the
+// subject (2·f·eyeX / z = 2·989·0.1 / 8 ≈ 25 px) = 39 px with the eyes in order; with them swapped
+// (pseudoscopic) it would be 64 + 25.
+const EYES_SHIFT = 39 / 640;
+
 export default function cases({ P, NEW }) {
   const view = (q, extra) => ({
     url: P + 'three-postfx.html?' + q, shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
     probe: () => window.__expectNdcY, alsoCheck: framed, ...extra,
   });
+  const chain = (id, name, q, extra) => ({ id, name, url: P + 'three-postfx.html' + q, shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', ...extra });
   return [
-    { id: 'e-postfx', name: 'three.js post chain (scene target + two-pass blur on ONE material + composite + HUD)', url: P + 'three-postfx.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+    chain('e-postfx', 'three.js post chain (scene target + two-pass blur on ONE material + composite + HUD)', '', { alsoCheck: mirrorIs(false) }),
+    chain('e-postfx-eyes', 'post chain, eyes 0.2 apart (real parallax): the eye order of the chain path = the direct path\'s', '', { fake: { eyeX: 0.1 }, pairShift: EYES_SHIFT }),
+    chain('e-postfx-mirror', 'post chain whose composite flips the picture left-right (visual-learning.app/sandworm): found, each eye drawn mirrored, the pair the right way round', '?mirror=1', {
+      alsoCheck(r, t, h, R) {
+        mirrorIs(true)(r, t, h, R);
+        t('console: "the post chain … mirrors its picture left-right"', r.log.some((l) => /mirrors its picture left-right/.test(l)), '');
+      },
+    }),
+    chain('e-postfx-mirror-overlay', 'mirrored chain seeded three times a frame, the last seed blank (sandworm on the panel): the probe and the estimator use the main seed', '?mirror=1&overlay=1', {
+      alsoCheck(r, t, h, R) {
+        mirrorIs(true)(r, t, h, R);
+        t('decided on the first ask (not by the 3 s fallback)', R.mirrorWhy === 'decided' && R.mirrorAsks === 1, `mirrorWhy "${R.mirrorWhy}", asks ${R.mirrorAsks}`);
+      },
+    }),
+    chain('e-postfx-mirror-ctl', 'CONTROL: the same page with the mirror probe off (chainMirror: false): the pair comes out pseudoscopic (-64 px)', '?mirror=1', { cfg: { convTarget: false, chainMirror: false }, pairShift: -0.1, alsoCheck: mirrorIs(false) }),
+    chain('e-postfx-mirror-eyes', 'mirrored chain, eyes 0.2 apart: the same 39 px as unmirrored (eye order AND parallax direction kept)', '?mirror=1', { fake: { eyeX: 0.1 }, pairShift: EYES_SHIFT, alsoCheck: mirrorIs(true) }),
     { id: 'e-postfx-view0', name: 'post chain, the scene camera keeps an identity setViewOffset (visual-learning.app/sandworm at rest)', ...view('view=identity') },
     { id: 'e-postfx-shift', name: 'post chain, the scene camera keeps a lens shift (setViewOffset, 12 % down): framed as the page frames it', ...view('view=shift') },
     { id: 'e-postfx-crop', name: 'post chain, the scene camera keeps a 2x off-centre crop (setViewOffset): framed as the page frames it, disparity x2', ...view('view=crop', { pairShift: 0.2 }) },

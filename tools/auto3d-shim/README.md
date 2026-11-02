@@ -262,8 +262,9 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | extra screen passes after the scene (HUD, overlay) | **3D** scene, flat overlay |
 | several viewports in one canvas | flat per viewport |
 | post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
-| a camera the page frames with `setViewOffset` and keeps (a lens shift, a crop zoom: `visual-learning.app/sandworm`), through a chain or straight to the screen | **3D** since v0.6.3: the view window is carried into each eye's projection (see [view windows](#view-windows-setviewoffset-v063)). Harness cases `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`. Before: a chain stayed 2D (`not converting … the screen camera is not a PerspectiveCamera`), and a direct draw converted but never drew a stereo frame |
+| a camera the page frames with `setViewOffset` and keeps (a lens shift, a crop zoom: `visual-learning.app/sandworm`, `/strandbeest`, `/robotic-bee`), through a chain or straight to the screen | **3D** since v0.6.3: the view window is carried into each eye's projection (see [view windows](#view-windows-setviewoffset-v063)). Harness cases `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`. Before: a chain stayed 2D (`not converting … the screen camera is not a PerspectiveCamera`), and a direct draw converted but never drew a stereo frame |
 | a chain whose scene pass sets `setViewOffset` for that draw only (TAA / SSAA jitter) | **2D**, reported `flat` with `the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split`. Harness case `e-postfx-jitter` |
+| a chain that flips its picture left-right (a pass sampling `1.0 - vUv.x`: `visual-learning.app/sandworm`) | **3D** since v0.6.3, each eye drawn mirrored so that the page's own flip gives the right pair (see [mirroring chains](#chains-that-mirror-their-picture-v063)). Harness cases `e-postfx-mirror`, `-mirror-eyes`, control `-mirror-ctl`. Before, the pair came out pseudoscopic (seen on the panel) |
 | `WebGPURenderer` r178–r186, WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
 | `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
 | `WebGPURenderer` of another revision (r177 and older never announce it; r187+ are unverified), or an object without the common `Renderer` API | **2D**, reported `flat` with the reason (`WebGPURenderer r190 — the driver is verified on r178–r186 only`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
@@ -364,6 +365,56 @@ anyway.
 
 The convergence estimator and `rigFov` still use the camera's full, unwindowed frustum. For a
 lens shift that changes nothing. For a crop zoom, the estimator also counts bounds outside the crop.
+
+#### Chains that mirror their picture (v0.6.3)
+
+`visual-learning.app/sandworm`'s chain has a ShaderPass that flips the picture left-right:
+`texture2D(tDiffuse, vec2(1.0 - vUv.x, vUv.y))`. Converted, each eye's image went through that flip.
+That inverts its disparity, so the pair read as pseudoscopic on the panel. `three-keyframes` and
+`webgl_postprocessing_unreal_bloom` read right on the same panel.
+
+**The fix.** Flipping the screen is the same as drawing through the camera C·S, with
+S = diag(−1, 1, 1). So, for a mirroring chain, the seed draws each eye as S·E·S with the projection
+S·P·S: the eye's x offset and the frustum's x skew are negated. The page's own flip then turns that
+into eye E of C·S, head motion included. Swapping the halves instead would fix a still pair but
+invert the look-around.
+- Order in `eyeProjection`: S·P·S first, then the view window, then the depth conversions.
+- The display rig's pivot offset stays in the page camera's own axes.
+
+**How it is found (`probeMirror`).** The probe looks at the picture, so it works however the page
+mirrors: a pass's UVs, a flipped quad.
+- **What is compared.** In a mono chain frame, two draws are made again, each into a 192-px RGBA8
+  target of the shim's own: the chain's screen pass that was just drawn, and the scene by the page
+  camera. The same 9 rows of the two are compared, each reduced to 64 bins and high-passed (minus a
+  ±6-bin moving average). The shim's targets are always readable; the page's half-float or MSAA ones
+  may not be.
+- **Never the canvas.** The first version read the drawing buffer instead. On the panel it never
+  reached a correlation (`mirrorCorr` null), where the same page decided on its first ask headless.
+- **The main seed.** On the panel, sandworm seeded three targets a frame with the page camera: the
+  scene, then two overlay scenes of one child each (points / lines, nothing in view). The probe drew
+  the last one (`2 calls, 0 triangles, luminance 189..189`), found no structure, and fell back to
+  not mirrored. Each seed now records what its own draw drew (triangles + points + lines). The one
+  that drew the most is the frame's `main` seed, and the probe, the convergence estimator
+  (`st.lastScene`), the mono replay and the flip all use it. Harness case
+  `e-postfx-mirror-overlay`.
+- **Why high-pass.** Compared raw, the sandworm page's vignette, grading and light gradients
+  (left-right symmetric) matched its scene as drawn almost as well as mirrored (r 0.6 vs 0.8).
+  High-passed, over its whole tour, as drawn stays near r 0 and mirrored reads 0.4–0.9; as drawn
+  never won.
+- **Deciding.** A reading that wins with r > 0.4 by 0.25 decides. A blank or ambiguous frame is asked
+  again, at most 4 times a second. The page qualifies only once there is a decision.
+- **Fallback.** Still undecided 3 s after the first ask means not mirrored, which is how every chain
+  was drawn before, so a page that drew one frame and stopped still converts.
+- **Cost.** Two extra 192 × 108 draws (the scene and one full-screen pass) and two reads per ask,
+  usually one ask. The sandworm page decides on its first chain frame: r 0.88 mirrored vs 0.01 as
+  drawn.
+- **Diagnostics.** `state()` reports `chainMirror`, `mirrorCorr` ([as drawn, mirrored]), `mirrorAsks`
+  and `mirrorWhy`, which says how the last ask ended. A blank frame names what each draw drew
+  (calls, triangles, luminance range) and the frame's seeds.
+- **Switches.** `chainMirror` is test only. `false` turns the probe off. `'force'` draws every chain
+  mirrored whatever the probe found, live from the console with
+  `__dxrAuto3D.set('chainMirror', 'force')`. That is how the panel confirmed the eye conjugation
+  before the probe was fixed.
 
 ### PlayCanvas (engine 2.x, WebGL2 and WebGPU)
 
@@ -818,6 +869,11 @@ running), so the rig is always sampled at the configured depth.
 | `e-direct-shift` | `?view=shift&chain=0`: the scene straight to the screen | as `e-postfx-shift`. Before v0.6.3 it converted but drew flat, and the cover never dropped |
 | `e-postfx-jitter` | `?view=jitter`: a sub-pixel `setViewOffset` around the scene pass only, cleared after it (SSAA / TAA) | no session requested, `flat` with the jitter reason in `state()` and on the HUD, the `stays 2D` console line |
 | `e-postfx-miss` | `?rtScale=0.25`: the scene into a quarter-size target | 2D, and the 2D line names the near miss: `target 320x180 is under half the canvas's 1280x720 px` |
+| `e-postfx-eyes` | `three-postfx.html`, the fake's eyes 0.2 apart (`eyeX` 0.1): real parallax | the pair shift is 39 px: the skew's 64 minus the eyes' parallax at the subject (≈ 25). Swapped eyes would give 64 + 25. Until this case, the chain path's eye order was checked with the skew only (depth-independent) |
+| `e-postfx-mirror` | `?mirror=1`: the composite samples `vec2(1.0 - vUv.x, vUv.y)`, and a pillar stands off centre | as `a` (64 px, the right way round); `chainMirror` true; the console line `the post chain … mirrors its picture left-right` |
+| `e-postfx-mirror-overlay` | `?mirror=1&overlay=1`: after the scene, two overlay scenes (one child each, nothing in view) seeded into targets of their own: three seeds a frame, the last blank, as sandworm's on the panel | as `e-postfx-mirror`, decided on the first ask, convergence 8 from the estimator on the main seed. Fails when the last seed is used instead: never decided (the 3 s fallback, not mirrored), and convergence 5.00 (the default: the overlay's bounds) |
+| `e-postfx-mirror-ctl` | the same page, cfg `chainMirror: false` | the pair shift is −64 px: pseudoscopic, the panel's report reproduced |
+| `e-postfx-mirror-eyes` | `?mirror=1`, eyes 0.2 apart | 39 px, as `e-postfx-eyes`: eye order and parallax direction kept through the mirror |
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |
@@ -1136,10 +1192,15 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
 
 ## Verified, and what is not
 
-**Headless, v0.6.3 (three.js view windows, #221), Windows, ANGLE D3D11 + WebGPU:** 115 cases. That is
-109 plus 6 new: `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`,
-`e-postfx-jitter` and `e-postfx-miss`.
-- **Full pass.** 113 run, 2 skipped (`c` / `d`: no `ports_25.sog`), 112 green.
+**Headless, v0.6.3 (three.js view windows + mirroring chains, #221), Windows, ANGLE D3D11 + WebGPU:**
+120 cases, 11 of them new:
+- view windows: `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`, `e-postfx-jitter`
+  and `e-postfx-miss`;
+- mirroring chains and real parallax: `e-postfx-eyes`, `e-postfx-mirror`, `e-postfx-mirror-overlay`,
+  `e-postfx-mirror-ctl` and `e-postfx-mirror-eyes`.
+
+Results:
+- **Full pass.** 118 run, 2 skipped (`c` / `d`: no `ports_25.sog`), 117 green.
 - **The one red is not from this change.** `a-legacy` fails its rig-parity check (convergence 8.0747
   vs 8.0413; the frame is still byte-identical). It failed identically on `main` before this change,
   so it broke after the v0.6.2 run.
@@ -1152,9 +1213,28 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
 - **The real page.** `visual-learning.app/sandworm` (three r186), headless with the fake session:
   - it converts: `SBS 1600x900`, 1200 stereo frames, no flat frame after the eyes, convergence from
     its `camera.lookAt`;
-  - its own crop zoom (`__STAGE.setCrop(2, …)`) stays live in stereo.
+  - its own crop zoom (`__STAGE.setCrop(2, …)`) stays live in stereo;
+  - its mirroring chain is found on the first chain frame (r 0.88 mirrored vs 0.01 as drawn);
+  - with the fake's eyes 2 units apart, the pair shifts +32 px. That is the skew's +80 less the
+    parallax, the same sign as any unmirrored page. With `chainMirror: false` it shifts −34 px:
+    pseudoscopic, the panel's report reproduced.
+- **The same site's `strandbeest` and `robotic-bee`.** Both frame with a per-shot
+  `setViewOffset(w, h, -sx, -sy, w, h)` and do not mirror. With v0.6.2 they stayed 2D with
+  sandworm's exact line. Now:
+  - both convert, and the probe takes them as not mirrored (r 0.56 vs −0.06, 0.93 vs 0.00);
+  - with real parallax the pair is the right way round. strandbeest with eyes 0.06 apart reads
+    +55 px (`'force'`: −55); robotic-bee with eyes 0.2 apart reads +41 px.
 
-Nothing on the panel yet.
+**On the panel (Windows box, DisplayXR Browser via `launch.cmd`), sandworm, 2026-11-02:**
+1. **Before the mirror fix.** It converted, but the pair read as pseudoscopic. `three-keyframes` and
+   `webgl_postprocessing_unreal_bloom` read right on the same panel, and removing `#app`'s CSS
+   scale changed nothing.
+2. **First probe.** It never reached a correlation (`mirrorCorr` null) and fell back to not
+   mirrored.
+3. **Second probe (re-draws, last seed).** It found the frame's last seed blank (above).
+   `chainMirror: 'force'` read right, which confirmed the eye conjugation.
+4. **Final probe (main seed).** It decides on its own, and the tester confirmed that the pair reads
+   right.
 
 **Headless, v0.6.2 (PlayCanvas CameraFrame, P-W1c), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere):** 109
 cases (98 + 11 new: `pc-cf-kill`, `pc-cf-webgpu-kill`, `pc-cf`, `pc-cf-webgpu`, `pc-cf-unsplit-ctl`,

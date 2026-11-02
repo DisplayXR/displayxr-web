@@ -87,6 +87,7 @@ function dxrCore(cfg, cap, S) {
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
+    chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
     pcCanvasTrap: true, // TEST ONLY (A/B): false lets a PlayCanvas page's own canvas.width / height writes through while converted
   };
