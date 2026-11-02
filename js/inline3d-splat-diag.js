@@ -36,6 +36,8 @@
 //              outgoing photo jumps when the incoming rig is declared".
 //   keepshaders — leave the engine's compiled-shader cache as it ships (no per-program release,
 //              ./inline3d-pc-shader-cache.js). Page-wide: the engine's shader class is shared.
+//   keepprograms — a material the page destroys keeps the programs it linked, as the engine ships
+//              (./inline3d-pc-auto-release.js). Per tile.
 //
 // LIVE GL OBJECTS (docs/content-lifecycle-rules.md): programs and shaders created / deleted on the
 // tile's context since diag attached, and the live difference, on the overlay and in the dump.
@@ -63,8 +65,10 @@
 //   - the settle itself: the SDK's settle work in ms, then how long the SAME task kept running
 //     after it (the page's continuation of `await setSource`).
 
+import { autoReleaseStats, autoReleaseState } from './inline3d-pc-auto-release.js';
+
 /** The switches `diag` / `?dxrdiag` understand, besides the plain on values. */
-export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig', 'keepshaders']);
+export const DIAG_SWITCHES = Object.freeze(['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig', 'keepshaders', 'keepprograms']);
 /**
  * The leak watch's window: content swaps of one kind with no drop in live programs, more than 60%
  * of them a rise. Wide enough that a first pass through the transitions (each compiles its own
@@ -239,6 +243,7 @@ export class DiagRecorder {
     /** GL object counts on the tile's context (instrumentGl): programs / shaders created + deleted. */
     this.glObjects = { programs: { created: 0, deleted: 0 }, shaders: { created: 0, deleted: 0 } };
     this.shaderCacheState = null; // () => the engine shader-cache patch state (./inline3d-pc-shader-cache.js)
+    this.programReleaseState = null; // () => { state, released, … } (./inline3d-pc-auto-release.js)
     this._swapLive = new Map(); // kind → live programs at each content swap of that kind (the leak watch)
     this._leakWarned = false;
     this._burst = null; // the pick burst of the current task
@@ -661,7 +666,7 @@ export class DiagRecorder {
       label: this.label,
       switches: [...this.switches],
       rigLocked: this.rigLocked,
-      glObjects: { ...this.glObjects, live: this.liveGl(), shaderCache: safe(() => this.shaderCacheState?.()) ?? null },
+      glObjects: { ...this.glObjects, live: this.liveGl(), shaderCache: safe(() => this.shaderCacheState?.()) ?? null, programRelease: safe(() => this.programReleaseState?.()) ?? null },
       transitions: this.transitions,
       events: this.events,
       frames: this.frames,
@@ -911,6 +916,13 @@ export function startDiagLoop(rec, { overlay = true, doc = typeof document !== '
 export function watchContent(rec, app, viewer) {
   rec.instrumentGl(app?.graphicsDevice?.gl);
   rec.shaderCacheState = () => app?.graphicsDevice?.__dxrShaderCache ?? null;
+  rec.programReleaseState = () => {
+    const state = app?.graphicsDevice?.__dxrAutoRelease ?? null;
+    const st = autoReleaseStats(app);
+    return state ? { state, ...(st || {}) } : null;
+  };
+  const ar = autoReleaseState(app);
+  if (ar) ar.onSweep = (n) => n && rec.contentSwap('auto-release');
   if (viewer) viewer.onContentReleased = () => rec.contentSwap('release');
   app?.assets?.on?.('load', (a) => a?.type === 'container' && rec.contentSwap('container'));
 }
@@ -919,7 +931,12 @@ export function watchContent(rec, app, viewer) {
 export function glObjectsLine(rec) {
   const { programs: p, shaders: s } = rec.glObjects;
   const cache = safe(() => rec.shaderCacheState?.());
-  return `gl programs ${p.created - p.deleted} live (+${p.created} −${p.deleted})  shaders ${s.created - s.deleted} live (+${s.created} −${s.deleted})` + (cache ? `  cache ${cache}` : '');
+  const rel = safe(() => rec.programReleaseState?.());
+  return (
+    `gl programs ${p.created - p.deleted} live (+${p.created} −${p.deleted})  shaders ${s.created - s.deleted} live (+${s.created} −${s.deleted})` +
+    (cache ? `  cache ${cache}` : '') +
+    (rel ? `  release ${rel.state}${rel.released !== undefined ? ` (−${rel.released})` : ''}` : '')
+  );
 }
 
 /**
