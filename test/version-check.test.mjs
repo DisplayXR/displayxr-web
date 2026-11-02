@@ -215,7 +215,7 @@ test('platformKey maps userAgentData.platform', () => {
   assert.equal(platformKey('Windows'), 'windows');
   assert.equal(platformKey('Android'), 'android');
   assert.equal(platformKey('Linux'), 'linux');
-  assert.equal(platformKey('macOS'), null);
+  assert.equal(platformKey('macOS'), 'macos');
   assert.equal(platformKey(''), null);
   assert.equal(platformKey(undefined), null);
 });
@@ -237,6 +237,22 @@ test('Android with no platforms entry says NOTHING (does not fall back to the .e
   assert.equal(evaluate(legacy, run('1.0.7', 'Android')), null);
   assert.equal(selectFeedEntry(legacy, 'android'), null);
   assert.equal(selectFeedEntry(legacy, 'linux'), null);
+});
+
+test('macOS with no platforms entry says NOTHING (does not fall back to the .exe)', () => {
+  const legacy = { latest: entry('1.0.8') };
+  assert.equal(selectFeedEntry(legacy, 'macos'), null);
+  assert.equal(evaluate(legacy, run('1.0.7', 'macOS')), null);
+  const winOnly = { latest: entry('1.0.8'), platforms: { windows: entry('1.0.8') } };
+  assert.equal(evaluate(winOnly, run('1.0.7', 'macOS')), null);
+});
+
+test('macOS is offered its .dmg when the feed has platforms.macos', () => {
+  const f = { latest: entry('1.0.8'), platforms: { macos: entry('1.0.8', { url: 'https://example.invalid/DisplayXR-Browser-1.0.8-mac-arm64.dmg' }) } };
+  const info = evaluate(f, run('1.0.7', 'macOS'));
+  assert.ok(info);
+  assert.equal(info.platform, 'macos');
+  assert.match(info.url, /mac-arm64\.dmg$/);
 });
 
 test('Windows and unknown platforms fall back to the legacy top-level latest', () => {
