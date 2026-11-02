@@ -42,7 +42,8 @@ export {
   LAYERID_IMMEDIATE,
   // cursor: 'depth' (./inline3d-cursor-depth-playcanvas.js, loaded only on opt-in)
   Picker,
-  // materials / meshes (the edge feather)
+  // materials / meshes (the edge feather; Material: the program release, ./inline3d-pc-auto-release.js)
+  Material,
   Mesh,
   MeshInstance,
   ShaderMaterial,

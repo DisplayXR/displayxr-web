@@ -128,6 +128,7 @@ import {
 } from './inline3d-splat-shared.js';
 import { resolveCursorOption } from './inline3d-cursor-option.js';
 import { installShaderCacheRelease } from './inline3d-pc-shader-cache.js';
+import { installAutoProgramRelease } from './inline3d-pc-auto-release.js';
 import { releaseEntity as releaseEntityIn } from './inline3d-pc-release.js';
 
 /**
@@ -1429,7 +1430,7 @@ export class PlayCanvasSplatViewer {
    * @param {object} o.perf  the resolved playcanvasPerfSettings().
    * @param {string} [o.viewPath]  force 'cameras' | 'renderview' (diagnostics).
    */
-  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true, shaderCacheRelease = true } = {}) {
+  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true, shaderCacheRelease = true, programRelease = true } = {}) {
     this.pc = pc;
     const device = await pc.createGraphicsDevice(this.canvas, {
       deviceTypes: [pc.DEVICETYPE_WEBGL2],
@@ -1461,6 +1462,11 @@ export class PlayCanvasSplatViewer {
     const app = new pc.AppBase(this.canvas);
     app.init(opts);
     guardDuplicateSystems(app);
+    // A material the page destroys (entity.destroy, a container's unload) keeps every program it
+    // linked for the device's life: release them a frame later, when nothing else uses them
+    // (./inline3d-pc-auto-release.js). `?dxrdiag=keepprograms` leaves the engine as it ships (A/B).
+    if (programRelease) installAutoProgramRelease(app, pc.Material);
+    else device.__dxrAutoRelease ??= 'off (keepprograms)';
     // The SDK sizes the buffer (double-width in 3D, 1:1 in mono), so the engine must never
     // resize it. RESOLUTION_FIXED is AppBase's DEFAULT, and with it `updateCanvasSize()` is a
     // no-op. Deliberately NOT calling setCanvasResolution/setCanvasFillMode: without explicit
@@ -4773,6 +4779,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       viewPath: opts.playcanvasViewPath,
       antialias: antialias === true,
       shaderCacheRelease: !diag?.has('keepshaders'),
+      programRelease: !diag?.has('keepprograms'),
     });
     if (!app || removed) return null;
     pcModule = pc;
