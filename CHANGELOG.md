@@ -7,6 +7,49 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — `handle.releaseEntity`: swap content in a PlayCanvas tile without leaking its programs (`./splat`, `./model`)
+
+Preview tier. PlayCanvas never frees a shader program by itself: its `ProgramLibrary` caches every
+variant for the device's life, and `Material.destroy()` (which `entity.destroy()` and a container's
+`asset.unload()` reach) only empties `material.variants`. A page that swaps glTFs under
+`handle.engine.root` (a carousel, a catalogue) therefore kept every program it ever showed, and a
+desktop driver keeps each linked program's compiled form (about 5 MB per program, measured on one
+Linux driver): a production page's GPU process grew about 8 MB/min for as long as it was open.
+
+- `handle.releaseEntity(entity, { asset })` on `addSplat(…, { engine: 'playcanvas' })` and
+  PlayCanvas `addModel` handles: collects the programs the entity's materials linked, destroys the
+  entity, unloads its glTF container `asset` unless something else in the tile still draws from it,
+  then destroys each collected program nothing left uses (`Shader.destroy()`, the engine's own
+  release). Returns `{ programs, container }`. A no-op on Spark and three.
+  Measured over 24 distinct models: live programs 5 → 47 without it, bounded at 5–16 (the model on
+  screen) with it.
+
+### Fixed — the engine kept every compiled shader until the device died (`./splat`, `./model`)
+
+Preview tier. PlayCanvas 2.22.3 keeps every compiled vertex and fragment shader in a
+module-private cache keyed by source, and `WebglShader.destroy()` deletes only the program. So
+even with the programs destroyed, two compiled shaders per program stayed (10 → 91 over the same 24
+swaps). The SDK now counts, per cached shader, the programs that use it and deletes it with the last
+one, on every PlayCanvas device it creates (`js/inline3d-pc-shader-cache.js`: a run-time patch of the
+engine's `WebglShader` prototype, since the engine is the page's own dependency; it installs only on
+the 2.22.x shape and otherwise steps aside). With `releaseEntity`, shaders stay at exactly twice the
+live programs. `?dxrdiag=keepshaders` turns it off for an A/B.
+
+### Added — live GL object counts and a leak warning in `?dxrdiag` (`./splat`, `./model`)
+
+The diagnostics overlay shows live programs and shaders on the tile's context (created and deleted
+since diag attached) and the shader-cache fix's state; the dump carries them under `glObjects`. At
+each content swap the SDK sees (`setSource`, a glTF container loaded into the tile's registry,
+`releaseEntity`) it samples the live program count, and warns once when it has not dropped across
+10 swaps of one kind and rose at more than 60% of them. `addModel`'s PlayCanvas tile now honours
+`?dxrdiag` too. Nothing runs when diag is off.
+
+### Docs
+
+- New [`docs/content-lifecycle-rules.md`](docs/content-lifecycle-rules.md): what a swap must release,
+  PlayCanvas and three.js engine facts, the hook-and-plateau pass test, the SDK's own swap paths
+  measured, and what the SDK does vs what the page owns.
+
 ## 1.47.5 — 2026-11-01
 
 ### Fixed — the camera permission prime could open a phone lens and crash its camera (`./camera`, `./call`)

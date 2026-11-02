@@ -15,6 +15,7 @@ detail, a cover that always comes off). The SDK's defaults do the rest.
 ## Reference
 - docs/authoring-inline-3d.md — every API, both view rigs, comfort maths
 - docs/woven-canvas-rules.md — what the browser does to a woven canvas; CSS, remount and cover rules
+- docs/content-lifecycle-rules.md — swapping content in a window: release programs, textures, containers (handle.releaseEntity)
 - docs/porting-three-js-apps.md — moving an existing three.js app over
 - docs/authoring-motion-and-effects.md, docs/splat-effects.md — motion, reveals, depth envelopes
 - index.d.ts, three.d.ts, viewer.d.ts, model.d.ts, splat.d.ts — the public API with JSDoc

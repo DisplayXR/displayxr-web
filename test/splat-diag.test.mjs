@@ -23,7 +23,7 @@ test('resolveDiag: the option wins over the URL; tokens are switches; off values
   const u = resolveDiag('norig,bogus', '');
   assert.equal(u.on, true);
   assert.deepEqual(u.unknown, ['bogus'], 'unknown tokens are reported, never thrown');
-  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig']);
+  assert.deepEqual([...DIAG_SWITCHES], ['norig', 'frozen', 'nowarm', 'cold', 'nooverlay', 'oldpick', 'nolayerrig', 'oldrig', 'keepshaders']);
 });
 
 test('poseDelta: bit-identical views are HELD; any real move is not; delta in world units and in eye separations', () => {
@@ -192,4 +192,57 @@ test('DiagRecorder.instrumentGl: wraps the context instance, books each call, di
   r.dispose();
   assert.equal(Object.hasOwn(gl, 'compileShader'), false, 'the instance method is gone again');
   assert.equal(gl.compileShader(), 'c');
+});
+
+test('live GL objects: instrumentGl counts programs and shaders; the leak watch warns once on a climb, never on a plateau or a sawtooth', async () => {
+  const { looksLikeLeak, LEAK_SWAPS, glObjectsLine } = await import('../js/inline3d-splat-diag.js');
+  class Ctx {
+    createProgram() {
+      return {};
+    }
+    deleteProgram() {}
+    createShader() {
+      return {};
+    }
+    deleteShader() {}
+  }
+  const gl = new Ctx();
+  const r = new DiagRecorder({ now: () => 0, log: () => {} });
+  r.instrumentGl(gl);
+  r.shaderCacheState = () => 'patched';
+  const p = gl.createProgram();
+  gl.createProgram();
+  gl.createShader();
+  gl.deleteProgram(p);
+  gl.deleteProgram(null); // a null delete is not a delete
+  assert.deepEqual(r.liveGl(), { programs: 1, shaders: 1 });
+  assert.match(glObjectsLine(r), /gl programs 1 live \(\+2 −1\)  shaders 1 live \(\+1 −0\)  cache patched/);
+  assert.equal(r.toJSON().glObjects.shaderCache, 'patched');
+
+  // the rule
+  const climb = Array.from({ length: LEAK_SWAPS + 1 }, (_, i) => 3 + i);
+  assert.equal(looksLikeLeak(climb), true);
+  assert.equal(looksLikeLeak(climb.slice(1)), false, 'not enough swaps yet');
+  assert.equal(looksLikeLeak([3, 3, 5, 6, 9, 9, 9, 9, 9, 9, 9]), false, 'first pass through the transitions, then flat');
+  assert.equal(looksLikeLeak([6, 9, 6, 7, 6, 16, 8, 8, 6, 14, 9]), false, 'a releasing page goes up and down');
+  assert.equal(looksLikeLeak([3, 5, 6, 7, 7, 11, 12, 13, 14, 14, 15]), true, 'measured: a page swapping glTFs without releasing');
+
+  // warned once, per kind
+  const warns = [];
+  const warn = console.warn;
+  console.warn = (m) => warns.push(m);
+  try {
+    for (let i = 0; i < 2 * LEAK_SWAPS; i++) {
+      gl.createProgram();
+      r.contentSwap('container');
+      r.contentSwap('release'); // another kind: its own window
+    }
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /never dropped across the last 10 content swaps/);
+  assert.equal(r.events.filter((e) => e.type === 'swap').length, 4 * LEAK_SWAPS);
+  r.dispose();
+  assert.equal(Object.hasOwn(gl, 'createProgram'), false, 'dispose restores the counted methods too');
 });

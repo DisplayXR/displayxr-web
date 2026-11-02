@@ -1135,6 +1135,18 @@ export interface SplatHandle {
    * it after this resolves. Resolves the number of programs warmed. docs/playcanvas-adapter.md §warmEntity.
    */
   warmEntity(entity: unknown, opts?: { timeoutMs?: number }): Promise<number>;
+  /**
+   * `engine: 'playcanvas'` only (a no-op returning `{ programs: 0, container: null }` on Spark).
+   * Destroy `entity` — content you added under `handle.engine.root` — and release what it held on
+   * the GPU: the shader programs its materials linked (PlayCanvas never frees a program by itself:
+   * its ProgramLibrary caches every variant for the device's life, and `Material.destroy()` does
+   * not destroy them), and, with `asset`, the glTF container it was instantiated from (unloaded
+   * and taken out of the registry unless something else in the tile still draws from it). A
+   * program another material still uses is kept. Call it for whatever a content swap replaces.
+   * Returns the number of programs destroyed and what happened to the container.
+   * docs/content-lifecycle-rules.md.
+   */
+  releaseEntity(entity: unknown, opts?: { asset?: unknown }): { programs: number; container: 'unloaded' | 'in-use' | null };
   setStereo(opts: SplatStereoOptions | null): SplatHandle;
   /**
    * The `depth` option's comfort factor in force, in (0, 1]: what the display rig's ipdFactor and

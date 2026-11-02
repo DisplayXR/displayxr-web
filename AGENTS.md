@@ -15,6 +15,8 @@ Then, by task:
 - Writing an inline-3D page: [`docs/authoring-inline-3d.md`](docs/authoring-inline-3d.md).
 - Motion and effects on woven tiles: [`docs/authoring-motion-and-effects.md`](docs/authoring-motion-and-effects.md).
 - Porting a three.js app: [`docs/porting-three-js-apps.md`](docs/porting-three-js-apps.md).
+- Swapping content in a window (a carousel, a catalogue), or the browser's GPU memory grows while
+  a page is open: [`docs/content-lifecycle-rules.md`](docs/content-lifecycle-rules.md).
 - Splats on the PlayCanvas backend (transitions, reveals, diagnostics with `?dxrdiag`):
   [`docs/playcanvas-adapter.md`](docs/playcanvas-adapter.md), [`docs/splat-effects.md`](docs/splat-effects.md).
 - API: the `.d.ts` files at the repo root; changes per release: [`CHANGELOG.md`](CHANGELOG.md).
