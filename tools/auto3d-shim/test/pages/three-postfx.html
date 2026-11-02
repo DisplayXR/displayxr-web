@@ -8,7 +8,19 @@
        4. a flat HUD pass.
      Same subject as three-keyframes.html (everything symmetric about (0, 1, 0), the camera 8 units
      in front), so the expected convergence is 8. Deterministic: fixed 1/60 s steps; after FREEZE
-     frames it stops drawing (render on demand from then on: the shim's replay path). -->
+     frames it stops drawing (render on demand from then on: the shim's replay path).
+     ?view=  frames the page camera with camera.setViewOffset, as visual-learning.app/sandworm does:
+             identity (0, 0, W, H: the sandworm page at rest), shift (a lens shift, 12 % of the height
+             down), crop (a 2x crop zoom, off centre), all set once and kept; or jitter (set for the
+             scene pass only and cleared after it, sub-pixel offsets: SSAA / TAA). A persistent view
+             adds an unlit magenta marker at (0, 1.5, 3) and exposes its projection, window.__expectNdcY.
+     ?chain=0  the scene straight to the screen (no chain), then the HUD.
+     ?mirror=1 the composite flips the picture left-right (texture2D(…, vec2(1.0 - vUv.x, vUv.y)), as
+             visual-learning.app/sandworm's chain does), and a pillar stands off centre at x -3.2.
+     ?overlay=1 after the scene, two more scenes of one child each (points behind the camera: nothing
+             in view) are drawn with the page camera into canvas-shaped targets of their own, and
+             composited. Three seeds per frame, the last one blank: sandworm's frame on the panel.
+     ?rtScale=  the scene target's size as a fraction of the canvas (0.25: too small to be a seed). -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three post-processing (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
 <script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
@@ -16,6 +28,8 @@
 <script type="module">
 import * as THREE from 'three';
 const FREEZE = 60;
+const q = new URLSearchParams(location.search);
+const VIEW = q.get('view'), DIRECT = q.get('chain') === '0', RT_SCALE = +(q.get('rtScale') || 1), MIRROR = q.get('mirror') === '1', OVERLAY = q.get('overlay') === '1';
 window.__expectedConvergence = 8;
 const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -48,10 +62,45 @@ const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
 mk(box, 0x2fb4ff, 1.8, 0, 0); mk(box, 0x2fb4ff, -1.8, 0, 0);
 const ball = new THREE.SphereGeometry(0.35, 32, 16);
 mk(ball, 0x9dff4a, 0, 0, 1.8); mk(ball, 0x9dff4a, 0, 0, -1.8);
+if (MIRROR) { // static, off centre: the picture is clearly not its own mirror image
+  const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.8, 4, 0.8), new THREE.MeshStandardMaterial({ color: 0xf2f2f2 }));
+  pillar.position.set(-3.2, 2, 0); pillar.castShadow = true;
+  scene.add(pillar);
+}
+
+// ---- the page camera's view window (?view=)
+const FRAMED = VIEW === 'identity' || VIEW === 'shift' || VIEW === 'crop';
+// In front of everything on the turntable (its nearest point is z 2.1), above the axis so a crop's
+// scale shows too. Magenta: no other colour in the scene, linear (the chain) or sRGB (?chain=0) output.
+const marker = new THREE.Vector3(0, 1.5, 3);
+if (FRAMED) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.2, 32, 16), new THREE.MeshBasicMaterial({ color: 0xff00ff }));
+  m.position.copy(marker);
+  scene.add(m);
+}
+function frameView() {
+  const w = innerWidth, h = innerHeight;
+  if (VIEW === 'identity') camera.setViewOffset(w, h, 0, 0, w, h);
+  else if (VIEW === 'shift') camera.setViewOffset(w, h, 0, 0.12 * h, w, h);
+  else if (VIEW === 'crop') camera.setViewOffset(w, h, 0.25 * w, 0.1 * h, 0.5 * w, 0.5 * h);
+  if (FRAMED) window.__expectNdcY = marker.clone().project(camera).y;
+}
+frameView();
+const JITTER = [[0.25, -0.25], [-0.25, 0.25], [0.125, 0.375], [-0.375, -0.125]];
 
 // ---- the post chain
 const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-const rtScene = new THREE.WebGLRenderTarget(size.x, size.y, { depthTexture: new THREE.DepthTexture(size.x, size.y) });
+const rtW = Math.round(size.x * RT_SCALE), rtH = Math.round(size.y * RT_SCALE);
+const rtScene = new THREE.WebGLRenderTarget(rtW, rtH, { depthTexture: new THREE.DepthTexture(rtW, rtH) });
+// ?overlay=1: two overlay scenes, one child each, nothing in view (points 5 units behind the camera)
+const overlays = OVERLAY ? [0, 1].map(() => {
+  const s = new THREE.Scene();
+  const pts = new Float32Array(300 * 3);
+  for (let i = 0; i < pts.length; i += 3) { pts[i] = (i % 7) - 3; pts[i + 1] = 1 + (i % 5) * 0.2; pts[i + 2] = 13; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  s.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0xffffff, size: 3, sizeAttenuation: false })));
+  return { scene: s, rt: new THREE.WebGLRenderTarget(rtW, rtH) };
+}) : [];
 const rtA = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1);
 const rtB = new THREE.WebGLRenderTarget(size.x >> 1, size.y >> 1);
 const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -64,10 +113,14 @@ const blurMat = new THREE.ShaderMaterial({ // ONE material, both blur passes
   depthTest: false, depthWrite: false,
 });
 const compMat = new THREE.ShaderMaterial({
-  uniforms: { base: { value: rtScene.texture }, glow: { value: rtB.texture }, depthTex: { value: rtScene.depthTexture } },
+  uniforms: { base: { value: rtScene.texture }, glow: { value: rtB.texture }, depthTex: { value: rtScene.depthTexture }, mirror: { value: MIRROR ? 1 : 0 },
+    ov0: { value: OVERLAY ? overlays[0].rt.texture : null }, ov1: { value: OVERLAY ? overlays[1].rt.texture : null }, ovK: { value: OVERLAY ? 1 : 0 } },
   vertexShader: vs,
-  fragmentShader: `varying vec2 vUv; uniform sampler2D base; uniform sampler2D glow; uniform sampler2D depthTex;
-    void main(){ float d = texture2D(depthTex, vUv).r; vec4 c = texture2D(base, vUv) + 0.35 * texture2D(glow, vUv);
+  fragmentShader: `varying vec2 vUv; uniform sampler2D base; uniform sampler2D glow; uniform sampler2D depthTex; uniform float mirror;
+    uniform sampler2D ov0; uniform sampler2D ov1; uniform float ovK;
+    void main(){ vec2 uv = mix(vUv, vec2(1.0 - vUv.x, vUv.y), mirror);
+      float d = texture2D(depthTex, uv).r; vec4 c = texture2D(base, uv) + 0.35 * texture2D(glow, uv);
+      if (ovK > 0.5) c += 0.5 * (texture2D(ov0, uv) + texture2D(ov1, uv));
       gl_FragColor = vec4(c.rgb * (0.9 + 0.1 * d), 1.0); }`,
   depthTest: false, depthWrite: false,
 });
@@ -85,6 +138,7 @@ hudScene.add(badge);
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  frameView();
   renderer.setSize(innerWidth, innerHeight);
 });
 let n = 0, t = 0;
@@ -95,8 +149,17 @@ function frame() {
   turntable.rotation.y = t * Math.PI / 2;
   const c = renderer.domElement;
   if (c.width !== Math.floor(innerWidth * devicePixelRatio)) renderer.setSize(innerWidth, innerHeight, false);
-  // 1. scene -> rtScene
+  if (DIRECT) { // no chain: the scene straight to the screen, then the HUD
+    renderer.setRenderTarget(null); renderer.clear(); renderer.render(scene, camera);
+    renderer.render(hudScene, hudCam);
+    window.__pageFrames = n;
+    return;
+  }
+  // 1. scene -> rtScene (?view=jitter: an SSAA-style sub-pixel offset for this draw only)
+  if (VIEW === 'jitter') { const j = JITTER[n % JITTER.length]; camera.setViewOffset(size.x, size.y, j[0], j[1], size.x, size.y); }
   renderer.setRenderTarget(rtScene); renderer.clear(); renderer.render(scene, camera);
+  if (VIEW === 'jitter') camera.clearViewOffset();
+  for (const o of overlays) { renderer.setRenderTarget(o.rt); renderer.clear(); renderer.render(o.scene, camera); }
   // 2. blur, one material, uniforms rewritten between the passes
   quad.material = blurMat;
   blurMat.uniforms.tex.value = rtScene.texture; blurMat.uniforms.dir.value.set(1 / rtA.width, 0);

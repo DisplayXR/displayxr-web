@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.6.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.6.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -408,7 +408,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.6.2'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.6.3'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -444,6 +444,7 @@ function dxrCore(cfg, cap, S) {
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
+    chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
     pcCanvasTrap: true, // TEST ONLY (A/B): false lets a PlayCanvas page's own canvas.width / height writes through while converted
   };
@@ -2200,6 +2201,7 @@ function dxrThree(core) {
   const ad = {
     label: (st) => `three r${revision || '?'}` + (st && st.common ? ` (WebGPURenderer, ${backendOf(st) || 'not initialised'})` : ''),
     unqualified(st) {
+      if (st.viewJitter) return st.flatReason;
       if (st.common) {
         if (!ready(st)) return 'WebGPURenderer not initialised yet';
         if (st.gpuPostfx) return st.flatReason;
@@ -2337,6 +2339,9 @@ function dxrThree(core) {
         coordinateSystem: ready(st) ? st.r.coordinateSystem : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].projectionMatrix.elements) : null, // what three draws eye 0 with
         eyeCoord0: st.eyes ? st.eyes[0].coordinateSystem : null,
+      } : st.postfx ? {
+        chainMirror: st.mirrorX === undefined ? null : st.mirrorX, mirrorCorr: st.mirrorCorr, // [as drawn, mirrored] (probeMirror)
+        mirrorWhy: st.mirrorWhy, mirrorAsks: st.mirrorAsks,
       } : undefined,
     }),
   };
@@ -2357,6 +2362,8 @@ function dxrThree(core) {
       frame: { drew: false, ops: [] }, lastOps: null,
       monoOps: null, monoCur: null, monoOpen: false, idleOps: null, // the page's last MONO frame (draws before / between conversions)
       postfx: false, seedTask: null, twins: new Map(), texTwin: new Map(), chainStereo: false,
+      viewOk: false, viewJitter: false, seedMiss: null, missLogged: null,
+      mirrorX: undefined, mirrorCorr: null, mirrorNext: 0, mirrorGiveUp: null, mirrorWhy: null, mirrorAsks: 0,
     });
     states.set(r, st);
     wrap(st);
@@ -2470,8 +2477,13 @@ function dxrThree(core) {
       const toScreen = target === null;
       const xrLive = !!(r.xr && r.xr.enabled && r.xr.isPresenting);
       if (!st.active) {
+        const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
         const out = st.call('render', scene, camera);
-        if (!toScreen && !xrLive && isSeed(st, target, camera)) markSeed(st, scene, camera);
+        if (!toScreen && !xrLive) {
+          const why = seedWhy(st, target, camera);
+          if (why === null) markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+          else if (why) noteSeedMiss(st, why);
+        }
         if (toScreen && !xrLive) {
           recordMono(st, ['render', scene, camera]);
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
@@ -2484,15 +2496,22 @@ function dxrThree(core) {
           } else if (st.common && ((st.nestPersp && !st.sawPersp) || (st.seedTask && !st.seedTask.direct))) {
             gpuPostfx(st); // WebGPURenderer + a post-processing chain: flat with the reason, not split
           } else if (st.seedTask && !st.seedTask.direct) {
-            const sd = st.seedTask;
+            const sd = st.seedTask, main = sd.main; // the seed that drew the most: the scene (markSeed)
             st.postfx = true; st.sawPersp = true;
-            st.lastMono = { scene: sd.scene, camera: sd.camera };
-            hookLookAt(sd.camera);
-            if (st.armed) flip(st, sd.scene, sd.camera);
-            else { st.qualifyCam = sd.camera; core.considerActivation(st); }
-          } else if (!st.sawPersp && !st.lastWhy) {
+            st.lastMono = { scene: main.scene, camera: main.camera };
+            hookLookAt(main.camera);
+            st.qualifyCam = main.camera;
+            if (st.mirrorX === undefined) probeMirror(st, sd, scene, camera);
+            if (sd.view && !st.viewOk) sd.toScreen = true;
+            else if (st.mirrorX === undefined) { /* qualified on a later frame, or by probeMirror's give-up */ }
+            else if (st.armed) flip(st, main.scene, main.camera);
+            else core.considerActivation(st);
+          } else if (!st.sawPersp && (!st.lastWhy || (st.seedMiss && st.seedMiss !== st.missLogged))) {
             st.lastWhy = 'the screen camera is not a PerspectiveCamera';
-            info('not converting', desc(st.canvas), 'yet:', st.lastWhy, '(a post-processing chain, or an ortho-only scene)');
+            st.missLogged = st.seedMiss;
+            info('not converting', desc(st.canvas), 'yet:', st.lastWhy, st.seedMiss
+              ? `(the scene went into a render target first, but not as a post chain's input: ${st.seedMiss})`
+              : '(a post-processing chain, or an ortho-only scene)');
           }
         }
         return out;
@@ -2500,7 +2519,14 @@ function dxrThree(core) {
       if (xrLive) { core.stand(st, 'the renderer is presenting WebXR'); return st.call('render', scene, camera); }
       if (!toScreen) {
         if (st.postfx) {
-          if (isSeed(st, target, camera)) { st.mainCam = camera; st.lastScene = scene; st.chainStereo = st.haveViews; return renderIntoChain(st, scene, camera, target, true); }
+          if (isSeed(st, target, camera)) {
+            st.mainCam = camera; st.chainStereo = st.haveViews;
+            const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+            const out = renderIntoChain(st, scene, camera, target, true);
+            markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+            st.lastScene = st.seedTask.main.scene;
+            return out;
+          }
           if (st.twins.has(target) || taintedSwaps(st, scene)) return renderIntoChain(st, scene, camera, target, false);
         }
         return st.call('render', scene, camera); // shadow / picking / other targets: untouched, mono
@@ -2574,7 +2600,6 @@ function dxrThree(core) {
 
   function isMainPerspective(st, camera) {
     if (!camera.isPerspectiveCamera || camera.isArrayCamera) return false;
-    if (camera.view && camera.view.enabled) return false; // setViewOffset (tiles, TAA jitter): not ours to split
     const [x, y, w, h] = st.L.vp;
     return x === 0 && y === 0 && Math.abs(w - st.L.w) < 1 && Math.abs(h - st.L.h) < 1;
   }
@@ -2622,9 +2647,11 @@ function dxrThree(core) {
   function toReversedZ(e) {
     for (const c of [0, 4, 8, 12]) e[c + 2] = (e[c + 3] - e[c + 2]) / 2;
   }
-  function eyeProjection(st, e, i, rev) {
+  function eyeProjection(st, e, i, rev, view, mirror) {
     const m = e.projectionMatrix.elements;
     e.projectionMatrix.fromArray(st.V[i].proj);
+    if (mirror) conjX(m);
+    if (view) applyView(m, view);
     if (st.common) {
       e.coordinateSystem = st.r.coordinateSystem;
       if (st.r.reversedDepthBuffer === true) { toReversedZ(m); e._reversedDepth = true; }
@@ -2706,7 +2733,7 @@ function dxrThree(core) {
         if (i === 0) st.eyeAt = e.matrixWorld.elements.slice(12, 15); // diagnostics (dev state(): eyeAt)
         e.matrix.copy(e.matrixWorld);
         invertFrom(e.matrixWorldInverse, e.matrixWorld);
-        eyeProjection(st, e, i, rev);                             // the runtime's off-axis frustum, x / y untouched
+        eyeProjection(st, e, i, rev, viewOf(camera));             // the runtime's off-axis frustum + the page's view window
         e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
         if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
         setEyeViewport(st, i);
@@ -2779,18 +2806,160 @@ function dxrThree(core) {
   }
 
   const TEX_PROPS = ['map', 'alphaMap', 'emissiveMap', 'envMap', 'lightMap', 'aoMap'];
-  function isSeed(st, rt, camera) {
-    if (!rt || rt.isWebGLCubeRenderTarget || rt.isWebGL3DRenderTarget || rt.isWebGLArrayRenderTarget) return false;
-    if (!camera || !camera.isPerspectiveCamera || camera.isArrayCamera || (camera.view && camera.view.enabled)) return false;
-    if (st.active && st.mainCam && camera !== st.mainCam) return false;
+  function seedWhy(st, rt, camera) {
+    if (!rt || rt.isWebGLCubeRenderTarget || rt.isWebGL3DRenderTarget || rt.isWebGLArrayRenderTarget) return '';
+    if (!camera || !camera.isPerspectiveCamera || camera.isArrayCamera) return '';
+    if (st.active && st.mainCam && camera !== st.mainCam) return 'not the page camera';
     const L = st.L;
-    if (!(L.w > 0 && L.h > 0 && rt.width > 0 && rt.height > 0)) return false;
+    if (!(L.w > 0 && L.h > 0 && rt.width > 0 && rt.height > 0)) return 'the renderer or the target has no size yet';
     const a = L.w / L.h, near = (x) => Math.abs(x - a) / a < 0.1;
-    return near(rt.width / rt.height) && near(camera.aspect || a) && rt.width >= 0.5 * L.w * L.pr && rt.height >= 0.5 * L.h * L.pr;
+    const tgt = `target ${Math.round(rt.width)}x${Math.round(rt.height)}`;
+    if (!near(rt.width / rt.height)) return `${tgt} is not shaped like the ${L.w}x${L.h} canvas`;
+    if (!near(camera.aspect || a)) return `camera aspect ${(+camera.aspect).toFixed(3)} is not the canvas's ${a.toFixed(3)}`;
+    if (!(rt.width >= 0.5 * L.w * L.pr && rt.height >= 0.5 * L.h * L.pr)) return `${tgt} is under half the canvas's ${Math.round(L.w * L.pr)}x${Math.round(L.h * L.pr)} px`;
+    return null;
   }
-  function markSeed(st, scene, camera) {
-    if (!st.seedTask) queueMicrotask(() => { st.seedTask = null; }); // a page draws its frame in one task
-    st.seedTask = { scene, camera };
+  const isSeed = (st, rt, camera) => seedWhy(st, rt, camera) === null;
+  function markSeed(st, scene, camera, rt, drawn = 0) {
+    const prev = st.seedTask, view = viewSnap(camera);
+    const mixed = !!prev && (prev.mixed || (prev.camera === camera && !sameView(prev.view, view)));
+    const main = !prev || drawn > prev.main.drawn ? { scene, camera, rt, drawn } : prev.main;
+    st.seedTask = { scene, camera, rt, view, mixed, n: prev ? prev.n + 1 : 1, main };
+    if (prev) return;
+    queueMicrotask(() => { // a page draws its frame in one task
+      const sd = st.seedTask;
+      st.seedTask = null;
+      if (!sd || !sd.view) return;
+      if (sd.mixed || !sameView(sd.view, viewSnap(sd.camera))) { viewJitter(st); return; }
+      if (st.viewOk) return;
+      st.viewOk = true;
+      if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
+    });
+  }
+  const drawnSoFar = (st) => { const ri = st.r.info && st.r.info.render; return ri ? (ri.triangles || 0) + (ri.points || 0) + (ri.lines || 0) : 0; };
+  function noteSeedMiss(st, why) {
+    if (st.seedMiss === null) queueMicrotask(() => { st.seedMiss = null; });
+    st.seedMiss = why;
+  }
+
+  const viewOf = (cam) => (cam && cam.view && cam.view.enabled ? cam.view : null);
+  const viewSnap = (cam) => { const v = viewOf(cam); return v ? [v.fullWidth, v.fullHeight, v.offsetX, v.offsetY, v.width, v.height] : null; };
+  const sameView = (p, q) => (p === null || q === null ? p === q : p.every((x, i) => x === q[i]));
+  function applyView(m, v) {
+    const a = v.fullWidth / v.width, c = v.fullHeight / v.height;
+    if (!(isFinite(a) && isFinite(c))) return;
+    const b = a * (1 - (2 * v.offsetX) / v.fullWidth) - 1;
+    const d = 1 - c * (1 - (2 * v.offsetY) / v.fullHeight);
+    for (let k = 0; k < 16; k += 4) {
+      const w = m[k + 3];
+      m[k] = a * m[k] + b * w;
+      m[k + 1] = c * m[k + 1] + d * w;
+    }
+  }
+  const MIRROR_ROWS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], MIRROR_BINS = 64, MIRROR_PW = 192, MIRROR_HP = 6;
+  const conjX = (m) => { for (const k of [1, 2, 3, 4, 8, 12]) m[k] = -m[k]; return m; };
+  function probeMirror(st, sd, pass, passCam) {
+    if (core.T.chainMirror === false) { st.mirrorX = false; st.mirrorWhy = 'probe off (chainMirror: false)'; return; }
+    const t = performance.now();
+    if (t < st.mirrorNext) return;
+    st.mirrorNext = t + 250;
+    st.mirrorAsks++;
+    const r = st.r, gl = typeof r.getContext === 'function' ? r.getContext() : null;
+    const main = sd.main; // the frame's main seed: the scene, not an overlay seeded after it (markSeed)
+    const RT = main.rt && main.rt.isWebGLRenderTarget ? main.rt.constructor : null;
+    if (!gl || !RT || typeof r.readRenderTargetPixels !== 'function') {
+      st.mirrorX = false; st.mirrorWhy = `cannot probe: ${!gl ? 'no WebGL context' : !RT ? 'the seed is not a WebGLRenderTarget' : 'no readRenderTargetPixels'}`;
+      return;
+    }
+    if (!st.mirrorGiveUp) {
+      st.mirrorGiveUp = setTimeout(() => {
+        if (st.mirrorX !== undefined) return;
+        st.mirrorX = false; st.mirrorWhy = `undecided after 3 s (${st.mirrorAsks} asks; last: ${st.mirrorWhy}): taken as not mirrored`;
+        if (!st.active && !st.pending && !st.armed && st.qualifyCam) core.considerActivation(st);
+      }, 3000);
+    }
+    try {
+      const ph = Math.max(8, Math.round((MIRROR_PW * st.L.h) / (st.L.w || 1)));
+      const out = drawRows(st, RT, MIRROR_PW, ph, pass, passCam);   // the chain's output: its screen pass, drawn again
+      const scn = drawRows(st, RT, MIRROR_PW, ph, main.scene, main.camera); // the scene, as the page camera sees it
+      const o = highPass(out), s = highPass(scn), f = [];
+      for (let k = 0; k < MIRROR_ROWS.length; k++) for (let b = MIRROR_BINS - 1; b >= 0; b--) f.push(s[k * MIRROR_BINS + b]);
+      const so = spread(o), ss = spread(s);
+      if (so < 0.5 || ss < 0.5) { // ask again later
+        st.mirrorWhy = `blank frame (structure: screen ${so.toFixed(2)}, scene ${ss.toFixed(2)}; screen pass ${out.stats}; scene ${scn.stats}, ` +
+          `${sd.n} seed(s) this frame, the main one (${main.drawn} primitives) a ${main.scene.type} of ${main.scene.children ? main.scene.children.length : 0} children, camera layers ${main.camera.layers ? main.camera.layers.mask : '?'})`;
+        return;
+      }
+      const asDrawn = corr(s, o), mirrored = corr(f, o);
+      st.mirrorCorr = [+asDrawn.toFixed(3), +mirrored.toFixed(3)];
+      if (Math.max(asDrawn, mirrored) <= 0.4 || Math.abs(mirrored - asDrawn) < 0.25) { st.mirrorWhy = 'ambiguous'; return; } // ask again later
+      st.mirrorX = mirrored > asDrawn;
+      st.mirrorWhy = 'decided';
+      if (st.mirrorX) info(`the post chain on ${desc(st.canvas)} mirrors its picture left-right (r ${mirrored.toFixed(2)} mirrored vs ${asDrawn.toFixed(2)} as drawn): each eye is drawn mirrored to match`);
+    } catch (e) {
+      warnOnce('mirror', 'could not compare the post chain with its scene: taken as not mirrored', e);
+      st.mirrorX = false; st.mirrorWhy = `error: ${e && e.message}`;
+    }
+  }
+  function highPass(v) {
+    const out = [];
+    for (let k = 0; k < v.length; k += MIRROR_BINS) {
+      for (let b = 0; b < MIRROR_BINS; b++) {
+        const lo = Math.max(0, b - MIRROR_HP), hi = Math.min(MIRROR_BINS - 1, b + MIRROR_HP);
+        let s = 0;
+        for (let j = lo; j <= hi; j++) s += v[k + j];
+        out.push(v[k + b] - s / (hi - lo + 1));
+      }
+    }
+    return out;
+  }
+  function drawRows(st, RT, pw, ph, scene, camera) {
+    const r = st.r, rt = new RT(pw, ph), px = new Uint8Array(pw * ph * 4), out = [];
+    const prev = st.call('getRenderTarget');
+    const sm = r.shadowMap, smAuto = sm ? sm.autoUpdate : undefined;
+    try {
+      if (sm) sm.autoUpdate = false; // the page's own draw this frame rendered them
+      st.call('setRenderTarget', rt);
+      st.call('clear', true, true, true);
+      st.call('render', scene, camera);
+      const ri = r.info && r.info.render; // reset by render() itself (info.autoReset): this draw alone
+      r.readRenderTargetPixels(rt, 0, 0, pw, ph, px);
+      let lo = 255, hi = 0, sum = 0;
+      for (let i = 0; i < px.length; i += 4) { const l = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; lo = Math.min(lo, l); hi = Math.max(hi, l); sum += l; }
+      out.stats = `${ri ? ri.calls : '?'} calls, ${ri ? ri.triangles : '?'} triangles, luminance ${lo.toFixed(0)}..${hi.toFixed(0)} (mean ${(sum / (px.length / 4)).toFixed(0)})`;
+    } finally {
+      if (sm) sm.autoUpdate = smAuto;
+      st.call('setRenderTarget', prev);
+      rt.dispose();
+    }
+    for (const f of MIRROR_ROWS) binRow(px, Math.min(ph - 1, Math.floor(f * ph)) * pw * 4, pw, out);
+    return out;
+  }
+  function binRow(px, at, w, out) {
+    for (let b = 0; b < MIRROR_BINS; b++) {
+      const x0 = Math.floor((b * w) / MIRROR_BINS), x1 = Math.max(x0 + 1, Math.floor(((b + 1) * w) / MIRROR_BINS));
+      let s = 0;
+      for (let x = x0; x < x1; x++) { const i = at + x * 4; s += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; }
+      out.push(s / (x1 - x0));
+    }
+  }
+  const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
+  const spread = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) * (x - m)))); };
+  function corr(a, b) {
+    const ma = mean(a), mb = mean(b);
+    let ab = 0, aa = 0, bb = 0;
+    for (let i = 0; i < a.length; i++) { const x = a[i] - ma, y = b[i] - mb; ab += x * y; aa += x * x; bb += y * y; }
+    return aa > 0 && bb > 0 ? ab / Math.sqrt(aa * bb) : 0;
+  }
+
+  const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';
+  function viewJitter(st) {
+    if (st.viewJitter) return;
+    st.viewJitter = true; st.flatReason = WHY_JITTER;
+    info('three.js canvas', desc(st.canvas), 'stays 2D:', WHY_JITTER);
+    if (st.active) core.stand(st, WHY_JITTER, { staged: true });
+    else if (st.pending || st.armed) core.stand(st, WHY_JITTER);
+    core.notify();
   }
   function passMaterials(obj) {
     const mats = [];
@@ -2851,13 +3020,23 @@ function dxrThree(core) {
     tw.scissorTest = rt.scissorTest;
     return tw;
   }
+  const mirroredPose = new Float32Array(16);
+  const mirrorOf = (st) => (core.T.chainMirror === 'force' ? true : !!st.mirrorX);
   function aimEye(st, camera, eyes, i, rev) {
-    const e = eyes[i];
-    st.m4.fromArray(core.eyePose(st, i, camera.matrixWorld.elements));
+    const e = eyes[i], mirror = mirrorOf(st);
+    let pose = core.eyePose(st, i, camera.matrixWorld.elements);
+    if (mirror) {
+      mirroredPose.set(pose);
+      conjX(mirroredPose);
+      const t = st.piv && st.piv.t;
+      if (t) mirroredPose[12] += 2 * t[0];
+      pose = mirroredPose;
+    }
+    st.m4.fromArray(pose);
     e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4);
     e.matrix.copy(e.matrixWorld);
     invertFrom(e.matrixWorldInverse, e.matrixWorld);
-    eyeProjection(st, e, i, rev);
+    eyeProjection(st, e, i, rev, viewOf(camera), mirror);
     e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
     if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
     return e;
