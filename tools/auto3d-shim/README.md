@@ -262,7 +262,8 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | extra screen passes after the scene (HUD, overlay) | **3D** scene, flat overlay |
 | several viewports in one canvas | flat per viewport |
 | post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
-| a chain whose scene pass uses `setViewOffset` (TAA / SSAA jitter) | **2D** (the seed is not recognised) |
+| a camera the page frames with `setViewOffset` and keeps (a lens shift, a crop zoom: `visual-learning.app/sandworm`), through a chain or straight to the screen | **3D** since v0.6.3: the view window is carried into each eye's projection (see [view windows](#view-windows-setviewoffset-v063)). Harness cases `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`. Before: a chain stayed 2D (`not converting … the screen camera is not a PerspectiveCamera`), and a direct draw converted but never drew a stereo frame |
+| a chain whose scene pass sets `setViewOffset` for that draw only (TAA / SSAA jitter) | **2D**, reported `flat` with `the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split`. Harness case `e-postfx-jitter` |
 | `WebGPURenderer` r178–r186, WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
 | `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
 | `WebGPURenderer` of another revision (r177 and older never announce it; r187+ are unverified), or an object without the common `Renderer` API | **2D**, reported `flat` with the reason (`WebGPURenderer r190 — the driver is verified on r178–r186 only`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
@@ -313,7 +314,7 @@ The target (`camera.lookAt`, `OrbitControls`) still wins when there is one.
 adapter duplicates every chain draw at the moment the page makes it:
 
 - **Seed.** A draw with the page camera into a target shaped like the canvas (same aspect, at least
-  half its size, not a cube / 3D / array target, no `setViewOffset`) starts the chain. The left eye
+  half its size, not a cube / 3D / array target) starts the chain. The left eye
   draws into the page's target, the right eye into a **twin** (`rt.clone()`, kept the target's size,
   viewport and scissor). The aspect test is what keeps a PMREM / cube-face draw (square camera,
   atlas-shaped target) and a picking draw (tiny target) out of it.
@@ -331,7 +332,38 @@ chain target clear its twin. Idle frames replay the final screen passes, samplin
 chain. Twins are disposed when the canvas goes back to 2D. Cost: every chain pass runs twice, at
 the page's own target sizes. A page qualifies for this path when a frame draws the scene into such a
 target and then a non-perspective pass to the screen, with no perspective draw to the screen in the
-same frame.
+same frame. When a frame draws its scene into a target that is not taken as a seed, the 2D line says
+why (v0.6.3): `not converting canvas yet: the screen camera is not a PerspectiveCamera (the scene went
+into a render target first, but not as a post chain's input: target 320x180 is under half the
+canvas's 1280x720 px)`. Harness case `e-postfx-miss`.
+
+#### View windows (`setViewOffset`, v0.6.3)
+
+`visual-learning.app/sandworm` (#221) frames its camera with `setViewOffset`. At rest it calls
+`setViewOffset(w, h, 0, h/2 − centre, w, h)`, a lens shift that centres the subject between the HUD
+panels. `__STAGE.setCrop(z, …)` makes it a crop zoom. Its EffectComposer chain stayed 2D because a
+seed with a view offset was refused, a rule meant for TAA jitter.
+
+Now the view is the page's framing, carried into each eye. three draws a view as a sub-window of the
+camera's image plane. In NDC that window is a 2D scale + offset, so in clip space (`x' = a·x + b·w`,
+`y' = c·y + d·w`, x / y rows only) it applies to the runtime's off-axis eye projections as is. This
+equals three r180's `updateProjectionMatrix` to 4e-16, on symmetric and off-axis frusta. Both eyes
+get the same window. The convergence plane keeps zero disparity, and a crop zoom magnifies the
+disparity with the picture, as zooming into a stereo photo does: `e-postfx-crop` asserts the pair
+shift doubles. The direct path (`isMainPerspective`) and the chain path (`isSeed`) both take it.
+
+TAA and SSAA also use `setViewOffset`. They set a sub-pixel jitter for the scene draw only and clear it
+afterwards. Those chains stay 2D: TAA stops drawing the scene once its accumulation completes, so the
+eyes would freeze on the held frame while the head moves. The two cases are told apart when the frame's
+task ends. A view still set then is framing. A view cleared by then, or several views of one camera in
+one frame, is jitter, and the canvas stays `flat` with the reason (sticky for that renderer; a
+converted canvas that starts jittering stands down). A chain whose seed has a view offset qualifies
+only after one frame has ended with the view still set, which costs one frame. The rule also keeps a
+page that sets and clears a framing view around every frame 2D; that was the behaviour before v0.6.3
+anyway.
+
+The convergence estimator and `rigFov` still use the camera's full, unwindowed frustum. For a
+lens shift that changes nothing. For a crop zoom, the estimator also counts bounds outside the crop.
 
 ### PlayCanvas (engine 2.x, WebGL2 and WebGPU)
 
@@ -774,6 +806,12 @@ running), so the rig is always sampled at the configured depth.
 | `spark-room-percentile` | the same page, cfg `openSceneMode: 'percentile'` | convergence 8.6 ± 5 % from the `estimator` (the 0.5.3 room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
 | `spark-room-percentile-p50` | the same, plus cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the weighted median: the key is live) |
 | `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | `fixed` (2, m2v 1) before; `estimator` after, converging on the box (3 ± 5 %), m2v = d again; ONE `convergence settled: ~3 units (estimator)` console line |
+| `e-postfx-view0` | `three-postfx.html?view=identity`: the chain, its camera kept at `setViewOffset(w, h, 0, 0, w, h)` (the sandworm page at rest), an unlit magenta marker at (0, 1.5, 3) | as `a`, plus the marker's height in the left eye = the page's own projection of it (`window.__expectNdcY`, ± 0.02 NDC). The fake skews x only, so without the view both halves are equally wrong and only this check sees it. Fails before v0.6.3: never converts, with the sandworm page's 2D line |
+| `e-postfx-shift` | `?view=shift`: a kept lens shift, 12 % of the height down | as `e-postfx-view0` (marker at 0.515; 0.275 without the view) |
+| `e-postfx-crop` | `?view=crop`: a kept 2× crop, off centre | as `e-postfx-view0` (marker at −0.051; 0.275 without the view), the pair shift doubled: 128 px (`pairShift` 0.2) |
+| `e-direct-shift` | `?view=shift&chain=0`: the scene straight to the screen | as `e-postfx-shift`. Before v0.6.3 it converted but drew flat, and the cover never dropped |
+| `e-postfx-jitter` | `?view=jitter`: a sub-pixel `setViewOffset` around the scene pass only, cleared after it (SSAA / TAA) | no session requested, `flat` with the jitter reason in `state()` and on the HUD, the `stays 2D` console line |
+| `e-postfx-miss` | `?rtScale=0.25`: the scene into a quarter-size target | 2D, and the 2D line names the near miss: `target 320x180 is under half the canvas's 1280x720 px` |
 | `a-legacy` | the same page with the **pre-split** `content.js` (commit `84b14f7`) | the same, plus **parity with `a`**: byte-identical frame (MAE 0.000), identical rig and convergence |
 | `a-off` | the same page, site switched off | no session requested, nothing converted |
 | `b` | `pages/pc-mesh.html`: ESM PlayCanvas, **no globals**, `RESOLUTION_AUTO`, render-on-demand after 60 frames | found through the constructor trap, SBS, 64 px shift, counters, rig, convergence 8 ± 5 % |
@@ -1091,6 +1129,26 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.6.3 (three.js view windows, #221), Windows, ANGLE D3D11 + WebGPU:** 115 cases. That is
+109 plus 6 new: `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`,
+`e-postfx-jitter` and `e-postfx-miss`.
+- **Full pass.** 113 run, 2 skipped (`c` / `d`: no `ports_25.sog`), 112 green.
+- **The one red is not from this change.** `a-legacy` fails its rig-parity check (convergence 8.0747
+  vs 8.0413; the frame is still byte-identical). It failed identically on `main` before this change,
+  so it broke after the v0.6.2 run.
+- **Controls.**
+  - Without `applyView`, the marker checks of `-shift`, `-crop` and `e-direct-shift` fail, and
+    `-crop`'s pair shift is 64 px, not 128. The generic 64 px check still passes on `-shift`, which
+    is why the marker check exists.
+  - With the v0.6.2 adapter, `e-postfx-view0` never converts and logs the sandworm page's exact 2D
+    line, and `e-direct-shift` never draws a stereo frame.
+- **The real page.** `visual-learning.app/sandworm` (three r186), headless with the fake session:
+  - it converts: `SBS 1600x900`, 1200 stereo frames, no flat frame after the eyes, convergence from
+    its `camera.lookAt`;
+  - its own crop zoom (`__STAGE.setCrop(2, …)`) stays live in stereo.
+
+Nothing on the panel yet.
 
 **Headless, v0.6.2 (PlayCanvas CameraFrame, P-W1c), Windows, ANGLE D3D11 + WebGPU (NVIDIA Ampere):** 109
 cases (98 + 11 new: `pc-cf-kill`, `pc-cf-webgpu-kill`, `pc-cf`, `pc-cf-webgpu`, `pc-cf-unsplit-ctl`,

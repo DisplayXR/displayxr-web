@@ -16,7 +16,8 @@
 //     virtualised, so the common `canvas.width !== clientWidth * dpr` resize check stays quiet);
 //   - each render(scene, perspectiveCamera) to the screen becomes one render per eye, into its
 //     half, from the eye poses + off-axis projections the session reports (attach pattern:
-//     eye world = page camera × view.transform, the rig pose is identity);
+//     eye world = page camera × view.transform, the rig pose is identity); a camera the page frames
+//     with setViewOffset (a lens shift, a crop zoom) keeps that framing in each eye (applyView);
 //   - anything else aimed at the screen (an ortho HUD pass, a post-processing chain's final quad) is
 //     drawn identically into both halves: flat, but never a broken tile;
 //   - a frame the page did not draw (render-on-demand pages) is replayed from the page's last
@@ -114,6 +115,7 @@ function dxrThree(core) {
   const ad = {
     label: (st) => `three r${revision || '?'}` + (st && st.common ? ` (WebGPURenderer, ${backendOf(st) || 'not initialised'})` : ''),
     unqualified(st) {
+      if (st.viewJitter) return st.flatReason;
       if (st.common) {
         if (!ready(st)) return 'WebGPURenderer not initialised yet';
         if (st.gpuPostfx) return st.flatReason;
@@ -293,6 +295,9 @@ function dxrThree(core) {
       // Post-processing (see "post-processing chains" below): set once the page is seen drawing its
       // scene into a render target and then a full-screen pass to the screen.
       postfx: false, seedTask: null, twins: new Map(), texTwin: new Map(), chainStereo: false,
+      // The scene pass's view offset (see "the page camera's view window" below): viewOk once a frame
+      // ended with it still set (the page's framing), viewJitter once one did not (TAA / SSAA).
+      viewOk: false, viewJitter: false, seedMiss: null, missLogged: null,
     });
     states.set(r, st);
     wrap(st);
@@ -418,7 +423,11 @@ function dxrThree(core) {
       const xrLive = !!(r.xr && r.xr.enabled && r.xr.isPresenting);
       if (!st.active) {
         const out = st.call('render', scene, camera);
-        if (!toScreen && !xrLive && isSeed(st, target, camera)) markSeed(st, scene, camera);
+        if (!toScreen && !xrLive) {
+          const why = seedWhy(st, target, camera);
+          if (why === null) markSeed(st, scene, camera);
+          else if (why) noteSeedMiss(st, why);
+        }
         if (toScreen && !xrLive) {
           recordMono(st, ['render', scene, camera]);
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
@@ -440,11 +449,17 @@ function dxrThree(core) {
             st.postfx = true; st.sawPersp = true;
             st.lastMono = { scene: sd.scene, camera: sd.camera };
             hookLookAt(sd.camera);
-            if (st.armed) flip(st, sd.scene, sd.camera);
+            // A scene pass with a view offset qualifies once a frame has ENDED with it still set: TAA /
+            // SSAA set it for their draws only and clear it before the task ends (markSeed).
+            if (sd.view && !st.viewOk) sd.toScreen = true;
+            else if (st.armed) flip(st, sd.scene, sd.camera);
             else { st.qualifyCam = sd.camera; core.considerActivation(st); }
-          } else if (!st.sawPersp && !st.lastWhy) {
+          } else if (!st.sawPersp && (!st.lastWhy || (st.seedMiss && st.seedMiss !== st.missLogged))) {
             st.lastWhy = 'the screen camera is not a PerspectiveCamera';
-            info('not converting', desc(st.canvas), 'yet:', st.lastWhy, '(a post-processing chain, or an ortho-only scene)');
+            st.missLogged = st.seedMiss;
+            info('not converting', desc(st.canvas), 'yet:', st.lastWhy, st.seedMiss
+              ? `(the scene went into a render target first, but not as a post chain's input: ${st.seedMiss})`
+              : '(a post-processing chain, or an ortho-only scene)');
           }
         }
         return out;
@@ -454,7 +469,11 @@ function dxrThree(core) {
         if (st.postfx) {
           // The scene pass seeds the per-eye chain; any pass writing a chain target or sampling one
           // is part of it. Everything else (picking, PMREM, cube cameras) stays a single mono draw.
-          if (isSeed(st, target, camera)) { st.mainCam = camera; st.lastScene = scene; st.chainStereo = st.haveViews; return renderIntoChain(st, scene, camera, target, true); }
+          if (isSeed(st, target, camera)) {
+            st.mainCam = camera; st.lastScene = scene; st.chainStereo = st.haveViews;
+            markSeed(st, scene, camera); // a view offset that turns out to be jitter stands down (viewJitter)
+            return renderIntoChain(st, scene, camera, target, true);
+          }
           if (st.twins.has(target) || taintedSwaps(st, scene)) return renderIntoChain(st, scene, camera, target, false);
         }
         return st.call('render', scene, camera); // shadow / picking / other targets: untouched, mono
@@ -544,7 +563,8 @@ function dxrThree(core) {
   // ------------------------------------------------------------ drawing
   function isMainPerspective(st, camera) {
     if (!camera.isPerspectiveCamera || camera.isArrayCamera) return false;
-    if (camera.view && camera.view.enabled) return false; // setViewOffset (tiles, TAA jitter): not ours to split
+    // A view offset (setViewOffset) is the page's framing, carried into the eyes (applyView). Tiles drawn
+    // into several viewports fail the full-viewport test below.
     const [x, y, w, h] = st.L.vp;
     return x === 0 && y === 0 && Math.abs(w - st.L.w) < 1 && Math.abs(h - st.L.h) < 1;
   }
@@ -604,9 +624,11 @@ function dxrThree(core) {
   // that system's clip space: reversed-Z (the same row for both systems, Matrix4.makePerspective), else
   // WebGPU's z 0..1 (surface.toClip) on the WebGPU backend, else GL's as is (the WebGL2 fallback).
   // Frustum culling reads the matrix with the same coordinateSystem, so it culls what is drawn.
-  function eyeProjection(st, e, i, rev) {
+  // view: the page camera's view window (setViewOffset), applied first (applyView).
+  function eyeProjection(st, e, i, rev, view) {
     const m = e.projectionMatrix.elements;
     e.projectionMatrix.fromArray(st.V[i].proj);
+    if (view) applyView(m, view);
     if (st.common) {
       e.coordinateSystem = st.r.coordinateSystem;
       if (st.r.reversedDepthBuffer === true) { toReversedZ(m); e._reversedDepth = true; }
@@ -726,7 +748,7 @@ function dxrThree(core) {
         if (i === 0) st.eyeAt = e.matrixWorld.elements.slice(12, 15); // diagnostics (dev state(): eyeAt)
         e.matrix.copy(e.matrixWorld);
         invertFrom(e.matrixWorldInverse, e.matrixWorld);
-        eyeProjection(st, e, i, rev);                             // the runtime's off-axis frustum, x / y untouched
+        eyeProjection(st, e, i, rev, viewOf(camera));             // the runtime's off-axis frustum + the page's view window
         e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
         if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
         setEyeViewport(st, i);
@@ -817,20 +839,87 @@ function dxrThree(core) {
   // frame would not be. A target the chain never touches (picking, PMREM, a cube camera) keeps its
   // single mono draw.
   const TEX_PROPS = ['map', 'alphaMap', 'emissiveMap', 'envMap', 'lightMap', 'aoMap'];
-  function isSeed(st, rt, camera) {
-    if (!rt || rt.isWebGLCubeRenderTarget || rt.isWebGL3DRenderTarget || rt.isWebGLArrayRenderTarget) return false;
-    if (!camera || !camera.isPerspectiveCamera || camera.isArrayCamera || (camera.view && camera.view.enabled)) return false;
-    if (st.active && st.mainCam && camera !== st.mainCam) return false;
+  // Why a draw into render target rt is NOT a chain's seed: null when it is one, '' when it is not
+  // even a candidate (no perspective camera, a cube / 3D / array target), else the reason, which the
+  // 2D log line names (a page whose chain is missed says why).
+  function seedWhy(st, rt, camera) {
+    if (!rt || rt.isWebGLCubeRenderTarget || rt.isWebGL3DRenderTarget || rt.isWebGLArrayRenderTarget) return '';
+    if (!camera || !camera.isPerspectiveCamera || camera.isArrayCamera) return '';
+    if (st.active && st.mainCam && camera !== st.mainCam) return 'not the page camera';
     const L = st.L;
-    if (!(L.w > 0 && L.h > 0 && rt.width > 0 && rt.height > 0)) return false;
+    if (!(L.w > 0 && L.h > 0 && rt.width > 0 && rt.height > 0)) return 'the renderer or the target has no size yet';
     const a = L.w / L.h, near = (x) => Math.abs(x - a) / a < 0.1;
+    const tgt = `target ${Math.round(rt.width)}x${Math.round(rt.height)}`;
     // Shaped like the canvas: excludes a PMREM / cube-face draw (square camera, atlas-shaped
     // target) and a picking draw (tiny target).
-    return near(rt.width / rt.height) && near(camera.aspect || a) && rt.width >= 0.5 * L.w * L.pr && rt.height >= 0.5 * L.h * L.pr;
+    if (!near(rt.width / rt.height)) return `${tgt} is not shaped like the ${L.w}x${L.h} canvas`;
+    if (!near(camera.aspect || a)) return `camera aspect ${(+camera.aspect).toFixed(3)} is not the canvas's ${a.toFixed(3)}`;
+    if (!(rt.width >= 0.5 * L.w * L.pr && rt.height >= 0.5 * L.h * L.pr)) return `${tgt} is under half the canvas's ${Math.round(L.w * L.pr)}x${Math.round(L.h * L.pr)} px`;
+    return null;
   }
+  const isSeed = (st, rt, camera) => seedWhy(st, rt, camera) === null;
   function markSeed(st, scene, camera) {
-    if (!st.seedTask) queueMicrotask(() => { st.seedTask = null; }); // a page draws its frame in one task
-    st.seedTask = { scene, camera };
+    const prev = st.seedTask, view = viewSnap(camera);
+    // Two seeds of one camera with different views in one frame: SSAA's per-sample jitter.
+    const mixed = !!prev && (prev.mixed || (prev.camera === camera && !sameView(prev.view, view)));
+    st.seedTask = { scene, camera, view, mixed };
+    if (prev) return;
+    queueMicrotask(() => { // a page draws its frame in one task
+      const sd = st.seedTask;
+      st.seedTask = null;
+      if (!sd || !sd.view) return;
+      // A view offset still set when the task ends is the page's framing; one set for the scene pass
+      // alone (set, draw, cleared), or several in one frame, is TAA / SSAA jitter.
+      if (sd.mixed || !sameView(sd.view, viewSnap(sd.camera))) { viewJitter(st); return; }
+      if (st.viewOk) return;
+      st.viewOk = true;
+      // The frame that put the chain on the screen waited for this (render()): qualify it now.
+      if (sd.toScreen && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.camera; core.considerActivation(st); }
+    });
+  }
+  // The last near-miss seed of this task, for the 2D log line.
+  function noteSeedMiss(st, why) {
+    if (st.seedMiss === null) queueMicrotask(() => { st.seedMiss = null; });
+    st.seedMiss = why;
+  }
+
+  // ------------------------------------------------------------ the page camera's view window
+  // A page may frame its picture with camera.setViewOffset: a lens shift (visual-learning.app keeps
+  // the subject centred between its HUD panels), a crop zoom, a tile of a larger image. three draws
+  // that view as a SUB-WINDOW of the camera's image plane, which in NDC is a 2D scale + offset:
+  // x' = a·x + b, y' = c·y + d (a = fullWidth / width, b = a·(1 − 2·offsetX / fullWidth) − 1; c, d
+  // likewise, with offsetY measured down from the top). In clip space (x' = a·x + b·w) it applies to
+  // any projection, so each eye's off-axis frustum gets the page's framing exactly (equal to three
+  // r180's updateProjectionMatrix to 4e-16, symmetric and off-axis). Both eyes get the same window:
+  // the convergence plane keeps zero disparity, and a crop zoom magnifies the disparity with the
+  // picture, as zooming into a stereo photo does. Touches the x / y rows only, so it commutes with the
+  // reversed-Z and WebGPU depth conversions (z row).
+  //
+  // TAA / SSAA also use setViewOffset: a sub-pixel jitter set for the scene draw and cleared after
+  // it. Those stay 2D (viewJitter): TAA stops drawing the scene once its accumulation completes, so
+  // the eyes would freeze on the held frame while the head moves.
+  const viewOf = (cam) => (cam && cam.view && cam.view.enabled ? cam.view : null);
+  const viewSnap = (cam) => { const v = viewOf(cam); return v ? [v.fullWidth, v.fullHeight, v.offsetX, v.offsetY, v.width, v.height] : null; };
+  const sameView = (p, q) => (p === null || q === null ? p === q : p.every((x, i) => x === q[i]));
+  function applyView(m, v) {
+    const a = v.fullWidth / v.width, c = v.fullHeight / v.height;
+    if (!(isFinite(a) && isFinite(c))) return;
+    const b = a * (1 - (2 * v.offsetX) / v.fullWidth) - 1;
+    const d = 1 - c * (1 - (2 * v.offsetY) / v.fullHeight);
+    for (let k = 0; k < 16; k += 4) {
+      const w = m[k + 3];
+      m[k] = a * m[k] + b * w;
+      m[k + 1] = c * m[k + 1] + d * w;
+    }
+  }
+  const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';
+  function viewJitter(st) {
+    if (st.viewJitter) return;
+    st.viewJitter = true; st.flatReason = WHY_JITTER;
+    info('three.js canvas', desc(st.canvas), 'stays 2D:', WHY_JITTER);
+    if (st.active) core.stand(st, WHY_JITTER, { staged: true });
+    else if (st.pending || st.armed) core.stand(st, WHY_JITTER);
+    core.notify();
   }
   // The materials of a small object (a full-screen quad, or a scene holding one): a pass. A big
   // scene is not scanned, so a scene draw never pays for this.
@@ -903,7 +992,7 @@ function dxrThree(core) {
     e.matrixWorld.multiplyMatrices(camera.matrixWorld, st.m4);
     e.matrix.copy(e.matrixWorld);
     invertFrom(e.matrixWorldInverse, e.matrixWorld);
-    eyeProjection(st, e, i, rev);
+    eyeProjection(st, e, i, rev, viewOf(camera));
     e.near = camera.near; e.far = camera.far; e.fov = camera.fov; e.aspect = camera.aspect; e.zoom = camera.zoom;
     if (e.layers && camera.layers) e.layers.mask = camera.layers.mask;
     return e;

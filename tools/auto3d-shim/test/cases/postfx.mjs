@@ -1,8 +1,60 @@
 // Post-processing on the three.js adapter: the scene drawn into a render target, then full-screen
 // passes, then the screen. Asserted through the same 'convert' checks as case 'a': the halves must
 // differ by the fake eyes' shift, which fails if the right eye samples the left eye's chain.
+//
+// The page camera's view window (setViewOffset, visual-learning.app/sandworm): the generic checks
+// pass whether or not the view reaches the eyes (both halves are equally wrong without it), so the
+// view cases also measure WHERE the marker lands. The fake views skew x only, so the marker's
+// height in the left eye must be the page's own projection of it (window.__expectNdcY).
+const MARKER_TOL = 0.02; // NDC (7 px of 720); without the view: 0.24 (shift), 0.33 (crop)
+
+// The magenta marker's centroid in the left eye, as NDC y.
+function markerNdcY(px, w, h, eyeW) {
+  let sy = 0, n = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < eyeW; x++) {
+      const i = (y * w + x) * 4, r = px[i], g = px[i + 1], b = px[i + 2];
+      if (r > 150 && b > 150 && g < 0.3 * Math.min(r, b)) { sy += y; n++; }
+    }
+  }
+  return n >= 50 ? { y: 1 - (2 * (sy / n + 0.5)) / h, n } : { y: NaN, n };
+}
+function framed(r, t, h, R) {
+  const exp = r.probe, m = markerNdcY(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0]);
+  t(`the page's view window reaches the eyes: marker at its own projection (±${MARKER_TOL} NDC)`, typeof exp === 'number' && Math.abs(m.y - exp) <= MARKER_TOL,
+    `left eye ${m.y.toFixed(3)} (${m.n} px), page ${typeof exp === 'number' ? exp.toFixed(3) : exp}`);
+}
+
 export default function cases({ P, NEW }) {
+  const view = (q, extra) => ({
+    url: P + 'three-postfx.html?' + q, shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
+    probe: () => window.__expectNdcY, alsoCheck: framed, ...extra,
+  });
   return [
     { id: 'e-postfx', name: 'three.js post chain (scene target + two-pass blur on ONE material + composite + HUD)', url: P + 'three-postfx.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+    { id: 'e-postfx-view0', name: 'post chain, the scene camera keeps an identity setViewOffset (visual-learning.app/sandworm at rest)', ...view('view=identity') },
+    { id: 'e-postfx-shift', name: 'post chain, the scene camera keeps a lens shift (setViewOffset, 12 % down): framed as the page frames it', ...view('view=shift') },
+    { id: 'e-postfx-crop', name: 'post chain, the scene camera keeps a 2x off-centre crop (setViewOffset): framed as the page frames it, disparity x2', ...view('view=crop', { pairShift: 0.2 }) },
+    { id: 'e-direct-shift', name: 'no chain: a lens-shifted camera straight to the screen converts in stereo (was flat), framed as the page frames it', ...view('view=shift&chain=0') },
+    {
+      id: 'e-postfx-jitter', name: 'post chain whose scene pass sets a sub-pixel setViewOffset for that draw only (SSAA / TAA): stays 2D, reported flat with the reason',
+      url: P + 'three-postfx.html?view=jitter', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('no session requested, nothing converted', r.fake.sessions === 0 && S && !S.active && !S.pending, `sessions ${r.fake.sessions}, active ${S && S.active}`);
+        t('flat with the jitter reason (state, HUD)', S && /jitters camera\.setViewOffset/.test(S.flatReason || '') && /jitters camera\.setViewOffset/.test(r.hud || ''), `flatReason "${S && S.flatReason}", hud "${r.hud}"`);
+        t('console: "stays 2D: the scene pass jitters …"', r.log.some((l) => /stays 2D: the scene pass jitters camera\.setViewOffset/.test(l)), '');
+      },
+    },
+    {
+      id: 'e-postfx-miss', name: 'post chain whose scene target is a quarter of the canvas: stays 2D, and the console says why the seed was not taken',
+      url: P + 'three-postfx.html?rtScale=0.25', shim: NEW, cfg: { convTarget: false }, expect: 'idle2d', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('nothing converted', r.fake.sessions === 0 && S && !S.active, `sessions ${r.fake.sessions}`);
+        const line = r.log.find((l) => /not converting/.test(l)) || '';
+        t('console names the near-miss seed: target 320x180 is under half the canvas', /not as a post chain's input: target 320x180 is under half the canvas's 1280x720 px/.test(line), line || 'no line');
+      },
+    },
   ];
 }

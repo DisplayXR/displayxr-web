@@ -111,9 +111,9 @@ const lum = (px, i) => 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
 function mae(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; }
 function diffCount(a, b) { let n = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++; return n; }
 // The horizontal shift s that best maps the left half onto the right half: right(x + s) ≈ left(x).
-function bestShift(px, w, h, eyeW) {
+function bestShift(px, w, h, eyeW, want = 0) {
   let best = { s: 0, e: Infinity }, zero = 0;
-  const S = Math.max(120, Math.ceil(0.15 * eyeW)); // the fake's skew shifts 0.1 x eyeW: search past it
+  const S = Math.max(120, Math.ceil(0.15 * eyeW), Math.ceil(1.5 * want)); // the fake's skew shifts 0.1 x eyeW: search past it
   for (let s = -S; s <= S; s++) {
     let e = 0, n = 0;
     for (let y = 0; y < h; y += 2) {
@@ -396,8 +396,10 @@ function check(r, results) {
   const [rw, rh] = R.real, [ew, eh] = R.eye || [rw / 2, rh]; // the pre-split script does not report the eye
   t('SBS store = 2 × eye width', rw === 2 * ew && rh === eh, `store ${rw}x${rh}, eye ${ew}x${eh}, page sees ${JSON.stringify(R.page)}`);
   if (R.engine === 'three.js') t('page still sees its mono canvas.width', R.page.canvasWidthSeenByPage === Math.floor(R.page.w * R.page.pr), `canvas.width seen by page = ${R.page.canvasWidthSeenByPage}`);
-  const sh = bestShift(pixels.px, pixels.w, pixels.h, ew);
-  const want = Math.round(0.1 * ew);
+  // c.pairShift: the expected shift as a fraction of the eye width (the fake's 0.1 skew, times a
+  // page's crop zoom: a setViewOffset crop magnifies the disparity with the picture).
+  const want = Math.round((c.pairShift || 0.1) * ew);
+  const sh = bestShift(pixels.px, pixels.w, pixels.h, ew, want);
   t('halves differ', sh.zeroErr > 1, `MAE(left, right) at shift 0 = ${sh.zeroErr.toFixed(2)}`);
   t(`right half = left half shifted ${want} px`, Math.abs(sh.s - want) <= 1, `best shift ${sh.s} px (residual ${sh.e.toFixed(2)})`);
   t('HUD counters: stereo > 0, no flat scene frame after eyes', R.stats.stereo > 0 && (R.stats.flatAfterEyes ?? 0) === 0, `3D ${R.stats.stereo} · flat ${R.stats.flat} · flatAfterEyes ${R.stats.flatAfterEyes} · replay ${R.stats.replays} · twoView ${R.stats.twoView}`);
