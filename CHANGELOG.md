@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.47.6 — 2026-11-03
+
 ### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
 
 Preview tier. When a page destroys a material on a PlayCanvas tile the SDK created, either
