@@ -110,6 +110,7 @@ interface CallOptions
   CallOptions.mono3D?: mono3D?:'auto'|'off'|false|LiftFunction
   CallOptions.room?: room?:'auto'|(string &{})
   CallOptions.selfView?: selfView?:boolean
+  CallOptions.sendConvergence?: sendConvergence?:boolean
   CallOptions.signaling?: signaling?:SignalingAdapter
   CallOptions.theme?: theme?:CallTheme
   CallOptions.ui?: ui?:boolean|'tiles'

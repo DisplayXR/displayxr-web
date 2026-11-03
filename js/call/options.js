@@ -90,6 +90,10 @@ export function normalizeCallOptions(opts = {}) {
     // peer's eyes and shift the eyes so it sits at the display plane. The depth slider stays an
     // offset on top. Off = the pair as sent (plus any `hint`).
     autoConverge: opts.autoConverge === undefined ? true : !!opts.autoConverge,
+    // Sender side of auto-convergence (docs/call.md): with a stereo camera, measure that disparity
+    // on this side's own raw frames and send it to every peer (`conv` on the data channel), so
+    // receivers apply it instead of measuring the compressed frames. Off = receivers measure.
+    sendConvergence: opts.sendConvergence === undefined ? true : !!opts.sendConvergence,
     // `cursor: 'depth'` (runtime ADR-046 on a pair): the arrow comes in front of a person who pops
     // out of the screen under it, measured off each stereo tile's two halves; else the plain OS
     // arrow on the plane. Off by default (zero cost).
@@ -124,6 +128,8 @@ export function normalizeCallOptions(opts = {}) {
     log: typeof opts.log === 'function' ? opts.log : opts.debug ? (tag, obj) => console.log(`${TAG} ${tag} ${JSON.stringify(obj)}`) : null,
     // Internal (tests): replaces the lift module importer behind `mono3D: 'auto'`.
     _liftImporter: typeof opts._liftImporter === 'function' ? opts._liftImporter : undefined,
+    // Internal (tests): replaces the sender's frame grab (camera/conv-meter.js grabLumaFrame).
+    _convGrab: typeof opts._convGrab === 'function' ? opts._convGrab : undefined,
   };
 }
 

@@ -210,11 +210,20 @@ export interface CallOptions {
    */
   liftOptions?: Record<string, unknown> & { max?: number };
   /**
-   * Auto-convergence (default true): measure the disparity of the point between each SBS peer's
-   * eyes on the received frames and shift the two eyes by half of it each, so the remote person sits
-   * at the display plane. No calibration needed. The depth slider stays an offset on top.
+   * Auto-convergence (default true): shift each SBS peer's two eyes by half the disparity of the
+   * point between that person's eyes, so the remote person sits at the display plane. No
+   * calibration needed. The depth slider stays an offset on top. The disparity comes from the
+   * sender when it measures it (`sendConvergence`, 1.48+); from an older sender, this side measures
+   * the received frames itself.
    */
   autoConverge?: boolean;
+  /**
+   * With a stereo camera (default true): measure the disparity of the point between your eyes on
+   * your own raw camera frames, before compression, and send it to every peer a few times a second
+   * (a few bytes on the data channel). Their `autoConverge` applies it, so nobody measures the
+   * decoded frames. `false`: send nothing; receivers measure, as before 1.48.
+   */
+  sendConvergence?: boolean;
   /**
    * `'depth'`: over a 3D (stereo) tile — a peer's or your self view — the cursor is never
    * overlapped by what comes out of the screen: where the person under the pointer pops out, the
@@ -421,8 +430,8 @@ export function parseInviteLink(link: string | { hash?: string; href?: string } 
 // a bubbling, composed `CustomEvent` named `dxr-call:<event>` with the payload in `detail`, and
 // exposes the handle as `el.call`. Attributes (read once, at connect): `room`, `signaling` (a
 // URL), `key`, `camera`, `layout`, `accent`, `max-peers`, `no-ui`, `ui="tiles"`, `auto-join`,
-// `mono3d="off"`, `no-audio`, `no-self-view`, `no-auto-converge`, `tile-aspect`, `invite-base`,
-// `browser-url`, `debug`. Everything else is `el.options`, set before connect; options win.
+// `mono3d="off"`, `no-audio`, `no-self-view`, `no-auto-converge`, `no-send-convergence`,
+// `tile-aspect`, `invite-base`, `browser-url`, `debug`. Everything else is `el.options`, set before connect; options win.
 
 export class DxrCallElement extends HTMLElement {
   /** The mount seam: null = `mountCall` of `./call`; `./call/full` sets its own. */
