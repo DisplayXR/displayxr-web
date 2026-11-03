@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.6.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.6.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.6.4'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.6.5'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -2577,7 +2577,7 @@ function dxrThree(core) {
       return n;
     };
     const span = (k) => Math.max(...run.map((p) => p[k])) - Math.min(...run.map((p) => p[k]));
-    if (Math.max(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
+    if (Math.min(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
     return st.viewSteps >= VIEW_FRAMES - 1 ? 'framing' : 'unknown';
   }
   const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';
