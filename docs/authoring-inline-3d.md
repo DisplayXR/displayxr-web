@@ -1387,18 +1387,22 @@ it. Nothing about the tile changes — its buffer is still side-by-side stereo
 ([the one contract](#the-one-contract-you-must-understand)), it is still lazily woven, it still
 scrolls.
 
-**The case that still does not work is `backdrop-filter`** on anything that overlaps a tile.
-A backdrop filter is by definition a function of *what is behind it*, and behind it is the
-woven, lens-interleaved buffer — not the flat image it would need to blur. Drop the blur and use
-a near-solid background (`rgba(16,17,22,.92)` reads much like a frosted bar), or keep the blur on
-a surface that never overlaps a tile. Same guidance as before, and the piece of it that survives.
+**`backdrop-filter` on anything that overlaps a tile needs DisplayXR Browser 0.1.16+.** A
+backdrop filter is by definition a function of *what is behind it*, and behind it is the woven,
+lens-interleaved buffer — not the flat image it would need to blur. From 0.1.16 the compositor
+draws the tile **mono inside each frost rect** (displayxr-browser#120), so partial frosted chrome
+over a tile looks right: flat under the frost, 3D elsewhere (`samples/composition`'s sticky header
+is the validated case). Never frost a whole visible tile, and effects on the canvas or its
+ancestors are still out (rule 7). On older browsers drop the blur and use a near-solid background
+(`rgba(16,17,22,.92)` reads much like a frosted bar). See [rule 10](woven-canvas-rules.md#10-backdrop-filter-over-the-weave-only-on-displayxr-browser-0116-never-over-a-whole-tile).
 
 More precisely — and this is the whole of the small print — the first version of the split is
 **conservative about content that does not draw as a plain quad**. Anything that reaches the
 compositor through its own render pass, or out of the normal painting order, is left where it is
 rather than lifted over the weave, and so weaves like Phase-1 content did:
 
-- pixel-moving filters — `filter: blur()`, `drop-shadow()` — and `backdrop-filter`;
+- pixel-moving filters — `filter: blur()`, `drop-shadow()` — and, before DisplayXR Browser 0.1.16,
+  `backdrop-filter` (0.1.16+ draws the tile mono under it, above);
 - blend modes other than normal (`mix-blend-mode`, `background-blend-mode`);
 - 3D sorting contexts (`transform-style: preserve-3d` and friends).
 
@@ -1514,19 +1518,20 @@ Rules of the road:
   a console warning rather than destroying the tile — but it can only judge the rect it can
   measure, so a plate that is `display:none` at registration and becomes full-tile when shown
   slips through. The rule is yours to keep.
-- **A `backdrop-filter` element can never be an overlay.** Exclusion needs the element as an
-  isolated composited resource — the element rastered on transparency. `backdrop-filter` is
-  defined as a function *of what is behind it*, so it has no such resource: the browser has
-  nothing to hand the compositor, and the element either weaves anyway or drops out. There is
-  no flag for this. On the woven path, drop the blur and use a near-solid background
-  (`rgba(16,17,22,.92)` reads much like a frosted bar) — and if you want the blur off the
-  woven path, keep it on a surface that never overlaps a tile.
+- **A `backdrop-filter` element can never be an overlay** on a browser that excludes overlays.
+  Exclusion needs the element as an isolated composited resource — the element rastered on
+  transparency. `backdrop-filter` is defined as a function *of what is behind it*, so it has no
+  such resource: the browser has nothing to hand the compositor, and the element either weaves
+  anyway or drops out. There is no flag for this. There, drop the blur and use a near-solid
+  background (`rgba(16,17,22,.92)` reads much like a frosted bar), or keep the blur on a surface
+  that never overlaps a tile. DisplayXR Browser 0.1.16+ handles it differently: see below.
 - **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
   before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
 - **Newer DisplayXR Browsers** (draw-order occlusion): also a no-op, for the opposite reason —
   the overlay already composites over the woven 3D, and none of the rules above apply to it (a
   full-tile plate is fine, a translucent one is fine, no promotion is needed). `backdrop-filter`
-  remains the exception.
+  works from 0.1.16: the tile is drawn mono inside the frost rect (never frost a whole visible
+  tile; rule 10).
 
 ## Page chrome — headers, toolbars, floating bars (legacy browsers)
 
@@ -1578,9 +1583,10 @@ your DOM's `will-change`. Both paths are no-ops on a browser without overlay exc
 
 Two things to know about chrome specifically:
 
-- **Keep `backdrop-filter` off it.** A blurred sticky header is the single most common chrome
-  mistake: it cannot be excluded at all (see the rule above), so tiles weave straight through
-  it. Use a near-solid background instead.
+- **Keep `backdrop-filter` off it on these browsers.** A blurred sticky header is the single
+  most common chrome mistake here: it cannot be excluded at all (see the rule above), so tiles
+  weave straight through it. Use a near-solid background instead. (On DisplayXR Browser 0.1.16+
+  a frosted header over a tile works: the tile is drawn mono under it.)
 - **Seams during scroll.** Exclusion keeps chrome out of each tile's weave input, but the
   per-tile present can still seam a page-global bar where it spans the gap between two tiles.
   The systematic fix is the whole-window composited present (browser#22).
@@ -1698,8 +1704,10 @@ short:
    wrapper or later sibling with an opaque background painted over the canvas hides the tile while
    its content keeps running (for video: sound, no picture). If you want black around a tile, put
    it on an element behind the canvas.
-10. **No `backdrop-filter` on controls drawn over the weave.** A blur reads the interlaced pixels
-    and disturbs the 3D image across the element's whole box. Use a plain tint.
+10. **`backdrop-filter` over the weave only on DisplayXR Browser 0.1.16+.** There the tile is
+    drawn mono inside each frost rect; never frost a whole visible tile. Before 0.1.16 a blur
+    reads the interlaced pixels and disturbs the 3D image across the element's whole box: use a
+    plain tint.
 11. **A resize is a fresh-canvas moment.** Fullscreen or a layout change moves the rect through
     the same identity gap as a new canvas. Cover across it and release on `handle.rewoven()`.
 
@@ -1781,10 +1789,12 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
   matches the canvas's own quad and the tile falls out of the weave.
 - **Legacy: page chrome is page-global, not per-tile.** `autoChrome` covers sticky/fixed
   furniture in the top three DOM levels; anything else goes through `addGlobalOverlay()`.
-- **No effects on anything that overlaps a tile.** `backdrop-filter` fails on *both* generations
-  (it is a function of what is behind it, and what is behind it is the woven buffer); on the
-  draw-order path a pixel-moving `filter`, a non-normal blend mode or a 3D sorting context also
-  keeps the element out of the lift. Near-solid backgrounds and plain quads instead.
+- **No effects on anything that overlaps a tile, except a partial frost on 0.1.16+.**
+  `backdrop-filter` fails on both generations before DisplayXR Browser 0.1.16 (it is a function
+  of what is behind it, and what is behind it is the woven buffer); from 0.1.16 the tile is drawn
+  mono inside the frost rect (never frost a whole visible tile). On the draw-order path a
+  pixel-moving `filter`, a non-normal blend mode or a 3D sorting context keeps the element out of
+  the lift. Near-solid backgrounds and plain quads instead.
 - **One `createInline3D()` per document.** The element-rect channel is a whole-widget setter,
   so two live managers overwrite each other every frame (the SDK warns). Sequential sessions
   across routes are fine — `close()` the old one first.

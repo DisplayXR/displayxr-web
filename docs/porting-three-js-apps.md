@@ -525,9 +525,10 @@ know:
   *there* and still measured — and it must be `display:none` **before** you register the tile. A
   start screen that fades out on `opacity` and a start screen that is `display:none` are the same
   picture and different weaves.
-- **No `backdrop-filter`** on anything that overlaps a tile, on either generation. It is by
-  definition a function of what is behind it, and what is behind it is the lens-interleaved buffer.
-  A near-solid background (`rgba(16,17,22,.92)`) reads much like a frosted panel.
+- **`backdrop-filter` over a tile only on DisplayXR Browser 0.1.16+**, and never over a whole
+  visible tile. It is by definition a function of what is behind it, and what is behind it is the
+  lens-interleaved buffer; from 0.1.16 the compositor draws the tile mono inside the frost rect.
+  On older browsers a near-solid background (`rgba(16,17,22,.92)`) reads much like a frosted panel.
 - **Never animate the canvas's own transform or size.** Not `transform: scale()`, not a width
   transition, not a CSS `filter`. A woven tile's rect reaches the compositor once per frame and the
   weave is computed for *that* rect; animate the element and the two disagree for the length of the
@@ -659,8 +660,9 @@ Consolidated, in the order they tend to bite:
 20. **A full-bleed overlay sharing the canvas rect.** Hide it with `display:none`, never
     `opacity:0`, and hide it *before* registering the tile — which means activating after the
     splash's fade has actually completed, not when you started it.
-21. **`backdrop-filter` anywhere over a tile.** No z-order model fixes it. Near-solid backgrounds
-    instead.
+21. **`backdrop-filter` over a tile before DisplayXR Browser 0.1.16, or over a whole tile.** No
+    z-order model fixes the old case; 0.1.16+ draws the tile mono inside a partial frost rect.
+    Near-solid backgrounds on older browsers.
 22. **Animating the canvas element itself.** Its rect and its weave disagree for the length of the
     animation. Animate a wrapper or the buffer's contents.
 23. **Picking against an eye camera.** One cursor, one screen, one camera: `appCam`.
