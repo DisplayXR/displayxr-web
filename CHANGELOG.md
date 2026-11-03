@@ -30,6 +30,63 @@ a mono camera.
   sender.
 - `docs/call.md` § *Auto-convergence is measured by the sender*.
 
+### Added — headless-mode hooks for an app that owns its layout (`./call`)
+
+Preview tier. Everything a chat app that lays out the call itself (`ui: false`, `layout: 'none'`)
+needed and had to work around; the tiles stay module-owned. Docs: `docs/call.md` § *Hooks for an
+app that owns its layout*.
+
+- **Names.** Option `name` (≤ 64 characters, control and bidi characters stripped), sent in
+  `hello`; `CallPeer.name`; `handle.setName()` re-sends it; event `name { id, name }`. Additive on
+  the wire (wire version stays 1): an older peer ignores it.
+- **App messages.** `handle.send(peerId, data)` / `handle.broadcast(data)` on the call's data
+  channel (`{ type: 'app', d }`): JSON, ≤ 16 KiB serialised, ≤ 20 a second per participant (over a
+  cap: `false`, nothing sent); event `message { from, data }`. Only app messages reach the page.
+  An older peer drops them silently.
+- **Events.** `signal { state, code? }` (+ `handle.signal`): connected / reconnecting / closed.
+  `weave { id, state, reason?, ms }`: a tile's first join and its re-join after a resize, per
+  participant and `'self'`. `speaking { id, on }`, for participants and `'self'`.
+- **Layout.** `tileCover` (default `'auto'` with `layout: 'none'`): the core's `rectCover` on every
+  woven tile and a stereo self view. `theme.tileAspect: 'fill'`: no aspect imposed, each tile's
+  crop follows its own box (the numeric default is unchanged). `handle.tile('self')`
+  (`data-dxr-peer="self"`); under `layout: 'none'` the footer and self slot are
+  `display: contents` so the page places the self tile. `handle.setSelfView(on)` removes / restores
+  its layer. A hidden (0×0) tile is no longer painted or measured.
+- **Devices.** `handle.setMic(deviceId)`, `handle.setAudioOutput(sinkId)` (tiles that join later
+  too), `handle.localStream`.
+- **Quality.** The `quality` event gains `path` (`'host'` / `'srflx'` / `'prflx'` / `'relay'`, from
+  the selected ICE candidate pair) and `rttMs`.
+- `<dxr-call>`: `name` attribute, `tile-aspect="fill"`, and the five new events as `dxr-call:*`.
+
+### Fixed — the camera probe opened a hand-tracking camera (`./camera`, `./call`)
+
+Preview tier. Found on hardware (Windows, DisplayXR Browser 1.9.1): with no stereo pair open,
+`camera: 'auto'`'s last-resort "try every device" loop opened a hand-tracking camera — an ordinary
+video input, wide enough to pass for a side-by-side pair — and the call sent its picture as 3D.
+Every probe path (the named-pair fast path, the default camera, the last resort) now skips devices
+whose label marks a sensor (hand tracking, eye tracking, a "tracking camera", a depth camera), plus
+the new `openCamera({ exclude })` / call `cameraExclude` list; `false` turns the built-in list off.
+Left-out devices appear in `skipped` with `excluded: true`; an explicit `deviceId` is opened
+regardless. Also: the browser's "3D Camera (DisplayXR)" is listed LAST on Windows, so the probe no
+longer assumes it is the default — a default that is a pair only by its shape no longer wins over a
+camera that names itself a pair, and with an excluded default the first plain camera is the
+fallback. `addCameraView` gains `aspect: 'fill'` and `rectCover`.
+
+### Added — the dev signalling server ships in the package
+
+`signaling/dev-server.mjs` and the five modules it imports are in the published files (not an
+`exports` entry): run it by path, or import `startDevServer` from the file. Copy it unbundled
+(`signaling/README.md`).
+
+### Docs — frosted chrome over a tile works on DisplayXR Browser 0.1.16+
+
+`docs/woven-canvas-rules.md` rule 10 and §5, and `docs/call.md`: since DisplayXR Browser 0.1.16 the
+compositor draws a tile mono inside each `backdrop-filter` rect (displayxr-browser#120;
+`samples/composition` is the validated case), so partial frosted chrome over a tile is fine. Never
+frost a whole visible tile; effects on a tile or its ancestors (rule 7) are unchanged. The SDK's
+own chrome keeps its near-solid tint. `docs/call.md` also notes that changing only the `#room=`
+fragment of a page with a live call does not re-join (reload, or navigate with a changed query).
+
 ## 1.47.6 — 2026-11-03
 
 ### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
