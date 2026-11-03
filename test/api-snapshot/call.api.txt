@@ -61,13 +61,19 @@ interface CallEvents
   CallEvents.error: error:{code:CallErrorCode;message:string;error:Error|null}
   CallEvents.joined: joined:{room:string;id:string}
   CallEvents.left: left:{room:string|null;reason:string}
+  CallEvents.message: message:{from:string;data:unknown}
+  CallEvents.name: name:{id:string;name:string|null}
   CallEvents.peer: peer:{id:string}
   CallEvents.peerleft: peerleft:{id:string;reason:string}
   CallEvents.quality: quality:({id:string}& CallQuality)|({id:null;in:null;out:null;lift:{degraded:boolean;frameMs:number;tiles:number}})
+  CallEvents.signal: signal:{state:'connected'|'reconnecting'|'closed';code?:string}
   CallEvents.speaker: speaker:{id:string|null}
+  CallEvents.speaking: speaking:{id:string;on:boolean}
   CallEvents.state: state:{id:string;state:PeerState}
   CallEvents.warning: warning:{code:CallWarningCode;message:string}
+  CallEvents.weave: weave:{id:string;state:'woven'|'flat';reason?:string;ms:number}
 interface CallHandle
+  CallHandle.broadcast: broadcast(data:unknown):boolean
   CallHandle.diagnostics: diagnostics():Record<string,unknown>
   CallHandle.inviteLink: inviteLink():string|null
   CallHandle.join: join():Promise<void>
@@ -80,23 +86,32 @@ interface CallHandle
   CallHandle.readonly depth: readonly depth:number
   CallHandle.readonly id: readonly id:string
   CallHandle.readonly localFormat: readonly localFormat:CallFormat|null
+  CallHandle.readonly localStream: readonly localStream:MediaStream|null
   CallHandle.readonly mono3D: readonly mono3D:{readonly on:boolean;readonly state:'off'|'idle'|'loading'|'ready'|'unavailable';readonly reason:string|null;readonly provider:string|null;readonly lifted:number;readonly max:number}
   CallHandle.readonly muted: readonly muted:boolean
+  CallHandle.readonly name: readonly name:string|null
   CallHandle.readonly peers: readonly peers:ReadonlyArray<CallPeer>
   CallHandle.readonly room: readonly room:string|null
+  CallHandle.readonly signal: readonly signal:'connected'|'reconnecting'|'closed'|null
   CallHandle.readonly speaker: readonly speaker:string|null
   CallHandle.readonly state: readonly state:'lobby'|'joining'|'in-call'|'full'|'left'
   CallHandle.retryCamera: retryCamera():Promise<{format:CallFormat;width:number;height:number;label:string}>
+  CallHandle.send: send(peerId:string,data:unknown):boolean
+  CallHandle.setAudioOutput: setAudioOutput(sinkId:string):Promise<boolean>
   CallHandle.setCamera: setCamera(src:string|MediaStream|StereoCamera,opts?:{format?:CallFormat}):Promise<{format:CallFormat;width:number;height:number;label:string}>
   CallHandle.setCameraOff: setCameraOff(on?:boolean):boolean
   CallHandle.setDepth: setDepth(v:number|null):number
+  CallHandle.setMic: setMic(deviceId:string|null):Promise<boolean>
   CallHandle.setMono3D: setMono3D(on?:boolean):boolean
+  CallHandle.setName: setName(name:string|null):string|null
+  CallHandle.setSelfView: setSelfView(on?:boolean):boolean
   CallHandle.tile: tile(peerId:string):HTMLElement|null
 interface CallOptions
   CallOptions.audio?: audio?:boolean
   CallOptions.autoConverge?: autoConverge?:boolean
   CallOptions.autoJoin?: autoJoin?:boolean
   CallOptions.camera?: camera?:'auto'|'stereo'|'mono'|(string &{})|MediaStream|StereoCamera
+  CallOptions.cameraExclude?: cameraExclude?:ReadonlyArray<string|RegExp>|false
   CallOptions.cursor?: cursor?:'depth'|PairCursorOptions
   CallOptions.debug?: debug?:boolean
   CallOptions.format?: format?:CallFormat
@@ -108,11 +123,13 @@ interface CallOptions
   CallOptions.liftOptions?: liftOptions?:Record<string,unknown>&{max?:number}
   CallOptions.maxPeers?: maxPeers?:number
   CallOptions.mono3D?: mono3D?:'auto'|'off'|false|LiftFunction
+  CallOptions.name?: name?:string
   CallOptions.room?: room?:'auto'|(string &{})
   CallOptions.selfView?: selfView?:boolean
   CallOptions.sendConvergence?: sendConvergence?:boolean
   CallOptions.signaling?: signaling?:SignalingAdapter
   CallOptions.theme?: theme?:CallTheme
+  CallOptions.tileCover?: tileCover?:'auto'|'off'
   CallOptions.ui?: ui?:boolean|'tiles'
   CallOptions.wall?: wall?:Inline3D|Inline3DUnsupported|null
 interface CallPeer
@@ -121,11 +138,14 @@ interface CallPeer
   CallPeer.readonly format: readonly format:CallFormat
   CallPeer.readonly id: readonly id:string
   CallPeer.readonly muted: readonly muted:boolean
+  CallPeer.readonly name: readonly name:string|null
   CallPeer.readonly speaking: readonly speaking:boolean
   CallPeer.readonly state: readonly state:PeerState
 interface CallQuality
   CallQuality.in: in:{width:number;height:number;fps:number;codec:string|null;kbps:number|null;dropped:number;decoder:string|null}|null
   CallQuality.out: out:{width:number;height:number;fps:number;codec:string|null;kbps:number|null;limitation:string|null;encoder:string|null}|null
+  CallQuality.path?: path?:'host'|'srflx'|'prflx'|'relay'|null
+  CallQuality.rttMs?: rttMs?:number|null
 interface CallTheme
   CallTheme.accent?: accent?:CallAccent|(string &{})
   CallTheme.danger?: danger?:string
@@ -134,7 +154,7 @@ interface CallTheme
   CallTheme.radius?: radius?:number|string
   CallTheme.shell?: shell?:string
   CallTheme.strings?: strings?:CallStrings
-  CallTheme.tileAspect?: tileAspect?:number
+  CallTheme.tileAspect?: tileAspect?:number|'fill'
 interface SignalingAdapter
   SignalingAdapter.join: join(room:string,hooks:SignalingHooks):Promise<SignalingSession>
   SignalingAdapter.readonly name?: readonly name?:string

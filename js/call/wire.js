@@ -39,6 +39,18 @@ export const CONV_FRESH_MS = 1200;
 /** `conv.d` is a fraction of the per-eye width; anything beyond ±this is not a face's disparity. */
 export const CONV_MAX_FRAC = 0.5;
 
+/**
+ * App messages (`handle.send` / `handle.broadcast`, docs/call.md § Headless): `{ type: 'app', d }`
+ * on the call's data channel. The serialised message is at most `APP_MAX_BYTES` (UTF-8), and a
+ * sender sends at most `APP_MAX_PER_SEC` to one peer in any second (a receiver drops anything
+ * beyond `APP_RECV_MAX_PER_SEC`: network jitter can bunch a legal burst).
+ */
+export const APP_MAX_BYTES = 16 * 1024;
+export const APP_MAX_PER_SEC = 20;
+export const APP_RECV_MAX_PER_SEC = 40;
+/** A display name (`hello.name`, the `name` option) is at most this many characters. */
+export const NAME_MAX_CHARS = 64;
+
 /** Plausible subject distances, mm. A hint outside this is ignored as noise. */
 export const SUBJECT_Z_MIN_MM = 150;
 export const SUBJECT_Z_MAX_MM = 5000;
@@ -154,14 +166,33 @@ export function normalizeHello(msg) {
     // The sender measures its own convergence and sends `conv` messages. Absent (an older sender) =
     // false: the receiver measures the decoded frames itself, as before.
     conv: msg.conv === true,
+    // The sender's display name (`name` option, 1.48+), sanitised; null when absent or empty.
+    name: sanitizeName(msg.name),
   };
+}
+
+/**
+ * A display name as it may travel and be shown: a string, control characters removed (C0, DEL,
+ * C1, and the bidi / zero-width format controls that can disguise a name), whitespace collapsed
+ * and trimmed, at most `NAME_MAX_CHARS` characters (code points). Null for anything else or an
+ * empty result. Never throws: this reads data from another browser. Pure.
+ * @param {unknown} v
+ * @returns {string|null}
+ */
+export function sanitizeName(v) {
+  if (typeof v !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  const clean = v.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+  const cps = Array.from(clean);
+  return cps.length > NAME_MAX_CHARS ? cps.slice(0, NAME_MAX_CHARS).join('').trim() : clean;
 }
 
 /**
  * Build the `hello` this side sends. `conv: true` (advertised for a side-by-side sender only)
  * says this side sends `conv` messages.
  */
-export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified, conv } = {}) {
+export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified, conv, name } = {}) {
   const h = {
     type: 'hello',
     v: WIRE_VERSION,
@@ -174,7 +205,59 @@ export function makeHello({ format, width, height, baselineMm, hfovDeg, rectifie
   if (Number.isFinite(baselineMm)) h.baselineMm = baselineMm;
   if (Number.isFinite(hfovDeg)) h.hfovDeg = hfovDeg;
   if (h.format === 'sbs' && conv) h.conv = true;
+  const n = sanitizeName(name);
+  if (n) h.name = n;
   return h;
+}
+
+/**
+ * Wrap a page's app payload: `{ type: 'app', d: data }` serialised, or null when `data` cannot be
+ * serialised (undefined, a function, a cycle, a BigInt) or the message is over `APP_MAX_BYTES`
+ * (UTF-8). Returns the JSON string the data channel carries. Pure.
+ * @param {unknown} data
+ * @returns {{ json: string, bytes: number } | null}
+ */
+export function makeAppMessage(data) {
+  if (data === undefined || typeof data === 'function') return null;
+  let json;
+  try {
+    json = JSON.stringify({ type: 'app', d: data });
+  } catch {
+    return null;
+  }
+  if (typeof json !== 'string') return null;
+  const bytes = utf8Length(json);
+  return bytes > APP_MAX_BYTES ? null : { json, bytes };
+}
+
+/** An incoming `app` message: `{ data }`, or null when it is not one. Only this type reaches a page. */
+export function normalizeApp(msg) {
+  if (!msg || typeof msg !== 'object' || msg.type !== 'app' || !('d' in msg)) return null;
+  return { data: msg.d };
+}
+
+function utf8Length(s) {
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(s).length;
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
+}
+
+/**
+ * A sliding-window counter: `gate(nowMs)` is true at most `max` times in any `windowMs`. The app
+ * channel's per-peer cap (a burst of `max` is fine; the next one waits for the window). Pure.
+ */
+export function windowGate(max, windowMs = 1000) {
+  const at = [];
+  return (now) => {
+    while (at.length && now - at[0] >= windowMs) at.shift();
+    if (at.length >= max) return false;
+    at.push(now);
+    return true;
+  };
 }
 
 /**
@@ -235,6 +318,29 @@ export function rateGate(hz, slackMs = 0) {
     last = now;
     return true;
   };
+}
+
+// ── connection quality ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The selected ICE candidate pair of one getStats() report: `{ path, rttMs }`. `path` is
+ * `'relay'` when either end is relayed (TURN), else the local candidate's type (`'host'` /
+ * `'srflx'` / `'prflx'`); null when no pair is selected yet. Chrome names the pair on the
+ * `transport` stats; Firefox flags it `selected`. Pure: reads an RTCStatsReport (maplike).
+ */
+export function selectedPath(report) {
+  const all = [];
+  report.forEach((s) => all.push(s));
+  const byId = (id) => (id && typeof report.get === 'function' ? report.get(id) : all.find((s) => s.id === id)) || null;
+  const tr = all.find((s) => s.type === 'transport' && s.selectedCandidatePairId);
+  const pair = (tr && byId(tr.selectedCandidatePairId)) || all.find((s) => s.type === 'candidate-pair' && s.selected) || all.find((s) => s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded');
+  if (!pair) return { path: null, rttMs: null };
+  const lc = byId(pair.localCandidateId);
+  const rc = byId(pair.remoteCandidateId);
+  const lt = lc ? lc.candidateType : null;
+  const path = lt === 'relay' || (rc && rc.candidateType === 'relay') ? 'relay' : ['host', 'srflx', 'prflx'].includes(lt) ? lt : null;
+  const rtt = typeof pair.currentRoundTripTime === 'number' ? Math.round(pair.currentRoundTripTime * 1000) : null;
+  return { path, rttMs: rtt };
 }
 
 // ── routing (RFC §3) ───────────────────────────────────────────────────────────────────────

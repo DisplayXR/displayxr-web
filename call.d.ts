@@ -154,8 +154,12 @@ export interface CallTheme {
   radius?: number | string;
   /** Chrome font family → `--dxr-font`. */
   font?: string;
-  /** Tile aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
-  tileAspect?: number;
+  /**
+   * Tile aspect (w/h) = the woven buffer's per-eye aspect, the same for every tile. Default 16/9.
+   * `'fill'`: no aspect is imposed — the page sizes each tile's box (layout: 'none') and each
+   * tile's crop follows its own stage box (clamped to 0.3–4), the self view's too.
+   */
+  tileAspect?: number | 'fill';
   /** Overrides for the chrome's text (also localisation). */
   strings?: CallStrings;
 }
@@ -193,6 +197,24 @@ export interface CallOptions {
   format?: CallFormat;
   /** Microphone (echo cancellation + noise suppression). Default true. */
   audio?: boolean;
+  /**
+   * Your display name, sent to every participant in `hello` (their `CallPeer.name`). At most 64
+   * characters; control characters are stripped. Change it with `setName()`. Default none.
+   */
+  name?: string;
+  /**
+   * Devices `camera: 'auto' | 'stereo' | 'mono'` never opens — `openCamera`'s `exclude`: strings
+   * match a label (case-insensitive substring) or a deviceId, RegExps the label. Labels of
+   * sensors (hand tracking, eye tracking, a "tracking camera", a depth camera) are always left out
+   * too; `false` turns that built-in list off. An explicit deviceId is opened regardless.
+   */
+  cameraExclude?: ReadonlyArray<string | RegExp> | false;
+  /**
+   * Cover each woven tile (and a stereo self view) across a resize or move until it is woven
+   * again — the core's `rectCover: 'auto'` on its registration. Default `'auto'` with
+   * `layout: 'none'` (your layout moves the tiles), `'off'` otherwise.
+   */
+  tileCover?: 'auto' | 'off';
   /**
    * Lift mono peers to 3D on a 3D display (RFC §5). `'auto'` (default): import
    * `@displayxr/inline3d/lift` lazily from this copy of the SDK, and use it when it reports a
@@ -286,6 +308,14 @@ export type LiftFunction = ((element: HTMLVideoElement, opts: Record<string, unk
 export interface CallQuality {
   in: { width: number; height: number; fps: number; codec: string | null; kbps: number | null; dropped: number; decoder: string | null } | null;
   out: { width: number; height: number; fps: number; codec: string | null; kbps: number | null; limitation: string | null; encoder: string | null } | null;
+  /**
+   * The network path of the selected ICE candidate pair: `'relay'` (through TURN, either end),
+   * else the local candidate's type — `'host'` (direct, same network), `'srflx'` / `'prflx'`
+   * (direct through NAT). Null before a pair is selected.
+   */
+  path?: 'host' | 'srflx' | 'prflx' | 'relay' | null;
+  /** The selected pair's current round-trip time, ms; null when unknown. */
+  rttMs?: number | null;
 }
 
 /** A remote participant, as a page needs it. Debug data (hello, route, convergence, lift) is in `diagnostics()`. */
@@ -297,6 +327,8 @@ export interface CallPeer {
   readonly muted: boolean;
   readonly cameraOff: boolean;
   readonly speaking: boolean;
+  /** Their display name (`name` option / `setName()`), sanitised; null when they sent none (or an older SDK). */
+  readonly name: string | null;
 }
 
 /**
@@ -363,6 +395,26 @@ export interface CallEvents {
    * address this hour); the call runs STUN-only. A publishable key keeps TURN.
    */
   warning: { code: CallWarningCode; message: string };
+  /** A participant's display name arrived or changed (`name: null` = they cleared it). */
+  name: { id: string; name: string | null };
+  /**
+   * An app message from a participant (`send` / `broadcast` on their side): `data` as they sent it
+   * (JSON). Only app messages surface here — the call's own wire messages never do.
+   */
+  message: { from: string; data: unknown };
+  /**
+   * The signalling connection: `'connected'` on join and after a reconnect, `'reconnecting'` while
+   * it retries (media keeps flowing), `'closed'` when it gave up — `code` says why (e.g. `'expired'`).
+   */
+  signal: { state: 'connected' | 'reconnecting' | 'closed'; code?: string };
+  /**
+   * A tile's weave state settled: its first join (`firstWoven`), or its re-join after a resize
+   * (`rewoven()`). `id` is a participant's, or `'self'` for your self view. `'flat'`: the wall
+   * says the tile will not weave (`reason`, e.g. `'layer-failed'`) — it is shown flat.
+   */
+  weave: { id: string; state: 'woven' | 'flat'; reason?: string; ms: number };
+  /** A participant (or `'self'`) started / stopped speaking. */
+  speaking: { id: string; on: boolean };
 }
 
 export interface CallHandle {
@@ -400,8 +452,37 @@ export interface CallHandle {
   setDepth(v: number | null): number;
   /** Turn mono→3D on/off at runtime (no argument toggles). Off releases every lift; tiles go flat. */
   setMono3D(on?: boolean): boolean;
-  /** A participant's tile element (for `layout: 'none'`), or null. Style it in place; never move it. */
+  /**
+   * A participant's tile element (for `layout: 'none'`), or null; `'self'` is your self view
+   * (`data-dxr-peer="self"`). Style it in place; never move it.
+   */
   tile(peerId: string): HTMLElement | null;
+  /** Your display name, or null. */
+  readonly name: string | null;
+  /** Change your display name (re-sent to everyone in `hello`). Returns it sanitised (null = none). */
+  setName(name: string | null): string | null;
+  /**
+   * An app message to one participant over the call's data channel (arrives as their `message`
+   * event). `data` must be JSON-serialisable and at most 16 KiB serialised; at most 20 messages a
+   * second per participant. Returns false (nothing sent) when over a cap, not serialisable, or the
+   * participant is not connected. A participant on an SDK before 1.48 drops it silently.
+   */
+  send(peerId: string, data: unknown): boolean;
+  /** {@link CallHandle.send} to everyone. True only if every connected participant got it. */
+  broadcast(data: unknown): boolean;
+  /** The signalling connection — see the `signal` event. Null before join and after leave. */
+  readonly signal: 'connected' | 'reconnecting' | 'closed' | null;
+  /**
+   * Show (true) or hide (false) your self view; no argument toggles. Hiding removes its layer
+   * from the wall (never a hidden live registration). Returns the new state.
+   */
+  setSelfView(on?: boolean): boolean;
+  /** Switch the microphone (a `deviceId`; null = the default). Resolves false, keeping the old one, if it cannot open. */
+  setMic(deviceId: string | null): Promise<boolean>;
+  /** Play every participant's audio (also later ones) to `sinkId` (`HTMLMediaElement.setSinkId`). Resolves false if any tile refused. */
+  setAudioOutput(sinkId: string): Promise<boolean>;
+  /** What you send (camera + microphone). Read-only — use `setCamera` / `setMic` to change it. */
+  readonly localStream: MediaStream | null;
   on<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): () => void;
   off<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): void;
   /** Explicitly UNSTABLE: the wall, the transport, per-peer hello / route / convergence / lift / quality, the lift pool. For devtools. */

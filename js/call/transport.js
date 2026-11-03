@@ -501,6 +501,16 @@ export class MeshTransport {
     for (const pid of this.peers.keys()) this.send(pid, msg);
   }
 
+  /** An already-serialised message (the app channel: sized before it is sent). */
+  sendRaw(pid, json) {
+    const rec = this.peers.get(pid);
+    if (rec && rec.dc && rec.dc.readyState === 'open') {
+      rec.dc.send(json);
+      return true;
+    }
+    return false;
+  }
+
   peerConnection(pid) {
     const rec = this.peers.get(pid);
     return rec ? rec.pc : null;

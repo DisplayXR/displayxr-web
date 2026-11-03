@@ -25,12 +25,13 @@ interface CameraClip
   CameraClip.type: type:string
 interface CameraError extends Error
   CameraError.code: code:CameraErrorCode
-  CameraError.skipped: skipped:ReadonlyArray<{label:string;error:string;busy?:boolean;denied?:boolean}>
+  CameraError.skipped: skipped:ReadonlyArray<CameraSkip>
 interface CameraEvents
   CameraEvents.ended: ended:{reason:string}
 interface CameraOptions
   CameraOptions.calibration?: calibration?:CameraCalibration
   CameraOptions.debug?: debug?:boolean
+  CameraOptions.exclude?: exclude?:ReadonlyArray<string|RegExp>|false
   CameraOptions.format?: format?:CameraFormat
   CameraOptions.prefer?: prefer?:CameraPreference
   CameraOptions.rectify?: rectify?:(stream:MediaStream,info:{width:number;height:number;deviceId:string|null;label:string})=>MediaStream|Promise<MediaStream>
@@ -50,6 +51,12 @@ interface CameraRecording
   CameraRecording.readonly state: readonly state:'inactive'|'recording'|'paused'
   CameraRecording.resume: resume():void
   CameraRecording.stop: stop():Promise<CameraClip>
+interface CameraSkip
+  CameraSkip.busy?: busy?:boolean
+  CameraSkip.denied?: denied?:boolean
+  CameraSkip.error: error:string
+  CameraSkip.excluded?: excluded?:boolean
+  CameraSkip.label: label:string
 interface CameraView
   CameraView.paint: paint():void
   CameraView.readonly autoConverge: readonly autoConverge:boolean
@@ -68,12 +75,13 @@ interface CameraView
   CameraView.setMirror: setMirror(on?:boolean):boolean
   CameraView.weaveState: weaveState():CameraViewWeaveState
 interface CameraViewOptions
-  CameraViewOptions.aspect?: aspect?:number
+  CameraViewOptions.aspect?: aspect?:number|'fill'
   CameraViewOptions.autoConverge?: autoConverge?:boolean
   CameraViewOptions.cursor?: cursor?:'depth'|PairCursorOptions
   CameraViewOptions.depth?: depth?:number
   CameraViewOptions.mirror?: mirror?:boolean
   CameraViewOptions.onRouteChange?: onRouteChange?:(route:CameraView['route'],state:CameraViewWeaveState)=>void
+  CameraViewOptions.rectCover?: rectCover?:RectCoverOption
 interface CameraViewWeaveState
   CameraViewWeaveState.firstWoven: firstWoven:{woven:boolean;confirmed:boolean;reason:string|null;ms:number}|'pending'|null
   CameraViewWeaveState.layerRetries: layerRetries:number
@@ -111,7 +119,7 @@ interface StereoCamera
   StereoCamera.readonly label: readonly label:string
   StereoCamera.readonly owned: readonly owned:boolean
   StereoCamera.readonly rectifyError?: readonly rectifyError?:Error
-  StereoCamera.readonly skipped: readonly skipped:ReadonlyArray<{label:string;error:string;busy?:boolean;denied?:boolean}>
+  StereoCamera.readonly skipped: readonly skipped:ReadonlyArray<CameraSkip>
   StereoCamera.readonly state: readonly state:'live'|'ended'|'closed'
   StereoCamera.readonly stereo: readonly stereo:StereoInfo|null
   StereoCamera.readonly stream: readonly stream:MediaStream
