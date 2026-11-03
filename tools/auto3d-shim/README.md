@@ -1219,8 +1219,14 @@ are new: `e-postfx-taa`, `e-postfx-taa-late` and `e-postfx-pan`.
   on this Windows box: the #222 review ran 120/120 on macOS, `a-legacy` included.
 - **On v0.6.3.** `e-postfx-taa` converts and `e-postfx-taa-late` stays live: the bug.
   `e-postfx-pan` passes there too, and still passes: a slow pan is not taken for jitter.
-- **The real pages.** `visual-learning.app/sandworm`, `/strandbeest` and `/robotic-bee`, headless with
-  the fake session, 30 s of their tours each: all three stay live, with no jitter stand-down.
+- **The real pages, headless with the fake session.** `visual-learning.app/sandworm`, `/strandbeest`
+  and `/robotic-bee`:
+  - 30 s of their tours each: all three stay live, with no jitter stand-down;
+  - about 70 s each, driven like a visitor (view keys 1–6, a drag, the wheel, X-ray on and off, pause):
+    live in every once-a-second sample after going live.
+- **On the panel** (Windows box, DisplayXR Browser via `launch.cmd`, 2026-11-03): all three convert with
+  v0.6.4 and read right. `flatReason` stays `null`. This is strandbeest's and robotic-bee's first
+  panel check.
 
 **Headless, v0.6.3 (three.js view windows + mirroring chains, #221), Windows, ANGLE D3D11 + WebGPU:**
 120 cases, 11 of them new:
