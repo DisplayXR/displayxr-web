@@ -89,13 +89,13 @@ export const HAND_GESTURE_DEFAULTS = Object.freeze({
    * same finger posture as a physical one. 0 = never scale.
    */
   referencePalmM: 0.095,
-  /** Radians of orbit per metre of pinch-point drag — 10 cm of drag is about 57°. */
+  /** Radians of orbit per metre of pinch-point drag, for a `referencePalmM` hand — 10 cm is about 57°. */
   orbitRadPerM: 10,
   /** EMA time constant on the pinch point, seconds; 0 = off. Smooths tracker jitter before differencing. */
   smoothTauS: 0.05,
   /** Per-frame zoom ratio clamp, both ways — one bad sample cannot slam the zoom. */
   maxZoomStep: 1.25,
-  /** Two-hand gestures are ignored (and their baseline dropped) while the hands are further apart than this. */
+  /** Two-hand gestures are ignored (and their baseline dropped) while the hands are further apart than this, for `referencePalmM` hands. */
   maxHandSeparationM: 1.2,
 });
 
@@ -151,7 +151,9 @@ function wrapAngle(a) {
  * are the negation of these — same gesture, same picture.)
  *
  * - pinch = thumb tip to index tip below `pinchEnterM`, until above `pinchExitM`, both scaled by
- *   `palmLength / referencePalmM` when a sample carries its palm length;
+ *   `palmLength / referencePalmM` when a sample carries its palm length — and so is every other
+ *   distance: the orbit gain and the separation guard are stated for a reference-size hand, so a
+ *   hand that arrives scaled (a provider gain, a rig scale, a small tile) behaves the same;
  * - one hand pinched and moving = ORBIT: lateral motion × `orbitRadPerM` → yaw (x) and pitch (y);
  * - both hands pinched: separation ratio = ZOOM, rotation of the inter-hand vector in the display
  *   plane = ROLL, midpoint drag = ORBIT;
@@ -165,6 +167,7 @@ export class HandGestureController {
     this.config = { ...HAND_GESTURE_DEFAULTS, ...config };
     this._pinch = [new PinchDetector(), new PinchDetector()];
     this._tipDist = [-1, -1];
+    this._handScale = [1, 1];
     this._point = [[0, 0, 0], [0, 0, 0]];
     this._pointValid = [false, false];
     this._prevOne = [false, false];
@@ -232,11 +235,13 @@ export class HandGestureController {
       // size, gain and all.
       let enter = cfg.pinchEnterM;
       let exit = cfg.pinchExitM;
+      let hs = 1;
       if (s.palmLength > 0 && cfg.referencePalmM > 0) {
-        const hs = (s.palmLength * ls) / cfg.referencePalmM;
+        hs = (s.palmLength * ls) / cfg.referencePalmM;
         enter *= hs;
         exit *= hs;
       }
+      this._handScale[h] = hs;
       pinched[h] = this._pinch[h].update(true, this._tipDist[h], enter, exit);
 
       // The pinch point is the midpoint of the two tips; smooth it.
@@ -254,6 +259,17 @@ export class HandGestureController {
     }
 
     let two = pinched[0] && pinched[1];
+    // HAND-RELATIVE MOTION, like the pinch. Every distance below is divided by the pinched hands'
+    // size factor (palm / referencePalmM; 1 when unknown), so the orbit gain and the separation
+    // guard are stated for a reference-size hand and a hand that arrives scaled — a provider gain,
+    // a rig scale, a small tile — turns the subject by the same angle for the same finger travel.
+    const hsAll = two
+      ? 0.5 * (this._handScale[0] + this._handScale[1])
+      : pinched[0]
+        ? this._handScale[0]
+        : pinched[1]
+          ? this._handScale[1]
+          : 1;
     const mid = [0, 0, 0];
     const v = [0, 0, 0];
     let d = 0;
@@ -266,14 +282,14 @@ export class HandGestureController {
       d = Math.hypot(v[0], v[1], v[2]);
       // Implausibly far apart: not a gesture. Drop the baseline so the next plausible frame
       // re-anchors instead of integrating the glitch.
-      if (d > cfg.maxHandSeparationM) {
+      if (d / hsAll > cfg.maxHandSeparationM) {
         this._prevTwo = false;
         this._prevOne[0] = this._prevOne[1] = false;
         return out;
       }
     }
     const one = !two && pinched[0] ? 0 : !two && pinched[1] ? 1 : -1;
-    const k = cfg.orbitRadPerM;
+    const k = cfg.orbitRadPerM / hsAll;
 
     if (two) {
       out.twoHand = out.any = true;

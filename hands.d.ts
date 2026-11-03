@@ -16,9 +16,13 @@ export interface HandGestureConfig {
   pinchEnterM: number;
   /** Distance that ends it, > enter (default 0.04). */
   pinchExitM: number;
-  /** Palm length the pinch distances are stated for; a sample's own palm length scales them. 0 = never scale (default 0.095). */
+  /**
+   * Palm length every distance here is stated for; a sample's own palm length scales them (pinch
+   * thresholds, orbit gain, separation guard), so a scaled hand behaves the same. 0 = never scale
+   * (default 0.095).
+   */
   referencePalmM: number;
-  /** Radians of orbit per metre of pinch-point drag (default 10). */
+  /** Radians of orbit per metre of pinch-point drag, for a reference-size hand (default 10). */
   orbitRadPerM: number;
   /** EMA time constant on the pinch point, seconds; 0 = off (default 0.05). */
   smoothTauS: number;

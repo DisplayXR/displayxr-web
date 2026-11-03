@@ -217,9 +217,11 @@ and turns it into controls:
   `joint(name)`, `thumbTip`, `indexTip`, `palmLength`), the browser's per-frame gate
   (`state.gate`: `'available'` or why hands are withheld) and the hand `inputsourceschange`.
 - `HandGestureController` / `PinchDetector` — the DisplayXR Model Viewer's gesture math, ported:
-  hand-relative pinch (2.5 cm enter / 4 cm exit, scaled by palm length over 9.5 cm), one pinched
-  hand orbits (10 rad/m), two pinched hands zoom (separation ratio), roll (twist) and orbit
-  (midpoint drag); EMA-smoothed, anchored on every mode change.
+  hand-relative throughout — the pinch thresholds (2.5 cm enter / 4 cm exit), the orbit gain
+  (10 rad/m) and the two-hand separation guard are all stated for a 9.5 cm palm and scale by the
+  hand's own palm length, so a hand that arrives scaled turns the subject by the same angle for
+  the same finger travel; one pinched hand orbits, two pinched hands zoom (separation ratio), roll
+  (twist) and orbit (midpoint drag); EMA-smoothed, anchored on every mode change.
 - `handControls(wall, target)` — drives anything with the viewer pose surface from those
   gestures; and the option **`hands: true`** on `addModel` / `addSplat` (both engines, every
   entry) wires it for you, exposed as `handle.hands`. Pointer and wheel keep working alongside.
