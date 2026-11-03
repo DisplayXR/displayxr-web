@@ -1016,6 +1016,38 @@ rather than of a lens:
   the runtime's frusta. For a capture lifted from the raw pair (`cx = width/2`) the two agree
   exactly.
 
+## Hands — pinch to turn, two pinches to zoom
+
+Where the display has a hand tracker (the DisplayXR Browser 1.8.0+ on Windows, an Ultraleap
+tracker through the runtime), an inline-3D session exposes **standard WebXR Hand Input**: one
+`XRInputSource` per tracked hand with a 25-joint `XRHand`, located in the **same rig frame as the
+eye views**. There are no `select` events for hands — pinch is computed from the joints — and
+hands are gated per frame (`session.handInputWithheldReason`: `null` when they can be delivered,
+else a reason such as `'camera-rig'`, `'not-fullscreen'` or `'scaled-rig'`; a display-rig tile gets
+them on a runtime that supports rig-scoped joints).
+
+The SDK's `./hands` subpath does the work, and for a model or a splat it is one option:
+
+```js
+import { addModel } from '@displayxr/inline3d/model';
+const h = addModel(wall, canvas, 'helmet.glb', { hands: true });
+h.hands.state.gate;   // 'available' | 'not-fullscreen' | … | 'unknown' (no hand surface)
+```
+
+One pinched hand dragged turns the subject (yaw / pitch, 10 rad per metre of drag); two pinched
+hands spread or close to zoom, twist to roll (on the three.js engine — the PlayCanvas viewer has
+no roll axis), and dragged together turn it. The pinch is **hand-relative**: the 2.5 cm / 4 cm
+enter / exit thresholds scale by the hand's palm length, so a hand scaled into a small tile pinches
+at the same finger posture as a physical one. These are the DisplayXR Model Viewer's controls.
+Pointer and wheel keep working alongside; the idle turntable pauses while a pinch is held, as it
+does for a drag. Everywhere else — every other browser, a DisplayXR Browser with no tracker — the
+option is inert: no hands, nothing moves, no errors.
+
+For a page with its own renderer: `watchHands(wall, f => …)` gives the joints each frame (`poses`,
+`radii`, `joint('index-finger-tip')`, `palmLength`, the gate), `HandGestureController` turns two
+hands' tips into pose deltas, and `handControls(wall, viewerLike)` drives anything with `nudgePose`
+or `getPose` + `setPose`. `samples/hands/` draws the raw joints and nothing else.
+
 ## Many windows, and how batching helps
 
 Add as many windows as you like to one `wall` — a gallery, a grid, a scrolling wall. The

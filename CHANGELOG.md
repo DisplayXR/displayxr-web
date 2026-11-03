@@ -206,6 +206,33 @@ frost a whole visible tile; effects on a tile or its ancestors (rule 7) are unch
 own chrome keeps its near-solid tint. `docs/call.md` also notes that changing only the `#room=`
 fragment of a page with a live call does not re-join (reload, or navigate with a changed query).
 
+### Added — `@displayxr/inline3d/hands`: tracked hands, and pinch controls for every viewer (`./hands`, `./viewer`, `./model`, `./splat`)
+
+Preview tier. The DisplayXR Browser 1.8.0+ (Windows, with a hand provider such as an Ultraleap
+tracker) exposes standard WebXR Hand Input on an inline-3D session: one `XRInputSource` per hand
+with a 25-joint `XRHand`, located in the same rig frame as the eye views. The new subpath reads it
+and turns it into controls:
+
+- `watchHands(wall, onFrame)` — the tracked hands every session frame (`poses`, `radii`,
+  `joint(name)`, `thumbTip`, `indexTip`, `palmLength`), the browser's per-frame gate
+  (`state.gate`: `'available'` or why hands are withheld) and the hand `inputsourceschange`.
+- `HandGestureController` / `PinchDetector` — the DisplayXR Model Viewer's gesture math, ported:
+  hand-relative pinch (2.5 cm enter / 4 cm exit, scaled by palm length over 9.5 cm), one pinched
+  hand orbits (10 rad/m), two pinched hands zoom (separation ratio), roll (twist) and orbit
+  (midpoint drag); EMA-smoothed, anchored on every mode change.
+- `handControls(wall, target)` — drives anything with the viewer pose surface from those
+  gestures; and the option **`hands: true`** on `addModel` / `addSplat` (both engines, every
+  entry) wires it for you, exposed as `handle.hands`. Pointer and wheel keep working alongside.
+- `SceneViewer.nudgePose(delta)` and `PlayCanvasSplatViewer.nudgePose(delta)` — move the pose by
+  an eased delta, counting as input for the idle turntable (what the hands call; a page may too).
+- `OrbitPose.roll` on SceneViewer — degrees about the view axis, outside yaw and pitch (Euler
+  order `'ZXY'`, bit-identical to before at roll 0); `getPose()` now reports `roll` (always 0 on the
+  PlayCanvas viewer, which has no roll axis).
+
+Inert everywhere else: no hands, nothing moves, no errors. New sample `samples/hands/` (the raw
+surface), and `?hands` on `samples/model/` and `samples/splat/`. The porting guide's "no input
+sources" row is corrected (web#229). Tracks DisplayXR/displayxr-web#228.
+
 ## 1.47.6 — 2026-11-03
 
 ### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
