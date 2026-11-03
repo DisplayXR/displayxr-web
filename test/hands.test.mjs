@@ -185,7 +185,8 @@ test('hand-relative pinch: a half-size hand pinches at half the metre thresholds
   assert.ok(deterministic().update({ time: 0, right: hand(0, 0, 0.3, 0.02) }).oneHand, 'unknown palm: 2 cm pinches');
   // referencePalmM 0 switches the scaling off.
   assert.ok(deterministic({ referencePalmM: 0 }).update({ time: 0, right: hand(0, 0, 0.3, 0.01, 0.0475) }).oneHand);
-  // lengthScale 3: the same 0.10 m drag reads as 0.30 m, and the pinch holds (tips and palm scale together).
+  // lengthScale 3 with a KNOWN palm: tips, palm and drag scale together, so the hand-relative
+  // motion cancels it — the same finger travel, the same angle (1.0 rad), and the pinch holds.
   const c4 = deterministic();
   let yaw = 0;
   for (let i = 0; i <= 10; i++) {
@@ -193,7 +194,36 @@ test('hand-relative pinch: a half-size hand pinches at half the metre thresholds
     assert.ok(d.oneHand, 'scaled hand stays pinched');
     yaw += d.yaw;
   }
+  near(yaw, 1.0, 1e-9);
+  // Without a palm length, lengthScale is the only scale: the 0.10 m drag reads as 0.30 m.
+  const c5 = deterministic();
+  yaw = 0;
+  for (let i = 0; i <= 10; i++) yaw += c5.update({ time: i / 60, lengthScale: 3, right: hand(0.01 * i, 0, 0.3, 0.005) }).yaw;
   near(yaw, 3.0, 1e-9);
+});
+
+test('hand-relative motion: a scaled hand turns the subject by the same angle for the same finger travel', () => {
+  // A double-size hand (palm 0.19) dragging 0.20 m == a reference hand dragging 0.10 m.
+  const big = deterministic();
+  const ref = deterministic();
+  let yawBig = 0;
+  let yawRef = 0;
+  for (let i = 0; i <= 10; i++) {
+    yawBig += big.update({ time: i / 60, right: hand(0.02 * i, 0, 0.3, 0.02, 0.19) }).yaw;
+    yawRef += ref.update({ time: i / 60, right: hand(0.01 * i, 0, 0.3, 0.01, 0.095) }).yaw;
+  }
+  near(yawBig, 1.0, 1e-9);
+  near(yawRef, 1.0, 1e-9);
+  // Two double-size hands 2 m apart are a plausible pair (1 m for a reference hand); their zoom is
+  // the separation ratio as before.
+  const c = deterministic();
+  let d = c.update({ time: 0, left: hand(-1.0, 0, 0.3, 0.02, 0.19), right: hand(1.0, 0, 0.3, 0.02, 0.19) });
+  assert.ok(d.twoHand, 'scaled hands inside the scaled guard');
+  d = c.update({ time: 1 / 60, left: hand(-1.1, 0, 0.3, 0.02, 0.19), right: hand(1.1, 0, 0.3, 0.02, 0.19) });
+  near(d.zoom, 1.1, 1e-9);
+  // Without a palm length nothing scales: 2 m apart is over the metre guard.
+  const u = deterministic();
+  assert.ok(!u.update({ time: 0, left: hand(-1.0, 0, 0.3, 0.01), right: hand(1.0, 0, 0.3, 0.01) }).any);
 });
 
 // ── the session side ────────────────────────────────────────────────────────────────────────
