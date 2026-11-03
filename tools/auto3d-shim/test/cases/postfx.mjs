@@ -69,6 +69,27 @@ export default function cases({ P, NEW }) {
         t('console: "stays 2D: the scene pass jitters …"', r.log.some((l) => /stays 2D: the scene pass jitters camera\.setViewOffset/.test(l)), '');
       },
     },
+    // #226: a jitter left set across frames (a TAA that never clears its offset).
+    {
+      id: 'e-postfx-taa', name: 'post chain whose scene camera keeps a sub-pixel jitter set across frames (a TAA that never clears it): stays 2D, reported flat with the reason',
+      url: P + 'three-postfx.html?view=taa', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('no session requested, nothing converted', r.fake.sessions === 0 && S && !S.active && !S.pending, `sessions ${r.fake.sessions}, active ${S && S.active}`);
+        t('flat with the jitter reason (state, HUD)', S && /jitters camera\.setViewOffset/.test(S.flatReason || '') && /jitters camera\.setViewOffset/.test(r.hud || ''), `flatReason "${S && S.flatReason}", hud "${r.hud}"`);
+      },
+    },
+    { id: 'e-postfx-pan', name: 'post chain whose lens shift drifts 0.3 px a frame, one way: framing, not jitter (converts, framed as the page frames it)', ...view('view=pan') },
+    {
+      id: 'e-postfx-taa-late', name: 'post chain with a steady view, then a jitter left on from frame 31: converts, then stands down with the reason',
+      url: P + 'three-postfx.html?view=taa-late', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('converted first (one session, one layer)', r.fake.sessions === 1 && r.fake.layers === 1, `sessions ${r.fake.sessions}, layers ${r.fake.layers}`);
+        t('then back to 2D: "back to 2D: the scene pass jitters …"', r.log.some((l) => /back to 2D: the scene pass jitters camera\.setViewOffset/.test(l)), r.log.filter((l) => /back to 2D/.test(l)).join(' | ') || 'no back-to-2D line');
+        t('ends flat with the jitter reason, not live', S && !S.active && /jitters camera\.setViewOffset/.test(S.flatReason || ''), `active ${S && S.active}, flatReason "${S && S.flatReason}"`);
+      },
+    },
     {
       id: 'e-postfx-miss', name: 'post chain whose scene target is a quarter of the canvas: stays 2D, and the console says why the seed was not taken',
       url: P + 'three-postfx.html?rtScale=0.25', shim: NEW, cfg: { convTarget: false }, expect: 'idle2d', ready: 'window.__frozen',

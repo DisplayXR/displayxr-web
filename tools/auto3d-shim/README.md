@@ -264,6 +264,7 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
 | a camera the page frames with `setViewOffset` and keeps (a lens shift, a crop zoom: `visual-learning.app/sandworm`, `/strandbeest`, `/robotic-bee`), through a chain or straight to the screen | **3D** since v0.6.3: the view window is carried into each eye's projection (see [view windows](#view-windows-setviewoffset-v063)). Harness cases `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`. Before: a chain stayed 2D (`not converting … the screen camera is not a PerspectiveCamera`), and a direct draw converted but never drew a stereo frame |
 | a chain whose scene pass sets `setViewOffset` for that draw only (TAA / SSAA jitter) | **2D**, reported `flat` with `the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split`. Harness case `e-postfx-jitter` |
+| a chain whose camera keeps a sub-pixel jitter set across frames (a page's own TAA that never clears it) | **2D** since v0.6.4, the same `flat` reason; a live canvas that starts it stands down. Harness cases `e-postfx-taa`, `e-postfx-taa-late`. Before (v0.6.3), it converted and froze once the accumulation settled (#226) |
 | a chain that flips its picture left-right (a pass sampling `1.0 - vUv.x`: `visual-learning.app/sandworm`) | **3D** since v0.6.3, each eye drawn mirrored so that the page's own flip gives the right pair (see [mirroring chains](#chains-that-mirror-their-picture-v063)). Harness cases `e-postfx-mirror`, `-mirror-eyes`, control `-mirror-ctl`. Before, the pair came out pseudoscopic (seen on the panel) |
 | `WebGPURenderer` r178–r186, WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
 | `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
@@ -353,14 +354,30 @@ get the same window. The convergence plane keeps zero disparity, and a crop zoom
 disparity with the picture, as zooming into a stereo photo does: `e-postfx-crop` asserts the pair
 shift doubles. The direct path (`isMainPerspective`) and the chain path (`isSeed`) both take it.
 
-TAA and SSAA also use `setViewOffset`. They set a sub-pixel jitter for the scene draw only and clear it
-afterwards. Those chains stay 2D: TAA stops drawing the scene once its accumulation completes, so the
-eyes would freeze on the held frame while the head moves. The two cases are told apart when the frame's
-task ends. A view still set then is framing. A view cleared by then, or several views of one camera in
-one frame, is jitter, and the canvas stays `flat` with the reason (sticky for that renderer; a
-converted canvas that starts jittering stands down). A chain whose seed has a view offset qualifies
-only after one frame has ended with the view still set, which costs one frame. The rule also keeps a
-page that sets and clears a framing view around every frame 2D; that was the behaviour before v0.6.3
+TAA and SSAA also use `setViewOffset`. Those chains stay 2D: TAA stops drawing the scene once its
+accumulation completes, so the eyes would freeze on the held frame while the head moves. A jitter is
+told from framing in two ways.
+
+- **Set for the draw only.** three's `TAARenderPass` and `SSAARenderPass` set a sub-pixel jitter for
+  the scene draw and clear it afterwards. A view cleared by the end of the frame's task is jitter, and
+  so are several views of one camera in one frame.
+- **Left set and moved (v0.6.4, #226, from the #222 review).** A page's own TAA may never clear its
+  offset and only move it, so the view reaches the end of every frame. `viewTrend` keeps the view as
+  it stands at the end of each frame, in drawing-buffer pixels whatever units the page passes. Eight
+  frames in a row of sub-pixel steps (< 1 px) that stay within 1.5 px and turn back at least 3 times on
+  one axis is jitter: Halton and random jitter turn back almost every frame. Everything else is framing:
+  - a view unchanged since the last frame;
+  - a move of 1 px or more (a shift, a cut);
+  - a new window size (a zoom);
+  - sub-pixel steps that keep one direction (a slow pan, `e-postfx-pan`).
+
+Jitter leaves the canvas `flat` with the reason. This is sticky for that renderer, and a converted
+canvas that starts jittering stands down (`e-postfx-taa-late`).
+
+A chain whose seed has a view offset qualifies once a frame has ended with the view still set and
+`viewTrend` says framing. A steady view takes 2 frames; a sub-pixel pan takes 8. A page that stops
+drawing before then qualifies 1 s after its last frame, since it is not jittering. The rule also keeps a
+page that sets and clears a framing view around every frame 2D, which was the behaviour before v0.6.3
 anyway.
 
 The convergence estimator and `rigFov` still use the camera's full, unwindowed frustum. For a
@@ -868,6 +885,9 @@ running), so the rig is always sampled at the configured depth.
 | `e-postfx-crop` | `?view=crop`: a kept 2× crop, off centre | as `e-postfx-view0` (marker at −0.051; 0.275 without the view), the pair shift doubled: 128 px (`pairShift` 0.2) |
 | `e-direct-shift` | `?view=shift&chain=0`: the scene straight to the screen | as `e-postfx-shift`. Before v0.6.3 it converted but drew flat, and the cover never dropped |
 | `e-postfx-jitter` | `?view=jitter`: a sub-pixel `setViewOffset` around the scene pass only, cleared after it (SSAA / TAA) | no session requested, `flat` with the jitter reason in `state()` and on the HUD, the `stays 2D` console line |
+| `e-postfx-taa` | `?view=taa`: a sub-pixel Halton jitter set every frame and never cleared (a page's own TAA) | no session requested, `flat` with the jitter reason in `state()` and on the HUD. Fails on v0.6.3: converts |
+| `e-postfx-taa-late` | `?view=taa-late`: the identity view for 30 frames, then the same jitter, left on | converts (one session, one layer), then `back to 2D: the scene pass jitters …`, ends not live with the reason. Fails on v0.6.3: stays live |
+| `e-postfx-pan` | `?view=pan`: the lens shift drifts 0.3 px a frame, one way, set every frame | converts, the marker at the page's own projection: a slow pan is framing, not jitter |
 | `e-postfx-miss` | `?rtScale=0.25`: the scene into a quarter-size target | 2D, and the 2D line names the near miss: `target 320x180 is under half the canvas's 1280x720 px` |
 | `e-postfx-eyes` | `three-postfx.html`, the fake's eyes 0.2 apart (`eyeX` 0.1): real parallax | the pair shift is 39 px: the skew's 64 minus the eyes' parallax at the subject (≈ 25). Swapped eyes would give 64 + 25. Until this case, the chain path's eye order was checked with the skew only (depth-independent) |
 | `e-postfx-mirror` | `?mirror=1`: the composite samples `vec2(1.0 - vUv.x, vUv.y)`, and a pillar stands off centre | as `a` (64 px, the right way round); `chainMirror` true; the console line `the post chain … mirrors its picture left-right` |
@@ -1191,6 +1211,16 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.6.4 (a TAA jitter left set, #226), Windows, ANGLE D3D11 + WebGPU:** 123 cases, of which 3
+are new: `e-postfx-taa`, `e-postfx-taa-late` and `e-postfx-pan`.
+- **Full pass.** 121 run, 2 skipped (`c` / `d`: no `ports_25.sog`), 120 green.
+- **The one red is not from this change.** `a-legacy` fails as before, with the same numbers, and only
+  on this Windows box: the #222 review ran 120/120 on macOS, `a-legacy` included.
+- **On v0.6.3.** `e-postfx-taa` converts and `e-postfx-taa-late` stays live: the bug.
+  `e-postfx-pan` passes there too, and still passes: a slow pan is not taken for jitter.
+- **The real pages.** `visual-learning.app/sandworm`, `/strandbeest` and `/robotic-bee`, headless with
+  the fake session, 30 s of their tours each: all three stay live, with no jitter stand-down.
 
 **Headless, v0.6.3 (three.js view windows + mirroring chains, #221), Windows, ANGLE D3D11 + WebGPU:**
 120 cases, 11 of them new:
