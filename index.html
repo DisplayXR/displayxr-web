@@ -142,6 +142,14 @@
     <p class="lead">Your own renderer, your own camera, and the display it runs on.</p>
     <div class="grid">
 <div class="card">
+    <h2><a href="samples/hands/">tracked hands</a></h2>
+    <p>Hands on an inline-3D session: one dot per tracked joint, placed in the element&rsquo;s own
+       rig so it sits on your real hand, and a pinch computed from the fingertips. The raw
+       <code>@displayxr/inline3d/hands</code> surface; <code>?hands</code> on the model and splat
+       samples turns it into controls &mdash; pinch to turn, two pinches to zoom. Needs the
+       DisplayXR Browser with a hand tracker (Windows).</p>
+  </div>
+<div class="card">
     <h2><a href="samples/camera-rig/">camera rig</a></h2>
     <p>Hand the runtime <em>your</em> camera instead of a virtual display: pose, vertical FOV and a
        convergence distance, sent every frame with <code>setViewRig()</code>. Drag to orbit — your

@@ -35,6 +35,9 @@ import { addModel } from '@displayxr/inline3d/model';               // experimen
 import { addPlayer } from '@displayxr/inline3d/player';             // preview: a media player, built
                                                                     //   on addVideo, with transport
 import { SceneViewer } from '@displayxr/inline3d/viewer';           // experimental: framing + orbit
+import { handControls } from '@displayxr/inline3d/hands';          // experimental: tracked hands,
+                                                                    //   pinch to orbit (or `hands: true`
+                                                                    //   on addModel / addSplat)
 ```
 
 No build step or bundler required — it's plain ES modules. You can also import a pinned version by
