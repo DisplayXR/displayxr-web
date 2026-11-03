@@ -139,7 +139,8 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `camera` | `'auto'` | `'auto'` opens the best camera through [`/camera`](camera.md): a stereo device when one is present (the DisplayXR Browser's "3D Camera", or a wide side-by-side device) else the default webcam; `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId` string; a `MediaStream` you own; or a `StereoCamera` from `openCamera()` (left open when the call ends) |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream` (`'sbs'` or `'mono'`). 3D-ness is never guessed from a stream |
 | `audio` | `true` | Microphone, with echo cancellation and noise suppression |
-| `autoConverge` | `true` | Measure the disparity of the point between a stereo peer's eyes and put that person at the display plane. No calibration needed. Also governs your own stereo self view |
+| `autoConverge` | `true` | Put each stereo peer at the display plane: shift its two eyes by half the disparity of the point between that person's eyes. The disparity comes from the sender when it measures it (see [below](#auto-convergence-is-measured-by-the-sender)); from an older sender this side measures the received frames. No calibration needed. Also governs your own stereo self view |
+| `sendConvergence` | `true` | With a stereo camera, measure that disparity on your own raw camera frames and send it to every peer (a few bytes, ≤ 5 times a second). `false` sends nothing, and receivers measure your compressed frames as before 1.48. `<dxr-call no-send-convergence>` |
 | `cursor` | off | `'depth'` (or `{ height, pointerScope, soften }`): over a 3D tile — a stereo peer or your stereo self view — where the person under the pointer comes out of the screen, the normal arrow is drawn just in front of them instead of on the glass behind them (runtime ADR-046); everywhere else it is the plain OS arrow on the screen plane, never inside the display. The lifted arrow is softened against crosstalk (blur + fade with its lift, zero on the glass; `soften: 'off'` for the crisp arrow; see [A cursor that respects depth](authoring-inline-3d.md#a-cursor-that-respects-depth)). The depth is measured off the tile's two halves, so nothing extra is sent or computed until the pointer is over a 3D tile. Lifted (2D→3D) and flat tiles keep the normal cursor |
 | `mono3D` | `'auto'` | Lift 2D peers to 3D: `'auto'` · `'off'` · a `lift` function (see [`/call/full`](#callfull-vs-call--lift--which-import)) |
 | `liftOptions` | — | Extra `lift()` options, e.g. `{ models }` for where the depth model is served from, plus `max` (default 4): concurrent lifted tiles; further 2D peers stay flat |
@@ -157,6 +158,35 @@ Camera calibration and rectification (`calibration`, `rectify`) are [`openCamera
 options now: open the camera there and pass it as `camera`. Re-opening the inline-3D session if
 the runtime ends it is a property of the document's session (`sharedInline3D()`), not of the
 call; a call always recovers it.
+
+### Auto-convergence is measured by the sender
+
+A stereo participant should appear at the display plane: the point between their eyes has zero
+parallax, and the depth slider moves them from there. That needs the disparity of that point, in
+the pair. The sender has the raw, uncompressed frames, so it measures it there, once for everyone,
+and sends the result; each receiver still **applies** it, as a per-eye crop of the frame it
+decodes. The stream itself is never shifted: it keeps the full picture, every receiver keeps its
+own depth slider, and a receiver on a 2D screen simply shows the left eye.
+
+- **On the wire.** A side-by-side sender's `hello` carries `conv: true`. It then sends
+  `{ type: 'conv', d, c }` on the call's data channel: `d` is the measured disparity as a
+  **fraction of its per-eye width** (positive = in front of the plane; `null` = nothing measured
+  yet), so it stays right when WebRTC changes the resolution it sends; `c` is the match confidence
+  (0–1). At most 5 a second when the person moves, one every 400 ms while they hold still, and the
+  latest one right after `hello` to a participant who joins later. Measured on the sender's own
+  camera frames whatever its self view does, including `selfView: false`; nothing is sent while
+  the camera is off, from a mono camera, or with `sendConvergence: false`. A receiver accepts at
+  most 10 a second and drops anything outside ±0.5.
+- **Fresh for 1.2 s.** A receiver uses the sender's value while the last `conv` is under 1.2 s old.
+  After that it measures the received frames itself, holding the last value until it locks.
+- **Older senders.** A `hello` without `conv` (an SDK before 1.48, or another client) means the
+  receiver measures the decoded frames itself, exactly as before. An older receiver ignores `conv`
+  and does the same. The wire version stays 1: nothing else changed.
+- **The depth cursor** (`cursor: 'depth'`) still copies the received frames while it hovers a
+  tile: it measures the depth under the pointer, not the face.
+
+`diagnostics().peers[i].autoConverge.source` says which one a tile is using: `'sender'`, `'local'`
+or `null` (off, or nothing measured yet); `senderFrac` is the last value received.
 
 ### The handle
 
