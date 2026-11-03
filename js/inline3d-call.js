@@ -98,7 +98,8 @@ import * as signalingMod from './call/signaling.js';
 import { injectCallStyle, ICONS, el, show, CALL_ACCENTS as CALL_ACCENTS_IMPL, createStrings, CALL_STRINGS } from './call/ui.js';
 import { normalizeCallOptions as normalizeOptions } from './call/options.js';
 import { defineCallElement } from './call/element.js';
-import { lumaFromRgba, createDisparityTrack, createFocusTracker, downsampleLuma } from './call/disparity.js';
+import { createDisparityTrack, createFocusTracker } from './call/disparity.js';
+import { grabLumaFrame } from './camera/conv-meter.js';
 import { dxrSignaling } from './call/signaling.js';
 
 // ── the public surface (RFC 0003 §2) ────────────────────────────────────────────────────────
@@ -119,8 +120,6 @@ const AUTO_CONV_INTERVAL_MS = 200;
 const AUTO_CONV_EYE_WIDTH = 240;
 // While a depth cursor hovers a stereo tile, its source is copied this often (the cursor measures it).
 const CURSOR_SAMPLE_MS = 66;
-// WebCodecs pixel formats whose plane 0 is luma (Y): read directly, no colour conversion.
-const Y_PLANE_FORMATS = new Set(['I420', 'I420A', 'I422', 'I444', 'NV12']);
 /**
  * Put a 3D video call in `container`. Resolves once the camera is open and (with `ui:true`) the
  * lobby is showing; with `ui:false` (or `autoJoin:true`) once the call is joined.
@@ -1729,61 +1728,20 @@ class Tile {
     // ~15 Hz while a depth cursor hovers: it measures the same copy, under the pointer.
     if (this.autoPending || now - this.autoAt < (hover ? CURSOR_SAMPLE_MS : AUTO_CONV_INTERVAL_MS)) return;
     this.autoAt = now;
-    // Preferred: WebCodecs. `new VideoFrame(video)` + an ASYNC copyTo() of the decoded frame, reading
-    // the luma (Y) plane directly: no synchronous GPU->CPU canvas readback on the paint path (that
-    // readback, not the matching, was ~25 ms of a ~30 ms measurement).
-    if (typeof VideoFrame === 'function') {
-      let frame = null;
-      try {
-        frame = new VideoFrame(v);
-      } catch {
-        frame = null;
-      }
-      if (frame && Y_PLANE_FORMATS.has(frame.format)) {
-        this.autoPending = true;
-        const gen = this.autoGen;
-        const fw = frame.visibleRect ? frame.visibleRect.width : frame.displayWidth;
-        const fh = frame.visibleRect ? frame.visibleRect.height : frame.displayHeight;
-        const buf = new Uint8Array(frame.allocationSize());
-        frame
-          .copyTo(buf)
-          .then((layout) => {
-            if (gen !== this.autoGen) return; // the stream changed or the tile is gone: stale frame
-            const t0 = performance.now();
-            const f = Math.max(1, Math.ceil(fw / 2 / AUTO_CONV_EYE_WIDTH));
-            const ds = downsampleLuma(buf, layout[0].offset, layout[0].stride, fw, fh, f);
-            this._applyMeasurement(ds.img, ds.w, ds.h, ds.w / fw, now, performance.now() - t0, 'videoframe');
-          })
-          .catch(() => {
-            if (gen === this.autoGen) this._applyMeasurement(null, 0, 0, 1, now, 0, 'videoframe');
-          })
-          .finally(() => {
-            frame.close();
-            this.autoPending = false;
-          });
-        return;
-      }
-      if (frame) frame.close();
-    }
-    // Fallback: a small canvas + getImageData (synchronous readback).
-    const s = Math.min(1, AUTO_CONV_EYE_WIDTH / (W / 2));
-    const w = Math.max(2, Math.round((W * s) / 2) * 2);
-    const h = Math.max(2, Math.round(H * s));
+    this.autoPending = true;
+    const gen = this.autoGen;
     if (!this.autoCanvas) this.autoCanvas = document.createElement('canvas');
-    const c = this.autoCanvas;
-    if (c.width !== w || c.height !== h) {
-      c.width = w;
-      c.height = h;
-    }
-    const g = c.getContext('2d', { willReadFrequently: true });
-    let img = null;
-    try {
-      g.drawImage(v, 0, 0, w, h);
-      img = lumaFromRgba(g.getImageData(0, 0, w, h).data, w * h);
-    } catch {
-      img = null; // a frame that cannot be read (tainted, not decoded yet): skip it
-    }
-    this._applyMeasurement(img, w, h, w / W, now, performance.now() - now, 'canvas');
+    // camera/conv-meter.js: WebCodecs Y plane (async copyTo, no canvas readback) when the decoded
+    // frame has one, else a small canvas + getImageData.
+    grabLumaFrame(v, { eyeMax: AUTO_CONV_EYE_WIDTH, scratch: this.autoCanvas })
+      .then((g) => {
+        if (gen !== this.autoGen) return; // the stream changed or the tile is gone: stale frame
+        if (g) this._applyMeasurement(g.img, g.w, g.h, g.scale, now, g.readMs, g.via);
+        else this._applyMeasurement(null, 0, 0, 1, now, 0, this.autoStats.via);
+      })
+      .finally(() => {
+        this.autoPending = false;
+      });
   }
 
   /**
