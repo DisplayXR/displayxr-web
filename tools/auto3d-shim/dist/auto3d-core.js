@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.6.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.6.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.6.3'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.6.4'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -1958,6 +1958,7 @@ function dxrThree(core) {
       monoOps: null, monoCur: null, monoOpen: false, idleOps: null, // the page's last MONO frame (draws before / between conversions)
       postfx: false, seedTask: null, twins: new Map(), texTwin: new Map(), chainStereo: false,
       viewOk: false, viewJitter: false, seedMiss: null, missLogged: null,
+      viewHist: [], viewSteps: 0, viewWait: null, // the view at the end of each frame (viewTrend)
       mirrorX: undefined, mirrorCorr: null, mirrorNext: 0, mirrorGiveUp: null, mirrorWhy: null, mirrorAsks: 0,
     });
     states.set(r, st);
@@ -2426,10 +2427,18 @@ function dxrThree(core) {
       st.seedTask = null;
       if (!sd || !sd.view) return;
       if (sd.mixed || !sameView(sd.view, viewSnap(sd.camera))) { viewJitter(st); return; }
+      const trend = viewTrend(st, sd.view, sd.rt);
+      if (trend === 'jitter') { viewJitter(st); return; }
       if (st.viewOk) return;
-      st.viewOk = true;
-      if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
+      if (trend === 'framing') { viewReady(st, sd); return; }
+      clearTimeout(st.viewWait);
+      st.viewWait = setTimeout(() => { if (!st.viewOk && !st.viewJitter) viewReady(st, sd); }, 1000);
     });
+  }
+  function viewReady(st, sd) {
+    st.viewOk = true;
+    clearTimeout(st.viewWait);
+    if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
   }
   const drawnSoFar = (st) => { const ri = st.r.info && st.r.info.render; return ri ? (ri.triangles || 0) + (ri.points || 0) + (ri.lines || 0) : 0; };
   function noteSeedMiss(st, why) {
@@ -2547,6 +2556,30 @@ function dxrThree(core) {
     return aa > 0 && bb > 0 ? ab / Math.sqrt(aa * bb) : 0;
   }
 
+  const VIEW_FRAMES = 8;
+  function viewTrend(st, v, rt) {
+    const bw = (rt && rt.width) || st.L.w * st.L.pr || 1, bh = (rt && rt.height) || st.L.h * st.L.pr || 1;
+    const e = { x: (v[2] / (v[0] || 1)) * bw, y: (v[3] / (v[1] || 1)) * bh, w: v[4] / (v[0] || 1), h: v[5] / (v[1] || 1) };
+    const hist = st.viewHist, prev = hist[hist.length - 1];
+    hist.push(e);
+    if (hist.length > VIEW_FRAMES) hist.shift();
+    if (!prev) return 'unknown';
+    const dx = e.x - prev.x, dy = e.y - prev.y;
+    if (e.w !== prev.w || e.h !== prev.h || (dx === 0 && dy === 0) || Math.abs(dx) >= 1 || Math.abs(dy) >= 1) { st.viewSteps = 0; return 'framing'; }
+    st.viewSteps++;
+    const run = hist.slice(-Math.min(st.viewSteps + 1, VIEW_FRAMES)); // this run of sub-pixel steps
+    const turns = (k) => {
+      let n = 0;
+      for (let i = 2; i < run.length; i++) {
+        const a = run[i - 1][k] - run[i - 2][k], b = run[i][k] - run[i - 1][k];
+        if (a * b < 0) n++;
+      }
+      return n;
+    };
+    const span = (k) => Math.max(...run.map((p) => p[k])) - Math.min(...run.map((p) => p[k]));
+    if (Math.max(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
+    return st.viewSteps >= VIEW_FRAMES - 1 ? 'framing' : 'unknown';
+  }
   const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';
   function viewJitter(st) {
     if (st.viewJitter) return;
