@@ -37,7 +37,7 @@ test('package.json files: every relative import of a published .js resolves to a
   const files = publishedFiles();
   const missing = [];
   for (const f of files) {
-    if (!f.endsWith('.js')) continue;
+    if (!f.endsWith('.js') && !f.endsWith('.mjs')) continue;
     const src = readFileSync(join(root, f), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
@@ -47,4 +47,11 @@ test('package.json files: every relative import of a published .js resolves to a
     }
   }
   assert.deepEqual(missing, [], `add to package.json "files": ${[...new Set(missing.map((s) => s.split(' -> ')[1]))].join(', ')}`);
+});
+
+test('package.json files: the dev signalling server ships (runnable from node_modules), but is no export', () => {
+  const files = publishedFiles();
+  for (const f of ['dev-server.mjs', 'room.mjs', 'limits.mjs', 'turn-budget.mjs', 'keys.mjs', 'gate.mjs']) assert.ok(files.has(join('signaling', f)), `signaling/${f} is published`);
+  assert.ok(!files.has(join('signaling', 'worker.mjs')), 'the Cloudflare Worker is a self-hosting template, not a package file');
+  assert.ok(!Object.keys(pkg.exports).some((k) => k.includes('signal')), 'not an entry point: copied or run by path, never imported through exports');
 });

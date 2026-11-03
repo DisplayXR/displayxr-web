@@ -31,6 +31,31 @@ python3 -m http.server 8000              # from the repo root
 # open http://localhost:8000/samples/call/ (the sample defaults to ws://localhost:8787 on localhost)
 ```
 
+### From the npm package
+
+The dev server ships in `@displayxr/inline3d` (since 1.48) as `signaling/dev-server.mjs` plus the
+five modules it imports (`room`, `limits`, `turn-budget`, `keys`, `gate`). It is **not** an
+`exports` entry: run it by path, or copy the six files as they are.
+
+```sh
+node node_modules/@displayxr/inline3d/signaling/dev-server.mjs --port 8787
+```
+
+```js
+// programmatic (an app's dev script, a test harness)
+// By FILE path: `exports` does not list it, so Node refuses the bare
+// '@displayxr/inline3d/signaling/…' specifier (ERR_PACKAGE_PATH_NOT_EXPORTED).
+import { startDevServer } from './node_modules/@displayxr/inline3d/signaling/dev-server.mjs';
+const server = await startDevServer({ port: 8787, host: '127.0.0.1' }); // resolves once listening
+console.log(server.url); // ws://127.0.0.1:8787 — pass it to dxrSignaling()
+await server.close();
+```
+
+**Never bundle it.** The file starts the CLI when it is the script Node was started with
+(`import.meta.url === argv[1]`); a bundler inlining it into another script breaks that check and
+its relative imports. Keep it as separate, unbundled `.mjs` files (mark it external, or copy the
+six files), and import `startDevServer` from it by file path.
+
 `getUserMedia` needs a secure context: `localhost` counts; a LAN IP over plain `http` does not.
 The dev server applies the same limits as the hosted server (env vars below); for a flood test
 set e.g. `ANON_JOINS_PER_MIN=3`.
