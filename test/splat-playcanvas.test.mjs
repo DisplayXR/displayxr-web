@@ -2675,7 +2675,7 @@ test("setRig('display'): frames the meshes under root on addModel's defaults, de
   near(v._fitScale, fitScale({ extent: [0.2, 0.4, 0.1], fit: 'contain', margin: 0.8, vH: 0.24, aspect: 320 / 180, fitSweep: true, depthLimit: 4 }), 1e-12, 'addModel fit');
   assert.deepEqual(v.getFocus(), { x: 0.5, y: 1, z: -2 });
   assert.equal(v._focusRecentres, true, 'orbits the frame centre');
-  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 }, 'rest');
+  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 }, 'rest');
   assert.equal(v.idleSpin, 8, "addModel's idle spin");
   assert.deepEqual(pushed.at(-1), {
     type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 },

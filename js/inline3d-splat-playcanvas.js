@@ -1088,8 +1088,29 @@ export class PlayCanvasSplatViewer {
       yaw: target ? this._targetYaw : this._yaw,
       pitch: target ? this._targetPitch : this._pitch,
       zoom: target ? this._targetZoom : this._zoom,
+      roll: 0,
       depthOffset: this._depthOffset,
     };
+  }
+
+  /**
+   * Move the pose by a delta, eased — SceneViewer.nudgePose's twin, what the hands
+   * (`@displayxr/inline3d/hands`) drive. Degrees to add, zoom a ratio to multiply (within
+   * `zoomOpts`, and it becomes the new REST, as a setPose zoom does, so a relax does not undo a
+   * two-hand zoom). Roll is accepted and ignored: this viewer has no roll axis. Counts as
+   * interaction for the idle turntable and ends an orbit relax, like a drag.
+   */
+  nudgePose({ yaw = 0, pitch = 0, zoom = 1 } = {}) {
+    if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
+    if (yaw || pitch) this._orbitMode = null;
+    if (yaw) this._targetYaw += yaw;
+    if (pitch) this._targetPitch = clamp(this._targetPitch + pitch, this.pitchLimit[0], this.pitchLimit[1]);
+    if (zoom && zoom !== 1) {
+      const from = this._zoomMode === 'rest' ? this._zoom : this._targetZoom;
+      this._targetZoom = this._restZoom = clamp(from * zoom, this.zoomOpts.min, this.zoomOpts.max);
+      this._zoomMode = null;
+    }
+    this._lastInput = now();
   }
 
   resetPose() {
