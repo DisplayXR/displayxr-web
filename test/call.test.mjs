@@ -215,6 +215,9 @@ test('hint and state validation; hint rate gate is 5 Hz', () => {
   const gate = rateGate(5);
   const passed = [0, 50, 150, 199, 200, 390, 400, 1000].filter((t) => gate(t));
   assert.deepEqual(passed, [0, 200, 400, 1000]);
+  // With slack (the sender's timer-paced conv gate): a tick a few ms early still passes.
+  const slack = rateGate(5, 20);
+  assert.deepEqual([0, 150, 185, 370, 545, 560].filter((t) => slack(t)), [0, 185, 370, 560]);
 });
 
 test('capture: aspect > 2.5 is a side-by-side pair (1280x480 is, 1280x720 is not); stereo label hint', () => {

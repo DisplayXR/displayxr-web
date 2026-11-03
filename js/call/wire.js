@@ -221,11 +221,14 @@ export function normalizeState(msg) {
 }
 
 /**
- * A minimum-interval gate: `gate(nowMs)` is true at most `hz` times a second. Used on both ends
+ * A minimum-interval gate: `gate(nowMs)` is true at most `hz` times a second (`slackMs` shortens
+ * the interval by that much). Used on both ends
  * of `hint` so a chatty (or hostile) sender cannot drive the receiver's convergence at frame rate.
  */
-export function rateGate(hz) {
-  const minMs = 1000 / hz;
+export function rateGate(hz, slackMs = 0) {
+  // `slackMs`: a timer-paced caller at exactly `hz` (the sender's `conv` tick) lands a few ms early
+  // now and then; without slack every such tick is refused and the rate halves.
+  const minMs = 1000 / hz - Math.max(0, slackMs);
   let last = -Infinity;
   return (now) => {
     if (now - last < minMs) return false;
