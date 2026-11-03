@@ -658,10 +658,14 @@ function attachFlatPaint(canvas, video, { mode, getPoster, dissolve, fit = null,
 //     pair: two squished halves, no 3D. That is why the "scrim" here is a bottom band with a
 //     capped height, and NOT the full-height gradient a 2D player would reach for. Same reason
 //     the centre badge is a small circle rather than a full-tile click-catcher.
-//  2. NO `backdrop-filter`, anywhere. Exclusion needs the element as an isolated composited
-//     resource; `backdrop-filter` is defined as a function of what is behind it, so there is
-//     nothing to hand the compositor and the element either weaves anyway or drops out. The
-//     near-solid background below is the documented substitute for frosted glass.
+//  2. NO `backdrop-filter` in this chrome. On a pre-draw-order browser exclusion needs the
+//     element as an isolated composited resource, and `backdrop-filter` is a function of what is
+//     behind it, so the element either weaves anyway or drops out; the near-solid background
+//     below is the substitute, and the player keeps it so one build works on every generation.
+//     On DisplayXR Browser 0.1.16+ a frosted element OVER a tile works (browser#120: the
+//     compositor draws the tile mono inside each frost rect; samples/composition is the
+//     validated case) — never a frost over the WHOLE visible tile, and never an effect on the
+//     canvas or an ancestor (woven-canvas rule 7).
 //  3. Promotion is `will-change: transform`, never a CSS `filter` — a filter's render surface is
 //     flattened away in the weave path.
 //
