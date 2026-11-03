@@ -13,6 +13,7 @@
 // test/splat-playcanvas.test.mjs (values, and a behavioural trace of both viewers side by side).
 
 import { comfortDepthFactor, isComfortZone, DEPTH_DEFAULT_VIEWER_M } from './inline3d-depth-budget.js';
+import { attachHandsOption } from './inline3d-hands.js';
 
 /**
  * Double-attach detection around a scene subpath's public entry (`addSplat`, `addModel`).
@@ -25,9 +26,19 @@ import { comfortDepthFactor, isComfortZone, DEPTH_DEFAULT_VIEWER_M } from './inl
  */
 export function guardedAttach(wall, canvas, method, opts, attach) {
   const g = wall && typeof wall._attachGuard === 'function' ? wall._attachGuard(canvas, method, opts) : null;
-  if (!g) return attach(opts);
+  if (!g) return withHands(wall, attach(opts), opts);
   const out = attach(g.opts);
   g.own(out);
+  return withHands(wall, out, opts);
+}
+
+/**
+ * The `hands` option (`./inline3d-hands.js`): pinch to orbit, two pinches to zoom. Wired here so
+ * every addModel / addSplat entry, on either engine, gets it from one place, after the core has
+ * claimed the handle (the hands' stop rides the same `remove` accessor).
+ */
+function withHands(wall, out, opts) {
+  if (opts && opts.hands) attachHandsOption(wall, out, opts);
   return out;
 }
 
