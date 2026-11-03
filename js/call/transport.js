@@ -6,7 +6,7 @@
 //
 //   transport.start({ room, localStream, onPeer, onPeerLeft, onStream, onMessage, onPeerState })
 //   transport.send(peerId, msg) / broadcast(msg)
-//   transport.replaceVideoTrack(track) / setSendFormat(format)
+//   transport.replaceTrack(kind, track, stream) / setSendFormat(format)
 //   transport.peerConnection(peerId)   // for getStats (null on an SFU)
 //   transport.stop()
 //

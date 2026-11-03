@@ -7,6 +7,29 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Changed — auto-convergence is measured on the sender's raw frames (`./call`)
+
+Preview tier. A stereo participant was converged by each RECEIVER, which measured the disparity of
+the point between the person's eyes on the frame it decoded: a compressed copy, often downscaled
+by WebRTC, measured again by every participant. The sender now measures it on its own raw camera
+frames, before encoding, and sends the result on the data channel (`conv { d, c }`, `d` a
+fraction of the per-eye width; at most 5 a second while the person moves, one every 400 ms while
+they hold still). Each receiver still applies it as a per-eye crop, so the stream keeps the full
+picture and every receiver keeps its own depth slider and display. The sender measures whatever
+its self view does, including `selfView: false`, and sends nothing while its camera is off or from
+a mono camera.
+
+- New option **`sendConvergence`** (default `true`; `<dxr-call no-send-convergence>`). `false`
+  sends nothing and leaves the measuring to the receivers.
+- Additive on the wire, so the wire version stays 1. A sender advertises it with `hello.conv:
+  true`. A sender without it (1.47 and earlier), or one silent for 1.2 s, is measured by the
+  receiver exactly as before, and an older receiver ignores `conv`. The depth cursor still copies
+  the received frames while it hovers a tile.
+- `diagnostics().peers[i].autoConverge` gains `source` (`'sender'` / `'local'` / `null`),
+  `senderFrac` and `samples`. A failed local measurement no longer drops a value held from the
+  sender.
+- `docs/call.md` § *Auto-convergence is measured by the sender*.
+
 ## 1.47.6 — 2026-11-03
 
 ### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
