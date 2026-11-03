@@ -85,7 +85,7 @@
 
 import { sharedInline3D } from './inline3d.js';
 import * as wire from './call/wire.js';
-import { DEFAULT_MAX_PEERS, HINT_MAX_HZ, newPeerId, parseInviteLink, normalizeHint, normalizeState, rateGate, createConvergence, eyeOutputSize, backoffMs } from './call/wire.js';
+import { DEFAULT_MAX_PEERS, HINT_MAX_HZ, CONV_MAX_HZ, CONV_RECV_MAX_HZ, CONV_HEARTBEAT_MS, CONV_FRESH_MS, newPeerId, parseInviteLink, normalizeHint, normalizeState, normalizeConv, makeConv, rateGate, createConvergence, eyeOutputSize, backoffMs } from './call/wire.js';
 import { MeshTransport as MeshTransportImpl, clampMaxPeers as clampMaxPeersImpl } from './call/transport.js';
 import { openMic } from './camera/capture.js';
 import { openCamera, addCameraView, isStereoCamera } from './inline3d-camera.js';
@@ -99,7 +99,7 @@ import { injectCallStyle, ICONS, el, show, CALL_ACCENTS as CALL_ACCENTS_IMPL, cr
 import { normalizeCallOptions as normalizeOptions } from './call/options.js';
 import { defineCallElement } from './call/element.js';
 import { createDisparityTrack, createFocusTracker } from './call/disparity.js';
-import { grabLumaFrame } from './camera/conv-meter.js';
+import { grabLumaFrame, createConvergenceMeter } from './camera/conv-meter.js';
 import { dxrSignaling } from './call/signaling.js';
 
 // ── the public surface (RFC 0003 §2) ────────────────────────────────────────────────────────
@@ -179,6 +179,14 @@ class Call {
     this._raf = 0;
     this._statsTimer = 0;
     this._hintGate = rateGate(HINT_MAX_HZ);
+    // Sender-side auto-convergence (docs/call.md): this side measures its OWN raw camera frames
+    // (before encoding) and broadcasts `conv`, so every receiver applies one good measurement
+    // instead of each measuring a compressed, possibly downscaled copy. The timer paces it.
+    this._convGate = rateGate(CONV_MAX_HZ, 20); // paced by a 5 Hz timer: 20 ms of slack for its jitter (rateGate)
+    this._convMeter = createConvergenceMeter({ intervalMs: 0, grab: o._convGrab });
+    this._convOut = { frac: null, sentAt: 0, msg: null };
+    this._convGen = 0;
+    this._convTimer = 0;
     // mono→3D (call/lift.js): the option, whether it is on right now (setMono3D), the resolved
     // lift (null until resolved), the pool of lifted streams, and the web-provider frame watch.
     this.mono3D = o.mono3D;
@@ -329,6 +337,7 @@ class Call {
       baselineMm: l.calibration?.baselineMm,
       hfovDeg: l.calibration?.hfovDeg,
       rectified: !!l.calibration?.rectified,
+      conv: this.o.sendConvergence && l.format === 'sbs',
     });
   }
 
@@ -408,6 +417,7 @@ class Call {
       }
     }
     this._startStats();
+    this._startConvSend();
     this._pagehide = () => this.leave('pagehide');
     globalThis.addEventListener?.('pagehide', this._pagehide);
     this.log('joined', { id: this.id, peers: this.tiles.size });
@@ -491,6 +501,8 @@ class Call {
     if (msg.type === '__open') {
       this.transport.send(id, this.hello());
       this.transport.send(id, this.stateMsg());
+      // A peer that joins mid-call gets the current convergence at once, not at the next heartbeat.
+      if (this._convOut.msg && this._convSending()) this.transport.send(id, this._convOut.msg);
       tile.onChannelOpen();
       return;
     }
@@ -500,6 +512,67 @@ class Call {
     if (hint) return tile.setHint(hint);
     const st = normalizeState(msg);
     if (st) return tile.setRemoteState(st);
+    const cv = normalizeConv(msg);
+    if (cv) return tile.setConv(cv);
+  }
+
+  // ── sender-side auto-convergence ─────────────────────────────────────────────────────────
+
+  _startConvSend() {
+    this._stopConvSend();
+    this._convTimer = setInterval(() => this._tickConv(), AUTO_CONV_INTERVAL_MS);
+  }
+
+  _stopConvSend() {
+    clearInterval(this._convTimer);
+    this._convTimer = 0;
+  }
+
+  /** Forget the measurement (a new camera, leaving): the next `conv` is a fresh one. */
+  _resetConvSend() {
+    this._convGen++;
+    this._convMeter.reset();
+    this._convOut = { frac: null, sentAt: 0, msg: null };
+  }
+
+  /** Is this side measuring and sending its convergence right now? */
+  _convSending() {
+    const l = this.local;
+    return !!(this.transport && this.o.sendConvergence && l && l.format === 'sbs' && l.videoTrack && !this.camOff && l.video);
+  }
+
+  /**
+   * One sample of this side's raw camera frame (`local.video` plays the camera's own stream: the
+   * pre-encode, unmirrored pair; the self view's mirroring is a paint, never on this video). Runs
+   * whatever the self view does, including `selfView: false`. Broadcasts `conv` when the gate
+   * passes and the value moved by a quarter source pixel, or the heartbeat is due.
+   */
+  _tickConv() {
+    if (!this._convSending() || this._convMeter.busy) return;
+    const v = this.local.video;
+    const gen = this._convGen;
+    this._convMeter
+      .sample(v, performance.now())
+      .then((r) => {
+        if (!r || gen !== this._convGen || !this._convSending()) return;
+        // Gate on the SEND time (what a receiver's own gate sees). A send the gate refuses is not
+        // lost: the value still differs from the last one sent, so the next tick sends it.
+        const now = performance.now();
+        const out = this._convOut;
+        const eyeW = (v.videoWidth || 0) / 2;
+        const minStep = eyeW > 0 ? 0.25 / eyeW : 0;
+        const moved = (r.frac === null) !== (out.frac === null) || (r.frac !== null && Math.abs(r.frac - out.frac) >= minStep);
+        const due = !out.msg || now - out.sentAt >= CONV_HEARTBEAT_MS;
+        if ((!moved && !due) || !this._convGate(now)) return;
+        const msg = makeConv(r.frac, r.ncc);
+        this.transport.broadcast(msg);
+        this._convOut = { frac: r.frac, sentAt: now, msg };
+        if (r.frac !== null && !this._convLogged) {
+          this._convLogged = true;
+          this.log('send-conv', { frac: Math.round(r.frac * 1e4) / 1e4, disparityPx: Math.round(r.d * 10) / 10, method: r.method, via: r.via, ms: Math.round(r.ms) });
+        }
+      })
+      .catch(() => {});
   }
 
   // ── handle ops ─────────────────────────────────────────────────────────────────────────
@@ -540,6 +613,7 @@ class Call {
   async setCamera(idOrStream, { format } = {}) {
     const before = this.local?.format;
     const l = await this._openMedia(idOrStream, format, { keepOnFail: true });
+    this._resetConvSend(); // a new camera: measure afresh, before the hello that announces it
     if (this.transport) {
       await this.transport.replaceTrack('video', l.videoTrack, l.stream);
       await this.transport.setSendFormat(l.format);
@@ -568,6 +642,8 @@ class Call {
     globalThis.removeEventListener?.('pagehide', this._pagehide);
     this.transport?.stop();
     this.transport = null;
+    this._stopConvSend();
+    this._resetConvSend();
     for (const t of this.tiles.values()) t.destroy();
     this.tiles.clear();
     this.liftPool?.releaseAll();
@@ -1303,6 +1379,7 @@ class Tile {
     this.autoCanvas = null;
     this.autoLocked = false;
     this.autoStats = { n: 0, ms: 0, readMs: 0, method: null, via: null };
+    this.autoGrabs = 0; // local copies made: the receiver fallback, or the depth cursor's
     this.autoPending = false;
     // Bumped on every stream change and on destroy(): an async copyTo() that resolves after either
     // belongs to a stream this tile no longer shows, and is dropped (review of #92).
@@ -1311,6 +1388,10 @@ class Tile {
     this.destroyed = false;
     this.conv.depth = call.depth;
     this.hintGate = rateGate(HINT_MAX_HZ);
+    // The sender's own measurement (`conv`, when its hello says `conv: true`): `{ frac, c, at }`,
+    // `at` = when it ARRIVED here. Fresh for CONV_FRESH_MS; after that this side measures again.
+    this.convGate = rateGate(CONV_RECV_MAX_HZ);
+    this.senderConv = null;
     this.layerFails = 0;
     this.forceFlat = false;
     // lifted route (mono→3D): the lift handle once it lands, whether it is showing (live), and a
@@ -1386,6 +1467,12 @@ class Tile {
         readMs: this.autoStats.n ? this.autoStats.readMs / this.autoStats.n : null,
         method: this.autoStats.method,
         via: this.autoStats.via,
+        // Local copies made (the receiver fallback, or the depth cursor's).
+        samples: this.autoGrabs,
+        // Where the applied disparity comes from: 'sender' (its `conv`, fresh), 'local' (measured
+        // here: an older or silent sender), null (autoConverge off, or nothing measured yet).
+        source: !this.call.o.autoConverge ? null : this._senderFrac(performance.now()) !== null ? 'sender' : this.conv.measuredPx !== null ? 'local' : null,
+        senderFrac: this.senderConv ? this.senderConv.frac : null,
       },
       lift: this.lifted
         ? {
@@ -1434,6 +1521,28 @@ class Tile {
   setHint(h) {
     if (!this.hintGate(performance.now())) return;
     this.conv.subjectZmm = h.subjectZmm;
+  }
+
+  /**
+   * A `conv` from the sender (wire.normalizeConv already validated it). Rate-limited here too, so a
+   * chatty or hostile sender cannot drive this tile at frame rate. `d: null` (nothing measured
+   * yet) keeps a previous value alive and is otherwise ignored.
+   */
+  setConv(cv) {
+    const now = performance.now();
+    if (!this.convGate(now)) return;
+    if (cv.d === null) {
+      if (this.senderConv) this.senderConv.at = now;
+      return;
+    }
+    this.senderConv = { frac: cv.d, c: cv.c === undefined ? null : cv.c, at: now };
+  }
+
+  /** The sender's measured disparity as a fraction of its eye width, when fresh and announced; else null. */
+  _senderFrac(now) {
+    const sc = this.senderConv;
+    if (!sc || !this.hello || !this.hello.conv || now - sc.at >= CONV_FRESH_MS) return null;
+    return sc.frac;
   }
 
   setRemoteState(st) {
@@ -1706,7 +1815,12 @@ class Tile {
       c.height = outH;
     }
     const hover = !!(this.cursor && this.cursor.hovering);
-    if (this.call.o.autoConverge || hover) this._sampleDisparity(v, W, H, hover);
+    // The sender's measurement, when it sends one (recomputed per paint: a WebRTC resolution change
+    // keeps it right, since it is a fraction of the eye width). Otherwise measure here, as before.
+    const auto = this.call.o.autoConverge;
+    const frac = auto ? this._senderFrac(performance.now()) : null;
+    if (frac !== null) this.conv.measuredPx = frac * eyeW;
+    if (hover || (auto && frac === null)) this._sampleDisparity(v, W, H, hover);
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
     const rects = [];
@@ -1751,12 +1865,16 @@ class Tile {
    */
   _applyMeasurement(img, w, h, s, at, readMs, via) {
     if (this.destroyed) return;
+    this.autoGrabs++;
     if (img) this.luma = { img, w, h, scale: s };
     if (!this.call.o.autoConverge) return; // the copy was for the depth cursor only
+    if (this._senderFrac(performance.now()) !== null) return; // the sender's measurement wins; the copy was for the cursor
     const t = performance.now();
     const m = img ? this.autoFocus.measure(img, w, h, at) : null;
     const d = this.autoTrack.push(m ? m.d / s : null);
-    this.conv.measuredPx = d;
+    // A failed measurement holds: the track holds its last value, and with an empty track (the
+    // sender's `conv` just went stale) the sender's last value stays until this side locks.
+    if (d !== null) this.conv.measuredPx = d;
     this.autoStats.n++;
     this.autoStats.readMs += readMs;
     this.autoStats.ms += readMs + (performance.now() - t);
@@ -1778,6 +1896,7 @@ class Tile {
 
   _resetAutoConverge() {
     this.autoGen++;
+    this.senderConv = null;
     this.luma = null;
     this.autoTrack.reset();
     this.autoFocus.reset();
