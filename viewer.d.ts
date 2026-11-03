@@ -66,6 +66,12 @@ export interface OrbitPose {
   pitch?: number;
   /** Multiplier on the fit scale. */
   zoom?: number;
+  /**
+   * Degrees about the VIEW axis (counter-clockwise as the viewer sees it), applied outside yaw and
+   * pitch. Written only by the two-hand gesture (`@displayxr/inline3d/hands`) or an explicit call;
+   * 0 for every page that never touches it. The PlayCanvas viewer has no roll axis and reports 0.
+   */
+  roll?: number;
   /** Display metres along the depth axis, `+` toward the viewer (out of the glass). */
   depthOffset?: number;
 }
@@ -136,6 +142,12 @@ export declare class SceneViewer {
 
   /** Snap the pose. Writes the eased value and its target together. */
   setPose(pose?: OrbitPose): void;
+  /**
+   * Move the pose by a delta, EASED — what an input device does. Degrees to add, `zoom` a ratio
+   * to multiply (pitch clamped, zoom bounded). Counts as interaction for the idle turntable, like
+   * a pointer drag. `@displayxr/inline3d/hands` drives the viewer through this.
+   */
+  nudgePose(delta?: { yaw?: number; pitch?: number; zoom?: number; roll?: number }): void;
   /**
    * Point the viewer at something: the orbit centre, the pivot plane and (on a camera rig) the
    * convergence distance are ONE point, and this is it. `recentre: true` (a display rig) brings
