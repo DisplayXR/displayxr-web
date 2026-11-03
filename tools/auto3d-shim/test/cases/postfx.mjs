@@ -31,6 +31,15 @@ const mirrorIs = (want) => (r, t, h, R) => t(`mirror probe: the chain is ${want 
 // subject (2·f·eyeX / z = 2·989·0.1 / 8 ≈ 25 px) = 39 px with the eyes in order; with them swapped
 // (pseudoscopic) it would be 64 + 25.
 const EYES_SHIFT = 39 / 640;
+// A view that moves along one axis (#231): framed as the page frames it, and never taken for jitter.
+const oneAxis = {
+  timeoutMs: 20000,
+  alsoCheck(r, t, h, R) {
+    framed(r, t, h, R);
+    const why = r.log.find((l) => /jitters camera\.setViewOffset/.test(l));
+    t('never taken for jitter (no "stays 2D: the scene pass jitters …" line), live at the end', !why && R && R.flatReason == null, why || `flatReason ${R && R.flatReason}`);
+  },
+};
 
 export default function cases({ P, NEW }) {
   const view = (q, extra) => ({
@@ -80,6 +89,11 @@ export default function cases({ P, NEW }) {
       },
     },
     { id: 'e-postfx-pan', name: 'post chain whose lens shift drifts 0.3 px a frame, one way: framing, not jitter (converts, framed as the page frames it)', ...view('view=pan') },
+    // #231: sub-pixel framing along ONE axis that turns back often. v0.6.4 took each for jitter within
+    // 8 frames (a timeout here: it never stays live).
+    { id: 'e-postfx-bob', name: 'post chain whose lens shift bobs 0.5 px on y (period 8 frames): framing, not jitter (converts and stays live)', ...view('view=bob', oneAxis) },
+    { id: 'e-postfx-spring', name: 'post chain whose lens shift ends in an underdamped spring\'s tail on x (0.9 px decaying, period 7 frames): framing, not jitter', ...view('view=spring', oneAxis) },
+    { id: 'e-postfx-parallax', name: 'post chain with a lerped mouse parallax on x (the mouse wobbles by whole px): framing, not jitter', ...view('view=parallax', oneAxis) },
     {
       id: 'e-postfx-taa-late', name: 'post chain with a steady view, then a jitter left on from frame 31: converts, then stands down with the reason',
       url: P + 'three-postfx.html?view=taa-late', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',

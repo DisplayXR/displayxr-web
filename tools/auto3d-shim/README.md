@@ -265,6 +265,7 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | a camera the page frames with `setViewOffset` and keeps (a lens shift, a crop zoom: `visual-learning.app/sandworm`, `/strandbeest`, `/robotic-bee`), through a chain or straight to the screen | **3D** since v0.6.3: the view window is carried into each eye's projection (see [view windows](#view-windows-setviewoffset-v063)). Harness cases `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`. Before: a chain stayed 2D (`not converting … the screen camera is not a PerspectiveCamera`), and a direct draw converted but never drew a stereo frame |
 | a chain whose scene pass sets `setViewOffset` for that draw only (TAA / SSAA jitter) | **2D**, reported `flat` with `the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split`. Harness case `e-postfx-jitter` |
 | a chain whose camera keeps a sub-pixel jitter set across frames (a page's own TAA that never clears it) | **2D** since v0.6.4, the same `flat` reason; a live canvas that starts it stands down. Harness cases `e-postfx-taa`, `e-postfx-taa-late`, `e-postfx-taa-short`, `e-postfx-taa-half`. Before (v0.6.3), it converted and froze once the accumulation settled (#226) |
+| a camera whose `setViewOffset` moves by sub-pixel steps along one axis, turning back often (a lerped mouse parallax, a spring's tail, an idle bob) | **3D** since v0.6.5: framing, not jitter. Harness cases `e-postfx-bob`, `e-postfx-spring`, `e-postfx-parallax`. In v0.6.4 it was taken for jitter within 8 frames and stayed 2D for good (#231) |
 | a chain that flips its picture left-right (a pass sampling `1.0 - vUv.x`: `visual-learning.app/sandworm`) | **3D** since v0.6.3, each eye drawn mirrored so that the page's own flip gives the right pair (see [mirroring chains](#chains-that-mirror-their-picture-v063)). Harness cases `e-postfx-mirror`, `-mirror-eyes`, control `-mirror-ctl`. Before, the pair came out pseudoscopic (seen on the panel) |
 | `WebGPURenderer` r178–r186, WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
 | `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
@@ -365,12 +366,16 @@ told from framing in two ways.
   offset and only move it, so the view reaches the end of every frame. `viewTrend` keeps the view as
   it stands at the end of each frame, in the scene target's pixels (the units a TAA jitters in)
   whatever units the page passes. A run of sub-pixel steps (< 1 px) that stays within 1.5 px and turns
-  back at least twice on one axis is jitter. Halton and random jitter turn back almost every frame, so
-  a TAA is caught on its 4th sample. Everything else is framing:
+  back at least twice on **both** axes is jitter. A TAA jitters both axes, and Halton and random jitter
+  turn back almost every frame, so a TAA is caught on its 4th to 6th sample. Everything else is framing:
   - a view unchanged since the last frame;
   - a move of 1 px or more (a shift, a cut);
   - a new window size (a zoom);
-  - sub-pixel steps that keep one direction for 8 frames (a slow pan, `e-postfx-pan`).
+  - sub-pixel steps that keep one direction for 8 frames (a slow pan, `e-postfx-pan`);
+  - sub-pixel steps along one axis, however often they turn back (v0.6.5, #231, from the #227 review):
+    a lerped mouse parallax (`e-postfx-parallax`), a spring's tail (`e-postfx-spring`), an idle bob
+    (`e-postfx-bob`). v0.6.4 asked for the turns on one axis only, so each of these was taken for jitter
+    within 8 frames, and the verdict is for good.
 
   Two cases came out of a second look at the first cut, which took 8 frames that turned back 3 times
   and measured in drawing-buffer pixels. A TAA that settles after fewer than 8 samples and stops
@@ -385,7 +390,9 @@ A chain whose seed has a view offset qualifies once a frame has ended with the v
 `viewTrend` says framing. A steady view takes 2 frames; a sub-pixel pan takes 8. A page that stops
 drawing before then qualifies 1 s after its last frame. It turned back at most once before it
 stopped, so it is not taken for jitter. A TAA of 3 samples or fewer is too short to tell from a nudge,
-until its next run of samples carries on from the last. The rule also keeps a
+until its next run of samples carries on from the last; since v0.6.5, so is a 4-sample one on some
+Halton phases. A 2-D random shake that decays below a pixel can trip the rule; it cannot be told from
+a random-sample TAA. The rule also keeps a
 page that sets and clears a framing view around every frame 2D, which was the behaviour before v0.6.3
 anyway.
 
@@ -898,6 +905,9 @@ running), so the rig is always sampled at the configured depth.
 | `e-postfx-taa-late` | `?view=taa-late`: the identity view for 30 frames, then the same jitter, left on | converts (one session, one layer), then `back to 2D: the scene pass jitters …`, ends not live with the reason. Fails on v0.6.3: stays live |
 | `e-postfx-taa-short` | `?view=taa-short`: sample 1 held for 20 frames (a TAA while the camera moves), then samples 2–6 left set, then the scene pass stops (settled) | `back to 2D: the scene pass jitters …`, ends not live with the reason. Fails on the first v0.6.4 cut: stays live |
 | `e-postfx-taa-half` | `?view=taa&rtScale=0.5`: the same jitter on a half-size scene target, in that target's px (±1 canvas px) | no session requested, `flat` with the jitter reason. Fails on the first v0.6.4 cut: converts |
+| `e-postfx-bob` | `?view=bob`: the 12 % lens shift bobs 0.5 px on y, period 8 frames | converts and stays live, the marker at the page's own projection, no jitter line. Fails on v0.6.4: stays 2D |
+| `e-postfx-spring` | `?view=spring`: an underdamped spring's tail on x (0.9 px decaying, period 7 frames) | as `e-postfx-bob`. Fails on v0.6.4: stays 2D |
+| `e-postfx-parallax` | `?view=parallax`: a lerped mouse parallax on x (the mouse wobbles by whole px, the offset follows at 0.2 a frame) | as `e-postfx-bob`. Fails on v0.6.4: stays 2D |
 | `e-postfx-pan` | `?view=pan`: the lens shift drifts 0.3 px a frame, one way, set every frame | converts, the marker at the page's own projection: a slow pan is framing, not jitter |
 | `e-postfx-miss` | `?rtScale=0.25`: the scene into a quarter-size target | 2D, and the 2D line names the near miss: `target 320x180 is under half the canvas's 1280x720 px` |
 | `e-postfx-eyes` | `three-postfx.html`, the fake's eyes 0.2 apart (`eyeX` 0.1): real parallax | the pair shift is 39 px: the skew's 64 minus the eyes' parallax at the subject (≈ 25). Swapped eyes would give 64 + 25. Until this case, the chain path's eye order was checked with the skew only (depth-independent) |
@@ -1222,6 +1232,15 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.6.5 (one-axis framing is not jitter, #231), Windows, ANGLE D3D11 + WebGPU:** 128 cases, of
+which 3 are new: `e-postfx-bob`, `e-postfx-spring` and `e-postfx-parallax`.
+- **Full pass.** 126 run, 2 skipped (`c` / `d`: no `ports_25.sog`), 125 green. `a-legacy` fails as before,
+  with the same numbers, on this Windows box only.
+- **On v0.6.4.** All three new cases stay 2D with the jitter reason: the bug.
+- **TAA still caught.** The TAA cases (`e-postfx-jitter`, `-taa`, `-taa-late`, `-taa-short`, `-taa-half`)
+  pass unchanged. With the rule fed synthetic offsets, a Halton TAA is caught at frame 4–5 (each start
+  phase), a 4-sample rotated grid at 6, random jitter at 5.
 
 **Headless, v0.6.4 (a TAA jitter left set, #226), Windows, ANGLE D3D11 + WebGPU:** 125 cases, of which 5
 are new: `e-postfx-taa`, `e-postfx-taa-late`, `e-postfx-taa-short`, `e-postfx-taa-half` and `e-postfx-pan`.
