@@ -7,6 +7,19 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — `viewerIndependent`: stereo photos and video no longer start a viewer tracker (core)
+
+Every `add*()` takes `viewerIndependent` (default `true` for `addImage` / `addVideo`, `false` for
+`addScene`; image/video default to `false` under `untrackedFallback: 'mono'`), and every tile
+handle gains `setViewerIndependent(bool)` and a `viewerIndependent` getter. New export
+`inline3dViewerIndependentSupported()`. The SDK passes the declaration to the DisplayXR Browser
+(`XRDisplayLayerInit.viewerIndependent`, `XRDisplayLayer.setViewerIndependent`), which, while
+everything a page shows is viewer-independent, asks the runtime for the display's nominal viewer
+(runtime `XR_DXR_display_info` v25) — so a page that only plays stereo video never turns on a
+webcam viewer tracker. Advisory only: no pixel the SDK paints changes, and on a browser or runtime
+without the capability nothing is sent. While a page is viewer-independent its `trackingState`
+keeps its last value. See `docs/authoring-inline-3d.md` § *Viewer-independent content*.
+
 ## 1.47.6 — 2026-11-03
 
 ### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)

@@ -122,7 +122,22 @@ const hasViewRig = () => {
     return false; // a prototype that refuses to be probed is not a capability
   }
 };
-// Display modes — the display's own capabilities, and the one thing a page can ask it to
+// Viewer-independent content (runtime XR_DXR_display_info v25, `XrViewLocateFixedViewerDXR`). A
+// window whose picture is the same wherever the viewer stands — a stereo photo, a side-by-side
+// video — DECLARES so with `XRDisplayLayer.setViewerIndependent(true)` (or the init member). The
+// browser then locates for the display's nominal viewer while everything its foreground tab shows
+// is viewer-independent, so a viewer-tracking provider (a webcam tracker on a display that does
+// not track by itself) is never started just to play a movie. Advisory: it changes no pixel the
+// SDK paints, and a 3D scene stays head-tracked. Probed as a METHOD for the setViewRig reason.
+const hasViewerIndependent = () => {
+  if (!hasLayer()) return false;
+  try {
+    return 'setViewerIndependent' in window.XRDisplayLayer.prototype;
+  } catch {
+    return false;
+  }
+};
+// Display modes —the display's own capabilities, and the one thing a page can ask it to
 // change. Three methods, all on XRDisplayLayer, all promise-returning:
 //
 //   getDisplayInfo()          the panel: physical size, pixel size, the view scale it
@@ -346,6 +361,20 @@ export function inline3dOcclusionByDrawOrder() {
  */
 export function inline3dViewRigSupported() {
   return inline3DAvailable() && hasViewRig();
+}
+
+/**
+ * True when this browser takes the VIEWER-INDEPENDENT declaration — `addImage` / `addVideo` /
+ * `addScene`'s `viewerIndependent` option and `handle.setViewerIndependent()` reach the browser,
+ * which then asks the runtime for fixed (nominal-viewer) views instead of tracked ones while
+ * everything on screen is viewer-independent. Sync + cheap; implies {@link inline3DAvailable}.
+ *
+ * Reads a capability (the presence of `XRDisplayLayer.prototype.setViewerIndependent`). A page
+ * never needs to branch on it: the declaration is advisory, stored either way, and on an older
+ * browser simply not sent — the window weaves exactly as before.
+ */
+export function inline3dViewerIndependentSupported() {
+  return inline3DAvailable() && hasViewerIndependent();
 }
 
 /**
@@ -1077,6 +1106,11 @@ class Inline3D {
    *        hard rectangle. Same reason CSS can't do it: a mask/filter on the canvas applies
    *        across the packed SBS pair, so each eye would get an inner fade along the split
    *        line and only half its outer edge.
+   * @param {boolean} [opts.viewerIndependent=true]  (every add*()) declare that this window's
+   *        picture is the same wherever the viewer stands, so the browser may locate it for the
+   *        display's nominal viewer and no viewer tracker (webcam) starts for it. Default `true`
+   *        for `addImage`/`addVideo`, `false` for `addScene`. Advisory; see
+   *        `handle.setViewerIndependent()`.
    * @returns {{remove():void}}
    */
   addImage(canvas, source, opts = {}) {
@@ -1129,6 +1163,10 @@ class Inline3D {
    *        falls back to `virtualDisplayHeight` if one was given (that pair is the one reason
    *        to pass both) — either way the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
+   * @param {boolean} [opts.viewerIndependent=false]  declare that this scene's picture does NOT
+   *        depend on where the viewer stands (rare for a scene: e.g. a canvas that only plays a
+   *        pre-rendered stereo pair). See `handle.setViewerIndependent()`. `addImage`/`addVideo`
+   *        default to `true`.
    * @param {(box:{width:number, height:number, dpr:number}) => void} [opts.onResize]  called
    *        inside the ResizeObserver callback when the canvas's CSS box or dpr changes, i.e.
    *        before the paint: resize your backing store and draw one frame here and the old store
@@ -1290,6 +1328,30 @@ class Inline3D {
         // factors > 1, a FOV in degrees). Read only: the rig goes out exactly as given.
         if (rig) warnViewRigOnce(win.rigWarned, rig);
         return this._pushViewRig(win);
+      },
+      /** Whether this window is declared viewer-independent (see setViewerIndependent). */
+      get viewerIndependent() {
+        return win.viewerIndependent;
+      },
+      /**
+       * Declare whether this window's picture depends on where the viewer stands (runtime
+       * XR_DXR_display_info v25). `true` for content rendered from a fixed image pair (a stereo
+       * photo or video, a flat UI); `false` for a live 3D scene. While everything the foreground
+       * tab shows is viewer-independent the browser locates for the display's nominal viewer, so
+       * no viewer tracker (a webcam) starts for it. Advisory only — nothing the SDK paints changes.
+       * Returns whether a LIVE layer took it; the value is stored either way and builds the next
+       * layer, and a browser without the capability just never receives it.
+       */
+      setViewerIndependent: (flag) => {
+        win.viewerIndependent = flag === true;
+        const layer = win.layer;
+        if (!layer || typeof layer.setViewerIndependent !== 'function') return false;
+        try {
+          layer.setViewerIndependent(win.viewerIndependent);
+          return true;
+        } catch {
+          return false;
+        }
       },
       /**
        * Runtime ADR-046 Amendment 4: the depth under the pointer for THIS window, forwarded to its
@@ -2384,6 +2446,17 @@ class Inline3D {
       // and rebuilds layers behind the page's back: a tile that scrolls away and back would
       // otherwise silently revert to the default display rig mid-scene.
       viewRig: opts.viewRig || null,
+      // Does this window's picture depend on where the viewer stands? A still or video stereo
+      // pair does not (default true for 'image'/'video'); a live scene does (default false — look-
+      // around is the point). Declared to the browser, never enforced: the SDK paints the same
+      // pixels either way. Kept on the window, like viewRig, so a lazily rebuilt layer gets it.
+      // One exception to the image/video default: under `untrackedFallback: 'mono'` the page has
+      // asked to follow the viewer's tracking state, and a viewer-independent page locates for no
+      // viewer, so its tracking state would never move. An explicit option still wins.
+      viewerIndependent:
+        opts.viewerIndependent === undefined
+          ? kind !== 'scene' && this._untrackedFallback !== 'mono'
+          : opts.viewerIndependent === true,
       // Which one-time rig warnings this window has given (setViewRig / opts.viewRig), and
       // whether its 'withheld' reason has been logged. Diagnostics only.
       rigWarned: new Set(),
@@ -2518,6 +2591,10 @@ class Inline3D {
         : win.virtualDisplayHeight > 0
           ? { virtualDisplayHeight: win.virtualDisplayHeight }
           : {};
+      // Only offered to a browser that knows the member (same reasoning as the rig): an older
+      // one ignores an unknown dictionary member anyway, but keeping the init byte-identical
+      // there keeps what an older browser sees exactly what it saw before.
+      if (hasViewerIndependent()) init.viewerIndependent = win.viewerIndependent;
       win.layer = new XRDisplayLayer(this.session, win.canvas, init);
     } catch (err) {
       win.layer = null;
