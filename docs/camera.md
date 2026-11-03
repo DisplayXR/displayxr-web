@@ -45,10 +45,11 @@ when the camera is one.
 
 | Option | Default | What |
 |---|---|---|
-| `prefer` | `'auto'` | `'auto'`: a stereo device when one is present — the DisplayXR Browser's "3D Camera" (recognised by its `displayxrStereo` track settings, never by its label) or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId`; or a `MediaStream` you own |
+| `prefer` | `'auto'` | `'auto'`: a stereo device when one is present — the DisplayXR Browser's "3D Camera" (recognised by its `displayxrStereo` track settings or its label, never by where it is listed: on Windows it is listed last) or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId`; or a `MediaStream` you own |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream`. 3D-ness is never guessed from a stream |
 | `calibration` | — | `{ baselineMm, horizontalFovDeg, rectified }` for a stream the device does not describe; a page value wins over the device's |
 | `rectify` | — | `(stream, info) => MediaStream` — a calibrated rectification step for a raw pair; `stereo.rectified` is then true. A throwing hook keeps the raw pair (`cam.rectifyError`) |
+| `exclude` | the built-in list | Devices no probe may open: strings match a label (case-insensitive substring) or a `deviceId` exactly, RegExps test the label. Always added: labels that mark a **sensor rather than a camera** — hand tracking, an eye tracker's or a "tracking camera"'s stream, a depth camera. `false` turns the built-in list off too. See below |
 | `debug` | `false` | Verbose console logging |
 
 `openCamera('stereo')` and `openCamera(mediaStream)` are shorthands for `prefer`.
@@ -63,6 +64,15 @@ fatal. The promise rejects only when **no** camera opens, with `error.code`:
 | `no-camera` | No device, or every open failed for another reason |
 
 `error.skipped` lists each device tried and why it was not used.
+
+**Sensors are not cameras.** A hand-tracking camera (and an eye tracker's or a depth camera's IR
+stream) enumerates as an ordinary video input, and its frame can be wide enough to look like a
+side-by-side pair. Found on hardware: on a Windows box with no stereo camera open, the last-resort
+"try every device" probe opened a hand-tracking camera and a call sent it as its 3D picture. So
+every probe path skips devices whose label matches the built-in list (plus `exclude`): the
+named-pair fast path, the default camera (opened, since its label is only known then, and closed
+again), and the last resort. They show up in `skipped` with `excluded: true` and `error:
+'excluded'`. An explicit `deviceId` is your choice and is opened regardless.
 
 ### The camera
 
@@ -98,7 +108,8 @@ const view = addCameraView(await sharedInline3D(), document.querySelector('canva
   mirror: true,          // selfie mirroring, done right for a pair (default: true unless cam.facing is 'environment')
   autoConverge: true,    // the face at the display plane (default false)
   depth: 0,              // [-1, 1], + = push back — an offset on top of the convergence
-  aspect: 16 / 9,        // the tile's aspect = the woven buffer's per-eye aspect
+  aspect: 16 / 9,        // the tile's aspect = the woven buffer's per-eye aspect; 'fill' = the canvas's own box
+  rectCover: 'auto',     // optional: the core's rect cover across a later resize / move (default off)
 });
 view.route;              // 'woven-sbs' | 'flat-left' | 'flat'
 view.woven;              // true only while on the woven route (a failed layer takes it flat)
