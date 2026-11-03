@@ -26,6 +26,19 @@ export const MESH_HARD_CAP = 4;
 /** `hint` messages are rate-limited to this many per second, on the sender AND the receiver. */
 export const HINT_MAX_HZ = 5;
 
+/**
+ * `conv` (sender-measured auto-convergence, docs/call.md): a sender broadcasts at most this many
+ * per second; a receiver accepts at most `CONV_RECV_MAX_HZ`. A sender whose value has not changed
+ * still sends one every `CONV_HEARTBEAT_MS`; a receiver that has heard nothing for `CONV_FRESH_MS`
+ * goes back to measuring the received frames itself.
+ */
+export const CONV_MAX_HZ = 5;
+export const CONV_RECV_MAX_HZ = 10;
+export const CONV_HEARTBEAT_MS = 400;
+export const CONV_FRESH_MS = 1200;
+/** `conv.d` is a fraction of the per-eye width; anything beyond ±this is not a face's disparity. */
+export const CONV_MAX_FRAC = 0.5;
+
 /** Plausible subject distances, mm. A hint outside this is ignored as noise. */
 export const SUBJECT_Z_MIN_MM = 150;
 export const SUBJECT_Z_MAX_MM = 5000;
@@ -116,7 +129,7 @@ export function buildInviteLink(base, room) {
   return `${b}#room=${room}`;
 }
 
-// ── hello / hint / state ───────────────────────────────────────────────────────────────────
+// ── hello / hint / state / conv ────────────────────────────────────────────────────────────
 
 /**
  * Validate an incoming `hello`, filling the defaults a receiver may assume. Returns null for
@@ -138,11 +151,17 @@ export function normalizeHello(msg) {
     hfovDeg: num(msg.hfovDeg, 5, 170),
     rectified: msg.rectified === true,
     sdk: typeof msg.sdk === 'string' ? msg.sdk.slice(0, 64) : null,
+    // The sender measures its own convergence and sends `conv` messages. Absent (an older sender) =
+    // false: the receiver measures the decoded frames itself, as before.
+    conv: msg.conv === true,
   };
 }
 
-/** Build the `hello` this side sends. */
-export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified } = {}) {
+/**
+ * Build the `hello` this side sends. `conv: true` (advertised for a side-by-side sender only)
+ * says this side sends `conv` messages.
+ */
+export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified, conv } = {}) {
   const h = {
     type: 'hello',
     v: WIRE_VERSION,
@@ -154,7 +173,36 @@ export function makeHello({ format, width, height, baselineMm, hfovDeg, rectifie
   };
   if (Number.isFinite(baselineMm)) h.baselineMm = baselineMm;
   if (Number.isFinite(hfovDeg)) h.hfovDeg = hfovDeg;
+  if (h.format === 'sbs' && conv) h.conv = true;
   return h;
+}
+
+/**
+ * `conv {d, c?}`: the sender's measured disparity of the point between its subject's eyes, as a
+ * FRACTION of its per-eye width (resolution-free: a receiver multiplies by the width of the frame it
+ * decodes), `null` = nothing measured yet (the receiver holds what it had). `c` = the match
+ * confidence (NCC, 0..1), informational.
+ * @param {number|null} frac
+ * @param {number|null} [ncc]
+ */
+export function makeConv(frac, ncc) {
+  const m = { type: 'conv', d: typeof frac === 'number' && Number.isFinite(frac) ? Math.max(-CONV_MAX_FRAC, Math.min(CONV_MAX_FRAC, frac)) : null };
+  if (typeof ncc === 'number' && Number.isFinite(ncc)) m.c = Math.max(0, Math.min(1, ncc));
+  return m;
+}
+
+/**
+ * Validate an incoming `conv`. Null for anything that is not one, or whose `d` is neither null nor
+ * a finite number within ±CONV_MAX_FRAC. `c` is clamped to 0..1, or dropped. Never throws: this
+ * reads data from another browser.
+ */
+export function normalizeConv(msg) {
+  if (!msg || typeof msg !== 'object' || msg.type !== 'conv') return null;
+  const d = msg.d;
+  if (d !== null && !(typeof d === 'number' && Number.isFinite(d) && Math.abs(d) <= CONV_MAX_FRAC)) return null;
+  const out = { type: 'conv', d };
+  if (typeof msg.c === 'number' && Number.isFinite(msg.c)) out.c = Math.max(0, Math.min(1, msg.c));
+  return out;
 }
 
 /** `hint {subjectZmm}`: a number in range, or null (ignored). */
