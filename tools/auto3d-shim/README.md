@@ -1241,9 +1241,11 @@ are new: `e-postfx-taa`, `e-postfx-taa-late`, `e-postfx-taa-short`, `e-postfx-ta
   - 30 s of their tours each: all three stay live, with no jitter stand-down;
   - about 70 s each, driven like a visitor (view keys 1–6, a drag, the wheel, X-ray on and off, pause):
     live in every once-a-second sample after going live.
-- **On the panel** (Windows box, DisplayXR Browser via `launch.cmd`, 2026-11-03): all three convert with
-  the first cut of v0.6.4 and read right. `flatReason` stays `null`. This is strandbeest's and
-  robotic-bee's first panel check. The second look's rule was run headless only (above).
+- **On the panel** (Windows box, DisplayXR Browser via `launch.cmd`, 2026-11-03), with the first cut and
+  again with the final rule: all three convert and read right, and `flatReason` stays `null`. This is
+  strandbeest's and robotic-bee's first panel check. With the final rule, threejs.org
+  `webgl_postprocessing_taa` and `three-postfx.html` (served locally) with `?view=taa`,
+  `?view=taa&rtScale=0.5` and `?view=taa-short` stay 2D, and `?view=pan` converts.
 
 **Headless, v0.6.3 (three.js view windows + mirroring chains, #221), Windows, ANGLE D3D11 + WebGPU:**
 120 cases, 11 of them new:
