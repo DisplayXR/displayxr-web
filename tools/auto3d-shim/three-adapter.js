@@ -898,7 +898,7 @@ function dxrThree(core) {
       // alone (set, draw, cleared), or several in one frame, is TAA / SSAA jitter. So is one left set
       // that dithers frame to frame (viewTrend).
       if (sd.mixed || !sameView(sd.view, viewSnap(sd.camera))) { viewJitter(st); return; }
-      const trend = viewTrend(st, sd.view);
+      const trend = viewTrend(st, sd.view, sd.rt);
       if (trend === 'jitter') { viewJitter(st); return; }
       if (st.viewOk) return;
       if (trend === 'framing') { viewReady(st, sd); return; }
@@ -1082,17 +1082,21 @@ function dxrThree(core) {
   // A jitter left set (#226, from the #222 review). three's TAARenderPass / SSAARenderPass clear their
   // offset after the draw (caught above, in markSeed), but a page's own TAA may leave it set and only
   // move it: the view then reaches the end of every frame, and passed for framing. One entry per frame,
-  // the view as it stands at the end of the frame, in drawing-buffer pixels whatever units the page
-  // passes to setViewOffset:
+  // the view as it stands at the end of the frame, in the scene target's pixels (the units a TAA
+  // jitters in: ±0.5 px of a half-size target is ±1 canvas px) whatever units the page passes to
+  // setViewOffset:
   //   framing    unchanged since the last frame; or moved by 1 px or more (a deliberate shift, a cut);
   //              or a new window size (a zoom); or VIEW_FRAMES frames of sub-pixel steps that do not
   //              keep turning back (a slow pan)
-  //   jitter     VIEW_FRAMES frames in a row of sub-pixel steps, staying within 1.5 px and turning
-  //              back at least 3 times on one axis (Halton / random jitter turns back almost every frame)
-  //   unknown    fewer frames than that so far
+  //   jitter     a run of sub-pixel steps (its last VIEW_FRAMES frames at most) that stays within 1.5 px
+  //              and turns back at least twice on one axis. Halton / random jitter turns back almost
+  //              every frame, so a TAA is caught on its 4th sample: one that settles after a few
+  //              samples and stops drawing the scene is caught too. A pan, a tween, a settling spring
+  //              does not turn back twice in a few frames.
+  //   unknown    neither, so far
   const VIEW_FRAMES = 8;
-  function viewTrend(st, v) {
-    const bw = st.L.w * st.L.pr || 1, bh = st.L.h * st.L.pr || 1;
+  function viewTrend(st, v, rt) {
+    const bw = (rt && rt.width) || st.L.w * st.L.pr || 1, bh = (rt && rt.height) || st.L.h * st.L.pr || 1;
     const e = { x: (v[2] / (v[0] || 1)) * bw, y: (v[3] / (v[1] || 1)) * bh, w: v[4] / (v[0] || 1), h: v[5] / (v[1] || 1) };
     const hist = st.viewHist, prev = hist[hist.length - 1];
     hist.push(e);
@@ -1100,17 +1104,19 @@ function dxrThree(core) {
     if (!prev) return 'unknown';
     const dx = e.x - prev.x, dy = e.y - prev.y;
     if (e.w !== prev.w || e.h !== prev.h || (dx === 0 && dy === 0) || Math.abs(dx) >= 1 || Math.abs(dy) >= 1) { st.viewSteps = 0; return 'framing'; }
-    if (++st.viewSteps < VIEW_FRAMES - 1) return 'unknown';
+    st.viewSteps++;
+    const run = hist.slice(-Math.min(st.viewSteps + 1, VIEW_FRAMES)); // this run of sub-pixel steps
     const turns = (k) => {
       let n = 0;
-      for (let i = 2; i < hist.length; i++) {
-        const a = hist[i - 1][k] - hist[i - 2][k], b = hist[i][k] - hist[i - 1][k];
+      for (let i = 2; i < run.length; i++) {
+        const a = run[i - 1][k] - run[i - 2][k], b = run[i][k] - run[i - 1][k];
         if (a * b < 0) n++;
       }
       return n;
     };
-    const span = (k) => Math.max(...hist.map((p) => p[k])) - Math.min(...hist.map((p) => p[k]));
-    return Math.max(turns('x'), turns('y')) >= 3 && span('x') <= 1.5 && span('y') <= 1.5 ? 'jitter' : 'framing';
+    const span = (k) => Math.max(...run.map((p) => p[k])) - Math.min(...run.map((p) => p[k]));
+    if (Math.max(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
+    return st.viewSteps >= VIEW_FRAMES - 1 ? 'framing' : 'unknown';
   }
   const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';
   function viewJitter(st) {
