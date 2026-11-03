@@ -5,16 +5,25 @@
 // 1280x480, i.e. 640x480 per eye, grayscale and UNRECTIFIED). Found → sent as `sbs`. Otherwise the
 // default webcam, sent as `mono`. Per-eye width is whatever the camera gives; nothing is upscaled.
 //
-// Two field facts shape the probing:
+// Three field facts shape the probing:
 //  - On some laptops the stereo camera is held EXCLUSIVELY by the eye tracker, so opening it
 //    fails with NotReadableError ("Device in use"). That device is skipped silently — a call must
 //    never fail because an optional camera is busy.
+//  - Not every `videoinput` is a camera a person should be seen through. A hand-tracking camera
+//    (and an eye tracker's or a depth sensor's IR stream) enumerates as an ordinary video input
+//    and can even look like a pair by shape; on a Windows box with no stereo camera open, the
+//    last-resort "try every device" loop opened one and sent it as the call's 3D picture. Labels
+//    matching CAMERA_EXCLUDE_BUILTIN, plus the page's `exclude` list, are never opened by any probe
+//    path (an excluded default is closed again), and are reported in `skipped` as `excluded`.
 //  - Labels are empty until one getUserMedia has succeeded. Without them, permission is primed on
-//    the DEFAULT camera with no constraints: in the DisplayXR Browser the runtime's 3D camera is
-//    listed first, so the prime opens the pair itself and no phone lens is opened at all (a plain
-//    open of one lens of the pair, or its teardown, crashes some phones' camera HAL; any facing or
-//    size constraint lets the engine pick a lens instead). Then the list is read again and a
-//    stereo device is opened by id BEFORE falling back. The primed default is the fallback.
+//    the DEFAULT camera with no constraints (a plain open of one lens of a phone's pair, or its
+//    teardown, crashes some phones' camera HAL; any facing or size constraint lets the engine pick
+//    a lens instead). Where the runtime's 3D camera is the default, the prime opens the pair
+//    itself. NOTHING here assumes a list position: on Windows the DisplayXR Browser lists its
+//    "3D Camera (DisplayXR)" LAST. A pair is recognised by the track's own `displayxrStereo`
+//    description or by its label (stereoLabelHint), and after the prime the list is read again and
+//    a named pair is opened by id BEFORE a default that is a pair only by its shape is kept. The
+//    primed default is the fallback.
 //
 // RECTIFICATION is not done here (P2): it needs the camera's calibration (intrinsics/extrinsics
 // for the ACTIVE device), which comes from a plug-in or the runtime. P1 sends the raw pair with
@@ -48,9 +57,42 @@ export function isDeniedError(err) {
  * @param {Array<{error: string, busy?: boolean, denied?: boolean}>} skipped
  */
 export function noCameraCode(skipped) {
-  if (skipped.length && skipped.every((s) => s.busy)) return 'camera-busy';
-  if (skipped.some((s) => s.denied)) return 'permission-denied';
+  // A device left out on purpose (`excluded`) says nothing about why the others failed.
+  const tried = skipped.filter((s) => !s.excluded);
+  if (tried.length && tried.every((s) => s.busy)) return 'camera-busy';
+  if (tried.some((s) => s.denied)) return 'permission-denied';
   return 'no-camera';
+}
+
+/**
+ * Labels of video inputs that are sensors, not cameras to be seen through: hand tracking, an eye
+ * tracker's or a "tracking camera"'s IR stream, a depth camera. Generic words only. Applied on
+ * every probe path unless `exclude: false`.
+ */
+export const CAMERA_EXCLUDE_BUILTIN = /\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera)/i;
+
+/**
+ * The exclusion list in force: the built-in pattern plus `exclude` (strings match a label
+ * case-insensitively as a substring, or a deviceId exactly; RegExps test the label), or nothing at
+ * all for `exclude: false`. Returns a predicate `(label, deviceId) => boolean`. Pure.
+ * @param {false|null|undefined|ReadonlyArray<string|RegExp>|string|RegExp} exclude
+ */
+export function cameraExcluder(exclude) {
+  if (exclude === false) return () => false;
+  const list = [CAMERA_EXCLUDE_BUILTIN];
+  for (const x of exclude == null ? [] : Array.isArray(exclude) ? exclude : [exclude]) {
+    if (x instanceof RegExp || (typeof x === 'string' && x)) list.push(x);
+  }
+  return (label, deviceId) => {
+    const l = String(label || '');
+    for (const x of list) {
+      if (x instanceof RegExp) {
+        x.lastIndex = 0; // a /g or /y pattern is stateful
+        if (l && x.test(l)) return true;
+      } else if ((l && l.toLowerCase().includes(x.toLowerCase())) || (deviceId && deviceId === x)) return true;
+    }
+    return false;
+  };
 }
 
 /** A label that names a stereo camera, tried first when probing. Pure. */
@@ -65,7 +107,9 @@ export function stereoLabelHint(label) {
  * @param {'auto'|'stereo'|'mono'|string|MediaStream} want  'auto' | 'stereo' | 'mono' | a
  *        deviceId | a page-supplied MediaStream
  * @param {{ format?: 'sbs'|'mono', calibration?: {baselineMm?: number, hfovDeg?: number, rectified?: boolean},
- *           mediaDevices?: MediaDevices, log?: Function }} [o]
+ *           mediaDevices?: MediaDevices, log?: Function, exclude?: false|Array<string|RegExp> }} [o]
+ *        `exclude`: devices no probe may open (see cameraExcluder); an explicit deviceId is the
+ *        page's own choice and is opened regardless.
  * @returns {Promise<{ stream: MediaStream, format: 'sbs'|'mono', width: number, height: number,
  *           deviceId: string|null, label: string, owned: boolean, skipped: Array<{label: string, error: string}>,
  *           calibration: object }>}
@@ -75,6 +119,7 @@ export async function openCamera(want = 'auto', o = {}) {
   const log = o.log || (() => {});
   const skipped = [];
   const cal = o.calibration || {};
+  const isExcluded = cameraExcluder(o.exclude);
 
   if (want && typeof want === 'object' && typeof want.getVideoTracks === 'function') {
     const t = want.getVideoTracks()[0];
@@ -105,6 +150,32 @@ export async function openCamera(want = 'auto', o = {}) {
     log('camera-skip', { label, error: err.name });
   };
   const stop = (r) => r && r.stream.getTracks().forEach((t) => t.stop());
+  // Excluded devices: never opened by id; a default that turns out to be one is closed again.
+  const excludedIds = new Set();
+  const exclude = (label, deviceId) => {
+    if (deviceId && excludedIds.has(deviceId)) return;
+    if (deviceId) excludedIds.add(deviceId);
+    skipped.push({ label, error: 'excluded', excluded: true });
+    log('camera-skip', { label, error: 'excluded' });
+  };
+  const listedExcluded = (d) => {
+    if (!d.label || !isExcluded(d.label, d.deviceId)) return false;
+    exclude(d.label, d.deviceId);
+    return true;
+  };
+  // An open of the DEFAULT (no id): only after it opened is its label known. An excluded default
+  // is closed and never opened again in this probe.
+  let defaultExcluded = false;
+  const openDefault = async (constraints) => {
+    const r = await open(constraints);
+    if (isExcluded(r.label, r.deviceId)) {
+      stop(r);
+      exclude(r.label, r.deviceId);
+      defaultExcluded = true;
+      return null;
+    }
+    return r;
+  };
   // Ask an open camera for another mode without a second start; keep it as it is if it refuses.
   const withMode = async (r, constraints) => {
     try {
@@ -165,6 +236,7 @@ export async function openCamera(want = 'auto', o = {}) {
     for (const d of list) {
       if (!d.deviceId || !stereoLabelHint(d.label) || tried.has(d.deviceId)) continue;
       tried.add(d.deviceId);
+      if (listedExcluded(d)) continue;
       let r = null;
       try {
         r = await open({ deviceId: { exact: d.deviceId }, ...PROBE_CONSTRAINTS });
@@ -192,31 +264,35 @@ export async function openCamera(want = 'auto', o = {}) {
       pair = await tryNamedPairs(listed);
       if (pair) return result(pair, 'sbs');
     }
-    // No labels yet (no permission). Prime it on the default camera with NO constraints: in the
-    // DisplayXR Browser that is the 3D camera (listed first), so no phone lens is opened; a facing
-    // or size constraint would let the engine pick a lens instead. Then open a pair by id.
+    // No labels yet (no permission). Prime it on the default camera with NO constraints (a facing
+    // or size constraint would let the engine pick a phone lens instead). Where the runtime's 3D
+    // camera is the default this opens the pair itself; elsewhere (Windows lists it LAST) the list
+    // is read again and a NAMED pair is opened by id. A default that is a pair only by its SHAPE is
+    // kept as the pair only when no named one opens (it could be any wide sensor).
     if (listed.length && listed.every((d) => !d.label)) {
       let primed = null;
       try {
-        primed = await open(true);
+        primed = await openDefault(true);
       } catch (err) {
         skip('default', err);
       }
-      if (primed && isPair(primed)) return result(primed, 'sbs');
+      if (primed && primed.stereo) return result(primed, 'sbs'); // the device says it is the pair
+      if (primed && primed.deviceId) tried.add(primed.deviceId);
       const named = await tryNamedPairs(await listCameras());
       if (named) {
         stop(primed);
         return result(named, 'sbs');
       }
+      if (primed && isPair(primed)) return result(primed, 'sbs');
       // The primed default is the fallback as is (one camera start); ask it for the usual mode.
       if (primed) mono = await withMode(primed, MONO_CONSTRAINTS);
     }
   }
 
   // The default camera: the fallback (and, with labels already visible, also the probe base).
-  if (!mono) {
+  if (!mono && !defaultExcluded) {
     try {
-      mono = await open(MONO_CONSTRAINTS);
+      mono = await openDefault(MONO_CONSTRAINTS);
     } catch (err) {
       skip('default', err);
     }
@@ -230,11 +306,13 @@ export async function openCamera(want = 'auto', o = {}) {
   } catch {
     /* no enumeration: keep the default */
   }
+  // A label that names a pair first; never by list position (see the header).
   devices.sort((a, b) => Number(stereoLabelHint(b.label)) - Number(stereoLabelHint(a.label)));
   for (const d of devices) {
     if (!d.deviceId) continue; // no permission yet: an anonymous entry cannot be opened by id
     if (mono && d.deviceId === mono.deviceId) continue;
-    if (tried.has(d.deviceId)) continue; // the fast path already opened it (not a pair, or busy)
+    if (tried.has(d.deviceId) || excludedIds.has(d.deviceId)) continue; // already opened (not a pair, or busy) or left out
+    if (listedExcluded(d)) continue; // the last resort never opens a sensor (a hand-tracking camera)
     let r = null;
     try {
       r = await open({ deviceId: { exact: d.deviceId }, ...PROBE_CONSTRAINTS });
@@ -243,10 +321,16 @@ export async function openCamera(want = 'auto', o = {}) {
       skip(d.label, err);
       continue;
     }
-    if (isPair(r)) {
+    if (isPair(r) && want !== 'mono') {
       stop(mono);
       log('camera-sbs', { label: r.label, width: r.width, height: r.height });
       return result(r, 'sbs');
+    }
+    // No default could be used (excluded, busy): the first plain camera found is the fallback.
+    if (!mono && !isPair(r)) {
+      mono = await withMode(r, MONO_CONSTRAINTS);
+      if (want === 'mono') return result(mono, 'mono');
+      continue;
     }
     stop(r);
   }
@@ -261,11 +345,14 @@ export async function openCamera(want = 'auto', o = {}) {
   );
 }
 
-/** The microphone, with echo cancellation and noise suppression. Null if unavailable/denied. */
+/**
+ * The microphone, with echo cancellation and noise suppression. Null if unavailable/denied.
+ * `deviceId`: that input exactly (`handle.setMic`).
+ */
 export async function openMic(o = {}) {
   const md = o.mediaDevices || (globalThis.navigator && navigator.mediaDevices);
   try {
-    const s = await md.getUserMedia({ audio: { ...AUDIO_CONSTRAINTS }, video: false });
+    const s = await md.getUserMedia({ audio: { ...AUDIO_CONSTRAINTS, ...(o.deviceId ? { deviceId: { exact: o.deviceId } } : {}) }, video: false });
     return s.getAudioTracks()[0] || null;
   } catch (err) {
     (o.log || (() => {}))('mic-skip', { error: err && err.name });

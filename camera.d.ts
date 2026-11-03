@@ -11,7 +11,7 @@
 // The public surface of this file is pinned by test/api-snapshot: a change here fails `npm test`
 // until the snapshot is updated in the same change (`node tools/api-surface.mjs --update`).
 
-import type { Inline3D, Inline3DUnsupported, TileHandle } from './index.js';
+import type { Inline3D, Inline3DUnsupported, TileHandle, RectCoverOption } from './index.js';
 import type { CursorShape, CursorShapeHit, CursorShapeOption, CursorSoftenOption } from './cursor-depth.js';
 
 /** What the camera delivers: a side-by-side pair (left eye left) or one flat picture. */
@@ -56,6 +56,17 @@ export interface CameraOptions {
    * is then true. A throwing hook keeps the raw pair (`cam.rectifyError`).
    */
   rectify?: (stream: MediaStream, info: { width: number; height: number; deviceId: string | null; label: string }) => MediaStream | Promise<MediaStream>;
+  /**
+   * Devices no probe may open. Built in, always (unless `false`): video inputs whose label marks a
+   * sensor rather than a camera — hand tracking, an eye tracker's or a "tracking camera"'s stream,
+   * a depth camera (`/\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera)/i`). Add your
+   * own: a string matches a label (case-insensitive substring) or a deviceId exactly; a RegExp
+   * tests the label. Applied on every probe path, the last-resort "try every device" one
+   * included; a default camera that turns out to be excluded is closed again. Left-out devices
+   * are listed in `skipped` with `excluded: true`. `false` turns the built-in list off. An explicit
+   * `deviceId` (`prefer`) is your choice and is opened regardless.
+   */
+  exclude?: ReadonlyArray<string | RegExp> | false;
   /** Verbose console logging. */
   debug?: boolean;
 }
@@ -64,7 +75,16 @@ export interface CameraOptions {
 export type CameraErrorCode = 'camera-busy' | 'permission-denied' | 'no-camera';
 export interface CameraError extends Error {
   code: CameraErrorCode;
-  skipped: ReadonlyArray<{ label: string; error: string; busy?: boolean; denied?: boolean }>;
+  skipped: ReadonlyArray<CameraSkip>;
+}
+
+/** A device {@link openCamera} tried and did not use: busy, refused, or left out (`excluded`, `error: 'excluded'`). */
+export interface CameraSkip {
+  label: string;
+  error: string;
+  busy?: boolean;
+  denied?: boolean;
+  excluded?: boolean;
 }
 
 export interface CameraEvents {
@@ -162,7 +182,7 @@ export interface StereoCamera {
   /** True when this module opened the device (and `close()` stops it); false for a page-supplied stream. */
   readonly owned: boolean;
   /** Devices tried and not used (busy, denied, not a pair) — the clue a `'camera-busy'` report carries. */
-  readonly skipped: ReadonlyArray<{ label: string; error: string; busy?: boolean; denied?: boolean }>;
+  readonly skipped: ReadonlyArray<CameraSkip>;
   readonly state: 'live' | 'ended' | 'closed';
   /** A detached, playing `<video>` on the stream (never in the DOM); null without a document. */
   readonly video: HTMLVideoElement | null;
@@ -214,8 +234,17 @@ export interface CameraViewOptions {
   autoConverge?: boolean;
   /** [-1, 1], + = push back: an offset on top of the convergence. Default 0. */
   depth?: number;
-  /** The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
-  aspect?: number;
+  /**
+   * The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. `'fill'`: the
+   * canvas's own CSS box, read every frame (clamped to 0.3–4), for a page that sizes the tile.
+   */
+  aspect?: number | 'fill';
+  /**
+   * The core's rect cover (`addImage`'s `rectCover`) on the woven registration: `'auto'`
+   * covers the tile across a later resize or move until it is woven again. Default: the core's
+   * (`'off'`).
+   */
+  rectCover?: RectCoverOption;
   /**
    * `'depth'`: while the pointer is over the woven view and what is under it comes out of the
    * screen, the normal arrow is drawn just in front of it (runtime ADR-046, measured off the pair's
