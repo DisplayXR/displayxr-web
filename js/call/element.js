@@ -37,7 +37,7 @@ import { mountCall, dxrSignaling } from '../inline3d-call.js';
 
 /** Every call event is re-dispatched as `dxr-call:<type>`; `dxr-call:ready` carries the handle. */
 export const CALL_EVENT_PREFIX = 'dxr-call:';
-const CALL_EVENTS = ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning'];
+const CALL_EVENTS = ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning', 'name', 'message', 'signal', 'weave', 'speaking'];
 const TAG = '[inline3d/call] <dxr-call>';
 
 /** A boolean attribute: present is true, unless its value spells "false"/"0"/"off"/"no". */
@@ -73,7 +73,8 @@ const str = (v) => (v === null || v === undefined || String(v).trim() === '' ? u
  * | `no-auto-converge`   | `autoConverge: false`                    |
  * | `no-send-convergence`| `sendConvergence: false`                 |
  * | `cursor="depth"`     | `cursor: 'depth'`                        |
- * | `tile-aspect`        | `theme.tileAspect` (a number, or `w/h`)  |
+ * | `tile-aspect`        | `theme.tileAspect` (a number, `w/h`, or `fill`) |
+ * | `name`               | `name` (your display name)               |
  * | `invite-base`        | `invite.base`                            |
  * | `browser-url`        | `landing.browserUrl`                     |
  * | `debug`              | `debug: true`                            |
@@ -106,7 +107,8 @@ export function attrsToOpts(source) {
   if (isOn(get('no-send-convergence'))) o.sendConvergence = false;
   if (str(get('cursor')) === 'depth') o.cursor = 'depth';
   // The C2 groups (RFC 0003 §2): the attribute names are the C1 ones, the option shapes are new.
-  const theme = { accent: str(get('accent')), tileAspect: num(get('tile-aspect')) };
+  put('name', str(get('name')));
+  const theme = { accent: str(get('accent')), tileAspect: str(get('tile-aspect')) === 'fill' ? 'fill' : num(get('tile-aspect')) };
   if (theme.accent !== undefined || theme.tileAspect !== undefined) o.theme = Object.fromEntries(Object.entries(theme).filter(([, v]) => v !== undefined));
   if (str(get('invite-base'))) o.invite = { base: str(get('invite-base')) };
   if (str(get('browser-url'))) o.landing = { browserUrl: str(get('browser-url')) };

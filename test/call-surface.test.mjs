@@ -136,7 +136,12 @@ test('handle: localFormat, cameraOff getter + setCameraOff, join() → void, til
     assert.equal(events.format.length, 1, "the 1.29 'format' event still fires for a listener that asked for it");
     assert.equal(events.format[0].route, 'flat');
     const p = call.peers[0];
-    assert.deepEqual(Object.keys(p).sort(), ['cameraOff', 'display', 'format', 'id', 'muted', 'speaking', 'state'], 'CallPeer is the trimmed shape');
+    assert.deepEqual(Object.keys(p).sort(), ['cameraOff', 'display', 'format', 'id', 'muted', 'name', 'speaking', 'state'], 'CallPeer is the trimmed shape (+ name, 1.48)');
+    assert.deepEqual(
+      Object.keys(call).sort(),
+      ['broadcast', 'camera', 'cameraOff', 'depth', 'diagnostics', 'id', 'inviteLink', 'join', 'leave', 'localFormat', 'localStream', 'mono3D', 'mute', 'muted', 'name', 'off', 'on', 'peers', 'retryCamera', 'room', 'send', 'setAudioOutput', 'setCamera', 'setCameraOff', 'setDepth', 'setMic', 'setMono3D', 'setName', 'setSelfView', 'signal', 'speaker', 'state', 'tile'].sort(),
+      'the handle: the C2 shape + the headless hooks'
+    );
     const tile = call.tile('~~~~~~~~~~~');
     assert.ok(tile);
     assert.equal(tile.getAttribute('data-dxr-peer'), '~~~~~~~~~~~');

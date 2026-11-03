@@ -85,7 +85,7 @@
 
 import { sharedInline3D } from './inline3d.js';
 import * as wire from './call/wire.js';
-import { DEFAULT_MAX_PEERS, HINT_MAX_HZ, CONV_MAX_HZ, CONV_RECV_MAX_HZ, CONV_HEARTBEAT_MS, CONV_FRESH_MS, newPeerId, parseInviteLink, normalizeHint, normalizeState, normalizeConv, makeConv, rateGate, createConvergence, eyeOutputSize, backoffMs } from './call/wire.js';
+import { DEFAULT_MAX_PEERS, HINT_MAX_HZ, CONV_MAX_HZ, CONV_RECV_MAX_HZ, CONV_HEARTBEAT_MS, CONV_FRESH_MS, APP_MAX_PER_SEC, APP_RECV_MAX_PER_SEC, newPeerId, parseInviteLink, normalizeHint, normalizeState, normalizeConv, makeConv, makeAppMessage, normalizeApp, windowGate, selectedPath, sanitizeName, rateGate, createConvergence, eyeOutputSize, backoffMs } from './call/wire.js';
 import { MeshTransport as MeshTransportImpl, clampMaxPeers as clampMaxPeersImpl } from './call/transport.js';
 import { openMic } from './camera/capture.js';
 import { openCamera, addCameraView, isStereoCamera } from './inline3d-camera.js';
@@ -176,6 +176,14 @@ class Call {
     this.depth = 0;
     this.speakerId = null;
     this.transport = null;
+    // Headless hooks (docs/call.md § Headless mode): this side's name, the signalling state, the
+    // self view switch, the audio output every tile plays to, and the app channel's per-peer gates.
+    this.name = o.name;
+    this.signalState = null;
+    this.selfViewOn = o.selfView;
+    this.sinkId = null;
+    this._appOut = new Map();
+    this._appIn = new Map();
     this._raf = 0;
     this._statsTimer = 0;
     this._hintGate = rateGate(HINT_MAX_HZ);
@@ -263,7 +271,7 @@ class Call {
     let camError = null;
     const given = isStereoCamera(want) ? want : null;
     try {
-      cam = given || (await openCamera({ prefer: want, format: format || this.o.format, calibration: this.o.calibration, rectify: this.o.rectify || undefined, log }));
+      cam = given || (await openCamera({ prefer: want, format: format || this.o.format, calibration: this.o.calibration, rectify: this.o.rectify || undefined, exclude: this.o.cameraExclude, log }));
       if (given && given.state !== 'live') throw Object.assign(new Error('the camera given is not live'), { code: 'no-camera', skipped: [] });
     } catch (err) {
       camError = err;
@@ -338,6 +346,7 @@ class Call {
       hfovDeg: l.calibration?.hfovDeg,
       rectified: !!l.calibration?.rectified,
       conv: this.o.sendConvergence && l.format === 'sbs',
+      name: this.name,
     });
   }
 
@@ -390,6 +399,7 @@ class Call {
         onGhost: (gid, on) => this._onGhost(gid, on),
         onSignalingState: (st, err) => {
           this.log('signaling', { state: st });
+          this._setSignal(st, err);
           if (st === 'closed' && err) this.error(err.code || 'signaling-closed', err.message, err);
         },
       });
@@ -405,6 +415,7 @@ class Call {
       throw err;
     }
     this._setState('in-call');
+    this._setSignal('connected');
     // The grid is sized so the whole call block fits ONE viewport, but only if it starts at the
     // top: a tile below the fold is withheld from the weave (browser#167), so its layer goes
     // live late. Bring the block into view once, on join.
@@ -514,6 +525,106 @@ class Call {
     if (st) return tile.setRemoteState(st);
     const cv = normalizeConv(msg);
     if (cv) return tile.setConv(cv);
+    // An app message (handle.send / broadcast). The ONLY type that reaches the page: everything
+    // above is the SDK's own and never surfaces. Rate-capped per peer on receipt too.
+    const app = normalizeApp(msg);
+    if (app) {
+      let gate = this._appIn.get(id);
+      if (!gate) this._appIn.set(id, (gate = windowGate(APP_RECV_MAX_PER_SEC)));
+      if (gate(performance.now())) this.emit('message', { from: id, data: app.data });
+    }
+  }
+
+  /** The signalling connection's state for `handle.signal` + the `signal` event (transitions only). */
+  _setSignal(st, err) {
+    if (st === this.signalState) return;
+    this.signalState = st;
+    const ev = { state: st };
+    if (err && err.code) ev.code = err.code;
+    this.emit('signal', ev);
+  }
+
+  // ── headless hooks: names, app messages, devices, the self view ─────────────────────────
+
+  setName(n) {
+    this.name = sanitizeName(n);
+    this.transport?.broadcast(this.hello());
+    return this.name;
+  }
+
+  /** One app message to one peer: false when not connected, too big, not serialisable, or over its rate. */
+  sendApp(peerId, data) {
+    if (!this.transport) return false;
+    const m = makeAppMessage(data);
+    if (!m) return false;
+    return this._sendAppTo(peerId, m.json);
+  }
+
+  /** The same message to every peer; true only if every connected peer got it. */
+  broadcastApp(data) {
+    if (!this.transport) return false;
+    const m = makeAppMessage(data);
+    if (!m) return false;
+    let any = false;
+    let all = true;
+    for (const id of this.tiles.keys()) {
+      if (this.transport.peerState?.(id) === null) continue; // a ghost / a peer the mesh does not hold
+      any = true;
+      if (!this._sendAppTo(id, m.json)) all = false;
+    }
+    return any && all;
+  }
+
+  _sendAppTo(id, json) {
+    if (!this.tiles.has(id)) return false;
+    let gate = this._appOut.get(id);
+    if (!gate) this._appOut.set(id, (gate = windowGate(APP_MAX_PER_SEC)));
+    if (!gate(performance.now())) return false;
+    return this.transport.sendRaw ? this.transport.sendRaw(id, json) : this.transport.send(id, JSON.parse(json));
+  }
+
+  /** Switch the microphone to `deviceId` (null = the default). False (old mic kept) when it cannot open. */
+  async setMic(deviceId) {
+    const track = await openMic({ deviceId: deviceId || undefined, log: (t, x) => this.log(t, x) });
+    if (!track) return false;
+    const l = this.local;
+    if (!l) {
+      track.stop();
+      return false;
+    }
+    const old = l.audioTrack;
+    track.enabled = !this.muted;
+    l.audioTrack = track;
+    l.stream = new MediaStream([l.videoTrack, track].filter(Boolean));
+    if (this.transport) await this.transport.replaceTrack('audio', track, l.stream);
+    if (old && old !== track) old.stop();
+    this.log('mic', { deviceId: deviceId || null });
+    return true;
+  }
+
+  /** Every participant's audio to `sinkId` (also tiles that join later). True if every tile took it. */
+  async setAudioOutput(sinkId) {
+    this.sinkId = sinkId || '';
+    const results = await Promise.all([...this.tiles.values()].map((t) => t.applySink()));
+    return results.every(Boolean);
+  }
+
+  setSelfView(on) {
+    const want = on === undefined ? !this.selfViewOn : !!on;
+    if (want === this.selfViewOn) return want;
+    this.selfViewOn = want;
+    if (want) {
+      if (!this.self) this.self = new SelfTile(this, this.ui.selfSlot);
+      show(this.ui.selfSlot, true);
+      show(this.self.el, true);
+      this.self.update();
+    } else if (this.self) {
+      // Remove the LAYER first (never display:none over a live registration), then hide the box.
+      this.self.detach();
+      show(this.self.el, false);
+    }
+    this.log('self-view', { on: want });
+    return want;
   }
 
   // ── sender-side auto-convergence ─────────────────────────────────────────────────────────
@@ -660,6 +771,9 @@ class Call {
       this.local.audioTrack = null;
     }
     this.self?.detach(); // a rejoin re-attaches it
+    this.signalState = null;
+    this._appOut.clear();
+    this._appIn.clear();
     this._unhookWall();
     this._setState('left');
     this._layout();
@@ -938,6 +1052,7 @@ class Call {
         if (s.type === 'codec') codecs[s.id] = s.mimeType;
       });
       const q = { in: null, out: null };
+      if (withQuality) Object.assign(q, selectedPath(report));
       report.forEach((s) => {
         if (s.type === 'inbound-rtp' && s.kind === 'audio' && typeof s.audioLevel === 'number') tile.level = Math.max(s.audioLevel, (tile.level || 0) * 0.6);
         if (s.type === 'media-source' && s.kind === 'audio' && typeof s.audioLevel === 'number') localLevel = Math.max(localLevel, s.audioLevel);
@@ -968,7 +1083,7 @@ class Call {
           tile._prevOut = { bytes: s.bytesSent, t: s.timestamp };
         }
       });
-      if (withQuality && (q.in || q.out)) {
+      if (withQuality && (q.in || q.out || q.path)) {
         tile.quality = q;
         this.emit('quality', { id, ...q });
       }
@@ -991,6 +1106,7 @@ class Call {
       this._selfSpeaking = speaking;
       this.transport?.broadcast(this.stateMsg());
       this.self?.setSpeaking(speaking);
+      this.emit('speaking', { id: 'self', on: speaking });
     }
   }
 
@@ -1037,6 +1153,9 @@ class Call {
     const t = this.t;
     injectCallStyle(c.ownerDocument || document);
     c.classList.add('dxr-call-host');
+    // layout:'none': the footer and self slot step aside too (display:contents), so the page can
+    // place the self tile ([data-dxr-peer="self"]) — style it in place, never move it.
+    c.classList.toggle('dxr-call-host--none', this.o.layout === 'none');
     // theme → CSS custom properties on the host (chrome only: no variable can reach a tile).
     for (const [prop, v] of Object.entries(this.o.cssVars)) c.style.setProperty(prop, v);
     const ui = (this.ui = {});
@@ -1054,7 +1173,7 @@ class Call {
       show(ui.bar, false);
     }
     c.append(ui.banner, ui.panel, ui.grid, ui.invite, ui.foot);
-    if (this.o.selfView) this.self = new SelfTile(this, ui.selfSlot);
+    if (this.selfViewOn) this.self = new SelfTile(this, ui.selfSlot);
     else show(ui.selfSlot, false);
     if (this.o.chrome) this._buildBar();
   }
@@ -1278,8 +1397,26 @@ class Call {
       retryCamera: () => call.retryCamera(),
       setMono3D: (on) => call.setMono3D(on),
       leave: () => call.leave('left'),
-      /** A remote participant's tile element (for `layout: 'none'`), or null. */
-      tile: (peerId) => call.tiles.get(peerId)?.el || null,
+      /** A participant's tile element (for `layout: 'none'`), or null; `'self'` is your self view. */
+      tile: (peerId) => (peerId === 'self' ? call.self?.el || null : call.tiles.get(peerId)?.el || null),
+      /** Your display name (sent in `hello`), or null. */
+      get name() {
+        return call.name;
+      },
+      setName: (n) => call.setName(n),
+      send: (peerId, data) => call.sendApp(peerId, data),
+      broadcast: (data) => call.broadcastApp(data),
+      /** The signalling connection: 'connected' | 'reconnecting' | 'closed', null before join / after leave. */
+      get signal() {
+        return call.signalState;
+      },
+      setSelfView: (on) => call.setSelfView(on),
+      setMic: (deviceId) => call.setMic(deviceId),
+      setAudioOutput: (sinkId) => call.setAudioOutput(sinkId),
+      /** What this side sends (camera + microphone), read-only; null before a camera / mic opened. */
+      get localStream() {
+        return call.local ? call.local.stream : null;
+      },
       diagnostics: () => call.diagnostics(),
       on(type, cb) {
         if (typeof cb !== 'function') throw new TypeError(`${TAG} on() takes a function`);
@@ -1321,6 +1458,27 @@ class Call {
 }
 
 // ── paint helpers ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Observe a tile's stage box (`ResizeObserver`, where there is one): `onBox(w, h)` with its
+ * `clientWidth` / `clientHeight` on every change. Returns the disconnect, or null without one.
+ */
+function observeBox(el, onBox) {
+  if (typeof ResizeObserver !== 'function') return null;
+  const ro = new ResizeObserver(() => onBox(el.clientWidth || 0, el.clientHeight || 0));
+  ro.observe(el);
+  return () => ro.disconnect();
+}
+
+/** The `weave` event payload of a settled `firstWoven` / `rewoven()`. */
+function weaveEvent(id, res) {
+  const ev = { id, state: res.woven ? 'woven' : 'flat', ms: Math.round(res.ms || 0) };
+  if (res.reason) ev.reason = res.reason;
+  return ev;
+}
+
+/** `theme.tileAspect: 'fill'`: a stage box's aspect, clamped to what a woven tile may take. */
+const clampAspect = (w, h) => Math.max(0.3, Math.min(4, w / h));
 
 /** Size a FLAT (never woven) canvas to its box × dpr. Returns false if it has no box yet. */
 function sizeFlat(canvas) {
@@ -1412,13 +1570,20 @@ class Tile {
     this.badge = el('div', { class: 'dxr-call-badge', part: 'badge' });
     this.plate = el('div', { class: 'dxr-call-state', part: 'plate', text: call.t('connecting') });
     this.stage = el('div', { class: 'dxr-call-stage' }, [this.canvas, this.cover, this.badge, this.plate]);
-    this.stage.style.aspectRatio = String(call.o.tileAspect);
+    // 'fill' (theme.tileAspect): no aspect-ratio — the page sizes the stage and the crop follows it.
+    if (call.o.tileAspect !== 'fill') this.stage.style.aspectRatio = String(call.o.tileAspect);
+    /** The stage box `{ w, h }` from the ResizeObserver; null until it first reports (or without one). */
+    this._box = null;
+    this._aspect = null; // 'fill': the stage's own aspect, once measured
+    this._rwP = null; // the rewoven() promise a `weave` event is waiting on
+    this._unobserve = observeBox(this.stage, (w, h) => this._onBox(w, h));
     // `data-dxr-peer` is the documented hook (layout:'none', handle.tile()); `data-peer` is the 1.29 spelling.
     this.el = el('div', { class: 'dxr-call-tile', part: 'tile', 'data-dxr-peer': id, 'data-peer': id }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
     if (!call.o.ui) {
       show(this.badge, false);
     }
     call.ui.grid.appendChild(this.el);
+    if (call.sinkId) this.applySink();
     this._renderBadge();
     /** The depth cursor (`cursor: 'depth'`) once its module has loaded; null otherwise. */
     this.cursor = null;
@@ -1445,7 +1610,36 @@ class Tile {
       muted: this.remote.muted,
       cameraOff: this.remote.cameraOff,
       speaking: this.speaking,
+      name: (this.hello && this.hello.name) || null,
     });
+  }
+
+  /** The stage box changed: the 'fill' aspect, and a woven tile's `weave` event once it re-joins. */
+  _onBox(w, h) {
+    const prev = this._box;
+    this._box = { w, h };
+    if (w > 0 && h > 0) this._aspect = clampAspect(w, h);
+    if (!prev || !w || !h || (prev.w === w && prev.h === h)) return;
+    const handle = this.handle;
+    if (!handle || !this._fwSettled || typeof handle.rewoven !== 'function') return;
+    const p = handle.rewoven();
+    if (p === this._rwP || !p || typeof p.then !== 'function') return;
+    this._rwP = p;
+    p.then((res) => {
+      if (this._rwP !== p || this.handle !== handle || !res) return;
+      this._rwP = null;
+      this.call.emit('weave', weaveEvent(this.id, res));
+    });
+  }
+
+  /** Play this participant's audio to the call's output device (`handle.setAudioOutput`). */
+  applySink() {
+    const a = this.audio;
+    if (typeof a.setSinkId !== 'function') return Promise.resolve(false);
+    return a.setSinkId(this.call.sinkId || '').then(
+      () => true,
+      () => false
+    );
   }
 
   /** Everything else (UNSTABLE): `handle.diagnostics().peers[i]`. */
@@ -1509,8 +1703,10 @@ class Tile {
 
   setHello(h) {
     clearTimeout(this.helloTimer);
+    const prevName = this.hello ? this.hello.name || null : null;
     this.hello = h;
     this.conv.hello = h;
+    if ((h.name || null) !== prevName) this.call.emit('name', { id: this.id, name: h.name || null });
     const changed = this.format !== h.format;
     this.format = h.format;
     this.call.log('hello', { peer: this.id, format: h.format, width: h.width, height: h.height, rectified: h.rectified });
@@ -1556,6 +1752,7 @@ class Tile {
     if (on === this.speaking) return;
     this.speaking = on;
     this.el.classList.toggle('dxr-call-tile--speaking', on);
+    this.call.emit('speaking', { id: this.id, on });
   }
 
   setConn(st) {
@@ -1641,12 +1838,18 @@ class Tile {
     if (!this.convCanvas) this.convCanvas = document.createElement('canvas');
     this._paintConv(); // the first frame exists before the layer does
     show(this.cover, true);
-    const handle = call.wall.addImage(this.canvas, this.convCanvas);
+    // tileCover 'auto': the core's rect cover takes over after the first join, across every later
+    // resize / move (layout: 'none' — the page moves the tiles). No cover machinery here.
+    const handle = call.o.tileCover === 'auto' ? call.wall.addImage(this.canvas, this.convCanvas, { rectCover: 'auto' }) : call.wall.addImage(this.canvas, this.convCanvas);
     this.handle = handle;
+    this._fwSettled = false;
+    this._rwP = null;
     handle.firstWoven?.then((res) => {
       if (this.handle !== handle) return;
+      this._fwSettled = true;
       show(this.cover, false); // a cut, never a fade
       call.log('first-woven', { peer: this.id, woven: res.woven, reason: res.reason, ms: Math.round(res.ms) });
+      call.emit('weave', weaveEvent(this.id, res));
       if (!res.woven && res.reason === 'layer-failed') this._layerFailed();
     });
   }
@@ -1793,6 +1996,9 @@ class Tile {
 
   paint() {
     if (!this.route) return;
+    // Hidden (display:none) or collapsed: nothing to see, so no copy, no measurement. Known from the
+    // ResizeObserver; without one (or before it reports) the tile paints as before.
+    if (this._box && (!this._box.w || !this._box.h)) return;
     if (this.route !== 'woven-sbs') this.cursor?.idle(); // only a woven pair has depth to measure
     if (this.route === 'woven-sbs') this._paintConv();
     else if (this.route === 'lifted') {
@@ -1807,7 +2013,7 @@ class Tile {
     const H = v.videoHeight;
     if (!W || !H || (v.readyState || 0) < 2 || !this.convCanvas) return;
     const eyeW = W / 2;
-    const A = this.call.o.tileAspect;
+    const A = this.call.o.tileAspect === 'fill' ? this._aspect || 16 / 9 : this.call.o.tileAspect;
     const { w: outW, h: outH } = eyeOutputSize(eyeW, H, A);
     const c = this.convCanvas;
     if (c.width !== 2 * outW || c.height !== outH) {
@@ -1914,6 +2120,8 @@ class Tile {
     clearTimeout(this.leaveTimer);
     clearTimeout(this.liftTimer);
     this._unregister();
+    this._unobserve?.();
+    this._unobserve = null;
     this.video.srcObject = null;
     this.audio.srcObject = null;
     this.el.remove();
@@ -1936,9 +2144,13 @@ class SelfTile {
     this.badge = el('div', { class: 'dxr-call-badge', part: 'badge' });
     this.plate = el('div', { class: 'dxr-call-state dxr-call-hidden', part: 'plate' });
     this.stage = el('div', { class: 'dxr-call-stage' }, [this.canvas, this.badge, this.plate]);
-    this.stage.style.aspectRatio = String(call.o.tileAspect);
-    this.el = el('div', { class: 'dxr-call-tile dxr-call-tile--self', part: 'tile' }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
+    if (call.o.tileAspect !== 'fill') this.stage.style.aspectRatio = String(call.o.tileAspect);
+    // `data-dxr-peer="self"`: handle.tile('self'), and the page's CSS under layout: 'none'.
+    this.el = el('div', { class: 'dxr-call-tile dxr-call-tile--self', part: 'tile', 'data-dxr-peer': 'self' }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
     slot.appendChild(this.el);
+    this._box = null;
+    this._rwP = null;
+    this._unobserve = observeBox(this.stage, (w, h) => this._onBox(w, h));
     this.view = null; // the CameraView over the current camera
     this.cam = null;
   }
@@ -1961,7 +2173,7 @@ class SelfTile {
     const l = this.call.local;
     const cam = l && l.videoTrack ? l.cam : null;
     const wall = this.call.woven ? this.call.wall : { supported: false };
-    if (!cam || cam.state !== 'live') {
+    if (!cam || cam.state !== 'live' || !this.call.selfViewOn) {
       this.detach();
       return this._badge();
     }
@@ -1976,14 +2188,46 @@ class SelfTile {
         autoConverge: !!this.call.o.autoConverge, // the call option (default on) governs the self view too
         cursor: this.call.o.cursor || undefined, // and so does `cursor: 'depth'`
         aspect: this.call.o.tileAspect,
+        ...(this.call.o.tileCover === 'auto' ? { rectCover: 'auto' } : {}),
         onRouteChange: (route, st) => {
           if (this.cam !== cam) return; // a view this tile already replaced
           this.call.log('self-route', { route, woven: st.woven, reason: st.reason });
           this._badge();
+          this._weave(st);
         },
       });
     }
     this._badge();
+  }
+
+  /**
+   * The self view's `weave` event (`id: 'self'`): its tile's `firstWoven` settled (woven or not),
+   * or the view dropped flat because the wall said the tile will not weave.
+   */
+  _weave(st) {
+    const fw = st.firstWoven;
+    let ev = null;
+    if (fw && typeof fw === 'object') ev = weaveEvent('self', fw);
+    else if (st.route !== 'woven-sbs' && st.reason) ev = { id: 'self', state: 'flat', reason: st.reason, ms: 0 };
+    if (ev) this.call.emit('weave', ev);
+  }
+
+  /** The self stage resized: once woven, the `weave` event of its re-join. */
+  _onBox(w, h) {
+    const prev = this._box;
+    this._box = { w, h };
+    if (!prev || !w || !h || (prev.w === w && prev.h === h)) return;
+    const handle = this.view && this.view.woven ? this.view.handle : null;
+    const fw = this.view ? this.view.weaveState().firstWoven : null;
+    if (!handle || !fw || typeof fw !== 'object' || typeof handle.rewoven !== 'function') return;
+    const p = handle.rewoven();
+    if (p === this._rwP || !p || typeof p.then !== 'function') return;
+    this._rwP = p;
+    p.then((res) => {
+      if (this._rwP !== p || !this.view || this.view.handle !== handle || !res) return;
+      this._rwP = null;
+      this.call.emit('weave', weaveEvent('self', res));
+    });
   }
 
   /** 3D only while the view is on the woven route — a layer the wall failed has already taken it flat. */
