@@ -1089,9 +1089,11 @@ function dxrThree(core) {
   //              or a new window size (a zoom); or VIEW_FRAMES frames of sub-pixel steps that do not
   //              keep turning back (a slow pan)
   //   jitter     a run of sub-pixel steps (its last VIEW_FRAMES frames at most) that stays within 1.5 px
-  //              and turns back at least twice on one axis. Halton / random jitter turns back almost
-  //              every frame, so a TAA is caught on its 4th sample: one that settles after a few
-  //              samples and stops drawing the scene is caught too. A pan, a tween, a settling spring
+  //              and turns back at least twice on BOTH axes. A TAA jitters both, and Halton / random
+  //              jitter turns back almost every frame, so it is caught on its 4th to 6th sample: one
+  //              that settles after a few samples and stops drawing the scene is caught too. Framing
+  //              that moves along one axis may turn back as often (a lerped mouse parallax, a spring's
+  //              tail, an idle bob: #231, from the #227 review) and is not jitter. A pan or a tween
   //              does not turn back twice in a few frames.
   //   unknown    neither, so far
   const VIEW_FRAMES = 8;
@@ -1115,7 +1117,7 @@ function dxrThree(core) {
       return n;
     };
     const span = (k) => Math.max(...run.map((p) => p[k])) - Math.min(...run.map((p) => p[k]));
-    if (Math.max(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
+    if (Math.min(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
     return st.viewSteps >= VIEW_FRAMES - 1 ? 'framing' : 'unknown';
   }
   const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';

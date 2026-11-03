@@ -20,6 +20,10 @@
              samples 2-6, then the scene pass stops: settled), pan (a lens shift drifting 0.3 px a
              frame, one way: framing; it adds the marker too). The taa views are in the scene
              target's own px, as a TAA passes them (with ?rtScale=0.5: a half-size target).
+             Framing that moves along ONE axis, sub-pixel and turning back often (#231), on top of
+             the 12 % lens shift, with the marker: bob (a 0.5 px idle bob, period 8 frames, on y),
+             spring (an underdamped spring's tail, 0.9 px decaying, period 7 frames, on x), parallax
+             (a lerped mouse parallax on x: the mouse wobbles by whole px, the offset follows).
      ?chain=0  the scene straight to the screen (no chain), then the HUD.
      ?mirror=1 the composite flips the picture left-right (texture2D(…, vec2(1.0 - vUv.x, vUv.y)), as
              visual-learning.app/sandworm's chain does), and a pillar stands off centre at x -3.2.
@@ -75,7 +79,8 @@ if (MIRROR) { // static, off centre: the picture is clearly not its own mirror i
 }
 
 // ---- the page camera's view window (?view=)
-const FRAMED = VIEW === 'identity' || VIEW === 'shift' || VIEW === 'crop' || VIEW === 'pan';
+const ONE_AXIS = VIEW === 'bob' || VIEW === 'spring' || VIEW === 'parallax';
+const FRAMED = VIEW === 'identity' || VIEW === 'shift' || VIEW === 'crop' || VIEW === 'pan' || ONE_AXIS;
 // In front of everything on the turntable (its nearest point is z 2.1), above the axis so a crop's
 // scale shows too. Magenta: no other colour in the scene, linear (the chain) or sRGB (?chain=0) output.
 const marker = new THREE.Vector3(0, 1.5, 3);
@@ -93,9 +98,26 @@ function frameView() {
 }
 frameView();
 const JITTER = [[0.25, -0.25], [-0.25, 0.25], [0.125, 0.375], [-0.375, -0.125]];
-// ?view=taa / taa-late / taa-short / pan: the view for frame n, set before the scene pass and left set.
+// ?view=taa / taa-late / taa-short / pan / bob / spring / parallax: the view for frame n, set before
+// the scene pass and left set.
 const halton = (i, b) => { let f = 1, r = 0; for (; i > 0; i = Math.floor(i / b)) { f /= b; r += f * (i % b); } return r; };
+// ?view=bob / spring / parallax: the motion for frame n, in target px. parallax: 0.25 px of offset per
+// mouse px, following the mouse at 0.2 a frame.
+const MOUSE = [0, 1, 2, 1, 0, -1, 0, 1, 1, 0, -1, -2, -1, 0, 1, 0];
+let follow = 0;
+function oneAxis(n) {
+  if (VIEW === 'bob') return [0, 0.5 * Math.sin((2 * Math.PI * n) / 8)];
+  if (VIEW === 'spring') return [0.9 * Math.exp(-n / 30) * Math.cos((2 * Math.PI * n) / 7), 0];
+  follow += (0.25 * MOUSE[n % MOUSE.length] - follow) * 0.2;
+  return [follow, 0];
+}
 function persistentView(n) {
+  if (ONE_AXIS) {
+    const [x, y] = oneAxis(n);
+    camera.setViewOffset(rtW, rtH, x, 0.12 * rtH + y, rtW, rtH);
+    window.__expectNdcY = marker.clone().project(camera).y;
+    return;
+  }
   if (VIEW === 'pan') {
     camera.setViewOffset(innerWidth, innerHeight, 0, 0.12 * innerHeight + 0.3 * n, innerWidth, innerHeight);
     window.__expectNdcY = marker.clone().project(camera).y;
