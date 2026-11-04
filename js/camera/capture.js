@@ -29,6 +29,11 @@
 //    It is a pair, it names itself "3D", and it is NOT a camera: no probe path opens one, whatever
 //    `exclude` says (`exclude: false` included). Each is reported in `skipped` as `excluded` with
 //    `reason: 'app-share'`. `/call`'s `listShareableApps()` / `openAppShare()` are how a page uses them.
+//    A browser WITHOUT the app-share device patch lists such an app as a stereo camera instead
+//    ("3D Camera (DisplayXR) - <app>", no `source` in the hint) and gives the REAL camera the same
+//    label shape whenever there is more than one source — so the label cannot decide. Those are
+//    opened like any named pair, and the opened track's hint decides: baseline 0 and FOV 0 is an
+//    app (ADR-061 decision 2) → closed again, `reason: 'app-share'`, probing goes on.
 //
 // RECTIFICATION is not done here (P2): it needs the camera's calibration (intrinsics/extrinsics
 // for the ACTIVE device), which comes from a plug-in or the runtime. P1 sends the raw pair with
@@ -36,7 +41,7 @@
 // `(stream, info) => MediaStream | Promise<MediaStream>`, returning a rectified SBS stream.
 
 import { looksSbs } from './geometry.js';
-import { isAppShareDevice } from './app-share.js';
+import { isAppShareDevice, isAppShareHint } from './app-share.js';
 
 const MONO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
 // Ask a candidate stereo device for its widest mode; a 2560x720 or 3840x1080 pair comes back as
@@ -160,8 +165,11 @@ export async function openCamera(want = 'auto', o = {}) {
     // eye-tracking camera shared without stealing it) describes itself on the opened track:
     // `displayxrStereo: {layout, rectified, baselineMm, horizontalFovDeg}`.
     const stereo = st.displayxrStereo && st.displayxrStereo.layout === 'side-by-side' ? st.displayxrStereo : null;
-    // A running app's views (3D screen share, ADR-061) describe themselves too: `source: 'app'`.
-    const appShare = isAppShareDevice({ label: t.label || '', deviceId: st.deviceId || '' }) || !!(st.displayxrStereo && st.displayxrStereo.source === 'app');
+    // A running app's views (3D screen share, ADR-061) describe themselves too: `source: 'app'`,
+    // or — on a browser without the app-share device patch, which lists the app as a "3D Camera
+    // (DisplayXR) - <app>" — baseline 0 and FOV 0, which no real camera advertises. Every probe
+    // path checks this on the OPENED track (rejectOpened), since the label cannot tell them apart.
+    const appShare = isAppShareDevice({ label: t.label || '', deviceId: st.deviceId || '' }) || isAppShareHint(st.displayxrStereo);
     return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '', stereo, appShare };
   };
   const skip = (label, err) => {

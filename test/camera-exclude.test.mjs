@@ -354,3 +354,49 @@ test('app share: excluded from every probe path — named pair, default (blind a
     assert.equal((await openCamera({ prefer: 'dxr-app:mv', mediaDevices: md })).deviceId, 'dxr-app:mv');
   }
 });
+
+// A browser WITHOUT the app-share device patch lists a running app through its stereo-camera
+// factory, and once the runtime lists two sources it suffixes EVERY label (the real camera too):
+// `3D Camera (DisplayXR) - <name>`. The label cannot decide; the opened track's hint does — an app
+// advertises baseline 0 and FOV 0 (runtime ADR-061 decision 2), a real camera never baseline 0.
+test('app share, browsers without the app-share patch: a "3D Camera (DisplayXR) - X" is opened, then skipped as app-share only when its hint says baseline 0', async () => {
+  const APP_HINT = { layout: 'side-by-side', rectified: true, baselineMm: 0, horizontalFovDeg: 0 };
+  const legacyApp = { id: 'dxr-stereo:app1', label: '3D Camera (DisplayXR) - CubeApp', w: 2560, h: 720, stereo: APP_HINT };
+  const legacyCam = { id: 'dxr-stereo:cam1', label: '3D Camera (DisplayXR) - Built-in camera', w: 2560, h: 720, stereo: STEREO };
+  // App listed first: opened (the label is not enough to refuse it), closed, and the camera is used.
+  {
+    const md = media([webcam, legacyApp, legacyCam], { granted: true });
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.format, 'sbs');
+    assert.equal(cam.deviceId, 'dxr-stereo:cam1', 'the suffixed REAL camera is the pair');
+    assert.equal(cam.calibration.baselineMm, 63);
+    assert.ok(md.opens.includes('id:dxr-stereo:app1'), 'the candidate is opened to be verified');
+    assert.ok(md.stopped.includes('dxr-stereo:app1'), '...and closed again');
+    assert.deepEqual(cam.skipped.filter((s) => s.reason === 'app-share').map((s) => s.label), ['3D Camera (DisplayXR) - CubeApp']);
+  }
+  // Only the app: never kept as the pair, never the mono fallback; the webcam is used.
+  {
+    const md = media([legacyApp, webcam], { granted: true });
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.format, 'mono');
+    assert.equal(cam.deviceId, 'web');
+    assert.ok(md.stopped.includes('dxr-stereo:app1'));
+    assert.equal(cam.skipped.filter((s) => s.reason === 'app-share').length, 1);
+  }
+  // The app as the blind default (no permission yet): closed, the suffixed camera opened by label.
+  {
+    const md = media([legacyApp, legacyCam, webcam]);
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.deviceId, 'dxr-stereo:cam1');
+    assert.equal(cam.format, 'sbs');
+    assert.ok(md.stopped.includes('dxr-stereo:app1'));
+  }
+  // A suffixed camera alone (baseline > 0) is simply the camera — no app-share skip.
+  {
+    const md = media([webcam, legacyCam], { granted: true });
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.deviceId, 'dxr-stereo:cam1');
+    assert.equal(cam.format, 'sbs');
+    assert.equal(cam.skipped.filter((s) => s.reason === 'app-share').length, 0);
+  }
+});

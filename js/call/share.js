@@ -14,11 +14,21 @@
 // runtime asks the user on the SENDER's machine, every start ("Share <app> with <browser>?"), when
 // `openAppShare()` opens the device; a Deny rejects it (`code: 'share-denied'`). The track ends
 // (`ended`) when the app exits or the share is stopped from the runtime side.
+//
+// Browsers WITHOUT the app-share device patch (DisplayXR Browser 1.9.x) list an app through their
+// stereo-camera factory as `3D Camera (DisplayXR) - <app>` — and, whenever the runtime lists more
+// than one source, give the real camera the same shape. So when no ADR-form device exists,
+// `listShareableApps()` returns those as CANDIDATES (`legacy: true`), and `openAppShare()` verifies
+// the opened track (`isAppShareHint`: baseline 0 and FOV 0 is an app) — a real camera is closed
+// again with `code: 'not-app-share'`.
 
-import { isAppShareDevice, appNameFromLabel, APP_SHARE_ID_PREFIX, APP_SHARE_LABEL_RE } from '../camera/app-share.js';
+import { isAppShareDevice, isAppShareHint, legacyAppCandidate, appNameFromLabel, APP_SHARE_ID_PREFIX, APP_SHARE_LABEL_RE, APP_SHARE_LEGACY_LABEL_RE } from '../camera/app-share.js';
 import { sanitizeName, CONV_MAX_FRAC } from './wire.js';
 
-export { isAppShareDevice, appNameFromLabel, APP_SHARE_ID_PREFIX, APP_SHARE_LABEL_RE };
+export { isAppShareDevice, isAppShareHint, legacyAppCandidate, appNameFromLabel, APP_SHARE_ID_PREFIX, APP_SHARE_LABEL_RE, APP_SHARE_LEGACY_LABEL_RE };
+
+/** The app name a label carries: the ADR form, else a legacy candidate's `<name>`. */
+const nameOfLabel = (label) => sanitizeName(appNameFromLabel(label)) || sanitizeName((legacyAppCandidate(label) || {}).appName) || null;
 
 /** What `openAppShare` asks for by default: the runtime's default stream (ADR-061 decision 5). */
 const SHARE_CONSTRAINTS = Object.freeze({ width: 2560, height: 720, frameRate: 30 });
@@ -29,6 +39,11 @@ const mdOf = (o) => (o && o.mediaDevices) || (globalThis.navigator && navigator.
  * The running apps this browser offers to share: `[{ deviceId, label, appName }]`, in the
  * browser's order. Empty without camera permission (the browser lists none before it), on any
  * other browser, or when nothing is shareable. Never rejects.
+ *
+ * On a browser without the app-share device patch (no ADR-form device listed), the entries are the
+ * `3D Camera (DisplayXR) - <name>` CANDIDATES instead, marked `legacy: true`. A real camera can be
+ * among them (that browser labels every source that way once there are two); `openAppShare()`
+ * tells them apart and rejects a camera with `not-app-share`.
  * @param {{ mediaDevices?: MediaDevices }} [o]
  */
 export async function listShareableApps(o = {}) {
@@ -40,9 +55,14 @@ export async function listShareableApps(o = {}) {
   } catch {
     return [];
   }
-  return list
-    .filter((d) => d && d.kind === 'videoinput' && isAppShareDevice(d))
+  const videos = list.filter((d) => d && d.kind === 'videoinput');
+  const apps = videos
+    .filter((d) => isAppShareDevice(d))
     .map((d) => Object.freeze({ deviceId: d.deviceId, label: d.label || '', appName: sanitizeName(appNameFromLabel(d.label)) || sanitizeName(d.label) || null }));
+  if (apps.length) return apps;
+  return videos
+    .filter((d) => d.deviceId && legacyAppCandidate(d))
+    .map((d) => Object.freeze({ deviceId: d.deviceId, label: d.label || '', appName: nameOfLabel(d.label), legacy: true }));
 }
 
 /**
@@ -61,7 +81,7 @@ export function watchShareableApps(cb, o = {}) {
     const mine = ++seq;
     const apps = await listShareableApps({ mediaDevices: md });
     if (!live || mine !== seq) return; // a newer read is in flight (devicechange bursts)
-    const key = JSON.stringify(apps.map((a) => [a.deviceId, a.label]));
+    const key = JSON.stringify(apps.map((a) => [a.deviceId, a.label, !!a.legacy]));
     if (key === last) return;
     last = key;
     try {
@@ -97,7 +117,8 @@ export function describeAppShare(track, fallbackLabel = '') {
   const hint = st.displayxrStereo && typeof st.displayxrStereo === 'object' ? st.displayxrStereo : {};
   const z = hint.zeroDisparityShiftFrac;
   const frac = typeof z === 'number' && Number.isFinite(z) ? Math.max(-CONV_MAX_FRAC, Math.min(CONV_MAX_FRAC, z)) : 0;
-  const appName = sanitizeName(hint.appName) || sanitizeName(appNameFromLabel(track && track.label)) || sanitizeName(appNameFromLabel(fallbackLabel)) || null;
+  // The hint's name, else the label's: the ADR form, or a legacy candidate's ` - <name>`.
+  const appName = sanitizeName(hint.appName) || nameOfLabel(track && track.label) || nameOfLabel(fallbackLabel) || null;
   return {
     kind: 'content',
     format: hint.layout && hint.layout !== 'side-by-side' ? 'mono' : 'sbs',
@@ -111,7 +132,9 @@ export function describeAppShare(track, fallbackLabel = '') {
 /**
  * Open one shareable app (a `deviceId` from `listShareableApps`) as a side-by-side track. This is
  * when the runtime asks the user on this machine; Deny rejects with `code: 'share-denied'`. A device
- * that turns out not to be an app share is closed again (`code: 'not-app-share'`). The track is
+ * that turns out not to be an app share is closed again (`code: 'not-app-share'`) — on a browser
+ * without the app-share device patch that is how a `legacy` candidate that is really a camera
+ * (its track's baseline is not 0) is told apart from an app. The track is
  * yours: stop it when you stop sharing (`track.stop()`), or the runtime keeps the share open.
  *
  * @param {string} deviceId
@@ -134,7 +157,16 @@ export async function openAppShare(deviceId, o = {}) {
     throw Object.assign(new Error(`could not share the app: ${(err && err.message) || err}`), { code: denied ? 'share-denied' : 'share-failed', cause: err });
   }
   const track = stream.getVideoTracks()[0] || null;
-  if (!track || !(isAppShareDevice(track) || deviceId.startsWith(APP_SHARE_ID_PREFIX))) {
+  let hint = null;
+  try {
+    hint = track && typeof track.getSettings === 'function' ? (track.getSettings() || {}).displayxrStereo : null;
+  } catch {
+    hint = null;
+  }
+  // A track whose hint describes a camera (a `source` other than 'app', or a real baseline) is not
+  // an app, whatever its label or id; otherwise the label, the id or the hint must say "app".
+  const cameraHint = !!hint && typeof hint === 'object' && !isAppShareHint(hint) && (typeof hint.source === 'string' || hint.baselineMm > 0);
+  if (!track || cameraHint || !(isAppShareDevice(track) || deviceId.startsWith(APP_SHARE_ID_PREFIX))) {
     stream.getTracks().forEach((t) => t.stop());
     throw Object.assign(new Error('that device is not a shared DisplayXR app'), { code: 'not-app-share' });
   }
