@@ -86,6 +86,7 @@ interface CameraViewOptions
   CameraViewOptions.rectCover?: rectCover?:RectCoverOption
 interface CameraViewWeaveState
   CameraViewWeaveState.firstWoven: firstWoven:{woven:boolean;confirmed:boolean;reason:string|null;ms:number}|'pending'|null
+  CameraViewWeaveState.frameAgeMs: frameAgeMs:number|null
   CameraViewWeaveState.layerRetries: layerRetries:number
   CameraViewWeaveState.reason: reason:string|null
   CameraViewWeaveState.route: route:'woven-sbs'|'flat-left'|'flat'|null

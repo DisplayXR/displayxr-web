@@ -564,6 +564,8 @@ class CameraView {
     this._scratch = null;
     this._luma = null; // the latest grayscale source copy (auto-convergence and the depth cursor read it)
     this.disparityPx = null;
+    this._lastFrameAt = 0; // performance.now() of the last NEW camera frame (0 = none yet)
+    this._lastVideoTime = -1;
     // `cursor: 'depth'` (ADR-046 on a pair): validated now, its module loaded only on opt-in.
     this._cursorOpt = resolvePairCursorOption(o.cursor, '@displayxr/inline3d/camera');
     /** The depth cursor once its module has loaded; null without `cursor: 'depth'`. */
@@ -598,7 +600,26 @@ class CameraView {
       reason: this.fallbackReason,
       firstWoven: this.route === 'woven-sbs' ? (this._fw ? { ...this._fw } : 'pending') : null,
       layerRetries: this._layerFails,
+      frameAgeMs: this.frameAgeMs,
     };
+  }
+
+  /**
+   * Milliseconds since the camera last delivered a NEW frame to this view (its video's
+   * `currentTime` moved), or null before the first one. A view whose track stalls (a camera taken
+   * by another app, a suspended capture) keeps painting its last frame; this is how a page tells.
+   */
+  get frameAgeMs() {
+    return this._lastFrameAt ? Math.round(performance.now() - this._lastFrameAt) : null;
+  }
+
+  /** Note a new camera frame (the video's clock moved since the last paint). */
+  _noteFrame(v) {
+    if ((v.readyState || 0) < 2) return;
+    const t = v.currentTime;
+    if (t === this._lastVideoTime) return;
+    this._lastVideoTime = t;
+    this._lastFrameAt = performance.now();
   }
 
   /** The per-eye convergence shift currently painted, source px. */
@@ -658,7 +679,14 @@ class CameraView {
   }
 
   _registerWoven() {
-    if (!this.buffer) this.buffer = document.createElement('canvas');
+    if (!this.buffer) {
+      // Empty until the camera's first frame is painted into it: the wall does not count an empty
+      // buffer as a stereo frame, so firstWoven cannot settle "woven" over a tile that never
+      // showed the camera (a track that delivers no frames).
+      this.buffer = document.createElement('canvas');
+      this.buffer.width = 0;
+      this.buffer.height = 0;
+    }
     this._paintWoven(); // the first frame exists before the layer does
     const handle = this.rectCover === undefined ? this.wall.addImage(this.canvas, this.buffer) : this.wall.addImage(this.canvas, this.buffer, { rectCover: this.rectCover });
     this.handle = handle;
@@ -737,6 +765,7 @@ class CameraView {
     if (this.removed) return;
     const v = this.cam.video;
     if (!v || this.cam.state === 'closed') return;
+    this._noteFrame(v);
     if (this.route === 'woven-sbs') this._paintWoven();
     else this._paintFlat(v);
   }

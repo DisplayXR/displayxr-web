@@ -3345,7 +3345,10 @@ class Inline3D {
         this._paint(win, views);
         // An SBS paint with a real source behind it. Before the image has loaded (or while a
         // video has never had a frame) the tile holds nothing worth revealing yet.
-        if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : !!win.img)) {
+        // A canvas source counts once it has pixels: an empty (0x0) buffer is a page that has not
+        // drawn its first frame yet (a camera view before the camera's first frame), and settling
+        // firstWoven on it reported a tile woven that had never shown anything.
+        if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : sourceHasPixels(win.img))) {
           win.fwStereo = true;
           win.lfStereo = true;
           if (win.rw) win.rw.stereo = true;
@@ -3865,6 +3868,18 @@ class Inline3D {
 /** `firstWovenHoldMs`, validated: a finite number >= 0, else the default. */
 function firstWovenHold(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : FIRST_WOVEN_HOLD_MS;
+}
+
+/**
+ * True when an image source has something to draw: a loaded image, a sized canvas or bitmap. A
+ * source that reports no size at all (a test double) keeps the old rule: present = drawable.
+ */
+function sourceHasPixels(src) {
+  if (!src) return false;
+  const w = src.naturalWidth ?? src.videoWidth ?? src.width;
+  const h = src.naturalHeight ?? src.videoHeight ?? src.height;
+  if (w === undefined && h === undefined) return true;
+  return w > 0 && h > 0;
 }
 
 function loadImage(source) {

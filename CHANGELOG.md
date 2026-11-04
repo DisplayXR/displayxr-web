@@ -5,6 +5,24 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — a camera view is not "woven" before the camera's first frame; `frameAgeMs` tells a stalled track (`.`, `./camera`, `./call`)
+
+Core and preview tier. A camera view (`addCameraView`, and the call's self view, which is one)
+registers its tile on the wall with an SBS buffer it fills from the camera. That buffer started
+as a blank default 300x150 canvas, and the wall counted any image source as a stereo frame, so
+`firstWoven` settled `woven: true` (`hold-elapsed`) on a tile that had never shown the camera.
+On an Android 3D tablet whose camera track was `live` but delivered no frames, the call reported
+the self view woven over a black tile.
+
+- **Core:** an `addImage` source that is a canvas or image with no pixels (0x0) is not a stereo
+  frame: `firstWoven` / `rewoven()` wait for one. Sources that report no size keep the old rule.
+- **`./camera`:** the woven buffer starts 0x0 until the first camera frame is painted into it.
+- **New: `view.frameAgeMs`** and `weaveState().frameAgeMs` (also `call.diagnostics().self`): ms
+  since the camera last delivered a new frame to the view, null before the first. A stalled track
+  keeps its last frame on screen; a growing age is how a page shows "no video".
+
 ## 1.49.2 — 2026-11-04
 
 ### Fixed — the camera probe waits for the DisplayXR 3D camera before opening a plain lens (`./camera`, `./call`)

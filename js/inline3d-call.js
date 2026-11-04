@@ -2565,7 +2565,7 @@ class SelfTile {
 
   /** For `call.diagnostics().self`: what the self view actually shows. */
   diag() {
-    if (!this.view) return { route: null, woven: false, reason: 'no-camera', firstWoven: null, layerRetries: 0 };
+    if (!this.view) return { route: null, woven: false, reason: 'no-camera', firstWoven: null, layerRetries: 0, frameAgeMs: null };
     return this.view.weaveState();
   }
 

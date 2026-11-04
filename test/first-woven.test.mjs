@@ -203,6 +203,28 @@ test('image: pending until the source has loaded and been painted side-by-side',
   wall.close();
 });
 
+test('image: an EMPTY canvas source (0x0, nothing drawn yet) is not a stereo frame — a camera view before its first frame', async () => {
+  // The self view registers its tile with an SBS buffer it fills from the camera. A track that
+  // never delivers a frame left that buffer empty, and firstWoven still settled woven: the call
+  // then reported "self woven" over a black tile (chat, NP02J, 2026-11-04).
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const buffer = { width: 0, height: 0 };
+  const h = wall.addImage(makeCanvas(), buffer, { firstWovenHoldMs: 0 });
+  await flush();
+  for (let i = 0; i < 5; i++) {
+    clock += 500;
+    env.runFrame(2);
+  }
+  assert.equal(await peek(h.firstWoven), 'pending', 'no frame painted: nothing to call woven');
+  buffer.width = 640; // the first camera frame lands in the buffer
+  buffer.height = 240;
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  wall.close();
+});
+
 test('lazy: a layer that closes before settling restarts the hold on its next layer', async () => {
   clock = 0;
   const env = installEnv();

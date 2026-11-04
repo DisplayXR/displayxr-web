@@ -285,6 +285,11 @@ export interface CameraViewWeaveState {
   firstWoven: { woven: boolean; confirmed: boolean; reason: string | null; ms: number } | 'pending' | null;
   /** Layer re-registrations attempted after a `'layer-failed'` (bounded; reset by a woven result). */
   layerRetries: number;
+  /**
+   * Milliseconds since the camera last delivered a new frame to the view, or null before the first.
+   * A stalled track keeps its last frame on screen; a growing age is how a page shows "no video".
+   */
+  frameAgeMs: number | null;
 }
 
 /** A self view from {@link addCameraView}. */
