@@ -57,6 +57,7 @@ interface CameraSkip
   CameraSkip.error: error:string
   CameraSkip.excluded?: excluded?:boolean
   CameraSkip.label: label:string
+  CameraSkip.reason?: reason?:'excluded'|'app-share'
 interface CameraView
   CameraView.paint: paint():void
   CameraView.readonly autoConverge: readonly autoConverge:boolean

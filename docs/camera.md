@@ -74,6 +74,13 @@ named-pair fast path, the default camera and the last resort. They show up in `s
 `excluded: true` and `error: 'excluded'`. An explicit `deviceId` or `label:` is your choice and is
 opened regardless (the call widget's camera picker is explicit, so a sensor stays selectable there).
 
+**A running app is not a camera either.** The DisplayXR Browser lists every shareable running
+DisplayXR app as a side-by-side `videoinput` labelled `DisplayXR: <app> (3D)` (device id
+`dxr-app:…`) — 3D screen share, used through [`/call`](call.md#sharing-a-3d-app). It is a pair and its
+label says "3D", so no probe path opens one, whatever `exclude` says (`exclude: false` included),
+and `label:3d` finds a camera, never an app. They show up in `skipped` with `excluded: true` and
+`reason: 'app-share'`.
+
 The default camera is the second trap. An **Ultraleap** hand tracker enumerates as a UVC
 "Ultraleap" — the bare brand, no "hand tracking" in the label, and modes of 2:1 or squarer, so it
 is never a pair by shape — and its own service normally holds it (skipped as busy). With that

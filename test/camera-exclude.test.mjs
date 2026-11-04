@@ -268,3 +268,89 @@ test("prefer 'label:<text>': the first camera whose label contains the text; exp
   await assert.rejects(openCamera({ prefer: 'label:nothing like it', mediaDevices: md }), (e) => e.code === 'no-camera' && /no camera labelled/.test(e.message));
   await assert.rejects(openCamera({ prefer: 'label:', mediaDevices: md }), (e) => e.code === 'no-camera');
 });
+
+// ── 3D screen share: a running app is never a camera (runtime ADR-061) ───────────────────────
+// The DisplayXR Browser lists each shareable app as a side-by-side `videoinput` labelled
+// "DisplayXR: <app> (3D)" (id `dxr-app:…`). It is a pair AND its label says "3D", so stereoLabelHint
+// alone would prefer it over a real stereo camera: no probe path may open it, `exclude: false`
+// included. The shipping browser lacks the track hint, so the label / id must be enough.
+
+const appShare = { id: 'dxr-app:mv', label: 'DisplayXR: Model Viewer (3D)', w: 2560, h: 720, stereo: { layout: 'side-by-side', rectified: true, source: 'app' } };
+const appShareNoLabelHint = { id: 'dxr-app:cube', label: 'DisplayXR: Cube (3D)', w: 2560, h: 720, stereo: { layout: 'side-by-side', rectified: true } };
+
+test('app share: stereoLabelHint never prefers it; cameraExcluder always leaves it out (exclude: false too)', async () => {
+  const { stereoLabelHint } = await import('../js/camera/capture.js');
+  assert.equal(stereoLabelHint('DisplayXR: Model Viewer (3D)'), false);
+  assert.equal(stereoLabelHint('3D Camera (DisplayXR)'), true, 'the runtime camera still is');
+  for (const ex of [cameraExcluder(), cameraExcluder(['acme']), cameraExcluder(false)]) {
+    assert.ok(ex('DisplayXR: Model Viewer (3D)', 'h'), 'by label');
+    assert.ok(ex('', 'dxr-app:mv'), 'by id');
+    assert.ok(!ex('3D Camera (DisplayXR)', 'dxr-stereo:1'));
+  }
+});
+
+test('app share: excluded from every probe path — named pair, default (blind and by id), last resort, mono, label:', async () => {
+  const appSkips = (cam) => cam.skipped.filter((s) => s.reason === 'app-share').map((s) => s.label);
+  // Labels visible, listed FIRST: the named-pair fast path takes the camera, never the app.
+  {
+    const md = media([appShare, webcam, pair3d], { granted: true });
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.deviceId, 'pair');
+    assert.deepEqual(md.opens, ['id:pair']);
+  }
+  // No stereo camera: the app is not the "pair" either — the webcam, by id (the default is not opened blind).
+  {
+    const md = media([appShare, webcam], { granted: true });
+    const cam = await openCamera({ prefer: 'stereo', mediaDevices: md });
+    assert.equal(cam.format, 'mono');
+    assert.equal(cam.deviceId, 'web');
+    assert.ok(!md.opens.includes('id:dxr-app:mv'), `opens: ${md.opens}`);
+    assert.deepEqual(appSkips(cam), ['DisplayXR: Model Viewer (3D)']);
+    const s = cam.skipped.find((x) => x.reason === 'app-share');
+    assert.equal(s.excluded, true);
+    assert.equal(s.error, 'excluded');
+  }
+  // exclude: false does not let it back in.
+  {
+    const md = media([webcam, appShare], { granted: true });
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md, exclude: false });
+    assert.equal(cam.deviceId, 'web');
+    assert.ok(!md.opens.includes('id:dxr-app:mv'));
+  }
+  // The DEFAULT opened blind (no labels yet) turns out to be the app (its track hint): closed, never kept.
+  {
+    const md = media([{ ...appShare, label: 'unlabelled' }, webcam]);
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.deviceId, 'web');
+    assert.deepEqual(md.stopped.slice(0, 1), ['dxr-app:mv']);
+    assert.equal(appSkips(cam).length, 1);
+  }
+  // A shipping-browser app (no source hint) as the blind default: its id / label give it away.
+  {
+    const md = media([appShareNoLabelHint, webcam]);
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.deviceId, 'web');
+    assert.ok(md.stopped.includes('dxr-app:cube'));
+  }
+  // 'mono' and the last resort.
+  {
+    const md = media([appShare, webcam], { granted: true });
+    assert.equal((await openCamera({ prefer: 'mono', mediaDevices: md })).deviceId, 'web');
+    assert.ok(!md.opens.includes('id:dxr-app:mv'));
+  }
+  {
+    const md = media([appShare], { granted: true });
+    await assert.rejects(openCamera({ prefer: 'auto', mediaDevices: md }), (e) => e.code === 'no-camera' && e.skipped.some((s) => s.reason === 'app-share'));
+    assert.ok(!md.opens.includes('id:dxr-app:mv'));
+  }
+  // label: is a camera search — `label:3d` finds the runtime camera, not the app.
+  {
+    const md = media([appShare, pair3d], { granted: true });
+    assert.equal((await openCamera({ prefer: 'label:3d', mediaDevices: md })).deviceId, 'pair');
+  }
+  // An explicit deviceId is the page's choice (openAppShare is the API for it, but it is not refused).
+  {
+    const md = media([webcam, appShare], { granted: true });
+    assert.equal((await openCamera({ prefer: 'dxr-app:mv', mediaDevices: md })).deviceId, 'dxr-app:mv');
+  }
+});

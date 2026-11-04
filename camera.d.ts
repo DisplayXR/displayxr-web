@@ -91,6 +91,8 @@ export interface CameraSkip {
   busy?: boolean;
   denied?: boolean;
   excluded?: boolean;
+  /** Why it was left out: `'excluded'` (a sensor, or your `exclude`), or `'app-share'` (a running DisplayXR app offered for 3D screen share — never a camera). */
+  reason?: 'excluded' | 'app-share';
 }
 
 export interface CameraEvents {

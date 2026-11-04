@@ -24,6 +24,11 @@
 //    description or by its label (stereoLabelHint), and after the prime the list is read again and
 //    a named pair is opened by id BEFORE a default that is a pair only by its shape is kept. The
 //    primed default is the fallback.
+//  - A DisplayXR Browser also lists every shareable running DisplayXR APP as a side-by-side
+//    `videoinput` ("DisplayXR: <app> (3D)", id `dxr-app:…`, runtime ADR-061) — 3D screen share.
+//    It is a pair, it names itself "3D", and it is NOT a camera: no probe path opens one, whatever
+//    `exclude` says (`exclude: false` included). Each is reported in `skipped` as `excluded` with
+//    `reason: 'app-share'`. `/call`'s `listShareableApps()` / `openAppShare()` are how a page uses them.
 //
 // RECTIFICATION is not done here (P2): it needs the camera's calibration (intrinsics/extrinsics
 // for the ACTIVE device), which comes from a plug-in or the runtime. P1 sends the raw pair with
@@ -31,6 +36,7 @@
 // `(stream, info) => MediaStream | Promise<MediaStream>`, returning a rectified SBS stream.
 
 import { looksSbs } from './geometry.js';
+import { isAppShareDevice } from './app-share.js';
 
 const MONO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
 // Ask a candidate stereo device for its widest mode; a 2560x720 or 3840x1080 pair comes back as
@@ -76,17 +82,21 @@ export const CAMERA_EXCLUDE_BUILTIN = /\b(hand[- ]?track|tracking camera|eye[- ]
 
 /**
  * The exclusion list in force: the built-in pattern plus `exclude` (strings match a label
- * case-insensitively as a substring, or a deviceId exactly; RegExps test the label), or nothing at
- * all for `exclude: false`. Returns a predicate `(label, deviceId) => boolean`. Pure.
+ * case-insensitively as a substring, or a deviceId exactly; RegExps test the label), or only the
+ * app-share rule for `exclude: false`. Returns a predicate `(label, deviceId) => boolean`. An
+ * app-share device (camera/app-share.js: a running app's views, not a camera) is ALWAYS excluded —
+ * `exclude: false` turns the sensor list off, never that. Pure.
  * @param {false|null|undefined|ReadonlyArray<string|RegExp>|string|RegExp} exclude
  */
 export function cameraExcluder(exclude) {
-  if (exclude === false) return () => false;
+  const app = (label, deviceId) => isAppShareDevice({ label: String(label || ''), deviceId: typeof deviceId === 'string' ? deviceId : '' });
+  if (exclude === false) return app;
   const list = [CAMERA_EXCLUDE_BUILTIN];
   for (const x of exclude == null ? [] : Array.isArray(exclude) ? exclude : [exclude]) {
     if (x instanceof RegExp || (typeof x === 'string' && x)) list.push(x);
   }
   return (label, deviceId) => {
+    if (app(label, deviceId)) return true;
     const l = String(label || '');
     for (const x of list) {
       if (x instanceof RegExp) {
@@ -98,8 +108,12 @@ export function cameraExcluder(exclude) {
   };
 }
 
-/** A label that names a stereo camera, tried first when probing. Pure. */
+/**
+ * A label that names a stereo camera, tried first when probing. Never an app-share device's
+ * ("DisplayXR: <app> (3D)" says "3D" but is a running app, not a camera). Pure.
+ */
 export function stereoLabelHint(label) {
+  if (isAppShareDevice(String(label || ''))) return false;
   return /stereo|\b3d\b|\bsbs\b|dual/i.test(label || '');
 }
 
@@ -146,7 +160,9 @@ export async function openCamera(want = 'auto', o = {}) {
     // eye-tracking camera shared without stealing it) describes itself on the opened track:
     // `displayxrStereo: {layout, rectified, baselineMm, horizontalFovDeg}`.
     const stereo = st.displayxrStereo && st.displayxrStereo.layout === 'side-by-side' ? st.displayxrStereo : null;
-    return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '', stereo };
+    // A running app's views (3D screen share, ADR-061) describe themselves too: `source: 'app'`.
+    const appShare = isAppShareDevice({ label: t.label || '', deviceId: st.deviceId || '' }) || !!(st.displayxrStereo && st.displayxrStereo.source === 'app');
+    return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '', stereo, appShare };
   };
   const skip = (label, err) => {
     skipped.push({ label, error: `${err.name}: ${err.message}`, busy: isBusyError(err), denied: isDeniedError(err) });
@@ -162,25 +178,43 @@ export async function openCamera(want = 'auto', o = {}) {
   };
   // Excluded devices: never opened by id; a default that turns out to be one is closed again.
   const excludedIds = new Set();
-  const exclude = (label, deviceId) => {
+  // `reason`: 'app-share' for a running app's views (never a camera), else 'excluded'.
+  const exclude = (label, deviceId, reason = 'excluded') => {
     if (deviceId && excludedIds.has(deviceId)) return;
     if (deviceId) excludedIds.add(deviceId);
-    skipped.push({ label, error: 'excluded', excluded: true });
-    log('camera-skip', { label, error: 'excluded' });
+    skipped.push({ label, error: 'excluded', excluded: true, reason });
+    log('camera-skip', { label, error: 'excluded', reason });
   };
+  const isApp = (d) => isAppShareDevice({ label: d.label || '', deviceId: d.deviceId || '' });
   const listedExcluded = (d) => {
+    if (isApp(d)) {
+      exclude(d.label || '', d.deviceId, 'app-share');
+      return true;
+    }
     if (!d.label || !isExcluded(d.label, d.deviceId)) return false;
     exclude(d.label, d.deviceId);
     return true;
+  };
+  /** An opened device that must not be used: an app share (by its own hint too) or an excluded label. Closes it. */
+  const rejectOpened = (r) => {
+    if (r.appShare) {
+      stop(r);
+      exclude(r.label, r.deviceId, 'app-share');
+      return true;
+    }
+    if (isExcluded(r.label, r.deviceId)) {
+      stop(r);
+      exclude(r.label, r.deviceId);
+      return true;
+    }
+    return false;
   };
   // An open of the DEFAULT (no id): only after it opened is its label known. An excluded default
   // is closed and never opened again in this probe.
   let defaultExcluded = false;
   const openDefault = async (constraints) => {
     const r = await open(constraints);
-    if (isExcluded(r.label, r.deviceId)) {
-      stop(r);
-      exclude(r.label, r.deviceId);
+    if (rejectOpened(r)) {
       defaultExcluded = true;
       return null;
     }
@@ -231,7 +265,8 @@ export async function openCamera(want = 'auto', o = {}) {
       }
       list = await listCameras();
     }
-    const d = needle ? list.find((x) => x.deviceId && (x.label || '').toLowerCase().includes(needle)) : null;
+    // Never a running app's views: `label:3d` means a camera (open an app with openAppShare()).
+    const d = needle ? list.find((x) => x.deviceId && !isApp(x) && (x.label || '').toLowerCase().includes(needle)) : null;
     if (!d) throw Object.assign(new Error(`camera unavailable: no camera labelled "${needle}"`), { code: noCameraCode(skipped), skipped });
     log('camera-label', { label: d.label, needle });
     want = d.deviceId;
@@ -268,6 +303,7 @@ export async function openCamera(want = 'auto', o = {}) {
         skip(d.label, err);
         continue;
       }
+      if (rejectOpened(r)) continue; // an app that described itself only on its track
       if (isPair(r)) {
         log('camera-sbs', { label: r.label, width: r.width, height: r.height, direct: true });
         return r;
@@ -325,6 +361,7 @@ export async function openCamera(want = 'auto', o = {}) {
       if (first.deviceId) tried.add(first.deviceId);
       try {
         mono = await open({ deviceId: { exact: first.deviceId }, ...MONO_CONSTRAINTS });
+        if (rejectOpened(mono)) mono = null;
       } catch (err) {
         skip(first.label, err);
       }
@@ -360,6 +397,7 @@ export async function openCamera(want = 'auto', o = {}) {
       skip(d.label, err);
       continue;
     }
+    if (rejectOpened(r)) continue;
     if (isPair(r) && want !== 'mono') {
       stop(mono);
       log('camera-sbs', { label: r.label, width: r.width, height: r.height });
