@@ -197,7 +197,7 @@ test('every call event is re-dispatched as a bubbling CustomEvent dxr-call:<type
   await withMount(fakeMount(), async () => {
     const el = makeEl();
     const seen = [];
-    for (const t of ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning', 'name', 'message', 'signal', 'weave', 'speaking']) {
+    for (const t of ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning', 'name', 'message', 'signal', 'weave', 'speaking', 'content']) {
       el.addEventListener(`dxr-call:${t}`, (e) => seen.push([e.type, e.detail, e.bubbles]));
     }
     const warned = [];

@@ -37,7 +37,7 @@ import { mountCall, dxrSignaling } from '../inline3d-call.js';
 
 /** Every call event is re-dispatched as `dxr-call:<type>`; `dxr-call:ready` carries the handle. */
 export const CALL_EVENT_PREFIX = 'dxr-call:';
-const CALL_EVENTS = ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning', 'name', 'message', 'signal', 'weave', 'speaking'];
+const CALL_EVENTS = ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning', 'name', 'message', 'signal', 'weave', 'speaking', 'content'];
 const TAG = '[inline3d/call] <dxr-call>';
 
 /** A boolean attribute: present is true, unless its value spells "false"/"0"/"off"/"no". */
@@ -70,6 +70,7 @@ const str = (v) => (v === null || v === undefined || String(v).trim() === '' ? u
  * | `mono3d="off"`       | `mono3D: 'off'`                          |
  * | `no-audio`           | `audio: false`                           |
  * | `no-self-view`       | `selfView: false`                        |
+ * | `self-content-view`  | `selfContentView: true`                  |
  * | `no-auto-converge`   | `autoConverge: false`                    |
  * | `no-send-convergence`| `sendConvergence: false`                 |
  * | `cursor="depth"`     | `cursor: 'depth'`                        |
@@ -103,6 +104,7 @@ export function attrsToOpts(source) {
   if (m3 && /^(off|false|0|no)$/i.test(m3)) o.mono3D = 'off';
   if (isOn(get('no-audio'))) o.audio = false;
   if (isOn(get('no-self-view'))) o.selfView = false;
+  if (isOn(get('self-content-view'))) o.selfContentView = true;
   if (isOn(get('no-auto-converge'))) o.autoConverge = false;
   if (isOn(get('no-send-convergence'))) o.sendConvergence = false;
   if (str(get('cursor')) === 'depth') o.cursor = 'depth';

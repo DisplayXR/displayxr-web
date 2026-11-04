@@ -76,6 +76,14 @@
 // visibility (paused), the depth slider drives lift's convergence, and at most `maxLifted`
 // streams run at once.
 //
+// CONTENT (3D app share, docs/call.md § Sharing a 3D app): a participant may share a second
+// video track — a running DisplayXR app's side-by-side views (`openAppShare()`), or any SBS
+// track — with `shareContent()`. It rides its own transceiver (call/transport.js, "THE CONTENT
+// TRACK") and is announced by a `content` message; each receiver shows it in a ContentTile: the
+// remote tile's woven path with `kind: 'content'`, but DISPLAY-REFERRED — the frames already put
+// the sender's display plane at a known disparity (`convergence.frac`, 0 for an app in v1), so
+// that is applied as the shift, nothing is measured, and only the depth slider adds to it.
+//
 // SESSION LOSS: a call must outlive a service restart. A layer that fails to build is retried
 // with backoff (flat in between); a session that ENDS without the page closing the wall is
 // replaced with a fresh `createInline3D()` and every tile re-registers on it — no reload. To tell
@@ -101,11 +109,14 @@ import { defineCallElement } from './call/element.js';
 import { createDisparityTrack, createFocusTracker } from './call/disparity.js';
 import { grabLumaFrame, createConvergenceMeter } from './camera/conv-meter.js';
 import { dxrSignaling } from './call/signaling.js';
+import { describeAppShare, isAppShareDevice } from './call/share.js';
 
 // ── the public surface (RFC 0003 §2) ────────────────────────────────────────────────────────
 export { DxrCallElement, defineCallElement, attrsToOpts, CALL_EVENT_PREFIX } from './call/element.js';
 export { dxrSignaling, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
 export { parseInviteLink };
+// 3D screen share (runtime ADR-061): find and open a running DisplayXR app as content.
+export { isAppShareDevice, listShareableApps, watchShareableApps, openAppShare } from './call/share.js';
 
 const TAG = '[inline3d/call]';
 const HELLO_WAIT_MS = 2000;
@@ -169,6 +180,13 @@ class Call {
     this.room = o.room === 'auto' ? parseInviteLink(globalThis.location) : o.room;
     this.state = 'idle'; // idle | lobby | joining | in-call | full | left
     this.tiles = new Map();
+    // Content tiles (3D app share): one per sharing participant, keyed by its id; `'self'` is the
+    // optional preview of what this side shares (`selfContentView`). `contentStreams`: each peer's
+    // content track as it arrived (it can come before or after its `content` message).
+    this.contentTiles = new Map();
+    this.contentStreams = new Map();
+    this.content = null; // what THIS side shares: { track, stream, desc, off }
+    this._contentWarned = new Set();
     this.listeners = new Map();
     this.local = null; // { stream, video, audio, format, width, height, calibration, owned, label }
     this.muted = false;
@@ -347,6 +365,7 @@ class Call {
       rectified: !!l.calibration?.rectified,
       conv: this.o.sendConvergence && l.format === 'sbs',
       name: this.name,
+      content: true, // this SDK carries the content track (3D app share): see call/transport.js
     });
   }
 
@@ -387,9 +406,12 @@ class Call {
         room: this.room,
         localStream: this.local.stream,
         sendFormat: this.local.format,
+        contentTrack: this.content ? this.content.track : null,
+        contentStream: this.content ? this.content.stream : null,
         onPeer: (id) => this._onPeer(id),
         onPeerLeft: (id, reason) => this._onPeerLeft(id, reason),
         onStream: (id, stream) => this.tiles.get(id)?.setStream(stream),
+        onContentStream: (id, stream) => this._onContentStream(id, stream),
         onMessage: (id, msg) => this._onMessage(id, msg),
         onPeerState: (id, st) => {
           this.tiles.get(id)?.setConn(st);
@@ -496,6 +518,8 @@ class Call {
   _onPeerLeft(id, reason) {
     const tile = this.tiles.get(id);
     if (!tile) return;
+    this._dropRemoteContent(id);
+    this.contentStreams.delete(id);
     tile.setConn('left');
     this.emit('peerleft', { id, reason });
     tile.leaveTimer = setTimeout(() => {
@@ -514,11 +538,19 @@ class Call {
       this.transport.send(id, this.stateMsg());
       // A peer that joins mid-call gets the current convergence at once, not at the next heartbeat.
       if (this._convOut.msg && this._convSending()) this.transport.send(id, this._convOut.msg);
+      // ...and what this side is sharing, if anything (a late joiner, a rebuilt connection).
+      if (this.content) this.transport.send(id, wire.makeContent(this.content.desc));
       tile.onChannelOpen();
       return;
     }
     const h = wire.normalizeHello(msg);
-    if (h) return tile.setHello(h);
+    if (h) {
+      tile.setHello(h);
+      this._onPeerHello(id, h);
+      return;
+    }
+    const cm = wire.normalizeContent(msg);
+    if (cm) return this._onRemoteContent(id, cm);
     const hint = normalizeHint(msg);
     if (hint) return tile.setHint(hint);
     const st = normalizeState(msg);
@@ -533,6 +565,171 @@ class Call {
       if (!gate) this._appIn.set(id, (gate = windowGate(APP_RECV_MAX_PER_SEC)));
       if (gate(performance.now())) this.emit('message', { from: id, data: app.data });
     }
+  }
+
+  // ── content (3D app share) ──────────────────────────────────────────────────────────────
+
+  /**
+   * A peer's hello: both sides carry content → the pair gets its content transceiver (the offerer
+   * adds it; call/transport.js). A peer that cannot (an older SDK) while this side shares: one
+   * `warning { code: 'content-unsupported' }` per peer and share.
+   */
+  _onPeerHello(id, h) {
+    if (h.content) this.transport?.addContentTransceiver?.(id);
+    else this._warnContentPeer(id);
+  }
+
+  _warnContentPeer(id) {
+    const tile = this.tiles.get(id);
+    if (!this.content || !tile || !tile.hello || tile.hello.content || this._contentWarned.has(id)) return;
+    this._contentWarned.add(id);
+    this.warning('content-unsupported', `participant ${id} is on an older SDK that cannot receive a shared app; they keep seeing your camera only`);
+  }
+
+  _onContentStream(id, stream) {
+    if (stream) this.contentStreams.set(id, stream);
+    else this.contentStreams.delete(id);
+    const ct = this.contentTiles.get(id);
+    if (ct && stream) ct.setStream(stream);
+  }
+
+  /** A peer's `content` message (wire.normalizeContent validated it). */
+  _onRemoteContent(id, cm) {
+    const tile = this.tiles.get(id);
+    if (!tile) return;
+    const prev = tile.content;
+    if (!cm.on) {
+      if (prev.on) this._dropRemoteContent(id);
+      return;
+    }
+    tile.content = { on: true, format: cm.format, appName: cm.appName };
+    let ct = this.contentTiles.get(id);
+    if (!ct) {
+      ct = new ContentTile(this, id);
+      this.contentTiles.set(id, ct);
+      const s = this.contentStreams.get(id);
+      if (s) ct.setStream(s);
+    }
+    ct.setContent(cm);
+    this.log('content', { peer: id, on: true, format: cm.format, appName: cm.appName, convergence: cm.convergence });
+    if (!prev.on || prev.appName !== cm.appName) this.emit('content', { id, on: true, appName: cm.appName });
+    this._layout();
+  }
+
+  _dropRemoteContent(id) {
+    const tile = this.tiles.get(id);
+    const ct = this.contentTiles.get(id);
+    const was = tile ? tile.content : null;
+    if (tile) tile.content = { on: false, format: null, appName: null };
+    if (ct) {
+      ct.destroy();
+      this.contentTiles.delete(id);
+    }
+    if (was && was.on) {
+      this.log('content', { peer: id, on: false });
+      this.emit('content', { id, on: false, appName: was.appName });
+    }
+    this._layout();
+  }
+
+  /**
+   * Share `src` (a MediaStream or a video MediaStreamTrack — `openAppShare()`'s, or any
+   * side-by-side track) as this side's content. `opts` override what the track says about itself
+   * (`openAppShare()`'s `descriptor` fits as is). Replaces a previous share. Resolves with what is
+   * announced to everyone.
+   */
+  async shareContent(src, opts = {}) {
+    const isStream = !!(src && typeof src.getVideoTracks === 'function');
+    const track = isStream ? src.getVideoTracks()[0] || null : src && src.kind === 'video' ? src : null;
+    if (!track) throw new TypeError(`${TAG} shareContent(src) needs a MediaStream with a video track, or a video MediaStreamTrack`);
+    if (track.readyState === 'ended') throw Object.assign(new Error(`${TAG} shareContent: that track has ended`), { code: 'content-ended' });
+    const stream = isStream ? src : new MediaStream([track]);
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const auto = describeAppShare(track);
+    const app = isAppShareDevice(track);
+    const c = o.convergence;
+    const desc = {
+      format: o.format === 'mono' || o.format === 'sbs' ? o.format : auto.format,
+      width: o.width > 0 ? o.width : auto.width,
+      height: o.height > 0 ? o.height : auto.height,
+      // A DisplayXR app's frames are display-referred (its hint, 0 when the browser has none); any
+      // other track's convergence is unknown unless the page says so.
+      convergence: c && typeof c === 'object' ? { known: !!c.known, frac: c.known && Number.isFinite(c.frac) ? c.frac : c.known ? 0 : null } : app ? auto.convergence : { known: false, frac: null },
+      appName: sanitizeName(o.appName) || auto.appName,
+    };
+    const announced = wire.makeContent(desc);
+    desc.convergence = announced.convergence;
+    desc.width = announced.width;
+    desc.height = announced.height;
+    try {
+      track.contentHint = 'detail';
+    } catch {
+      /* older engines */
+    }
+    if (this.content && this.content.track !== track) this.content.off();
+    const onEnded = () => {
+      if (this.content && this.content.track === track) this.stopContent({}, 'ended').catch(() => {});
+    };
+    if (!this.content || this.content.track !== track) track.addEventListener?.('ended', onEnded);
+    const off = () => track.removeEventListener?.('ended', onEnded);
+    const was = this.content;
+    this.content = { track, stream, desc, off: was && was.track === track ? was.off : off };
+    this._contentWarned.clear();
+    if (this.transport) {
+      await this.transport.replaceTrack('video', track, stream, { slot: 'content' });
+      this.transport.broadcast(announced);
+      for (const id of this.tiles.keys()) this._warnContentPeer(id);
+    }
+    this._refreshSelfContent();
+    this.log('share-content', { format: desc.format, width: desc.width, height: desc.height, appName: desc.appName, convergence: desc.convergence });
+    if (!was || was.desc.appName !== desc.appName) this.emit('content', { id: 'self', on: true, appName: desc.appName });
+    return this.contentInfo();
+  }
+
+  /** Stop sharing: the content sender goes empty, everyone gets `content { on: false }`. */
+  async stopContent({ stopTrack = false } = {}, reason = 'stopped') {
+    const c = this.content;
+    if (!c) return false;
+    this.content = null;
+    c.off();
+    this._refreshSelfContent();
+    if (this.transport) {
+      this.transport.broadcast(wire.makeContent({ on: false }));
+      await this.transport.replaceTrack('video', null, null, { slot: 'content' });
+    }
+    if (stopTrack) c.track.stop?.();
+    this.log('stop-content', { reason });
+    this.emit('content', { id: 'self', on: false, appName: c.desc.appName, reason });
+    return true;
+  }
+
+  /** `handle.content`: what this side shares, or null. */
+  contentInfo() {
+    const c = this.content;
+    if (!c) return null;
+    const d = c.desc;
+    return Object.freeze({ on: true, format: d.format, width: d.width, height: d.height, appName: d.appName, convergence: Object.freeze({ ...d.convergence }) });
+  }
+
+  /** The optional preview of what this side shares (`selfContentView`). */
+  _refreshSelfContent() {
+    const want = !!(this.content && this.o.selfContentView && this.state !== 'left');
+    let ct = this.contentTiles.get('self');
+    if (!want) {
+      if (ct) {
+        ct.destroy();
+        this.contentTiles.delete('self');
+        this._layout();
+      }
+      return;
+    }
+    if (!ct) {
+      ct = new ContentTile(this, 'self');
+      this.contentTiles.set('self', ct);
+    }
+    ct.setStream(this.content.stream);
+    ct.setContent({ on: true, ...this.content.desc });
+    this._layout();
   }
 
   /** The signalling connection's state for `handle.signal` + the `signal` event (transitions only). */
@@ -716,6 +913,7 @@ class Call {
     const n = v === null || v === undefined || !Number.isFinite(+v) ? 0 : Math.max(-1, Math.min(1, +v));
     this.depth = n;
     for (const t of this.tiles.values()) t.conv.depth = n;
+    for (const t of this.contentTiles.values()) t.conv.depth = n; // added to content's known convergence
     this.liftPool?.setDepth(n); // the same control is lift's convergence on lifted tiles
     if (this.ui?.depth && +this.ui.depth.value !== n) this.ui.depth.value = String(n);
     return n;
@@ -757,6 +955,16 @@ class Call {
     this._resetConvSend();
     for (const t of this.tiles.values()) t.destroy();
     this.tiles.clear();
+    for (const t of this.contentTiles.values()) t.destroy();
+    this.contentTiles.clear();
+    this.contentStreams.clear();
+    if (this.content) {
+      // Leaving ends the share (the track is the page's; it is left running).
+      const c = this.content;
+      this.content = null;
+      c.off();
+      this.emit('content', { id: 'self', on: false, appName: c.desc.appName, reason: 'left' });
+    }
     this.liftPool?.releaseAll();
     clearInterval(this._statsTimer);
     this._setSpeaker(null);
@@ -837,6 +1045,7 @@ class Call {
       // Re-create only what was woven before the session was live (#172); flat tiles are untouched.
       // A lifted tile is a woven window too (lift's addScene canvas): release + lift again.
       for (const t of this.tiles.values()) if (t.route === 'woven-sbs' || t.route === 'lifted') t.reroute(true);
+      for (const t of this.contentTiles.values()) if (t.route === 'woven-sbs') t.reroute(true);
       if (this.self && this.self.route === 'woven-sbs') this.self.reroute(true);
       this._layout();
     };
@@ -865,6 +1074,7 @@ class Call {
     this.weaveLive = false;
     this.log('session-ended', { byPage: hook.pageClosed });
     for (const t of this.tiles.values()) t.onWallLost();
+    for (const t of this.contentTiles.values()) t.onWallLost();
     this.self?.onWallLost();
     if (hook.pageClosed || this.state === 'left') {
       this._unhookWall();
@@ -893,6 +1103,7 @@ class Call {
       this._hookWall(w);
       this.log('session-recovered', { attempt });
       for (const t of this.tiles.values()) t.reroute(true);
+      for (const t of this.contentTiles.values()) t.reroute(true);
       this.self?.reroute(true);
     }, backoffMs(attempt, { baseMs: 1000, maxMs: 15000 }));
   }
@@ -904,6 +1115,7 @@ class Call {
     const tick = (now) => {
       this._raf = requestAnimationFrame(tick);
       for (const t of this.tiles.values()) t.paint();
+      for (const t of this.contentTiles.values()) t.paint();
       if (last && this.liftPool && this.liftPool.anyWeb) this._watchFrames(now - last);
       last = now;
     };
@@ -1053,10 +1265,15 @@ class Call {
       });
       const q = { in: null, out: null };
       if (withQuality) Object.assign(q, selectedPath(report));
+      // The content track (3D app share) has its own inbound / outbound video: not the camera's quality.
+      const contentIds = new Set();
+      for (const t of this.contentStreams.get(id)?.getTracks?.() || []) contentIds.add(t.id);
+      if (this.content && this.content.track) contentIds.add(this.content.track.id);
       report.forEach((s) => {
         if (s.type === 'inbound-rtp' && s.kind === 'audio' && typeof s.audioLevel === 'number') tile.level = Math.max(s.audioLevel, (tile.level || 0) * 0.6);
         if (s.type === 'media-source' && s.kind === 'audio' && typeof s.audioLevel === 'number') localLevel = Math.max(localLevel, s.audioLevel);
         if (!withQuality) return;
+        if (s.trackIdentifier && contentIds.has(s.trackIdentifier)) return;
         if (s.type === 'inbound-rtp' && s.kind === 'video') {
           const prev = tile._prevIn;
           q.in = {
@@ -1106,7 +1323,7 @@ class Call {
       this._selfSpeaking = speaking;
       this.transport?.broadcast(this.stateMsg());
       this.self?.setSpeaking(speaking);
-      this.emit('speaking', { id: 'self', on: speaking });
+      this.emit('speaking', { id: 'self', on: speaking, kind: 'camera' });
     }
   }
 
@@ -1256,11 +1473,16 @@ class Call {
     c.classList.toggle('dxr-call-host--lobby', lobby);
     show(ui.banner, this.o.chrome && !this.woven);
     const n = this.tiles.size;
-    ui.grid.dataset.n = String(Math.min(n, 4));
-    show(ui.grid, n > 0 && this.state !== 'left');
-    // Speaker layout: the active speaker (or the first tile) spans the row. layout:'none' positions nothing.
-    const main = this.o.layout === 'speaker' ? this.speakerId || [...this.tiles.keys()][0] : null;
+    const nc = this.contentTiles.size;
+    ui.grid.dataset.n = String(Math.min(n + nc, 4));
+    ui.grid.dataset.content = nc ? '1' : '0';
+    show(ui.grid, n + nc > 0 && this.state !== 'left');
+    // Shared content is the main tile (it spans the row; the people form a strip under it).
+    // Otherwise, speaker layout: the active speaker (or the first tile) spans the row. layout:'none' positions nothing.
+    const contentMain = nc && this.o.layout !== 'none' ? [...this.contentTiles.values()][0] : null;
+    const main = contentMain ? null : this.o.layout === 'speaker' ? this.speakerId || [...this.tiles.keys()][0] : null;
     for (const [id, tile] of this.tiles) tile.el.classList.toggle('dxr-call-tile--main', id === main);
+    for (const ct of this.contentTiles.values()) ct.el.classList.toggle('dxr-call-tile--main', ct === contentMain);
     if (!this.o.chrome) return;
     this._refreshBar();
     queueMicrotask(() => this._fitGrid());
@@ -1323,6 +1545,9 @@ class Call {
       hello: this.hello(),
       transport: this.transport,
       peers: [...this.tiles.values()].map((tile) => tile.diag()),
+      // Content tiles (3D app share), by participant ('self' = the preview of your own share).
+      content: [...this.contentTiles.values()].map((tile) => tile.diag()),
+      sharing: this.contentInfo(),
       // The self view's ACTUAL weave state (web#131): route, woven, the fallback reason and the
       // tile's firstWoven result — null without a self view.
       self: this.self ? this.self.diag() : null,
@@ -1397,8 +1622,19 @@ class Call {
       retryCamera: () => call.retryCamera(),
       setMono3D: (on) => call.setMono3D(on),
       leave: () => call.leave('left'),
-      /** A participant's tile element (for `layout: 'none'`), or null; `'self'` is your self view. */
-      tile: (peerId) => (peerId === 'self' ? call.self?.el || null : call.tiles.get(peerId)?.el || null),
+      /**
+       * A participant's tile element (for `layout: 'none'`), or null; `'self'` is your self view.
+       * `kind: 'content'`: their shared-app tile instead (`'self'`: the preview of yours).
+       */
+      tile: (peerId, kind = 'camera') =>
+        kind === 'content' ? call.contentTiles.get(peerId)?.el || null : peerId === 'self' ? call.self?.el || null : call.tiles.get(peerId)?.el || null,
+      /** 3D app share: share a track (a running app's views from openAppShare(), or any SBS track). */
+      shareContent: (src, o) => call.shareContent(src, o),
+      stopContent: (o) => call.stopContent(o),
+      /** What you share right now, or null. */
+      get content() {
+        return call.contentInfo();
+      },
       /** Your display name (sent in `hello`), or null. */
       get name() {
         return call.name;
@@ -1470,9 +1706,9 @@ function observeBox(el, onBox) {
   return () => ro.disconnect();
 }
 
-/** The `weave` event payload of a settled `firstWoven` / `rewoven()`. */
-function weaveEvent(id, res) {
-  const ev = { id, state: res.woven ? 'woven' : 'flat', ms: Math.round(res.ms || 0) };
+/** The `weave` event payload of a settled `firstWoven` / `rewoven()`. `kind`: which tile of `id`. */
+function weaveEvent(id, res, kind = 'camera') {
+  const ev = { id, state: res.woven ? 'woven' : 'flat', ms: Math.round(res.ms || 0), kind };
   if (res.reason) ev.reason = res.reason;
   return ev;
 }
@@ -1517,9 +1753,17 @@ function paintFlat(canvas, video, { eyeHalf = null, mirror = false } = {}) {
 // ── a remote participant ──────────────────────────────────────────────────────────────────
 
 class Tile {
-  constructor(call, id) {
+  /**
+   * @param {Call} call
+   * @param {string} id  the participant
+   * @param {'camera'|'content'} [kind]  `'content'`: a ContentTile (their shared app), see below
+   */
+  constructor(call, id, kind = 'camera') {
     this.call = call;
     this.id = id;
+    this.kind = kind;
+    // What this participant shares (their `content` messages): { on, format, appName }.
+    this.content = { on: false, format: null, appName: null };
     this.hello = null;
     this.format = null; // null until hello or its timeout
     this.route = null;
@@ -1561,7 +1805,8 @@ class Tile {
     this.liftFails = 0;
     this.visible = true;
     this.video = Object.assign(document.createElement('video'), { muted: true, playsInline: true, autoplay: true });
-    this.audio = Object.assign(document.createElement('audio'), { autoplay: true });
+    // A content tile is video only: the participant's voice stays on their camera tile.
+    this.audio = kind === 'content' ? null : Object.assign(document.createElement('audio'), { autoplay: true });
     this.video.addEventListener('playing', () => this._maybeRoute());
     this.video.addEventListener('loadeddata', () => this._maybeRoute());
     this.video.addEventListener('resize', () => this._maybeRoute());
@@ -1578,16 +1823,21 @@ class Tile {
     this._rwP = null; // the rewoven() promise a `weave` event is waiting on
     this._unobserve = observeBox(this.stage, (w, h) => this._onBox(w, h));
     // `data-dxr-peer` is the documented hook (layout:'none', handle.tile()); `data-peer` is the 1.29 spelling.
-    this.el = el('div', { class: 'dxr-call-tile', part: 'tile', 'data-dxr-peer': id, 'data-peer': id }, [this.stage, el('div', { class: 'dxr-call-talk' })]);
+    // `data-dxr-kind`: 'camera' (the person) or 'content' (what they share) — tile(id, kind).
+    const attrs = { class: `dxr-call-tile${kind === 'content' ? ' dxr-call-tile--content' : ''}`, part: 'tile', 'data-dxr-peer': id, 'data-dxr-kind': kind };
+    if (kind !== 'content') attrs['data-peer'] = id;
+    this.el = el('div', attrs, [this.stage, el('div', { class: 'dxr-call-talk' })]);
     if (!call.o.ui) {
       show(this.badge, false);
     }
-    call.ui.grid.appendChild(this.el);
+    // Shared content goes FIRST in the grid (created there: a later move would be a teardown).
+    if (kind === 'content') call.ui.grid.insertBefore(this.el, call.ui.grid.firstChild);
+    else call.ui.grid.appendChild(this.el);
     if (call.sinkId) this.applySink();
     this._renderBadge();
     /** The depth cursor (`cursor: 'depth'`) once its module has loaded; null otherwise. */
     this.cursor = null;
-    if (call.o.cursor) {
+    if (call.o.cursor && kind !== 'content') {
       call._pairCursorMod = call._pairCursorMod || import('./camera/pair-cursor.js');
       call._pairCursorMod.then((m) => {
         if (!this.destroyed) this.cursor = new m.PairCursor(this.canvas, call.o.cursor);
@@ -1611,6 +1861,8 @@ class Tile {
       cameraOff: this.remote.cameraOff,
       speaking: this.speaking,
       name: (this.hello && this.hello.name) || null,
+      // What they share (3D app share): `on`, its format and the app's name.
+      content: Object.freeze({ ...this.content }),
     });
   }
 
@@ -1628,13 +1880,14 @@ class Tile {
     p.then((res) => {
       if (this._rwP !== p || this.handle !== handle || !res) return;
       this._rwP = null;
-      this.call.emit('weave', weaveEvent(this.id, res));
+      this.call.emit('weave', weaveEvent(this.id, res, this.kind));
     });
   }
 
   /** Play this participant's audio to the call's output device (`handle.setAudioOutput`). */
   applySink() {
     const a = this.audio;
+    if (!a) return Promise.resolve(true); // a content tile has no audio of its own
     if (typeof a.setSinkId !== 'function') return Promise.resolve(false);
     return a.setSinkId(this.call.sinkId || '').then(
       () => true,
@@ -1683,11 +1936,11 @@ class Tile {
   setStream(stream) {
     if (this.video.srcObject !== stream) {
       this.video.srcObject = stream;
-      this.audio.srcObject = stream;
+      if (this.audio) this.audio.srcObject = stream;
       this._resetAutoConverge(); // a new stream may be a new camera: measure afresh
     }
     this.video.play().catch(() => {});
-    this.audio.play().catch(() => {});
+    this.audio?.play().catch(() => {});
   }
 
   onChannelOpen() {
@@ -1752,7 +2005,7 @@ class Tile {
     if (on === this.speaking) return;
     this.speaking = on;
     this.el.classList.toggle('dxr-call-tile--speaking', on);
-    this.call.emit('speaking', { id: this.id, on });
+    this.call.emit('speaking', { id: this.id, on, kind: this.kind });
   }
 
   setConn(st) {
@@ -1804,10 +2057,14 @@ class Tile {
   reroute(force) {
     const call = this.call;
     const pool = call.liftPool;
+    const content = this.kind === 'content';
     const r =
       this.forceFlat && this.format === 'sbs'
         ? { route: 'flat-left' }
-        : wire.routeFor({
+        : content
+          ? // Shared content: woven when it is a pair on a woven wall, else flat. Never lifted.
+            { route: this.format === 'sbs' ? (call.woven ? 'woven-sbs' : 'flat-left') : 'flat' }
+          : wire.routeFor({
             format: this.format,
             woven: call.woven,
             mono3D: call.mono3DOn ? 'auto' : 'off',
@@ -1816,9 +2073,9 @@ class Tile {
             failed: this.liftFailed,
           });
     // First mono peer on a woven wall and lift not asked for yet (e.g. setMono3D(true) later).
-    if (this.format !== 'sbs' && call.woven && call.mono3DOn && !call._liftP) call._ensureLift();
+    if (!content && this.format !== 'sbs' && call.woven && call.mono3DOn && !call._liftP) call._ensureLift();
     // A mono peer on a 3D display that stays flat because the lift MODULE is missing: say so.
-    if (this.format !== 'sbs' && call.woven && call.liftMissing) call._warnLiftMissing();
+    if (!content && this.format !== 'sbs' && call.woven && call.liftMissing) call._warnLiftMissing();
     const key = `${r.route}|${this.format}`;
     if (!force && key === this.routedKey) return;
     this.routedKey = key;
@@ -1826,10 +2083,10 @@ class Tile {
     this.route = r.route;
     if (r.route === 'woven-sbs') this._registerWoven();
     else if (r.route === 'lifted') this._registerLifted();
-    call.log('route', { peer: this.id, route: r.route, format: this.format, mono3d: r.mono3d || null });
-    call.emit('display', { id: this.id, display: this.display() });
+    call.log('route', { peer: this.id, kind: this.kind, route: r.route, format: this.format, mono3d: r.mono3d || null });
+    call.emit('display', { id: this.id, display: this.display(), kind: this.kind });
     // 1.29's 'format' event (route / mono3d detail → diagnostics()): one release of compatibility.
-    if (call.listeners.get('format')?.size) call.emit('format', { id: this.id, format: this.format, route: r.route, mono3d: r.mono3d || null, hello: this.hello });
+    if (!content && call.listeners.get('format')?.size) call.emit('format', { id: this.id, format: this.format, route: r.route, mono3d: r.mono3d || null, hello: this.hello });
     this._renderBadge();
   }
 
@@ -1848,8 +2105,8 @@ class Tile {
       if (this.handle !== handle) return;
       this._fwSettled = true;
       show(this.cover, false); // a cut, never a fade
-      call.log('first-woven', { peer: this.id, woven: res.woven, reason: res.reason, ms: Math.round(res.ms) });
-      call.emit('weave', weaveEvent(this.id, res));
+      call.log('first-woven', { peer: this.id, kind: this.kind, woven: res.woven, reason: res.reason, ms: Math.round(res.ms) });
+      call.emit('weave', weaveEvent(this.id, res, this.kind));
       if (!res.woven && res.reason === 'layer-failed') this._layerFailed();
     });
   }
@@ -2021,12 +2278,18 @@ class Tile {
       c.height = outH;
     }
     const hover = !!(this.cursor && this.cursor.hovering);
-    // The sender's measurement, when it sends one (recomputed per paint: a WebRTC resolution change
-    // keeps it right, since it is a fraction of the eye width). Otherwise measure here, as before.
-    const auto = this.call.o.autoConverge;
-    const frac = auto ? this._senderFrac(performance.now()) : null;
-    if (frac !== null) this.conv.measuredPx = frac * eyeW;
-    if (hover || (auto && frac === null)) this._sampleDisparity(v, W, H, hover);
+    if (this.kind === 'content') {
+      // DISPLAY-REFERRED (3D app share): the sender's display plane sits at a known disparity, so
+      // that IS the convergence — applied directly, never measured (the depth slider still adds).
+      this.conv.measuredPx = this.contentFrac() * eyeW;
+    } else {
+      // The sender's measurement, when it sends one (recomputed per paint: a WebRTC resolution change
+      // keeps it right, since it is a fraction of the eye width). Otherwise measure here, as before.
+      const auto = this.call.o.autoConverge;
+      const frac = auto ? this._senderFrac(performance.now()) : null;
+      if (frac !== null) this.conv.measuredPx = frac * eyeW;
+      if (hover || (auto && frac === null)) this._sampleDisparity(v, W, H, hover);
+    }
     const shift = this.conv.step(eyeW);
     const g = c.getContext('2d');
     const rects = [];
@@ -2123,8 +2386,70 @@ class Tile {
     this._unobserve?.();
     this._unobserve = null;
     this.video.srcObject = null;
-    this.audio.srcObject = null;
+    if (this.audio) this.audio.srcObject = null;
     this.el.remove();
+  }
+
+  /** Overridden by ContentTile; a camera tile has no known convergence. */
+  contentFrac() {
+    return 0;
+  }
+}
+
+// ── shared content (3D app share) ─────────────────────────────────────────────────────────
+
+/**
+ * What a participant shares (`shareContent`): a Tile with `kind: 'content'` — the same detached
+ * <video>, woven canvas, cover, layer retries, session recovery and #172 re-registration as a
+ * camera tile, but DISPLAY-REFERRED: `convergence.frac` from the `content` message is the shift
+ * (half of it per eye, like a measured disparity), nothing is sampled, the sender's `conv` does not
+ * apply, and only the depth slider adds to it. An unknown convergence is shown as sent (0). No
+ * audio, no depth cursor, never lifted. `id: 'self'` is the optional preview of your own share.
+ */
+class ContentTile extends Tile {
+  constructor(call, id) {
+    super(call, id, 'content');
+    this.desc = null;
+    this.conn = 'connected';
+    this._renderPlate();
+  }
+
+  /** A `content` message (or this side's own descriptor, for the self preview). */
+  setContent(cm) {
+    const changed = this.format !== cm.format;
+    this.desc = cm;
+    this.format = cm.format;
+    this.content = { on: true, format: cm.format, appName: cm.appName || null };
+    if (changed) this._maybeRoute();
+    this._renderBadge();
+  }
+
+  contentFrac() {
+    const c = this.desc && this.desc.convergence;
+    return c && c.known && typeof c.frac === 'number' && Number.isFinite(c.frac) ? c.frac : 0;
+  }
+
+  _renderBadge() {
+    super._renderBadge();
+    const name = this.desc && this.desc.appName;
+    if (name && this.route) this.badge.replaceChildren(el('b', { text: `${name} · ${this.display() === '3D' ? this.call.t('badge3D') : this.call.t('badge2D')}` }));
+  }
+
+  diag() {
+    return {
+      id: this.id,
+      kind: 'content',
+      route: this.route,
+      display: this.display(),
+      format: this.format,
+      appName: this.desc ? this.desc.appName : null,
+      width: this.desc ? this.desc.width : null,
+      height: this.desc ? this.desc.height : null,
+      convergence: this.desc ? this.desc.convergence : null,
+      convergencePx: this.conv.current,
+      samples: this.autoGrabs, // always 0: content is never measured
+      element: this.el,
+    };
   }
 }
 
@@ -2208,7 +2533,7 @@ class SelfTile {
     const fw = st.firstWoven;
     let ev = null;
     if (fw && typeof fw === 'object') ev = weaveEvent('self', fw);
-    else if (st.route !== 'woven-sbs' && st.reason) ev = { id: 'self', state: 'flat', reason: st.reason, ms: 0 };
+    else if (st.route !== 'woven-sbs' && st.reason) ev = { id: 'self', state: 'flat', reason: st.reason, ms: 0, kind: 'camera' };
     if (ev) this.call.emit('weave', ev);
   }
 

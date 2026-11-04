@@ -123,6 +123,8 @@ export function normalizeCallOptions(opts = {}) {
     chrome,
     autoJoin: opts.autoJoin === undefined ? !chrome : !!opts.autoJoin,
     selfView: opts.selfView === undefined ? true : !!opts.selfView,
+    // A woven preview of what this side shares (`shareContent`), as a content tile with id 'self'.
+    selfContentView: !!opts.selfContentView,
     tileAspect: aspect,
     // theme → the CSS custom properties written on the host, and the string table.
     cssVars,
