@@ -538,3 +538,139 @@ test('openCamera: a track that declares side-by-side is a pair whatever its aspe
   assert.equal(again.format, 'sbs');
   assert.equal(again.deviceId, 'pair');
 });
+
+// ── a DisplayXR Browser whose 3D camera is listed late (runtime restart, camera HAL restart) ──
+
+const PAIR = { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } };
+const LENSES = [
+  { id: 'cam1', label: 'camera 1, facing front', facing: 'user', w: 640, h: 480 },
+  { id: 'cam0', label: 'camera 0, facing back', facing: 'environment', w: 640, h: 480 },
+];
+/** Labels already visible; the pair is listed only once `listed()` says so. Records when each open happened. */
+function lateMedia(listed) {
+  const md = permissionMedia([...LENSES, PAIR]);
+  const listeners = new Set();
+  md.addEventListener = (ev, fn) => ev === 'devicechange' && listeners.add(fn);
+  md.removeEventListener = (ev, fn) => listeners.delete(fn);
+  md.fireDeviceChange = () => [...listeners].forEach((fn) => fn());
+  return (async () => {
+    await md.getUserMedia({ video: { deviceId: { exact: 'cam1' } } }); // permission granted
+    md.opens.length = 0;
+    md.openedAt = [];
+    const gum = md.getUserMedia.bind(md);
+    md.getUserMedia = async (c) => {
+      md.openedAt.push(Date.now());
+      return gum(c);
+    };
+    const all = md.enumerateDevices.bind(md);
+    md.enumerateDevices = async () => (await all()).filter((d) => d.deviceId !== 'pair' || listed());
+    return md;
+  })();
+}
+
+test('openCamera waits for a 3D camera listed late, and opens no plain lens while it waits', async () => {
+  let reads = 0;
+  const md = await lateMedia(() => ++reads > 3);
+  const t0 = Date.now();
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 2000 });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['id:pair'], 'no phone lens opened at all');
+  assert.ok(Date.now() - t0 < 2000, 'returns as soon as it is listed, not at the deadline');
+});
+
+test('openCamera: a devicechange re-reads the list at once', async () => {
+  let up = false;
+  const md = await lateMedia(() => up);
+  const t0 = Date.now();
+  setTimeout(() => {
+    up = true;
+    md.fireDeviceChange();
+  }, 50);
+  const cam = await openCamera({ prefer: 'stereo', mediaDevices: md, stereoWaitMs: 2000 });
+  assert.equal(cam.deviceId, 'pair');
+  assert.ok(Date.now() - t0 < 400, `found on the event, not the 500 ms tick (${Date.now() - t0} ms)`);
+});
+
+test('openCamera: no 3D camera within stereoWaitMs → the plain lens, opened only after the wait', async () => {
+  const md = await lateMedia(() => false);
+  const t0 = Date.now();
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 300 });
+  assert.equal(cam.format, 'mono');
+  assert.ok(md.openedAt.length > 0 && md.openedAt[0] - t0 >= 290, `first open after the wait (${md.openedAt[0] - t0} ms)`);
+});
+
+test('openCamera: prefer mono never waits; stereoWaitMs 0 reads the list once more and goes on', async () => {
+  const md = await lateMedia(() => false);
+  let t0 = Date.now();
+  assert.equal((await openCamera({ prefer: 'mono', mediaDevices: md, stereoWaitMs: 2000 })).format, 'mono');
+  assert.ok(Date.now() - t0 < 200);
+  t0 = Date.now();
+  assert.equal((await openCamera({ prefer: 'auto', mediaDevices: await lateMedia(() => false), stereoWaitMs: 0 })).format, 'mono');
+  assert.ok(Date.now() - t0 < 200);
+});
+
+test('defaultStereoWaitMs: 2500 in a DisplayXR Browser (navigator.xr + XRDisplayLayer), else 0', async () => {
+  const { defaultStereoWaitMs, STEREO_WAIT_MS } = await import('../js/camera/capture.js');
+  const hadXr = Object.getOwnPropertyDescriptor(globalThis.navigator, 'xr');
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = {};
+  const hadLayer = globalThis.window.XRDisplayLayer;
+  try {
+    Object.defineProperty(globalThis.navigator, 'xr', { value: undefined, configurable: true });
+    assert.equal(defaultStereoWaitMs(), 0);
+    Object.defineProperty(globalThis.navigator, 'xr', { value: {}, configurable: true });
+    globalThis.window.XRDisplayLayer = function XRDisplayLayer() {};
+    assert.equal(defaultStereoWaitMs(), STEREO_WAIT_MS);
+    assert.equal(STEREO_WAIT_MS, 2500);
+  } finally {
+    if (hadXr) Object.defineProperty(globalThis.navigator, 'xr', hadXr);
+    else delete globalThis.navigator.xr;
+    globalThis.window.XRDisplayLayer = hadLayer;
+    if (!hadWindow) delete globalThis.window;
+  }
+});
+
+test('openCamera with labels visible, default delivers 0x0 (camera HAL restarting): a lens that opens by id is KEPT as the fallback', async () => {
+  const opens = [];
+  const md = {
+    async getUserMedia({ video }) {
+      const id = video && video.deviceId ? video.deviceId.exact : null;
+      opens.push(id || 'default');
+      const cam = LENSES.find((c) => c.id === id);
+      const w = cam ? cam.w : 0;
+      const h = cam ? cam.h : 0;
+      const track = Object.assign(new FakeTrack('video'), { label: cam ? cam.label : '', getSettings: () => ({ width: w, height: h, deviceId: id || '' }) });
+      return new FakeStream([track]);
+    },
+    async enumerateDevices() {
+      return LENSES.map((c) => ({ kind: 'videoinput', deviceId: c.id, label: c.label }));
+    },
+  };
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 0 });
+  assert.equal(cam.format, 'mono');
+  assert.equal(cam.deviceId, 'cam1');
+  assert.ok(cam.skipped.some((s) => s.label === 'default' && s.busy), 'the 0x0 default is reported');
+  // Outside a DisplayXR Browser the last-resort loop still probes the other lens for a pair by
+  // shape (a USB stereo webcam is found that way), but never gives up the lens it kept.
+  assert.ok(opens.includes('cam0'));
+  // In a DisplayXR Browser it stops at the first plain lens: a USB pair is the runtime's named
+  // 3D Camera there, and the extra open is the one that can crash a phone's camera HAL.
+  const hadXr = Object.getOwnPropertyDescriptor(globalThis.navigator, 'xr');
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = {};
+  const hadLayer = globalThis.window.XRDisplayLayer;
+  try {
+    Object.defineProperty(globalThis.navigator, 'xr', { value: {}, configurable: true });
+    globalThis.window.XRDisplayLayer = function XRDisplayLayer() {};
+    opens.length = 0;
+    const dxr = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 0 });
+    assert.equal(dxr.deviceId, 'cam1');
+    assert.deepEqual(opens, ['default', 'cam1'], 'no second plain lens');
+  } finally {
+    if (hadXr) Object.defineProperty(globalThis.navigator, 'xr', hadXr);
+    else delete globalThis.navigator.xr;
+    globalThis.window.XRDisplayLayer = hadLayer;
+    if (!hadWindow) delete globalThis.window;
+  }
+});

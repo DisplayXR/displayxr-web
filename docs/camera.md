@@ -50,6 +50,7 @@ when the camera is one.
 | `calibration` | — | `{ baselineMm, horizontalFovDeg, rectified }` for a stream the device does not describe; a page value wins over the device's |
 | `rectify` | — | `(stream, info) => MediaStream` — a calibrated rectification step for a raw pair; `stereo.rectified` is then true. A throwing hook keeps the raw pair (`cam.rectifyError`) |
 | `exclude` | the built-in list | Devices no probe may open: strings match a label (case-insensitive substring) or a `deviceId` exactly, RegExps test the label. Always added: labels that mark a **sensor rather than a camera** — hand tracking, an eye tracker's or a "tracking camera"'s stream, a depth camera. `false` turns the built-in list off too. See below |
+| `stereoWaitMs` | 2500 in a DisplayXR Browser, else 0 | With labels visible and no 3D camera listed: how long `'auto'` / `'stereo'` waits for the runtime's 3D camera before opening any plain lens. See below |
 | `debug` | `false` | Verbose console logging |
 
 `openCamera('stereo')` and `openCamera(mediaStream)` are shorthands for `prefer`.
@@ -91,6 +92,21 @@ excluded device is listed the default is **not opened blind**: the first other c
 id (an eye tracker's camera is never started; with no other camera listed, nothing is). Only when
 labels are still hidden (no permission yet) is the default primed blind, and a default that turns
 out to be excluded is closed again.
+
+**Waiting for the 3D camera.** In a DisplayXR Browser (`inline3DAvailable()` true) the runtime
+lists its 3D camera lazily: right after a runtime restart, or after the phone's camera service
+restarted, it can be missing from the first `enumerateDevices()`. So when camera labels are visible
+(permission granted) and no stereo-named device is listed, `'auto'` and `'stereo'` wait up to
+`stereoWaitMs` (2500 ms) **before opening any plain lens**. They re-read the list on each
+`devicechange` and every 500 ms, and open the 3D camera the moment it appears. Only then do they
+fall back to the default camera. The rule exists because of hardware: on some phones, opening a
+physical lens while head tracking streams crashes the camera HAL. The runtime's 3D camera goes down
+with it, so falling back too early is what keeps it from ever coming back. Outside a DisplayXR
+Browser the wait is 0 (the list is read once more). The wait cannot help on a first visit, when
+labels are still hidden and the default camera has to be opened once to get permission. For the
+same reason, once a plain lens is open, a DisplayXR Browser never opens another plain lens just to
+test whether its frame is a side-by-side pair. There, a stereo webcam (a USB one included) is the
+runtime's named "3D Camera".
 
 ### The camera
 

@@ -49,6 +49,47 @@ const MONO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 }, frame
 const PROBE_CONSTRAINTS = { width: { ideal: 3840 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
 export const AUDIO_CONSTRAINTS = Object.freeze({ echoCancellation: true, noiseSuppression: true, autoGainControl: true });
 
+// How long `'auto'` / `'stereo'` waits, in a DisplayXR Browser with labels visible, for the
+// runtime's 3D camera to be listed before it opens any plain lens (see openCamera), and how often
+// it re-reads the list meanwhile (a `devicechange` re-reads at once).
+export const STEREO_WAIT_MS = 2500;
+const STEREO_WAIT_STEP_MS = 500;
+
+/**
+ * The default `stereoWaitMs`: STEREO_WAIT_MS in a DisplayXR Browser (the same test as
+ * inline3DAvailable(): a runtime 3D camera can be listed there), else 0. Pure apart from globals.
+ */
+export function defaultStereoWaitMs() {
+  return inDisplayXRBrowser() ? STEREO_WAIT_MS : 0;
+}
+
+/** The same test as inline3DAvailable() (navigator.xr + XRDisplayLayer), without importing the core. */
+function inDisplayXRBrowser() {
+  return typeof navigator !== 'undefined' && !!navigator.xr && typeof window !== 'undefined' && typeof window.XRDisplayLayer === 'function';
+}
+
+/** Resolves on the next `devicechange` of `md`, or after `ms`, whichever is first. */
+function nextDeviceChange(md, ms) {
+  return new Promise((resolve) => {
+    let timer = 0;
+    const done = () => {
+      clearTimeout(timer);
+      try {
+        md.removeEventListener?.('devicechange', done);
+      } catch {
+        /* no events */
+      }
+      resolve();
+    };
+    timer = setTimeout(done, ms);
+    try {
+      md.addEventListener?.('devicechange', done);
+    } catch {
+      /* no events: the timer alone */
+    }
+  });
+}
+
 /** Errors that mean "the device exists but another process holds it" (an eye tracker, say). */
 export function isBusyError(err) {
   return !!err && (err.name === 'NotReadableError' || err.name === 'TrackStartError' || /in use|busy/i.test(err.message || ''));
@@ -129,9 +170,12 @@ export function stereoLabelHint(label) {
  * @param {'auto'|'stereo'|'mono'|string|MediaStream} want  'auto' | 'stereo' | 'mono' | a
  *        deviceId | a page-supplied MediaStream
  * @param {{ format?: 'sbs'|'mono', calibration?: {baselineMm?: number, hfovDeg?: number, rectified?: boolean},
- *           mediaDevices?: MediaDevices, log?: Function, exclude?: false|Array<string|RegExp> }} [o]
+ *           mediaDevices?: MediaDevices, log?: Function, exclude?: false|Array<string|RegExp>,
+ *           stereoWaitMs?: number }} [o]
  *        `exclude`: devices no probe may open (see cameraExcluder); an explicit deviceId is the
  *        page's own choice and is opened regardless.
+ *        `stereoWaitMs`: with labels visible and no stereo-named device listed, how long to wait
+ *        for one before opening a plain lens (default defaultStereoWaitMs(); 0 = one re-read).
  * @returns {Promise<{ stream: MediaStream, format: 'sbs'|'mono', width: number, height: number,
  *           deviceId: string|null, label: string, owned: boolean, skipped: Array<{label: string, error: string}>,
  *           calibration: object }>}
@@ -320,16 +364,38 @@ export async function openCamera(want = 'auto', o = {}) {
     }
     return null;
   };
+  // Re-read the list until a stereo-named device opens or `ms` is up: on each `devicechange` and
+  // every STEREO_WAIT_STEP_MS. `ms` <= 0: one re-read. Stops early once a named pair was listed and
+  // failed to open (busy): waiting longer would not free it.
+  const waitMs = Number.isFinite(o.stereoWaitMs) ? Math.max(0, o.stereoWaitMs) : defaultStereoWaitMs();
+  const waitForNamedPair = async (ms) => {
+    if (!(ms > 0)) return tryNamedPairs(await listCameras());
+    const deadline = Date.now() + ms;
+    log('camera-wait-stereo', { ms });
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await nextDeviceChange(md, Math.min(STEREO_WAIT_STEP_MS, left));
+      const list = await listCameras();
+      const r = await tryNamedPairs(list);
+      if (r) return r;
+      if (list.some((d) => stereoLabelHint(d.label) && !isApp(d))) break; // listed, tried, not usable
+    }
+    log('camera-no-stereo-listed', { ms });
+    return null;
+  };
   let mono = null;
   if (want !== 'mono') {
     let listed = await listCameras();
     let pair = await tryNamedPairs(listed);
     if (pair) return result(pair, 'sbs');
     // Labels visible but no stereo-named device: a runtime 3D camera can join the list late (after
-    // a runtime restart), so read it once more before falling back.
+    // a runtime restart; on Android the runtime lists its cameras lazily). In a DisplayXR Browser
+    // wait for it BEFORE any plain lens is opened (stereoWaitMs): on some phones opening a physical
+    // lens while head tracking streams crashes the camera HAL, and the runtime's pair goes down with
+    // it. Elsewhere read the list once more.
     if (listed.some((d) => d.label) && !listed.some((d) => stereoLabelHint(d.label))) {
-      listed = await listCameras();
-      pair = await tryNamedPairs(listed);
+      pair = await waitForNamedPair(waitMs);
       if (pair) return result(pair, 'sbs');
     }
     // No labels yet (no permission). Prime it on the default camera with NO constraints (a facing
@@ -392,9 +458,14 @@ export async function openCamera(want = 'auto', o = {}) {
   }
   // A label that names a pair first; never by list position (see the header).
   devices.sort((a, b) => Number(stereoLabelHint(b.label)) - Number(stereoLabelHint(a.label)));
+  // In a DisplayXR Browser a stereo camera (a USB SBS webcam included) is the runtime's named
+  // "3D Camera", so once a plain lens is in hand no other plain lens is opened to test its shape:
+  // on some phones that extra open crashes the camera HAL.
+  const shapeProbe = !inDisplayXRBrowser();
   for (const d of devices) {
     if (!d.deviceId) continue; // no permission yet: an anonymous entry cannot be opened by id
     if (mono && d.deviceId === mono.deviceId) continue;
+    if (mono && !shapeProbe && !stereoLabelHint(d.label)) continue;
     if (tried.has(d.deviceId) || excludedIds.has(d.deviceId)) continue; // already opened (not a pair, or busy) or left out
     if (listedExcluded(d)) continue; // the last resort never opens a sensor (a hand-tracking camera)
     let r = null;
@@ -414,7 +485,7 @@ export async function openCamera(want = 'auto', o = {}) {
     // No default could be used (excluded, busy): the first plain camera found is the fallback.
     if (!mono && !isPair(r)) {
       mono = await withMode(r, MONO_CONSTRAINTS);
-      if (want === 'mono') return result(mono, 'mono');
+      if (want === 'mono' || !shapeProbe) return result(mono, 'mono');
       continue;
     }
     stop(r);

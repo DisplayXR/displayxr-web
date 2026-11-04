@@ -73,6 +73,13 @@ export interface CameraOptions {
    * list off. An explicit `deviceId` or `label:` (`prefer`) is your choice and is opened regardless.
    */
   exclude?: ReadonlyArray<string | RegExp> | false;
+  /**
+   * `'auto'` / `'stereo'` with labels visible and no 3D camera listed: how long (ms) to wait for
+   * the runtime's 3D camera to be listed before any plain lens is opened. Default 2500 in a
+   * DisplayXR Browser, 0 elsewhere (one re-read of the list). Opening a phone lens while head
+   * tracking streams can crash the camera HAL on some devices and take the 3D camera down with it.
+   */
+  stereoWaitMs?: number;
   /** Verbose console logging. */
   debug?: boolean;
 }

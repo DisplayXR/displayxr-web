@@ -441,7 +441,11 @@ class StereoCamera {
  * are in `skipped` with `excluded: true`. An explicit `deviceId` or `label:` is the page's choice
  * and is opened regardless.
  *
- * @param {object|string|MediaStream} [opts]  `{ prefer, format, calibration, rectify, exclude, debug }` (or just `prefer`)
+ * In a DisplayXR Browser with labels visible and no 3D camera listed yet, `'auto'` / `'stereo'`
+ * waits up to `stereoWaitMs` (default 2500) for the runtime's 3D camera to be listed before it
+ * opens any plain lens (docs/camera.md, "Waiting for the 3D camera").
+ *
+ * @param {object|string|MediaStream} [opts]  `{ prefer, format, calibration, rectify, exclude, stereoWaitMs, debug }` (or just `prefer`)
  */
 export async function openCamera(opts = {}) {
   const o = typeof opts === 'string' || (opts && typeof opts.getVideoTracks === 'function') ? { prefer: opts } : opts || {};
@@ -451,7 +455,7 @@ export async function openCamera(opts = {}) {
   // `horizontalFovDeg` is the public spelling (RFC 0003 §4); the hello wire field is `hfovDeg`.
   if (cal.horizontalFovDeg > 0 && !(cal.hfovDeg > 0)) cal.hfovDeg = cal.horizontalFovDeg;
   delete cal.horizontalFovDeg;
-  const r = await openDevice(prefer, { format: o.format, calibration: cal, mediaDevices: o.mediaDevices, log: log || undefined, exclude: o.exclude });
+  const r = await openDevice(prefer, { format: o.format, calibration: cal, mediaDevices: o.mediaDevices, log: log || undefined, exclude: o.exclude, stereoWaitMs: o.stereoWaitMs });
   if (r.format === 'sbs' && typeof o.rectify === 'function') {
     // A calibrated rectification step (plug-in or runtime supplied): its output is a rectified
     // SBS stream, and the record then says so. A throwing hook keeps the raw pair.
