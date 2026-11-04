@@ -288,6 +288,33 @@ test('addCameraView: a pair on a 3D wall is woven (addImage) and mirrored; on a 
   assert.throws(() => addCameraView(wall, doc.createElement('canvas'), {}), /StereoCamera/);
 });
 
+// ── addCameraView: frames ────────────────────────────────────────────────────────────────
+
+test('addCameraView: the woven buffer starts EMPTY, and frameAgeMs follows the camera clock', async () => {
+  const added = [];
+  const wall = { supported: true, addImage: (canvas, src) => { const h = { canvas, src, remove() {} }; added.push(h); return h; } };
+  const cam = await sbsCam();
+  const view = addCameraView(wall, doc.createElement('canvas'), cam, { _loop: false });
+  // The wall must not see a default 300x150 canvas as a painted stereo frame (core: sourceHasPixels).
+  assert.equal(added[0].src.width, 0);
+  assert.equal(added[0].src.height, 0);
+  assert.equal(view.frameAgeMs, null, 'no frame yet');
+  assert.equal(view.weaveState().frameAgeMs, null);
+  const v = cam.video;
+  Object.assign(v, { readyState: 4, currentTime: 1 });
+  view.paint();
+  assert.equal(typeof view.frameAgeMs, 'number');
+  assert.ok(view.frameAgeMs >= 0);
+  // A stalled track: the clock stops, the age grows (the last frame stays on screen).
+  const at = view._lastFrameAt;
+  view.paint();
+  assert.equal(view._lastFrameAt, at, 'the same frame again is not a new frame');
+  v.currentTime = 1.033;
+  view.paint();
+  assert.ok(view._lastFrameAt >= at);
+  view.remove();
+});
+
 // ── addCameraView: follows firstWoven (web#131) ───────────────────────────────────────────
 
 /** A 3D wall whose addImage handles carry a firstWoven the test settles by hand. */
@@ -323,7 +350,7 @@ test('addCameraView: a tile the wall will not weave (layer-failed) drops to the 
   assert.equal(view.fallbackReason, 'layer-failed');
   assert.equal(added[0].removed, 1, 'the dead registration was left');
   assert.deepEqual(changes.at(-1), ['flat-left', false, 'layer-failed']);
-  assert.deepEqual(view.weaveState(), { route: 'flat-left', woven: false, reason: 'layer-failed', firstWoven: null, layerRetries: 1 });
+  assert.deepEqual(view.weaveState(), { route: 'flat-left', woven: false, reason: 'layer-failed', firstWoven: null, layerRetries: 1, frameAgeMs: null });
   // An unforced reroute (the call's update()) keeps it flat while the fallback stands.
   view._reroute(false);
   assert.equal(view.route, 'flat-left');

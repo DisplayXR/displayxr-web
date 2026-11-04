@@ -53,7 +53,7 @@ test('self view: a layer-failed tile goes flat with a 2D badge; diagnostics().se
   try {
     assert.equal(added.length, 1, 'the self view registered on the 3D wall');
     assert.equal(badge(), 'You · 3D');
-    assert.deepEqual(call.diagnostics().self, { route: 'woven-sbs', woven: true, reason: null, firstWoven: 'pending', layerRetries: 0 });
+    assert.deepEqual(call.diagnostics().self, { route: 'woven-sbs', woven: true, reason: null, firstWoven: 'pending', layerRetries: 0, frameAgeMs: null });
 
     added[0].settle(false, 'layer-failed');
     await flush();
@@ -125,7 +125,7 @@ test('self view: on a 2D wall diagnostics().self is flat with no failure reason;
   const { call, badge } = await selfCall({ supported: false });
   try {
     assert.equal(badge(), 'You · 2D');
-    assert.deepEqual(call.diagnostics().self, { route: 'flat-left', woven: false, reason: null, firstWoven: null, layerRetries: 0 });
+    assert.deepEqual(call.diagnostics().self, { route: 'flat-left', woven: false, reason: null, firstWoven: null, layerRetries: 0, frameAgeMs: null });
   } finally {
     call.leave();
   }
