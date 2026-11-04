@@ -207,6 +207,48 @@ test('conv: makeConv / normalizeConv — range, null hold, junk, never throws', 
   assert.equal(CONV_FRESH_MS, 1200);
 });
 
+test('content: hello.content capability; makeContent / normalizeContent — range, sanitising, junk, never throws', async () => {
+  const { makeContent, normalizeContent } = await import('../js/call/wire.js');
+  // The capability: this SDK advertises it; an older hello (no field) and junk read false.
+  assert.equal(makeHello({ format: 'mono', content: true }).content, true);
+  assert.ok(!('content' in makeHello({ format: 'mono' })));
+  assert.equal(normalizeHello(JSON.parse(JSON.stringify(makeHello({ format: 'sbs', content: true })))).content, true);
+  assert.equal(normalizeHello({ type: 'hello', v: 1, format: 'sbs' }).content, false, 'an old hello');
+  assert.equal(normalizeHello({ type: 'hello', content: 'yes' }).content, false);
+  // A share round-trips.
+  const on = makeContent({ format: 'sbs', width: 2560, height: 720, convergence: { known: true, frac: 0 }, appName: 'Model Viewer' });
+  assert.deepEqual(on, { type: 'content', on: true, format: 'sbs', width: 2560, height: 720, convergence: { known: true, frac: 0 }, appName: 'Model Viewer' });
+  assert.deepEqual(normalizeContent(JSON.parse(JSON.stringify(on))), on);
+  assert.deepEqual(makeContent({ on: false }), { type: 'content', on: false });
+  const off = normalizeContent({ type: 'content', on: false, appName: 'x' });
+  assert.equal(off.on, false);
+  assert.equal(off.appName, null);
+  // Out on the wire: clamped frac, junk sizes as 0, unknown convergence, a sanitised name.
+  assert.deepEqual(makeContent({ convergence: { known: true, frac: 3 } }).convergence, { known: true, frac: CONV_MAX_FRAC });
+  assert.deepEqual(makeContent({ convergence: { known: true, frac: NaN } }).convergence, { known: true, frac: 0 });
+  assert.deepEqual(makeContent({}).convergence, { known: false, frac: null });
+  assert.equal(makeContent({ width: -4, height: 1e9 }).width, 0);
+  assert.equal(makeContent({}).format, 'sbs', 'content defaults to a pair');
+  assert.ok(!('appName' in makeContent({ appName: '  ' })));
+  // In: range checks.
+  const n = (m) => normalizeContent({ type: 'content', on: true, ...m });
+  assert.equal(n({ format: 'weird' }).format, 'mono', 'never assume a pair that was not declared');
+  assert.equal(n({ width: 0 }).width, null);
+  assert.equal(n({ width: 20000 }).width, null);
+  assert.equal(n({ height: 720 }).height, 720);
+  assert.deepEqual(n({ convergence: { known: true, frac: 0.6 } }).convergence, { known: false, frac: null }, 'beyond ±0.5: unknown');
+  assert.deepEqual(n({ convergence: { known: true, frac: '0' } }).convergence, { known: false, frac: null });
+  assert.deepEqual(n({ convergence: { known: 'yes', frac: 0 } }).convergence, { known: false, frac: null });
+  assert.deepEqual(n({ convergence: { known: true, frac: -0.02 } }).convergence, { known: true, frac: -0.02 });
+  assert.equal(n({ appName: 'A\u0000B\u202e' + 'x'.repeat(100) }).appName.length, 64, 'sanitised, ≤ 64 characters');
+  assert.ok(!/[\u0000\u202e]/.test(n({ appName: 'A\u0000B\u202eC' }).appName));
+  assert.equal(n({ appName: 7 }).appName, null);
+  assert.equal(normalizeContent({ type: 'content', on: 'true' }).on, false, 'on must be true');
+  const hostile = { type: 'content', on: true, get convergence() { throw new Error('no'); } };
+  assert.deepEqual(normalizeContent(hostile).convergence, { known: false, frac: null });
+  for (const junk of [null, undefined, 0, 'content', [], {}, { type: 'conv' }]) assert.equal(normalizeContent(junk), null, JSON.stringify(junk));
+});
+
 test('hint and state validation; hint rate gate is 5 Hz', () => {
   assert.deepEqual(normalizeHint({ type: 'hint', subjectZmm: 650 }), { type: 'hint', subjectZmm: 650 });
   assert.equal(normalizeHint({ type: 'hint', subjectZmm: 10 }), null);
