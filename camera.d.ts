@@ -21,8 +21,11 @@ export type CameraFormat = 'sbs' | 'mono';
  * Which camera to open. `'auto'` (default): a stereo device when one is present — the DisplayXR
  * Browser's "3D Camera" (recognised by its `displayxrStereo` track settings, never by its label),
  * or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers
- * the pair and falls back to mono; `'mono'` never probes; a string is a `deviceId`; a
- * `MediaStream` is used as given, with {@link CameraOptions.format} declaring what it is.
+ * the pair and falls back to mono; `'mono'` never probes; a string is a `deviceId`, or
+ * `'label:<text>'` for the first camera whose label contains the text (case-insensitive; for a URL
+ * or a config, where a per-origin deviceId is useless); a `MediaStream` is used as given, with
+ * {@link CameraOptions.format} declaring what it is. A `deviceId` or `label:` is explicit and
+ * opens an {@link CameraOptions.exclude excluded} device too.
  */
 export type CameraPreference = 'auto' | 'stereo' | 'mono' | (string & {}) | MediaStream;
 
@@ -59,12 +62,15 @@ export interface CameraOptions {
   /**
    * Devices no probe may open. Built in, always (unless `false`): video inputs whose label marks a
    * sensor rather than a camera — hand tracking, an eye tracker's or a "tracking camera"'s stream,
-   * a depth camera (`/\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera)/i`). Add your
-   * own: a string matches a label (case-insensitive substring) or a deviceId exactly; a RegExp
-   * tests the label. Applied on every probe path, the last-resort "try every device" one
-   * included; a default camera that turns out to be excluded is closed again. Left-out devices
-   * are listed in `skipped` with `excluded: true`. `false` turns the built-in list off. An explicit
-   * `deviceId` (`prefer`) is your choice and is opened regardless.
+   * a depth camera, an infrared / IR camera, and the Ultraleap / Leap Motion hand tracker, which
+   * enumerates under its bare brand name
+   * (`/\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera|ultraleap|leap motion|infrared|ir camera)/i`).
+   * Add your own: a string matches a label (case-insensitive substring) or a deviceId exactly; a
+   * RegExp tests the label. Applied on every probe path, the last-resort "try every device" one
+   * included; while an excluded device is listed the default camera is not opened blind (the first
+   * other camera is opened by id), and a default that turns out to be excluded is closed again.
+   * Left-out devices are listed in `skipped` with `excluded: true`. `false` turns the built-in
+   * list off. An explicit `deviceId` or `label:` (`prefer`) is your choice and is opened regardless.
    */
   exclude?: ReadonlyArray<string | RegExp> | false;
   /** Verbose console logging. */

@@ -45,7 +45,7 @@ when the camera is one.
 
 | Option | Default | What |
 |---|---|---|
-| `prefer` | `'auto'` | `'auto'`: a stereo device when one is present — the DisplayXR Browser's "3D Camera" (recognised by its `displayxrStereo` track settings or its label, never by where it is listed: on Windows it is listed last) or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId`; or a `MediaStream` you own |
+| `prefer` | `'auto'` | `'auto'`: a stereo device when one is present — the DisplayXR Browser's "3D Camera" (recognised by its `displayxrStereo` track settings or its label, never by where it is listed: on Windows it is listed last) or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId`; `'label:<text>'` (the first camera whose label contains the text, case-insensitive — for a URL or a config, where a per-origin `deviceId` is useless); or a `MediaStream` you own |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream`. 3D-ness is never guessed from a stream |
 | `calibration` | — | `{ baselineMm, horizontalFovDeg, rectified }` for a stream the device does not describe; a page value wins over the device's |
 | `rectify` | — | `(stream, info) => MediaStream` — a calibrated rectification step for a raw pair; `stereo.rectified` is then true. A throwing hook keeps the raw pair (`cam.rectifyError`) |
@@ -70,9 +70,20 @@ stream) enumerates as an ordinary video input, and its frame can be wide enough 
 side-by-side pair. Found on hardware: on a Windows box with no stereo camera open, the last-resort
 "try every device" probe opened a hand-tracking camera and a call sent it as its 3D picture. So
 every probe path skips devices whose label matches the built-in list (plus `exclude`): the
-named-pair fast path, the default camera (opened, since its label is only known then, and closed
-again), and the last resort. They show up in `skipped` with `excluded: true` and `error:
-'excluded'`. An explicit `deviceId` is your choice and is opened regardless.
+named-pair fast path, the default camera and the last resort. They show up in `skipped` with
+`excluded: true` and `error: 'excluded'`. An explicit `deviceId` or `label:` is your choice and is
+opened regardless (the call widget's camera picker is explicit, so a sensor stays selectable there).
+
+The default camera is the second trap. An **Ultraleap** hand tracker enumerates as a UVC
+"Ultraleap" — the bare brand, no "hand tracking" in the label, and modes of 2:1 or squarer, so it
+is never a pair by shape — and its own service normally holds it (skipped as busy). With that
+service idle it opens like any webcam, and on some Windows boxes it is the browser's *default*
+camera, so the `'auto'` / `'mono'` fallback sent a hand tracker's IR picture as the self view. The
+built-in list therefore names Ultraleap / Leap Motion and infrared / IR cameras too, and while an
+excluded device is listed the default is **not opened blind**: the first other camera is opened by
+id (an eye tracker's camera is never started; with no other camera listed, nothing is). Only when
+labels are still hidden (no permission yet) is the default primed blind, and a default that turns
+out to be excluded is closed again.
 
 ### The camera
 

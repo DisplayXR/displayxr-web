@@ -5,6 +5,29 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — the Ultraleap hand tracker is excluded by its bare brand name; the default camera is not opened blind (`./camera`, `./call`)
+
+1.48.0's built-in exclusion list is generic words (hand tracking, tracking camera, eye tracking,
+depth camera). On Windows an Ultraleap (Leap 2 / Leap Motion Controller) enumerates as a UVC device
+labelled just **"Ultraleap"**, with modes of 2:1 or squarer, so neither the list nor the pair shape
+caught it; with its tracking service stopped it was free and, as the browser's *default* camera on
+that box, became the call's self view (win box, 2026-11-04). The list now also names `ultraleap`,
+`leap motion`, `infrared` and `ir camera`.
+
+While an excluded device is listed and labels are visible, the default camera is no longer opened
+blind and closed again: the first camera that is not excluded is opened by id, so a sensor is never
+started (an eye tracker's camera must not be). With labels hidden the prime stays blind, as before.
+
+### Added — `prefer: 'label:<text>'` opens the first camera whose label contains the text (`./camera`, `./call`)
+
+For a URL or a config, where a per-origin `deviceId` is useless: `openCamera({ prefer: 'label:hd webcam' })`,
+`addCall(wall, el, { camera: 'label:brio' })`. Case-insensitive; with no permission yet the default
+camera is primed once and let go so the labels become visible; no match rejects with `no-camera`.
+Explicit like a `deviceId`, so it opens an excluded device too. The call sample passes
+`?camera=label:…` (and a bare `?camera=<deviceId>`) straight through.
+
 ## 1.48.0 — 2026-11-03
 
 ### Changed — auto-convergence is measured on the sender's raw frames (`./call`)
