@@ -69,7 +69,7 @@ export interface OrbitPose {
   /**
    * Degrees about the VIEW axis (counter-clockwise as the viewer sees it), applied outside yaw and
    * pitch. Written only by the two-hand gesture (`@displayxr/inline3d/hands`) or an explicit call;
-   * 0 for every page that never touches it. The PlayCanvas viewer has no roll axis and reports 0.
+   * 0 for every page that never touches it. Both viewers (three.js and PlayCanvas) carry it.
    */
   roll?: number;
   /** Display metres along the depth axis, `+` toward the viewer (out of the glass). */

@@ -28,7 +28,7 @@ export interface ModelOptions {
   orbit?: boolean;
   /**
    * Tracked-hand controls (`@displayxr/inline3d/hands`): one pinch dragged turns the model, two
-   * pinches spread / dragged zoom / turn it (and twist rolls it on the three.js engine). Needs the
+   * pinches spread / dragged / twisted zoom / turn / roll it (either engine). Needs the
    * DisplayXR Browser 1.8.0+ with a hand provider; inert elsewhere, and pointer / wheel keep
    * working alongside. `true` or the controller options; exposed as `handle.hands`. Default off.
    */

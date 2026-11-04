@@ -1035,8 +1035,8 @@ h.hands.state.gate;   // 'available' | 'not-fullscreen' | … | 'unknown' (no ha
 ```
 
 One pinched hand dragged turns the subject (yaw / pitch, 10 rad per metre of drag); two pinched
-hands spread or close to zoom, twist to roll (on the three.js engine — the PlayCanvas viewer has
-no roll axis), and dragged together turn it. The pinch is **hand-relative**: the 2.5 cm / 4 cm
+hands spread or close to zoom, twist to roll (about the view axis, on either engine), and dragged
+together turn it. The pinch is **hand-relative**: the 2.5 cm / 4 cm
 enter / exit thresholds scale by the hand's palm length, so a hand scaled into a small tile pinches
 at the same finger posture as a physical one. These are the DisplayXR Model Viewer's controls.
 Pointer and wheel keep working alongside; the idle turntable pauses while a pinch is held, as it
