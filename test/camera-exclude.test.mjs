@@ -92,10 +92,21 @@ test('exclude applies to every probe path: a named pair, the default, and the la
     assert.equal(cam.deviceId, 'web');
     assert.ok(!md.opens.includes('id:acme'));
   }
-  // The default: opened (its label is only known then), excluded, closed, never re-opened; the
-  // first plain camera of the last-resort loop becomes the fallback.
+  // The default: with labels visible and a sensor listed it is not opened blind — the first plain
+  // camera is opened by id and the sensor is never started.
   {
     const md = media([hands, webcam], { granted: true });
+    const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+    assert.equal(cam.format, 'mono');
+    assert.equal(cam.deviceId, 'web');
+    assert.deepEqual(md.opens, ['id:web'], 'the sensor default is never opened');
+    assert.deepEqual(md.stopped, []);
+    assert.equal(cam.skipped.filter((s) => s.excluded).length, 1);
+  }
+  // Labels hidden: the default is primed blind (its label is only known then), excluded, closed,
+  // never re-opened; the first plain camera of the last-resort loop becomes the fallback.
+  {
+    const md = media([hands, webcam]);
     const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
     assert.equal(cam.format, 'mono');
     assert.equal(cam.deviceId, 'web');
@@ -191,4 +202,69 @@ test("addCameraView: rectCover reaches the wall's addImage only when given; aspe
   const b2 = calls.at(-1).src;
   assert.ok(Math.abs(b2.width / 2 / b2.height - 4 / 3) < 0.02, 'a number is unchanged');
   num.remove();
+});
+
+// ── the bare-brand hand tracker, and the default not opened blind ─────────────────────────────
+// Field case (win box, 2026-11-04): the Ultraleap enumerates as a UVC "Ultraleap" — no "hand
+// tracking" in the label — with modes of 2:1 or squarer (never a pair by shape). With its tracking
+// service stopped it was free, listed first, and became the call's self view as the DEFAULT camera.
+
+const leap = { id: 'leap', label: 'Ultraleap', w: 512, h: 256 };
+const srcam = { id: 'sr', label: 'SpatialLabs Tracking Camera', w: 1280, h: 480, busy: true };
+
+test('the built-in list names the Ultraleap by its bare brand, Leap Motion, infrared / IR cameras', () => {
+  const ex = cameraExcluder();
+  for (const l of ['Ultraleap', 'Ultraleap Stereo IR 170', 'Leap Motion Controller', 'Infrared Camera', 'IR Camera', 'SpatialLabs Tracking Camera']) assert.ok(ex(l, 'x'), l);
+  for (const l of ['HD WebCam', 'Logitech BRIO', 'camera 0, facing front', 'Tracker stereo']) assert.ok(!ex(l, 'x'), l);
+});
+
+test('labels visible, a sensor listed: the default is not opened blind — the first camera for people is opened by id', async () => {
+  const md = media([leap, webcam], { granted: true });
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'mono');
+  assert.equal(cam.deviceId, 'web');
+  assert.deepEqual(md.opens, ['id:web'], 'the Ultraleap is never started');
+  assert.deepEqual(md.stopped, []);
+  assert.deepEqual(cam.skipped.filter((s) => s.excluded).map((s) => s.label), ['Ultraleap']);
+  // 'mono' takes the same by-id route.
+  const md2 = media([leap, webcam], { granted: true });
+  assert.equal((await openCamera({ prefer: 'mono', mediaDevices: md2 })).deviceId, 'web');
+  assert.deepEqual(md2.opens, ['id:web']);
+  // Without labels the prime is blind: it lands on the Ultraleap, which is closed for the webcam.
+  const md3 = media([leap, webcam]);
+  const cam3 = await openCamera({ prefer: 'auto', mediaDevices: md3 });
+  assert.equal(cam3.deviceId, 'web');
+  assert.deepEqual(md3.opens, ['default', 'id:web']);
+  assert.deepEqual(md3.stopped, ['leap']);
+  // A sensor that names itself stereo ("Stereo IR 170") is not a pair for people either.
+  const md4 = media([{ id: 'leap', label: 'Ultraleap Stereo IR 170', w: 2560, h: 720 }, webcam], { granted: true });
+  const cam4 = await openCamera({ prefer: 'stereo', mediaDevices: md4 });
+  assert.equal(cam4.format, 'mono');
+  assert.deepEqual(md4.opens, ['id:web']);
+});
+
+test("the eye tracker's camera (busy or not) is never started; a sensor plus a busy webcam is camera-busy", async () => {
+  const md = media([srcam, leap, webcam], { granted: true });
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.deviceId, 'web');
+  assert.deepEqual(md.opens, ['id:web']);
+  const busy = media([leap, { ...webcam, busy: true }], { granted: true });
+  await assert.rejects(openCamera({ prefer: 'auto', mediaDevices: busy }), (e) => e.code === 'camera-busy' && e.skipped.some((s) => s.excluded) && e.skipped.some((s) => s.busy));
+  assert.deepEqual(busy.opens, ['id:web']);
+});
+
+test("prefer 'label:<text>': the first camera whose label contains the text; explicit, so it opens a sensor too", async () => {
+  const md = media([leap, webcam], { granted: true });
+  const cam = await openCamera({ prefer: 'label:integrated webcam', mediaDevices: md });
+  assert.equal(cam.deviceId, 'web');
+  assert.ok(md.opens.length && md.opens.every((o) => o === 'id:web'), 'resolved to the id, then opened by id');
+  const cold = media([leap, webcam]);
+  const cam2 = await openCamera({ prefer: 'label:WebCam', mediaDevices: cold });
+  assert.equal(cam2.deviceId, 'web');
+  assert.equal(cold.opens[0], 'default', 'labels were hidden: the default is primed once and let go');
+  assert.deepEqual(cold.stopped.slice(0, 1), ['leap']);
+  const md3 = media([leap, webcam], { granted: true });
+  assert.equal((await openCamera({ prefer: 'label:ultra', mediaDevices: md3 })).label, 'Ultraleap');
+  await assert.rejects(openCamera({ prefer: 'label:nothing like it', mediaDevices: md }), (e) => e.code === 'no-camera' && /no camera labelled/.test(e.message));
+  await assert.rejects(openCamera({ prefer: 'label:', mediaDevices: md }), (e) => e.code === 'no-camera');
 });

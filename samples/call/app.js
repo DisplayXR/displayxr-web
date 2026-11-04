@@ -67,8 +67,10 @@ function syntheticSbs() {
 const cam = q.get('camera');
 // The synthetic pair is opened through /camera (a page-supplied stream declares its format and
 // its calibration there — the module never guesses 3D from a stream's aspect) and handed to the
-// call as `camera`; the real cameras go through the call's own 'auto' / 'stereo' / 'mono'.
-const camera = cam === 'synthetic' ? await openCamera({ prefer: syntheticSbs(), format: 'sbs', calibration: { baselineMm: 63, horizontalFovDeg: 70 } }) : cam === 'mono' || cam === 'stereo' ? cam : 'auto';
+// call as `camera`; the real cameras go through the call's own 'auto' / 'stereo' / 'mono', and
+// `?camera=label:<text>` (or a deviceId) forces one device — the way to pick, say, the built-in
+// webcam by hand on a box where a sensor is the default camera.
+const camera = cam === 'synthetic' ? await openCamera({ prefer: syntheticSbs(), format: 'sbs', calibration: { baselineMm: 63, horizontalFovDeg: 70 } }) : cam || 'auto';
 
 const call = await addCall(wall, document.getElementById('call'), {
   signaling,

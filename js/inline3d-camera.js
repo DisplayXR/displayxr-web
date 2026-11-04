@@ -426,16 +426,20 @@ class StereoCamera {
  * Open the best camera. `prefer`: `'auto'` (default — a stereo device when one is present: the
  * DisplayXR Browser's "3D Camera", or a device delivering > 2.5:1 frames; else the default
  * webcam), `'stereo'` (prefer the pair, fall back to mono), `'mono'` (never probe), a `deviceId`,
- * or a `MediaStream` you own (then `format` declares what it is — 3D-ness is never guessed from
+ * `'label:<text>'` (the first camera whose label contains the text, case-insensitive), or a
+ * `MediaStream` you own (then `format` declares what it is — 3D-ness is never guessed from
  * a stream). A camera held by another process (an eye tracker) is skipped, never fatal; the
  * promise rejects only when NO camera opens, with `code` `'camera-busy'` (every device is held),
  * `'permission-denied'`, or `'no-camera'`, and `skipped` listing every device tried.
  *
  * A probe never opens a device whose label marks it as a sensor rather than a camera (a hand-tracking
- * camera, an eye tracker's or depth camera's stream — capture.js CAMERA_EXCLUDE_BUILTIN), nor one
- * matching `exclude` (strings: a label substring, case-insensitive, or an exact deviceId; RegExps:
- * the label). `exclude: false` turns the built-in list off too. Left-out devices are in `skipped`
- * with `excluded: true`. An explicit `deviceId` is the page's choice and is opened regardless.
+ * camera — an Ultraleap enumerates as just "Ultraleap" — an eye tracker's, infrared or depth
+ * camera's stream — capture.js CAMERA_EXCLUDE_BUILTIN), nor one matching `exclude` (strings: a
+ * label substring, case-insensitive, or an exact deviceId; RegExps: the label). While a listed
+ * device is excluded and labels are visible, the default camera is not opened blind: the first
+ * other camera is opened by id. `exclude: false` turns the built-in list off too. Left-out devices
+ * are in `skipped` with `excluded: true`. An explicit `deviceId` or `label:` is the page's choice
+ * and is opened regardless.
  *
  * @param {object|string|MediaStream} [opts]  `{ prefer, format, calibration, rectify, exclude, debug }` (or just `prefer`)
  */

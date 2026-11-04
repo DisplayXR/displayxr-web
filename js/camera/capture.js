@@ -69,7 +69,10 @@ export function noCameraCode(skipped) {
  * tracker's or a "tracking camera"'s IR stream, a depth camera. Generic words only. Applied on
  * every probe path unless `exclude: false`.
  */
-export const CAMERA_EXCLUDE_BUILTIN = /\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera)/i;
+// Generic words, plus the one hand tracker that enumerates under its bare brand name: on Windows
+// an Ultraleap (Leap 2 / Leap Motion Controller) is a UVC "Ultraleap", nothing else in the label —
+// the generic words alone let it through (win box, 2026-11-04: it was the browser's default camera).
+export const CAMERA_EXCLUDE_BUILTIN = /\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera|ultraleap|leap motion|infrared|ir camera)/i;
 
 /**
  * The exclusion list in force: the built-in pattern plus `exclude` (strings match a label
@@ -150,6 +153,13 @@ export async function openCamera(want = 'auto', o = {}) {
     log('camera-skip', { label, error: err.name });
   };
   const stop = (r) => r && r.stream.getTracks().forEach((t) => t.stop());
+  const listCameras = async () => {
+    try {
+      return (await md.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    } catch {
+      return []; // no enumeration: the paths below still work
+    }
+  };
   // Excluded devices: never opened by id; a default that turns out to be one is closed again.
   const excludedIds = new Set();
   const exclude = (label, deviceId) => {
@@ -206,6 +216,27 @@ export async function openCamera(want = 'auto', o = {}) {
     },
   });
 
+  // `label:<text>`: the first camera whose label contains the text (case-insensitive) — a way to
+  // force a device from a URL or a config, where a per-origin deviceId is useless. Labels need
+  // permission: with none visible yet, the default camera is primed once and let go. Explicit like
+  // a deviceId, so it opens an excluded device too.
+  if (typeof want === 'string' && want.startsWith('label:')) {
+    const needle = want.slice('label:'.length).trim().toLowerCase();
+    let list = await listCameras();
+    if (needle && list.length && list.every((d) => !d.label)) {
+      try {
+        stop(await open(true));
+      } catch (err) {
+        skip('default', err);
+      }
+      list = await listCameras();
+    }
+    const d = needle ? list.find((x) => x.deviceId && (x.label || '').toLowerCase().includes(needle)) : null;
+    if (!d) throw Object.assign(new Error(`camera unavailable: no camera labelled "${needle}"`), { code: noCameraCode(skipped), skipped });
+    log('camera-label', { label: d.label, needle });
+    want = d.deviceId;
+  }
+
   // An explicit device id.
   if (typeof want === 'string' && !['auto', 'stereo', 'mono'].includes(want)) {
     let r;
@@ -225,13 +256,6 @@ export async function openCamera(want = 'auto', o = {}) {
   // camera start can take seconds (a busy capture stack took 7-20 s per start on a field box), and
   // the default-first probe below costs two or three of them before it reaches the pair.
   const tried = new Set();
-  const listCameras = async () => {
-    try {
-      return (await md.enumerateDevices()).filter((d) => d.kind === 'videoinput');
-    } catch {
-      return []; // no enumeration: the paths below still work
-    }
-  };
   const tryNamedPairs = async (list) => {
     for (const d of list) {
       if (!d.deviceId || !stereoLabelHint(d.label) || tried.has(d.deviceId)) continue;
@@ -290,11 +314,26 @@ export async function openCamera(want = 'auto', o = {}) {
   }
 
   // The default camera: the fallback (and, with labels already visible, also the probe base).
+  // With labels visible and an excluded device listed, the default is not opened blind — it may BE
+  // the sensor (an idle Ultraleap is the default camera on some Windows boxes, and an eye tracker's
+  // camera should not be started at all) — the first camera that is not excluded is opened by id.
   if (!mono && !defaultExcluded) {
-    try {
-      mono = await openDefault(MONO_CONSTRAINTS);
-    } catch (err) {
-      skip('default', err);
+    const listed = await listCameras();
+    const anyExcluded = listed.filter(listedExcluded).length > 0; // every excluded device is noted, not just the first
+    const first = anyExcluded ? listed.find((d) => d.deviceId && !excludedIds.has(d.deviceId)) || null : null;
+    if (first) {
+      if (first.deviceId) tried.add(first.deviceId);
+      try {
+        mono = await open({ deviceId: { exact: first.deviceId }, ...MONO_CONSTRAINTS });
+      } catch (err) {
+        skip(first.label, err);
+      }
+    } else {
+      try {
+        mono = await openDefault(MONO_CONSTRAINTS);
+      } catch (err) {
+        skip('default', err);
+      }
     }
   }
   if (want === 'mono' && mono) return result(mono, 'mono');

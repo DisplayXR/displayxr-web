@@ -40,7 +40,9 @@
     (<code>node signaling/dev-server.mjs</code>; the default on localhost) ·
     <code>?signal=peerjs</code> the free public PeerJS broker (<b>demo only</b>; this sample's own adapter, not in the package) ·
     <code>?camera=synthetic</code> a generated side-by-side test pair instead of a camera ·
-    <code>?camera=mono</code> · <code>?layout=speaker</code> · <code>?accent=violet</code> ·
+    <code>?camera=mono</code> · <code>?camera=label:hd%20webcam</code> the first camera whose label contains the text
+    (a hand or eye tracker that enumerates as a webcam is never picked automatically; this, or the
+    camera picker, opens one on purpose) · <code>?layout=speaker</code> · <code>?accent=violet</code> ·
     <code>?untracked=mono</code> ease tiles flat while nobody is tracked ·
     <code>?lift=0</code> show 2D participants flat instead of lifting them ·
     <code>?models=https://…</code> where the lift depth model is served from · <code>?debug</code> logs.
