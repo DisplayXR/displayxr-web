@@ -35,6 +35,7 @@ interface CameraOptions
   CameraOptions.format?: format?:CameraFormat
   CameraOptions.prefer?: prefer?:CameraPreference
   CameraOptions.rectify?: rectify?:(stream:MediaStream,info:{width:number;height:number;deviceId:string|null;label:string})=>MediaStream|Promise<MediaStream>
+  CameraOptions.stereoWaitMs?: stereoWaitMs?:number
 interface CameraPhoto
   CameraPhoto.blob: blob:Blob
   CameraPhoto.convergencePx: convergencePx:number|null
