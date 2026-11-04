@@ -96,6 +96,7 @@ the element connects**, or you use `mountCall` directly.
 | `no-ui` | `ui: false` | boolean attribute: no SDK chrome (see [Headless](#headless-mode)) |
 | `ui="tiles"` | `ui: 'tiles'` | badges and plates only — your bar, the module's per-tile chrome |
 | `auto-join` | `autoJoin` | boolean attribute: skip the lobby |
+| `self-content-view` | `selfContentView` | boolean attribute: a woven preview of what you share (see [Sharing a 3D app](#sharing-a-3d-app)) |
 | `mono3d` | `mono3D` | `off` to keep 2D callers 2D; default `auto` |
 | `cursor` | `cursor` | `depth`: a depth cursor over the 3D tiles (see [Options](#options)) |
 
@@ -152,6 +153,7 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `ui` | `true` | `true` full chrome · `'tiles'` badges and plates only · `false` nothing |
 | `autoJoin` | `ui !== true` | Join without the lobby |
 | `selfView` | `true` | The small mirrored self view — an [`addCameraView`](camera.md#addcameraviewwall-canvas-cam-opts--the-self-view): a stereo self view is mirrored **and** eye-swapped, which is what a mirror does |
+| `selfContentView` | `false` | While you [share a 3D app](#sharing-a-3d-app), also show it to yourself as a woven tile (`tile('self', 'content')`). Off by default: the app is already on your display |
 | `theme` | — | `{ accent, ink, shell, danger, radius, font, tileAspect, strings }` — see [Theming](#theming). `tileAspect: 'fill'`: each tile's crop follows its own box (for `layout: 'none'`) |
 | `invite` | — | `{ base, updateUrl }`: the link's base (default this page's URL, query kept, fragment replaced); write `#room=` into the page URL on join so a reload rejoins (default `ui === true`) |
 | `landing` | — | `{ browserUrl, allow2D }`: where the "see it in 3D" offer links; `allow2D: false` for 3D-only kiosk pages |
@@ -194,7 +196,7 @@ or `null` (off, or nothing measured yet); `senderFrac` is the last value receive
 ### The handle
 
 ```ts
-import type { CallFormat, CallPeer, CallEvents } from '@displayxr/inline3d/call';
+import type { CallFormat, CallPeer, CallEvents, CallContent, ContentDescriptor } from '@displayxr/inline3d/call';
 import type { StereoCamera } from '@displayxr/inline3d/camera';
 
 interface CallHandle {
@@ -204,7 +206,7 @@ interface CallHandle {
   readonly localFormat: CallFormat | null;    // what YOU send: 'sbs' | 'mono'
   readonly muted: boolean;  readonly cameraOff: boolean;
   readonly depth: number;  readonly speaker: string | null;
-  readonly peers: ReadonlyArray<CallPeer>;    // id, format, display, state, muted, cameraOff, speaking, name
+  readonly peers: ReadonlyArray<CallPeer>;    // id, format, display, state, muted, cameraOff, speaking, name, content
   readonly mono3D: { on: boolean; state: string; reason: string | null; provider: string | null; lifted: number; max: number };
   join(): Promise<void>;  leave(): void;
   inviteLink(): string | null;                // …#room=<id>; null before a room exists
@@ -213,7 +215,10 @@ interface CallHandle {
   retryCamera(): Promise<{ format: CallFormat; width: number; height: number; label: string }>;
   setDepth(v: number): number;                // the ONE depth control, [-1, 1], + = push back
   setMono3D(on?: boolean): boolean;
-  tile(peerId: string): HTMLElement | null;   // for layout: 'none'; 'self' = your self view
+  tile(peerId: string, kind?: 'camera' | 'content'): HTMLElement | null;   // for layout: 'none'; 'self' = your self view; 'content' = their shared app
+  shareContent(src: MediaStream | MediaStreamTrack, opts?: ContentDescriptor): Promise<CallContent>;   // 3D app share
+  stopContent(opts?: { stopTrack?: boolean }): Promise<boolean>;
+  readonly content: CallContent | null;       // what you share, or null
   readonly name: string | null;  setName(name: string | null): string | null;
   send(peerId: string, data: unknown): boolean;   broadcast(data: unknown): boolean;   // app messages
   readonly signal: 'connected' | 'reconnecting' | 'closed' | null;
@@ -253,16 +258,17 @@ self view that looks wrong on the panel can be read off directly
 | `peer` | `{ id }` | A participant appeared |
 | `peerleft` | `{ id, reason }` | A participant is gone |
 | `state` | `{ id, state }` | A participant's connection changed: `new` `connecting` `connected` `reconnecting` `unreachable` `left` |
-| `display` | `{ id, display }` | How this side shows a participant changed: `'3D'` · `'2D→3D'` · `'2D'` (a hello arrived, lift went live, the wall came back). Route detail is in `diagnostics()` |
+| `display` | `{ id, display, kind }` | How this side shows a participant changed: `'3D'` · `'2D→3D'` · `'2D'` (a hello arrived, lift went live, the wall came back). Route detail is in `diagnostics()` |
 | `speaker` | `{ id \| null }` | The active speaker changed |
 | `quality` | `{ id, in, out, path, rttMs }` | Per peer every 2 s: resolution, fps, codec, kbps; `path` = the selected ICE pair's route (`'host'` · `'srflx'` · `'prflx'` · `'relay'` = through TURN; null before one is selected), `rttMs` its round-trip time. With `id: null` and `lift`: the web lift provider is degrading the page's frame rate, or has recovered. Shape stable, values informative |
 | `error` | `{ code, message, error }` | Something a feature depends on failed — see [Troubleshooting](#troubleshooting). Never fatal to the widget: a camera error joins audio-only, an unreachable peer keeps retrying. Codes are typed (`CallErrorCode`) |
-| `warning` | `{ code, message }` | Degraded, not broken. Today: `lift-not-bundled`, `turn-shed` |
+| `warning` | `{ code, message }` | Degraded, not broken. Today: `lift-not-bundled`, `turn-shed`, `content-unsupported` (you share, and a participant's SDK predates content: they see your camera only) |
 | `name` | `{ id, name }` | A participant's display name arrived or changed (`null` = cleared) |
 | `message` | `{ from, data }` | An app message from a participant (`send` / `broadcast`). Only app messages surface; the call's own wire messages never do |
 | `signal` | `{ state, code? }` | The signalling connection: `connected` (join, reconnect) · `reconnecting` (media keeps flowing) · `closed` (`code` says why, e.g. `expired`) |
-| `weave` | `{ id, state, reason?, ms }` | A tile's weave settled: its first join, or its re-join after a resize. `id` is a participant's or `'self'`; `state` `'woven'` or `'flat'` (the wall will not weave it — `reason`) |
-| `speaking` | `{ id, on }` | A participant (or `'self'`) started / stopped speaking |
+| `weave` | `{ id, state, reason?, ms, kind }` | A tile's weave settled: its first join, or its re-join after a resize. `id` is a participant's or `'self'`; `kind` `'camera'` or `'content'` (their shared app); `state` `'woven'` or `'flat'` (the wall will not weave it — `reason`) |
+| `speaking` | `{ id, on, kind }` | A participant (or `'self'`) started / stopped speaking (`kind` is always `'camera'`) |
+| `content` | `{ id, on, appName, reason? }` | A participant (or `'self'`) started / stopped [sharing a 3D app](#sharing-a-3d-app). Your own stop says why: `'stopped'`, `'ended'` (the app exited), `'left'` |
 
 ---
 
@@ -330,6 +336,7 @@ from the handle and the events; the tiles stay module-owned.
 | Placing the self view | `call.tile('self')` (`data-dxr-peer="self"`); with `layout: 'none'` the footer and self slot are `display: contents`, so it is laid out by your CSS on the host like the others |
 | Hiding the self view | `setSelfView(false)` removes its layer (never a hidden live tile); `true` brings it back |
 | Speaking rings | the `speaking` event (`'self'` too) |
+| A shared app | `shareContent()` / `stopContent()`; the `content` event; `call.tile(id, 'content')` (`data-dxr-kind="content"`) — see [Sharing a 3D app](#sharing-a-3d-app) |
 | Device menus | `setCamera(deviceId)`, `setMic(deviceId)`, `setAudioOutput(sinkId)` (also for tiles that join later); `call.localStream` is what you send |
 | A network badge | `quality.path` (`'relay'` = through TURN) and `quality.rttMs` |
 
@@ -346,6 +353,82 @@ call.on('weave', ({ id, state }) => call.tile(id)?.classList.toggle('flat', stat
 call.on('signal', ({ state }) => (banner.hidden = state === 'connected'));
 selfToggle.onclick = () => call.setSelfView();
 ```
+
+---
+
+## Sharing a 3D app
+
+**Preview.** In the DisplayXR Browser a participant can share a running DisplayXR app — a model
+viewer, a game, a CAD view — and everyone else sees it **in 3D on their own display**: what is sent
+is the app's two views before weaving (side by side), which each receiver weaves for its own panel
+and its own eyes. It is a **second video track** next to the camera, so people stay on their own
+tiles while the app is shown big.
+
+```js
+import { mountCall, listShareableApps, watchShareableApps, openAppShare } from '@displayxr/inline3d/call';
+
+const call = await mountCall(document.getElementById('call'), { ui: 'tiles', layout: 'none' });
+
+// 1. Which apps can be shared? (needs camera permission first — the browser lists none before.)
+const stopWatching = watchShareableApps((apps) => renderMenu(apps)); // [{ deviceId, label, appName }]
+
+// 2. Share one. The runtime asks the user on THIS machine ("Share Model Viewer with …?") now.
+async function share(deviceId) {
+  const app = await openAppShare(deviceId);            // rejects with code 'share-denied' on Deny
+  await call.shareContent(app.stream, app.descriptor);
+  app.track.addEventListener('ended', () => toast('the app closed'));
+}
+
+// 3. Stop (and end the runtime's share).
+stopBtn.onclick = () => call.stopContent({ stopTrack: true });
+
+// Everyone's side: a content tile appears and goes.
+call.on('content', ({ id, on, appName }) => {
+  const el = call.tile(id, 'content');                 // data-dxr-peer="<id>" data-dxr-kind="content"
+  if (on && el) el.style.gridArea = 'main';
+});
+```
+
+- **Discovery.** The DisplayXR Browser lists each shareable app as a camera-like `videoinput`
+  labelled `DisplayXR: <app> (3D)` (device id `dxr-app:…`, runtime ADR-061). `listShareableApps()`
+  / `watchShareableApps(cb)` filter them out of `enumerateDevices()`; `isAppShareDevice(device)`
+  is the test (label, id prefix, or the track's `displayxrStereo.source === 'app'`). They are
+  listed only once the page holds **camera** permission, so join the call (or open the camera)
+  first. Every other browser lists none. No camera probe ever opens one: `camera: 'auto'` can't
+  send your app as your face.
+- **Consent is the runtime's.** `openAppShare()` opens the device, and that is when the runtime
+  prompts on the sender's machine, every time. A Deny rejects with `code: 'share-denied'`; nothing
+  is sent. The runtime shows its own "Sharing <app>" indicator while the share is open.
+- **`shareContent(src, opts)`** takes the stream (or its track) and, optionally, a descriptor —
+  `openAppShare()`'s `descriptor` fits as is. Any side-by-side track works too (a stereo video, a
+  canvas capture): pass `{ format: 'sbs', convergence: { known: true, frac } }` when you know its
+  zero-parallax plane. It replaces a previous share; `handle.content` says what is shared.
+- **Display-referred convergence.** A camera pair is converged on the face (measured). An app's
+  views are not a camera: the runtime renders them with the display plane at zero disparity, so
+  the content message carries that plane's disparity as a fraction of the eye width
+  (`convergence: { known: true, frac }`, 0 for every app today) and receivers apply it **directly**
+  — nothing is measured, and the depth slider still adds to it. Content with an unknown
+  convergence is shown as sent.
+- **Stopping.** `stopContent()` empties the content track and tells everyone (`content` with
+  `on: false`); `stopContent({ stopTrack: true })` also stops the track, which ends the runtime's
+  share. The track is yours: the call leaves it running otherwise. When the app exits the track
+  ends and the share stops by itself (`content` with `reason: 'ended'`). Leaving the call stops it
+  too.
+- **Layout.** With the module's layout, the content tile goes first and spans the row; the people
+  form a strip under it. With `layout: 'none'` it is yours: `tile(id, 'content')` (or
+  `[data-dxr-kind="content"]`) — content main, people in a strip beside or under it, is the layout
+  that reads. Like every tile it is a woven canvas: style it in place, never move it. The sharer
+  does not see their own content tile unless `selfContentView: true` (they have the app itself).
+- **Who can see it.** The content track exists only between participants whose SDKs both support
+  it (`hello.content`, this release on). An older participant keeps seeing your camera only, and
+  you get one `warning { code: 'content-unsupported' }` for them. On a 2D screen a receiver sees
+  the left view, flat. Bandwidth: the content track gets the side-by-side budget and holds its
+  resolution; your camera drops to 60% of its budget while you share.
+
+On the wire: a `content` message on the data channel (`{ type: 'content', on, format, width,
+height, convergence: { known, frac }, appName }`, re-sent to anyone who joins later) and a second
+video transceiver, added by the pair's offerer with a same-generation re-offer once both hellos say
+`content: true`. Sharing itself is a `replaceTrack` on that sender — no renegotiation.
 
 ---
 
