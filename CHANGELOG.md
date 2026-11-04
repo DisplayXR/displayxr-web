@@ -5,6 +5,26 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.49.2 — 2026-11-04
+
+### Fixed — the camera probe waits for the DisplayXR 3D camera before opening a plain lens (`./camera`, `./call`)
+
+Preview tier. In a DisplayXR Browser the runtime lists its 3D camera lazily. On a phone it is
+missing from the list right after a runtime restart, or after the camera service restarted. With
+the 3D camera absent, `camera: 'auto'` read the list once more and then opened the plain front lens.
+On some phones that open crashes the camera HAL while head tracking streams. The HAL restart takes
+the 3D camera down again, so the call never got it back: the self view stayed 2D, or the call
+reported "Camera busy".
+
+- **The wait:** with camera labels visible and no stereo-named device listed, `'auto'` / `'stereo'`
+  now wait up to `stereoWaitMs` (new option, default **2500 ms in a DisplayXR Browser**, 0
+  elsewhere) before opening any plain lens. They re-read the list on every `devicechange` and every
+  500 ms, and open the 3D camera as soon as it appears. `'mono'`, an explicit `deviceId` and
+  `label:` never wait. The rule is in [`docs/camera.md`](docs/camera.md), "Waiting for the 3D camera".
+- **Pinned:** when the default camera opens but delivers no picture (0x0), a lens that opens by id
+  is kept as the fallback, never stopped and reported as busy. This has worked since 1.48.0; a test
+  now covers it.
+
 ## 1.49.1 — 2026-11-03
 
 ### Fixed — app share on browsers without the app-share device patch (`./call`, `./camera`)
