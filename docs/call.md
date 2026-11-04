@@ -396,6 +396,16 @@ call.on('content', ({ id, on, appName }) => {
   listed only once the page holds **camera** permission, so join the call (or open the camera)
   first. Every other browser lists none. No camera probe ever opens one: `camera: 'auto'` can't
   send your app as your face.
+- **Browsers without the app-share device patch** (DisplayXR Browser 1.9.x) list an app through
+  their 3D-camera device instead, as `3D Camera (DisplayXR) - <app>` — and once the runtime offers
+  more than one source they give the **real** camera the same shape (`3D Camera (DisplayXR) -
+  Built-in camera`), so the label cannot tell them apart. With no `DisplayXR: <app> (3D)` device
+  listed, `listShareableApps()` returns those entries as candidates (`legacy: true`; a real camera
+  can be among them), and `openAppShare()` checks the opened track: an app advertises
+  `baselineMm: 0` and `horizontalFovDeg: 0` in `displayxrStereo`, a camera never has baseline 0, so
+  a camera is closed again with `code: 'not-app-share'`. The camera probe does the same check on
+  every device it opens: such an app is skipped as `reason: 'app-share'`, the suffixed camera is
+  used as usual.
 - **Consent is the runtime's.** `openAppShare()` opens the device, and that is when the runtime
   prompts on the sender's machine, every time. A Deny rejects with `code: 'share-denied'`; nothing
   is sent. The runtime shows its own "Sharing <app>" indicator while the share is open.
