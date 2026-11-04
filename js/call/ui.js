@@ -148,6 +148,9 @@ const CSS = `
 .dxr-call-grid[data-layout="speaker"]{grid-template-columns:repeat(3,1fr);}
 .dxr-call-grid[data-layout="speaker"] .dxr-call-tile--main{grid-column:1/-1;}
 .dxr-call-grid[data-layout="speaker"][data-n="1"]{grid-template-columns:1fr;}
+/* Shared content (3D app share): the content tile spans the row, the people form a strip under it. */
+.dxr-call-grid[data-content="1"]:not([data-n="1"]){grid-template-columns:repeat(3,1fr);max-width:calc(var(--dxr-call-h)*4/3);}
+.dxr-call-grid[data-content="1"] .dxr-call-tile--main{grid-column:1/-1;}
 /* layout:'none' — the module creates the tiles but does not position them: the grid box steps
    aside (display:contents) so each [data-dxr-peer] tile is laid out by the PAGE's own CSS on the
    host. A tile is never moved; it is styled in place (woven-canvas rule 2). */

@@ -284,7 +284,7 @@ test('setSelfView: off removes the layer (then hides the box); on registers it a
     assert.equal(added.length, 1, 'the self view is on the wall');
     added[0].settle(true, 'hold-elapsed');
     await flush();
-    assert.deepEqual(events.weave, [{ id: 'self', state: 'woven', reason: 'hold-elapsed', ms: 7 }]);
+    assert.deepEqual(events.weave, [{ id: 'self', state: 'woven', reason: 'hold-elapsed', ms: 7, kind: 'camera' }]);
     assert.equal(call.setSelfView(false), false);
     assert.equal(added[0].removed, 1, 'the layer is removed, not hidden under display:none');
     assert.ok(call.tile('self').classList.contains('dxr-call-hidden'));
@@ -295,7 +295,7 @@ test('setSelfView: off removes the layer (then hides the box); on registers it a
     assert.ok(!call.tile('self').classList.contains('dxr-call-hidden'));
     added[1].settle(false, 'layer-failed');
     await flush();
-    assert.deepEqual(events.weave.at(-1), { id: 'self', state: 'flat', reason: 'layer-failed', ms: 0 });
+    assert.deepEqual(events.weave.at(-1), { id: 'self', state: 'flat', reason: 'layer-failed', ms: 0, kind: 'camera' });
   } finally {
     call.leave();
   }
@@ -319,13 +319,13 @@ test("weave events for a peer (firstWoven → woven; failure → flat; a resize 
     setBox(stage, 640, 360); // the first look: a baseline, no rewoven
     added[0].settle(true, 'woven');
     await flush();
-    assert.deepEqual(events.weave, [{ id: PEER, state: 'woven', reason: 'woven', ms: 7 }]);
+    assert.deepEqual(events.weave, [{ id: PEER, state: 'woven', reason: 'woven', ms: 7, kind: 'camera' }]);
     setBox(stage, 800, 450);
     assert.equal(added[0].rewovenCalls, 1);
     setBox(stage, 820, 460); // still settling: the same pending promise, one event
     added[0].rw.settle({ woven: true, confirmed: true, reason: 'woven', ms: 300 });
     await flush();
-    assert.deepEqual(events.weave.at(-1), { id: PEER, state: 'woven', reason: 'woven', ms: 300 });
+    assert.deepEqual(events.weave.at(-1), { id: PEER, state: 'woven', reason: 'woven', ms: 300, kind: 'camera' });
     assert.equal(events.weave.length, 2);
   } finally {
     call.leave();
@@ -340,7 +340,7 @@ test("weave events for a peer (firstWoven → woven; failure → flat; a resize 
       assert.equal(a2[0].opts, undefined, "layout 'grid': tileCover 'off' — addImage exactly as before");
       a2[0].settle(false, 'layer-failed');
       await flush();
-      assert.deepEqual(e2.weave[0], { id: PEER, state: 'flat', reason: 'layer-failed', ms: 7 });
+      assert.deepEqual(e2.weave[0], { id: PEER, state: 'flat', reason: 'layer-failed', ms: 7, kind: 'camera' });
     } finally {
       c2.leave();
     }
