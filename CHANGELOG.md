@@ -21,6 +21,11 @@ reported "Camera busy".
   elsewhere) before opening any plain lens. They re-read the list on every `devicechange` and every
   500 ms, and open the 3D camera as soon as it appears. `'mono'`, an explicit `deviceId` and
   `label:` never wait. The rule is in [`docs/camera.md`](docs/camera.md), "Waiting for the 3D camera".
+- **No shape probe of a second lens in a DisplayXR Browser:** once a plain lens is in hand, the
+  last-resort probe no longer opens the other plain lenses to test whether one is a side-by-side
+  pair. There, a stereo webcam (a USB SBS one included, through the runtime's UVC source) is the
+  runtime's named "3D Camera". The extra open is the one that can crash a phone's camera HAL. Other
+  browsers keep the shape probe, which is how a USB stereo webcam is found there.
 - **Pinned:** when the default camera opens but delivers no picture (0x0), a lens that opens by id
   is kept as the fallback, never stopped and reported as busy. This has worked since 1.48.0; a test
   now covers it.

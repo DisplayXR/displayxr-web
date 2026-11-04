@@ -103,7 +103,10 @@ fall back to the default camera. The rule exists because of hardware: on some ph
 physical lens while head tracking streams crashes the camera HAL. The runtime's 3D camera goes down
 with it, so falling back too early is what keeps it from ever coming back. Outside a DisplayXR
 Browser the wait is 0 (the list is read once more). The wait cannot help on a first visit, when
-labels are still hidden and the default camera has to be opened once to get permission.
+labels are still hidden and the default camera has to be opened once to get permission. For the
+same reason, once a plain lens is open, a DisplayXR Browser never opens another plain lens just to
+test whether its frame is a side-by-side pair. There, a stereo webcam (a USB one included) is the
+runtime's named "3D Camera".
 
 ### The camera
 

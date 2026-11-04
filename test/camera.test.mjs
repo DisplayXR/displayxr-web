@@ -651,6 +651,26 @@ test('openCamera with labels visible, default delivers 0x0 (camera HAL restartin
   assert.equal(cam.format, 'mono');
   assert.equal(cam.deviceId, 'cam1');
   assert.ok(cam.skipped.some((s) => s.label === 'default' && s.busy), 'the 0x0 default is reported');
-  // The last-resort loop still probes the other lens for a pair by shape (a USB stereo webcam
-  // is found that way), but never gives up the lens it kept.
+  // Outside a DisplayXR Browser the last-resort loop still probes the other lens for a pair by
+  // shape (a USB stereo webcam is found that way), but never gives up the lens it kept.
+  assert.ok(opens.includes('cam0'));
+  // In a DisplayXR Browser it stops at the first plain lens: a USB pair is the runtime's named
+  // 3D Camera there, and the extra open is the one that can crash a phone's camera HAL.
+  const hadXr = Object.getOwnPropertyDescriptor(globalThis.navigator, 'xr');
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = {};
+  const hadLayer = globalThis.window.XRDisplayLayer;
+  try {
+    Object.defineProperty(globalThis.navigator, 'xr', { value: {}, configurable: true });
+    globalThis.window.XRDisplayLayer = function XRDisplayLayer() {};
+    opens.length = 0;
+    const dxr = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 0 });
+    assert.equal(dxr.deviceId, 'cam1');
+    assert.deepEqual(opens, ['default', 'cam1'], 'no second plain lens');
+  } finally {
+    if (hadXr) Object.defineProperty(globalThis.navigator, 'xr', hadXr);
+    else delete globalThis.navigator.xr;
+    globalThis.window.XRDisplayLayer = hadLayer;
+    if (!hadWindow) delete globalThis.window;
+  }
 });

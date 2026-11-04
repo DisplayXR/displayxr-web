@@ -60,8 +60,12 @@ const STEREO_WAIT_STEP_MS = 500;
  * inline3DAvailable(): a runtime 3D camera can be listed there), else 0. Pure apart from globals.
  */
 export function defaultStereoWaitMs() {
-  const dxr = typeof navigator !== 'undefined' && !!navigator.xr && typeof window !== 'undefined' && typeof window.XRDisplayLayer === 'function';
-  return dxr ? STEREO_WAIT_MS : 0;
+  return inDisplayXRBrowser() ? STEREO_WAIT_MS : 0;
+}
+
+/** The same test as inline3DAvailable() (navigator.xr + XRDisplayLayer), without importing the core. */
+function inDisplayXRBrowser() {
+  return typeof navigator !== 'undefined' && !!navigator.xr && typeof window !== 'undefined' && typeof window.XRDisplayLayer === 'function';
 }
 
 /** Resolves on the next `devicechange` of `md`, or after `ms`, whichever is first. */
@@ -454,9 +458,14 @@ export async function openCamera(want = 'auto', o = {}) {
   }
   // A label that names a pair first; never by list position (see the header).
   devices.sort((a, b) => Number(stereoLabelHint(b.label)) - Number(stereoLabelHint(a.label)));
+  // In a DisplayXR Browser a stereo camera (a USB SBS webcam included) is the runtime's named
+  // "3D Camera", so once a plain lens is in hand no other plain lens is opened to test its shape:
+  // on some phones that extra open crashes the camera HAL.
+  const shapeProbe = !inDisplayXRBrowser();
   for (const d of devices) {
     if (!d.deviceId) continue; // no permission yet: an anonymous entry cannot be opened by id
     if (mono && d.deviceId === mono.deviceId) continue;
+    if (mono && !shapeProbe && !stereoLabelHint(d.label)) continue;
     if (tried.has(d.deviceId) || excludedIds.has(d.deviceId)) continue; // already opened (not a pair, or busy) or left out
     if (listedExcluded(d)) continue; // the last resort never opens a sensor (a hand-tracking camera)
     let r = null;
@@ -476,7 +485,7 @@ export async function openCamera(want = 'auto', o = {}) {
     // No default could be used (excluded, busy): the first plain camera found is the fallback.
     if (!mono && !isPair(r)) {
       mono = await withMode(r, MONO_CONSTRAINTS);
-      if (want === 'mono') return result(mono, 'mono');
+      if (want === 'mono' || !shapeProbe) return result(mono, 'mono');
       continue;
     }
     stop(r);
