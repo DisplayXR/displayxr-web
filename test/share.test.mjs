@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { FakeTrack, FakeStream } from './call-dom.mjs';
-import { isAppShareDevice, appNameFromLabel, listShareableApps, watchShareableApps, openAppShare, describeAppShare, APP_SHARE_ID_PREFIX } from '../js/call/share.js';
+import { isAppShareDevice, isAppShareHint, legacyAppCandidate, appNameFromLabel, listShareableApps, watchShareableApps, openAppShare, describeAppShare, APP_SHARE_ID_PREFIX } from '../js/call/share.js';
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -132,4 +132,60 @@ test('openAppShare: Deny at the runtime prompt → share-denied; a camera → no
   await assert.rejects(openAppShare('cam1', { mediaDevices: notApp }), (e) => e.code === 'not-app-share');
   assert.equal(cam.readyState, 'ended', 'the camera it opened by mistake is stopped');
   await assert.rejects(openAppShare('', { mediaDevices: notApp }), (e) => e.code === 'not-app-share');
+});
+
+// Browsers WITHOUT the app-share device patch: the app is listed as `3D Camera (DisplayXR) - <app>`,
+// and so is the real camera once the runtime lists two sources. No `source` in the hint; an app
+// advertises baseline 0 and FOV 0 (runtime ADR-061 decision 2), a real camera never baseline 0.
+const APP_HINT = { layout: 'side-by-side', rectified: true, baselineMm: 0, horizontalFovDeg: 0 };
+const CAM_HINT = { layout: 'side-by-side', rectified: true, baselineMm: 63, horizontalFovDeg: 60 };
+
+test('isAppShareHint: source app, or side-by-side with baseline AND fov exactly 0; a real camera is not', () => {
+  assert.ok(isAppShareHint({ source: 'app' }));
+  assert.ok(isAppShareHint(APP_HINT));
+  assert.ok(isAppShareHint({ baselineMm: 0, horizontalFovDeg: 0 }), 'layout absent');
+  for (const h of [CAM_HINT, { ...APP_HINT, baselineMm: 63 }, { ...APP_HINT, horizontalFovDeg: 60 }, { layout: 'side-by-side' }, { ...APP_HINT, layout: 'top-bottom' }, { ...APP_HINT, source: 'camera' }, null, undefined, 'app', 0]) {
+    assert.equal(isAppShareHint(h), false, JSON.stringify(h));
+  }
+  assert.equal(isAppShareHint({ get source() { throw new Error('no'); } }), false, 'never throws');
+  // isAppShareDevice takes the hint on a track or its settings; the legacy LABEL alone is not enough.
+  assert.ok(isAppShareDevice({ displayxrStereo: APP_HINT }));
+  assert.ok(isAppShareDevice(Object.assign(new FakeTrack('video'), { label: '3D Camera (DisplayXR) - Cube', getSettings: () => ({ displayxrStereo: APP_HINT }) })));
+  assert.equal(isAppShareDevice(Object.assign(new FakeTrack('video'), { label: '3D Camera (DisplayXR) - Built-in camera', getSettings: () => ({ displayxrStereo: CAM_HINT }) })), false);
+  assert.equal(isAppShareDevice({ kind: 'videoinput', label: '3D Camera (DisplayXR) - Cube', deviceId: 'dxr-stereo:1' }), false);
+});
+
+test('legacyAppCandidate: "3D Camera (DisplayXR) - <name>" is a candidate with its name; anything else is not', () => {
+  assert.deepEqual(legacyAppCandidate({ label: '3D Camera (DisplayXR) - CubeOpenXRExt' }), { appName: 'CubeOpenXRExt' });
+  assert.deepEqual(legacyAppCandidate('3D Camera (DisplayXR)  -  Model Viewer '), { appName: 'Model Viewer' });
+  for (const x of ['3D Camera (DisplayXR)', '3D Camera (DisplayXR) - ', 'DisplayXR: Cube (3D)', 'Integrated Webcam', '', null, 7, {}]) {
+    assert.equal(legacyAppCandidate(x), null, String(x));
+  }
+});
+
+test('listShareableApps on a browser without the app-share patch: the suffixed entries as legacy candidates; ADR-form devices win', async () => {
+  const legacy = media([
+    { kind: 'videoinput', label: 'Integrated Webcam', deviceId: 'cam1' },
+    { kind: 'videoinput', label: '3D Camera (DisplayXR) - CubeOpenXRExt', deviceId: 'dxr-stereo:app' },
+    { kind: 'videoinput', label: '3D Camera (DisplayXR) - Built-in camera', deviceId: 'dxr-stereo:cam' },
+    { kind: 'videoinput', label: '3D Camera (DisplayXR)', deviceId: 'dxr-stereo:solo' },
+  ]);
+  const apps = await listShareableApps({ mediaDevices: legacy });
+  assert.deepEqual(apps.map((a) => [a.deviceId, a.appName, a.legacy]), [['dxr-stereo:app', 'CubeOpenXRExt', true], ['dxr-stereo:cam', 'Built-in camera', true]]);
+  assert.equal(apps[0].label, '3D Camera (DisplayXR) - CubeOpenXRExt');
+  const both = media([...legacy.devices, { kind: 'videoinput', label: 'DisplayXR: Cube (3D)', deviceId: 'dxr-app:c' }]);
+  assert.deepEqual((await listShareableApps({ mediaDevices: both })).map((a) => [a.deviceId, a.legacy]), [['dxr-app:c', undefined]]);
+});
+
+test('openAppShare on a legacy candidate: a baseline-0 track is the app (name from its label); a suffixed real camera → not-app-share, closed', async () => {
+  const app = appTrack({ width: 2560, height: 720, deviceId: 'dxr-stereo:app', displayxrStereo: APP_HINT }, '3D Camera (DisplayXR) - CubeOpenXRExt');
+  const s = await openAppShare('dxr-stereo:app', { mediaDevices: media([], { onOpen: () => new FakeStream([app]) }) });
+  assert.equal(s.track, app);
+  assert.deepEqual(s.descriptor, { kind: 'content', format: 'sbs', width: 2560, height: 720, convergence: { known: true, frac: 0 }, appName: 'CubeOpenXRExt' });
+  const cam = appTrack({ width: 2560, height: 720, deviceId: 'dxr-stereo:cam', displayxrStereo: CAM_HINT }, '3D Camera (DisplayXR) - Built-in camera');
+  await assert.rejects(openAppShare('dxr-stereo:cam', { mediaDevices: media([], { onOpen: () => new FakeStream([cam]) }) }), (e) => e.code === 'not-app-share');
+  assert.equal(cam.readyState, 'ended', 'the camera is stopped again');
+  // Even under a dxr-app: id, a track whose hint is a real camera is not an app.
+  const odd = appTrack({ width: 2560, height: 720, displayxrStereo: CAM_HINT }, 'whatever');
+  await assert.rejects(openAppShare('dxr-app:x', { mediaDevices: media([], { onOpen: () => new FakeStream([odd]) }) }), (e) => e.code === 'not-app-share');
 });

@@ -189,6 +189,7 @@ interface ShareableApp
   ShareableApp.readonly appName: readonly appName:string|null
   ShareableApp.readonly deviceId: readonly deviceId:string
   ShareableApp.readonly label: readonly label:string
+  ShareableApp.readonly legacy?: readonly legacy?:true
 interface SignalingAdapter
   SignalingAdapter.join: join(room:string,hooks:SignalingHooks):Promise<SignalingSession>
   SignalingAdapter.readonly name?: readonly name?:string

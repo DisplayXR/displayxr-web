@@ -374,9 +374,15 @@ export interface CallContent {
 /** A running DisplayXR app the browser offers to share (`listShareableApps`). */
 export interface ShareableApp {
   readonly deviceId: string;
-  /** `DisplayXR: <app> (3D)`. */
+  /** `DisplayXR: <app> (3D)` (or `3D Camera (DisplayXR) - <app>` for a `legacy` candidate). */
   readonly label: string;
   readonly appName: string | null;
+  /**
+   * A browser without the app-share device patch: a CANDIDATE listed by its label shape only — a
+   * real camera can carry the same shape. `openAppShare()` verifies it (a camera rejects with
+   * `not-app-share`).
+   */
+  readonly legacy?: true;
 }
 
 /** An opened app share (`openAppShare`): pass `stream` (+ `descriptor`) to `shareContent`. The track is yours to stop. */
@@ -392,8 +398,9 @@ export type AppShareErrorCode = 'share-denied' | 'share-failed' | 'not-app-share
 /**
  * Is this a running DisplayXR app offered for 3D screen share (runtime ADR-061) rather than a
  * camera? A `MediaDeviceInfo`, a label, a track, or its settings: true on the label
- * `DisplayXR: <app> (3D)`, a `dxr-app:` device id, or `displayxrStereo.source === 'app'`. No camera
- * probe (`camera: 'auto'`, `openCamera`) ever opens one.
+ * `DisplayXR: <app> (3D)`, a `dxr-app:` device id, `displayxrStereo.source === 'app'`, or (browsers
+ * without the app-share device patch) a hint with `baselineMm` and `horizontalFovDeg` both 0. No
+ * camera probe (`camera: 'auto'`, `openCamera`) ever uses one.
  */
 export function isAppShareDevice(device: MediaDeviceInfo | MediaStreamTrack | MediaTrackSettings | { label?: string; deviceId?: string } | string | null | undefined): boolean;
 
