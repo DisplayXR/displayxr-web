@@ -5,6 +5,38 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Added — `@displayxr/inline3d/hands`: tracked hands, and pinch controls for every viewer (`./hands`, `./viewer`, `./model`, `./splat`)
+
+Preview tier. The DisplayXR Browser 1.8.0+ (Windows, with a hand provider such as an Ultraleap
+tracker) exposes standard WebXR Hand Input on an inline-3D session: one `XRInputSource` per hand
+with a 25-joint `XRHand`, located in the same rig frame as the eye views. The new subpath reads it
+and turns it into controls:
+
+- `watchHands(wall, onFrame)` — the tracked hands every session frame (`poses`, `radii`,
+  `joint(name)`, `thumbTip`, `indexTip`, `palmLength`), the browser's per-frame gate
+  (`state.gate`: `'available'` or why hands are withheld) and the hand `inputsourceschange`.
+- `HandGestureController` / `PinchDetector` — the DisplayXR Model Viewer's gesture math, ported:
+  hand-relative throughout — the pinch thresholds (2.5 cm enter / 4 cm exit), the orbit gain
+  (10 rad/m) and the two-hand separation guard are all stated for a 9.5 cm palm and scale by the
+  hand's own palm length, so a hand that arrives scaled turns the subject by the same angle for
+  the same finger travel; one pinched hand orbits, two pinched hands zoom (separation ratio), roll
+  (twist) and orbit (midpoint drag); EMA-smoothed, anchored on every mode change.
+- `handControls(wall, target)` — drives anything with the viewer pose surface from those
+  gestures; and the option **`hands: true`** on `addModel` / `addSplat` (both engines, every
+  entry) wires it for you, exposed as `handle.hands`. Pointer and wheel keep working alongside.
+- `SceneViewer.nudgePose(delta)` and `PlayCanvasSplatViewer.nudgePose(delta)` — move the pose by
+  an eased delta, counting as input for the idle turntable (what the hands call; a page may too).
+- `OrbitPose.roll` on both viewers — degrees about the view axis, outside yaw and pitch (Euler
+  order `'ZXY'`; the PlayCanvas pivot quaternion gains the same Rz factor), bit-identical to
+  before at roll 0; `getPose()` now reports `roll`. (The first cut left the PlayCanvas viewer
+  without a roll axis, so the two-hand twist did nothing on the default engine — found on the
+  panel 2026-11-04.)
+
+Inert everywhere else: no hands, nothing moves, no errors. New sample `samples/hands/` (the raw
+surface), and `?hands` on `samples/model/` and `samples/splat/`. The porting guide's "no input
+sources" row is corrected (web#229). Tracks DisplayXR/displayxr-web#228.
 ## 1.49.3 — 2026-11-04
 
 ### Fixed — a camera view is not "woven" before the camera's first frame; `frameAgeMs` tells a stalled track (`.`, `./camera`, `./call`)
@@ -205,35 +237,6 @@ compositor draws a tile mono inside each `backdrop-filter` rect (displayxr-brows
 frost a whole visible tile; effects on a tile or its ancestors (rule 7) are unchanged. The SDK's
 own chrome keeps its near-solid tint. `docs/call.md` also notes that changing only the `#room=`
 fragment of a page with a live call does not re-join (reload, or navigate with a changed query).
-
-### Added — `@displayxr/inline3d/hands`: tracked hands, and pinch controls for every viewer (`./hands`, `./viewer`, `./model`, `./splat`)
-
-Preview tier. The DisplayXR Browser 1.8.0+ (Windows, with a hand provider such as an Ultraleap
-tracker) exposes standard WebXR Hand Input on an inline-3D session: one `XRInputSource` per hand
-with a 25-joint `XRHand`, located in the same rig frame as the eye views. The new subpath reads it
-and turns it into controls:
-
-- `watchHands(wall, onFrame)` — the tracked hands every session frame (`poses`, `radii`,
-  `joint(name)`, `thumbTip`, `indexTip`, `palmLength`), the browser's per-frame gate
-  (`state.gate`: `'available'` or why hands are withheld) and the hand `inputsourceschange`.
-- `HandGestureController` / `PinchDetector` — the DisplayXR Model Viewer's gesture math, ported:
-  hand-relative throughout — the pinch thresholds (2.5 cm enter / 4 cm exit), the orbit gain
-  (10 rad/m) and the two-hand separation guard are all stated for a 9.5 cm palm and scale by the
-  hand's own palm length, so a hand that arrives scaled turns the subject by the same angle for
-  the same finger travel; one pinched hand orbits, two pinched hands zoom (separation ratio), roll
-  (twist) and orbit (midpoint drag); EMA-smoothed, anchored on every mode change.
-- `handControls(wall, target)` — drives anything with the viewer pose surface from those
-  gestures; and the option **`hands: true`** on `addModel` / `addSplat` (both engines, every
-  entry) wires it for you, exposed as `handle.hands`. Pointer and wheel keep working alongside.
-- `SceneViewer.nudgePose(delta)` and `PlayCanvasSplatViewer.nudgePose(delta)` — move the pose by
-  an eased delta, counting as input for the idle turntable (what the hands call; a page may too).
-- `OrbitPose.roll` on SceneViewer — degrees about the view axis, outside yaw and pitch (Euler
-  order `'ZXY'`, bit-identical to before at roll 0); `getPose()` now reports `roll` (always 0 on the
-  PlayCanvas viewer, which has no roll axis).
-
-Inert everywhere else: no hands, nothing moves, no errors. New sample `samples/hands/` (the raw
-surface), and `?hands` on `samples/model/` and `samples/splat/`. The porting guide's "no input
-sources" row is corrected (web#229). Tracks DisplayXR/displayxr-web#228.
 
 ## 1.47.6 — 2026-11-03
 

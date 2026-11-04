@@ -380,13 +380,15 @@ const FLIP_Q = [1, 0, 0, 0];
 /**
  * SceneViewer's pivot as ONE matrix: content space → display space.
  *
- *   M = T(orbitCentre + (0,0,depthOffset)) · Rx(pitch) · Ry(yaw) · S(fit × zoom) · T(−focus)
+ *   M = T(orbitCentre + (0,0,depthOffset)) · Rz(roll) · Rx(pitch) · Ry(yaw) · S(fit × zoom) · T(−focus)
  *
- * which is exactly the product of its `_pivot` (position, 'XYZ' rotation, scale) and
+ * which is exactly the product of its `_pivot` (position, 'ZXY' rotation, scale) and
  * `_centering` (−focus) groups. Kept as a pure function so a test can hold the two together.
+ * Roll (the two-hand twist) is about the VIEW axis, so it sits outside yaw and pitch; at roll 0
+ * this is the old Rx · Ry product bit for bit.
  */
-export function pivotMatrix({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
-  const q = pivotQuat(yaw, pitch);
+export function pivotMatrix({ yaw = 0, pitch = 0, roll = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
+  const q = pivotQuat(yaw, pitch, roll);
   const R = poseMatrix([0, 0, 0], q);
   const out = new Float64Array(16);
   // columns of R·S
@@ -400,19 +402,25 @@ export function pivotMatrix({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 0], 
   return out;
 }
 
-/** R = Rx(pitch)·Ry(yaw) — three's Euler order 'XYZ' — as a quaternion. */
-function pivotQuat(yawDeg, pitchDeg) {
+/**
+ * R = Rz(roll)·Rx(pitch)·Ry(yaw) — three's Euler order 'ZXY', SceneViewer's — as a quaternion.
+ * With roll 0 the Rz factor is the identity quaternion and the product is exactly Rx·Ry.
+ */
+function pivotQuat(yawDeg, pitchDeg, rollDeg = 0) {
   const a = (pitchDeg * DEG) / 2;
   const b = (yawDeg * DEG) / 2;
-  return qmul([Math.sin(a), 0, 0, Math.cos(a)], [0, Math.sin(b), 0, Math.cos(b)]);
+  const q = qmul([Math.sin(a), 0, 0, Math.cos(a)], [0, Math.sin(b), 0, Math.cos(b)]);
+  if (!rollDeg) return q;
+  const c = (rollDeg * DEG) / 2;
+  return qmul([0, 0, Math.sin(c), Math.cos(c)], q);
 }
 
 /**
  * The INVERSE pivot, as the TRS the engine's rig node takes. M⁻¹ = T(f)·S(1/s)·Rᵀ·T(−t), and a
  * uniform scale commutes with a rotation, so it is position f − Rᵀt/s, rotation Rᵀ, scale 1/s.
  */
-export function pivotInverseTRS({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
-  const q = pivotQuat(yaw, pitch);
+export function pivotInverseTRS({ yaw = 0, pitch = 0, roll = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
+  const q = pivotQuat(yaw, pitch, roll);
   const qi = [-q[0], -q[1], -q[2], q[3]];
   const t = [orbitCentre[0], orbitCentre[1], orbitCentre[2] + depthOffset];
   const rt = qrot(qi, t);
@@ -952,6 +960,11 @@ export class PlayCanvasSplatViewer {
     this._pitch = 0;
     this._targetYaw = 0;
     this._targetPitch = 0;
+    // Roll about the VIEW axis, degrees — SceneViewer's. Only the two-hand gesture
+    // (./inline3d-hands.js) and an explicit setPose({ roll }) write it, so every existing page is
+    // bit-identical at 0.
+    this._roll = 0;
+    this._targetRoll = 0;
     this._focus = { x: 0, y: 0, z: 0 };
     this._targetFocus = { x: 0, y: 0, z: 0 };
     this._orbitCentre = { x: 0, y: 0, z: 0 };
@@ -1066,7 +1079,7 @@ export class PlayCanvasSplatViewer {
     this._placeMonoForFit();
   }
 
-  setPose({ yaw, pitch, zoom, depthOffset } = {}) {
+  setPose({ yaw, pitch, zoom, roll, depthOffset } = {}) {
     if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
     // A snap, as on SceneViewer; it also ends an orbit relax (the page is driving now).
     if (yaw !== undefined || pitch !== undefined) this._orbitMode = null;
@@ -1074,6 +1087,7 @@ export class PlayCanvasSplatViewer {
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
+    if (roll !== undefined) this._targetRoll = this._roll = roll;
     if (zoom !== undefined) {
       // A snap, and the new rest: a relax comes home HERE, not to 1×.
       this._targetZoom = this._zoom = this._restZoom = clamp(zoom, this.zoomOpts.min, this.zoomOpts.max);
@@ -1088,7 +1102,7 @@ export class PlayCanvasSplatViewer {
       yaw: target ? this._targetYaw : this._yaw,
       pitch: target ? this._targetPitch : this._pitch,
       zoom: target ? this._targetZoom : this._zoom,
-      roll: 0,
+      roll: target ? this._targetRoll : this._roll,
       depthOffset: this._depthOffset,
     };
   }
@@ -1097,14 +1111,15 @@ export class PlayCanvasSplatViewer {
    * Move the pose by a delta, eased — SceneViewer.nudgePose's twin, what the hands
    * (`@displayxr/inline3d/hands`) drive. Degrees to add, zoom a ratio to multiply (within
    * `zoomOpts`, and it becomes the new REST, as a setPose zoom does, so a relax does not undo a
-   * two-hand zoom). Roll is accepted and ignored: this viewer has no roll axis. Counts as
-   * interaction for the idle turntable and ends an orbit relax, like a drag.
+   * two-hand zoom). Roll (the two-hand twist) is degrees about the view axis, as on SceneViewer.
+   * Counts as interaction for the idle turntable and ends an orbit relax, like a drag.
    */
-  nudgePose({ yaw = 0, pitch = 0, zoom = 1 } = {}) {
+  nudgePose({ yaw = 0, pitch = 0, zoom = 1, roll = 0 } = {}) {
     if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
     if (yaw || pitch) this._orbitMode = null;
     if (yaw) this._targetYaw += yaw;
     if (pitch) this._targetPitch = clamp(this._targetPitch + pitch, this.pitchLimit[0], this.pitchLimit[1]);
+    if (roll) this._targetRoll += roll;
     if (zoom && zoom !== 1) {
       const from = this._zoomMode === 'rest' ? this._zoom : this._targetZoom;
       this._targetZoom = this._restZoom = clamp(from * zoom, this.zoomOpts.min, this.zoomOpts.max);
@@ -1115,7 +1130,7 @@ export class PlayCanvasSplatViewer {
 
   resetPose() {
     if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
-    this.setPose({ yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
+    this.setPose({ yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 });
     this._lastInput = now();
   }
 
@@ -1124,12 +1139,19 @@ export class PlayCanvasSplatViewer {
     const s = this._fitScale * this._zoom;
     const [hx, hy, hz] = this._subjectHalf;
     // SceneViewer's exact arithmetic (degrees → radians as `(d * Math.PI) / 180`), so the two
-    // viewers report bit-identical boxes (pinned by the behavioural-trace test).
+    // viewers report bit-identical boxes (pinned by the behavioural-trace test). Rows of
+    // R = Rz(roll) · Rx(pitch) · Ry(yaw), |row| · half = the AABB half-extent along that axis;
+    // at roll 0 the first two rows are the old Rx · Ry rows exactly.
     const p = (this._pitch * Math.PI) / 180;
     const y = (this._yaw * Math.PI) / 180;
+    const r = (this._roll * Math.PI) / 180;
     const cp = Math.cos(p), sp = Math.sin(p), cy = Math.cos(y), sy = Math.sin(y);
-    const ex = s * (Math.abs(cy) * hx + Math.abs(sy) * hz);
-    const ey = s * (Math.abs(sp * sy) * hx + Math.abs(cp) * hy + Math.abs(sp * cy) * hz);
+    const cr = Math.cos(r), sr = Math.sin(r);
+    // Rx . Ry rows
+    const a0 = cy, a1 = 0, a2 = sy;
+    const b0 = sp * sy, b1 = cp, b2 = -sp * cy;
+    const ex = s * (Math.abs(cr * a0 - sr * b0) * hx + Math.abs(cr * a1 - sr * b1) * hy + Math.abs(cr * a2 - sr * b2) * hz);
+    const ey = s * (Math.abs(sr * a0 + cr * b0) * hx + Math.abs(sr * a1 + cr * b1) * hy + Math.abs(sr * a2 + cr * b2) * hz);
     const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
     const cz = this._depthOffset;
     return {
@@ -2493,6 +2515,8 @@ export class PlayCanvasSplatViewer {
     const ko = tau > 0 ? (dt > 0 ? 1 - Math.exp(-dt / tau) : 0) : k;
     this._yaw += (this._targetYaw - this._yaw) * ko;
     this._pitch += (this._targetPitch - this._pitch) * ko;
+    // Roll has no drag / relax phase (only the hands and setPose write it): the ordinary damping.
+    if (this._roll !== this._targetRoll) this._roll += (this._targetRoll - this._roll) * k;
     if (
       this._orbitMode === 'rest' &&
       Math.abs(this._targetYaw - this._yaw) < 0.01 &&
@@ -2629,6 +2653,7 @@ export class PlayCanvasSplatViewer {
     return {
       yaw: this._yaw,
       pitch: this._pitch,
+      roll: this._roll,
       scale: this._fitScale * this._zoom,
       focus: [f.x, f.y, f.z],
       orbitCentre: [o.x, o.y, o.z],
@@ -4943,6 +4968,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       mono: { fov: v.mono.fov, near: v.mono.near, far: v.mono.far, pose: Float64Array.from(v.mono.pose), capture: v.mono.capture },
       pose: {
         _yaw: v._yaw, _pitch: v._pitch, _targetYaw: v._targetYaw, _targetPitch: v._targetPitch,
+        _roll: v._roll, _targetRoll: v._targetRoll,
         _zoom: v._zoom, _targetZoom: v._targetZoom, _depthOffset: v._depthOffset,
         _focusSettled: v._focusSettled, _focusRecentres: v._focusRecentres, _orbitMode: v._orbitMode, _lastInput: v._lastInput,
       },

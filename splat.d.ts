@@ -78,12 +78,11 @@ export interface PlayCanvasSplatViewer {
   readonly app: unknown;
   fitTo(center: number[], extent: number[]): void;
   setPose(pose?: OrbitPose): void;
-  /** `roll` is always 0: this viewer has no roll axis. */
   getPose(opts?: { target?: boolean }): Required<OrbitPose>;
   /**
-   * Move the pose by a delta, eased (SceneViewer.nudgePose's twin): degrees to add, zoom a ratio
-   * to multiply within `zoomOpts` (it becomes the new rest, as a `setPose` zoom does). `roll` is
-   * accepted and ignored. Counts as interaction for the idle turntable and ends an orbit relax.
+   * Move the pose by a delta, eased (SceneViewer.nudgePose's twin): degrees to add (`roll` about
+   * the view axis), zoom a ratio to multiply within `zoomOpts` (it becomes the new rest, as a
+   * `setPose` zoom does). Counts as interaction for the idle turntable and ends an orbit relax.
    */
   nudgePose(delta?: { yaw?: number; pitch?: number; zoom?: number; roll?: number }): void;
   resetPose(): void;
