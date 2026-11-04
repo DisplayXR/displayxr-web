@@ -168,6 +168,9 @@ export function normalizeHello(msg) {
     conv: msg.conv === true,
     // The sender's display name (`name` option, 1.48+), sanitised; null when absent or empty.
     name: sanitizeName(msg.name),
+    // This side can carry a SECOND video track, the content tile (3D app share). Absent (an older
+    // SDK) = false: the offerer then never adds the content transceiver for this pair.
+    content: msg.content === true,
   };
 }
 
@@ -192,7 +195,7 @@ export function sanitizeName(v) {
  * Build the `hello` this side sends. `conv: true` (advertised for a side-by-side sender only)
  * says this side sends `conv` messages.
  */
-export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified, conv, name } = {}) {
+export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified, conv, name, content } = {}) {
   const h = {
     type: 'hello',
     v: WIRE_VERSION,
@@ -207,7 +210,68 @@ export function makeHello({ format, width, height, baselineMm, hfovDeg, rectifie
   if (h.format === 'sbs' && conv) h.conv = true;
   const n = sanitizeName(name);
   if (n) h.name = n;
+  if (content) h.content = true;
   return h;
+}
+
+// ── content (3D app share: a second, per-peer video track) ────────────────────────────────
+
+/** A content stream's size is at most this on either side (a receiver ignores anything bigger). */
+export const CONTENT_MAX_DIM = 16384;
+
+/**
+ * `content {on, format, width, height, convergence: {known, frac}, appName?}`: what this side is
+ * sharing on its content track (docs/call.md § Sharing a 3D app). `on: false` = stopped (only `on`
+ * is sent). `convergence.known` = the frames are display-referred and `frac` IS the disparity of
+ * the sender's display plane as a fraction of the per-eye width (`zeroDisparityShiftFrac`, 0 for
+ * a DisplayXR app in v1): a receiver applies it and never measures. Pure.
+ */
+export function makeContent({ on = true, format, width, height, convergence, appName } = {}) {
+  if (!on) return { type: 'content', on: false };
+  const fmt = CALL_FORMATS.includes(format) ? format : 'sbs';
+  const dim = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= CONTENT_MAX_DIM ? Math.round(v) : 0);
+  const known = !!(convergence && convergence.known);
+  const f = known ? convergence.frac : null;
+  const m = {
+    type: 'content',
+    on: true,
+    format: fmt,
+    width: dim(width),
+    height: dim(height),
+    convergence: known ? { known: true, frac: typeof f === 'number' && Number.isFinite(f) ? Math.max(-CONV_MAX_FRAC, Math.min(CONV_MAX_FRAC, f)) : 0 } : { known: false, frac: null },
+  };
+  const n = sanitizeName(appName);
+  if (n) m.appName = n;
+  return m;
+}
+
+/**
+ * Validate an incoming `content`. Null for anything that is not one. `on` must be `true` to mean
+ * on; a bad `format` reads as `'mono'` (never assume more than was said); sizes outside
+ * 1..16384 read as null; a `convergence.frac` that is not finite or beyond ±CONV_MAX_FRAC makes
+ * the convergence UNKNOWN; `appName` is sanitised (≤ 64 characters). Never throws: this reads data
+ * from another browser.
+ */
+export function normalizeContent(msg) {
+  if (!msg || typeof msg !== 'object' || msg.type !== 'content') return null;
+  if (msg.on !== true) return { type: 'content', on: false, format: null, width: null, height: null, convergence: { known: false, frac: null }, appName: null };
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= CONTENT_MAX_DIM ? v : null);
+  let convergence = { known: false, frac: null };
+  try {
+    const c = msg.convergence;
+    if (c && typeof c === 'object' && c.known === true && typeof c.frac === 'number' && Number.isFinite(c.frac) && Math.abs(c.frac) <= CONV_MAX_FRAC) convergence = { known: true, frac: c.frac };
+  } catch {
+    /* a hostile getter */
+  }
+  return {
+    type: 'content',
+    on: true,
+    format: CALL_FORMATS.includes(msg.format) ? msg.format : 'mono',
+    width: num(msg.width),
+    height: num(msg.height),
+    convergence,
+    appName: sanitizeName(msg.appName),
+  };
 }
 
 /**
