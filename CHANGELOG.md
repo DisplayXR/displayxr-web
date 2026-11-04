@@ -5,6 +5,27 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — app share on browsers without the app-share device patch (`./call`, `./camera`)
+
+Preview tier. A DisplayXR Browser that predates the app-share device patch (1.9.x) lists a running
+app through its 3D-camera device, as `3D Camera (DisplayXR) - <app>` with no `source` in
+`displayxrStereo` — and once the runtime offers more than one source it suffixes the REAL camera the
+same way, so the label cannot tell an app from a camera. On such a browser `camera: 'auto'` could
+open the app and send it as your face, and `listShareableApps()` found nothing.
+
+- **Detection by the opened track**: an app source advertises `baselineMm: 0` and
+  `horizontalFovDeg: 0` (runtime ADR-061 decision 2); a real camera never has baseline 0.
+  `isAppShareDevice()` now accepts that hint as well as `source: 'app'`. The legacy label alone is
+  never enough.
+- **Camera probe**: every probe path checks the opened track; an app is closed again and reported
+  in `skipped` with `reason: 'app-share'`, and probing goes on. Suffixed real cameras open as before.
+- **Discovery**: with no `DisplayXR: <app> (3D)` device listed, `listShareableApps()` returns the
+  `3D Camera (DisplayXR) - <name>` entries as candidates (`ShareableApp.legacy: true`, `appName`
+  from the label). `openAppShare()` verifies the opened track and rejects a real camera with
+  `code: 'not-app-share'` (stopped again); the descriptor's `appName` falls back to the label's name.
+
 ## 1.49.0 — 2026-11-03
 
 ### Added — the content tile: share a running 3D app into a call (`./call`, `./camera`)
