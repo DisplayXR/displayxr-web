@@ -7,6 +7,38 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — the content tile: share a running 3D app into a call (`./call`, `./camera`)
+
+Preview tier. In the DisplayXR Browser a participant can share a running DisplayXR app, and every
+other participant sees it in 3D on their own display (runtime ADR-061, "3D screen share"). What is
+sent is the app's two views before weaving, side by side, on a **second video track** next to the
+camera; each receiver weaves it for its own panel. See [`docs/call.md` § Sharing a 3D app](docs/call.md#sharing-a-3d-app).
+
+- **Discovery** (`./call`): `listShareableApps()`, `watchShareableApps(cb)`, `isAppShareDevice()`,
+  `openAppShare(deviceId)`. The browser lists each app as a `videoinput` labelled
+  `DisplayXR: <app> (3D)` (id `dxr-app:…`); detection takes the label, the id prefix or the track's
+  `displayxrStereo.source === 'app'`, so browsers that do not expose the hint fields yet work, and a
+  missing `zeroDisparityShiftFrac` reads as 0. `openAppShare` is when the runtime asks the user on
+  the sender's machine; a Deny rejects with `code: 'share-denied'`.
+- **Sharing**: `handle.shareContent(stream, descriptor)`, `handle.stopContent({ stopTrack })`,
+  `handle.content`; the `content` event (`{ id | 'self', on, appName }`); `CallPeer.content`;
+  `tile(id, 'content')` (`data-dxr-kind="content"`); `selfContentView` (`<dxr-call self-content-view>`)
+  for a woven preview of your own share.
+- **Display-referred convergence**: the content message carries the disparity of the sender's
+  display plane (`convergence: { known: true, frac }`, 0 for every app today); a receiver applies
+  it directly, never measures the frames, and its depth slider still adds.
+- **Wire**: `hello.content: true` (capability) and a `content` message, both additive (wire version
+  stays 1). The content transceiver is added only when both hellos say `content`, by the pair's
+  offerer with a same-generation re-offer, so an older participant never gets a second video
+  m-line (nor a second camera sender) — they keep seeing your camera, and you get
+  `warning { code: 'content-unsupported' }`. While content is on, the camera sends at 60% of its
+  bitrate; the content track gets the side-by-side budget and holds its resolution.
+- `weave`, `speaking` and `display` events now carry `kind: 'camera' | 'content'`.
+- **`./camera`: a running app is never a camera.** Its label says "3D", so `stereoLabelHint` would
+  have preferred it: no probe path of `openCamera` (and so `camera: 'auto'`) opens an app-share
+  device, `exclude: false` included, and `label:` searches skip them. They are in `skipped` with
+  `reason: 'app-share'` (`CameraSkip.reason`, new).
+
 ### Fixed — the Ultraleap hand tracker is excluded by its bare brand name; the default camera is not opened blind (`./camera`, `./call`)
 
 1.48.0's built-in exclusion list is generic words (hand tracking, tracking camera, eye tracking,
