@@ -13,6 +13,16 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   that never asks never resolves `playcanvas`: `./splat` imports the adapter with a literal dynamic
   `import('./inline3d-splat-playcanvas.js')`, and the adapter imports the engine the same way.
 - **Peer:** `playcanvas >=2.22.3 <3`, optional. Or hand the module in: `{ playcanvas: pc }`.
+  **Pin `playcanvas` to exactly `2.22.3` in your app** (`"playcanvas": "2.22.3"`, no caret): it is
+  the only engine version validated on a panel, and an unpinned install picks up the newest 2.x.
+  On 2.23.3 a page's splats lost their stereo on an Android tablet, and pinning 2.22.3 restored it;
+  the cause is not isolated yet. (2.23 fixes the side-by-side footprint upstream, so the SDK leaves
+  that chunk alone there; older SDKs logged a false "footprint fix SKIPPED … half height"
+  warning on 2.23.) esbuild: `external: ['node:worker_threads']` — the engine's sort and draco
+  workers carry a `require("node:worker_threads")` fallback that a browser never reaches.
+- **Give the splat canvas an explicit size.** A canvas positioned with `left`/`right`/`top`/`bottom`
+  and `width: auto` keeps its 300×150 intrinsic size, so the splat renders tiny in a corner. Set
+  `width` and `height` (e.g. `100%`, or the stage rect) in CSS.
 - **Formats:** `.sog` (bytes or URL), `.ply`, and a Streamed SOG by URL: its `lod-meta.json`, or
   the directory holding it (a URL ending in `/`). Bytes of a `lod-meta.json` throw at call time
   (a Streamed SOG is a directory of relatively named chunks; §Streamed SOG). `.spz`,
@@ -1314,6 +1324,11 @@ immutable`). The chunk paths are relative, so any prefix works. A rebuild goes t
 never over the old one: a viewer mid-stream would otherwise mix levels from two builds. Cross-origin
 hosting needs CORS on every chunk (`Access-Control-Allow-Origin`). The public Trogir scene below
 serves `*`.
+
+A Streamed SOG also gets past response-size caps. Behind a serverless route handler (Vercel caps one
+response at 4.5 MB) an 11 MB flat `.sog` fails, while a Streamed SOG built with chunks of 1.6 MB or
+less loads, and paints its first level sooner. The chunk URLs carry no cache key, so the versioned
+folder is what invalidates them.
 
 ### Measured
 

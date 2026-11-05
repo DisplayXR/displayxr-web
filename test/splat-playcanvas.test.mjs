@@ -174,6 +174,26 @@ test('footprint patch declines (ok:false, source untouched) when the anchor move
   assert.equal(r.src, moved);
 });
 
+test('footprint patch: the engine\'s own per-axis focal (PlayCanvas ≥ 2.23) is fixed already — ok, native, untouched', () => {
+  const corner223 = [
+    '#else',
+    '\t\tvec2 focal = viewport_size.xy * vec2(center.projMat00, center.projMat11);',
+    '\t\tvec3 vp = camera_params.w == 1.0 ? vec3(0.0, 0.0, 1.0) : v;',
+    '\t\tvec2 J1 = focal / vp.z;',
+    '\t\tvec2 J2 = -J1 / vp.z * vp.xy;',
+    '\t\tmat3 J = mat3(',
+    '\t\t\tJ1.x, 0.0, J2.x,',
+    '\t\t\t0.0, J1.y, J2.y,',
+    '\t\t\t0.0, 0.0, 0.0',
+    '\t\t);',
+    '#endif',
+  ].join('\n');
+  const r = patchGsplatFootprint(corner223);
+  assert.equal(r.ok, true);
+  assert.equal(r.native, true);
+  assert.equal(r.src, corner223);
+});
+
 test('quad-extent patch caps clipCorner at k, scaling offset AND uv together', () => {
   const r = patchPlayCanvasQuadExtent(COMMON_2_22_3, Math.sqrt(6) / Math.sqrt(8));
   assert.equal(r.ok, true);

@@ -159,7 +159,16 @@ one region are **refused as ambiguous**, and neither is drawn from. Cut between 
 two pictures, blend them **inside one canvas**
 ([motion, §3 Crossfade](authoring-motion-and-effects.md#crossfade)).
 
-Many woven canvases in one frame (a gallery wall) are fine. Each one joins by its own identity.
+Many woven canvases in one frame (a gallery wall) are fine. Each one joins by its own identity,
+**as long as no two of them overlap.**
+
+**Never leave two woven canvases overlapping.** This is the static case of the crossfade: a splat
+canvas laid over a full-page scene canvas, both live. The Android DisplayXR Browser logs
+`[DisplayXR] inline-3D OVERLAPPING tiles …` and an `inline-3D recovery draw`; on a
+tablet the top canvas head-tracked but showed no stereo, and adding a second splat crashed the tab.
+The same page looked fine on a Windows panel, so a desktop check does not clear it. Hide the canvas
+underneath with `display: none` while the other one shows, and restore it when that one goes, so
+only one woven tile covers any point of the screen.
 
 ### 7. No CSS effects on a woven canvas or on any of its ancestors
 
