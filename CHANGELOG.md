@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.50.0 — 2026-11-04
+
 ### Fixed — `./camera`, `./call`: half-width side-by-side webcams keep their aspect ratio
 
 A USB stereo webcam that sends 3840x2160 half-SBS came through as a 3840x1080 centre crop: each eye
