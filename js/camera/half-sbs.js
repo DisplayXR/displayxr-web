@@ -61,7 +61,9 @@ export async function unsqueezeHalfSbs(source) {
  */
 export function unsqueezeTrack(source, srcW, srcH, frameRate) {
   if (typeof MediaStreamTrackProcessor !== 'function' || typeof document === 'undefined') return null;
-  const { width, height } = unsqueezedSize(srcW, srcH);
+  let { width, height } = unsqueezedSize(srcW, srcH);
+  let srcSeenW = srcW;
+  let srcSeenH = srcH;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -83,6 +85,15 @@ export function unsqueezeTrack(source, srcW, srcH, frameRate) {
     for (;;) {
       const { value: frame, done } = await reader.read();
       if (done) break;
+      // Follow the frames, not the settings: a captured tab's frames are not the size its track
+      // reports, and it changes when the tab resizes.
+      if (frame.displayWidth > 0 && frame.displayHeight > 0 && (frame.displayWidth !== srcSeenW || frame.displayHeight !== srcSeenH)) {
+        srcSeenW = frame.displayWidth;
+        srcSeenH = frame.displayHeight;
+        const next = unsqueezedSize(srcSeenW, srcSeenH);
+        canvas.width = width = next.width;
+        canvas.height = height = next.height;
+      }
       ctx.drawImage(frame, 0, 0, width, height);
       frame.close();
     }
