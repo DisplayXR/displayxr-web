@@ -522,6 +522,10 @@ export interface TileHandle {
    * its layer, and a window that never set a rig at all.
    *
    * Rejects with an `Error` when no such mode is listed, otherwise as `requestRenderingMode` does.
+   * A browser that cannot forward mode requests (the Android DisplayXR Browser today)
+   * rejects with a `NotSupportedError` even though its modes read
+   * `isRequestable: true`. Try, then fall back to easing your rig's `ipdFactor`/`parallaxFactor`
+   * to 0 — docs/woven-canvas-rules.md, "A 2D/3D toggle".
    */
   setStereoEnabled(enabled: boolean): Promise<boolean>;
   /** Listen for one display event, re-emitted on this handle. Returns an unsubscribe function. */

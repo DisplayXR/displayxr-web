@@ -362,6 +362,26 @@ like a runtime or browser bug on the panel and turned out to be the page.
   `wall.hardwareDisplayState === '2d'`. The SDK's eased mode switch ramps disparity out before the
   panel flips and in only after it reports 3D. The mode is display-wide: every woven tile goes flat
   while it is in force.
+- **A 2D/3D toggle: try the mode switch, then fall back.** Not every browser can forward a mode
+  request yet. The DisplayXR Browser for Android rejects `setStereoEnabled` /
+  `requestRenderingMode` with a `NotSupportedError` while still listing its modes as
+  `isRequestable: true`. You can't detect this in advance:
+  `isRequestable` overstates it, and the Android browser sends a desktop user agent. So call
+  `setStereoEnabled(false)` and, if it rejects with a `NotSupportedError`, flatten the image
+  yourself: ease your rig's `ipdFactor` and `parallaxFactor` to 0 over ~300 ms (the SDK's own
+  ramp length), and back to your values for 3D. Both views become identical and the image reads
+  flat, though the panel's lens stays on, so it is a softer 2D than the real 1-view mode. Keep
+  the button visible either way; only a different rejection (no 1-view mode listed at all) is a
+  reason to hide it.
+  ```js
+  async function setFlat(flat) {
+    try { await wall.setStereoEnabled(!flat); }
+    catch (e) {
+      if (e.name !== 'NotSupportedError') throw e;
+      easeRigFactors(flat ? 0 : 1, 300);   // your rig: ipdFactor / parallaxFactor × k
+    }
+  }
+  ```
 - **Keep the frames after `setSource` resolves free of per-splat CPU work.** A slideshow ran 105
   `pick()` calls (24 to plan an animation path, 81 for a diagnostic depth grid) right after every
   swap. On the Windows panel that was a 1.3 s main-thread stall at the end of every transition,
