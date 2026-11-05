@@ -7,6 +7,13 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — `./call`: `openTabShare()`, share a browser tab in 3D
+
+Opens the browser's tab picker and returns a track for `shareContent`. In a DisplayXR Browser with
+stereo tab capture, a picked tab comes back as a true side-by-side track, so receivers need nothing
+new; a window, a screen or any other browser comes back flat. Needs `MediaStreamTrackProcessor` for
+the stereo path.
+
 ## 1.50.0 — 2026-11-04
 
 ### Fixed — `./camera`, `./call`: half-width side-by-side webcams keep their aspect ratio

@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { FakeTrack, FakeStream } from './call-dom.mjs';
+import { openTabShare, isTabShareHint } from '../js/call/share.js';
 import { isAppShareDevice, isAppShareHint, legacyAppCandidate, appNameFromLabel, listShareableApps, watchShareableApps, openAppShare, describeAppShare, APP_SHARE_ID_PREFIX } from '../js/call/share.js';
 
 const flush = async () => {
@@ -188,4 +189,67 @@ test('openAppShare on a legacy candidate: a baseline-0 track is the app (name fr
   // Even under a dxr-app: id, a track whose hint is a real camera is not an app.
   const odd = appTrack({ width: 2560, height: 720, displayxrStereo: CAM_HINT }, 'whatever');
   await assert.rejects(openAppShare('dxr-app:x', { mediaDevices: media([], { onOpen: () => new FakeStream([odd]) }) }), (e) => e.code === 'not-app-share');
+});
+
+function displayMedia(settings, seen = {}) {
+  return {
+    getDisplayMedia: async (c) => {
+      seen.constraints = c;
+      const t = new FakeTrack('video');
+      t.getSettings = () => settings;
+      return new FakeStream([t]);
+    },
+  };
+}
+const HALF = { layout: 'side-by-side-half', source: 'tab', rectified: true, zeroDisparityShiftFrac: 0 };
+
+test('isTabShareHint: only a half-width tab capture', () => {
+  assert.equal(isTabShareHint(HALF), true);
+  assert.equal(isTabShareHint({ layout: 'side-by-side', source: 'tab' }), false);
+  assert.equal(isTabShareHint({ layout: 'side-by-side-half', source: 'app' }), false);
+  assert.equal(isTabShareHint(undefined), false);
+});
+
+test('openTabShare: asks for stereo; a tab comes back true side-by-side at the converted size', async () => {
+  const seen = {};
+  const conv = new FakeTrack('video');
+  let got;
+  const unsqueeze = (src, w, h, fps) => {
+    got = [w, h, fps];
+    return { stream: new FakeStream([conv]), track: conv, width: 2560, height: 600 };
+  };
+  const r = await openTabShare({ mediaDevices: displayMedia({ width: 2560, height: 1200, frameRate: 30, displayxrStereo: HALF }, seen), unsqueeze });
+  assert.equal(seen.constraints.displayxrStereo, true);
+  assert.deepEqual(got, [2560, 1200, 30]);
+  assert.equal(r.stereo, true);
+  assert.equal(r.track, conv);
+  assert.deepEqual([r.descriptor.format, r.descriptor.width, r.descriptor.height], ['sbs', 2560, 600]);
+  assert.deepEqual(r.descriptor.convergence, { known: true, frac: 0 });
+});
+
+test('openTabShare: no hint (a window, a screen, another browser) stays flat', async () => {
+  const r = await openTabShare({ mediaDevices: displayMedia({ width: 1920, height: 1080 }), unsqueeze: () => assert.fail('no conversion') });
+  assert.equal(r.stereo, false);
+  assert.deepEqual([r.descriptor.format, r.descriptor.width, r.descriptor.height], ['mono', 1920, 1080]);
+});
+
+test('openTabShare: a stereo frame that cannot be converted is refused and its track stopped', async () => {
+  const seen = [];
+  const md = {
+    getDisplayMedia: async () => {
+      const t = new FakeTrack('video');
+      t.getSettings = () => ({ width: 2560, height: 1200, displayxrStereo: HALF });
+      seen.push(t);
+      return new FakeStream([t]);
+    },
+  };
+  await assert.rejects(openTabShare({ mediaDevices: md, unsqueeze: () => null }), (e) => e.code === 'share-failed');
+  assert.equal(seen[0].readyState, 'ended');
+});
+
+test('openTabShare: cancel is share-denied, other failures and no API are share-failed', async () => {
+  const fail = (name) => ({ getDisplayMedia: async () => { throw Object.assign(new Error('x'), { name }); } });
+  await assert.rejects(openTabShare({ mediaDevices: fail('NotAllowedError') }), (e) => e.code === 'share-denied');
+  await assert.rejects(openTabShare({ mediaDevices: fail('NotReadableError') }), (e) => e.code === 'share-failed');
+  await assert.rejects(openTabShare({ mediaDevices: {} }), (e) => e.code === 'share-failed');
 });

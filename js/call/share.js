@@ -24,6 +24,7 @@
 
 import { isAppShareDevice, isAppShareHint, legacyAppCandidate, appNameFromLabel, APP_SHARE_ID_PREFIX, APP_SHARE_LABEL_RE, APP_SHARE_LEGACY_LABEL_RE } from '../camera/app-share.js';
 import { sanitizeName, CONV_MAX_FRAC } from './wire.js';
+import { unsqueezeTrack } from '../camera/half-sbs.js';
 
 export { isAppShareDevice, isAppShareHint, legacyAppCandidate, appNameFromLabel, APP_SHARE_ID_PREFIX, APP_SHARE_LABEL_RE, APP_SHARE_LEGACY_LABEL_RE };
 
@@ -176,4 +177,93 @@ export async function openAppShare(deviceId, o = {}) {
     /* older engines */
   }
   return { stream, track, descriptor: describeAppShare(track) };
+}
+
+/** The hint layout of a stereo tab capture: each eye squeezed to half the frame's width. */
+export const TAB_SHARE_LAYOUT = 'side-by-side-half';
+
+/** Does this `displayxrStereo` hint describe a stereo tab capture? Pure. */
+export function isTabShareHint(hint) {
+  return !!hint && typeof hint === 'object' && hint.source === 'tab' && hint.layout === TAB_SHARE_LAYOUT;
+}
+
+/**
+ * Let the user pick a browser tab to share, in 3D where the browser can. The browser's own picker
+ * is the consent. On a browser that captures tabs in stereo, a picked tab comes back as a true
+ * side-by-side track (`format: 'sbs'`), the same shape an app share has, so receivers need nothing
+ * new. A window or a screen, or a browser without stereo capture, comes back flat (`format: 'mono'`).
+ * The track ends when the sharing stops or the tab closes. Stop it yourself when you stop sharing.
+ *
+ * Cancelling the picker rejects with `code: 'share-denied'`; anything else with `'share-failed'`.
+ *
+ * @param {{ width?: number, frameRate?: number, mediaDevices?: MediaDevices, unsqueeze?: typeof unsqueezeTrack }} [o]
+ */
+export async function openTabShare(o = {}) {
+  const md = o.mediaDevices || (typeof navigator !== 'undefined' ? navigator.mediaDevices : null);
+  if (!md || typeof md.getDisplayMedia !== 'function') {
+    throw Object.assign(new Error('this browser cannot share a tab'), { code: 'share-failed' });
+  }
+  const frameRate = o.frameRate > 0 ? o.frameRate : SHARE_CONSTRAINTS.frameRate;
+  let stream;
+  try {
+    stream = await md.getDisplayMedia({
+      video: { width: { ideal: o.width > 0 ? o.width : SHARE_CONSTRAINTS.width }, frameRate: { ideal: frameRate } },
+      audio: false,
+      displayxrStereo: true,
+    });
+  } catch (err) {
+    const denied = err && (err.name === 'NotAllowedError' || err.name === 'AbortError');
+    throw Object.assign(new Error(denied ? 'the share was declined' : 'the tab could not be shared'), {
+      code: denied ? 'share-denied' : 'share-failed',
+      cause: err,
+    });
+  }
+  const source = stream.getVideoTracks()[0];
+  const st = (source && typeof source.getSettings === 'function' && source.getSettings()) || {};
+  const hint = st.displayxrStereo;
+  const flat = {
+    stream,
+    track: source,
+    stereo: false,
+    descriptor: {
+      kind: 'content',
+      format: 'mono',
+      width: st.width > 0 ? st.width : 0,
+      height: st.height > 0 ? st.height : 0,
+      convergence: { known: true, frac: 0 },
+      appName: null,
+    },
+  };
+  let out = flat;
+  if (isTabShareHint(hint)) {
+    const pair = (o.unsqueeze || unsqueezeTrack)(source, st.width, st.height, st.frameRate > 0 ? st.frameRate : frameRate);
+    if (!pair) {
+      // Sent as it is, every receiver would see two squeezed halves: refuse instead.
+      stream.getTracks().forEach((t) => t.stop());
+      throw Object.assign(new Error('this browser cannot convert a stereo tab capture'), { code: 'share-failed' });
+    }
+    const z = hint.zeroDisparityShiftFrac;
+    out = {
+      stream: pair.stream,
+      track: pair.track,
+      stereo: true,
+      descriptor: {
+        kind: 'content',
+        format: 'sbs',
+        width: pair.width,
+        height: pair.height,
+        convergence: {
+          known: true,
+          frac: typeof z === 'number' && Number.isFinite(z) ? Math.max(-CONV_MAX_FRAC, Math.min(CONV_MAX_FRAC, z)) : 0,
+        },
+        appName: null,
+      },
+    };
+  }
+  try {
+    out.track.contentHint = 'detail'; // text and resolution over frame rate
+  } catch {
+    /* older engines */
+  }
+  return out;
 }
