@@ -420,6 +420,22 @@ export function watchShareableApps(cb: (apps: ShareableApp[]) => void, opts?: { 
  */
 export function openAppShare(deviceId: string, opts?: { width?: number; height?: number; frameRate?: number; mediaDevices?: MediaDevices }): Promise<AppShare>;
 
+/** An opened tab share (`openTabShare`): pass `stream` (+ `descriptor`) to `shareContent`. The track is yours to stop. */
+export interface TabShare {
+  stream: MediaStream;
+  track: MediaStreamTrack;
+  /** true: a side-by-side track. false: the user picked a window or screen, or the browser captures tabs flat. */
+  stereo: boolean;
+  descriptor: { kind: 'content'; format: CallFormat; width: number; height: number; convergence: { known: true; frac: number }; appName: null };
+}
+
+/**
+ * Let the user pick a browser tab to share, in 3D where the browser can (the browser's picker is
+ * the consent). Comes back flat (`stereo: false`) for a window, a screen, or a browser without stereo
+ * tab capture. Cancelling rejects with `code: 'share-denied'`, anything else with `'share-failed'`.
+ */
+export function openTabShare(opts?: { width?: number; frameRate?: number; mediaDevices?: MediaDevices }): Promise<TabShare>;
+
 /**
  * `error` codes — fatal for a feature, never for the widget. `'camera-busy'` (held by another
  * app: audio-only until `retryCamera()`), `'no-camera'`, `'permission-denied'`, `'unreachable'`
