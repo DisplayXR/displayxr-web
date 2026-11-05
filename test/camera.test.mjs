@@ -17,6 +17,7 @@ import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
 import { mirrorSwapOps, mirrorSwapPixels, eyeCropRect, looksSbs } from '../js/camera/geometry.js';
 import { buildStereoXmp, parseStereoXmp, jpegWithXmp, readJpegXmp, readJpegStereoMeta, webmWithTags, readWebmTags, readWebmStereoMeta, stereoTagEntries, buildWebmTags, normalizeStereoMeta } from '../js/camera/metadata.js';
 import { noCameraCode, isDeniedError, isBusyError } from '../js/camera/capture.js';
+import { isHalfSbsCamera, unsqueezedSize, unsqueezeHalfSbs } from '../js/camera/half-sbs.js';
 
 installCallDom();
 const { openCamera, addCameraView, isStereoCamera, suggestedName, CAMERA_SDK, readJpegStereoMeta: fromEntry } = await import('../js/inline3d-camera.js');
@@ -700,4 +701,26 @@ test('openCamera with labels visible, default delivers 0x0 (camera HAL restartin
     globalThis.window.XRDisplayLayer = hadLayer;
     if (!hadWindow) delete globalThis.window;
   }
+});
+
+// ── half-SBS webcams: read natively, eyes un-squeezed ────────────────────────────────
+
+test('half-SBS: known by USB id in the label, never by shape', () => {
+  assert.equal(isHalfSbsCamera('Stereo webcam (0733:011a)'), true);
+  assert.equal(isHalfSbsCamera('STEREO WEBCAM (0733:011A)'), true);
+  assert.equal(isHalfSbsCamera('4K webcam (046d:085e)'), false);
+  assert.equal(isHalfSbsCamera(''), false);
+});
+
+test('half-SBS: a 3840x2160 frame becomes 2560x720, two square-pixel 16:9 eyes', () => {
+  assert.deepEqual(unsqueezedSize(3840, 2160), { width: 2560, height: 720 });
+  // Never upscaled: a smaller native mode keeps its own eye width.
+  assert.deepEqual(unsqueezedSize(640, 360), { width: 1280, height: 360 });
+});
+
+test('half-SBS: without MediaStreamTrackProcessor the source is left as it opened', async () => {
+  let asked = 0;
+  const source = { applyConstraints: async () => asked++, getSettings: () => ({ width: 3840, height: 1080 }) };
+  assert.equal(await unsqueezeHalfSbs(source), null);
+  assert.equal(asked, 0);
 });

@@ -7,6 +7,13 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — `./camera`, `./call`: half-width side-by-side webcams keep their aspect ratio
+
+A USB stereo webcam that sends 3840x2160 half-SBS came through as a 3840x1080 centre crop: each eye
+2x too tall, with half the vertical view. Such a camera (listed by USB id, since its shape matches
+a 4K webcam's) is now read in its native mode and sent as 2560x720 with square-pixel eyes. Needs
+`MediaStreamTrackProcessor`; without it the camera opens as before. `prefer: 'mono'` stays raw.
+
 ### Added — `@displayxr/inline3d/hands`: tracked hands, and pinch controls for every viewer (`./hands`, `./viewer`, `./model`, `./splat`)
 
 Preview tier. The DisplayXR Browser 1.8.0+ (Windows, with a hand provider such as an Ultraleap

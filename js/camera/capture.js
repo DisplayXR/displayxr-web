@@ -41,6 +41,7 @@
 // `(stream, info) => MediaStream | Promise<MediaStream>`, returning a rectified SBS stream.
 
 import { looksSbs } from './geometry.js';
+import { isHalfSbsCamera, unsqueezeHalfSbs } from './half-sbs.js';
 import { isAppShareDevice, isAppShareHint } from './app-share.js';
 
 const MONO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
@@ -213,6 +214,14 @@ export async function openCamera(want = 'auto', o = {}) {
     // or — on a browser without the app-share device patch, which lists the app as a "3D Camera
     // (DisplayXR) - <app>" — baseline 0 and FOV 0, which no real camera advertises. Every probe
     // path checks this on the OPENED track (rejectOpened), since the label cannot tell them apart.
+    // A half-SBS webcam: send true side-by-side eyes, whichever path opened it. 'mono' stays raw.
+    if (want !== 'mono' && isHalfSbsCamera(t.label)) {
+      const pair = await unsqueezeHalfSbs(t);
+      if (pair) {
+        log('camera-half-sbs', { label: t.label, width: pair.width, height: pair.height });
+        return { ...pair, deviceId: st.deviceId || null, label: t.label, stereo: null, appShare: false };
+      }
+    }
     const appShare = isAppShareDevice({ label: t.label || '', deviceId: st.deviceId || '' }) || isAppShareHint(st.displayxrStereo);
     return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '', stereo, appShare };
   };
