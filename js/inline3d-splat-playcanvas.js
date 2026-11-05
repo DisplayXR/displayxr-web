@@ -587,14 +587,22 @@ export function capturePose(rest, flipY) {
  * (epic #36, P4d); until then the anchors are regexes (the npm build re-indents chunks with
  * tabs) and a miss warns once and renders unpatched rather than failing.
  *
+ * PlayCanvas 2.23 fixed it upstream: its perspective branch takes the focal length per axis
+ * (`vec2 focal = viewport_size.xy * vec2(center.projMat00, center.projMat11)`). That chunk is
+ * returned untouched with `native: true` and counts as fixed — it is not a miss, and must not
+ * warn that splats will draw at half height.
+ *
  * The rewritten lines are adapted from PlayCanvas engine src/scene/shader-lib/glsl/chunks/gsplat/vert/
  * gsplatCorner.js (the `gsplatCornerVS` chunk) @ v2.22.3, MIT (THIRD_PARTY_NOTICES.md).
  *
- * @returns {{src:string, ok:boolean}}
+ * @returns {{src:string, ok:boolean, native?:boolean}}
  */
 export function patchGsplatFootprint(src) {
   if (typeof src !== 'string') return { src, ok: false };
   if (src.includes('dxrFocalY')) return { src, ok: true };
+  if (/vec2\s+focal\s*=\s*viewport_size\.xy\s*\*\s*vec2\s*\(\s*center\.projMat00\s*,\s*center\.projMat11\s*\)/.test(src)) {
+    return { src, ok: true, native: true };
+  }
   const r1 = /vec2\s+J2\s*=\s*-J1\s*\/\s*vp\.z\s*\*\s*vp\.xy\s*;/;
   const r2 = /0\.0\s*,\s*J1\s*,\s*J2\.y\s*,/;
   if (!r1.test(src) || !r2.test(src)) return { src, ok: false };
@@ -1542,7 +1550,7 @@ export class PlayCanvasSplatViewer {
     // handle.engine.root on a model tile gets the engine's stock footprint (documented).
     const chunks = patchSplats ? pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL) : null;
     const corner = chunks ? patchGsplatFootprint(chunks.get('gsplatCornerVS')) : { ok: false, skipped: true };
-    if (corner.ok) chunks.set('gsplatCornerVS', corner.src);
+    if (corner.ok && !corner.native) chunks.set('gsplatCornerVS', corner.src);
     else if (!corner.skipped && !warnedFootprint) {
       warnedFootprint = true;
       console.warn(
