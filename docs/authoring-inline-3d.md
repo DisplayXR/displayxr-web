@@ -463,6 +463,12 @@ Pop-out tolerates about half the depth that recession does, and moving objects l
 ones. The viewers' default fit puts the front of a typical subject near the stricter front limit,
 which is why rule 1 there is "keep the placement", not "come further out".
 
+These are **limits, not targets.** That recession is tolerated better than pop-out does not make
+"behind the glass" a default. The best-looking placement is the subject centred on the glass with
+the least disparity it needs ([making-3d-look-right.md](making-3d-look-right.md) rule 1). Stereo
+cinema agrees: stereographers put the screen plane through the subject, so a part of it sits in
+front and most of it just behind, not set back from the glass as a whole.
+
 **The same content on different devices.** On a display rig at real proportions, depth in tile
 heights is `d · H` metres (`H` = the canvas's physical height), so the vergence load goes roughly
 as `d · H / V²`. Devices are sized for their distance, which keeps it in a narrow band, but close
