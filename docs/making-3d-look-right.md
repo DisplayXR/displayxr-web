@@ -3,15 +3,22 @@
 The SDK's defaults already give comfortable, real-looking 3D. These rules cover the mistakes seen
 on real panels; everything else about how your scene looks is your call.
 
-1. **Objects: keep the viewer's placement, and frame the first view.** `addModel`, `addSplat` and
-   `SceneViewer` scale the subject to its real proportions and centre it on the glass. That gives
-   it the smallest spread of disparity it can have. Don't push it back, shrink it or flatten it to
-   make it "more comfortable". The first view shows the whole subject, centred: a globe or a tank
+1. **The default depth is the glass. Keep the viewer's placement, and frame the first view.**
+   Centre your subject on z = 0 so it straddles the screen: a little in front, most of it just
+   behind, with as little total disparity as its shape allows. `addModel`, `addSplat` and
+   `SceneViewer` do this for you: they scale the subject to its real proportions and centre it on
+   the glass. A scene you build yourself follows the same rule. Don't push it back, shrink it or
+   flatten it to make it "more comfortable": recession costs disparity and crosstalk like pop-out
+   does, and only buys softness. Recede content only where it must clear something flat in front
+   of it (an HTML label over the scene), and only that part; HTML beside the scene needs no room.
+   The first view shows the whole subject, centred: a globe or a tank
    that starts low and cut off by the frame reads as broken. If the user can zoom, cap zoom-in
    before the subject comes uncomfortably far out, and leave room to zoom out.
-2. **Lay flat arrangements back into depth.** Orbits, a map, a board game: tilt the plane they lie
-   in back from the glass so it recedes, rather than looking straight down on it, where it reads
-   as flat circles. A chart, a figure or a building starts upright.
+2. **Tilt flat arrangements; don't push them back.** Orbits, a map, a board game: tilt the plane
+   they lie in about an axis through the glass (about 25–40° from face-on is plenty), so its near
+   edge comes slightly forward, its far edge recedes and its centre stays on the glass. Only the
+   exactly face-on view reads as flat circles; a fairly top-down view is fine. A chart, a figure
+   or a building starts upright.
 3. **Moving things: keep the forward swing small.** Objects that orbit, fly or swing toward the
    viewer are where pop-out becomes uncomfortable. Keep their paths mostly at or behind the glass,
    and fade them out as they come close to the viewer. A follow camera keeps its subject in frame
