@@ -49,6 +49,7 @@ function normalizeCallOptions [deprecated]: (opts?:Partial<CallOptions>):Record<
 function normalizeHello [deprecated]: (msg:unknown):{type:'hello';v:number;format:CallFormat;width:number|null;height:number|null;baselineMm:number|null;hfovDeg:number|null;rectified:boolean;sdk:string|null}|null
 function normalizeMono3D [deprecated]: (v:unknown):'auto'|'off'|LiftFunction
 function openAppShare: (deviceId:string,opts?:{width?:number;height?:number;frameRate?:number;mediaDevices?:MediaDevices}):Promise<AppShare>
+function openTabShare: (opts?:{width?:number;frameRate?:number;mediaDevices?:MediaDevices}):Promise<TabShare>
 function parseInviteLink: (link:string|{hash?:string;href?:string}|null|undefined):string|null
 function preferVideoCodecs [deprecated]: (sdp:string,order?:readonly string[]):string
 function qrEncode [deprecated]: (text:string,opts?:{ecl?:'L'|'M';mask?:number}):{version:number;size:number;mask:number;modules:boolean[][]}
@@ -216,6 +217,11 @@ interface SignalingTurnStatus
   SignalingTurnStatus.reason?: reason?:'unconfigured'|'budget'|'cap'|'rate'|'mint-failed'
   SignalingTurnStatus.status: status:'ok'|'degraded'|'off'
   SignalingTurnStatus.ttl?: ttl?:number
+interface TabShare
+  TabShare.descriptor: descriptor:{kind:'content';format:CallFormat;width:number;height:number;convergence:{known:true;frac:number};appName:null}
+  TabShare.stereo: stereo:boolean
+  TabShare.stream: stream:MediaStream
+  TabShare.track: track:MediaStreamTrack
 type AppShareErrorCode: 'share-denied'|'share-failed'|'not-app-share'
 type CallAccent: 'azure'|'violet'|'magenta'|'sunset'|'amber'|'lime'|'mint'|'ice'
 type CallDisplay: '3D'|'2D→3D'|'2D'

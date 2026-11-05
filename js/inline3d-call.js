@@ -116,7 +116,7 @@ export { DxrCallElement, defineCallElement, attrsToOpts, CALL_EVENT_PREFIX } fro
 export { dxrSignaling, DXR_SIGNAL_DEFAULT } from './call/signaling.js';
 export { parseInviteLink };
 // 3D screen share (runtime ADR-061): find and open a running DisplayXR app as content.
-export { isAppShareDevice, listShareableApps, watchShareableApps, openAppShare } from './call/share.js';
+export { isAppShareDevice, listShareableApps, watchShareableApps, openAppShare, openTabShare } from './call/share.js';
 
 const TAG = '[inline3d/call]';
 const HELLO_WAIT_MS = 2000;

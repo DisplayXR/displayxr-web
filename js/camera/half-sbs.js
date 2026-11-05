@@ -45,14 +45,29 @@ export async function unsqueezeHalfSbs(source) {
   }
   const st = source.getSettings();
   if (!(st.width > 0) || !(st.height > 0) || Math.abs(st.width / st.height - 16 / 9) > 0.01) return null;
+  return unsqueezeTrack(source, st.width, st.height, st.frameRate);
+}
 
-  const { width, height } = unsqueezedSize(st.width, st.height);
+/**
+ * Redraw a half-width side-by-side `source` of `srcW`x`srcH` into a true side-by-side track, or null
+ * when the engine cannot. Each eye keeps the frame's aspect. Stopping the returned track stops the
+ * source; the source ending ends the returned track.
+ *
+ * @param {MediaStreamTrack} source
+ * @param {number} srcW
+ * @param {number} srcH
+ * @param {number} [frameRate]
+ * @returns {{stream: MediaStream, track: MediaStreamTrack, width: number, height: number}|null}
+ */
+export function unsqueezeTrack(source, srcW, srcH, frameRate) {
+  if (typeof MediaStreamTrackProcessor !== 'function' || typeof document === 'undefined') return null;
+  const { width, height } = unsqueezedSize(srcW, srcH);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) return null;
-  const stream = canvas.captureStream(st.frameRate > 0 ? st.frameRate : 30);
+  const stream = canvas.captureStream(frameRate > 0 ? frameRate : 30);
   const track = stream.getVideoTracks()[0];
   const reader = new MediaStreamTrackProcessor({ track: source }).readable.getReader();
 
