@@ -26,7 +26,7 @@
     rig: o.rig || 'camera',
     convScale: typeof o.convScale === 'number' ? o.convScale : 1,
     dev: !!o.dev,
-    engines: Object.freeze({ three: true, playcanvas: true, ...(o.engines || {}) }),
+    engines: Object.freeze({ three: true, playcanvas: true, babylon: true, ...(o.engines || {}) }),
     test: o.test || null,
   });
   let core = null;

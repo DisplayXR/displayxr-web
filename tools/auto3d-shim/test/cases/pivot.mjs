@@ -120,5 +120,8 @@ export default function cases({ P, NEW }) {
     mk('pivot-spark-room', 'display rig pivot: Spark open world (fixed 2 m), toggle + first-person turn', 'three-spark.html?room=1', { motion: 'yaw', step: (5 * Math.PI) / 180, ready: 'window.__splatReady' }),
     mk('pivot-pc-orbit', 'display rig pivot: PlayCanvas CameraControls page, toggle', 'pc-orbit.html', {}),
     mk('pivot-pc-mesh', 'display rig pivot: PlayCanvas page, toggle + first-person turn', 'pc-mesh.html', { motion: 'yaw', step: 5 }),
+    // Babylon.js, left-handed: the eyes are composed as camera world x H x pose x H (babylon-adapter.js).
+    mk('pivot-bjs-orbit', 'display rig pivot: Babylon.js ArcRotateCamera page, toggle + orbit about the target', 'bjs-scene.html?cam=arc&freeze=1000000', { motion: 'orbit', step: (5 * Math.PI) / 180 }),
+    mk('pivot-bjs-yaw', 'display rig pivot: Babylon.js FreeCamera page, toggle + first-person turn', 'bjs-scene.html?cam=free&freeze=1000000', { motion: 'yaw', step: (5 * Math.PI) / 180 }),
   ];
 }
