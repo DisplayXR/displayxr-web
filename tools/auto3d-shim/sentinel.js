@@ -44,9 +44,15 @@
 //                   trap is removed once an app is found, on a '2d' context, or 10 s after load. The
 //                   core loads only when an app is actually found.
 //       Babylon.js  the ThinEngine constructor's `this._gl = canvas.getContext('webgl2', …)` (WebGPUEngine:
-//                   `this._context = canvas.getContext('webgpu')` in initAsync): a WebGL / WebGPU getContext
-//                   arms a one-shot setter for `_gl` (`_context`) on Object.prototype for the rest of that
-//                   task (removed at the next microtask checkpoint: two engines made in one task are both seen); the
+//                   `this._context = canvas.getContext('webgpu')` in initAsync): a getContext that LOOKS LIKE
+//                   Babylon's arms a one-shot setter for `_gl` (`_context`) on Object.prototype for the rest of
+//                   that task (removed at the next microtask checkpoint: two engines made in one task are both
+//                   seen). Looks like Babylon's: WebGL, the context attributes are the engine's own options
+//                   object, to which AbstractEngine's constructor has added `lockstepMaxSteps` and `timeStep`
+//                   (7.x - 9.x); WebGPU, the call comes from WebGPUEngine's `_initializeContextAndSwapChain`
+//                   (the stack, read only on a webgpu getContext; the method name survives minification). Any
+//                   other getContext arms nothing, so on a page without Babylon `'_gl' in anyObject` /
+//                   `'_context' in anyObject` never changes (David, review of #252). The
 //                   engine's assignment lands on it, the setter re-creates the property as an ordinary own
 //                   property and, when its receiver is a Babylon engine (runRenderLoop, scenes, …), hands
 //                   it over: no global needed (ESM bundles), the core loads INSIDE the constructor, before
@@ -84,8 +90,8 @@
 //   4. an own, non-enumerable `id` accessor on armed <canvas> elements (none on a page without
 //      canvases), plus, for the rest of a task in which an armed canvas's id was read, a one-shot
 //      non-enumerable setter for that key on Object.prototype; and, for the rest of a task in which a
-//      WebGL (WebGPU) context was created, a one-shot non-enumerable `_gl` (`_context`) setter on
-//      Object.prototype (only when cfg.engines.babylon !== false);
+//      Babylon engine created its WebGL (WebGPU) context, a one-shot non-enumerable `_gl` (`_context`)
+//      setter on Object.prototype (only when cfg.engines.babylon !== false; never on a page without Babylon);
 //   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange' and
 //   the one MutationObserver on the document (not page-visible), no other window key, no prototype
 //   descriptor anywhere else.
@@ -107,6 +113,8 @@ function dxrSentinel(cfg, cap) {
   const sTimeout = setTimeout, cTimeout = clearTimeout;
   const MO = typeof MutationObserver === 'function' ? MutationObserver : null;
   const perfNow = performance.now.bind(performance);
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const Err = Error;
   const info = (...a) => console.info(TAG, ...a);
 
   // ------------------------------------------------------------ intrinsics (R4)
@@ -423,6 +431,19 @@ function dxrSentinel(cfg, cap) {
   // The constructor trap: a one-shot `_gl` (WebGL) / `_context` (WebGPU) setter on Object.prototype for
   // the rest of the task that created the context. Any other object assigning that key meanwhile gets
   // an ordinary own property, as it would have without us.
+  // Is this getContext Babylon's? WebGL: the attributes are the engine's own options object (AbstractEngine
+  // has added lockstepMaxSteps and timeStep to it before ThinEngine asks for the context). WebGPU: called
+  // from WebGPUEngine._initializeContextAndSwapChain (the only signal before it assigns _context). A stack
+  // is taken only on a webgpu getContext, which Babylon makes once per engine and most pages once per
+  // canvas. It is not cached per canvas, since a page may make a new engine on the same canvas.
+  function bjsLikely(kind, attrs) {
+    if (kind === 1) {
+      try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
+    }
+    let s = '';
+    try { s = String(new Err().stack || ''); } catch (e) { return false; }
+    return s.indexOf('_initializeContextAndSwapChain') >= 0;
+  }
   const bjsKeys = new Set();
   function removeBjsKey(key) {
     if (!bjsKeys.delete(key)) return;
@@ -466,10 +487,10 @@ function dxrSentinel(cfg, cap) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
-    const onContext = (c, type) => {
+    const onContext = (c, type, attrs) => {
       if (done) return;
       const kind = WEBGL[type];
-      if (kind && wantBJS && !retired) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
+      if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
       if (pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
@@ -487,7 +508,7 @@ function dxrSentinel(cfg, cap) {
     try {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
-        try { onContext(this, type); } catch (e) { /* never break the page's getContext */ }
+        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }

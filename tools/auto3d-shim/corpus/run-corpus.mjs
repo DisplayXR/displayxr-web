@@ -88,6 +88,11 @@ const PROBE = `(() => {
     if (r && /webgl/i.test(String(type))) webgl++; else if (/^webgpu$/i.test(String(type))) webgpu++; // a null webgpu context still names a WebGPU page
     return r;
   };
+  // The Babylon.js constructor trap (sentinel.js, v0.7.0): every '_gl' / '_context' accessor defined on
+  // Object.prototype, i.e. each time it was armed. v0.7.1 arms it only for a getContext that looks like
+  // Babylon's: on a page without Babylon it must stay 0 ('_context' in anyObject never changes).
+  const dp0 = Object.defineProperty; const bjsTrap = { gl: 0, context: 0 };
+  Object.defineProperty = function defineProperty(o, k, d) { if (o === Object.prototype && (k === '_gl' || k === '_context')) bjsTrap[k === '_gl' ? 'gl' : 'context']++; return dp0.apply(this, arguments); };
   const keys0 = Object.getOwnPropertyNames(window);
   const snap = (o) => { const m = new Map(); for (const k of Reflect.ownKeys(o)) m.set(k, Object.getOwnPropertyDescriptor(o, k)); return m; };
   const before = {}; for (const n of Object.keys(protos)) before[n] = snap(protos[n]);
@@ -123,7 +128,7 @@ const PROBE = `(() => {
       try { if (window.BABYLON) engineOracle.push('babylon'); } catch (e) {}
       try { if (typeof window.createUnityInstance === 'function' || window.unityInstance) engineOracle.push('unity'); } catch (e) {}
       return {
-        newKeys: Object.getOwnPropertyNames(window).filter((k) => !k0.has(k)), protoChanges, webgl, webgpu,
+        newKeys: Object.getOwnPropertyNames(window).filter((k) => !k0.has(k)), protoChanges, webgl, webgpu, bjsTrap: { ...bjsTrap },
         pcInWindow: 'pc' in window, ours: { ...ours, pending: [...pending.values()] }, mo: { ...mo }, engineOracle,
         host: H && { loadCore: H.loadCore, sentinelMs: H.sentinelMs, coreEvalMs: H.coreEvalMs, saves: H.saves.length,
           reports: H.reports.map(({ status, engine, reason, t }) => ({ status, engine: engine || null, reason: reason || null, t: Math.round(t) })) },
@@ -262,6 +267,9 @@ function judge(site, C, I) {
   row.sentinelMs = warm;
   if (row.sentinelMsCold == null) fail.push('sentinel did not run');
   else if (warm == null) review.push(`no warm sample (reload failed); cold ${row.sentinelMsCold} ms`);
+  // A site whose reloads land in a fresh renderer process has no warm sample: each "warm" figure is a
+  // cold one (no V8 cache for the fake host's eval). sites.json says why; the cost is recorded, not judged.
+  else if (site.noWarmCache) row.costNotJudged = `warm ${warm} ms not judged: ${site.noWarmCache}`;
   else if (warm >= BUDGET.sentinelMs) fail.push(`sentinel ${warm} ms warm >= ${BUDGET.sentinelMs} ms (cold ${row.sentinelMsCold} ms)`);
   // 2. exceptions and console errors
   const ourExc = I.pageErrors.filter((e) => OURS.test(e.stack) || OURS_LOOSE.test(e.stack) || /dxr-auto3d/.test(e.msg));
@@ -278,6 +286,11 @@ function judge(site, C, I) {
   row.protoDiff = protoNew;
   const protoBad = protoNew.filter((p) => !BUDGET.allowedProto.has(p) && !(webgl && /^Object\.[^ ]+ \(added\)$/.test(p)));
   if (protoBad.length) fail.push(`prototype changes beyond getContext: ${protoBad.join(', ')}`);
+  // 3b. the Babylon.js constructor trap: armed only on a page with Babylon
+  const T = P.bjsTrap || { gl: 0, context: 0 };
+  row.bjsTrapArms = T.gl + T.context;
+  const babylonPage = site.engine === 'babylon.js' || /babylon/i.test(engine || '') || (Q && Q.engineOracle.some((e) => /babylon/.test(e)));
+  if (row.bjsTrapArms && !babylonPage) fail.push(`the Babylon.js constructor trap was armed ${row.bjsTrapArms} time(s) on a page without Babylon (_gl ${T.gl}, _context ${T.context})`);
   const ctrlKeys = new Set(Q ? Q.newKeys : []);
   const keysNew = (P.newKeys || []).filter((k) => !ctrlKeys.has(k) && !HARNESS_KEYS.has(k));
   row.windowKeysDiff = keysNew;

@@ -94,6 +94,7 @@ function dxrCore(cfg, cap, S) {
     bjsWebGPU: true,    // TEST ONLY (A/B): false keeps a Babylon.js WebGPU engine 2D
     bjsEyeTarget: true, // TEST ONLY (A/B): false lets Babylon eyes draw straight into their halves (no eye target + pass)
     bjsIblHistory: true, // TEST ONLY (A/B): false leaves Babylon IBL shadows' accumulation history copied once per frame (the right eye's then mismatches its velocity)
+    bjsCustomRT: true,  // TEST ONLY (A/B): false leaves a Babylon.js scene's customRenderTargets drawn once per frame from the page camera (not again per eye)
     bjsGBuffer: true,   // EXPERIMENTAL (Babylon.js): true draws the geometry buffer again for the right eye; false keeps a scene with one 2D; 'shared' (TEST ONLY, A/B) converts it without the second draw
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.

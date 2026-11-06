@@ -27,6 +27,10 @@
        gpu=1              a WebGPUEngine (initAsync: found by the _context trap). window.__grabFrame() draws
                           one frame and reads the canvas back IN its drawing task (a WebGPU canvas reads back
                           empty once presented)
+       meshlate=N         the meshes (and the ss backdrop) are added N ms after the engine starts drawing: no
+                          material has compiled when the shim goes live (Nike By You on a fast load)
+       refr=1             a window in front of the scene showing it through a render target sampled at
+                          gl_FragCoord (screen-space refraction), the target in scene.customRenderTargets
        freeze=N           stop the render loop after N frames (default 60): from then on it draws nothing
                           (render on demand), window.__frozen = true
      The meshes are symmetric about (0, 1, 0), 8 units in front of the camera. -->
@@ -91,11 +95,48 @@
   sun.intensity = 0.9;
   const mat = (r, g, b) => { const m = new B.StandardMaterial('m', scene); m.diffuseColor = new B.Color3(r, g, b); m.specularColor = new B.Color3(0.2, 0.2, 0.2); return m; };
   const put = (mesh, m, x, y, z) => { mesh.material = m; mesh.position.set(x, y, z); return mesh; };
-  put(B.MeshBuilder.CreateTorus('torus', { diameter: 2.2, thickness: 0.6, tessellation: 48 }, scene), mat(1, 0.48, 0.18), 0, 1, 0).rotation.x = Math.PI / 2.5;
-  put(B.MeshBuilder.CreateBox('boxL', { size: 0.6 }, scene), mat(0.18, 0.7, 1), -1.8, 1, 0);
-  put(B.MeshBuilder.CreateBox('boxR', { size: 0.6 }, scene), mat(0.18, 0.7, 1), 1.8, 1, 0);
-  put(B.MeshBuilder.CreateSphere('sphN', { diameter: 0.7 }, scene), mat(0.62, 1, 0.29), 0, 1, 1.8);
-  put(B.MeshBuilder.CreateSphere('sphF', { diameter: 0.7 }, scene), mat(0.62, 1, 0.29), 0, 1, -1.8);
+  // meshlate=N: the meshes (and the ss backdrop) come N ms after the first frame, so the engine draws an
+  // empty scene first and no material has compiled when the shim goes live (Nike By You on a fast load).
+  const addMeshes = () => {
+    put(B.MeshBuilder.CreateTorus('torus', { diameter: 2.2, thickness: 0.6, tessellation: 48 }, scene), mat(1, 0.48, 0.18), 0, 1, 0).rotation.x = Math.PI / 2.5;
+    put(B.MeshBuilder.CreateBox('boxL', { size: 0.6 }, scene), mat(0.18, 0.7, 1), -1.8, 1, 0);
+    put(B.MeshBuilder.CreateBox('boxR', { size: 0.6 }, scene), mat(0.18, 0.7, 1), 1.8, 1, 0);
+    put(B.MeshBuilder.CreateSphere('sphN', { diameter: 0.7 }, scene), mat(0.62, 1, 0.29), 0, 1, 1.8);
+    put(B.MeshBuilder.CreateSphere('sphF', { diameter: 0.7 }, scene), mat(0.62, 1, 0.29), 0, 1, -1.8);
+    if (q.get('ss') === '1') {
+      const sm = gpu ? new B.ShaderMaterial('ss', scene, { // WGSL on WebGPU (GLSL would need the CDN's glslang / twgsl)
+        vertexSource: 'attribute position: vec3<f32>; uniform worldViewProjection: mat4x4<f32>;\n@vertex\nfn main(input: VertexInputs) -> FragmentInputs { vertexOutputs.position = uniforms.worldViewProjection * vec4<f32>(vertexInputs.position, 1.0); }',
+        fragmentSource: 'uniform renderTargetSize: vec2<f32>;\n@fragment\nfn main(input: FragmentInputs) -> FragmentOutputs { fragmentOutputs.color = vec4<f32>(fragmentInputs.position.x / uniforms.renderTargetSize.x, 0.15, 0.15, 1.0); }',
+      }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'], shaderLanguage: B.ShaderLanguage.WGSL }) : new B.ShaderMaterial('ss', scene, {
+        vertexSource: 'precision highp float; attribute vec3 position; uniform mat4 worldViewProjection; void main(void) { gl_Position = worldViewProjection * vec4(position, 1.0); }',
+        fragmentSource: 'precision highp float; uniform vec2 renderTargetSize; void main(void) { gl_FragColor = vec4(gl_FragCoord.x / renderTargetSize.x, 0.15, 0.15, 1.0); }',
+      }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'] });
+      sm.onBind = () => { const e = sm.getEffect(); if (e) e.setFloat2('renderTargetSize', engine.getRenderWidth(), engine.getRenderHeight()); };
+      sm.backFaceCulling = false;
+      const back = B.MeshBuilder.CreatePlane('backdrop', { width: 60, height: 40 }, scene);
+      back.material = sm; back.position.set(0, 1, -12);
+    }
+  };
+  const meshLate = +(q.get('meshlate') || 0);
+  if (meshLate) setTimeout(addMeshes, meshLate); else addMeshes();
+  if (q.get('refr') === '1') {
+    // A window in front of the scene that shows the scene through it by sampling a render target of it at
+    // gl_FragCoord: the screen-space refraction pattern (Nike By You's 'shared_refraction_texture'). The
+    // target is in scene.customRenderTargets with no camera of its own, so the scene draws it from its camera.
+    const rt = new B.RenderTargetTexture('refr', { ratio: 1 }, scene, false);
+    rt.clearColor = scene.clearColor;
+    scene.customRenderTargets.push(rt);
+    const wm = new B.ShaderMaterial('win', scene, {
+      vertexSource: 'precision highp float; attribute vec3 position; uniform mat4 worldViewProjection; void main(void) { gl_Position = worldViewProjection * vec4(position, 1.0); }',
+      fragmentSource: 'precision highp float; uniform vec2 renderTargetSize; uniform sampler2D refr; void main(void) { vec4 c = texture2D(refr, gl_FragCoord.xy / renderTargetSize); gl_FragColor = vec4(c.rgb * 0.8 + vec3(0.0, 0.08, 0.16), 1.0); }',
+    }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'], samplers: ['refr'] });
+    wm.setTexture('refr', rt);
+    wm.onBind = () => { const e = wm.getEffect(); if (e) e.setFloat2('renderTargetSize', engine.getRenderWidth(), engine.getRenderHeight()); };
+    wm.backFaceCulling = false;
+    const win = B.MeshBuilder.CreatePlane('window', { width: 0.9, height: 0.5 }, scene);
+    win.material = wm; win.position.set(0, 1, 5.5);
+    rt.renderList = scene.meshes.filter((m) => m !== win);
+  }
   if (q.get('fx') === 'ssao') {
     const ssao = new B.SSAO2RenderingPipeline('ssao', scene, { ssaoRatio: 1, blurRatio: 1 }, [camera], true);
     ssao.totalStrength = 1.4; ssao.radius = 1.5; ssao.samples = 16;
@@ -108,19 +149,6 @@
     p.fxaaEnabled = true;
     p.imageProcessingEnabled = true;
     if (q.get('fx') === 'dof') { p.depthOfFieldEnabled = true; p.depthOfField.focusDistance = 5000; }
-  }
-  if (q.get('ss') === '1') {
-    const sm = gpu ? new B.ShaderMaterial('ss', scene, { // WGSL on WebGPU (GLSL would need the CDN's glslang / twgsl)
-      vertexSource: 'attribute position: vec3<f32>; uniform worldViewProjection: mat4x4<f32>;\n@vertex\nfn main(input: VertexInputs) -> FragmentInputs { vertexOutputs.position = uniforms.worldViewProjection * vec4<f32>(vertexInputs.position, 1.0); }',
-      fragmentSource: 'uniform renderTargetSize: vec2<f32>;\n@fragment\nfn main(input: FragmentInputs) -> FragmentOutputs { fragmentOutputs.color = vec4<f32>(fragmentInputs.position.x / uniforms.renderTargetSize.x, 0.15, 0.15, 1.0); }',
-    }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'], shaderLanguage: B.ShaderLanguage.WGSL }) : new B.ShaderMaterial('ss', scene, {
-      vertexSource: 'precision highp float; attribute vec3 position; uniform mat4 worldViewProjection; void main(void) { gl_Position = worldViewProjection * vec4(position, 1.0); }',
-      fragmentSource: 'precision highp float; uniform vec2 renderTargetSize; void main(void) { gl_FragColor = vec4(gl_FragCoord.x / renderTargetSize.x, 0.15, 0.15, 1.0); }',
-    }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'] });
-    sm.onBind = () => { const e = sm.getEffect(); if (e) e.setFloat2('renderTargetSize', engine.getRenderWidth(), engine.getRenderHeight()); };
-    sm.backFaceCulling = false;
-    const back = B.MeshBuilder.CreatePlane('backdrop', { width: 60, height: 40 }, scene);
-    back.material = sm; back.position.set(0, 1, -12);
   }
   if (q.get('vp') === '1') {
     camera.viewport = new B.Viewport(0, 0.4, 1, 0.6);

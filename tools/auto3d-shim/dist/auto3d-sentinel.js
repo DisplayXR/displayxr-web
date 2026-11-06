@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -17,6 +17,8 @@ function dxrSentinel(cfg, cap) {
   const sTimeout = setTimeout, cTimeout = clearTimeout;
   const MO = typeof MutationObserver === 'function' ? MutationObserver : null;
   const perfNow = performance.now.bind(performance);
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const Err = Error;
   const info = (...a) => console.info(TAG, ...a);
 
   const gopd = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return d ? Object.freeze(d) : null; };
@@ -299,6 +301,14 @@ function dxrSentinel(cfg, cap) {
     const c = signal('Babylon.js');
     if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
   }
+  function bjsLikely(kind, attrs) {
+    if (kind === 1) {
+      try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
+    }
+    let s = '';
+    try { s = String(new Err().stack || ''); } catch (e) { return false; }
+    return s.indexOf('_initializeContextAndSwapChain') >= 0;
+  }
   const bjsKeys = new Set();
   function removeBjsKey(key) {
     if (!bjsKeys.delete(key)) return;
@@ -341,10 +351,10 @@ function dxrSentinel(cfg, cap) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
-    const onContext = (c, type) => {
+    const onContext = (c, type, attrs) => {
       if (done) return;
       const kind = WEBGL[type];
-      if (kind && wantBJS && !retired) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
+      if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
       if (pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
@@ -362,7 +372,7 @@ function dxrSentinel(cfg, cap) {
     try {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
-        try { onContext(this, type); } catch (e) { /* never break the page's getContext */ }
+        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }

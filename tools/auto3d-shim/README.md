@@ -46,9 +46,10 @@ no engine: no other window key, no other prototype descriptor, no timer, `'pc' i
 3. `navigator.xr.requestSession`, wrapped;
 4. an own, non-enumerable `id` accessor on armed `<canvas>` elements (plus, for the rest of a task
    in which one was read, a one-shot setter for that id on `Object.prototype`), and, for the rest of
-   a task in which a WebGL (WebGPU) context was created, a one-shot non-enumerable `_gl` (`_context`)
-   setter on `Object.prototype` (the Babylon.js constructor trap, v0.7.0; gone at the next microtask
-   checkpoint).
+   a task in which a Babylon engine created its WebGL (WebGPU) context, a one-shot non-enumerable
+   `_gl` (`_context`) setter on `Object.prototype` (the Babylon.js constructor trap, v0.7.0; gone at the
+   next microtask checkpoint; since v0.7.1 armed only by a getContext that looks like Babylon's, so
+   never on a page without Babylon).
 
 Plus one `MutationObserver` on the document (not page-visible; it arms `<canvas>` elements as they are
 added, see R1 below) until an app is found or the first mutation after load + 10 s.
@@ -564,9 +565,18 @@ are offset from it by a few ipd × m2v.
 
 1. **The constructor trap (no global needed: ESM bundles).** The `ThinEngine` constructor assigns
    `this._gl = canvas.getContext('webgl2', …)`; `WebGPUEngine.initAsync` assigns
-   `this._context = canvas.getContext('webgpu')`. The sentinel's `getContext` wrapper arms a
-   one-shot, non-enumerable `_gl` (`_context`) setter on `Object.prototype` for the rest of that task
-   (removed at the next microtask checkpoint). The engine's
+   `this._context = canvas.getContext('webgpu')`. When that `getContext` looks like Babylon's, the
+   sentinel's `getContext` wrapper arms a one-shot, non-enumerable `_gl` (`_context`) setter on
+   `Object.prototype` for the rest of that task (removed at the next microtask checkpoint).
+   - **WebGL:** the context attributes are the engine's own options object, to which AbstractEngine's
+     constructor has added `lockstepMaxSteps` and `timeStep` (7.x, 8.x, 9.x).
+   - **WebGPU:** the call comes from `WebGPUEngine._initializeContextAndSwapChain`. The stack is read
+     only on a `webgpu` getContext, which Babylon makes once per engine. The method name survives
+     minification in all three versions.
+   - **Any other getContext arms nothing** (v0.7.1, from David's review of #252). Before that, every
+     WebGL / WebGPU context armed it, so for the rest of that task `'_context' in anyObject` was true on
+     any page, and `_context` is a common private name. Corpus metric `bjsTrapArms`: 0 on every
+     non-Babylon site. The engine's
    assignment lands on it; the setter re-creates the property as an ordinary own data property (the
    engine's `_gl` is then exactly what it would have been) and, when its receiver is a Babylon engine
    (`runRenderLoop`, `scenes`, `getRenderWidth`, `onNewSceneAddedObservable`), hands it over. Any other
@@ -716,6 +726,22 @@ Harness cases:
 Live, headless with the fake session, both playground samples convert: `#VW8IG3#156` (GIRSM, the
 right lighting per eye against its 2D frame) and `#8R5SSE#587` (IBL shadows).
 
+**Render targets the page draws from its camera, per eye (v0.7.1, `T.bjsCustomRT`).**
+`scene.customRenderTargets` are drawn once per frame, from the page camera, before any camera's pass.
+A material that samples one at `gl_FragCoord`, a screen-space refraction for example, then shows both
+eyes the same mono picture.
+- **Found on the panel** (Nike By You, 2026-11-06). Its translucent parts sample its
+  `shared_refraction_texture`, so the shoe showed a flat "transparent texture" in 3D.
+- **The fix.** Each such target is queued into each eye's pass, as the geometry buffer is. It is then
+  drawn again with that eye's view, right after `onBeforeCameraRenderObservable`. This covers every
+  target with no `activeCamera` of its own, redrawn every frame (`refreshRate` 1), with a non-empty
+  render list. The mono draw stays.
+- **Cost.** Each such target is drawn three times a frame instead of once. The frame-rate guard
+  covers a page where that is too much.
+- **Harness.** `bjs-refr`: a window in front of the scene samples such a target at `gl_FragCoord`.
+  The pair matches at the fake's shift through it (residual 0.04). `bjs-refr-mono` (A/B, not drawn
+  per eye): residual 5.19.
+
 **Eye targets: each eye renders like a mono frame (`T.bjsEyeTarget`).** An eye drawn straight into
 half the canvas breaks every screen-space lookup keyed to the render target, `uv = gl_FragCoord.xy /
 getRenderWidth()`. The IBL shadows material plugin read the left / right HALF of the eye's own shadow
@@ -735,8 +761,11 @@ are registered through the engine's public `Effect.RegisterShader` (7.x / 8.x / 
 compiled effect. The engine's `pass` shader is registered lazily, so it cannot be relied on. The pass
 is attached once ready.
 
-Not available: no `PostProcess` class reachable (a tree-shaken ESM bundle with no post-process at
-all). The eyes then draw straight into their halves, as before. `state()` reports `eyeTargets`.
+Not available yet: no `PostProcess` class or no compiled effect reachable. A page can go live before
+its first material compiles (Nike By You on a fast load, panel 2026-11-06: the shoe looked subtly
+different per eye again). Since v0.7.1 the targets are tried again about once a second, for a minute,
+and come on once an effect has compiled. Until then, and for good in a tree-shaken ESM bundle with no
+post-process at all, the eyes draw straight into their halves. `state()` reports `eyeTargets`.
 
 Harness cases:
 - `bjs-ss`: a backdrop coloured by `gl_FragCoord.x / renderTargetSize.x` shows the same ramp in both
@@ -744,6 +773,9 @@ Harness cases:
 - `bjs-ss-direct` (A/B, eye targets off): the halves read 1 → 127 and 128 → 254.
 - `bjs-gpu-ss` / `bjs-gpu-ss-direct`: the same on a WebGPU engine (a WGSL backdrop, the WGSL pass):
   2 → 253 in both halves, against 1 → 127 / 128 → 254.
+- `bjs-ss-late` (v0.7.1): the meshes come 1.5 s after the first frame, so nothing has compiled when
+  the page goes live. The targets come on after a retry, and both halves read the same ramp. On
+  v0.7.0 the targets never came on (1 → 127 / 128 → 254).
 - `bjs-fx`, `bjs-global`: still pixel-exact at the fake's shift (residual 0.00) through the pass.
 - Live, headless: playground `?webgpu#8R5SSE#587` (IBL shadows on WebGPU) showed the other eye's
   ghost without the WGSL pass, and matching shadows with it.
@@ -1448,6 +1480,42 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.7.1 (the Babylon trap only for Babylon's getContext, from David's review of #252; eye targets
+retried; the page's render targets per eye), Windows, ANGLE D3D11 + WebGPU:** 8 new cases in
+`test/cases/babylon.mjs`.
+- **Full pass.** 159 run, 2 skipped (`c` / `d`: no `ports_25.sog`), all green. `bjs-ss-late`,
+  `bjs-refr` and `bjs-refr-mono` were added after it; all 34 Babylon cases plus `pivot-bjs-*` are green
+  with them.
+- **The trap's scope** (`bjs-scope-*`; a probe injected before the shim counts every `_gl` / `_context`
+  accessor defined on `Object.prototype`). three.js, PlayCanvas and a raw WebGPU page: never armed.
+  Babylon WebGL and `WebGPUEngine`: armed, and live. Green on babylonjs 9.32.0, 8.56.2 and 7.54.3.
+  With v0.7.0's `sentinel.js` under the same cases: three.js `_gl` 1, PlayCanvas `_gl` 1, the raw
+  WebGPU page `_context` 1.
+- **Render targets the page draws from its camera, per eye** (`bjs-refr`, `bjs-refr-mono`): see above.
+  Found on the panel too: Nike By You's translucent parts sample `shared_refraction_texture`.
+- **Eye targets on a page live before any material compiled** (`bjs-ss-late`): on after a retry, the
+  same ramp in both halves. With v0.7.0's adapter: never on, 1 → 127 / 128 → 254. Found on the panel:
+  Nike By You on one load logged `eye targets: no Effect class reachable` and looked subtly different
+  per eye again.
+- **Corpus** (`corpus/results/2026-11-06-only.*`, 12 sites, the trap-scope build): no harm, 10 PASS, 2
+  REVIEW. `bjsTrapArms` is 0 on every site without Babylon, and 1 on `babylon-playground`, which
+  converts. Sites that made a context in the main frame: Google Maps (3 WebGL), Google Earth (4),
+  deck.gl (2), ArcGIS SceneView (1), the WebGPU samples (1 WebGPU), babylonjs.com (1 WebGPU). MapLibre,
+  Cesium Sandcastle and mapbox.com made none there headless. With v0.7.0's bundle: Google Earth
+  `_gl` 3, babylonjs.com `_context` 1.
+  - **The two REVIEWs are not this change.** ArcGIS: our MutationObserver, 5-8 ms in ~78 callbacks
+    (longest 0.6 ms). Google Earth: a Zone.js window key.
+  - **Google Earth's cost is not judged** (`noWarmCache`). Each reload lands in a new renderer
+    process, so its warm samples are cold ones: 1.66 ms on v0.7.0 and v0.7.1 alike. A local page with
+    the same COOP / COEP headers is warm at 0.01 ms.
+  - **Corrected.** `babylon-home` goes back to `plain`: babylonjs.com runs no Babylon engine in the
+    main frame. `webgpu-samples` points at the sample page; the gallery runs it in an iframe.
+- **On the panel** (2026-11-06, Byungju):
+  - The trap-scope build: Nike By You (ESM: `_gl` trap), the default playground, `?webgpu` and threejs.org
+    `unreal_bloom` all convert.
+  - The final build: Nike By You logs `eye targets: made on try 2` and
+    `… drawn again for each eye: shared_refraction_texture`. Its translucent parts read right; no guard trip.
 
 **Headless, v0.7.0 (Babylon.js), Windows, ANGLE D3D11 + WebGPU:** 28 new cases in `test/cases/babylon.mjs`
 plus `pivot-bjs-orbit` / `pivot-bjs-yaw`, all green on babylonjs **9.32.0, 8.56.2 and 7.54.3** (the UMD

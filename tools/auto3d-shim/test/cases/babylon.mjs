@@ -29,7 +29,13 @@
 //   bjs-flat-*     orthographic / two active cameras / depth of field: 2D with the reason, no session
 //   bjs-product    product mode (fake host): converting -> live, the constructor trap leaves nothing behind
 //   bjs-block      product mode, user block: detect-only, one { off, Babylon.js } report
-//   bjs-trap-clean a three.js page (WebGL, no Babylon): the `_gl` trap is gone after the task, three converts
+//   bjs-refr       a customRenderTargets target sampled at gl_FragCoord (screen-space refraction): drawn again per eye;
+//                  bjs-refr-mono (A/B, bjsCustomRT false): both eyes see the mono picture through the window
+//   bjs-ss-late    live before any material compiled: the eye targets are tried again each second and come on
+//   bjs-trap-clean a three.js page (WebGL, no Babylon): no `_gl` key on Object.prototype after the task, three converts
+//   bjs-scope-*    v0.7.1: the trap is armed only by a getContext that looks like Babylon's (counted from the page:
+//                  Object.defineProperty(Object.prototype, '_gl' | '_context')): 0 on three.js, PlayCanvas and a raw
+//                  WebGPU page; >= 1 on Babylon WebGL / WebGPU pages, which still convert
 
 // Product mode: what the fake host recorded, and what the constructor trap left on Object.prototype.
 const readProduct = () => {
@@ -42,6 +48,11 @@ const readProduct = () => {
     engineGl: window.__engine ? { ...d(window.__engine, '_gl'), isGl: typeof WebGL2RenderingContext !== 'undefined' && window.__engine._gl instanceof WebGL2RenderingContext } : null,
   };
 };
+
+// Injected BEFORE the shim (the sentinel captures Object.defineProperty at its start, so it calls this): counts
+// every '_gl' / '_context' accessor defined on Object.prototype in the document, i.e. each time the trap is armed.
+const ARMS = `(() => { const dp = Object.defineProperty; const n = (window.__bjsArms = { gl: 0, context: 0 });
+  Object.defineProperty = function defineProperty(o, k, d) { if (o === Object.prototype && (k === '_gl' || k === '_context')) n[k === '_gl' ? 'gl' : 'context']++; return dp.apply(this, arguments); }; })();`;
 
 export default function cases({ P, NEW, productShim }) {
   const U = P + 'bjs-scene.html';
@@ -148,6 +159,20 @@ export default function cases({ P, NEW, productShim }) {
         const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
         t('the pair matches tightly (each eye\'s SSAO from its own G-buffer): residual < 0.5', sh.e < 0.5, `residual ${sh.e.toFixed(3)} at shift ${sh.s}`);
       } },
+    // A render target the scene draws from its camera (scene.customRenderTargets), sampled at gl_FragCoord by a
+    // window in front (screen-space refraction: Nike By You's translucent parts). Drawn again per eye, the window
+    // shows each eye's own view; drawn once from the page camera, both eyes see the same mono picture through it.
+    { ...base, id: 'bjs-refr', name: 'Babylon.js screen-space refraction (a customRenderTargets target sampled at gl_FragCoord): drawn again for each eye', url: U + '?cam=arc&keep=1&refr=1',
+      alsoCheck(r, t, h, R) {
+        t("the page's render target was drawn in the eyes' passes", R.customRtPerEye > 10 && R.eyeTargets === true, `customRtPerEye ${R.customRtPerEye}, eyeTargets ${R.eyeTargets}`);
+        const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
+        t('the pair matches tightly through the window (each eye sees its own view): residual < 0.5', sh.e < 0.5, `residual ${sh.e.toFixed(3)} at shift ${sh.s}`);
+      } },
+    { ...base, id: 'bjs-refr-mono', name: 'A/B: the same, the render target drawn once from the page camera (bjsCustomRT false)', url: U + '?cam=arc&keep=1&refr=1', cfg: { bjsCustomRT: false },
+      alsoCheck(r, t, h, R) {
+        const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
+        t('control: not drawn per eye, and the pair does NOT match through the window (residual > 0.5)', R.customRtPerEye === 0 && sh.e > 0.5, `customRtPerEye ${R.customRtPerEye}, residual ${sh.e.toFixed(3)} at shift ${sh.s}`);
+      } },
     { ...base, id: 'bjs-gbuf-shared', name: 'A/B: SSAO2 on the geometry buffer, converted WITHOUT the right eye\'s G-buffer (the left eye\'s reused)', url: U + '?cam=arc&fx=ssao', cfg: { bjsGBuffer: 'shared' },
       alsoCheck(r, t, h, R) {
         const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
@@ -168,6 +193,15 @@ export default function cases({ P, NEW, productShim }) {
         const { px, w } = r.pixels, ew = R.eye[0], red = (x) => px[(8 * w + x) * 4];
         const l = [red(4), red(ew - 5)], rr = [red(ew + 4), red(2 * ew - 5)];
         t('control: no eye targets, and the right half reads the upper half of the ramp', R.eyeTargets === false && rr[0] > 100 && l[1] < 160, `left half ${l.join(' -> ')}, right half ${rr.join(' -> ')}`);
+      } },
+    // Live before any material compiled (meshes 1.5 s after the first frame: Nike By You on a fast load). The eye
+    // targets need a compiled effect for the Effect class: they are tried again each second, then come on.
+    { ...base, id: 'bjs-ss-late', name: 'Babylon.js, live before any material compiled (meshlate): the eye targets come on once one has, each eye gets the mono ramp', url: U + '?cam=arc&keep=1&ss=1&meshlate=1500&freeze=300',
+      alsoCheck(r, t, h, R) {
+        t('eye targets on, after a retry', R.eyeTargets === true && r.log.some((l) => /eye targets: no Effect class reachable yet/.test(l)) && r.log.some((l) => /eye targets: made on try \d+/.test(l)), `eyeTargets ${R.eyeTargets}; ${r.log.filter((l) => /eye targets/.test(l)).join(' | ')}`);
+        const { px, w } = r.pixels, ew = R.eye[0], red = (x) => px[(8 * w + x) * 4];
+        const l = [red(4), red(ew - 5)], rr = [red(ew + 4), red(2 * ew - 5)];
+        t('both halves show the same ramp', Math.abs(l[0] - rr[0]) <= 4 && Math.abs(l[1] - rr[1]) <= 4 && l[0] < 12 && l[1] > 240, `left half ${l.join(' -> ')}, right half ${rr.join(' -> ')}`);
       } },
     // The same on a WebGPU engine (WGSL backdrop: fragmentInputs.position.x / renderTargetSize.x; WGSL eye pass).
     { ...base, id: 'bjs-gpu-ss', name: 'Babylon.js WebGPU screen-space lookup: eye targets (WGSL pass) give each eye the mono ramp', url: U + '?cam=arc&keep=1&ss=1&gpu=1', webgpu: true,
@@ -229,8 +263,33 @@ export default function cases({ P, NEW, productShim }) {
         t('no _gl / _context left on Object.prototype', X && X.protoGl === null && X.protoContext === null, JSON.stringify(X && { protoGl: X.protoGl, protoContext: X.protoContext }));
       },
     },
+    ...[
+      ['bjs-scope-three', 'three.js keyframes (WebGL)', P + 'three-keyframes.html', 'window.__frozen', false, null],
+      ['bjs-scope-pc', 'PlayCanvas meshes (WebGL)', P + 'pc-mesh.html', 'window.__frozen', false, null],
+      ['bjs-scope-webgpu', 'a raw WebGPU page, no engine', P + 'plain-webgpu.html', '!!document.documentElement.dataset.gpuDone', true, null],
+      ['bjs-scope-bjs', 'Babylon.js WebGL', U + '?cam=arc', 'window.__frozen', false, 'gl'],
+      ['bjs-scope-bjs-gpu', 'Babylon.js WebGPUEngine', U + '?cam=arc&gpu=1', 'window.__frozen', true, 'context'],
+    ].map(([id, what, url, ready, webgpu, want]) => ({
+      id, name: `product mode, trap scope: ${what} — ${want ? `the '_${want}' trap is armed, the page converts` : 'the trap is never armed'}`, url, webgpu,
+      shim: [ARMS, ...productShim({ decision: 'allow' })],
+      async run(page, h) {
+        await page.waitForFunction(ready, { timeout: 30000, polling: 100 });
+        if (want) await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((r) => r.status === 'live')); })()", { timeout: 30000, polling: 100 }).catch(() => {});
+        else await h.sleep(1500);
+        return { arms: await page.evaluate(() => window.__bjsArms), X: await page.evaluate(readProduct) };
+      },
+      check(r, t) {
+        const A = r.arms || {}, H = r.X && r.X.host;
+        if (!want) t("the '_gl' / '_context' trap was never armed on this page", r.ok && A.gl === 0 && A.context === 0, r.error || JSON.stringify(A));
+        else {
+          t(`the '_${want}' trap was armed (a Babylon getContext)`, r.ok && A[want] >= 1, r.error || JSON.stringify(A));
+          t('went live, engine Babylon.js', H && H.reports.some((x) => x.status === 'live' && x.engine === 'Babylon.js'), JSON.stringify(H && H.reports));
+        }
+        t('nothing left on Object.prototype', r.X && r.X.protoGl === null && r.X.protoContext === null, JSON.stringify(r.X && { protoGl: r.X.protoGl, protoContext: r.X.protoContext }));
+      },
+    })),
     {
-      id: 'bjs-trap-clean', name: 'product mode, a three.js page: the _gl trap armed by its getContext is gone after the task; three converts',
+      id: 'bjs-trap-clean', name: 'product mode, a three.js page: no _gl trap on Object.prototype after the task (since v0.7.1 never armed: bjs-scope-three); three converts',
       url: P + 'three-keyframes.html', shim: productShim({ decision: 'allow' }),
       async run(page, h) {
         await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(window.__frozen && H && H.reports.some((r) => r.status === 'live')); })()", { timeout: 30000, polling: 100 });
