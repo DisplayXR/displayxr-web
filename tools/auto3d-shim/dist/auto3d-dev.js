@@ -4496,11 +4496,21 @@ function dxrBabylon(core) {
     }
     return null;
   }
-  const EYE_PASS_VS = 'attribute vec2 position; uniform vec2 scale; varying vec2 vUV; const vec2 madd = vec2(0.5, 0.5);\n' +
-    'void main(void) { vUV = (position * madd + madd) * scale; gl_Position = vec4(position, 0.0, 1.0); }';
-  const EYE_PASS_FS = 'varying vec2 vUV; uniform sampler2D textureSampler;\nvoid main(void) { gl_FragColor = texture2D(textureSampler, vUV); }';
+  const EYE_PASS = {
+    0: {
+      vs: 'attribute vec2 position; uniform vec2 scale; varying vec2 vUV; const vec2 madd = vec2(0.5, 0.5);\n' +
+        'void main(void) { vUV = (position * madd + madd) * scale; gl_Position = vec4(position, 0.0, 1.0); }',
+      fs: 'varying vec2 vUV; uniform sampler2D textureSampler;\nvoid main(void) { gl_FragColor = texture2D(textureSampler, vUV); }',
+    },
+    1: {
+      vs: 'attribute position: vec2<f32>; uniform scale: vec2<f32>; varying vUV: vec2<f32>; const madd = vec2(0.5, 0.5);\n' +
+        '@vertex\nfn main(input : VertexInputs) -> FragmentInputs {\nvertexOutputs.vUV = (vertexInputs.position * madd + madd) * uniforms.scale; vertexOutputs.position = vec4(vertexInputs.position, 0.0, 1.0);\n}',
+      fs: 'varying vUV: vec2f; var textureSamplerSampler: sampler; var textureSampler: texture_2d<f32>;\n' +
+        '@fragment\nfn main(input: FragmentInputs) -> FragmentOutputs { fragmentOutputs.color = textureSample(textureSampler, textureSamplerSampler, input.vUV); }',
+    },
+  };
   function eyePassShader(scene) {
-    if (scene.getEngine().isWebGPU) return false;
+    const lang = scene.getEngine().isWebGPU ? 1 : 0; // ShaderLanguage.WGSL / GLSL
     const effects = [];
     for (const m of scene.materials || []) { try { effects.push(m && typeof m.getEffect === 'function' ? m.getEffect() : null); } catch (x) { /* ignore */ } }
     const pps = [...(scene.postProcesses || [])];
@@ -4508,25 +4518,25 @@ function dxrBabylon(core) {
     for (const pp of pps) { try { effects.push(pp && typeof pp.getEffect === 'function' ? pp.getEffect() : null); } catch (x) { /* ignore */ } }
     for (const m of (scene.meshes || []).slice(0, 64)) { try { const sm = m && m.subMeshes && m.subMeshes[0]; effects.push(sm ? sm.effect : null); } catch (x) { /* ignore */ } }
     for (const e of effects) {
-      const store = e && e.constructor && e.constructor.ShadersStore;
-      if (!store || typeof store !== 'object') continue;
-      if (!store.dxrEyePassVertexShader) store.dxrEyePassVertexShader = EYE_PASS_VS;
-      if (!store.dxrEyePassPixelShader) store.dxrEyePassPixelShader = EYE_PASS_FS;
-      return true;
+      const E = e && e.constructor;
+      if (!E || typeof E.RegisterShader !== 'function') continue;
+      try { E.RegisterShader('dxrEyePass', EYE_PASS[lang].fs, EYE_PASS[lang].vs, lang); } catch (x) { return -1; }
+      return lang;
     }
-    return false;
+    return -1;
   }
   function makeEyeTargets(st, scene) {
     if (st.eyeTargets !== undefined || core.T.bjsEyeTarget === false) return;
     st.eyeTargets = null;
     const PP = postProcessClass(st, scene);
-    if (!PP || !eyePassShader(scene)) { info(`eye targets: ${PP ? 'no shader store' : 'no PostProcess class'} reachable — the eyes draw straight into their halves (screen-space lookups keyed to the canvas may misplace)`); return; }
+    const lang = PP ? eyePassShader(scene) : -1;
+    if (!PP || lang < 0) { info(`eye targets: ${PP ? 'no Effect class' : 'no PostProcess class'} reachable — the eyes draw straight into their halves (screen-space lookups keyed to the canvas may misplace)`); return; }
     const eng = scene.getEngine();
     let samples = 1;
-    try { const aa = eng.getCreationOptions && eng.getCreationOptions().antialias; samples = aa && eng.webGLVersion > 1 ? Math.min(4, (eng.getCaps().maxMSAASamples) || 1) : 1; } catch (e) { samples = 1; }
+    try { const aa = eng.getCreationOptions && eng.getCreationOptions().antialias; samples = aa && (eng.isWebGPU || eng.webGLVersion > 1) ? Math.min(4, (eng.getCaps().maxMSAASamples) || 1) : 1; } catch (e) { samples = 1; }
     try {
       st.eyeTargets = [0, 1].map((i) => {
-        const pp = new PP(`dxr-auto3d-eye-${i}-target`, 'dxrEyePass', null, null, { width: 2, height: 2 }, null, 1 /* NEAREST: a 1:1 copy */, eng, false, null, 0, 'dxrEyePass');
+        const pp = new PP(`dxr-auto3d-eye-${i}-target`, 'dxrEyePass', null, null, { width: 2, height: 2 }, null, 1, eng, false, null, 0, 'dxrEyePass', undefined, false, 5, lang);
         pp.samples = samples;
         return pp;
       });
