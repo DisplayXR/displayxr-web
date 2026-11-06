@@ -54,6 +54,7 @@
     await new Promise((r) => setTimeout(r, 30)); // a later task: the constructor trap is gone
     engine = new B.Engine(gl, false, opts);
   } else engine = new B.Engine(canvas, false, opts);
+  if (opts.useReverseDepthBuffer) engine.useReverseDepthBuffer = true; // the engine option is 9.x's; the property works on 7.x / 8.x too
   const scene = new B.Scene(engine);
   scene.useRightHandedSystem = q.get('rh') === '1';
   scene.clearColor = new B.Color4(0.16, 0.19, 0.25, 1);
@@ -109,7 +110,10 @@
     if (q.get('fx') === 'dof') { p.depthOfFieldEnabled = true; p.depthOfField.focusDistance = 5000; }
   }
   if (q.get('ss') === '1') {
-    const sm = new B.ShaderMaterial('ss', scene, {
+    const sm = gpu ? new B.ShaderMaterial('ss', scene, { // WGSL on WebGPU (GLSL would need the CDN's glslang / twgsl)
+      vertexSource: 'attribute position: vec3<f32>; uniform worldViewProjection: mat4x4<f32>;\n@vertex\nfn main(input: VertexInputs) -> FragmentInputs { vertexOutputs.position = uniforms.worldViewProjection * vec4<f32>(vertexInputs.position, 1.0); }',
+      fragmentSource: 'uniform renderTargetSize: vec2<f32>;\n@fragment\nfn main(input: FragmentInputs) -> FragmentOutputs { fragmentOutputs.color = vec4<f32>(fragmentInputs.position.x / uniforms.renderTargetSize.x, 0.15, 0.15, 1.0); }',
+    }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'], shaderLanguage: B.ShaderLanguage.WGSL }) : new B.ShaderMaterial('ss', scene, {
       vertexSource: 'precision highp float; attribute vec3 position; uniform mat4 worldViewProjection; void main(void) { gl_Position = worldViewProjection * vec4(position, 1.0); }',
       fragmentSource: 'precision highp float; uniform vec2 renderTargetSize; void main(void) { gl_FragColor = vec4(gl_FragCoord.x / renderTargetSize.x, 0.15, 0.15, 1.0); }',
     }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'] });

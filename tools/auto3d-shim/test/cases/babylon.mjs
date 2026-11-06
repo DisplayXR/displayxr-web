@@ -22,6 +22,7 @@
 //   bjs-ss         a screen-space lookup keyed to the render target (gl_FragCoord / getRenderWidth(), the IBL
 //                  shadows plugin's pattern): with eye targets each half shows the mono ramp
 //   bjs-ss-direct  ... A/B: eyes drawn straight into their halves (bjsEyeTarget false): the halves split the ramp
+//   bjs-gpu-ss / bjs-gpu-ss-direct  the same on a WebGPU engine (a WGSL backdrop, the WGSL eye pass)
 //   bjs-dpr2 / bjs-gui  the store at the element's device pixels (DPR 2); a pixel-laid GUI keeps the page's density
 //   bjs-gpu        a WebGPUEngine (the _context trap): clip z 0..1, out-cover read back from the GPU
 //   bjs-gpu-kill   ... Ctrl+Alt+3 off / on again on a page that stopped drawing (replays bracketed by begin/endFrame)
@@ -76,7 +77,10 @@ export default function cases({ P, NEW, productShim }) {
   return [
     { ...base, id: 'bjs', name: 'Babylon.js ArcRotateCamera, no global (Engine constructor _gl trap)', url: U + '?cam=arc',
       alsoCheck: babylon({ via: 'Engine constructor (_gl trap)', camera: 'ArcRotateCamera', handedness: 'left', reverse: false, convVia: 'ArcRotateCamera target', pp: 0, rt: false }) },
-    { ...base, id: 'bjs-rh', name: 'Babylon.js right-handed scene, UniversalCamera.setTarget', url: U + '?cam=universal&rh=1',
+    // unstableBytes: on Babylon 7.54.3 only (not 8.56.2 / 9.32.0), the harness's two reads of this page differ by 1 LSB at
+    // one pixel (both eyes, the same scene point). Read 90 times through ONE readback canvas, page drawing or replayed,
+    // the pixel never changes: a readback artifact, not a flicker.
+    { ...base, id: 'bjs-rh', name: 'Babylon.js right-handed scene, UniversalCamera.setTarget', url: U + '?cam=universal&rh=1', unstableBytes: 8,
       alsoCheck: babylon({ via: 'Engine constructor (_gl trap)', camera: 'UniversalCamera', handedness: 'right', convVia: 'camera.setTarget' }) },
     { ...base, id: 'bjs-est-rev', name: 'Babylon.js FreeCamera, no target (estimator), reverse depth buffer', url: U + '?cam=free&reverse=1',
       alsoCheck: babylon({ via: 'Engine constructor (_gl trap)', camera: 'FreeCamera', handedness: 'left', reverse: true }) },
@@ -164,6 +168,20 @@ export default function cases({ P, NEW, productShim }) {
         const { px, w } = r.pixels, ew = R.eye[0], red = (x) => px[(8 * w + x) * 4];
         const l = [red(4), red(ew - 5)], rr = [red(ew + 4), red(2 * ew - 5)];
         t('control: no eye targets, and the right half reads the upper half of the ramp', R.eyeTargets === false && rr[0] > 100 && l[1] < 160, `left half ${l.join(' -> ')}, right half ${rr.join(' -> ')}`);
+      } },
+    // The same on a WebGPU engine (WGSL backdrop: fragmentInputs.position.x / renderTargetSize.x; WGSL eye pass).
+    { ...base, id: 'bjs-gpu-ss', name: 'Babylon.js WebGPU screen-space lookup: eye targets (WGSL pass) give each eye the mono ramp', url: U + '?cam=arc&keep=1&ss=1&gpu=1', webgpu: true,
+      alsoCheck(r, t, h, R) {
+        t('eye targets on, on WebGPU', R.eyeTargets === true && R.device === 'webgpu', `eyeTargets ${R.eyeTargets}, device ${R.device}`);
+        const { px, w } = r.pixels, ew = R.eye[0], red = (x) => px[(8 * w + x) * 4];
+        const l = [red(4), red(ew - 5)], rr = [red(ew + 4), red(2 * ew - 5)];
+        t('both halves show the same ramp', Math.abs(l[0] - rr[0]) <= 4 && Math.abs(l[1] - rr[1]) <= 4 && l[0] < 12 && l[1] > 240, `left half ${l.join(' -> ')}, right half ${rr.join(' -> ')}`);
+      } },
+    { ...base, id: 'bjs-gpu-ss-direct', name: 'A/B: the same on WebGPU, eyes drawn straight into their halves (bjsEyeTarget false)', url: U + '?cam=arc&keep=1&ss=1&gpu=1', webgpu: true, cfg: { bjsEyeTarget: false },
+      alsoCheck(r, t, h, R) {
+        const { px, w } = r.pixels, ew = R.eye[0], red = (x) => px[(8 * w + x) * 4];
+        const l = [red(4), red(ew - 5)], rr = [red(ew + 4), red(2 * ew - 5)];
+        t('control: no eye targets, the right half reads the upper half of the ramp', R.eyeTargets === false && rr[0] > 100 && l[1] < 160, `left half ${l.join(' -> ')}, right half ${rr.join(' -> ')}`);
       } },
     { ...base, id: 'bjs-fx', name: 'Babylon.js DefaultRenderingPipeline (bloom, FXAA, image processing) per eye', url: U + '?cam=arc&fx=1',
       alsoCheck: babylon({ via: 'Engine constructor (_gl trap)', camera: 'ArcRotateCamera', pp: 3, rt: true }) },

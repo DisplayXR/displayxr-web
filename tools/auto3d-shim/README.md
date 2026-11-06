@@ -730,19 +730,23 @@ So each eye renders into its own target, the size of its viewport, and a pass co
 - in its own target the eye's `gl_FragCoord` and `getRenderWidth()` are the eye's.
 
 It is built from the page's own `PostProcess` class (the `BABYLON` namespace, or any post-process
-instance in the scene) and our own copy shaders (`dxrEyePass*`), registered in the engine's shader
-store (reached from any compiled effect). The engine's `pass` shader is registered lazily, so it
-cannot be relied on. The pass is attached once ready.
+instance in the scene) and our own copy shaders, `dxrEyePass`: GLSL for WebGL, WGSL for WebGPU. They
+are registered through the engine's public `Effect.RegisterShader` (7.x / 8.x / 9.x), reached from any
+compiled effect. The engine's `pass` shader is registered lazily, so it cannot be relied on. The pass
+is attached once ready.
 
 Not available: no `PostProcess` class reachable (a tree-shaken ESM bundle with no post-process at
-all), or WebGPU (WGSL, not done). The eyes then draw straight into their halves, as before.
-`state()` reports `eyeTargets`.
+all). The eyes then draw straight into their halves, as before. `state()` reports `eyeTargets`.
 
 Harness cases:
 - `bjs-ss`: a backdrop coloured by `gl_FragCoord.x / renderTargetSize.x` shows the same ramp in both
   halves (2 → 253).
 - `bjs-ss-direct` (A/B, eye targets off): the halves read 1 → 127 and 128 → 254.
+- `bjs-gpu-ss` / `bjs-gpu-ss-direct`: the same on a WebGPU engine (a WGSL backdrop, the WGSL pass):
+  2 → 253 in both halves, against 1 → 127 / 128 → 254.
 - `bjs-fx`, `bjs-global`: still pixel-exact at the fake's shift (residual 0.00) through the pass.
+- Live, headless: playground `?webgpu#8R5SSE#587` (IBL shadows on WebGPU) showed the other eye's
+  ghost without the WGSL pass, and matching shadows with it.
 
 **What the Babylon.js adapter cannot see.**
 - An ESM page that builds its engine on a WebGL context it created itself in an earlier task
@@ -1445,8 +1449,9 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
 
 ## Verified, and what is not
 
-**Headless, v0.7.0 (Babylon.js), Windows, ANGLE D3D11 + WebGPU, babylonjs 9.32.0:** 26 new cases in
-`test/cases/babylon.mjs` plus `pivot-bjs-orbit` / `pivot-bjs-yaw`, all green:
+**Headless, v0.7.0 (Babylon.js), Windows, ANGLE D3D11 + WebGPU:** 28 new cases in `test/cases/babylon.mjs`
+plus `pivot-bjs-orbit` / `pivot-bjs-yaw`, all green on babylonjs **9.32.0, 8.56.2 and 7.54.3** (the UMD
+build swapped under the same pages):
 - **Basics.** `bjs`, `bjs-rh`, `bjs-est-rev`, `bjs-global`, `bjs-gpu`: the pair at the fake's shift
   (residual 0.00), the page's FOV on the rig, the convergence on the target / the scene.
 - **Display rig and pivot.** `bjs-display`, `pivot-bjs-*`.
@@ -1454,8 +1459,11 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   drawing.
 - **Sizing.** `bjs-dpr2`, `bjs-cap`, `bjs-gui`: `scene.pick` still hits at device pixels and under the cap.
 - **The rest.** The partial viewport (`bjs-vp`), the per-eye G-buffer (`bjs-gbuf` + A/B), eye targets
-  (`bjs-ss` + A/B), post-processes (`bjs-fx`), the 2D reasons (`bjs-flat-*`), product mode (`bjs-product`,
-  `bjs-block`, `bjs-trap-clean`).
+  on WebGL and WebGPU (`bjs-ss`, `bjs-gpu-ss` + A/Bs), post-processes (`bjs-fx`), the 2D reasons
+  (`bjs-flat-*`), product mode (`bjs-product`, `bjs-block`, `bjs-trap-clean`).
+- **Per-version notes.** The engine option `useReverseDepthBuffer` is 9.x's, so the page sets the
+  property, which 7.x / 8.x have too. On 7.54.3, `bjs-rh`'s two reads can differ by 1 LSB at one
+  pixel (`unstableBytes`), while 90 reads through one readback canvas never change.
 
 Full pass with the three.js and PlayCanvas cases: see the PR.
 
@@ -1474,9 +1482,9 @@ Full pass with the three.js and PlayCanvas cases: see the PR.
     subtly different ("see-through").
 - **Not seen yet.** WebGPU pages, a fullscreen GUI, gizmos.
 
-**Not verified.** Babylon 7.x / 8.x (the harness drives 9.32.0; the panel saw 9.6.2 and 9.33.3).
-The corpus (`corpus/sites.json`, `babylon-playground` and `babylon-home` now in the engine group)
-has not been re-run.
+**Not verified.** Babylon 7.x / 8.x on the panel (headless: green on 7.54.3 and 8.56.2; the panel saw
+9.6.2 and 9.33.3). The corpus (`corpus/sites.json`, `babylon-playground` and `babylon-home` now in the
+engine group) has not been re-run.
 
 **Headless, v0.6.5 (one-axis framing is not jitter, #231), Windows, ANGLE D3D11 + WebGPU:** 128 cases, of
 which 3 are new: `e-postfx-bob`, `e-postfx-spring` and `e-postfx-parallax`.
