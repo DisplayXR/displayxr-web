@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.6.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -39,7 +39,7 @@ function dxrDevHost(loadCore) {
     rig: cur.rig,
     convScale: cur.convScale,
     dev,
-    engines: Object.freeze({ three: true, playcanvas: true }),
+    engines: Object.freeze({ three: true, playcanvas: true, babylon: true }),
     test,
     hud: cur.hud !== false,
   });
@@ -110,6 +110,7 @@ function dxrSentinel(cfg, cap) {
   } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
 
   const en = cfg.engines || {};
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
@@ -268,7 +269,9 @@ function dxrSentinel(cfg, cap) {
 
   let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
-    if (done || pcFound || retired) return;
+    if (done || retired) return;
+    if (wantBJS) lookBabylon();
+    if (pcFound || !wantPC) return;
     let pc = null;
     try { pc = window.pc; } catch (e) { /* ignore */ }
     if (pc && typeof pc === 'object') {
@@ -292,14 +295,17 @@ function dxrSentinel(cfg, cap) {
   }
   function poll() {
     pollT = 0;
-    if (done || pcFound || retired) return;
+    if (done || pcFound || bjsFound || retired) return;
     lookGlobals();
-    if (done || pcFound) return;
+    if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
     if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
-    info(`a WebGL canvas (${descCanvas(glCanvas)}) but no supported engine found — left 2D.`,
+    let tag = null;
+    try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
+    info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
       'A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its',
-      'canvas id when the <canvas> is in the HTML before deferred / module scripts run. A canvas created by script with no',
+      'canvas id when the <canvas> is in the HTML before deferred / module scripts run; a Babylon.js engine through its',
+      'constructor (in the task that created its context) or BABYLON.EngineStore. A canvas created by script with no',
       'global is not visible (an engine-side announce hook would fix it).');
   }
   function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
@@ -335,28 +341,84 @@ function dxrSentinel(cfg, cap) {
   };
 
   const disarm = () => {
-    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k);
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
     document.removeEventListener('DOMContentLoaded', lookGlobals);
     window.removeEventListener('load', lookGlobals);
   };
 
-  if (en.playcanvas !== false) {
+  const isBjsEngine = (e) =>
+    !!e && typeof e === 'object' && typeof e.runRenderLoop === 'function' && Array.isArray(e.scenes) &&
+    typeof e.getRenderWidth === 'function' && !!e.onNewSceneAddedObservable;
+  const bjsSeen = new WeakSet();
+  let bjsFound = false;
+  function foundBabylon(engine, how, ns, canvas) {
+    if (retired || bjsSeen.has(engine)) return;
+    bjsSeen.add(engine);
+    bjsFound = true;
+    if (canvas) settle(canvas); // this canvas is accounted for: the PlayCanvas search stops unless another has a context
+    else stopPoll();
+    let B = ns;
+    if (!B) { try { B = window.BABYLON; } catch (e) { B = null; } }
+    const c = signal('Babylon.js');
+    if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
+  }
+  const bjsKeys = new Set();
+  function removeBjsKey(key) {
+    if (!bjsKeys.delete(key)) return;
+    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
+  }
+  function trapBjs(kind, canvas) {
+    const key = kind === 2 ? '_context' : '_gl';
+    if (bjsKeys.has(key) || key in Object.prototype) return;
+    bjsKeys.add(key);
+    try {
+      defProp(Object.prototype, key, {
+        configurable: true, enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          try { defProp(this, key, { value: v, writable: true, enumerable: true, configurable: true }); } catch (e) { return; }
+          if (!isBjsEngine(this)) return;
+          try { foundBabylon(this, kind === 2 ? 'WebGPUEngine (_context trap)' : 'Engine constructor (_gl trap)', null, canvas); } catch (e) { /* never break the page's engine */ }
+        },
+      });
+    } catch (e) { bjsKeys.delete(key); return; }
+    micro(() => removeBjsKey(key));
+  }
+  function lookBabylon() {
+    let B = null;
+    try { B = window.BABYLON; } catch (e) { return; }
+    if (!B || typeof B !== 'object') return;
+    let list = null;
+    try { list = (B.EngineStore && B.EngineStore.Instances) || (B.Engine && B.Engine.Instances) || null; } catch (e) { list = null; }
+    if (!list || typeof list.length !== 'number') return;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!isBjsEngine(e) || bjsSeen.has(e)) continue;
+      let cv = null;
+      try { cv = typeof e.getRenderingCanvas === 'function' ? e.getRenderingCanvas() : null; } catch (x) { cv = null; }
+      foundBabylon(e, 'BABYLON.EngineStore.Instances', B, cv);
+    }
+  }
+
+  if (wantPC || wantBJS) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
     const onContext = (c, type) => {
-      if (done || pcFound) return;
+      if (done) return;
+      const kind = WEBGL[type];
+      if (kind && wantBJS && !retired) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
+      if (pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
-      const kind = WEBGL[type];
       if (!kind || seenGL.has(c)) return;
       seenGL.add(c);
       if (kind === 1 && !glCanvas) glCanvas = c;
       if (c !== settledOn) glCanvases.push(c);
       signal(null); // the first engine / graphics-context signal: the page's opt-out
       if (done) return;
-      arm(c);
-      if (kind === 2) { startPoll(false); return; } // WebGPU: the trap finds the app; no timer (above)
+      if (wantPC) arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the traps find the app / engine; no timer (above)
       scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };
@@ -366,8 +428,10 @@ function dxrSentinel(cfg, cap) {
         try { onContext(this, type); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
-    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps may not be found', e); }
+    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
+  }
 
+  if (wantPC) {
     const armDom = () => {
       if (done || pcFound) return;
       if (optedOut()) return; // the report comes with the first WebGL / engine signal
@@ -408,7 +472,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.6.5'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.0'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -447,6 +511,11 @@ function dxrCore(cfg, cap, S) {
     chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
     pcCanvasTrap: true, // TEST ONLY (A/B): false lets a PlayCanvas page's own canvas.width / height writes through while converted
+    bjsPostFx: true,    // TEST ONLY (A/B): false keeps a Babylon.js camera with post-processes 2D (true: the engine cascades the chain to the eye cameras)
+    bjsWebGPU: true,    // TEST ONLY (A/B): false keeps a Babylon.js WebGPU engine 2D
+    bjsEyeTarget: true, // TEST ONLY (A/B): false lets Babylon eyes draw straight into their halves (no eye target + pass)
+    bjsIblHistory: true, // TEST ONLY (A/B): false leaves Babylon IBL shadows' accumulation history copied once per frame (the right eye's then mismatches its velocity)
+    bjsGBuffer: true,   // EXPERIMENTAL (Babylon.js): true draws the geometry buffer again for the right eye; false keeps a scene with one 2D; 'shared' (TEST ONLY, A/B) converts it without the second draw
   };
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
   const T = { ...TUNING };
@@ -1377,12 +1446,13 @@ function dxrCore(cfg, cap, S) {
   const en = cfg.engines || {};
   const three = en.three === false ? null : dxrThree(core);
   const playcanvas = en.playcanvas === false ? null : dxrPlayCanvas(core);
+  const babylon = en.babylon === false ? null : dxrBabylon(core);
 
   S.onForeign(yieldTo);
   if (S.foreign()) yieldTo(S.foreign());
   info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
   notify();
-  return { ctl, three, playcanvas };
+  return { ctl, three, playcanvas, babylon };
 }
 function dxrSurface(core) {
   const { warnOnce } = core;
@@ -3933,6 +4003,691 @@ function dxrPlayCanvas(core) {
   }
 
   info(`PlayCanvas adapter armed (core v${core.VERSION})`);
+  return { consider };
+}
+function dxrBabylon(core) {
+  core.registerEngine('Babylon.js');
+  const { info, warnOnce, desc, realW, realH } = core;
+  const RIG_MODE_CUSTOM = 22; // Camera.RIG_MODE_CUSTOM: the scene renders the rig cameras, no rig maths of its own
+  const RECENT_MS = 250;      // a scene "renders to the canvas" when it rendered this recently
+
+  const engines = new WeakMap(); // engine -> state; null before it has a canvas; false when not convertible
+  const via = new WeakMap();     // engine -> how it was found
+  const sceneAt = new WeakMap(); // scene -> its last render (performance.now())
+  const hookedScenes = new WeakSet();
+  let bjsNS = null;              // window.BABYLON, when the page has it (UMD)
+  core.meta.babylon = { detected: [] };
+
+  const isEngine = (e) =>
+    !!e && typeof e === 'object' && typeof e.runRenderLoop === 'function' && Array.isArray(e.scenes) &&
+    typeof e.getRenderWidth === 'function' && !!e.onNewSceneAddedObservable;
+
+  function consider(engine, how, ns) {
+    if (core.retired) return;
+    if (!bjsNS && ns && typeof ns === 'object' && ns.Engine) bjsNS = ns;
+    if (!isEngine(engine) || engines.has(engine)) return;
+    engines.set(engine, null);
+    via.set(engine, how);
+    core.meta.babylon.detected.push(how);
+    info('Babylon.js engine found via', how);
+    try {
+      for (const s of engine.scenes) hookScene(engine, s);
+      engine.onNewSceneAddedObservable.add((s) => hookScene(engine, s));
+      if (engine.onDisposeObservable) engine.onDisposeObservable.add(() => { const st = engines.get(engine); if (st && (st.active || st.pending || st.armed)) core.stand(st, 'the page disposed the engine'); });
+    } catch (e) { warnOnce('bjs-hook', 'could not watch the Babylon.js engine — left 2D', e); }
+  }
+  function hookScene(engine, scene) {
+    if (!scene || hookedScenes.has(scene) || !scene.onBeforeRenderObservable || !scene.onAfterRenderObservable) return;
+    hookedScenes.add(scene);
+    scene.onBeforeRenderObservable.add(() => onBeforeRender(engine, scene));
+    scene.onAfterRenderObservable.add(() => onAfterRender(engine, scene));
+    if (scene.onActiveCameraChanged) scene.onActiveCameraChanged.add(() => onCameraChanged(engine, scene));
+    if (scene.onBeforeCameraRenderObservable) scene.onBeforeCameraRenderObservable.add((cam) => onBeforeCamera(engine, scene, cam));
+    if (scene.onAfterCameraRenderObservable) scene.onAfterCameraRenderObservable.add((cam) => { if (cam && cam.__dxrVp && cam.viewport !== cam.__dxrVp) cam.viewport = cam.__dxrVp; });
+    const pm = scene.postProcessManager;
+    if (pm && typeof pm._finalizeFrame === 'function' && !Object.prototype.hasOwnProperty.call(pm, '_finalizeFrame')) {
+      const fin = pm._finalizeFrame;
+      pm._finalizeFrame = function (doNotPresent, targetTexture) {
+        const cam = scene.activeCamera;
+        if (!targetTexture && cam && cam.__dxrVp && cam.viewport !== cam.__dxrVp) { try { engine.setViewport(cam.__dxrVp); } catch (e) { /* ignore */ } }
+        return fin.apply(this, arguments);
+      };
+    }
+    if (scene.onDisposeObservable) {
+      scene.onDisposeObservable.add(() => {
+        const st = engines.get(engine);
+        if (st && st.scene === scene && (st.active || st.pending || st.armed)) core.stand(st, 'the page disposed the scene');
+        if (st && st.lastScene === scene) st.lastScene = null;
+      });
+    }
+    hookCameras(scene);
+  }
+
+  const setTargets = new WeakMap(); // camera -> { x, y, z }
+  const hookedProtos = new WeakSet();
+  function hookSetTarget(cam) {
+    let p = cam && Object.getPrototypeOf(cam);
+    while (p && !Object.prototype.hasOwnProperty.call(p, 'setTarget')) p = Object.getPrototypeOf(p);
+    if (!p || hookedProtos.has(p) || typeof p.setTarget !== 'function') return;
+    hookedProtos.add(p);
+    const orig = p.setTarget;
+    try {
+      p.setTarget = function (t) {
+        if (t && isFinite(t.x) && isFinite(t.y) && isFinite(t.z)) setTargets.set(this, { x: t.x, y: t.y, z: t.z });
+        return orig.apply(this, arguments);
+      };
+    } catch (e) { warnOnce('bjs-settarget', 'could not watch camera.setTarget — convergence falls back to the estimator', e); }
+  }
+  function hookCameras(scene) {
+    for (const c of scene.cameras || []) hookSetTarget(c);
+    if (typeof scene.addCamera !== 'function' || Object.prototype.hasOwnProperty.call(scene, 'addCamera')) return;
+    const add = scene.addCamera;
+    try {
+      scene.addCamera = function (c) { hookSetTarget(c); return add.apply(this, arguments); };
+    } catch (e) { /* setup-time setTarget calls are missed: the estimator stands in */ }
+  }
+
+  function stateFor(engine) {
+    let st = engines.get(engine);
+    if (st) return st;
+    if (st === false || st === undefined) return null;
+    const canvas = typeof engine.getRenderingCanvas === 'function' ? engine.getRenderingCanvas() : null;
+    if (!canvas) return null; // still in the constructor
+    if (!(canvas instanceof HTMLCanvasElement)) { warnOnce('bjs-offscreen', 'Babylon.js on an OffscreenCanvas — not supported, left 2D'); engines.set(engine, false); return null; }
+    st = core.newState('Babylon.js', canvas, ad);
+    Object.assign(st, {
+      eng: engine, scene: null, lastScene: null, cam: null, rigOn: null, eyes: null, qualify: null,
+      L: { w: realW(canvas), h: realH(canvas), pr: 1 }, // what the PAGE believes: its own store, in pixels
+      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
+      tmp: { mrh: new Float64Array(16), e: new Float64Array(16), p: new Float64Array(16) },
+    });
+    engines.set(engine, st);
+    info(`Babylon.js engine on ${desc(canvas)} (${engine.isWebGPU ? 'WebGPU' : 'WebGL' + (engine.webGLVersion || '')}, found via ${via.get(engine)})`);
+    return st;
+  }
+
+  function sceneOf(st) {
+    const t = core.now() - RECENT_MS;
+    const live = st.eng.scenes.filter((s) => s && !s.isDisposed && hookedScenes.has(s) && (sceneAt.get(s) || 0) > t);
+    if (!live.length) return { why: 'no scene has rendered yet' };
+    if (live.length > 1) return { why: `${live.length} scenes render to the canvas — not split in this prototype`, flat: true };
+    return { scene: live[0] };
+  }
+  function pickCamera(st, scene) {
+    const ac = scene.activeCameras;
+    if (ac && ac.length > 1) return { why: `${ac.length} active cameras render the scene (split screen / UI camera) — not split in this prototype`, flat: true };
+    const cam = (ac && ac.length === 1 ? ac[0] : null) || scene.activeCamera;
+    if (!cam) return { why: 'the scene has no active camera' };
+    if (cam.mode === 1) return { why: 'the camera is orthographic', flat: true };
+    if (cam.cameraRigMode !== 0 && cam !== st.rigOn) return { why: 'the camera has its own rig (a stereoscopic / VR camera)', flat: true };
+    if (cam.outputRenderTarget) return { why: 'the camera renders into a texture', flat: true };
+    const vp = vpOf(cam);
+    if (!(vp.w > 0 && vp.h > 0) || vp.x < -1e-6 || vp.y < -1e-6 || vp.x + vp.w > 1 + 1e-6 || vp.y + vp.h > 1 + 1e-6) return { why: `the camera viewport lies outside the canvas (${vp.x}, ${vp.y}, ${vp.w} x ${vp.h})`, flat: true };
+    if (scene.customRenderFunction) return { why: 'scene.customRenderFunction — the page renders the scene itself', flat: true };
+    const fx = sceneFxWhy(scene) || postFxWhy(cam);
+    if (fx) return { why: fx, flat: true };
+    if (!cameraBase(cam)) return { why: 'no Babylon Camera class reachable from the page camera', flat: true };
+    return { cam };
+  }
+  function sceneFxWhy(scene) {
+    if (scene.prePassRenderer && scene.prePassRenderer.enabled) return 'the prepass renderer is on (SSAO2 / SSR / motion blur / subsurface) — not split per eye';
+    if (scene._geometryBufferRenderer && core.T.bjsGBuffer === false) return 'a geometry buffer renderer is on (SSAO / SSR / GI / IBL shadows) — not split per eye (bjsGBuffer off)';
+    const dr = scene._depthRenderer;
+    if (dr && typeof dr === 'object' && Object.keys(dr).length) return 'a depth renderer is on (depth of field / SSAO / a depth effect) — not split per eye';
+    return null;
+  }
+  const TEMPORAL_CLASS = /^(MotionBlur|ScreenSpaceReflection|SSR|TAA)/, TEMPORAL_NAME = /^(TAA|SSR|MotionBlur)/i;
+  function postFxWhy(cam) {
+    const pps = (cam._postProcesses || []).filter(Boolean);
+    if (!pps.length) return null;
+    if (core.T.bjsPostFx === false) return `${pps.length} post-process(es) on the camera — left unsplit (bjsPostFx off)`; // TEST ONLY (A/B)
+    for (const pp of pps) {
+      let n = '';
+      try { n = typeof pp.getClassName === 'function' ? pp.getClassName() : ''; } catch (e) { n = ''; }
+      if (TEMPORAL_CLASS.test(n) || TEMPORAL_NAME.test(pp.name || '')) return `a temporal post-process on the camera (${n || pp.name}) — one history for both eyes, not split`;
+    }
+    return null;
+  }
+  const bases = new WeakMap();
+  function cameraBase(cam) {
+    const K = cam && cam.constructor;
+    if (K && bases.has(K)) return bases.get(K);
+    let found = null;
+    for (let p = Object.getPrototypeOf(cam); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+      if (!Object.prototype.hasOwnProperty.call(p, 'getClassName')) continue;
+      let n = null;
+      try { n = p.getClassName.call(cam); } catch (e) { n = null; }
+      if (n === 'Camera' && typeof p.constructor === 'function') { found = p.constructor; break; }
+    }
+    if (K) bases.set(K, found);
+    return found;
+  }
+  function vpOf(cam) {
+    const v = cam && cam.viewport;
+    return v ? { x: +v.x || 0, y: +v.y || 0, w: v.width === undefined ? 1 : +v.width, h: v.height === undefined ? 1 : +v.height } : { x: 0, y: 0, w: 1, h: 1 };
+  }
+  function subAspect(st) { const v = vpOf(st.cam); return (st.L.w * v.w) / ((st.L.h * v.h) || 1); }
+  function vfovOf(st) {
+    const c = st.cam;
+    return c.fovMode === 1 ? 2 * Math.atan(Math.tan(c.fov / 2) / subAspect(st)) : c.fov; // FOVMODE_HORIZONTAL_FIXED
+  }
+  function rigFovOf(st) {
+    const h = vpOf(st.cam).h || 1;
+    return h === 1 ? vfovOf(st) : 2 * Math.atan(Math.tan(vfovOf(st) / 2) / h);
+  }
+  function rangeOf(st) {
+    const c = st.cam;
+    const near = c.minZ > 0 ? c.minZ : 0.1;
+    const far = c.maxZ > 0 && !c.ignoreCameraMaxZ ? c.maxZ : 1e4; // 0 = an infinite far plane
+    return { near, far: Math.max(far, near * 2) };
+  }
+
+  const ad = {
+    label: (st) => `Babylon.js ${engineVersion(st)}, ${via.get(st.eng)}`,
+    unqualified(st) {
+      const eng = st.eng;
+      if (eng.isWebGPU && core.T.bjsWebGPU === false) return flatWhy(st, 'WebGPU engine — left 2D (bjsWebGPU off)'); // TEST ONLY (A/B)
+      if (eng.isWebGPU && eng.snapshotRendering) return flatWhy(st, 'WebGPU snapshot rendering (GPU bundles recorded with the page camera) — not split per eye');
+      const sc = sceneOf(st);
+      if (!sc.scene) return sc.flat ? flatWhy(st, sc.why) : sc.why;
+      const pick = pickCamera(st, sc.scene);
+      if (!pick.cam) return pick.flat ? flatWhy(st, pick.why) : pick.why;
+      st.flatReason = null;
+      st.qualify = { scene: sc.scene, cam: pick.cam };
+      const where = core.canvasPlacement(st.canvas);
+      if (where) return where;
+      if (!(realW(st.canvas) > 0 && realH(st.canvas) > 0)) return 'canvas has no size yet';
+      return core.cssEffect(st.canvas);
+    },
+    hasCamera: (st) => !!st.cam,
+    depthRange: (st) => rangeOf(st),
+    rigFov: (st) => rigFovOf(st),
+    sampler(st) {
+      if (!st.cam) return null;
+      const r = rangeOf(st);
+      return {
+        cameraPose: cameraRH(st, new Float64Array(16)),
+        verticalFov: vfovOf(st), aspect: subAspect(st), near: r.near, far: r.far,
+        forEachBounds: (cb) => forEachBounds(st, cb),
+      };
+    },
+    fakeViewParams(st) { const r = rangeOf(st), v = rigFovOf(st); return { near: r.near, far: r.far, t: r.near * Math.tan(v / 2), aspect: st.L.w / (st.L.h || 1) }; },
+    beforeActive(st) {
+      st.L.w = realW(st.canvas); st.L.h = realH(st.canvas); st.L.pr = 1;
+      st.hw0 = hwLevel(st);
+      st.follows = followsResize(st);
+    },
+    afterActive(st) {
+      st.scene = st.qualify.scene; st.cam = st.qualify.cam; st.lastScene = st.scene;
+      applySize(st);
+      installRig(st, st.cam);
+    },
+    firstDraw(st) { replaySoon(st); },
+    redraw(st) {
+      if (st.frame.drew) st.frame.idle = 0;
+      else if (++st.frame.idle >= 2) { st.stats.replays++; replay(st); }
+      st.frame.drew = false;
+    },
+    restore(st, wasLive) {
+      uninstallRig(st);
+      unScale(st);
+      st.cam = null; st.scene = null;
+      if (wasLive) replaySoon(st); // the mono frame: the page's next render (or ours, if it draws no more), reported from onAfterRender
+      return false;
+    },
+    wake(st) { if (!st.active) replaySoon(st); }, // re-enabled: one frame, whose onAfterRender considers activation
+    flipIdle(st) { replay(st); },                  // armed, page idle: one mono frame, flipped on its onAfterRender
+    coverAfterDraw: true,
+    surface(st) {
+      const eng = st.eng;
+      if (!eng) return null;
+      if (eng.isWebGPU) {
+        if (!eng._device || !eng._context) return null;
+        return core.surfaces.gpu({
+          get device() { return eng._device; }, get context() { return eng._context; },
+          flush: () => { if (typeof eng.flushFramebuffer === 'function') eng.flushFramebuffer(); },
+          get alphaMode() { return eng.premultipliedAlpha === false ? 'opaque' : 'premultiplied'; },
+        });
+      }
+      return eng._gl ? core.surfaces.gl(eng._gl) : null;
+    },
+    target(st) {
+      const c = st.cam;
+      if (!c) return null;
+      const ok = (p) => p && isFinite(p.x) && isFinite(p.y) && isFinite(p.z);
+      if (typeof c.alpha === 'number' && typeof c.beta === 'number' && typeof c.radius === 'number') {
+        let t = null;
+        try { t = c.target; } catch (e) { t = null; }
+        if (ok(t)) return { x: t.x, y: t.y, z: t.z, via: 'ArcRotateCamera target' };
+      }
+      const lt = c.lockedTarget;
+      if (lt) {
+        let p = null;
+        try { p = typeof lt.getAbsolutePosition === 'function' ? lt.getAbsolutePosition() : lt; } catch (e) { p = null; }
+        if (ok(p)) return { x: p.x, y: p.y, z: p.z, via: 'camera.lockedTarget' };
+      }
+      const s = setTargets.get(c);
+      return s ? { x: s.x, y: s.y, z: s.z, via: 'camera.setTarget' } : null;
+    },
+    describe: (st) => ({
+      page: { w: st.L.w, h: st.L.h, pr: 1 },
+      extra: {
+        detection: via.get(st.eng), version: engineVersion(st), device: st.eng.isWebGPU ? 'webgpu' : 'webgl' + (st.eng.webGLVersion || ''),
+        camera: st.cam ? `${st.cam.name} (${className(st.cam)})` : null, rigOn: st.rigOn ? st.rigOn.name : null,
+        handedness: st.scene ? (st.scene.useRightHandedSystem ? 'right' : 'left') : null, reverseDepth: !!st.eng.useReverseDepthBuffer,
+        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, eyeTargets: !!st.eyeTargetsOn,
+        hwScale: hwLevel(st), scale: st.scale || 1, followsResize: st.follows, pixelGui: st.pxGui, postProcesses: st.cam ? (st.cam._postProcesses || []).filter(Boolean).length : 0,
+        surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null, autoRender: st.frame.idle < 2,
+        eyeProj0: st.eyes ? Array.from(st.eyes[0].__dxrP.m) : null, // what the engine draws eye 0 with
+      },
+    }),
+  };
+  function flatWhy(st, why) {
+    if (st.flatReason !== why) { st.flatReason = why; info('Babylon.js canvas stays 2D:', why); core.notify(); }
+    return why;
+  }
+  const className = (o) => { try { return typeof o.getClassName === 'function' ? o.getClassName() : (o.constructor && o.constructor.name) || '?'; } catch (e) { return '?'; } };
+  function engineVersion(st) {
+    let v = null;
+    try { v = (bjsNS && bjsNS.Engine && bjsNS.Engine.Version) || (st.eng.constructor && st.eng.constructor.Version); } catch (e) { v = null; }
+    return v || '?';
+  }
+  const hwLevel = (st) => { try { return st.eng.getHardwareScalingLevel(); } catch (e) { return 1; } };
+
+  function onBeforeRender(engine, scene) {
+    const st = stateFor(engine);
+    if (!st) return;
+    sceneAt.set(scene, core.now());
+    if (!st.active) return;
+    if (scene !== st.scene) {
+      core.stand(st, 'another scene renders to the canvas', { staged: true });
+      st.nextTry = core.now() + 1000;
+      return;
+    }
+    const pick = pickCamera(st, scene);
+    if (!pick.cam) {
+      core.stand(st, pick.why, { staged: true }); // this frame now renders mono; the layer goes after it
+      if (pick.flat) flatWhy(st, pick.why);
+      st.nextTry = core.now() + 1000;
+      return;
+    }
+    if (pick.cam !== st.rigOn) moveRig(st, pick.cam);
+    applySize(st);
+    syncRig(st);
+    if (st.haveViews) st.stats.stereo++;
+    else { st.stats.flat++; if (st.stats.twoView > 0) st.stats.flatAfterEyes++; }
+  }
+  function onAfterRender(engine, scene) {
+    const st = stateFor(engine);
+    if (!st) return;
+    if (!st.replaying) { st.frame.drew = true; st.frame.n++; }
+    if (st.active) {
+      if (scene !== st.scene) return;
+      core.drew(st);
+      if (st.outCoverDue) core.takeOutCover(st);
+      return;
+    }
+    if (st.releasing) { core.monoDrawn(st); return; } // the mono frame after a staged stand-down
+    st.lastScene = scene;
+    if (st.armed) {
+      const sc = sceneOf(st);
+      const pick = sc.scene === scene ? pickCamera(st, scene) : { why: sc.why || 'the page switched scenes', flat: sc.flat };
+      if (!pick.cam) { core.stand(st, pick.why); if (pick.flat) flatWhy(st, pick.why); return; }
+      st.qualify = { scene, cam: pick.cam };
+      core.flip(st); // this task just drew the mono frame: it is the cover
+      return;
+    }
+    core.considerActivation(st);
+  }
+  function onBeforeCamera(engine, scene, cam) {
+    const st = engines.get(engine);
+    if (!st || !st.active || st.scene !== scene || !st.eyes || (cam !== st.eyes[0] && cam !== st.eyes[1])) return;
+    if (st.rigOn && scene.postProcessesEnabled !== false && (cam._postProcesses || []).some(Boolean)) cam.viewport = st.rigOn.viewport;
+    if (cam !== st.eyes[1]) return;
+    const gbr = scene._geometryBufferRenderer;
+    if (!gbr || core.T.bjsGBuffer === false || core.T.bjsGBuffer === 'shared' || !scene._renderTargets || typeof gbr.getGBuffer !== 'function') return;
+    try {
+      scene._renderTargets.pushNoDuplicate(gbr.getGBuffer());
+      iblHistory(engine, scene, cam);
+      if (!st.gbufEyes++) info('geometry buffer drawn again for the right eye (EXPERIMENTAL): GI / IBL shadows / SSAO / SSR see each eye\'s own view');
+    } catch (e) { warnOnce('bjs-gbuf', 'could not draw the geometry buffer for the right eye', e); }
+  }
+  function iblHistory(engine, scene, cam) {
+    const mgr = scene.postProcessRenderPipelineManager;
+    const map = mgr && mgr._renderPipelines;
+    if (!map || core.T.bjsIblHistory === false) return; // TEST ONLY (A/B)
+    let did = false;
+    for (const k of Object.keys(map)) {
+      const p = map[k];
+      let n = '';
+      try { n = p && typeof p.getClassName === 'function' ? p.getClassName() : ''; } catch (e) { n = ''; }
+      const acc = n === 'IBLShadowsRenderPipeline' ? p._accumulationPass : null;
+      if (!acc || acc.enabled === false) continue;
+      for (const t of [acc._oldAccumulationCopy, acc._oldPositionCopy]) {
+        if (t && typeof t.render === 'function' && (typeof t.isReady !== 'function' || t.isReady())) { t.render(); did = true; }
+      }
+    }
+    if (did) {
+      try { engine.setViewport(cam.__dxrVp || cam.viewport); } catch (e) { /* the pass sets its own next */ }
+      const st = engines.get(engine);
+      if (st && !st.iblLogged) { st.iblLogged = true; info('IBL shadows: the accumulation history is copied again before the right eye (each eye reprojects the other eye\'s shadows)'); }
+    }
+  }
+  function onCameraChanged(engine, scene) {
+    const st = engines.get(engine);
+    if (!st || !st.active || st.scene !== scene) return;
+    const pick = pickCamera(st, scene);
+    if (pick.cam) { if (pick.cam !== st.rigOn) moveRig(st, pick.cam); return; }
+    core.stand(st, pick.why, { staged: true });
+    if (pick.flat) flatWhy(st, pick.why);
+    st.nextTry = core.now() + 1000;
+  }
+
+  function replay(st) {
+    const scene = st.scene || st.lastScene;
+    if (!scene || scene.isDisposed || st.replaying) return;
+    const eng = st.eng, frame = !!eng.isWebGPU; // WebGPU submits at endFrame: a bare scene.render() would never reach the canvas
+    st.replaying = true;
+    try {
+      if (frame) eng.beginFrame();
+      try { scene.render(false, true); } finally { if (frame) eng.endFrame(); }
+    } catch (e) { warnOnce('bjs-replay', 'replaying the scene threw; idle frames will not be redrawn', e); } finally { st.replaying = false; }
+  }
+  function replaySoon(st) {
+    const n = st.frame.n;
+    requestAnimationFrame(() => { if (st.frame.n === n) replay(st); });
+  }
+
+  function applySize(st) {
+    const c = st.canvas, cw = c.clientWidth, ch = c.clientHeight;
+    const kPage = st.hw0 > 0 ? 1 / st.hw0 : 1;
+    let k = kPage;
+    if (st.follows && cw > 0 && ch > 0) {
+      const sf = core.surfaceOf(st);
+      if (st.lim === undefined && sf) st.lim = sf.limit();
+      const lim = core.T.glLimit > 0 ? core.T.glLimit : st.lim || Infinity;
+      const dpr = Math.min(window.devicePixelRatio || 1, core.T.maxEyeDpr);
+      st.pxGui = pixelGui(st.scene);
+      if (!st.pxGui) k = Math.max(kPage, dpr);
+      k = Math.min(k, Math.min(core.T.maxSbsWidth, lim) / cw, lim / ch);
+    }
+    const want = k / kPage;
+    if (Math.abs(want - (st.scale || 1)) > 1e-3) setScale(st, want);
+    const w = realW(c), h = realH(c);
+    st.L.w = Math.round(w / (st.scale || 1)); st.L.h = Math.round(h / (st.scale || 1));
+    const eyeW = Math.max(1, w >> 1);
+    st.R = { eyeW, eyeH: h, W: 2 * eyeW, H: h };
+  }
+  function followsResize(st) {
+    const c = st.canvas, hw = st.hw0 > 0 ? st.hw0 : 1;
+    const cw = c.clientWidth, ch = c.clientHeight;
+    return cw > 0 && ch > 0 && Math.abs(realW(c) - cw / hw) <= 1 && Math.abs(realH(c) - ch / hw) <= 1;
+  }
+  function pixelGui(scene) {
+    const layers = (scene && scene.layers) || [];
+    for (const l of layers) {
+      const t = l && l.texture;
+      if (!t || typeof t.getClassName !== 'function') continue;
+      let n = '';
+      try { n = t.getClassName(); } catch (e) { n = ''; }
+      if (n === 'AdvancedDynamicTexture' && !t.adjustToEngineHardwareScalingLevel && !t.idealWidth && !t.idealHeight) return true;
+    }
+    return false;
+  }
+  function setScale(st, s) {
+    const eng = st.eng;
+    if (Math.abs(s - 1) <= 1e-3) { unScale(st); return; }
+    if (!st.scale) {
+      const orig = eng.setHardwareScalingLevel;
+      st.hwOwn = Object.prototype.hasOwnProperty.call(eng, 'setHardwareScalingLevel') ? orig : null;
+      eng.setHardwareScalingLevel = function (level) {
+        if (!st.scale) return orig.apply(this, arguments);
+        st.hw0 = level;
+        this._hardwareScalingLevel = level / st.scale;
+        this.resize();
+      };
+    }
+    st.scale = s;
+    eng._hardwareScalingLevel = st.hw0 / s;
+    try { eng.resize(); } catch (e) { warnOnce('bjs-scale', 'could not resize the store for the eyes', e); }
+    st.stats.resizes++;
+    info(`store ${realW(st.canvas)}x${realH(st.canvas)}: x${s.toFixed(3)} the page's (hardware scaling ${eng._hardwareScalingLevel.toFixed(3)}, the page's ${st.hw0}) — ` +
+      (s < 1 ? `the side-by-side width limit is ${core.T.maxSbsWidth}` : "the element's device pixels"));
+  }
+  function unScale(st) {
+    if (!st.scale) return;
+    const eng = st.eng;
+    st.scale = 0;
+    if (st.hwOwn) eng.setHardwareScalingLevel = st.hwOwn; else { try { delete eng.setHardwareScalingLevel; } catch (e) { /* ignore */ } }
+    st.hwOwn = null;
+    eng._hardwareScalingLevel = st.hw0;
+    try { eng.resize(); } catch (e) { /* the page's next resize puts it back */ }
+  }
+
+  function makeEyes(st, cam) {
+    const Cam = cameraBase(cam), scene = cam.getScene();
+    const Mx = cam.getViewMatrix().constructor;
+    const Vp = cam.viewport.constructor;
+    const ident = () => (typeof Mx.Identity === 'function' ? Mx.Identity() : new Mx());
+    return [0, 1].map((i) => {
+      const e = new Cam(`dxr-auto3d-eye-${i}`, typeof cam.position.clone === 'function' ? cam.position.clone() : cam.position, scene, false);
+      Object.defineProperty(e, '__dxrEye', { value: i });
+      e.isRigCamera = true;
+      e._isLeftCamera = i === 0; e._isRightCamera = i === 1;
+      e.viewport = e.__dxrVp = new Vp(i * 0.5, 0, 0.5, 1); // __dxrVp: the eye's own (viewport may stand in for the page's, onBeforeCamera)
+      e.__dxrV = ident(); e.__dxrP = ident();
+      e.freezeProjectionMatrix(e.__dxrP);
+      e._isSynchronizedViewMatrix = () => false; // recomputed on every read (cheap; values compared before marking)
+      e._getViewMatrix = () => eyeView(st, i, e);
+      return e;
+    });
+  }
+  function postProcessClass(st, scene) {
+    if (bjsNS && typeof bjsNS.PostProcess === 'function') return bjsNS.PostProcess;
+    const seen = [...(scene.postProcesses || [])];
+    for (const c of scene.cameras || []) for (const pp of c._postProcesses || []) if (pp) seen.push(pp);
+    for (const pp of seen) {
+      for (let q = Object.getPrototypeOf(pp); q && q !== Object.prototype; q = Object.getPrototypeOf(q)) {
+        if (!Object.prototype.hasOwnProperty.call(q, 'getClassName')) continue;
+        let n = null;
+        try { n = q.getClassName.call(pp); } catch (e) { n = null; }
+        if (n === 'PostProcess' && typeof q.constructor === 'function') return q.constructor;
+      }
+    }
+    return null;
+  }
+  const EYE_PASS_VS = 'attribute vec2 position; uniform vec2 scale; varying vec2 vUV; const vec2 madd = vec2(0.5, 0.5);\n' +
+    'void main(void) { vUV = (position * madd + madd) * scale; gl_Position = vec4(position, 0.0, 1.0); }';
+  const EYE_PASS_FS = 'varying vec2 vUV; uniform sampler2D textureSampler;\nvoid main(void) { gl_FragColor = texture2D(textureSampler, vUV); }';
+  function eyePassShader(scene) {
+    if (scene.getEngine().isWebGPU) return false;
+    const effects = [];
+    for (const m of scene.materials || []) { try { effects.push(m && typeof m.getEffect === 'function' ? m.getEffect() : null); } catch (x) { /* ignore */ } }
+    const pps = [...(scene.postProcesses || [])];
+    for (const c of scene.cameras || []) for (const pp of c._postProcesses || []) if (pp) pps.push(pp);
+    for (const pp of pps) { try { effects.push(pp && typeof pp.getEffect === 'function' ? pp.getEffect() : null); } catch (x) { /* ignore */ } }
+    for (const m of (scene.meshes || []).slice(0, 64)) { try { const sm = m && m.subMeshes && m.subMeshes[0]; effects.push(sm ? sm.effect : null); } catch (x) { /* ignore */ } }
+    for (const e of effects) {
+      const store = e && e.constructor && e.constructor.ShadersStore;
+      if (!store || typeof store !== 'object') continue;
+      if (!store.dxrEyePassVertexShader) store.dxrEyePassVertexShader = EYE_PASS_VS;
+      if (!store.dxrEyePassPixelShader) store.dxrEyePassPixelShader = EYE_PASS_FS;
+      return true;
+    }
+    return false;
+  }
+  function makeEyeTargets(st, scene) {
+    if (st.eyeTargets !== undefined || core.T.bjsEyeTarget === false) return;
+    st.eyeTargets = null;
+    const PP = postProcessClass(st, scene);
+    if (!PP || !eyePassShader(scene)) { info(`eye targets: ${PP ? 'no shader store' : 'no PostProcess class'} reachable — the eyes draw straight into their halves (screen-space lookups keyed to the canvas may misplace)`); return; }
+    const eng = scene.getEngine();
+    let samples = 1;
+    try { const aa = eng.getCreationOptions && eng.getCreationOptions().antialias; samples = aa && eng.webGLVersion > 1 ? Math.min(4, (eng.getCaps().maxMSAASamples) || 1) : 1; } catch (e) { samples = 1; }
+    try {
+      st.eyeTargets = [0, 1].map((i) => {
+        const pp = new PP(`dxr-auto3d-eye-${i}-target`, 'dxrEyePass', null, null, { width: 2, height: 2 }, null, 1 /* NEAREST: a 1:1 copy */, eng, false, null, 0, 'dxrEyePass');
+        pp.samples = samples;
+        return pp;
+      });
+    } catch (e) { st.eyeTargets = null; warnOnce('bjs-eyert', 'could not make the eye targets — the eyes draw straight into their halves', e); }
+  }
+  function syncEyeTargets(st) {
+    const T = st.eyeTargets, cam = st.rigOn;
+    if (!T || !st.eyes || !cam) return;
+    const W = realW(st.canvas), H = realH(st.canvas);
+    for (let i = 0; i < 2; i++) {
+      const pp = T[i], e = st.eyes[i], v = e.__dxrVp;
+      pp._options = { width: Math.max(1, Math.round(W * v.width)), height: Math.max(1, Math.round(H * v.height)) };
+      if (e._rigPostProcess !== pp && typeof pp.isReady === 'function' && pp.isReady()) {
+        e._rigPostProcess = pp;
+        st.eyeTargetsOn = true;
+      }
+    }
+    if (st.eyeTargetsOn && (st.eyes[0]._postProcesses || []).indexOf(T[0]) < 0) {
+      cam._cascadePostProcessesToRigCams();
+      for (const e of st.eyes) e.isIntermediate = false; // defensive: the cascade marks a lone rig post-process of the engine's 'pass' effect intermediate (a VR rig's); ours is dxrEyePass, so it should not
+      if (!st.eyeTargetsLogged) { st.eyeTargetsLogged = true; info('eye targets on: each eye renders into its own target and is copied into its half'); }
+    }
+  }
+  function disposeEyeTargets(st) {
+    const T = st.eyeTargets;
+    st.eyeTargets = undefined; st.eyeTargetsOn = false;
+    if (st.eyes) for (const e of st.eyes) { e._rigPostProcess = null; e._postProcesses = []; }
+    if (T) for (const pp of T) { try { pp.dispose(); } catch (e) { /* ignore */ } }
+  }
+
+  function installRig(st, cam) {
+    try {
+      if (st.eyes && st.eyes.some((e) => typeof e.isDisposed === 'function' && e.isDisposed())) st.eyes = null;
+      if (!st.eyes) st.eyes = makeEyes(st, cam);
+      for (const e of st.eyes) e.rigParent = cam;
+      st.rigMode0 = cam.cameraRigMode;
+      cam.cameraRigMode = RIG_MODE_CUSTOM;
+      cam._rigCameras.push(st.eyes[0], st.eyes[1]);
+      st.rigOn = cam;
+      makeEyeTargets(st, cam.getScene());
+      syncRig(st);
+      if (typeof cam._cascadePostProcessesToRigCams === 'function') cam._cascadePostProcessesToRigCams();
+    } catch (e) {
+      warnOnce('bjs-rig', 'could not put the eye cameras on the page camera — standing down', e);
+      uninstallRig(st);
+      core.stand(st, 'the eye cameras could not be installed', { staged: true });
+    }
+  }
+  function detachRig(st) {
+    const cam = st.rigOn;
+    st.rigOn = null;
+    if (!cam || !st.eyes) return;
+    const list = cam._rigCameras || [];
+    for (const e of st.eyes) { const k = list.indexOf(e); if (k >= 0) list.splice(k, 1); e._postProcesses = []; e._rigPostProcess = null; }
+    st.eyeTargetsOn = false; // re-attached on the next camera (syncEyeTargets)
+    if (!list.length && cam.cameraRigMode === RIG_MODE_CUSTOM) cam.cameraRigMode = st.rigMode0 || 0;
+  }
+  function moveRig(st, cam) {
+    detachRig(st);
+    st.cam = cam;
+    installRig(st, cam);
+    info(`the page switched cameras: the eyes follow ${cam.name} (${className(cam)})`);
+  }
+  function uninstallRig(st) {
+    detachRig(st);
+    disposeEyeTargets(st);
+    if (st.eyes) {
+      for (const e of st.eyes) { e._postProcesses = []; try { e.dispose(); } catch (err) { /* ignore */ } }
+      st.eyes = null;
+    }
+  }
+  function syncRig(st) {
+    const cam = st.rigOn;
+    if (!cam || !st.eyes) return;
+    const v = (st.vp = vpOf(cam));
+    for (let i = 0; i < 2; i++) {
+      const e = st.eyes[i], ev = e.__dxrVp;
+      if (e.viewport !== ev) e.viewport = ev;
+      e.layerMask = cam.layerMask; e.minZ = cam.minZ; e.maxZ = cam.maxZ;
+      ev.x = i * 0.5 + v.x * 0.5; ev.y = v.y; ev.width = v.w * 0.5; ev.height = v.h;
+    }
+    syncEyeTargets(st);
+  }
+
+  function cameraRH(st, out) {
+    const w = st.cam.getWorldMatrix().m;
+    for (let k = 0; k < 16; k++) out[k] = w[k];
+    if (!st.scene.useRightHandedSystem) { out[8] = -out[8]; out[9] = -out[9]; out[10] = -out[10]; out[11] = -out[11]; }
+    return out;
+  }
+  function eyeView(st, i, e) {
+    const V = e.__dxrV, P = e.__dxrP;
+    const cam = st.rigOn;
+    if (!cam || !st.scene) return V;
+    if (st.haveViews) {
+      const T = st.tmp, lh = !st.scene.useRightHandedSystem;
+      const mrh = cameraRH(st, T.mrh);
+      const pose = core.eyePose(st, i, mrh);
+      mul4(mrh, pose, T.e);
+      if (lh) { T.e[8] = -T.e[8]; T.e[9] = -T.e[9]; T.e[10] = -T.e[10]; T.e[11] = -T.e[11]; } // × H: the eye's own frame, left-handed
+      writeMat(V, core.invert4(T.e));
+      if (i === 0) st.eyeAt = [T.e[12], T.e[13], T.e[14]]; // diagnostics (dev state(): eyeAt)
+      eyeProjection(st, st.V[i].proj, lh, T.p);
+      writeMat(P, T.p);
+    } else {
+      writeMat(V, cam.getViewMatrix().m);
+      writeMat(P, cam.getProjectionMatrix().m);
+    }
+    return V;
+  }
+  function eyeProjection(st, src, lh, out) {
+    for (let k = 0; k < 16; k++) out[k] = src[k];
+    const v = st.vp;
+    if (v && (v.w !== 1 || v.h !== 1)) for (let c = 0; c < 4; c++) { out[c * 4] /= v.w; out[c * 4 + 1] /= v.h; } // the whole canvas's -> the camera's viewport (rigFovOf)
+    if (lh) { out[8] = -out[8]; out[9] = -out[9]; out[10] = -out[10]; out[11] = -out[11]; } // P × H
+    const eng = st.eng;
+    if (eng.useReverseDepthBuffer) { out[2] = -out[2]; out[6] = -out[6]; out[10] = -out[10]; out[14] = -out[14]; } // near -> 1, far -> -1 (near / far swapped)
+    if (eng.isNDCHalfZRange) for (let c = 0; c < 4; c++) out[c * 4 + 2] = 0.5 * (out[c * 4 + 2] + out[c * 4 + 3]);
+    return out;
+  }
+  function writeMat(M, src) {
+    const m = M.m;
+    let diff = false;
+    for (let k = 0; k < 16; k++) {
+      const v = m instanceof Float32Array ? Math.fround(src[k]) : src[k];
+      if (m[k] !== v) { diff = true; break; }
+    }
+    if (!diff) return;
+    for (let k = 0; k < 16; k++) m[k] = src[k];
+    M.markAsUpdated();
+  }
+
+  function forEachBounds(st, cb) {
+    const scene = st.scene, mask = st.cam.layerMask;
+    const list = scene.meshes || [];
+    for (let k = 0; k < list.length && k < 4000; k++) {
+      const m = list[k];
+      try {
+        if (!m || !m.isVisible || m.visibility === 0 || m.infiniteDistance || !(m.layerMask & mask) || (typeof m.isEnabled === 'function' && !m.isEnabled())) continue;
+        if (typeof m.getTotalVertices === 'function' && m.getTotalVertices() === 0 && !(m.getBoundingInfo && m.getBoundingInfo().boundingSphere.radiusWorld > 0)) continue;
+        const bs = m.getBoundingInfo && m.getBoundingInfo().boundingSphere;
+        if (!bs) continue;
+        const c = bs.centerWorld, r = bs.radiusWorld;
+        if (!(r >= 0) || !isFinite(r) || !isFinite(c.x)) continue;
+        if (cb(c.x, c.y, c.z, r) === false) return;
+      } catch (e) { /* a mesh mid-dispose */ }
+    }
+  }
+
+  function mul4(a, b, o) {
+    for (let c = 0; c < 4; c++) {
+      const b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+      o[c * 4] = a[0] * b0 + a[4] * b1 + a[8] * b2 + a[12] * b3;
+      o[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9] * b2 + a[13] * b3;
+      o[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+      o[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+    }
+    return o;
+  }
+
+  info(`Babylon.js adapter armed (core v${core.VERSION})`);
   return { consider };
 }
 return dxrCore(cfg, cap, S);
