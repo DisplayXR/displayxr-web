@@ -304,7 +304,7 @@ function judge(site, C, I) {
   const live = /^converted/.test(outcome);
   if (site.group === 'plain') {
     if (engine || live) {
-      const oracle = Q && Q.engineOracle.some((e) => /three|playcanvas/.test(e));
+      const oracle = Q && Q.engineOracle.some((e) => /three|playcanvas|babylon/.test(e));
       (oracle ? review : fail).push(`${live ? 'converted' : 'engine detected'} (${engine}) on a plain page${oracle ? ' — the control load has one too: relabel the site' : ''}`);
     }
   } else if (site.group === 'sdk') {

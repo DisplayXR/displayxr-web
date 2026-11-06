@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.6.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -47,6 +47,7 @@ function dxrSentinel(cfg, cap) {
   } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
 
   const en = cfg.engines || {};
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
@@ -205,7 +206,9 @@ function dxrSentinel(cfg, cap) {
 
   let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
-    if (done || pcFound || retired) return;
+    if (done || retired) return;
+    if (wantBJS) lookBabylon();
+    if (pcFound || !wantPC) return;
     let pc = null;
     try { pc = window.pc; } catch (e) { /* ignore */ }
     if (pc && typeof pc === 'object') {
@@ -229,14 +232,17 @@ function dxrSentinel(cfg, cap) {
   }
   function poll() {
     pollT = 0;
-    if (done || pcFound || retired) return;
+    if (done || pcFound || bjsFound || retired) return;
     lookGlobals();
-    if (done || pcFound) return;
+    if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
     if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
-    info(`a WebGL canvas (${descCanvas(glCanvas)}) but no supported engine found — left 2D.`,
+    let tag = null;
+    try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
+    info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
       'A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its',
-      'canvas id when the <canvas> is in the HTML before deferred / module scripts run. A canvas created by script with no',
+      'canvas id when the <canvas> is in the HTML before deferred / module scripts run; a Babylon.js engine through its',
+      'constructor (in the task that created its context) or BABYLON.EngineStore. A canvas created by script with no',
       'global is not visible (an engine-side announce hook would fix it).');
   }
   function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
@@ -272,28 +278,84 @@ function dxrSentinel(cfg, cap) {
   };
 
   const disarm = () => {
-    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k);
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
     document.removeEventListener('DOMContentLoaded', lookGlobals);
     window.removeEventListener('load', lookGlobals);
   };
 
-  if (en.playcanvas !== false) {
+  const isBjsEngine = (e) =>
+    !!e && typeof e === 'object' && typeof e.runRenderLoop === 'function' && Array.isArray(e.scenes) &&
+    typeof e.getRenderWidth === 'function' && !!e.onNewSceneAddedObservable;
+  const bjsSeen = new WeakSet();
+  let bjsFound = false;
+  function foundBabylon(engine, how, ns, canvas) {
+    if (retired || bjsSeen.has(engine)) return;
+    bjsSeen.add(engine);
+    bjsFound = true;
+    if (canvas) settle(canvas); // this canvas is accounted for: the PlayCanvas search stops unless another has a context
+    else stopPoll();
+    let B = ns;
+    if (!B) { try { B = window.BABYLON; } catch (e) { B = null; } }
+    const c = signal('Babylon.js');
+    if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
+  }
+  const bjsKeys = new Set();
+  function removeBjsKey(key) {
+    if (!bjsKeys.delete(key)) return;
+    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
+  }
+  function trapBjs(kind, canvas) {
+    const key = kind === 2 ? '_context' : '_gl';
+    if (bjsKeys.has(key) || key in Object.prototype) return;
+    bjsKeys.add(key);
+    try {
+      defProp(Object.prototype, key, {
+        configurable: true, enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          try { defProp(this, key, { value: v, writable: true, enumerable: true, configurable: true }); } catch (e) { return; }
+          if (!isBjsEngine(this)) return;
+          try { foundBabylon(this, kind === 2 ? 'WebGPUEngine (_context trap)' : 'Engine constructor (_gl trap)', null, canvas); } catch (e) { /* never break the page's engine */ }
+        },
+      });
+    } catch (e) { bjsKeys.delete(key); return; }
+    micro(() => removeBjsKey(key));
+  }
+  function lookBabylon() {
+    let B = null;
+    try { B = window.BABYLON; } catch (e) { return; }
+    if (!B || typeof B !== 'object') return;
+    let list = null;
+    try { list = (B.EngineStore && B.EngineStore.Instances) || (B.Engine && B.Engine.Instances) || null; } catch (e) { list = null; }
+    if (!list || typeof list.length !== 'number') return;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!isBjsEngine(e) || bjsSeen.has(e)) continue;
+      let cv = null;
+      try { cv = typeof e.getRenderingCanvas === 'function' ? e.getRenderingCanvas() : null; } catch (x) { cv = null; }
+      foundBabylon(e, 'BABYLON.EngineStore.Instances', B, cv);
+    }
+  }
+
+  if (wantPC || wantBJS) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
     const onContext = (c, type) => {
-      if (done || pcFound) return;
+      if (done) return;
+      const kind = WEBGL[type];
+      if (kind && wantBJS && !retired) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
+      if (pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
-      const kind = WEBGL[type];
       if (!kind || seenGL.has(c)) return;
       seenGL.add(c);
       if (kind === 1 && !glCanvas) glCanvas = c;
       if (c !== settledOn) glCanvases.push(c);
       signal(null); // the first engine / graphics-context signal: the page's opt-out
       if (done) return;
-      arm(c);
-      if (kind === 2) { startPoll(false); return; } // WebGPU: the trap finds the app; no timer (above)
+      if (wantPC) arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the traps find the app / engine; no timer (above)
       scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };
@@ -303,8 +365,10 @@ function dxrSentinel(cfg, cap) {
         try { onContext(this, type); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
-    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps may not be found', e); }
+    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
+  }
 
+  if (wantPC) {
     const armDom = () => {
       if (done || pcFound) return;
       if (optedOut()) return; // the report comes with the first WebGL / engine signal

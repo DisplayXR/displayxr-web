@@ -36,8 +36,6 @@
     { "id": "photopea",           "group": "plain",  "url": "https://www.photopea.com/",                                 "expect": "none", "webgl": true, "note": "Photoshop-like canvas app, WebGL" },
     { "id": "excalidraw",         "group": "plain",  "url": "https://excalidraw.com/",                                   "expect": "none", "note": "2D canvas app" },
     { "id": "tldraw",             "group": "plain",  "url": "https://www.tldraw.com/",                                   "expect": "none", "note": "canvas-like SPA" },
-    { "id": "babylon-playground", "group": "plain",  "url": "https://playground.babylonjs.com/",                         "expect": "none", "webgl": true, "note": "Babylon.js: must NOT be taken for three.js / PlayCanvas" },
-    { "id": "babylon-home",       "group": "plain",  "url": "https://www.babylonjs.com/",                                "expect": "none", "webgl": true, "note": "Babylon.js hero scene" },
     { "id": "webgl-aquarium",     "group": "plain",  "url": "https://webglsamples.org/aquarium/aquarium.html",           "expect": "none", "webgl": true, "note": "raw WebGL, no engine" },
     { "id": "unity-play",         "group": "plain",  "url": "https://play.unity.com/",                                   "expect": "none", "webgl": true, "note": "Unity WebGL games (in iframes); swap for a direct build URL when one is stable" },
 
@@ -67,6 +65,8 @@
     { "id": "pc-game-swooop",     "group": "engine", "engine": "playcanvas", "url": "https://playcanv.as/p/2OlkUaxF/",                                    "expect": "convert", "note": "PlayCanvas-hosted game" },
     { "id": "pc-project-2",       "group": "engine", "engine": "playcanvas", "url": "https://playcanv.as/p/JtL2iqIH/",                                    "expect": "convert", "note": "PlayCanvas-hosted project" },
     { "id": "playcanvas-explore", "group": "engine", "engine": "playcanvas", "url": "https://playcanvas.com/explore",                                      "expect": "convert", "note": "listing page: 2D is fine" },
+    { "id": "babylon-playground", "group": "engine", "engine": "babylon.js", "url": "https://playground.babylonjs.com/",   "expect": "convert", "note": "Babylon.js (v0.7.0): the default playground, UMD build, FreeCamera + setTarget; before v0.7.0 a plain page (must not be taken for three.js / PlayCanvas)" },
+    { "id": "babylon-home",       "group": "engine", "engine": "babylon.js", "url": "https://www.babylonjs.com/",          "expect": "convert", "note": "Babylon.js (v0.7.0): the hero scene" },
 
     { "id": "sdk-hello-cube",     "group": "sdk",    "url": "https://displayxr.github.io/displayxr-web/samples/hello-cube/",   "expect": "standdown", "sample": true },
     { "id": "sdk-model",          "group": "sdk",    "url": "https://displayxr.github.io/displayxr-web/samples/model/",        "expect": "standdown" },

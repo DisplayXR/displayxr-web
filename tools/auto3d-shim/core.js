@@ -1,13 +1,13 @@
 // DisplayXR auto-3D — engine-agnostic core. PROTOTYPE, not a product.
 //
 // One PART of the build (build.mjs): `function dxrCore(cfg, cap, S)`, concatenated with guard.js,
-// chip.js, dev.js, three-adapter.js and playcanvas-adapter.js into ONE function body
+// chip.js, dev.js, three-adapter.js, playcanvas-adapter.js and babylon-adapter.js into ONE function body
 // (dist/auto3d-core.js), so every part shares one lexical scope and nothing is handed over on
 // `window`. The sentinel (sentinel.js) runs first, at document start, and calls it with:
 //   cfg  frozen data from the host for this frame: { decision: 'allow'|'offer'|'block',
 //        depths: { camera, display } (each DEPTH_MIN..DEPTH_MAX = 0.02..1), rig: 'camera'|'display',
 //        convScale (CONV_SCALE_MIN..CONV_SCALE_MAX = 0.05..20, 1 = automatic), dev,
-//        engines: { three, playcanvas }, test }
+//        engines: { three, playcanvas, babylon }, test }
 //        The host validates cap.save against the same ranges. A user 'block' outside dev never
 //        reaches the core (the sentinel stays detect-only).
 //   cap  the host's capabilities, closures only: { loadCore(), save(partial), report({status, engine?, reason?}) }
@@ -15,7 +15,7 @@
 //        settle(canvas), devtools }. The core calls S.settle(canvas) when a canvas goes live (the
 //        PlayCanvas search is over unless another canvas has a WebGL context) and S.disarm() when it
 //        stands down for good (the page owns XR, opted out, the frame-rate guard blocked).
-// and gets back { ctl, three: { observe, register }, playcanvas: { consider } }.
+// and gets back { ctl, three: { observe, register }, playcanvas: { consider }, babylon: { consider } }.
 //
 // What lives here (everything that is not about one engine):
 //   - document state: one inline-3D session per document (`owner`), standing down for good when
@@ -90,6 +90,11 @@ function dxrCore(cfg, cap, S) {
     chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
     pcCanvasTrap: true, // TEST ONLY (A/B): false lets a PlayCanvas page's own canvas.width / height writes through while converted
+    bjsPostFx: true,    // TEST ONLY (A/B): false keeps a Babylon.js camera with post-processes 2D (true: the engine cascades the chain to the eye cameras)
+    bjsWebGPU: true,    // TEST ONLY (A/B): false keeps a Babylon.js WebGPU engine 2D
+    bjsEyeTarget: true, // TEST ONLY (A/B): false lets Babylon eyes draw straight into their halves (no eye target + pass)
+    bjsIblHistory: true, // TEST ONLY (A/B): false leaves Babylon IBL shadows' accumulation history copied once per frame (the right eye's then mismatches its velocity)
+    bjsGBuffer: true,   // EXPERIMENTAL (Babylon.js): true draws the geometry buffer again for the right eye; false keeps a scene with one 2D; 'shared' (TEST ONLY, A/B) converts it without the second draw
   };
   // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
@@ -1363,11 +1368,12 @@ function dxrCore(cfg, cap, S) {
   const en = cfg.engines || {};
   const three = en.three === false ? null : dxrThree(core);
   const playcanvas = en.playcanvas === false ? null : dxrPlayCanvas(core);
+  const babylon = en.babylon === false ? null : dxrBabylon(core);
 
   // The page may have asked for inline-3D / WebXR before the core was loaded.
   S.onForeign(yieldTo);
   if (S.foreign()) yieldTo(S.foreign());
   info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
   notify();
-  return { ctl, three, playcanvas };
+  return { ctl, three, playcanvas, babylon };
 }

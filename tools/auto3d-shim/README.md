@@ -1,6 +1,6 @@
-# auto-3D for existing three.js and PlayCanvas pages (prototype)
+# auto-3D for existing three.js, PlayCanvas and Babylon.js pages (prototype)
 
-Turns an ordinary, already-published three.js or PlayCanvas page into a woven glasses-free-3D
+Turns an ordinary, already-published three.js, PlayCanvas or Babylon.js page into a woven glasses-free-3D
 window in the DisplayXR Browser, **with no change to the page**: no SDK import, no WebXR, no source
 edit. It is a prototype for measuring coverage on real sites, in the same spirit as
 `tools/immersive-shim/` (which does the same for WebXR `immersive-vr` pages). It is not a product
@@ -14,7 +14,7 @@ dependencies, no bundler: concatenation plus a version stamp) assembles them int
 ```
 dist/auto3d-sentinel.js   (function (cfg, cap) { sentinel.js ... return dxrSentinel(cfg, cap); })
 dist/auto3d-core.js       (function (cfg, cap, S) { core.js surface.js guard.js chip.js dev.js
-                            three-adapter.js playcanvas-adapter.js ... return dxrCore(cfg, cap, S); })
+                            three-adapter.js playcanvas-adapter.js babylon-adapter.js ... return dxrCore(cfg, cap, S); })
 dist/auto3d-dev.js        (() => { host-dev.js sentinel.js  const CORE = function (cfg, cap, S) {…};
                             dxrSentinel(dxrDevHost(() => CORE)…) })()   <- manifest.json (dev extension)
 VENDOR.json               { name, version, sourceCommit, sourceSha256, files: { <f>: { bytes, sha256 } } }
@@ -31,7 +31,8 @@ wins: the dev extension, or the browser's).
 
 ```
 cfg = { decision: 'allow'|'offer'|'block', depths: { camera, display } (0.02..1), rig: 'camera'|'display',
-        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas }, test }   // frozen
+        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas, babylon }, test }   // frozen
+        // engines: an engine set to false is never detected; a missing key means on
 cap = { loadCore() -> function, save({ decision?, depths?, rig?, convScale? }), report({ status, engine?, reason? }) }
       // report: 'live' | 'converting' | 'standdown' | 'optout' | 'guard' | 'offer' | 'off' | 'flat' | 'idle' — transitions only
 ```
@@ -44,7 +45,10 @@ no engine: no other window key, no other prototype descriptor, no timer, `'pc' i
 2. `HTMLCanvasElement.prototype.getContext`, wrapped (the only prototype change);
 3. `navigator.xr.requestSession`, wrapped;
 4. an own, non-enumerable `id` accessor on armed `<canvas>` elements (plus, for the rest of a task
-   in which one was read, a one-shot setter for that id on `Object.prototype`).
+   in which one was read, a one-shot setter for that id on `Object.prototype`), and, for the rest of
+   a task in which a WebGL (WebGPU) context was created, a one-shot non-enumerable `_gl` (`_context`)
+   setter on `Object.prototype` (the Babylon.js constructor trap, v0.7.0; gone at the next microtask
+   checkpoint).
 
 Plus one `MutationObserver` on the document (not page-visible; it arms `<canvas>` elements as they are
 added, see R1 below) until an app is found or the first mutation after load + 10 s.
@@ -53,8 +57,13 @@ Plus the value-only symbol marker. After an engine is found the core adds what c
 
 5. per-instance wrappers on the renderer / app (three.js `render` / `setSize` / getters, plus
    `Object3D.prototype.lookAt` wrapped when the first Scene is announced; PlayCanvas
-   `GraphNode.prototype.lookAt` and the camera's `xrViews`), and the canvas `width` / `height`
-   virtualisation while converted;
+   `GraphNode.prototype.lookAt` and the camera's `xrViews`; Babylon.js observers on each scene
+   (`onBeforeRender`, `onAfterRender`, `onActiveCameraChanged`, `onDispose`), the scene's own
+   `addCamera`, the scene's `postProcessManager._finalizeFrame`, `TargetCamera.prototype.setTarget`,
+   two `dxrEyePass*` shaders in the engine's shader store, and while converted the page camera's
+   `cameraRigMode` / `_rigCameras`, two eye cameras in `scene.cameras`, two eye-target post-processes in
+   `scene.postProcesses`, and the engine's hardware scaling level while the store is rescaled), and the
+   canvas `width` / `height` virtualisation while converted (three.js, and a PlayCanvas page that writes them);
 6. during a switch, for ~1.2 s: the cover `<img>` inserted as a **sibling** of the canvas, and the
    canvas's inline `will-change` / `transform` (risk R7: layout-visible while they last);
 7. the **chip host**: one element on `<html>` carrying `popover="manual"` and a
@@ -85,7 +94,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 
 | file | owns |
 |---|---|
-| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes incl. the parse-time canvas observer), the page's `<meta>` opt-out (`S.optedOut()`), `S.settle(canvas)` (a canvas went live: the PlayCanvas search stops unless another canvas has a WebGL context) and `S.disarm()` (the core stands down for good: every trap and poll off, for good), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found). On a page with no engine the core is never parsed. |
+| `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes incl. the parse-time canvas observer, the Babylon.js `_gl` / `_context` constructor trap and `BABYLON.EngineStore`), the page's `<meta>` opt-out (`S.optedOut()`), `S.settle(canvas)` (a canvas went live: the PlayCanvas search stops unless another canvas has a WebGL context) and `S.disarm()` (the core stands down for good: every trap and poll off, for good), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found; Babylon.js: when an engine is found, inside its constructor on the trap route). On a page with no engine the core is never parsed. |
 | `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (the SBS store = the element's full device size, each eye half of it, whatever store the page keeps; each axis capped on its own: 3072 wide, and the GL limits; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
 | `surface.js` | `dxrSurface(core)`: the per-graphics-API **surface** seam (v0.6.0, see [WebGPU](#webgpu-v060)). `core.surfaces.gl(gl)` / `core.surfaces.gpu({ device, context, flush, alphaMode })` build the object an adapter returns from `ad.surface(st)`: `kind`, `limit()`, `flush()`, `readEye(st, target)`, `readFrame(st, target)`, `async`, `toClip(projGL, out)`. The GL read-back (`readGlEye`) lives here, unchanged |
 | `guard.js` | `dxrGuard(core)`: the frame-rate guard (see [The guard](#the-frame-rate-guard-the-gl-clamp-reduced-motion)). Hooks: `draw` (the page's 2D rate, from the top of `considerActivation`; also the re-measure after a trip with no baseline), `onFlip`, `tick`, `tripped` (`statusOf` → `'guard'`), `measuring` (`statusOf` → `'converting'`) |
@@ -94,6 +103,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | `host-dev.js` | `dxrDevHost(loadCore)`: the dev extension's stand-in for the browser host, over `localStorage` |
 | `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Fed by the sentinel's `__THREE_DEVTOOLS__` listener (`observe`, `register`); per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
 | `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: takes the app the sentinel found (`consider(app, how, ns)`), drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
+| `babylon-adapter.js` | `dxrBabylon(core)` (v0.7.0): takes the engine the sentinel found (`consider(engine, how, ns)`), hooks its scenes as they are created, and renders both eyes through the engine's own camera-rig path (two eye cameras on `RIG_MODE_CUSTOM`, as Babylon's WebXR camera does). Sizes the store to the element's device pixels through the engine's hardware scaling level (picking is in store pixels), supplies bounds from the scene's meshes. See [Babylon.js](#babylonjs-7--9x-webgl2-webgl1-webgpu-v070) |
 | `build.mjs` | the build above; `--check` for drift |
 
 **Convergence: the page's target first.** When the page says what it is looking at, that is the
@@ -108,6 +118,10 @@ convergence distance: the depth, along the camera's axis, of
 - PlayCanvas: `pivotPoint` of an `orbit-camera.js` script, or `focusPoint` of the engine's
   `CameraControls` script, on the camera entity; otherwise the camera entity's last `lookAt()`
   (`GraphNode.prototype.lookAt`, wrapped from `app.root`).
+- Babylon.js: an `ArcRotateCamera`'s orbit `target`; a camera's `lockedTarget` (a point or a mesh,
+  `FollowCamera` included); otherwise the camera's last `setTarget()` (`TargetCamera.prototype
+  .setTarget`, wrapped from the first camera a scene adds: the playground template's
+  `camera.setTarget(Vector3.Zero())` is seen).
 
 It is used only while the camera is still looking at it (within a quarter of the half-FOV of the
 axis) and it is in `[2·near, 0.9·far]`; a stale `lookAt` falls back to the estimator. The target is
@@ -544,6 +558,203 @@ are offset from it by a few ipd × m2v.
   hook at construction, the way three.js announces renderers to `__THREE_DEVTOOLS__`. See the
   integration proposal.
 
+### Babylon.js (7+ / 9.x; WebGL2, WebGL1, WebGPU) (v0.7.0)
+
+**Finding the engine** (the sentinel's job; the core loads only then):
+
+1. **The constructor trap (no global needed: ESM bundles).** The `ThinEngine` constructor assigns
+   `this._gl = canvas.getContext('webgl2', …)`; `WebGPUEngine.initAsync` assigns
+   `this._context = canvas.getContext('webgpu')`. The sentinel's `getContext` wrapper arms a
+   one-shot, non-enumerable `_gl` (`_context`) setter on `Object.prototype` for the rest of that task
+   (removed at the next microtask checkpoint). The engine's
+   assignment lands on it; the setter re-creates the property as an ordinary own data property (the
+   engine's `_gl` is then exactly what it would have been) and, when its receiver is a Babylon engine
+   (`runRenderLoop`, `scenes`, `getRenderWidth`, `onNewSceneAddedObservable`), hands it over. Any other
+   object that assigns `_gl` / `_context` in that task gets an ordinary own property, as it would have
+   without us. The core loads inside the engine constructor, before the page has a scene.
+2. **Globals (UMD pages, the CDN build).** `BABYLON.EngineStore.Instances`, in the same globals
+   search as PlayCanvas's (the microtask after the first WebGL context, `DOMContentLoaded` / `load`,
+   then every 500 ms, 40 times). It finds an engine the trap cannot: one built on a WebGL context the
+   page created itself in an earlier task (`new Engine(gl)`, harness case `bjs-global`).
+
+The adapter hooks every scene of the engine (`engine.scenes`, then `onNewSceneAddedObservable`):
+`onBeforeRender` / `onAfterRender` (the frame hooks), `onActiveCameraChanged`, `onDispose`, and the
+scene's own `addCamera` (to wrap `TargetCamera.prototype.setTarget` before the page's setup calls it).
+
+**Per-eye path: the engine's camera rig.** This is how Babylon's own WebXR camera renders two views,
+so the engine already knows how to draw a camera with rig cameras: `Scene._processSubCameras` renders
+the scene once per rig camera, into its viewport. While converted, the page camera gets
+`cameraRigMode = RIG_MODE_CUSTOM` (22: no rig maths of the engine's own) and two eye cameras in
+`_rigCameras`:
+- **The eye cameras** are instances of the engine's base `Camera` class, reached from the page
+  camera's prototype chain (`getClassName() === 'Camera'`; an ESM page gives us no namespace), added
+  to the scene as WebXR's are. Viewport `(0, 0, 0.5, 1)` / `(0.5, 0, 0.5, 1)`.
+- **Projection:** frozen (`freezeProjectionMatrix`) on a matrix of their own, rewritten in place.
+- **View:** recomputed on every `getViewMatrix()` from the page camera's CURRENT world matrix, so a
+  camera the page moves in `onBeforeRender` (after `camera.update()`) is followed in the same frame.
+- **Change detection:** a rewrite that changes a value bumps the matrix's `updateFlag`
+  (`markAsUpdated()`); the scene's transform cache and every effect's uniform cache key on it.
+- **Before the first 2-view frame** both eyes get the page camera's own view and projection: the
+  flat picture, never a blank tile.
+
+What the engine then does per eye on its own: shadow maps, render targets and the scene's render
+target textures, a fullscreen GUI (a layer: flat per eye), utility layers (gizmos:
+`UtilityLayerRenderer` swaps the rig cameras' scene), and post-processes (the page camera's chain is
+cascaded to the eye cameras by `_cascadePostProcessesToRigCams`; each eye runs it at the canvas's
+size into its half, as Babylon's side-by-side stereo cameras do). Stand-down puts the camera's rig
+mode back and disposes the eye cameras (their post-process list emptied first: never the page's).
+
+**Handedness and depth conventions.** The runtime's poses and projections are GL's (right-handed, the
+eye looks down −Z, clip z −1..1). Babylon is left-handed unless `scene.useRightHandedSystem`. With
+H = diag(1, 1, −1):
+- eye world = camera world × H × pose × H (for a right-handed scene, H is the identity);
+- eye projection = P × H, then the engine's own conventions: `useReverseDepthBuffer` negates the z
+  row (Babylon swaps near and far), and a half-z-range engine (`isNDCHalfZRange`: WebGPU) maps the z
+  row to 0..1 (z := (z + w) / 2);
+- the core's `eyePose` (the display rig's pivot) and estimator get the camera's world × H (the
+  runtime's camera convention).
+
+**Sizing: the element's device pixels, through the engine's hardware scaling level.** The side-by-side
+store is the element's device size, each eye half of it (the core's rule), but reached UNIFORMLY through
+the engine's own hardware scaling level (`_hardwareScalingLevel` = the page's level / s, then the
+engine's `resize()`), not by sizing a store the engine does not know about. Babylon picks in store
+pixels (`CreatePickingRayToRef` divides the pointer's CSS px by the hardware scaling level, against
+`getRenderWidth()`), so the store must stay what `resize()` makes of the level; then picking stays exact.
+- **Why.** Babylon's default (`adaptToDeviceRatio` false) renders at CSS pixels. On the panel
+  (2026-11-06) the default playground converted at its own store, `SBS 636x495 (eye 318x495)`: heavy
+  aliasing, and the sphere read flat (its relief is a pixel or two of disparity at that size). The
+  same page at DPR 2 in the harness (`bjs-dpr2`) now converts at 2560 × 1440 for a 1280 × 720 CSS
+  canvas, hardware scaling 0.5, and `scene.pick` at the canvas centre still hits the sphere there.
+- **Never below the page's own density;** capped by the zero-copy width (`maxSbsWidth`, 3072) and the
+  context's limits the same way (uniformly: the eye's aspect is kept, where the core caps each axis on
+  its own). Harness case `bjs-cap`: 1024 × 576 from 1280 × 720.
+- **A fullscreen GUI laid out in pixels** (an `AdvancedDynamicTexture` on a scene layer, without
+  `adjustToEngineHardwareScalingLevel` or an ideal size) keeps the page's density: its controls are
+  sized in store pixels and would shrink by the same factor (`bjs-gui`). State: `pixelGui`.
+- **A page that sizes its store itself** (not `engine.resize()`: store ≠ CSS size / hardware scaling
+  level at go-live) is left as it is. State: `followsResize`.
+- While scaled, the page's own `setHardwareScalingLevel()` is recorded (an own method on the engine for
+  that time) and re-scaled; stand-down puts the page's level back and resizes. `state()` reports
+  `scale` (× the page's density) and `hwScale`.
+
+**Pages that stop drawing.** A page whose render loop stopped (render on demand) for two session
+frames gets the scene re-rendered: `scene.render(false, true)` (cameras not updated, animations not
+advanced; the page's `onBeforeRender` observers do run, which is why it is used only then). On WebGPU
+the replay is bracketed by `engine.beginFrame()` / `endFrame()`: the engine submits only there.
+Re-enabling, flipping from idle and the mono frame after a stand-down use the same replay, deferred
+to the next animation frame and skipped when the page drew meanwhile (never from inside a render).
+
+**WebGPU.** The same rig. The surface is the device and canvas context (`engine._device`,
+`engine._context`, read live); its flush is the engine's own `flushFramebuffer()` (it ends the
+current pass and starts new encoders, so the rest of the frame goes on), so the out-cover read in
+`onAfterRender` sees this frame. The engine configures the canvas with `COPY_SRC`. Harness cases
+`bjs-gpu`, `bjs-gpu-kill`. Not yet seen on the panel.
+
+| Page | Result |
+|---|---|
+| one scene, one active camera (ArcRotate / Universal / Free / Follow / any `TargetCamera`), drawn to the whole canvas | **3D**, at the element's device pixels |
+| `scene.useRightHandedSystem`, `useReverseDepthBuffer` | **3D** (harness `bjs-rh`, `bjs-est-rev`) |
+| a fullscreen GUI (`AdvancedDynamicTexture`), utility layers (gizmos) | **3D** scene, the GUI flat per eye (`bjs-gui`; at the page's own density when laid out in pixels); gizmos not yet in the harness |
+| spatial post-processes (`DefaultRenderingPipeline` bloom / FXAA / image processing / sharpen / grain / chromatic aberration, a page's own `PostProcess`) | **3D**, the chain per eye (harness `bjs-fx`) |
+| the geometry buffer (`enableGeometryBufferRenderer`: GI with `GIRSMManager`, IBL shadows, SSAO2 / SSR forced onto it) | **3D, EXPERIMENTAL**: the G-buffer is drawn again for the second eye (`bjs-gbuf`; below). IBL shadows' temporal accumulation stays one history for both eyes |
+| depth of field, SSAO on a depth renderer, SSAO2 / SSR / motion blur on the prepass renderer (drawn once per frame with the page camera) | **2D**, HUD reason (`bjs-flat-dof`) |
+| a temporal post-process (TAA, motion blur, SSR: one history for both eyes) | **2D**, HUD reason |
+| render on demand (the page's loop stops) | **3D**, idle frames re-rendered |
+| WebGPU engine | **3D** since v0.7.0 (`bjs-gpu`); WebGPU snapshot rendering stays **2D** |
+| an orthographic camera | **2D**, HUD reason (`bjs-flat-ortho`) |
+| several active cameras (`scene.activeCameras`: split screen, a UI or minimap camera) | **2D**, HUD reason (`bjs-flat-two`) |
+| a camera that draws into part of the canvas (a configurator under its UI: Nike By You, viewport `(0, 0.39, 1, 0.61)`) | **3D**: each eye draws into the same sub-rectangle of its half, at the page's framing (`bjs-vp`; below) |
+| a camera that renders into a texture, or one with its own rig (stereoscopic / VR cameras) | **2D**, HUD reason |
+| two scenes rendering to one canvas (an overlay scene with `autoClear` off) | **2D**, HUD reason |
+| `scene.customRenderFunction` | **2D**, HUD reason |
+| the page switches `scene.activeCamera` while converted | **3D**: the eyes move to the new camera at once (from the setter), or back to 2D when it does not qualify |
+| the page asks for WebXR (`createDefaultXRExperienceAsync` and an `immersive-*` session) | stands down (the core's `requestSession` wrapper) |
+| an engine on an OffscreenCanvas / in a worker, `NullEngine`, Babylon Native | not converted |
+
+**A camera that draws into part of the canvas.** A configurator often keeps its 3D in the top of a
+canvas and its UI over the rest: Nike By You sets `camera.viewport = (0, 0.39, 1, 0.61)` once its
+builder opens (panel, 2026-11-06: it went live, then back to 2D on the v0.7.0 draft's "part of the
+canvas" rule). Each eye now draws into the same sub-rectangle of its half (eye i: `x = i/2 + x/2`,
+`width = w/2`, the same `y` / `height`). The rig declares the WHOLE canvas's vertical FOV,
+`2·atan(tan(fov/2) / h)`, so the runtime's eye projections cover the canvas, and each is scaled to the
+sub-rectangle (x row × 1/w, y row × 1/h). The page's own framing on its viewport, the camera's axis
+through its centre, and the same physical disparity as on the whole canvas. Harness case `bjs-vp`: a
+marker above the axis lands at the page's own projection (91.5 px vs 91.6), nothing is drawn below the
+viewport.
+
+**The geometry buffer, per eye (EXPERIMENTAL, `T.bjsGBuffer`).** `enableGeometryBufferRenderer()` is
+gathered once per frame (`Scene._gatherRenderTargetsStage`) and drawn in the first eye's pass only (the
+scene resets its render-target list after each camera), so the second eye sampled the first eye's
+G-buffer. The adapter queues it again from `onBeforeCameraRender` of the second eye, before that pass
+draws its render targets. What samples it in the eye's own pass then sees that eye's view:
+- `GIRSMManager`: its GI pass runs in `onBeforeDrawPhase`, per camera.
+- IBL shadows and SSAO2 / SSR forced onto the G-buffer: post-processes, cascaded to the eye cameras.
+
+Two engine facts needed handling:
+- **Viewport-mapped passes.** With a post-process chain, the eye renders the scene into the chain's FULL
+  texture, as the page camera does. But some passes map their textures through
+  `scene.activeCamera.viewport`: SSAO2's combine samples `uv = viewport.xy + vUV · viewport.zw`, and
+  GIRSM resets the viewport from it mid-pass. So for the rest of its pass the eye camera reports the
+  PAGE camera's viewport. The chain's last pass still draws into the eye's half: `_finalizeFrame` is
+  wrapped per scene to put the engine's viewport back first. Without this the first try drew each
+  eye's SSAO picture stretched over half its width.
+- **History (IBL shadows).** Its accumulation output is drawn after every G-buffer draw (so per eye).
+  Its history is copied once per frame, at frame start: `oldAccumulationRT` (the last output) and
+  `oldLocalPositionRT` (the last G-buffer positions). The G-buffer's velocity always refers to the
+  view drawn before, i.e. the other eye:
+  - the left eye's history and velocity both refer to the right eye of the previous frame: consistent;
+  - the right eye's velocity referred to the left eye, but its history was still its own.
+
+  Both copies are now made again before the right eye's pass (`T.bjsIblHistory`), so each eye
+  reprojects the other eye's accumulated shadows through the velocity, as a TAA follows a moving
+  camera.
+
+Harness cases:
+- `bjs-gbuf`: SSAO2 on the geometry buffer, the pair matches at the fake's shift with residual 0.44.
+- `bjs-gbuf-shared` (A/B, `bjsGBuffer: 'shared'`): the second draw left out, residual 1.60.
+
+Live, headless with the fake session, both playground samples convert: `#VW8IG3#156` (GIRSM, the
+right lighting per eye against its 2D frame) and `#8R5SSE#587` (IBL shadows).
+
+**Eye targets: each eye renders like a mono frame (`T.bjsEyeTarget`).** An eye drawn straight into
+half the canvas breaks every screen-space lookup keyed to the render target, `uv = gl_FragCoord.xy /
+getRenderWidth()`. The IBL shadows material plugin read the left / right HALF of the eye's own shadow
+image (panel, 2026-11-06: the ground shadow under playground `#8R5SSE#587` differed between the eyes,
+"a glitch"). GIRSM's plugin without a chain, depth peeling and a transmission pass work the same way.
+
+So each eye renders into its own target, the size of its viewport, and a pass copies it into its half:
+- the slot is Babylon's own rig post-process, `_rigPostProcess`, cascaded after the page's chain
+  (`_cascadePostProcessesToRigCams`; `isIntermediate` is cleared: the cascade marks a lone pass
+  intermediate, as for a VR rig);
+- the copy is NEAREST and 1:1, MSAA as the canvas has it;
+- in its own target the eye's `gl_FragCoord` and `getRenderWidth()` are the eye's.
+
+It is built from the page's own `PostProcess` class (the `BABYLON` namespace, or any post-process
+instance in the scene) and our own copy shaders, `dxrEyePass`: GLSL for WebGL, WGSL for WebGPU. They
+are registered through the engine's public `Effect.RegisterShader` (7.x / 8.x / 9.x), reached from any
+compiled effect. The engine's `pass` shader is registered lazily, so it cannot be relied on. The pass
+is attached once ready.
+
+Not available: no `PostProcess` class reachable (a tree-shaken ESM bundle with no post-process at
+all). The eyes then draw straight into their halves, as before. `state()` reports `eyeTargets`.
+
+Harness cases:
+- `bjs-ss`: a backdrop coloured by `gl_FragCoord.x / renderTargetSize.x` shows the same ramp in both
+  halves (2 → 253).
+- `bjs-ss-direct` (A/B, eye targets off): the halves read 1 → 127 and 128 → 254.
+- `bjs-gpu-ss` / `bjs-gpu-ss-direct`: the same on a WebGPU engine (a WGSL backdrop, the WGSL pass):
+  2 → 253 in both halves, against 1 → 127 / 128 → 254.
+- `bjs-fx`, `bjs-global`: still pixel-exact at the fake's shift (residual 0.00) through the pass.
+- Live, headless: playground `?webgpu#8R5SSE#587` (IBL shadows on WebGPU) showed the other eye's
+  ghost without the WGSL pass, and matching shadows with it.
+
+**What the Babylon.js adapter cannot see.**
+- An ESM page that builds its engine on a WebGL context it created itself in an earlier task
+  (`new Engine(gl)`), with no `window.BABYLON`: the trap is gone by then and there is no global.
+- An engine created before `document_start` (never, for a content script).
+- Not yet verified on the panel. The harness drives Babylon 9.32.0 only; 7.x / 8.x share the code
+  paths used here (`_gl` assignment, `RIG_MODE_CUSTOM`, `_processSubCameras`), not run.
+
 ## Try it on the display (Windows box)
 
 **A — in your own DisplayXR Browser (recommended).** `chrome://extensions` → *Developer mode* →
@@ -573,10 +784,13 @@ Pages to start with:
 | the same, a gaussian-splatting example | PlayCanvas: gsplat (footprint fix) |
 | a supersplat-viewer page, `…/scene/<id>?webgl` (the query starts with `?`, not `&webgl`) | PlayCanvas: an ESM app found through the canvas-id trap (route 2), `autoRender = false`. Without `webgl` the viewer picks WebGPU (2D before v0.6.0; since then the WebGPU path, not yet seen on the panel). Note that on `superspl.at/scene/<id>` the viewer runs in an iframe whose own URL decides the device, so `?webgl` on the scene page may not reach it. A standalone copy of the viewer (its built `index.html` served locally) needs the scene's `settings.json` next to it (`./settings.json`); without it the viewer never starts |
 | the PlayCanvas engine examples, `loaders/glb` | PlayCanvas: the camera alternates perspective / orthographic every 2 s (3D, then 2D; see below) |
+| `https://playground.babylonjs.com/` (any playground; the render canvas is the right-hand pane) | Babylon.js: the UMD build, found by the constructor trap; the default template's `camera.setTarget(Vector3.Zero())` is the convergence target |
+| `https://www.babylonjs.com/` | Babylon.js: the hero scene |
+| a Babylon.js page built with Vite / webpack (ESM, no `window.BABYLON`) | Babylon.js: the constructor trap is the only route |
 
 ### Hardware verification checklist (for the tester)
 
-1. **It converts.** The console shows `[dxr-auto3d] three.js r… renderer found` or `PlayCanvas app found via …`, then `live on canvas…`.
+1. **It converts.** The console shows `[dxr-auto3d] three.js r… renderer found`, `PlayCanvas app found via …` or `Babylon.js engine found via …`, then `live on canvas…`.
    The go-live line carries the convergence of the first frame, often a fallback (`5.00 units
    (estimator)`) before the page's splats or model have loaded. Since v0.5.4 one follow-up line,
    `convergence settled: 2.95 units (estimator)`, follows once the source or the value has moved
@@ -863,7 +1077,7 @@ would and records `loadCore` calls, `cap.save` and `cap.report` on `window.__dxr
 ```bash
 cd tools/auto3d-shim/test
 npm install                      # puppeteer-core only
-node deps.mjs                    # three@0.180.0 + playcanvas@2.22.3 + playcanvas@2.23.0 + @sparkjsdev/spark@2.2.0 + @playcanvas/supersplat-viewer@1.37.0 into .deps/ (npm pack; local overrides below)
+node deps.mjs                    # three@0.180.0 + playcanvas@2.22.3 + playcanvas@2.23.0 + @sparkjsdev/spark@2.2.0 + @playcanvas/supersplat-viewer@1.37.0 + babylonjs@9.32.0 + babylonjs-gui@9.32.0 into .deps/ (npm pack; local overrides below)
 node run.mjs                     # every case; `node run.mjs a a-legacy` for one; KEEP=1 writes out/<case>.png
 ```
 
@@ -879,7 +1093,9 @@ into an npm package layout (`<THREE_BUILD_DIR>/../examples/jsm/controls/OrbitCon
 three's `postprocessing/Pass.js` (`THREE_PASS_JS`, or next to `THREE_BUILD_DIR` in an npm layout).
 The CameraFrame pages need playcanvas 2.23.0 (`PLAYCANVAS_CF_MJS`, its `build/playcanvas.mjs`) and the
 real-viewer cases supersplat-viewer 1.37.0's `public/` (`SUPERSPLAT_VIEWER_DIR`, holding `index.html`,
-`index.js`, `index.css`). With all of them set, nothing is fetched. (On the Windows box `npm` may not
+`index.js`, `index.css`). The Babylon.js pages need babylonjs 9.32.0's UMD `babylon.js` (`BABYLON_JS`) and babylonjs-gui
+9.32.0's `babylon.gui.js` (`BABYLON_GUI_JS`).
+With all of them set, nothing is fetched. (On the Windows box `npm` may not
 be on the shell `deps.mjs` spawns: point the overrides at `npm pack`ed copies.)
 
 A converting case settles only once the go-live depth fade has finished (`rampK` exactly 1, no ramp
@@ -1232,6 +1448,46 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.7.0 (Babylon.js), Windows, ANGLE D3D11 + WebGPU:** 28 new cases in `test/cases/babylon.mjs`
+plus `pivot-bjs-orbit` / `pivot-bjs-yaw`, all green on babylonjs **9.32.0, 8.56.2 and 7.54.3** (the UMD
+build swapped under the same pages):
+- **Basics.** `bjs`, `bjs-rh`, `bjs-est-rev`, `bjs-global`, `bjs-gpu`: the pair at the fake's shift
+  (residual 0.00), the page's FOV on the rig, the convergence on the target / the scene.
+- **Display rig and pivot.** `bjs-display`, `pivot-bjs-*`.
+- **Turn-off.** `bjs-kill`, `bjs-gpu-kill`: mono first, the out-cover, on again on a page that stopped
+  drawing.
+- **Sizing.** `bjs-dpr2`, `bjs-cap`, `bjs-gui`: `scene.pick` still hits at device pixels and under the cap.
+- **The rest.** The partial viewport (`bjs-vp`), the per-eye G-buffer (`bjs-gbuf` + A/B), eye targets
+  on WebGL and WebGPU (`bjs-ss`, `bjs-gpu-ss` + A/Bs), post-processes (`bjs-fx`), the 2D reasons
+  (`bjs-flat-*`), product mode (`bjs-product`, `bjs-block`, `bjs-trap-clean`).
+- **Per-version notes.** The engine option `useReverseDepthBuffer` is 9.x's, so the page sets the
+  property, which 7.x / 8.x have too. On 7.54.3, `bjs-rh`'s two reads can differ by 1 LSB at one
+  pixel (`unstableBytes`), while 90 reads through one readback canvas never change.
+
+Full pass with the three.js and PlayCanvas cases: see the PR.
+
+**On the panel** (Windows box, DisplayXR Browser via `launch.cmd`, 2026-11-06, Byungju):
+- **The default playground** (`playground.babylonjs.com`, Babylon 9.33.3, UMD, the constructor trap)
+  converts. At its own CSS-pixel store (`SBS 636x495`, eye 318 px) it was jagged and read flat;
+  now 1910 × 1485 at the element's device pixels.
+- **`#VW8IG3#156`** (GIRSM global illumination on the geometry buffer) converts and reads right.
+- **`#8R5SSE#587`** (IBL shadows) first showed different ground shadows per eye; after the history
+  copy and the eye targets, "much better".
+- **Nike By You**, the shoe customizer (`nike.com/u/custom-ja-3-by-you-10002432/5274852793#Builder`
+  and `custom-sabrina-4-by-you…`, Babylon 9.6.2, ESM, the constructor trap):
+  - converts at SBS 3072 × 1384 under the cap, with its camera viewport `(0, 0.39, 1, 0.61)` under the
+    builder UI;
+  - works normally, rotating and customizing included, with the eye targets. Before them the eyes looked
+    subtly different ("see-through").
+- **WebGPU** (the playground's `?webgpu`: `WebGPUEngine`, found by the `_context` trap, the WGSL eye
+  pass): the default scene, `?webgpu#8R5SSE#587` (IBL shadows) and `?webgpu#VW8IG3#156` (GIRSM) all
+  read right.
+- **Not seen yet.** A fullscreen GUI, gizmos.
+
+**Not verified.** Babylon 7.x / 8.x on the panel (headless: green on 7.54.3 and 8.56.2; the panel saw
+9.6.2 and 9.33.3). The corpus (`corpus/sites.json`, `babylon-playground` and `babylon-home` now in the
+engine group) has not been re-run.
 
 **Headless, v0.6.5 (one-axis framing is not jitter, #231), Windows, ANGLE D3D11 + WebGPU:** 128 cases, of
 which 3 are new: `e-postfx-bob`, `e-postfx-spring` and `e-postfx-parallax`.

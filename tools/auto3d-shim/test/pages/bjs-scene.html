@@ -1,0 +1,180 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary Babylon.js page (babylonjs 9.32.0, the UMD build). By default it takes
+     window.BABYLON and DELETES it before making the engine: what an ESM page looks like to the shim
+     (no global), so only the Engine constructor's `_gl` trap can find it. Query switches:
+       cam=arc (default)  ArcRotateCamera at (0, 1, 8) orbiting (0, 1, 3): expected convergence 5, 'target'
+       cam=universal      UniversalCamera at (0, 1, 8), setTarget((0, 1, 3)): 5, 'target' (camera.setTarget)
+       cam=free           FreeCamera at (0, 1, 8) turned to look down the scene's axis, no target: 8, 'estimator'
+       rh=1               scene.useRightHandedSystem
+       reverse=1          engine option useReverseDepthBuffer
+       late=1             the WebGL context is made first and the engine built on it in a LATER task, global
+                          kept: only the globals search (BABYLON.EngineStore.Instances) can find it
+       fx=1               DefaultRenderingPipeline: bloom + FXAA + image processing (spatial post-processes)
+       fx=dof             ... plus depth of field (a depth renderer: stays 2D)
+       fx=taa             TAARenderingPipeline (temporal: stays 2D)
+       fx=ssao            SSAO2RenderingPipeline forced onto the GEOMETRY BUFFER (the per-eye G-buffer path)
+       keep=1             keep window.BABYLON (a UMD page: the adapter reaches the engine's classes through it)
+       ss=1               a backdrop whose colour is gl_FragCoord.x / renderTargetSize.x (renderTargetSize =
+                          engine.getRenderWidth() at bind time): the screen-space lookup the IBL shadows material
+                          plugin makes. In 2D a red ramp 0 -> 1 across the canvas
+       vp=1               the camera draws into the top 60 % of the canvas (viewport 0, 0.4, 1, 0.6), as a
+                          configurator under its UI does (Nike By You); adds a magenta marker above the axis.
+                          window.__markerY(): the marker's centre in canvas px from the top, by the page camera
+       gui=1              a fullscreen GUI (babylon.gui.js, AdvancedDynamicTexture laid out in pixels): the
+                          store keeps the page's density
+       ortho=1            orthographic camera (stays 2D)
+       two=1              two active cameras (stays 2D)
+       gpu=1              a WebGPUEngine (initAsync: found by the _context trap). window.__grabFrame() draws
+                          one frame and reads the canvas back IN its drawing task (a WebGPU canvas reads back
+                          empty once presented)
+       freeze=N           stop the render loop after N frames (default 60): from then on it draws nothing
+                          (render on demand), window.__frozen = true
+     The meshes are symmetric about (0, 1, 0), 8 units in front of the camera. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Babylon.js scene (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%;touch-action:none}</style>
+<script src="/deps/babylon/babylon.js"></script>
+</head><body>
+<canvas id="renderCanvas"></canvas>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('gui') === '1') await new Promise((r) => { const s = document.createElement('script'); s.src = '/deps/babylon/babylon.gui.js'; s.onload = r; document.head.appendChild(s); });
+  const B = window.BABYLON;
+  const late = q.get('late') === '1';
+  if (!late && q.get('keep') !== '1') delete window.BABYLON; // an ESM page: no global
+  const canvas = document.getElementById('renderCanvas');
+  const opts = { preserveDrawingBuffer: true, stencil: true, antialias: false, useReverseDepthBuffer: q.get('reverse') === '1' };
+  let engine;
+  const gpu = q.get('gpu') === '1';
+  if (gpu) {
+    engine = new B.WebGPUEngine(canvas, { antialias: false, stencil: true, useReverseDepthBuffer: opts.useReverseDepthBuffer });
+    await engine.initAsync();
+  } else if (late) {
+    const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true, stencil: true, antialias: false });
+    await new Promise((r) => setTimeout(r, 30)); // a later task: the constructor trap is gone
+    engine = new B.Engine(gl, false, opts);
+  } else engine = new B.Engine(canvas, false, opts);
+  if (opts.useReverseDepthBuffer) engine.useReverseDepthBuffer = true; // the engine option is 9.x's; the property works on 7.x / 8.x too
+  const scene = new B.Scene(engine);
+  scene.useRightHandedSystem = q.get('rh') === '1';
+  scene.clearColor = new B.Color4(0.16, 0.19, 0.25, 1);
+  const V = (x, y, z) => new B.Vector3(x, y, z);
+  const camKind = q.get('cam') || 'arc';
+  // The camera sits at (0, 1, 8) on the scene's axis whatever the handedness: the scene is the same
+  // numbers, and a right-handed scene is seen from the same point (mirrored, which the test ignores).
+  let camera;
+  if (camKind === 'arc') {
+    camera = new B.ArcRotateCamera('cam', Math.PI / 2, Math.PI / 2, 5, V(0, 1, 3), scene);
+    window.__expectedConvergence = 5; window.__expectedConvergenceSource = 'target';
+  } else if (camKind === 'universal') {
+    camera = new B.UniversalCamera('cam', V(0, 1, 8), scene);
+    camera.setTarget(V(0, 1, 3));
+    window.__expectedConvergence = 5; window.__expectedConvergenceSource = 'target';
+  } else {
+    camera = new B.FreeCamera('cam', V(0, 1, 8), scene);
+    camera.rotation.y = scene.useRightHandedSystem ? 0 : Math.PI; // look down -Z (left-handed: +Z is forward)
+    window.__expectedConvergence = 8; window.__expectedConvergenceSource = 'estimator';
+  }
+  camera.fov = (40 * Math.PI) / 180;
+  camera.minZ = 0.1; camera.maxZ = 100;
+  if (q.get('ortho') === '1') {
+    camera.mode = B.Camera.ORTHOGRAPHIC_CAMERA;
+    camera.orthoLeft = -4; camera.orthoRight = 4; camera.orthoTop = 2.25; camera.orthoBottom = -2.25;
+  }
+  if (q.get('two') === '1') {
+    const ui = new B.FreeCamera('ui', V(0, 5, 0), scene);
+    ui.viewport = new B.Viewport(0.75, 0.75, 0.25, 0.25);
+    scene.activeCameras = [camera, ui];
+  }
+  new B.HemisphericLight('sky', V(0, 1, 0), scene).intensity = 0.6;
+  const sun = new B.DirectionalLight('sun', V(-0.5, -1, -0.3), scene);
+  sun.intensity = 0.9;
+  const mat = (r, g, b) => { const m = new B.StandardMaterial('m', scene); m.diffuseColor = new B.Color3(r, g, b); m.specularColor = new B.Color3(0.2, 0.2, 0.2); return m; };
+  const put = (mesh, m, x, y, z) => { mesh.material = m; mesh.position.set(x, y, z); return mesh; };
+  put(B.MeshBuilder.CreateTorus('torus', { diameter: 2.2, thickness: 0.6, tessellation: 48 }, scene), mat(1, 0.48, 0.18), 0, 1, 0).rotation.x = Math.PI / 2.5;
+  put(B.MeshBuilder.CreateBox('boxL', { size: 0.6 }, scene), mat(0.18, 0.7, 1), -1.8, 1, 0);
+  put(B.MeshBuilder.CreateBox('boxR', { size: 0.6 }, scene), mat(0.18, 0.7, 1), 1.8, 1, 0);
+  put(B.MeshBuilder.CreateSphere('sphN', { diameter: 0.7 }, scene), mat(0.62, 1, 0.29), 0, 1, 1.8);
+  put(B.MeshBuilder.CreateSphere('sphF', { diameter: 0.7 }, scene), mat(0.62, 1, 0.29), 0, 1, -1.8);
+  if (q.get('fx') === 'ssao') {
+    const ssao = new B.SSAO2RenderingPipeline('ssao', scene, { ssaoRatio: 1, blurRatio: 1 }, [camera], true);
+    ssao.totalStrength = 1.4; ssao.radius = 1.5; ssao.samples = 16;
+  } else if (q.get('fx') === 'taa') {
+    const taa = new B.TAARenderingPipeline('taa', scene, [camera]);
+    taa.samples = 8;
+  } else if (q.get('fx')) {
+    const p = new B.DefaultRenderingPipeline('fx', true, scene, [camera]);
+    p.bloomEnabled = true; p.bloomThreshold = 0.6; p.bloomWeight = 0.4;
+    p.fxaaEnabled = true;
+    p.imageProcessingEnabled = true;
+    if (q.get('fx') === 'dof') { p.depthOfFieldEnabled = true; p.depthOfField.focusDistance = 5000; }
+  }
+  if (q.get('ss') === '1') {
+    const sm = gpu ? new B.ShaderMaterial('ss', scene, { // WGSL on WebGPU (GLSL would need the CDN's glslang / twgsl)
+      vertexSource: 'attribute position: vec3<f32>; uniform worldViewProjection: mat4x4<f32>;\n@vertex\nfn main(input: VertexInputs) -> FragmentInputs { vertexOutputs.position = uniforms.worldViewProjection * vec4<f32>(vertexInputs.position, 1.0); }',
+      fragmentSource: 'uniform renderTargetSize: vec2<f32>;\n@fragment\nfn main(input: FragmentInputs) -> FragmentOutputs { fragmentOutputs.color = vec4<f32>(fragmentInputs.position.x / uniforms.renderTargetSize.x, 0.15, 0.15, 1.0); }',
+    }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'], shaderLanguage: B.ShaderLanguage.WGSL }) : new B.ShaderMaterial('ss', scene, {
+      vertexSource: 'precision highp float; attribute vec3 position; uniform mat4 worldViewProjection; void main(void) { gl_Position = worldViewProjection * vec4(position, 1.0); }',
+      fragmentSource: 'precision highp float; uniform vec2 renderTargetSize; void main(void) { gl_FragColor = vec4(gl_FragCoord.x / renderTargetSize.x, 0.15, 0.15, 1.0); }',
+    }, { attributes: ['position'], uniforms: ['worldViewProjection', 'renderTargetSize'] });
+    sm.onBind = () => { const e = sm.getEffect(); if (e) e.setFloat2('renderTargetSize', engine.getRenderWidth(), engine.getRenderHeight()); };
+    sm.backFaceCulling = false;
+    const back = B.MeshBuilder.CreatePlane('backdrop', { width: 60, height: 40 }, scene);
+    back.material = sm; back.position.set(0, 1, -12);
+  }
+  if (q.get('vp') === '1') {
+    camera.viewport = new B.Viewport(0, 0.4, 1, 0.6);
+    const mk = B.MeshBuilder.CreateSphere('marker', { diameter: 0.3 }, scene);
+    const mm = new B.StandardMaterial('mm', scene); mm.disableLighting = true; mm.emissiveColor = new B.Color3(1, 0, 1); mm.diffuseColor = new B.Color3(0, 0, 0);
+    mk.material = mm; mk.position.set(0, 2.3, 1.8);
+    window.__markerY = () => {
+      const p = B.Vector3.TransformCoordinates(mk.getAbsolutePosition(), camera.getViewMatrix().multiply(camera.getProjectionMatrix()));
+      const H = engine.getRenderHeight(), vp = camera.viewport;
+      return (1 - p.y) / 2 * vp.height * H + (1 - vp.y - vp.height) * H; // top-origin px
+    };
+  }
+  if (q.get('gui') === '1') {
+    const ui = B.GUI.AdvancedDynamicTexture.CreateFullscreenUI('ui', true, scene);
+    const label = new B.GUI.TextBlock('label', 'auto-3D GUI');
+    label.color = 'white'; label.fontSize = 28; label.top = '-40%';
+    ui.addControl(label);
+  }
+  // Test hooks (cases/pivot.mjs): the page camera's world matrix in the RUNTIME's convention (the eye
+  // looks down -Z: world x diag(1, 1, -1) for a left-handed scene), an orbit about the ArcRotateCamera's
+  // target, a first-person turn of a FreeCamera, and the orbit target.
+  window.__camWorld = () => {
+    const m = Array.from(camera.getWorldMatrix().m);
+    if (!scene.useRightHandedSystem) for (const k of [8, 9, 10, 11]) m[k] = -m[k];
+    return m;
+  };
+  window.__orbit = (rad) => { camera.alpha += rad; };
+  window.__yaw = (rad) => { camera.rotation.y += rad; };
+  window.__target = () => (camera.target ? [camera.target.x, camera.target.y, camera.target.z] : null);
+  window.__engine = engine; window.__scene = scene;
+  if (gpu) {
+    const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width'), CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+    window.__grabFrame = () => new Promise((res) => {
+      scene.onAfterRenderObservable.addOnce(() => {
+        engine.flushFramebuffer();
+        const w = CW.get.call(canvas), h = CH.get.call(canvas);
+        const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+        const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+        const d = g.getImageData(0, 0, w, h).data;
+        let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
+        res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+      });
+      engine.beginFrame(); scene.render(); engine.endFrame();
+    });
+  }
+  const freeze = +(q.get('freeze') || 60);
+  let n = 0;
+  window.__pageFrames = 0;
+  engine.runRenderLoop(() => {
+    scene.render();
+    window.__pageFrames = ++n;
+    if (n >= freeze) { engine.stopRenderLoop(); window.__frozen = true; }
+  });
+  window.addEventListener('resize', () => engine.resize());
+})();
+</script>
+</body></html>
