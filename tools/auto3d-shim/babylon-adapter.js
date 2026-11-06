@@ -149,7 +149,7 @@ function dxrBabylon(core) {
     Object.assign(st, {
       eng: engine, scene: null, lastScene: null, cam: null, rigOn: null, eyes: null, qualify: null,
       L: { w: realW(canvas), h: realH(canvas), pr: 1 }, // what the PAGE believes: its own store, in pixels
-      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
+      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
       tmp: { mrh: new Float64Array(16), e: new Float64Array(16), p: new Float64Array(16) },
     });
     engines.set(engine, st);
@@ -364,7 +364,7 @@ function dxrBabylon(core) {
         detection: via.get(st.eng), version: engineVersion(st), device: st.eng.isWebGPU ? 'webgpu' : 'webgl' + (st.eng.webGLVersion || ''),
         camera: st.cam ? `${st.cam.name} (${className(st.cam)})` : null, rigOn: st.rigOn ? st.rigOn.name : null,
         handedness: st.scene ? (st.scene.useRightHandedSystem ? 'right' : 'left') : null, reverseDepth: !!st.eng.useReverseDepthBuffer,
-        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, eyeTargets: !!st.eyeTargetsOn,
+        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, eyeTargets: !!st.eyeTargetsOn,
         hwScale: hwLevel(st), scale: st.scale || 1, followsResize: st.follows, pixelGui: st.pxGui, postProcesses: st.cam ? (st.cam._postProcesses || []).filter(Boolean).length : 0,
         surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null, autoRender: st.frame.idle < 2,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].__dxrP.m) : null, // what the engine draws eye 0 with
@@ -446,6 +446,7 @@ function dxrBabylon(core) {
     const st = engines.get(engine);
     if (!st || !st.active || st.scene !== scene || !st.eyes || (cam !== st.eyes[0] && cam !== st.eyes[1])) return;
     if (st.rigOn && scene.postProcessesEnabled !== false && (cam._postProcesses || []).some(Boolean)) cam.viewport = st.rigOn.viewport;
+    eyeRenderTargets(st, scene);
     if (cam !== st.eyes[1]) return;
     const gbr = scene._geometryBufferRenderer;
     if (!gbr || core.T.bjsGBuffer === false || core.T.bjsGBuffer === 'shared' || !scene._renderTargets || typeof gbr.getGBuffer !== 'function') return;
@@ -454,6 +455,26 @@ function dxrBabylon(core) {
       iblHistory(engine, scene, cam);
       if (!st.gbufEyes++) info('geometry buffer drawn again for the right eye (EXPERIMENTAL): GI / IBL shadows / SSAO / SSR see each eye\'s own view');
     } catch (e) { warnOnce('bjs-gbuf', 'could not draw the geometry buffer for the right eye', e); }
+  }
+  // Render targets the page draws from its camera: scene.customRenderTargets with no camera of their own,
+  // redrawn every frame (a screen-space refraction texture, a mirror). The scene draws them ONCE per frame,
+  // with the page camera, before any camera's pass; a material that samples one at gl_FragCoord then shows
+  // both eyes the same mono picture (Nike By You's translucent parts sample its 'shared_refraction_texture':
+  // panel 2026-11-06, a flat "transparent texture" on the shoe). Queued into each eye's pass, as the G-buffer
+  // above, they are drawn again with that eye's view right after this observable. The mono draw stays (the
+  // page may read it between frames). T.bjsCustomRT false (TEST ONLY, A/B): not drawn again.
+  function eyeRenderTargets(st, scene) {
+    const list = scene.customRenderTargets;
+    if (!list || !list.length || core.T.bjsCustomRT === false || !scene._renderTargets) return;
+    try {
+      const names = [];
+      for (const rt of list) {
+        if (!rt || rt.activeCamera || rt.refreshRate !== 1 || (rt.renderList && !rt.renderList.length)) continue;
+        scene._renderTargets.pushNoDuplicate(rt);
+        names.push(rt.name || '?');
+      }
+      if (names.length && !st.rtEyes++) info(`render target(s) the page draws from its camera, drawn again for each eye: ${names.slice(0, 4).join(', ')}`);
+    } catch (e) { warnOnce('bjs-customrt', "could not draw the page's render targets for each eye", e); }
   }
   // IBL shadows' temporal accumulation (IblShadowsAccumulationPass): its output is drawn after EVERY
   // G-buffer draw (so per eye), but its history (oldAccumulationRT = the last output, oldLocalPositionRT
@@ -633,9 +654,11 @@ function dxrBabylon(core) {
   // shadow differed between the eyes), and so would GIRSM's plugin without a chain, depth peeling, a
   // transmission pass. In its own target the eye's gl_FragCoord and getRenderWidth() are the eye's.
   // MSAA as the canvas has it. Built from the page's own PostProcess class and our copy shaders
-  // (eyePassShader: GLSL, or WGSL on WebGPU); attached once ready. No PostProcess class reachable (a
-  // tree-shaken ESM bundle with no post-process at all): the eyes keep drawing straight into their
-  // halves. T.bjsEyeTarget false: A/B.
+  // (eyePassShader: GLSL, or WGSL on WebGPU); attached once ready. No PostProcess class or no compiled
+  // Effect reachable yet (the page went live before its first material compiled: Nike By You on a fast
+  // load, panel 2026-11-06): tried again about once a second, for a minute; until then, and after that
+  // in a tree-shaken ESM bundle with no post-process at all, the eyes draw straight into their halves.
+  // T.bjsEyeTarget false: A/B.
   function postProcessClass(st, scene) {
     if (bjsNS && typeof bjsNS.PostProcess === 'function') return bjsNS.PostProcess;
     const seen = [...(scene.postProcesses || [])];
@@ -685,12 +708,19 @@ function dxrBabylon(core) {
     }
     return -1;
   }
+  const EYE_TARGET_TRIES = 60;
   function makeEyeTargets(st, scene) {
     if (st.eyeTargets !== undefined || core.T.bjsEyeTarget === false) return;
     st.eyeTargets = null;
     const PP = postProcessClass(st, scene);
     const lang = PP ? eyePassShader(scene) : -1;
-    if (!PP || lang < 0) { info(`eye targets: ${PP ? 'no Effect class' : 'no PostProcess class'} reachable — the eyes draw straight into their halves (screen-space lookups keyed to the canvas may misplace)`); return; }
+    if (!PP || lang < 0) {
+      const n = (st.eyeTargetTries = (st.eyeTargetTries || 0) + 1);
+      if (n < EYE_TARGET_TRIES) { st.eyeTargets = undefined; st.eyeTargetRetryAt = core.now() + 1000; }
+      if (n === 1 || n === EYE_TARGET_TRIES) info(`eye targets: ${PP ? 'no Effect class' : 'no PostProcess class'} reachable${n < EYE_TARGET_TRIES ? ' yet (trying again each second, for a minute)' : ' after a minute'} — the eyes draw straight into their halves (screen-space lookups keyed to the canvas may misplace)`);
+      return;
+    }
+    if (st.eyeTargetTries) info(`eye targets: made on try ${st.eyeTargetTries + 1}`);
     const eng = scene.getEngine();
     let samples = 1;
     try { const aa = eng.getCreationOptions && eng.getCreationOptions().antialias; samples = aa && (eng.isWebGPU || eng.webGLVersion > 1) ? Math.min(4, (eng.getCaps().maxMSAASamples) || 1) : 1; } catch (e) { samples = 1; }
@@ -707,6 +737,7 @@ function dxrBabylon(core) {
   // Attached once their pass shader is ready (until then, and if it never is, the eyes draw straight
   // into their halves); sized every frame to the eye's viewport in pixels.
   function syncEyeTargets(st) {
+    if (st.eyeTargets === undefined && st.eyeTargetRetryAt && st.rigOn && core.now() >= st.eyeTargetRetryAt) makeEyeTargets(st, st.rigOn.getScene());
     const T = st.eyeTargets, cam = st.rigOn;
     if (!T || !st.eyes || !cam) return;
     const W = realW(st.canvas), H = realH(st.canvas);
@@ -726,7 +757,7 @@ function dxrBabylon(core) {
   }
   function disposeEyeTargets(st) {
     const T = st.eyeTargets;
-    st.eyeTargets = undefined; st.eyeTargetsOn = false;
+    st.eyeTargets = undefined; st.eyeTargetsOn = false; st.eyeTargetTries = 0; st.eyeTargetRetryAt = 0;
     if (st.eyes) for (const e of st.eyes) { e._rigPostProcess = null; e._postProcesses = []; }
     if (T) for (const pp of T) { try { pp.dispose(); } catch (e) { /* ignore */ } }
   }
