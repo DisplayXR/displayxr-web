@@ -1480,7 +1480,10 @@ Full pass with the three.js and PlayCanvas cases: see the PR.
     builder UI;
   - works normally, rotating and customizing included, with the eye targets. Before them the eyes looked
     subtly different ("see-through").
-- **Not seen yet.** WebGPU pages, a fullscreen GUI, gizmos.
+- **WebGPU** (the playground's `?webgpu`: `WebGPUEngine`, found by the `_context` trap, the WGSL eye
+  pass): the default scene, `?webgpu#8R5SSE#587` (IBL shadows) and `?webgpu#VW8IG3#156` (GIRSM) all
+  read right.
+- **Not seen yet.** A fullscreen GUI, gizmos.
 
 **Not verified.** Babylon 7.x / 8.x on the panel (headless: green on 7.54.3 and 8.56.2; the panel saw
 9.6.2 and 9.33.3). The corpus (`corpus/sites.json`, `babylon-playground` and `babylon-home` now in the
