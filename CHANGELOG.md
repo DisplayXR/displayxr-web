@@ -7,12 +7,20 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.51.0 — 2026-11-08
+
 ### Added — `./call`: `openTabShare()`, share a browser tab in 3D
 
 Opens the browser's tab picker and returns a track for `shareContent`. In a DisplayXR Browser with
-stereo tab capture, a picked tab comes back as a true side-by-side track, so receivers need nothing
-new; a window, a screen or any other browser comes back flat. Needs `MediaStreamTrackProcessor` for
-the stereo path.
+stereo tab capture (1.9.4+), a picked tab comes back as a true side-by-side track, so receivers need
+nothing new; a window, a screen or any other browser comes back flat. Needs
+`MediaStreamTrackProcessor` for the stereo path.
+
+### Fixed — `./splat` (`engine: 'playcanvas'`): no false "footprint fix SKIPPED" warning on PlayCanvas 2.23
+
+Preview tier. PlayCanvas 2.23 fixed the side-by-side splat footprint upstream, so the SDK now
+leaves that shader chunk untouched there instead of warning that splats will draw at half height.
+2.22.3 is still patched as before, and remains the only version validated on a panel.
 
 ## 1.50.0 — 2026-11-04
 
