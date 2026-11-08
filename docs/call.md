@@ -389,6 +389,10 @@ call.on('content', ({ id, on, appName }) => {
 });
 ```
 
+A browser tab shares the same way: `const tab = await openTabShare();` opens the browser's tab
+picker (its consent), then `call.shareContent(tab.stream, tab.descriptor)`. `tab.stereo` says
+whether it came back side-by-side; a window or a screen comes back flat.
+
 - **Discovery.** The DisplayXR Browser lists each shareable app as a camera-like `videoinput`
   labelled `DisplayXR: <app> (3D)` (device id `dxr-app:…`, runtime ADR-061). `listShareableApps()`
   / `watchShareableApps(cb)` filter them out of `enumerateDevices()`; `isAppShareDevice(device)`

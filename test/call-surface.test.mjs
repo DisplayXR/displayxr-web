@@ -41,9 +41,9 @@ function captureWarn(fn) {
   }
 }
 
-test('the public surface: 13 public value exports + the 38 deprecated wrappers, and nothing else', () => {
+test('the public surface: 14 public value exports + the 38 deprecated wrappers, and nothing else', () => {
   const names = Object.keys(mod).sort();
-  const pub = ['CALL_EVENT_PREFIX', 'DXR_SIGNAL_DEFAULT', 'DxrCallElement', 'addCall', 'attrsToOpts', 'defineCallElement', 'dxrSignaling', 'isAppShareDevice', 'listShareableApps', 'mountCall', 'openAppShare', 'parseInviteLink', 'watchShareableApps'];
+  const pub = ['CALL_EVENT_PREFIX', 'DXR_SIGNAL_DEFAULT', 'DxrCallElement', 'addCall', 'attrsToOpts', 'defineCallElement', 'dxrSignaling', 'isAppShareDevice', 'listShareableApps', 'mountCall', 'openAppShare', 'openTabShare', 'parseInviteLink', 'watchShareableApps'];
   assert.deepEqual(names, [...pub, ...DEPRECATED_CALL_EXPORTS].sort());
   assert.equal(DEPRECATED_CALL_EXPORTS.length, 38);
   assert.equal(mod.peerjsCloud, undefined, 'Decision 12: gone outright');
