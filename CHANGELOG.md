@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.51.1 — 2026-11-09
+
 ### Fixed — `./call`: `listShareableApps()` no longer lists stereo cameras as apps
 
 With two runtime stereo cameras (for example two 3D screens) and no app running, a DisplayXR Browser
