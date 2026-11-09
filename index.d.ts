@@ -45,6 +45,21 @@ export interface TileOptions {
    * callback can show for one frame.
    */
   rectCover?: RectCoverOption;
+  /**
+   * Declare that this window's picture is the same wherever the viewer stands — a stereo photo or
+   * video, a flat UI — as opposed to a live 3D scene, where look-around is the point. Default
+   * `true` on `addImage` / `addVideo` (and everything built on them: `./player`, `./camera`),
+   * `false` on `addScene` (and `./viewer`, `./splat`, `./model`).
+   *
+   * While EVERYTHING the foreground tab shows is viewer-independent, the DisplayXR Browser asks the
+   * runtime for views of the display's nominal viewer instead of tracked ones (runtime
+   * `XR_DXR_display_info` v25, `XrViewLocateFixedViewerDXR`), so a viewer tracker — a webcam on a
+   * display that does not track by itself — is never started for the page. A display that tracks
+   * by itself keeps weaving to its own eye positions. Advisory: nothing the SDK paints changes,
+   * and a browser without the capability ({@link inline3dViewerIndependentSupported}) never
+   * receives it. Replaceable with {@link TileHandle.setViewerIndependent}.
+   */
+  viewerIndependent?: boolean;
 }
 
 /** See {@link TileOptions.rectCover}. */
@@ -440,6 +455,15 @@ export interface TileHandle {
    * walk out of 2D, and the 2-view mode going active restores exactly this rig.
    */
   setViewRig(rig: XRViewRigInit): boolean;
+  /** This window's viewer-independence declaration ({@link TileOptions.viewerIndependent}). */
+  readonly viewerIndependent: boolean;
+  /**
+   * Replace this window's viewer-independence declaration ({@link TileOptions.viewerIndependent}),
+   * e.g. when a tile switches from a stereo video to a live scene. Returns whether a **live**
+   * layer took it; the value is stored either way and builds the next layer. Advisory: never
+   * changes what the SDK paints.
+   */
+  setViewerIndependent(viewerIndependent: boolean): boolean;
   /**
    * The panel this window weaves on, or `null` where there is no glasses-free display.
    *
@@ -912,6 +936,14 @@ export function inline3dOcclusionByDrawOrder(): boolean;
 export function inline3dViewRigSupported(): boolean;
 
 /**
+ * True when this browser takes the viewer-independence declaration
+ * ({@link TileOptions.viewerIndependent}, {@link TileHandle.setViewerIndependent}). Reads the
+ * presence of `XRDisplayLayer.setViewerIndependent`. A page never needs to branch on it: the
+ * declaration is advisory and harmless where it is not sent.
+ */
+export function inline3dViewerIndependentSupported(): boolean;
+
+/**
  * True when this browser exposes the DISPLAY-MODE API — {@link TileHandle.getDisplayInfo},
  * {@link TileHandle.getRenderingModes} and {@link TileHandle.requestRenderingMode}. Sync + cheap;
  * implies {@link inline3DAvailable}.
@@ -1011,6 +1043,12 @@ export interface XRDisplayLayer {
    * all on the browser that has it.
    */
   setViewRig?(rig: XRViewRigInit): void;
+  /**
+   * Declare whether this layer's picture depends on the viewer's position (also an
+   * `XRDisplayLayerInit` member, `viewerIndependent`). Optional; same probe rule as `setViewRig`
+   * ({@link inline3dViewerIndependentSupported}).
+   */
+  setViewerIndependent?(viewerIndependent: boolean): void;
   /**
    * The display-mode API. All three optional for the same reason as `setViewRig`: their presence
    * on the prototype IS the capability signal ({@link inline3dDisplayModesSupported}), and the

@@ -1227,6 +1227,48 @@ wall.on('trackingstatechange', (state) => {
 MANAGED display skip this; the runtime already eases the views together, and a scene renders
 from the views.
 
+## Viewer-independent content — keeping the camera off
+
+A stereo photo or a stereo video looks the same wherever the viewer stands: it is a fixed image
+pair. A live 3D scene is not — look-around is the point. The runtime cannot tell the two apart
+(every page asks it for views), so a page **declares** it, and the DisplayXR Browser forwards the
+declaration to the runtime (`XR_DXR_display_info` v25, `XrViewLocateFixedViewerDXR`).
+
+```js
+wall.addVideo(canvas, video);                                  // viewerIndependent: true (default)
+wall.addImage(canvas, 'pair.jpg');                             // viewerIndependent: true (default)
+const scene = wall.addScene(canvas, onFrame);                  // viewerIndependent: false (default)
+wall.addScene(canvas2, drawPrerenderedPair, { viewerIndependent: true }); // a scene canvas that only plays a fixed pair
+scene.setViewerIndependent(false);                             // change it later; returns whether a live layer took it
+```
+
+What it does: while **every** window the page shows is viewer-independent, the browser asks the
+runtime for the display's nominal viewer instead of the tracked one. On a display that does not
+track the viewer by itself, that means a viewer tracker (a webcam) is **never started** just to
+play a movie. One window that is not viewer-independent (a scene) keeps the whole page tracked, so
+mixing a photo with a scene never costs the scene its look-around. A display that tracks the
+viewer by itself keeps weaving to the viewer's eyes either way.
+
+Rules:
+
+- **It is a declaration, never a constraint.** Nothing the SDK paints changes, and nothing is
+  prevented. Get it wrong in the `true` direction and a scene stops following the head; in the
+  `false` direction, the camera turns on for nothing.
+- **Defaults:** `true` for `addImage` / `addVideo` and everything built on them (`./player`,
+  `./camera`); `false` for `addScene` and everything built on it (`./viewer`, `./splat`,
+  `./model`). Under `createInline3D({ untrackedFallback: 'mono' })` image and video windows
+  default to `false` too: that option follows the viewer's tracking state, and a viewer-
+  independent page locates for no viewer, so its `trackingState` would not move.
+- **While the page is viewer-independent its `trackingState` stops updating** (it keeps its last
+  value): the runtime is not being asked about a viewer. Do not drive a "step back into view" hint
+  off it on a pure video page.
+- **Capability:** `inline3dViewerIndependentSupported()` (the presence of
+  `XRDisplayLayer.prototype.setViewerIndependent`). You never need to branch on it — on an older
+  browser or runtime the declaration is simply not sent and the page behaves as before.
+
+Raw WebXR spelling: `new XRDisplayLayer(session, canvas, { viewerIndependent: true })` and
+`layer.setViewerIndependent(bool)`.
+
 ## A cursor that respects depth
 
 **On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
