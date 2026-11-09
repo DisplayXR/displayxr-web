@@ -1518,8 +1518,8 @@ WebGPU check survives a small `Error.stackTraceLimit`), Windows, ANGLE D3D11 + W
     `#VW8IG3#156` (GI, 49-60 fps), `#8R5SSE#587` (IBL shadows) on WebGL and on `?webgpu`, Nike By
     You, and a three.js page and a PlayCanvas page.
   - The v0.7.2 dev build on `#VW8IG3#156` logs `render target RSMmrt_spotLight draws from a view of its
-    own …`. The GI looks the same, and the frame rate is about the same: the RSM there is 1/8 of the
-    render size each way, so its two extra draws were cheap.
+    own …` and converts at about the same frame rate: the RSM there is 1/8 of the render size each way,
+    so its two extra draws were cheap.
 
 **Headless, v0.7.1 (the Babylon trap only for Babylon's getContext, from David's review of #252; eye targets
 retried; the page's render targets per eye), Windows, ANGLE D3D11 + WebGPU:** 8 new cases in
