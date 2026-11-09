@@ -31,6 +31,10 @@
                           material has compiled when the shim goes live (Nike By You on a fast load)
        refr=1             a window in front of the scene showing it through a render target sampled at
                           gl_FragCoord (screen-space refraction), the target in scene.customRenderTargets
+       lightrt=1          a render target in scene.customRenderTargets drawn from a fixed view of its own (set in
+                          onBeforeRender, restored after, as Babylon's ReflectiveShadowMap draws from its light).
+                          window.__lightPerFrame: its draws in each of the scene's frames
+       stl=N              Error.stackTraceLimit = N before the engine is made; window.__stlAfter: the limit after
        freeze=N           stop the render loop after N frames (default 60): from then on it draws nothing
                           (render on demand), window.__frozen = true
      The meshes are symmetric about (0, 1, 0), 8 units in front of the camera. -->
@@ -50,6 +54,7 @@
   const opts = { preserveDrawingBuffer: true, stencil: true, antialias: false, useReverseDepthBuffer: q.get('reverse') === '1' };
   let engine;
   const gpu = q.get('gpu') === '1';
+  if (q.has('stl')) Error.stackTraceLimit = +q.get('stl');
   if (gpu) {
     engine = new B.WebGPUEngine(canvas, { antialias: false, stencil: true, useReverseDepthBuffer: opts.useReverseDepthBuffer });
     await engine.initAsync();
@@ -58,6 +63,7 @@
     await new Promise((r) => setTimeout(r, 30)); // a later task: the constructor trap is gone
     engine = new B.Engine(gl, false, opts);
   } else engine = new B.Engine(canvas, false, opts);
+  window.__stlAfter = Error.stackTraceLimit;
   if (opts.useReverseDepthBuffer) engine.useReverseDepthBuffer = true; // the engine option is 9.x's; the property works on 7.x / 8.x too
   const scene = new B.Scene(engine);
   scene.useRightHandedSystem = q.get('rh') === '1';
@@ -136,6 +142,19 @@
     const win = B.MeshBuilder.CreatePlane('window', { width: 0.9, height: 0.5 }, scene);
     win.material = wm; win.position.set(0, 1, 5.5);
     rt.renderList = scene.meshes.filter((m) => m !== win);
+  }
+  if (q.get('lightrt') === '1') {
+    // A render target drawn from a fixed view of its own, the same whoever looks: the view is set in
+    // onBeforeRender and the camera's put back after, as Babylon's ReflectiveShadowMap does for its light.
+    const lr = new B.RenderTargetTexture('lightview', 256, scene, false);
+    lr.renderList = scene.meshes.slice();
+    const lv = B.Matrix.LookAtLH(V(4, 8, 4), V(0, 1, 0), V(0, 1, 0)), lp = B.Matrix.OrthoLH(8, 8, 0.1, 30);
+    lr.onBeforeRenderObservable.add(() => scene.setTransformMatrix(lv, lp));
+    lr.onAfterUnbindObservable.add(() => scene.updateTransformMatrix());
+    let n = 0; window.__lightPerFrame = [];
+    lr.onAfterRenderObservable.add(() => { n++; });
+    scene.onAfterRenderObservable.add(() => { window.__lightPerFrame.push(n); n = 0; });
+    scene.customRenderTargets.push(lr);
   }
   if (q.get('fx') === 'ssao') {
     const ssao = new B.SSAO2RenderingPipeline('ssao', scene, { ssaoRatio: 1, blurRatio: 1 }, [camera], true);

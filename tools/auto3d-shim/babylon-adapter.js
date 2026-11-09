@@ -149,7 +149,7 @@ function dxrBabylon(core) {
     Object.assign(st, {
       eng: engine, scene: null, lastScene: null, cam: null, rigOn: null, eyes: null, qualify: null,
       L: { w: realW(canvas), h: realH(canvas), pr: 1 }, // what the PAGE believes: its own store, in pixels
-      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
+      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, rtProbes: new Map(), rtFrame: 0, rtFixed: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
       tmp: { mrh: new Float64Array(16), e: new Float64Array(16), p: new Float64Array(16) },
     });
     engines.set(engine, st);
@@ -364,7 +364,7 @@ function dxrBabylon(core) {
         detection: via.get(st.eng), version: engineVersion(st), device: st.eng.isWebGPU ? 'webgpu' : 'webgl' + (st.eng.webGLVersion || ''),
         camera: st.cam ? `${st.cam.name} (${className(st.cam)})` : null, rigOn: st.rigOn ? st.rigOn.name : null,
         handedness: st.scene ? (st.scene.useRightHandedSystem ? 'right' : 'left') : null, reverseDepth: !!st.eng.useReverseDepthBuffer,
-        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, eyeTargets: !!st.eyeTargetsOn,
+        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, customRtOwnView: st.rtFixed || 0, eyeTargets: !!st.eyeTargetsOn,
         hwScale: hwLevel(st), scale: st.scale || 1, followsResize: st.follows, pixelGui: st.pxGui, postProcesses: st.cam ? (st.cam._postProcesses || []).filter(Boolean).length : 0,
         surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null, autoRender: st.frame.idle < 2,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].__dxrP.m) : null, // what the engine draws eye 0 with
@@ -446,7 +446,7 @@ function dxrBabylon(core) {
     const st = engines.get(engine);
     if (!st || !st.active || st.scene !== scene || !st.eyes || (cam !== st.eyes[0] && cam !== st.eyes[1])) return;
     if (st.rigOn && scene.postProcessesEnabled !== false && (cam._postProcesses || []).some(Boolean)) cam.viewport = st.rigOn.viewport;
-    eyeRenderTargets(st, scene);
+    eyeRenderTargets(st, scene, cam === st.eyes[0] ? 0 : 1);
     if (cam !== st.eyes[1]) return;
     const gbr = scene._geometryBufferRenderer;
     if (!gbr || core.T.bjsGBuffer === false || core.T.bjsGBuffer === 'shared' || !scene._renderTargets || typeof gbr.getGBuffer !== 'function') return;
@@ -462,19 +462,75 @@ function dxrBabylon(core) {
   // both eyes the same mono picture (Nike By You's translucent parts sample its 'shared_refraction_texture':
   // panel 2026-11-06, a flat "transparent texture" on the shoe). Queued into each eye's pass, as the G-buffer
   // above, they are drawn again with that eye's view right after this observable. The mono draw stays (the
-  // page may read it between frames). T.bjsCustomRT false (TEST ONLY, A/B): not drawn again.
-  function eyeRenderTargets(st, scene) {
+  // page may read it between frames: Babylon's GPUPicker reads its picking texture right after that draw).
+  // T.bjsCustomRT false (TEST ONLY, A/B): not drawn again.
+  //
+  // Some of these set a view of their own in onBeforeRender, one that no eye changes: Babylon's
+  // ReflectiveShadowMap (GIRSMManager's MRT, drawn from the light), a cube probe. Drawn again per eye they
+  // repeat the mono draw at twice its cost and fire their observables twice more (#253 review). A probe
+  // reads the view each queued target is drawn with in each eye's pass (after every onBeforeRender
+  // observer): when both eyes drew it with the same view, neither eye's own, while the eyes' views differ,
+  // 3 frames running, the target is left to the scene's single draw (v0.7.2). A mirror (a view of its own,
+  // but the reflected eye's) and a screen-space refraction (the eye's view) stay per eye.
+  // T.bjsCustomRTOwnView false (TEST ONLY, A/B): every target drawn per eye, as v0.7.1.
+  const RT_OWN_VIEW_FRAMES = 3;
+  function eyeRenderTargets(st, scene, eye) {
     const list = scene.customRenderTargets;
     if (!list || !list.length || core.T.bjsCustomRT === false || !scene._renderTargets) return;
     try {
-      const names = [];
+      if (eye === 0) st.rtFrame++;
+      const names = [], probe = core.T.bjsCustomRTOwnView !== false;
       for (const rt of list) {
         if (!rt || rt.activeCamera || rt.refreshRate !== 1 || (rt.renderList && !rt.renderList.length)) continue;
+        if (probe && viewProbe(st, scene, rt).own) continue;
         scene._renderTargets.pushNoDuplicate(rt);
         names.push(rt.name || '?');
       }
       if (names.length && !st.rtEyes++) info(`render target(s) the page draws from its camera, drawn again for each eye: ${names.slice(0, 4).join(', ')}`);
     } catch (e) { warnOnce('bjs-customrt', "could not draw the page's render targets for each eye", e); }
+  }
+  // A view here is view and projection together (32 numbers): eyes may share a view and differ in their
+  // (skewed) projections only, and a light's draw sets both.
+  function sameM(a, b) {
+    for (let k = 0; k < 32; k++) if (Math.abs(a[k] - b[k]) > 1e-6) return false;
+    return true;
+  }
+  function readVP(out, v, p) {
+    for (let k = 0; k < 16; k++) { out[k] = v.m[k]; out[16 + k] = p.m[k]; }
+  }
+  function viewProbe(st, scene, rt) {
+    let p = st.rtProbes.get(rt);
+    if (p) return p;
+    const vp = () => new Float64Array(32);
+    p = { v: [vp(), vp()], e: [vp(), vp()], mine: [false, false], at: [-1, -1], same: 0, own: false, ob: null, obs: null };
+    st.rtProbes.set(rt, p);
+    // Right before the draw, after every onBeforeRender observer (ObjectRenderer, 7.x-9.x); else onBeforeRender.
+    const ob = (rt._objectRenderer && rt._objectRenderer.onBeforeRenderingManagerRenderObservable) || rt.onBeforeRenderObservable;
+    if (!ob || typeof ob.add !== 'function') return p;
+    p.ob = ob;
+    p.obs = ob.add((pass) => {
+      try {
+        if (pass || p.own || !st.eyes) return;
+        const cam = scene.activeCamera, i = cam === st.eyes[0] ? 0 : cam === st.eyes[1] ? 1 : -1;
+        if (i < 0) return; // the scene's own (mono) draw
+        const sv = scene.getViewMatrix(), sp = scene.getProjectionMatrix(), cv = cam.getViewMatrix(), cp = cam.getProjectionMatrix();
+        if (!sv || !sp || !cv || !cp || !sv.m || !sp.m || !cv.m || !cp.m) return;
+        readVP(p.v[i], sv, sp); readVP(p.e[i], cv, cp);
+        p.mine[i] = !sameM(p.v[i], p.e[i]);
+        p.at[i] = st.rtFrame;
+        if (i !== 1 || p.at[0] !== st.rtFrame) return;
+        const fixed = p.mine[0] && p.mine[1] && sameM(p.v[0], p.v[1]) && !sameM(p.e[0], p.e[1]);
+        p.same = fixed ? p.same + 1 : 0;
+        if (p.same < RT_OWN_VIEW_FRAMES) return;
+        p.own = true;
+        if (st.rtFixed++ < 4) info(`render target ${rt.name || '?'} draws from a view of its own, the same for both eyes (a light, a probe): drawn once, as the page does`);
+      } catch (e) { /* the probe only ever withholds a redraw */ }
+    });
+    return p;
+  }
+  function dropViewProbes(st) {
+    for (const p of st.rtProbes.values()) { try { if (p.ob && p.obs) p.ob.remove(p.obs); } catch (e) { /* ignore */ } }
+    st.rtProbes.clear();
   }
   // IBL shadows' temporal accumulation (IblShadowsAccumulationPass): its output is drawn after EVERY
   // G-buffer draw (so per eye), but its history (oldAccumulationRT = the last output, oldLocalPositionRT
@@ -799,6 +855,7 @@ function dxrBabylon(core) {
   function uninstallRig(st) {
     detachRig(st);
     disposeEyeTargets(st);
+    dropViewProbes(st);
     if (st.eyes) {
       for (const e of st.eyes) { e._postProcesses = []; try { e.dispose(); } catch (err) { /* ignore */ } }
       st.eyes = null;

@@ -436,12 +436,21 @@ function dxrSentinel(cfg, cap) {
   // from WebGPUEngine._initializeContextAndSwapChain (the only signal before it assigns _context). A stack
   // is taken only on a webgpu getContext, which Babylon makes once per engine and most pages once per
   // canvas. It is not cached per canvas, since a page may make a new engine on the same canvas.
+  // A page's small Error.stackTraceLimit (0 turns stacks off) would hide that frame and leave the page 2D:
+  // the limit is raised for this one Error (the call sits 4 frames down) and put back as the page had it
+  // (v0.7.2). A limit the page made read-only is left alone.
+  const STACK_FRAMES = 16;
   function bjsLikely(kind, attrs) {
     if (kind === 1) {
       try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
     }
-    let s = '';
-    try { s = String(new Err().stack || ''); } catch (e) { return false; }
+    let s = '', had = false, lim, raised = false;
+    try {
+      had = apply(hasOwn, Err, ['stackTraceLimit']); lim = Err.stackTraceLimit;
+      if (!(lim >= STACK_FRAMES)) { Err.stackTraceLimit = STACK_FRAMES; raised = Err.stackTraceLimit === STACK_FRAMES; }
+    } catch (e) { /* read-only: the page's limit */ }
+    try { s = String(new Err().stack || ''); } catch (e) { s = ''; }
+    if (raised) { try { if (had) Err.stackTraceLimit = lim; else delete Err.stackTraceLimit; } catch (e) { /* ignore */ } }
     return s.indexOf('_initializeContextAndSwapChain') >= 0;
   }
   const bjsKeys = new Set();

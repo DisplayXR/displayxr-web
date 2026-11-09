@@ -31,11 +31,15 @@
 //   bjs-block      product mode, user block: detect-only, one { off, Babylon.js } report
 //   bjs-refr       a customRenderTargets target sampled at gl_FragCoord (screen-space refraction): drawn again per eye;
 //                  bjs-refr-mono (A/B, bjsCustomRT false): both eyes see the mono picture through the window
+//   bjs-rt-own     v0.7.2: a customRenderTargets target drawn from a view of its own, the same for both eyes (as
+//                  Babylon's ReflectiveShadowMap draws from its light): drawn once per frame, the refraction target
+//                  next to it still per eye; bjs-rt-own-ab (A/B, bjsCustomRTOwnView false): drawn 3 times a frame
 //   bjs-ss-late    live before any material compiled: the eye targets are tried again each second and come on
 //   bjs-trap-clean a three.js page (WebGL, no Babylon): no `_gl` key on Object.prototype after the task, three converts
 //   bjs-scope-*    v0.7.1: the trap is armed only by a getContext that looks like Babylon's (counted from the page:
 //                  Object.defineProperty(Object.prototype, '_gl' | '_context')): 0 on three.js, PlayCanvas and a raw
-//                  WebGPU page; >= 1 on Babylon WebGL / WebGPU pages, which still convert
+//                  WebGPU page; >= 1 on Babylon WebGL / WebGPU pages, which still convert. bjs-scope-bjs-gpu-stl
+//                  (v0.7.2): the same WebGPU page with Error.stackTraceLimit = 0, which keeps its limit
 
 // Product mode: what the fake host recorded, and what the constructor trap left on Object.prototype.
 const readProduct = () => {
@@ -173,6 +177,25 @@ export default function cases({ P, NEW, productShim }) {
         const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
         t('control: not drawn per eye, and the pair does NOT match through the window (residual > 0.5)', R.customRtPerEye === 0 && sh.e > 0.5, `customRtPerEye ${R.customRtPerEye}, residual ${sh.e.toFixed(3)} at shift ${sh.s}`);
       } },
+    // A render target drawn from a view of its own, the same for both eyes (Babylon's ReflectiveShadowMap draws
+    // GIRSMManager's MRT from its light). Once both eyes have drawn it with that view it is left to the scene's
+    // single draw; the refraction target next to it, drawn from the camera, stays per eye.
+    { ...base, id: 'bjs-rt-own', name: "Babylon.js, a customRenderTargets target drawn from a view of its own (a light's): drawn once per frame; the refraction target still per eye", url: U + '?cam=arc&keep=1&refr=1&lightrt=1&freeze=200',
+      probe: '(() => window.__lightPerFrame.slice(-40))()',
+      alsoCheck(r, t, h, R) {
+        const last = r.probe || [];
+        t('the light target recognised (one target, logged)', R.customRtOwnView === 1 && r.log.some((l) => /render target lightview draws from a view of its own/.test(l)), `customRtOwnView ${R.customRtOwnView}; ${r.log.filter((l) => /view of its own/.test(l)).join(' | ')}`);
+        t('the light target drawn once per frame (the last 40 frames)', last.length === 40 && last.every((n) => n === 1), JSON.stringify(last));
+        t("the refraction target still drawn in the eyes' passes", R.customRtPerEye > 10, `customRtPerEye ${R.customRtPerEye}`);
+        const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
+        t('the pair matches tightly through the window: residual < 0.5', sh.e < 0.5, `residual ${sh.e.toFixed(3)} at shift ${sh.s}`);
+      } },
+    { ...base, id: 'bjs-rt-own-ab', name: 'A/B: the same, every target drawn per eye (bjsCustomRTOwnView false): the light target 3 times a frame', url: U + '?cam=arc&keep=1&refr=1&lightrt=1&freeze=200', cfg: { bjsCustomRTOwnView: false },
+      probe: '(() => window.__lightPerFrame.slice(-40))()',
+      alsoCheck(r, t, h, R) {
+        const last = r.probe || [];
+        t('control: not recognised, the light target drawn 3 times a frame', R.customRtOwnView === 0 && last.length === 40 && last.every((n) => n === 3), `customRtOwnView ${R.customRtOwnView}; ${JSON.stringify(last)}`);
+      } },
     { ...base, id: 'bjs-gbuf-shared', name: 'A/B: SSAO2 on the geometry buffer, converted WITHOUT the right eye\'s G-buffer (the left eye\'s reused)', url: U + '?cam=arc&fx=ssao', cfg: { bjsGBuffer: 'shared' },
       alsoCheck(r, t, h, R) {
         const sh = h.bestShift(r.pixels.px, r.pixels.w, r.pixels.h, R.eye[0], 64);
@@ -269,6 +292,7 @@ export default function cases({ P, NEW, productShim }) {
       ['bjs-scope-webgpu', 'a raw WebGPU page, no engine', P + 'plain-webgpu.html', '!!document.documentElement.dataset.gpuDone', true, null],
       ['bjs-scope-bjs', 'Babylon.js WebGL', U + '?cam=arc', 'window.__frozen', false, 'gl'],
       ['bjs-scope-bjs-gpu', 'Babylon.js WebGPUEngine', U + '?cam=arc&gpu=1', 'window.__frozen', true, 'context'],
+      ['bjs-scope-bjs-gpu-stl', 'Babylon.js WebGPUEngine, the page set Error.stackTraceLimit = 0', U + '?cam=arc&gpu=1&stl=0', 'window.__frozen', true, 'context'],
     ].map(([id, what, url, ready, webgpu, want]) => ({
       id, name: `product mode, trap scope: ${what} — ${want ? `the '_${want}' trap is armed, the page converts` : 'the trap is never armed'}`, url, webgpu,
       shim: [ARMS, ...productShim({ decision: 'allow' })],
@@ -276,7 +300,7 @@ export default function cases({ P, NEW, productShim }) {
         await page.waitForFunction(ready, { timeout: 30000, polling: 100 });
         if (want) await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((r) => r.status === 'live')); })()", { timeout: 30000, polling: 100 }).catch(() => {});
         else await h.sleep(1500);
-        return { arms: await page.evaluate(() => window.__bjsArms), X: await page.evaluate(readProduct) };
+        return { arms: await page.evaluate(() => window.__bjsArms), X: await page.evaluate(readProduct), stl: await page.evaluate(() => window.__stlAfter) };
       },
       check(r, t) {
         const A = r.arms || {}, H = r.X && r.X.host;
@@ -286,6 +310,7 @@ export default function cases({ P, NEW, productShim }) {
           t('went live, engine Babylon.js', H && H.reports.some((x) => x.status === 'live' && x.engine === 'Babylon.js'), JSON.stringify(H && H.reports));
         }
         t('nothing left on Object.prototype', r.X && r.X.protoGl === null && r.X.protoContext === null, JSON.stringify(r.X && { protoGl: r.X.protoGl, protoContext: r.X.protoContext }));
+        if (/stl=0/.test(url)) t("the page's Error.stackTraceLimit is still 0", r.stl === 0, `Error.stackTraceLimit after the engine: ${r.stl}`);
       },
     })),
     {
