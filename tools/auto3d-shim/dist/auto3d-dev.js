@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -364,12 +364,18 @@ function dxrSentinel(cfg, cap) {
     const c = signal('Babylon.js');
     if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
   }
+  const STACK_FRAMES = 16;
   function bjsLikely(kind, attrs) {
     if (kind === 1) {
       try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
     }
-    let s = '';
-    try { s = String(new Err().stack || ''); } catch (e) { return false; }
+    let s = '', had = false, lim, raised = false;
+    try {
+      had = apply(hasOwn, Err, ['stackTraceLimit']); lim = Err.stackTraceLimit;
+      if (!(lim >= STACK_FRAMES)) { Err.stackTraceLimit = STACK_FRAMES; raised = Err.stackTraceLimit === STACK_FRAMES; }
+    } catch (e) { /* read-only: the page's limit */ }
+    try { s = String(new Err().stack || ''); } catch (e) { s = ''; }
+    if (raised) { try { if (had) Err.stackTraceLimit = lim; else delete Err.stackTraceLimit; } catch (e) { /* ignore */ } }
     return s.indexOf('_initializeContextAndSwapChain') >= 0;
   }
   const bjsKeys = new Set();
@@ -482,7 +488,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.1'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.2'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -526,6 +532,7 @@ function dxrCore(cfg, cap, S) {
     bjsEyeTarget: true, // TEST ONLY (A/B): false lets Babylon eyes draw straight into their halves (no eye target + pass)
     bjsIblHistory: true, // TEST ONLY (A/B): false leaves Babylon IBL shadows' accumulation history copied once per frame (the right eye's then mismatches its velocity)
     bjsCustomRT: true,  // TEST ONLY (A/B): false leaves a Babylon.js scene's customRenderTargets drawn once per frame from the page camera (not again per eye)
+    bjsCustomRTOwnView: true,  // TEST ONLY (A/B): false draws every such target again per eye, even one drawn from a view of its own the same for both eyes (v0.7.1)
     bjsGBuffer: true,   // EXPERIMENTAL (Babylon.js): true draws the geometry buffer again for the right eye; false keeps a scene with one 2D; 'shared' (TEST ONLY, A/B) converts it without the second draw
   };
   const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
@@ -4109,7 +4116,7 @@ function dxrBabylon(core) {
     Object.assign(st, {
       eng: engine, scene: null, lastScene: null, cam: null, rigOn: null, eyes: null, qualify: null,
       L: { w: realW(canvas), h: realH(canvas), pr: 1 }, // what the PAGE believes: its own store, in pixels
-      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
+      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, rtProbes: new Map(), rtFrame: 0, rtFixed: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
       tmp: { mrh: new Float64Array(16), e: new Float64Array(16), p: new Float64Array(16) },
     });
     engines.set(engine, st);
@@ -4286,7 +4293,7 @@ function dxrBabylon(core) {
         detection: via.get(st.eng), version: engineVersion(st), device: st.eng.isWebGPU ? 'webgpu' : 'webgl' + (st.eng.webGLVersion || ''),
         camera: st.cam ? `${st.cam.name} (${className(st.cam)})` : null, rigOn: st.rigOn ? st.rigOn.name : null,
         handedness: st.scene ? (st.scene.useRightHandedSystem ? 'right' : 'left') : null, reverseDepth: !!st.eng.useReverseDepthBuffer,
-        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, eyeTargets: !!st.eyeTargetsOn,
+        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, customRtOwnView: st.rtFixed || 0, eyeTargets: !!st.eyeTargetsOn,
         hwScale: hwLevel(st), scale: st.scale || 1, followsResize: st.follows, pixelGui: st.pxGui, postProcesses: st.cam ? (st.cam._postProcesses || []).filter(Boolean).length : 0,
         surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null, autoRender: st.frame.idle < 2,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].__dxrP.m) : null, // what the engine draws eye 0 with
@@ -4354,7 +4361,7 @@ function dxrBabylon(core) {
     const st = engines.get(engine);
     if (!st || !st.active || st.scene !== scene || !st.eyes || (cam !== st.eyes[0] && cam !== st.eyes[1])) return;
     if (st.rigOn && scene.postProcessesEnabled !== false && (cam._postProcesses || []).some(Boolean)) cam.viewport = st.rigOn.viewport;
-    eyeRenderTargets(st, scene);
+    eyeRenderTargets(st, scene, cam === st.eyes[0] ? 0 : 1);
     if (cam !== st.eyes[1]) return;
     const gbr = scene._geometryBufferRenderer;
     if (!gbr || core.T.bjsGBuffer === false || core.T.bjsGBuffer === 'shared' || !scene._renderTargets || typeof gbr.getGBuffer !== 'function') return;
@@ -4364,18 +4371,61 @@ function dxrBabylon(core) {
       if (!st.gbufEyes++) info('geometry buffer drawn again for the right eye (EXPERIMENTAL): GI / IBL shadows / SSAO / SSR see each eye\'s own view');
     } catch (e) { warnOnce('bjs-gbuf', 'could not draw the geometry buffer for the right eye', e); }
   }
-  function eyeRenderTargets(st, scene) {
+  const RT_OWN_VIEW_FRAMES = 3;
+  function eyeRenderTargets(st, scene, eye) {
     const list = scene.customRenderTargets;
     if (!list || !list.length || core.T.bjsCustomRT === false || !scene._renderTargets) return;
     try {
-      const names = [];
+      if (eye === 0) st.rtFrame++;
+      const names = [], probe = core.T.bjsCustomRTOwnView !== false;
       for (const rt of list) {
         if (!rt || rt.activeCamera || rt.refreshRate !== 1 || (rt.renderList && !rt.renderList.length)) continue;
+        if (probe && viewProbe(st, scene, rt).own) continue;
         scene._renderTargets.pushNoDuplicate(rt);
         names.push(rt.name || '?');
       }
       if (names.length && !st.rtEyes++) info(`render target(s) the page draws from its camera, drawn again for each eye: ${names.slice(0, 4).join(', ')}`);
     } catch (e) { warnOnce('bjs-customrt', "could not draw the page's render targets for each eye", e); }
+  }
+  function sameM(a, b) {
+    for (let k = 0; k < 32; k++) if (Math.abs(a[k] - b[k]) > 1e-6) return false;
+    return true;
+  }
+  function readVP(out, v, p) {
+    for (let k = 0; k < 16; k++) { out[k] = v.m[k]; out[16 + k] = p.m[k]; }
+  }
+  function viewProbe(st, scene, rt) {
+    let p = st.rtProbes.get(rt);
+    if (p) return p;
+    const vp = () => new Float64Array(32);
+    p = { v: [vp(), vp()], e: [vp(), vp()], mine: [false, false], at: [-1, -1], same: 0, own: false, ob: null, obs: null };
+    st.rtProbes.set(rt, p);
+    const ob = (rt._objectRenderer && rt._objectRenderer.onBeforeRenderingManagerRenderObservable) || rt.onBeforeRenderObservable;
+    if (!ob || typeof ob.add !== 'function') return p;
+    p.ob = ob;
+    p.obs = ob.add((pass) => {
+      try {
+        if (pass || p.own || !st.eyes) return;
+        const cam = scene.activeCamera, i = cam === st.eyes[0] ? 0 : cam === st.eyes[1] ? 1 : -1;
+        if (i < 0) return; // the scene's own (mono) draw
+        const sv = scene.getViewMatrix(), sp = scene.getProjectionMatrix(), cv = cam.getViewMatrix(), cp = cam.getProjectionMatrix();
+        if (!sv || !sp || !cv || !cp || !sv.m || !sp.m || !cv.m || !cp.m) return;
+        readVP(p.v[i], sv, sp); readVP(p.e[i], cv, cp);
+        p.mine[i] = !sameM(p.v[i], p.e[i]);
+        p.at[i] = st.rtFrame;
+        if (i !== 1 || p.at[0] !== st.rtFrame) return;
+        const fixed = p.mine[0] && p.mine[1] && sameM(p.v[0], p.v[1]) && !sameM(p.e[0], p.e[1]);
+        p.same = fixed ? p.same + 1 : 0;
+        if (p.same < RT_OWN_VIEW_FRAMES) return;
+        p.own = true;
+        if (st.rtFixed++ < 4) info(`render target ${rt.name || '?'} draws from a view of its own, the same for both eyes (a light, a probe): drawn once, as the page does`);
+      } catch (e) { /* the probe only ever withholds a redraw */ }
+    });
+    return p;
+  }
+  function dropViewProbes(st) {
+    for (const p of st.rtProbes.values()) { try { if (p.ob && p.obs) p.ob.remove(p.obs); } catch (e) { /* ignore */ } }
+    st.rtProbes.clear();
   }
   function iblHistory(engine, scene, cam) {
     const mgr = scene.postProcessRenderPipelineManager;
@@ -4636,6 +4686,7 @@ function dxrBabylon(core) {
   function uninstallRig(st) {
     detachRig(st);
     disposeEyeTargets(st);
+    dropViewProbes(st);
     if (st.eyes) {
       for (const e of st.eyes) { e._postProcesses = []; try { e.dispose(); } catch (err) { /* ignore */ } }
       st.eyes = null;

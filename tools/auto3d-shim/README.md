@@ -572,7 +572,9 @@ are offset from it by a few ipd × m2v.
      constructor has added `lockstepMaxSteps` and `timeStep` (7.x, 8.x, 9.x).
    - **WebGPU:** the call comes from `WebGPUEngine._initializeContextAndSwapChain`. The stack is read
      only on a `webgpu` getContext, which Babylon makes once per engine. The method name survives
-     minification in all three versions.
+     minification in all three versions. A page's small `Error.stackTraceLimit` (0 turns stacks off)
+     would hide that frame, so the limit is raised to 16 for this one `Error` and put back as the page
+     had it (v0.7.2, from David's review of #253). A limit the page made read-only is left alone.
    - **Any other getContext arms nothing** (v0.7.1, from David's review of #252). Before that, every
      WebGL / WebGPU context armed it, so for the rest of that task `'_context' in anyObject` was true on
      any page, and `_context` is a common private name. Corpus metric `bjsTrapArms`: 0 on every
@@ -735,12 +737,31 @@ eyes the same mono picture.
 - **The fix.** Each such target is queued into each eye's pass, as the geometry buffer is. It is then
   drawn again with that eye's view, right after `onBeforeCameraRenderObservable`. This covers every
   target with no `activeCamera` of its own, redrawn every frame (`refreshRate` 1), with a non-empty
-  render list. The mono draw stays.
-- **Cost.** Each such target is drawn three times a frame instead of once. The frame-rate guard
-  covers a page where that is too much.
-- **Harness.** `bjs-refr`: a window in front of the scene samples such a target at `gl_FragCoord`.
-  The pair matches at the fake's shift through it (residual 0.04). `bjs-refr-mono` (A/B, not drawn
-  per eye): residual 5.19.
+  render list. The mono draw stays: the page may read it between frames, and Babylon's `GPUPicker`
+  reads its picking texture right after that draw.
+- **Cost.** Each such target is drawn three times a frame instead of once, and its observables fire
+  three times. The frame-rate guard covers a page where that is too much.
+- **Targets with a view of their own are drawn once (v0.7.2, `T.bjsCustomRTOwnView`, from David's
+  review of #253).** Some targets set their own view in `onBeforeRender`, one that no eye changes:
+  Babylon's `ReflectiveShadowMap` (`GIRSMManager`'s MRT, drawn from the light, as on playground
+  `#VW8IG3#156`), a cube probe. Drawn per eye, they only repeat the mono draw.
+  - A probe on each queued target reads the view and projection it is drawn with in each eye's pass,
+    after every `onBeforeRender` observer (`ObjectRenderer.onBeforeRenderingManagerRenderObservable`,
+    7.x to 9.x).
+  - When both eyes drew it with the same view, neither eye's own, while the eyes' views differ, three
+    frames running, the target is left to the scene's single draw. It logs `render target <name> draws
+    from a view of its own …`.
+  - A mirror (a view of its own, but the reflected eye's) and a screen-space refraction (the eye's
+    view) stay per eye.
+  - Static bakes were never redrawn (`refreshRate` 0). `ReflectionProbe` does not use
+    `customRenderTargets`.
+- **Harness.**
+  - `bjs-refr`: a window in front of the scene samples such a target at `gl_FragCoord`. The pair
+    matches at the fake's shift through it (residual 0.04). `bjs-refr-mono` (A/B, not drawn per
+    eye): residual 5.19.
+  - `bjs-rt-own`: next to it, a target drawn from a fixed light view, as `ReflectiveShadowMap` is. It
+    is drawn once a frame over the last 40 frames, and the window still matches per eye.
+    `bjs-rt-own-ab` (A/B, the probe off): three times a frame.
 
 **Eye targets: each eye renders like a mono frame (`T.bjsEyeTarget`).** An eye drawn straight into
 half the canvas breaks every screen-space lookup keyed to the render target, `uv = gl_FragCoord.xy /
@@ -1480,6 +1501,25 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.7.2 (from David's review of #253: render targets with a view of their own drawn once; the
+WebGPU check survives a small `Error.stackTraceLimit`), Windows, ANGLE D3D11 + WebGPU:** 3 new cases in
+`test/cases/babylon.mjs`.
+- **Full pass.** 165 run, 2 skipped (`c` / `d`: no `ports_25.sog`), all green.
+- **A view of its own** (`bjs-rt-own`, `bjs-rt-own-ab`). A target drawn from a fixed light view is
+  recognised, logged once, and drawn once a frame (the last 40 frames); the refraction target next to
+  it stays per eye, residual 0.04. With the probe off (A/B): three times a frame. Green on babylonjs
+  9.32.0, 8.56.2 and 7.54.3.
+- **`Error.stackTraceLimit = 0`** (`bjs-scope-bjs-gpu-stl`). A `WebGPUEngine` page that set it before
+  the engine: the `_context` trap is armed, the page goes live, and its limit is still 0 afterwards.
+  With v0.7.1's `sentinel.js`: never armed, 2D. Green on 9.32.0, 8.56.2 and 7.54.3.
+- **On the panel, 2026-11-09.**
+  - DisplayXR Browser v1.10.1 (v0.7.1 built in) converts each of these: the default playground,
+    `#VW8IG3#156` (GI, 49-60 fps), `#8R5SSE#587` (IBL shadows) on WebGL and on `?webgpu`, Nike By
+    You, and a three.js page and a PlayCanvas page.
+  - The v0.7.2 dev build on `#VW8IG3#156` logs `render target RSMmrt_spotLight draws from a view of its
+    own …` and converts at about the same frame rate: the RSM there is 1/8 of the render size each way,
+    so its two extra draws were cheap.
 
 **Headless, v0.7.1 (the Babylon trap only for Babylon's getContext, from David's review of #252; eye targets
 retried; the page's render targets per eye), Windows, ANGLE D3D11 + WebGPU:** 8 new cases in

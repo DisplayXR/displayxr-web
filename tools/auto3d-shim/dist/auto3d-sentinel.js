@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -301,12 +301,18 @@ function dxrSentinel(cfg, cap) {
     const c = signal('Babylon.js');
     if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
   }
+  const STACK_FRAMES = 16;
   function bjsLikely(kind, attrs) {
     if (kind === 1) {
       try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
     }
-    let s = '';
-    try { s = String(new Err().stack || ''); } catch (e) { return false; }
+    let s = '', had = false, lim, raised = false;
+    try {
+      had = apply(hasOwn, Err, ['stackTraceLimit']); lim = Err.stackTraceLimit;
+      if (!(lim >= STACK_FRAMES)) { Err.stackTraceLimit = STACK_FRAMES; raised = Err.stackTraceLimit === STACK_FRAMES; }
+    } catch (e) { /* read-only: the page's limit */ }
+    try { s = String(new Err().stack || ''); } catch (e) { s = ''; }
+    if (raised) { try { if (had) Err.stackTraceLimit = lim; else delete Err.stackTraceLimit; } catch (e) { /* ignore */ } }
     return s.indexOf('_initializeContextAndSwapChain') >= 0;
   }
   const bjsKeys = new Set();
