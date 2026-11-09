@@ -25,6 +25,15 @@
   .feature{border-width:2px}
   .toc{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px;margin:0 0 8px}
   .tag{font-size:12px;opacity:.65;font-weight:normal}
+  /* "Made with the SDK" showcase: thumbnail cards for projects built outside this repo */
+  .show{display:flex;flex-direction:column;padding:0;overflow:hidden}
+  .show>a.shot{display:block;aspect-ratio:16/10;background:#8882;border-bottom:1px solid #8884}
+  .show>a.shot img{display:block;width:100%;height:100%;object-fit:cover}
+  .show .body{padding:12px 16px 14px;display:flex;flex-direction:column;flex:1}
+  .show .kind{font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.6;margin:0 0 2px}
+  .show p{margin:4px 0 0;font-size:15px}
+  .show .go{margin-top:auto;padding-top:10px;font-size:14px}
+  .submit{font-size:14px;opacity:.75;margin:4px 0 0}
 </style>
 </head>
 <body>
@@ -36,35 +45,98 @@
     <br><strong><a href="https://github.com/DisplayXR/displayxr-browser/releases/latest">Get the DisplayXR Browser</a></strong>
     &middot; <a href="https://displayxr.org/browser">displayxr.org/browser</a></p>
   <nav class="toc">
-    <a href="#apps">Featured apps</a><a href="#start">Start here</a><a href="#media">Photos &amp; video</a>
+    <a href="#apps">Featured apps</a><a href="#made-with">Made with the SDK</a><a href="#start">Start here</a><a href="#media">Photos &amp; video</a>
     <a href="#content">3D models &amp; splats</a><a href="#scenes">Scenes &amp; cameras</a><a href="#auto">Automatic 3D</a>
     <a href="#calls">Video calls</a><a href="#composition">Page composition</a>
-    <a href="#more">More apps</a><a href="#build">Build your own</a>
+    <a href="#build">Build your own</a>
   </nav>
 
   <section id="apps">
     <h2>Featured apps</h2>
     <p class="lead">Complete web apps built on the DisplayXR Browser and the <code>@displayxr/inline3d</code> SDK.</p>
     <div class="grid grid3">
-<div class="card feature">
-    <h2><a href="https://displayxr-gallery.vercel.app">DisplayXR Gallery</a> <span class="tag">live app</span></h2>
-    <p>A full 3D-photo/video social app (a 3D Instagram) built on the inline-3D SDK and
-       hosted on Vercel — browse, upload, and view a feed of woven 3D posts.</p>
+<div class="card feature show">
+    <a class="shot" href="https://displayxr-gallery.vercel.app"><img src="img/showcase/gallery.webp" alt="A 3D macro photo of a passion flower in the DisplayXR Gallery feed" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Social</p>
+    <h2><a href="https://displayxr-gallery.vercel.app">DisplayXR Gallery</a></h2>
+    <p>A full 3D-photo and video social app (a 3D Instagram): browse, upload and view a feed of woven 3D posts.</p>
+    <p class="go"><a href="https://displayxr-gallery.vercel.app">Browse &rarr;</a></p>
+    </div>
   </div>
-<div class="card feature">
-    <h2><a href="https://displayxr-shop.vercel.app">DisplayXR Shop</a> <span class="tag">live app</span></h2>
-    <p>A full shop, except the products are actually there: four departments, a product page whose
-       hero you look <em>around</em> rather than spin a turntable of photos, search, a cart — and a
-       studio that turns one photograph into a 3D item you can keep. Sign in with Google to scan
-       your own.</p>
+<div class="card feature show">
+    <a class="shot" href="https://displayxr-shop.vercel.app"><img src="img/showcase/shop.webp" alt="DisplayXR Shop home page with a 3D water bottle as the hero" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Shopping</p>
+    <h2><a href="https://displayxr-shop.vercel.app">DisplayXR Shop</a></h2>
+    <p>A full shop, except the products are actually there: four departments, a product page whose hero you look <em>around</em> rather than spin a turntable of photos, search, a cart &mdash; and a studio that turns one photograph into a 3D item you can keep.</p>
+    <p class="go"><a href="https://displayxr-shop.vercel.app">Shop &rarr;</a></p>
+    </div>
   </div>
-  <div class="card feature">
-    <h2><a href="https://displayxr-ride.vercel.app">DisplayXR Ride</a> <span class="tag">live app</span></h2>
-    <p>An in-car rider screen with real depth: a captured destination as an immersive Gaussian-splat
-       scene, a one-tap 2D/3D toggle, and photoreal 3D maps with fly-to in its 2D mode &mdash; all in a
-       web page, built on <code>addSplat()</code>.</p>
+<div class="card feature show">
+    <a class="shot" href="https://displayxr-ride.vercel.app"><img src="img/showcase/ride.webp" alt="DisplayXR Ride: a red car in a sunlit driveway with its frunk, hatch and charge-port controls" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">In-car</p>
+    <h2><a href="https://displayxr-ride.vercel.app">DisplayXR Ride</a></h2>
+    <p>An in-car rider screen with real depth: a captured destination as an immersive Gaussian-splat scene, a one-tap 2D/3D toggle, and photoreal 3D maps with fly-to in its 2D mode, built on <code>addSplat()</code>.</p>
+    <p class="go"><a href="https://displayxr-ride.vercel.app">Ride &rarr;</a></p>
+    </div>
   </div>
     </div>
+  </section>
+
+  <section id="made-with">
+    <h2>Made with the SDK</h2>
+    <p class="lead">Apps built on <code>@displayxr/inline3d</code> outside this repo, each on its own site.
+      In the DisplayXR Browser on a spatial display they open in 3D; anywhere else they run in 2D.</p>
+    <div class="grid grid3">
+<div class="card show">
+    <a class="shot" href="https://2pbattles.vercel.app/"><img src="img/showcase/splitshot.webp" alt="Splitshot title screen: two soldiers in a block arena" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Game</p>
+    <h2><a href="https://2pbattles.vercel.app/">Splitshot</a> <span class="tag">by <a href="https://github.com/leofattal">@leofattal</a></span></h2>
+    <p>A couch 1v1 arena shooter: two players, one screen, first to five. Controller or keyboard and mouse, or duel a friend on another device &mdash; including in arenas scanned from real historic sites.</p>
+    <p class="go"><a href="https://2pbattles.vercel.app/">Play &rarr;</a></p>
+    </div>
+  </div>
+<div class="card show">
+    <a class="shot" href="https://3dlaern.vercel.app/"><img src="img/showcase/physics-in-3d.webp" alt="Physics in 3D: a projectile-motion lesson with velocity vectors and its equations" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Education</p>
+    <h2><a href="https://3dlaern.vercel.app/">Physics in 3D</a> <span class="tag">by <a href="https://github.com/leofattal">@leofattal</a></span></h2>
+    <p>Interactive physics from high school to college to the Feynman Lectures: projectiles, orbits, electric fields, a quantum particle in a box. Each lesson is a live simulation you look into, with the equations beside it.</p>
+    <p class="go"><a href="https://3dlaern.vercel.app/">Start learning &rarr;</a></p>
+    </div>
+  </div>
+<div class="card show">
+    <a class="shot" href="https://leia-display-demo.vercel.app/"><img src="img/showcase/display-explainer.webp" alt="A 3D walkthrough of an eye-tracked display: a head, a monitor and the tracker's numbers" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Explainer</p>
+    <h2><a href="https://leia-display-demo.vercel.app/">Inside a 3D display</a> <span class="tag">by <a href="https://github.com/byungjul">@byungjul</a></span></h2>
+    <p>An interactive walkthrough of how an eye-tracked 3D display works &mdash; the tracker, the two views, the pixels and the lenses &mdash; taken apart step by step. Its numbers are illustrative.</p>
+    <p class="go"><a href="https://leia-display-demo.vercel.app/">Take it apart &rarr;</a></p>
+    </div>
+  </div>
+<div class="card show">
+    <a class="shot" href="https://azbleia.github.io/arcade/"><img src="img/showcase/arcade.webp" alt="DisplayXR Arcade menu: Dino Run, Tetris and Gem Swap" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Games</p>
+    <h2><a href="https://azbleia.github.io/arcade/">DisplayXR Arcade</a> <span class="tag">by <a href="https://github.com/azbleia">@azbleia</a></span></h2>
+    <p>Three small games with real depth: <a href="https://azbleia.github.io/arcade/tetris3d/">Tetris 3D</a> (the stack sits behind the glass, the falling piece hovers in front), <a href="https://azbleia.github.io/arcade/dino3d/">Dino Run 3D</a> and <a href="https://azbleia.github.io/arcade/gems3d/">Gem Swap 3D</a>.</p>
+    <p class="go"><a href="https://azbleia.github.io/arcade/">Play &rarr;</a></p>
+    </div>
+  </div>
+<div class="card show">
+    <a class="shot" href="https://dfattal.github.io/F1000/"><img src="img/showcase/historic-sites.webp" alt="Historic Sites Navigator: a globe with photo pins on historic sites" width="640" height="400" loading="lazy"></a>
+    <div class="body">
+    <p class="kind">Travel</p>
+    <h2><a href="https://dfattal.github.io/F1000/">Historic Sites Navigator</a> <span class="tag">by <a href="https://github.com/dfattal">@dfattal</a></span></h2>
+    <p>Pick a historic site off a globe and drop into it: scanned castles, monuments and museums you walk through in depth.</p>
+    <p class="go"><a href="https://dfattal.github.io/F1000/">Explore &rarr;</a></p>
+    </div>
+  </div>
+    </div>
+    <p class="submit">Built something with the SDK? <a href="https://github.com/DisplayXR/displayxr-web/issues/new?title=Showcase%3A%20">Tell us</a> and we&rsquo;ll consider it for this list.</p>
   </section>
 
   <section id="start">
@@ -236,27 +308,6 @@
     </div>
   </section>
 
-  <section id="more">
-    <h2>More apps</h2>
-    <p class="lead">Community-hosted experiences built on the SDK.</p>
-    <div class="grid">
-<div class="card">
-    <h2><a href="https://azbleia.github.io/arcade/">DisplayXR Arcade</a> — live app</h2>
-    <p>Three small games with real depth, all built the same way on the inline-3D SDK:
-       <a href="https://azbleia.github.io/arcade/tetris3d/">Tetris 3D</a> (the stack sits behind the
-       glass, the falling piece hovers in front),
-       <a href="https://azbleia.github.io/arcade/dino3d/">Dino Run 3D</a> and
-       <a href="https://azbleia.github.io/arcade/gems3d/">Gem Swap 3D</a>. Open them in the DisplayXR
-       Browser on hardware to see it in 3D; anywhere else they degrade to 2D.</p>
-  </div>
-<div class="card">
-    <h2><a href="https://dfattal.github.io/F1000/">Historic Sites Navigator</a> — live app</h2>
-    <p>Pick a historic site off a globe and drop into it — a travel/heritage experience built on the
-       inline-3D SDK. Open it in the DisplayXR Browser on hardware to see it in 3D; anywhere else
-       it degrades to 2D.</p>
-  </div>
-    </div>
-  </section>
 
   <section id="build">
     <h2>Build your own</h2>
