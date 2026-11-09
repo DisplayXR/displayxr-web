@@ -7,6 +7,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — `./call`: `listShareableApps()` no longer lists stereo cameras as apps
+
+With two runtime stereo cameras (for example two 3D screens) and no app running, a DisplayXR Browser
+1.9.3+ gives both cameras the multi-source `3D Camera (DisplayXR) - <name>` label, and the listing
+took them for an older browser's app candidates. The legacy candidates now come only from a
+DisplayXR Browser that reports a release before 1.9.3; any other browser, or an unknown version,
+lists only real app-share devices. `openAppShare()` already refused a camera, so nothing wrong was
+ever sent; the list was wrong.
+
 ## 1.51.0 — 2026-11-08
 
 ### Added — `./call`: `openTabShare()`, share a browser tab in 3D

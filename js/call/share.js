@@ -37,14 +37,66 @@ const SHARE_CONSTRAINTS = Object.freeze({ width: 2560, height: 720, frameRate: 3
 const mdOf = (o) => (o && o.mediaDevices) || (globalThis.navigator && navigator.mediaDevices) || null;
 
 /**
+ * The first DisplayXR Browser release with the app-share device patch (browser-pvt 0437). Only an
+ * OLDER DisplayXR Browser gets the legacy candidate list. A patched browser with no app running
+ * also has no ADR-form device, and with two or more runtime sources it gives every CAMERA the
+ * legacy `3D Camera (DisplayXR) - <name>` label, so falling back there lists the cameras as apps
+ * (displayxr-web#255: two Leia screens, so two SR cameras, and nothing running).
+ */
+const APP_SHARE_DEVICE_RELEASE = '1.9.3';
+
+const parseDotted = (s) => (typeof s === 'string' && /^\d+(\.\d+)*$/.test(s.trim()) ? s.trim().split('.').map(Number) : null);
+
+/** a < b for dotted versions, the shorter one zero-extended. */
+function versionBefore(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+/**
+ * The running DisplayXR Browser release from the high-entropy `fullVersionList` brand (1.0.7+),
+ * or null: no userAgentData, another browser, or an unparseable brand such as a `0.0.0-dev` build.
+ * (Not imported from ../version-check.js: that module runs an update check when it loads.)
+ */
+async function displayxrBrowserVersion() {
+  const uad = globalThis.navigator && navigator.userAgentData;
+  if (!uad || typeof uad.getHighEntropyValues !== 'function') return null;
+  try {
+    const { fullVersionList } = (await uad.getHighEntropyValues(['fullVersionList'])) || {};
+    const hit = Array.isArray(fullVersionList) && fullVersionList.find((b) => b && typeof b.brand === 'string' && b.brand.toLowerCase() === 'displayxr browser');
+    return hit && parseDotted(hit.version) ? hit.version.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Should the listing fall back to legacy candidates? Only on a DisplayXR Browser that reports a
+ * release before APP_SHARE_DEVICE_RELEASE. An unknown version (no brand, a dev build, any other
+ * browser) gets no candidates: a missing app row costs less than a camera listed as an app.
+ * `o.browserVersion` (a string, or null for unknown) replaces the lookup, for tests.
+ */
+async function wantsLegacyListing(o) {
+  const v = o && 'browserVersion' in o ? o.browserVersion : await displayxrBrowserVersion();
+  const p = parseDotted(v);
+  return !!p && versionBefore(p, parseDotted(APP_SHARE_DEVICE_RELEASE));
+}
+
+/**
  * The running apps this browser offers to share: `[{ deviceId, label, appName }]`, in the
  * browser's order. Empty without camera permission (the browser lists none before it), on any
  * other browser, or when nothing is shareable. Never rejects.
  *
- * On a browser without the app-share device patch (no ADR-form device listed), the entries are the
+ * On a DisplayXR Browser older than the app-share device patch (before 1.9.3, read from its
+ * `fullVersionList` brand) with no ADR-form device listed, the entries are the
  * `3D Camera (DisplayXR) - <name>` CANDIDATES instead, marked `legacy: true`. A real camera can be
  * among them (that browser labels every source that way once there are two); `openAppShare()`
- * tells them apart and rejects a camera with `not-app-share`.
+ * tells them apart and rejects a camera with `not-app-share`. A newer browser, or one whose
+ * version is unknown, never gets candidates: there they would be cameras (displayxr-web#255).
  * @param {{ mediaDevices?: MediaDevices }} [o]
  */
 export async function listShareableApps(o = {}) {
@@ -60,7 +112,7 @@ export async function listShareableApps(o = {}) {
   const apps = videos
     .filter((d) => isAppShareDevice(d))
     .map((d) => Object.freeze({ deviceId: d.deviceId, label: d.label || '', appName: sanitizeName(appNameFromLabel(d.label)) || sanitizeName(d.label) || null }));
-  if (apps.length) return apps;
+  if (apps.length || !(await wantsLegacyListing(o))) return apps;
   return videos
     .filter((d) => d.deviceId && legacyAppCandidate(d))
     .map((d) => Object.freeze({ deviceId: d.deviceId, label: d.label || '', appName: nameOfLabel(d.label), legacy: true }));
@@ -80,7 +132,7 @@ export function watchShareableApps(cb, o = {}) {
   let seq = 0;
   const run = async () => {
     const mine = ++seq;
-    const apps = await listShareableApps({ mediaDevices: md });
+    const apps = await listShareableApps({ ...o, mediaDevices: md });
     if (!live || mine !== seq) return; // a newer read is in flight (devicechange bursts)
     const key = JSON.stringify(apps.map((a) => [a.deviceId, a.label, !!a.legacy]));
     if (key === last) return;

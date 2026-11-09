@@ -171,11 +171,29 @@ test('listShareableApps on a browser without the app-share patch: the suffixed e
     { kind: 'videoinput', label: '3D Camera (DisplayXR) - Built-in camera', deviceId: 'dxr-stereo:cam' },
     { kind: 'videoinput', label: '3D Camera (DisplayXR)', deviceId: 'dxr-stereo:solo' },
   ]);
-  const apps = await listShareableApps({ mediaDevices: legacy });
+  const apps = await listShareableApps({ mediaDevices: legacy, browserVersion: '1.9.2' });
   assert.deepEqual(apps.map((a) => [a.deviceId, a.appName, a.legacy]), [['dxr-stereo:app', 'CubeOpenXRExt', true], ['dxr-stereo:cam', 'Built-in camera', true]]);
   assert.equal(apps[0].label, '3D Camera (DisplayXR) - CubeOpenXRExt');
   const both = media([...legacy.devices, { kind: 'videoinput', label: 'DisplayXR: Cube (3D)', deviceId: 'dxr-app:c' }]);
-  assert.deepEqual((await listShareableApps({ mediaDevices: both })).map((a) => [a.deviceId, a.legacy]), [['dxr-app:c', undefined]]);
+  assert.deepEqual((await listShareableApps({ mediaDevices: both, browserVersion: '1.9.2' })).map((a) => [a.deviceId, a.legacy]), [['dxr-app:c', undefined]]);
+});
+
+test('listShareableApps on a patched browser (1.9.3+) or an unknown version: no legacy candidates, so two cameras are never listed as apps (#255)', async () => {
+  // Two Leia screens, so two SR cameras, no app running: the patched browser labels both cameras in
+  // the multi-source legacy form, and there is no ADR-form device to win.
+  const twoCameras = media([
+    { kind: 'videoinput', label: '3D Camera (DisplayXR) - Leia SR camera - Built-in display', deviceId: 'dxr-stereo:a' },
+    { kind: 'videoinput', label: '3D Camera (DisplayXR) - Leia SR camera - DS1_156', deviceId: 'dxr-stereo:b' },
+  ]);
+  for (const browserVersion of ['1.9.3', '1.10.1', '2.0', null, '0.0.0-dev', undefined]) {
+    assert.deepEqual(await listShareableApps({ mediaDevices: twoCameras, browserVersion }), [], String(browserVersion));
+  }
+  // Older releases still get them as candidates (openAppShare refuses the cameras).
+  for (const browserVersion of ['1.9.2', '1.9', '1.0.7']) {
+    assert.equal((await listShareableApps({ mediaDevices: twoCameras, browserVersion })).length, 2, browserVersion);
+  }
+  // With no override the version comes from userAgentData; node has none, so: unknown, no candidates.
+  assert.deepEqual(await listShareableApps({ mediaDevices: twoCameras }), []);
 });
 
 test('openAppShare on a legacy candidate: a baseline-0 track is the app (name from its label); a suffixed real camera → not-app-share, closed', async () => {
