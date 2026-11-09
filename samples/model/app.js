@@ -33,6 +33,9 @@ const engineOpt = onThree ? { engine: 'three' } : ENGINE ? { engine: ENGINE } : 
 // Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
 // &cursorDebug (cost stats in the console) &cursorDebug=both (+ the OS cursor beside the sprite)
 const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(pageParams) } : {};
+// ?hands — tracked-hand controls (./hands): one pinch dragged turns a tile, two pinches zoom it.
+// Inert without a hand tracker; the pointer orbit keeps working alongside.
+const handsOpt = pageParams.has('hands') ? { hands: true } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
@@ -42,13 +45,27 @@ const a = addModel(wall, document.getElementById('tileA'), GLB, {
   renderScale: 0.6,
   ...engineOpt,
   ...cursorOpt,
+  ...handsOpt,
 });
 a.exclude(document.getElementById('plateA')); // crisp 2D price plate over the woven 3D
 
-report(a.ready, 'noteA', () => {
+const noteA = () => {
   const [w, h, d] = a.frame.extent.map((n) => n.toFixed(2));
-  return `glTF loaded · bounds ${w} x ${h} x ${d} · framed on the display plane · ${a.backend}`;
-});
+  // The gate opens a few frames after the session (no-canvas → available) and the hand count
+  // moves every frame, so the note is refreshed live below rather than captured once.
+  const hands = a.hands ? ` · hands: ${a.hands.state.gate} (${a.hands.state.hands} tracked)` : '';
+  return `glTF loaded · bounds ${w} x ${h} x ${d} · framed on the display plane · ${a.backend}${hands}`;
+};
+report(a.ready, 'noteA', noteA);
+if (handsOpt.hands) {
+  a.ready.then(() => {
+    const el = document.getElementById('noteA');
+    const tick = setInterval(() => {
+      if (!a.hands?.running) return clearInterval(tick);
+      el.textContent = noteA() + (woven ? '' : ' — open in the DisplayXR Browser for 3D');
+    }, 250);
+  }).catch(() => {});
+}
 
 // ── B. a mesh and a splat in ONE scene ────────────────────────────────────────────────────
 // Two ways to build it, one per splat engine:
@@ -67,7 +84,7 @@ const mixedEngine = onThree ? 'spark' : 'playcanvas';
 // vH, so a different value does not change how big anything looks — but it does change the
 // world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
 // them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
-const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6, ...cursorOpt };
+const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6, ...cursorOpt, ...handsOpt };
 // Layout of the pair, the same on both paths: the splat stands SPLAT_H of the mesh's height,
 // to the mesh's right, GAP of the mesh's width apart, bases level. The gap has to cover the
 // turntable: both subjects turn about the union's centre, so a box's corners swing wider than
@@ -219,6 +236,7 @@ const c = addModel(wall, document.getElementById('tileC'), DRACO_GLTF, {
   feather: 24,
   renderScale: 0.6,
   ...cursorOpt,
+  ...handsOpt,
   decoderPath: DECODER_PATH,
   ...engineOpt,
 });

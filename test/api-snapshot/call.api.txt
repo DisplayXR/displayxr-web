@@ -32,9 +32,11 @@ function defaultLiftSpecifier [deprecated]: (base?:string):string
 function defineCallElement: (name?:string,registry?:CustomElementRegistry):boolean
 function dxrSignaling: (url?:string,opts?:{WebSocket?:any;pingMs?:number;key?:string;aliases?:string[]}):SignalingAdapter
 function eyeCropRect [deprecated]: (eyeW:number,eyeH:number,aspect:number,shift:number,eye:0|1):{sx:number;sy:number;sw:number;sh:number}
+function isAppShareDevice: (device:MediaDeviceInfo|MediaStreamTrack|MediaTrackSettings|{label?:string;deviceId?:string}|string|null|undefined):boolean
 function isValidRoomId [deprecated]: (room:unknown):boolean
 function liftConvergenceFor [deprecated]: (depth:number|null|undefined):'auto'|number
 function liftPriorityFor [deprecated]: (p:{id:string|null;speakerId:string|null;visible?:boolean}):'high'|'normal'|'low'|'paused'
+function listShareableApps: (opts?:{mediaDevices?:MediaDevices}):Promise<ShareableApp[]>
 function lowPass [deprecated]: (prev:number,target:number,alpha?:number):number
 function makeHello [deprecated]: (o?:{format?:CallFormat;width?:number;height?:number;baselineMm?:number;hfovDeg?:number;rectified?:boolean}):object
 function maxBitrateKbps [deprecated]: (format:CallFormat,remotePeers:number):number
@@ -46,6 +48,8 @@ function newRoomId [deprecated]: (getRandomValues?:(a:Uint8Array)=>Uint8Array):s
 function normalizeCallOptions [deprecated]: (opts?:Partial<CallOptions>):Record<string,unknown>
 function normalizeHello [deprecated]: (msg:unknown):{type:'hello';v:number;format:CallFormat;width:number|null;height:number|null;baselineMm:number|null;hfovDeg:number|null;rectified:boolean;sdk:string|null}|null
 function normalizeMono3D [deprecated]: (v:unknown):'auto'|'off'|LiftFunction
+function openAppShare: (deviceId:string,opts?:{width?:number;height?:number;frameRate?:number;mediaDevices?:MediaDevices}):Promise<AppShare>
+function openTabShare: (opts?:{width?:number;frameRate?:number;mediaDevices?:MediaDevices}):Promise<TabShare>
 function parseInviteLink: (link:string|{hash?:string;href?:string}|null|undefined):string|null
 function preferVideoCodecs [deprecated]: (sdp:string,order?:readonly string[]):string
 function qrEncode [deprecated]: (text:string,opts?:{ecl?:'L'|'M';mask?:number}):{version:number;size:number;mask:number;modules:boolean[][]}
@@ -54,20 +58,39 @@ function roomKey [deprecated]: (room:string):Promise<string>
 function routeFor [deprecated]: (p:{format?:string|null;woven:boolean;mono3D?:'auto'|'off'|false|LiftFunction;lift?:boolean;overBudget?:boolean;failed?:boolean}):{route:'woven-sbs'|'flat-left'|'flat'|'lifted';mono3d?:string}
 function setLiftPriority [deprecated]: (handle:{setPriority?(p:'high'|'normal'|'low'|'paused'):boolean}|null|undefined,level:'high'|'normal'|'low'|'paused'):boolean
 function sortCodecCapabilities [deprecated]: <T extends{mimeType?:string}>(codecs:T[],order?:readonly string[]):T[]
+function watchShareableApps: (cb:(apps:ShareableApp[])=>void,opts?:{mediaDevices?:MediaDevices}):()=>void
 global interface HTMLElementEventMap extends DxrCallEventMap{}
 global interface HTMLElementTagNameMap{'dxr-call':DxrCallElement}
+interface AppShare
+  AppShare.descriptor: descriptor:{kind:'content';format:CallFormat;width:number;height:number;convergence:{known:true;frac:number};appName:string|null}
+  AppShare.stream: stream:MediaStream
+  AppShare.track: track:MediaStreamTrack
+interface CallContent
+  CallContent.readonly appName: readonly appName:string|null
+  CallContent.readonly convergence: readonly convergence:Readonly<ContentConvergence>
+  CallContent.readonly format: readonly format:CallFormat
+  CallContent.readonly height: readonly height:number
+  CallContent.readonly on: readonly on:true
+  CallContent.readonly width: readonly width:number
 interface CallEvents
-  CallEvents.display: display:{id:string;display:CallDisplay}
+  CallEvents.content: content:{id:string;on:boolean;appName:string|null;reason?:'stopped'|'ended'|'left'}
+  CallEvents.display: display:{id:string;display:CallDisplay;kind:CallTileKind}
   CallEvents.error: error:{code:CallErrorCode;message:string;error:Error|null}
   CallEvents.joined: joined:{room:string;id:string}
   CallEvents.left: left:{room:string|null;reason:string}
+  CallEvents.message: message:{from:string;data:unknown}
+  CallEvents.name: name:{id:string;name:string|null}
   CallEvents.peer: peer:{id:string}
   CallEvents.peerleft: peerleft:{id:string;reason:string}
   CallEvents.quality: quality:({id:string}& CallQuality)|({id:null;in:null;out:null;lift:{degraded:boolean;frameMs:number;tiles:number}})
+  CallEvents.signal: signal:{state:'connected'|'reconnecting'|'closed';code?:string}
   CallEvents.speaker: speaker:{id:string|null}
+  CallEvents.speaking: speaking:{id:string;on:boolean;kind:CallTileKind}
   CallEvents.state: state:{id:string;state:PeerState}
   CallEvents.warning: warning:{code:CallWarningCode;message:string}
+  CallEvents.weave: weave:{id:string;state:'woven'|'flat';reason?:string;ms:number;kind:CallTileKind}
 interface CallHandle
+  CallHandle.broadcast: broadcast(data:unknown):boolean
   CallHandle.diagnostics: diagnostics():Record<string,unknown>
   CallHandle.inviteLink: inviteLink():string|null
   CallHandle.join: join():Promise<void>
@@ -77,26 +100,38 @@ interface CallHandle
   CallHandle.on: on<K extends keyof CallEvents>(type:K,cb:(e:CallEvents[K])=>void):()=>void
   CallHandle.readonly camera: readonly camera:'ok'|'busy'|'none'|'pending'
   CallHandle.readonly cameraOff: readonly cameraOff:boolean
+  CallHandle.readonly content: readonly content:CallContent|null
   CallHandle.readonly depth: readonly depth:number
   CallHandle.readonly id: readonly id:string
   CallHandle.readonly localFormat: readonly localFormat:CallFormat|null
+  CallHandle.readonly localStream: readonly localStream:MediaStream|null
   CallHandle.readonly mono3D: readonly mono3D:{readonly on:boolean;readonly state:'off'|'idle'|'loading'|'ready'|'unavailable';readonly reason:string|null;readonly provider:string|null;readonly lifted:number;readonly max:number}
   CallHandle.readonly muted: readonly muted:boolean
+  CallHandle.readonly name: readonly name:string|null
   CallHandle.readonly peers: readonly peers:ReadonlyArray<CallPeer>
   CallHandle.readonly room: readonly room:string|null
+  CallHandle.readonly signal: readonly signal:'connected'|'reconnecting'|'closed'|null
   CallHandle.readonly speaker: readonly speaker:string|null
   CallHandle.readonly state: readonly state:'lobby'|'joining'|'in-call'|'full'|'left'
   CallHandle.retryCamera: retryCamera():Promise<{format:CallFormat;width:number;height:number;label:string}>
+  CallHandle.send: send(peerId:string,data:unknown):boolean
+  CallHandle.setAudioOutput: setAudioOutput(sinkId:string):Promise<boolean>
   CallHandle.setCamera: setCamera(src:string|MediaStream|StereoCamera,opts?:{format?:CallFormat}):Promise<{format:CallFormat;width:number;height:number;label:string}>
   CallHandle.setCameraOff: setCameraOff(on?:boolean):boolean
   CallHandle.setDepth: setDepth(v:number|null):number
+  CallHandle.setMic: setMic(deviceId:string|null):Promise<boolean>
   CallHandle.setMono3D: setMono3D(on?:boolean):boolean
-  CallHandle.tile: tile(peerId:string):HTMLElement|null
+  CallHandle.setName: setName(name:string|null):string|null
+  CallHandle.setSelfView: setSelfView(on?:boolean):boolean
+  CallHandle.shareContent: shareContent(src:MediaStream|MediaStreamTrack,opts?:ContentDescriptor):Promise<CallContent>
+  CallHandle.stopContent: stopContent(opts?:{stopTrack?:boolean}):Promise<boolean>
+  CallHandle.tile: tile(peerId:string,kind?:CallTileKind):HTMLElement|null
 interface CallOptions
   CallOptions.audio?: audio?:boolean
   CallOptions.autoConverge?: autoConverge?:boolean
   CallOptions.autoJoin?: autoJoin?:boolean
   CallOptions.camera?: camera?:'auto'|'stereo'|'mono'|(string &{})|MediaStream|StereoCamera
+  CallOptions.cameraExclude?: cameraExclude?:ReadonlyArray<string|RegExp>|false
   CallOptions.cursor?: cursor?:'depth'|PairCursorOptions
   CallOptions.debug?: debug?:boolean
   CallOptions.format?: format?:CallFormat
@@ -108,23 +143,31 @@ interface CallOptions
   CallOptions.liftOptions?: liftOptions?:Record<string,unknown>&{max?:number}
   CallOptions.maxPeers?: maxPeers?:number
   CallOptions.mono3D?: mono3D?:'auto'|'off'|false|LiftFunction
+  CallOptions.name?: name?:string
   CallOptions.room?: room?:'auto'|(string &{})
+  CallOptions.selfContentView?: selfContentView?:boolean
   CallOptions.selfView?: selfView?:boolean
+  CallOptions.sendConvergence?: sendConvergence?:boolean
   CallOptions.signaling?: signaling?:SignalingAdapter
   CallOptions.theme?: theme?:CallTheme
+  CallOptions.tileCover?: tileCover?:'auto'|'off'
   CallOptions.ui?: ui?:boolean|'tiles'
   CallOptions.wall?: wall?:Inline3D|Inline3DUnsupported|null
 interface CallPeer
   CallPeer.readonly cameraOff: readonly cameraOff:boolean
+  CallPeer.readonly content: readonly content:{readonly on:boolean;readonly format:CallFormat|null;readonly appName:string|null}
   CallPeer.readonly display: readonly display:CallDisplay
   CallPeer.readonly format: readonly format:CallFormat
   CallPeer.readonly id: readonly id:string
   CallPeer.readonly muted: readonly muted:boolean
+  CallPeer.readonly name: readonly name:string|null
   CallPeer.readonly speaking: readonly speaking:boolean
   CallPeer.readonly state: readonly state:PeerState
 interface CallQuality
   CallQuality.in: in:{width:number;height:number;fps:number;codec:string|null;kbps:number|null;dropped:number;decoder:string|null}|null
   CallQuality.out: out:{width:number;height:number;fps:number;codec:string|null;kbps:number|null;limitation:string|null;encoder:string|null}|null
+  CallQuality.path?: path?:'host'|'srflx'|'prflx'|'relay'|null
+  CallQuality.rttMs?: rttMs?:number|null
 interface CallTheme
   CallTheme.accent?: accent?:CallAccent|(string &{})
   CallTheme.danger?: danger?:string
@@ -133,7 +176,21 @@ interface CallTheme
   CallTheme.radius?: radius?:number|string
   CallTheme.shell?: shell?:string
   CallTheme.strings?: strings?:CallStrings
-  CallTheme.tileAspect?: tileAspect?:number
+  CallTheme.tileAspect?: tileAspect?:number|'fill'
+interface ContentConvergence
+  ContentConvergence.frac: frac:number|null
+  ContentConvergence.known: known:boolean
+interface ContentDescriptor
+  ContentDescriptor.appName?: appName?:string|null
+  ContentDescriptor.convergence?: convergence?:ContentConvergence
+  ContentDescriptor.format?: format?:CallFormat
+  ContentDescriptor.height?: height?:number
+  ContentDescriptor.width?: width?:number
+interface ShareableApp
+  ShareableApp.readonly appName: readonly appName:string|null
+  ShareableApp.readonly deviceId: readonly deviceId:string
+  ShareableApp.readonly label: readonly label:string
+  ShareableApp.readonly legacy?: readonly legacy?:true
 interface SignalingAdapter
   SignalingAdapter.join: join(room:string,hooks:SignalingHooks):Promise<SignalingSession>
   SignalingAdapter.readonly name?: readonly name?:string
@@ -160,12 +217,19 @@ interface SignalingTurnStatus
   SignalingTurnStatus.reason?: reason?:'unconfigured'|'budget'|'cap'|'rate'|'mint-failed'
   SignalingTurnStatus.status: status:'ok'|'degraded'|'off'
   SignalingTurnStatus.ttl?: ttl?:number
+interface TabShare
+  TabShare.descriptor: descriptor:{kind:'content';format:CallFormat;width:number;height:number;convergence:{known:true;frac:number};appName:null}
+  TabShare.stereo: stereo:boolean
+  TabShare.stream: stream:MediaStream
+  TabShare.track: track:MediaStreamTrack
+type AppShareErrorCode: 'share-denied'|'share-failed'|'not-app-share'
 type CallAccent: 'azure'|'violet'|'magenta'|'sunset'|'amber'|'lime'|'mint'|'ice'
 type CallDisplay: '3D'|'2D→3D'|'2D'
 type CallErrorCode: |'camera-busy'|'no-camera'|'permission-denied'|'unreachable'|'room-full'|'session-ended'|'signaling-closed'|'join-failed'|'camera-failed'|'rectify-failed'|'mount-failed'|'signaling-unreachable'|'rate-limited'|'quota'|'bad-key'|'origin-not-allowed'|'blocked'|'expired'|'turn-cap'|(string &{})
 type CallFormat: 'sbs'|'mono'
 type CallStrings: Partial<Record<|'lobbyStartTitle'|'lobbyJoinTitle'|'lobbyFullTitle'|'lobbyLeftTitle'|'lobbyFullText'|'lobbyText'|'cameraDefault'|'kindBusy'|'kindNone'|'kindSbs'|'kindMono'|'liftOff'|'liftChecking'|'liftMissing'|'liftNoProvider'|'liftNative'|'liftWeb'|'liftProven'|'liftUnproven'|'start'|'join'|'rejoin'|'retryCamera'|'cameraSelect'|'joining'|'waitingTitle'|'waitingText'|'inviteTitle'|'inviteText'|'inviteLink'|'copyLink'|'copied'|'pressCopy'|'qrLabel'|'banner2D'|'bannerLink'|'mute'|'unmute'|'cameraOn'|'cameraOff'|'cameraRetry'|'cameraBusyRetry'|'depth'|'invite'|'leave'|'connecting'|'reconnecting'|'leftCall'|'cameraOffPlate'|'noCamera'|'unreachable'|'cameraBusy'|'you'|'badge3D'|'badge2D3D'|'badge2D'|'badgePending',string>>
-type CallWarningCode: 'lift-not-bundled'|'turn-shed'|(string &{})
+type CallTileKind: 'camera'|'content'
+type CallWarningCode: 'lift-not-bundled'|'turn-shed'|'content-unsupported'|(string &{})
 type DxrCallEventMap: {[K in keyof CallEvents as `dxr-call:${K}`]:CustomEvent<CallEvents[K]>}&{'dxr-call:ready':CustomEvent<{call:CallHandle}>}
 type LiftFunction: ((element:HTMLVideoElement,opts:Record<string,unknown>&{mode:'live';wall:unknown;ui:'none';convergence:'auto'|number;priority:'high'|'normal'|'low'|'paused'})=>Promise<{remove():void;setPriority?(p:'high'|'normal'|'low'|'paused'):boolean;setConvergence?(x:'auto'|number):void;on?(type:string,cb:(d:any)=>void):()=>void;readonly native?:boolean;readonly state?:string;readonly canvas?:HTMLCanvasElement}>)&{liftCapabilities?:(o?:{webFallback?:boolean})=>Promise<any>}
 type PeerState: 'new'|'connecting'|'connected'|'reconnecting'|'unreachable'|'left'

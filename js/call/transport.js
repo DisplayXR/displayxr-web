@@ -6,7 +6,8 @@
 //
 //   transport.start({ room, localStream, onPeer, onPeerLeft, onStream, onMessage, onPeerState })
 //   transport.send(peerId, msg) / broadcast(msg)
-//   transport.replaceVideoTrack(track) / setSendFormat(format)
+//   transport.replaceTrack(kind, track, stream, { slot }) / setSendFormat(format)
+//   transport.addContentTransceiver(peerId)   // the content track (3D app share), see below
 //   transport.peerConnection(peerId)   // for getStats (null on an SFU)
 //   transport.stop()
 //
@@ -23,6 +24,19 @@
 // GENERATIONS: every signal carries the connection generation it belongs to. A rebuild bumps it,
 // and a late ICE candidate or answer from a dead connection is dropped instead of poisoning the
 // new one.
+//
+// THE CONTENT TRACK (3D app share, docs/call.md § Sharing a 3D app): a SECOND video transceiver
+// per pair, sendrecv, so either side can share into it. It exists only when BOTH hellos said
+// `content: true` — the call module calls addContentTransceiver(pid) when the peer's hello says
+// so (its own always does) — so an older peer is never offered a second video m-line and never
+// gets a second camera sender. The offerer adds it (null track until someone shares) and
+// renegotiates with a same-generation re-offer (the answerer's 'offer' case takes it on the same
+// connection); a rebuild re-adds it in the first offer. It is identified as the SECOND video
+// transceiver in getTransceivers() order on both ends: that order is m-line order (the offerer
+// created them in that order; the answerer's are created from the offer's m-lines, and it never
+// adds its own), and m-lines are never reordered or reused here — so both ends agree with no mid
+// or msid bookkeeping. Sharing is then a replaceTrack on that sender only (no renegotiation), and
+// its frames reach the far end's onContentStream, never the camera stream.
 //
 // RECOVERY LADDER on a pair that stops working: 'disconnected' for 4 s, or 'failed' → ICE restart
 // on the SAME connection (cheap: keeps the transceivers, renegotiates candidates) → if that has
@@ -44,6 +58,8 @@ const ANSWERER_WAIT_MS = 8000;
  * keeps retrying underneath it the whole time.
  */
 export const UNREACHABLE_MS = 10000;
+/** The camera's share of its bitrate while this side shares content (tuneSenders). */
+export const CAMERA_SHARE_FACTOR = 0.6;
 
 /**
  * Clamp the requested room size to what a full mesh can carry.
@@ -86,6 +102,9 @@ export class MeshTransport {
     this.stopped = false;
     this.sendFormat = 'mono';
     this.localStream = null;
+    // The content track this side shares (null = not sharing) and the stream it rides in.
+    this.contentTrack = null;
+    this.contentStream = null;
   }
 
   /** Remote peers currently in the mesh (not counting this one). */
@@ -93,10 +112,12 @@ export class MeshTransport {
     return this.peers.size;
   }
 
-  async start({ room, localStream, sendFormat, onPeer, onPeerLeft, onStream, onMessage, onPeerState, onRefused, onSignalingState, onGhost }) {
+  async start({ room, localStream, sendFormat, contentTrack, contentStream, onPeer, onPeerLeft, onStream, onContentStream, onMessage, onPeerState, onRefused, onSignalingState, onGhost }) {
     this.localStream = localStream;
     this.sendFormat = sendFormat || 'mono';
-    this.cb = { onPeer, onPeerLeft, onStream, onMessage, onPeerState, onRefused, onSignalingState, onGhost };
+    if (contentTrack !== undefined) this.contentTrack = contentTrack || null;
+    if (contentStream !== undefined) this.contentStream = contentStream || null;
+    this.cb = { onPeer, onPeerLeft, onStream, onContentStream, onMessage, onPeerState, onRefused, onSignalingState, onGhost };
     // Hooks can fire before join() resolves (the PeerJS adapter discovers peers while joining);
     // queue them so every one runs against a fully-initialised transport.
     const later = (fn) => (...a) => (this.ready ? fn(...a) : this._pending.push(() => fn(...a)));
@@ -178,6 +199,11 @@ export class MeshTransport {
       gen: 0,
       state: 'new',
       stream: null,
+      // Content (3D app share): both hellos said `content` (contentCap), and the far end's
+      // content track once it arrived, in its own stream.
+      contentCap: false,
+      contentStream: null,
+      renegotiate: false,
       attempts: 0,
       iceRestarted: false,
       absent: false,
@@ -201,6 +227,11 @@ export class MeshTransport {
     rec.iceRestarted = false;
     rec.pendingCandidates = [];
     rec.stream = null; // a new connection's tracks arrive in a new stream (a fresh srcObject)
+    rec.renegotiate = false;
+    if (rec.contentStream) {
+      rec.contentStream = null;
+      this.cb.onContentStream?.(rec.id, null);
+    }
     const pc = new this.PC({ iceServers: this.iceServers });
     rec.pc = pc;
     const dc = pc.createDataChannel('dxr-call', { negotiated: true, id: 0, ordered: true });
@@ -213,11 +244,20 @@ export class MeshTransport {
       pc.addTransceiver(audio || 'audio', { direction: 'sendrecv', streams });
       const vt = pc.addTransceiver(video || 'video', { direction: 'sendrecv', streams });
       this._preferCodecs(vt);
+      // A rebuild of a pair that already agreed on content offers its transceiver at once.
+      if (rec.contentCap) this._addContent(rec, pc);
     }
     pc.onicecandidate = (e) => {
       if (e.candidate) this._signal(rec, { kind: 'candidate', candidate: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate });
     };
     pc.ontrack = (e) => {
+      if (rec.pc !== pc) return;
+      if (this._isContent(pc, e.transceiver, e.track)) {
+        // The far end's content track: its own stream, never the camera's (no eviction).
+        rec.contentStream = new MediaStream([e.track]);
+        this.cb.onContentStream?.(rec.id, rec.contentStream);
+        return;
+      }
       if (!rec.stream) rec.stream = new MediaStream();
       if (!rec.stream.getTracks().includes(e.track)) {
         for (const t of rec.stream.getTracks()) if (t.kind === e.track.kind) rec.stream.removeTrack(t);
@@ -269,12 +309,18 @@ export class MeshTransport {
           await pc.setLocalDescription(answer);
           this._signal(rec, { kind: 'answer', sdp: pc.localDescription.sdp });
           this._flushCandidates(rec);
+          if (rec.state === 'connected') this.tuneSenders(); // a re-offer may have added the content sender
           break;
         }
         case 'answer':
           if (!rec.offerer || gen !== rec.gen || !rec.pc || rec.pc.signalingState !== 'have-local-offer') return;
           await rec.pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
           this._flushCandidates(rec);
+          if (rec.renegotiate) {
+            // A content transceiver was added while this offer was out: offer again.
+            rec.renegotiate = false;
+            this._offer(rec).catch((err) => this.log('offer-error', { peer: rec.id, err: String(err) }));
+          } else if (rec.state === 'connected') this.tuneSenders();
           break;
         case 'candidate':
           if (gen !== rec.gen || !rec.pc) return;
@@ -305,11 +351,25 @@ export class MeshTransport {
     for (const c of list) rec.pc.addIceCandidate(c).catch(() => {});
   }
 
-  /** Answerer side: put our tracks on the transceivers the offer created, and make them sendrecv. */
+  /**
+   * Answerer side: put our tracks on the transceivers the offer created, and make them sendrecv.
+   * The content transceiver (the second video one) never gets the camera: it gets this side's
+   * content track when it is sharing, else stays empty (but sendrecv, so it can share later).
+   */
   _attachAnswererTracks(rec) {
     const pc = rec.pc;
     const tracks = this.localStream ? this.localStream.getTracks() : [];
+    const content = this._contentTransceiver(pc);
+    if (content) {
+      if (this.contentTrack && content.sender.track !== this.contentTrack) {
+        content.sender.replaceTrack(this.contentTrack).catch(() => {});
+        if (this.contentStream && content.sender.setStreams) content.sender.setStreams(this.contentStream);
+      }
+      content.direction = 'sendrecv';
+      this._preferCodecs(content);
+    }
     for (const tr of pc.getTransceivers()) {
+      if (tr === content) continue;
       const kind = tr.receiver && tr.receiver.track ? tr.receiver.track.kind : null;
       if (!kind || tr.sender.track) continue;
       const t = tracks.find((x) => x.kind === kind);
@@ -320,6 +380,61 @@ export class MeshTransport {
       tr.direction = 'sendrecv';
       if (kind === 'video') this._preferCodecs(tr);
     }
+  }
+
+  // ── the content transceiver ─────────────────────────────────────────────────────────────
+
+  /** The video transceivers of a connection, in getTransceivers() (= m-line) order. */
+  _videoTransceivers(pc) {
+    if (!pc || typeof pc.getTransceivers !== 'function') return [];
+    return pc.getTransceivers().filter((tr) => tr && tr.receiver && tr.receiver.track && tr.receiver.track.kind === 'video');
+  }
+
+  /** The content transceiver: the SECOND video transceiver (see the header), or null. */
+  _contentTransceiver(pc) {
+    return this._videoTransceivers(pc)[1] || null;
+  }
+
+  /** Is this incoming track (ontrack) the far end's content track? */
+  _isContent(pc, transceiver, track) {
+    const ct = this._contentTransceiver(pc);
+    if (!ct) return false;
+    if (transceiver) return transceiver === ct;
+    return !!(track && ct.receiver && ct.receiver.track === track);
+  }
+
+  _addContent(rec, pc) {
+    if (this._contentTransceiver(pc)) return this._contentTransceiver(pc);
+    const streams = this.contentStream ? [this.contentStream] : [];
+    const tr = pc.addTransceiver(this.contentTrack || 'video', { direction: 'sendrecv', streams });
+    this._preferCodecs(tr);
+    return tr;
+  }
+
+  /**
+   * Both hellos of this pair said `content`: give it the content transceiver. Offerer only (the
+   * answerer gets it in the offer); idempotent. Renegotiates with a same-generation re-offer, or
+   * after the offer in flight is answered. False when this side cannot (answerer, unknown peer).
+   */
+  addContentTransceiver(pid) {
+    const rec = this.peers.get(pid);
+    if (!rec || this.stopped) return false;
+    rec.contentCap = true;
+    if (!rec.offerer) return false;
+    const pc = rec.pc;
+    if (!pc) return true; // the next build adds it
+    if (this._contentTransceiver(pc)) return true;
+    this._addContent(rec, pc);
+    this.log('content-transceiver', { peer: rec.id, gen: rec.gen });
+    if (pc.signalingState === 'stable') this._offer(rec).catch((err) => this.log('offer-error', { peer: rec.id, err: String(err) }));
+    else rec.renegotiate = true;
+    return true;
+  }
+
+  /** Does this pair carry a content transceiver right now? */
+  hasContent(pid) {
+    const rec = this.peers.get(pid);
+    return !!(rec && rec.pc && this._contentTransceiver(rec.pc));
   }
 
   _preferCodecs(transceiver) {
@@ -402,6 +517,10 @@ export class MeshTransport {
     clearTimeout(rec.waitTimer);
     this._closePc(rec);
     this.peers.delete(rec.id);
+    if (rec.contentStream) {
+      rec.contentStream = null;
+      this.cb.onContentStream?.(rec.id, null);
+    }
     this._setState(rec, 'left');
     this.cb.onPeerLeft?.(rec.id, reason);
     this.tuneSenders();
@@ -501,6 +620,16 @@ export class MeshTransport {
     for (const pid of this.peers.keys()) this.send(pid, msg);
   }
 
+  /** An already-serialised message (the app channel: sized before it is sent). */
+  sendRaw(pid, json) {
+    const rec = this.peers.get(pid);
+    if (rec && rec.dc && rec.dc.readyState === 'open') {
+      rec.dc.send(json);
+      return true;
+    }
+    return false;
+  }
+
   peerConnection(pid) {
     const rec = this.peers.get(pid);
     return rec ? rec.pc : null;
@@ -513,12 +642,29 @@ export class MeshTransport {
 
   // ── sending ─────────────────────────────────────────────────────────────────────────────
 
-  /** Swap the outgoing video (setCamera). No renegotiation: replaceTrack on every sender. */
-  async replaceTrack(kind, track, stream) {
-    if (stream) this.localStream = stream;
+  /**
+   * Swap an outgoing track. No renegotiation: replaceTrack on the senders of that slot.
+   * `slot: 'camera'` (default — setCamera / setMic): every sender of that kind EXCEPT the content
+   * one. `slot: 'content'` (shareContent / stopContent, video only): the content sender of every
+   * pair that has one; `track: null` stops sharing. A pair that gets its content transceiver later
+   * picks the current content track up then.
+   */
+  async replaceTrack(kind, track, stream, { slot = 'camera' } = {}) {
+    if (slot === 'content') {
+      this.contentTrack = track || null;
+      this.contentStream = track ? stream || null : null;
+    } else if (stream) this.localStream = stream;
     for (const rec of this.peers.values()) {
       if (!rec.pc) continue;
+      const content = this._contentTransceiver(rec.pc);
+      if (slot === 'content') {
+        if (!content) continue;
+        await content.sender.replaceTrack(track || null).catch(() => {});
+        if (track && stream && content.sender.setStreams) content.sender.setStreams(stream);
+        continue;
+      }
       for (const tr of rec.pc.getTransceivers()) {
+        if (tr === content) continue;
         const k = tr.receiver && tr.receiver.track ? tr.receiver.track.kind : null;
         if (k === kind) await tr.sender.replaceTrack(track).catch(() => {});
       }
@@ -537,16 +683,21 @@ export class MeshTransport {
    */
   async tuneSenders() {
     const n = this.peers.size;
-    const kbps = maxBitrateKbps(this.sendFormat, n);
+    const sharing = !!this.contentTrack;
+    // While content is on, the camera yields: the shared app is what people look at.
+    const kbps = Math.round(maxBitrateKbps(this.sendFormat, n) * (sharing ? CAMERA_SHARE_FACTOR : 1));
+    const contentKbps = maxBitrateKbps('sbs', n);
     for (const rec of this.peers.values()) {
       if (!rec.pc) continue;
+      const ct = this._contentTransceiver(rec.pc);
       for (const s of rec.pc.getSenders()) {
         if (!s.track || s.track.kind !== 'video') continue;
+        const isContent = !!(ct && ct.sender === s);
         try {
           const p = s.getParameters();
           p.degradationPreference = 'maintain-resolution';
           if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-          p.encodings[0].maxBitrate = kbps * 1000;
+          p.encodings[0].maxBitrate = (isContent ? contentKbps : kbps) * 1000;
           await s.setParameters(p);
         } catch (err) {
           this.log('setParameters-error', { peer: rec.id, err: String(err) });

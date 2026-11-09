@@ -3,6 +3,7 @@
 
 import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
+import type { HandControlOptions, HandControls } from './hands.js';
 import type { FirstWovenResult, RectCoverOption, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
 
@@ -25,6 +26,13 @@ export interface ModelOptions {
   /** Degrees/second of turntable once idle (default 8). */
   idleSpin?: number;
   orbit?: boolean;
+  /**
+   * Tracked-hand controls (`@displayxr/inline3d/hands`): one pinch dragged turns the model, two
+   * pinches spread / dragged / twisted zoom / turn / roll it (either engine). Needs the
+   * DisplayXR Browser 1.8.0+ with a hand provider; inert elsewhere, and pointer / wheel keep
+   * working alongside. `true` or the controller options; exposed as `handle.hands`. Default off.
+   */
+  hands?: boolean | HandControlOptions;
   fit?: 'contain' | 'height' | 'cover' | 'none';
   /** Fraction of the tile the subject may occupy (default 0.8) — width AND height. */
   margin?: number;
@@ -212,6 +220,8 @@ export interface ModelHandle {
    * returns (1.11 returned it synchronously; `@displayxr/inline3d/model/three` still does).
    */
   readonly viewer: SceneViewer | PlayCanvasSplatViewer | null;
+  /** The hand controls, when the `hands` option asked for them (`stop()`, `state.gate`, `controller`). */
+  readonly hands?: HandControls;
   /**
    * The loaded glTF root — a three `Object3D`, or on PlayCanvas the render `pc.Entity`
    * (`instantiateRenderEntity()`). Null until `ready` resolves.

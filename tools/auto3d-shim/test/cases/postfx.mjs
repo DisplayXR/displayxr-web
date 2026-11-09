@@ -31,6 +31,15 @@ const mirrorIs = (want) => (r, t, h, R) => t(`mirror probe: the chain is ${want 
 // subject (2·f·eyeX / z = 2·989·0.1 / 8 ≈ 25 px) = 39 px with the eyes in order; with them swapped
 // (pseudoscopic) it would be 64 + 25.
 const EYES_SHIFT = 39 / 640;
+// A view that moves along one axis (#231): framed as the page frames it, and never taken for jitter.
+const oneAxis = {
+  timeoutMs: 20000,
+  alsoCheck(r, t, h, R) {
+    framed(r, t, h, R);
+    const why = r.log.find((l) => /jitters camera\.setViewOffset/.test(l));
+    t('never taken for jitter (no "stays 2D: the scene pass jitters …" line), live at the end', !why && R && R.flatReason == null, why || `flatReason ${R && R.flatReason}`);
+  },
+};
 
 export default function cases({ P, NEW }) {
   const view = (q, extra) => ({
@@ -67,6 +76,50 @@ export default function cases({ P, NEW }) {
         t('no session requested, nothing converted', r.fake.sessions === 0 && S && !S.active && !S.pending, `sessions ${r.fake.sessions}, active ${S && S.active}`);
         t('flat with the jitter reason (state, HUD)', S && /jitters camera\.setViewOffset/.test(S.flatReason || '') && /jitters camera\.setViewOffset/.test(r.hud || ''), `flatReason "${S && S.flatReason}", hud "${r.hud}"`);
         t('console: "stays 2D: the scene pass jitters …"', r.log.some((l) => /stays 2D: the scene pass jitters camera\.setViewOffset/.test(l)), '');
+      },
+    },
+    // #226: a jitter left set across frames (a TAA that never clears its offset).
+    {
+      id: 'e-postfx-taa', name: 'post chain whose scene camera keeps a sub-pixel jitter set across frames (a TAA that never clears it): stays 2D, reported flat with the reason',
+      url: P + 'three-postfx.html?view=taa', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('no session requested, nothing converted', r.fake.sessions === 0 && S && !S.active && !S.pending, `sessions ${r.fake.sessions}, active ${S && S.active}`);
+        t('flat with the jitter reason (state, HUD)', S && /jitters camera\.setViewOffset/.test(S.flatReason || '') && /jitters camera\.setViewOffset/.test(r.hud || ''), `flatReason "${S && S.flatReason}", hud "${r.hud}"`);
+      },
+    },
+    { id: 'e-postfx-pan', name: 'post chain whose lens shift drifts 0.3 px a frame, one way: framing, not jitter (converts, framed as the page frames it)', ...view('view=pan') },
+    // #231: sub-pixel framing along ONE axis that turns back often. v0.6.4 took each for jitter within
+    // 8 frames (a timeout here: it never stays live).
+    { id: 'e-postfx-bob', name: 'post chain whose lens shift bobs 0.5 px on y (period 8 frames): framing, not jitter (converts and stays live)', ...view('view=bob', oneAxis) },
+    { id: 'e-postfx-spring', name: 'post chain whose lens shift ends in an underdamped spring\'s tail on x (0.9 px decaying, period 7 frames): framing, not jitter', ...view('view=spring', oneAxis) },
+    { id: 'e-postfx-parallax', name: 'post chain with a lerped mouse parallax on x (the mouse wobbles by whole px): framing, not jitter', ...view('view=parallax', oneAxis) },
+    {
+      id: 'e-postfx-taa-late', name: 'post chain with a steady view, then a jitter left on from frame 31: converts, then stands down with the reason',
+      url: P + 'three-postfx.html?view=taa-late', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('converted first (one session, one layer)', r.fake.sessions === 1 && r.fake.layers === 1, `sessions ${r.fake.sessions}, layers ${r.fake.layers}`);
+        t('then back to 2D: "back to 2D: the scene pass jitters …"', r.log.some((l) => /back to 2D: the scene pass jitters camera\.setViewOffset/.test(l)), r.log.filter((l) => /back to 2D/.test(l)).join(' | ') || 'no back-to-2D line');
+        t('ends flat with the jitter reason, not live', S && !S.active && /jitters camera\.setViewOffset/.test(S.flatReason || ''), `active ${S && S.active}, flatReason "${S && S.flatReason}"`);
+      },
+    },
+    {
+      id: 'e-postfx-taa-half', name: 'post chain on a half-size scene target whose TAA jitter (in that target\'s px, ±1 canvas px) is left set: stays 2D, reported flat with the reason',
+      url: P + 'three-postfx.html?view=taa&rtScale=0.5', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('no session requested, nothing converted', r.fake.sessions === 0 && S && !S.active && !S.pending, `sessions ${r.fake.sessions}, active ${S && S.active}`);
+        t('flat with the jitter reason', S && /jitters camera\.setViewOffset/.test(S.flatReason || ''), `flatReason "${S && S.flatReason}"`);
+      },
+    },
+    {
+      id: 'e-postfx-taa-short', name: 'post chain whose TAA holds sample 1 while "moving", then takes 5 more samples left set and stops drawing the scene: converts, then stands down with the reason',
+      url: P + 'three-postfx.html?view=taa-short', shim: NEW, cfg: { convTarget: false }, expect: 'flat', ready: 'window.__frozen',
+      check(r, t) {
+        const S = r.state && r.state.renderers[0];
+        t('then back to 2D: "back to 2D: the scene pass jitters …"', r.log.some((l) => /back to 2D: the scene pass jitters camera\.setViewOffset/.test(l)), r.log.filter((l) => /back to 2D/.test(l)).join(' | ') || 'no back-to-2D line');
+        t('ends flat with the jitter reason, not live', S && !S.active && /jitters camera\.setViewOffset/.test(S.flatReason || ''), `active ${S && S.active}, flatReason "${S && S.flatReason}"`);
       },
     },
     {

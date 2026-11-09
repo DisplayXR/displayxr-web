@@ -426,12 +426,26 @@ class StereoCamera {
  * Open the best camera. `prefer`: `'auto'` (default — a stereo device when one is present: the
  * DisplayXR Browser's "3D Camera", or a device delivering > 2.5:1 frames; else the default
  * webcam), `'stereo'` (prefer the pair, fall back to mono), `'mono'` (never probe), a `deviceId`,
- * or a `MediaStream` you own (then `format` declares what it is — 3D-ness is never guessed from
+ * `'label:<text>'` (the first camera whose label contains the text, case-insensitive), or a
+ * `MediaStream` you own (then `format` declares what it is — 3D-ness is never guessed from
  * a stream). A camera held by another process (an eye tracker) is skipped, never fatal; the
  * promise rejects only when NO camera opens, with `code` `'camera-busy'` (every device is held),
  * `'permission-denied'`, or `'no-camera'`, and `skipped` listing every device tried.
  *
- * @param {object|string|MediaStream} [opts]  `{ prefer, format, calibration, rectify, debug }` (or just `prefer`)
+ * A probe never opens a device whose label marks it as a sensor rather than a camera (a hand-tracking
+ * camera — an Ultraleap enumerates as just "Ultraleap" — an eye tracker's, infrared or depth
+ * camera's stream — capture.js CAMERA_EXCLUDE_BUILTIN), nor one matching `exclude` (strings: a
+ * label substring, case-insensitive, or an exact deviceId; RegExps: the label). While a listed
+ * device is excluded and labels are visible, the default camera is not opened blind: the first
+ * other camera is opened by id. `exclude: false` turns the built-in list off too. Left-out devices
+ * are in `skipped` with `excluded: true`. An explicit `deviceId` or `label:` is the page's choice
+ * and is opened regardless.
+ *
+ * In a DisplayXR Browser with labels visible and no 3D camera listed yet, `'auto'` / `'stereo'`
+ * waits up to `stereoWaitMs` (default 2500) for the runtime's 3D camera to be listed before it
+ * opens any plain lens (docs/camera.md, "Waiting for the 3D camera").
+ *
+ * @param {object|string|MediaStream} [opts]  `{ prefer, format, calibration, rectify, exclude, stereoWaitMs, debug }` (or just `prefer`)
  */
 export async function openCamera(opts = {}) {
   const o = typeof opts === 'string' || (opts && typeof opts.getVideoTracks === 'function') ? { prefer: opts } : opts || {};
@@ -441,7 +455,7 @@ export async function openCamera(opts = {}) {
   // `horizontalFovDeg` is the public spelling (RFC 0003 §4); the hello wire field is `hfovDeg`.
   if (cal.horizontalFovDeg > 0 && !(cal.hfovDeg > 0)) cal.hfovDeg = cal.horizontalFovDeg;
   delete cal.horizontalFovDeg;
-  const r = await openDevice(prefer, { format: o.format, calibration: cal, mediaDevices: o.mediaDevices, log: log || undefined });
+  const r = await openDevice(prefer, { format: o.format, calibration: cal, mediaDevices: o.mediaDevices, log: log || undefined, exclude: o.exclude, stereoWaitMs: o.stereoWaitMs });
   if (r.format === 'sbs' && typeof o.rectify === 'function') {
     // A calibrated rectification step (plug-in or runtime supplied): its output is a rectified
     // SBS stream, and the record then says so. A throwing hook keeps the raw pair.
@@ -498,7 +512,12 @@ function sizeFlat(canvas) {
  * pair — with `fallbackReason` saying why, and `onRouteChange(route, state)` tells the page (a
  * badge reads `route`). A refused layer is retried a few times; `_reroute(true, wall)` recovers.
  *
- * @param {{ mirror?: boolean, autoConverge?: boolean, depth?: number, aspect?: number, onRouteChange?: Function }} [opts]
+ * `aspect: 'fill'` crops each eye to the canvas's own CSS box (read every frame) instead of a fixed
+ * aspect, for a page that sizes the tile itself. `rectCover: 'auto'` is the core's rect cover
+ * (`addImage`'s `rectCover`) on the woven registration: the tile is covered across a later resize
+ * or move until it is woven again.
+ *
+ * @param {{ mirror?: boolean, autoConverge?: boolean, depth?: number, aspect?: number|'fill', rectCover?: 'auto'|'off'|object, onRouteChange?: Function }} [opts]
  */
 export function addCameraView(wall, canvas, cam, opts = {}) {
   if (!canvas || typeof canvas.getContext !== 'function') throw new TypeError(`${TAG} addCameraView(wall, canvas, cam, opts) needs a canvas`);
@@ -516,7 +535,10 @@ class CameraView {
     // A self view mirrors; a rear camera shows the world as it is. Unset: mirror unless the track
     // says it faces the environment (an unknown facing is a webcam pointed at the viewer).
     this.mirror = o.mirror === undefined ? cam.facing !== 'environment' : !!o.mirror;
-    this.aspect = typeof o.aspect === 'number' && o.aspect > 0.3 && o.aspect < 4 ? o.aspect : 16 / 9;
+    // 'fill': the canvas box's own aspect, read at paint (clamped like a number) — `_eyeAspect()`.
+    this.aspect = o.aspect === 'fill' ? 'fill' : typeof o.aspect === 'number' && o.aspect > 0.3 && o.aspect < 4 ? o.aspect : 16 / 9;
+    // The core's rect cover on the woven registration (undefined = the core's default, off).
+    this.rectCover = o.rectCover;
     this.autoConverge = !!o.autoConverge;
     this.conv = createConvergence();
     this.conv.depth = 0;
@@ -542,6 +564,8 @@ class CameraView {
     this._scratch = null;
     this._luma = null; // the latest grayscale source copy (auto-convergence and the depth cursor read it)
     this.disparityPx = null;
+    this._lastFrameAt = 0; // performance.now() of the last NEW camera frame (0 = none yet)
+    this._lastVideoTime = -1;
     // `cursor: 'depth'` (ADR-046 on a pair): validated now, its module loaded only on opt-in.
     this._cursorOpt = resolvePairCursorOption(o.cursor, '@displayxr/inline3d/camera');
     /** The depth cursor once its module has loaded; null without `cursor: 'depth'`. */
@@ -576,7 +600,26 @@ class CameraView {
       reason: this.fallbackReason,
       firstWoven: this.route === 'woven-sbs' ? (this._fw ? { ...this._fw } : 'pending') : null,
       layerRetries: this._layerFails,
+      frameAgeMs: this.frameAgeMs,
     };
+  }
+
+  /**
+   * Milliseconds since the camera last delivered a NEW frame to this view (its video's
+   * `currentTime` moved), or null before the first one. A view whose track stalls (a camera taken
+   * by another app, a suspended capture) keeps painting its last frame; this is how a page tells.
+   */
+  get frameAgeMs() {
+    return this._lastFrameAt ? Math.round(performance.now() - this._lastFrameAt) : null;
+  }
+
+  /** Note a new camera frame (the video's clock moved since the last paint). */
+  _noteFrame(v) {
+    if ((v.readyState || 0) < 2) return;
+    const t = v.currentTime;
+    if (t === this._lastVideoTime) return;
+    this._lastVideoTime = t;
+    this._lastFrameAt = performance.now();
   }
 
   /** The per-eye convergence shift currently painted, source px. */
@@ -636,9 +679,16 @@ class CameraView {
   }
 
   _registerWoven() {
-    if (!this.buffer) this.buffer = document.createElement('canvas');
+    if (!this.buffer) {
+      // Empty until the camera's first frame is painted into it: the wall does not count an empty
+      // buffer as a stereo frame, so firstWoven cannot settle "woven" over a tile that never
+      // showed the camera (a track that delivers no frames).
+      this.buffer = document.createElement('canvas');
+      this.buffer.width = 0;
+      this.buffer.height = 0;
+    }
     this._paintWoven(); // the first frame exists before the layer does
-    const handle = this.wall.addImage(this.canvas, this.buffer);
+    const handle = this.rectCover === undefined ? this.wall.addImage(this.canvas, this.buffer) : this.wall.addImage(this.canvas, this.buffer, { rectCover: this.rectCover });
     this.handle = handle;
     this._fw = null;
     const fw = handle && handle.firstWoven;
@@ -715,6 +765,7 @@ class CameraView {
     if (this.removed) return;
     const v = this.cam.video;
     if (!v || this.cam.state === 'closed') return;
+    this._noteFrame(v);
     if (this.route === 'woven-sbs') this._paintWoven();
     else this._paintFlat(v);
   }
@@ -749,7 +800,7 @@ class CameraView {
     const H = v.videoHeight;
     if (!W || !H || (v.readyState || 0) < 2 || !this.buffer) return;
     const eyeW = W / 2;
-    const A = this.aspect;
+    const A = this._eyeAspect();
     const { w: outW, h: outH } = eyeOutputSize(eyeW, H, A);
     const c = this.buffer;
     if (c.width !== 2 * outW || c.height !== outH) {
@@ -781,6 +832,15 @@ class CameraView {
       const geo = { rL: eyeCropRect(eyeW, H, A, shift, 0), rR: eyeCropRect(eyeW, H, A, shift, 1), outW, outH, mirror: this.mirror, handle: this.handle };
       this.cursor.draw(g, this._luma, geo, performance.now() / 1000);
     }
+  }
+
+  /** The per-eye aspect the pair is cropped to: the number given, or (`'fill'`) the canvas box's. */
+  _eyeAspect() {
+    if (this.aspect !== 'fill') return this.aspect;
+    const w = this.canvas.clientWidth || 0;
+    const h = this.canvas.clientHeight || 0;
+    if (w > 0 && h > 0) this._fillAspect = Math.max(0.3, Math.min(4, w / h));
+    return this._fillAspect || 16 / 9;
   }
 
   /**

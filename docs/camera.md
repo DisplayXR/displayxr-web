@@ -45,10 +45,12 @@ when the camera is one.
 
 | Option | Default | What |
 |---|---|---|
-| `prefer` | `'auto'` | `'auto'`: a stereo device when one is present — the DisplayXR Browser's "3D Camera" (recognised by its `displayxrStereo` track settings, never by its label) or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId`; or a `MediaStream` you own |
+| `prefer` | `'auto'` | `'auto'`: a stereo device when one is present — the DisplayXR Browser's "3D Camera" (recognised by its `displayxrStereo` track settings or its label, never by where it is listed: on Windows it is listed last) or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId`; `'label:<text>'` (the first camera whose label contains the text, case-insensitive — for a URL or a config, where a per-origin `deviceId` is useless); or a `MediaStream` you own |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream`. 3D-ness is never guessed from a stream |
 | `calibration` | — | `{ baselineMm, horizontalFovDeg, rectified }` for a stream the device does not describe; a page value wins over the device's |
 | `rectify` | — | `(stream, info) => MediaStream` — a calibrated rectification step for a raw pair; `stereo.rectified` is then true. A throwing hook keeps the raw pair (`cam.rectifyError`) |
+| `exclude` | the built-in list | Devices no probe may open: strings match a label (case-insensitive substring) or a `deviceId` exactly, RegExps test the label. Always added: labels that mark a **sensor rather than a camera** — hand tracking, an eye tracker's or a "tracking camera"'s stream, a depth camera. `false` turns the built-in list off too. See below |
+| `stereoWaitMs` | 2500 in a DisplayXR Browser, else 0 | With labels visible and no 3D camera listed: how long `'auto'` / `'stereo'` waits for the runtime's 3D camera before opening any plain lens. See below |
 | `debug` | `false` | Verbose console logging |
 
 `openCamera('stereo')` and `openCamera(mediaStream)` are shorthands for `prefer`.
@@ -63,6 +65,48 @@ fatal. The promise rejects only when **no** camera opens, with `error.code`:
 | `no-camera` | No device, or every open failed for another reason |
 
 `error.skipped` lists each device tried and why it was not used.
+
+**Sensors are not cameras.** A hand-tracking camera (and an eye tracker's or a depth camera's IR
+stream) enumerates as an ordinary video input, and its frame can be wide enough to look like a
+side-by-side pair. Found on hardware: on a Windows box with no stereo camera open, the last-resort
+"try every device" probe opened a hand-tracking camera and a call sent it as its 3D picture. So
+every probe path skips devices whose label matches the built-in list (plus `exclude`): the
+named-pair fast path, the default camera and the last resort. They show up in `skipped` with
+`excluded: true` and `error: 'excluded'`. An explicit `deviceId` or `label:` is your choice and is
+opened regardless (the call widget's camera picker is explicit, so a sensor stays selectable there).
+
+**A running app is not a camera either.** The DisplayXR Browser lists every shareable running
+DisplayXR app as a side-by-side `videoinput` labelled `DisplayXR: <app> (3D)` (device id
+`dxr-app:…`) — 3D screen share, used through [`/call`](call.md#sharing-a-3d-app). It is a pair and its
+label says "3D", so no probe path opens one, whatever `exclude` says (`exclude: false` included),
+and `label:3d` finds a camera, never an app. They show up in `skipped` with `excluded: true` and
+`reason: 'app-share'`.
+
+The default camera is the second trap. An **Ultraleap** hand tracker enumerates as a UVC
+"Ultraleap" — the bare brand, no "hand tracking" in the label, and modes of 2:1 or squarer, so it
+is never a pair by shape — and its own service normally holds it (skipped as busy). With that
+service idle it opens like any webcam, and on some Windows boxes it is the browser's *default*
+camera, so the `'auto'` / `'mono'` fallback sent a hand tracker's IR picture as the self view. The
+built-in list therefore names Ultraleap / Leap Motion and infrared / IR cameras too, and while an
+excluded device is listed the default is **not opened blind**: the first other camera is opened by
+id (an eye tracker's camera is never started; with no other camera listed, nothing is). Only when
+labels are still hidden (no permission yet) is the default primed blind, and a default that turns
+out to be excluded is closed again.
+
+**Waiting for the 3D camera.** In a DisplayXR Browser (`inline3DAvailable()` true) the runtime
+lists its 3D camera lazily: right after a runtime restart, or after the phone's camera service
+restarted, it can be missing from the first `enumerateDevices()`. So when camera labels are visible
+(permission granted) and no stereo-named device is listed, `'auto'` and `'stereo'` wait up to
+`stereoWaitMs` (2500 ms) **before opening any plain lens**. They re-read the list on each
+`devicechange` and every 500 ms, and open the 3D camera the moment it appears. Only then do they
+fall back to the default camera. The rule exists because of hardware: on some phones, opening a
+physical lens while head tracking streams crashes the camera HAL. The runtime's 3D camera goes down
+with it, so falling back too early is what keeps it from ever coming back. Outside a DisplayXR
+Browser the wait is 0 (the list is read once more). The wait cannot help on a first visit, when
+labels are still hidden and the default camera has to be opened once to get permission. For the
+same reason, once a plain lens is open, a DisplayXR Browser never opens another plain lens just to
+test whether its frame is a side-by-side pair. There, a stereo webcam (a USB one included) is the
+runtime's named "3D Camera".
 
 ### The camera
 
@@ -98,7 +142,8 @@ const view = addCameraView(await sharedInline3D(), document.querySelector('canva
   mirror: true,          // selfie mirroring, done right for a pair (default: true unless cam.facing is 'environment')
   autoConverge: true,    // the face at the display plane (default false)
   depth: 0,              // [-1, 1], + = push back — an offset on top of the convergence
-  aspect: 16 / 9,        // the tile's aspect = the woven buffer's per-eye aspect
+  aspect: 16 / 9,        // the tile's aspect = the woven buffer's per-eye aspect; 'fill' = the canvas's own box
+  rectCover: 'auto',     // optional: the core's rect cover across a later resize / move (default off)
 });
 view.route;              // 'woven-sbs' | 'flat-left' | 'flat'
 view.woven;              // true only while on the woven route (a failed layer takes it flat)

@@ -26,6 +26,31 @@ export const MESH_HARD_CAP = 4;
 /** `hint` messages are rate-limited to this many per second, on the sender AND the receiver. */
 export const HINT_MAX_HZ = 5;
 
+/**
+ * `conv` (sender-measured auto-convergence, docs/call.md): a sender broadcasts at most this many
+ * per second; a receiver accepts at most `CONV_RECV_MAX_HZ`. A sender whose value has not changed
+ * still sends one every `CONV_HEARTBEAT_MS`; a receiver that has heard nothing for `CONV_FRESH_MS`
+ * goes back to measuring the received frames itself.
+ */
+export const CONV_MAX_HZ = 5;
+export const CONV_RECV_MAX_HZ = 10;
+export const CONV_HEARTBEAT_MS = 400;
+export const CONV_FRESH_MS = 1200;
+/** `conv.d` is a fraction of the per-eye width; anything beyond ±this is not a face's disparity. */
+export const CONV_MAX_FRAC = 0.5;
+
+/**
+ * App messages (`handle.send` / `handle.broadcast`, docs/call.md § Headless): `{ type: 'app', d }`
+ * on the call's data channel. The serialised message is at most `APP_MAX_BYTES` (UTF-8), and a
+ * sender sends at most `APP_MAX_PER_SEC` to one peer in any second (a receiver drops anything
+ * beyond `APP_RECV_MAX_PER_SEC`: network jitter can bunch a legal burst).
+ */
+export const APP_MAX_BYTES = 16 * 1024;
+export const APP_MAX_PER_SEC = 20;
+export const APP_RECV_MAX_PER_SEC = 40;
+/** A display name (`hello.name`, the `name` option) is at most this many characters. */
+export const NAME_MAX_CHARS = 64;
+
 /** Plausible subject distances, mm. A hint outside this is ignored as noise. */
 export const SUBJECT_Z_MIN_MM = 150;
 export const SUBJECT_Z_MAX_MM = 5000;
@@ -116,7 +141,7 @@ export function buildInviteLink(base, room) {
   return `${b}#room=${room}`;
 }
 
-// ── hello / hint / state ───────────────────────────────────────────────────────────────────
+// ── hello / hint / state / conv ────────────────────────────────────────────────────────────
 
 /**
  * Validate an incoming `hello`, filling the defaults a receiver may assume. Returns null for
@@ -138,11 +163,39 @@ export function normalizeHello(msg) {
     hfovDeg: num(msg.hfovDeg, 5, 170),
     rectified: msg.rectified === true,
     sdk: typeof msg.sdk === 'string' ? msg.sdk.slice(0, 64) : null,
+    // The sender measures its own convergence and sends `conv` messages. Absent (an older sender) =
+    // false: the receiver measures the decoded frames itself, as before.
+    conv: msg.conv === true,
+    // The sender's display name (`name` option, 1.48+), sanitised; null when absent or empty.
+    name: sanitizeName(msg.name),
+    // This side can carry a SECOND video track, the content tile (3D app share). Absent (an older
+    // SDK) = false: the offerer then never adds the content transceiver for this pair.
+    content: msg.content === true,
   };
 }
 
-/** Build the `hello` this side sends. */
-export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified } = {}) {
+/**
+ * A display name as it may travel and be shown: a string, control characters removed (C0, DEL,
+ * C1, and the bidi / zero-width format controls that can disguise a name), whitespace collapsed
+ * and trimmed, at most `NAME_MAX_CHARS` characters (code points). Null for anything else or an
+ * empty result. Never throws: this reads data from another browser. Pure.
+ * @param {unknown} v
+ * @returns {string|null}
+ */
+export function sanitizeName(v) {
+  if (typeof v !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  const clean = v.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+  const cps = Array.from(clean);
+  return cps.length > NAME_MAX_CHARS ? cps.slice(0, NAME_MAX_CHARS).join('').trim() : clean;
+}
+
+/**
+ * Build the `hello` this side sends. `conv: true` (advertised for a side-by-side sender only)
+ * says this side sends `conv` messages.
+ */
+export function makeHello({ format, width, height, baselineMm, hfovDeg, rectified, conv, name, content } = {}) {
   const h = {
     type: 'hello',
     v: WIRE_VERSION,
@@ -154,7 +207,149 @@ export function makeHello({ format, width, height, baselineMm, hfovDeg, rectifie
   };
   if (Number.isFinite(baselineMm)) h.baselineMm = baselineMm;
   if (Number.isFinite(hfovDeg)) h.hfovDeg = hfovDeg;
+  if (h.format === 'sbs' && conv) h.conv = true;
+  const n = sanitizeName(name);
+  if (n) h.name = n;
+  if (content) h.content = true;
   return h;
+}
+
+// ── content (3D app share: a second, per-peer video track) ────────────────────────────────
+
+/** A content stream's size is at most this on either side (a receiver ignores anything bigger). */
+export const CONTENT_MAX_DIM = 16384;
+
+/**
+ * `content {on, format, width, height, convergence: {known, frac}, appName?}`: what this side is
+ * sharing on its content track (docs/call.md § Sharing a 3D app). `on: false` = stopped (only `on`
+ * is sent). `convergence.known` = the frames are display-referred and `frac` IS the disparity of
+ * the sender's display plane as a fraction of the per-eye width (`zeroDisparityShiftFrac`, 0 for
+ * a DisplayXR app in v1): a receiver applies it and never measures. Pure.
+ */
+export function makeContent({ on = true, format, width, height, convergence, appName } = {}) {
+  if (!on) return { type: 'content', on: false };
+  const fmt = CALL_FORMATS.includes(format) ? format : 'sbs';
+  const dim = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= CONTENT_MAX_DIM ? Math.round(v) : 0);
+  const known = !!(convergence && convergence.known);
+  const f = known ? convergence.frac : null;
+  const m = {
+    type: 'content',
+    on: true,
+    format: fmt,
+    width: dim(width),
+    height: dim(height),
+    convergence: known ? { known: true, frac: typeof f === 'number' && Number.isFinite(f) ? Math.max(-CONV_MAX_FRAC, Math.min(CONV_MAX_FRAC, f)) : 0 } : { known: false, frac: null },
+  };
+  const n = sanitizeName(appName);
+  if (n) m.appName = n;
+  return m;
+}
+
+/**
+ * Validate an incoming `content`. Null for anything that is not one. `on` must be `true` to mean
+ * on; a bad `format` reads as `'mono'` (never assume more than was said); sizes outside
+ * 1..16384 read as null; a `convergence.frac` that is not finite or beyond ±CONV_MAX_FRAC makes
+ * the convergence UNKNOWN; `appName` is sanitised (≤ 64 characters). Never throws: this reads data
+ * from another browser.
+ */
+export function normalizeContent(msg) {
+  if (!msg || typeof msg !== 'object' || msg.type !== 'content') return null;
+  if (msg.on !== true) return { type: 'content', on: false, format: null, width: null, height: null, convergence: { known: false, frac: null }, appName: null };
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= CONTENT_MAX_DIM ? v : null);
+  let convergence = { known: false, frac: null };
+  try {
+    const c = msg.convergence;
+    if (c && typeof c === 'object' && c.known === true && typeof c.frac === 'number' && Number.isFinite(c.frac) && Math.abs(c.frac) <= CONV_MAX_FRAC) convergence = { known: true, frac: c.frac };
+  } catch {
+    /* a hostile getter */
+  }
+  return {
+    type: 'content',
+    on: true,
+    format: CALL_FORMATS.includes(msg.format) ? msg.format : 'mono',
+    width: num(msg.width),
+    height: num(msg.height),
+    convergence,
+    appName: sanitizeName(msg.appName),
+  };
+}
+
+/**
+ * Wrap a page's app payload: `{ type: 'app', d: data }` serialised, or null when `data` cannot be
+ * serialised (undefined, a function, a cycle, a BigInt) or the message is over `APP_MAX_BYTES`
+ * (UTF-8). Returns the JSON string the data channel carries. Pure.
+ * @param {unknown} data
+ * @returns {{ json: string, bytes: number } | null}
+ */
+export function makeAppMessage(data) {
+  if (data === undefined || typeof data === 'function') return null;
+  let json;
+  try {
+    json = JSON.stringify({ type: 'app', d: data });
+  } catch {
+    return null;
+  }
+  if (typeof json !== 'string') return null;
+  const bytes = utf8Length(json);
+  return bytes > APP_MAX_BYTES ? null : { json, bytes };
+}
+
+/** An incoming `app` message: `{ data }`, or null when it is not one. Only this type reaches a page. */
+export function normalizeApp(msg) {
+  if (!msg || typeof msg !== 'object' || msg.type !== 'app' || !('d' in msg)) return null;
+  return { data: msg.d };
+}
+
+function utf8Length(s) {
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(s).length;
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
+}
+
+/**
+ * A sliding-window counter: `gate(nowMs)` is true at most `max` times in any `windowMs`. The app
+ * channel's per-peer cap (a burst of `max` is fine; the next one waits for the window). Pure.
+ */
+export function windowGate(max, windowMs = 1000) {
+  const at = [];
+  return (now) => {
+    while (at.length && now - at[0] >= windowMs) at.shift();
+    if (at.length >= max) return false;
+    at.push(now);
+    return true;
+  };
+}
+
+/**
+ * `conv {d, c?}`: the sender's measured disparity of the point between its subject's eyes, as a
+ * FRACTION of its per-eye width (resolution-free: a receiver multiplies by the width of the frame it
+ * decodes), `null` = nothing measured yet (the receiver holds what it had). `c` = the match
+ * confidence (NCC, 0..1), informational.
+ * @param {number|null} frac
+ * @param {number|null} [ncc]
+ */
+export function makeConv(frac, ncc) {
+  const m = { type: 'conv', d: typeof frac === 'number' && Number.isFinite(frac) ? Math.max(-CONV_MAX_FRAC, Math.min(CONV_MAX_FRAC, frac)) : null };
+  if (typeof ncc === 'number' && Number.isFinite(ncc)) m.c = Math.max(0, Math.min(1, ncc));
+  return m;
+}
+
+/**
+ * Validate an incoming `conv`. Null for anything that is not one, or whose `d` is neither null nor
+ * a finite number within ±CONV_MAX_FRAC. `c` is clamped to 0..1, or dropped. Never throws: this
+ * reads data from another browser.
+ */
+export function normalizeConv(msg) {
+  if (!msg || typeof msg !== 'object' || msg.type !== 'conv') return null;
+  const d = msg.d;
+  if (d !== null && !(typeof d === 'number' && Number.isFinite(d) && Math.abs(d) <= CONV_MAX_FRAC)) return null;
+  const out = { type: 'conv', d };
+  if (typeof msg.c === 'number' && Number.isFinite(msg.c)) out.c = Math.max(0, Math.min(1, msg.c));
+  return out;
 }
 
 /** `hint {subjectZmm}`: a number in range, or null (ignored). */
@@ -173,17 +368,43 @@ export function normalizeState(msg) {
 }
 
 /**
- * A minimum-interval gate: `gate(nowMs)` is true at most `hz` times a second. Used on both ends
+ * A minimum-interval gate: `gate(nowMs)` is true at most `hz` times a second (`slackMs` shortens
+ * the interval by that much). Used on both ends
  * of `hint` so a chatty (or hostile) sender cannot drive the receiver's convergence at frame rate.
  */
-export function rateGate(hz) {
-  const minMs = 1000 / hz;
+export function rateGate(hz, slackMs = 0) {
+  // `slackMs`: a timer-paced caller at exactly `hz` (the sender's `conv` tick) lands a few ms early
+  // now and then; without slack every such tick is refused and the rate halves.
+  const minMs = 1000 / hz - Math.max(0, slackMs);
   let last = -Infinity;
   return (now) => {
     if (now - last < minMs) return false;
     last = now;
     return true;
   };
+}
+
+// ── connection quality ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The selected ICE candidate pair of one getStats() report: `{ path, rttMs }`. `path` is
+ * `'relay'` when either end is relayed (TURN), else the local candidate's type (`'host'` /
+ * `'srflx'` / `'prflx'`); null when no pair is selected yet. Chrome names the pair on the
+ * `transport` stats; Firefox flags it `selected`. Pure: reads an RTCStatsReport (maplike).
+ */
+export function selectedPath(report) {
+  const all = [];
+  report.forEach((s) => all.push(s));
+  const byId = (id) => (id && typeof report.get === 'function' ? report.get(id) : all.find((s) => s.id === id)) || null;
+  const tr = all.find((s) => s.type === 'transport' && s.selectedCandidatePairId);
+  const pair = (tr && byId(tr.selectedCandidatePairId)) || all.find((s) => s.type === 'candidate-pair' && s.selected) || all.find((s) => s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded');
+  if (!pair) return { path: null, rttMs: null };
+  const lc = byId(pair.localCandidateId);
+  const rc = byId(pair.remoteCandidateId);
+  const lt = lc ? lc.candidateType : null;
+  const path = lt === 'relay' || (rc && rc.candidateType === 'relay') ? 'relay' : ['host', 'srflx', 'prflx'].includes(lt) ? lt : null;
+  const rtt = typeof pair.currentRoundTripTime === 'number' ? Math.round(pair.currentRoundTripTime * 1000) : null;
+  return { path, rttMs: rtt };
 }
 
 // ── routing (RFC §3) ───────────────────────────────────────────────────────────────────────

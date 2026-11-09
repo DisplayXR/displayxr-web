@@ -3,7 +3,7 @@
 // 1.29 spellings accepted for one release with a warning. Pure (no DOM, no network) — see
 // test/call.test.mjs. Internal: importable by path, not part of the `./call` entry.
 
-import { isValidRoomId, parseInviteLink, DEFAULT_MAX_PEERS } from './wire.js';
+import { isValidRoomId, parseInviteLink, DEFAULT_MAX_PEERS, sanitizeName } from './wire.js';
 import { clampMaxPeers } from './transport.js';
 import { normalizeMono3D } from './lift.js';
 import { dxrSignaling } from './signaling.js';
@@ -53,7 +53,10 @@ export function normalizeCallOptions(opts = {}) {
   const ui = opts.ui === undefined ? true : opts.ui === 'tiles' ? 'tiles' : !!opts.ui;
   const chrome = ui === true;
   const tileAspect = theme.tileAspect !== undefined ? theme.tileAspect : opts.tileAspect;
-  const aspect = typeof tileAspect === 'number' && tileAspect > 0.3 && tileAspect < 4 ? tileAspect : 16 / 9;
+  // 'fill': each tile's per-eye aspect is its own stage box (the page sizes the tiles).
+  const aspect = tileAspect === 'fill' ? 'fill' : typeof tileAspect === 'number' && tileAspect > 0.3 && tileAspect < 4 ? tileAspect : 16 / 9;
+  const layout = opts.layout === 'speaker' ? 'speaker' : opts.layout === 'none' ? 'none' : 'grid';
+  const tileCover = opts.tileCover === 'auto' || opts.tileCover === 'off' ? opts.tileCover : layout === 'none' ? 'auto' : 'off';
   let room = opts.room === undefined || opts.room === null ? 'auto' : opts.room;
   if (room !== 'auto' && !isValidRoomId(room)) {
     const fromLink = parseInviteLink(room);
@@ -90,6 +93,10 @@ export function normalizeCallOptions(opts = {}) {
     // peer's eyes and shift the eyes so it sits at the display plane. The depth slider stays an
     // offset on top. Off = the pair as sent (plus any `hint`).
     autoConverge: opts.autoConverge === undefined ? true : !!opts.autoConverge,
+    // Sender side of auto-convergence (docs/call.md): with a stereo camera, measure that disparity
+    // on this side's own raw frames and send it to every peer (`conv` on the data channel), so
+    // receivers apply it instead of measuring the compressed frames. Off = receivers measure.
+    sendConvergence: opts.sendConvergence === undefined ? true : !!opts.sendConvergence,
     // `cursor: 'depth'` (runtime ADR-046 on a pair): the arrow comes in front of a person who pops
     // out of the screen under it, measured off each stereo tile's two halves; else the plain OS
     // arrow on the plane. Off by default (zero cost).
@@ -102,12 +109,22 @@ export function normalizeCallOptions(opts = {}) {
     // Concurrent lifted tiles (`liftOptions.max`). Default = maxPeers (4): every mono peer can be lifted.
     maxLifted: Number.isFinite(+maxLiftedRaw) && maxLiftedRaw !== null && maxLiftedRaw !== undefined ? Math.max(0, Math.min(DEFAULT_MAX_PEERS, Math.floor(+maxLiftedRaw))) : DEFAULT_MAX_PEERS,
     // 'grid' | 'speaker' | 'none' (the page lays the tiles out; handle.tile(id) finds them).
-    layout: opts.layout === 'speaker' ? 'speaker' : opts.layout === 'none' ? 'none' : 'grid',
+    layout,
+    // The core's rect cover on every woven tile (and a stereo self view): 'auto' covers a tile
+    // across a resize or move until it is woven again. Default 'auto' with layout: 'none' (the
+    // page moves and resizes the tiles), 'off' otherwise (the module's own layout).
+    tileCover,
+    // This side's display name (hello.name), sanitised; null = none.
+    name: sanitizeName(opts.name),
+    // Devices no camera probe opens (openCamera's `exclude`); false = not even the built-in list.
+    cameraExclude: opts.cameraExclude === false ? false : Array.isArray(opts.cameraExclude) ? [...opts.cameraExclude] : undefined,
     // true: full chrome | 'tiles': badges + plates only | false: nothing. `chrome` = the full set.
     ui,
     chrome,
     autoJoin: opts.autoJoin === undefined ? !chrome : !!opts.autoJoin,
     selfView: opts.selfView === undefined ? true : !!opts.selfView,
+    // A woven preview of what this side shares (`shareContent`), as a content tile with id 'self'.
+    selfContentView: !!opts.selfContentView,
     tileAspect: aspect,
     // theme → the CSS custom properties written on the host, and the string table.
     cssVars,
@@ -124,6 +141,8 @@ export function normalizeCallOptions(opts = {}) {
     log: typeof opts.log === 'function' ? opts.log : opts.debug ? (tag, obj) => console.log(`${TAG} ${tag} ${JSON.stringify(obj)}`) : null,
     // Internal (tests): replaces the lift module importer behind `mono3D: 'auto'`.
     _liftImporter: typeof opts._liftImporter === 'function' ? opts._liftImporter : undefined,
+    // Internal (tests): replaces the sender's frame grab (camera/conv-meter.js grabLumaFrame).
+    _convGrab: typeof opts._convGrab === 'function' ? opts._convGrab : undefined,
   };
 }
 

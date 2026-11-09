@@ -154,8 +154,12 @@ export interface CallTheme {
   radius?: number | string;
   /** Chrome font family → `--dxr-font`. */
   font?: string;
-  /** Tile aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
-  tileAspect?: number;
+  /**
+   * Tile aspect (w/h) = the woven buffer's per-eye aspect, the same for every tile. Default 16/9.
+   * `'fill'`: no aspect is imposed — the page sizes each tile's box (layout: 'none') and each
+   * tile's crop follows its own stage box (clamped to 0.3–4), the self view's too.
+   */
+  tileAspect?: number | 'fill';
   /** Overrides for the chrome's text (also localisation). */
   strings?: CallStrings;
 }
@@ -194,6 +198,24 @@ export interface CallOptions {
   /** Microphone (echo cancellation + noise suppression). Default true. */
   audio?: boolean;
   /**
+   * Your display name, sent to every participant in `hello` (their `CallPeer.name`). At most 64
+   * characters; control characters are stripped. Change it with `setName()`. Default none.
+   */
+  name?: string;
+  /**
+   * Devices `camera: 'auto' | 'stereo' | 'mono'` never opens — `openCamera`'s `exclude`: strings
+   * match a label (case-insensitive substring) or a deviceId, RegExps the label. Labels of
+   * sensors (hand tracking, eye tracking, a "tracking camera", a depth camera) are always left out
+   * too; `false` turns that built-in list off. An explicit deviceId is opened regardless.
+   */
+  cameraExclude?: ReadonlyArray<string | RegExp> | false;
+  /**
+   * Cover each woven tile (and a stereo self view) across a resize or move until it is woven
+   * again — the core's `rectCover: 'auto'` on its registration. Default `'auto'` with
+   * `layout: 'none'` (your layout moves the tiles), `'off'` otherwise.
+   */
+  tileCover?: 'auto' | 'off';
+  /**
    * Lift mono peers to 3D on a 3D display (RFC §5). `'auto'` (default): import
    * `@displayxr/inline3d/lift` lazily from this copy of the SDK, and use it when it reports a
    * native provider or a WebGPU web fallback — otherwise mono peers stay flat (one log line, no
@@ -210,11 +232,20 @@ export interface CallOptions {
    */
   liftOptions?: Record<string, unknown> & { max?: number };
   /**
-   * Auto-convergence (default true): measure the disparity of the point between each SBS peer's
-   * eyes on the received frames and shift the two eyes by half of it each, so the remote person sits
-   * at the display plane. No calibration needed. The depth slider stays an offset on top.
+   * Auto-convergence (default true): shift each SBS peer's two eyes by half the disparity of the
+   * point between that person's eyes, so the remote person sits at the display plane. No
+   * calibration needed. The depth slider stays an offset on top. The disparity comes from the
+   * sender when it measures it (`sendConvergence`, 1.48+); from an older sender, this side measures
+   * the received frames itself.
    */
   autoConverge?: boolean;
+  /**
+   * With a stereo camera (default true): measure the disparity of the point between your eyes on
+   * your own raw camera frames, before compression, and send it to every peer a few times a second
+   * (a few bytes on the data channel). Their `autoConverge` applies it, so nobody measures the
+   * decoded frames. `false`: send nothing; receivers measure, as before 1.48.
+   */
+  sendConvergence?: boolean;
   /**
    * `'depth'`: over a 3D (stereo) tile — a peer's or your self view — the cursor is never
    * overlapped by what comes out of the screen: where the person under the pointer pops out, the
@@ -242,6 +273,11 @@ export interface CallOptions {
   autoJoin?: boolean;
   /** The small self view (mirrored; a stereo self view is mirrored AND eye-swapped — an `addCameraView`). Default true. */
   selfView?: boolean;
+  /**
+   * While you share content (`shareContent`), also show it to yourself: a woven preview tile,
+   * `tile('self', 'content')`. Default false (you have the app itself on your display).
+   */
+  selfContentView?: boolean;
   /** Colours, radius, font, tile aspect and strings — see {@link CallTheme}. */
   theme?: CallTheme;
   /** Invite links: `base` (default this page's URL, query kept, fragment replaced); `updateUrl` writes `#room=` into the page URL on join (default: `ui === true`). */
@@ -277,6 +313,14 @@ export type LiftFunction = ((element: HTMLVideoElement, opts: Record<string, unk
 export interface CallQuality {
   in: { width: number; height: number; fps: number; codec: string | null; kbps: number | null; dropped: number; decoder: string | null } | null;
   out: { width: number; height: number; fps: number; codec: string | null; kbps: number | null; limitation: string | null; encoder: string | null } | null;
+  /**
+   * The network path of the selected ICE candidate pair: `'relay'` (through TURN, either end),
+   * else the local candidate's type — `'host'` (direct, same network), `'srflx'` / `'prflx'`
+   * (direct through NAT). Null before a pair is selected.
+   */
+  path?: 'host' | 'srflx' | 'prflx' | 'relay' | null;
+  /** The selected pair's current round-trip time, ms; null when unknown. */
+  rttMs?: number | null;
 }
 
 /** A remote participant, as a page needs it. Debug data (hello, route, convergence, lift) is in `diagnostics()`. */
@@ -288,7 +332,109 @@ export interface CallPeer {
   readonly muted: boolean;
   readonly cameraOff: boolean;
   readonly speaking: boolean;
+  /** Their display name (`name` option / `setName()`), sanitised; null when they sent none (or an older SDK). */
+  readonly name: string | null;
+  /** What they share (3D app share): `on`, its format and the app's name (null while `on` is false). */
+  readonly content: { readonly on: boolean; readonly format: CallFormat | null; readonly appName: string | null };
 }
+
+/** Which of a participant's tiles: their camera (the person) or the content they share. */
+export type CallTileKind = 'camera' | 'content';
+
+/**
+ * The convergence of shared content. `known: true`: the frames are DISPLAY-REFERRED — `frac` is the
+ * disparity of the sender's display plane as a fraction of the per-eye width (`zeroDisparityShiftFrac`
+ * of a DisplayXR app, 0 in v1). Receivers apply it directly and never measure the frames; their
+ * depth control adds to it. `known: false`: shown as sent.
+ */
+export interface ContentConvergence {
+  known: boolean;
+  frac: number | null;
+}
+
+/** What `shareContent` announces (also `openAppShare()`'s `descriptor`, which fits it as is). */
+export interface ContentDescriptor {
+  format?: CallFormat;
+  width?: number;
+  height?: number;
+  convergence?: ContentConvergence;
+  appName?: string | null;
+}
+
+/** `handle.content`: what you share right now. */
+export interface CallContent {
+  readonly on: true;
+  readonly format: CallFormat;
+  readonly width: number;
+  readonly height: number;
+  readonly appName: string | null;
+  readonly convergence: Readonly<ContentConvergence>;
+}
+
+/** A running DisplayXR app the browser offers to share (`listShareableApps`). */
+export interface ShareableApp {
+  readonly deviceId: string;
+  /** `DisplayXR: <app> (3D)` (or `3D Camera (DisplayXR) - <app>` for a `legacy` candidate). */
+  readonly label: string;
+  readonly appName: string | null;
+  /**
+   * A browser without the app-share device patch: a CANDIDATE listed by its label shape only — a
+   * real camera can carry the same shape. `openAppShare()` verifies it (a camera rejects with
+   * `not-app-share`).
+   */
+  readonly legacy?: true;
+}
+
+/** An opened app share (`openAppShare`): pass `stream` (+ `descriptor`) to `shareContent`. The track is yours to stop. */
+export interface AppShare {
+  stream: MediaStream;
+  track: MediaStreamTrack;
+  descriptor: { kind: 'content'; format: CallFormat; width: number; height: number; convergence: { known: true; frac: number }; appName: string | null };
+}
+
+/** Why `openAppShare` rejected (`error.code`): the user said no at the runtime's prompt, it failed, or the device is not an app. */
+export type AppShareErrorCode = 'share-denied' | 'share-failed' | 'not-app-share';
+
+/**
+ * Is this a running DisplayXR app offered for 3D screen share (runtime ADR-061) rather than a
+ * camera? A `MediaDeviceInfo`, a label, a track, or its settings: true on the label
+ * `DisplayXR: <app> (3D)`, a `dxr-app:` device id, `displayxrStereo.source === 'app'`, or (browsers
+ * without the app-share device patch) a hint with `baselineMm` and `horizontalFovDeg` both 0. No
+ * camera probe (`camera: 'auto'`, `openCamera`) ever uses one.
+ */
+export function isAppShareDevice(device: MediaDeviceInfo | MediaStreamTrack | MediaTrackSettings | { label?: string; deviceId?: string } | string | null | undefined): boolean;
+
+/**
+ * The running apps this browser offers to share. Empty before the page holds camera permission
+ * (the browser lists none until then), on any other browser, or when none is shareable.
+ */
+export function listShareableApps(opts?: { mediaDevices?: MediaDevices }): Promise<ShareableApp[]>;
+
+/** `cb(apps)` now and whenever the list changes (`devicechange`). Returns the unsubscribe. */
+export function watchShareableApps(cb: (apps: ShareableApp[]) => void, opts?: { mediaDevices?: MediaDevices }): () => void;
+
+/**
+ * Open a shareable app as a side-by-side track (default 2560×720 at 30 fps). The runtime asks the
+ * user on THIS machine now; Deny rejects with `code: 'share-denied'`. The track ends when the app
+ * exits. Stop it yourself when you stop sharing.
+ */
+export function openAppShare(deviceId: string, opts?: { width?: number; height?: number; frameRate?: number; mediaDevices?: MediaDevices }): Promise<AppShare>;
+
+/** An opened tab share (`openTabShare`): pass `stream` (+ `descriptor`) to `shareContent`. The track is yours to stop. */
+export interface TabShare {
+  stream: MediaStream;
+  track: MediaStreamTrack;
+  /** true: a side-by-side track. false: the user picked a window or screen, or the browser captures tabs flat. */
+  stereo: boolean;
+  descriptor: { kind: 'content'; format: CallFormat; width: number; height: number; convergence: { known: true; frac: number }; appName: null };
+}
+
+/**
+ * Let the user pick a browser tab to share, in 3D where the browser can (the browser's picker is
+ * the consent). Comes back flat (`stereo: false`) for a window, a screen, or a browser without stereo
+ * tab capture. Cancelling rejects with `code: 'share-denied'`, anything else with `'share-failed'`.
+ */
+export function openTabShare(opts?: { width?: number; frameRate?: number; mediaDevices?: MediaDevices }): Promise<TabShare>;
 
 /**
  * `error` codes — fatal for a feature, never for the widget. `'camera-busy'` (held by another
@@ -326,7 +472,7 @@ export type CallErrorCode =
   | (string & {});
 
 /** `warning` codes — degraded, not broken. */
-export type CallWarningCode = 'lift-not-bundled' | 'turn-shed' | (string & {});
+export type CallWarningCode = 'lift-not-bundled' | 'turn-shed' | 'content-unsupported' | (string & {});
 
 export interface CallEvents {
   joined: { room: string; id: string };
@@ -335,8 +481,8 @@ export interface CallEvents {
   peer: { id: string };
   peerleft: { id: string; reason: string };
   state: { id: string; state: PeerState };
-  /** How this side shows a participant changed (a hello arrived, lift went live, the wall came back). */
-  display: { id: string; display: CallDisplay };
+  /** How this side shows a participant changed (a hello arrived, lift went live, the wall came back). `kind`: which of their tiles. */
+  display: { id: string; display: CallDisplay; kind: CallTileKind };
   speaker: { id: string | null };
   /**
    * Per peer (`id`) every 2 s; or, with `id: null` and `lift`, when lifted tiles on the web
@@ -352,8 +498,35 @@ export interface CallEvents {
    * `'turn-shed'`: only THIS session got no TURN from the hosted service (an anonymous session
    * while the monthly relay budget is nearly spent, or too many credential requests from this
    * address this hour); the call runs STUN-only. A publishable key keeps TURN.
+   * `'content-unsupported'`: you share content and a participant's SDK predates it (no `content` in
+   * their hello) — they keep seeing your camera only. Once per participant per share.
    */
   warning: { code: CallWarningCode; message: string };
+  /** A participant's display name arrived or changed (`name: null` = they cleared it). */
+  name: { id: string; name: string | null };
+  /**
+   * An app message from a participant (`send` / `broadcast` on their side): `data` as they sent it
+   * (JSON). Only app messages surface here — the call's own wire messages never do.
+   */
+  message: { from: string; data: unknown };
+  /**
+   * The signalling connection: `'connected'` on join and after a reconnect, `'reconnecting'` while
+   * it retries (media keeps flowing), `'closed'` when it gave up — `code` says why (e.g. `'expired'`).
+   */
+  signal: { state: 'connected' | 'reconnecting' | 'closed'; code?: string };
+  /**
+   * A tile's weave state settled: its first join (`firstWoven`), or its re-join after a resize
+   * (`rewoven()`). `id` is a participant's, or `'self'` for your self view. `'flat'`: the wall
+   * says the tile will not weave (`reason`, e.g. `'layer-failed'`) — it is shown flat.
+   */
+  weave: { id: string; state: 'woven' | 'flat'; reason?: string; ms: number; kind: CallTileKind };
+  /** A participant (or `'self'`) started / stopped speaking. */
+  speaking: { id: string; on: boolean; kind: CallTileKind };
+  /**
+   * A participant (or `'self'`) started or stopped sharing content (3D app share). `reason` on your
+   * own stop: `'stopped'` (`stopContent()`), `'ended'` (the track ended — the app exited), `'left'`.
+   */
+  content: { id: string; on: boolean; appName: string | null; reason?: 'stopped' | 'ended' | 'left' };
 }
 
 export interface CallHandle {
@@ -391,8 +564,48 @@ export interface CallHandle {
   setDepth(v: number | null): number;
   /** Turn mono→3D on/off at runtime (no argument toggles). Off releases every lift; tiles go flat. */
   setMono3D(on?: boolean): boolean;
-  /** A participant's tile element (for `layout: 'none'`), or null. Style it in place; never move it. */
-  tile(peerId: string): HTMLElement | null;
+  /**
+   * A participant's tile element (for `layout: 'none'`), or null; `'self'` is your self view
+   * (`data-dxr-peer="self"`). Style it in place; never move it.
+   */
+  tile(peerId: string, kind?: CallTileKind): HTMLElement | null;
+  /**
+   * Share content on a second video track (3D app share): a running DisplayXR app's views from
+   * `openAppShare()` (pass its `descriptor` too), or any side-by-side track. Every participant on a
+   * DisplayXR SDK with content support gets a content tile; older ones keep seeing your camera only
+   * (`warning` `'content-unsupported'`). Replaces a previous share. Resolves with what is announced.
+   */
+  shareContent(src: MediaStream | MediaStreamTrack, opts?: ContentDescriptor): Promise<CallContent>;
+  /** Stop sharing. `stopTrack: true` also stops the track (ends the runtime's share). Resolves false when nothing was shared. */
+  stopContent(opts?: { stopTrack?: boolean }): Promise<boolean>;
+  /** What you share right now, or null. */
+  readonly content: CallContent | null;
+  /** Your display name, or null. */
+  readonly name: string | null;
+  /** Change your display name (re-sent to everyone in `hello`). Returns it sanitised (null = none). */
+  setName(name: string | null): string | null;
+  /**
+   * An app message to one participant over the call's data channel (arrives as their `message`
+   * event). `data` must be JSON-serialisable and at most 16 KiB serialised; at most 20 messages a
+   * second per participant. Returns false (nothing sent) when over a cap, not serialisable, or the
+   * participant is not connected. A participant on an SDK before 1.48 drops it silently.
+   */
+  send(peerId: string, data: unknown): boolean;
+  /** {@link CallHandle.send} to everyone. True only if every connected participant got it. */
+  broadcast(data: unknown): boolean;
+  /** The signalling connection — see the `signal` event. Null before join and after leave. */
+  readonly signal: 'connected' | 'reconnecting' | 'closed' | null;
+  /**
+   * Show (true) or hide (false) your self view; no argument toggles. Hiding removes its layer
+   * from the wall (never a hidden live registration). Returns the new state.
+   */
+  setSelfView(on?: boolean): boolean;
+  /** Switch the microphone (a `deviceId`; null = the default). Resolves false, keeping the old one, if it cannot open. */
+  setMic(deviceId: string | null): Promise<boolean>;
+  /** Play every participant's audio (also later ones) to `sinkId` (`HTMLMediaElement.setSinkId`). Resolves false if any tile refused. */
+  setAudioOutput(sinkId: string): Promise<boolean>;
+  /** What you send (camera + microphone). Read-only — use `setCamera` / `setMic` to change it. */
+  readonly localStream: MediaStream | null;
   on<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): () => void;
   off<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): void;
   /** Explicitly UNSTABLE: the wall, the transport, per-peer hello / route / convergence / lift / quality, the lift pool. For devtools. */
@@ -421,8 +634,8 @@ export function parseInviteLink(link: string | { hash?: string; href?: string } 
 // a bubbling, composed `CustomEvent` named `dxr-call:<event>` with the payload in `detail`, and
 // exposes the handle as `el.call`. Attributes (read once, at connect): `room`, `signaling` (a
 // URL), `key`, `camera`, `layout`, `accent`, `max-peers`, `no-ui`, `ui="tiles"`, `auto-join`,
-// `mono3d="off"`, `no-audio`, `no-self-view`, `no-auto-converge`, `tile-aspect`, `invite-base`,
-// `browser-url`, `debug`. Everything else is `el.options`, set before connect; options win.
+// `mono3d="off"`, `no-audio`, `no-self-view`, `self-content-view`, `no-auto-converge`, `no-send-convergence`,
+// `tile-aspect`, `invite-base`, `browser-url`, `debug`. Everything else is `el.options`, set before connect; options win.
 
 export class DxrCallElement extends HTMLElement {
   /** The mount seam: null = `mountCall` of `./call`; `./call/full` sets its own. */

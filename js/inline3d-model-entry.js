@@ -240,7 +240,9 @@ function preValidatePlayCanvas(opts) {
  */
 async function attachThree(out, wall, canvas, src, opts, pending, mod) {
   const m = mod || (await import('./inline3d-model.js'));
-  const inner = m.addModel(wall, canvas, src, opts);
+  // `hands` is already wired on THIS handle (guardedAttach); the inner attach must not wire a
+  // second controller on the inner one.
+  const inner = m.addModel(wall, canvas, src, opts.hands ? { ...opts, hands: undefined } : opts);
   for (const k of ['viewer', 'model', 'frame']) {
     Object.defineProperty(out, k, { get: () => inner[k], set: (v) => (inner[k] = v), enumerable: true, configurable: true });
   }

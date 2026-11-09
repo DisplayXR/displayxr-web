@@ -69,6 +69,8 @@ try {
     // ?cursor=depth — the depth-aware cursor (opt-in). Cheapest on PlayCanvas, this page's default.
     // Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
     ...(params.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(params) } : {}),
+    // ?hands — tracked-hand controls (./hands): pinch to turn, two pinches to zoom. Inert without a tracker.
+    ...(params.has('hands') ? { hands: true } : {}),
   });
 } catch (err) {
   // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)

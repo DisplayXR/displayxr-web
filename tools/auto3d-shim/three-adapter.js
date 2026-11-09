@@ -299,9 +299,11 @@ function dxrThree(core) {
       // Post-processing (see "post-processing chains" below): set once the page is seen drawing its
       // scene into a render target and then a full-screen pass to the screen.
       postfx: false, seedTask: null, twins: new Map(), texTwin: new Map(), chainStereo: false,
-      // The scene pass's view offset (see "the page camera's view window" below): viewOk once a frame
-      // ended with it still set (the page's framing), viewJitter once one did not (TAA / SSAA).
+      // The scene pass's view offset (see "the page camera's view window" below): viewOk once frames end
+      // with it still set and viewTrend calls it framing; viewJitter once a frame cleared it, or it
+      // dithered from frame to frame (TAA / SSAA).
       viewOk: false, viewJitter: false, seedMiss: null, missLogged: null,
+      viewHist: [], viewSteps: 0, viewWait: null, // the view at the end of each frame (viewTrend)
       // Whether the chain flips its picture left-right (probeMirror): undefined until a frame decides.
       mirrorX: undefined, mirrorCorr: null, mirrorNext: 0, mirrorGiveUp: null, mirrorWhy: null, mirrorAsks: 0,
     });
@@ -893,13 +895,24 @@ function dxrThree(core) {
       st.seedTask = null;
       if (!sd || !sd.view) return;
       // A view offset still set when the task ends is the page's framing; one set for the scene pass
-      // alone (set, draw, cleared), or several in one frame, is TAA / SSAA jitter.
+      // alone (set, draw, cleared), or several in one frame, is TAA / SSAA jitter. So is one left set
+      // that dithers frame to frame (viewTrend).
       if (sd.mixed || !sameView(sd.view, viewSnap(sd.camera))) { viewJitter(st); return; }
+      const trend = viewTrend(st, sd.view, sd.rt);
+      if (trend === 'jitter') { viewJitter(st); return; }
       if (st.viewOk) return;
-      st.viewOk = true;
-      // The frame that put the chain on the screen waited for this (render()): qualify it now.
-      if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
+      if (trend === 'framing') { viewReady(st, sd); return; }
+      // Not known yet (a view that moved by less than a pixel, fewer than VIEW_FRAMES frames ago). A
+      // page that stops drawing here is not jittering: framing, 1 s after its last frame.
+      clearTimeout(st.viewWait);
+      st.viewWait = setTimeout(() => { if (!st.viewOk && !st.viewJitter) viewReady(st, sd); }, 1000);
     });
+  }
+  function viewReady(st, sd) {
+    st.viewOk = true;
+    clearTimeout(st.viewWait);
+    // The frame that put the chain on the screen waited for this (render()): qualify it now.
+    if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
   }
   // Primitives the renderer has counted. render() zeroes the count first (info.autoReset, the default),
   // so after one render() the count is that render's own; a page that turned autoReset off accumulates,
@@ -1066,6 +1079,47 @@ function dxrThree(core) {
     return aa > 0 && bb > 0 ? ab / Math.sqrt(aa * bb) : 0;
   }
 
+  // A jitter left set (#226, from the #222 review). three's TAARenderPass / SSAARenderPass clear their
+  // offset after the draw (caught above, in markSeed), but a page's own TAA may leave it set and only
+  // move it: the view then reaches the end of every frame, and passed for framing. One entry per frame,
+  // the view as it stands at the end of the frame, in the scene target's pixels (the units a TAA
+  // jitters in: ±0.5 px of a half-size target is ±1 canvas px) whatever units the page passes to
+  // setViewOffset:
+  //   framing    unchanged since the last frame; or moved by 1 px or more (a deliberate shift, a cut);
+  //              or a new window size (a zoom); or VIEW_FRAMES frames of sub-pixel steps that do not
+  //              keep turning back (a slow pan)
+  //   jitter     a run of sub-pixel steps (its last VIEW_FRAMES frames at most) that stays within 1.5 px
+  //              and turns back at least twice on BOTH axes. A TAA jitters both, and Halton / random
+  //              jitter turns back almost every frame, so it is caught on its 4th to 6th sample: one
+  //              that settles after a few samples and stops drawing the scene is caught too. Framing
+  //              that moves along one axis may turn back as often (a lerped mouse parallax, a spring's
+  //              tail, an idle bob: #231, from the #227 review) and is not jitter. A pan or a tween
+  //              does not turn back twice in a few frames.
+  //   unknown    neither, so far
+  const VIEW_FRAMES = 8;
+  function viewTrend(st, v, rt) {
+    const bw = (rt && rt.width) || st.L.w * st.L.pr || 1, bh = (rt && rt.height) || st.L.h * st.L.pr || 1;
+    const e = { x: (v[2] / (v[0] || 1)) * bw, y: (v[3] / (v[1] || 1)) * bh, w: v[4] / (v[0] || 1), h: v[5] / (v[1] || 1) };
+    const hist = st.viewHist, prev = hist[hist.length - 1];
+    hist.push(e);
+    if (hist.length > VIEW_FRAMES) hist.shift();
+    if (!prev) return 'unknown';
+    const dx = e.x - prev.x, dy = e.y - prev.y;
+    if (e.w !== prev.w || e.h !== prev.h || (dx === 0 && dy === 0) || Math.abs(dx) >= 1 || Math.abs(dy) >= 1) { st.viewSteps = 0; return 'framing'; }
+    st.viewSteps++;
+    const run = hist.slice(-Math.min(st.viewSteps + 1, VIEW_FRAMES)); // this run of sub-pixel steps
+    const turns = (k) => {
+      let n = 0;
+      for (let i = 2; i < run.length; i++) {
+        const a = run[i - 1][k] - run[i - 2][k], b = run[i][k] - run[i - 1][k];
+        if (a * b < 0) n++;
+      }
+      return n;
+    };
+    const span = (k) => Math.max(...run.map((p) => p[k])) - Math.min(...run.map((p) => p[k]));
+    if (Math.min(turns('x'), turns('y')) >= 2 && span('x') <= 1.5 && span('y') <= 1.5) return 'jitter';
+    return st.viewSteps >= VIEW_FRAMES - 1 ? 'framing' : 'unknown';
+  }
   const WHY_JITTER = 'the scene pass jitters camera.setViewOffset (TAA / SSAA) — not split';
   function viewJitter(st) {
     if (st.viewJitter) return;

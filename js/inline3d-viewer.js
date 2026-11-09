@@ -379,6 +379,10 @@ export class SceneViewer {
     this._pitch = 0;
     this._targetYaw = 0;
     this._targetPitch = 0;
+    // Roll about the VIEW axis, degrees. Only the two-hand gesture (./inline3d-hands.js) and an
+    // explicit setPose({ roll }) ever write it, so every existing page is bit-identical at 0.
+    this._roll = 0;
+    this._targetRoll = 0;
     this._lastInput = now(); // so the turntable waits out the load-in rather than starting mid-pop
     this._lastTick = 0;
     this._monoRaf = 0;
@@ -524,12 +528,13 @@ export class SceneViewer {
    * This SNAPS — it writes the eased value and its target together. The easing in _tick exists
    * for input, not for programmatic placement.
    */
-  setPose({ yaw, pitch, zoom, depthOffset } = {}) {
+  setPose({ yaw, pitch, zoom, roll, depthOffset } = {}) {
     if (yaw !== undefined) this._targetYaw = this._yaw = yaw;
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
     if (zoom !== undefined) this._targetZoom = this._zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
+    if (roll !== undefined) this._targetRoll = this._roll = roll;
     if (depthOffset !== undefined) this._depthOffset = finite(depthOffset, this._depthOffset);
     this._applyTransform();
   }
@@ -553,6 +558,7 @@ export class SceneViewer {
       yaw: target ? this._targetYaw : this._yaw,
       pitch: target ? this._targetPitch : this._pitch,
       zoom: target ? this._targetZoom : this._zoom,
+      roll: target ? this._targetRoll : this._roll,
       depthOffset: this._depthOffset,
     };
   }
@@ -588,15 +594,22 @@ export class SceneViewer {
     const [hx, hy, hz] = this._subjectHalf;
     const p = (this._pitch * Math.PI) / 180;
     const y = (this._yaw * Math.PI) / 180;
-    // Rows of R = Rx(pitch) . Ry(yaw) — the same product _applyTransform builds, and the same
-    // order, which is the part that matters (see its comment on why 'XYZ' and not 'YXZ').
-    // |row| . half gives the AABB half-extent along that world axis.
+    const r = (this._roll * Math.PI) / 180;
+    // Rows of R = Rz(roll) . Rx(pitch) . Ry(yaw) — the same product _applyTransform builds, and
+    // the same order, which is the part that matters (see its comment on why pitch is outside
+    // yaw, and roll outside both). |row| . half gives the AABB half-extent along that world axis.
+    // At roll 0 the first two rows reduce to the old Rx . Ry rows exactly.
     const cp = Math.cos(p);
     const sp = Math.sin(p);
     const cy = Math.cos(y);
     const sy = Math.sin(y);
-    const ex = s * (Math.abs(cy) * hx + Math.abs(sy) * hz);
-    const ey = s * (Math.abs(sp * sy) * hx + Math.abs(cp) * hy + Math.abs(sp * cy) * hz);
+    const cr = Math.cos(r);
+    const sr = Math.sin(r);
+    // Rx . Ry rows
+    const a0 = cy, a1 = 0, a2 = sy;
+    const b0 = sp * sy, b1 = cp, b2 = -sp * cy;
+    const ex = s * (Math.abs(cr * a0 - sr * b0) * hx + Math.abs(cr * a1 - sr * b1) * hy + Math.abs(cr * a2 - sr * b2) * hz);
+    const ey = s * (Math.abs(sr * a0 + cr * b0) * hx + Math.abs(sr * a1 + cr * b1) * hy + Math.abs(sr * a2 + cr * b2) * hz);
     const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
     const cz = this._depthOffset;
     return {
@@ -675,8 +688,22 @@ export class SceneViewer {
   }
 
   /** Return to the framed default pose, depth slide included. */
+  /**
+   * Move the pose by a delta, EASED — what an input device does, as opposed to `setPose`'s snap.
+   * Angles in degrees to add, `zoom` a ratio to multiply; pitch is clamped, zoom bounded. Counts
+   * as interaction for the idle turntable, exactly like a pointer drag. The hands
+   * (`@displayxr/inline3d/hands`) drive the viewer through this; a page may too.
+   */
+  nudgePose({ yaw = 0, pitch = 0, zoom = 1, roll = 0 } = {}) {
+    if (yaw) this._targetYaw += yaw;
+    if (pitch) this._targetPitch = clamp(this._targetPitch + pitch, this.pitchLimit[0], this.pitchLimit[1]);
+    if (zoom && zoom !== 1) this._targetZoom = clamp(this._targetZoom * zoom, ZOOM_MIN, ZOOM_MAX);
+    if (roll) this._targetRoll += roll;
+    this._lastInput = now();
+  }
+
   resetPose() {
-    this.setPose({ yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
+    this.setPose({ yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 });
     this._lastInput = now();
   }
 
@@ -1035,7 +1062,10 @@ export class SceneViewer {
     // axis is itself yawed. At yaw 90° that axis has swung onto world Z and dragging up/down
     // rolls the subject instead of tilting it. Correct head-on, wrong the moment you turn it —
     // which is why it survived review and only showed up when two controls were combined.
-    this._pivot.rotation.set((this._pitch * Math.PI) / 180, (this._yaw * Math.PI) / 180, 0, 'XYZ');
+    //
+    // Roll (the two-hand twist) is about the VIEW axis, so it goes OUTSIDE both: 'ZXY' == R =
+    // Rz(roll) · Rx(pitch) · Ry(yaw). At roll 0 that is the 'XYZ' product above, bit for bit.
+    this._pivot.rotation.set((this._pitch * Math.PI) / 180, (this._yaw * Math.PI) / 180, (this._roll * Math.PI) / 180, 'ZXY');
   }
 
   /**
@@ -1136,6 +1166,7 @@ export class SceneViewer {
     const k = dt > 0 ? 1 - Math.pow(DAMP_BASE, dt) : 1;
     this._yaw += (this._targetYaw - this._yaw) * k;
     this._pitch += (this._targetPitch - this._pitch) * k;
+    if (this._roll !== this._targetRoll) this._roll += (this._targetRoll - this._roll) * k;
     // Zoom eases on the same curve. Multiplicatively, because zoom is a ratio: approaching 2x
     // linearly spends most of its time near the start and then lurches, while a ratio approach
     // covers equal PERCEPTUAL steps per frame.

@@ -8,7 +8,12 @@
 //     pill, never a plate congruent with the tile (it would match the canvas's own quad on a
 //     legacy browser and take the tile out of the weave). The bottom bar and self view live in a
 //     footer BELOW the grid, over no tile at all.
-//  2. NO `backdrop-filter`. The near-solid `--dxr-shell` (rgba(16,17,22,.92)) is the substitute.
+//  2. NO `backdrop-filter` in the SDK's own chrome. The near-solid `--dxr-shell`
+//     (rgba(16,17,22,.92)) is its choice, and it stays. A frosted element OVER a tile is no longer
+//     a defect on DisplayXR Browser 0.1.16+ (browser#120: the compositor draws the tile mono
+//     inside each frost rect; samples/composition is the validated case) — a page's own chrome may
+//     use it. Never frost a WHOLE visible tile, and rule 3 (effects on the canvas or an ancestor)
+//     is unchanged.
 //  3. Promotion is `will-change: transform`. No CSS filter / opacity / border-radius / shadow on a
 //     woven canvas OR ANY ANCESTOR of one — the tile, the grid and the host stay visually bare.
 //     A speaking highlight is a separate bar UNDER the stage, not an outline around it.
@@ -143,10 +148,15 @@ const CSS = `
 .dxr-call-grid[data-layout="speaker"]{grid-template-columns:repeat(3,1fr);}
 .dxr-call-grid[data-layout="speaker"] .dxr-call-tile--main{grid-column:1/-1;}
 .dxr-call-grid[data-layout="speaker"][data-n="1"]{grid-template-columns:1fr;}
+/* Shared content (3D app share): the content tile spans the row, the people form a strip under it. */
+.dxr-call-grid[data-content="1"]:not([data-n="1"]){grid-template-columns:repeat(3,1fr);max-width:calc(var(--dxr-call-h)*4/3);}
+.dxr-call-grid[data-content="1"] .dxr-call-tile--main{grid-column:1/-1;}
 /* layout:'none' — the module creates the tiles but does not position them: the grid box steps
    aside (display:contents) so each [data-dxr-peer] tile is laid out by the PAGE's own CSS on the
    host. A tile is never moved; it is styled in place (woven-canvas rule 2). */
 .dxr-call-grid[data-layout="none"]{display:contents;}
+/* …and so do the footer and the self slot, so the page places the self tile ([data-dxr-peer="self"]). */
+.dxr-call-host--none .dxr-call-foot,.dxr-call-host--none .dxr-call-self{display:contents;}
 .dxr-call-tile{position:relative;min-width:0;}
 .dxr-call-stage{position:relative;background:#000;}
 .dxr-call-stage>canvas{display:block;width:100%;height:100%;}

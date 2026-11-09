@@ -65,7 +65,7 @@ column as the shopping list.
 | `requestReferenceSpace('local-floor' \| 'local' \| 'bounded-floor')` | None. There is one space and you never ask for it | The canvas plane is world `z = 0` and the viewer is a few tens of cm in front of it. There is no room, no floor and no origin to negotiate. |
 | Locomotion by `getOffsetReferenceSpace(new XRRigidTransform(...).inverse)` — teleport, snap-turn, smooth locomotion | Move your camera | This is the single biggest simplification. Offset reference spaces exist because in a headset you cannot move the user's head, so you move the world under it. Here the "user" is a viewer sitting at a desk: the app camera is the viewpoint, you move it the way you did before WebXR, and you tell the runtime where it went with a **view rig**. Delete the rig object, the offset space, and the inverse-transform bookkeeping. |
 | `renderer.xr.getCamera()` → an `ArrayCamera` of two sub-cameras | Two `EyeCamera`s from `@displayxr/inline3d/three` | Same idea, explicit. `EyeCamera` has `matrixAutoUpdate` off and takes `projectionMatrix` + `transform.matrix` straight off the `XRView` — `setFromView` for a world pose, `setLocalFromView` for the [attach pattern](#the-attach-pattern-and-the-frame-of-lag). |
-| Controllers, hands, `XRInputSource`, `squeeze`/`select` events, gesture detection, haptics | None. Keyboard, mouse, touch, pointer events — exactly as on the flat page | An inline-3D session is **sensorless** apart from the eye tracking that drives the weave. There are no input sources to enumerate and no `inputsourceschange` to listen for. Everything that was gated on a controller needs a DOM-input equivalent, and everything you already had on the flat page still works because the canvas is still a normal element receiving normal events. |
+| Controllers, hands, `XRInputSource`, `squeeze`/`select` events, gesture detection, haptics | **Hands: the standard WebXR Hand Input, where the display has a hand tracker.** Controllers, `select`/`squeeze`, haptics: none — keyboard, mouse, touch, pointer events, exactly as on the flat page | From DisplayXR Browser 1.8.0 (Windows) an inline-3D session with a hand provider (an Ultraleap tracker today) exposes one `XRInputSource` per tracked hand — `handedness`, `targetRayMode: 'tracked-pointer'`, `profiles: ['generic-hand']`, a 25-joint `.hand` — fires `inputsourceschange` as hands appear and vanish, and answers `frame.fillPoses()` / `getJointPose()` against any reference space you requested; the joints arrive in the **same rig frame as the eye views**, so a joint drawn where the API puts it sits on the real hand. Three.js's `XRHandModelFactory` works on `session.inputSources` as-is; what does **not** exist is a primary action — no `selectstart`/`select`/`selectend` on a hand source, so pinch is computed from the joints (`@displayxr/inline3d/hands` does it: `watchHands`, `HandGestureController`, and `hands: true` on `addModel`/`addSplat` for pinch-to-orbit). Hands are gated per frame: `session.handInputWithheldReason` is `null` when they can be delivered, else why not (`'camera-rig'`, `'not-fullscreen'`, `'scaled-rig'`, …) — a camera-rig page gets none. Every other browser, and a DisplayXR Browser with no tracker, reports zero input sources, so the code path is the same as before: nothing to enumerate. Everything you gated on a controller still needs a DOM-input equivalent. |
 | `session.updateRenderState({ depthNear, depthFar })` | The same call, on `wall.session` | Unchanged, and still worth making: `XRView.projectionMatrix` is built with the session's near/far, so leaving them at the defaults while your app camera uses `0.05 / 100` gives every eye a different depth range than the one your scene was tuned for. Set them from your camera once the session is up, and again if you change them. |
 | Foveation, `framebufferScaleFactor` | Scale the **backing store** yourself | See [§4](#resize-and-quality-scaling). There is no runtime-owned framebuffer to ask for a scale factor; there is your canvas, and you choose how many device pixels it holds. |
 
@@ -525,9 +525,10 @@ know:
   *there* and still measured — and it must be `display:none` **before** you register the tile. A
   start screen that fades out on `opacity` and a start screen that is `display:none` are the same
   picture and different weaves.
-- **No `backdrop-filter`** on anything that overlaps a tile, on either generation. It is by
-  definition a function of what is behind it, and what is behind it is the lens-interleaved buffer.
-  A near-solid background (`rgba(16,17,22,.92)`) reads much like a frosted panel.
+- **`backdrop-filter` over a tile only on DisplayXR Browser 0.1.16+**, and never over a whole
+  visible tile. It is by definition a function of what is behind it, and what is behind it is the
+  lens-interleaved buffer; from 0.1.16 the compositor draws the tile mono inside the frost rect.
+  On older browsers a near-solid background (`rgba(16,17,22,.92)`) reads much like a frosted panel.
 - **Never animate the canvas's own transform or size.** Not `transform: scale()`, not a width
   transition, not a CSS `filter`. A woven tile's rect reaches the compositor once per frame and the
   weave is computed for *that* rect; animate the element and the two disagree for the length of the
@@ -659,8 +660,9 @@ Consolidated, in the order they tend to bite:
 20. **A full-bleed overlay sharing the canvas rect.** Hide it with `display:none`, never
     `opacity:0`, and hide it *before* registering the tile — which means activating after the
     splash's fade has actually completed, not when you started it.
-21. **`backdrop-filter` anywhere over a tile.** No z-order model fixes it. Near-solid backgrounds
-    instead.
+21. **`backdrop-filter` over a tile before DisplayXR Browser 0.1.16, or over a whole tile.** No
+    z-order model fixes the old case; 0.1.16+ draws the tile mono inside a partial frost rect.
+    Near-solid backgrounds on older browsers.
 22. **Animating the canvas element itself.** Its rect and its weave disagree for the length of the
     animation. Animate a wrapper or the buffer's contents.
 23. **Picking against an eye camera.** One cursor, one screen, one camera: `appCam`.

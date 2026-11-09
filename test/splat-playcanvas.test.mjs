@@ -174,6 +174,26 @@ test('footprint patch declines (ok:false, source untouched) when the anchor move
   assert.equal(r.src, moved);
 });
 
+test('footprint patch: the engine\'s own per-axis focal (PlayCanvas ≥ 2.23) is fixed already — ok, native, untouched', () => {
+  const corner223 = [
+    '#else',
+    '\t\tvec2 focal = viewport_size.xy * vec2(center.projMat00, center.projMat11);',
+    '\t\tvec3 vp = camera_params.w == 1.0 ? vec3(0.0, 0.0, 1.0) : v;',
+    '\t\tvec2 J1 = focal / vp.z;',
+    '\t\tvec2 J2 = -J1 / vp.z * vp.xy;',
+    '\t\tmat3 J = mat3(',
+    '\t\t\tJ1.x, 0.0, J2.x,',
+    '\t\t\t0.0, J1.y, J2.y,',
+    '\t\t\t0.0, 0.0, 0.0',
+    '\t\t);',
+    '#endif',
+  ].join('\n');
+  const r = patchGsplatFootprint(corner223);
+  assert.equal(r.ok, true);
+  assert.equal(r.native, true);
+  assert.equal(r.src, corner223);
+});
+
 test('quad-extent patch caps clipCorner at k, scaling offset AND uv together', () => {
   const r = patchPlayCanvasQuadExtent(COMMON_2_22_3, Math.sqrt(6) / Math.sqrt(8));
   assert.equal(r.ok, true);
@@ -244,6 +264,8 @@ const POSES = [
   { yaw: 0, pitch: 0, scale: 1, focus: [0, 0, 0], orbitCentre: [0, 0, 0], depthOffset: 0 },
   { yaw: 37, pitch: -22, scale: 0.013, focus: [2.4, 18.2, -35.4], orbitCentre: [0, 0, 0], depthOffset: 0.02 },
   { yaw: -120, pitch: 50, scale: 3.5, focus: [0.1, -0.2, 1.7], orbitCentre: [0.1, -0.2, 1.7], depthOffset: -0.05 },
+  // The two-hand twist: roll about the view axis, outside yaw and pitch.
+  { yaw: 25, pitch: -10, roll: 40, scale: 0.8, focus: [0.3, 0.1, -0.6], orbitCentre: [0, 0, 0], depthOffset: 0.01 },
 ];
 
 test('pivotInverseTRS is exactly the inverse of pivotMatrix', () => {
@@ -2675,7 +2697,7 @@ test("setRig('display'): frames the meshes under root on addModel's defaults, de
   near(v._fitScale, fitScale({ extent: [0.2, 0.4, 0.1], fit: 'contain', margin: 0.8, vH: 0.24, aspect: 320 / 180, fitSweep: true, depthLimit: 4 }), 1e-12, 'addModel fit');
   assert.deepEqual(v.getFocus(), { x: 0.5, y: 1, z: -2 });
   assert.equal(v._focusRecentres, true, 'orbits the frame centre');
-  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 }, 'rest');
+  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 }, 'rest');
   assert.equal(v.idleSpin, 8, "addModel's idle spin");
   assert.deepEqual(pushed.at(-1), {
     type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 },
@@ -4553,5 +4575,83 @@ test('a camera-rig focus at or behind the camera never declares convergence at i
   out.viewer._tick();
   const after = pushed.slice(n).filter((r) => r.type === 'camera');
   assert.ok(after.every((r) => r.convergenceDiopters > 0), `no convergence-0 rig after the focus went behind (got ${after.map((r) => r.convergenceDiopters)})`);
+  out.remove();
+});
+
+// ── roll on the PlayCanvas viewer (the two-hand twist; SceneViewer's axis, test/viewer-roll.test.mjs) ──
+
+test('pivotMatrix: roll is Rz OUTSIDE Rx·Ry, and roll 0 is the old quaternion bit for bit', () => {
+  const base = { yaw: 37, pitch: -22, scale: 1, focus: [0, 0, 0], orbitCentre: [0, 0, 0], depthOffset: 0 };
+  assert.deepEqual(Array.from(pivotMatrix({ ...base, roll: 0 })), Array.from(pivotMatrix(base)), 'roll 0 == no roll, bit for bit');
+  assert.deepEqual(pivotInverseTRS({ ...base, roll: 0 }), pivotInverseTRS(base));
+  // R(roll) = Rz(roll) · R(0): rotating the display-space result of the unrolled pivot about Z.
+  const M0 = pivotMatrix(base);
+  const M = pivotMatrix({ ...base, roll: 90 });
+  for (const p of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.3, -0.7, 2]]) {
+    const [x, y, z] = transformPoint(M0, ...p);
+    nearArr(transformPoint(M, ...p), [-y, x, z], 1e-12, `Rz(90°) of ${p}`);
+  }
+  // …and the inverse TRS still inverts it (POSES carries a rolled pose through the test above too).
+  const s = { ...base, roll: -33, scale: 2.5, focus: [0.2, 0.1, -1], orbitCentre: [0.2, 0.1, -1] };
+  const t = pivotInverseTRS(s);
+  const Minv = poseMatrix(t.position, t.rotation);
+  for (let i = 0; i < 12; i++) if (i % 4 !== 3) Minv[i] *= t.scale;
+  nearArr(Array.from(mat4Mul(pivotMatrix(s), Minv)), I16, 1e-9, 'M·M⁻¹ with roll');
+});
+
+test('PlayCanvasSplatViewer: setPose / getPose / nudgePose / resetPose carry roll; _tick eases it; the rig follows', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const v = out.viewer;
+  assert.equal(v.getPose().roll, 0, 'rest');
+  const rig0 = Array.from(v.rigMatrix());
+  v.setPose({ roll: 45 });
+  assert.equal(v.getPose().roll, 45);
+  assert.equal(v.getPose({ target: true }).roll, 45);
+  assert.equal(v.pivotState().roll, 45, 'the pivot carries it');
+  const rig45 = Array.from(v.rigMatrix());
+  assert.notDeepEqual(rig45, rig0, 'the rig node moved under the roll');
+  // nudgePose moves the TARGET; the eased value waits for _tick.
+  v.nudgePose({ roll: -45 });
+  assert.equal(v.getPose({ target: true }).roll, 0);
+  assert.equal(v.getPose().roll, 45, 'eased value unchanged until the tick');
+  v._lastTick = 1;
+  v._tick();
+  const r = v.getPose().roll;
+  assert.ok(r < 45 && r > 0, `roll eases toward the target: ${r}`);
+  v.setPose({ yaw: 12, pitch: 5, roll: 0 });
+  v.setPose({ yaw: 0, pitch: 0 });
+  nearArr(Array.from(v.rigMatrix()), rig0, 1e-12, 'back at rest the rig is the rest rig');
+  v.nudgePose({ roll: 30 });
+  v.resetPose();
+  assert.equal(v.getPose().roll, 0);
+  assert.equal(v.getPose({ target: true }).roll, 0, 'resetPose clears the target too');
+  out.remove();
+});
+
+test('PlayCanvasSplatViewer.getSubjectBounds: a 90° roll swaps the x and y extents; depth never changes under a roll', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const v = out.viewer;
+  v.fitTo([0, 0, 0], [2, 1, 0.5]);
+  const b0 = v.getSubjectBounds();
+  assert.ok(b0.extent.x > b0.extent.y && b0.extent.y > b0.extent.z, 'unrolled: x > y > z');
+  v.setPose({ roll: 90 });
+  const b = v.getSubjectBounds();
+  near(b.extent.x, b0.extent.y, 1e-12, 'x takes the old y');
+  near(b.extent.y, b0.extent.x, 1e-12, 'y takes the old x');
+  near(b.extent.z, b0.extent.z, 1e-12, 'z unchanged');
+  v.setPose({ yaw: 40, pitch: 15, roll: 0 });
+  const z0 = v.getSubjectBounds().extent.z;
+  v.setPose({ roll: 33 });
+  near(v.getSubjectBounds().extent.z, z0, 1e-12, 'depth under yaw+pitch is roll-invariant');
   out.remove();
 });

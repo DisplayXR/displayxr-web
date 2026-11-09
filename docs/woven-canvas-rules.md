@@ -159,7 +159,16 @@ one region are **refused as ambiguous**, and neither is drawn from. Cut between 
 two pictures, blend them **inside one canvas**
 ([motion, §3 Crossfade](authoring-motion-and-effects.md#crossfade)).
 
-Many woven canvases in one frame (a gallery wall) are fine. Each one joins by its own identity.
+Many woven canvases in one frame (a gallery wall) are fine. Each one joins by its own identity,
+**as long as no two of them overlap.**
+
+**Never leave two woven canvases overlapping.** This is the static case of the crossfade: a splat
+canvas laid over a full-page scene canvas, both live. The Android DisplayXR Browser logs
+`[DisplayXR] inline-3D OVERLAPPING tiles …` and an `inline-3D recovery draw`; on a
+tablet the top canvas head-tracked but showed no stereo, and adding a second splat crashed the tab.
+The same page looked fine on a Windows panel, so a desktop check does not clear it. Hide the canvas
+underneath with `display: none` while the other one shows, and restore it when that one goes, so
+only one woven tile covers any point of the screen.
 
 ### 7. No CSS effects on a woven canvas or on any of its ancestors
 
@@ -196,14 +205,23 @@ tile while its content keeps running (for a video: sound, no picture). To put bl
 tile, give it to an element **behind** the canvas. A cover you mean to hide the tile with (rule 5,
 rule 11) is the one deliberate exception, and it comes off on a signal.
 
-### 10. No `backdrop-filter` on anything drawn over the weave
+### 10. `backdrop-filter` over the weave: only on DisplayXR Browser 0.1.16+, never over a whole tile
 
-Rule 7 covers the canvas and its ancestors. This one covers the **siblings on top of it**: a
-control bar, a caption, a badge, a menu. `backdrop-filter` is defined as a function of what is
-behind the element, and behind it is the interlaced weave. A blur reads the interlaced pixels
-and smears them, and the 3D image is disturbed across the element's **whole box**, not only
-where the element is opaque (seen on the panel, 24 September). Use a plain translucent tint
-(`background: rgba(0, 0, 0, 0.55)`) instead. The SDK's own player chrome follows this rule.
+Rule 7 covers the canvas and its ancestors, and is unchanged. This one covers the **siblings on
+top of it**: a control bar, a caption, a badge, a menu. `backdrop-filter` is defined as a function
+of what is behind the element, and behind it is the interlaced weave. On browsers before
+DisplayXR Browser 0.1.16 the blur reads the interlaced pixels and smears them, and the 3D image is
+disturbed across the element's **whole box**, not only where it is opaque (seen on the panel, 24
+September). From 0.1.16 the compositor draws the tile **mono inside each frost rect**
+(displayxr-browser#120), so frosted chrome over a tile looks right: the frosted region is flat,
+the rest of the tile stays 3D. [`samples/composition`](../samples/composition/) (its sticky
+header) is the validated case.
+
+- Frost a **partial** region only (a bar, a pill). Never frost a whole tile while it is visible:
+  the whole tile goes mono under it.
+- If the page must also run on older browsers, use a plain translucent tint
+  (`background: rgba(0, 0, 0, 0.55)`) there. The SDK's own chrome (player, call) keeps its
+  near-solid tint so one build works on every generation.
 
 ### 11. Treat a resize as a fresh-canvas moment
 
@@ -331,11 +349,14 @@ for exactly that reason). It cannot check the join. On a DisplayXR display:
 Found on hardware in a production photo app after the rules above were written. Each one looked
 like a runtime or browser bug on the panel and turned out to be the page.
 
-- **No `backdrop-filter` on chrome that sits over the weave.** Rule 7 covers effects on the canvas
-  and its ancestors. A frosted bar or button placed *over* a woven tile is a different element, but
-  on a lenticular laptop panel it visibly disturbs the 3D image across that element's whole rect.
-  Use a plain translucent tint instead (a solid `rgba()` background). Keep an A/B switch for the
-  blurred variant if the design wants it back, and judge it on the panel, not on a 2D monitor.
+- **`backdrop-filter` on chrome that sits over the weave (superseded for 0.1.16+).** Rule 7 covers
+  effects on the canvas and its ancestors. A frosted bar or button placed *over* a woven tile is a
+  different element; on browsers before DisplayXR Browser 0.1.16 it visibly disturbed the 3D image
+  across that element's whole rect on a lenticular laptop panel, and the fix was a plain
+  translucent tint. Since 0.1.16 the compositor draws the tile mono inside each frost rect
+  (displayxr-browser#120), so partial frosted chrome is fine there (`samples/composition` is the
+  validated case); still never frost a whole visible tile ([rule 10](#10-backdrop-filter-over-the-weave-only-on-displayxr-browser-0116-never-over-a-whole-tile)).
+  Judge it on the panel, not on a 2D monitor.
 - **Nothing opaque above the woven canvas.** Stacking order still applies: an element with an
   opaque background painted *above* the canvas hides it, and on a draw-order browser that is
   exactly what you get. The classic case is a full-bleed video plane under a page `<main>` with
@@ -350,6 +371,26 @@ like a runtime or browser bug on the panel and turned out to be the page.
   `wall.hardwareDisplayState === '2d'`. The SDK's eased mode switch ramps disparity out before the
   panel flips and in only after it reports 3D. The mode is display-wide: every woven tile goes flat
   while it is in force.
+- **A 2D/3D toggle: try the mode switch, then fall back.** Not every browser can forward a mode
+  request yet. The DisplayXR Browser for Android rejects `setStereoEnabled` /
+  `requestRenderingMode` with a `NotSupportedError` while still listing its modes as
+  `isRequestable: true`. You can't detect this in advance:
+  `isRequestable` overstates it, and the Android browser sends a desktop user agent. So call
+  `setStereoEnabled(false)` and, if it rejects with a `NotSupportedError`, flatten the image
+  yourself: ease your rig's `ipdFactor` and `parallaxFactor` to 0 over ~300 ms (the SDK's own
+  ramp length), and back to your values for 3D. Both views become identical and the image reads
+  flat, though the panel's lens stays on, so it is a softer 2D than the real 1-view mode. Keep
+  the button visible either way; only a different rejection (no 1-view mode listed at all) is a
+  reason to hide it.
+  ```js
+  async function setFlat(flat) {
+    try { await wall.setStereoEnabled(!flat); }
+    catch (e) {
+      if (e.name !== 'NotSupportedError') throw e;
+      easeRigFactors(flat ? 0 : 1, 300);   // your rig: ipdFactor / parallaxFactor × k
+    }
+  }
+  ```
 - **Keep the frames after `setSource` resolves free of per-splat CPU work.** A slideshow ran 105
   `pick()` calls (24 to plan an animation path, 81 for a diagnostic depth grid) right after every
   swap. On the Windows panel that was a 1.3 s main-thread stall at the end of every transition,

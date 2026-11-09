@@ -35,6 +35,9 @@ import { addModel } from '@displayxr/inline3d/model';               // experimen
 import { addPlayer } from '@displayxr/inline3d/player';             // preview: a media player, built
                                                                     //   on addVideo, with transport
 import { SceneViewer } from '@displayxr/inline3d/viewer';           // experimental: framing + orbit
+import { handControls } from '@displayxr/inline3d/hands';          // experimental: tracked hands,
+                                                                    //   pinch to orbit (or `hands: true`
+                                                                    //   on addModel / addSplat)
 ```
 
 No build step or bundler required — it's plain ES modules. You can also import a pinned version by
@@ -66,7 +69,9 @@ The repo's splat sample (`samples/splat/`) renders with PlayCanvas and keeps `?e
 its A/B switch.
 Bundlers: the engine is reached through a named-import module (`js/inline3d-playcanvas-engine.js`,
 so the unused ~40% of the engine tree-shakes away); its sort workers are Blob URLs (CSP
-`worker-src blob:`), and esbuild needs `node:worker_threads` marked external.
+`worker-src blob:`), and esbuild needs `node:worker_threads` marked external. Pin the engine to
+exactly `playcanvas@2.22.3`, the version validated on a panel
+([why](docs/playcanvas-adapter.md)).
 
 **Splat effects (preview, `engine: 'playcanvas'`).** Shader effects on the splats themselves,
 keyed on world position and time so both eyes agree: `addSplat(…, { reveal: 'inflate' | 'sweep' |

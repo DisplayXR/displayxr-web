@@ -27,7 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const CORE_PARTS = ['core.js', 'surface.js', 'guard.js', 'chip.js', 'dev.js', 'three-adapter.js', 'playcanvas-adapter.js'];
+export const CORE_PARTS = ['core.js', 'surface.js', 'guard.js', 'chip.js', 'dev.js', 'three-adapter.js', 'playcanvas-adapter.js', 'babylon-adapter.js'];
 export const SOURCES = ['manifest.json', 'host-dev.js', 'sentinel.js', ...CORE_PARTS];
 export const OUTPUTS = ['dist/auto3d-sentinel.js', 'dist/auto3d-core.js', 'dist/auto3d-dev.js'];
 const VERSION_TOKEN = '__DXR_AUTO3D_VERSION__';

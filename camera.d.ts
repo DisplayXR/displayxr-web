@@ -11,7 +11,7 @@
 // The public surface of this file is pinned by test/api-snapshot: a change here fails `npm test`
 // until the snapshot is updated in the same change (`node tools/api-surface.mjs --update`).
 
-import type { Inline3D, Inline3DUnsupported, TileHandle } from './index.js';
+import type { Inline3D, Inline3DUnsupported, TileHandle, RectCoverOption } from './index.js';
 import type { CursorShape, CursorShapeHit, CursorShapeOption, CursorSoftenOption } from './cursor-depth.js';
 
 /** What the camera delivers: a side-by-side pair (left eye left) or one flat picture. */
@@ -21,8 +21,11 @@ export type CameraFormat = 'sbs' | 'mono';
  * Which camera to open. `'auto'` (default): a stereo device when one is present — the DisplayXR
  * Browser's "3D Camera" (recognised by its `displayxrStereo` track settings, never by its label),
  * or a device delivering wider than 2.5:1 frames — else the default webcam. `'stereo'` prefers
- * the pair and falls back to mono; `'mono'` never probes; a string is a `deviceId`; a
- * `MediaStream` is used as given, with {@link CameraOptions.format} declaring what it is.
+ * the pair and falls back to mono; `'mono'` never probes; a string is a `deviceId`, or
+ * `'label:<text>'` for the first camera whose label contains the text (case-insensitive; for a URL
+ * or a config, where a per-origin deviceId is useless); a `MediaStream` is used as given, with
+ * {@link CameraOptions.format} declaring what it is. A `deviceId` or `label:` is explicit and
+ * opens an {@link CameraOptions.exclude excluded} device too.
  */
 export type CameraPreference = 'auto' | 'stereo' | 'mono' | (string & {}) | MediaStream;
 
@@ -56,6 +59,27 @@ export interface CameraOptions {
    * is then true. A throwing hook keeps the raw pair (`cam.rectifyError`).
    */
   rectify?: (stream: MediaStream, info: { width: number; height: number; deviceId: string | null; label: string }) => MediaStream | Promise<MediaStream>;
+  /**
+   * Devices no probe may open. Built in, always (unless `false`): video inputs whose label marks a
+   * sensor rather than a camera — hand tracking, an eye tracker's or a "tracking camera"'s stream,
+   * a depth camera, an infrared / IR camera, and the Ultraleap / Leap Motion hand tracker, which
+   * enumerates under its bare brand name
+   * (`/\b(hand[- ]?track|tracking camera|eye[- ]?track|depth camera|ultraleap|leap motion|infrared|ir camera)/i`).
+   * Add your own: a string matches a label (case-insensitive substring) or a deviceId exactly; a
+   * RegExp tests the label. Applied on every probe path, the last-resort "try every device" one
+   * included; while an excluded device is listed the default camera is not opened blind (the first
+   * other camera is opened by id), and a default that turns out to be excluded is closed again.
+   * Left-out devices are listed in `skipped` with `excluded: true`. `false` turns the built-in
+   * list off. An explicit `deviceId` or `label:` (`prefer`) is your choice and is opened regardless.
+   */
+  exclude?: ReadonlyArray<string | RegExp> | false;
+  /**
+   * `'auto'` / `'stereo'` with labels visible and no 3D camera listed: how long (ms) to wait for
+   * the runtime's 3D camera to be listed before any plain lens is opened. Default 2500 in a
+   * DisplayXR Browser, 0 elsewhere (one re-read of the list). Opening a phone lens while head
+   * tracking streams can crash the camera HAL on some devices and take the 3D camera down with it.
+   */
+  stereoWaitMs?: number;
   /** Verbose console logging. */
   debug?: boolean;
 }
@@ -64,7 +88,18 @@ export interface CameraOptions {
 export type CameraErrorCode = 'camera-busy' | 'permission-denied' | 'no-camera';
 export interface CameraError extends Error {
   code: CameraErrorCode;
-  skipped: ReadonlyArray<{ label: string; error: string; busy?: boolean; denied?: boolean }>;
+  skipped: ReadonlyArray<CameraSkip>;
+}
+
+/** A device {@link openCamera} tried and did not use: busy, refused, or left out (`excluded`, `error: 'excluded'`). */
+export interface CameraSkip {
+  label: string;
+  error: string;
+  busy?: boolean;
+  denied?: boolean;
+  excluded?: boolean;
+  /** Why it was left out: `'excluded'` (a sensor, or your `exclude`), or `'app-share'` (a running DisplayXR app offered for 3D screen share — never a camera). */
+  reason?: 'excluded' | 'app-share';
 }
 
 export interface CameraEvents {
@@ -162,7 +197,7 @@ export interface StereoCamera {
   /** True when this module opened the device (and `close()` stops it); false for a page-supplied stream. */
   readonly owned: boolean;
   /** Devices tried and not used (busy, denied, not a pair) — the clue a `'camera-busy'` report carries. */
-  readonly skipped: ReadonlyArray<{ label: string; error: string; busy?: boolean; denied?: boolean }>;
+  readonly skipped: ReadonlyArray<CameraSkip>;
   readonly state: 'live' | 'ended' | 'closed';
   /** A detached, playing `<video>` on the stream (never in the DOM); null without a document. */
   readonly video: HTMLVideoElement | null;
@@ -214,8 +249,17 @@ export interface CameraViewOptions {
   autoConverge?: boolean;
   /** [-1, 1], + = push back: an offset on top of the convergence. Default 0. */
   depth?: number;
-  /** The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. */
-  aspect?: number;
+  /**
+   * The tile's aspect (w/h) = the woven buffer's per-eye aspect. Default 16/9. `'fill'`: the
+   * canvas's own CSS box, read every frame (clamped to 0.3–4), for a page that sizes the tile.
+   */
+  aspect?: number | 'fill';
+  /**
+   * The core's rect cover (`addImage`'s `rectCover`) on the woven registration: `'auto'`
+   * covers the tile across a later resize or move until it is woven again. Default: the core's
+   * (`'off'`).
+   */
+  rectCover?: RectCoverOption;
   /**
    * `'depth'`: while the pointer is over the woven view and what is under it comes out of the
    * screen, the normal arrow is drawn just in front of it (runtime ADR-046, measured off the pair's
@@ -241,6 +285,11 @@ export interface CameraViewWeaveState {
   firstWoven: { woven: boolean; confirmed: boolean; reason: string | null; ms: number } | 'pending' | null;
   /** Layer re-registrations attempted after a `'layer-failed'` (bounded; reset by a woven result). */
   layerRetries: number;
+  /**
+   * Milliseconds since the camera last delivered a new frame to the view, or null before the first.
+   * A stalled track keeps its last frame on screen; a growing age is how a page shows "no video".
+   */
+  frameAgeMs: number | null;
 }
 
 /** A self view from {@link addCameraView}. */

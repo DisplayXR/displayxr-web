@@ -40,7 +40,7 @@ Each gets a `//# sourceURL` (`dxr-auto3d-sentinel.js`, `dxr-auto3d-core.js`), so
 or exception can be traced to **our** code by its stack. The probe snapshots `window`'s own keys
 and the own-property descriptors of `Object`, `EventTarget`, `Node`, `Element`, `HTMLElement`,
 `HTMLCanvasElement`, `Document` and `Window` prototypes; it counts WebGL contexts and
-`getContext('webgpu')` calls, records every timer whose creating stack is ours, and times our
+`getContext('webgpu')` calls, counts the Babylon.js constructor trap's arms (below), records every timer whose creating stack is ours, and times our
 `MutationObserver`'s callbacks: total ms (`moMs`), the number of callbacks (`moCalls`) and the
 longest single one (`moMaxMs`), so a total over the REVIEW line can be judged per callback. The
 probe runs in both loads, so its own changes cancel out.
@@ -72,10 +72,18 @@ A site **FAILs** on any of the following (design §3.3):
 - **cost:** the sentinel's evaluate-and-run time is 0.5 ms or more, **warm** (median of the three
   reloads). The cold first load in a fresh context has no V8 cache and costs 3-4 ms on the win box.
   It is recorded, not judged: the §3.3 target and `test/cases/sentinel.mjs` `s-cost` are warm
-  figures. Whether the browser's injector gets a code cache is a browser-side question.
+  figures. Whether the browser's injector gets a code cache is a browser-side question. A site
+  whose reloads land in a new renderer process has no warm sample, since each reload is a cold load
+  (Google Earth, 2026-11-06). `sites.json` marks it `"noWarmCache": "<why>"`; its cost is recorded
+  (`costNotJudged`), not judged.
 - **prototypes:** any descriptor change on the prototypes above other than
   `HTMLCanvasElement.prototype.getContext`, compared with the control. On WebGL pages the
   sentinel's transient one-shot `Object.prototype` id setter is tolerated.
+- **the Babylon.js constructor trap** (v0.7.1): the probe counts every `_gl` / `_context` accessor
+  defined on `Object.prototype` (`bjsTrapArms`). Any arm on a page without Babylon is a FAIL; a page
+  is a Babylon page when the site is listed as `babylon.js`, or either load sees Babylon. Since v0.7.1
+  the sentinel arms the trap only for a `getContext` that looks like Babylon's, so on any other page
+  `'_gl' in anyObject` / `'_context' in anyObject` never changes, not even for the rest of a task.
 - **window:** a new `window` key other than `__THREE_DEVTOOLS__`, or `pc` on a page that created a
   WebGL context, when the key is ours (named `dxr`/`auto3d`, or `pc`). `'pc' in window` newly true
   on a page with no WebGL is a FAIL.

@@ -3,6 +3,7 @@
 
 import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
+import type { HandControlOptions, HandControls } from './hands.js';
 import type { FirstWovenResult, RectCoverOption, ViewerEaseOption, DisplayMetrics } from './index.js';
 
 /**
@@ -78,6 +79,12 @@ export interface PlayCanvasSplatViewer {
   fitTo(center: number[], extent: number[]): void;
   setPose(pose?: OrbitPose): void;
   getPose(opts?: { target?: boolean }): Required<OrbitPose>;
+  /**
+   * Move the pose by a delta, eased (SceneViewer.nudgePose's twin): degrees to add (`roll` about
+   * the view axis), zoom a ratio to multiply within `zoomOpts` (it becomes the new rest, as a
+   * `setPose` zoom does). Counts as interaction for the idle turntable and ends an orbit relax.
+   */
+  nudgePose(delta?: { yaw?: number; pitch?: number; zoom?: number; roll?: number }): void;
   resetPose(): void;
   getSubjectBounds(): SubjectBounds & { front: number; back: number; scale: number };
   setFocus(point: number[] | { x: number; y: number; z: number } | null, opts?: { snap?: boolean; recentre?: boolean }): PlayCanvasSplatViewer;
@@ -391,6 +398,13 @@ export interface SplatOptions {
    * it is still the cumulative turntable (a full-width drag = 180°).
    */
   orbit?: boolean;
+  /**
+   * Tracked-hand controls (`@displayxr/inline3d/hands`): one pinch dragged turns the splat, two
+   * pinches spread / dragged zoom / turn it (and twist rolls it on Spark). Needs the DisplayXR
+   * Browser 1.8.0+ with a hand provider; inert elsewhere. `true` or the controller options;
+   * exposed as `handle.hands`. Default off.
+   */
+  hands?: boolean | HandControlOptions;
   /** PlayCanvas: the largest drag tilt, degrees, either axis (default 15). */
   orbitMaxDeg?: number;
   /** PlayCanvas: easing time constants, seconds — `drag` while held (0.2), `rest` after release (0.6). */
@@ -1007,6 +1021,8 @@ export interface SplatHandle {
    * there until the backend module has loaded — one module fetch after addSplat returns).
    */
   readonly viewer: SceneViewer | PlayCanvasSplatViewer;
+  /** The hand controls, when the `hands` option asked for them (`stop()`, `state.gate`, `controller`). */
+  readonly hands?: HandControls;
   /**
    * Spark's SplatMesh; on `engine: 'playcanvas'` a `{ numSplats, entity, asset, resource }`
    * record of the engine objects. Null until the asset is loaded.

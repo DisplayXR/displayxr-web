@@ -96,6 +96,7 @@ the element connects**, or you use `mountCall` directly.
 | `no-ui` | `ui: false` | boolean attribute: no SDK chrome (see [Headless](#headless-mode)) |
 | `ui="tiles"` | `ui: 'tiles'` | badges and plates only — your bar, the module's per-tile chrome |
 | `auto-join` | `autoJoin` | boolean attribute: skip the lobby |
+| `self-content-view` | `selfContentView` | boolean attribute: a woven preview of what you share (see [Sharing a 3D app](#sharing-a-3d-app)) |
 | `mono3d` | `mono3D` | `off` to keep 2D callers 2D; default `auto` |
 | `cursor` | `cursor` | `depth`: a depth cursor over the 3D tiles (see [Options](#options)) |
 
@@ -139,7 +140,11 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `camera` | `'auto'` | `'auto'` opens the best camera through [`/camera`](camera.md): a stereo device when one is present (the DisplayXR Browser's "3D Camera", or a wide side-by-side device) else the default webcam; `'stereo'` prefers the pair and falls back; `'mono'` never probes; a `deviceId` string; a `MediaStream` you own; or a `StereoCamera` from `openCamera()` (left open when the call ends) |
 | `format` | `'mono'` | The format of a page-supplied `MediaStream` (`'sbs'` or `'mono'`). 3D-ness is never guessed from a stream |
 | `audio` | `true` | Microphone, with echo cancellation and noise suppression |
-| `autoConverge` | `true` | Measure the disparity of the point between a stereo peer's eyes and put that person at the display plane. No calibration needed. Also governs your own stereo self view |
+| `name` | — | Your display name, sent to everyone in `hello` (`CallPeer.name`, the `name` event). ≤ 64 characters, control characters stripped; `setName()` changes it. `<dxr-call name="…">` |
+| `cameraExclude` | the built-in list | Devices the camera probe never opens (`openCamera`'s [`exclude`](camera.md#opencameraopts)): strings match a label or a deviceId, RegExps a label. Sensors — hand tracking, eye tracking, a "tracking camera", a depth camera — are always left out; `false` turns that off. See [Troubleshooting](#troubleshooting) |
+| `tileCover` | `'auto'` with `layout: 'none'`, else `'off'` | Cover each woven tile (and a stereo self view) across a resize or move until it is woven again: the core's `rectCover` on its registration |
+| `autoConverge` | `true` | Put each stereo peer at the display plane: shift its two eyes by half the disparity of the point between that person's eyes. The disparity comes from the sender when it measures it (see [below](#auto-convergence-is-measured-by-the-sender)); from an older sender this side measures the received frames. No calibration needed. Also governs your own stereo self view |
+| `sendConvergence` | `true` | With a stereo camera, measure that disparity on your own raw camera frames and send it to every peer (a few bytes, ≤ 5 times a second). `false` sends nothing, and receivers measure your compressed frames as before 1.48. `<dxr-call no-send-convergence>` |
 | `cursor` | off | `'depth'` (or `{ height, pointerScope, soften }`): over a 3D tile — a stereo peer or your stereo self view — where the person under the pointer comes out of the screen, the normal arrow is drawn just in front of them instead of on the glass behind them (runtime ADR-046); everywhere else it is the plain OS arrow on the screen plane, never inside the display. The lifted arrow is softened against crosstalk (blur + fade with its lift, zero on the glass; `soften: 'off'` for the crisp arrow; see [A cursor that respects depth](authoring-inline-3d.md#a-cursor-that-respects-depth)). The depth is measured off the tile's two halves, so nothing extra is sent or computed until the pointer is over a 3D tile. Lifted (2D→3D) and flat tiles keep the normal cursor |
 | `mono3D` | `'auto'` | Lift 2D peers to 3D: `'auto'` · `'off'` · a `lift` function (see [`/call/full`](#callfull-vs-call--lift--which-import)) |
 | `liftOptions` | — | Extra `lift()` options, e.g. `{ models }` for where the depth model is served from, plus `max` (default 4): concurrent lifted tiles; further 2D peers stay flat |
@@ -148,7 +153,8 @@ Disconnecting the element (`el.remove()`, a framework unmounting it) leaves the 
 | `ui` | `true` | `true` full chrome · `'tiles'` badges and plates only · `false` nothing |
 | `autoJoin` | `ui !== true` | Join without the lobby |
 | `selfView` | `true` | The small mirrored self view — an [`addCameraView`](camera.md#addcameraviewwall-canvas-cam-opts--the-self-view): a stereo self view is mirrored **and** eye-swapped, which is what a mirror does |
-| `theme` | — | `{ accent, ink, shell, danger, radius, font, tileAspect, strings }` — see [Theming](#theming) |
+| `selfContentView` | `false` | While you [share a 3D app](#sharing-a-3d-app), also show it to yourself as a woven tile (`tile('self', 'content')`). Off by default: the app is already on your display |
+| `theme` | — | `{ accent, ink, shell, danger, radius, font, tileAspect, strings }` — see [Theming](#theming). `tileAspect: 'fill'`: each tile's crop follows its own box (for `layout: 'none'`) |
 | `invite` | — | `{ base, updateUrl }`: the link's base (default this page's URL, query kept, fragment replaced); write `#room=` into the page URL on join so a reload rejoins (default `ui === true`) |
 | `landing` | — | `{ browserUrl, allow2D }`: where the "see it in 3D" offer links; `allow2D: false` for 3D-only kiosk pages |
 | `debug` | `false` | Verbose console logging; `call.diagnostics()` has the rest |
@@ -158,10 +164,39 @@ options now: open the camera there and pass it as `camera`. Re-opening the inlin
 the runtime ends it is a property of the document's session (`sharedInline3D()`), not of the
 call; a call always recovers it.
 
+### Auto-convergence is measured by the sender
+
+A stereo participant should appear at the display plane: the point between their eyes has zero
+parallax, and the depth slider moves them from there. That needs the disparity of that point, in
+the pair. The sender has the raw, uncompressed frames, so it measures it there, once for everyone,
+and sends the result; each receiver still **applies** it, as a per-eye crop of the frame it
+decodes. The stream itself is never shifted: it keeps the full picture, every receiver keeps its
+own depth slider, and a receiver on a 2D screen simply shows the left eye.
+
+- **On the wire.** A side-by-side sender's `hello` carries `conv: true`. It then sends
+  `{ type: 'conv', d, c }` on the call's data channel: `d` is the measured disparity as a
+  **fraction of its per-eye width** (positive = in front of the plane; `null` = nothing measured
+  yet), so it stays right when WebRTC changes the resolution it sends; `c` is the match confidence
+  (0–1). At most 5 a second when the person moves, one every 400 ms while they hold still, and the
+  latest one right after `hello` to a participant who joins later. Measured on the sender's own
+  camera frames whatever its self view does, including `selfView: false`; nothing is sent while
+  the camera is off, from a mono camera, or with `sendConvergence: false`. A receiver accepts at
+  most 10 a second and drops anything outside ±0.5.
+- **Fresh for 1.2 s.** A receiver uses the sender's value while the last `conv` is under 1.2 s old.
+  After that it measures the received frames itself, holding the last value until it locks.
+- **Older senders.** A `hello` without `conv` (an SDK before 1.48, or another client) means the
+  receiver measures the decoded frames itself, exactly as before. An older receiver ignores `conv`
+  and does the same. The wire version stays 1: nothing else changed.
+- **The depth cursor** (`cursor: 'depth'`) still copies the received frames while it hovers a
+  tile: it measures the depth under the pointer, not the face.
+
+`diagnostics().peers[i].autoConverge.source` says which one a tile is using: `'sender'`, `'local'`
+or `null` (off, or nothing measured yet); `senderFrac` is the last value received.
+
 ### The handle
 
 ```ts
-import type { CallFormat, CallPeer, CallEvents } from '@displayxr/inline3d/call';
+import type { CallFormat, CallPeer, CallEvents, CallContent, ContentDescriptor } from '@displayxr/inline3d/call';
 import type { StereoCamera } from '@displayxr/inline3d/camera';
 
 interface CallHandle {
@@ -171,7 +206,7 @@ interface CallHandle {
   readonly localFormat: CallFormat | null;    // what YOU send: 'sbs' | 'mono'
   readonly muted: boolean;  readonly cameraOff: boolean;
   readonly depth: number;  readonly speaker: string | null;
-  readonly peers: ReadonlyArray<CallPeer>;    // id, format, display, state, muted, cameraOff, speaking
+  readonly peers: ReadonlyArray<CallPeer>;    // id, format, display, state, muted, cameraOff, speaking, name, content
   readonly mono3D: { on: boolean; state: string; reason: string | null; provider: string | null; lifted: number; max: number };
   join(): Promise<void>;  leave(): void;
   inviteLink(): string | null;                // …#room=<id>; null before a room exists
@@ -180,7 +215,16 @@ interface CallHandle {
   retryCamera(): Promise<{ format: CallFormat; width: number; height: number; label: string }>;
   setDepth(v: number): number;                // the ONE depth control, [-1, 1], + = push back
   setMono3D(on?: boolean): boolean;
-  tile(peerId: string): HTMLElement | null;   // for layout: 'none'
+  tile(peerId: string, kind?: 'camera' | 'content'): HTMLElement | null;   // for layout: 'none'; 'self' = your self view; 'content' = their shared app
+  shareContent(src: MediaStream | MediaStreamTrack, opts?: ContentDescriptor): Promise<CallContent>;   // 3D app share
+  stopContent(opts?: { stopTrack?: boolean }): Promise<boolean>;
+  readonly content: CallContent | null;       // what you share, or null
+  readonly name: string | null;  setName(name: string | null): string | null;
+  send(peerId: string, data: unknown): boolean;   broadcast(data: unknown): boolean;   // app messages
+  readonly signal: 'connected' | 'reconnecting' | 'closed' | null;
+  setSelfView(on?: boolean): boolean;
+  setMic(deviceId: string | null): Promise<boolean>;  setAudioOutput(sinkId: string): Promise<boolean>;
+  readonly localStream: MediaStream | null;   // what you send, read-only
   on<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): () => void;
   off<K extends keyof CallEvents>(type: K, cb: (e: CallEvents[K]) => void): void;
   diagnostics(): Record<string, unknown>;     // explicitly UNSTABLE: the wall, the transport, per-peer hello / route / convergence / lift / quality, the self view's weave state
@@ -214,11 +258,17 @@ self view that looks wrong on the panel can be read off directly
 | `peer` | `{ id }` | A participant appeared |
 | `peerleft` | `{ id, reason }` | A participant is gone |
 | `state` | `{ id, state }` | A participant's connection changed: `new` `connecting` `connected` `reconnecting` `unreachable` `left` |
-| `display` | `{ id, display }` | How this side shows a participant changed: `'3D'` · `'2D→3D'` · `'2D'` (a hello arrived, lift went live, the wall came back). Route detail is in `diagnostics()` |
+| `display` | `{ id, display, kind }` | How this side shows a participant changed: `'3D'` · `'2D→3D'` · `'2D'` (a hello arrived, lift went live, the wall came back). Route detail is in `diagnostics()` |
 | `speaker` | `{ id \| null }` | The active speaker changed |
-| `quality` | `{ id, in, out }` | Per peer every 2 s: resolution, fps, codec, kbps. With `id: null` and `lift`: the web lift provider is degrading the page's frame rate, or has recovered. Shape stable, values informative |
+| `quality` | `{ id, in, out, path, rttMs }` | Per peer every 2 s: resolution, fps, codec, kbps; `path` = the selected ICE pair's route (`'host'` · `'srflx'` · `'prflx'` · `'relay'` = through TURN; null before one is selected), `rttMs` its round-trip time. With `id: null` and `lift`: the web lift provider is degrading the page's frame rate, or has recovered. Shape stable, values informative |
 | `error` | `{ code, message, error }` | Something a feature depends on failed — see [Troubleshooting](#troubleshooting). Never fatal to the widget: a camera error joins audio-only, an unreachable peer keeps retrying. Codes are typed (`CallErrorCode`) |
-| `warning` | `{ code, message }` | Degraded, not broken. Today: `lift-not-bundled` |
+| `warning` | `{ code, message }` | Degraded, not broken. Today: `lift-not-bundled`, `turn-shed`, `content-unsupported` (you share, and a participant's SDK predates content: they see your camera only) |
+| `name` | `{ id, name }` | A participant's display name arrived or changed (`null` = cleared) |
+| `message` | `{ from, data }` | An app message from a participant (`send` / `broadcast`). Only app messages surface; the call's own wire messages never do |
+| `signal` | `{ state, code? }` | The signalling connection: `connected` (join, reconnect) · `reconnecting` (media keeps flowing) · `closed` (`code` says why, e.g. `expired`) |
+| `weave` | `{ id, state, reason?, ms, kind }` | A tile's weave settled: its first join, or its re-join after a resize. `id` is a participant's or `'self'`; `kind` `'camera'` or `'content'` (their shared app); `state` `'woven'` or `'flat'` (the wall will not weave it — `reason`) |
+| `speaking` | `{ id, on, kind }` | A participant (or `'self'`) started / stopped speaking (`kind` is always `'camera'`) |
+| `content` | `{ id, on, appName, reason? }` | A participant (or `'self'`) started / stopped [sharing a 3D app](#sharing-a-3d-app). Your own stop says why: `'stopped'`, `'ended'` (the app exited), `'left'` |
 
 ---
 
@@ -261,9 +311,138 @@ call.on('peer', ({ id }) => call.tile(id).style.gridArea = nextArea());
 ```
 
 Chrome you draw yourself has to follow the same rules as the module's. In practice: keep controls
-**below or beside** the tiles, not over them; if something must sit on a tile, make it small (a
-pill, never a plate the size of the tile); no `backdrop-filter` anywhere over the weave; hide
-with `display: none`, never `opacity: 0`.
+**below or beside** the tiles where you can; if something must sit on a tile, make it a partial
+region (a pill, a bar — never a plate the size of the tile); hide with `display: none`, never
+`opacity: 0`. Frosted chrome (`backdrop-filter`) **over** a tile works on DisplayXR Browser
+0.1.16+: the compositor draws the tile mono inside the frosted rect (displayxr-browser#120;
+`samples/composition`'s sticky header is the validated case). Never frost a whole tile while it
+is visible, and never put an effect on a tile or its ancestors
+([rules 7 and 10](woven-canvas-rules.md#10-backdrop-filter-over-the-weave-only-on-displayxr-browser-0116-never-over-a-whole-tile)).
+On older browsers use a translucent tint instead.
+
+### Hooks for an app that owns its layout
+
+A chat app that lays the call out itself (`ui: false`, `layout: 'none'`) gets everything it needs
+from the handle and the events; the tiles stay module-owned.
+
+| Need | Hook |
+|---|---|
+| Who is who | `name` option / `setName()`; `CallPeer.name`; the `name` event |
+| Chat, reactions, app state | `send(peerId, data)` / `broadcast(data)` → the other side's `message` event. JSON, ≤ 16 KiB serialised, ≤ 20 a second per participant (beyond that: `false`, nothing sent). Participants on an SDK before 1.48 drop them silently |
+| "Reconnecting…" banner | the `signal` event, `call.signal` |
+| A tile's own cover / spinner | the `weave` event (`'woven'`, or `'flat'` + `reason`), per participant and `'self'` |
+| Moving / resizing tiles | `tileCover: 'auto'` (the default with `layout: 'none'`) covers a tile across the change until it re-joins — the core's `rectCover`; no cover of your own |
+| Tiles of different shapes | `theme: { tileAspect: 'fill' }`: no aspect is imposed; each tile's crop follows its own box |
+| Placing the self view | `call.tile('self')` (`data-dxr-peer="self"`); with `layout: 'none'` the footer and self slot are `display: contents`, so it is laid out by your CSS on the host like the others |
+| Hiding the self view | `setSelfView(false)` removes its layer (never a hidden live tile); `true` brings it back |
+| Speaking rings | the `speaking` event (`'self'` too) |
+| A shared app | `shareContent()` / `stopContent()`; the `content` event; `call.tile(id, 'content')` (`data-dxr-kind="content"`) — see [Sharing a 3D app](#sharing-a-3d-app) |
+| Device menus | `setCamera(deviceId)`, `setMic(deviceId)`, `setAudioOutput(sinkId)` (also for tiles that join later); `call.localStream` is what you send |
+| A network badge | `quality.path` (`'relay'` = through TURN) and `quality.rttMs` |
+
+A hidden tile (`display: none`, or a 0×0 box) costs nothing: it is not painted or measured.
+
+```js
+import { mountCall } from '@displayxr/inline3d/call/full';
+
+const call = await mountCall(document.getElementById('call'), { ui: false, layout: 'none', name: 'Ada', theme: { tileAspect: 'fill' } });
+call.on('name', ({ id, name }) => (call.tile(id).dataset.label = name ?? ''));
+call.on('message', ({ from, data }) => chat.append(from, data));
+sendBtn.onclick = () => call.broadcast({ text: input.value });
+call.on('weave', ({ id, state }) => call.tile(id)?.classList.toggle('flat', state === 'flat'));
+call.on('signal', ({ state }) => (banner.hidden = state === 'connected'));
+selfToggle.onclick = () => call.setSelfView();
+```
+
+---
+
+## Sharing a 3D app
+
+**Preview.** In the DisplayXR Browser a participant can share a running DisplayXR app — a model
+viewer, a game, a CAD view — and everyone else sees it **in 3D on their own display**: what is sent
+is the app's two views before weaving (side by side), which each receiver weaves for its own panel
+and its own eyes. It is a **second video track** next to the camera, so people stay on their own
+tiles while the app is shown big.
+
+```js
+import { mountCall, listShareableApps, watchShareableApps, openAppShare } from '@displayxr/inline3d/call';
+
+const call = await mountCall(document.getElementById('call'), { ui: 'tiles', layout: 'none' });
+
+// 1. Which apps can be shared? (needs camera permission first — the browser lists none before.)
+const stopWatching = watchShareableApps((apps) => renderMenu(apps)); // [{ deviceId, label, appName }]
+
+// 2. Share one. The runtime asks the user on THIS machine ("Share Model Viewer with …?") now.
+async function share(deviceId) {
+  const app = await openAppShare(deviceId);            // rejects with code 'share-denied' on Deny
+  await call.shareContent(app.stream, app.descriptor);
+  app.track.addEventListener('ended', () => toast('the app closed'));
+}
+
+// 3. Stop (and end the runtime's share).
+stopBtn.onclick = () => call.stopContent({ stopTrack: true });
+
+// Everyone's side: a content tile appears and goes.
+call.on('content', ({ id, on, appName }) => {
+  const el = call.tile(id, 'content');                 // data-dxr-peer="<id>" data-dxr-kind="content"
+  if (on && el) el.style.gridArea = 'main';
+});
+```
+
+A browser tab shares the same way: `const tab = await openTabShare();` opens the browser's tab
+picker (its consent), then `call.shareContent(tab.stream, tab.descriptor)`. `tab.stereo` says
+whether it came back side-by-side; a window or a screen comes back flat.
+
+- **Discovery.** The DisplayXR Browser lists each shareable app as a camera-like `videoinput`
+  labelled `DisplayXR: <app> (3D)` (device id `dxr-app:…`, runtime ADR-061). `listShareableApps()`
+  / `watchShareableApps(cb)` filter them out of `enumerateDevices()`; `isAppShareDevice(device)`
+  is the test (label, id prefix, or the track's `displayxrStereo.source === 'app'`). They are
+  listed only once the page holds **camera** permission, so join the call (or open the camera)
+  first. Every other browser lists none. No camera probe ever opens one: `camera: 'auto'` can't
+  send your app as your face.
+- **Browsers without the app-share device patch** (DisplayXR Browser 1.9.x) list an app through
+  their 3D-camera device instead, as `3D Camera (DisplayXR) - <app>` — and once the runtime offers
+  more than one source they give the **real** camera the same shape (`3D Camera (DisplayXR) -
+  Built-in camera`), so the label cannot tell them apart. With no `DisplayXR: <app> (3D)` device
+  listed, `listShareableApps()` returns those entries as candidates (`legacy: true`; a real camera
+  can be among them), and `openAppShare()` checks the opened track: an app advertises
+  `baselineMm: 0` and `horizontalFovDeg: 0` in `displayxrStereo`, a camera never has baseline 0, so
+  a camera is closed again with `code: 'not-app-share'`. The camera probe does the same check on
+  every device it opens: such an app is skipped as `reason: 'app-share'`, the suffixed camera is
+  used as usual.
+- **Consent is the runtime's.** `openAppShare()` opens the device, and that is when the runtime
+  prompts on the sender's machine, every time. A Deny rejects with `code: 'share-denied'`; nothing
+  is sent. The runtime shows its own "Sharing <app>" indicator while the share is open.
+- **`shareContent(src, opts)`** takes the stream (or its track) and, optionally, a descriptor —
+  `openAppShare()`'s `descriptor` fits as is. Any side-by-side track works too (a stereo video, a
+  canvas capture): pass `{ format: 'sbs', convergence: { known: true, frac } }` when you know its
+  zero-parallax plane. It replaces a previous share; `handle.content` says what is shared.
+- **Display-referred convergence.** A camera pair is converged on the face (measured). An app's
+  views are not a camera: the runtime renders them with the display plane at zero disparity, so
+  the content message carries that plane's disparity as a fraction of the eye width
+  (`convergence: { known: true, frac }`, 0 for every app today) and receivers apply it **directly**
+  — nothing is measured, and the depth slider still adds to it. Content with an unknown
+  convergence is shown as sent.
+- **Stopping.** `stopContent()` empties the content track and tells everyone (`content` with
+  `on: false`); `stopContent({ stopTrack: true })` also stops the track, which ends the runtime's
+  share. The track is yours: the call leaves it running otherwise. When the app exits the track
+  ends and the share stops by itself (`content` with `reason: 'ended'`). Leaving the call stops it
+  too.
+- **Layout.** With the module's layout, the content tile goes first and spans the row; the people
+  form a strip under it. With `layout: 'none'` it is yours: `tile(id, 'content')` (or
+  `[data-dxr-kind="content"]`) — content main, people in a strip beside or under it, is the layout
+  that reads. Like every tile it is a woven canvas: style it in place, never move it. The sharer
+  does not see their own content tile unless `selfContentView: true` (they have the app itself).
+- **Who can see it.** The content track exists only between participants whose SDKs both support
+  it (`hello.content`, this release on). An older participant keeps seeing your camera only, and
+  you get one `warning { code: 'content-unsupported' }` for them. On a 2D screen a receiver sees
+  the left view, flat. Bandwidth: the content track gets the side-by-side budget and holds its
+  resolution; your camera drops to 60% of its budget while you share.
+
+On the wire: a `content` message on the data channel (`{ type: 'content', on, format, width,
+height, convergence: { known, frac }, appName }`, re-sent to anyone who joins later) and a second
+video transceiver, added by the pair's offerer with a same-generation re-offer once both hellos say
+`content: true`. Sharing itself is a `replaceTrack` on that sender — no renegotiation.
 
 ---
 
@@ -326,8 +505,9 @@ you localise it. Keys and defaults: lobby — `lobbyStartTitle` ("Start a 3D cal
 **What theming cannot reach, by design.** A woven tile and every ancestor of it must be visually
 bare: no `filter`, `opacity < 1`, `border-radius`, `box-shadow`, `mask`, `backdrop-filter`
 ([rule 7](woven-canvas-rules.md#7-no-css-effects-on-a-woven-canvas-or-on-any-of-its-ancestors)).
-The chrome's own translucent surfaces use a near-solid tint instead of a blur for the same reason
-([rule 10](woven-canvas-rules.md#10-no-backdrop-filter-on-anything-drawn-over-the-weave)). The
+The chrome's own translucent surfaces use a near-solid tint instead of a blur, so one build works
+on browsers before DisplayXR Browser 0.1.16 too
+([rule 10](woven-canvas-rules.md#10-backdrop-filter-over-the-weave-only-on-displayxr-browser-0116-never-over-a-whole-tile)). The
 variables and parts above only ever style chrome (`--dxr-radius` is never applied to a tile), so
 a theme cannot break a tile — that constraint is enforced by the module, not documented at you.
 
@@ -393,7 +573,9 @@ origin in charge of the product.
 
 - `call.inviteLink()` — the link for the current room (`null` before one exists).
 - `room: 'auto'` (default) picks up `#room=` from the page's own URL, so a recipient who opens the
-  link lands in the room; `updateUrl` writes it on join so a reload rejoins.
+  link lands in the room; `updateUrl` writes it on join so a reload rejoins. It is read when the
+  call is mounted: changing only the `#room=` fragment of a page with a live call does not re-join;
+  reload or navigate with a changed query.
 - `invite.base` sets the link's base when the page that mounts the widget is not the page a
   recipient should open (a modal, a route with private query parameters); `invite.updateUrl`
   controls the `#room=` write-back.
@@ -510,6 +692,7 @@ Each row is what the widget emits (`error` / `warning` events, `handle.camera`,
 |---|---|---|
 | A tile says "Can't reach this participant" | `error` `unreachable` (`error.peer` = the tile) | That pair has had no connection for ~10 s: one side is on a network that needs a relay (TURN). Retries continue in the background and the plate clears on its own if it connects. Fix: TURN on your signalling server, or your own `iceServers`; on the hosted server, check its health endpoint's `turn` |
 | "Camera busy" plate on your self view; `handle.camera === 'busy'` | `error` `camera-busy` | Every camera is held by another process. **On 3D laptops that is usually the eye tracker**, which owns the camera while tracking; the call joins audio-only. Fix: the "Retry camera" button / `call.retryCamera()` once it is free, or `camera: <deviceId>` for a different device. The DisplayXR Browser's built-in "3D Camera" device reads the pair *without* taking it from tracking, so prefer it where present (`camera: 'auto'` does) |
+| The call sends a hand tracker's (or another sensor's) IR picture as its camera | — (`diagnostics().local.skipped` lists left-out devices as `excluded`) | Before 1.48 the last-resort probe opened any video input, and a hand-tracking camera can be wide enough to look like a pair (seen on Windows). Fixed: sensor labels are never probed. A sensor with an unusual label: `cameraExclude: ['its label']` |
 | No camera prompt, or denied | `error` `permission-denied` / `no-camera` | `permission-denied`: the prompt was refused, a policy forbids it, or the context is insecure (`http://` on a LAN IP). `no-camera`: no device. Fix: serve over `https://` or `localhost`; reset the site's camera permission in the browser's site settings (the lock icon in the address bar) and reload |
 | Cannot reach the signalling server | `error` `signaling-unreachable` | The URL is wrong, the server is down, or a proxy blocks WebSockets. Check `signaling`; for self-hosted, that `wss://` (not `ws://`) is used from an `https://` page |
 | Tiles went flat mid-call in the DisplayXR Browser, then came back | `error` `session-ended` | The inline-3D session ended without the page closing it (a runtime service restart). The widget re-opens it and re-weaves the tiles by itself; media is not interrupted. Nothing to do unless it does not come back, in which case reload |

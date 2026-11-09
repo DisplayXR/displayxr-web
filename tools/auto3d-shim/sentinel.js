@@ -43,6 +43,22 @@
 //                   lazily (§3.3), so a WebGPU page with no engine gets no sentinel timer. A canvas
 //                   trap is removed once an app is found, on a '2d' context, or 10 s after load. The
 //                   core loads only when an app is actually found.
+//       Babylon.js  the ThinEngine constructor's `this._gl = canvas.getContext('webgl2', …)` (WebGPUEngine:
+//                   `this._context = canvas.getContext('webgpu')` in initAsync): a getContext that LOOKS LIKE
+//                   Babylon's arms a one-shot setter for `_gl` (`_context`) on Object.prototype for the rest of
+//                   that task (removed at the next microtask checkpoint: two engines made in one task are both
+//                   seen). Looks like Babylon's: WebGL, the context attributes are the engine's own options
+//                   object, to which AbstractEngine's constructor has added `lockstepMaxSteps` and `timeStep`
+//                   (7.x - 9.x); WebGPU, the call comes from WebGPUEngine's `_initializeContextAndSwapChain`
+//                   (the stack, read only on a webgpu getContext; the method name survives minification). Any
+//                   other getContext arms nothing, so on a page without Babylon `'_gl' in anyObject` /
+//                   `'_context' in anyObject` never changes (David, review of #252). The
+//                   engine's assignment lands on it, the setter re-creates the property as an ordinary own
+//                   property and, when its receiver is a Babylon engine (runRenderLoop, scenes, …), hands
+//                   it over: no global needed (ESM bundles), the core loads INSIDE the constructor, before
+//                   the page has a scene. A UMD page (the CDN build) is also found through the globals
+//                   search below (`BABYLON.EngineStore.Instances`). Not seen: an engine built on a WebGL
+//                   context the page created itself in an EARLIER task (`new Engine(gl)`), with no global.
 //     Not seen (PlayCanvas): a canvas created by script with no global AND handed to
 //     `new Application()` in the SAME task that inserted it (or before inserting it) — the
 //     observer's callback is a microtask, so the id is read before the trap exists, and before the
@@ -69,11 +85,13 @@
 //   1. `window.__THREE_DEVTOOLS__` — a configurable, non-enumerable accessor holding an EventTarget
 //      (only when cfg.engines.three !== false);
 //   2. `HTMLCanvasElement.prototype.getContext` — replaced by a wrapper (the only prototype change;
-//      only when cfg.engines.playcanvas !== false);
+//      only when cfg.engines.playcanvas or cfg.engines.babylon is not false);
 //   3. `navigator.xr.requestSession` — replaced by a wrapper (own property of the XRSystem);
 //   4. an own, non-enumerable `id` accessor on armed <canvas> elements (none on a page without
 //      canvases), plus, for the rest of a task in which an armed canvas's id was read, a one-shot
-//      non-enumerable setter for that key on Object.prototype;
+//      non-enumerable setter for that key on Object.prototype; and, for the rest of a task in which a
+//      Babylon engine created its WebGL (WebGPU) context, a one-shot non-enumerable `_gl` (`_context`)
+//      setter on Object.prototype (only when cfg.engines.babylon !== false; never on a page without Babylon);
 //   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange' and
 //   the one MutationObserver on the document (not page-visible), no other window key, no prototype
 //   descriptor anywhere else.
@@ -95,6 +113,8 @@ function dxrSentinel(cfg, cap) {
   const sTimeout = setTimeout, cTimeout = clearTimeout;
   const MO = typeof MutationObserver === 'function' ? MutationObserver : null;
   const perfNow = performance.now.bind(performance);
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const Err = Error;
   const info = (...a) => console.info(TAG, ...a);
 
   // ------------------------------------------------------------ intrinsics (R4)
@@ -131,6 +151,7 @@ function dxrSentinel(cfg, cap) {
 
   // ------------------------------------------------------------ state
   const en = cfg.engines || {};
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
@@ -305,7 +326,9 @@ function dxrSentinel(cfg, cap) {
   // starts only its timer-free looks (timed = false: the microtask, DOMContentLoaded, load).
   let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
   function lookGlobals() {
-    if (done || pcFound || retired) return;
+    if (done || retired) return;
+    if (wantBJS) lookBabylon();
+    if (pcFound || !wantPC) return;
     let pc = null;
     try { pc = window.pc; } catch (e) { /* ignore */ }
     if (pc && typeof pc === 'object') {
@@ -329,15 +352,18 @@ function dxrSentinel(cfg, cap) {
   }
   function poll() {
     pollT = 0;
-    if (done || pcFound || retired) return;
+    if (done || pcFound || bjsFound || retired) return;
     lookGlobals();
-    if (done || pcFound) return;
+    if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
     if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
     // Nothing found, and nothing left that could find it: say why, once.
-    info(`a WebGL canvas (${descCanvas(glCanvas)}) but no supported engine found — left 2D.`,
+    let tag = null;
+    try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
+    info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
       'A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its',
-      'canvas id when the <canvas> is in the HTML before deferred / module scripts run. A canvas created by script with no',
+      'canvas id when the <canvas> is in the HTML before deferred / module scripts run; a Babylon.js engine through its',
+      'constructor (in the task that created its context) or BABYLON.EngineStore. A canvas created by script with no',
       'global is not visible (an engine-side announce hook would fix it).');
   }
   function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
@@ -380,39 +406,124 @@ function dxrSentinel(cfg, cap) {
   };
 
   const disarm = () => {
-    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k);
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
     document.removeEventListener('DOMContentLoaded', lookGlobals);
     window.removeEventListener('load', lookGlobals);
   };
 
-  if (en.playcanvas !== false) {
+  // ------------------------------------------------------------ Babylon.js
+  const isBjsEngine = (e) =>
+    !!e && typeof e === 'object' && typeof e.runRenderLoop === 'function' && Array.isArray(e.scenes) &&
+    typeof e.getRenderWidth === 'function' && !!e.onNewSceneAddedObservable;
+  const bjsSeen = new WeakSet();
+  let bjsFound = false;
+  function foundBabylon(engine, how, ns, canvas) {
+    if (retired || bjsSeen.has(engine)) return;
+    bjsSeen.add(engine);
+    bjsFound = true;
+    if (canvas) settle(canvas); // this canvas is accounted for: the PlayCanvas search stops unless another has a context
+    else stopPoll();
+    let B = ns;
+    if (!B) { try { B = window.BABYLON; } catch (e) { B = null; } }
+    const c = signal('Babylon.js');
+    if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
+  }
+  // The constructor trap: a one-shot `_gl` (WebGL) / `_context` (WebGPU) setter on Object.prototype for
+  // the rest of the task that created the context. Any other object assigning that key meanwhile gets
+  // an ordinary own property, as it would have without us.
+  // Is this getContext Babylon's? WebGL: the attributes are the engine's own options object (AbstractEngine
+  // has added lockstepMaxSteps and timeStep to it before ThinEngine asks for the context). WebGPU: called
+  // from WebGPUEngine._initializeContextAndSwapChain (the only signal before it assigns _context). A stack
+  // is taken only on a webgpu getContext, which Babylon makes once per engine and most pages once per
+  // canvas. It is not cached per canvas, since a page may make a new engine on the same canvas.
+  // A page's small Error.stackTraceLimit (0 turns stacks off) would hide that frame and leave the page 2D:
+  // the limit is raised for this one Error (the call sits 4 frames down) and put back as the page had it
+  // (v0.7.2). A limit the page made read-only is left alone.
+  const STACK_FRAMES = 16;
+  function bjsLikely(kind, attrs) {
+    if (kind === 1) {
+      try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
+    }
+    let s = '', had = false, lim, raised = false;
+    try {
+      had = apply(hasOwn, Err, ['stackTraceLimit']); lim = Err.stackTraceLimit;
+      if (!(lim >= STACK_FRAMES)) { Err.stackTraceLimit = STACK_FRAMES; raised = Err.stackTraceLimit === STACK_FRAMES; }
+    } catch (e) { /* read-only: the page's limit */ }
+    try { s = String(new Err().stack || ''); } catch (e) { s = ''; }
+    if (raised) { try { if (had) Err.stackTraceLimit = lim; else delete Err.stackTraceLimit; } catch (e) { /* ignore */ } }
+    return s.indexOf('_initializeContextAndSwapChain') >= 0;
+  }
+  const bjsKeys = new Set();
+  function removeBjsKey(key) {
+    if (!bjsKeys.delete(key)) return;
+    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
+  }
+  function trapBjs(kind, canvas) {
+    const key = kind === 2 ? '_context' : '_gl';
+    if (bjsKeys.has(key) || key in Object.prototype) return;
+    bjsKeys.add(key);
+    try {
+      defProp(Object.prototype, key, {
+        configurable: true, enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          try { defProp(this, key, { value: v, writable: true, enumerable: true, configurable: true }); } catch (e) { return; }
+          if (!isBjsEngine(this)) return;
+          try { foundBabylon(this, kind === 2 ? 'WebGPUEngine (_context trap)' : 'Engine constructor (_gl trap)', null, canvas); } catch (e) { /* never break the page's engine */ }
+        },
+      });
+    } catch (e) { bjsKeys.delete(key); return; }
+    micro(() => removeBjsKey(key));
+  }
+  // UMD pages (the CDN build): every engine the page has made, from the globals search.
+  function lookBabylon() {
+    let B = null;
+    try { B = window.BABYLON; } catch (e) { return; }
+    if (!B || typeof B !== 'object') return;
+    let list = null;
+    try { list = (B.EngineStore && B.EngineStore.Instances) || (B.Engine && B.Engine.Instances) || null; } catch (e) { list = null; }
+    if (!list || typeof list.length !== 'number') return;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!isBjsEngine(e) || bjsSeen.has(e)) continue;
+      let cv = null;
+      try { cv = typeof e.getRenderingCanvas === 'function' ? e.getRenderingCanvas() : null; } catch (x) { cv = null; }
+      foundBabylon(e, 'BABYLON.EngineStore.Instances', B, cv);
+    }
+  }
+
+  if (wantPC || wantBJS) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
-    const onContext = (c, type) => {
-      if (done || pcFound) return;
+    const onContext = (c, type, attrs) => {
+      if (done) return;
+      const kind = WEBGL[type];
+      if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
+      if (pcFound) return;
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
-      const kind = WEBGL[type];
       if (!kind || seenGL.has(c)) return;
       seenGL.add(c);
       if (kind === 1 && !glCanvas) glCanvas = c;
       if (c !== settledOn) glCanvases.push(c);
       signal(null); // the first engine / graphics-context signal: the page's opt-out
       if (done) return;
-      arm(c);
-      if (kind === 2) { startPoll(false); return; } // WebGPU: the trap finds the app; no timer (above)
+      if (wantPC) arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the traps find the app / engine; no timer (above)
       scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
       startPoll();
     };
     try {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
-        try { onContext(this, type); } catch (e) { /* never break the page's getContext */ }
+        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
-    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps may not be found', e); }
+    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
+  }
 
+  if (wantPC) {
     // Every <canvas> already in the DOM, before deferred / module scripts run (R1).
     const armDom = () => {
       if (done || pcFound) return;

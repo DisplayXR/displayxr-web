@@ -26,6 +26,14 @@ import {
   mirrorSwapOps,
   mirrorSwapPixels,
   maxBitrateKbps,
+  makeConv,
+  normalizeConv,
+  WIRE_VERSION,
+  CONV_MAX_FRAC,
+  CONV_MAX_HZ,
+  CONV_RECV_MAX_HZ,
+  CONV_HEARTBEAT_MS,
+  CONV_FRESH_MS,
 } from '../js/call/wire.js';
 import { preferVideoCodecs, sortCodecCapabilities } from '../js/call/sdp.js';
 import { MeshTransport, clampMaxPeers } from '../js/call/transport.js';
@@ -156,6 +164,91 @@ test('makeHello round-trips through normalizeHello', () => {
   assert.ok(!('baselineMm' in makeHello({ format: 'mono' })));
 });
 
+test('hello.conv: advertised only by a side-by-side sender; normalizeHello keeps it; an old hello reads false', () => {
+  assert.equal(makeHello({ format: 'sbs', width: 1280, height: 480, conv: true }).conv, true);
+  assert.ok(!('conv' in makeHello({ format: 'sbs', width: 1280, height: 480 })), 'not asked: not advertised');
+  assert.ok(!('conv' in makeHello({ format: 'mono', conv: true })), 'a mono sender has no pair to measure');
+  assert.ok(!('conv' in makeHello({ format: 'weird', conv: true })));
+  const got = normalizeHello(JSON.parse(JSON.stringify(makeHello({ format: 'sbs', width: 1280, height: 480, conv: true }))));
+  assert.equal(got.conv, true);
+  // A 1.47 sender's hello (no field) and junk values read as "does not send conv".
+  assert.equal(normalizeHello({ type: 'hello', v: 1, format: 'sbs', width: 1280, height: 480, rectified: false, sdk: 'inline3d-call/1' }).conv, false);
+  assert.equal(normalizeHello({ type: 'hello', format: 'sbs', conv: 'yes' }).conv, false);
+  assert.equal(normalizeHello({ type: 'hello', format: 'sbs', conv: 1 }).conv, false);
+  assert.equal(WIRE_VERSION, 1, 'an additive message: no version bump');
+});
+
+test('conv: makeConv / normalizeConv — range, null hold, junk, never throws', () => {
+  assert.deepEqual(makeConv(0.12, 0.93), { type: 'conv', d: 0.12, c: 0.93 });
+  assert.deepEqual(makeConv(null), { type: 'conv', d: null });
+  assert.deepEqual(makeConv(NaN, 2), { type: 'conv', d: null, c: 1 });
+  assert.deepEqual(makeConv(0.9), { type: 'conv', d: CONV_MAX_FRAC }, 'clamped on the way out');
+  assert.deepEqual(normalizeConv(JSON.parse(JSON.stringify(makeConv(-0.05, 0.8)))), { type: 'conv', d: -0.05, c: 0.8 });
+  // d: null is a valid message (nothing measured yet; the receiver holds what it had).
+  assert.deepEqual(normalizeConv({ type: 'conv', d: null }), { type: 'conv', d: null });
+  // Range: |d| <= CONV_MAX_FRAC, or the whole message is dropped.
+  assert.deepEqual(normalizeConv({ type: 'conv', d: CONV_MAX_FRAC }), { type: 'conv', d: CONV_MAX_FRAC });
+  assert.equal(normalizeConv({ type: 'conv', d: CONV_MAX_FRAC + 0.01 }), null);
+  assert.equal(normalizeConv({ type: 'conv', d: -0.75 }), null);
+  // c is clamped to 0..1, or dropped when it is not a number.
+  assert.equal(normalizeConv({ type: 'conv', d: 0.1, c: 7 }).c, 1);
+  assert.equal(normalizeConv({ type: 'conv', d: 0.1, c: -2 }).c, 0);
+  assert.ok(!('c' in normalizeConv({ type: 'conv', d: 0.1, c: 'high' })));
+  assert.ok(!('c' in normalizeConv({ type: 'conv', d: 0.1, c: Infinity })));
+  // Junk from another browser: never a throw, never a value.
+  for (const junk of [null, undefined, 0, 'conv', [], {}, { type: 'hint', d: 0.1 }, { type: 'conv' }, { type: 'conv', d: '0.1' }, { type: 'conv', d: NaN }, { type: 'conv', d: Infinity }, { type: 'conv', d: {} }, { type: 'conv', d: [0.1] }]) {
+    assert.equal(normalizeConv(junk), null, JSON.stringify(junk));
+  }
+  assert.equal(normalizeConv(Object.create(null)), null);
+  // The rates the call uses.
+  assert.equal(CONV_MAX_HZ, 5);
+  assert.equal(CONV_RECV_MAX_HZ, 10);
+  assert.equal(CONV_HEARTBEAT_MS, 400);
+  assert.equal(CONV_FRESH_MS, 1200);
+});
+
+test('content: hello.content capability; makeContent / normalizeContent — range, sanitising, junk, never throws', async () => {
+  const { makeContent, normalizeContent } = await import('../js/call/wire.js');
+  // The capability: this SDK advertises it; an older hello (no field) and junk read false.
+  assert.equal(makeHello({ format: 'mono', content: true }).content, true);
+  assert.ok(!('content' in makeHello({ format: 'mono' })));
+  assert.equal(normalizeHello(JSON.parse(JSON.stringify(makeHello({ format: 'sbs', content: true })))).content, true);
+  assert.equal(normalizeHello({ type: 'hello', v: 1, format: 'sbs' }).content, false, 'an old hello');
+  assert.equal(normalizeHello({ type: 'hello', content: 'yes' }).content, false);
+  // A share round-trips.
+  const on = makeContent({ format: 'sbs', width: 2560, height: 720, convergence: { known: true, frac: 0 }, appName: 'Model Viewer' });
+  assert.deepEqual(on, { type: 'content', on: true, format: 'sbs', width: 2560, height: 720, convergence: { known: true, frac: 0 }, appName: 'Model Viewer' });
+  assert.deepEqual(normalizeContent(JSON.parse(JSON.stringify(on))), on);
+  assert.deepEqual(makeContent({ on: false }), { type: 'content', on: false });
+  const off = normalizeContent({ type: 'content', on: false, appName: 'x' });
+  assert.equal(off.on, false);
+  assert.equal(off.appName, null);
+  // Out on the wire: clamped frac, junk sizes as 0, unknown convergence, a sanitised name.
+  assert.deepEqual(makeContent({ convergence: { known: true, frac: 3 } }).convergence, { known: true, frac: CONV_MAX_FRAC });
+  assert.deepEqual(makeContent({ convergence: { known: true, frac: NaN } }).convergence, { known: true, frac: 0 });
+  assert.deepEqual(makeContent({}).convergence, { known: false, frac: null });
+  assert.equal(makeContent({ width: -4, height: 1e9 }).width, 0);
+  assert.equal(makeContent({}).format, 'sbs', 'content defaults to a pair');
+  assert.ok(!('appName' in makeContent({ appName: '  ' })));
+  // In: range checks.
+  const n = (m) => normalizeContent({ type: 'content', on: true, ...m });
+  assert.equal(n({ format: 'weird' }).format, 'mono', 'never assume a pair that was not declared');
+  assert.equal(n({ width: 0 }).width, null);
+  assert.equal(n({ width: 20000 }).width, null);
+  assert.equal(n({ height: 720 }).height, 720);
+  assert.deepEqual(n({ convergence: { known: true, frac: 0.6 } }).convergence, { known: false, frac: null }, 'beyond ±0.5: unknown');
+  assert.deepEqual(n({ convergence: { known: true, frac: '0' } }).convergence, { known: false, frac: null });
+  assert.deepEqual(n({ convergence: { known: 'yes', frac: 0 } }).convergence, { known: false, frac: null });
+  assert.deepEqual(n({ convergence: { known: true, frac: -0.02 } }).convergence, { known: true, frac: -0.02 });
+  assert.equal(n({ appName: 'A\u0000B\u202e' + 'x'.repeat(100) }).appName.length, 64, 'sanitised, ≤ 64 characters');
+  assert.ok(!/[\u0000\u202e]/.test(n({ appName: 'A\u0000B\u202eC' }).appName));
+  assert.equal(n({ appName: 7 }).appName, null);
+  assert.equal(normalizeContent({ type: 'content', on: 'true' }).on, false, 'on must be true');
+  const hostile = { type: 'content', on: true, get convergence() { throw new Error('no'); } };
+  assert.deepEqual(normalizeContent(hostile).convergence, { known: false, frac: null });
+  for (const junk of [null, undefined, 0, 'content', [], {}, { type: 'conv' }]) assert.equal(normalizeContent(junk), null, JSON.stringify(junk));
+});
+
 test('hint and state validation; hint rate gate is 5 Hz', () => {
   assert.deepEqual(normalizeHint({ type: 'hint', subjectZmm: 650 }), { type: 'hint', subjectZmm: 650 });
   assert.equal(normalizeHint({ type: 'hint', subjectZmm: 10 }), null);
@@ -164,6 +257,9 @@ test('hint and state validation; hint rate gate is 5 Hz', () => {
   const gate = rateGate(5);
   const passed = [0, 50, 150, 199, 200, 390, 400, 1000].filter((t) => gate(t));
   assert.deepEqual(passed, [0, 200, 400, 1000]);
+  // With slack (the sender's timer-paced conv gate): a tick a few ms early still passes.
+  const slack = rateGate(5, 20);
+  assert.deepEqual([0, 150, 185, 370, 545, 560].filter((t) => slack(t)), [0, 185, 370, 560]);
 });
 
 test('capture: aspect > 2.5 is a side-by-side pair (1280x480 is, 1280x720 is not); stereo label hint', () => {
@@ -328,6 +424,9 @@ test('invite links: room in the FRAGMENT only; query kept; old fragment dropped'
 test('normalizeCallOptions: defaults, a link as room, clamped maxPeers', () => {
   const o = normalizeCallOptions({});
   assert.equal(o.room, 'auto');
+  assert.equal(o.sendConvergence, true, 'a stereo sender measures and sends its convergence by default');
+  assert.equal(normalizeCallOptions({ sendConvergence: false }).sendConvergence, false);
+  assert.equal(normalizeCallOptions({ sendConvergence: 0 }).sendConvergence, false);
   assert.equal(o.maxPeers, 4);
   assert.equal(o.layout, 'grid');
   assert.equal(o.ui, true);

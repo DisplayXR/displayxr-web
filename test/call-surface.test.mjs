@@ -41,9 +41,9 @@ function captureWarn(fn) {
   }
 }
 
-test('the public surface: 9 public value exports + the 38 deprecated wrappers, and nothing else', () => {
+test('the public surface: 14 public value exports + the 38 deprecated wrappers, and nothing else', () => {
   const names = Object.keys(mod).sort();
-  const pub = ['CALL_EVENT_PREFIX', 'DXR_SIGNAL_DEFAULT', 'DxrCallElement', 'addCall', 'attrsToOpts', 'defineCallElement', 'dxrSignaling', 'mountCall', 'parseInviteLink'];
+  const pub = ['CALL_EVENT_PREFIX', 'DXR_SIGNAL_DEFAULT', 'DxrCallElement', 'addCall', 'attrsToOpts', 'defineCallElement', 'dxrSignaling', 'isAppShareDevice', 'listShareableApps', 'mountCall', 'openAppShare', 'openTabShare', 'parseInviteLink', 'watchShareableApps'];
   assert.deepEqual(names, [...pub, ...DEPRECATED_CALL_EXPORTS].sort());
   assert.equal(DEPRECATED_CALL_EXPORTS.length, 38);
   assert.equal(mod.peerjsCloud, undefined, 'Decision 12: gone outright');
@@ -132,11 +132,16 @@ test('handle: localFormat, cameraOff getter + setCameraOff, join() → void, til
     assert.equal(call.state, 'in-call');
     arriveMono();
     for (let i = 0; i < 200 && !events.display.length; i++) await sleep(5);
-    assert.deepEqual(events.display, [{ id: '~~~~~~~~~~~', display: '2D' }]);
+    assert.deepEqual(events.display, [{ id: '~~~~~~~~~~~', display: '2D', kind: 'camera' }]);
     assert.equal(events.format.length, 1, "the 1.29 'format' event still fires for a listener that asked for it");
     assert.equal(events.format[0].route, 'flat');
     const p = call.peers[0];
-    assert.deepEqual(Object.keys(p).sort(), ['cameraOff', 'display', 'format', 'id', 'muted', 'speaking', 'state'], 'CallPeer is the trimmed shape');
+    assert.deepEqual(Object.keys(p).sort(), ['cameraOff', 'content', 'display', 'format', 'id', 'muted', 'name', 'speaking', 'state'], 'CallPeer is the trimmed shape (+ name, 1.48; + content)');
+    assert.deepEqual(
+      Object.keys(call).sort(),
+      ['broadcast', 'camera', 'cameraOff', 'depth', 'diagnostics', 'id', 'inviteLink', 'join', 'leave', 'localFormat', 'localStream', 'mono3D', 'mute', 'muted', 'name', 'off', 'on', 'peers', 'retryCamera', 'room', 'send', 'setAudioOutput', 'setCamera', 'setCameraOff', 'setDepth', 'setMic', 'setMono3D', 'setName', 'setSelfView', 'signal', 'speaker', 'state', 'tile', 'shareContent', 'stopContent', 'content'].sort(),
+      'the handle: the C2 shape + the headless hooks'
+    );
     const tile = call.tile('~~~~~~~~~~~');
     assert.ok(tile);
     assert.equal(tile.getAttribute('data-dxr-peer'), '~~~~~~~~~~~');

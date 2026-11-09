@@ -121,6 +121,7 @@ test('attrsToOpts: the attribute → option table (unset attributes contribute n
       'no-audio': '',
       'no-self-view': '',
       'no-auto-converge': '',
+      'no-send-convergence': '',
       'tile-aspect': '4/3',
       'invite-base': 'https://x.example/call',
       'browser-url': 'https://dl.example',
@@ -141,6 +142,7 @@ test('attrsToOpts: the attribute → option table (unset attributes contribute n
   assert.equal(o.audio, false);
   assert.equal(o.selfView, false);
   assert.equal(o.autoConverge, false);
+  assert.equal(o.sendConvergence, false);
   assert.equal(o.theme.tileAspect, 4 / 3);
   assert.equal(o.invite.base, 'https://x.example/call');
   assert.equal(o.landing.browserUrl, 'https://dl.example');
@@ -195,7 +197,7 @@ test('every call event is re-dispatched as a bubbling CustomEvent dxr-call:<type
   await withMount(fakeMount(), async () => {
     const el = makeEl();
     const seen = [];
-    for (const t of ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning']) {
+    for (const t of ['joined', 'left', 'peer', 'peerleft', 'state', 'display', 'speaker', 'quality', 'error', 'warning', 'name', 'message', 'signal', 'weave', 'speaking', 'content']) {
       el.addEventListener(`dxr-call:${t}`, (e) => seen.push([e.type, e.detail, e.bubbles]));
     }
     const warned = [];

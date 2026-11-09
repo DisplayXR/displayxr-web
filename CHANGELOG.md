@@ -20,6 +20,272 @@ webcam viewer tracker. Advisory only: no pixel the SDK paints changes, and on a 
 without the capability nothing is sent. While a page is viewer-independent its `trackingState`
 keeps its last value. See `docs/authoring-inline-3d.md` § *Viewer-independent content*.
 
+## 1.51.1 — 2026-11-09
+
+### Fixed — `./call`: `listShareableApps()` no longer lists stereo cameras as apps
+
+With two runtime stereo cameras (for example two 3D screens) and no app running, a DisplayXR Browser
+1.9.3+ gives both cameras the multi-source `3D Camera (DisplayXR) - <name>` label, and the listing
+took them for an older browser's app candidates. The legacy candidates now come only from a
+DisplayXR Browser that reports a release before 1.9.3; any other browser, or an unknown version,
+lists only real app-share devices. `openAppShare()` already refused a camera, so nothing wrong was
+ever sent; the list was wrong.
+
+## 1.51.0 — 2026-11-08
+
+### Added — `./call`: `openTabShare()`, share a browser tab in 3D
+
+Opens the browser's tab picker and returns a track for `shareContent`. In a DisplayXR Browser with
+stereo tab capture (1.9.4+), a picked tab comes back as a true side-by-side track, so receivers need
+nothing new; a window, a screen or any other browser comes back flat. Needs
+`MediaStreamTrackProcessor` for the stereo path.
+
+### Fixed — `./splat` (`engine: 'playcanvas'`): no false "footprint fix SKIPPED" warning on PlayCanvas 2.23
+
+Preview tier. PlayCanvas 2.23 fixed the side-by-side splat footprint upstream, so the SDK now
+leaves that shader chunk untouched there instead of warning that splats will draw at half height.
+2.22.3 is still patched as before, and remains the only version validated on a panel.
+
+## 1.50.0 — 2026-11-04
+
+### Fixed — `./camera`, `./call`: half-width side-by-side webcams keep their aspect ratio
+
+A USB stereo webcam that sends 3840x2160 half-SBS came through as a 3840x1080 centre crop: each eye
+2x too tall, with half the vertical view. Such a camera (listed by USB id, since its shape matches
+a 4K webcam's) is now read in its native mode and sent as 2560x720 with square-pixel eyes. Needs
+`MediaStreamTrackProcessor`; without it the camera opens as before. `prefer: 'mono'` stays raw.
+
+### Added — `@displayxr/inline3d/hands`: tracked hands, and pinch controls for every viewer (`./hands`, `./viewer`, `./model`, `./splat`)
+
+Preview tier. The DisplayXR Browser 1.8.0+ (Windows, with a hand provider such as an Ultraleap
+tracker) exposes standard WebXR Hand Input on an inline-3D session: one `XRInputSource` per hand
+with a 25-joint `XRHand`, located in the same rig frame as the eye views. The new subpath reads it
+and turns it into controls:
+
+- `watchHands(wall, onFrame)` — the tracked hands every session frame (`poses`, `radii`,
+  `joint(name)`, `thumbTip`, `indexTip`, `palmLength`), the browser's per-frame gate
+  (`state.gate`: `'available'` or why hands are withheld) and the hand `inputsourceschange`.
+- `HandGestureController` / `PinchDetector` — the DisplayXR Model Viewer's gesture math, ported:
+  hand-relative throughout — the pinch thresholds (2.5 cm enter / 4 cm exit), the orbit gain
+  (10 rad/m) and the two-hand separation guard are all stated for a 9.5 cm palm and scale by the
+  hand's own palm length, so a hand that arrives scaled turns the subject by the same angle for
+  the same finger travel; one pinched hand orbits, two pinched hands zoom (separation ratio), roll
+  (twist) and orbit (midpoint drag); EMA-smoothed, anchored on every mode change.
+- `handControls(wall, target)` — drives anything with the viewer pose surface from those
+  gestures; and the option **`hands: true`** on `addModel` / `addSplat` (both engines, every
+  entry) wires it for you, exposed as `handle.hands`. Pointer and wheel keep working alongside.
+- `SceneViewer.nudgePose(delta)` and `PlayCanvasSplatViewer.nudgePose(delta)` — move the pose by
+  an eased delta, counting as input for the idle turntable (what the hands call; a page may too).
+- `OrbitPose.roll` on both viewers — degrees about the view axis, outside yaw and pitch (Euler
+  order `'ZXY'`; the PlayCanvas pivot quaternion gains the same Rz factor), bit-identical to
+  before at roll 0; `getPose()` now reports `roll`. (The first cut left the PlayCanvas viewer
+  without a roll axis, so the two-hand twist did nothing on the default engine — found on the
+  panel 2026-11-04.)
+
+Inert everywhere else: no hands, nothing moves, no errors. New sample `samples/hands/` (the raw
+surface), and `?hands` on `samples/model/` and `samples/splat/`. The porting guide's "no input
+sources" row is corrected (web#229). Tracks DisplayXR/displayxr-web#228.
+## 1.49.3 — 2026-11-04
+
+### Fixed — a camera view is not "woven" before the camera's first frame; `frameAgeMs` tells a stalled track (`.`, `./camera`, `./call`)
+
+Core and preview tier. A camera view (`addCameraView`, and the call's self view, which is one)
+registers its tile on the wall with an SBS buffer it fills from the camera. That buffer started
+as a blank default 300x150 canvas, and the wall counted any image source as a stereo frame, so
+`firstWoven` settled `woven: true` (`hold-elapsed`) on a tile that had never shown the camera.
+On an Android 3D tablet whose camera track was `live` but delivered no frames, the call reported
+the self view woven over a black tile.
+
+- **Core:** an `addImage` source that is a canvas or image with no pixels (0x0) is not a stereo
+  frame: `firstWoven` / `rewoven()` wait for one. Sources that report no size keep the old rule.
+- **`./camera`:** the woven buffer starts 0x0 until the first camera frame is painted into it.
+- **New: `view.frameAgeMs`** and `weaveState().frameAgeMs` (also `call.diagnostics().self`): ms
+  since the camera last delivered a new frame to the view, null before the first. A stalled track
+  keeps its last frame on screen; a growing age is how a page shows "no video".
+
+## 1.49.2 — 2026-11-04
+
+### Fixed — the camera probe waits for the DisplayXR 3D camera before opening a plain lens (`./camera`, `./call`)
+
+Preview tier. In a DisplayXR Browser the runtime lists its 3D camera lazily. On a phone it is
+missing from the list right after a runtime restart, or after the camera service restarted. With
+the 3D camera absent, `camera: 'auto'` read the list once more and then opened the plain front lens.
+On some phones that open crashes the camera HAL while head tracking streams. The HAL restart takes
+the 3D camera down again, so the call never got it back: the self view stayed 2D, or the call
+reported "Camera busy".
+
+- **The wait:** with camera labels visible and no stereo-named device listed, `'auto'` / `'stereo'`
+  now wait up to `stereoWaitMs` (new option, default **2500 ms in a DisplayXR Browser**, 0
+  elsewhere) before opening any plain lens. They re-read the list on every `devicechange` and every
+  500 ms, and open the 3D camera as soon as it appears. `'mono'`, an explicit `deviceId` and
+  `label:` never wait. The rule is in [`docs/camera.md`](docs/camera.md), "Waiting for the 3D camera".
+- **No shape probe of a second lens in a DisplayXR Browser:** once a plain lens is in hand, the
+  last-resort probe no longer opens the other plain lenses to test whether one is a side-by-side
+  pair. There, a stereo webcam (a USB SBS one included, through the runtime's UVC source) is the
+  runtime's named "3D Camera". The extra open is the one that can crash a phone's camera HAL. Other
+  browsers keep the shape probe, which is how a USB stereo webcam is found there.
+- **Pinned:** when the default camera opens but delivers no picture (0x0), a lens that opens by id
+  is kept as the fallback, never stopped and reported as busy. This has worked since 1.48.0; a test
+  now covers it.
+
+## 1.49.1 — 2026-11-03
+
+### Fixed — app share on browsers without the app-share device patch (`./call`, `./camera`)
+
+Preview tier. A DisplayXR Browser that predates the app-share device patch (1.9.x) lists a running
+app through its 3D-camera device, as `3D Camera (DisplayXR) - <app>` with no `source` in
+`displayxrStereo` — and once the runtime offers more than one source it suffixes the REAL camera the
+same way, so the label cannot tell an app from a camera. On such a browser `camera: 'auto'` could
+open the app and send it as your face, and `listShareableApps()` found nothing.
+
+- **Detection by the opened track**: an app source advertises `baselineMm: 0` and
+  `horizontalFovDeg: 0` (runtime ADR-061 decision 2); a real camera never has baseline 0.
+  `isAppShareDevice()` now accepts that hint as well as `source: 'app'`. The legacy label alone is
+  never enough.
+- **Camera probe**: every probe path checks the opened track; an app is closed again and reported
+  in `skipped` with `reason: 'app-share'`, and probing goes on. Suffixed real cameras open as before.
+- **Discovery**: with no `DisplayXR: <app> (3D)` device listed, `listShareableApps()` returns the
+  `3D Camera (DisplayXR) - <name>` entries as candidates (`ShareableApp.legacy: true`, `appName`
+  from the label). `openAppShare()` verifies the opened track and rejects a real camera with
+  `code: 'not-app-share'` (stopped again); the descriptor's `appName` falls back to the label's name.
+
+## 1.49.0 — 2026-11-03
+
+### Added — the content tile: share a running 3D app into a call (`./call`, `./camera`)
+
+Preview tier. In the DisplayXR Browser a participant can share a running DisplayXR app, and every
+other participant sees it in 3D on their own display (runtime ADR-061, "3D screen share"). What is
+sent is the app's two views before weaving, side by side, on a **second video track** next to the
+camera; each receiver weaves it for its own panel. See [`docs/call.md` § Sharing a 3D app](docs/call.md#sharing-a-3d-app).
+
+- **Discovery** (`./call`): `listShareableApps()`, `watchShareableApps(cb)`, `isAppShareDevice()`,
+  `openAppShare(deviceId)`. The browser lists each app as a `videoinput` labelled
+  `DisplayXR: <app> (3D)` (id `dxr-app:…`); detection takes the label, the id prefix or the track's
+  `displayxrStereo.source === 'app'`, so browsers that do not expose the hint fields yet work, and a
+  missing `zeroDisparityShiftFrac` reads as 0. `openAppShare` is when the runtime asks the user on
+  the sender's machine; a Deny rejects with `code: 'share-denied'`.
+- **Sharing**: `handle.shareContent(stream, descriptor)`, `handle.stopContent({ stopTrack })`,
+  `handle.content`; the `content` event (`{ id | 'self', on, appName }`); `CallPeer.content`;
+  `tile(id, 'content')` (`data-dxr-kind="content"`); `selfContentView` (`<dxr-call self-content-view>`)
+  for a woven preview of your own share.
+- **Display-referred convergence**: the content message carries the disparity of the sender's
+  display plane (`convergence: { known: true, frac }`, 0 for every app today); a receiver applies
+  it directly, never measures the frames, and its depth slider still adds.
+- **Wire**: `hello.content: true` (capability) and a `content` message, both additive (wire version
+  stays 1). The content transceiver is added only when both hellos say `content`, by the pair's
+  offerer with a same-generation re-offer, so an older participant never gets a second video
+  m-line (nor a second camera sender) — they keep seeing your camera, and you get
+  `warning { code: 'content-unsupported' }`. While content is on, the camera sends at 60% of its
+  bitrate; the content track gets the side-by-side budget and holds its resolution.
+- `weave`, `speaking` and `display` events now carry `kind: 'camera' | 'content'`.
+- **`./camera`: a running app is never a camera.** Its label says "3D", so `stereoLabelHint` would
+  have preferred it: no probe path of `openCamera` (and so `camera: 'auto'`) opens an app-share
+  device, `exclude: false` included, and `label:` searches skip them. They are in `skipped` with
+  `reason: 'app-share'` (`CameraSkip.reason`, new).
+
+### Fixed — the Ultraleap hand tracker is excluded by its bare brand name; the default camera is not opened blind (`./camera`, `./call`)
+
+1.48.0's built-in exclusion list is generic words (hand tracking, tracking camera, eye tracking,
+depth camera). On Windows an Ultraleap (Leap 2 / Leap Motion Controller) enumerates as a UVC device
+labelled just **"Ultraleap"**, with modes of 2:1 or squarer, so neither the list nor the pair shape
+caught it; with its tracking service stopped it was free and, as the browser's *default* camera on
+that box, became the call's self view (win box, 2026-11-04). The list now also names `ultraleap`,
+`leap motion`, `infrared` and `ir camera`.
+
+While an excluded device is listed and labels are visible, the default camera is no longer opened
+blind and closed again: the first camera that is not excluded is opened by id, so a sensor is never
+started (an eye tracker's camera must not be). With labels hidden the prime stays blind, as before.
+
+### Added — `prefer: 'label:<text>'` opens the first camera whose label contains the text (`./camera`, `./call`)
+
+For a URL or a config, where a per-origin `deviceId` is useless: `openCamera({ prefer: 'label:hd webcam' })`,
+`addCall(wall, el, { camera: 'label:brio' })`. Case-insensitive; with no permission yet the default
+camera is primed once and let go so the labels become visible; no match rejects with `no-camera`.
+Explicit like a `deviceId`, so it opens an excluded device too. The call sample passes
+`?camera=label:…` (and a bare `?camera=<deviceId>`) straight through.
+
+## 1.48.0 — 2026-11-03
+
+### Changed — auto-convergence is measured on the sender's raw frames (`./call`)
+
+Preview tier. A stereo participant was converged by each RECEIVER, which measured the disparity of
+the point between the person's eyes on the frame it decoded: a compressed copy, often downscaled
+by WebRTC, measured again by every participant. The sender now measures it on its own raw camera
+frames, before encoding, and sends the result on the data channel (`conv { d, c }`, `d` a
+fraction of the per-eye width; at most 5 a second while the person moves, one every 400 ms while
+they hold still). Each receiver still applies it as a per-eye crop, so the stream keeps the full
+picture and every receiver keeps its own depth slider and display. The sender measures whatever
+its self view does, including `selfView: false`, and sends nothing while its camera is off or from
+a mono camera.
+
+- New option **`sendConvergence`** (default `true`; `<dxr-call no-send-convergence>`). `false`
+  sends nothing and leaves the measuring to the receivers.
+- Additive on the wire, so the wire version stays 1. A sender advertises it with `hello.conv:
+  true`. A sender without it (1.47 and earlier), or one silent for 1.2 s, is measured by the
+  receiver exactly as before, and an older receiver ignores `conv`. The depth cursor still copies
+  the received frames while it hovers a tile.
+- `diagnostics().peers[i].autoConverge` gains `source` (`'sender'` / `'local'` / `null`),
+  `senderFrac` and `samples`. A failed local measurement no longer drops a value held from the
+  sender.
+- `docs/call.md` § *Auto-convergence is measured by the sender*.
+
+### Added — headless-mode hooks for an app that owns its layout (`./call`)
+
+Preview tier. Everything a chat app that lays out the call itself (`ui: false`, `layout: 'none'`)
+needed and had to work around; the tiles stay module-owned. Docs: `docs/call.md` § *Hooks for an
+app that owns its layout*.
+
+- **Names.** Option `name` (≤ 64 characters, control and bidi characters stripped), sent in
+  `hello`; `CallPeer.name`; `handle.setName()` re-sends it; event `name { id, name }`. Additive on
+  the wire (wire version stays 1): an older peer ignores it.
+- **App messages.** `handle.send(peerId, data)` / `handle.broadcast(data)` on the call's data
+  channel (`{ type: 'app', d }`): JSON, ≤ 16 KiB serialised, ≤ 20 a second per participant (over a
+  cap: `false`, nothing sent); event `message { from, data }`. Only app messages reach the page.
+  An older peer drops them silently.
+- **Events.** `signal { state, code? }` (+ `handle.signal`): connected / reconnecting / closed.
+  `weave { id, state, reason?, ms }`: a tile's first join and its re-join after a resize, per
+  participant and `'self'`. `speaking { id, on }`, for participants and `'self'`.
+- **Layout.** `tileCover` (default `'auto'` with `layout: 'none'`): the core's `rectCover` on every
+  woven tile and a stereo self view. `theme.tileAspect: 'fill'`: no aspect imposed, each tile's
+  crop follows its own box (the numeric default is unchanged). `handle.tile('self')`
+  (`data-dxr-peer="self"`); under `layout: 'none'` the footer and self slot are
+  `display: contents` so the page places the self tile. `handle.setSelfView(on)` removes / restores
+  its layer. A hidden (0×0) tile is no longer painted or measured.
+- **Devices.** `handle.setMic(deviceId)`, `handle.setAudioOutput(sinkId)` (tiles that join later
+  too), `handle.localStream`.
+- **Quality.** The `quality` event gains `path` (`'host'` / `'srflx'` / `'prflx'` / `'relay'`, from
+  the selected ICE candidate pair) and `rttMs`.
+- `<dxr-call>`: `name` attribute, `tile-aspect="fill"`, and the five new events as `dxr-call:*`.
+
+### Fixed — the camera probe opened a hand-tracking camera (`./camera`, `./call`)
+
+Preview tier. Found on hardware (Windows, DisplayXR Browser 1.9.1): with no stereo pair open,
+`camera: 'auto'`'s last-resort "try every device" loop opened a hand-tracking camera — an ordinary
+video input, wide enough to pass for a side-by-side pair — and the call sent its picture as 3D.
+Every probe path (the named-pair fast path, the default camera, the last resort) now skips devices
+whose label marks a sensor (hand tracking, eye tracking, a "tracking camera", a depth camera), plus
+the new `openCamera({ exclude })` / call `cameraExclude` list; `false` turns the built-in list off.
+Left-out devices appear in `skipped` with `excluded: true`; an explicit `deviceId` is opened
+regardless. Also: the browser's "3D Camera (DisplayXR)" is listed LAST on Windows, so the probe no
+longer assumes it is the default — a default that is a pair only by its shape no longer wins over a
+camera that names itself a pair, and with an excluded default the first plain camera is the
+fallback. `addCameraView` gains `aspect: 'fill'` and `rectCover`.
+
+### Added — the dev signalling server ships in the package
+
+`signaling/dev-server.mjs` and the five modules it imports are in the published files (not an
+`exports` entry): run it by path, or import `startDevServer` from the file. Copy it unbundled
+(`signaling/README.md`).
+
+### Docs — frosted chrome over a tile works on DisplayXR Browser 0.1.16+
+
+`docs/woven-canvas-rules.md` rule 10 and §5, and `docs/call.md`: since DisplayXR Browser 0.1.16 the
+compositor draws a tile mono inside each `backdrop-filter` rect (displayxr-browser#120;
+`samples/composition` is the validated case), so partial frosted chrome over a tile is fine. Never
+frost a whole visible tile; effects on a tile or its ancestors (rule 7) are unchanged. The SDK's
+own chrome keeps its near-solid tint. `docs/call.md` also notes that changing only the `#room=`
+fragment of a page with a live call does not re-join (reload, or navigate with a changed query).
+
 ## 1.47.6 — 2026-11-03
 
 ### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
