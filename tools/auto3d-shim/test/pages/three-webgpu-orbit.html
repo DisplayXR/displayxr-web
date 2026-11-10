@@ -75,7 +75,7 @@ if (postfx) {
   post.outputNode = THREE.TSL.pass(scene, camera);
 }
 const render = () => (post ? post.render() : renderer.render(scene, camera));
-try { renderer.render(scene, camera); } catch (e) { /* r182+: throws before init */ } // before init(): three forwards it to renderAsync
+try { renderer.render(scene, camera); } catch (e) { console.warn(String(e && e.message || e)); } // before init(): r178-r181 warn and forward it to renderAsync; r182+ throw (logged, so the case sees three's message either way)
 window.__camWorld = () => { camera.updateMatrixWorld(); return Array.from(camera.matrixWorld.elements); };
 window.__target = () => [controls.target.x, controls.target.y, controls.target.z];
 controls.addEventListener('change', render);

@@ -267,7 +267,7 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 
 ## What each adapter converts, and where it stands down
 
-### three.js (r105+ `WebGLRenderer`; r178–r186 `WebGPURenderer`)
+### three.js (r105+ `WebGLRenderer`; r178+ `WebGPURenderer`)
 
 | Page | Result |
 |---|---|
@@ -282,9 +282,10 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | a chain whose camera keeps a sub-pixel jitter set across frames (a page's own TAA that never clears it) | **2D** since v0.6.4, the same `flat` reason; a live canvas that starts it stands down. Harness cases `e-postfx-taa`, `e-postfx-taa-late`, `e-postfx-taa-short`, `e-postfx-taa-half`. Before (v0.6.3), it converted and froze once the accumulation settled (#226) |
 | a camera whose `setViewOffset` moves by sub-pixel steps along one axis, turning back often (a lerped mouse parallax, a spring's tail, an idle bob) | **3D** since v0.6.5: framing, not jitter. Harness cases `e-postfx-bob`, `e-postfx-spring`, `e-postfx-parallax`. In v0.6.4 it was taken for jitter within 8 frames and stayed 2D for good (#231) |
 | a chain that flips its picture left-right (a pass sampling `1.0 - vUv.x`: `visual-learning.app/sandworm`) | **3D** since v0.6.3, each eye drawn mirrored so that the page's own flip gives the right pair (see [mirroring chains](#chains-that-mirror-their-picture-v063)). Harness cases `e-postfx-mirror`, `-mirror-eyes`, control `-mirror-ctl`. Before, the pair came out pseudoscopic (seen on the panel) |
-| `WebGPURenderer` r178–r186, WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
+| `WebGPURenderer` r178+ (harness-verified through r187), WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
 | `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
-| `WebGPURenderer` of another revision (r177 and older never announce it; r187+ are unverified), or an object without the common `Renderer` API | **2D**, reported `flat` with the reason (`WebGPURenderer r190 — the driver is verified on r178–r186 only`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
+| `WebGPURenderer` newer than the last verified revision (`GPU_VERIFIED`, r187) | **3D** since v0.7.3, with one console note (`WebGPURenderer r188 is newer than the last verified r187; converting …`), as long as every hook the driver uses is present. Through v0.7.2 a revision ceiling (r186) left every newer release 2D, which is how threejs.org's `webgpu_loader_gltf` went 2D when the examples moved to r187. Harness case `three-webgpu-newer` |
+| `WebGPURenderer` below r178 (never announced in practice), or one missing a hook the driver uses (the common `Renderer` API, `hasInitialized()` / `_initialized`, `needsFrameBufferTarget` / `_getFrameBufferTarget()`) | **2D**, reported `flat` with the reason, naming what is missing (`WebGPURenderer r190 without what the driver uses: …`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
 | r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
 | a second renderer in the same document | 2D (one converted canvas per document) |
 | Spark Gaussian splats (`@sparkjsdev/spark` 2.x, World Labs worlds) | **3D** (below) |
@@ -1380,9 +1381,10 @@ sizes, replay of render-on-demand frames, the convergence target, covers, turn-o
 driver serves both backends: the backend only picks the surface (`surfaces.gpu` from
 `renderer.backend.device` + `renderer.getContext()`; `surfaces.gl` from the fallback's context) and
 the clip space. Read and tested at three **r180** (the harness's pin); the API it relies on was read at
-r178, r182, r184 and r186. **Supported: r178–r186.** r177 and older never announce a `WebGPURenderer`
-on `__THREE_DEVTOOLS__` (nothing to find); a later revision is reported `flat` with its number until
-it has been checked.
+r178, r182, r184 and r186; the whole harness was run at **r187** (v0.7.3). **Supported: r178 and later**, gated
+on the hooks the driver uses rather than on a revision ceiling (see
+[Keeping up with three.js](#keeping-up-with-threejs-v073)). r177 and older never announce a `WebGPURenderer`
+on `__THREE_DEVTOOLS__` (nothing to find).
 
 How each difference was resolved:
 
@@ -1399,6 +1401,40 @@ How each difference was resolved:
 Not done: `ArrayCamera` / multi-view (`renderer.render` with an `ArrayCamera` stays flat per the
 existing rule), WebXR on the WebGPU renderer (`renderer.xr` presenting stands down, as on WebGL), and
 three's `PostProcessing` (above). Spark is WebGL-only.
+
+### Keeping up with three.js (v0.7.3)
+
+three ships about once a month, and threejs.org's examples move to each release the day it ships.
+Through v0.7.2 the `WebGPURenderer` driver had a revision ceiling (r178–r186), so every new release
+silently turned the WebGPU examples 2D: `webgpu_loader_gltf` went flat when the examples moved to
+r187 (2026-11), while Little Tokyo and SuperSplat, on older or non-three engines, kept working.
+
+So the gate is now **what the driver uses**, not the revision (`three-adapter.js` `missingHooks`):
+the common `Renderer` API, plus the two hooks that have already moved once, readiness
+(`hasInitialized()` r182+ / `_initialized` r178–r181) and the output path (`needsFrameBufferTarget`
+r182+ / `_getFrameBufferTarget()` r178–r181). A revision above `GPU_VERIFIED` converts and logs one
+console note; one with a hook missing stays 2D and names it.
+
+The hooks being present does not prove the frame is right, so there is an early warning:
+**`test/three-canary.mjs`**, run weekly by `.github/workflows/auto3d-three-canary.yml` (no GPU, no
+browser: it fetches `three@latest`'s `three.webgpu.js` and looks for the same hooks):
+
+| exit | meaning | what to do |
+|---|---|---|
+| 0 | latest ≤ `GPU_VERIFIED`, every hook present | nothing |
+| 2 | a newer release, every hook present: it converts, untested | run the harness on it, raise `GPU_VERIFIED`, cut a patch |
+| 1 | a hook is **gone**: pages on that release go 2D | fix the driver first |
+
+On exit 1 or 2 the workflow opens (or comments on) one issue, `auto3d: three rNNN canary`. Running
+the harness on a release:
+
+```
+cd tools/auto3d-shim/test
+rm -rf .deps/three && THREE_VERSION=0.188.0 node deps.mjs && node run.mjs
+```
+
+(`THREE_VERSION` takes an npm version or `latest`; `.deps/three` must be cleared, since `deps.mjs`
+keeps files already present. r187 also needs `three.tsl.js`, which three.webgpu.js imports since then.)
 
 ## PlayCanvas `CameraFrame` (v0.6.2)
 
@@ -1501,6 +1537,13 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.7.3 (no `WebGPURenderer` revision ceiling), Windows, ANGLE D3D11 + WebGPU:** the full
+harness on **three r187** (`THREE_VERSION=0.187.0`) and on the r180 pin: 166 cases each, 2 skipped (`c` / `d`: no `ports_25.sog`), all green. On r187 before the change,
+`three-webgpu` and `p-three-webgpu` never got a layer (flat, `verified on r178–r186 only`). After it:
+every `three-webgpu*` case green; `p-webgpu` / `p-webgpu-api` rewritten for the new gate (r177; r190 with
+no Renderer API); new `three-webgpu-newer` (`gpuVerified: 177` forced: converts, one note). The page's
+pre-`init()` render now logs the r182+ throw, so its check holds on both sides of r182.
 
 **Headless, v0.7.2 (from David's review of #253: render targets with a view of their own drawn once; the
 WebGPU check survives a small `Error.stackTraceLimit`), Windows, ANGLE D3D11 + WebGPU:** 3 new cases in

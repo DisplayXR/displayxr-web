@@ -1,7 +1,9 @@
 // Resolves the engines the test pages import into test/.deps/ (gitignored). Nothing is fetched
 // from threejs.org or a CDN at test time: three and playcanvas come from the npm registry (npm pack)
 // unless a local copy is named.
-//   THREE_BUILD_DIR=<dir with three.module.js + three.core.js + three.webgpu.js>   (default: npm pack three@0.180.0)
+//   THREE_BUILD_DIR=<dir with three.module.js + three.core.js + three.webgpu.js + three.tsl.js>   (default: npm pack three@0.180.0)
+//   THREE_VERSION=<npm version or tag, e.g. 0.187.0 / latest>     (default 0.180.0; the canary runs `latest`, see ../README.md
+//                                                                  'Keeping up with three.js'). Re-run with a clean .deps/three.
 //   PLAYCANVAS_MJS=<path to build/playcanvas.mjs>                 (default: npm pack playcanvas@2.22.3)
 //   SPARK_DIST=<dir with spark.module.js>                         (default: npm pack @sparkjsdev/spark@2.2.0)
 //   PLAYCANVAS_CF_MJS=<path to build/playcanvas.mjs of 2.23.0>    (default: npm pack playcanvas@2.23.0; the
@@ -33,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, '.deps');
-const THREE = 'three@0.180.0';
+const THREE = `three@${process.env.THREE_VERSION || '0.180.0'}`;
 const PLAYCANVAS = 'playcanvas@2.22.3';
 const SPARK = '@sparkjsdev/spark@2.2.0'; // World Labs' splat renderer for three (peer: three >= 0.180)
 const PLAYCANVAS_CF = 'playcanvas@2.23.0'; // the engine superspl.at's viewer is built with (its devDependency)
@@ -43,7 +45,7 @@ const BABYLON_GUI = 'babylonjs-gui@9.32.0'; // the UMD build (one file, sets win
 const WIN = process.platform === 'win32';
 
 // The files the pages import, by .deps path (run.mjs's preflight checks the same list).
-const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js',
+const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/three.tsl.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js',
   'playcanvas-2.23/playcanvas.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css', 'babylon/babylon.js', 'babylon/babylon.gui.js'];
 
 function die(msg) {
@@ -91,6 +93,7 @@ const threeDir = env('THREE_BUILD_DIR'), pcMjs = env('PLAYCANVAS_MJS'), sparkDir
 ensure('three', 'build/three.module.js', threeDir && join(threeDir, 'three.module.js'), 'THREE_BUILD_DIR', THREE);
 ensure('three', 'build/three.core.js', threeDir && join(threeDir, 'three.core.js'), 'THREE_BUILD_DIR', THREE);
 ensure('three', 'build/three.webgpu.js', threeDir && join(threeDir, 'three.webgpu.js'), 'THREE_BUILD_DIR', THREE); // WebGPURenderer (+ its WebGL2 fallback backend)
+ensure('three', 'build/three.tsl.js', threeDir && join(threeDir, 'three.tsl.js'), 'THREE_BUILD_DIR', THREE); // r187+: three.webgpu.js imports it
 ensure('three', 'examples/jsm/controls/OrbitControls.js', env('THREE_ORBIT_CONTROLS') || derived(threeDir, '../examples/jsm/controls/OrbitControls.js'), 'THREE_ORBIT_CONTROLS', THREE);
 ensure('three', 'examples/jsm/postprocessing/Pass.js', env('THREE_PASS_JS') || derived(threeDir, '../examples/jsm/postprocessing/Pass.js'), 'THREE_PASS_JS', THREE);
 ensure('spark', 'dist/spark.module.js', sparkDir && join(sparkDir, 'spark.module.js'), 'SPARK_DIST', SPARK);

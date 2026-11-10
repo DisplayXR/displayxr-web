@@ -80,8 +80,9 @@ export default function cases({ P, NEW, productShim }) {
     return { glProj0: Array.from(v.projectionMatrix), deviceType: window.__deviceType, W, H };
   })()`;
   return [...[
-    ['p-webgpu', '?rev=190', 'a three.js WebGPURenderer of an unverified revision (r190)', /WebGPURenderer r190 .*verified on r178/],
-    ['p-webgpu-api', '?rev=185', 'an object announced as a WebGPURenderer (r185) without the common Renderer API', /WebGPURenderer without the common Renderer API/],
+    ['p-webgpu', '?rev=177', 'a three.js WebGPURenderer below the driver minimum (r177)', /WebGPURenderer r177 .*needs r178 or later/],
+    // v0.7.3: no revision ceiling. A far-future revision (r190) without what the driver uses is flat, naming the hooks.
+    ['p-webgpu-api', '?rev=190', 'an object announced as a WebGPURenderer (r190) without the common Renderer API', /WebGPURenderer r190 without what the driver uses: backend, .*hasInitialized\(\) \/ _initialized/],
   ].map(([id, qs, what, want]) => ({
       id, name: `product mode: ${what} reports flat (WebGPU reason), converts nothing`,
       url: P + 'three-webgpu.html' + qs, shim: productShim({ decision: 'allow' }),

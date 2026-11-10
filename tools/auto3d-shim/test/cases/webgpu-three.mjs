@@ -66,6 +66,17 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
+      // v0.7.3: no revision ceiling. With the verified revision forced BELOW the one under test, the
+      // real renderer still converts (every hook it uses is present) and says so once on the console.
+      id: 'three-webgpu-newer', name: 'three.js WebGPURenderer newer than GPU_VERIFIED (forced): converts, with one "newer than the last verified" note', webgpu: true,
+      url: P + 'three-webgpu-orbit.html', shim: NEW, cfg: { gpuVerified: 177 }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
+      alsoCheck(r, t) {
+        const n = r.log.filter((l) => /newer than the last verified r177; converting/.test(l)).length;
+        t('one "newer than the last verified r177" console note', n === 1, `${n} note(s)`);
+        t('one layer', r.fake.layers === 1, `layers ${r.fake.layers}`);
+      },
+    },
+    {
       // The direct path: no frame-buffer target, the scene draws straight to the canvas, whose clear
       // (loadOp 'clear') ignores the scissor. The generic checks (halves differ, right = left shifted
       // 0.1 x eye) only pass when BOTH eyes survive; the corners check the clear colour in each half.
