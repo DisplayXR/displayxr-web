@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -124,8 +124,9 @@ function dxrSentinel(cfg, cap) {
   }
 
   const isApp = (a) =>
-    !!a && typeof a === 'object' && typeof a.tick === 'function' && typeof a.on === 'function' &&
-    typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
+    !!a && typeof a === 'object' && typeof a.on === 'function' && typeof a.fire === 'function' && !!a.systems &&
+    ((typeof a.tick === 'function' && 'graphicsDevice' in a) ||
+      (typeof a.init === 'function' && typeof a.start === 'function'));
   const nsOf = (pc) => (pc && typeof pc === 'object' && (pc.AppBase || pc.Application) ? pc : null);
   let pcFound = false;
   let retired = false;  // S.disarm(): nothing is armed again in this document
