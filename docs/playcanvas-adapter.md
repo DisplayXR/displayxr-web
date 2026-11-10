@@ -13,13 +13,33 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   that never asks never resolves `playcanvas`: `./splat` imports the adapter with a literal dynamic
   `import('./inline3d-splat-playcanvas.js')`, and the adapter imports the engine the same way.
 - **Peer:** `playcanvas >=2.22.3 <3`, optional. Or hand the module in: `{ playcanvas: pc }`.
-  **Pin `playcanvas` to exactly `2.22.3` in your app** (`"playcanvas": "2.22.3"`, no caret): it is
-  the only engine version validated on a panel, and an unpinned install picks up the newest 2.x.
-  On 2.23.3 a page's splats lost their stereo on an Android tablet, and pinning 2.22.3 restored it;
-  the cause is not isolated yet. (2.23 fixes the side-by-side footprint upstream, so the SDK leaves
-  that chunk alone there; older SDKs logged a false "footprint fix SKIPPED … half height"
-  warning on 2.23.) esbuild: `external: ['node:worker_threads']` — the engine's sort and draco
-  workers carry a `require("node:worker_threads")` fallback that a browser never reaches.
+  **Which engine to pin.** One SDK build supports every engine in the range at once: where an
+  engine release changed something the SDK depends on, the SDK detects the shape it finds (shader
+  chunk text, which uniforms exist), never the version number. Pin an exact version in your app
+  (no caret), because an unpinned install picks up the newest 2.x the day it ships:
+  - **`2.22.3` — the only version validated on a panel and on an Android tablet.** Use it for
+    anything you ship to a device until the A/B below comes back.
+  - **`2.24.0` — what the samples now load.** Validated headless only (Chrome, ANGLE/Metal): both
+    eyes render with the same disparity as on 2.22.3 for a splat and a model, on both view paths,
+    and the unit tests run every SDK shader rewrite against its real chunks. **Not yet run on a
+    panel or a tablet.**
+  - **`2.23.x` — avoid for now.** On 2.23.3 a page's splats lost their stereo on an Android tablet,
+    and pinning 2.22.3 restored it. The cause is not isolated: headless, 2.23.3 renders both eyes
+    exactly as 2.22.3 does, and the same page also had overlapping woven canvases (woven-canvas
+    rules), which flatten a tile on their own.
+
+  A device A/B needs no rebuild: `samples/splat/?pc=2.22.3` (or `2.23.3`, `2.24.0`) swaps the
+  engine build, and `&viewPath=cameras` renders each eye with its own camera instead of one camera
+  with N `RenderView`s (`playcanvasViewPath: 'cameras'` on `addSplat`). Stereo on `cameras` but not
+  on the default path points at the engine's per-view path; flat on both points at the page.
+
+  Through SDK 1.51.1, two things broke on newer engines (now fixed by feature detection, so 2.22.3
+  is unchanged): a transmissive (glass) glTF on `./model` failed to compile on 2.23+ and the
+  tile went black, and the depth cursor found no splat on 2.24 (it stayed on the glass). SDK
+  1.51.x also logged a false "footprint fix SKIPPED … half height" warning on 2.23+ (2.23 fixes the
+  side-by-side footprint upstream; the SDK leaves that chunk alone there).
+
+  esbuild: `external: ['node:worker_threads']` — the engine's sort and draco workers carry a `require("node:worker_threads")` fallback that a browser never reaches.
 - **Give the splat canvas an explicit size.** A canvas positioned with `left`/`right`/`top`/`bottom`
   and `width: auto` keeps its 300×150 intrinsic size, so the splat renders tiny in a corner. Set
   `width` and `height` (e.g. `100%`, or the stage rect) in CSS.

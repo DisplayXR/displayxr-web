@@ -622,6 +622,36 @@ let warnedFootprint = false;
 let warnedQuadExtent = false;
 
 /**
+ * Apply patchGsplatFootprint to the engine's GLSL chunk store (anything with get/set): rewrite the
+ * chunk on an engine that has the bug (≤ 2.22), leave it alone on one that fixed it (≥ 2.23,
+ * `native`), and warn once only when neither shape is there. Feature-detected on the chunk text,
+ * never on the engine version, so one SDK build serves the whole peer range.
+ *
+ * Through SDK 1.51.1 the native case fell into the warning branch: every 2.23.x / 2.24.x page logged
+ * "side-by-side splats will draw at half height" although they drew correctly.
+ *
+ * @returns {{ok:boolean, native?:boolean}}
+ */
+export function installGsplatFootprint(chunks) {
+  const corner = patchGsplatFootprint(chunks.get('gsplatCornerVS'));
+  if (corner.native) return corner;
+  if (corner.ok) {
+    chunks.set('gsplatCornerVS', corner.src);
+    return corner;
+  }
+  if (!warnedFootprint) {
+    warnedFootprint = true;
+    console.warn(
+      '[inline3d/splat] engine:playcanvas — this engine build does not have the gsplatCornerVS ' +
+        'lines the non-square-pixel footprint fix rewrites, so it is SKIPPED: side-by-side ' +
+        'splats will draw at half height (vertical stipple). Report the engine version; the ' +
+        'anchors are in js/inline3d-splat-playcanvas.js.',
+    );
+  }
+  return corner;
+}
+
+/**
  * Which way the engine gets N views into one canvas. `renderview` — one camera, N `RenderView`s
  * — is the design; `cameras` — N cameras with `rect` + `calculateProjection`, all public API,
  * bit-identical in the P0 spike at N× the gsplat memory — is the fallback for an engine build
@@ -1549,17 +1579,7 @@ export class PlayCanvasSplatViewer {
     // ./model passes patchSplats:false: its subject is a mesh, and a page adding a splat under
     // handle.engine.root on a model tile gets the engine's stock footprint (documented).
     const chunks = patchSplats ? pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL) : null;
-    const corner = chunks ? patchGsplatFootprint(chunks.get('gsplatCornerVS')) : { ok: false, skipped: true };
-    if (corner.ok && !corner.native) chunks.set('gsplatCornerVS', corner.src);
-    else if (!corner.skipped && !warnedFootprint) {
-      warnedFootprint = true;
-      console.warn(
-        '[inline3d/splat] engine:playcanvas — this engine build does not have the gsplatCornerVS ' +
-          'lines the non-square-pixel footprint fix rewrites, so it is SKIPPED: side-by-side ' +
-          'splats will draw at half height (vertical stipple). Report the engine version; the ' +
-          'anchors are in js/inline3d-splat-playcanvas.js.',
-      );
-    }
+    const corner = chunks ? installGsplatFootprint(chunks) : { ok: false, skipped: true };
     this.footprintPatched = corner.ok;
     if (chunks && perf?.quadExtent) {
       const q = patchPlayCanvasQuadExtent(chunks.get('gsplatCommonVS'), perf.quadExtent);

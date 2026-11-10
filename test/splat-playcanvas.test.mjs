@@ -2817,7 +2817,8 @@ test("setRig('display'): a transmissive mesh under root gets the grab pass, tran
   installDom();
   const { pc, rec } = makeFakePc();
   rec.resource = camFlat();
-  const engineChunk = 'vec3 evalRefractionColor(vec3 v) {\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n}';
+  // 2.23+-shaped (screen_size in the view block); the real chunks: test/playcanvas-chunks.test.mjs.
+  const engineChunk = 'vec3 evalRefractionColor(vec3 v) {\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n\tfloat refractionLod = log2(screen_size.x);\n}';
   pc.ShaderChunks = { get: () => ({ get: (k) => (k === 'refractionDynamicPS' ? engineChunk : ''), set() {} }) };
   pc.SHADERLANGUAGE_GLSL = pc.SHADERLANGUAGE_GLSL || 'glsl';
   const out = {};

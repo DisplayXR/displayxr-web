@@ -69,8 +69,9 @@ The repo's splat sample (`samples/splat/`) renders with PlayCanvas and keeps `?e
 its A/B switch.
 Bundlers: the engine is reached through a named-import module (`js/inline3d-playcanvas-engine.js`,
 so the unused ~40% of the engine tree-shakes away); its sort workers are Blob URLs (CSP
-`worker-src blob:`), and esbuild needs `node:worker_threads` marked external. Pin the engine to
-exactly `playcanvas@2.22.3`, the version validated on a panel
+`worker-src blob:`), and esbuild needs `node:worker_threads` marked external. Pin the engine to an
+exact version: `playcanvas@2.22.3` is the one validated on a panel and a tablet; the samples load
+2.24.0, validated headless but not yet on a device
 ([why](docs/playcanvas-adapter.md)).
 
 **Splat effects (preview, `engine: 'playcanvas'`).** Shader effects on the splats themselves,

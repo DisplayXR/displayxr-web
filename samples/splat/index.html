@@ -116,17 +116,27 @@
      The "three/addons/" trailing-slash entry is REQUIRED, not tidiness: Spark reaches into
      three/addons/postprocessing/Pass.js internally, and without the prefix mapping the page
      dies at import time with "Failed to resolve module specifier". -->
-<script type="importmap">
-{ "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
-  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
-  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs",
-  "@displayxr/inline3d": "../../js/inline3d.js",
-  "@displayxr/inline3d/three": "../../js/inline3d-three.js",
-  "@displayxr/inline3d/viewer": "../../js/inline3d-viewer.js",
-  "@displayxr/inline3d/splat": "../../js/inline3d-splat.js"
-} }
+<!-- ?pc=2.22.3 swaps the engine build for a device A/B (exact x.y.z only; default 2.24.0, the
+     version this page ships on; 2.22.3 is the last one validated on a panel). An import map has
+     to exist before the first module loads, so this one is written by a classic script. -->
+<script>
+  (() => {
+    const v = new URLSearchParams(location.search).get('pc');
+    const pc = /^2\.\d+\.\d+$/.test(v || '') ? v : '2.24.0';
+    const map = document.createElement('script');
+    map.type = 'importmap';
+    map.textContent = JSON.stringify({ imports: {
+      three: 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js',
+      'three/addons/': 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/',
+      '@sparkjsdev/spark': 'https://sparkjs.dev/releases/spark/2.1.0/spark.module.js',
+      playcanvas: `https://cdn.jsdelivr.net/npm/playcanvas@${pc}/build/playcanvas.mjs`,
+      '@displayxr/inline3d': '../../js/inline3d.js',
+      '@displayxr/inline3d/three': '../../js/inline3d-three.js',
+      '@displayxr/inline3d/viewer': '../../js/inline3d-viewer.js',
+      '@displayxr/inline3d/splat': '../../js/inline3d-splat.js',
+    } });
+    document.currentScript.after(map);
+  })();
 </script>
 <script type="module" src="./app.js"></script>
 </body>

@@ -501,6 +501,7 @@ export class PlayCanvasDepthCursor {
   // pickable. (A ShaderMaterial opts in with CURSOR_DEPTH_PICK_GLSL / _WGSL.)
   _prepare(picker, cam, app, layers) {
     const muted = muteDepthlessPicks(this.pc, layers, app.graphicsDevice);
+    const restore = lendGsplatInstances(layers, cam.camera.camera, this._ownerCameras());
     try {
       cam.camera.enabled = true;
       picker.prepare(cam.camera, app.scene, layers);
@@ -510,9 +511,21 @@ export class PlayCanvasDepthCursor {
       this.hit = null;
       return false;
     } finally {
+      restore();
       cam.camera.enabled = false;
       for (const mi of muted) mi.pick = true;
     }
+  }
+
+  // The scene cameras whose splat draws the pick pass borrows: the eye (RenderView path), or each
+  // per-view camera (the N-camera fallback).
+  _ownerCameras() {
+    const v = this.viewer;
+    const out = [];
+    const eye = v?.eye?.camera?.camera;
+    if (eye) out.push(eye);
+    if (v?._viewPath === 'cameras') for (const c of v._views || []) if (c?.camera?.camera) out.push(c.camera.camera);
+    return out;
   }
 
   // The display-rig pass: its own picker + camera, drawn with exactly what the layer rig's display
@@ -733,6 +746,36 @@ function materialWritesPickDepth(pc, mat, device) {
 
 // Clear `pick` on the layers' mesh instances whose shader cannot write pick depth; returns them so
 // the caller restores the flag right after the (synchronous) pick pass.
+/**
+ * Let the pick camera draw the splats the eye camera draws, for one pick pass. The engine gives
+ * each camera its own gsplat mesh instance and marks it visible to that camera only
+ * (`isVisibleFunc`). Through PlayCanvas 2.23 a camera with frustum culling off skipped that test,
+ * so the (never-rendering) pick camera drew the eye's splats; 2.24 honours `isVisibleFunc` with
+ * culling off too, and the pick pass drew no splat at all (the depth cursor stayed on the glass
+ * over every splat). Wrapping the test — the eye's draw, sorted for the eye, exactly what the pass
+ * drew before — works on every engine in the peer range, and is restored right after the pass.
+ * Instances without an `isVisibleFunc`, or not visible to an owner camera, are left alone.
+ *
+ * @returns {() => void} restore
+ */
+export function lendGsplatInstances(layers, pickCamera, ownerCameras) {
+  const lent = [];
+  if (pickCamera && ownerCameras?.length) {
+    for (const layer of layers || []) {
+      for (const mi of layer?.meshInstances || []) {
+        const own = mi?.isVisibleFunc;
+        if (typeof own !== 'function' || lent.some((l) => l.mi === mi)) continue;
+        if (!ownerCameras.some((c) => own(c))) continue;
+        mi.isVisibleFunc = (camera) => camera === pickCamera || own(camera);
+        lent.push({ mi, own });
+      }
+    }
+  }
+  return () => {
+    for (const { mi, own } of lent) mi.isVisibleFunc = own;
+  };
+}
+
 function muteDepthlessPicks(pc, layers, device) {
   const muted = [];
   for (const layer of layers) {
