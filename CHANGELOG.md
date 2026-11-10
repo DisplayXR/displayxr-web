@@ -20,6 +20,16 @@ porting checklist, and the rig decision in `llms.txt`. `docs/authoring-inline-3d
 `docs/porting-three-js-apps.md` now ship in the npm package: `llms.txt` and `AGENTS.md` already
 pointed agents at them, but an agent reading `node_modules` could not open either.
 
+### Changed — `rectCover` is live: a window drag shows moving 2D, not one frozen frame (core option, subpath default)
+
+While the cover is up, it now redraws the left eye of each new frame (one `drawImage` at CSS px per
+frame), once the page has redrawn for the new box (the eye's aspect within 3 % of the box's; until
+then the last picture stays, so a buffer resized a frame late never shows stretched). Before, the
+cover held the one snapshot taken at the change, and since every step of a window drag restarts the
+wait, a page with the cover on (`./splat`, `./model`, or `rectCover: 'auto'`) showed a still frame
+for the whole drag plus a hold. New field `rectCover: { live: false }` restores the still.
+`docs/woven-canvas-rules.md` §11 gains a resize checklist.
+
 ### Added — `viewerIndependent`: stereo photos and video no longer start a viewer tracker (core)
 
 Every `add*()` takes `viewerIndependent` (default `true` for `addImage` / `addVideo`, `false` for

@@ -224,7 +224,51 @@ test('change → cover up on that frame → rewoven settles → cover down', asy
   env.runFrame(2);
   assert.equal((await peek(p)).woven, true);
   assert.equal(cover.style.display, 'none', 'cut, never faded, when rewoven settles');
+  // live (the default): the two frames it was up after the change each drew the new left eye.
+  assert.equal(cover.draws.length, 3, 'the snapshot, then one live frame per frame while up');
+  const [src, sx, sy, sw, sh, dx, dy, dw, dh] = cover.draws[2];
+  assert.equal(src, canvas);
+  assert.deepEqual([sx, sy, sw, sh, dx, dy, dw, dh], [0, 0, 400, 200, 0, 0, 400, 200], 'the whole left eye, at the box');
+  clock = 1200;
+  env.runFrame(2);
+  assert.equal(cover.draws.length, 3, 'nothing drawn once the cover is down');
+  wall.close();
+});
+
+test('live: false keeps the one still frame for the whole cycle', async () => {
+  clock = 0;
+  const env = installEnv();
+  const { wall, canvas } = await wovenScene(env, { rectCover: { live: false } });
+  env.runFrame(2);
+  clock = 1000;
+  canvas.left = 640;
+  env.runFrame(2);
+  clock = 1050;
+  env.runFrame(2);
+  const [cover] = env.covers();
+  assert.equal(cover.style.display, 'block');
   assert.equal(cover.draws.length, 1, 'never re-snapshotted per frame');
+  wall.close();
+});
+
+test('a live frame waits until the page has redrawn for the new box (no stretched frame)', async () => {
+  clock = 0;
+  const env = installEnv();
+  const { wall, canvas } = await wovenScene(env, { rectCover: 'auto' });
+  env.runFrame(2);
+  clock = 1000;
+  canvas.clientWidth = 800; // the window drag widens the box to 4:1; the buffer is still 2:1 eyes
+  env.runFrame(2);
+  const [cover] = env.covers();
+  assert.equal(cover.draws.length, 1, 'the snapshot at the change');
+  clock = 1016;
+  env.runFrame(2);
+  assert.equal(cover.draws.length, 1, 'buffer not yet resized: the snapshot stays');
+  canvas.width = 1600; // the page resizes its side-by-side buffer to the new box (2 x 800x200: 4:1 eyes)
+  clock = 1032;
+  env.runFrame(2);
+  assert.equal(cover.draws.length, 2, 'now the live frame follows');
+  assert.equal(cover.width, 800);
   wall.close();
 });
 

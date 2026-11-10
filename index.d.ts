@@ -36,9 +36,12 @@ export interface TileOptions {
    * filled with `color` and, with `snapshot`, the last frame: the left eye, cover-fit to the new
    * box, captured once at the change with one `drawImage` (never `toDataURL`).
    *
-   * - `'auto'` — `{ color: '#000', snapshot: true }`.
+   * - `'auto'` — `{ color: '#000', snapshot: true, live: true }`.
    * - `'off'` — nothing; a page that runs its own cover passes this.
-   * - `{ color?, snapshot? }` — `color` any CSS color (default `'#000'`); `snapshot` default true.
+   * - `{ color?, snapshot?, live? }` — `color` any CSS color (default `'#000'`); `snapshot` default
+   *   true; `live` (1.52) default true: while the cover is up its picture follows the canvas (the
+   *   left eye of each new frame, once the page has redrawn for the new box), so a window drag
+   *   shows moving 2D content instead of one still frame. `live: false` keeps the single still.
    *
    * Before the first join nothing is raised: cover a fresh canvas yourself until `firstWoven`
    * (rule 5). A pure move is seen at the next session frame, so a move made after that frame's
@@ -63,7 +66,7 @@ export interface TileOptions {
 }
 
 /** See {@link TileOptions.rectCover}. */
-export type RectCoverOption = 'auto' | 'off' | { color?: string; snapshot?: boolean };
+export type RectCoverOption = 'auto' | 'off' | { color?: string; snapshot?: boolean; live?: boolean };
 
 /**
  * The browser's per-frame report for one layer (`XRDisplayLayer.wovenState`, DisplayXR Browser
