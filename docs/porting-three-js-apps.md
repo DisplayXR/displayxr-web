@@ -586,8 +586,12 @@ Browser, verify:
 6. **No raw-SBS drop when an overlay fades.** Trigger every full-bleed element you have — start
    screen, pause menu, modal — and watch the tile as it appears *and* as it goes. Two squished
    halves for a moment means the element is `opacity:0` rather than `display:none`.
-7. **Resize repaints.** Drag the window, zoom the browser, rotate the display, drag to a
-   different-DPI monitor. Any black flash is the no-op-resize clear from §4.
+7. **Resize repaints, and depth survives it.** Drag the window, zoom the browser, rotate the
+   display, drag to a different-DPI monitor. Any black flash is the no-op-resize clear from §4.
+   Then widen and narrow the window across every layout breakpoint and enter full screen: the
+   subject must stay on the glass, not sink or pop. A scene that recedes after a resize is a camera
+   rig's convergence lagging the camera; an orbit viewer belongs on a display rig posed at the
+   target ([which rig](authoring-inline-3d.md#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera)).
 8. **No raw pair when the canvas first appears.** Navigate into the screen, several times, with
    the asset already cached (the fast case is the bad one). Two squeezed halves for up to a second
    means the canvas was revealed before the browser joined it. Keep a cover over it until

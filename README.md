@@ -138,7 +138,23 @@ The runtime batches every visible window into one weave per frame, so it scales 
 Most pages want the default — a **display rig**, where the canvas is a portal onto a virtual
 display and the runtime places the eyes. That includes every scene that frames a *subject* (a model
 or splat viewer, an avatar, a product hero) **even when the user orbits it**: rotate the subject,
-not the camera, and the stereo comes out the same for a figurine and an airliner.
+not the camera, and the stereo comes out the same for a figurine and an airliner. If the page
+already has an orbit camera, keep it and pose the portal from it:
+
+```js
+import * as THREE from 'three';
+import { displayRig } from '@displayxr/inline3d/three';
+// An orbit viewer (OrbitControls): pose the portal at the orbit target, facing the camera, as
+// tall as the camera's view there. The target sits on the glass at any window size and zoom.
+const rig = {};
+function orbitRig() {
+  const d = camera.position.distanceTo(controls.target);
+  const vH = 2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  return displayRig({ position: controls.target, orientation: camera.quaternion, virtualDisplayHeight: vH, out: rig });
+}
+const handle = wall.addScene(canvas, onFrame, { viewRig: orbitRig() });
+// in onFrame, before rendering the eyes: handle.setViewRig(orbitRig());
+```
 
 A scene whose viewpoint the user *moves through a world* — first person, a walkthrough, a game, a
 map, an editor, a ported VR app — can instead hand its own camera to the runtime and let eye

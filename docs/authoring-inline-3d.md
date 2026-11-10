@@ -416,6 +416,33 @@ correctly and still looks flat.
   editor, a ported VR app. **Camera rig.** The viewpoint is state the app owns, and a portal has
   no camera to follow you.
 
+**An orbit viewer you already wrote keeps its camera: pose the portal from it.** The portal sits
+at the orbit target, faces the camera and is exactly as tall as the camera's view at that
+distance, so the framing matches the 2D view and orbiting turns the subject behind a fixed window:
+
+```js
+import * as THREE from 'three';
+import { displayRig } from '@displayxr/inline3d/three';
+// An orbit viewer (OrbitControls): pose the portal at the orbit target, facing the camera, as
+// tall as the camera's view there. The target sits on the glass at any window size and zoom.
+const rig = {};
+function orbitRig() {
+  const d = camera.position.distanceTo(controls.target);
+  const vH = 2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  return displayRig({ position: controls.target, orientation: camera.quaternion, virtualDisplayHeight: vH, out: rig });
+}
+const handle = wall.addScene(canvas, onFrame, { viewRig: orbitRig() });
+// in onFrame, before rendering the eyes: handle.setViewRig(orbitRig());
+```
+
+What this buys over a camera rig for the same orbit: there is no convergence distance to keep in
+sync. A camera rig's glass sits wherever `convergenceDiopters` says, so a page that eases
+convergence toward the camera distance leaves the glass at a stale depth after anything that moves
+the camera (a resize refit, a layout breakpoint that makes the canvas taller, a zoom), and the
+scene recedes until it catches up. The SDK logs a one-time `console.info` when a camera rig
+orbits a fixed point. A real-world report: an orbit-camera physics course whose scene sank into
+the screen as the window was widened, fixed by this switch.
+
 **On a display rig the eye is wherever the viewer's head is.** The eye poses are the tracked
 head, scaled into scene units by `virtualDisplayHeight / the element's physical height`, so the
 camera's distance from the glass is not a constant you chose: it changes as the viewer moves, and
