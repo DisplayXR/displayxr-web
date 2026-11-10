@@ -9,6 +9,13 @@ arrangements about an axis through the glass, don't push them back; keep moving 
 low contrast behind the subject, text as HTML near the glass, no coplanar surfaces, no sub-pixel
 detail, a cover that always comes off). The SDK's defaults do the rest.
 
+Pick the view rig before writing code — decide by what the user moves, not by whether the page
+owns a camera. The user turns a SUBJECT (model, product, diorama, simulation, chart), even with an
+orbit control: DISPLAY rig (keep the orbit camera and pose the portal from it with
+displayRig({ position: target, orientation: camera.quaternion, virtualDisplayHeight: 2·d·tan(fov/2) })).
+The user moves through a WORLD (first person, game, map, editor, ported VR): CAMERA rig. Then
+check depth at three window sizes and in full screen: the subject must stay on the glass.
+
 ## Samples (they show the API, not a look to copy)
 - samples/model/, samples/splat/, samples/hello-cube/, samples/camera-rig/, samples/display-modes/
 

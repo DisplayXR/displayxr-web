@@ -50,6 +50,7 @@ export {
   withheldReasonHint,
 } from './inline3d-depth-budget.js';
 import { warnViewRigOnce, withheldReasonHint } from './inline3d-depth-budget.js';
+import { noteCameraRigOrbit } from './inline3d-rig-hint.js';
 
 // The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
 // `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
@@ -1327,6 +1328,9 @@ class Inline3D {
         // One-time console warnings for a rig that looks like a mistake (convergence at infinity,
         // factors > 1, a FOV in degrees). Read only: the rig goes out exactly as given.
         if (rig) warnViewRigOnce(win.rigWarned, rig);
+        // One-time console.info when a camera rig orbits a fixed point (a subject viewer that
+        // would sit better on a display rig). Read only, like the warnings above.
+        if (rig) noteCameraRigOrbit(win.orbitHint, rig);
         return this._pushViewRig(win);
       },
       /** Whether this window is declared viewer-independent (see setViewerIndependent). */
@@ -2460,6 +2464,7 @@ class Inline3D {
       // Which one-time rig warnings this window has given (setViewRig / opts.viewRig), and
       // whether its 'withheld' reason has been logged. Diagnostics only.
       rigWarned: new Set(),
+      orbitHint: {},
       warnedWithheld: false,
       // The automatic 1-view collapse (the latch itself is manager-wide — the mode is the
       // display's, not this window's). `stereoSaved` records the factors in force when the panel

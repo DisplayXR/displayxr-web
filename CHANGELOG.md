@@ -7,6 +7,19 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — a one-time hint when a camera rig orbits a fixed point; rig choice up front for agents (core, docs)
+
+`handle.setViewRig` now logs one `console.info` per window when a **camera** rig keeps its
+convergence point still while the camera swings 45° around it — the shape of a subject viewer on
+the wrong rig. It points to a display rig posed at the orbit target (`displayRig({ position:
+target, orientation: camera.quaternion, virtualDisplayHeight: 2·d·tan(fov/2) })`), which keeps the
+target on the glass at any window size and zoom. Read only: the rig is sent exactly as given, and
+first-person turns, walking and following a moving subject never trigger it. The docs gain that
+recipe (README, `docs/authoring-inline-3d.md` § *Which rig*), a depth-after-resize step in the
+porting checklist, and the rig decision in `llms.txt`. `docs/authoring-inline-3d.md` and
+`docs/porting-three-js-apps.md` now ship in the npm package: `llms.txt` and `AGENTS.md` already
+pointed agents at them, but an agent reading `node_modules` could not open either.
+
 ### Added — `viewerIndependent`: stereo photos and video no longer start a viewer tracker (core)
 
 Every `add*()` takes `viewerIndependent` (default `true` for `addImage` / `addVideo`, `false` for
