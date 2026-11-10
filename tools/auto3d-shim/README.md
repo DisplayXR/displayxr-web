@@ -535,6 +535,8 @@ are offset from it by a few ipd × m2v.
 | legacy post effects (`camera.postEffects`), or `framePasses` that are not one `CameraFrame` | **2D**, HUD reason |
 | the page sizes the canvas by writing `canvas.width / height` itself (supersplat-viewer) | **3D** since v0.6.2: the writes are recorded as the page's size, the store stays side by side (below) |
 | orthographic camera | **2D**, HUD reason |
+| nothing 3D for the camera: its layers hold only screen-space UI (a 2D menu, a loading screen; playcanvas.com/examples `user-interface/*`) | **2D** since v0.7.4, `nothing 3D for the camera to render (screen-space UI only)`; re-checked on every activation attempt, so 3D content that arrives later converts (cases `pc-ui-only`, `pc-ui-then-3d`). Before, two identical halves at half the horizontal resolution |
+| an engine without `Camera.xrViews` (before 2.20) | **2D** since v0.7.4, HUD reason (see [engine versions](#playcanvas-engine-versions-v074)) |
 | the app presents WebXR through `app.xr` | stands down (the immersive path owns it) |
 | OffscreenCanvas / worker | not converted |
 

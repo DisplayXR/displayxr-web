@@ -65,6 +65,39 @@ export default function cases(env) {
         t('no page error', !r.log.some((l) => /pageerror|\[error\]/.test(l)), r.log.filter((l) => /pageerror|\[error\]/.test(l)).slice(0, 2).join(' | ') || 'none');
       },
     })),
+    // Screen-space UI only: nothing has depth, left 2D with the reason (on 2.22.3, the default engine,
+    // and on 2.24, the examples'); the same page once it adds a 3D box converts.
+    ...['', '/pc-2.24'].map((pre) => ({
+      id: `pc-ui-only${pre ? '@2.24' : ''}`, name: `${pre ? '[PlayCanvas 2.24] ' : ''}PlayCanvas screen-space UI only (no mesh, no splat): left 2D, 'nothing 3D', no layer`,
+      url: `${pre}${env.P}pc-ui.html`, shim: env.NEW,
+      async run(page, h) {
+        await page.waitForFunction(() => window.__frozen, { timeout: 30000, polling: 200 });
+        await h.sleep(3000);
+        return { S: await page.evaluate(() => window.__dxrAuto3D.state()), layers: await page.evaluate(() => window.__fakeXR.layers.length) };
+      },
+      check(r, t) {
+        if (r.error) { t('ran', false, r.error); return; }
+        const R = r.S.renderers.find((x) => x.engine === 'PlayCanvas');
+        t('PlayCanvas app found, left 2D: nothing 3D', !!R && !R.active && /nothing 3D/.test(R.flatReason || '') && r.layers === 0, `active ${R && R.active}, flatReason ${R && R.flatReason}, layers ${r.layers}`);
+        t('no page error', !r.log.some((l) => /pageerror|\[error\]/.test(l)), r.log.filter((l) => /pageerror|\[error\]/.test(l)).slice(0, 2).join(' | ') || 'none');
+      },
+    })),
+    {
+      id: 'pc-ui-then-3d', name: 'PlayCanvas screen-space UI, then the page adds a 3D box (4 s): converts once there is depth',
+      url: `${env.P}pc-ui.html?add3dMs=4000`, shim: env.NEW,
+      async run(page) {
+        await page.waitForFunction(() => window.__frozen && performance.now() > 2500, { timeout: 30000, polling: 100 });
+        const before = await page.evaluate(() => ({ ...(window.__dxrAuto3D.state().renderers.find((x) => x.engine === 'PlayCanvas') || {}), added: !!window.__added3d }));
+        await page.waitForFunction(() => window.__added3d, { timeout: 30000, polling: 100 });
+        await page.waitForFunction(() => { const r = window.__dxrAuto3D.state().renderers.find((x) => x.active); return !!(r && r.stats.twoView > 30); }, { timeout: 20000, polling: 200 });
+        return { before, after: await page.evaluate(() => window.__dxrAuto3D.state().renderers.find((x) => x.active)) };
+      },
+      check(r, t) {
+        if (r.error) { t('ran', false, r.error); return; }
+        t('2D while UI only (nothing 3D)', !!r.before && !r.before.added && !r.before.active && /nothing 3D/.test(r.before.flatReason || ''), `flatReason ${r.before && r.before.flatReason}`);
+        t('3D once the box is there', !!r.after && r.after.stats.twoView > 30, `twoView ${r.after && r.after.stats.twoView}`);
+      },
+    },
     pin('b', '2.20'),
     pin('pc-cf', '2.20'),
     {

@@ -260,6 +260,7 @@ function dxrPlayCanvas(core) {
       const where = core.canvasPlacement(st.canvas);
       if (where) return where;
       if (!(st.L.w > 0 && st.L.h > 0)) return 'canvas has no size yet';
+      if (core.T.pcNeeds3D !== false && !has3D(st, pick.cam)) return flatWhy(st, NOTHING_3D); // false: TEST ONLY
       return core.cssEffect(st.canvas);
     },
     hasCamera: (st) => !!st.cam,
@@ -359,6 +360,33 @@ function dxrPlayCanvas(core) {
       },
     }),
   };
+  // A camera whose layers hold nothing but screen-space UI (a 2D menu, a HUD-only page, a loading
+  // screen) has no depth to show: converting it only duplicates the picture at half the horizontal
+  // resolution (playcanvas.com/examples user-interface/*: 'halves identical'). Stays 2D with the
+  // reason, re-checked on every activation attempt, so 3D content that arrives later converts.
+  // Looked for: any visible mesh instance in the camera's enabled layers that is not a screen-space
+  // element's, or an enabled gsplat component.
+  const NOTHING_3D = 'nothing 3D for the camera to render (screen-space UI only)';
+  function has3D(st, cam) {
+    const app = st.app, comp = app.scene && app.scene.layers;
+    if (!comp || typeof comp.getLayerById !== 'function' || !Array.isArray(cam.layers)) return true; // unknown shape: do not block
+    for (const id of cam.layers) {
+      const layer = comp.getLayerById(id);
+      if (!layer || layer.enabled === false) continue;
+      let mis = layer.meshInstances;
+      if (!mis) mis = [...(layer.opaqueMeshInstances || []), ...(layer.transparentMeshInstances || [])];
+      for (const mi of mis) {
+        if (!mi || mi.visible === false) continue;
+        // An element's image / text draws from a node of its own, a child of the element's entity.
+        let n = mi.node, el = null;
+        for (let k = 0; n && k < 3 && !el; k++, n = n.parent) el = n.element || null;
+        if (el && typeof el._isScreenSpace === 'function' && el._isScreenSpace()) continue;
+        return true;
+      }
+    }
+    try { for (const g of app.root.findComponents('gsplat')) if (g.enabled && g.entity.enabled) return true; } catch (e) { return true; }
+    return false;
+  }
   function flatWhy(st, why) {
     if (st.flatReason !== why) { st.flatReason = why; info('PlayCanvas canvas stays 2D:', why); core.notify(); }
     return why;
