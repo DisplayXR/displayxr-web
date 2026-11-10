@@ -365,7 +365,7 @@ function dxrPlayCanvas(core) {
   // resolution (playcanvas.com/examples user-interface/*: 'halves identical'). Stays 2D with the
   // reason, re-checked on every activation attempt, so 3D content that arrives later converts.
   // Looked for: any visible mesh instance in the camera's enabled layers that is not a screen-space
-  // element's, or an enabled gsplat component.
+  // element's, an enabled gsplat component, or immediate-mode lines.
   const NOTHING_3D = 'nothing 3D for the camera to render (screen-space UI only)';
   function has3D(st, cam) {
     const app = st.app, comp = app.scene && app.scene.layers;
@@ -385,6 +385,10 @@ function dxrPlayCanvas(core) {
       }
     }
     try { for (const g of app.root.findComponents('gsplat')) if (g.enabled && g.entity.enabled) return true; } catch (e) { return true; }
+    // Immediate-mode drawing (app.drawLine / drawLines / drawWireSphere, debug/wire-shapes): its mesh
+    // instances join the layers only while the frame renders; the batches it has made are kept.
+    const im = app.scene.immediate;
+    if (im && ((im.allBatches && im.allBatches.size > 0) || (im.batchesMap && im.batchesMap.size > 0))) return true;
     return false;
   }
   function flatWhy(st, why) {

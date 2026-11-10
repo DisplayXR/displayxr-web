@@ -535,7 +535,7 @@ are offset from it by a few ipd × m2v.
 | legacy post effects (`camera.postEffects`), or `framePasses` that are not one `CameraFrame` | **2D**, HUD reason |
 | the page sizes the canvas by writing `canvas.width / height` itself (supersplat-viewer) | **3D** since v0.6.2: the writes are recorded as the page's size, the store stays side by side (below) |
 | orthographic camera | **2D**, HUD reason |
-| nothing 3D for the camera: its layers hold only screen-space UI (a 2D menu, a loading screen; playcanvas.com/examples `user-interface/*`) | **2D** since v0.7.4, `nothing 3D for the camera to render (screen-space UI only)`; re-checked on every activation attempt, so 3D content that arrives later converts (cases `pc-ui-only`, `pc-ui-then-3d`). Before, two identical halves at half the horizontal resolution |
+| nothing 3D for the camera: its layers hold only screen-space UI (a 2D menu, a loading screen; playcanvas.com/examples `user-interface/*`) | **2D** since v0.7.4, `nothing 3D for the camera to render (screen-space UI only)`; re-checked on every activation attempt, so 3D content that arrives later converts (cases `pc-ui-only`, `pc-ui-then-3d`; immediate-mode lines count as 3D, `pc-ui-lines`). Before, two identical halves at half the horizontal resolution |
 | an engine without `Camera.xrViews` (before 2.20) | **2D** since v0.7.4, HUD reason (see [engine versions](#playcanvas-engine-versions-v074)) |
 | the app presents WebXR through `app.xr` | stands down (the immersive path owns it) |
 | OffscreenCanvas / worker | not converted |
@@ -1563,6 +1563,30 @@ runs EVERY PlayCanvas page on one engine).
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Headless, v0.7.4 (PlayCanvas 2.24 and engine versions side by side), macOS, ANGLE Metal + WebGPU (Apple
+M1 Pro):** the official PlayCanvas examples (playcanvas.com/examples, engine 2.24.0), every one of the
+277 listed (`corpus/run-pc-examples.mjs`, results `corpus/results/2026-11-10-pc-examples-{v0.7.3,v0.7.4}.json`):
+each example's iframe page loaded top-level with the fake session and the dev bundle, scored on a
+screenshot of the canvas (the right eye must be the left shifted by the fake's 0.1 × eye width; DOM over
+the canvas hidden for the shot).
+- **v0.7.3 → v0.7.4: PASS 161 → 207, REVIEW 105 → 33, FLAT 10 → 36, ERROR 1 → 1.** v0.7.3 froze every
+  example with a CameraFrame on its last mono frame (all 14 `camera-frame/*`, and the CameraFrame users in
+  graphics, demos, lights-and-shadows, gaussian-splatting-fx, animation); the WebGPU compute examples with a
+  CameraFrame then lost eye 0 to the MSAA store (fixed with them); the 20 `user-interface/*` and 5 `xr/ar-*`
+  pages (screen UI only) now stay 2D with the reason instead of two identical halves.
+- **Left 2D by design:** several cameras to the canvas (`compute/scene-maps`, `gizmos/camera`,
+  `graphics/multi-view`, `gaussian-splatting/multi-view`), orthographic (`integrations/spine*`,
+  `misc/*sprite*`), frame passes that are not a CameraFrame (`render-targets/render-pass-camera`).
+- **Converted, flagged by the score, by nature:** screen-space content sits at screen depth in both eyes
+  (UI text over the post chain, a halftone compose shader, picture-in-picture thumbnails, a 3D view shown
+  through a render-target quad: `edge-detect`, `multi-render-targets`, `texture-renderer`).
+- **Open (not fixed here):** a few gsplat effects differ between the eyes (`gaussian-splatting-fx/relighting`
+  shows sort artifacts in eye 0; `shader-rings`, `depth-effects`, `clipping`, `particle-blast`), refraction
+  through the scene-colour grab (`materials/dispersion`), custom MSAA render-target passes
+  (`render-targets/msaa-depth-fog`, `custom-msaa-resolve`), volumetric fog (low contrast, the score cannot
+  tell). The harness: whole suite on the default pins, and every PlayCanvas page on 2.24, 2.23 and 2.20
+  (`PC_ENGINE`), plus `cases/pc-engines.mjs` (2.24 / 2.20 / 2.17) in the default run.
 
 **Headless, v0.7.3 (no `WebGPURenderer` revision ceiling), Windows, ANGLE D3D11 + WebGPU:** the full
 harness on **three r187** (`THREE_VERSION=0.187.0`) and on the r180 pin: 166 cases each, 2 skipped (`c` / `d`: no `ports_25.sog`), all green. On r187 before the change,

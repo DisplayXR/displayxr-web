@@ -83,6 +83,15 @@ export default function cases(env) {
       },
     })),
     {
+      id: 'pc-ui-lines', name: 'PlayCanvas screen-space UI + immediate-mode lines (app.drawLine): that is 3D, converts',
+      url: `${env.P}pc-ui.html?lines=1`, shim: env.NEW,
+      async run(page) {
+        await page.waitForFunction(() => { const r = window.__dxrAuto3D && window.__dxrAuto3D.state().renderers.find((x) => x.active); return !!(r && r.stats.twoView > 30); }, { timeout: 20000, polling: 200 });
+        return { R: await page.evaluate(() => window.__dxrAuto3D.state().renderers.find((x) => x.active)) };
+      },
+      check(r, t) { t('converted', !r.error && !!r.R && r.R.stats.twoView > 30, r.error || `twoView ${r.R && r.R.stats.twoView}`); },
+    },
+    {
       id: 'pc-ui-then-3d', name: 'PlayCanvas screen-space UI, then the page adds a 3D box (4 s): converts once there is depth',
       url: `${env.P}pc-ui.html?add3dMs=4000`, shim: env.NEW,
       async run(page) {
