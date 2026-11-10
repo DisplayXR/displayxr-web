@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -488,7 +488,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.2'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.3'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -521,6 +521,7 @@ function dxrCore(cfg, cap, S) {
     guardRetryMaxMs: 30000, // ... or after this long at the latest
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
+    gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
@@ -2249,18 +2250,30 @@ function dxrThree(core) {
     if (o.isWebGPURenderer) { trackCommon(o); return; }
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
-  const GPU_REVS = [178, 186];
+  const GPU_MIN = 178, GPU_VERIFIED = 187;
   const COMMON_API = ['render', 'setSize', 'setPixelRatio', 'getPixelRatio', 'getSize', 'getDrawingBufferSize', 'setViewport', 'setScissor', 'setScissorTest', 'getRenderTarget', 'setRenderTarget', 'getContext'];
+  function missingHooks(r) {
+    const miss = [];
+    if (!r.backend) miss.push('backend');
+    if (!('autoClearColor' in r)) miss.push('autoClearColor');
+    for (const k of COMMON_API) if (typeof r[k] !== 'function') miss.push(k + '()');
+    if (typeof r.hasInitialized !== 'function' && !('_initialized' in r)) miss.push('hasInitialized() / _initialized');
+    if (!('needsFrameBufferTarget' in r) && typeof r._getFrameBufferTarget !== 'function') miss.push('needsFrameBufferTarget / _getFrameBufferTarget()');
+    return miss;
+  }
   const seenCommon = new WeakSet();
   function trackCommon(r) {
     if (seenCommon.has(r)) return;
     seenCommon.add(r);
     if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted, left 2D'); return; }
     const rev = parseInt(revision, 10);
+    const miss = missingHooks(r);
     let why = null;
-    if (!(rev >= GPU_REVS[0] && rev <= GPU_REVS[1])) why = `WebGPURenderer r${revision || '?'} — the driver is verified on r${GPU_REVS[0]}–r${GPU_REVS[1]} only`;
-    else if (!r.backend || !('autoClearColor' in r) || COMMON_API.some((k) => typeof r[k] !== 'function')) why = 'WebGPURenderer without the common Renderer API (backend, autoClearColor, setViewport …)';
+    if (!(rev >= GPU_MIN)) why = `WebGPURenderer r${revision || '?'} — the driver needs r${GPU_MIN} or later`;
+    else if (miss.length) why = `WebGPURenderer r${rev} without what the driver uses: ${miss.join(', ')}`;
     if (why) { core.noteFlat('three.js', r.domElement, why); return; }
+    const verified = core.T.gpuVerified || GPU_VERIFIED;
+    if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
     track(r, true);
   }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
