@@ -36,7 +36,7 @@
 // (surface.toClip on WebGPU, reversed-Z when reversedDepthBuffer); its clears ignore the scissor, so
 // the eye pair is drawn the way its output path allows (eyeBegin); three's own reads of its size /
 // viewport getters see the REAL store (its screen nodes and output pass sample by them); and a
-// PostProcessing chain is reported 'flat' with a reason, not split. Verified revisions: GPU_REVS.
+// PostProcessing chain is reported 'flat' with a reason, not split. Revision gate: GPU_MIN / GPU_VERIFIED.
 function dxrThree(core) {
   core.registerEngine('three.js');
   const { info, warnOnce, desc, realW, realH } = core;
@@ -61,22 +61,41 @@ function dxrThree(core) {
     if (o.isWebGLRenderer || (o.domElement && typeof o.render === 'function' && typeof o.getContext === 'function')) track(o);
   };
   // WebGPURenderer (three r178+ announces it on __THREE_DEVTOOLS__ from its constructor; earlier
-  // revisions never do, so they are never seen). Driven on the revisions this driver was read and
-  // tested against (the private fields it reads, _initialized / _getFrameBufferTarget, and the output
-  // pass it relies on move between releases); any other revision, or an object without the common
-  // Renderer API, is left untouched and reported 'flat' with the reason.
-  const GPU_REVS = [178, 186];
+  // revisions never do, so they are never seen). Gated on WHAT THE DRIVER USES, not on a revision
+  // ceiling (v0.7.3). three ships about monthly and threejs.org's examples move with it, so a ceiling
+  // turned every new release into "the WebGPU examples silently went 2D" (r187, 2026-11: the
+  // webgpu_loader_gltf example). Instead:
+  //   - below GPU_MIN: never announced, nothing to drive;
+  //   - every revision: the common Renderer API, plus the two version-dependent hooks the driver reads
+  //     (readiness: hasInitialized() r182+ / _initialized r178-r181; the output path:
+  //     needsFrameBufferTarget r182+ / _getFrameBufferTarget() r178-r181). One missing = flat, with a
+  //     reason naming it;
+  //   - above GPU_VERIFIED (the newest revision the harness was run on): converted, with ONE console
+  //     note. The headless harness on three@latest is the canary (README 'Keeping up with three.js').
+  const GPU_MIN = 178, GPU_VERIFIED = 187;
   const COMMON_API = ['render', 'setSize', 'setPixelRatio', 'getPixelRatio', 'getSize', 'getDrawingBufferSize', 'setViewport', 'setScissor', 'setScissorTest', 'getRenderTarget', 'setRenderTarget', 'getContext'];
+  function missingHooks(r) {
+    const miss = [];
+    if (!r.backend) miss.push('backend');
+    if (!('autoClearColor' in r)) miss.push('autoClearColor');
+    for (const k of COMMON_API) if (typeof r[k] !== 'function') miss.push(k + '()');
+    if (typeof r.hasInitialized !== 'function' && !('_initialized' in r)) miss.push('hasInitialized() / _initialized');
+    if (!('needsFrameBufferTarget' in r) && typeof r._getFrameBufferTarget !== 'function') miss.push('needsFrameBufferTarget / _getFrameBufferTarget()');
+    return miss;
+  }
   const seenCommon = new WeakSet();
   function trackCommon(r) {
     if (seenCommon.has(r)) return;
     seenCommon.add(r);
     if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted, left 2D'); return; }
     const rev = parseInt(revision, 10);
+    const miss = missingHooks(r);
     let why = null;
-    if (!(rev >= GPU_REVS[0] && rev <= GPU_REVS[1])) why = `WebGPURenderer r${revision || '?'} — the driver is verified on r${GPU_REVS[0]}–r${GPU_REVS[1]} only`;
-    else if (!r.backend || !('autoClearColor' in r) || COMMON_API.some((k) => typeof r[k] !== 'function')) why = 'WebGPURenderer without the common Renderer API (backend, autoClearColor, setViewport …)';
+    if (!(rev >= GPU_MIN)) why = `WebGPURenderer r${revision || '?'} — the driver needs r${GPU_MIN} or later`;
+    else if (miss.length) why = `WebGPURenderer r${rev} without what the driver uses: ${miss.join(', ')}`;
     if (why) { core.noteFlat('three.js', r.domElement, why); return; }
+    const verified = core.T.gpuVerified || GPU_VERIFIED;
+    if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
     track(r, true);
   }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };

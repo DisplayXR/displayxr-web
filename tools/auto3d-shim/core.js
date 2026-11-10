@@ -84,6 +84,7 @@ function dxrCore(cfg, cap, S) {
     guardRetryMaxMs: 30000, // ... or after this long at the latest
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
+    gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
