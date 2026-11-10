@@ -176,11 +176,14 @@ export default function cases({ P, NEW, productShim }) {
       alsoCheck(r, t, h, R) {
         t('WebGPU device', R.device === 'webgpu', `device ${R.device}`);
         const fp = R.footprint;
-        if (k === '-ctl') t('footprint fix off: no shader patched', fp.patched === 0, `${fp.patched}/${fp.seen}`);
-        else t('WGSL footprint shader patched (>= 1)', fp.patched >= 1 && fp.seen >= 1, `patched ${fp.patched} of ${fp.seen} splat module(s) seen`);
+        // An engine with its own per-axis focal (2.23+, footprint.native) needs no fix: round either way.
+        const native = (fp.native || 0) > 0;
+        if (k === '-ctl') t('footprint fix off: no shader patched', fp.patched === 0, `${fp.patched}/${fp.seen}, native ${fp.native || 0}`);
+        else t('WGSL footprint shader patched (>= 1), or the engine\'s own per-axis focal', (fp.patched >= 1 || native) && fp.seen >= 1, `patched ${fp.patched} of ${fp.seen} splat module(s) seen, native ${fp.native || 0}`);
         const a = [0, 1].map((e) => splatAspect(r.pixels.px, r.pixels.w, r.pixels.h, e));
-        const ok = (x) => !!x && (k === '-ctl' ? x.ratio > 0.8 && x.ratio < 1.25 : x.ratio > 1.7 && x.ratio < 2.3);
-        t(k === '-ctl' ? 'centre splat ~1:1 in store px in each eye (half height on the display)' : 'centre splat ~2:1 (tall) in store px in each eye = round on the display (pixel aspect 2)', ok(a[0]) && ok(a[1]),
+        const half = k === '-ctl' && !native;
+        const ok = (x) => !!x && (half ? x.ratio > 0.8 && x.ratio < 1.25 : x.ratio > 1.7 && x.ratio < 2.3);
+        t(half ? 'centre splat ~1:1 in store px in each eye (half height on the display)' : 'centre splat ~2:1 (tall) in store px in each eye = round on the display (pixel aspect 2)' + (k === '-ctl' ? ' — native engine focal' : ''), ok(a[0]) && ok(a[1]),
           a.map((x, e) => (x ? `eye ${e}: ${x.w}x${x.h} px, h/w ${x.ratio.toFixed(2)}` : `eye ${e}: no splat found`)).join('; '));
       },
     })),

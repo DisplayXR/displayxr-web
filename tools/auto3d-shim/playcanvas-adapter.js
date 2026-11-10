@@ -58,8 +58,11 @@ function dxrPlayCanvas(core) {
 
   // ------------------------------------------------------------ what the sentinel hands over
   const isApp = (a) =>
-    !!a && typeof a === 'object' && typeof a.tick === 'function' && typeof a.on === 'function' &&
-    typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
+    !!a && typeof a === 'object' && typeof a.on === 'function' && typeof a.fire === 'function' && !!a.systems &&
+    ((typeof a.tick === 'function' && 'graphicsDevice' in a) ||
+      // In the constructor (the canvas-id trap) of an older AppBase (2.17.2) neither exists yet: tick
+      // and graphicsDevice are set by init(). Newer engines declare both as class fields.
+      (typeof a.init === 'function' && typeof a.start === 'function'));
 
   // ------------------------------------------------------------ convergence target: lookAt
   // GraphNode.prototype.lookAt, wrapped once, records the world point per entity (the core uses it
@@ -158,7 +161,8 @@ function dxrPlayCanvas(core) {
     // gsplatCornerVS derives ONE focal length from the viewport width. Applied at the GL boundary
     // because ShaderChunks is not reachable from an ESM app; square pixels are unchanged by it.
     // WebGPU: the same fix in WGSL, at the device's createShaderModule (patchGsplatFootprintWgsl).
-    if (core.T.pcFootprint === false) return; // TEST ONLY (A/B)
+    // Engines from 2.23 derive the footprint from a per-axis focal themselves (`vec2 focal`, J1.x / J1.y):
+    // counted as footprint.native, left as is. core.T.pcFootprint === false (TEST ONLY, A/B) still counts.
     if (dev.isWebGPU) { wrapWgsl(st); return; }
     const gl = dev.gl;
     if (gl && typeof gl.shaderSource === 'function' && !dev.isWebGPU) {
@@ -166,8 +170,11 @@ function dxrPlayCanvas(core) {
       gl.shaderSource = function (sh, src) {
         if (typeof src === 'string' && src.indexOf('J2') >= 0 && /vec2\s+J2\s*=/.test(src)) {
           st.footprint.seen++;
-          const p = patchGsplatFootprint(src);
-          if (p.ok) { st.footprint.patched++; src = p.src; }
+          if (nativeFootprint(src)) st.footprint.native = (st.footprint.native || 0) + 1;
+          else if (core.T.pcFootprint !== false) {
+            const p = patchGsplatFootprint(src);
+            if (p.ok) { st.footprint.patched++; src = p.src; }
+          }
         }
         return ss.call(this, sh, src);
       };
@@ -185,8 +192,11 @@ function dxrPlayCanvas(core) {
       const code = desc && desc.code;
       if (typeof code === 'string' && code.indexOf('J2') >= 0 && /let\s+J2\s*=/.test(code)) {
         st.footprint.seen++;
-        const p = patchGsplatFootprintWgsl(code);
-        if (p.ok) { st.footprint.patched++; desc = { ...desc, code: p.src }; }
+        if (nativeFootprint(code)) st.footprint.native = (st.footprint.native || 0) + 1;
+        else if (core.T.pcFootprint !== false) {
+          const p = patchGsplatFootprintWgsl(code);
+          if (p.ok) { st.footprint.patched++; desc = { ...desc, code: p.src }; }
+        }
       }
       return csm.call(this, desc);
     };
@@ -210,10 +220,13 @@ function dxrPlayCanvas(core) {
     if (!cams.length) return { why: 'no enabled camera renders to the canvas' };
     if (cams.length > 1) return { why: `${cams.length} cameras render to the canvas (UI / multi-view) — not split in this prototype`, flat: true };
     const c = cams[0];
+    // The per-eye path is the engine's Camera.xrViews (an accessor on its Camera since 2.20): an older
+    // engine draws XR views only from its own XrManager session, so it is left 2D, with the reason.
+    if (!c.camera || !('xrViews' in c.camera)) return { why: 'this PlayCanvas engine has no Camera.xrViews (added in 2.20) — left 2D', flat: true };
     if (c.projection === 1) return { why: 'the camera is orthographic', flat: true };
     const pe = c.postEffects;
     if (c.postEffectsEnabled !== false && pe && Array.isArray(pe.effects) && pe.effects.length) return { why: 'post effects on the camera — needs per-eye targets (next)', flat: true };
-    const fp = c.framePasses || (c.camera && c.camera.framePasses);
+    const fp = getFP(c);
     let cf = null;
     if (fp && fp.length) {
       if (st && st.cf && fp === st.cf.list) cf = st.cf.A;
@@ -534,7 +547,7 @@ function dxrPlayCanvas(core) {
 
   function syncCameraFrame(st, want) {
     const C = st.cf;
-    if (C && C.A === want && st.cam.camera.framePasses === C.list) return;
+    if (C && C.A === want && getFP(st.cam) === C.list) return;
     if (!C && !want) return;
     if (C) uninstallCameraFrame(st);
     if (want) {
@@ -549,7 +562,7 @@ function dxrPlayCanvas(core) {
     const cam = st.cam, sc = cam.camera, dev = st.dev, FP = frameBase(A);
     if (!st.eyeSrc) st.eyeSrc = { get width() { return st.R ? st.R.eyeW : realW(st.canvas) >> 1; }, get height() { return st.R ? st.R.eyeH : realH(st.canvas); } };
     const C = (st.cf = {
-      A, B: null, list: null, n: 0, frames: 0, jit: [0, 0, 0, 0], prev: [null, null],
+      A, B: null, list: null, n: 0, frames: 0, shared: false, seen: [null, null], steps: new Map(), stores: new Map(), clears: null, taaEye0: null, jit: [0, 0, 0, 0], prev: [null, null],
       vp: [{ x: 0, y: 0, z: 1, w: 1 }, { x: 0, y: 0, z: 1, w: 1 }],
       saved: { idx: dev.xrCurrentViewIndex, prev: sc._viewProjPrevious && sc._viewProjPrevious.clone(), inv: sc._viewProjInverse && sc._viewProjInverse.clone(), jit: Array.isArray(sc._jitters) ? sc._jitters.slice() : null },
     });
@@ -557,21 +570,34 @@ function dxrPlayCanvas(core) {
     C.mS = [0, 1].map((i) => mark(`DxrEye${i}Scene`, () => eyeScene(st, i)));
     C.mA = [0, 1].map((i) => mark(`DxrEye${i}After`, () => eyeAfter(st)));
     C.mEnd = mark('DxrEyeEnd', () => eyeEnd(st));
+    // Effect-based CameraFrame (2.24+: CameraFrameEffect objects own their passes and uniforms, one set
+    // per effect): a second FramePassCameraFrame would take every effect's passes over from A, so A's
+    // ONE chain is run twice instead (C.shared), see "one chain, run per eye" below.
+    C.shared = sharedEffects(A);
     hookPass(st, A, 0);
-    C.B = new A.constructor(st.app, A.cameraFrame, cam, A.options);
-    hookPass(st, C.B, 1);
-    syncB(st);
+    if (!C.shared) {
+      C.B = new A.constructor(st.app, A.cameraFrame, cam, A.options);
+      hookPass(st, C.B, 1);
+      syncB(st);
+    }
     const proxy = (i) => {
       const p = new FP(dev);
       p.name = `DxrEye${i}`;
-      p.enabled = false; // never rendered: the frame graph only runs its frameUpdate and adds its before passes
-      p.beforePasses = i ? [C.mS[1], C.B, C.mEnd] : [C.mS[0], A];
-      p.frameUpdate = () => { if (st.cf !== C) return; if (i === 0) { if (A.layersDirty) C.B.layersDirty = true; } else syncB(st); };
+      // Never executes: the frame graph runs its frameUpdate and adds its before passes. It stays
+      // ENABLED (executeEnabled false instead): 2.24's FrameGraph.addPass skips a disabled pass with
+      // its whole subtree (beforePasses included), where 2.22 / 2.23's addRenderPass still added them.
+      p.executeEnabled = false;
+      p.beforePasses = i ? (C.shared ? [C.mS[1], C.mEnd] : [C.mS[1], C.B, C.mEnd]) : [C.mS[0], A];
+      p.frameUpdate = () => {
+        if (st.cf !== C) return;
+        if (C.shared) { if (i === 1) p.beforePasses = [C.mS[1], ...(C.A.internalBeforePasses || []), ...C.A.beforePasses, C.mEnd]; return; } // after A's frameUpdate: its current passes
+        if (i === 0) { if (A.layersDirty) C.B.layersDirty = true; } else syncB(st);
+      };
       p.destroy = () => { if (st.cf === C && i === 0) uninstallCameraFrame(st, true); }; // CameraFrame.disable(): the page destroys its pass
       return p;
     };
     C.list = [proxy(0), proxy(1)];
-    cam.framePasses = C.list;
+    setFP(cam, C.list);
     info('CameraFrame split per eye:', JSON.stringify(describeCameraFrame(st)));
   }
   // Adopt a FramePassCameraFrame's passes for eye i; re-run after each of its rebuilds (update() ->
@@ -581,17 +607,26 @@ function dxrPlayCanvas(core) {
     const orig = P.setupRenderPasses;
     P.setupRenderPasses = function (o) { const r = orig.call(this, o); if (st.cf && (st.cf.A === this || st.cf.B === this)) adoptPasses(st, this, i); return r; };
     P.__dxrSetup = own ? orig : null;
+    // CameraFrame.disable() on 2.24 filters ITS pass out of camera.framePasses (our proxies stay) and
+    // destroys it, never calling a proxy's destroy: the page's pass destroying itself is the signal.
+    if (i === 0) {
+      const ownD = Object.prototype.hasOwnProperty.call(P, 'destroy'), d = P.destroy;
+      P.destroy = function () { if (st.cf && st.cf.A === this) uninstallCameraFrame(st, true, true); return d.apply(this, arguments); };
+      P.__dxrDestroy = ownD ? d : null;
+    }
     adoptPasses(st, P, i);
   }
   function adoptPasses(st, P, i) {
     const C = st.cf;
-    if (P.sceneOptions) P.sceneOptions.resizeSource = st.eyeSrc; // scenePass / prePass hold this object
+    if (P.sceneOptions) P.sceneOptions.resizeSource = st.eyeSrc; // scenePass / prePass hold this object (<= 2.23)
+    setResizeSource(P, st.eyeSrc); // 2.24 copies the options into each pass
     const cp = P.composePass;
     if (cp) {
       cp.viewport = C.vp[i]; cp.scissor = C.vp[i];
       cp.afterPasses = [C.mA[i]];
       if (i === 1) { cp.setClearColor(undefined); cp.setClearDepth(undefined); cp.setClearStencil(undefined); }
     }
+    if (C.shared) return; // the camera-use flags are switched per eye by the markers
     for (const pass of P.beforePasses) {
       const steps = pass && pass.layerRenderSteps;
       if (steps) for (const s of steps) { if (i === 1) s.firstCameraUse = false; else s.lastCameraUse = false; }
@@ -601,7 +636,9 @@ function dxrPlayCanvas(core) {
     if (P.__dxrSetup === undefined) return;
     if (P.__dxrSetup) P.setupRenderPasses = P.__dxrSetup; else delete P.setupRenderPasses;
     delete P.__dxrSetup;
+    if (P.__dxrDestroy !== undefined) { if (P.__dxrDestroy) P.destroy = P.__dxrDestroy; else delete P.destroy; delete P.__dxrDestroy; }
     if (P.sceneOptions) P.sceneOptions.resizeSource = cam.renderTarget;
+    setResizeSource(P, cam.renderTarget);
     const cp = P.composePass;
     if (cp) { cp.viewport = undefined; cp.scissor = undefined; cp.afterPasses = []; }
     if (typeof P.updateCameraUseFlags === 'function') P.updateCameraUseFlags();
@@ -609,24 +646,31 @@ function dxrPlayCanvas(core) {
   // CameraFrame.update() for B: the page's current settings, B's passes.
   function syncB(st) {
     const C = st.cf, cf = C.A.cameraFrame;
+    if (!C.B) return;
     if (!cf || cf.renderPassCamera !== C.A || typeof cf.update !== 'function') return;
     cf.renderPassCamera = C.B;
     try { cf.update(); } finally { cf.renderPassCamera = C.A; }
   }
-  function uninstallCameraFrame(st, pageDestroys) {
+  function uninstallCameraFrame(st, pageDestroys, fromA) {
     const C = st.cf;
     if (!C) return;
     st.cf = null;
     const cam = st.cam || st.qualifyCam, sc = cam && cam.camera, dev = st.dev;
-    try { if (cam && sc.framePasses === C.list) cam.framePasses = pageDestroys ? [] : [C.A]; } catch (e) { /* ignore */ }
+    try {
+      const cur = cam && getFP(cam);
+      if (cam && cur === C.list) setFP(cam, pageDestroys ? [] : [C.A]);
+      else if (cam && pageDestroys && Array.isArray(cur) && cur.some((p) => C.list.includes(p))) setFP(cam, cur.filter((p) => !C.list.includes(p) && p !== C.A)); // 2.24 disable(): the page's filtered copy
+    } catch (e) { /* ignore */ }
     try { unhookPass(st, C.A, cam); } catch (e) { /* ignore */ }
     if (C.B) { try { unhookPass(st, C.B, cam); C.B.destroy(); } catch (e) { warnOnce('pc-cf-b', 'eye 1 CameraFrame passes did not destroy cleanly', e); } }
-    if (pageDestroys) { try { C.A.destroy(); } catch (e) { /* the page's own pass */ } }
+    if (pageDestroys) { if (!fromA) { try { C.A.destroy(); } catch (e) { /* the page's own pass */ } } }
     else if (C.A.sceneDepthTexture && cam) {
       // B's reset() cleared the camera's scene-depth flags, which A (still the page's) needs.
       const sp = cam.shaderParams;
       sp.sceneDepthMapLinear = true; sp.sceneDepthMapPacked = false; sp.sceneDepthMapReciprocal = true;
     }
+    if (C.shared) sharedEyeRestore(C);
+    if (C.taaEye0) { try { C.taaEye0.rt.destroyTextureBuffers(); C.taaEye0.rt.destroy(); } catch (e) { /* ignore */ } C.taaEye0 = null; }
     try { dev.xrCurrentViewIndex = C.saved.idx; } catch (e) { /* ignore */ }
     if (sc) {
       try {
@@ -641,14 +685,15 @@ function dxrPlayCanvas(core) {
   function eyeScene(st, i) {
     const C = st.cf;
     if (!C || !st.views) return;
-    const P = i ? C.B : C.A, sc = st.cam.camera, R = st.R;
+    const P = i && !C.shared ? C.B : C.A, sc = st.cam.camera, R = st.R;
     st.dev.xrCurrentViewIndex = i;
     const rt = P.rt, w = rt ? rt.width : R.eyeW, h = rt ? rt.height : R.eyeH;
     for (const v of st.views) v.setViewport(0, 0, w, h);
     // The compose quad goes to this eye's half of the store.
-    const vp = C.vp[i]; vp.x = i * R.eyeW; vp.y = 0; vp.z = R.eyeW; vp.w = R.eyeH;
-    if (P.taaPass && sc._viewProjPrevious) {
-      sc.updateViewTransforms();
+    const vp = C.vp[C.shared ? 0 : i]; vp.x = i * R.eyeW; vp.y = 0; vp.z = R.eyeW; vp.w = R.eyeH;
+    if (C.shared) sharedEye(st, C, i);
+    if (taaOf(P) && sc._viewProjPrevious) {
+      if (typeof sc.updateViewTransforms === 'function') sc.updateViewTransforms();
       const cur = st.views[i].projViewOffMat;
       const prev = C.prev[i] || (C.prev[i] = cur.clone());
       sc._viewProjPrevious.copy(prev);
@@ -665,6 +710,7 @@ function dxrPlayCanvas(core) {
     const C = st.cf;
     if (!C) return;
     st.dev.xrCurrentViewIndex = C.saved.idx;
+    if (C.shared) sharedEyeRestore(C);
     C.frames++;
   }
   // TAA jitter on both eye projections (prerender, after updateViews set them): the engine's own
@@ -672,21 +718,124 @@ function dxrPlayCanvas(core) {
   function cameraFrameJitter(st) {
     const C = st.cf, A = C.A, j = C.jit, sc = st.cam.camera;
     j[2] = j[0]; j[3] = j[1];
-    if (!A.taaPass || !(sc.jitter > 0) || core.T.pcTaaJitter === false) { j[0] = j[1] = 0; return; }
+    if (!taaOf(A) || !(sc.jitter > 0) || core.T.pcTaaJitter === false) { j[0] = j[1] = 0; return; }
     const o = HALTON[C.n++ % HALTON.length];
     const w = (A.rt && A.rt.width) || st.R.eyeW, h = (A.rt && A.rt.height) || st.R.eyeH;
     j[0] = (sc.jitter * (o[0] * 2 - 1)) / w; j[1] = (sc.jitter * (o[1] * 2 - 1)) / h;
     for (const v of st.views) { v.projMat.data[8] += j[0]; v.projMat.data[9] += j[1]; }
   }
+  // ---- feature detection across engine versions (never a version number)
+  // The camera's pass list: `framePasses` (2.18+), `renderPasses` before (2.17: CameraFrame's
+  // RenderPassCameraFrame lands there). The component's own accessor first, else its Camera's.
+  const fpKey = (o) => (o && 'framePasses' in o ? 'framePasses' : o && 'renderPasses' in o ? 'renderPasses' : null);
+  function getFP(c) {
+    const k = fpKey(c);
+    if (k && c[k]) return c[k];
+    const k2 = c && c.camera && fpKey(c.camera);
+    return k2 ? c.camera[k2] : undefined;
+  }
+  function setFP(c, v) { const k = fpKey(c); if (k) c[k] = v; else if (c.camera && fpKey(c.camera)) c.camera[fpKey(c.camera)] = v; }
+  // The CameraFrame's effects own their passes (CameraFrameEffect, 2.24+): CameraFrame.effects lists them.
+  const sharedEffects = (A) => {
+    const fx = A && A.cameraFrame && A.cameraFrame.effects;
+    return Array.isArray(fx) && fx.some((e) => e && typeof e.createPasses === 'function');
+  };
+  // The chain's TAA resolve: a member (<= 2.23: taaPass) or, with effects, the pass that keeps a history pair.
+  const taaOf = (P) => (P && (P.taaPass || (Array.isArray(P.beforePasses) && P.beforePasses.find((p) => p && Array.isArray(p.historyTextures) && Array.isArray(p.historyRenderTargets) && typeof p.update === 'function')))) || null;
+  const hasEffect = (P, id) => !!(P && (P[`${id}Pass`] || (Array.isArray(P._passEffects) && P._passEffects.some((e) => e && e.id === id)) ||
+    (P.cameraFrame && Array.isArray(P.cameraFrame._activeEffects) && P.cameraFrame._activeEffects.some((e) => e && e.id === id))));
+  // The scene / prepass size from the eye: their own options object when the engine copied it (2.24).
+  function setResizeSource(P, src) {
+    for (const pass of [P.scenePass, P.prePass, P.scenePassTransparent]) {
+      const o = pass && pass.options;
+      if (o && typeof o === 'object' && 'resizeSource' in o && o !== P.sceneOptions) o.resizeSource = src;
+    }
+  }
+  // ---- one chain, run per eye (effect-based CameraFrame). At render time, in pass order:
+  //   eye 0: the camera's first use, not its last; the compose clears (the page's ops); TAA reads the
+  //          eye-0 history kept below (not the pair's last output, which is eye 1's).
+  //   eye 1: not the first use, the last; the compose does not clear (it would wipe eye 0); TAA reads
+  //          the pass's own previous output (eye 1 wrote it last). After eye 0's TAA, its output is
+  //          copied aside as eye 0's history for the next frame. Exposure / adaptation state is shared.
+  function sharedEye(st, C, i) {
+    const A = C.A, cp = A.composePass;
+    for (const pass of A.beforePasses) {
+      const steps = pass && pass.layerRenderSteps;
+      if (!steps) continue;
+      for (const s of steps) {
+        let o = C.steps.get(s);
+        if (!o) C.steps.set(s, (o = { f: s.firstCameraUse, l: s.lastCameraUse }));
+        s.firstCameraUse = i ? false : o.f; s.lastCameraUse = i ? o.l : false;
+      }
+    }
+    if (cp && cp.colorArrayOps) {
+      const c0 = cp.colorArrayOps[0], ds = cp.depthStencilOps;
+      if (!C.clears || C.clears.cp !== cp) C.clears = { cp, c: c0 ? c0.clear : false, d: ds ? ds.clearDepth : false, s: ds ? ds.clearStencil : false };
+      if (c0) c0.clear = i ? false : C.clears.c;
+      if (ds) { ds.clearDepth = i ? false : C.clears.d; ds.clearStencil = i ? false : C.clears.s; }
+      C.seen[i] = { vp: { ...C.vp[0] }, clears: !!(c0 && c0.clear) };
+    }
+    // Eye 0's back-buffer passes (compose, after) must STORE: on an MSAA back buffer a pass stores only
+    // when a later pass on the target loads it, which the frame graph's compile decides from the clear
+    // flags it sees then, and it sees eye 1's compose as clearing (the same pass object, switched here
+    // at render time). Without it eye 1's resolve wipes eye 0: a black left half (case pc-cf-*-aa@2.24).
+    for (const p of core.T.pcEyeStore === false ? [] : [cp, A.afterPass]) { // false: TEST ONLY (A/B)
+      const c0 = p && p.colorArrayOps && p.colorArrayOps[0], ds = p && p.depthStencilOps;
+      if (!c0) continue;
+      let o = C.stores.get(p);
+      if (!o) C.stores.set(p, (o = { s: c0.store, d: ds ? ds.storeDepth : false }));
+      c0.store = i ? o.s : true;
+      if (ds) ds.storeDepth = i ? o.d : true;
+    }
+    const taa = taaOf(A);
+    if (!taa || core.T.pcTaaEyeHistory === false) return;
+    const k = taa.historyIndex, out = taa.historyRenderTargets[k], H = C.taaEye0 || (C.taaEye0 = taaHistory(st, taa));
+    if (!H || !out) return;
+    if (i === 0) {
+      if (H.tex.width !== out.width || H.tex.height !== out.height) H.rt.resize(out.width, out.height);
+      H.slot = 1 - k; H.saved = taa.historyTextures[H.slot]; taa.historyTextures[H.slot] = H.tex;
+    } else if (H.saved) {
+      taa.historyTextures[H.slot] = H.saved; H.saved = null;
+      try { st.dev.copyRenderTarget(out, H.rt, true, false); } catch (e) { warnOnce('pc-taa-copy', 'could not keep eye 0\'s TAA history', e); }
+    }
+  }
+  function taaHistory(st, taa) {
+    try {
+      const t0 = taa.historyTextures[0], r0 = taa.historyRenderTargets[0];
+      const tex = new t0.constructor(st.dev, { name: 'DxrTaaHistoryEye0', width: t0.width, height: t0.height, format: t0.format, mipmaps: false,
+        minFilter: t0.minFilter, magFilter: t0.magFilter, addressU: t0.addressU, addressV: t0.addressV });
+      return { tex, rt: new r0.constructor({ colorBuffer: tex, depth: false }), slot: 0, saved: null };
+    } catch (e) { warnOnce('pc-taa-eye', 'no eye-0 TAA history: eye 0 reads eye 1\'s', e); return null; }
+  }
+  function sharedEyeRestore(C) {
+    for (const [s, o] of C.steps) { s.firstCameraUse = o.f; s.lastCameraUse = o.l; }
+    C.steps.clear();
+    const K = C.clears;
+    if (K && K.cp.colorArrayOps) {
+      if (K.cp.colorArrayOps[0]) K.cp.colorArrayOps[0].clear = K.c;
+      if (K.cp.depthStencilOps) { K.cp.depthStencilOps.clearDepth = K.d; K.cp.depthStencilOps.clearStencil = K.s; }
+    }
+    C.clears = null;
+    for (const [p, o] of C.stores) {
+      const c0 = p.colorArrayOps && p.colorArrayOps[0];
+      if (c0) c0.store = o.s;
+      if (p.depthStencilOps) p.depthStencilOps.storeDepth = o.d;
+    }
+    C.stores.clear();
+    const H = C.taaEye0, taa = H && H.saved && taaOf(C.A);
+    if (taa) { taa.historyTextures[H.slot] = H.saved; H.saved = null; }
+  }
   function describeCameraFrame(st) {
     const C = st.cf;
     if (!C) return null;
     const one = (P) => P && {
-      target: P.rt ? [P.rt.width, P.rt.height] : null, taa: !!P.taaPass, bloom: !!P.bloomPass, ssao: !!P.ssaoPass, dof: !!P.dofPass,
+      target: P.rt ? [P.rt.width, P.rt.height] : null, taa: !!taaOf(P), bloom: hasEffect(P, 'bloom'), ssao: hasEffect(P, 'ssao'), dof: hasEffect(P, 'dof'),
       prepass: !!P.prePass, sceneDepth: !!P.sceneDepthTexture,
       compose: P.composePass ? { vp: P.composePass.viewport ? { ...P.composePass.viewport } : null, clears: !!(P.composePass.colorArrayOps && P.composePass.colorArrayOps[0] && P.composePass.colorArrayOps[0].clear) } : null,
     };
-    return { eyes: [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2) };
+    // One chain run per eye: what each run applied (recorded by the markers).
+    const eye = (i) => { const o = one(C.A); if (o && o.compose && C.seen[i]) o.compose = { ...C.seen[i] }; return o; };
+    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2) };
   }
 
   // ------------------------------------------------------------ pages that size the canvas themselves
@@ -832,6 +981,8 @@ function dxrPlayCanvas(core) {
       farClip: Math.abs(P[10] + 1) < 1e-9 ? 1e4 : P[14] / (P[10] + 1),
     };
   }
+  // The engine's own per-axis focal: J1 is a vec2 read per axis (2.23+, GLSL and WGSL alike).
+  const nativeFootprint = (src) => /\bJ1\.y\b/.test(src) && !/dxrFocalY/.test(src);
   // inline3d-splat-playcanvas.js patchGsplatFootprint, verbatim.
   function patchGsplatFootprint(src) {
     if (typeof src !== 'string') return { src, ok: false };

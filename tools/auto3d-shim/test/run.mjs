@@ -13,6 +13,9 @@
 // Cases live in test/cases/*.mjs (a registry, loaded in file-name order; see cases/existing.mjs).
 //
 // Usage: node run.mjs [caseId…]      env: CHROME=<binary>  SOG_DIR=<dir with ports_25.sog>  KEEP=1 (write PNGs to test/out)
+//   PC_ENGINE=2.24: every PlayCanvas page gets .deps/playcanvas-2.24 (the engine playcanvas.com/examples runs) in place of
+//   the 2.22.3 / 2.23.0 its import map names — the engine-upgrade regression run (the supersplat-viewer bundles its own).
+//   Any staged .deps/playcanvas-X.Y works (deps.mjs PC_ENGINES=2.17.2 -> PC_ENGINE=2.17).
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -32,13 +35,28 @@ const CHROME = process.env.CHROME || (WIN ? 'C:/Program Files/Google/Chrome/Appl
   : process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/google-chrome');
 const ANGLE = WIN ? 'd3d11' : process.platform === 'darwin' ? 'metal' : 'vulkan';
 const W = 1280, H = 720;
+const PC_ENGINE = process.env.PC_ENGINE || ''; // e.g. 2.24: see the header
 
 // ------------------------------------------------------------ static server
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.sog': 'application/octet-stream', '.png': 'image/png', '.css': 'text/css', '.svg': 'image/svg+xml' };
 function serve() {
   const roots = [['/deps/', join(here, '.deps')], ['/bench/', SOG_DIR], ['/', repo]];
   const srv = createServer((req, res) => {
-    const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    let path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (PC_ENGINE) path = path.replace(/^\/deps\/playcanvas(-2\.23)?\/(playcanvas|camera-controls)\.mjs$/, `/deps/playcanvas-${PC_ENGINE}/$2.mjs`);
+    // /pc-<X.Y>/<page>: the page with every PlayCanvas import pointed at .deps/playcanvas-<X.Y> (cases/pc-engines.mjs).
+    const pin = /^\/pc-(\d+\.\d+)(\/.*)$/.exec(path);
+    if (pin) {
+      path = pin[2];
+      if (extname(path) === '.html' && normalize(join(repo, path)).startsWith(normalize(repo))) {
+        try {
+          const html = readFileSync(normalize(join(repo, path)), 'utf8').replace(/\/deps\/playcanvas(-\d+\.\d+)?\//g, `/deps/playcanvas-${pin[1]}/`);
+          res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+          res.end(html);
+          return;
+        } catch { /* falls through to the 404 below */ }
+      }
+    }
     for (const [pre, dir] of roots) {
       if (!path.startsWith(pre)) continue;
       const f = normalize(join(dir, path.slice(pre.length)));
@@ -418,7 +436,7 @@ function check(r, results) {
   }
   if (R.engine === 'PlayCanvas') {
     t('PlayCanvas app detected', !!R.detection, `via ${R.detection}; RenderView ${R.renderView}; device ${R.device}; footprint patched ${R.footprint.patched}/${R.footprint.seen}`);
-    if (c.id === 'c') t('gsplat footprint shader patched', R.footprint.patched > 0, `${R.footprint.patched} shader(s)`);
+    if (c.id === 'c') t('gsplat footprint shader patched, or the engine\'s own per-axis focal (2.23+)', R.footprint.patched > 0 || R.footprint.native > 0, `${R.footprint.patched} patched, ${R.footprint.native || 0} native`);
   }
   if (c.parityOf) {
     const other = results.find((x) => x.c.id === c.parityOf);
@@ -526,7 +544,8 @@ const only = process.argv.slice(2);
 // Preflight: every engine file the pages import, and the browser. Missing ones fail HERE, loudly,
 // instead of as pages that never convert (a 60 s timeout per case).
 const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/three.tsl.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js',
-  'playcanvas-2.23/playcanvas.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css', 'babylon/babylon.js', 'babylon/babylon.gui.js'];
+  'playcanvas-2.23/playcanvas.mjs', 'playcanvas-2.24/playcanvas.mjs', 'playcanvas-2.24/camera-controls.mjs', 'playcanvas-2.20/playcanvas.mjs', 'playcanvas-2.20/camera-controls.mjs', 'playcanvas-2.17/playcanvas.mjs', 'playcanvas-2.17/camera-controls.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css', 'babylon/babylon.js', 'babylon/babylon.gui.js'];
+if (PC_ENGINE) DEP_FILES.push(`playcanvas-${PC_ENGINE}/playcanvas.mjs`, `playcanvas-${PC_ENGINE}/camera-controls.mjs`);
 const missingDeps = DEP_FILES.filter((f) => !existsSync(join(here, '.deps', f)));
 if (missingDeps.length) {
   console.error(`FAILED: engine files missing from ${join(here, '.deps')}: ${missingDeps.join(', ')}\n` +

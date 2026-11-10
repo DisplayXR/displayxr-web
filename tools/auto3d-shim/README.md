@@ -1501,7 +1501,8 @@ mesh. The footprint fix is unchanged (device-level, `gl.shaderSource` / `createS
 **2.23 fixed the footprint upstream**: `gsplatCorner` (GLSL and WGSL) now takes
 `focal = viewport_size.xy * (projMat00, projMat11)`, and the WebGPU compute projector a separate
 `focalY` (`compute-gsplat-projector.js`). The patch still sees its `J2` marker but none of the 2.22.3
-anchors, so it patches nothing (`footprint` `0/1` on WebGL2, `0/2` on WebGPU), and the splats come
+anchors, so it patches nothing (`footprint` `0/1` on WebGL2, `0/2` on WebGPU; since v0.7.4 these count
+as `footprint.native`), and the splats come
 out round in each eye on the engine's own maths. The roundness is asserted on the pixels (cases
 `pc-cf-gsplat*`, `ssv*`); on 2.22.3 pages the patch is still what makes it (`pc-webgpu-gsplat*`, `c`).
 
@@ -1519,7 +1520,30 @@ targets (the views' viewports follow the actual target size). A CameraFrame on a
 `renderTarget`, or a non-full `rect`, is not a case the adapter takes (one camera to the canvas). TAA
 under motion (the per-eye reprojection) was checked by reading `taaResolve` and by the jitter moving
 per frame in `state()`, not on pixels; image quality under motion is the panel's call. Test switches
-(harness only): `pcCameraFrame: false` (unsplit, approach a), `pcTaaJitter: false`, `pcCanvasTrap: false`.
+(harness only): `pcCameraFrame: false` (unsplit, approach a), `pcTaaJitter: false`, `pcCanvasTrap: false`,
+`pcTaaEyeHistory: false` (2.24: eye 0 reads eye 1's TAA history).
+
+## PlayCanvas engine versions (v0.7.4)
+
+Sites ship the engine they were built with (superspl.at 2.23.0, others 2.22.x and older 2.x), and
+playcanvas.com/examples runs **2.24.0**. Every PlayCanvas path is chosen by **which members exist**,
+never by a version number, and the harness runs the same cases on several engines at once
+(`cases/pc-engines.mjs`: a page served under `/pc-<X.Y>/` gets every PlayCanvas import pointed at
+`.deps/playcanvas-<X.Y>`; `deps.mjs` stages 2.24.0, 2.20.6 and 2.17.2; `PC_ENGINE=<X.Y> node run.mjs`
+runs EVERY PlayCanvas page on one engine).
+
+| engine | what differs | what the adapter does |
+|---|---|---|
+| 2.24 | `FrameGraph.addPass` returns at once on a **disabled** pass, subtree included (2.22 / 2.23's `addRenderPass` still added its `beforePasses`). The split's two proxies were disabled, so nothing of the CameraFrame rendered and the canvas froze on the last mono frame: every `camera-frame/*` example (and every example with a CameraFrame) on v0.7.3 | the proxies stay enabled with `executeEnabled = false` (never execute, on every version) |
+| 2.24 | `CameraFrame` is effect-based: `CameraFrame.effects` (`CameraFrameEffect`s) **own** their passes and uniforms, one set per effect (`TaaEffect._pass`, `BloomEffect._pass`, …). A second `FramePassCameraFrame` (eye 1's chain B) re-creates every effect's passes and takes them over from A | when `CameraFrame.effects` lists effects with `createPasses`, **one chain, run per eye**: proxy 1 holds `[marker, …A's passes, end marker]` (refreshed after A's `frameUpdate`); the markers switch, at render time, the camera-use flags (first use eye 0, last use eye 1), the compose clears (eye 1 clears nothing) and the compose viewport. Otherwise the pair of chains, as before |
+| 2.24 | TAA under one chain: the resolve keeps ONE history pair, which eye 1 writes last | eye 0 gets its own history: after eye 0's resolve its output is copied aside (`device.copyRenderTarget`), and swapped in as the history eye 0 reads next frame (case `pc-cf-taa@2.24`; control `pc-cf-taa-ctl@2.24`). Auto-exposure state stays shared (one exposure for both eyes, as it should) |
+| 2.24 | `RenderPass.options` is **copied** on assignment, so `sceneOptions.resizeSource` no longer reaches the scene pass: eye targets came out canvas-sized | the scene / prepass / transparent pass's own `options.resizeSource` is set too |
+| 2.24 | `CameraFrame.disable()` filters its own pass out of `framePasses` and destroys it, never calling a proxy's `destroy` (the toggle page hung) | a per-instance wrapper on A's `destroy` is the signal: the split comes off, the proxies are filtered out |
+| 2.24 | no `taaPass` / `bloomPass` / `ssaoPass` members | TAA found as the pass with a history pair; bloom / SSAO / DOF from the active effects (diagnostics) |
+| 2.23+ | the splat footprint uses a per-axis focal (`J1.x` / `J1.y`) | counted as `footprint.native`, not patched (the 2.22 patch is still applied on 2.22) |
+| ≤ 2.19 | no `Camera.xrViews` (an accessor on `Camera` from 2.20): XR views are drawn only from the engine's own `XrManager` session | left 2D, with the reason `this PlayCanvas engine has no Camera.xrViews` |
+| 2.17 | the AppBase constructor sets neither `tick` nor `graphicsDevice` (both come from `init()`), so the constructor trap's app test failed | an app is also an object with `on` / `fire` / `systems` / `init` / `start` (sentinel and adapter) |
+| ≤ 2.17 | `camera.renderPasses` instead of `framePasses` | read / written through whichever exists |
 
 ## Why a renderer shim, not the alternatives
 
