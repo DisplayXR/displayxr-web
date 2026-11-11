@@ -7,6 +7,16 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.52.3 — 2026-11-11
+
+### Fixed — `./splat` and `./splat/playcanvas` types declare every runtime export (types only)
+
+Both entries have exported `readSogCamera`, `readSogMeta`, `applySplatPerf`, `SPLAT_PERF_PRESETS` and
+`resolveRig` at runtime for several releases, but `splat.d.ts` declared none of them, so a
+TypeScript app importing e.g. `readSogCamera` from `@displayxr/inline3d/splat` failed to type-check
+and had to declare it itself. All five are now declared in `splat.d.ts` and re-exported from
+`splat-playcanvas.d.ts`. No JavaScript changed.
+
 ## 1.52.2 — 2026-11-11
 
 ### Added — `./splat/rig`, and `readCloud` / `roomRGBE` / `ROOM_YAW_DEG` on `./splat/playcanvas` (experimental)

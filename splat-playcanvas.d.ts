@@ -1,6 +1,6 @@
 // Types for `@displayxr/inline3d/splat/playcanvas`: ./splat's addSplat with the engine fixed to
 // 'playcanvas', without the Spark/three peers. Same handle and options as ./splat.
-export { addSplat } from './splat';
+export { addSplat, readSogCamera, readSogMeta, applySplatPerf, SPLAT_PERF_PRESETS, resolveRig } from './splat';
 export type * from './splat';
 
 // ── EXPERIMENTAL (docs/sdk-stability.md): helpers for an app that builds its own PlayCanvas scene ──
