@@ -454,7 +454,8 @@ test('room radiance: the panels, the lit walls, grey, deterministic, cached', ()
 
 test('KHR_materials_transmission: grab pass on, transmissive draws sorted first, per-eye grab chunk; plain models untouched', async () => {
   installDom();
-  const engineChunk = 'uniform float x;\nvec3 evalRefractionColor(vec3 v, float g, float i) {\n\tvec4 projectionPoint = v4;\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n}';
+  // 2.22-shaped (uScreenSize); test/playcanvas-chunks.test.mjs runs the real 2.22 / 2.23 / 2.24 chunks.
+  const engineChunk = 'uniform float x;\nvec3 evalRefractionColor(vec3 v, float g, float i) {\n\tvec4 projectionPoint = v4;\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n\tfloat refractionLod = log2(uScreenSize.x);\n}';
   const chunks = new Map();
   const glassMat = { useDynamicRefraction: true, getShaderChunks: () => chunks, update() {} };
   let { pc } = makeFakePc({ aabbs: [{ c: [0, 1, 0], h: [0.5, 1, 0.25], material: glassMat }, { c: [0, 0, 0], h: [1, 1, 1], material: { useDynamicRefraction: false } }] });

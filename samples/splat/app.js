@@ -71,6 +71,9 @@ try {
     ...(params.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(params) } : {}),
     // ?hands — tracked-hand controls (./hands): pinch to turn, two pinches to zoom. Inert without a tracker.
     ...(params.has('hands') ? { hands: true } : {}),
+    // ?viewPath=cameras — one PlayCanvas camera per eye instead of one camera with N RenderViews
+    // (a device A/B: same splats, different per-view engine path).
+    ...(params.get('viewPath') === 'cameras' ? { playcanvasViewPath: 'cameras' } : {}),
   });
 } catch (err) {
   // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)

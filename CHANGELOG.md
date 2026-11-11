@@ -7,6 +7,36 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Changed — PlayCanvas 2.24.0 supported alongside 2.22.3 and 2.23.x; samples load 2.24.0 (`./splat`, `./model`, preview tier)
+
+The peer range stays `playcanvas >=2.22.3 <3`, and one SDK build now works on 2.22.3, 2.23.x and
+2.24.0 at once: where an engine release changed something the SDK relies on, the SDK checks what it
+finds (shader chunk text, uniform names), never the version number. Three fixes came out of
+checking 2.24.0:
+
+- **`./model`: a transmissive (glass) glTF went black on PlayCanvas 2.23 and later.** The per-eye
+  grab-UV rewrite of `refractionDynamicPS` named `uScreenSize`, which 2.23 renamed `screen_size`
+  (moved into the view uniform block), so the material failed to compile. The rewrite now uses
+  whichever name the engine's chunk uses.
+- **Depth cursor (`cursor: 'depth'`) on splats found nothing on PlayCanvas 2.24**, so the arrow
+  stayed on the glass. The pick camera draws the eye camera's splats; 2.24 now applies a mesh
+  instance's per-camera visibility test even with frustum culling off, which hid them from the
+  pick pass. The SDK now lends the eye's splat draw to the pick camera for that one pass.
+- **The false "footprint fix SKIPPED … half height" warning is really gone on 2.23+.** The 1.51.0
+  fix detected 2.23's native footprint but still went down the warning branch.
+
+Samples and the cursor e2e pages now load `playcanvas@2.24.0`. The splat sample also takes
+`?pc=<x.y.z>` to swap the engine build and `?viewPath=cameras` to render each eye with its own
+camera, so a device A/B needs no rebuild. **2.22.3, 2.23.3 and 2.24.0 are all validated on a 3D
+panel and an Android 3D tablet** (splat stereo through orbit, zoom, resize and rotation; the depth
+cursor on a splat; glass glTF refracting in stereo; no footprint warning), and **2.24.0 is now the
+recommended pin** (`docs/playcanvas-adapter.md`). The earlier 2.23.3 tablet stereo loss did not
+reproduce on a page with one woven canvas.
+
+Tests: `test/playcanvas-chunks.test.mjs` runs every SDK shader rewrite against the real chunks of
+each engine version (copies in `test/playcanvas-chunks/`, refreshed with
+`node tools/playcanvas-chunks.mjs <version>`).
+
 ## 1.52.0 — 2026-11-10
 
 ### Added — a one-time hint when a camera rig orbits a fixed point; rig choice up front for agents (core, docs)

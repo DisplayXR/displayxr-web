@@ -425,30 +425,42 @@ export function useRoomEnvironment(pc, app, yawDeg = ROOM_YAW_DEG) {
  *     measures the offset from THIS fragment instead (NDC delta ÷ NDC-per-pixel, from the
  *     derivatives), which is exact for any viewport and identical in mono.
  */
-const GRAB_UV_FN = `
+// The screen-size uniform is named by the engine: `uScreenSize` through 2.22, `screen_size` (a
+// view-uniform-block member) from 2.23. Naming the wrong one does not compile, so it is read off
+// the engine's own chunk: one SDK build serves the whole peer range.
+const grabUvFn = (screen) => `
 vec2 inline3dGrabUV(vec4 clipPos) {
 	vec4 p0 = matrix_viewProjection * vec4(vPositionW, 1.0);
 	vec2 n0 = p0.xy / p0.w;
 	vec2 dn = clipPos.xy / clipPos.w - n0;
 	vec2 perPx = vec2(dFdx(n0.x), dFdy(n0.y));
 	vec2 off = vec2(abs(perPx.x) > 1e-9 ? dn.x / perPx.x : 0.0, abs(perPx.y) > 1e-9 ? dn.y / perPx.y : 0.0);
-	return (gl_FragCoord.xy + off) * uScreenSize.zw;
+	return (gl_FragCoord.xy + off) * ${screen}.zw;
 }
 `;
 const _grabChunk = new WeakMap();
 let _warnedGrabChunk = false;
+
+/**
+ * The engine's `refractionDynamicPS` source with the per-view grab UV, or null when its shape is
+ * not the expected one (no `getGrabScreenPos(projectionPoint)` call, no `evalRefractionColor`, or
+ * no screen-size uniform this function knows). Pure; exported for the tests.
+ */
+export function stereoRefractionSource(src) {
+  if (typeof src !== 'string') return null;
+  const call = /getGrabScreenPos\(\s*projectionPoint\s*\)/;
+  const def = /vec3\s+evalRefractionColor\s*\(/;
+  const screen = /\bscreen_size\b/.test(src) ? 'screen_size' : /\buScreenSize\b/.test(src) ? 'uScreenSize' : null;
+  if (!screen || !call.test(src) || !def.test(src)) return null;
+  return src.replace(def, (m) => `${grabUvFn(screen)}\n${m}`).replace(call, 'inline3dGrabUV(projectionPoint)');
+}
 
 /** The engine's refractionDynamicPS with the per-view grab UV (null if its shape is not the expected one). */
 function stereoRefractionChunk(pc, device) {
   if (_grabChunk.has(device)) return _grabChunk.get(device);
   let out = null;
   try {
-    const src = pc.ShaderChunks?.get?.(device, pc.SHADERLANGUAGE_GLSL)?.get?.('refractionDynamicPS');
-    const call = /getGrabScreenPos\(\s*projectionPoint\s*\)/;
-    const def = /vec3\s+evalRefractionColor\s*\(/;
-    if (typeof src === 'string' && call.test(src) && def.test(src)) {
-      out = src.replace(def, (m) => `${GRAB_UV_FN}\n${m}`).replace(call, 'inline3dGrabUV(projectionPoint)');
-    }
+    out = stereoRefractionSource(pc.ShaderChunks?.get?.(device, pc.SHADERLANGUAGE_GLSL)?.get?.('refractionDynamicPS'));
   } catch {
     out = null;
   }
