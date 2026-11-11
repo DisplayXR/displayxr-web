@@ -17,18 +17,16 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   engine release changed something the SDK depends on, the SDK detects the shape it finds (shader
   chunk text, which uniforms exist), never the version number. Pin an exact version in your app
   (no caret), because an unpinned install picks up the newest 2.x the day it ships:
-  - **`2.22.3` — the only version validated on a panel and on an Android tablet.** Use it for
-    anything you ship to a device until the A/B below comes back.
-  - **`2.24.0` — what the samples now load.** Validated headless only (Chrome, ANGLE/Metal): both
-    eyes render with the same disparity as on 2.22.3 for a splat and a model, on both view paths,
-    and the unit tests run every SDK shader rewrite against its real chunks. **Not yet run on a
-    panel or a tablet.**
-  - **`2.23.x` — avoid for now.** On 2.23.3 a page's splats lost their stereo on an Android tablet,
-    and pinning 2.22.3 restored it. The cause is not isolated: headless, 2.23.3 renders both eyes
-    exactly as 2.22.3 does, and the same page also had overlapping woven canvases (woven-canvas
-    rules), which flatten a tile on their own.
+  - **`2.24.0` — recommended, and what the samples load.** Validated on a 3D panel (Windows,
+    DisplayXR Browser) and an Android 3D tablet on 2026-11-10: splats in stereo through orbit, zoom,
+    resize and rotation, the depth cursor riding on a splat, transmissive glTF refracting in stereo,
+    no footprint warning. The unit tests run every SDK shader rewrite against its real chunks.
+  - **`2.23.3` and `2.22.3` — also validated on the same panel and tablet**, with the same checks.
+    An earlier report of 2.23.3 losing splat stereo on a tablet did not reproduce on a page with one
+    woven canvas; that page also had overlapping woven canvases (woven-canvas rules), which flatten
+    a tile on their own. Existing apps pinned to either need no change to keep working.
 
-  A device A/B needs no rebuild: `samples/splat/?pc=2.22.3` (or `2.23.3`, `2.24.0`) swaps the
+  To A/B engines on a device without a rebuild: `samples/splat/?pc=2.22.3` (or `2.23.3`, `2.24.0`) swaps the
   engine build, and `&viewPath=cameras` renders each eye with its own camera instead of one camera
   with N `RenderView`s (`playcanvasViewPath: 'cameras'` on `addSplat`). Stereo on `cameras` but not
   on the default path points at the engine's per-view path; flat on both points at the page.

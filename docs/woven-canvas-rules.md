@@ -252,7 +252,10 @@ itself. The SDK's player (`addPlayer`) does this for its own fullscreen button w
 
 **The SDK covers rect changes for you on `./splat` and `./model`** (1.38, `rectCover: 'auto'` by
 default there). After the first join, a move or resize of the canvas raises a cover over it on
-the frame the change is seen: a solid color with the last frame's left eye, cover-fit. The cover
+the frame the change is seen: a solid color with the last frame's left eye, cover-fit. Since 1.52
+the cover is **live**: while it is up, it redraws the left eye of each new frame once the page has
+redrawn for the new box, so a window drag shows the content moving in 2D rather than one frozen
+frame for the whole drag (`rectCover: { live: false }` keeps the still). The cover
 comes down when `rewoven()` settles. Pass `rectCover: 'off'` if the page runs its own cover. On
 core windows (`addScene` / `addImage` / `addVideo`) the same primitive is opt-in: pass
 `rectCover: 'auto'` (or `{ color, snapshot }`), or keep your own cover and release it on
@@ -269,6 +272,39 @@ page cover can hide it. That is why the player's cover is opt-in. Keep the rule 
 resize does show the pair.
 
 A scroll is not a resize. The canvas keeps its size and its identity, and nothing needs covering.
+
+#### Resize checklist (November 2026)
+
+From a study of two production pages on the 8K panel: one that blinked black on every resize step
+(cover off, canvas moved a frame late) and one that went flat for the whole drag (cover on, a still
+frame restarted at every step). The rules below are what keeps a resize as short and as clean as the
+page can make it. During a continuous window drag nothing a page does keeps the tile **3D**: every
+step re-joins the rect, and the gap is the browser's (§4). What a page controls is whether that gap
+shows black, a stale frame, or live 2D.
+
+1. **Let the SDK size the buffer, or size it inside `onResize`.** For an `addScene` canvas, resize
+   the backing store in the `onResize(box)` callback and draw a frame in that same callback (it runs
+   inside the ResizeObserver, before paint). Never from a `window` `resize` listener plus a later
+   `requestAnimationFrame`: that leaves one frame where the buffer is the new size and cleared.
+2. **Write `canvas.width` / `height` only when the value changes**, and redraw the last good frame
+   immediately when it does. Setting it, even to the same value, clears the buffer, and a cleared
+   (transparent) woven frame shows black. `./viewer`'s `_resize` is the reference.
+3. **Move the canvas's CSS box in the event handler that decides the move**, not in a later animation
+   callback. A box moved a frame late is woven one frame at the old rect, every step of a drag.
+4. **Draw an opaque frame** whenever nothing under the canvas has to show through. A transparent
+   frame weaves black (browser-pvt #255). If the page needs a transparent clear (2D layers under the
+   canvas), rule 2 matters twice as much.
+5. **Cap the buffer:** devicePixelRatio at most 2 for the side-by-side store (`./viewer` caps it), and
+   respect the eye clamp. A 300 % desktop asks for a ~7680 px-wide buffer on an 8K panel; the browser
+   may clamp it, and a clamped side-by-side store splits its eyes off-centre.
+6. **Use a cover, and prefer the SDK's** (`rectCover: 'auto'`, live since 1.52). Without one, every
+   step of a drag shows the gap; with a still cover, the whole drag is one frozen frame. The live
+   cover is 2D for the drag plus about one hold after it, and 3D comes back when `rewoven()` settles.
+   Running your own cover: raise it before the change, release it on `handle.rewoven()`, and keep its
+   picture updated if the change can last longer than a second.
+7. **Don't fight the cap.** A box that never stops changing settles anyway after four holds
+   (`hold-capped`), and the cover comes down for at least a frame. That is deliberate: an endless CSS
+   transition must not hide a tile for good.
 
 ### Two rules that keep a joined canvas joined
 

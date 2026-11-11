@@ -27,15 +27,17 @@ checking 2.24.0:
 
 Samples and the cursor e2e pages now load `playcanvas@2.24.0`. The splat sample also takes
 `?pc=<x.y.z>` to swap the engine build and `?viewPath=cameras` to render each eye with its own
-camera, so a device A/B needs no rebuild. **2.24.0 is validated headless only** (both eyes of a
-splat and a model render with the same disparity as on 2.22.3, on both view paths; the cursor e2e
-passes on all three versions). **2.22.3 remains the only version validated on a panel and a
-tablet**, and stays the recommended pin until a device A/B (`docs/playcanvas-adapter.md`). The
-2.23.3 tablet stereo loss is still not isolated.
+camera, so a device A/B needs no rebuild. **2.22.3, 2.23.3 and 2.24.0 are all validated on a 3D
+panel and an Android 3D tablet** (splat stereo through orbit, zoom, resize and rotation; the depth
+cursor on a splat; glass glTF refracting in stereo; no footprint warning), and **2.24.0 is now the
+recommended pin** (`docs/playcanvas-adapter.md`). The earlier 2.23.3 tablet stereo loss did not
+reproduce on a page with one woven canvas.
 
 Tests: `test/playcanvas-chunks.test.mjs` runs every SDK shader rewrite against the real chunks of
 each engine version (copies in `test/playcanvas-chunks/`, refreshed with
 `node tools/playcanvas-chunks.mjs <version>`).
+
+## 1.52.0 — 2026-11-10
 
 ### Added — a one-time hint when a camera rig orbits a fixed point; rig choice up front for agents (core, docs)
 
@@ -49,6 +51,16 @@ recipe (README, `docs/authoring-inline-3d.md` § *Which rig*), a depth-after-res
 porting checklist, and the rig decision in `llms.txt`. `docs/authoring-inline-3d.md` and
 `docs/porting-three-js-apps.md` now ship in the npm package: `llms.txt` and `AGENTS.md` already
 pointed agents at them, but an agent reading `node_modules` could not open either.
+
+### Changed — `rectCover` is live: a window drag shows moving 2D, not one frozen frame (core option, subpath default)
+
+While the cover is up, it now redraws the left eye of each new frame (one `drawImage` at CSS px per
+frame), once the page has redrawn for the new box (the eye's aspect within 3 % of the box's; until
+then the last picture stays, so a buffer resized a frame late never shows stretched). Before, the
+cover held the one snapshot taken at the change, and since every step of a window drag restarts the
+wait, a page with the cover on (`./splat`, `./model`, or `rectCover: 'auto'`) showed a still frame
+for the whole drag plus a hold. New field `rectCover: { live: false }` restores the still.
+`docs/woven-canvas-rules.md` §11 gains a resize checklist.
 
 ### Added — `viewerIndependent`: stereo photos and video no longer start a viewer tracker (core)
 
