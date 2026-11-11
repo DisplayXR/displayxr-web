@@ -3,7 +3,8 @@
      ScreenComponent (screenSpace) with image elements, no mesh, no splat (a 2D menu / loading screen).
      Nothing has depth, so the adapter must leave it 2D with the reason. ?add3dMs=N: after N ms the page
      adds a 3D box in front of the camera (the scene loaded), which must then convert. ?lines=1: immediate-mode
-     lines every frame (app.drawLine): 3D, must convert.
+     lines every frame (app.drawLine): 3D, must convert. ?stats=1: MiniStats on (the examples' stats
+     toggle), which is screen-space: must stay 2D.
      playcanvas.com/examples user-interface/* (2.24) were converted into two identical halves. -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas screen UI (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
@@ -43,6 +44,8 @@ if (add3dMs) setTimeout(() => {
   const light = new pc.Entity('sun'); light.addComponent('light', { type: 'directional' }); light.setEulerAngles(45, 30, 0); app.root.addChild(light);
   window.__added3d = performance.now();
 }, add3dMs);
+// ?stats=1: the engine's MiniStats overlay (a quad batch of its own, screen-space): still nothing 3D.
+if (q.has('stats')) window.__stats = new pc.MiniStats(app);
 // ?lines=1: the page also draws immediate-mode lines (app.drawLine, as debug/wire-shapes does): 3D, converts.
 const lines = q.has('lines');
 let n = 0;

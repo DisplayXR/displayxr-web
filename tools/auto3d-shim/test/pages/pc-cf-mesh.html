@@ -72,6 +72,8 @@ cf.vignette.intensity = on('vignette') ? 0.6 : 0;
 cf.vignette.inner = 0.4; cf.vignette.outer = 1.0; cf.vignette.curvature = 0.5;
 cf.update();
 window.__cf = cf;
+// ?stats=1: the engine's MiniStats overlay (UI layer, bottom-left), as playcanvas.com/examples shows it.
+if (q.get('stats') === '1') window.__stats = new pc.MiniStats(app);
 
 let n = 0;
 app.on('update', () => { if (n >= 60) { app.autoRender = false; window.__frozen = true; return; } n++; window.__pageFrames = n; });

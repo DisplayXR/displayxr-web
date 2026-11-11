@@ -82,6 +82,27 @@ export default function cases(env) {
         t('no page error', !r.log.some((l) => /pageerror|\[error\]/.test(l)), r.log.filter((l) => /pageerror|\[error\]/.test(l)).slice(0, 2).join(' | ') || 'none');
       },
     })),
+    // The same page with MiniStats on (the examples site's stats toggle): its quad batch is screen-space,
+    // so the page stays 2D, and the "stays 2D" reason is logged ONCE (it was re-logged ~2x/s, every
+    // activation attempt). MiniStats joins the UI layer as a mesh instance (2.21+) or draws as an
+    // immediate mesh (2.20).
+    ...['', '/pc-2.24', '/pc-2.20'].map((pre) => ({
+      id: `pc-ui-stats${pre ? '@' + pre.slice(4) : ''}`, name: `${pre ? `[PlayCanvas ${pre.slice(4)}] ` : ''}PlayCanvas screen-space UI + MiniStats: still 2D ('nothing 3D'), the reason logged once`,
+      url: `${pre}${env.P}pc-ui.html?stats=1`, shim: env.NEW,
+      async run(page, h) {
+        await page.waitForFunction(() => window.__frozen, { timeout: 30000, polling: 200 });
+        await h.sleep(4000);
+        return { S: await page.evaluate(() => window.__dxrAuto3D.state()), layers: await page.evaluate(() => window.__fakeXR.layers.length), stats: await page.evaluate(() => !!window.__stats) };
+      },
+      check(r, t) {
+        if (r.error) { t('ran', false, r.error); return; }
+        const R = r.S.renderers.find((x) => x.engine === 'PlayCanvas');
+        t('MiniStats on, left 2D: nothing 3D', r.stats && !!R && !R.active && /nothing 3D/.test(R.flatReason || '') && r.layers === 0, `stats ${r.stats}, active ${R && R.active}, flatReason ${R && R.flatReason}, layers ${r.layers}`);
+        const n = r.log.filter((l) => /stays 2D/.test(l)).length;
+        t('"stays 2D" logged once over 4+ s', n === 1, `${n} lines`);
+        t('no page error', !r.log.some((l) => /pageerror|\[error\]/.test(l)), r.log.filter((l) => /pageerror|\[error\]/.test(l)).slice(0, 2).join(' | ') || 'none');
+      },
+    })),
     {
       id: 'pc-ui-lines', name: 'PlayCanvas screen-space UI + immediate-mode lines (app.drawLine): that is 3D, converts',
       url: `${env.P}pc-ui.html?lines=1`, shim: env.NEW,

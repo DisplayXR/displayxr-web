@@ -18,10 +18,14 @@
 //   resid     MAE at the best shift (low = the eyes agree; high = something differs per eye: a
 //             screen-space effect, UI, random per-draw content)
 //   blankL/R  fraction of near-uniform rows per half (an eye left black)
-// Verdict: PASS (live, shift ≈ want, resid < 6), REVIEW (live but shift/resid off, or errors),
+// Then the viewpoint probe: skew 0 and the eyes ±X apart (X = 5% of the convergence distance). The
+// skew test alone passes a renderer that draws both eyes from one viewpoint with each eye's projection
+// (a skew shifts every pixel the same whatever the view); with no skew such a renderer gives two
+// identical halves (probe.zeroErr ≈ 0) and the example is REVIEW, not PASS.
+// Verdict: PASS (live, shift ≈ want, resid < 6, probe halves differ), REVIEW (live but shift/resid off, or errors),
 // FLAT (stayed 2D with a reason), NONE (never detected), ERROR (the example itself failed).
 //
-// Usage: node run-pc-examples.mjs [--only cat/name,cat/name] [--cat c1,c2] [--hidden] [--keep] [--tag x] [--resume]
+// Usage: node run-pc-examples.mjs [--only cat/name,cat/name] [--cat c1,c2] [--hidden] [--keep] [--tag x] [--resume] [--no-probe] [--device webgpu|webgl2]
 //   env: CHROME=<binary>  PC_EXAMPLES=<site base, default https://playcanvas.com/examples>  SHIM_DEV=<dev bundle to inject>
 // Output: results/<date>-pc-examples[-tag][-only].json. Captures (the canvas, left|right) only with --keep
 // (results/pc-examples-png/) or KEEP_DIR=<dir>: images are never committed.
@@ -49,6 +53,8 @@ const TAG = opt('--tag', '');
 const KEEP_DIR = process.env.KEEP_DIR || (argv.includes('--keep') ? join(here, 'results', 'pc-examples-png') : null);
 const SETTLE_MS = Number(opt('--settle-ms', 14000)); // after load: detection + the switch + 90 stereo frames
 const BUDGET_MS = Number(opt('--budget-ms', 30000));
+const DEVICE = opt('--device', ''); // the examples' deviceType override (webgpu, webgl2); default: the example's own choice
+const PROBE_OFF = argv.includes('--no-probe'); // skip the viewpoint probe (skew 0, eyes apart)
 
 // ------------------------------------------------------------ the example list (from the site's own bundle)
 async function listExamples() {
@@ -87,6 +93,38 @@ function score(px, w, h) {
   return { eyeW, want, shift: best.s, resid: +best.e.toFixed(2), residAtWant: +errAt(want).toFixed(2), zeroErr: +zero.toFixed(2), blankL: +blank(0).toFixed(2), blankR: +blank(eyeW).toFixed(2) };
 }
 
+// A screenshot of the canvas element (the composited frame), with everything else on the page hidden
+// for the shot (the page's own DOM UI over the canvas, our HUD and chip), so the score reads the canvas
+// only. A pair that is still blank (content streaming in: splats, glTF) is shot again, twice at most,
+// 4 s apart.
+async function shoot(page, ex, suffix) {
+  let pair = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise((res) => setTimeout(res, 4000));
+    const el = await page.$('canvas:not([data-dxr-auto3d-cover])');
+    const box = el && (await el.boundingBox());
+    if (!(box && box.width > 8 && box.height > 8)) break;
+    await page.evaluate(() => { const s = document.createElement('style'); s.id = '__dxrShot'; s.textContent = '* { visibility: hidden !important; } canvas:not([data-dxr-auto3d-cover]) { visibility: visible !important; }'; document.documentElement.appendChild(s); });
+    await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))));
+    const png = await page.screenshot({ clip: { x: box.x, y: box.y, width: Math.min(box.width, W - box.x), height: Math.min(box.height, H - box.y) }, encoding: 'base64' });
+    await page.evaluate(() => { const s = document.getElementById('__dxrShot'); if (s) s.remove(); });
+    const DW = 640; // decoded at a fixed width: the score reads 2 x 320 px eyes
+    const d = await page.evaluate(async (b64, DW) => {
+      const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
+      const h = Math.max(2, Math.round((DW * img.height) / img.width));
+      const c = document.createElement('canvas'); c.width = DW; c.height = h;
+      const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0, DW, h);
+      const px = g.getImageData(0, 0, DW, h).data; let s = '';
+      for (let i = 0; i < px.length; i += 32768) s += String.fromCharCode.apply(null, px.subarray(i, i + 32768));
+      return { w: DW, h, b64: btoa(s) };
+    }, png, DW);
+    pair = { ...score(Buffer.from(d.b64, 'base64'), d.w, d.h), shots: attempt + 1 };
+    if (KEEP_DIR) { mkdirSync(KEEP_DIR, { recursive: true }); writeFileSync(join(KEEP_DIR, `${ex.cat}_${ex.name}${suffix}.png`), Buffer.from(png, 'base64')); }
+    if (pair.blankL < 0.6 && pair.blankR < 0.6) break;
+  }
+  return pair;
+}
+
 // ------------------------------------------------------------ one example
 async function runOne(browser, ex) {
   const ctx = await browser.createBrowserContext();
@@ -99,7 +137,7 @@ async function runOne(browser, ex) {
   await page.evaluateOnNewDocument(FAKE);
   await page.evaluateOnNewDocument(DEV);
   const t0 = Date.now();
-  const r = { id: ex.id, cat: ex.cat, hidden: ex.hidden, url: `${SITE}/iframe/${ex.cat}_${ex.name}.html` };
+  const r = { id: ex.id, cat: ex.cat, hidden: ex.hidden, url: `${SITE}/iframe/${ex.cat}_${ex.name}.html${DEVICE ? `?deviceType=${DEVICE}` : ''}` };
   try {
     try { await page.goto(r.url, { waitUntil: 'load', timeout: BUDGET_MS }); } catch (e) { r.loadTimeout = true; }
     // Live with 90 stereo frames and the depth fade done, or a terminal report, or the settle budget.
@@ -131,6 +169,7 @@ async function runOne(browser, ex) {
           stats: R.stats, convergence: R.convergence, convergenceSource: R.convergenceSource, detection: R.detection, device: R.device, renderView: R.renderView,
           footprint: R.footprint, cameraFrame: R.cameraFrame, camera: R.camera, autoRender: R.autoRender, pageSizeWrites: R.pageSizeWrites },
         cams, hasCanvas: !!document.querySelector('canvas'),
+        rig: window.__fakeXR && window.__fakeXR.lastRig, // the view rig the shim sent (diagnostics: its scale)
       };
     });
     Object.assign(r, snap);
@@ -140,28 +179,19 @@ async function runOne(browser, ex) {
     // again, twice at most, 4 s apart.
     const R = snap.R;
     if (R && R.active) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt) await new Promise((res) => setTimeout(res, 4000));
-        const el = await page.$('canvas:not([data-dxr-auto3d-cover])');
-        const box = el && (await el.boundingBox());
-        if (!(box && box.width > 8 && box.height > 8)) break;
-        await page.evaluate(() => { const s = document.createElement('style'); s.id = '__dxrShot'; s.textContent = '* { visibility: hidden !important; } canvas:not([data-dxr-auto3d-cover]) { visibility: visible !important; }'; document.documentElement.appendChild(s); });
-        await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))));
-        const png = await page.screenshot({ clip: { x: box.x, y: box.y, width: Math.min(box.width, W - box.x), height: Math.min(box.height, H - box.y) }, encoding: 'base64' });
-        await page.evaluate(() => { const s = document.getElementById('__dxrShot'); if (s) s.remove(); });
-        const DW = 640; // decoded at a fixed width: the score reads 2 x 320 px eyes
-        const d = await page.evaluate(async (b64, DW) => {
-          const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
-          const h = Math.max(2, Math.round((DW * img.height) / img.width));
-          const c = document.createElement('canvas'); c.width = DW; c.height = h;
-          const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0, DW, h);
-          const px = g.getImageData(0, 0, DW, h).data; let s = '';
-          for (let i = 0; i < px.length; i += 32768) s += String.fromCharCode.apply(null, px.subarray(i, i + 32768));
-          return { w: DW, h, b64: btoa(s) };
-        }, png, DW);
-        r.pair = { ...score(Buffer.from(d.b64, 'base64'), d.w, d.h), shots: attempt + 1 };
-        if (KEEP_DIR) { mkdirSync(KEEP_DIR, { recursive: true }); writeFileSync(join(KEEP_DIR, `${ex.cat}_${ex.name}.png`), Buffer.from(png, 'base64')); }
-        if (r.pair.blankL < 0.6 && r.pair.blankR < 0.6) break;
+      r.pair = await shoot(page, ex, '');
+      // The viewpoint probe: no skew, the eyes ±X apart. A renderer that draws both eyes from ONE
+      // viewpoint (only the projections differ) passes the skew test above, since a skew moves every
+      // pixel the same whatever the view, but here it gives two identical halves. X = 5% of the
+      // shim's convergence distance (the scene's own scale), 0.25 when it has none.
+      if (r.pair && !PROBE_OFF) {
+        const conv = Number(R.convergence) > 0 ? Number(R.convergence) : 5;
+        const eyeX = +(0.05 * conv).toFixed(4);
+        await page.evaluate((x) => { Object.assign(window.__fakeXROpts, { skew: 0, eyeX: x }); }, eyeX);
+        await page.evaluate(() => new Promise((res) => { let n = 0; const f = () => (++n >= 20 ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); }));
+        const q = await shoot(page, ex, '-probe');
+        await page.evaluate(() => { delete window.__fakeXROpts.skew; delete window.__fakeXROpts.eyeX; });
+        r.probe = q && { eyeX, zeroErr: q.zeroErr, shift: q.shift, resid: q.resid, blankL: q.blankL, blankR: q.blankR };
       }
       // Still the same renderer, still live at the end (a late stand-down shows up here).
       r.liveAtEnd = await page.evaluate(() => { const S = window.__dxrAuto3D && window.__dxrAuto3D.state(); return !!(S && S.renderers.some((x) => x.active)); });
@@ -191,6 +221,7 @@ function verdict(r) {
     const shiftOk = Math.abs(p.shift - p.want) <= 2 || p.residAtWant <= p.resid + 0.5;
     if (!shiftOk) return { v: 'REVIEW', why: `live, shift ${p.shift} != ${p.want} (resid ${p.resid}, at want ${p.residAtWant})` };
     if (p.residAtWant >= 6) return { v: 'REVIEW', why: `live, eyes disagree (resid ${p.residAtWant} at the expected shift)` };
+    if (r.probe && r.probe.zeroErr <= 0.3) return { v: 'REVIEW', why: `live, eyes share one viewpoint (halves identical with the eyes ${r.probe.eyeX} apart and no skew)` };
     if (r.ourErrors.length) return { v: 'REVIEW', why: 'live, but errors from our code' };
     return { v: 'PASS', why: `live, shift ${p.shift}/${p.want}, resid ${p.residAtWant}` };
   }
@@ -213,7 +244,7 @@ if (ONLY.length) list = list.filter((e) => ONLY.includes(e.id));
 console.log(`${list.length} example(s) from ${SITE}`);
 const LAUNCH = {
   executablePath: CHROME, headless: 'new',
-  args: [`--use-angle=${ANGLE}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1', '--disable-features=OpenXR,WebXR', '--autoplay-policy=no-user-gesture-required'],
+  args: [`--use-angle=${ANGLE}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-sandbox', `--window-size=${W},${H}`, '--hide-scrollbars', '--force-device-scale-factor=1', '--disable-features=OpenXR,WebXR', '--autoplay-policy=no-user-gesture-required', ...(DEVICE.startsWith('webgpu') ? ['--enable-unsafe-webgpu'] : [])],
 };
 const date = new Date().toISOString().slice(0, 10);
 const out = join(here, 'results', `${date}-pc-examples${TAG ? '-' + TAG : ''}${ONLY.length || CATS.length ? '-only' : ''}.json`);

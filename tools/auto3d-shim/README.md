@@ -535,8 +535,8 @@ are offset from it by a few ipd × m2v.
 | legacy post effects (`camera.postEffects`), or `framePasses` that are not one `CameraFrame` | **2D**, HUD reason |
 | the page sizes the canvas by writing `canvas.width / height` itself (supersplat-viewer) | **3D** since v0.6.2: the writes are recorded as the page's size, the store stays side by side (below) |
 | orthographic camera | **2D**, HUD reason |
-| nothing 3D for the camera: its layers hold only screen-space UI (a 2D menu, a loading screen; playcanvas.com/examples `user-interface/*`) | **2D** since v0.7.4, `nothing 3D for the camera to render (screen-space UI only)`; re-checked on every activation attempt, so 3D content that arrives later converts (cases `pc-ui-only`, `pc-ui-then-3d`; immediate-mode lines count as 3D, `pc-ui-lines`). Before, two identical halves at half the horizontal resolution |
-| an engine without `Camera.xrViews` (before 2.20) | **2D** since v0.7.4, HUD reason (see [engine versions](#playcanvas-engine-versions-v074)) |
+| nothing 3D for the camera: its layers hold only screen-space UI (a 2D menu, a loading screen; playcanvas.com/examples `user-interface/*`) | **2D** since v0.7.4, `nothing 3D for the camera to render (screen-space UI only)`; re-checked on every activation attempt, so 3D content that arrives later converts (cases `pc-ui-only`, `pc-ui-then-3d`; immediate-mode lines count as 3D, `pc-ui-lines`). Before, two identical halves at half the horizontal resolution. The engine's MiniStats overlay is screen-space too (v0.7.5: with the examples' stats toggle on, those pages converted; `pc-ui-stats`), and the reason is logged once, not on every attempt |
+| an engine without `Camera.xrViews` (before 2.20) | **2D** since v0.7.4, HUD reason (see [engine versions](#playcanvas-engine-versions-v074-v075)) |
 | the app presents WebXR through `app.xr` | stands down (the immersive path owns it) |
 | OffscreenCanvas / worker | not converted |
 
@@ -1525,7 +1525,7 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
 (harness only): `pcCameraFrame: false` (unsplit, approach a), `pcTaaJitter: false`, `pcCanvasTrap: false`,
 `pcTaaEyeHistory: false` (2.24: eye 0 reads eye 1's TAA history).
 
-## PlayCanvas engine versions (v0.7.4)
+## PlayCanvas engine versions (v0.7.4, v0.7.5)
 
 Sites ship the engine they were built with (superspl.at 2.23.0, others 2.22.x and older 2.x), and
 playcanvas.com/examples runs **2.24.0**. Every PlayCanvas path is chosen by **which members exist**,
@@ -1542,6 +1542,8 @@ runs EVERY PlayCanvas page on one engine).
 | 2.24 | `RenderPass.options` is **copied** on assignment, so `sceneOptions.resizeSource` no longer reaches the scene pass: eye targets came out canvas-sized | the scene / prepass / transparent pass's own `options.resizeSource` is set too |
 | 2.24 | `CameraFrame.disable()` filters its own pass out of `framePasses` and destroys it, never calling a proxy's `destroy` (the toggle page hung) | a per-instance wrapper on A's `destroy` is the signal: the split comes off, the proxies are filtered out |
 | 2.24 | no `taaPass` / `bloomPass` / `ssaoPass` members | TAA found as the pass with a history pair; bloom / SSAO / DOF from the active effects (diagnostics) |
+| 2.24 | volumetric fog (`CameraFrame.volumetricFog`, `RenderPassVolumetricFog` / `…Local`) marches from `camera._node` and `camera.projectionMatrix` ([0] / [5] only: a symmetric ray), which the eye passes never move: both eyes got the centre camera's fog, flat (device run of v0.7.4) | v0.7.5: while eye i of a split CameraFrame renders, those passes (found by shape: `invViewId` / `projScaleId` / `cameraPosId` / `cameraFwdId`) see the eye's camera: its world transform, projection and view matrix, with the eye's off-axis frustum shift folded into the inverse view as a shear of its z column, so the shader's `invView · (ndc · projScale, -1, 0)` is the eye's true ray. `fogPerEye` in `state().cameraFrame` counts the runs |
+| 2.21+ | MiniStats joins the UI layer as a mesh instance (`MiniStatsMesh`) and draws only on the FIRST render of that layer in a frame (`Render2d.onPreRenderLayer`'s `rendered` flag): split per eye it showed in the left eye only (device run of v0.7.4) | v0.7.5: on eye 1's render of that layer the adapter shows it again (`shaderPassMask`, the flag the engine itself uses), from the scene's `prerender:layer` (cases `pc-cf-stats`, `pc-cf-stats@2.24`, `-webgpu`). ≤ 2.20 draws it as an immediate mesh, in both eyes already |
 | 2.23+ | the splat footprint uses a per-axis focal (`J1.x` / `J1.y`) | counted as `footprint.native`, not patched (the 2.22 patch is still applied on 2.22) |
 | ≤ 2.19 | no `Camera.xrViews` (an accessor on `Camera` from 2.20): XR views are drawn only from the engine's own `XrManager` session | left 2D, with the reason `this PlayCanvas engine has no Camera.xrViews` |
 | 2.17 | the AppBase constructor sets neither `tick` nor `graphicsDevice` (both come from `init()`), so the constructor trap's app test failed | an app is also an object with `on` / `fire` / `systems` / `init` / `start` (sentinel and adapter) |
@@ -1563,6 +1565,35 @@ runs EVERY PlayCanvas page on one engine).
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**Device run of v0.7.4 (DisplayXR Browser on a desktop panel), and v0.7.5:** 23 examples checked by hand,
+18 PASS, 2 partial, 3 fail; superspl.at (2.23, WebGPU, the CameraFrame path) PASS. Fixed in v0.7.5:
+- `camera-frame/volumetric-fog` (and `-local-lights`, `-shafts`) flat: the fog now marches per eye (engine
+  table). Headless before / after, best shift / residual at the expected shift: `volumetric-fog` 0 / 6.23 →
+  32 / 1.44, `-local-lights` 0 / 5.33 → 32 / 0.26, `-shafts` 0 / 12.34 → 32 / 0.70 (the fog followed the
+  centre camera before; it now moves with each eye's frustum exactly).
+- `user-interface/*` with the site's stats toggle on converted to two identical halves: MiniStats no longer
+  counts as 3D, and the "stays 2D" line is logged once (it repeated about twice a second).
+- MiniStats in the left eye only on CameraFrame pages: shown in both.
+- The harness's skew test passes a renderer that draws both eyes from ONE viewpoint (a skew moves every
+  pixel the same whatever the view). `run-pc-examples.mjs` now adds a **viewpoint probe** (skew 0, the eyes
+  ±5 % of the convergence distance apart; halves that stay identical are REVIEW), `--device webgpu|webgl2`,
+  and records the rig the shim sent. The fake session's `skew` / `eyeX` / `eyeZ` are read live.
+
+Open after the device run (not fixed here):
+- `graphics/water`: the reflection and refraction are rendered to textures ONCE per frame by the example's
+  own scripts (`WaterReflection` / `WaterRefraction`, cameras with a render target and no XR views) and
+  sampled in screen space by both eyes, so they sit at screen depth: flat. The same holds for the planar
+  floor reflection in `demos/car-showcase` (`PlanarRenderer`). A fix renders the reflection camera per eye
+  and swaps the texture per eye; that touches the page's own scripts' materials, so it is not attempted.
+- `demos/villa-sales` measured nearly flat on the panel (−1 to +2 px). **Not reproduced headless:** on WebGL2
+  and on WebGPU (its unified gsplat on the hybrid compute path) the viewpoint probe gives strongly different
+  halves (splats and meshes both move), and the rig sent is a camera rig converged on the CameraControls
+  focus point (80.7 units, `metersToVirtual` 80.7). The panel's `__dxrAuto3D.state()` (convergence, rig,
+  `eyeAt`, `stats`) on that page is the next datum.
+- `demos/car-showcase`: the car body's reflections differ between the eyes. They are the box-projected
+  environment and the area lights' highlights, which are view-dependent and correctly per eye (as they are
+  in life); with a clear coat and low roughness they differ a lot, which crosstalk makes tiring. Not a bug.
 
 **Headless, v0.7.4 (PlayCanvas 2.24 and engine versions side by side), macOS, ANGLE Metal + WebGPU (Apple
 M1 Pro):** the official PlayCanvas examples (playcanvas.com/examples, engine 2.24.0), every one of the

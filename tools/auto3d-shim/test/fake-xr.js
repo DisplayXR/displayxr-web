@@ -36,6 +36,9 @@
 //   eyeX: X           the left eye pose sits −X, the right +X along the camera's x axis (a real
 //                     inter-eye baseline: two distinct viewpoints, for view-dependent engines such as
 //                     a splat sorter). Adds depth-dependent parallax on top of the skew.
+//   skew: S           the off-axis skew instead of ±0.1 (0: none). eyeX / eyeZ / skew are read every
+//                     frame, so a harness may change them on window.__fakeXROpts mid-run (the
+//                     PlayCanvas examples run's viewpoint probe: skew 0 + eyeX, halves must differ).
 //   pixelAspect: K    the eye's projection aspect is K × (eye width / eye height): a store pixel is K
 //                     times as wide as it is tall, as on the panel (K = 2: the eye is stored at half
 //                     width and the weave un-squeezes it). A round object is then K times as tall as
@@ -81,8 +84,8 @@
     o[0] = t / aspect; o[5] = t; o[8] = skew; o[10] = -(f + n) / (f - n); o[11] = -1; o[14] = (-2 * f * n) / (f - n);
     return o;
   }
-  const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, +OPTS.eyeZ || 0, 1]);
-  const eyeMatrix = (i) => { const m = IDENTITY.slice(); m[12] = (i ? 1 : -1) * (+OPTS.eyeX || 0); return m; };
+  const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const eyeMatrix = (i) => { const m = IDENTITY.slice(); m[12] = (i ? 1 : -1) * (+OPTS.eyeX || 0); m[14] = +OPTS.eyeZ || 0; return m; };
 
   class FakeLayer {
     constructor(session, canvas, opts) {
@@ -144,7 +147,8 @@
           H.noViewFrames = (H.noViewFrames || 0) + 1; return { session: this, getViewerPose: () => ({ views: [] }) };
         }
       }
-      const views = [+SKEW, -SKEW].map((s, i) => ({
+      const sk = OPTS.skew !== undefined ? +OPTS.skew : SKEW; // read live: a harness may change it mid-run
+      const views = [+sk, -sk].map((s, i) => ({
         eye: i ? 'right' : 'left',
         projectionMatrix: proj(vfov, aspect, n, f, s),
         transform: { matrix: eyeMatrix(i) },
