@@ -1580,6 +1580,12 @@ runs EVERY PlayCanvas page on one engine).
   ±5 % of the convergence distance apart; halves that stay identical are REVIEW), `--device webgpu|webgl2`,
   and records the rig the shim sent. The fake session's `skew` / `eyeX` / `eyeZ` are read live.
 
+All 277 examples headless, v0.7.4 → v0.7.5 (`corpus/results/2026-11-11-pc-examples-v0.7.5.json`, with the
+probe): **PASS 207 → 212, REVIEW 33 → 28, FLAT 36, ERROR 1**, no regressions. Up: the three
+`volumetric-fog` examples, `gaussian-splatting-fx/depth-effects`, `loaders/bundle`. The probe flagged no
+example (every live example's halves differ with the eyes apart). Two examples timed out loading in the
+full run and were re-run alone (marked `recheck` in the file), with their v0.7.4 verdicts.
+
 Open after the device run (not fixed here):
 - `graphics/water`: the reflection and refraction are rendered to textures ONCE per frame by the example's
   own scripts (`WaterReflection` / `WaterRefraction`, cameras with a render target and no XR views) and
