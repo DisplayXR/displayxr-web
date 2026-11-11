@@ -7,6 +7,25 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.52.2 — 2026-11-11
+
+### Added — `./splat/rig`, and `readCloud` / `roomRGBE` / `ROOM_YAW_DEG` on `./splat/playcanvas` (experimental)
+
+For an app that builds its own scenes around a captured splat and so far reached into the SDK's
+internal files for the viewers' own math (which only works from a vendored copy, never from npm):
+
+- **`@displayxr/inline3d/splat/rig`**: `captureWindow` (the capture camera's off-axis window, the
+  projection the camera rigs draw the flat view through), `toRestSpace`, `aheadOfRest`,
+  `planeDistance`, `medianDisparityDistance`, `FOCUS_MIN_M`, `FOCUS_MAX_M`. Pure functions, no
+  engine or peer dependency, typed in `splat-rig.d.ts`.
+- **`@displayxr/inline3d/splat/playcanvas`** gains `readCloud(resource)` (centres + opacities of a
+  loaded gsplat resource, strided as the viewers sample them), `roomRGBE()` and `ROOM_YAW_DEG` (the
+  generated room environment). `readCloud` loads the viewer module on first call, so the entry stays
+  as light as before.
+
+All are re-exports of the functions the viewers themselves call (same module instances), so an app
+using them agrees with the SDK's own framing exactly. Experimental tier (`docs/sdk-stability.md`).
+
 ### Fixed — `warmEntity` / `warmEffect` warm the right programs on PlayCanvas 2.23+ (`./splat`, `./model`, preview tier)
 
 PlayCanvas 2.23 changed how the forward renderer asks a mesh for its program: `getShaderInstance`

@@ -1,6 +1,6 @@
 {
   "name": "@displayxr/inline3d",
-  "version": "1.52.1",
+  "version": "1.52.2",
   "description": "Turn any HTML <canvas> into a 3D window on a spatial display, inside an ordinary web page, for the DisplayXR Browser. Dependency-free; progressive enhancement (falls back to plain 2D everywhere else).",
   "type": "module",
   "types": "./index.d.ts",
@@ -38,6 +38,10 @@
     "./splat/playcanvas": {
       "types": "./splat-playcanvas.d.ts",
       "import": "./js/inline3d-splat-pc-entry.js"
+    },
+    "./splat/rig": {
+      "types": "./splat-rig.d.ts",
+      "import": "./js/inline3d-splat-rig-entry.js"
     },
     "./model": {
       "types": "./model.d.ts",
@@ -105,6 +109,7 @@
     "js/inline3d-sog.js",
     "js/inline3d-splat-perf.js",
     "js/inline3d-splat-rig.js",
+    "js/inline3d-splat-rig-entry.js",
     "js/inline3d-splat-playcanvas.js",
     "js/inline3d-splat-shared.js",
     "js/inline3d-splat-effects.js",
@@ -144,6 +149,7 @@
     "hands.d.ts",
     "splat.d.ts",
     "splat-playcanvas.d.ts",
+    "splat-rig.d.ts",
     "model.d.ts",
     "player.d.ts",
     "camera.d.ts",

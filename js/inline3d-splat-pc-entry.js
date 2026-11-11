@@ -22,6 +22,15 @@ import { addSplatDeferred } from './inline3d-splat-deferred.js';
 export { applySplatPerf, SPLAT_PERF_PRESETS } from './inline3d-splat-perf.js';
 export { readSogCamera, readSogMeta } from './inline3d-sog.js';
 export { resolveRig } from './inline3d-splat-rig.js';
+// EXPERIMENTAL helpers for an app that builds its own PlayCanvas scene around a splat (see
+// splat-playcanvas.d.ts). The room is one small module; readCloud lives in the viewer module, so
+// it is loaded on first call and this entry stays light until a splat is actually read.
+export { roomRGBE, ROOM_YAW_DEG } from './inline3d-pc-look.js';
+/** Centres (+ opacities) from a loaded flat gsplat resource, strided; see the viewer's readCloud. */
+export async function readCloud(resource, yielder) {
+  const m = await import('./inline3d-splat-playcanvas.js');
+  return yielder === undefined ? m.readCloud(resource) : m.readCloud(resource, yielder);
+}
 
 /** addSplat with `engine: 'playcanvas'`; the same validation, at the call, as ./splat's. */
 export function addSplat(wall, canvas, src, opts = {}) {

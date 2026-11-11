@@ -65,3 +65,23 @@ test('./splat/playcanvas addSplat: PlayCanvas handle, engine fixed, same call-si
   assert.throws(() => addSplat(null, {}, 'scene.sog', { captureFit: 'nope' }), /captureFit/);
   assert.throws(() => addSplat(null, {}, 'scene.sog', { reveal: 'nope' }));
 });
+
+// The experimental app helpers (1.52.2): the SAME functions as the viewers', and still light.
+test('./splat/rig re-exports the viewers\' own rig/window functions, with no bare import at all', async () => {
+  const rig = await import('../js/inline3d-splat-rig-entry.js');
+  const inner = await import('../js/inline3d-splat-rig.js');
+  const shared = await import('../js/inline3d-splat-shared.js');
+  for (const k of ['toRestSpace', 'aheadOfRest', 'planeDistance', 'medianDisparityDistance', 'FOCUS_MIN_M', 'FOCUS_MAX_M']) assert.equal(rig[k], inner[k], k);
+  assert.equal(rig.captureWindow, shared.captureWindow);
+  assert.deepEqual([...staticGraph(resolve(js, 'inline3d-splat-rig-entry.js')).bare.keys()], []);
+});
+
+test('./splat/playcanvas: readCloud loads the viewer module lazily (not in the static graph); room helpers are the look module\'s', async () => {
+  const entry = await import('../js/inline3d-splat-pc-entry.js');
+  const look = await import('../js/inline3d-pc-look.js');
+  assert.equal(entry.roomRGBE, look.roomRGBE);
+  assert.equal(entry.ROOM_YAW_DEG, look.ROOM_YAW_DEG);
+  assert.equal(await entry.readCloud(null), null, 'a missing resource resolves null, through the real readCloud');
+  const g = staticGraph(resolve(js, 'inline3d-splat-pc-entry.js'));
+  assert.ok(![...g.files].some((f) => f.endsWith('inline3d-splat-playcanvas.js')), 'the viewer module stays out of the static graph');
+});
