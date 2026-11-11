@@ -855,6 +855,45 @@ export function queryPickIndex(ix, xyz, origin, dir, coneRad = PICK_CONE_RAD) {
  * public methods, with the engine behind them instead of three. Not a SceneViewer subclass and
  * not field-compatible with one (docs/playcanvas-adapter.md §Divergences).
  */
+/**
+ * The light argument and view uniform format the forward renderer hands `getShaderInstance` /
+ * `getShaderVariant` for a mesh drawn in `layer`, so a warm-up issues the program the first draw
+ * looks up (the program library keys on the generated source, and the view uniform block is in it).
+ * Detected by shape, never by version:
+ * - PlayCanvas 2.23+: `getShaderInstance(pass, lightList, scene, shaderParams, viewUniformFormat)`,
+ *   the format per light list from `renderer.getViewUniformFormat(clustered, lightList)`;
+ *   `renderer.viewUniformFormat` no longer exists.
+ * - 2.22: `getShaderInstance(pass, lightHash, scene, shaderParams, renderer.viewUniformFormat,
+ *   layer.splitLights)`.
+ * `probe` only asks whether either shape is present (no layer needed). Returns null when neither is.
+ */
+export function rendererViewArgs(renderer, scene, layer, probe = false) {
+  if (!renderer) return null;
+  const clustered = !!scene?.clusteredLightingEnabled;
+  if (typeof renderer.getViewUniformFormat === 'function' && renderer.getViewUniformFormat.length >= 2) {
+    if (probe) return { modern: true };
+    const lightList = layer?.getLightList?.(clustered);
+    if (!lightList) return null;
+    return { modern: true, light: lightList, lightList, viewUniformFormat: renderer.getViewUniformFormat(clustered, lightList), sortedLights: undefined };
+  }
+  if (typeof renderer.viewUniformFormat === 'undefined') return null;
+  if (probe) return { modern: false };
+  return { modern: false, light: layer?.getLightHash?.(clustered) ?? 0, viewUniformFormat: renderer.viewUniformFormat, sortedLights: layer?.splitLights };
+}
+
+/**
+ * The light and view-format fields of a `getShaderVariant` params object for an unlit draw in the
+ * world layer (splat chunk variants, the transition overlay): `lightList` + its view uniform format
+ * on 2.23+, `sortedLights: []` + the renderer's format on 2.22.
+ */
+function variantViewParams(app, pc) {
+  const scene = app?.scene;
+  const layer = scene?.layers?.getLayerById?.(pc?.LAYERID_WORLD ?? 0);
+  const va = rendererViewArgs(app?.renderer, scene, layer);
+  if (va?.modern) return { lightList: va.lightList, viewUniformFormat: va.viewUniformFormat };
+  return { sortedLights: [], viewUniformFormat: va?.viewUniformFormat ?? null };
+}
+
 export class PlayCanvasSplatViewer {
   constructor(canvas, opts = {}) {
     const {
@@ -1305,7 +1344,7 @@ export class PlayCanvasSplatViewer {
     const device = app.graphicsDevice;
     const scene = app.scene;
     const renderer = app.renderer;
-    if (!renderer || typeof renderer.viewUniformFormat === 'undefined') return 0;
+    if (!rendererViewArgs(renderer, scene, null, true)) return 0;
     // [meshInstance, the layer ids it draws in] — a render/model component's own `layers`
     const groups = [];
     for (const c of [...(entity.findComponents?.('render') || []), ...(entity.findComponents?.('model') || [])]) {
@@ -1335,14 +1374,15 @@ export class PlayCanvasSplatViewer {
             if (cc.layers && !cc.layers.includes(layerId)) continue; // this camera never draws it
             const layer = scene.layers.getLayerById(layerId);
             if (!layer) continue;
-            const lightHash = layer.getLightHash?.(scene.clusteredLightingEnabled) ?? 0;
+            const va = rendererViewArgs(renderer, scene, layer);
+            if (!va) continue;
             for (const mi of mis) {
               if (!mi?.mesh || !mi.material) continue;
               if (((mi.shaderPassMask ?? ~0) & (1 << pass)) === 0) continue;
               mi.ensureMaterial?.(device);
               mi.material._scene = scene;
               mi.material.prepareForRender?.(device, scene);
-              const si = mi.getShaderInstance(pass, lightHash, scene, shaderParams, renderer.viewUniformFormat, layer.splitLights);
+              const si = mi.getShaderInstance(pass, va.light, scene, shaderParams, va.viewUniformFormat, va.sortedLights);
               if (si?.shader) shaders.add(si.shader);
               if (now() - slice > SLICE_MS) {
                 await yieldIdle(50);
@@ -5307,8 +5347,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             objDefs: p.mi._shaderDefs,
             cameraShaderParams: cam.shaderParams,
             pass: 0,
-            sortedLights: [],
-            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+            ...variantViewParams(viewer.app, pc),
             vertexFormat: p.mi.mesh?.vertexBuffer?.format,
           });
           if (v) (made.push(v), issued++);
@@ -5347,8 +5386,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         objDefs: mi._shaderDefs,
         cameraShaderParams: camera.shaderParams,
         pass: 0, // SHADER_FORWARD
-        sortedLights: [],
-        viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+        ...variantViewParams(viewer.app, pc),
         vertexFormat: mi.mesh?.vertexBuffer?.format,
       });
       if (v) made.push(v);
