@@ -7,6 +7,18 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — `warmEntity` / `warmEffect` warm the right programs on PlayCanvas 2.23+ (`./splat`, `./model`, preview tier)
+
+PlayCanvas 2.23 changed how the forward renderer asks a mesh for its program: `getShaderInstance`
+now takes the layer's light list and a view uniform format built per light list
+(`renderer.getViewUniformFormat(clustered, lightList)`), and `renderer.viewUniformFormat` is gone.
+`warmEntity` checked for that property first, so on 2.23 and 2.24 it gave up at once and resolved
+0: a glTF was no longer compiled ahead of its first draw. `warmEffect` and the transition pre-warm
+asked for a variant with no view uniform block, which is not the program the draw uses. Both now
+detect the renderer's shape and pass exactly what it passes; 2.22.3 is unchanged. Measured in
+headless Chrome on a fresh copy of a glTF: programs warmed 0 → 1 on 2.23.3 and 2.24.0 (1 on
+2.22.3 before and after), and the first draw then creates no new variant.
+
 ## 1.52.1 — 2026-11-11
 
 ### Changed — PlayCanvas 2.24.0 supported alongside 2.22.3 and 2.23.x; samples load 2.24.0 (`./splat`, `./model`, preview tier)

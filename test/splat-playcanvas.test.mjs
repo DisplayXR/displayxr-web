@@ -4444,6 +4444,43 @@ test("warmEntity issues each mesh's forward program via getShaderInstance with e
   assert.equal(await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: () => [] }), 0, 'nothing to warm');
 });
 
+test('warmEntity on the PlayCanvas 2.23+ renderer shape: the layer light list and its own view uniform format (no renderer.viewUniformFormat)', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer, rendererViewArgs } = await import('../js/inline3d-splat-playcanvas.js');
+  const calls = [];
+  const lightList = { hash: 77, key: 'L' };
+  const fmt = { vuf: 'for-L' };
+  const formatCalls = [];
+  const renderer = {
+    // 2.23+: no viewUniformFormat property; a format per (clustered, lightList)
+    getViewUniformFormat(isClustered, ll) { formatCalls.push([isClustered, ll]); return fmt; },
+  };
+  const layer = { getLightList: (c) => (c ? null : lightList) };
+  const sh = { ready: true };
+  const mi = {
+    mesh: {},
+    shaderPassMask: ~0,
+    material: { prepareForRender() {} },
+    ensureMaterial() {},
+    getShaderInstance(...args) { calls.push(args); return { shader: sh }; },
+  };
+  const fake = {
+    pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+    app: { graphicsDevice: {}, scene: { clusteredLightingEnabled: false, layers: { getLayerById: () => layer } }, renderer },
+    eye: { camera: { layers: [0], camera: { shaderParams: { hash: 1 } } } },
+    _views: [], _viewPath: 'renderViews', _disposed: false, logTag: '[t]',
+  };
+  const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: (t) => (t === 'render' ? [{ meshInstances: [mi], layers: [0] }] : []) });
+  assert.equal(n, 1, 'warmed (before the fix: 0, it gave up on the missing renderer.viewUniformFormat)');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1], lightList, "the layer's light list, not a hash");
+  assert.equal(calls[0][4], fmt, 'the view uniform format the renderer builds for that light list');
+  assert.deepEqual(formatCalls, [[false, lightList]]);
+  // neither shape: nothing
+  assert.equal(rendererViewArgs({}, {}, layer), null);
+  assert.equal(rendererViewArgs({ viewUniformFormat: 'old' }, {}, { getLightHash: () => 5, splitLights: 's' }).light, 5);
+});
+
 test('warmEntity also warms through the layer rig cameras: a mesh on a display-rig layer is drawn ONLY by them, with their own shaderParams', async () => {
   installDom();
   const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
