@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.52.1 — 2026-11-11
+
 ### Changed — PlayCanvas 2.24.0 supported alongside 2.22.3 and 2.23.x; samples load 2.24.0 (`./splat`, `./model`, preview tier)
 
 The peer range stays `playcanvas >=2.22.3 <3`, and one SDK build now works on 2.22.3, 2.23.x and
