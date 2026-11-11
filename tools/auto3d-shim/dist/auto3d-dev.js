@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.4 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,7 +489,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.4'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.5'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -3500,20 +3500,25 @@ function dxrPlayCanvas(core) {
     return { vfov, near, far, aspect };
   }
 
+  function qualify(st) {
+    const app = st.app;
+    if (app.xr && app.xr.active) return 'the app is presenting WebXR';
+    const pick = pickCamera(app, st);
+    if (!pick.cam) return pick.flat ? flatWhy(st, pick.why) : pick.why;
+    st.qualifyCam = pick.cam;
+    const where = core.canvasPlacement(st.canvas);
+    if (where) return where;
+    if (!(st.L.w > 0 && st.L.h > 0)) return 'canvas has no size yet';
+    if (core.T.pcNeeds3D !== false && !has3D(st, pick.cam)) return flatWhy(st, NOTHING_3D); // false: TEST ONLY
+    return core.cssEffect(st.canvas);
+  }
+
   const ad = {
     label: (st) => `PlayCanvas ${pcNS && pcNS.version ? pcNS.version : '2.x'}, ${via.get(st.app)}`,
     unqualified(st) {
-      const app = st.app;
-      if (app.xr && app.xr.active) return 'the app is presenting WebXR';
-      const pick = pickCamera(app, st);
-      if (!pick.cam) return pick.flat ? flatWhy(st, pick.why) : pick.why;
-      st.flatReason = null;
-      st.qualifyCam = pick.cam;
-      const where = core.canvasPlacement(st.canvas);
-      if (where) return where;
-      if (!(st.L.w > 0 && st.L.h > 0)) return 'canvas has no size yet';
-      if (core.T.pcNeeds3D !== false && !has3D(st, pick.cam)) return flatWhy(st, NOTHING_3D); // false: TEST ONLY
-      return core.cssEffect(st.canvas);
+      const why = qualify(st);
+      if (why !== st.flatReason) st.flatReason = null;
+      return why;
     },
     hasCamera: (st) => !!st.cam,
     depthRange(st) { const p = pageCam(st); return { near: p.near, far: p.far }; },
@@ -3612,6 +3617,7 @@ function dxrPlayCanvas(core) {
       if (!mis) mis = [...(layer.opaqueMeshInstances || []), ...(layer.transparentMeshInstances || [])];
       for (const mi of mis) {
         if (!mi || mi.visible === false) continue;
+        if (isMiniStats(mi)) continue; // the engine's stats overlay: screen-space, wherever it is added
         let n = mi.node, el = null;
         for (let k = 0; n && k < 3 && !el; k++, n = n.parent) el = n.element || null;
         if (el && typeof el._isScreenSpace === 'function' && el._isScreenSpace()) continue;
@@ -3623,6 +3629,7 @@ function dxrPlayCanvas(core) {
     if (im && ((im.allBatches && im.allBatches.size > 0) || (im.batchesMap && im.batchesMap.size > 0))) return true;
     return false;
   }
+  const isMiniStats = (mi) => !!(mi && mi.node && mi.node.name === 'MiniStatsMesh');
   function flatWhy(st, why) {
     if (st.flatReason !== why) { st.flatReason = why; info('PlayCanvas canvas stays 2D:', why); core.notify(); }
     return why;
@@ -3803,6 +3810,7 @@ function dxrPlayCanvas(core) {
     };
     C.list = [proxy(0), proxy(1)];
     setFP(cam, C.list);
+    hookMiniStats(st);
     info('CameraFrame split per eye:', JSON.stringify(describeCameraFrame(st)));
   }
   function hookPass(st, P, i) {
@@ -3880,11 +3888,74 @@ function dxrPlayCanvas(core) {
     }
     if (st.views && st.R) for (let k = 0; k < 2; k++) st.views[k].setViewport(k * st.R.eyeW, 0, st.R.eyeW, st.R.eyeH);
   }
+  const statsHooked = new WeakSet();
+  function hookMiniStats(st) {
+    const app = st.app, scene = app && app.scene;
+    if (!scene || typeof scene.on !== 'function' || statsHooked.has(app)) return;
+    statsHooked.add(app);
+    scene.on('prerender:layer', (camera, layer, transparent) => {
+      const s = apps.get(app);
+      if (!s || !s.cf || !s.active || !s.dev || s.dev.xrCurrentViewIndex !== 1 || !layer) return;
+      const mis = layer.meshInstances;
+      if (!Array.isArray(mis)) return;
+      for (const mi of mis) if (isMiniStats(mi) && mi.transparent === transparent && mi.shaderPassMask === 0) mi.shaderPassMask = 0xffffffff;
+    });
+  }
+  const isFogPass = (p) => !!p && typeof p.execute === 'function' && !!p.cameraComponent &&
+    !!p.invViewId && !!p.projScaleId && !!p.cameraPosId && !!p.cameraFwdId;
+  const fogWrapped = new WeakSet();
+  function wrapFogPasses(st, root) {
+    const seen = new Set(), stack = [root];
+    while (stack.length) {
+      const p = stack.pop();
+      if (!p || typeof p !== 'object' || seen.has(p)) continue;
+      seen.add(p);
+      if (isFogPass(p) && !fogWrapped.has(p)) wrapFog(st, p);
+      for (const k of ['beforePasses', 'internalBeforePasses', 'afterPasses']) if (Array.isArray(p[k])) stack.push(...p[k]);
+    }
+  }
+  function wrapFog(st, pass) {
+    fogWrapped.add(pass);
+    const orig = pass.execute;
+    pass.execute = function () {
+      const cc = this.cameraComponent, eye = eyeCameraFor(st, cc);
+      if (!eye) return orig.apply(this, arguments);
+      this.cameraComponent = eye;
+      if (st.cf) st.cf.fogRuns = (st.cf.fogRuns || 0) + 1;
+      try { return orig.apply(this, arguments); } finally { this.cameraComponent = cc; }
+    };
+  }
+  function eyeCameraFor(st, cc) {
+    const C = st.cf, i = st.dev && st.dev.xrCurrentViewIndex;
+    if (!C || !st.active || !st.views || !st.V || !st.haveViews || (i !== 0 && i !== 1) || !cc || !cc.camera || core.T.pcFogPerEye === false) return null;
+    const v = st.views[i], P = st.V[i].proj, cam = cc.camera;
+    if (!v || !P || !v.viewInvOffMat || !v.viewOffMat) return null;
+    if (typeof cam.updateViewTransforms === 'function') { try { cam.updateViewTransforms(); } catch (e) { /* the engine updates them per frame anyway */ } }
+    const E = (C.fogEye || (C.fogEye = [0, 1].map(() => ({ ws: new Float32Array(16), pos: { x: 0, y: 0, z: 0 }, fwd: { x: 0, y: 0, z: -1 }, proj: null, node: null, cam: null, cc: null, of: null }))))[i];
+    const W = v.viewInvOffMat.data, ws = E.ws;
+    const kx = -P[8] / P[0], ky = -P[9] / P[5];
+    for (let k = 0; k < 16; k++) ws[k] = W[k];
+    for (let r = 0; r < 3; r++) ws[8 + r] = W[8 + r] + kx * W[r] + ky * W[4 + r];
+    E.pos.x = W[12]; E.pos.y = W[13]; E.pos.z = W[14];
+    const fl = Math.hypot(W[8], W[9], W[10]) || 1;
+    E.fwd.x = -W[8] / fl; E.fwd.y = -W[9] / fl; E.fwd.z = -W[10] / fl;
+    if (!E.proj) { const M4 = v.projMat.constructor; E.proj = new M4(); }
+    for (let k = 0; k < 16; k++) E.proj.data[k] = P[k]; // GL clip z: the passes read [0] / [5] and project light bounds with it
+    if (!E.node) E.node = { getWorldTransform: () => ({ data: E.ws }), getPosition: () => E.pos, get forward() { return E.fwd; } };
+    if (E.of !== cc) {
+      const pass = (t, k) => { const val = Reflect.get(t, k, t); return typeof val === 'function' ? val.bind(t) : val; };
+      E.cam = new Proxy(cam, { get: (t, k) => (k === '_node' ? E.node : k === 'projectionMatrix' ? E.proj : k === 'viewMatrix' ? st.views[i].viewOffMat : pass(t, k)) });
+      E.cc = new Proxy(cc, { get: (t, k) => (k === 'camera' ? E.cam : pass(t, k)) });
+      E.of = cc;
+    }
+    return E.cc;
+  }
   function eyeScene(st, i) {
     const C = st.cf;
     if (!C || !st.views) return;
     const P = i && !C.shared ? C.B : C.A, sc = st.cam.camera, R = st.R;
     st.dev.xrCurrentViewIndex = i;
+    if (i === 0 || !C.shared) wrapFogPasses(st, P);
     const rt = P.rt, w = rt ? rt.width : R.eyeW, h = rt ? rt.height : R.eyeH;
     for (const v of st.views) v.setViewport(0, 0, w, h);
     const vp = C.vp[C.shared ? 0 : i]; vp.x = i * R.eyeW; vp.y = 0; vp.z = R.eyeW; vp.w = R.eyeH;
@@ -4013,7 +4084,7 @@ function dxrPlayCanvas(core) {
       compose: P.composePass ? { vp: P.composePass.viewport ? { ...P.composePass.viewport } : null, clears: !!(P.composePass.colorArrayOps && P.composePass.colorArrayOps[0] && P.composePass.colorArrayOps[0].clear) } : null,
     };
     const eye = (i) => { const o = one(C.A); if (o && o.compose && C.seen[i]) o.compose = { ...C.seen[i] }; return o; };
-    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2) };
+    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2), fogPerEye: C.fogRuns || 0 };
   }
 
   function trapCanvasSize(st) {
