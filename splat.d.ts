@@ -1367,3 +1367,31 @@ export function addSplat(
 
 /** Robust model-space bounds of a loaded SplatMesh, lifted through its own matrix. */
 export function measureSplatBounds(mesh: object, three?: object): SubjectBounds | null;
+
+/**
+ * Parse a `.sog`'s `meta.json`. Null when the bytes are not a `.sog`, have no `meta.json`, or the
+ * entry cannot be read on this platform.
+ */
+export function readSogMeta(bytes: ArrayBuffer | Uint8Array): Promise<Record<string, unknown> | null>;
+/** The `camera` block straight out of `.sog` bytes (readSogMeta + parse). Null when it has none. */
+export function readSogCamera(bytes: ArrayBuffer | Uint8Array): Promise<SogCamera | null>;
+
+/** The named perf profiles `perf: 'exact' | 'balanced' | 'aggressive'` applies (Spark engine). */
+export const SPLAT_PERF_PRESETS: Readonly<Record<'exact' | 'balanced' | 'aggressive', Readonly<SplatPerfOptions>>>;
+/**
+ * Apply a perf profile to a live `SparkRenderer` you built yourself (the knobs are live; takes
+ * effect next frame). `true` = 'balanced'. Returns the profile actually applied, or null.
+ */
+export function applySplatPerf(spark: object, perf: true | 'exact' | 'balanced' | 'aggressive' | SplatPerfOptions): SplatPerfOptions | null;
+
+/**
+ * Run the rig waterfall the viewers use: camera block → caller options → the cloud, to one
+ * resolved rig, every field beside the step that produced it. `cloud` is `{ tx, ty, invz, n }`
+ * from one pass over the splats in rest-camera space, or null.
+ */
+export function resolveRig(args: {
+  camera?: SogCamera | null;
+  opts?: SplatOptions;
+  cloud?: { tx: ArrayLike<number>; ty: ArrayLike<number>; invz: ArrayLike<number>; n: number } | null;
+  canvasAspect?: number;
+}): ResolvedRig;
