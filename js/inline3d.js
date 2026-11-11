@@ -832,21 +832,33 @@ function sceneBoxOf(canvas) {
 }
 
 /**
- * The `rectCover` option of every add*(): null (off) or `{ color, snapshot }`. Off by default in
- * the core (frozen defaults); `./splat` and `./model` pass 'auto'. A bad value throws at the call:
- * a typo here would otherwise silently leave a page without the cover it asked for.
+ * The `rectCover` option of every add*(): null (off) or `{ color, snapshot, live }`. Off by default
+ * in the core (frozen defaults); `./splat` and `./model` pass 'auto'. A bad value throws at the
+ * call: a typo here would otherwise silently leave a page without the cover it asked for.
+ *
+ * `live` (1.52, default true with a snapshot): while the cover is up, its picture follows the
+ * canvas, so a window DRAG shows the moving content in 2D instead of a still frame for the whole
+ * drag (each box change restarts the wait, up to REWOVEN_MAX_HOLDS holds).
  */
 function resolveRectCover(v) {
   if (v === undefined || v === null || v === false || v === 'off') return null;
-  if (v === 'auto' || v === true) return { color: '#000', snapshot: true };
+  if (v === 'auto' || v === true) return { color: '#000', snapshot: true, live: true };
   if (typeof v === 'object') {
     if (v.color !== undefined && typeof v.color !== 'string') {
       throw new TypeError('[inline3d] rectCover.color must be a CSS color string.');
     }
-    return { color: v.color || '#000', snapshot: v.snapshot !== false };
+    const snapshot = v.snapshot !== false;
+    return { color: v.color || '#000', snapshot, live: snapshot && v.live !== false };
   }
-  throw new TypeError(`[inline3d] rectCover: expected 'auto', 'off' or { color?, snapshot? }; got ${JSON.stringify(v)}.`);
+  throw new TypeError(`[inline3d] rectCover: expected 'auto', 'off' or { color?, snapshot?, live? }; got ${JSON.stringify(v)}.`);
 }
+
+/**
+ * A live cover frame is only taken once the page has redrawn FOR the new box: the left eye's
+ * aspect (half the side-by-side buffer) within this of the box's. Until then the last picture stays,
+ * so a page that resizes its buffer a frame late never flashes a stretched or cleared frame.
+ */
+const RECT_COVER_LIVE_ASPECT_TOL = 0.03;
 
 class Inline3D {
   constructor(
@@ -3440,6 +3452,7 @@ class Inline3D {
       // the backing store, in the same task, which is the one moment a WebGL drawing buffer is
       // guaranteed readable without preserveDrawingBuffer.
       if (win.rc && win.rc.snapWanted) this._rectCoverSnap(win);
+      else if (win.rc && win.rc.up && win.rc.snapped && win.rc.cfg.live) this._rectCoverLive(win);
       if (!win.layerFramed || win.framedWaiters.length) this._tickLayerFramed(win);
       this._tickFirstWoven(win);
     }
@@ -3774,6 +3787,34 @@ class Inline3D {
       rc.snapped = true;
     } catch {
       /* the solid color stays */
+    }
+  }
+
+  /**
+   * A live cover (rectCover.live): after each draw while the cover is up, the left eye of the frame
+   * just committed, drawn into the cover at the CURRENT box. One drawImage at CSS px per frame, for
+   * the second or so the cover is up. The frame is rendered for the box it was drawn at, so it is
+   * drawn whole (no crop) — but only once the buffer matches the box (RECT_COVER_LIVE_ASPECT_TOL);
+   * before that the previous picture stays.
+   */
+  _rectCoverLive(win) {
+    const rc = win.rc;
+    const el = rc.el;
+    const src = win.canvas;
+    if (!el || !(src.width > 1) || !(src.height > 0) || !(rc.w > 0) || !(rc.h > 0)) return;
+    const eye = src.width / 2 / src.height;
+    const box = rc.w / rc.h;
+    if (Math.abs(eye / box - 1) > RECT_COVER_LIVE_ASPECT_TOL) return;
+    const bw = Math.max(1, Math.round(rc.w));
+    const bh = Math.max(1, Math.round(rc.h));
+    try {
+      if (el.width !== bw) el.width = bw;
+      if (el.height !== bh) el.height = bh;
+      const ctx = el.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(src, 0, 0, src.width / 2, src.height, 0, 0, bw, bh);
+    } catch {
+      /* the last picture stays */
     }
   }
 
