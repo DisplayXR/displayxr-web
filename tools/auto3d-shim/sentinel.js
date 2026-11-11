@@ -236,8 +236,11 @@ function dxrSentinel(cfg, cap) {
 
   // ------------------------------------------------------------ PlayCanvas
   const isApp = (a) =>
-    !!a && typeof a === 'object' && typeof a.tick === 'function' && typeof a.on === 'function' &&
-    typeof a.fire === 'function' && 'graphicsDevice' in a && !!a.systems;
+    !!a && typeof a === 'object' && typeof a.on === 'function' && typeof a.fire === 'function' && !!a.systems &&
+    ((typeof a.tick === 'function' && 'graphicsDevice' in a) ||
+      // In the constructor (the canvas-id trap) of an older AppBase (2.17.2) neither exists yet: tick
+      // and graphicsDevice are set by init(). Newer engines declare both as class fields.
+      (typeof a.init === 'function' && typeof a.start === 'function'));
   const nsOf = (pc) => (pc && typeof pc === 'object' && (pc.AppBase || pc.Application) ? pc : null);
   let pcFound = false;
   let retired = false;  // S.disarm(): nothing is armed again in this document

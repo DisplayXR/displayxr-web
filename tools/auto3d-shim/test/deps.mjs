@@ -8,6 +8,12 @@
 //   SPARK_DIST=<dir with spark.module.js>                         (default: npm pack @sparkjsdev/spark@2.2.0)
 //   PLAYCANVAS_CF_MJS=<path to build/playcanvas.mjs of 2.23.0>    (default: npm pack playcanvas@2.23.0; the
 //                                                                  CameraFrame pages, cases/cameraframe.mjs)
+//   PLAYCANVAS_NEXT_MJS=<path to build/playcanvas.mjs of 2.24.0> (default: npm pack playcanvas@2.24.0; the engine
+//                                                                  playcanvas.com/examples runs. run.mjs PC_ENGINE=2.24 serves it
+//                                                                  for EVERY PlayCanvas page: the regression run)
+//   PC_ENGINES=<v>[,<v>…]   extra engines for the same run, e.g. PC_ENGINES=2.17.2 (npm pack, staged as
+//                           .deps/playcanvas-2.17/; then run.mjs PC_ENGINE=2.17). Sites ship whatever 2.x they
+//                           were built with: every adapter path is feature-detected and run on several.
 //   BABYLON_JS=<path to babylon.js (the UMD build)>                (default: npm pack babylonjs@9.32.0; the
 //                                                                  Babylon.js pages, cases/babylon.mjs)
 //   BABYLON_GUI_JS=<path to babylon.gui.js (the UMD build)>        (default: npm pack babylonjs-gui@9.32.0)
@@ -39,6 +45,10 @@ const THREE = `three@${process.env.THREE_VERSION || '0.180.0'}`;
 const PLAYCANVAS = 'playcanvas@2.22.3';
 const SPARK = '@sparkjsdev/spark@2.2.0'; // World Labs' splat renderer for three (peer: three >= 0.180)
 const PLAYCANVAS_CF = 'playcanvas@2.23.0'; // the engine superspl.at's viewer is built with (its devDependency)
+const PLAYCANVAS_NEXT = 'playcanvas@2.24.0'; // what playcanvas.com/examples runs (2026-11): PC_ENGINE=2.24 in run.mjs
+// Engine-pinned cases (cases/pc-engines.mjs, served under /pc-<X.Y>/): the oldest engine with Camera.xrViews
+// (2.20) and one older (2.17, must stay 2D with the reason). npm only; no local override.
+const PLAYCANVAS_PINNED = ['2.20.6', '2.17.2'];
 const SSV = '@playcanvas/supersplat-viewer@1.37.0'; // superspl.at's viewer: public/ is the standalone build
 const BABYLON = 'babylonjs@9.32.0';
 const BABYLON_GUI = 'babylonjs-gui@9.32.0'; // the UMD build (one file, sets window.BABYLON; the ESM-like pages delete it before the engine)
@@ -46,7 +56,7 @@ const WIN = process.platform === 'win32';
 
 // The files the pages import, by .deps path (run.mjs's preflight checks the same list).
 const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/three.tsl.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js',
-  'playcanvas-2.23/playcanvas.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css', 'babylon/babylon.js', 'babylon/babylon.gui.js'];
+  'playcanvas-2.23/playcanvas.mjs', 'playcanvas-2.24/playcanvas.mjs', 'playcanvas-2.24/camera-controls.mjs', 'playcanvas-2.20/playcanvas.mjs', 'playcanvas-2.20/camera-controls.mjs', 'playcanvas-2.17/playcanvas.mjs', 'playcanvas-2.17/camera-controls.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css', 'babylon/babylon.js', 'babylon/babylon.gui.js'];
 
 function die(msg) {
   console.error(`\ndeps: FAILED — ${msg}\n`);
@@ -99,6 +109,13 @@ ensure('three', 'examples/jsm/postprocessing/Pass.js', env('THREE_PASS_JS') || d
 ensure('spark', 'dist/spark.module.js', sparkDir && join(sparkDir, 'spark.module.js'), 'SPARK_DIST', SPARK);
 ensure('playcanvas', 'build/playcanvas.mjs', pcMjs, 'PLAYCANVAS_MJS', PLAYCANVAS);
 ensure('playcanvas-2.23', 'build/playcanvas.mjs', env('PLAYCANVAS_CF_MJS'), 'PLAYCANVAS_CF_MJS', PLAYCANVAS_CF);
+ensure('playcanvas-2.24', 'build/playcanvas.mjs', env('PLAYCANVAS_NEXT_MJS'), 'PLAYCANVAS_NEXT_MJS', PLAYCANVAS_NEXT);
+ensure('playcanvas-2.24', 'scripts/esm/camera-controls.mjs', derived(env('PLAYCANVAS_NEXT_MJS') && dirname(env('PLAYCANVAS_NEXT_MJS')), '../scripts/esm/camera-controls.mjs'), 'PLAYCANVAS_NEXT_MJS', PLAYCANVAS_NEXT);
+for (const v of [...PLAYCANVAS_PINNED, ...(process.env.PC_ENGINES || '').split(',')].map((x) => x.trim()).filter(Boolean)) {
+  const dir = `playcanvas-${v.split('.').slice(0, 2).join('.')}`;
+  ensure(dir, 'build/playcanvas.mjs', null, 'PC_ENGINES', `playcanvas@${v}`);
+  ensure(dir, 'scripts/esm/camera-controls.mjs', null, 'PC_ENGINES', `playcanvas@${v}`);
+}
 ensure('babylon', 'babylon.js', env('BABYLON_JS'), 'BABYLON_JS', BABYLON);
 ensure('babylon', 'babylon.gui.js', env('BABYLON_GUI_JS'), 'BABYLON_GUI_JS', BABYLON_GUI);
 for (const f of ['index.html', 'index.js', 'index.css']) ensure('supersplat-viewer', `public/${f}`, ssvDir && join(ssvDir, f), 'SUPERSPLAT_VIEWER_DIR', SSV);

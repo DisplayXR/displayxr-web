@@ -143,3 +143,16 @@ Add an entry to `sites.json`:
 - Check the URL first with `node run-corpus.mjs --only <id>`. A site that is `ERROR` on every run
   is noise, so replace it.
 - Keep `"sample": true` on about 10 sites: 6 plain, 3 engine, 1 sdk.
+
+## The official PlayCanvas examples (`run-pc-examples.mjs`, a coverage run, not a gate)
+
+`node run-pc-examples.mjs [--cat c1,c2] [--only cat/name,…] [--keep] [--resume] [--tag x]` loads every
+example listed by playcanvas.com/examples (its `iframe/<category>_<example>.html` page, top-level; the
+site runs PlayCanvas 2.24.0 as of 2026-11-10) with `../test/fake-xr.js` and the **dev** bundle built
+from the sources (`SHIM_DEV=<file>` injects another, e.g. an older release's `dist/auto3d-dev.js`), and
+records the reports, the renderer state, console errors and a pair score on a screenshot of the canvas
+(the right eye must be the left shifted by the fake's 0.1 × eye width; DOM over the canvas hidden for the
+shot): PASS / REVIEW / FLAT (with the reason) / NONE / ERROR per example, ~15 s each. Results:
+`results/<date>-pc-examples-<tag>.json`, written after every example (`--resume` continues). Captures
+(`--keep`, `KEEP_DIR`) are never committed. 2026-11-10: v0.7.3 vs v0.7.4, see `../README.md`
+("Verified").

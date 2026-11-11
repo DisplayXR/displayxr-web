@@ -202,7 +202,40 @@ export default function cases({ P, NEW }) {
     },
   });
 
+  // MiniStats over a split CameraFrame (playcanvas.com/examples with the stats toggle on): its quad
+  // batch draws on the FIRST render of the UI layer in a frame, so split per eye it showed in the
+  // left eye only. Both eyes must show it: its white text at the bottom-left of each eye (its
+  // clip-space quad lands in the eye's viewport), over the page's near-black floor there.
+  const statsBlock = (g, e) => {
+    const ew = g.w / 2, x0 = e * ew;
+    let mx = 0;
+    for (let y = Math.round(0.88 * g.h); y < Math.round(0.97 * g.h); y++) for (let x = x0 + 2; x < x0 + Math.round(0.11 * ew); x++) mx = Math.max(mx, lumAt(g.px, g.w, x, y));
+    return mx;
+  };
+  const statsCase = (pre, gpu) => ({
+    id: `pc-cf-stats${pre ? '@' + pre.slice(4) : ''}${gpu === 'webgpu' ? '-webgpu' : ''}`,
+    name: `${pre ? `[PlayCanvas ${pre.slice(4)}] ` : ''}CameraFrame split per eye + MiniStats${gpu === 'webgpu' ? ', WebGPU' : ''}: the stats panel in BOTH eyes`,
+    webgpu: gpu === 'webgpu', url: `${pre}${P}pc-cf-mesh.html?gpu=${gpu}&stats=1&taa=0&vignette=0&bloom=0&ssao=0`, shim: NEW,
+    async run(page) {
+      await page.waitForFunction(settled(90, 'window.__frozen'), { timeout: 60000, polling: 200 });
+      const g = frameOf(await page.evaluate(() => window.__grabFrame()));
+      return { R: await page.evaluate(active), g, pixels: { png: g.png } };
+    },
+    check(r, t) {
+      if (r.error) { t('ran', false, r.error); return; }
+      const { R, g } = r;
+      t('converted, CameraFrame split', !!R && !!R.cameraFrame, R ? `mode ${R.cameraFrame && R.cameraFrame.mode}` : 'not active');
+      const b = [0, 1].map((e) => statsBlock(g, e));
+      t('the stats text in both eyes: each eye\'s bottom-left corner has a pixel brighter than 150 (the floor there is < 40)', b[0] > 150 && b[1] > 150,
+        b.map((x, e) => `eye ${e}: brightest ${x.toFixed(1)}`).join('; '));
+      t('no page error', !r.log.some((l) => /pageerror/.test(l)), r.log.filter((l) => /pageerror/.test(l)).slice(0, 2).join(' | ') || 'none');
+    },
+  });
+
   return [
+    statsCase('', 'webgl2'),
+    statsCase('/pc-2.24', 'webgl2'),
+    statsCase('/pc-2.24', 'webgpu'),
     killCase('webgl2'),
     killCase('webgpu'),
     { id: 'pc-cf', name: 'PlayCanvas CameraFrame, bloom + SSAO + TAA + vignette, WebGL2: per-eye post chain (glow in both eyes, vignette per eye, TAA jitter)', url: P + 'pc-cf-mesh.html?gpu=webgl2', shim: NEW, run: meshRun('webgl2'), check: meshCheck },
