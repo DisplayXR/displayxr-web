@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.52.0 — 2026-11-10
+
 ### Added — a one-time hint when a camera rig orbits a fixed point; rig choice up front for agents (core, docs)
 
 `handle.setViewRig` now logs one `console.info` per window when a **camera** rig keeps its
