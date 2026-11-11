@@ -63,8 +63,8 @@ Deprecated here means *documented as unnecessary*, not scheduled for removal:
 
 ## Explicitly NOT covered (may change without a major bump)
 
-- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/model`, `/player`, `/call`,
-  `/call/full` and `/hands`.**
+- **The scene subpaths — `@displayxr/inline3d/viewer`, `/splat`, `/splat/playcanvas`, `/splat/rig`,
+  `/model`, `/player`, `/call`, `/call/full` and `/hands`.**
   `SceneViewer`, `boundsFromPositions`, `addSplat`, `addModel`, `addPlayer`, `addCall`, and every option
   they take are **experimental** and may change in any release. They are shipped inside the 1.x
   package rather than as a separate one so there is a single version to install and a single CI
