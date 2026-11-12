@@ -179,6 +179,90 @@ export function cameraRigComfortFactor(o: {
   metersToVirtual?: number;
 }): number;
 
+/** What {@link groundPlaneRig} reports. Disparities are on-glass, mm, signed (< 0 = in front). */
+export interface GroundPlaneRigReport {
+  /** Inverse-depth ratio of the flat ground at the bottom edge to the view centre: `1 + tan(tilt)·tan(fov/2)`. */
+  nearEdgeInvDepthRatio: number;
+  /** The same at the top edge: `1 − tan(tilt)·tan(fov/2)`; ≤ 0 when the horizon is in view. */
+  farEdgeInvDepthRatio: number;
+  horizonInView: boolean;
+  groundNearMm: number;
+  groundFarMm: number;
+  /** The top of an `objectHeight`-tall object at the near edge. */
+  objectNearMm: number;
+  /** Perceived distance in front of the glass of that object's top, mm. */
+  popOutMmNearEdge: number;
+  /** Perceived distance behind the glass of the ground at the top edge, mm (Infinity: divergent / horizon). */
+  recessionMmFarEdge: number;
+  /** The pop-out budget used, as on-glass crossed disparity, mm. */
+  budgetMm: number;
+  budgetSource: 'maxPopOutMm' | 'zone';
+  /** {@link cameraRigComfortFactor} for this rig and scene (> 1 = room to spare). NaN without `tileHeightM`. */
+  comfortFactor: number;
+  /** The runtime's comfort product `ipdFactor × metersToVirtual × convergenceDiopters × viewerM` (keep ≤ 1). */
+  comfortProduct: number;
+}
+
+/** A suggested ground-plane camera rig and its report. Nothing is applied. */
+export interface GroundPlaneRig {
+  /** Suggested convergence: the ground at the view centre, `height / cos(tilt)`, world units. */
+  convergence: number;
+  convergenceDiopters: number;
+  /** The FULL vertical FOV used, radians. */
+  verticalFov: number;
+  /** Lowest camera height (same tilt) keeping the near-edge object within the budget; null without `tileHeightM`. */
+  minHeight: number | null;
+  /** The ipdFactor that puts the near-edge object exactly at the budget at THIS height; null when nothing pops out. */
+  ipdFactorForBudget: number | null;
+  report: GroundPlaneRigReport;
+  basis: {
+    tiltDeg: number;
+    viewerM: number;
+    tileHeightM: number | null;
+    ipdFactor: number;
+    metersToVirtual: number;
+    objectHeight: number;
+    eyeSeparationM: number;
+    zone: ComfortZoneName;
+  };
+}
+
+/**
+ * A SUGGESTED camera rig for a tilted top-down view of a ground plane (a map, a strategy game, a
+ * board), plus what it does on this panel. Guideline only: it never applies or clamps anything.
+ *
+ * Convergence on the ground at the view centre (`height / cos(tilt)`, tilt from straight down);
+ * the flat ground's inverse depth at the bottom / top edges is `(1 ± tan(tilt)·tan(fov/2)) / d`.
+ * On-glass disparity is `0.063 · ipdFactor · metersToVirtual · (1/D − 1/z) · tileHeightM /
+ * (2·tan(fov/2))`, so it scales with the canvas's PHYSICAL height — pass `tileHeightM`
+ * (`handle.displayMetrics().canvasSizeM[1]`). `minHeight` is the zoom-in limit for an
+ * `objectHeight`-tall object at the near edge against `maxPopOutMm` (perceived) or the comfort
+ * zone's front side. Returns null on invalid input.
+ */
+export function groundPlaneRig(o: {
+  /** Camera height above the ground, world units. */
+  height: number;
+  /** View axis from straight down, degrees, [0, 90). */
+  tiltDeg: number;
+  /** FULL vertical FOV, DEGREES (three's camera.fov); or pass `verticalFov` in radians. */
+  fovDeg?: number;
+  verticalFov?: number;
+  /** The canvas's physical height, metres. */
+  tileHeightM?: number;
+  /** Default 0.6. */
+  viewerM?: number;
+  /** Default 0. World units. */
+  objectHeight?: number;
+  /** Default 1 (absolute, camera rig). */
+  ipdFactor?: number;
+  /** Default 1. */
+  metersToVirtual?: number;
+  /** Pop-out budget, perceived mm in front of the glass; default: the comfort zone's front side. */
+  maxPopOutMm?: number;
+  /** Default 'shibata'. */
+  zone?: ComfortZoneName;
+}): GroundPlaneRig | null;
+
 /** The hint `[inline3d]` logs for a `withheldReason` token (docs/woven-canvas-rules.md §3). */
 export function withheldReasonHint(reason: string): string;
 
