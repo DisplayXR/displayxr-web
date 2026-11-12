@@ -324,7 +324,6 @@ test('cameraRigFromCamera reuses `out` instead of allocating per frame', () => {
   assert.ok(Math.abs(out.verticalFov - Math.PI / 2) < 1e-12, 'the latest call wins');
 });
 
-<<<<<<< HEAD
 // web#276: a user depth slider drives ipdFactor + parallaxFactor and holds the rest. The builders
 // must pass both through unchanged and keep every other field independent of them, so the
 // zero-disparity plane, the FOV and the unit scale cannot move when the slider does.
@@ -348,7 +347,8 @@ test('depth slider: the rig builders pass ipdFactor / parallaxFactor through and
       }
     }
   }
-=======
+});
+
 // web#273: `out` is the zero-allocation path, so a reused descriptor must keep its position and
 // orientation OBJECTS too (identity, not just equal values), on every branch of all three builders.
 test('the rig builders write into out.position / out.orientation instead of replacing them', () => {
@@ -382,7 +382,6 @@ test('the rig builders write into out.position / out.orientation instead of repl
   const src = pose(7);
   cameraRigFromPose(src, { out });
   assert.notEqual(out.position, src.position);
->>>>>>> origin/main
 });
 
 test('displayRig defaults to the rig virtualDisplayHeight is shorthand for', () => {
