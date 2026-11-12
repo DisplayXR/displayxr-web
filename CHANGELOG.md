@@ -7,6 +7,17 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.53.1 — 2026-11-11
+
+### Fixed — the rig builders allocate nothing when given `opts.out` (`./three`, core)
+
+`cameraRigFromCamera`, `cameraRigFromPose` and `displayRig` took an `out` descriptor to reuse but
+still assigned fresh `position` / `orientation` literals on every call, so a rig declared every
+frame (as the docs recommend for a camera rig whose convergence follows the camera) cost two
+objects per frame regardless. They now write into `out.position` / `out.orientation` when those
+exist and create them only on the first call. Values are still copied, never aliased to the
+caller's vectors; the descriptor's fields and values are unchanged.
+
 ## 1.53.0 — 2026-11-11
 
 ### Added — `handle.stats()` reports the scene's frame clock (core, additive)
