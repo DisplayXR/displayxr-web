@@ -7,6 +7,22 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.54.0 — 2026-11-11
+
+### Added — the depth cursor for a page-owned scene: `cursorDisparityPxAt` and a documented recipe (`./cursor-depth`)
+
+A page that owns its scene and its picking on core `addScene` had to read the SDK source to feed
+`layer.setCursorDepth({ disparityPx, u, v })`. `docs/authoring-inline-3d.md` now has "Your own
+scene and your own picking": `DepthCursor` with your pick as `hitTest` on three.js, and
+`CursorRuntimeLink` + the new `cursorDisparityPxAt(views, u, v, point, canvasPx)` without it, plus
+the contract spelled out: device px between the two outermost rendered views, < 0 in front of the
+glass, raw (the runtime applies the policy), computed from the views you render (the rig and
+`ipdFactor` are already in them), `{ u, v }` with no depth over the canvas with nothing 3D under it,
+a single withdrawal over HTML chrome or off the canvas, the SDK-drawn fallback when support is not
+`"runtime"`, and the cost (once per frame; the runtime drops a depth 500 ms after the last frame
+that carried it). `cursorDisparityPxAt` is the maths every SDK depth cursor already uses, pulled
+out for one point; it returns `null` instead of guessing.
+
 ## 1.53.1 — 2026-11-11
 
 ### Fixed — the rig builders allocate nothing when given `opts.out` (`./three`, core)
