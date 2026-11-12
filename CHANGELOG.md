@@ -7,6 +7,21 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.55.0 — 2026-11-11
+
+### Added — `groundPlaneRig()`: a suggested camera rig for a tilted map / strategy camera (`./depth`)
+
+A pure helper for a camera looking down at a ground plane with some tilt: it suggests the
+convergence that puts the ground at the view centre on the glass (`height / cos(tilt)`), reports
+the ground's disparity at the near and far edges, the near-edge pop-out of an object of given
+height and the far-edge recession (on-glass mm and perceived mm), the comfort factor and the
+runtime's comfort product, and returns `minHeight`, the zoom-in limit that keeps that object
+within a pop-out budget (`maxPopOutMm`, or the comfort zone's front side), and the
+`ipdFactorForBudget` alternative. It carries the canvas-size factor (`tileHeightM`, from
+`handle.displayMetrics()`): on-glass disparity scales with the canvas's physical height. Guideline
+only: it never applies, clamps or changes a rig. Typed in `depth.d.ts`; documented in
+`docs/authoring-inline-3d.md` § "A tilted map or strategy camera".
+
 ## 1.54.0 — 2026-11-11
 
 ### Added — the depth cursor for a page-owned scene: `cursorDisparityPxAt` and a documented recipe (`./cursor-depth`)

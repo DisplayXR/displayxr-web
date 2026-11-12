@@ -705,6 +705,57 @@ also the one camera rig with no display-rig equivalent at all — a display rig'
 plane *is* its screen, at a finite distance, so it cannot express "zero disparity at infinity". A
 camera rig simply has one degree of freedom more than a display rig, and this is where you see it.
 
+### A tilted map or strategy camera — `groundPlaneRig()`
+
+*(`@displayxr/inline3d/depth`; added 1.55.0. Guideline only: it returns numbers, never applies
+them.)*
+
+A camera looking down at a ground plane with some tilt (a map, a board, an RTS) on a camera rig
+has one comfortable setup: the zero-disparity plane on the ground at the view centre, convergence a
+fixed function of camera height, and a zoom-in limit before tall things at the near edge come too
+far out of the glass. `groundPlaneRig` derives all of it, including the factor that is easy to get
+wrong silently: on-glass disparity scales with the canvas's **physical** height
+(`0.063 · ipdFactor · metersToVirtual · (1/D − 1/z) · tileHeightM / (2·tan(fov/2))`), so a formula
+that leaves `tileHeightM` out is right only when the canvas exactly fills the camera's field of
+view from the viewer.
+
+```js
+import { groundPlaneRig } from '@displayxr/inline3d/depth';
+import { cameraRigFromCamera } from '@displayxr/inline3d/three';
+
+const m = await handle.displayMetrics();       // read once, and again on resize
+const g = groundPlaneRig({
+  height: cam.position.y - groundY,            // world units above the ground
+  tiltDeg: 35,                                 // view axis from straight down
+  fovDeg: cam.fov,
+  tileHeightM: m.canvasSizeM[1],
+  viewerM: m.nominalViewerM,
+  objectHeight: 3,                             // the tallest unit that can stand at the near edge
+});
+handle.setViewRig(cameraRigFromCamera(THREE, cam, { convergence: g.convergence, out: rig }));
+zoom.minHeight = g.minHeight;                  // your decision, not the SDK's
+```
+
+- `convergence = height / cos(tilt)`: the ground at the view centre sits on the glass. The flat
+  ground's inverse depth at the bottom and top edges is `(1 ± tan(tilt)·tan(fov/2)) / d`, so the
+  near edge comes forward and the far edge recedes by the same disparity (`report.groundNearMm` /
+  `groundFarMm`, on-glass, signed, < 0 in front). Past `tan(tilt)·tan(fov/2) ≥ 1` the top edge sees
+  the horizon (`report.horizonInView`).
+- `minHeight` is the zoom-in limit: the lowest camera height, at the same tilt with convergence
+  following it, at which the top of an `objectHeight`-tall object standing on the near edge stays
+  within the budget — `maxPopOutMm` (perceived mm in front of the glass) if given, else the comfort
+  zone's front side at `viewerM` (`comfortZone()`). Exact, not iterated.
+- `ipdFactorForBudget` is the other way to spend the same budget: the `ipdFactor` that puts that
+  object exactly on it at the current height.
+- `report.popOutMmNearEdge` / `recessionMmFarEdge` are perceived distances in front of / behind
+  the glass; `report.comfortFactor` is `cameraRigComfortFactor` for this scene (> 1 = headroom) and
+  `report.comfortProduct` the runtime's `ipdFactor × metersToVirtual × convergenceDiopters × N`
+  rule (keep ≤ 1).
+
+It suggests a plain camera rig: the ground is tilted in depth, as rule 2 of
+[making-3d-look-right.md](making-3d-look-right.md) asks. A different mode, the ground locked to the
+glass through a sheared projection, is not built.
+
 ### Making a subject shallower: keep it rigid
 
 A subject too deep for the display (a room, a diorama, a long product turned side-on) has to lose
