@@ -888,18 +888,18 @@ times cheaper in stereo and it streams large scenes. The same `perf` presets map
 and the `camera` block below drives both engines the same way. The mapping and every difference
 from Spark are in [`playcanvas-adapter.md`](playcanvas-adapter.md).
 
-**Give a splat tile an opaque background.** A splat covers only part of its tile, and the viewer's
-default clear is transparent (`clearColor` unset). A transparent woven frame comes out **black** on
-the panel, not see-through (a browser limitation, [woven-canvas rules, resize
-checklist](woven-canvas-rules.md#resize-checklist-november-2026) item 4), so a splat on a
-light page sits on a black square in 3D while the 2D page looks right. Pass an opaque
-`clearColor` that matches the page behind the tile, a light or mid-tone colour, not black behind a
-bright subject ([rule 7 of making 3D look right](making-3d-look-right.md)):
+**What shows around a splat.** A splat covers only part of its tile, and the viewer's default clear
+is transparent (`clearColor` unset), so the page behind the canvas shows through. The DisplayXR
+Browser pre-blends that page under both eyes at zero disparity, so it reads as a flat backdrop on
+the glass, sampled at half horizontal resolution. Keep what sits behind a splat tile soft (a colour
+or a gentle gradient, light or mid-tone, never black behind a bright subject: [making 3D look
+right](making-3d-look-right.md)); text or a photo there smears. To pin the backdrop regardless of
+the page, pass an opaque `clearColor` (0..1):
 
 ```js
 const splat = addSplat(wall, canvas, 'butterfly.sog', {
   engine: 'playcanvas',
-  clearColor: [0.85, 0.83, 0.8, 1],          // the page's background, alpha 1
+  clearColor: [0.85, 0.83, 0.8, 1],          // optional: an opaque backdrop of your own
 });
 ```
 
@@ -1967,8 +1967,9 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
   [Woven canvas rules](woven-canvas-rules.md).
 - **A player's cover comes off on `player.firstWoven`,** not on `'ready'` / `loadeddata`
   ([§2b](#2b-player--addplayercanvas-src-opts)).
-- **Splat tiles need an opaque `clearColor`.** The default transparent clear weaves black on the
-  panel ([Gaussian splats](#gaussian-splats-performance-and-the-camera-block)).
+- **What is behind a transparent tile is part of the 3D picture**, flat and at half horizontal
+  resolution: keep it soft, never black behind a bright subject
+  ([Gaussian splats](#gaussian-splats-performance-and-the-camera-block)).
 - **An `addScene` page passes an `onLayerLost` that goes flat** (one mono view across the canvas),
   never a no-op: otherwise the last side-by-side pair stays on screen
   ([§3](#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).

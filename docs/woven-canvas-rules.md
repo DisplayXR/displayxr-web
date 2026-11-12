@@ -297,12 +297,12 @@ shows black, a stale frame, or live 2D.
    `requestAnimationFrame`: that leaves one frame where the buffer is the new size and cleared.
 2. **Write `canvas.width` / `height` only when the value changes**, and redraw the last good frame
    immediately when it does. Setting it, even to the same value, clears the buffer, and a cleared
-   (transparent) woven frame shows black. `./viewer`'s `_resize` is the reference.
+   (transparent) woven frame shows a blink of the page behind it. `./viewer`'s `_resize` is the reference.
 3. **Move the canvas's CSS box in the event handler that decides the move**, not in a later animation
    callback. A box moved a frame late is woven one frame at the old rect, every step of a drag.
-4. **Draw an opaque frame** whenever nothing under the canvas has to show through. A transparent
-   frame weaves black (browser-pvt #255). If the page needs a transparent clear (2D layers under the
-   canvas), rule 2 matters twice as much.
+4. **Draw an opaque frame** whenever nothing under the canvas has to show through: a cleared,
+   transparent frame shows the page behind the tile (flat) for that frame, which reads as a blink.
+   If the page needs a transparent clear (2D layers under the canvas), rule 2 matters twice as much.
 5. **Cap the buffer:** devicePixelRatio at most 2 for the side-by-side store (`./viewer` caps it), and
    respect the eye clamp. A 300 % desktop asks for a ~7680 px-wide buffer on an 8K panel; the browser
    may clamp it, and a clamped side-by-side store splits its eyes off-centre.
@@ -331,10 +331,12 @@ shows black, a stale frame, or live 2D.
   copy the viewport's and view's fields **by name**: `XRViewport` and `XRView` fields are
   prototype getters, so `Object.assign` and spread copy nothing and the replay draws into a 0×0
   viewport, which weaves black ([details](authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
-  - **Known limitation: a transparent canvas weaves black.** A cleared (fully transparent) woven
-    frame comes out black on the panel, not see-through: a browser bug (browser-pvt #255), not
-    the SDK's. Until it is fixed, a frame with nothing to show is drawn but dark. If the page
-    behind the tile is not black, cover the tile until its content is in (rule 5).
+  - **Transparent pixels show the page behind the tile.** The browser pre-blends the page under
+    both eyes at zero disparity before weaving, so a transparent woven frame shows the page,
+    flat, at half horizontal resolution. (A black box reported as "transparent weaves black",
+    browser-pvt #255, turned out to be the page's own 2D cover; the issue is closed.) A frame
+    with nothing drawn yet shows that backdrop, so cover a new tile until its content is in
+    (rule 5).
 - **Large scene canvases: consider `preserveDrawingBuffer: true`.** On older DisplayXR Browser
   builds, the weave's zero-copy read of a full-window WebGL canvas can race the page's next
   write, and the frame is dropped. Keep the SBS buffer no wider than the panel, and try

@@ -19,7 +19,8 @@ check depth at three window sizes and in full screen: the subject must stay on t
 Four mistakes a page makes most often (each looks fine in a 2D browser):
 - a cover over a new canvas comes off on handle.firstWoven (a player's too: player.firstWoven),
   never on 'ready' / loadeddata / the first frame, and always on a timeout as well;
-- a splat tile needs an opaque clearColor matching the page: the default transparent clear weaves black;
+- what sits behind a transparent tile (a splat's default clear) shows through flat, at half horizontal
+  resolution: keep it a soft light/mid-tone colour, or pass an opaque clearColor;
 - an addScene page passes onLayerLost that draws ONE mono view across the canvas, never a no-op;
 - page chrome over a tile (sticky header, buy card, caption) is fine as ordinary HTML, opaque or
   translucent, as long as it covers part of the tile; no filter/blend on it, frost only a partial region.
