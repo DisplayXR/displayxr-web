@@ -166,6 +166,20 @@ export const CURSOR_RUNTIME_SLOW_RETRY_MS: number;
 export function cursorRuntimeCapable(target: unknown): boolean;
 /** Baseline-unit content disparity → device px between the outermost views (`d × pxPerBaseline`); null when either is unknown. */
 export function cursorDisparityPx(contentDisparity: number | null | undefined, pxPerBaseline: number | null | undefined): number | null;
+/**
+ * The `disparityPx` for `setCursorDepth` of ONE content point under the pointer, for a page that
+ * owns its scene and picking (core `addScene`). `point` is in the same space as the views'
+ * transforms; `canvasPx` is the canvas's height in DEVICE px (CSS height × devicePixelRatio). Raw
+ * and signed (< 0 in front of the glass). Null with fewer than two views, (u, v) off the canvas, a
+ * point not in front of the eye, or an unknown canvas size. Same maths as every SDK depth cursor.
+ */
+export function cursorDisparityPxAt(
+  views: ArrayLike<CursorView | XRView>,
+  u: number,
+  v: number,
+  point: ArrayLike<number> | null | undefined,
+  canvasPx: number,
+): number | null;
 /** Anything a depth can be handed to: an XRDisplayLayer, or a tile handle that forwards to one. */
 export interface CursorDepthTarget {
   setCursorDepth(depth?: { disparityPx?: number | null; u: number; v: number } | null): unknown;

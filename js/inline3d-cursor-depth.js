@@ -674,6 +674,36 @@ export function cursorDisparityPx(contentDisparity, pxPerBaseline) {
   return Number.isFinite(px) ? px : null;
 }
 
+/**
+ * The `disparityPx` `setCursorDepth` takes, for ONE content point a page found under its pointer
+ * (web#275: a page that owns its scene and its picking, on core `addScene`). Exactly what every SDK
+ * depth cursor sends: the canvas point S under (u, v) is where the two OUTERMOST views' rays meet,
+ * E is their midpoint, the point's depth is t = its distance in front of E along the display
+ * normal over S's, d = 1 − 1/t (eye baselines), and px = d × baseline / canvasHeight × canvasPx.
+ *
+ * `views` are this frame's views (XRViews or `{projectionMatrix, transformMatrix}`), `point` is in
+ * THE SAME SPACE as their transforms (the reference space; camera-local in the attach pattern).
+ * The rig (camera or display, ipdFactor, metersToVirtual, convergence) is already in the views, so
+ * nothing about it is passed separately. `canvasPx` is the canvas's on-page height in DEVICE px
+ * (CSS height × devicePixelRatio). Raw and signed: < 0 in front of the glass, > 0 behind it (send
+ * it anyway — the runtime's policy never puts the cursor behind the glass).
+ *
+ * @returns {number|null}  null with fewer than two views, (u, v) off the canvas, a point not in
+ *          front of the eye, or an unknown canvas size.
+ */
+export function cursorDisparityPxAt(views, u, v, point, canvasPx) {
+  if (!views || views.length < 2 || !point) return null;
+  const a = asView(views[0]);
+  const b = asView(views[views.length - 1]);
+  const g = solveCursorGeometry(a, b, u, v);
+  if (!g) return null;
+  const d = cursorPointDisparity(g, point);
+  if (d === null) return null;
+  const ra = a.transformMatrix, rb = b.transformMatrix;
+  const baseline = Math.hypot(ra[12] - rb[12], ra[13] - rb[13], ra[14] - rb[14]);
+  return cursorDisparityPx(d, canvasPx > 0 ? (baseline / g.canvasHeight) * canvasPx : null);
+}
+
 // What each target answered, shared by every link (one support probe per layer, not per cursor).
 const _runtimeSupport = new WeakMap();
 
