@@ -88,6 +88,7 @@
     "js/inline3d.js",
     "js/inline3d-undock.js",
     "js/inline3d-display-metrics.js",
+    "js/inline3d-frame-clock.js",
     "js/inline3d-depth-budget.js",
     "js/inline3d-rig-hint.js",
     "js/inline3d-mode-switch.js",

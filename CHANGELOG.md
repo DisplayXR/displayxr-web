@@ -18,6 +18,22 @@ objects per frame regardless. They now write into `out.position` / `out.orientat
 exist and create them only on the first call. Values are still copied, never aliased to the
 caller's vectors; the descriptor's fields and values are unchanged.
 
+## 1.53.0 — 2026-11-11
+
+### Added — `handle.stats()` reports the scene's frame clock (core, additive)
+
+A scene window's `stats()` now also returns `frameIntervalMs` and `cbMs` (`{ p50, p95 }` over the
+last 120 `onFrame` deliveries: the interval on the XR frame timestamp, and the wall time the
+callback took), `frameClockSamples`, `displayHz` / `displayHzSource` (from `XRSession.frameRate`
+when the session reports it, else `null`; the SDK does not guess it from the cadence), and a
+`paced` hint: `true` when the interval is steady, the callback uses at most half of it and, with a
+known refresh, the interval is a whole number of refresh periods. That is the signature of a
+compositor-capped frame, which an adaptive resolution scaler cannot fix by scaling down (a
+full-window woven canvas on an Android 3D tablet sits at a flat ≈ 33.5 ms whatever the scene
+costs). Typed as `SceneStats` / `SceneFrameClock` in `index.d.ts`; "Capped or slow?" in
+`docs/authoring-inline-3d.md` says how to read it. Two rings allocated once per scene window, no
+per-frame allocation; nothing is throttled or clamped. `frames` / `monoFrames` are unchanged.
+
 ## 1.52.3 — 2026-11-11
 
 ### Fixed — `./splat` and `./splat/playcanvas` types declare every runtime export (types only)
