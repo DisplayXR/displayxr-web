@@ -418,6 +418,59 @@ export type SceneFrameCallback = (
  * identity gap), or a subpath puts a second renderer on the context, and the call returns its own
  * new handle. Change what is in the canvas instead, or `remove()` first.
  */
+/** A p50 / p95 pair over the frame clock's recent window, in milliseconds. */
+export interface FramePercentiles {
+  p50: number;
+  p95: number;
+}
+
+/**
+ * A scene window's frame clock, part of {@link TileHandle.stats} (1.53). Measured over the last
+ * 120 `onFrame` deliveries (about 2 s at 60 Hz, 4 s at 30 Hz) with no per-frame allocation.
+ * Read it a few times a second at most; each read sorts the window.
+ */
+export interface SceneFrameClock {
+  /**
+   * Interval between consecutive `onFrame` deliveries, on the XR frame timestamp. Gaps where the
+   * window sat out frames (no layer) and pauses over 1 s are not counted. `null` before the first
+   * interval.
+   */
+  frameIntervalMs: FramePercentiles | null;
+  /**
+   * Wall time your `onFrame` took per call (main-thread CPU). GPU work is queued, not waited on,
+   * so it is NOT in this number. `null` before the first call.
+   */
+  cbMs: FramePercentiles | null;
+  /** How many intervals `frameIntervalMs` is computed from (0 to 120). */
+  frameClockSamples: number;
+  /**
+   * The display's refresh rate when the session reports it (`XRSession.frameRate`), else `null`.
+   * The SDK does not estimate it from the cadence: a 30 Hz panel and a 60 Hz panel delivering
+   * every second vsync look the same from here.
+   */
+  displayHz: number | null;
+  /** Where `displayHz` came from; `null` when it is unknown. */
+  displayHzSource: 'session' | null;
+  /**
+   * A hint, computed from the numbers above: `true` when the interval is steady
+   * (p95 ≤ 1.15 × p50), your callback is idle (cb p50 ≤ 0.5 × interval p50) and — when
+   * `displayHz` is known — the interval is a whole number of refresh periods (within 8%). Then the
+   * interval is set by the compositor's cadence, and spending less CPU will not shorten it.
+   * `false` when any condition fails; `null` with fewer than 30 intervals. It cannot see GPU
+   * cost: to rule out a GPU-bound frame, change the resolution and watch whether the interval
+   * moves.
+   */
+  paced: boolean | null;
+}
+
+/** What {@link TileHandle.stats} returns. */
+export interface SceneStats extends SceneFrameClock {
+  /** `onFrame` deliveries. */
+  frames: number;
+  /** Deliveries that carried fewer than two views (the load-induced mono fallback). */
+  monoFrames: number;
+}
+
 export interface TileHandle {
   /** Remove this window: close its weave layer and stop driving it. */
   remove(): void;
@@ -583,9 +636,14 @@ export interface TileHandle {
    * a rising ratio is the machine telling you the session is falling back, and is worth
    * surfacing before it turns into a bug report about "blinking".
    *
-   * Scene windows only — image/video windows always report `{ frames: 0, monoFrames: 0 }`.
+   * Since 1.53 it also reports the scene's **frame clock** ({@link SceneFrameClock}), so an app
+   * that adapts its resolution can tell "my frame is expensive" from "the compositor delivers
+   * frames at this cadence whatever I do". Numbers only: the SDK never throttles or clamps.
+   *
+   * Scene windows only — image/video windows report `frames: 0, monoFrames: 0` and null clock
+   * fields.
    */
-  stats(): { frames: number; monoFrames: number };
+  stats(): SceneStats;
   /**
    * The browser's report for this window's layer, read live ({@link WovenState}); `'pending'`
    * while the window has no live layer; `null` on a browser that does not report it (the

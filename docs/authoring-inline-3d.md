@@ -361,6 +361,36 @@ last.xf.set(view.transform.matrix);
 own loop. `handle.stats()` reports `{ frames, monoFrames }` per scene window if you want to see
 how often the fallback is firing on real hardware.
 
+**Capped or slow? Read the frame clock before you scale anything down.** A long frame interval is
+not always yours to fix. On an Android 3D tablet a full-window woven canvas settled at a flat
+≈ 33.5 ms (every second vsync) that did not move with a 10× triangle count or a narrower eye
+buffer, while `onFrame` used 4–6 ms of CPU; an adaptive scaler aiming for 16.6 ms drove the
+resolution to its floor and bought nothing. Since 1.53 `handle.stats()` also reports the scene's
+frame clock over its last 120 deliveries:
+
+| field | meaning |
+|---|---|
+| `frameIntervalMs` `{ p50, p95 }` | interval between `onFrame` deliveries, on the XR frame timestamp |
+| `cbMs` `{ p50, p95 }` | wall time your `onFrame` took (main-thread CPU only — queued GPU work is not in it) |
+| `frameClockSamples` | intervals behind the percentiles (0–120) |
+| `displayHz`, `displayHzSource` | the refresh rate when the session reports one (`XRSession.frameRate`, source `'session'`), else `null` — never estimated from the cadence, which cannot tell a 30 Hz panel from a 60 Hz one at vsync/2 |
+| `paced` | `true` when the interval is steady (p95 ≤ 1.15 × p50), your callback idle (cb p50 ≤ 0.5 × interval p50) and, if `displayHz` is known, a whole number of refresh periods (±8%); `null` under 30 samples |
+
+```js
+const s = handle.stats();
+if (s.paced) {
+  // The compositor sets this cadence. Cutting CPU or resolution will not shorten it: hold, or
+  // scale back UP while the interval stays put.
+} else if (s.frameIntervalMs && s.cbMs && s.cbMs.p50 > 0.8 * s.frameIntervalMs.p50) {
+  // Your callback is the frame. This is the case resolution/LOD scaling is for.
+}
+```
+
+`paced` cannot see GPU cost, so a GPU-bound scene with a light callback can read `true`. The
+decisive test is the one the scaler already runs: change the resolution one step and watch whether
+`frameIntervalMs.p50` moves. If it does not, stop scaling. Read `stats()` a few times a second, not
+every frame: each read sorts the window. The SDK reports these numbers and changes nothing.
+
 **Resizing clears the buffer, even when nothing changed.** Writing `canvas.width` or
 `canvas.height` reallocates the drawing buffer — including a write of the *same* value, which is
 what `renderer.setSize()` does unconditionally. A `ResizeObserver` fires on plenty of things that
