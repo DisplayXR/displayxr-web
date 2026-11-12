@@ -361,6 +361,36 @@ last.xf.set(view.transform.matrix);
 own loop. `handle.stats()` reports `{ frames, monoFrames }` per scene window if you want to see
 how often the fallback is firing on real hardware.
 
+**Capped or slow? Read the frame clock before you scale anything down.** A long frame interval is
+not always yours to fix. On an Android 3D tablet a full-window woven canvas settled at a flat
+≈ 33.5 ms (every second vsync) that did not move with a 10× triangle count or a narrower eye
+buffer, while `onFrame` used 4–6 ms of CPU; an adaptive scaler aiming for 16.6 ms drove the
+resolution to its floor and bought nothing. Since 1.53 `handle.stats()` also reports the scene's
+frame clock over its last 120 deliveries:
+
+| field | meaning |
+|---|---|
+| `frameIntervalMs` `{ p50, p95 }` | interval between `onFrame` deliveries, on the XR frame timestamp |
+| `cbMs` `{ p50, p95 }` | wall time your `onFrame` took (main-thread CPU only — queued GPU work is not in it) |
+| `frameClockSamples` | intervals behind the percentiles (0–120) |
+| `displayHz`, `displayHzSource` | the refresh rate when the session reports one (`XRSession.frameRate`, source `'session'`), else `null` — never estimated from the cadence, which cannot tell a 30 Hz panel from a 60 Hz one at vsync/2 |
+| `paced` | `true` when the interval is steady (p95 ≤ 1.15 × p50), your callback idle (cb p50 ≤ 0.5 × interval p50) and, if `displayHz` is known, a whole number of refresh periods (±8%); `null` under 30 samples |
+
+```js
+const s = handle.stats();
+if (s.paced) {
+  // The compositor sets this cadence. Cutting CPU or resolution will not shorten it: hold, or
+  // scale back UP while the interval stays put.
+} else if (s.frameIntervalMs && s.cbMs && s.cbMs.p50 > 0.8 * s.frameIntervalMs.p50) {
+  // Your callback is the frame. This is the case resolution/LOD scaling is for.
+}
+```
+
+`paced` cannot see GPU cost, so a GPU-bound scene with a light callback can read `true`. The
+decisive test is the one the scaler already runs: change the resolution one step and watch whether
+`frameIntervalMs.p50` moves. If it does not, stop scaling. Read `stats()` a few times a second, not
+every frame: each read sorts the window. The SDK reports these numbers and changes nothing.
+
 **Resizing clears the buffer, even when nothing changed.** Writing `canvas.width` or
 `canvas.height` reallocates the drawing buffer — including a write of the *same* value, which is
 what `renderer.setSize()` does unconditionally. A `ResizeObserver` fires on plenty of things that
@@ -674,6 +704,57 @@ just puts the entire scene in front of the glass, which is comfortable for almos
 also the one camera rig with no display-rig equivalent at all — a display rig's zero-disparity
 plane *is* its screen, at a finite distance, so it cannot express "zero disparity at infinity". A
 camera rig simply has one degree of freedom more than a display rig, and this is where you see it.
+
+### A tilted map or strategy camera — `groundPlaneRig()`
+
+*(`@displayxr/inline3d/depth`; added 1.55.0. Guideline only: it returns numbers, never applies
+them.)*
+
+A camera looking down at a ground plane with some tilt (a map, a board, an RTS) on a camera rig
+has one comfortable setup: the zero-disparity plane on the ground at the view centre, convergence a
+fixed function of camera height, and a zoom-in limit before tall things at the near edge come too
+far out of the glass. `groundPlaneRig` derives all of it, including the factor that is easy to get
+wrong silently: on-glass disparity scales with the canvas's **physical** height
+(`0.063 · ipdFactor · metersToVirtual · (1/D − 1/z) · tileHeightM / (2·tan(fov/2))`), so a formula
+that leaves `tileHeightM` out is right only when the canvas exactly fills the camera's field of
+view from the viewer.
+
+```js
+import { groundPlaneRig } from '@displayxr/inline3d/depth';
+import { cameraRigFromCamera } from '@displayxr/inline3d/three';
+
+const m = await handle.displayMetrics();       // read once, and again on resize
+const g = groundPlaneRig({
+  height: cam.position.y - groundY,            // world units above the ground
+  tiltDeg: 35,                                 // view axis from straight down
+  fovDeg: cam.fov,
+  tileHeightM: m.canvasSizeM[1],
+  viewerM: m.nominalViewerM,
+  objectHeight: 3,                             // the tallest unit that can stand at the near edge
+});
+handle.setViewRig(cameraRigFromCamera(THREE, cam, { convergence: g.convergence, out: rig }));
+zoom.minHeight = g.minHeight;                  // your decision, not the SDK's
+```
+
+- `convergence = height / cos(tilt)`: the ground at the view centre sits on the glass. The flat
+  ground's inverse depth at the bottom and top edges is `(1 ± tan(tilt)·tan(fov/2)) / d`, so the
+  near edge comes forward and the far edge recedes by the same disparity (`report.groundNearMm` /
+  `groundFarMm`, on-glass, signed, < 0 in front). Past `tan(tilt)·tan(fov/2) ≥ 1` the top edge sees
+  the horizon (`report.horizonInView`).
+- `minHeight` is the zoom-in limit: the lowest camera height, at the same tilt with convergence
+  following it, at which the top of an `objectHeight`-tall object standing on the near edge stays
+  within the budget — `maxPopOutMm` (perceived mm in front of the glass) if given, else the comfort
+  zone's front side at `viewerM` (`comfortZone()`). Exact, not iterated.
+- `ipdFactorForBudget` is the other way to spend the same budget: the `ipdFactor` that puts that
+  object exactly on it at the current height.
+- `report.popOutMmNearEdge` / `recessionMmFarEdge` are perceived distances in front of / behind
+  the glass; `report.comfortFactor` is `cameraRigComfortFactor` for this scene (> 1 = headroom) and
+  `report.comfortProduct` the runtime's `ipdFactor × metersToVirtual × convergenceDiopters × N`
+  rule (keep ≤ 1).
+
+It suggests a plain camera rig: the ground is tilted in depth, as rule 2 of
+[making-3d-look-right.md](making-3d-look-right.md) asks. A different mode, the ground locked to the
+glass through a sheared projection, is not built.
 
 ### Making a subject shallower: keep it rigid
 
@@ -1514,6 +1595,92 @@ exactly as described below. Tile handles forward the same two methods (`handle.s
 - **Stereo pairs** (`./call` and `./camera`, `cursor: 'depth'`) follow the same policy and draw the
   same sprites (the arrow, or your CSS cursor's), softened the same way; their depth is measured off the pair's two halves instead of
   hit-tested.
+
+### Your own scene and your own picking (core `addScene`)
+
+A page that owns its whole scene (an instanced renderer, its own picking) gets the same cursor,
+including the runtime-drawn one, by supplying only the depth under the pointer.
+
+**On three.js, use `DepthCursor` with your pick as `hitTest`.** It does everything below (the
+support probe, the runtime hand-off, the SDK-drawn fallback, the footprint, withdrawing):
+
+```js
+import { DepthCursor } from '@displayxr/inline3d/three';
+
+// hitTest(origin, direction): WORLD-space ray in, nearest content point [x, y, z] out (or null).
+const cursor = new DepthCursor(THREE, { canvas, hitTest: (o, d) => myPick(o, d), viewSpace: appCamera });
+scene.add(cursor.object);
+wall.addScene(canvas, (views, layer) => {
+  cursor.update(views, { layer }); // before rendering, with THIS frame's views and layer
+  // ... render every view ...
+});
+```
+
+`viewSpace` is only for the attach pattern (eye cameras parented under an app camera). Picks that
+are expensive take `raysPerFrame: N`.
+
+**Without three (or to drive the layer yourself):** `@displayxr/inline3d/cursor-depth` has the
+pieces. `CursorRuntimeLink` is the probe and hand-off every SDK cursor uses;
+`cursorDisparityPxAt(views, u, v, point, canvasPx)` turns your picked point into the number the
+layer takes:
+
+```js
+import { CursorRuntimeLink, cursorDisparityPxAt } from '@displayxr/inline3d/cursor-depth';
+
+const link = new CursorRuntimeLink();
+wall.addScene(canvas, (views, layer) => {
+  if (link.bind(layer)) {
+    // The runtime draws the browser's own cursor: draw no sprite, leave the CSS cursor alone.
+    if (pointerOverCanvas) {
+      const point = myPickAt(u, v); // nearest content under the pointer, in the views' space, or null
+      const canvasPx = canvas.getBoundingClientRect().height * devicePixelRatio;
+      link.report(u, v, point ? cursorDisparityPxAt(views, u, v, point, canvasPx) : null);
+    } else {
+      link.withdraw();
+    }
+  } else {
+    // "none" or still "pending": draw your own sprite (CursorDepthPlacer gives the placement).
+  }
+  // ... render ...
+});
+```
+
+The contract of `layer.setCursorDepth({ disparityPx, u, v })` (also `handle.setCursorDepth`, which
+returns `false` while the window has no live layer):
+
+| | |
+|---|---|
+| `disparityPx` | on-screen disparity of the **nearest content under the cursor footprint**, in **device px** (CSS px × `devicePixelRatio`), between the **two outermost views** you rendered (last view minus first) |
+| sign | **< 0 = crossed = in front of the glass** (display-space `+z`, out toward the viewer); 0 on the glass; > 0 behind it |
+| raw | no margin, clamp or filter: the runtime applies the one policy (never behind the glass, margin, draw threshold, rise/sink, hybrid anchor). Send content behind the glass as it is |
+| the rig | compute it from the **views you render**: the rig (camera or display, `ipdFactor`, `metersToVirtual`, convergence) is already in them, so nothing about it is sent or re-derived |
+| `u`, `v` | where it was sampled, element-normalised, `v` down, clamped to [0, 1]. The runtime reads the live pointer itself at weave time; `u`/`v` is diagnostic |
+| over the canvas, nothing 3D under it | `{ u, v }` with no `disparityPx` |
+| over HTML chrome, or off the canvas | withdraw: `setCursorDepth()` with no argument, once (not every frame). The runtime then draws nothing and the OS cursor is the cursor. This is what the default `pointerScope: 'canvas'` does over DOM layered on the canvas |
+| 2D (fewer than two views) | withdraw |
+
+`cursorDisparityPxAt` is the same maths every SDK cursor uses: S, the canvas point under (u, v),
+is where the outermost views' rays meet, E their midpoint, the point's depth t its distance in
+front of E along the display normal over S's, d = 1 − 1/t eye baselines, and
+`disparityPx = d × baseline / canvasHeight × canvasPx`. `point` must be in the views' space (the
+reference space, or camera-local in the attach pattern). It returns `null` rather than guessing:
+fewer than two views, (u, v) off the canvas, a point not in front of the eye, an unknown canvas
+size. To pick the cursor's footprint rather than its tip (so an edge beside the hotspot cannot cut
+through the drawn cursor), `cursorFootprint` / `cursorArrowFootprint` give the sample points, and
+the nearest hit wins.
+
+**Support.** `getCursorDepthSupport()` answers `"runtime"` only where the browser and runtime draw
+the web cursor (Windows, `XR_DXR_cursor_depth` spec 8 or later) and `"none"` until the weave
+session is live, so ask again (`CursorRuntimeLink` re-asks, rate-limited); a browser without the
+methods is never asked. Anywhere else, draw your own sprite: `CursorDepthPlacer.update(views,
+{ u, v, nearestPoint, canvasPx })` returns the placement (`active` false on the plane, where the
+OS cursor is the cursor).
+
+**Cost: send it every animation frame while the pointer is over the canvas.** The call carries
+three numbers. The runtime keeps a rect's depth for **500 ms** after the last frame that carried
+it, then lets the cursor sink to the glass, so skipping unchanged values saves nothing and a long
+skip drops the cursor. The expensive part is your pick: amortise that (a few rays a frame, a
+coarse proxy, a depth read-back you already have), not the call.
 
 ## Rounded corners
 
