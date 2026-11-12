@@ -713,6 +713,63 @@ what the dials do, though: they leave the geometry and the 2D view untouched, bu
 flatten for the viewer much as they do under a `scale.z`. A rigid, re-oriented subject is still the
 way to keep its shape.
 
+### A user depth slider
+
+A "3D depth" control (0 = flat, 1 = as authored, a little above for more) is two rig fields
+moved **together**, everything else held:
+
+| | camera rig | display rig |
+|---|---|---|
+| drive | `ipdFactor = authoredIpd × s` **and** `parallaxFactor = authoredParallax × s` | `ipdFactor = s`, `parallaxFactor = s` |
+| hold | `convergenceDiopters`, `verticalFov`, `metersToVirtual` | `virtualDisplayHeight`, `perspectiveFactor` |
+| range | `>= 0`, absolute (the runtime clamps only to [0, 10000]) | `[0, 1]` relative; above 1 is accepted and `setViewRig` warns once |
+| comfort | the product `ipdFactor × metersToVirtual × convergenceDiopters × N` scales with `s`: keep `s ≤ 1 / (authored product)` | 1 is what the display shows by construction |
+
+Why these two and not the others:
+
+- **The zero-disparity plane does not move.** On a camera rig it is set by `convergenceDiopters`
+  alone. The runtime shears each eye's frustum by its offset × `convergenceDiopters`, so a point at
+  the convergence distance lands on the same pixel in every view whatever the eye offsets are.
+  `ipdFactor` scales the eyes' spread around their centre, `parallaxFactor` scales how far that
+  centre follows the head, and both scale about that plane. On a display rig the plane is the
+  glass. So scaling depth never reconverges the scene.
+- **Move both, or the cues disagree.** `ipdFactor` alone shrinks stereo depth while head-tracked
+  look-around still shows the full depth (see *Making a subject shallower* above). Moving them
+  together is the default; splitting them is a deliberate effect.
+- **Leave `metersToVirtual` alone.** In the runtime it multiplies the eye exactly as the two factors
+  do, so it would "work". But it is the scene's unit conversion, and an app that changes it for
+  depth has two numbers meaning the same thing. Keep it a unit fix.
+
+```js
+const authored = { ipd: 0.8, parallax: 1 };     // what the scene was tuned with
+let s = 1;                                      // the slider, 0..1.2
+
+wall.addScene(canvas, (views, layer) => {
+  handle.setViewRig(cameraRigFromCamera(THREE, appCam, {
+    attach: true, convergence,                  // held: the zero-disparity plane stays put
+    ipdFactor: authored.ipd * s,
+    parallaxFactor: authored.parallax * s,
+    out: rig,                                   // reused: no allocation per frame
+  }));
+  // ... render ...
+});
+```
+
+`cameraRigFromCamera`, `cameraRigFromPose` and `displayRig` all take `ipdFactor` and
+`parallaxFactor` and put them on the descriptor unchanged. They do not rescale, clamp or couple
+them, and the convergence, FOV and `metersToVirtual` they emit do not depend on them.
+
+**Latency: one frame, the same as any rig change.** The browser locates views before the page's
+rAF, so factors set in frame N shape the views of frame N+1. They are not applied together with
+that frame's eye poses. The attach pattern removes the lag from the camera's *pose* only; the
+factors are applied in the runtime's eye maths and always arrive a frame later. On a slider or a
+300 ms ease that is invisible.
+
+**Going flat where the mode switch is refused** (`setStereoEnabled(false)` rejecting with
+`NotSupportedError`, see [woven-canvas-rules.md](woven-canvas-rules.md)) is the same control eased to
+`s = 0`: every view becomes identical and head motion stops moving the picture. The panel's lens
+stays on, so it is a softer 2D than the real 1-view mode.
+
 ### Reading back where the subject is — `getSubjectBounds()`
 
 *(`@displayxr/inline3d/viewer`; added 1.6.0.)*
