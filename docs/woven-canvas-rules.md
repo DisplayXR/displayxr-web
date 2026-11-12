@@ -110,10 +110,15 @@ canvas: the poster, or an opaque block of the page background.
 - **Released on `handle.firstWoven`, not on first paint, and not on your own timer.**
 
 ```js
-const handle = wall.addScene(canvas, onFrame);        // or addImage / addVideo / addSplat / addModel
+const handle = wall.addScene(canvas, onFrame);        // or addImage / addVideo / addSplat / addModel / addPlayer
 await Promise.all([contentReady, handle.firstWoven]); // your load + the SDK's woven signal
 poster.remove();                                       // cut, never fade
 ```
+
+**Video and players too.** A `<video>`'s `loadeddata` / `canplay`, a player's `'ready'`, and the
+first decoded frame all fire *before* the join: they mean "there is a stereo frame to paint", which
+is where the hold starts, not where it ends. `addPlayer` returns `firstWoven` like every other
+handle (it is the woven `addVideo` window's own); release the cover on it.
 
 `handle.firstWoven` resolves **once and never rejects** with `{ woven, confirmed, reason, ms }`:
 
@@ -200,8 +205,12 @@ generations.
 
 ### 9. Nothing with a background sits above the woven canvas; black goes under it
 
-A section, wrapper or later sibling with an opaque background, painted over the canvas, hides the
-tile while its content keeps running (for a video: sound, no picture). To put black around a
+This is about elements that cover the tile **by accident**, not chrome you put there on purpose.
+On a draw-order browser a sticky header, a buy card or a caption plate over part of a tile is
+fine, opaque or translucent: it occludes that part of the tile as 2D, exactly as it would occlude
+a picture (rule 8). What is wrong is a section, wrapper or later sibling with an opaque background
+painted over the **whole** canvas: it hides the tile while its content keeps running (for a video:
+sound, no picture). To put black around a
 tile, give it to an element **behind** the canvas. A cover you mean to hide the tile with (rule 5,
 rule 11) is the one deliberate exception, and it comes off on a signal.
 

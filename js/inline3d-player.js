@@ -2314,7 +2314,28 @@ export function addPlayer(wall, canvas, src, opts = {}) {
     }
   }
 
+  // A page's own cover over the player releases on this, exactly like any other woven window
+  // (woven-canvas rule 5) — NOT on 'ready' / 'loadeddata' / the first decoded frame.
+  const woven = playerWovenSignals(innerHandle);
+  Object.defineProperty(handle, 'firstWoven', { value: woven.firstWoven, enumerable: true });
+  Object.defineProperty(handle, 'rewoven', { value: woven.rewoven, enumerable: true });
+
   return handle;
+}
+
+/**
+ * The player's `firstWoven` / `rewoven()`: the woven `addVideo` window's own signals when the player
+ * weaves ('sbs' / 'tb' on a supported wall), else the subpaths' settled-at-once
+ * `{ woven: false, confirmed: false, reason: 'unsupported', ms: 0 }` (a 'mono' title or no session:
+ * the canvas is painted flat, there is nothing to wait for). Exported for the tests.
+ */
+const UNSUPPORTED_WOVEN = Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 });
+export function playerWovenSignals(innerHandle) {
+  const firstWoven = innerHandle && innerHandle.firstWoven ? innerHandle.firstWoven : Promise.resolve(UNSUPPORTED_WOVEN);
+  return {
+    firstWoven,
+    rewoven: () => (innerHandle && typeof innerHandle.rewoven === 'function' ? innerHandle.rewoven() : Promise.resolve(UNSUPPORTED_WOVEN)),
+  };
 }
 
 // ── attachPlayer: the player on an existing splat handle (surface mode) ───────────────────────

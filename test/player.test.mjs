@@ -488,3 +488,22 @@ test('group: a string or unset', () => {
   assert.equal(normalizePlayerOptions({ group: 'shelf' }).group, 'shelf');
   assert.equal(normalizePlayerOptions({ group: '' }).group, null);
 });
+
+// ── playerWovenSignals: the player's firstWoven / rewoven (woven-canvas rule 5) ─────────────────
+import { playerWovenSignals } from '../js/inline3d-player.js';
+
+test('playerWovenSignals forwards the woven addVideo window\'s firstWoven and rewoven', async () => {
+  const fw = Promise.resolve({ woven: true, confirmed: false, reason: 'hold-elapsed', ms: 1200 });
+  let rw = 0;
+  const s = playerWovenSignals({ firstWoven: fw, rewoven: () => { rw++; return fw; } });
+  assert.equal(s.firstWoven, fw);
+  assert.equal((await s.rewoven()).reason, 'hold-elapsed');
+  assert.equal(rw, 1);
+});
+
+test('playerWovenSignals settles unsupported at once when the player does not weave (mono / no session)', async () => {
+  const s = playerWovenSignals(null);
+  const r = await s.firstWoven;
+  assert.deepEqual({ ...r }, { woven: false, confirmed: false, reason: 'unsupported', ms: 0 });
+  assert.equal((await s.rewoven()).reason, 'unsupported');
+});
