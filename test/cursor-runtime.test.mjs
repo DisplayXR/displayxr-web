@@ -22,6 +22,7 @@ import {
   CursorDepthPlacer,
   CursorRuntimeLink,
   cursorDisparityPx,
+  cursorDisparityPxAt,
   cursorRuntimeCapable,
 } from '../js/inline3d-cursor-depth.js';
 import { DepthCursor } from '../js/inline3d-three.js';
@@ -156,6 +157,29 @@ test('unit: content disparity → device px between the outermost views = the pr
   assert.equal(cursorDisparityPx(null, 64), null);
   assert.equal(cursorDisparityPx(-0.2, 0), null);
   assert.equal(cursorDisparityPx(NaN, 64), null);
+});
+
+// web#275: the one-point helper for a page that owns its scene and its picking.
+test('cursorDisparityPxAt: one picked point → the same device px as the placer and the oracle', () => {
+  const pt = [-0.05, 0, PLANE_Z];
+  near(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, pt, 200), oracleDisparityPx(pt), 1e-6, 'in front: crossed, < 0');
+  assert.ok(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, pt, 200) < 0);
+  const behind = [-0.05, 0, -0.3];
+  near(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, behind, 200), oracleDisparityPx(behind), 1e-6, 'behind: > 0, sent raw');
+  near(cursorDisparityPxAt(VIEWS, 0.5, 0.5, [0, 0, 0], 200), 0, 1e-9, 'on the glass: 0');
+  const p = new CursorDepthPlacer().update(VIEWS, { u: 1 / 3, v: 0.5, nearestPoint: pt, canvasPx: 200 }, 1);
+  near(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, pt, 200), p.contentDisparityPx, 1e-12, 'what every SDK cursor sends');
+  // Device px scale with the canvas's device height (dpr 2 → twice the px).
+  near(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, pt, 400), 2 * oracleDisparityPx(pt), 1e-6);
+  // XRView-shaped views (transform.matrix) work the same.
+  const xr = VIEWS.map((v) => ({ projectionMatrix: v.projectionMatrix, transform: { matrix: v.transformMatrix } }));
+  near(cursorDisparityPxAt(xr, 1 / 3, 0.5, pt, 200), oracleDisparityPx(pt), 1e-6);
+  // Unknowns are null, never a guess.
+  assert.equal(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, null, 200), null);
+  assert.equal(cursorDisparityPxAt(VIEWS, 1 / 3, 0.5, pt, 0), null);
+  assert.equal(cursorDisparityPxAt(VIEWS.slice(0, 1), 1 / 3, 0.5, pt, 200), null);
+  assert.equal(cursorDisparityPxAt(VIEWS, 1.2, 0.5, pt, 200), null, 'off the canvas');
+  assert.equal(cursorDisparityPxAt(VIEWS, 0.5, 0.5, [0, 0, 1], 200), null, 'behind the eye');
 });
 
 // ── the link ────────────────────────────────────────────────────────────────────────────────
