@@ -1,0 +1,17 @@
+/* Page styles for the inline-3D template. The woven canvas and its ancestors carry NO filter,
+   opacity < 1, mask, clip-path, blend mode, backdrop-filter, scale/rotate transform, border,
+   border-radius or box-shadow: any of those breaks or distorts the weave. */
+:root { color-scheme: light; --bg: #e7e4de; --ink: #23262b; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 880px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 28px; margin: 0 0 6px; }
+
+/* The stage: the canvas box is the shape the viewer sees (here 16:9). */
+.stage { position: relative; width: 100%; max-width: 840px; aspect-ratio: 16 / 9; }
+#stage { display: block; width: 100%; height: 100%; will-change: transform; } /* a compositor layer from the first paint */
+
+/* The cover sits ON TOP of the canvas (never behind) and is removed with a hard cut, never faded. */
+#cover { position: absolute; inset: 0; background: var(--bg); display: grid; place-items: center; font-size: 14px; opacity: 1; }
+
+/* Text stays HTML, next to (or partially over) the tile, at a readable size. */
+#status { margin: 8px 0 0; font-size: 14px; color: #555b63; }

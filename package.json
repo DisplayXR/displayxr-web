@@ -209,7 +209,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\"",
+    "test": "tsc --noEmit -p tsconfig.json && node --test \"test/*.test.mjs\" \"plugins/displayxr-inline3d/checker/test/*.test.mjs\"",
+    "test:plugin:e2e": "node --test --test-concurrency=1 plugins/displayxr-inline3d/checker/test/checker.e2e.mjs",
     "build:dist": "node tools/dist/build.mjs",
     "vendor:bvh": "node tools/vendor/three-mesh-bvh.mjs",
     "prepack": "node tools/dist/build.mjs",

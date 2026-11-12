@@ -1,0 +1,18 @@
+{
+  "name": "displayxr",
+  "owner": {
+    "name": "DisplayXR",
+    "url": "https://github.com/DisplayXR"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for building on DisplayXR."
+  },
+  "plugins": [
+    {
+      "name": "displayxr-inline3d",
+      "source": "./plugins/displayxr-inline3d",
+      "description": "Build glasses-free 3D web pages on @displayxr/inline3d, and check them headlessly before calling them done.",
+      "category": "development"
+    }
+  ]
+}
