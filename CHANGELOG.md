@@ -7,6 +7,19 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.55.1 — 2026-11-11
+
+### Docs — a user depth slider on a camera (or display) rig
+
+`docs/authoring-inline-3d.md` § "A user depth slider": drive `ipdFactor` and `parallaxFactor`
+together (authored × s on a camera rig, s on a display rig) and hold `convergenceDiopters`,
+`verticalFov` and `metersToVirtual` (or `virtualDisplayHeight` / `perspectiveFactor`), so the
+zero-disparity plane never moves; ranges per rig; how the comfort product scales with s; why
+`metersToVirtual` is not the dial; the one-frame latency of a factor change (the attach pattern
+removes pose lag only); and going flat by easing s to 0 where `setStereoEnabled(false)` is
+refused. `cameraRigFromCamera`, `cameraRigFromPose` and `displayRig` already pass both factors
+through unchanged; a test now pins that, and that no other field depends on them. No code change.
+
 ## 1.55.0 — 2026-11-11
 
 ### Added — `groundPlaneRig()`: a suggested camera rig for a tilted map / strategy camera (`./depth`)
