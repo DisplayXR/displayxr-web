@@ -1,0 +1,28 @@
+{
+  "description": "Non-blocking reminders to run inline3d-check after editing an @displayxr/inline3d page. Never blocks a tool call or the end of a turn.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/remind-check.mjs\" post",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/remind-check.mjs\" stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

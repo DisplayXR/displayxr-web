@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>inline3d-check fixture</title>
+<!--
+  Test fixture for the checker: a correct addScene page (raw WebGL, no CDN) and, with ?bug=<name>,
+  one deliberate mistake per check. Served from the repo root so it imports the SDK at /js/.
+-->
+<style>
+  html, body { margin: 0; background: #d8d4cc; font: 15px/1.5 system-ui, sans-serif; color: #222; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px; }
+  .stage { position: relative; width: 640px; height: 360px; }
+  #view { display: block; width: 640px; height: 360px; will-change: transform; }
+  .cover { position: absolute; inset: 0; background: #d8d4cc; }
+  .plate { position: absolute; inset: 0; background: #ffffff; }
+  .topbar { position: sticky; top: 0; z-index: 5; height: 56px; background: #20222a; color: #fff; padding: 0 24px; display: flex; align-items: center; }
+  .card { position: absolute; right: 12px; bottom: 12px; width: 180px; padding: 10px; background: #fff; }
+  .tall { height: 1400px; }
+</style>
+</head>
+<body>
+<header class="topbar" id="topbar">fixture store</header>
+<main>
+  <h1>fixture</h1>
+  <div class="wrap"><div class="stage" id="stage"><canvas id="view" width="1280" height="360"></canvas></div></div>
+  <p id="status">starting</p>
+  <div class="tall"></div>
+</main>
+<script type="importmap">
+{ "imports": { "@displayxr/inline3d": "/js/inline3d.js" } }
+</script>
+<script type="module">
+import { createInline3D, inline3DAvailable } from '@displayxr/inline3d';
+
+const params = new URLSearchParams(location.search);
+const bug = params.get('bug') || 'none';
+const canvas = document.getElementById('view');
+const stage = document.getElementById('stage');
+const status = document.getElementById('status');
+
+// ---- deliberate CSS / DOM mistakes ------------------------------------------------------
+if (bug === 'css-filter') canvas.style.filter = 'saturate(1.3)';
+if (bug === 'css-opacity') document.querySelector('.wrap').style.opacity = '0.92';
+if (bug === 'css-transform') document.querySelector('.wrap').style.transform = 'rotate(1.5deg) scale(0.98)';
+if (bug === 'opaque-overlay') { const p = document.createElement('div'); p.className = 'plate'; p.id = 'plate'; stage.appendChild(p); }
+if (bug === 'huge-buffer') { canvas.width = 6000; canvas.height = 1688; }
+// A sticky header and an opaque buy card over part of the tile are FINE (draw-order occlusion):
+// they are in the good page. What is wrong is chrome the split cannot lift as a plain quad.
+// (Not in ?bug=no-fallback: the card's pixels would stand in for the empty canvas in the 2D check.)
+if (bug !== 'no-fallback') { const c = document.createElement('div'); c.className = 'card'; c.id = 'buycard'; c.textContent = 'Add to cart'; stage.appendChild(c); }
+if (bug === 'sticky-blend') document.getElementById('topbar').style.mixBlendMode = 'multiply';
+
+// ---- a tiny WebGL renderer: three checkered boxes at three depths ------------------------
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
+const vs = `#version 300 es
+in vec3 p; in vec3 c; uniform mat4 uP, uV; uniform vec3 uO; uniform float uS; out vec3 vc; out vec3 vl;
+void main(){ vec3 w = p * uS + uO; vl = p; vc = c; gl_Position = uP * uV * vec4(w, 1.0); }`;
+const fs = `#version 300 es
+precision mediump float; in vec3 vc; in vec3 vl; out vec4 o;
+void main(){ float k = mod(floor(vl.x*6.0)+floor(vl.y*6.0)+floor(vl.z*6.0), 2.0); o = vec4(vc * (0.65 + 0.35*k), 1.0); }`;
+function sh(t, s) { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(x)); return x; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(prog);
+gl.getProgramParameter(prog, gl.LINK_STATUS);
+const P = [], C = [];
+const faces = [[0, 1], [0, -1], [1, 1], [1, -1], [2, 1], [2, -1]];
+const cols = [[0.9, 0.35, 0.3], [0.3, 0.7, 0.35], [0.3, 0.45, 0.9], [0.9, 0.8, 0.3], [0.7, 0.35, 0.8], [0.3, 0.8, 0.8]];
+faces.forEach(([ax, sgn], fi) => {
+  const q = [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]];
+  for (const [a, b] of q) { const v = [0, 0, 0]; v[ax] = sgn * 0.5; v[(ax + 1) % 3] = a * 0.5; v[(ax + 2) % 3] = b * 0.5 * sgn; P.push(...v); C.push(...cols[fi]); }
+});
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+const buf = (data, loc) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0); };
+buf(P, gl.getAttribLocation(prog, 'p')); buf(C, gl.getAttribLocation(prog, 'c'));
+const uP = gl.getUniformLocation(prog, 'uP'), uV = gl.getUniformLocation(prog, 'uV'), uO = gl.getUniformLocation(prog, 'uO'), uS = gl.getUniformLocation(prog, 'uS');
+gl.enable(gl.DEPTH_TEST);
+
+function rotY(m, a) { return m; }
+function invRigid(m) {
+  const r = new Float32Array(16);
+  r[0] = m[0]; r[1] = m[4]; r[2] = m[8]; r[4] = m[1]; r[5] = m[5]; r[6] = m[9]; r[8] = m[2]; r[9] = m[6]; r[10] = m[10];
+  r[12] = -(m[0] * m[12] + m[1] * m[13] + m[2] * m[14]); r[13] = -(m[4] * m[12] + m[5] * m[13] + m[6] * m[14]); r[14] = -(m[8] * m[12] + m[9] * m[13] + m[10] * m[14]); r[15] = 1;
+  return r;
+}
+function perspective(fovy, aspect, n, f) { const t = 1 / Math.tan(fovy / 2), o = new Float32Array(16); o[0] = t / aspect; o[5] = t; o[10] = -(f + n) / (f - n); o[11] = -1; o[14] = (-2 * f * n) / (f - n); return o; }
+function lookFrom(x, y, z) { const m = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -x, -y, -z, 1]); return m; }
+const BOXES = [[-0.035, 0, 0.0, 0.03], [0.0, 0.004, 0.018, 0.022], [0.038, -0.004, -0.03, 0.03]]; // x y z size (metres, display rig vdh 0.12)
+function drawScene(proj, view) {
+  gl.useProgram(prog); gl.bindVertexArray(vao);
+  gl.uniformMatrix4fv(uP, false, proj); gl.uniformMatrix4fv(uV, false, view);
+  for (const [x, y, z, s] of BOXES) { gl.uniform3f(uO, x, y, z); gl.uniform1f(uS, s); gl.drawArrays(gl.TRIANGLES, 0, 36); }
+}
+function clear(r = 0.62, g = 0.6, b = 0.56) { gl.clearColor(r, g, b, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); }
+function mono(w, h, x = 0) { gl.viewport(0, 0, w, h); clear(); drawScene(perspective(0.5, w / h, 0.01, 10), lookFrom(x, 0, 0.26)); }
+
+// ---- 2D fallback ---------------------------------------------------------------------------
+function fallback() {
+  status.textContent = '2D';
+  if (bug === 'no-fallback') return; // leaves the canvas empty
+  if (bug === 'sbs-flat-fallback') {
+    // WRONG: shows the packed side-by-side pair flat.
+    const loop = () => {
+      canvas.width = 1280; canvas.height = 360;
+      gl.enable(gl.SCISSOR_TEST);
+      for (const [i, dx] of [[0, -0.003], [1, 0.003]]) { gl.viewport(i * 640, 0, 640, 360); gl.scissor(i * 640, 0, 640, 360); clear(); drawScene(perspective(0.5, 640 / 360, 0.01, 10), lookFrom(dx, 0, 0.26)); }
+      gl.disable(gl.SCISSOR_TEST);
+      requestAnimationFrame(loop);
+    };
+    loop();
+    return;
+  }
+  canvas.width = 640; canvas.height = 360;
+  const loop = () => { mono(640, 360); requestAnimationFrame(loop); };
+  loop();
+}
+
+// ---- 3D ------------------------------------------------------------------------------------
+if (bug === 'console-error') { console.error('fixture: something failed'); setTimeout(() => { throw new Error('fixture: uncaught'); }, 50); }
+if (bug === 'gl-error') { gl.bindTexture(12345, null); }
+
+let supported = false;
+// (spelled indirectly so only the runtime half of the detection check sees it, not the source scan)
+if (bug === 'issupported') supported = await navigator.xr?.['isSession' + 'Supported']('inline-' + '3d').catch(() => false);
+else if (bug === 'no-session') supported = false; // WRONG: never even tries the 3D path
+else supported = inline3DAvailable();
+
+if (!supported) fallback();
+else {
+  const wall = await createInline3D({ lazy: false });
+  if (bug === 'two-sessions') await createInline3D({ lazy: false });
+  if (!wall.supported) fallback();
+  else {
+    let cover = null;
+    if (bug === 'none' || bug === 'stuck-cover') { cover = document.createElement('div'); cover.className = 'cover'; cover.id = 'cover'; stage.appendChild(cover); }
+    const handle = wall.addScene(canvas, (views, layer) => {
+      if (views.length < 2) return;
+      const vps = views.map((v) => layer.getViewport(v));
+      if (vps.some((v) => !v)) return;
+      if (bug === 'flat-wide') { mono(canvas.width, canvas.height); return; } // WRONG: one picture over the whole canvas
+      gl.enable(gl.SCISSOR_TEST);
+      gl.viewport(0, 0, canvas.width, canvas.height); gl.scissor(0, 0, canvas.width, canvas.height);
+      if (bug === 'black') { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); gl.disable(gl.SCISSOR_TEST); return; } // WRONG: draws nothing
+      clear();
+      views.forEach((v, i) => {
+        const vp = vps[i];
+        gl.viewport(vp.x, vp.y, vp.width, vp.height); gl.scissor(vp.x, vp.y, vp.width, vp.height);
+        const src = bug === 'same-eyes' ? views[0] : v; // WRONG for same-eyes: one camera in both halves
+        drawScene(src.projectionMatrix, invRigid(src.transform.matrix));
+      });
+      gl.disable(gl.SCISSOR_TEST);
+    }, {
+      ...(params.get('rig') === 'camera'
+        // A camera rig: the camera 0.26 m in front of the boxes, converged on them.
+        ? { viewRig: { type: 'camera', position: { x: 0, y: 0, z: 0.26 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, verticalFov: 0.5, convergenceDiopters: 1 / 0.26 } }
+        : { virtualDisplayHeight: 0.12 }),
+      // The layer went away for good: go flat (one mono view), the same path as no support.
+      // WRONG for noop-layerlost: the last side-by-side pair stays on screen.
+      onLayerLost: bug === 'noop-layerlost' ? () => {} : () => fallback(),
+    });
+    status.textContent = '3D';
+    if (cover && bug !== 'stuck-cover') {
+      const off = () => cover.remove();
+      Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]).then(off, off);
+    }
+    addEventListener('pagehide', () => wall.close());
+  }
+}
+</script>
+</body>
+</html>

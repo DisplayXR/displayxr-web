@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<link rel="stylesheet" href="./style.css">
+<!-- Exact pins. Bump them together, and only after reading the SDK CHANGELOG. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@displayxr/inline3d": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d.js",
+  "@displayxr/inline3d/three": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d-three.js"
+} }
+</script>
+</head>
+<body>
+<main>
+  <h1>__TITLE__</h1>
+  <div class="stage">
+    <canvas id="stage"></canvas>
+    <div id="cover">loading…</div>
+  </div>
+  <p id="status">starting…</p>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
