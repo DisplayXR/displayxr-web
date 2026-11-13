@@ -139,7 +139,7 @@ function run(g) {
   if (used.includes('KHR_texture_basisu')) decoders.push('KTX2/Basis: serve three/examples/jsm/libs/basis/ at /basis/');
   if (used.includes('EXT_meshopt_compression')) decoders.push('meshopt: add the meshoptimizer package (import map / package.json), no served files');
   add('decoders', decoders.length ? 'warn' : 'pass', decoders.length ? decoders.join('; ') : 'no compression extension needs a decoder', { doc: 'node_modules/@displayxr/inline3d/docs/authoring-inline-3d.md#compressed-gltf' });
-  const unknown = req.filter((e) => !['KHR_draco_mesh_compression', 'KHR_texture_basisu', 'EXT_meshopt_compression', 'KHR_mesh_quantization', 'KHR_texture_transform', 'KHR_materials_emissive_strength'].includes(e));
+  const unknown = req.filter((e) => !['KHR_draco_mesh_compression', 'KHR_texture_basisu', 'EXT_meshopt_compression', 'KHR_mesh_quantization', 'KHR_texture_transform', 'KHR_materials_emissive_strength', 'EXT_texture_webp'].includes(e));
   if (unknown.length) add('required-ext', 'warn', `extensionsRequired includes ${unknown.join(', ')}: check the engine supports it, or the model will not load`);
 
   // geometry: triangles, draw calls, bounds
@@ -167,8 +167,10 @@ function run(g) {
       for (const p of J.meshes[n.mesh].primitives || []) {
         const a = J.accessors[p.attributes.POSITION];
         if (!a || !a.min || !a.max) continue;
+        // KHR_mesh_quantization: normalized integer positions; min/max are in raw integer units.
+        const q = a.normalized ? 1 / ({ 5120: 127, 5121: 255, 5122: 32767, 5123: 65535 }[a.componentType] || 1) : 1;
         for (let k = 0; k < 8; k++) {
-          const c = [k & 1 ? a.max[0] : a.min[0], k & 2 ? a.max[1] : a.min[1], k & 4 ? a.max[2] : a.min[2]];
+          const c = [k & 1 ? a.max[0] * q : a.min[0] * q, k & 2 ? a.max[1] * q : a.min[1] * q, k & 4 ? a.max[2] * q : a.min[2] * q];
           const w = xf(m, c);
           for (let d = 0; d < 3; d++) { lo[d] = Math.min(lo[d], w[d]); hi[d] = Math.max(hi[d], w[d]); }
         }

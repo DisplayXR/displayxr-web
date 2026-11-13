@@ -73,3 +73,7 @@ test('a .gltf with a missing external file fails', () => {
   const r = check('ext.gltf', Buffer.from(JSON.stringify(g)));
   assert.equal(r.by('files').status, 'fail');
 });
+test('quantized (normalized int16) positions are measured through the node scale', () => {
+  const r = check('q.glb', glb({ extra: {} }));
+  assert.equal(r.by('scale').status, 'pass');
+});
