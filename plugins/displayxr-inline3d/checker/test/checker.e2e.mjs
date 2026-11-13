@@ -38,7 +38,7 @@ for (const sample of ['samples/hello-cube/', 'samples/model/', 'samples/splat/',
     const failed = r.checks.filter((c) => c.status === 'fail');
     assert.equal(failed.length, 0, show(r));
     for (const id of ['session', 'stereo', 'eyes-not-blank', 'fallback-2d']) assert.equal(byId(r, id).status, 'pass', `${id}\n${show(r)}`);
-    assert.ok(r.durationMs < 30000, `took ${r.durationMs} ms`);
+    assert.ok(r.durationMs < 45000, `took ${r.durationMs} ms`);
   });
 }
 
@@ -76,6 +76,8 @@ const CASES = [
   ['gl-error', 'console', 'fail'],
   ['no-fallback', 'fallback-2d', 'fail'],
   ['issupported', 'detection', 'warn'],
+  ['noop-layerlost', 'layer-lost', 'fail'],
+  ['sticky-blend', 'overlay', 'warn'],
 ];
 for (const [bug, id, expected, opt] of CASES) {
   test(`broken: ?bug=${bug} -> ${id} ${expected}${opt ? ` ${JSON.stringify(opt)}` : ''}`, { skip, timeout: 60000 }, async () => {
@@ -84,6 +86,12 @@ for (const [bug, id, expected, opt] of CASES) {
     if (expected === 'fail') assert.equal(r.verdict, 'fail');
   });
 }
+
+test('good fixture: opaque sticky header + buy card over part of the tile pass; layer loss goes flat', { skip, timeout: 60000 }, async () => {
+  const r = await run(FIXTURE);
+  assert.equal(byId(r, 'overlay').status, 'pass', show(r));
+  assert.equal(byId(r, 'layer-lost').status, 'pass', show(r));
+});
 
 test('stuck cover is reported as a cover that never came off', { skip, timeout: 60000 }, async () => {
   const r = await run(`${FIXTURE}?bug=stuck-cover`);

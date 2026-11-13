@@ -7,7 +7,7 @@ import { launchChrome, withTimeout } from './cdp.mjs';
 import { serveDir } from './server.mjs';
 import { decodePng } from './png.mjs';
 import {
-  crop, halves, contentStats, compareEyes, blockDisparity, quantile, flatWideVerdict, sbsPairVerdict, shibataZoneMm, fromBase64Rgba,
+  crop, halves, contentStats, regionDiff, compareEyes, blockDisparity, quantile, flatWideVerdict, sbsPairVerdict, shibataZoneMm, fromBase64Rgba,
 } from './analyze.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -202,8 +202,81 @@ async function fakeRun(conn, url, opt, origin) {
   let shot = null;
   try { shot = await screenshot(page); } catch { /* none */ }
   const statics = await staticScan(page, log);
+  const scroll = opt.noScroll ? null : await scrollSweep(page, layers).catch((e) => ({ error: String(e) }));
+  const loss = opt.noLoss ? null : await layerLossProbe(page, layers).catch((e) => ({ error: String(e) }));
   await page.close();
-  return { loaded, summary, layers, log, shaderErrors, media, shot, scrollY, scrolled, statics, ms: Date.now() - t0 };
+  return { loaded, summary, layers, log, shaderErrors, media, shot, scrollY, scrolled, statics, scroll, loss, ms: Date.now() - t0 };
+}
+
+// Scroll the whole page past each woven canvas and audit what sits over it at every step: a
+// sticky header that only reaches the tile once the page scrolls is invisible to the end-of-run
+// audit. Restores the scroll position.
+async function scrollSweep(page, layers) {
+  if (!layers.length) return { steps: 0, layers: [] };
+  const y0 = await ev(page, 'window.scrollY');
+  const max = await ev(page, 'Math.max(0, document.documentElement.scrollHeight - innerHeight)');
+  const vh = await ev(page, 'innerHeight');
+  const step = Math.max(40, Math.round(vh * 0.25));
+  const ys = [];
+  for (let y = 0; y <= max && ys.length < 16; y += step) ys.push(y);
+  if (max > 0 && ys[ys.length - 1] !== max) ys.push(max);
+  const per = layers.map((l) => ({ selector: l.selector, maxCovered: 0, maxCoveredAt: null, maxFrost: 0, coverers: new Map(), effects: new Map(), samples: 0 }));
+  for (const y of ys) {
+    await ev(page, `window.scrollTo(0, ${y})`);
+    await sleep(60);
+    for (let i = 0; i < layers.length; i++) {
+      const a = await ev(page, `__dxrProbe.occlusionAudit(__dxrCheck.layerCanvas(${layers[i].index}), 7, 5)`).catch(() => null);
+      if (!a || !a.visible || !a.total || a.total < 0.5 * 35) continue; // mostly off screen: not judged here
+      const r = per[i];
+      r.samples++;
+      if (a.coveredFraction > r.maxCovered) { r.maxCovered = a.coveredFraction; r.maxCoveredAt = y; }
+      if (a.frostFraction > r.maxFrost) { r.maxFrost = a.frostFraction; r.maxFrostAt = y; }
+      for (const c of a.coverers) r.coverers.set(c.selector, Math.max(r.coverers.get(c.selector) || 0, c.hits));
+      for (const e of a.effects || []) r.effects.set(e.selector, e.props);
+    }
+  }
+  await ev(page, `window.scrollTo(0, ${y0})`);
+  await sleep(100);
+  return {
+    steps: ys.length,
+    layers: per.map((r) => ({ ...r, coverers: [...r.coverers.keys()], effects: [...r.effects.entries()].map(([selector, props]) => ({ selector, props })) })),
+  };
+}
+
+// End the inline-3D session (as the browser does when the weave goes away) and look at what each
+// woven canvas shows a second later: an addScene page whose onLayerLost does nothing is left
+// showing its last side-by-side pair, unwoven.
+async function layerLossProbe(page, layers) {
+  if (!layers.length) return null;
+  // Before: each canvas in view, as the woven run left it (its side-by-side pair).
+  const rectOf = (i) => ev(page, `(() => { const c = __dxrCheck.layerCanvas(${i}); if (!c) return null; c.scrollIntoView({ block: 'center', inline: 'center' }); const cs = getComputedStyle(c); const r = c.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height, shown: cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0 }; })()`).catch(() => null);
+  const grab = async (rect) => { try { const shot = await screenshot(page); return regionOf(shot, rect); } catch { return null; } };
+  const before = [];
+  for (const l of layers.slice(0, 4)) {
+    const rect = await rectOf(l.index);
+    await sleep(150);
+    before.push(rect && rect.shown ? { rect, reg: await grab(rect) } : null);
+  }
+  const n = await ev(page, '__dxrCheck.endSessions()');
+  if (!n) return { ended: 0, layers: [] };
+  await sleep(1200);
+  const out = [];
+  for (let i = 0; i < before.length; i++) {
+    const l = layers[i], b = before[i];
+    if (!b || !b.reg) { out.push({ selector: l.selector, shown: !!b, measured: false }); continue; }
+    const rect = await rectOf(l.index);
+    if (!rect || !rect.shown) { out.push({ selector: l.selector, shown: false }); continue; }
+    await sleep(250);
+    const reg = await grab(rect);
+    if (!reg) { out.push({ selector: l.selector, shown: true, measured: false }); continue; }
+    const diff = regionDiff(b.reg, reg);
+    const st = contentStats(reg);
+    // Unchanged since the woven run = still the side-by-side pair (nothing went flat). A mono view
+    // (one picture across the canvas) or a 2D fallback differs from it by far more than this.
+    const frozen = diff < 2.5 && !contentStats(b.reg).blank;
+    out.push({ selector: l.selector, shown: true, measured: true, sbs: frozen || sbsPairVerdict(reg).sbs, frozen, diff: +diff.toFixed(2), blank: st.blank });
+  }
+  return { ended: n, layers: out };
 }
 
 // ------------------------------------------------------------------------------ the plain run
@@ -497,14 +570,45 @@ function buildChecks(fake, plain, opt) {
       if (o.coveredFraction >= 0.5) {
         if (createTop && createTop === top) fails.push(`${l.selector}: the cover ${top} that was over the canvas when it was registered is still there ${Math.round(l.ageMs / 100) / 10}s later (it never came off: remove it on handle.firstWoven, plus a timeout and a catch)`);
         else fails.push(`${l.selector}: ${Math.round(o.coveredFraction * 100)}% of the canvas is under an opaque element (${top}): nothing with a background may sit above a woven canvas; put backdrops under it`);
-      } else if (o.coveredFraction >= 0.15) warns.push(`${l.selector}: ${Math.round(o.coveredFraction * 100)}% under opaque elements (${top}); fine for a control bar, not for a panel`);
+      }
+      // Partial chrome over a tile (a sticky header, a buy card, a caption) is fine on a
+      // draw-order browser, opaque or translucent: it occludes that part as 2D. Not judged.
       if (o.frostFraction >= 0.9) warns.push(`${l.selector}: a backdrop-filter covers the whole tile, so the whole tile goes mono; frost only a partial region`);
     }
+    // The scroll sweep: what sits over each tile at ANY scroll position (sticky chrome reaches a
+    // tile only once the page scrolls).
+    const sweep = fake.scroll && fake.scroll.layers ? fake.scroll.layers : [];
+    for (const r of sweep) {
+      for (const e of r.effects) warns.push(`${r.selector}: ${e.selector} passes over the tile while scrolling with ${e.props}: a pixel-moving filter, blend mode or 3D context cannot be lifted over the weave as 2D, so the tile weaves through it. Use a plain background (opaque or translucent), or a partial backdrop-filter on DisplayXR Browser 0.1.16+`);
+      if (r.maxFrost >= 0.9) warns.push(`${r.selector}: at scroll ${r.maxFrostAt ?? '?'} a backdrop-filter covers the whole tile (the whole tile goes mono); frost only a partial region`);
+      if (r.maxCovered >= 0.9 && r.samples > 1) warns.push(`${r.selector}: at scroll ${r.maxCoveredAt}px ${Math.round(r.maxCovered * 100)}% of the tile is under ${r.coverers[0] || 'an opaque element'}: a tall sticky panel or a later section painted over the canvas hides the tile while it keeps rendering`);
+    }
+    if (sweep.length) details.push({ scrollSweep: { steps: fake.scroll.steps, layers: sweep.map((r) => ({ selector: r.selector, maxCoveredPct: Math.round(r.maxCovered * 100), maxFrostPct: Math.round(r.maxFrost * 100), coverers: r.coverers.slice(0, 4), effects: r.effects })) } });
     const status = fails.length ? 'fail' : warns.length ? 'warn' : details.length ? 'pass' : 'skip';
     checks.push(check('overlay', 'f', 'No opaque element over the 3D canvas; the firstWoven cover comes off', status,
       fails[0] || warns[0] || (details.length ? 'canvas uncovered at the end of the run' : 'no woven canvas'), {
         details,
         doc: `${DOCS}/woven-canvas-rules.md#9-nothing-with-a-background-sits-above-the-woven-canvas-black-goes-under-it`,
+      }));
+  }
+
+  // (f4) layer loss: after the session ends, no tile may be left showing its side-by-side pair
+  {
+    const L = fake.loss;
+    const fails = [], warns = [];
+    if (L && L.layers) {
+      for (const r of L.layers) {
+        if (!r.shown || !r.measured) continue;
+        if (r.sbs) fails.push(`${r.selector}: after the inline-3D session ended, the canvas still shows its side-by-side pair (unwoven, two half-width copies). An addScene page must pass onLayerLost and draw ONE mono view across the canvas there (or hide it behind a 2D fallback); an empty onLayerLost is the same as none`);
+        else if (r.blank) warns.push(`${r.selector}: after the inline-3D session ended, the canvas is empty: draw a mono view in onLayerLost (or show a 2D fallback)`);
+      }
+    }
+    const status = !L || L.error || !L.ended ? 'skip' : fails.length ? 'fail' : warns.length ? 'warn' : 'pass';
+    checks.push(check('layer-lost', 'f', 'When the 3D layer goes away, the page goes flat (onLayerLost), not a raw pair', status,
+      fails[0] || warns[0] || (status === 'skip' ? (L && L.error ? `probe failed: ${L.error}` : 'no session to end') : `${L.layers.filter((r) => r.measured).length} canvas(es) went flat after the session ended`), {
+        details: L,
+        hint: fails.length || warns.length ? 'wall.addScene(canvas, onFrame, { onLayerLost: () => startMonoLoop() }): render one camera across the whole canvas on your own requestAnimationFrame, the same path as !wall.supported. SceneViewer: onLayerLost: viewer.onLayerLost. ./splat and ./model do this for you.' : undefined,
+        doc: `${DOCS}/authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts`,
       }));
   }
 

@@ -19,7 +19,7 @@ this skill does not copy them). The `.d.ts` files there carry the full API with 
 | an SBS 3D video element | `wall.addVideo(canvas, videoEl)` | VP9/WebM plays everywhere; `.mp4` may not |
 | a video with transport UI | `addPlayer(wall, canvas, src, opts)` from `/player` | canvas must sit in a container; `format: 'mono'` for 2D titles |
 | a glTF/GLB model | `addModel(wall, canvas, url, opts)` from `/model` | PlayCanvas by default; `engine: 'three'` for three.js; Draco/KTX2 decoders are files YOU serve |
-| a Gaussian splat (.sog/.ply) | `addSplat(wall, canvas, src, { engine: 'playcanvas' })` from `/splat/playcanvas` | Spark (three) is the `/splat` default; PlayCanvas adds `setSource`, effects, streaming |
+| a Gaussian splat (.sog/.ply) | `addSplat(wall, canvas, src, { engine: 'playcanvas' })` from `/splat/playcanvas` | the page behind the tile shows around the splat (§4: keep it soft, or pass an opaque `clearColor`); Spark (three) is the `/splat` default; PlayCanvas adds `setSource`, effects, streaming |
 | your own three.js / WebGL scene | `wall.addScene(canvas, onFrame, opts)` + `EyeCamera` from `/three` | you render each eye into `layer.getViewport(view)` |
 
 `addModel` / `addSplat` / `addPlayer` take the wall and work with an unsupported one (they draw the
@@ -36,6 +36,10 @@ three when the page already is a three.js app (`addScene` + `EyeCamera`, see
   `displayRig({ position: target, orientation: camera.quaternion, virtualDisplayHeight: 2*d*tan(fov/2) })`.
 - The user moves **through a world** (first person, game, map, walkthrough, ported VR): **camera rig**,
   `cameraRigFromCamera(THREE, cam, { convergence })`, set per frame with `handle.setViewRig`.
+  A game is a world even when it is seen from above (an RTS, a board, a top-down map the user pans
+  and zooms): the camera moves, so it is a camera rig. Tie `convergence` to the ground at the view
+  centre (raycast the centre of the screen to the ground plane), not to the cursor or a gaze point,
+  and cap zoom-in so the comfort product stays ≤ 1.
 - Details: `docs/authoring-inline-3d.md` § View rigs. Comfort on a camera rig:
   `ipdFactor × metersToVirtual × convergenceDiopters × ~0.6` must stay ≤ 1; never `convergence: 0`.
 
@@ -61,6 +65,20 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 - [ ] **Cover a new canvas** with an opaque element on top until `await handle.firstWoven`, then remove
       it with a hard cut, and ALSO on a timeout (~4 s) and in `catch`, so it always comes off. A
       `firstWoven` with `woven: false` still means "drop the cover and keep drawing both eyes".
+      **Video and players too:** `loadeddata`, `canplay`, a player's `'ready'` and the first decoded
+      frame all fire BEFORE the join, so a cover released there shows the raw pair for up to ~1.2 s.
+      Release on `handle.firstWoven` (`addVideo`), `player.firstWoven` (`addPlayer`, SDK 1.53+; on an
+      older SDK where it is undefined, wait for the first frame and then `firstWovenHoldMs` ≈ 1200 ms
+      more), plus the timeout. Give a player a `poster`: it is painted into both eyes under the cover.
+- [ ] **What is behind a transparent tile is part of the picture.** `addSplat` / `addModel` clear
+      transparent by default, and the browser pre-blends the page under both eyes, flat, at half
+      horizontal resolution. Make that page area a soft light or mid-tone colour or gradient (no
+      text or photo behind a tile, never black behind a bright subject), or pass an opaque
+      `clearColor: [r, g, b, 1]` (0..1).
+- [ ] **`onLayerLost` goes flat** (`addScene` pages): pass `onLayerLost` and, in it, render ONE mono
+      camera across the whole canvas on your own rAF loop (the `!wall.supported` path) or show a 2D
+      fallback. An empty `() => {}` leaves the last side-by-side pair on screen, unwoven. `SceneViewer`:
+      `onLayerLost: viewer.onLayerLost`; `addSplat` / `addModel` / `addPlayer` handle it themselves.
 - [ ] **Nothing opaque above the canvas**; backgrounds and black go *under* it. Never overlap two
       woven canvases (hide the lower one with `display: none`).
 - [ ] **Buffer = 2 × eye width**: `addScene` pages size it themselves (2× the box aspect, devicePixelRatio
@@ -78,10 +96,17 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 - Detect by capability: `await createInline3D()` → `wall.supported`, or `inline3DAvailable()` as a sync
   pre-gate. **Never** the user-agent string, never `navigator.xr.isSessionSupported('inline-3d')`.
-- Current browsers occlude woven tiles with 2D by draw order: headers, badges, menus and captions
-  over a tile just work. Keep them **partial** (a bar, a pill), never a full-tile plate. Frost
-  (`backdrop-filter`) only a partial region, never a whole visible tile. Hide chrome with
-  `display: none`, not `opacity: 0`. Ask `inline3dOcclusionByDrawOrder()` only to drop legacy calls.
+- Current browsers occlude woven tiles with 2D by draw order: a sticky header the tile scrolls
+  under, a buy card in a corner, badges, menus and captions over a tile just work, **opaque or
+  translucent**, as plain HTML (a solid or rgba background and text). Keep them **partial** (a bar,
+  a card, a pill): a section painted over the WHOLE tile hides it while it keeps rendering.
+- What does NOT work over a tile: a pixel-moving `filter` (blur, drop-shadow), a `mix-blend-mode`
+  other than normal, `transform-style: preserve-3d` on the chrome; the tile weaves through them.
+  `backdrop-filter` (frost) is fine on DisplayXR Browser 0.1.16+ over a **partial** region (the tile
+  is drawn flat under it), never over a whole visible tile. If you must also serve older browsers,
+  use a near-solid `rgba(…, .92)` bar without blur.
+- Hide chrome with `display: none`, not `opacity: 0`. Ask `inline3dOcclusionByDrawOrder()` only to
+  drop legacy calls. The checker scrolls the page and reports chrome that passes over a tile.
 - HUD text and values: HTML beside or over the tile, readable size, not drawn into the 3D scene.
 
 ## 6. Pins (exact versions, no `^`)
@@ -100,7 +125,8 @@ node "${CLAUDE_PLUGIN_ROOT}/checker/bin/inline3d-check.mjs" <url | dir | page.ht
 
 It loads the page in headless Chrome inside a fake DisplayXR Browser (two real eye views) and again
 plain, and reports pass/fail per check: session reached, real stereo, no blank eye, no flat
-side-by-side, buffer not clamped, CSS/cover/overlay/session rules, console and GL errors, 2D
+side-by-side, buffer not clamped, CSS/cover/overlay/session rules (scrolling the page past each
+tile), the page going flat when the session ends (`onLayerLost`), console and GL errors, 2D
 fallback, plus the rig, comfort and measured depth. Fix every **FAIL**; read every **WARN**; each
 line names the doc section. For a Vite/dev-server app pass the running URL. Use `--root <project>`
 when a page imports `../` or `/node_modules/`. A green run is not a panel test: say so, and ask for

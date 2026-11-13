@@ -31,8 +31,14 @@ Templates live in `${CLAUDE_SKILL_DIR}/templates/`:
    import { addModel } from '@displayxr/inline3d/model';          // or: import { addSplat } from '@displayxr/inline3d/splat/playcanvas';
    const wall = await createInline3D().catch(() => null);           // unsupported -> the viewer draws 2D
    const handle = addModel(wall, canvas, './assets/model.glb');     // addSplat(wall, canvas, './scene.sog', { engine: 'playcanvas' })
+   // the page behind the tile shows around the subject: keep it a soft colour (or pass clearColor)
    Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]).finally(dropCover);
    ```
+
+   A player is the same shape: `addPlayer(wall, canvas, ['./clip.webm', './clip.mp4'], { poster })`
+   from `/player` (webm first; the canvas sits in a container for the transport), and the cover
+   comes off on `player.firstWoven` + the timeout, never on `'ready'` / `loadeddata`. On an SDK
+   without `player.firstWoven`, wait for the first frame and then ~1200 ms more.
 
    Add `"playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs"` and
    `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d-model-entry.js"`

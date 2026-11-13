@@ -233,3 +233,12 @@ export function shibataZoneMm(viewerM = 0.65, eyeSepM = 0.063) {
 export function fromBase64Rgba(b64, w, h) {
   return { width: w, height: h, data: new Uint8Array(Buffer.from(b64, 'base64')) };
 }
+
+/** Mean absolute grey difference between two equally sized regions (0..255); Infinity if sizes differ. */
+export function regionDiff(A, B) {
+  if (!A || !B || A.width !== B.width || A.height !== B.height) return Infinity;
+  const a = gray(A), b = gray(B);
+  let t = 0;
+  for (let i = 0; i < a.length; i++) t += Math.abs(a[i] - b[i]);
+  return t / a.length;
+}

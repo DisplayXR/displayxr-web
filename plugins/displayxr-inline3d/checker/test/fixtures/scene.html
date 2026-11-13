@@ -15,13 +15,18 @@
   #view { display: block; width: 640px; height: 360px; will-change: transform; }
   .cover { position: absolute; inset: 0; background: #d8d4cc; }
   .plate { position: absolute; inset: 0; background: #ffffff; }
+  .topbar { position: sticky; top: 0; z-index: 5; height: 56px; background: #20222a; color: #fff; padding: 0 24px; display: flex; align-items: center; }
+  .card { position: absolute; right: 12px; bottom: 12px; width: 180px; padding: 10px; background: #fff; }
+  .tall { height: 1400px; }
 </style>
 </head>
 <body>
+<header class="topbar" id="topbar">fixture store</header>
 <main>
   <h1>fixture</h1>
   <div class="wrap"><div class="stage" id="stage"><canvas id="view" width="1280" height="360"></canvas></div></div>
   <p id="status">starting</p>
+  <div class="tall"></div>
 </main>
 <script type="importmap">
 { "imports": { "@displayxr/inline3d": "/js/inline3d.js" } }
@@ -41,6 +46,11 @@ if (bug === 'css-opacity') document.querySelector('.wrap').style.opacity = '0.92
 if (bug === 'css-transform') document.querySelector('.wrap').style.transform = 'rotate(1.5deg) scale(0.98)';
 if (bug === 'opaque-overlay') { const p = document.createElement('div'); p.className = 'plate'; p.id = 'plate'; stage.appendChild(p); }
 if (bug === 'huge-buffer') { canvas.width = 6000; canvas.height = 1688; }
+// A sticky header and an opaque buy card over part of the tile are FINE (draw-order occlusion):
+// they are in the good page. What is wrong is chrome the split cannot lift as a plain quad.
+// (Not in ?bug=no-fallback: the card's pixels would stand in for the empty canvas in the 2D check.)
+if (bug !== 'no-fallback') { const c = document.createElement('div'); c.className = 'card'; c.id = 'buycard'; c.textContent = 'Add to cart'; stage.appendChild(c); }
+if (bug === 'sticky-blend') document.getElementById('topbar').style.mixBlendMode = 'multiply';
 
 // ---- a tiny WebGL renderer: three checkered boxes at three depths ------------------------
 const gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
@@ -140,10 +150,15 @@ else {
         drawScene(src.projectionMatrix, invRigid(src.transform.matrix));
       });
       gl.disable(gl.SCISSOR_TEST);
-    }, params.get('rig') === 'camera'
-      // A camera rig: the camera 0.26 m in front of the boxes, converged on them.
-      ? { viewRig: { type: 'camera', position: { x: 0, y: 0, z: 0.26 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, verticalFov: 0.5, convergenceDiopters: 1 / 0.26 } }
-      : { virtualDisplayHeight: 0.12 });
+    }, {
+      ...(params.get('rig') === 'camera'
+        // A camera rig: the camera 0.26 m in front of the boxes, converged on them.
+        ? { viewRig: { type: 'camera', position: { x: 0, y: 0, z: 0.26 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, verticalFov: 0.5, convergenceDiopters: 1 / 0.26 } }
+        : { virtualDisplayHeight: 0.12 }),
+      // The layer went away for good: go flat (one mono view), the same path as no support.
+      // WRONG for noop-layerlost: the last side-by-side pair stays on screen.
+      onLayerLost: bug === 'noop-layerlost' ? () => {} : () => fallback(),
+    });
     status.textContent = '3D';
     if (cover && bug !== 'stuck-cover') {
       const off = () => cover.remove();

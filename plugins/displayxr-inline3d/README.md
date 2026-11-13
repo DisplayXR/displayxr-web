@@ -49,7 +49,8 @@ disparity, so the checker can measure depth in millimetres of screen disparity.
 | (e) `buffer` | `canvas.width/height` vs `drawingBufferWidth/Height`; with `--max-texture 4096` Chrome really clamps (`--webgl_or_caps_max_texture_size_limit_4096`) and the GL limits read 4096 | real |
 | (f) `css` | computed filter / opacity / mask / clip-path / blend / backdrop-filter / non-translate transform on the canvas and every ancestor, sampled over time; border/radius/shadow and running animations WARN | real |
 | (f) `single-session` | concurrent live sessions, a canvas registered twice, overlapping woven canvases | real |
-| (f) `overlay` | grid hit-test (pointer-events forced on) for opaque elements above the canvas after `firstWoven`; a cover present at registration and still there = "never came off" | real, grid-sampled |
+| (f) `overlay` | grid hit-test (pointer-events forced on) for opaque elements above the canvas after `firstWoven`; a cover present at registration and still there = "never came off"; then a **scroll sweep** over the whole page: chrome that passes over a tile with a filter, blend mode or 3D context, a whole-tile frost, or a section painted over the whole tile. Partial chrome (sticky header, buy card), opaque or translucent, passes: current browsers occlude by draw order | real, grid-sampled |
+| (f) `layer-lost` | ends the session, then compares each canvas with what it showed before: unchanged = the page left its side-by-side pair up (no-op `onLayerLost`) | real |
 | (g) `console` | console errors, uncaught exceptions, HTTP ≥ 400, GL errors, failed shader compile/link | real |
 | (h) `fallback-2d` | second run without the fake: no errors, and each canvas that wove shows something | real |
 | `detection` | runtime `isSessionSupported('inline-3d')` calls; static scan of same-origin scripts for it and for UA sniffing next to "DisplayXR" | approximate |

@@ -135,7 +135,9 @@ async function start() {
   const handle = wall.addScene(canvas, onFrame, {
     virtualDisplayHeight: VIRTUAL_DISPLAY_HEIGHT,
     onResize: () => { if (sizeBuffer(true) && haveLast) drawEyes(lastGood); }, // repaint at once
-    onLayerLost: () => statusEl.textContent = '3D layer lost',
+    // The layer went away for good (session ended / layer failed): go flat. An empty callback
+    // would leave the last side-by-side pair on screen, unwoven.
+    onLayerLost: () => start2D('3D layer lost'),
   });
   statusEl.textContent = 'glasses-free 3D';
   addEventListener('pagehide', () => wall.close());

@@ -370,6 +370,10 @@
     return n / (d.length / 4);
   }
   H.snap = (index, maxW = 640) => new Promise((resolve) => pending.push({ index, maxW, resolve }));
+  // The layer-loss probe: end every live session, as the browser does when the weave service goes
+  // away. The SDK then closes each layer, paints image/video windows mono and calls a scene's
+  // onLayerLost; whatever each canvas shows afterwards is what a user would be left looking at.
+  H.endSessions = () => { const n = liveSessions.size; for (const s of [...liveSessions]) s.end(); return n; };
 
   const probe = document.createElement('div');
   Object.assign(probe.style, { position: 'fixed', left: '-10px', top: '0', width: '1px', height: '1px', pointerEvents: 'none' });

@@ -151,6 +151,7 @@
     const vw = innerWidth, vh = innerHeight;
     let total = 0, opaque = 0, frost = 0, offscreen = 0;
     const coverers = new Map();
+    const effects = new Map(); // overlapping chrome the draw-order split cannot lift as a plain quad
     try {
       for (let j = 0; j < rows; j++) {
         for (let i = 0; i < cols; i++) {
@@ -166,6 +167,11 @@
             const cs = getComputedStyle(el);
             const bf = cs.backdropFilter || cs.webkitBackdropFilter;
             if (bf && bf !== 'none') frosted = true;
+            const fx = [];
+            if (cs.filter && cs.filter !== 'none') fx.push(`filter: ${cs.filter}`);
+            if (cs.mixBlendMode && cs.mixBlendMode !== 'normal') fx.push(`mix-blend-mode: ${cs.mixBlendMode}`);
+            if (cs.transformStyle === 'preserve-3d') fx.push('transform-style: preserve-3d');
+            if (fx.length) effects.set(selectorOf(el), fx.join(', '));
             if (opaqueBox(el)) {
               covered = true;
               const s = selectorOf(el);
@@ -196,6 +202,7 @@
       coveredFraction: total ? opaque / total : 0,
       frostFraction: total ? frost / total : 0,
       coverers: [...coverers.entries()].sort((a, b) => b[1] - a[1]).map(([selector, hits]) => ({ selector, hits })),
+      effects: [...effects.entries()].map(([selector, props]) => ({ selector, props })),
       visible: r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden',
       rect: { x: r.left, y: r.top, width: r.width, height: r.height },
     };
