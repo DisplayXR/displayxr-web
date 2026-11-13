@@ -149,7 +149,7 @@
     document.documentElement.appendChild(style);
     const r = canvas.getBoundingClientRect();
     const vw = innerWidth, vh = innerHeight;
-    let total = 0, opaque = 0, frost = 0, offscreen = 0;
+    let total = 0, opaque = 0, frost = 0, offscreen = 0, chrome = 0;
     const coverers = new Map();
     const effects = new Map(); // overlapping chrome the draw-order split cannot lift as a plain quad
     try {
@@ -174,6 +174,11 @@
             if (fx.length) effects.set(selectorOf(el), fx.join(', '));
             if (opaqueBox(el)) {
               covered = true;
+              // Page chrome: a fixed/sticky element or one inside it (a header the tile scrolls under).
+              for (let a = el; a && a !== document.body; a = a.parentElement) {
+                const p = getComputedStyle(a).position;
+                if (p === 'fixed' || p === 'sticky') { chrome++; break; }
+              }
               const s = selectorOf(el);
               coverers.set(s, (coverers.get(s) || 0) + 1);
               break;
@@ -200,6 +205,8 @@
     return {
       total, opaque, frost, offscreen,
       coveredFraction: total ? opaque / total : 0,
+      chromeFraction: total ? chrome / total : 0,
+      onScreenFraction: total + offscreen ? total / (total + offscreen) : 0,
       frostFraction: total ? frost / total : 0,
       coverers: [...coverers.entries()].sort((a, b) => b[1] - a[1]).map(([selector, hits]) => ({ selector, hits })),
       effects: [...effects.entries()].map(([selector, props]) => ({ selector, props })),

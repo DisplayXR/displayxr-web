@@ -567,7 +567,11 @@ function buildChecks(fake, plain, opt) {
       if (!o.total) continue; // off screen
       const top = o.coverers[0] && o.coverers[0].selector;
       const createTop = l.coverAtCreate && l.coverAtCreate.coverers && l.coverAtCreate.coverers[0] && l.coverAtCreate.coverers[0].selector;
-      if (o.coveredFraction >= 0.5) {
+      // Sticky/fixed page chrome over part of a tile is fine (draw-order occlusion), and a tile
+      // that is mostly scrolled off screen cannot be judged by its visible sliver: the scroll
+      // sweep below covers both. What fails here is something else painted over most of the tile.
+      if (o.onScreenFraction !== undefined && o.onScreenFraction < 0.5 && !(createTop && createTop === top)) continue;
+      if (o.coveredFraction - (o.chromeFraction || 0) >= 0.5 || (createTop && createTop === top && o.coveredFraction >= 0.5)) {
         if (createTop && createTop === top) fails.push(`${l.selector}: the cover ${top} that was over the canvas when it was registered is still there ${Math.round(l.ageMs / 100) / 10}s later (it never came off: remove it on handle.firstWoven, plus a timeout and a catch)`);
         else fails.push(`${l.selector}: ${Math.round(o.coveredFraction * 100)}% of the canvas is under an opaque element (${top}): nothing with a background may sit above a woven canvas; put backdrops under it`);
       }
