@@ -265,6 +265,157 @@ export function cameraRigComfortFactor({
   return m;
 }
 
+// ── ground-plane camera rig (web#274) ─────────────────────────────────────────────────────────
+
+/**
+ * A SUGGESTED camera rig for a tilted top-down view of a ground plane (a map, a strategy game, a
+ * board) and a report of what it does on this panel. Guideline only: it returns numbers and never
+ * touches a rig; the page decides what to apply.
+ *
+ * Geometry. The camera is `height` world units above the ground, its view axis `tiltDeg` from
+ * straight down (0 = top-down; making-3d-look-right.md rule 2's 25–40° from face-on), and it looks
+ * at the ground point on that axis. The suggested zero-disparity plane is the ground at the view
+ * centre: `convergence d = height / cos(tilt)`. A ground point seen `α` above the axis has view-axis
+ * depth `z = d / (1 − tan(tilt)·tan α)`, so the flat ground's INVERSE depth at the bottom / top
+ * edges is `(1 ± k) / d`, `k = tan(tilt)·tan(fov/2)` (k ≥ 1: the top edge sees the horizon).
+ *
+ * The canvas-size factor. On a camera rig the on-glass disparity of a point at depth z is
+ * `p = b · (1/D − 1/z) · tileHeightM / (2·tan(fov/2))`, `b = 0.063 m · ipdFactor ·
+ * metersToVirtual` (cameraRigDisparityPct × the tile width). It scales with the canvas's PHYSICAL
+ * height: the same rig on a canvas half as tall gives half the disparity. A formula without
+ * `tileHeightM` is only right when the canvas exactly fills the camera's field of view from the
+ * viewer (`tileHeightM = 2·viewerM·tan(fov/2)`). Read it from `handle.displayMetrics()`
+ * (`canvasSizeM[1]`, and `nominalViewerM` for `viewerM`).
+ *
+ * Perceived depth, for a viewer at `viewerM` with 63 mm eyes: crossed disparity p puts a point
+ * `viewerM·p / (e + p)` in front of the glass, uncrossed `viewerM·p / (e − p)` behind it
+ * (Infinity once p ≥ e: the eyes would diverge).
+ *
+ * The zoom-in limit. `minHeight` is the lowest camera height (same tilt, convergence following
+ * it) at which the top of an `objectHeight`-tall object standing on the near (bottom) edge stays
+ * within the pop-out budget: `maxPopOutMm` if given, else the comfort zone's front side
+ * (`comfortZone({ viewerM, zone }).frontMm`). Exact (a quadratic in the height), not iterated.
+ *
+ * @param {object} o
+ * @param {number} o.height  camera height above the ground, world units (> 0).
+ * @param {number} o.tiltDeg  view axis from straight down, DEGREES, [0, 90).
+ * @param {number} [o.fovDeg]  FULL vertical field of view, DEGREES (three's `camera.fov`)…
+ * @param {number} [o.verticalFov]  …or RADIANS, as the rig descriptor carries it.
+ * @param {number} [o.tileHeightM]  the canvas's physical height, metres. Without it the physical
+ *        fields (mm, minHeight, ipdFactorForBudget, comfortFactor) are NaN / null.
+ * @param {number} [o.viewerM=0.6]  nominal viewer distance, metres.
+ * @param {number} [o.objectHeight=0]  tallest thing that can stand at the near edge, world units.
+ * @param {number} [o.ipdFactor=1] [o.metersToVirtual=1]  the rig's (absolute, camera-rig) factors.
+ * @param {number} [o.maxPopOutMm]  pop-out budget, perceived mm in front of the glass.
+ * @param {'shibata'|'percival'|number} [o.zone='shibata']  the budget when maxPopOutMm is unset.
+ */
+export function groundPlaneRig({
+  height,
+  tiltDeg,
+  fovDeg,
+  verticalFov,
+  tileHeightM,
+  viewerM = DEPTH_DEFAULT_VIEWER_M,
+  objectHeight = 0,
+  ipdFactor = 1,
+  metersToVirtual = 1,
+  maxPopOutMm,
+  zone = 'shibata',
+} = {}) {
+  const fov = num(verticalFov) ? verticalFov : num(fovDeg) ? (fovDeg * Math.PI) / 180 : NaN;
+  const bad =
+    !num(height) || !(height > 0) || !num(tiltDeg) || !(tiltDeg >= 0 && tiltDeg < 90) || !(fov > 0 && fov < Math.PI) ||
+    !num(viewerM) || !(viewerM > 0) || !num(objectHeight) || !(objectHeight >= 0) || !num(ipdFactor) || !(ipdFactor >= 0) ||
+    !num(metersToVirtual) || !(metersToVirtual > 0);
+  if (bad) return null;
+  const tilt = (tiltDeg * Math.PI) / 180;
+  const cosT = Math.cos(tilt);
+  const tanHalf = Math.tan(fov / 2);
+  const k = Math.tan(tilt) * tanHalf;
+  const d = height / cosT;
+  const e = DEPTH_EYE_SEPARATION_M;
+  const H = num(tileHeightM) && tileHeightM > 0 ? tileHeightM : NaN;
+  // On-glass disparity (metres, + = behind) per unit of (1/D − 1/z), for this rig's eye scale.
+  const c = (e * ipdFactor * metersToVirtual * H) / (2 * tanHalf);
+  const s = objectHeight * cosT; // how much nearer the object's top is than its foot, along the axis
+  const zNearGround = d / (1 + k);
+  const zFarGround = k < 1 ? d / (1 - k) : Infinity;
+  const zObj = zNearGround - s;
+  const pOf = (z) => (z === Infinity ? c / d : z > 0 ? c * (1 / d - 1 / z) : -Infinity);
+  const groundNear = pOf(zNearGround);
+  const groundFar = pOf(zFarGround);
+  const objNear = pOf(zObj);
+  const popOut = (p) => (p < 0 ? (viewerM * -p) / (e - p) : 0);
+  const recess = (p) => (p > 0 ? (p < e ? (viewerM * p) / (e - p) : Infinity) : 0);
+  const mm = (x) => x * 1000;
+
+  // The budget, as on-glass crossed disparity (metres).
+  let budget;
+  let budgetSource;
+  if (num(maxPopOutMm) && maxPopOutMm > 0) {
+    const x = maxPopOutMm / 1000;
+    budget = x < viewerM ? (e * x) / (viewerM - x) : Infinity;
+    budgetSource = 'maxPopOutMm';
+  } else {
+    budget = comfortZone({ viewerM, zone }).frontMm / 1000;
+    budgetSource = 'zone';
+  }
+
+  // minHeight: |p(top of object at the near edge)| = budget, with d = h / cos(tilt) following h.
+  //   c·(1/(a·h − s) − cos/h) = B,  a = 1/(cos·(1+k))
+  //   → (B/c)·a·h² − ((B/c)·s + k/(1+k))·h − cos·s = 0, the positive root.
+  let minHeight = null;
+  if (c > 0 && budget > 0 && Number.isFinite(budget)) {
+    const r = budget / c;
+    const a = 1 / (cosT * (1 + k));
+    const A = r * a;
+    const Bq = r * s + k / (1 + k);
+    const C = cosT * s;
+    minHeight = (Bq + Math.sqrt(Bq * Bq + 4 * A * C)) / (2 * A);
+  } else if (c > 0 && budget === Infinity) {
+    minHeight = objectHeight * cosT * cosT * (1 + k); // only "the object's top stays in front of the camera"
+  }
+  const nearMag = objNear < 0 ? -objNear : 0;
+  const ipdFactorForBudget = nearMag > 0 && Number.isFinite(budget) ? (ipdFactor * budget) / nearMag : nearMag > 0 ? Infinity : null;
+  const comfortFactor = Number.isFinite(H)
+    ? cameraRigComfortFactor({
+        zNear: zObj > 0 ? zObj : zNearGround,
+        zFar: zFarGround,
+        convergence: d,
+        verticalFov: fov,
+        aspect: 1,
+        tileHeightM: H,
+        viewerM,
+        zone,
+        ipdFactor: ipdFactor > 0 ? ipdFactor : 1,
+        metersToVirtual,
+      })
+    : NaN;
+
+  return {
+    convergence: d,
+    convergenceDiopters: 1 / d,
+    verticalFov: fov,
+    minHeight,
+    ipdFactorForBudget,
+    report: {
+      nearEdgeInvDepthRatio: 1 + k,
+      farEdgeInvDepthRatio: 1 - k,
+      horizonInView: k >= 1,
+      groundNearMm: mm(groundNear),
+      groundFarMm: mm(groundFar),
+      objectNearMm: zObj > 0 ? mm(objNear) : -Infinity,
+      popOutMmNearEdge: zObj > 0 ? mm(popOut(objNear)) : Infinity,
+      recessionMmFarEdge: mm(recess(groundFar)),
+      budgetMm: mm(budget),
+      budgetSource,
+      comfortFactor,
+      comfortProduct: ipdFactor * metersToVirtual * (1 / d) * viewerM,
+    },
+    basis: { tiltDeg, viewerM, tileHeightM: Number.isFinite(H) ? H : null, ipdFactor, metersToVirtual, objectHeight, eyeSeparationM: e, zone },
+  };
+}
+
 // ── one-time warnings (never a behaviour change) ──────────────────────────────────────────────
 
 const CONVERGENCE_MSG =

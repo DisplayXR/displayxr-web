@@ -162,7 +162,8 @@ test('scene: mono (short view list) and missing-pose frames never count as stere
     env.runFrame(1);
   });
   assert.equal(await peek(h.firstWoven), 'pending');
-  assert.deepEqual(h.stats(), { frames: 2, monoFrames: 2 });
+  const st = h.stats();
+  assert.deepEqual({ frames: st.frames, monoFrames: st.monoFrames }, { frames: 2, monoFrames: 2 });
   env.runFrame(2);
   assert.equal((await peek(h.firstWoven)).woven, true);
   wall.close();
@@ -548,5 +549,48 @@ test('rewoven: released woven:false when the window goes away, and after a no-we
   h.remove();
   assert.equal((await peek(p)).reason, 'removed');
   assert.equal((await peek(h.rewoven())).reason, 'removed', 'a window that will not weave answers at once');
+  wall.close();
+});
+
+// web#278: the frame clock rides the same deliveries. Here it is only the wiring (interval on the
+// frame timestamp, callback time on performance.now(), session frameRate passed through);
+// test/frame-clock.test.mjs pins the clock itself.
+test('scene: stats() reports the frame clock — a steady 33.4 ms with an idle callback is paced', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {
+    clock += 5; // the callback "takes" 5 ms
+  });
+  const empty = h.stats();
+  assert.equal(empty.frameIntervalMs, null);
+  assert.equal(empty.paced, null);
+  for (let i = 0; i < 40; i++) {
+    env.runFrame(2);
+    clock = (i + 1) * 33.4;
+  }
+  const s = h.stats();
+  assert.equal(s.frames, 40);
+  assert.equal(s.frameClockSamples, 39);
+  assert.equal(s.frameIntervalMs.p50, 33.4);
+  assert.equal(s.cbMs.p50, 5);
+  assert.equal(s.displayHz, null, 'the session reports no frameRate: unknown, not guessed');
+  assert.equal(s.paced, true);
+  wall.session.frameRate = 60;
+  assert.equal(h.stats().displayHz, 60);
+  assert.equal(h.stats().displayHzSource, 'session');
+  assert.equal(h.stats().paced, true, '33.4 ms is two 60 Hz periods');
+  wall.close();
+});
+
+test('stats(): image windows carry no clock', async () => {
+  clock = 0;
+  installEnv();
+  const wall = await newWall();
+  const h = wall.addImage(makeCanvas(), 'x.jpg');
+  const s = h.stats();
+  assert.equal(s.frames, 0);
+  assert.equal(s.frameIntervalMs, null);
+  assert.equal(s.paced, null);
   wall.close();
 });

@@ -125,7 +125,7 @@ function withCapturedWarnings(fn) {
 
 const env = installEnv();
 const { createInline3D, inline3dViewRigSupported } = await import('../js/inline3d.js');
-const { EyeCamera, cameraRigFromCamera, displayRig } = await import('../js/inline3d-three.js');
+const { EyeCamera, cameraRigFromCamera, cameraRigFromPose, displayRig } = await import('../js/inline3d-three.js');
 
 // Converged at 1 world unit: a camera rig left at infinity (convergenceDiopters 0 / unset) now
 // draws its own one-time console warning (test/depth-budget.test.mjs), which these warning counts
@@ -322,6 +322,66 @@ test('cameraRigFromCamera reuses `out` instead of allocating per frame', () => {
   assert.equal(a, out);
   assert.equal(b, out);
   assert.ok(Math.abs(out.verticalFov - Math.PI / 2) < 1e-12, 'the latest call wins');
+});
+
+// web#276: a user depth slider drives ipdFactor + parallaxFactor and holds the rest. The builders
+// must pass both through unchanged and keep every other field independent of them, so the
+// zero-disparity plane, the FOV and the unit scale cannot move when the slider does.
+test('depth slider: the rig builders pass ipdFactor / parallaxFactor through and hold everything else', () => {
+  const THREE = makeRigTHREE();
+  const pose = { position: { x: 1, y: 2, z: 3 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, fov: 50 };
+  const builders = [
+    ['cameraRigFromCamera', (o) => cameraRigFromCamera(THREE, makeRigCamera(50), { convergence: 4, metersToVirtual: 2, ...o })],
+    ['cameraRigFromPose', (o) => cameraRigFromPose(pose, { convergence: 4, metersToVirtual: 2, ...o })],
+    ['displayRig', (o) => displayRig({ virtualDisplayHeight: 0.3, perspectiveFactor: 1.2, ...o })],
+  ];
+  for (const [name, build] of builders) {
+    const ref = build({});
+    for (const s of [0, 0.35, 1, 1.2, 3]) {
+      const r = build({ ipdFactor: 0.8 * s, parallaxFactor: s });
+      assert.equal(r.ipdFactor, 0.8 * s, `${name}: ipdFactor as given (s=${s})`);
+      assert.equal(r.parallaxFactor, s, `${name}: parallaxFactor as given (s=${s})`);
+      for (const k of Object.keys(ref)) {
+        if (k === 'ipdFactor' || k === 'parallaxFactor') continue;
+        assert.deepEqual(r[k], ref[k], `${name}: ${k} does not move with the slider (s=${s})`);
+      }
+    }
+  }
+});
+
+// web#273: `out` is the zero-allocation path, so a reused descriptor must keep its position and
+// orientation OBJECTS too (identity, not just equal values), on every branch of all three builders.
+test('the rig builders write into out.position / out.orientation instead of replacing them', () => {
+  const THREE = makeRigTHREE();
+  const pose = (x) => ({ position: { x, y: 2, z: 3 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, fov: 40 });
+  const cases = [
+    ['cameraRigFromCamera world', (out) => cameraRigFromCamera(THREE, makeRigCamera(), { out })],
+    ['cameraRigFromCamera attach', (out) => cameraRigFromCamera(THREE, makeRigCamera(), { out, attach: true })],
+    ['cameraRigFromPose world', (out) => cameraRigFromPose(pose(Math.random()), { out })],
+    ['cameraRigFromPose attach', (out) => cameraRigFromPose(pose(1), { out, attach: true })],
+    ['displayRig', (out) => displayRig({ out, position: { x: Math.random() } })],
+  ];
+  for (const [name, build] of cases) {
+    const out = {};
+    build(out);
+    const p = out.position;
+    const q = out.orientation;
+    assert.ok(p && q, `${name}: created on the first call`);
+    for (let i = 0; i < 3; i++) build(out);
+    assert.equal(out.position, p, `${name}: position object reused`);
+    assert.equal(out.orientation, q, `${name}: orientation object reused`);
+  }
+  // The values still follow the latest call, and switching branches on the same out is clean.
+  const out = {};
+  cameraRigFromPose(pose(5), { out });
+  assert.deepEqual(out.position, { x: 5, y: 2, z: 3 });
+  cameraRigFromPose(pose(5), { out, attach: true });
+  assert.deepEqual(out.position, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(out.orientation, { x: 0, y: 0, z: 0, w: 1 });
+  // Never aliased to the caller's pose objects.
+  const src = pose(7);
+  cameraRigFromPose(src, { out });
+  assert.notEqual(out.position, src.position);
 });
 
 test('displayRig defaults to the rig virtualDisplayHeight is shorthand for', () => {

@@ -256,8 +256,7 @@ export function cameraRigFromCamera(THREE, camera, opts = {}) {
   if (attach) {
     // Identity pose: the rig IS the camera, so the runtime reports eyes in camera space and the
     // scene graph does the rest. Deliberately not "the camera's pose from a frame ago".
-    out.position = { x: 0, y: 0, z: 0 };
-    out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+    setPose(out, 0, 0, 0, 0, 0, 0, 1);
   } else {
     // World pose, decomposed from the matrix rather than read off .position/.quaternion: those
     // are LOCAL, and an app camera parented under a rig/dolly (the usual way to build an orbit)
@@ -265,8 +264,7 @@ export function cameraRigFromCamera(THREE, camera, opts = {}) {
     camera.updateMatrixWorld();
     const { p, q, s } = scratch(THREE);
     camera.matrixWorld.decompose(p, q, s);
-    out.position = { x: p.x, y: p.y, z: p.z };
-    out.orientation = { x: q.x, y: q.y, z: q.z, w: q.w };
+    setPose(out, p.x, p.y, p.z, q.x, q.y, q.z, q.w);
   }
   // three's fov is the FULL angle, in degrees
   return fillCameraRig(out, THREE.MathUtils.degToRad(camera.fov), opts);
@@ -292,15 +290,34 @@ export function cameraRigFromPose(pose, opts = {}) {
   const { attach = false, out = {} } = opts;
   out.type = 'camera';
   if (attach) {
-    out.position = { x: 0, y: 0, z: 0 };
-    out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+    setPose(out, 0, 0, 0, 0, 0, 0, 1);
   } else {
     const p = pose.position;
     const q = pose.orientation;
-    out.position = { x: p.x, y: p.y, z: p.z };
-    out.orientation = { x: q.x, y: q.y, z: q.z, w: q.w };
+    setPose(out, p.x, p.y, p.z, q.x, q.y, q.z, q.w);
   }
   return fillCameraRig(out, pose.fov * DEG2RAD, opts);
+}
+
+/**
+ * Write a rig pose into `out.position` / `out.orientation`, REUSING those objects when they are
+ * already there (web#273): the point of `opts.out` is a zero-allocation per-frame rig, and a fresh
+ * pair of literals on every call defeated it. Created only on the first call with a given `out`.
+ * The values are copied, never aliased, so `out` never holds a live reference to a caller's
+ * Vector3/Quaternion.
+ */
+function setPose(out, px, py, pz, qx, qy, qz, qw) {
+  let p = out.position;
+  if (!p || typeof p !== 'object') p = out.position = { x: 0, y: 0, z: 0 };
+  p.x = px;
+  p.y = py;
+  p.z = pz;
+  let q = out.orientation;
+  if (!q || typeof q !== 'object') q = out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+  q.x = qx;
+  q.y = qy;
+  q.z = qz;
+  q.w = qw;
 }
 
 /** three's `MathUtils.DEG2RAD`, so a pose-built rig matches a camera-built one to the bit. */
@@ -347,11 +364,14 @@ function fillCameraRig(out, verticalFovRad, opts) {
  * @param {object} [opts.out]  a descriptor object to overwrite instead of allocating one.
  * @returns {object} an XRViewRigInit-shaped plain object.
  */
+const ORIGIN = Object.freeze({ x: 0, y: 0, z: 0 });
+const IDENTITY = Object.freeze({ x: 0, y: 0, z: 0, w: 1 });
+
 export function displayRig(opts = {}) {
   const {
     virtualDisplayHeight = 0.24,
-    position = { x: 0, y: 0, z: 0 },
-    orientation = { x: 0, y: 0, z: 0, w: 1 },
+    position = ORIGIN,
+    orientation = IDENTITY,
     ipdFactor = 1,
     parallaxFactor = 1,
     perspectiveFactor = 1,
@@ -359,14 +379,18 @@ export function displayRig(opts = {}) {
   } = opts;
   out.type = 'display';
   // Copied field by field, not aliased: a caller reusing `out` every frame must not end up
-  // holding a live reference to a THREE.Vector3 it is also mutating.
-  out.position = { x: position.x || 0, y: position.y || 0, z: position.z || 0 };
-  out.orientation = {
-    x: orientation.x || 0,
-    y: orientation.y || 0,
-    z: orientation.z || 0,
-    w: orientation.w === undefined ? 1 : orientation.w,
-  };
+  // holding a live reference to a THREE.Vector3 it is also mutating. Written into out's existing
+  // position/orientation when present, so a reused `out` allocates nothing (web#273).
+  setPose(
+    out,
+    position.x || 0,
+    position.y || 0,
+    position.z || 0,
+    orientation.x || 0,
+    orientation.y || 0,
+    orientation.z || 0,
+    orientation.w === undefined ? 1 : orientation.w,
+  );
   out.virtualDisplayHeight = virtualDisplayHeight;
   out.ipdFactor = ipdFactor;
   out.parallaxFactor = parallaxFactor;

@@ -32,6 +32,7 @@
 import { undock, undockAvailable, undockUrl, tileScreenRect, setUndockLayerResolver } from './inline3d-undock.js';
 export { undock, undockAvailable, undockUrl, tileScreenRect };
 import { setSessionViewerEase } from './inline3d-viewer-ease.js';
+import { createFrameClock } from './inline3d-frame-clock.js';
 // The tracking-acquisition ease, for pages that render their own addScene from the views.
 export { ViewerEase, resolveViewerEaseOption, frameTrackingState, VIEWER_EASE_DEFAULT_MS } from './inline3d-viewer-ease.js';
 export { DISPLAY_METRICS_DEFAULTS, displayMetricsFrom } from './inline3d-display-metrics.js';
@@ -1542,7 +1543,9 @@ class Inline3D {
       onDisplayModeChange: (cb) => this._onDisplayModeChange(cb),
       // Read-only counters, for pages that want to see the load-induced mono fallback rather
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
-      stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
+      // Plus (web#278) the scene's frame clock — interval and callback-time percentiles, the
+      // display rate when the session reports one, and the `paced` hint. Never changes behaviour.
+      stats: () => this._sceneStats(win),
       /**
        * The browser's own report for this window's layer, read live: 'pending' | 'woven' |
        * 'withheld', or null on a browser that does not report it (the attribute is absent: mac,
@@ -2501,6 +2504,8 @@ class Inline3D {
       // onFrame deliveries; monoFrames counts the ones that carried fewer than two views.
       frames: 0,
       monoFrames: 0,
+      // web#278: interval/callback-time rings for stats(); allocated once, written per delivery.
+      clock: kind === 'scene' ? createFrameClock() : null,
       // handle.firstWoven (web#36 follow-up). One-shot per window: `fwResult` is the settled
       // value, null while pending. `fwLayerAt` is when the CURRENT layer was built (null = none);
       // `fwStereo` whether that layer has since carried a real stereo frame. _activate resets both
@@ -3366,6 +3371,26 @@ class Inline3D {
     }
   }
 
+  /**
+   * handle.stats() for any window (web#12 counters + the web#278 frame clock). Image/video windows
+   * have no clock and report nulls. `displayHz` comes only from the session (XRSession.frameRate):
+   * a cadence estimate cannot tell a 30 Hz panel from a 60 Hz one delivering every second vsync,
+   * which is exactly the case this exists for, so the SDK does not guess.
+   */
+  _sceneStats(win) {
+    let hz = null;
+    try {
+      const r = this.session && this.session.frameRate;
+      if (Number.isFinite(r) && r > 0) hz = r;
+    } catch {
+      /* a session that throws on the read: unknown */
+    }
+    const c = win.clock
+      ? win.clock.read(hz)
+      : { frameIntervalMs: null, cbMs: null, frameClockSamples: 0, displayHz: hz, displayHzSource: hz === null ? null : 'session', paced: null };
+    return { frames: win.frames, monoFrames: win.monoFrames, ...c };
+  }
+
   _frame(t, f) {
     if (!this._running) return;
     this._requestFrame();
@@ -3392,6 +3417,7 @@ class Inline3D {
           // (a mono preview, say) must be allowed to. What the core owes you is VISIBILITY —
           // this is otherwise invisible from the page, since nothing throws and nothing logs.
           win.frames++;
+          if (win.clock) win.clock.tick(t, this._frameCount);
           if (views.length < 2) {
             win.monoFrames++;
             // 1-in-300 so a sustained rate is reported without the log itself becoming the load;
@@ -3409,8 +3435,10 @@ class Inline3D {
           // decoder that gives up) used to abort this loop body for every window AFTER it in the
           // map — and an un-redrawn canvas can have its layer dropped from the aggregated frame
           // (see the note below), so one broken tile took its neighbours' weave with it (web#28).
+          const cbAt = win.clock ? performance.now() : 0;
           try {
             win.onFrame(views, win.layer, f);
+            if (win.clock) win.clock.cb(performance.now() - cbAt);
             // A stereo frame the page drew without throwing. A short view list is the load
             // fallback (a mono frame), which is not what a poster is waiting for.
             if (views.length >= 2) {
