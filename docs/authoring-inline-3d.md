@@ -100,6 +100,23 @@ p.on('ready', () => p.play());
 p.on('ended', () => p.seek(0));
 ```
 
+**A page cover over a player comes off on `p.firstWoven`**, the same signal as every other woven
+window ([woven-canvas rule 5](woven-canvas-rules.md#5-keep-the-canvas-covered-until-handlefirstwoven-resolves)),
+never on `'ready'`, `loadeddata` or the first decoded frame. Those fire as soon as the video has a
+frame, which is up to a hold (~1.2 s) before the browser joins the layer, and in that window the
+canvas shows the raw side-by-side pair:
+
+```js
+const p = addPlayer(wall, canvas, ['memories.webm', 'memories.mp4'], { poster: 'memories-poster.jpg' });
+const reveal = () => cover.remove();          // a hard cut, never a fade
+setTimeout(reveal, 4000);                     // ...and always, eventually
+await p.firstWoven;                           // settles at once for 'mono' / no session
+reveal();
+```
+
+The SDK paints the poster into both eyes before the first frame, so the tile is never empty under
+the cover. `p.rewoven()` is the underlying window's `rewoven()` for your own resize cover.
+
 `opts.format` is `'sbs'` (default — a real stereo pair, woven exactly like `addVideo`) or
 `'mono'` (genuinely flat content, painted full-frame, never split into eyes — for a catalogue
 that mixes 2D and 3D titles under one component). `format:'sbs'` on an unsupported/absent `wall`
@@ -360,6 +377,26 @@ last.xf.set(view.transform.matrix);
 `./viewer` (and so `./splat` and `./model`) does all of this for you; use it unless you have your
 own loop. `handle.stats()` reports `{ frames, monoFrames }` per scene window if you want to see
 how often the fallback is firing on real hardware.
+
+**Pass `onLayerLost`, and make it go flat.** When the weave layer goes away for good (the session
+ended, the layer failed, the tile was removed), the SDK stops calling `onFrame` and calls
+`opts.onLayerLost` once. Whatever the canvas holds at that moment stays on screen, and for an
+`addScene` window that is your last side-by-side pair, now shown unwoven in a plain browser
+window: two half-width copies of the scene. The callback must replace it with the 2D view: render
+one mono camera across the full canvas on your own `requestAnimationFrame` loop (the same path as
+`!wall.supported`), or hide the canvas behind an `<img>` / poster. An empty `onLayerLost: () => {}`
+is the same as not passing one. `SceneViewer` ships the reference: `onLayerLost: viewer.onLayerLost`
+calls its `startMono()`. `./splat` and `./model` wire it for you.
+
+```js
+wall.addScene(canvas, onFrame, {
+  onLayerLost: () => {
+    stopStereo = true;                      // your onFrame will not run again anyway
+    const loop = () => { renderMono(); requestAnimationFrame(loop); };
+    loop();                                 // one camera, full canvas: the 2D page
+  },
+});
+```
 
 **Capped or slow? Read the frame clock before you scale anything down.** A long frame interval is
 not always yours to fix. On an Android 3D tablet a full-window woven canvas settled at a flat
@@ -988,6 +1025,21 @@ render with (`samples/splat/`, with `?engine=spark` as the A/B switch) because i
 times cheaper in stereo and it streams large scenes. The same `perf` presets map onto its knobs,
 and the `camera` block below drives both engines the same way. The mapping and every difference
 from Spark are in [`playcanvas-adapter.md`](playcanvas-adapter.md).
+
+**What shows around a splat.** A splat covers only part of its tile, and the viewer's default clear
+is transparent (`clearColor` unset), so the page behind the canvas shows through. The DisplayXR
+Browser pre-blends that page under both eyes at zero disparity, so it reads as a flat backdrop on
+the glass, sampled at half horizontal resolution. Keep what sits behind a splat tile soft (a colour
+or a gentle gradient, light or mid-tone, never black behind a bright subject: [making 3D look
+right](making-3d-look-right.md)); text or a photo there smears. To pin the backdrop regardless of
+the page, pass an opaque `clearColor` (0..1):
+
+```js
+const splat = addSplat(wall, canvas, 'butterfly.sog', {
+  engine: 'playcanvas',
+  clearColor: [0.85, 0.83, 0.8, 1],          // optional: an opaque backdrop of your own
+});
+```
 
 ### Splat performance — it is overdraw, and neither resolution nor splat count is the lever
 
@@ -1700,8 +1752,10 @@ stacking 2D over 2D. There is nothing to declare: no data-attribute, no `exclude
 registration of your header.
 
 This is the browser's **Phase-2 compositor path** (a plane split in viz, replacing the Phase-1
-geometric matcher). It is not the default yet — see [Rollout](#rollout) at the end of this
-section for exactly what is live when, and why the SDK's answer is `false` until it is.
+geometric matcher). It is **on by default** in current DisplayXR Browser builds (Windows since
+August 2026, then Android and macOS), and they expose the capability the SDK reads, so
+`inline3dOcclusionByDrawOrder()` answers `true` there. Older builds answer `false` and get the
+legacy machinery below; see [Rollout](#rollout).
 
 That means all of this is ordinary HTML/CSS again, with no inline-3D wiring at all:
 
@@ -1775,10 +1829,10 @@ Written for the transition, and safe at every step of it:
 
 | Browser state | `inline3dOcclusionByDrawOrder()` | What the SDK does |
 |---|---|---|
-| No Phase-2 path (everything published so far) | `false` | Legacy exclusion machinery, unchanged |
-| Phase-2 present but off (its default today) | `false` | Legacy machinery — correct, because that *is* the live path |
+| No Phase-2 path (builds before August 2026) | `false` | Legacy exclusion machinery, unchanged |
+| Phase-2 present but switched off (`--disable-inline-3d-occlusion`) | `false` | Legacy machinery — correct, because that *is* the live path |
 | Phase-2 on, capability flag not yet exposed | `false` | Legacy machinery: redundant but harmless (see below) |
-| Phase-2 on, flag exposed | `true` | Nothing — no scan, no observers, no promotions |
+| Phase-2 on, flag exposed (current builds, the default) | `true` | Nothing — no scan, no observers, no promotions |
 
 The third row is the one to understand: the browser's occlusion switch is enabled but the page
 cannot see it, so the SDK keeps declaring exclusions. That is **harmless** — the declarations are
@@ -2135,6 +2189,14 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
 - **Cover a new canvas until `handle.firstWoven` resolves** and never remount one: the browser
   shows the raw side-by-side pair until its compositor joins the canvas. See
   [Woven canvas rules](woven-canvas-rules.md).
+- **A player's cover comes off on `player.firstWoven`,** not on `'ready'` / `loadeddata`
+  ([§2b](#2b-player--addplayercanvas-src-opts)).
+- **What is behind a transparent tile is part of the 3D picture**, flat and at half horizontal
+  resolution: keep it soft, never black behind a bright subject
+  ([Gaussian splats](#gaussian-splats-performance-and-the-camera-block)).
+- **An `addScene` page passes an `onLayerLost` that goes flat** (one mono view across the canvas),
+  never a no-op: otherwise the last side-by-side pair stays on screen
+  ([§3](#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
 - **The page still works in 2D.** Always ship a fallback for `{ supported:false }`.
 
 ## Under the hood (raw WebXR)

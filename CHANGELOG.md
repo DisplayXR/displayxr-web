@@ -7,6 +7,27 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — `./player`: `firstWoven` and `rewoven()` on the player handle (preview tier)
+
+`addPlayer()` handles now carry `firstWoven` and `rewoven()`, forwarded from the woven `addVideo`
+window the player is built on (settled at once with `reason: 'unsupported'` for a `'mono'` title or
+a wall without a session). A page cover over a player had no correct release signal: `'ready'` and
+`loadeddata` fire before the browser joins the layer, so a cover released there showed the raw
+side-by-side pair for up to a hold. Additive; nothing changes for pages that do not read them.
+
+### Docs — the mistakes agents and authors make most
+
+- `docs/authoring-inline-3d.md`: a player's cover releases on `player.firstWoven`; what shows
+  around a splat (the page, pre-blended flat) and when to pass `clearColor`; `addScene`'s
+  `onLayerLost` must draw a mono view, not no-op; the draw-order occlusion Rollout table now says
+  what ships (on by default since August 2026) instead of "not the default yet".
+- `docs/woven-canvas-rules.md`: the "transparent canvas weaves black" limitation is removed
+  (browser-pvt #255 closed: the black box was a page cover; transparent pixels are pre-blended).
+- `samples/hello-cube`: passes `onLayerLost` and drops to its mono loop.
+- `docs/woven-canvas-rules.md`: rule 5 names video/player signals that fire before the join;
+  rule 9 separates accidental full-tile covers from deliberate partial chrome.
+- `llms.txt`: the four most common mistakes up front.
+
 ## 1.55.1 — 2026-11-11
 
 ### Docs — a user depth slider on a camera (or display) rig

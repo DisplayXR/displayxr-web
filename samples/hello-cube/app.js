@@ -292,7 +292,17 @@ function onMonoFrame(now) {
   // and the ?debug panel below drives it.
   const wall = await createInline3D({ lazy: false });
   if (wall.supported) {
-    const handle = wall.addScene(canvas, onXRFrame, { virtualDisplayHeight: 0.12 });
+    const handle = wall.addScene(canvas, onXRFrame, {
+      virtualDisplayHeight: 0.12,
+      // The weave layer went away for good (session ended, layer failed): go flat, the same mono
+      // loop as the 2D fallback. Without this the canvas keeps its last side-by-side pair.
+      onLayerLost: () => {
+        sbsMode = false;
+        sizeToCanvas();
+        statusEl.innerHTML = '<b>2D</b> — the 3D layer went away';
+        requestAnimationFrame(onMonoFrame);
+      },
+    });
     // Only now do we know we render side-by-side — re-size the backing store to 2x width.
     sbsMode = true;
     sizeToCanvas();

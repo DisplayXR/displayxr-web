@@ -158,6 +158,19 @@ export interface PlayerHandle {
   /** The hidden `<video>` this handle owns — escape hatch for anything not covered above. */
   readonly video: HTMLVideoElement;
 
+  /**
+   * Resolves once, when it is safe to reveal this player's canvas — the same signal as
+   * `TileHandle.firstWoven` (woven-canvas rule 5), taken from the woven `addVideo` window the
+   * player is built on. Release a page cover over the player on THIS, never on `'ready'`,
+   * `loadeddata` or the first decoded frame: those fire before the browser has joined the layer,
+   * so the raw side-by-side pair can show for up to a hold (~1.2 s). A `'mono'` title or a wall
+   * without a session settles at once with `{ woven: false, reason: 'unsupported' }`: the canvas
+   * is painted flat and there is nothing to wait for. Settles once and never rejects.
+   */
+  readonly firstWoven: Promise<import('./index.js').FirstWovenResult>;
+  /** `TileHandle.rewoven()` of the underlying window: settle after a resize / fullscreen change. */
+  rewoven(): Promise<import('./index.js').FirstWovenResult>;
+
   /** Resume; or, with an id (or an index into `titles`), switch to that title and play it. */
   play(id?: string | number): Promise<void>;
   pause(): void;
@@ -316,3 +329,9 @@ export type PlayerAccent = 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' |
  * still answers 'maybe' — so list a VP9 WebM first when you have one.
  */
 export function pickSource(candidates: PlayerSource, canPlayType?: (type: string) => string): string | Blob | undefined;
+
+/** Internal-but-exported: the player's woven signals from its inner `addVideo` handle (tests). */
+export declare function playerWovenSignals(innerHandle: { firstWoven?: Promise<import('./index.js').FirstWovenResult>; rewoven?: () => Promise<import('./index.js').FirstWovenResult> } | null): {
+  firstWoven: Promise<import('./index.js').FirstWovenResult>;
+  rewoven: () => Promise<import('./index.js').FirstWovenResult>;
+};
