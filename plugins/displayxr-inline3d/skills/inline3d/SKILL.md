@@ -131,4 +131,5 @@ fallback, plus the rig, comfort and measured depth. Fix every **FAIL**; read eve
 line names the doc section. For a Vite/dev-server app pass the running URL. Use `--root <project>`
 when a page imports `../` or `/node_modules/`. A green run is not a panel test: say so, and ask for
 a check on real hardware when depth or look matters. Scaffold a known-good page with the
-`new-inline3d-page` skill.
+`new-inline3d-page` skill. Any model, texture or poster the page loads goes through the
+`inline3d-assets` skill first (convert, optimise, `asset-check.mjs`, `ASSETS.md`).

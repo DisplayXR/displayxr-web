@@ -8,6 +8,7 @@ before calling them done**.
 |---|---|
 | `skills/inline3d` | auto-loads when a task touches `@displayxr/inline3d`: content type and entry point, view rig, depth/comfort, the woven-canvas checklist, chrome and detection, exact pins. Points at the docs inside the installed package instead of copying them. |
 | `skills/new-inline3d-page` | scaffolds a page from a known-good template (vanilla ESM + import map, or Vite). |
+| `skills/inline3d-assets` | get → prepare → check 3D assets: glTF-Transform (pinned, via npx), headless Blender **only if already installed**, a zero-dependency `assets/bin/asset-check.mjs` (tablet/desktop budgets, decoders, units, textures, materials), optional paid generation through `assets/bin/gen.mjs` adapters (`meshy`, `tripo`, `openai`; keys from the environment only, `--confirm-paid` per call after the user's yes), and `ASSETS.md` provenance. |
 | `commands/inline3d-check` | `/displayxr-inline3d:inline3d-check <target>`: runs the checker and fixes what fails. |
 | `checker/` | `inline3d-check`: loads the page in headless Chrome inside a fake DisplayXR inline-3D environment, and again plain, and reports pass/fail per rule. |
 | `hooks/` | non-blocking reminders to run the checker after editing an inline-3D page. |
