@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.56.0 — 2026-11-13
+
 ### Added — `./player`: `firstWoven` and `rewoven()` on the player handle (preview tier)
 
 `addPlayer()` handles now carry `firstWoven` and `rewoven()`, forwarded from the woven `addVideo`
