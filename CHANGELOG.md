@@ -7,6 +7,16 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — a devicePixelRatio-only change now reaches scene windows (core + `./viewer`)
+
+A browser zoom or a drag to a monitor at a different scale changes devicePixelRatio without moving
+the CSS box, so ResizeObserver never fires. The core's `(resolution: Ndppx)` watcher only
+re-derived the buffers it owns, so an `addScene` window's `onResize(box)` never heard of the change
+and the page kept a backing store sized for the old dpr. It now runs `onResize` (which already
+compares dpr) for scene windows. `SceneViewer` (`./viewer`, and the Spark `./splat` / three-engine
+`./model` paths built on it) had only a ResizeObserver; it now arms its own re-arming resolution
+query, released in `dispose()`. (web#267)
+
 ## 1.56.0 — 2026-11-13
 
 ### Added — `./player`: `firstWoven` and `rewoven()` on the player handle (preview tier)
