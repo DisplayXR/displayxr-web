@@ -97,7 +97,9 @@ export interface DisplayRigOptions {
  * {@link cameraRigDisparityPct} measures the disparity a rig gives.
  *
  * @param THREE your imported three.js module namespace.
- * @param camera a `THREE.PerspectiveCamera` (`.fov` degrees, `.matrixWorld`).
+ * @param camera a `THREE.PerspectiveCamera` (`.fov` degrees, `.matrixWorld`; `.zoom` is honoured
+ *        via `getEffectiveFOV()`). A camera with no perspective FOV (an `OrthographicCamera`)
+ *        logs one console warning and gets a 50° stand-in.
  */
 export function cameraRigFromCamera(
   THREE: unknown,

@@ -238,7 +238,9 @@ function scratch(THREE) {
  * display rig.
  *
  * @param {object} THREE  your imported three.js module namespace.
- * @param {object} camera  a THREE.PerspectiveCamera (`.fov` in degrees, `.matrixWorld` current).
+ * @param {object} camera  a THREE.PerspectiveCamera (`.fov` in degrees, `.matrixWorld` current;
+ *        `.zoom` is honoured through `getEffectiveFOV()`). A camera without a perspective FOV
+ *        (an OrthographicCamera) warns once and gets a 50° stand-in.
  * @param {object} [opts]
  * @param {number} [opts.convergence=0]  zero-disparity distance in WORLD units (0 = infinity).
  * @param {boolean} [opts.attach=false]  emit an IDENTITY pose, for the attach pattern above —
@@ -267,7 +269,33 @@ export function cameraRigFromCamera(THREE, camera, opts = {}) {
     setPose(out, p.x, p.y, p.z, q.x, q.y, q.z, q.w);
   }
   // three's fov is the FULL angle, in degrees
-  return fillCameraRig(out, THREE.MathUtils.degToRad(camera.fov), opts);
+  return fillCameraRig(out, THREE.MathUtils.degToRad(cameraFovDeg(camera)), opts);
+}
+
+/** three's PerspectiveCamera default fov, the stand-in for a camera that has none (web#268). */
+const FALLBACK_FOV_DEG = 50;
+let nonPerspectiveWarned = false;
+
+/**
+ * The vertical FOV a camera actually renders with, in degrees. `camera.zoom` narrows a
+ * PerspectiveCamera's projection without touching `.fov`, so `getEffectiveFOV()` is the
+ * truth when zoom is not 1 (at zoom 1 `.fov` is read directly, bit-identical to
+ * cameraRigFromPose). A camera with no perspective FOV (an OrthographicCamera) cannot describe a
+ * camera rig: warn once and use three's default 50° rather than send the runtime NaN.
+ */
+function cameraFovDeg(camera) {
+  let fov = camera.fov;
+  const zoom = camera.zoom;
+  if (zoom !== undefined && zoom !== 1 && typeof camera.getEffectiveFOV === 'function') fov = camera.getEffectiveFOV();
+  if (!camera.isOrthographicCamera && typeof fov === 'number' && Number.isFinite(fov) && fov > 0) return fov;
+  if (!nonPerspectiveWarned) {
+    nonPerspectiveWarned = true;
+    console.warn(
+      `[inline3d] cameraRigFromCamera needs a perspective camera (got ${camera.isOrthographicCamera ? 'an OrthographicCamera' : `fov ${fov}`}): ` +
+        `a camera rig is a perspective frustum. Using a ${FALLBACK_FOV_DEG}° vertical FOV; pass a PerspectiveCamera, or build the rig with cameraRigFromPose.`,
+    );
+  }
+  return FALLBACK_FOV_DEG;
 }
 
 /**

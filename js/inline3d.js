@@ -827,6 +827,10 @@ function boxKeyOf(canvas) {
 }
 
 /** A scene canvas's CSS box and dpr, as addScene's `onResize` receives it. */
+/** The inline styles _register promotes a window's canvas with (restored by _restoreCanvasStyle). */
+const PROMOTE_WILL_CHANGE = 'transform';
+const PROMOTE_TRANSFORM = 'translateZ(0)';
+
 function sceneBoxOf(canvas) {
   const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
   return { width: canvas.clientWidth || 0, height: canvas.clientHeight || 0, dpr };
@@ -2431,11 +2435,14 @@ class Inline3D {
   _register(canvas, kind, opts) {
     if (this._windows.has(canvas)) this._remove(canvas);
     // Own compositing layer: makes the canvas a distinct quad the weave can track. Harmless
-    // when the compositor would have promoted it anyway.
-    canvas.style.willChange = 'transform';
-    canvas.style.transform = 'translateZ(0)';
+    // when the compositor would have promoted it anyway. The page's own inline values are kept
+    // on the window and put back when it is removed or the session ends (_restoreCanvasStyle).
+    const priorStyle = { willChange: canvas.style.willChange || '', transform: canvas.style.transform || '' };
+    canvas.style.willChange = PROMOTE_WILL_CHANGE;
+    canvas.style.transform = PROMOTE_TRANSFORM;
     const win = {
       canvas,
+      priorStyle,
       kind,
       layer: null,
       img: null,
@@ -2567,6 +2574,23 @@ class Inline3D {
     this._windows.delete(canvas);
     this._settleFirstWoven(win, false, 'removed');
     this._dropCover(win);
+    this._restoreCanvasStyle(win);
+  }
+
+  /**
+   * Undo _register's compositing promotion on a window's canvas, restoring the inline
+   * `will-change` / `transform` the page had (which may be none), the way _unpromote does for an
+   * isolated element. A property the page has rewritten since is the page's and is left alone.
+   * One-shot per registration.
+   */
+  _restoreCanvasStyle(win) {
+    const prior = win.priorStyle;
+    if (!prior) return;
+    win.priorStyle = null;
+    const style = win.canvas && win.canvas.style;
+    if (!style) return;
+    if (style.willChange === PROMOTE_WILL_CHANGE) style.willChange = prior.willChange;
+    if (style.transform === PROMOTE_TRANSFORM) style.transform = prior.transform;
   }
 
   _onIntersect(entries) {
@@ -4008,6 +4032,7 @@ class Inline3D {
       this._settleFirstWoven(win, false, 'session-ended');
       this._dropCover(win);
       this._noteLayerFramed(win, false);
+      this._restoreCanvasStyle(win);
     }
     this._windows.clear();
     this._claims.clear();
