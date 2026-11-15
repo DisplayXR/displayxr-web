@@ -3155,7 +3155,8 @@ class Inline3D {
    * devicePixelRatio is invisible to ResizeObserver — a browser zoom or a move to a
    * different-scale monitor leaves the CSS box the same number of CSS px while the buffer
    * that box deserves changes. A `(resolution: Ndppx)` query flips exactly when dpr leaves
-   * its current value, so arm one, and re-arm it on the new value each time.
+   * its current value, so arm one, and re-arm it on the new value each time. Buffer-owning
+   * windows re-derive their buffer; scene windows get their onResize(box) (it compares dpr).
    */
   _armDprWatch() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -3169,7 +3170,13 @@ class Inline3D {
     const onChange = () => {
       if (!this._running) return;
       this._armDprWatch(); // this query is stale the moment it fires
-      for (const win of this._windows.values()) if (win.layer) this._onBoxChange(win);
+      // A scene window's buffer is the page's (ownsBuffer false, so _onBoxChange ignores it):
+      // its onResize(box) is the only way the page hears of a dpr-only change (web#267).
+      for (const win of this._windows.values()) {
+        if (!win.layer) continue;
+        if (win.kind === 'scene') this._onSceneResize(win);
+        else this._onBoxChange(win);
+      }
     };
     try {
       q.addEventListener('change', onChange);

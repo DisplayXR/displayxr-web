@@ -413,6 +413,10 @@ export class SceneViewer {
     this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(this._onResize) : null;
     if (this._ro) this._ro.observe(canvas);
     else addEventListener('resize', this._onResize);
+    // devicePixelRatio is invisible to ResizeObserver (a browser zoom, a drag to a monitor at a
+    // different scale): the box keeps its CSS size while the buffer it deserves changes (web#267).
+    this._dprWatch = null;
+    this._armDprWatch();
 
     if (orbit) this._bindOrbit();
     this._resize();
@@ -871,6 +875,7 @@ export class SceneViewer {
     this.stopMono();
     if (this._ro) this._ro.disconnect();
     else removeEventListener('resize', this._onResize);
+    this._disarmDprWatch();
     this._unbindOrbit();
     this.cursorDepth?.dispose();
     this.cursorDepth = null;
@@ -1003,6 +1008,44 @@ export class SceneViewer {
     }
     r.setScissorTest(false);
     return true;
+  }
+
+  /**
+   * A `(resolution: Ndppx)` query flips exactly when devicePixelRatio leaves its current value,
+   * so arm one and re-arm it on the new value each time it fires (the core does the same for
+   * its own windows, inline3d.js _armDprWatch). The resize itself is the coalesced one.
+   */
+  _armDprWatch() {
+    this._disarmDprWatch();
+    if (this._disposed) return;
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    let q;
+    try {
+      q = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    } catch {
+      return; // no resolution-query support: box changes are still covered
+    }
+    const onChange = () => {
+      if (this._disposed) return;
+      this._armDprWatch(); // this query is stale the moment it fires
+      this._scheduleResize();
+    };
+    try {
+      q.addEventListener('change', onChange);
+    } catch {
+      return;
+    }
+    this._dprWatch = { q, onChange };
+  }
+
+  _disarmDprWatch() {
+    if (!this._dprWatch) return;
+    try {
+      this._dprWatch.q.removeEventListener('change', this._dprWatch.onChange);
+    } catch {
+      /* ignore */
+    }
+    this._dprWatch = null;
   }
 
   /** One rAF per burst of observer callbacks. See the _onResize comment. */
