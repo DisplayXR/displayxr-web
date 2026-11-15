@@ -8,7 +8,7 @@
 # Secrets (never in this file):  npx wrangler secret put <NAME> --config signaling/deploy/displayxr.toml
 #   TURN_KEY_API_TOKEN   set        (TURN minting)
 #   ADMIN_TOKEN          optional   (/admin/* — usage, keys, meters)
-#   RATE_SALT            optional   (IP-hash salt for rate-limit state)
+#   RATE_SALT            set        (IP-hash salt for rate-limit state; set 2026-11-11, rotating it only resets the counters)
 #   CF_ANALYTICS_API_TOKEN + CF_ACCOUNT_ID   optional (hourly real TURN usage; else the estimate counts)
 # Health: GET https://signal.displayxr.org/  →  {"ok":true,"protocol":"dxr-signal/1","turn":"ok","keys":true,…}
 
