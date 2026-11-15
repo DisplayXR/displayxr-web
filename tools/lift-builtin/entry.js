@@ -6,8 +6,14 @@
 //
 //     __dxrLift.convertAt(x, y, 'image'|'video'|'canvas')   // x,y: visual-viewport CSS px
 //
-// It exposes exactly `globalThis.__dxrLift = { convertAt, cancelAll, setLiftState, status, version }`
-// (frozen).
+// It exposes exactly `globalThis.__dxrLift = { convertAt, cancelAll, setLiftState, status, version,
+// liveStills }` (frozen).
+//
+// LIVE STILLS. convertAt's 4th argument may carry `mode: 'live'` (browser patch 0459+): a picture
+// is then converted IN PLACE by the browser on the runtime's live stream, exactly like a video, and
+// gets the same chip (Explore / Exit) — instead of going straight to the explore view. Convert and
+// explore are separate: Explore on the chip is the explicit way into the splat view. `liveStills:
+// true` advertises the option, so a browser can tell this bundle from an older one that ignores it.
 // Everything else — the SDK, the PlayCanvas engine slice — lives in this IIFE's closure. (The real isolation is
 // Chromium's: isolated worlds share the DOM, never the JS heap, so page script cannot reach even
 // `__dxrLift`.)
@@ -118,10 +124,13 @@ const VERSION = typeof __DXR_LIFT_VERSION__ === 'string' ? __DXR_LIFT_VERSION__ 
     if (el.tagName === 'IMG' && !(el.complete && el.naturalWidth > 0)) return { ok: false, reason: 'image-not-loaded' };
     // The runtime converts <video> and <img>; nothing in this bundle converts a <canvas>.
     if (el.tagName === 'CANVAS') return { ok: false, reason: 'canvas-not-supported' };
-    return liftElement(el, await decide(hint));
+    // Only 'live' is taken from the browser: a still the browser converts in place (see LIVE
+    // STILLS above). Anything else keeps lift()'s defaults (video live, picture explore).
+    const mode = hint && typeof hint === 'object' && hint.mode === 'live' ? 'live' : undefined;
+    return liftElement(el, await decide(hint), mode);
   }
 
-  async function liftElement(el, caps) {
+  async function liftElement(el, caps, mode) {
     lastCaps = caps;
     // The runtime's converter takes the element — while it warms too. When it does not (`unavailable`:
     // no converter in the runtime), there is no in-page path: the element stays the page's own 2D.
@@ -138,7 +147,7 @@ const VERSION = typeof __DXR_LIFT_VERSION__ === 'string' ? __DXR_LIFT_VERSION__ 
       // ownLiftAttr: the built-in owns the element's lift state by definition — the browser's menu
       // (lift_trigger.cc) sets dxr-lift="auto" BEFORE this runs, and restoring that on Exit /
       // toggle-off left the element converting with no handle (a second Convert double-converted).
-      h = await lift(el, { ui: 'builtin', native: caps, ownLiftAttr: true });
+      h = await lift(el, { ui: 'builtin', native: caps, ownLiftAttr: true, ...(mode ? { mode } : {}) });
     } catch (e) {
       return { ok: false, reason: 'lift-failed: ' + ((e && e.message) || e) };
     }
@@ -175,6 +184,8 @@ const VERSION = typeof __DXR_LIFT_VERSION__ === 'string' ? __DXR_LIFT_VERSION__ 
 
   const api = {
     version: VERSION,
+    /** convertAt honours `hint.mode === 'live'` for a picture (in place + chip, not explore). */
+    liveStills: true,
     /**
      * Convert the media under (x, y) — visual-viewport CSS px — or turn it back if it is already
      * converted. Calls are serialised. Resolves {ok, reason?, action?}; never rejects.
