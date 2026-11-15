@@ -17,6 +17,20 @@ compares dpr) for scene windows. `SceneViewer` (`./viewer`, and the Spark `./spl
 `./model` paths built on it) had only a ResizeObserver; it now arms its own re-arming resolution
 query, released in `dispose()`. (web#267)
 
+### Fixed — `cameraRigFromCamera` honours `camera.zoom`; a non-perspective camera no longer sends NaN (`./three`)
+
+`cameraRigFromCamera` read `camera.fov` only, so a zoomed `PerspectiveCamera` sent the runtime a wider
+frustum than the one it renders, and an `OrthographicCamera` (no `.fov`) produced a NaN
+`verticalFov`. It now uses `getEffectiveFOV()` when `zoom` is not 1 (at zoom 1 the descriptor is
+bit-identical to before), and a camera with no perspective FOV logs one console warning and gets a
+50° stand-in (three's default) instead of NaN. (web#268)
+
+### Fixed — removing a window gives the canvas back its own inline `will-change` / `transform` (core)
+
+Every `add*()` promotes the canvas with inline `will-change: transform` and `transform:
+translateZ(0)`, and nothing put the page's own inline values back. `handle.remove()` and the session
+ending now restore them; a value the page has rewritten since is left alone. (web#268)
+
 ## 1.56.0 — 2026-11-13
 
 ### Added — `./player`: `firstWoven` and `rewoven()` on the player handle (preview tier)
