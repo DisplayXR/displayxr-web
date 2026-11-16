@@ -1523,7 +1523,7 @@ targets (the views' viewports follow the actual target size). A CameraFrame on a
 under motion (the per-eye reprojection) was checked by reading `taaResolve` and by the jitter moving
 per frame in `state()`, not on pixels; image quality under motion is the panel's call. Test switches
 (harness only): `pcCameraFrame: false` (unsplit, approach a), `pcTaaJitter: false`, `pcCanvasTrap: false`,
-`pcTaaEyeHistory: false` (2.24: eye 0 reads eye 1's TAA history).
+`pcTaaEyeHistory: false` (2.24: eye 0 reads eye 1's TAA history), `pcSbsDepth: false` (the after pass reads the eye-sized scene depth, as before v0.7.6).
 
 ## PlayCanvas engine versions (v0.7.4, v0.7.5)
 
@@ -1544,6 +1544,7 @@ runs EVERY PlayCanvas page on one engine).
 | 2.24 | no `taaPass` / `bloomPass` / `ssaoPass` members | TAA found as the pass with a history pair; bloom / SSAO / DOF from the active effects (diagnostics) |
 | 2.24 | volumetric fog (`CameraFrame.volumetricFog`, `RenderPassVolumetricFog` / `…Local`) marches from `camera._node` and `camera.projectionMatrix` ([0] / [5] only: a symmetric ray), which the eye passes never move: both eyes got the centre camera's fog, flat (device run of v0.7.4) | v0.7.5: while eye i of a split CameraFrame renders, those passes (found by shape: `invViewId` / `projScaleId` / `cameraPosId` / `cameraFwdId`) see the eye's camera: its world transform, projection and view matrix, with the eye's off-axis frustum shift folded into the inverse view as a shear of its z column, so the shader's `invView · (ndc · projScale, -1, 0)` is the eye's true ray. `fogPerEye` in `state().cameraFrame` counts the runs |
 | 2.21+ | MiniStats joins the UI layer as a mesh instance (`MiniStatsMesh`) and draws only on the FIRST render of that layer in a frame (`Render2d.onPreRenderLayer`'s `rendered` flag): split per eye it showed in the left eye only (device run of v0.7.4) | v0.7.5: on eye 1's render of that layer the adapter shows it again (`shaderPassMask`, the flag the engine itself uses), from the scene's `prerender:layer` (cases `pc-cf-stats`, `pc-cf-stats@2.24`, `-webgpu`). ≤ 2.20 draws it as an immediate mesh, in both eyes already |
+| 2.22+ | a CameraFrame that renders the **scene depth** (`sceneTextureDepth`: SSAO combine, TAA, DOF, fog on ≤ 2.23; any effect asking for `FRAMERESOURCE_DEPTH` on 2.24) publishes it as `uSceneDepthMap`, eye-sized under the split. A material in a layer after the post chain reads it at its own pixel, `uv = gl_FragCoord.xy * screen_size.zw` (the engine's `getLinearScreenDepth()`, a page's own `ShaderMaterial`), with `screen_size` the back buffer's (`renderer.setSceneConstants`, once a frame). In the eye's half of the side-by-side store eye 0 read the left half of its depth stretched, eye 1 the right half of its own: playcanvas.com/examples `demos/villa-sales` hides its roof outlines where the splats' depth is in front, and they showed in one eye only (device run of v0.7.5) | v0.7.6: just before each eye's after pass, its scene depth is copied into its half of a side-by-side depth texture (back-buffer layout, 2 × eye width; WebGL `copyTextureToTexture`, WebGPU a texture copy on the command encoder) and that is bound as `uSceneDepthMap`, only when the engine had published that eye's depth. `screen_size` stays the back buffer's (the eye passes' own `gl_FragCoord` runs over the eye target; setting it to the eye size there moved `camera-frame/dynamic-sky`'s water, which samples textures rendered once per frame, so it was left). `sbsDepth` in `state().cameraFrame` counts the copies (cases `pc-cf-depth`, `@2.24`, `-webgpu@2.24`; control `pc-cf-depth-ctl@2.24`). Headless on `demos/villa-sales` (fake eyes sharing one viewpoint, so right must equal left shifted 64 px): 8,612 px differing → 0 on WebGL2, 8,629 → 0 on WebGPU |
 | 2.23+ | the splat footprint uses a per-axis focal (`J1.x` / `J1.y`) | counted as `footprint.native`, not patched (the 2.22 patch is still applied on 2.22) |
 | ≤ 2.19 | no `Camera.xrViews` (an accessor on `Camera` from 2.20): XR views are drawn only from the engine's own `XrManager` session | left 2D, with the reason `this PlayCanvas engine has no Camera.xrViews` |
 | 2.17 | the AppBase constructor sets neither `tick` nor `graphicsDevice` (both come from `init()`), so the constructor trap's app test failed | an app is also an object with `on` / `fire` / `systems` / `init` / `start` (sentinel and adapter) |
@@ -1565,6 +1566,8 @@ runs EVERY PlayCanvas page on one engine).
   extension) once it earns it.
 
 ## Verified, and what is not
+
+**v0.7.6 (after a device run of v0.7.5):** `demos/villa-sales` showed some roof outlines in one eye only. Not a shared depth: each eye's after pass did read its own eye's scene depth, but at the wrong place (engine table, scene depth row). Reproduced headless: with the fake's eyes on one viewpoint (right = left shifted 0.1 × eye width), 8,612 px of the pair differed (WebGL2; 8,629 on WebGPU), 1,539 neon px in the left eye only and 581 in the right only; after the fix 0 and 0, the halves identical at the shift. A layer after the post chain that sizes a line in pixels from `screen_size` (`clipPosition` maths: the engine's wide lines, pixel snap) still sees the back buffer's width over an eye's half there, as on the engine's own XR path; not changed.
 
 **Device run of v0.7.4 (DisplayXR Browser on a desktop panel), and v0.7.5:** 23 examples checked by hand,
 18 PASS, 2 partial, 3 fail; superspl.at (2.23, WebGPU, the CameraFrame path) PASS. Fixed in v0.7.5:
@@ -1592,7 +1595,7 @@ Open after the device run (not fixed here):
   sampled in screen space by both eyes, so they sit at screen depth: flat. The same holds for the planar
   floor reflection in `demos/car-showcase` (`PlanarRenderer`). A fix renders the reflection camera per eye
   and swaps the texture per eye; that touches the page's own scripts' materials, so it is not attempted.
-- `demos/villa-sales` measured nearly flat on the panel (−1 to +2 px). **Not reproduced headless:** on WebGL2
+- `demos/villa-sales` measured nearly flat on the panel (−1 to +2 px) (its outlines in one eye only: fixed in v0.7.6, above). **Not reproduced headless:** on WebGL2
   and on WebGPU (its unified gsplat on the hybrid compute path) the viewpoint probe gives strongly different
   halves (splats and meshes both move), and the rig sent is a camera rig converged on the CameraControls
   focus point (80.7 units, `metersToVirtual` 80.7). The panel's `__dxrAuto3D.state()` (convergence, rig,

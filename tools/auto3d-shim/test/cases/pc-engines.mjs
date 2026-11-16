@@ -65,6 +65,50 @@ export default function cases(env) {
         t('no page error', !r.log.some((l) => /pageerror|\[error\]/.test(l)), r.log.filter((l) => /pageerror|\[error\]/.test(l)).slice(0, 2).join(' | ') || 'none');
       },
     })),
+    // The scene depth read AFTER the post chain (v0.7.6): a layer pushed after the camera's layers reads
+    // uSceneDepthMap at its own pixel (uv = gl_FragCoord * screen_size.zw), as playcanvas.com/examples
+    // demos/villa-sales draws its outlines. Split per eye the depth is eye-sized while the after pass
+    // draws into the eye's half of the side-by-side store, so before v0.7.6 eye 0 read the left half of
+    // its depth stretched and eye 1 the right half of its own: the panel's hole (where the post is in
+    // front) differed per eye. Oracle: the right eye equals the left shifted by the fake's 0.1 x eyeW
+    // (the fake's eyes share one viewpoint), magenta pixels and all. 2.23: the pair of chains (scene
+    // depth from SSAO combine); 2.24: one chain run per eye (CameraFrameEffect asking for the depth).
+    // ctl: pcSbsDepth false, v0.7.5's behaviour, the eyes disagree.
+    ...[['', '', 'webgl2', {}], ['', '/pc-2.24', 'webgl2', {}], ['', '/pc-2.24', 'webgpu', {}], ['-ctl', '/pc-2.24', 'webgl2', { pcSbsDepth: false }]].map(([k, pre, gpu, cfg]) => ({
+      id: `pc-cf-depth${k}${gpu === 'webgpu' ? '-webgpu' : ''}${pre ? '@' + pre.slice(4) : ''}`,
+      name: `[PlayCanvas ${pre ? pre.slice(4) : '2.23'}] ${k ? 'control: the after-pass scene-depth read without the side-by-side depth: the eyes disagree'
+        : `scene depth read after the post chain (${gpu}): the same hole in both eyes`}`,
+      webgpu: gpu === 'webgpu', url: `${pre}${env.P}pc-cf-depth.html?gpu=${gpu}`, shim: env.NEW, cfg,
+      async run(page, h) {
+        await page.waitForFunction(`(() => { const s = window.__dxrAuto3D && window.__dxrAuto3D.state(); const r = s && s.renderers.find((x) => x.active);
+          return !!(r && r.stats.twoView > 90 && r.rampK === 1 && !r.ramping && window.__frozen); })()`, { timeout: 60000, polling: 200 });
+        await h.sleep(300);
+        const g = await page.evaluate(() => window.__grabFrame());
+        const R = await page.evaluate(() => JSON.parse(JSON.stringify(window.__dxrAuto3D.state().renderers.find((x) => x.active))));
+        return { R, via: await page.evaluate(() => window.__depthVia), g: { w: g.w, h: g.h, px: Buffer.from(g.b64, 'base64') }, pixels: { png: g.png } };
+      },
+      check(r, t, h) {
+        if (r.error) { t('ran', false, r.error); return; }
+        const { R, g } = r, cf = R.cameraFrame;
+        t(`CameraFrame split with a scene depth (${r.via}), device ${gpu}`, !!cf && cf.eyes.every((e) => e.sceneDepth) && R.device === gpu,
+          JSON.stringify(cf && { mode: cf.mode, sceneDepth: cf.eyes.map((e) => e.sceneDepth), sbsDepth: cf.sbsDepth, device: R.device }));
+        if (!k) t('the after pass read a side-by-side scene depth, twice a frame', cf.sbsDepth >= 2 * Math.min(cf.frames, 60), `sbsDepth ${cf.sbsDepth}, split frames ${cf.frames}`);
+        const ew = g.w / 2, want = Math.round(0.1 * ew), px = g.px;
+        const mag = (i) => px[i] > 200 && px[i + 1] < 60 && px[i + 2] > 200;
+        let m0 = 0, m1 = 0, bad = 0, n = 0;
+        for (let y = 0; y < g.h; y++) for (let x = 0; x < ew - want; x++) {
+          const a = (y * g.w + x) * 4, b = (y * g.w + ew + x + want) * 4;
+          const ma = mag(a), mb = mag(b);
+          if (ma) m0++; if (mb) m1++;
+          if (ma !== mb || Math.abs(h.lum(px, a) - h.lum(px, b)) > 40) bad++; n++;
+        }
+        t('the panel is drawn, with a hole where the post is in front (each eye)', m0 > 2000 && m1 > 2000, `magenta px: eye 0 ${m0}, eye 1 ${m1}`);
+        if (k) t('eye 0 and eye 1 disagree (> 1000 px differ at the shift)', bad > 1000, `${bad} of ${n} px differ (magenta in one eye only, or > 40 luma) at ${want} px`);
+        else t('the eyes agree: right = left shifted (< 0.1 % of px differ, magenta counts within 1 %)', bad < 0.001 * n && Math.abs(m0 - m1) <= 0.01 * Math.max(m0, m1),
+          `${bad} of ${n} px differ (magenta in one eye only, or > 40 luma) at ${want} px; magenta ${m0} / ${m1}`);
+        t('no page error', !r.log.some((l) => /pageerror|\[error\]/.test(l)), r.log.filter((l) => /pageerror|\[error\]/.test(l)).slice(0, 2).join(' | ') || 'none');
+      },
+    })),
     // Screen-space UI only: nothing has depth, left 2D with the reason (on 2.22.3, the default engine,
     // and on 2.24, the examples'); the same page once it adds a 3D box converts.
     ...['', '/pc-2.24'].map((pre) => ({

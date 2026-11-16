@@ -611,7 +611,7 @@ function dxrPlayCanvas(core) {
     });
     const mark = (name, fn) => { const m = new FP(dev); m.name = name; m.execute = fn; return m; };
     C.mS = [0, 1].map((i) => mark(`DxrEye${i}Scene`, () => eyeScene(st, i)));
-    C.mA = [0, 1].map((i) => mark(`DxrEye${i}After`, () => eyeAfter(st)));
+    C.mA = [0, 1].map((i) => mark(`DxrEye${i}After`, () => eyeAfter(st, i)));
     C.mEnd = mark('DxrEyeEnd', () => eyeEnd(st));
     // Effect-based CameraFrame (2.24+: CameraFrameEffect objects own their passes and uniforms, one set
     // per effect): a second FramePassCameraFrame would take every effect's passes over from A, so A's
@@ -714,6 +714,8 @@ function dxrPlayCanvas(core) {
       sp.sceneDepthMapLinear = true; sp.sceneDepthMapPacked = false; sp.sceneDepthMapReciprocal = true;
     }
     if (C.shared) sharedEyeRestore(C);
+    if (C.sbsDepth) { try { C.sbsDepth.tex.destroy(); } catch (e) { /* ignore */ } C.sbsDepth = null; }
+    if (C.depthSrc) { for (const rt of C.depthSrc.values()) { try { rt.destroy(); } catch (e) { /* ignore */ } } C.depthSrc = null; }
     if (C.taaEye0) { try { C.taaEye0.rt.destroyTextureBuffers(); C.taaEye0.rt.destroy(); } catch (e) { /* ignore */ } C.taaEye0 = null; }
     try { dev.xrCurrentViewIndex = C.saved.idx; } catch (e) { /* ignore */ }
     if (sc) {
@@ -824,9 +826,13 @@ function dxrPlayCanvas(core) {
       for (let k = 0; k < 4; k++) sc._jitters[k] = C.jit[k];
     }
   }
-  function eyeAfter(st) {
-    const R = st.R;
+  function eyeAfter(st, i) {
+    const R = st.R, C = st.cf;
     if (st.views && R) for (let k = 0; k < 2; k++) st.views[k].setViewport(k * R.eyeW, 0, R.eyeW, R.eyeH);
+    if (!C) return;
+    // One chain run per eye: its ONE compose pass carries eye 0's marker for both runs; the eye is the
+    // view index eyeScene set.
+    sbsSceneDepth(st, C, C.shared ? st.dev.xrCurrentViewIndex : i);
   }
   function eyeEnd(st) {
     const C = st.cf;
@@ -947,6 +953,63 @@ function dxrPlayCanvas(core) {
     const H = C.taaEye0, taa = H && H.saved && taaOf(C.A);
     if (taa) { taa.historyTextures[H.slot] = H.saved; H.saved = null; }
   }
+  // ---- the scene depth, side by side, for the after pass (v0.7.6)
+  // A material in a layer after the post chain that reads the scene depth at its own pixel does
+  // `uv = gl_FragCoord.xy * screen_size.zw; texel = uv * textureSize(uSceneDepthMap)` (the engine's
+  // getLinearScreenDepth(), a page's own ShaderMaterial). screen_size is the back buffer's
+  // (renderer.js setSceneConstants, once a frame), and in mono so is the scene depth. Split per eye,
+  // the after pass draws into the eye's half of the SBS back buffer but the depth the eye's scene pass
+  // published is EYE-sized: eye 0 read the left half of its depth stretched twice as wide, eye 1 the
+  // right half of its own. A depth-tested overlay (playcanvas.com/examples demos/villa-sales: outlines
+  // hidden where the splats' depth is in front) then differed per eye: outlines in one eye only. So the
+  // after pass gets a side-by-side depth in the back buffer's layout (what the engine's own XR path
+  // publishes: one depth for the whole SBS target), each eye's depth copied into its half just before
+  // the eye's after pass, and only when the engine had published that eye's depth (the uniform's
+  // value). The other eye's half is left as it is: eye i's after pass draws in its own half.
+  // (screen_size is left alone: set to the eye size in the eye passes it moved
+  // camera-frame/dynamic-sky's water, which samples textures rendered once per frame.)
+  function sbsSceneDepth(st, C, i) {
+    if (core.T.pcSbsDepth === false || (i !== 0 && i !== 1)) return; // false: TEST ONLY (A/B)
+    const P = i && !C.shared ? C.B : C.A, tex = P && P.sceneDepthTexture, dev = st.dev;
+    if (!tex || !dev.scope) return;
+    const id = dev.scope.resolve('uSceneDepthMap');
+    if (id.value !== tex) return; // not what the engine published for this eye
+    const w = tex.width, h = tex.height;
+    let D = C.sbsDepth;
+    try {
+      if (!D || D.tex.format !== tex.format) {
+        if (D) D.tex.destroy();
+        D = C.sbsDepth = { tex: new tex.constructor(dev, { name: 'DxrSceneDepthSbs', width: 2 * w, height: h, format: tex.format, mipmaps: false,
+          minFilter: tex.minFilter, magFilter: tex.magFilter, addressU: tex.addressU, addressV: tex.addressV }) };
+      } else if (D.tex.width !== 2 * w || D.tex.height !== h) D.tex.resize(2 * w, h);
+      if (!copyIntoHalf(st, C, tex, D.tex, i * w)) return;
+    } catch (e) { warnOnce('pc-sbs-depth', 'could not lay the scene depth side by side (after-pass depth reads stay per-eye-sized)', e); return; }
+    id.setValue(D.tex);
+    C.sbsDepthRuns = (C.sbsDepthRuns || 0) + 1;
+  }
+  // tex -> dst at (x, 0), the whole of tex. WebGL: the device's copyTextureToTexture (copyTexSubImage2D
+  // from a framebuffer over tex; one cached per source texture). WebGPU: a texture-to-texture copy on
+  // the device's command encoder, between render passes (the markers run there).
+  function copyIntoHalf(st, C, tex, dst, x) {
+    const dev = st.dev;
+    if (dev.isWebGPU) {
+      const enc = typeof dev.getCommandEncoder === 'function' ? dev.getCommandEncoder() : dev.commandEncoder;
+      const s = tex.impl && tex.impl.gpuTexture, d = dst.impl && dst.impl.gpuTexture;
+      if (!enc || !s || !d) return false;
+      enc.copyTextureToTexture({ texture: s }, { texture: d, origin: [x, 0, 0] }, { width: tex.width, height: tex.height, depthOrArrayLayers: 1 });
+      return true;
+    }
+    if (typeof dev.copyTextureToTexture !== 'function') return false;
+    const src = C.depthSrc || (C.depthSrc = new Map());
+    let rt = src.get(tex);
+    if (!rt) {
+      const K = (C.A.rt && C.A.rt.constructor) || null;
+      if (!K) return false;
+      for (const [t, r] of src) { if (t !== C.A.sceneDepthTexture && !(C.B && t === C.B.sceneDepthTexture)) { try { r.destroy(); } catch (e) { /* ignore */ } src.delete(t); } }
+      src.set(tex, (rt = new K({ name: 'DxrSceneDepthSrc', colorBuffer: tex, depth: false })));
+    }
+    return dev.copyTextureToTexture(tex, dst, { destX: x, destY: 0, sourceRenderTarget: rt }) !== false;
+  }
   function describeCameraFrame(st) {
     const C = st.cf;
     if (!C) return null;
@@ -957,7 +1020,7 @@ function dxrPlayCanvas(core) {
     };
     // One chain run per eye: what each run applied (recorded by the markers).
     const eye = (i) => { const o = one(C.A); if (o && o.compose && C.seen[i]) o.compose = { ...C.seen[i] }; return o; };
-    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2), fogPerEye: C.fogRuns || 0 };
+    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2), fogPerEye: C.fogRuns || 0, sbsDepth: C.sbsDepthRuns || 0 };
   }
 
   // ------------------------------------------------------------ pages that size the canvas themselves
