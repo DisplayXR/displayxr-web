@@ -1,0 +1,149 @@
+<!doctype html>
+<!-- TEST PAGE — PlayCanvas 2.23 / 2.24 (ESM, no globals): a CameraFrame that publishes the scene depth,
+     and a layer AFTER the post chain whose material reads it at its own pixel, the way
+     playcanvas.com/examples demos/villa-sales draws its outlines (a ShaderMaterial in a layer pushed
+     after the camera's layers: uv = gl_FragCoord.xy * screen_size.zw; texelFetch(uSceneDepthMap,
+     ivec2(uv * textureSize)); discard where the scene is in front). A grey wall behind, an orange
+     post in front of the left part of a magenta panel; the panel is hidden where the post is in front
+     of it. Not left-right symmetric, so a depth read from the wrong place moves the hole.
+     The camera sits 8 units in front of the panel: expected convergence 8. Render on demand after 60
+     frames (window.__frozen).
+       ?gpu=webgpu   a WebGPU device (createGraphicsDevice), else WebGL2
+     The scene depth: 2.24's CameraFrameEffect asking for FRAMERESOURCE_DEPTH (the example's own way);
+     before 2.24, SSAO in combine mode (any post effect that needs depth renders it).
+     Hooks: window.__grabFrame() (read in the drawing task), __deviceType, __depthVia. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas CameraFrame scene depth (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas-2.23/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="cf-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const q = new URLSearchParams(location.search);
+const canvas = document.getElementById('cf-canvas');
+const device = await pc.createGraphicsDevice(canvas, { deviceTypes: [q.get('gpu') === 'webgpu' ? 'webgpu' : 'webgl2'], antialias: false });
+window.__deviceType = device.deviceType;
+const opts = new pc.AppOptions();
+opts.graphicsDevice = device;
+opts.componentSystems = [pc.CameraComponentSystem, pc.RenderComponentSystem, pc.LightComponentSystem];
+opts.resourceHandlers = [];
+const app = new pc.AppBase(canvas);
+app.init(opts);
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+window.__expectedConvergence = 8;
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.1, 0.1, 0.12), fov: 40, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+camera.lookAt(0, 1, 0);
+app.root.addChild(camera);
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.2 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+app.scene.ambientLight = new pc.Color(0.4, 0.4, 0.4);
+
+const mat = (r, g, b) => { const m = new pc.StandardMaterial(); m.diffuse = new pc.Color(r, g, b); m.update(); return m; };
+const add = (type, m, x, y, z, sx, sy, sz) => { const e = new pc.Entity(type); e.addComponent('render', { type, material: m }); e.setLocalPosition(x, y, z); e.setLocalScale(sx, sy, sz); app.root.addChild(e); return e; };
+add('box', mat(0.45, 0.45, 0.45), 0, 1, -2, 7, 4, 0.2);       // the wall behind
+add('box', mat(0.9, 0.45, 0.1), -0.9, 1.1, 1.5, 0.5, 1.6, 0.5); // the post in front of the panel's left part
+add('box', mat(0.2, 0.6, 0.3), 1.6, 0.2, 2.5, 0.4, 0.4, 0.4);   // a small block lower right, in front too
+
+const cf = new pc.CameraFrame(app, camera.camera);
+cf.rendering.toneMapping = pc.TONEMAP_LINEAR;
+if (pc.CameraFrameEffect && pc.FRAMERESOURCE_DEPTH && typeof cf.addEffect === 'function') {
+  cf.addEffect(new pc.CameraFrameEffect(device, 'sceneDepth', { requires: [pc.FRAMERESOURCE_DEPTH] }));
+  window.__depthVia = 'effect';
+} else {
+  cf.ssao.type = pc.SSAOTYPE_COMBINE; cf.ssao.radius = 1; cf.ssao.intensity = 0.001;
+  window.__depthVia = 'ssao';
+}
+cf.update();
+window.__cf = cf;
+
+// The panel: magenta, in a layer after everything else, hidden where the scene depth is in front.
+const overlay = new pc.ShaderMaterial({
+  uniqueName: 'DxrTestDepthOverlay',
+  attributes: { aPosition: pc.SEMANTIC_POSITION },
+  vertexGLSL: /* glsl */ `
+    attribute vec4 aPosition;
+    uniform mat4 matrix_model;
+    uniform mat4 matrix_view;
+    uniform mat4 matrix_viewProjection;
+    varying float vViewZ;
+    void main() {
+      vec4 world = matrix_model * aPosition;
+      vViewZ = -(matrix_view * world).z;
+      gl_Position = matrix_viewProjection * world;
+    }`,
+  fragmentGLSL: /* glsl */ `
+    uniform highp sampler2D uSceneDepthMap;
+    uniform vec4 screen_size;
+    varying float vViewZ;
+    void main() {
+      vec2 uv = gl_FragCoord.xy * screen_size.zw;
+      float recip = texelFetch(uSceneDepthMap, ivec2(uv * vec2(textureSize(uSceneDepthMap, 0))), 0).r;
+      if (recip > 0.0 && vViewZ > 1.0 / recip + 0.05) discard;
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
+    }`,
+  vertexWGSL: /* wgsl */ `
+    attribute aPosition: vec4f;
+    uniform matrix_model: mat4x4f;
+    uniform matrix_view: mat4x4f;
+    uniform matrix_viewProjection: mat4x4f;
+    varying vViewZ: f32;
+    @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
+      var output: VertexOutput;
+      let world = uniform.matrix_model * input.aPosition;
+      output.vViewZ = -(uniform.matrix_view * world).z;
+      output.position = uniform.matrix_viewProjection * world;
+      return output;
+    }`,
+  fragmentWGSL: /* wgsl */ `
+    var uSceneDepthMap: texture_2d<uff>;
+    uniform screen_size: vec4f;
+    varying vViewZ: f32;
+    @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+      var output: FragmentOutput;
+      let uv = pcPosition.xy * uniform.screen_size.zw;
+      let dims = vec2f(textureDimensions(uSceneDepthMap, 0));
+      let recip = textureLoad(uSceneDepthMap, vec2i(uv * dims), 0).r;
+      if (recip > 0.0 && input.vViewZ > 1.0 / recip + 0.05) { discard; }
+      output.color = vec4f(1.0, 0.0, 1.0, 1.0);
+      return output;
+    }`,
+});
+overlay.depthWrite = false;
+overlay.update();
+const layer = new pc.Layer({ name: 'AfterPost' });
+app.scene.layers.push(layer);
+camera.camera.layers = [...camera.camera.layers, layer.id];
+const panel = new pc.Entity('panel');
+panel.addComponent('render', { type: 'plane', material: overlay, layers: [layer.id] });
+panel.setLocalPosition(0, 1, 0);
+panel.setLocalEulerAngles(90, 0, 0); // the plane faces +Y: turned to face the camera
+panel.setLocalScale(4, 1, 2);
+app.root.addChild(panel);
+
+let n = 0;
+app.on('update', () => { if (n >= 60) { app.autoRender = false; window.__frozen = true; return; } n++; window.__pageFrames = n; });
+
+const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
+const CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+window.__grabFrame = () => new Promise((res) => {
+  app.once('postrender', () => {
+    if (app.graphicsDevice.isWebGPU) app.graphicsDevice.submit();
+    const w = CW.get.call(canvas), h = CH.get.call(canvas);
+    const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+    const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+    const d = g.getImageData(0, 0, w, h).data;
+    let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
+    res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+  });
+  app.renderNextFrame = true;
+});
+app.start();
+</script>
+</body></html>
