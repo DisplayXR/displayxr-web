@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.7.5 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.6 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.5'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.6'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -3300,7 +3300,7 @@ function dxrPlayCanvas(core) {
     });
     const mark = (name, fn) => { const m = new FP(dev); m.name = name; m.execute = fn; return m; };
     C.mS = [0, 1].map((i) => mark(`DxrEye${i}Scene`, () => eyeScene(st, i)));
-    C.mA = [0, 1].map((i) => mark(`DxrEye${i}After`, () => eyeAfter(st)));
+    C.mA = [0, 1].map((i) => mark(`DxrEye${i}After`, () => eyeAfter(st, i)));
     C.mEnd = mark('DxrEyeEnd', () => eyeEnd(st));
     C.shared = sharedEffects(A);
     hookPass(st, A, 0);
@@ -3391,6 +3391,8 @@ function dxrPlayCanvas(core) {
       sp.sceneDepthMapLinear = true; sp.sceneDepthMapPacked = false; sp.sceneDepthMapReciprocal = true;
     }
     if (C.shared) sharedEyeRestore(C);
+    if (C.sbsDepth) { try { C.sbsDepth.tex.destroy(); } catch (e) { /* ignore */ } C.sbsDepth = null; }
+    if (C.depthSrc) { for (const rt of C.depthSrc.values()) { try { rt.destroy(); } catch (e) { /* ignore */ } } C.depthSrc = null; }
     if (C.taaEye0) { try { C.taaEye0.rt.destroyTextureBuffers(); C.taaEye0.rt.destroy(); } catch (e) { /* ignore */ } C.taaEye0 = null; }
     try { dev.xrCurrentViewIndex = C.saved.idx; } catch (e) { /* ignore */ }
     if (sc) {
@@ -3484,9 +3486,11 @@ function dxrPlayCanvas(core) {
       for (let k = 0; k < 4; k++) sc._jitters[k] = C.jit[k];
     }
   }
-  function eyeAfter(st) {
-    const R = st.R;
+  function eyeAfter(st, i) {
+    const R = st.R, C = st.cf;
     if (st.views && R) for (let k = 0; k < 2; k++) st.views[k].setViewport(k * R.eyeW, 0, R.eyeW, R.eyeH);
+    if (!C) return;
+    sbsSceneDepth(st, C, C.shared ? st.dev.xrCurrentViewIndex : i);
   }
   function eyeEnd(st) {
     const C = st.cf;
@@ -3589,6 +3593,45 @@ function dxrPlayCanvas(core) {
     const H = C.taaEye0, taa = H && H.saved && taaOf(C.A);
     if (taa) { taa.historyTextures[H.slot] = H.saved; H.saved = null; }
   }
+  function sbsSceneDepth(st, C, i) {
+    if (core.T.pcSbsDepth === false || (i !== 0 && i !== 1)) return; // false: TEST ONLY (A/B)
+    const P = i && !C.shared ? C.B : C.A, tex = P && P.sceneDepthTexture, dev = st.dev;
+    if (!tex || !dev.scope) return;
+    const id = dev.scope.resolve('uSceneDepthMap');
+    if (id.value !== tex) return; // not what the engine published for this eye
+    const w = tex.width, h = tex.height;
+    let D = C.sbsDepth;
+    try {
+      if (!D || D.tex.format !== tex.format) {
+        if (D) D.tex.destroy();
+        D = C.sbsDepth = { tex: new tex.constructor(dev, { name: 'DxrSceneDepthSbs', width: 2 * w, height: h, format: tex.format, mipmaps: false,
+          minFilter: tex.minFilter, magFilter: tex.magFilter, addressU: tex.addressU, addressV: tex.addressV }) };
+      } else if (D.tex.width !== 2 * w || D.tex.height !== h) D.tex.resize(2 * w, h);
+      if (!copyIntoHalf(st, C, tex, D.tex, i * w)) return;
+    } catch (e) { warnOnce('pc-sbs-depth', 'could not lay the scene depth side by side (after-pass depth reads stay per-eye-sized)', e); return; }
+    id.setValue(D.tex);
+    C.sbsDepthRuns = (C.sbsDepthRuns || 0) + 1;
+  }
+  function copyIntoHalf(st, C, tex, dst, x) {
+    const dev = st.dev;
+    if (dev.isWebGPU) {
+      const enc = typeof dev.getCommandEncoder === 'function' ? dev.getCommandEncoder() : dev.commandEncoder;
+      const s = tex.impl && tex.impl.gpuTexture, d = dst.impl && dst.impl.gpuTexture;
+      if (!enc || !s || !d) return false;
+      enc.copyTextureToTexture({ texture: s }, { texture: d, origin: [x, 0, 0] }, { width: tex.width, height: tex.height, depthOrArrayLayers: 1 });
+      return true;
+    }
+    if (typeof dev.copyTextureToTexture !== 'function') return false;
+    const src = C.depthSrc || (C.depthSrc = new Map());
+    let rt = src.get(tex);
+    if (!rt) {
+      const K = (C.A.rt && C.A.rt.constructor) || null;
+      if (!K) return false;
+      for (const [t, r] of src) { if (t !== C.A.sceneDepthTexture && !(C.B && t === C.B.sceneDepthTexture)) { try { r.destroy(); } catch (e) { /* ignore */ } src.delete(t); } }
+      src.set(tex, (rt = new K({ name: 'DxrSceneDepthSrc', colorBuffer: tex, depth: false })));
+    }
+    return dev.copyTextureToTexture(tex, dst, { destX: x, destY: 0, sourceRenderTarget: rt }) !== false;
+  }
   function describeCameraFrame(st) {
     const C = st.cf;
     if (!C) return null;
@@ -3598,7 +3641,7 @@ function dxrPlayCanvas(core) {
       compose: P.composePass ? { vp: P.composePass.viewport ? { ...P.composePass.viewport } : null, clears: !!(P.composePass.colorArrayOps && P.composePass.colorArrayOps[0] && P.composePass.colorArrayOps[0].clear) } : null,
     };
     const eye = (i) => { const o = one(C.A); if (o && o.compose && C.seen[i]) o.compose = { ...C.seen[i] }; return o; };
-    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2), fogPerEye: C.fogRuns || 0 };
+    return { mode: C.shared ? 'shared' : 'pair', eyes: C.shared ? [eye(0), eye(1)] : [one(C.A), one(C.B)], frames: C.frames, jitter: C.jit.slice(0, 2), fogPerEye: C.fogRuns || 0, sbsDepth: C.sbsDepthRuns || 0 };
   }
 
   function trapCanvasSize(st) {
