@@ -24,6 +24,24 @@ From the marketplace in this repo:
 /plugin install displayxr-inline3d@displayxr
 ```
 
+## Generator API keys (optional)
+
+Only the asset skill's optional generation step needs keys. Everything else works without them.
+`gen.mjs` reads each key from the environment of the shell Claude Code runs commands in, and from
+nowhere else:
+
+| Adapter | Variable | Makes |
+|---|---|---|
+| `meshy` | `MESHY_API_KEY` | text/image → GLB model |
+| `tripo` | `TRIPO_API_KEY` | text/image → GLB model |
+| `openai` | `OPENAI_API_KEY` | images (textures, posters, backdrops); model via `OPENAI_IMAGE_MODEL`, default `gpt-image-2.5-flare` |
+
+Set the ones you have **before starting Claude Code**, either in your shell profile
+(`export MESHY_API_KEY=…` in `~/.zshrc` / `~/.bashrc`) or in the `env` block of
+`~/.claude/settings.json`. Don't paste a key into the chat; the skill never asks for one, prints one
+or writes one to a file. `node <plugin>/assets/bin/gen.mjs providers` lists which adapters see a key
+(names only). Every call is paid, and the skill asks before each one.
+
 ## The checker
 
 ```sh
