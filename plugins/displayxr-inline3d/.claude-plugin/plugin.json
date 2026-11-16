@@ -1,6 +1,7 @@
 {
   "name": "displayxr-inline3d",
-  "version": "0.1.2",
+  "displayName": "DisplayXR Inline 3D",
+  "version": "0.1.3",
   "description": "Build glasses-free 3D web pages on @displayxr/inline3d: authoring skill, page scaffold, and a headless checker that renders the page in a fake DisplayXR Browser (two real eye views) and in plain 2D, and reports pass/fail per rule.",
   "author": {
     "name": "DisplayXR",
@@ -9,5 +10,8 @@
   "homepage": "https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d",
   "repository": "https://github.com/DisplayXR/displayxr-web",
   "license": "Apache-2.0",
-  "keywords": ["displayxr", "inline-3d", "glasses-free-3d", "webxr", "three", "playcanvas", "stereo"]
+  "keywords": ["displayxr", "inline-3d", "glasses-free-3d", "3d-display", "webxr", "three", "playcanvas", "stereo", "gltf"],
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://github.com/DisplayXR/displayxr-web/blob/main/plugins/displayxr-inline3d/README.md",
+  "supportUrl": "https://github.com/DisplayXR/displayxr-web/issues"
 }

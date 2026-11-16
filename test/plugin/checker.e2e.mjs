@@ -1,7 +1,10 @@
 // End-to-end tests for inline3d-check: every check must PASS on the repo's samples and on the good
 // fixture, and FAIL (or WARN, where the check is warn-level) on the fixture page that breaks it.
 //
-//   node --test --test-concurrency=1 plugins/displayxr-inline3d/checker/test/checker.e2e.mjs
+//   npm run test:plugin:e2e   (node --test --test-concurrency=1 test/plugin/checker.e2e.mjs)
+//
+// It lives outside the plugin folder on purpose: it reads the repo's samples, and the plugin folder
+// (what users install, and what the plugin directory scans) must not reach above itself.
 //
 // Needs Chrome (CHROME env, else the default install path). The samples load three.js / PlayCanvas
 // from a CDN, so those cases need the network; the fixture cases do not.
@@ -9,10 +12,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { runCheck } from '../lib/run.mjs';
-import { findChrome } from '../lib/cdp.mjs';
+import { runCheck } from '../../plugins/displayxr-inline3d/checker/lib/run.mjs';
+import { findChrome } from '../../plugins/displayxr-inline3d/checker/lib/cdp.mjs';
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURE = 'plugins/displayxr-inline3d/checker/test/fixtures/scene.html';
 const skip = findChrome() ? false : 'Chrome not found (set CHROME)';
 const byId = (r, id) => r.checks.find((c) => c.id === id);
