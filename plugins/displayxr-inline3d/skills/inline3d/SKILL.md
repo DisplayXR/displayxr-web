@@ -90,7 +90,9 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 - [ ] **Never draw one full-width flat picture into a woven canvas.** To show 2D on purpose, call
       `wall.setStereoEnabled(false)` (fall back to easing `ipdFactor` to 0 on `NotSupportedError`).
 - [ ] **2D fallback**: on `!wall.supported` render one mono view or show an `<img>` (the left eye),
-      never the packed side-by-side pair.
+      never the packed side-by-side pair. `createInline3D()` can also **reject**. Guard it with
+      `await createInline3D().catch(() => null)` (or `try`/`catch`) and treat `null` like
+      `!wall.supported`. An uncaught rejection leaves the page with no 3D and no 2D fallback.
 
 ## 5. Page chrome, HUD and detection
 
