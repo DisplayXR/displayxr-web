@@ -88,7 +88,7 @@ const ADAPTERS = {
     estimate: () => 'a few US cents to ~US$0.25 per image depending on size/quality; check the provider\'s current pricing',
     terms: 'OpenAI usage policies: you own generated images subject to their terms',
     async run({ prompt }, key) {
-      const r = await http('https://api.openai.com/v1/images/generations', { method: 'POST', body: JSON.stringify({ model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1', prompt, size: opt('size', '1024x1024') }) }, key);
+      const r = await http('https://api.openai.com/v1/images/generations', { method: 'POST', body: JSON.stringify({ model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2.5-flare', prompt, size: opt('size', '1024x1024') }) }, key);
       const d = r.data[0];
       return d.b64_json ? Buffer.from(d.b64_json, 'base64') : download(d.url);
     },
