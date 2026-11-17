@@ -183,12 +183,13 @@ function syncCodex(check, stale) {
 
 export function sync({ check = false } = {}) {
   const stale = [];
-  syncCodex(check, stale);
+  // Pins first: the Codex plugin copies the Claude plugin's skills, so it must see them rewritten.
   for (const f of [...walk(PLUGIN), ...(existsSync(join(CODEX, 'README.md')) ? [join(CODEX, 'README.md')] : []), join(PKG_DIR, 'README.md')]) {
     const s = readFileSync(f, 'utf8');
     const t = s.replace(PIN_RE, PIN);
     if (t !== s) { stale.push(`${relative(REPO, f)}: pin is not ${PIN}`); if (!check) writeFileSync(f, t); }
   }
+  syncCodex(check, stale);
   const agentsPath = join(PKG_DIR, 'AGENTS.md');
   const want = buildAgents();
   let have = '';

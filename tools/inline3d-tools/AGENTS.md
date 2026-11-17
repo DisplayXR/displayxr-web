@@ -15,11 +15,11 @@ sandboxed agent, prefer the MCP server** (below): MCP servers run outside the sa
 sandbox. Otherwise run them as shell commands:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
-npx -y @displayxr/inline3d-tools@0.1.0 assets <file.glb> [--target tablet|desktop]
-npx -y @displayxr/inline3d-tools@0.1.0 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
-npx -y @displayxr/inline3d-tools@0.1.0 scaffold <esm|vite> <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.0 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
+npx -y @displayxr/inline3d-tools@0.1.1 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.1 assets <file.glb> [--target tablet|desktop]
+npx -y @displayxr/inline3d-tools@0.1.1 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
+npx -y @displayxr/inline3d-tools@0.1.1 scaffold <esm|vite> <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.1 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
 ```
 
 or, with the MCP server configured (`inline3d-tools mcp`; config snippets for Codex, Cursor and
@@ -152,7 +152,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ### 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.1 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
@@ -180,8 +180,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user may be asked to approve the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.0 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.1 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.1 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -229,8 +229,8 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.0 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.0 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.1 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.1 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the
@@ -247,17 +247,17 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.0 assets` (exact pin, from npm; Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.1 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.0 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.1 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ### 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `npx -y @displayxr/inline3d-tools@0.1.0 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+   `npx -y @displayxr/inline3d-tools@0.1.1 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
 2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
    Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
@@ -287,7 +287,7 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
+npx -y @displayxr/inline3d-tools@0.1.1 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
 It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
@@ -303,8 +303,8 @@ helmet is ~0.3 m, not 2 m).
 ### 3. Check it (before the page uses it)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 assets out.glb            # tablet budget (default)
-npx -y @displayxr/inline3d-tools@0.1.0 assets out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.1 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.1 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -318,7 +318,7 @@ animations. Fix every FAIL; act on WARNs or say why not. Then run the page check
 ### 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 gen providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.1 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -339,7 +339,7 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   shippable.
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.1 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ### 5. ASSETS.md
