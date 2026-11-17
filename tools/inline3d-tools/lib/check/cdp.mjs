@@ -29,10 +29,30 @@ export function findChrome() {
   return null;
 }
 
-export async function launchChrome({ chrome = findChrome(), extraArgs = [], width = 1280, height = 800 } = {}) {
+const PIPE_TIMEOUT = 'Chrome did not answer on the DevTools pipe';
+
+// A cold Chrome start (first launch after an update, a busy box, a slow disk) occasionally misses
+// the first DevTools round trip even though a second launch is fine (#299). So a launch that fails
+// only on that handshake is retried once with a fresh profile; any other failure, and a second
+// handshake miss, is reported as is.
+export async function launchChrome(opts = {}) {
+  const { chrome = findChrome(), pipeTimeoutMs = 15000, attempts = 2 } = opts;
   if (!chrome || !existsSync(chrome)) {
     throw new Error(`Chrome not found${chrome ? ` at ${chrome}` : ''}. Set CHROME=/path/to/chrome.`);
   }
+  for (let i = 1; ; i++) {
+    try {
+      return await launchOnce({ ...opts, chrome, pipeTimeoutMs });
+    } catch (e) {
+      if (i >= attempts || !String(e.message).includes(PIPE_TIMEOUT)) {
+        if (i > 1) e.message = `${e.message} (after ${i} attempts)`;
+        throw e;
+      }
+    }
+  }
+}
+
+async function launchOnce({ chrome, extraArgs = [], width = 1280, height = 800, pipeTimeoutMs }) {
   const profile = mkdtempSync(join(tmpdir(), 'inline3d-check-'));
   const args = [
     '--headless=new',
@@ -71,7 +91,7 @@ export async function launchChrome({ chrome = findChrome(), extraArgs = [], widt
 
   // First round trip proves the pipe is up.
   try {
-    await withTimeout(conn.send('Browser.getVersion'), 15000, 'Chrome did not answer on the DevTools pipe');
+    await withTimeout(conn.send('Browser.getVersion'), pipeTimeoutMs, PIPE_TIMEOUT);
   } catch (e) {
     try { process.kill(proc.pid, 'SIGKILL'); } catch { /* gone */ }
     try { rmSync(profile, { recursive: true, force: true }); } catch { /* best effort */ }
