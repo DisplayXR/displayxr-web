@@ -6,21 +6,29 @@ argument-hint: "[esm|vite] [target-dir] [model|splat|image|video|player|scene]"
 
 # Scaffold an inline-3D page
 
-Templates live in `${CLAUDE_SKILL_DIR}/templates/`:
+The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; its `scaffold`
+command copies them (the first run downloads the package; the user approves the command):
+
+```sh
+npx -y @displayxr/inline3d-tools@0.1.0 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.0 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+```
+
+It never overwrites an existing file (`--force` replaces). What it writes:
 
 | file | what |
 |---|---|
-| `templates/app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
-| `templates/style.css` | page styles; the canvas and its ancestors carry no CSS effects |
-| `templates/esm/index.html` | no build step: an import map with exact CDN pins |
-| `templates/vite/index.html`, `templates/vite/package.json` | Vite: exact npm pins (`@displayxr/inline3d` 1.52.3, `three` 0.180.0) |
+| `app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
+| `style.css` | page styles; the canvas and its ancestors carry no CSS effects |
+| `index.html` (esm) | no build step: an import map with exact CDN pins |
+| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.52.3, `three` 0.180.0) |
 
 ## Steps
 
 1. Pick the flavour: **esm** unless the project already uses npm/a bundler (then **vite**, or merge
    the pins into the existing `package.json` exactly, no `^`).
-2. Copy `app.js` and `style.css` plus the flavour's files into the target directory. Replace
-   `__TITLE__` / `__NAME__`. Don't add an `<img>` or extra canvas: there is ONE persistent canvas.
+2. Run `scaffold` with the flavour and the target directory (it fills in the title and, for vite,
+   the package name). Don't add an `<img>` or extra canvas: there is ONE persistent canvas.
 3. Pick the content (the `inline3d` skill §1 table) and swap the scene block if it is not a custom
    scene. Keep the cover, the fallback and the pins. For a model or a splat, replace everything from
    "renderer + scene" down with the viewer call, which handles the buffer, framing, validation and
@@ -51,8 +59,8 @@ Templates live in `${CLAUDE_SKILL_DIR}/templates/`:
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   node "${CLAUDE_PLUGIN_ROOT}/checker/bin/inline3d-check.mjs" <target-dir>        # esm
-   node "${CLAUDE_PLUGIN_ROOT}/checker/bin/inline3d-check.mjs" http://localhost:5173/   # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.0 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.0 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the

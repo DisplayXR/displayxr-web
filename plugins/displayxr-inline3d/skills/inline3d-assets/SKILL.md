@@ -14,17 +14,17 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `asset-check.mjs` (bundled) | always, last | none (Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.0 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `gen.mjs` (bundled) | no asset exists and the user wants one generated | needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.0 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ## 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `node "${CLAUDE_PLUGIN_ROOT}/assets/bin/gen.mjs" provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+   `npx -y @displayxr/inline3d-tools@0.1.0 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
 2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
    Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
@@ -54,12 +54,12 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-B=$(command -v blender || ls /Applications/Blender.app/Contents/MacOS/Blender 2>/dev/null)
-"$B" -b --factory-startup -P "${CLAUDE_PLUGIN_ROOT}/assets/blender/prep.py" -- in.fbx out.glb [--metres 0.01] [--decimate 0.5]
+npx -y @displayxr/inline3d-tools@0.1.0 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
-`prep.py` imports, applies transforms, scales to metres (`--metres` = metres per source unit:
-0.01 for centimetres), decimates, recentres the bounds on the origin and exports one GLB. Then run
+It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
+it, and runs the package's headless prep script, which imports, applies transforms, scales to
+metres (`--metres` = metres per source unit: 0.01 for centimetres), decimates, recentres the bounds on the origin and exports one GLB. Then run
 the glTF-Transform `optimize` line on its output (Blender writes PNG textures; WebP is far smaller).
 No Blender: say the format cannot be converted here, and ask for a GLB.
 
@@ -70,8 +70,8 @@ helmet is ~0.3 m, not 2 m).
 ## 3. Check it (before the page uses it)
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/assets/bin/asset-check.mjs" out.glb            # tablet budget (default)
-node "${CLAUDE_PLUGIN_ROOT}/assets/bin/asset-check.mjs" out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.0 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.0 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -86,7 +86,7 @@ skill §7): the asset check is about the file, the page check about how it is sh
 ## 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/assets/bin/gen.mjs" providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.0 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -98,16 +98,16 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   you create, a command line, or `ASSETS.md`. If no key is set, the adapter is unavailable: say so
   and use §1 instead. Do not suggest pasting a key into the chat.
 - **Ask before every paid call.** Tell the user the adapter, what you will generate (the prompt or
-  image), and the cost estimate `gen.mjs` prints; only after they say yes run it with
-  `--confirm-paid`. Without that flag `gen.mjs` refuses and prints the estimate. One yes covers
+  image), and the cost estimate `gen run` prints; only after they say yes run it with
+  `--confirm-paid`. Without that flag `gen run` refuses and prints the estimate. One yes covers
   one call, not a batch, unless the user said otherwise.
 - **Every generated file goes through §2 and §3** (generated models are often huge, off-centre,
-  with 4K textures), and `gen.mjs` has already written its `ASSETS.md` line (adapter, prompt,
+  with 4K textures), and `gen run` has already written its `ASSETS.md` line (adapter, prompt,
   date, the provider's licence note). Check the provider's licence terms before calling the asset
   shippable.
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/assets/bin/gen.mjs" run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.0 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ## 5. ASSETS.md

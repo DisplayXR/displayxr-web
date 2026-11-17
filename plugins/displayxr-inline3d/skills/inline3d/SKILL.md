@@ -1,6 +1,6 @@
 ---
 name: inline3d
-description: Build or fix web pages that show glasses-free 3D with @displayxr/inline3d (the DisplayXR Browser weaves a canvas; any other browser shows 2D). Use whenever code imports @displayxr/inline3d, calls createInline3D / addImage / addVideo / addScene / addPlayer / addModel / addSplat, or the user asks for a 3D web page, 3D photo/video/model/splat viewer, or "inline 3D" for a spatial display. Covers the content type and entry point, the view rig, depth/comfort, the woven-canvas rules, page chrome, exact version pins, and running the bundled checker before saying done.
+description: Build or fix web pages that show glasses-free 3D with @displayxr/inline3d (the DisplayXR Browser weaves a canvas; any other browser shows 2D). Use whenever code imports @displayxr/inline3d, calls createInline3D / addImage / addVideo / addScene / addPlayer / addModel / addSplat, or the user asks for a 3D web page, 3D photo/video/model/splat viewer, or "inline 3D" for a spatial display. Covers the content type and entry point, the view rig, depth/comfort, the woven-canvas rules, page chrome, exact version pins, and running the checker (`@displayxr/inline3d-tools`, an exact-pinned npm package) before saying done.
 ---
 
 # Building on @displayxr/inline3d
@@ -122,9 +122,11 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/checker/bin/inline3d-check.mjs" <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
+This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
+the user approves the command). Needs Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome`).
 It loads the page in headless Chrome inside a fake DisplayXR Browser (two real eye views) and again
 plain, and reports pass/fail per check: session reached, real stereo, no blank eye, no flat
 side-by-side, buffer not clamped, CSS/cover/overlay/session rules (scrolling the page past each
@@ -134,4 +136,10 @@ line names the doc section. For a Vite/dev-server app pass the running URL. Use 
 when a page imports `../` or `/node_modules/`. A green run is not a panel test: say so, and ask for
 a check on real hardware when depth or look matters. Scaffold a known-good page with the
 `new-inline3d-page` skill. Any model, texture or poster the page loads goes through the
-`inline3d-assets` skill first (convert, optimise, `asset-check.mjs`, `ASSETS.md`).
+`inline3d-assets` skill first (convert, optimise, `assets` check, `ASSETS.md`).
+
+**When to run it.** After you edit any file of a page that uses `@displayxr/inline3d` (its HTML,
+scripts or CSS), the page is unchecked until the checker has run again: run it before you tell the
+user the page is done, and again after every round of fixes. If you end a turn with an edited page
+you could not check (no Chrome, no Node, the user declined the command), say so in one line and give
+the user the command above to run.

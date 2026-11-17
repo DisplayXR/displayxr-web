@@ -1,8 +1,8 @@
 {
   "name": "displayxr-inline3d",
   "displayName": "DisplayXR Inline 3D",
-  "version": "0.1.4",
-  "description": "Build glasses-free 3D web pages on @displayxr/inline3d: authoring skill, page scaffold, and a headless checker that renders the page in a fake DisplayXR Browser (two real eye views) and in plain 2D, and reports pass/fail per rule.",
+  "version": "0.2.0",
+  "description": "Build glasses-free 3D web pages on @displayxr/inline3d: authoring skill, page scaffold, asset workflow, and a headless checker (run from the exact-pinned @displayxr/inline3d-tools npm package) that renders the page in a fake DisplayXR Browser (two real eye views) and in plain 2D, and reports pass/fail per rule.",
   "author": {
     "name": "DisplayXR",
     "url": "https://github.com/DisplayXR"

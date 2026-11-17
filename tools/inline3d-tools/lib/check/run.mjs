@@ -13,7 +13,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE_SRC = readFileSync(join(HERE, 'probe.js'), 'utf8');
 const FAKE_SRC = readFileSync(join(HERE, 'fake-env.js'), 'utf8');
-export const VERSION = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).version;
+export const VERSION = JSON.parse(readFileSync(join(HERE, '..', '..', 'package.json'), 'utf8')).version;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DOCS = 'node_modules/@displayxr/inline3d/docs';
 const MPP = 0.3456 / 1920; // metres per CSS px on the fake panel (see fake-env.js)
