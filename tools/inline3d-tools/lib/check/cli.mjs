@@ -1,17 +1,16 @@
-#!/usr/bin/env node
-// inline3d-check — does this @displayxr/inline3d page really render glasses-free 3D?
+// inline3d-tools check — does this @displayxr/inline3d page really render glasses-free 3D?
 //
-//   node inline3d-check.mjs <url | dir | file.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
+//   inline3d-tools check <url | dir | file.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
 //
 // Loads the page in headless Chrome twice: once inside a FAKE DisplayXR inline-3D environment (the
 // SDK believes it is in the DisplayXR Browser and renders two eyes), once plain (the 2D fallback).
 // Exit code: 0 pass or warnings only, 1 a check failed, 2 the checker itself could not run.
-// Needs Node >= 18 and a local Chrome (CHROME=/path/to/chrome to override). No npm install.
+// Needs Node >= 18 and a local Chrome (CHROME=/path/to/chrome to override).
 import { writeFileSync } from 'node:fs';
-import { runCheck, formatHuman, VERSION } from '../lib/run.mjs';
+import { runCheck, formatHuman, VERSION } from './run.mjs';
 
-const USAGE = `inline3d-check ${VERSION}
-usage: inline3d-check <url | dir | file.html> [options]
+export const USAGE = `inline3d-tools check ${VERSION}
+usage: inline3d-tools check <url | dir | file.html> [options]
 
   <url>            a running page (your dev server: http://localhost:5173/)
   <dir|file.html>  served from --root (default: the dir itself / the file's dir) on 127.0.0.1
@@ -30,8 +29,8 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); return v; };
-    if (a === '-h' || a === '--help') { console.log(USAGE); process.exit(0); }
-    else if (a === '--version') { console.log(VERSION); process.exit(0); }
+    if (a === '-h' || a === '--help') o.help = true;
+    else if (a === '--version') o.version = true;
     else if (a === '--json') o.json = true;
     else if (a === '--out') o.out = val();
     else if (a === '--root') o.opt.root = val();
@@ -43,20 +42,25 @@ function parse(argv) {
     else if (!o.target) o.target = a;
     else throw new Error(`unexpected argument ${a}`);
   }
-  if (!o.target) throw new Error('missing target');
+  if (!o.target && !o.help && !o.version) throw new Error('missing target');
   return o;
 }
 
-let args;
-try { args = parse(process.argv.slice(2)); } catch (e) { console.error(`${e.message}\n\n${USAGE}`); process.exit(2); }
-try {
-  const report = await runCheck(args.target, args.opt);
-  if (args.out) writeFileSync(args.out, JSON.stringify(report, null, 2));
-  console.log(args.json ? JSON.stringify(report, null, 2) : formatHuman(report));
-  process.exit(report.verdict === 'fail' ? 1 : 0);
-} catch (e) {
-  const err = { tool: 'inline3d-check', version: VERSION, target: args.target, verdict: 'error', error: e.message };
-  if (args.json) console.log(JSON.stringify(err, null, 2));
-  else console.error(`inline3d-check: ${e.message}`);
-  process.exit(2);
+// Returns the exit code: 0 pass or warnings only, 1 a check failed, 2 the checker could not run.
+export async function main(argv) {
+  let args;
+  try { args = parse(argv); } catch (e) { console.error(`${e.message}\n\n${USAGE}`); return 2; }
+  if (args.help) { console.log(USAGE); return 0; }
+  if (args.version) { console.log(VERSION); return 0; }
+  try {
+    const report = await runCheck(args.target, args.opt);
+    if (args.out) writeFileSync(args.out, JSON.stringify(report, null, 2));
+    console.log(args.json ? JSON.stringify(report, null, 2) : formatHuman(report));
+    return report.verdict === 'fail' ? 1 : 0;
+  } catch (e) {
+    const err = { tool: 'inline3d-check', version: VERSION, target: args.target, verdict: 'error', error: e.message };
+    if (args.json) console.log(JSON.stringify(err, null, 2));
+    else console.error(`inline3d-tools check: ${e.message}`);
+    return 2;
+  }
 }

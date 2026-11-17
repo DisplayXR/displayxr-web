@@ -72,3 +72,48 @@ Check the package page before re-trying anything.
 After the Trusted Publisher is configured, run the workflow manually with **dry run** (Actions →
 *Publish SDK to npm* → Run workflow → `dry_run: true`). It exercises OIDC auth + packs without
 uploading. Then push the real tag.
+
+# Publishing `@displayxr/inline3d-tools`
+
+`tools/inline3d-tools/` publishes the same way, from its own workflow
+(`.github/workflows/tools-publish.yml`) and its own tag prefix, **`tools-vX.Y.Z`**. The tag must
+match `tools/inline3d-tools/package.json` `version`; the workflow runs the package's tests, checks
+that `AGENTS.md` and the Claude plugin's pins are in sync, smoke-tests the packed tarball, then
+publishes with provenance over OIDC.
+
+## One-time bootstrap (not done yet)
+
+Same mechanism as the SDK above: npm attaches a Trusted Publisher **per package**, and both the npm
+UI and `npm trust github` require the package to **already exist** on the registry. So the first
+version cannot come from CI.
+
+1. **Publish a stub** of `@displayxr/inline3d-tools` manually, from an isolated directory (not this
+   checkout): a `package.json` with `name`, `version: "0.0.1"`, `license: "Apache-2.0"`,
+   `publishConfig.access: "public"`, plus a README saying "bootstrap placeholder, do not install".
+   No `bin`, no code.
+   ```sh
+   npm login                    # interactive; passkey/2FA, no token stored
+   npm publish --access public  # from the stub dir; npm asks for a fresh 2FA approval
+   ```
+2. **Configure the Trusted Publisher**: npmjs.com → `@displayxr/inline3d-tools` → Settings →
+   Trusted Publisher → GitHub Actions → Organization `DisplayXR`, Repository `displayxr-web`,
+   Workflow filename **`tools-publish.yml`** (filename only), Environment blank, Allowed actions
+   `npm publish`. CLI alternative (npm ≥ 11.15.0, while still logged in):
+   `npm trust github @displayxr/inline3d-tools --repo DisplayXR/displayxr-web --file tools-publish.yml --allow-publish`.
+   npm requires the first CI publish within 2 days of creating the configuration.
+3. **Publishing access** → "Require two-factor authentication and disallow tokens".
+4. **Deprecate the stub and log out**:
+   ```sh
+   npm deprecate @displayxr/inline3d-tools@0.0.1 "Bootstrap placeholder, no code. Use the latest release."
+   npm logout
+   ```
+5. Run *Publish inline3d-tools to npm* with `dry_run: true`, then push `tools-v0.1.0`.
+
+## Releasing a new tools version
+
+1. Bump `version` in `tools/inline3d-tools/package.json`, then run
+   `node tools/inline3d-tools/scripts/sync-agents.mjs`: it rewrites every
+   `@displayxr/inline3d-tools@X.Y.Z` pin in the Claude plugin and the package README and
+   regenerates `AGENTS.md`. Bump the plugin's `version` in `.claude-plugin/plugin.json` too.
+2. Merge, tag `tools-vX.Y.Z`, push the tag. **Publish the package before a plugin release that
+   pins it**: a plugin version whose pin is not on npm yet makes every skill command fail.

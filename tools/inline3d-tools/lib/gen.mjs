@@ -1,9 +1,8 @@
-#!/usr/bin/env node
-// gen — optional online asset generation behind one adapter interface, plus provenance.
+// inline3d-tools gen — optional online asset generation behind one adapter interface, plus provenance.
 //
-//   node gen.mjs providers                         which adapters have a key in the environment (names only)
-//   node gen.mjs run <adapter> --kind <kind> --prompt "<text>" [--image <url>] --out <file> --confirm-paid
-//   node gen.mjs provenance --file <path> --source "<where it came from>" --license "<licence>" [--notes "..."]
+//   inline3d-tools gen providers                   which adapters have a key in the environment (names only)
+//   inline3d-tools gen run <adapter> --kind <kind> --prompt "<text>" [--image <url>] [--size WxH] --out <file> --confirm-paid
+//   inline3d-tools gen provenance --file <path> --source "<where it came from>" --license "<licence>" [--notes "..."]
 //
 // Kinds: text-to-3d, image-to-3d (3D adapters, output .glb), image (image adapter, output .png:
 // textures, posters, HDR-free backdrops).
@@ -16,10 +15,7 @@ import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } fr
 import { dirname, resolve, relative, join } from 'node:path';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const args = process.argv.slice(2);
-const cmd = args[0];
-const opt = (k, d = undefined) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const flag = (k) => args.includes(`--${k}`);
+export const GEN_USAGE = 'usage: inline3d-tools gen providers | run <adapter> --kind <kind> --prompt "<text>" [--image <url>] [--size WxH] --out <file> --confirm-paid | provenance --file <f> --source <s> --license <l> [--notes <n>]';
 
 // ------------------------------------------------------------------------------ adapters
 // Each adapter: { env, kinds, estimate(kind), terms, async run({ kind, prompt, image }) -> Buffer }.
@@ -46,7 +42,7 @@ async function poll(fn, { everyMs = 5000, maxMs = 15 * 60_000 } = {}) {
   }
 }
 
-const ADAPTERS = {
+export const ADAPTERS = {
   meshy: {
     env: 'MESHY_API_KEY',
     kinds: ['text-to-3d', 'image-to-3d'],
@@ -87,8 +83,8 @@ const ADAPTERS = {
     kinds: ['image'],
     estimate: () => 'a few US cents to ~US$0.25 per image depending on size/quality; check the provider\'s current pricing',
     terms: 'OpenAI usage policies: you own generated images subject to their terms',
-    async run({ prompt }, key) {
-      const r = await http('https://api.openai.com/v1/images/generations', { method: 'POST', body: JSON.stringify({ model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2.5-flare', prompt, size: opt('size', '1024x1024') }) }, key);
+    async run({ prompt, size }, key) {
+      const r = await http('https://api.openai.com/v1/images/generations', { method: 'POST', body: JSON.stringify({ model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2.5-flare', prompt, size: size || '1024x1024' }) }, key);
       const d = r.data[0];
       return d.b64_json ? Buffer.from(d.b64_json, 'base64') : download(d.url);
     },
@@ -96,56 +92,81 @@ const ADAPTERS = {
 };
 
 // ------------------------------------------------------------------------------ provenance
-function provenance({ file, source, license, notes, extra = {} }) {
-  const abs = resolve(file);
-  const ledger = join(process.cwd(), 'ASSETS.md');
+// The ledger is ASSETS.md in `cwd` (default: the process's working directory = the project root).
+export function provenance({ file, source, license, notes, extra = {}, cwd = process.cwd() }) {
+  const abs = resolve(cwd, file);
+  const ledger = join(cwd, 'ASSETS.md');
   if (!existsSync(ledger)) writeFileSync(ledger, '# Assets\n\nWhere every 3D asset, texture and image on this page came from, and under what licence.\n\n| file | source | licence | date | notes |\n|---|---|---|---|---|\n');
   const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-  const row = `| ${esc(relative(process.cwd(), abs))} | ${esc(source)} | ${esc(license)} | ${new Date().toISOString().slice(0, 10)} | ${esc([notes, ...Object.entries(extra).map(([k, v]) => `${k}: ${v}`)].filter(Boolean).join('; '))} |\n`;
+  const row = `| ${esc(relative(cwd, abs))} | ${esc(source)} | ${esc(license)} | ${new Date().toISOString().slice(0, 10)} | ${esc([notes, ...Object.entries(extra).map(([k, v]) => `${k}: ${v}`)].filter(Boolean).join('; '))} |\n`;
   appendFileSync(ledger, row);
   return ledger;
 }
 
-// ------------------------------------------------------------------------------ main
-if (cmd === 'providers') {
-  for (const [name, a] of Object.entries(ADAPTERS)) {
-    console.log(`${name.padEnd(8)} ${process.env[a.env] ? 'key present' : 'no key'} (${a.env})  kinds: ${a.kinds.join(', ')}  cost: ${a.estimate()}`);
-  }
-  process.exit(0);
+// ------------------------------------------------------------------------------ API
+// Names and key presence only; never the key itself.
+export function listProviders() {
+  return Object.entries(ADAPTERS).map(([name, a]) => ({ name, env: a.env, keyPresent: !!process.env[a.env], kinds: a.kinds, cost: a.estimate() }));
 }
-if (cmd === 'provenance') {
-  const file = opt('file');
-  if (!file) { console.error('provenance needs --file'); process.exit(2); }
-  const l = provenance({ file, source: opt('source', 'unknown'), license: opt('license', 'unknown: check before shipping'), notes: opt('notes') });
-  console.log(`recorded ${file} in ${l}`);
-  process.exit(0);
+
+export class GenError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
 }
-if (cmd === 'run') {
-  const name = args[1];
-  const a = ADAPTERS[name];
-  const kind = opt('kind');
-  const prompt = opt('prompt', '');
-  const out = opt('out');
-  if (!a) { console.error(`unknown adapter "${name}" (known: ${Object.keys(ADAPTERS).join(', ')})`); process.exit(2); }
-  if (!a.kinds.includes(kind)) { console.error(`${name} does ${a.kinds.join(', ')}, not "${kind}"`); process.exit(2); }
-  if (!out) { console.error('run needs --out <file>'); process.exit(2); }
+
+// Runs one paid generation. Throws GenError with the CLI's exit code: 2 bad arguments, 3 no key in
+// the environment, 4 not confirmed (no call made; the message carries the estimate), 1 provider error.
+export async function genRun({ adapter, kind, prompt = '', image, size, out, confirmPaid = false, cwd = process.cwd() }) {
+  const a = ADAPTERS[adapter];
+  if (!a) throw new GenError(`unknown adapter "${adapter}" (known: ${Object.keys(ADAPTERS).join(', ')})`, 2);
+  if (!a.kinds.includes(kind)) throw new GenError(`${adapter} does ${a.kinds.join(', ')}, not "${kind}"`, 2);
+  if (!out) throw new GenError('run needs an output file (--out <file>)', 2);
   const key = process.env[a.env];
-  if (!key) { console.error(`no ${a.env} in the environment: this adapter is unavailable (keys are read from the environment only)`); process.exit(3); }
-  if (!flag('confirm-paid')) {
-    console.error(`PAID CALL NOT MADE. ${name} ${kind} costs ${a.estimate()}.\nAsk the user to approve this one call, then re-run with --confirm-paid.`);
-    process.exit(4);
+  if (!key) throw new GenError(`no ${a.env} in the environment: this adapter is unavailable (keys are read from the environment only)`, 3);
+  if (confirmPaid !== true) {
+    throw new GenError(`PAID CALL NOT MADE. ${adapter} ${kind} costs ${a.estimate()}.\nAsk the user to approve this one call, then re-run with --confirm-paid.`, 4);
   }
+  let bytes;
   try {
-    const bytes = await a.run({ kind, prompt, image: opt('image') }, key);
-    mkdirSync(dirname(resolve(out)), { recursive: true });
-    writeFileSync(out, bytes);
-    const l = provenance({ file: out, source: `generated: ${name} ${kind}`, license: a.terms, notes: prompt ? `prompt: ${prompt}` : opt('image') ? `from image ${opt('image')}` : '' });
-    console.log(`wrote ${out} (${(bytes.length / 1048576).toFixed(2)} MB); provenance in ${l}. Next: optimise + asset-check it.`);
+    bytes = await a.run({ kind, prompt, image, size }, key);
   } catch (e) {
-    console.error(`${name} failed: ${String(e.message || e).replace(key, '[redacted]')}`);
-    process.exit(1);
+    throw new GenError(`${adapter} failed: ${String(e.message || e).split(key).join('[redacted]')}`, 1);
   }
-  process.exit(0);
+  const abs = resolve(cwd, out);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, bytes);
+  const ledger = provenance({ file: abs, cwd, source: `generated: ${adapter} ${kind}`, license: a.terms, notes: prompt ? `prompt: ${prompt}` : image ? `from image ${image}` : '' });
+  return { file: abs, bytes: bytes.length, ledger, message: `wrote ${out} (${(bytes.length / 1048576).toFixed(2)} MB); provenance in ${ledger}. Next: optimise + asset-check it.` };
 }
-console.error('usage: gen.mjs providers | run <adapter> --kind <kind> --prompt "<text>" --out <file> --confirm-paid | provenance --file <f> --source <s> --license <l>');
-process.exit(2);
+
+// ------------------------------------------------------------------------------ CLI
+// Returns the exit code.
+export async function main(args) {
+  const cmd = args[0];
+  const opt = (k, d = undefined) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
+  const flag = (k) => args.includes(`--${k}`);
+  if (cmd === 'providers') {
+    for (const p of listProviders()) {
+      console.log(`${p.name.padEnd(8)} ${p.keyPresent ? 'key present' : 'no key'} (${p.env})  kinds: ${p.kinds.join(', ')}  cost: ${p.cost}`);
+    }
+    return 0;
+  }
+  if (cmd === 'provenance') {
+    const file = opt('file');
+    if (!file) { console.error('provenance needs --file'); return 2; }
+    const l = provenance({ file, source: opt('source', 'unknown'), license: opt('license', 'unknown: check before shipping'), notes: opt('notes') });
+    console.log(`recorded ${file} in ${l}`);
+    return 0;
+  }
+  if (cmd === 'run') {
+    try {
+      const r = await genRun({ adapter: args[1], kind: opt('kind'), prompt: opt('prompt', ''), image: opt('image'), size: opt('size'), out: opt('out'), confirmPaid: flag('confirm-paid') });
+      console.log(r.message);
+      return 0;
+    } catch (e) {
+      console.error(e.message);
+      return e.code || 1;
+    }
+  }
+  console.error(GEN_USAGE);
+  return cmd === '-h' || cmd === '--help' ? 0 : 2;
+}

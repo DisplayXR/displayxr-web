@@ -1,30 +1,20 @@
-#!/usr/bin/env node
-// asset-check — is this glTF/GLB ready for an inline-3D page on a glasses-free 3D display?
+// inline3d-tools assets — is this glTF/GLB ready for an inline-3D page on a glasses-free 3D display?
 // Zero dependencies: reads the glTF JSON, the accessor bounds and the image headers itself.
 //
-//   node asset-check.mjs <file.glb|file.gltf> [--json] [--target desktop|tablet]
+//   inline3d-tools assets <file.glb|file.gltf> [--json] [--target desktop|tablet]
 //
 // Exit 0 = no FAIL (WARNs allowed), 1 = at least one FAIL, 2 = could not read the file.
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, dirname, join, extname } from 'node:path';
 
-const argv = process.argv.slice(2);
-const ti = argv.indexOf('--target');
-const target = ti >= 0 ? argv[ti + 1] || 'tablet' : 'tablet';
-const file = argv.find((a, i) => !a.startsWith('--') && !(ti >= 0 && i === ti + 1));
-const asJson = argv.includes('--json');
-if (!file) {
-  console.error('usage: asset-check.mjs <file.glb|file.gltf> [--json] [--target desktop|tablet]');
-  process.exit(2);
-}
+export const ASSET_USAGE = 'usage: inline3d-tools assets <file.glb|file.gltf> [--json] [--target desktop|tablet]\n       inline3d-tools assets prep <in> <out.glb> [--metres <m>] [--decimate <ratio>] [--blender <path>]';
 
 // Budgets. Tablet = the weakest supported device class (Adreno 740-class, MAX_TEXTURE_SIZE 4096).
 // Both eyes render the whole scene, so a model costs twice what it costs on a 2D page.
-const BUDGET = {
+export const BUDGETS = {
   tablet: { tris: 300_000, trisFail: 1_500_000, tex: 2048, texFail: 4096, texMB: 128, fileMB: 25 },
   desktop: { tris: 1_000_000, trisFail: 5_000_000, tex: 4096, texFail: 8192, texMB: 512, fileMB: 60 },
-}[target] || null;
-if (!BUDGET) { console.error(`unknown --target ${target}`); process.exit(2); }
+};
 
 // ------------------------------------------------------------------------------ load
 function load(path) {
@@ -116,7 +106,8 @@ function trs(n) {
 const xf = (m, p) => [0, 1, 2].map((r) => m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r]);
 
 // ------------------------------------------------------------------------------ checks
-function run(g) {
+function run(g, target) {
+  const BUDGET = BUDGETS[target];
   const J = g.json;
   const out = [];
   const add = (id, status, summary, extra = {}) => out.push({ id, status, summary, ...extra });
@@ -240,13 +231,32 @@ function run(g) {
   return { file: g.abs, target, verdict, checks: out, info, generator: J.asset?.generator || null };
 }
 
-let g;
-try { g = load(file); } catch (e) { console.error(`asset-check: cannot read ${file}: ${e.message}`); process.exit(2); }
-const r = run(g);
-if (asJson) console.log(JSON.stringify(r, null, 1));
-else {
-  console.log(`asset-check  ${r.file}  (target: ${r.target})`);
-  for (const c of r.checks) console.log(`  ${c.status.toUpperCase().padEnd(4)}  ${c.id.padEnd(12)} ${c.summary}`);
-  console.log(`  verdict: ${r.verdict.toUpperCase()}`);
+// Throws when the file cannot be read; otherwise returns the report.
+export function assetCheck(file, { target = 'tablet' } = {}) {
+  if (!BUDGETS[target]) throw new Error(`unknown target ${target} (tablet | desktop)`);
+  let g;
+  try { g = load(file); } catch (e) { throw new Error(`cannot read ${file}: ${e.message}`); }
+  return run(g, target);
 }
-process.exit(r.verdict === 'fail' ? 1 : 0);
+
+export function formatAssetReport(r) {
+  const lines = [`asset-check  ${r.file}  (target: ${r.target})`];
+  for (const c of r.checks) lines.push(`  ${c.status.toUpperCase().padEnd(4)}  ${c.id.padEnd(12)} ${c.summary}`);
+  lines.push(`  verdict: ${r.verdict.toUpperCase()}`);
+  return lines.join('\n');
+}
+
+// Returns the exit code.
+export function main(argv) {
+  const ti = argv.indexOf('--target');
+  const target = ti >= 0 ? argv[ti + 1] || 'tablet' : 'tablet';
+  const file = argv.find((a, i) => !a.startsWith('--') && !(ti >= 0 && i === ti + 1));
+  const asJson = argv.includes('--json');
+  if (argv.includes('--help') || argv.includes('-h')) { console.log(ASSET_USAGE); return 0; }
+  if (!file) { console.error(ASSET_USAGE); return 2; }
+  if (!BUDGETS[target]) { console.error(`unknown --target ${target}`); return 2; }
+  let r;
+  try { r = assetCheck(file, { target }); } catch (e) { console.error(`asset-check: ${e.message}`); return 2; }
+  console.log(asJson ? JSON.stringify(r, null, 1) : formatAssetReport(r));
+  return r.verdict === 'fail' ? 1 : 0;
+}

@@ -40,10 +40,13 @@ import { handControls } from '@displayxr/inline3d/hands';          // experiment
                                                                     //   on addModel / addSplat)
 ```
 
-**Building with a coding agent?** [`plugins/displayxr-inline3d/`](plugins/displayxr-inline3d/) is a
-Claude Code plugin: an authoring skill, a page scaffold, and `inline3d-check`, a headless checker that
-renders your page in a fake DisplayXR Browser and in plain 2D and reports what breaks
-(`claude --plugin-dir plugins/displayxr-inline3d`, or `/plugin marketplace add DisplayXR/displayxr-web`).
+**Building with a coding agent?** [`@displayxr/inline3d-tools`](tools/inline3d-tools/) is an
+agent-agnostic npm package: `inline3d-tools check`, a headless checker that renders your page in a
+fake DisplayXR Browser and in plain 2D and reports what breaks, plus an asset check, page scaffolds
+and a stdio MCP server for any MCP client (Codex, Cursor, Claude Code), with an
+[`AGENTS.md`](tools/inline3d-tools/AGENTS.md) authoring checklist. For Claude Code,
+[`plugins/displayxr-inline3d/`](plugins/displayxr-inline3d/) wraps the same checklist as skills
+(`/plugin marketplace add DisplayXR/displayxr-web`).
 
 No build step or bundler required — it's plain ES modules. You can also import a pinned version by
 URL from a CDN (jsDelivr / unpkg) without npm. The samples in this repo import the SDK by relative

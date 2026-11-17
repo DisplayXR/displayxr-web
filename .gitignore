@@ -21,6 +21,9 @@ _scratch/
 # No lockfile: CI installs the two dev tools with --no-save (see .github/workflows); a local
 # `npm install` writes one that must not be committed.
 package-lock.json
+# Exception: the agent tools package has real (pinned) dependencies; its CI and publish workflows
+# install them with `npm ci` from this lockfile. npm never publishes a lockfile.
+!tools/inline3d-tools/package-lock.json
 
 # Bundler smoke tests (test/bundlers): installed tools and build output, never committed
 test/bundlers/node_modules/

@@ -1,0 +1,46 @@
+name: inline3d-tools CI
+
+# Tests for tools/inline3d-tools (the @displayxr/inline3d-tools package) and the Claude plugin that
+# runs it: unit + MCP tests, AGENTS.md / plugin pin drift, and the plugin folder staying
+# directory-compliant (Markdown/JSON/images only: no scripts, hooks, bin or MCP config).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/inline3d-tools/**"
+      - "plugins/**"
+      - ".claude-plugin/**"
+      - "test/plugin/**"
+      - ".github/workflows/tools-ci.yml"
+  pull_request:
+    paths:
+      - "tools/inline3d-tools/**"
+      - "plugins/**"
+      - ".claude-plugin/**"
+      - "test/plugin/**"
+      - ".github/workflows/tools-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        working-directory: tools/inline3d-tools
+        run: npm ci
+      - name: Unit + MCP tests
+        working-directory: tools/inline3d-tools
+        run: node --test test/*.test.mjs
+      - name: AGENTS.md and plugin pins in sync with the skills
+        run: node tools/inline3d-tools/scripts/sync-agents.mjs --check
+      - name: Plugin folder is directory-compliant
+        run: node tools/inline3d-tools/scripts/scan-plugin.mjs plugins/displayxr-inline3d
+      - name: Packed tarball runs
+        working-directory: tools/inline3d-tools
+        run: |
+          npm pack
+          npx -y --package="$PWD/$(ls displayxr-inline3d-tools-*.tgz)" inline3d-tools --version

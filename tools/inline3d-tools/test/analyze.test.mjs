@@ -1,9 +1,9 @@
 // Unit tests for the pixel analysis (no browser): synthetic stereo pairs with known disparity.
-//   node --test plugins/displayxr-inline3d/checker/test/analyze.test.mjs
+//   node --test tools/inline3d-tools/test/analyze.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { contentStats, compareEyes, blockDisparity, flatWideVerdict, sbsPairVerdict, halves, quantile, shibataZoneMm } from '../lib/analyze.mjs';
-import { decodePng, encodePng } from '../lib/png.mjs';
+import { contentStats, compareEyes, blockDisparity, flatWideVerdict, sbsPairVerdict, halves, quantile, shibataZoneMm } from '../lib/check/analyze.mjs';
+import { decodePng, encodePng } from '../lib/check/png.mjs';
 
 function image(w, h, fn) {
   const data = new Uint8Array(w * h * 4);

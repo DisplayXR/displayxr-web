@@ -22,4 +22,5 @@ Then, by task:
 - API: the `.d.ts` files at the repo root; changes per release: [`CHANGELOG.md`](CHANGELOG.md).
 
 Working in this repo: `npm test` runs the unit tests and the public-API typecheck (both are CI
-checks). The SDK publishes to npm as `@displayxr/inline3d` from `sdk-v*` tags.
+checks). The SDK publishes to npm as `@displayxr/inline3d` from `sdk-v*` tags; the agent tools in
+`tools/inline3d-tools/` publish as `@displayxr/inline3d-tools` from `tools-v*` tags (`docs/publishing.md`).

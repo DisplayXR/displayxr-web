@@ -1,4 +1,4 @@
-// node --test plugins/displayxr-inline3d/assets/test/asset-check.test.mjs
+// node --test tools/inline3d-tools/test/asset-check.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -7,7 +7,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'asset-check.mjs');
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'inline3d-tools.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'asset-check-'));
 
 // A PNG header claiming w x h (enough for the size probe).
@@ -38,7 +38,7 @@ function glb({ tris = 1, scale = 1, tex = 1024, offset = 0, extra = {} } = {}) {
 }
 function check(name, buf, ...args) {
   const p = join(dir, name); writeFileSync(p, buf);
-  const r = spawnSync(process.execPath, [BIN, p, '--json', ...args], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [BIN, 'assets', p, '--json', ...args], { encoding: 'utf8' });
   const out = JSON.parse(r.stdout);
   return { code: r.status, out, by: (id) => out.checks.find((c) => c.id === id) };
 }
