@@ -46,7 +46,7 @@ Templates live in `${CLAUDE_SKILL_DIR}/templates/`:
    `"playcanvas": "2.24.0"` to `package.json`. Images and video use `wall.addImage(canvas, 'pic_2x1.jpg')`
    / `wall.addVideo(canvas, videoEl)` in the 3D branch and an `<img>` of the left half (or a mono
    video) in the 2D branch. Check each export against the installed `.d.ts` before using it.
-4. Run it: esm → serve the directory (`npx serve` / `python3 -m http.server`), or let the checker
+4. Run it: esm → serve the directory (`python3 -m http.server`), or let the checker
    serve it; vite → `npm install && npm run dev`.
 5. **Run the checker before saying done**, and fix every FAIL:
 

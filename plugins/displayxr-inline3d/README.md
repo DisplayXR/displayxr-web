@@ -13,6 +13,32 @@ before calling them done**.
 | `checker/` | `inline3d-check`: loads the page in headless Chrome inside a fake DisplayXR inline-3D environment, and again plain, and reports pass/fail per rule. |
 | `hooks/` | non-blocking reminders to run the checker after editing an inline-3D page. |
 
+## What this plugin runs, sends and fetches
+
+Nothing runs in the background and nothing is sent anywhere by default. Every network call is one
+the agent makes on purpose, and the paid ones need your yes first.
+
+| part | runs | network | writes |
+|---|---|---|---|
+| skills, command | nothing by themselves (instructions to the agent) | none | none |
+| `hooks/remind-check.mjs` | `node`, after Edit/Write/MultiEdit/Bash and at the end of a turn; reads the edited file to see whether it uses `@displayxr/inline3d` | none | one small JSON state file per session in the OS temp directory (`displayxr-inline3d-hook/`) |
+| `checker/` | `node` + a headless Chrome it starts (local install, or `CHROME=`) and closes; a static file server on `127.0.0.1`, random port, when you pass a directory | whatever the page under test loads (for example its CDN imports); nothing else | a throwaway Chrome profile in the OS temp directory, deleted when Chrome closes; a JSON report only with `--out` |
+| `assets/bin/asset-check.mjs` | `node`, reads a GLB/glTF | none | none |
+| `skills/inline3d-assets` → glTF-Transform | `npx -y @gltf-transform/cli@4.3.0` (exact pin), when the agent optimises a model | the npm registry, to fetch that package | the output file you name |
+| `skills/inline3d-assets` → Blender | `assets/blender/prep.py` in Blender, **only if Blender is already installed**; never installs it | none | the output file you name |
+| `assets/bin/gen.mjs run` (optional, paid) | `node` | `api.meshy.ai`, `api.tripo3d.ai` or `api.openai.com` (the adapter you pick), with your prompt or image URL and your key for that provider; then downloads the result from the URL the provider returns | the output file and a row in `ASSETS.md` |
+
+`gen.mjs` refuses to call a provider without `--confirm-paid`, and the skill passes that flag only
+after you approved that one call and its estimated cost. It never prints, logs or writes a key, and
+redacts long tokens from provider error messages. DisplayXR receives nothing from this plugin: no
+telemetry, no accounts. Prompts and images you send to a generator are governed by that provider's
+terms.
+
+## Where it works
+
+Claude Code, on macOS, Windows or Linux. The checker and the hooks need Node ≥ 18 on the machine;
+the checker also needs Chrome or Chromium. The skills work without either.
+
 ## Install
 
 From a clone: `claude --plugin-dir <repo>/plugins/displayxr-inline3d`.
@@ -87,11 +113,14 @@ found by scrolling, which a page may react to. CDN-hosted samples need the netwo
 
 ## Tests
 
+From the repository root:
+
 ```sh
-node --test plugins/displayxr-inline3d/checker/test/analyze.test.mjs                               # pixel analysis, no browser
-node --test --test-concurrency=1 plugins/displayxr-inline3d/checker/test/checker.e2e.mjs      # Chrome: samples + one broken page per check
+node --test plugins/displayxr-inline3d/checker/test/analyze.test.mjs plugins/displayxr-inline3d/assets/test/asset-check.test.mjs   # no browser
+npm run test:plugin:e2e                                                                                                        # Chrome: samples + one broken page per check
 ```
 
-The e2e suite runs the repo's `hello-cube`, `model`, `splat` and `player` samples (no check may fail)
+The e2e suite (`test/plugin/checker.e2e.mjs`, outside the plugin folder because it reads the repo's
+samples) runs the repo's `hello-cube`, `model`, `splat` and `player` samples (no check may fail)
 and `test/fixtures/scene.html`, a raw-WebGL page that is clean by default and breaks one rule per
 `?bug=` value.
