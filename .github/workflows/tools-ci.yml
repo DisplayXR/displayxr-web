@@ -1,8 +1,9 @@
 name: inline3d-tools CI
 
 # Tests for tools/inline3d-tools (the @displayxr/inline3d-tools package) and the Claude plugin that
-# runs it: unit + MCP tests, AGENTS.md / plugin pin drift, and the plugin folder staying
-# directory-compliant (Markdown/JSON/images only: no scripts, hooks, bin or MCP config).
+# runs it: unit + MCP tests, AGENTS.md / plugin pin / Codex-plugin drift, and the Claude plugin
+# folder staying directory-compliant (Markdown/JSON/images only: no scripts, hooks, bin or MCP
+# config). plugins/displayxr-inline3d-codex/ is generated and has an MCP config by design.
 
 on:
   push:
@@ -35,7 +36,7 @@ jobs:
       - name: Unit + MCP tests
         working-directory: tools/inline3d-tools
         run: node --test test/*.test.mjs
-      - name: AGENTS.md and plugin pins in sync with the skills
+      - name: AGENTS.md, plugin pins and the Codex plugin in sync with the skills
         run: node tools/inline3d-tools/scripts/sync-agents.mjs --check
       - name: Plugin folder is directory-compliant
         run: node tools/inline3d-tools/scripts/scan-plugin.mjs plugins/displayxr-inline3d

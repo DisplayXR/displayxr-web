@@ -85,7 +85,18 @@ tool_timeout_sec = 180            # a page check takes 10-60 s; generation can t
 # env_vars = ["MESHY_API_KEY", "TRIPO_API_KEY", "OPENAI_API_KEY"]
 ```
 
-or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.0 mcp`. Codex reads
+or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.0 mcp`. The
+[`displayxr-inline3d-codex` plugin](https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d-codex)
+sets the server up for you in Codex.
+
+**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.0 --version`.
+Codex starts MCP servers when a session starts and can stop one before a cold `npx` download
+finishes. The interrupted download leaves a broken entry in npm's `_npx` cache (`node_modules`
+without a `package.json`), and from then on the server fails at every start with
+`npm error enoent Could not read package.json` in Codex's log. To recover, delete the
+`~/.npm/_npx/<hash>` directory named in that error, then run the command above.
+
+Codex reads
 [`AGENTS.md`](AGENTS.md) files from the project: copy this package's into yours (or call the
 `authoring_guide` tool).
 
