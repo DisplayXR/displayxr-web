@@ -11,7 +11,7 @@
     {
       "name": "displayxr-inline3d",
       "source": "./plugins/displayxr-inline3d",
-      "description": "Build glasses-free 3D web pages on @displayxr/inline3d, and check them headlessly before calling them done.",
+      "description": "Build 3D web pages for spatial displays on @displayxr/inline3d, and check them headlessly before calling them done.",
       "category": "development"
     }
   ]
