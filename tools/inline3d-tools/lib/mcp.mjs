@@ -47,7 +47,7 @@ export function createServer() {
       viewport: z.string().regex(/^\d+x\d+$/).optional().describe('WxH, default 1280x800'),
       fallback: z.boolean().optional().describe('Also run the plain-browser (2D fallback) pass (default true)'),
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   }, async ({ target, root, max_texture, timeout_ms, viewport, fallback }) => {
     const opt = {};
     if (root) opt.root = root;
@@ -68,7 +68,7 @@ export function createServer() {
       file: z.string().describe('Path to a .glb or .gltf'),
       target: z.enum(['tablet', 'desktop']).optional().describe('Device budget (default tablet: the weakest supported device)'),
     },
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async ({ file, target }) => {
     try {
       const r = assetCheck(file, { target: target || 'tablet' });
@@ -98,7 +98,7 @@ export function createServer() {
     title: 'List asset generators',
     description: 'Which optional paid generator adapters (meshy, tripo: text/image to GLB; openai: image) have an API key in the server environment. Names and presence only; never a key.',
     inputSchema: {},
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async () => {
     const p = listProviders();
     return ok(p.map((x) => `${x.name.padEnd(8)} ${x.keyPresent ? 'key present' : 'no key'} (${x.env})  kinds: ${x.kinds.join(', ')}  cost: ${x.cost}`).join('\n'), { providers: p });
@@ -145,7 +145,7 @@ export function createServer() {
     title: 'Inline-3D authoring guide',
     description: 'The authoring checklist for @displayxr/inline3d pages (content type and entry point, view rig, depth/comfort, woven-canvas rules, page chrome, exact pins, asset workflow). Read it before writing or fixing a page.',
     inputSchema: {},
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async () => ok(readFileSync(join(HERE, '..', 'AGENTS.md'), 'utf8')));
 
   return server;

@@ -32,6 +32,23 @@ test('tools/list exposes the CLI operations', { skip }, async () => {
   } finally { await c.close(); }
 });
 
+test('every tool states readOnlyHint, destructiveHint and openWorldHint explicitly', { skip }, async () => {
+  const c = await connect();
+  try {
+    const { tools } = await c.listTools();
+    for (const t of tools) {
+      for (const k of ['readOnlyHint', 'destructiveHint', 'openWorldHint']) {
+        assert.equal(typeof t.annotations?.[k], 'boolean', `${t.name}.annotations.${k}`);
+      }
+    }
+    const a = Object.fromEntries(tools.map((t) => [t.name, t.annotations]));
+    assert.equal(a.check.openWorldHint, true);
+    assert.equal(a.gen_run.openWorldHint, true);
+    assert.equal(a.gen_run.readOnlyHint, false);
+    for (const t of tools) assert.equal(t.annotations.destructiveHint, false, t.name);
+  } finally { await c.close(); }
+});
+
 test('gen_run refuses unless confirm_paid is true, and never echoes the key', { skip }, async () => {
   const secret = 'test-not-a-real-key-0123456789abcdef';
   const c = await connect({ OPENAI_API_KEY: secret });
