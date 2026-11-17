@@ -1,0 +1,44 @@
+{
+  "name": "displayxr-inline3d-codex",
+  "version": "0.2.1",
+  "description": "Build 3D web pages for spatial displays on @displayxr/inline3d: authoring skill, page scaffold, asset workflow, and a headless checker (run from the exact-pinned @displayxr/inline3d-tools npm package) that renders the page in a fake DisplayXR Browser (two real eye views) and in plain 2D, and reports pass/fail per rule.",
+  "author": {
+    "name": "DisplayXR",
+    "url": "https://github.com/DisplayXR"
+  },
+  "homepage": "https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d-codex",
+  "repository": "https://github.com/DisplayXR/displayxr-web",
+  "license": "Apache-2.0",
+  "keywords": [
+    "displayxr",
+    "inline-3d",
+    "glasses-free-3d",
+    "3d-display",
+    "webxr",
+    "three",
+    "playcanvas",
+    "stereo",
+    "gltf"
+  ],
+  "interface": {
+    "displayName": "DisplayXR Inline 3D",
+    "shortDescription": "Build and check 3D web pages for spatial displays",
+    "longDescription": "Skills and a local MCP server for pages built on @displayxr/inline3d: pick the entry point and view rig, scaffold a page from a known-good template, prepare and budget-check 3D assets, and check the page headlessly (two real eye views plus a plain 2D run) before calling it done.",
+    "developerName": "DisplayXR",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://displayxr.org/",
+    "privacyPolicyURL": "https://displayxr.org/privacy#claude-code-plugin",
+    "supportURL": "https://github.com/DisplayXR/displayxr-web/issues",
+    "defaultPrompt": [
+      "Make a 3D web page for a spatial display that shows my model",
+      "Check this inline-3D page and fix what fails"
+    ],
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -7,13 +7,20 @@
 //    this package's README) equals this package's version (the plugin runs the package at exactly that version).
 // 2. tools/inline3d-tools/AGENTS.md is generated from the plugin's three SKILL.md files: the same
 //    checklist and workflow, with a preamble on how a non-Claude agent calls the tools.
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+// 3. plugins/displayxr-inline3d-codex/ (the OpenAI Codex plugin) is generated from the Claude plugin:
+//    skills/, LICENSE and the icon are byte copies; .codex-plugin/plugin.json and .mcp.json are built
+//    here (version = the Claude plugin's, MCP server = this package at PIN). Only its README.md is
+//    hand-written. It is a separate folder so the Claude plugin stays free of MCP config (directory
+//    rule for unverified orgs), and because Codex reads .codex-plugin/ before .claude-plugin/ and only
+//    falls back to a root plugin.json when neither exists.
+import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PKG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(PKG_DIR, '..', '..');
 const PLUGIN = join(REPO, 'plugins', 'displayxr-inline3d');
+const CODEX = join(REPO, 'plugins', 'displayxr-inline3d-codex');
 const VERSION = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')).version;
 const PIN = `@displayxr/inline3d-tools@${VERSION}`;
 const PIN_RE = /@displayxr\/inline3d-tools@\d+\.\d+\.\d+(?:-[\w.]+)?/g;
@@ -95,9 +102,89 @@ Generator keys come only from the environment (\`MESHY_API_KEY\`, \`TRIPO_API_KE
   return parts.join('\n\n') + '\n';
 }
 
+function allFiles(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const n of readdirSync(dir)) {
+    const p = join(dir, n);
+    if (statSync(p).isDirectory()) allFiles(p, out); else out.push(p);
+  }
+  return out;
+}
+
+// Generated files of the Codex plugin: path relative to CODEX -> Buffer.
+export function buildCodexPlugin() {
+  const files = new Map();
+  for (const f of allFiles(join(PLUGIN, 'skills'))) files.set(join('skills', relative(join(PLUGIN, 'skills'), f)), readFileSync(f));
+  files.set('LICENSE', readFileSync(join(PLUGIN, 'LICENSE')));
+  files.set(join('assets', 'icon.png'), readFileSync(join(PLUGIN, '.claude-plugin', 'icon.png')));
+  const claude = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'));
+  const manifest = {
+    name: 'displayxr-inline3d-codex',
+    version: claude.version,
+    description: claude.description,
+    author: claude.author,
+    homepage: 'https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d-codex',
+    repository: claude.repository,
+    license: claude.license,
+    keywords: claude.keywords,
+    interface: {
+      displayName: 'DisplayXR Inline 3D',
+      shortDescription: 'Build and check 3D web pages for spatial displays',
+      longDescription: 'Skills and a local MCP server for pages built on @displayxr/inline3d: pick the entry point and view rig, scaffold a page from a known-good template, prepare and budget-check 3D assets, and check the page headlessly (two real eye views plus a plain 2D run) before calling it done.',
+      developerName: 'DisplayXR',
+      category: 'Developer Tools',
+      capabilities: ['Read', 'Write'],
+      websiteURL: 'https://displayxr.org/',
+      privacyPolicyURL: claude.privacyPolicyUrl,
+      supportURL: claude.supportUrl,
+      defaultPrompt: [
+        'Make a 3D web page for a spatial display that shows my model',
+        'Check this inline-3D page and fix what fails',
+      ],
+      composerIcon: './assets/icon.png',
+      logo: './assets/icon.png',
+    },
+    mcpServers: './.mcp.json',
+  };
+  const mcp = {
+    mcpServers: {
+      'inline3d-tools': {
+        command: 'npx',
+        args: ['-y', PIN, 'mcp'],
+        startup_timeout_sec: 60,
+        tool_timeout_sec: 180,
+      },
+    },
+  };
+  files.set(join('.codex-plugin', 'plugin.json'), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+  files.set('.mcp.json', Buffer.from(`${JSON.stringify(mcp, null, 2)}\n`));
+  return files;
+}
+
+function syncCodex(check, stale) {
+  const want = buildCodexPlugin();
+  for (const [rel, buf] of want) {
+    const f = join(CODEX, rel);
+    let have = null;
+    try { have = readFileSync(f); } catch { /* missing */ }
+    if (!have || !have.equals(buf)) {
+      stale.push(`${relative(REPO, f)}: out of date with the Claude plugin`);
+      if (!check) { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, buf); }
+    }
+  }
+  // Nothing in the Codex plugin but the generated files and its own README.
+  for (const f of allFiles(CODEX)) {
+    const rel = relative(CODEX, f);
+    if (rel === 'README.md' || want.has(rel)) continue;
+    stale.push(`${relative(REPO, f)}: not generated from the Claude plugin`);
+    if (!check) rmSync(f);
+  }
+}
+
 export function sync({ check = false } = {}) {
   const stale = [];
-  for (const f of [...walk(PLUGIN), join(PKG_DIR, 'README.md')]) {
+  syncCodex(check, stale);
+  for (const f of [...walk(PLUGIN), ...(existsSync(join(CODEX, 'README.md')) ? [join(CODEX, 'README.md')] : []), join(PKG_DIR, 'README.md')]) {
     const s = readFileSync(f, 'utf8');
     const t = s.replace(PIN_RE, PIN);
     if (t !== s) { stale.push(`${relative(REPO, f)}: pin is not ${PIN}`); if (!check) writeFileSync(f, t); }

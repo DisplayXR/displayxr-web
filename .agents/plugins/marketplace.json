@@ -1,0 +1,20 @@
+{
+  "name": "displayxr",
+  "interface": {
+    "displayName": "DisplayXR"
+  },
+  "plugins": [
+    {
+      "name": "displayxr-inline3d-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/displayxr-inline3d-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
