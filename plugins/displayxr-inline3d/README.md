@@ -4,7 +4,7 @@ Helps a coding agent build pages on [`@displayxr/inline3d`](https://www.npmjs.co
 (woven glasses-free 3D in the DisplayXR Browser, plain 2D everywhere else) and **check them
 before calling them done**.
 
-The plugin itself is instructions only: Markdown skills and a command, plus this README, a licence
+The plugin itself is instructions only: Markdown skills, plus this README, a licence
 and an icon. It contains no scripts, no hooks and no MCP server. The tools the skills use (the page
 checker, the asset check, the page templates and the optional generators) live in the open-source
 npm package [`@displayxr/inline3d-tools`](https://www.npmjs.com/package/@displayxr/inline3d-tools)
@@ -17,7 +17,7 @@ ordinary shell command that you approve.
 | `skills/inline3d` | auto-loads when a task touches `@displayxr/inline3d`: content type and entry point, view rig, depth/comfort, the woven-canvas checklist, chrome and detection, exact pins, and when to run the checker. Points at the docs inside the installed SDK package instead of copying them. |
 | `skills/new-inline3d-page` | scaffolds a page from a known-good template (vanilla ESM + import map, or Vite) with `inline3d-tools scaffold`. |
 | `skills/inline3d-assets` | get → prepare → check 3D assets: glTF-Transform (pinned, via npx), headless Blender **only if already installed** (`inline3d-tools assets prep`), `inline3d-tools assets` (tablet/desktop budgets, decoders, units, textures, materials), optional paid generation through `inline3d-tools gen` (`meshy`, `tripo`, `openai`; keys from the environment only, `--confirm-paid` per call after your yes), and `ASSETS.md` provenance. |
-| `commands/inline3d-check` | `/displayxr-inline3d:inline3d-check <target>`: runs the checker and fixes what fails. |
+| `skills/inline3d-check` | `/displayxr-inline3d:inline3d-check <target>` (or just "check this page"): runs the checker and fixes what fails. A skill rather than a command, so agents that read the plugin's skills but not `commands/` (OpenAI Codex) get it too. |
 
 ## What this plugin runs, sends and fetches
 
@@ -26,7 +26,7 @@ agent proposes and you approve, and the paid ones need your yes first.
 
 | part | runs | network | writes |
 |---|---|---|---|
-| skills, command | nothing by themselves (instructions to the agent) | none | none |
+| skills | nothing by themselves (instructions to the agent) | none | none |
 | `npx -y @displayxr/inline3d-tools@0.1.0 …` (any command below) | `npx`, when the agent runs it | the npm registry, to fetch that exact version of the package and its pinned dependencies (first run; then npm's cache) | npm's cache directory |
 | `… check` | `node` + a headless Chrome it starts (local install, or `CHROME=`) and closes; a static file server on `127.0.0.1`, random port, when you pass a directory | whatever the page under test loads (for example its CDN imports); nothing else | a throwaway Chrome profile in the OS temp directory, deleted when Chrome closes; a JSON report only with `--out` |
 | `… assets <file>` | `node`, reads a GLB/glTF | none | none |
@@ -44,7 +44,10 @@ provider's terms.
 
 ## Where it works
 
-Claude Code, on macOS, Windows or Linux. The commands need Node ≥ 18 (with `npx`) on the machine;
+Claude Code, on macOS, Windows or Linux. The skills are plain instructions with no plugin-root paths,
+so agents that read this marketplace's skills (OpenAI Codex) can use them too; inside Codex's default
+sandbox the checker's local server is blocked, so there use the MCP server below or approve running
+`check` outside the sandbox. The commands need Node ≥ 18 (with `npx`) on the machine;
 the checker also needs Chrome or Chromium. The skills work without either: if a command cannot run,
 the agent says so and gives you the command.
 

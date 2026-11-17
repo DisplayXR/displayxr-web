@@ -63,8 +63,11 @@ into a project as \`AGENTS.md\` (or point your agent at it) when the project bui
 
 ## How to call the tools
 
-The tools are the npm package \`@displayxr/inline3d-tools\`, pinned to an exact version. Either run
-them as shell commands:
+The tools are the npm package \`@displayxr/inline3d-tools\`, pinned to an exact version. **In a
+sandboxed agent, prefer the MCP server** (below): MCP servers run outside the sandbox, while a shell
+\`check\` starts a local file server and headless Chrome, which OpenAI Codex's default sandbox blocks
+(\`listen EPERM 127.0.0.1\`), so there it needs the user to approve running the command outside the
+sandbox. Otherwise run them as shell commands:
 
 \`\`\`sh
 ${T} check <url | dir | page.html> [--root <project>] [--max-texture 4096]
@@ -74,7 +77,8 @@ ${T} scaffold <esm|vite> <target-dir> --title "<page title>"
 ${T} gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
 \`\`\`
 
-or, if the user configured the MCP server (\`inline3d-tools mcp\`), call its tools with the same
+or, with the MCP server configured (\`inline3d-tools mcp\`; config snippets for Codex, Cursor and
+Claude Code in this package's README), call its tools with the same
 semantics: \`check\`, \`asset_check\`, \`scaffold\`, \`gen_providers\`, \`gen_run\` (paid: pass
 \`confirm_paid: true\` only after the user approved that one call and its cost),
 \`gen_provenance\`, \`authoring_guide\` (returns this file). Relative paths resolve against the

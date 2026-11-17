@@ -8,8 +8,11 @@ into a project as `AGENTS.md` (or point your agent at it) when the project build
 
 ## How to call the tools
 
-The tools are the npm package `@displayxr/inline3d-tools`, pinned to an exact version. Either run
-them as shell commands:
+The tools are the npm package `@displayxr/inline3d-tools`, pinned to an exact version. **In a
+sandboxed agent, prefer the MCP server** (below): MCP servers run outside the sandbox, while a shell
+`check` starts a local file server and headless Chrome, which OpenAI Codex's default sandbox blocks
+(`listen EPERM 127.0.0.1`), so there it needs the user to approve running the command outside the
+sandbox. Otherwise run them as shell commands:
 
 ```sh
 npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
@@ -19,7 +22,8 @@ npx -y @displayxr/inline3d-tools@0.1.0 scaffold <esm|vite> <target-dir> --title 
 npx -y @displayxr/inline3d-tools@0.1.0 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
 ```
 
-or, if the user configured the MCP server (`inline3d-tools mcp`), call its tools with the same
+or, with the MCP server configured (`inline3d-tools mcp`; config snippets for Codex, Cursor and
+Claude Code in this package's README), call its tools with the same
 semantics: `check`, `asset_check`, `scaffold`, `gen_providers`, `gen_run` (paid: pass
 `confirm_paid: true` only after the user approved that one call and its cost),
 `gen_provenance`, `authoring_guide` (returns this file). Relative paths resolve against the
@@ -153,6 +157,8 @@ npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <pr
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
 the user may be asked to approve the command). Needs Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome`).
+If the `inline3d-tools` MCP server is configured, its `check` tool is the same check (and the route
+to use inside a sandbox that blocks local servers).
 It loads the page in headless Chrome inside a fake DisplayXR Browser (two real eye views) and again
 plain, and reports pass/fail per check: session reached, real stereo, no blank eye, no flat
 side-by-side, buffer not clamped, CSS/cover/overlay/session rules (scrolling the page past each

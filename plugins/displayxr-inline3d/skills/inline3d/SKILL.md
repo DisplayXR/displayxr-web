@@ -127,6 +127,8 @@ npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <pr
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
 the user approves the command). Needs Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome`).
+If the `inline3d-tools` MCP server is configured, its `check` tool is the same check (and the route
+to use inside a sandbox that blocks local servers).
 It loads the page in headless Chrome inside a fake DisplayXR Browser (two real eye views) and again
 plain, and reports pass/fail per check: session reached, real stereo, no blank eye, no flat
 side-by-side, buffer not clamped, CSS/cover/overlay/session rules (scrolling the page past each

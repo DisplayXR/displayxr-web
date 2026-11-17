@@ -68,7 +68,9 @@ server: its skills run the CLI. The server is an optional add-on.)
 
 ### OpenAI Codex
 
-In `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`), one
+**Use the MCP server in Codex.** MCP servers run outside Codex's sandbox; a shell `check` does not:
+its local file server fails with `listen EPERM 127.0.0.1` in the default sandbox, so a shell run
+needs you to approve running it outside the sandbox. In `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`), one
 `[mcp_servers.<name>]` table per server, as in the
 [Codex MCP documentation](https://developers.openai.com/codex/mcp):
 
