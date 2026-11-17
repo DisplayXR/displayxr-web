@@ -1,6 +1,6 @@
 {
   "name": "displayxr-inline3d-codex",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Build 3D web pages for spatial displays on @displayxr/inline3d: authoring skill, page scaffold, asset workflow, and a headless checker (run from the exact-pinned @displayxr/inline3d-tools npm package) that renders the page in a fake DisplayXR Browser (two real eye views) and in plain 2D, and reports pass/fail per rule.",
   "author": {
     "name": "DisplayXR",

@@ -122,7 +122,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.1 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;

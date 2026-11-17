@@ -10,8 +10,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user approves the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.0 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.0 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.1 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.1 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -59,8 +59,8 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.0 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.0 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.1 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.1 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the
