@@ -44,10 +44,10 @@ provider's terms.
 
 ## Where it works
 
-Claude Code, on macOS, Windows or Linux. The skills are plain instructions with no plugin-root paths,
-so agents that read this marketplace's skills (OpenAI Codex) can use them too; inside Codex's default
-sandbox the checker's local server is blocked, so there use the MCP server below or approve running
-`check` outside the sandbox. The commands need Node ≥ 18 (with `npx`) on the machine;
+Claude Code, on macOS, Windows or Linux. For OpenAI Codex, install the Codex edition instead,
+[`displayxr-inline3d-codex`](../displayxr-inline3d-codex): the same skills plus the MCP server, which
+Codex needs because its default sandbox blocks the checker's local server. The commands need
+Node ≥ 18 (with `npx`) on the machine;
 the checker also needs Chrome or Chromium. The skills work without either: if a command cannot run,
 the agent says so and gives you the command.
 
@@ -97,7 +97,9 @@ measured depth. It is not a panel: a pass is a fake-environment check, and the s
 
 ## Other agents
 
-The authoring checklist in these skills is also published for agents that do not read Claude
-plugins (OpenAI Codex and others) as
+OpenAI Codex has its own plugin in this repo,
+[`displayxr-inline3d-codex`](../displayxr-inline3d-codex)
+(`codex plugin add displayxr-inline3d-codex@displayxr`). For other agents, the authoring checklist
+in these skills is also published as
 [`AGENTS.md`](https://github.com/DisplayXR/displayxr-web/blob/main/tools/inline3d-tools/AGENTS.md)
 in the package, generated from these skill files and checked for drift in CI.
