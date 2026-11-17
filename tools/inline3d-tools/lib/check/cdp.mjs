@@ -79,6 +79,10 @@ async function launchOnce({ chrome, extraArgs = [], width = 1280, height = 800, 
     'about:blank',
   ];
   const proc = spawn(chrome, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+  // Killing Chrome resets its pipes; on Linux that surfaces as ECONNRESET on these streams, which
+  // with no listener is an uncaught exception that takes the whole process down. Exit is handled
+  // below, so the stream errors themselves carry nothing.
+  for (const s of [proc.stdio[2], proc.stdio[3], proc.stdio[4]]) s?.on('error', () => {});
   let stderr = '';
   proc.stderr.on('data', (d) => {
     stderr = (stderr + d.toString()).slice(-4000);
