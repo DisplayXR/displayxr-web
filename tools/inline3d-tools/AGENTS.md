@@ -100,6 +100,11 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
       Release on `handle.firstWoven` (`addVideo`), `player.firstWoven` (`addPlayer`, SDK 1.53+; on an
       older SDK where it is undefined, wait for the first frame and then `firstWovenHoldMs` ≈ 1200 ms
       more), plus the timeout. Give a player a `poster`: it is painted into both eyes under the cover.
+- [ ] **Covering a move or resize:** use `rectCover: 'auto'` (the default on `./splat` / `./model`).
+      Running your own cover (`rectCover: 'off'`): raise it only while `handle.wovenState` is not
+      `'woven'`, and release it on `handle.rewoven()`. A cover over a tile the browser is still weaving
+      is woven with it: each eye gets half of its 2D picture, stretched twice as wide (SDK 1.56.1+;
+      `woven-canvas-rules.md` §11).
 - [ ] **What is behind a transparent tile is part of the picture.** `addSplat` / `addModel` clear
       transparent by default, and the browser pre-blends the page under both eyes, flat, at half
       horizontal resolution. Make that page area a soft light or mid-tone colour or gradient (no
