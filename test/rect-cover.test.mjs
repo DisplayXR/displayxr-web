@@ -529,3 +529,104 @@ test('report: once a woven read is about the new rect, a later withhold raises n
   assert.equal(env.covers().length, 0);
   wall.close();
 });
+
+// The fill when the page names no color: the opaque background behind the canvas (so a cover that
+// shows for a frame reads as the page's 2D), the document's `Canvas` color when nothing paints one,
+// black when the backdrop is not one opaque color. Read at each raise.
+
+/** Installs a getComputedStyle that reads `el.cs` ({ backgroundColor, backgroundImage }), transparent by default. */
+function stubComputedStyle() {
+  globalThis.getComputedStyle = (el) => ({ backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none', zIndex: 'auto', ...(el && el.cs) });
+  return () => {
+    delete globalThis.getComputedStyle;
+  };
+}
+
+/** A woven scene whose canvas sits in parent → grandparent; returns the cover after one move. */
+async function coverOver(env, { parentCs, grandCs, opts = { rectCover: 'auto' } } = {}) {
+  const grand = makeParent();
+  grand.cs = grandCs;
+  const parent = makeParent();
+  parent.cs = parentCs;
+  parent.parentElement = grand;
+  const wall = await newWall();
+  const canvas = makeCanvas(400, 200, parent);
+  const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 100, ...opts });
+  env.runFrame(2);
+  clock += 100;
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  env.runFrame(2); // baseline look
+  canvas.left = 50;
+  env.runFrame(2);
+  return { wall, canvas, parent, cover: env.covers()[0] };
+}
+
+test('fill: the first opaque background behind the canvas', async () => {
+  clock = 0;
+  const env = installEnv();
+  const restore = stubComputedStyle();
+  const { wall, cover } = await coverOver(env, { parentCs: { backgroundColor: 'rgb(250, 249, 245)' } });
+  assert.equal(cover.style.background, 'rgb(250, 249, 245)');
+  wall.close();
+  restore();
+});
+
+test('fill: a translucent color or a background image behind the canvas falls back to black', async () => {
+  clock = 0;
+  let env = installEnv();
+  let restore = stubComputedStyle();
+  let r = await coverOver(env, { parentCs: { backgroundColor: 'rgba(255, 255, 255, 0.5)' } });
+  assert.equal(r.cover.style.background, '#000', 'translucent');
+  r.wall.close();
+  restore();
+
+  clock = 0;
+  env = installEnv();
+  restore = stubComputedStyle();
+  r = await coverOver(env, { grandCs: { backgroundImage: 'linear-gradient(red, blue)', backgroundColor: 'rgb(1, 1, 1)' } });
+  assert.equal(r.cover.style.background, '#000', 'an image or gradient on the way up');
+  r.wall.close();
+  restore();
+});
+
+test('fill: nothing paints a background → the document canvas color', async () => {
+  clock = 0;
+  const env = installEnv();
+  const restore = stubComputedStyle();
+  const { wall, cover } = await coverOver(env);
+  assert.equal(cover.style.background, 'Canvas');
+  wall.close();
+  restore();
+});
+
+test('fill: a color the page names wins', async () => {
+  clock = 0;
+  const env = installEnv();
+  const restore = stubComputedStyle();
+  const { wall, cover } = await coverOver(env, { parentCs: { backgroundColor: 'rgb(250, 249, 245)' }, opts: { rectCover: { color: 'rgb(9, 9, 9)' } } });
+  assert.equal(cover.style.background, 'rgb(9, 9, 9)');
+  wall.close();
+  restore();
+});
+
+test('fill: read at each raise, so a theme switch is followed', async () => {
+  clock = 0;
+  const env = installEnv();
+  const restore = stubComputedStyle();
+  const { wall, canvas, parent, cover } = await coverOver(env, { parentCs: { backgroundColor: 'rgb(255, 255, 255)' }, opts: { rectCover: 'auto', firstWovenHoldMs: 100 } });
+  assert.equal(cover.style.background, 'rgb(255, 255, 255)');
+  clock += 100; // let rewoven settle: the cover comes down
+  env.runFrame(2);
+  clock += 100;
+  env.runFrame(2);
+  await flush(); // the cover comes down when the rewoven() promise settles
+  assert.equal(cover.style.display, 'none');
+  parent.cs = { backgroundColor: 'rgb(18, 18, 18)' }; // the page went dark
+  canvas.left = 90;
+  env.runFrame(2);
+  assert.equal(cover.style.display, 'block');
+  assert.equal(cover.style.background, 'rgb(18, 18, 18)');
+  wall.close();
+  restore();
+});
