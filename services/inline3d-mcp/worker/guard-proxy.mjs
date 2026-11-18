@@ -1,12 +1,16 @@
-// Forward proxy for the checker's Chrome: lets a page load public http(s) resources only.
-// Resolves every host itself and connects to the checked address, so DNS rebinding cannot reach a
-// private network. Listens on 127.0.0.1:8899 (chrome-gpu.sh points Chrome at it).
+// Forward proxy for the checker's Chrome: lets a page load public http(s) resources, plus the
+// checker's own file server on loopback (check_files). Resolves every host itself and connects to
+// the checked address, so DNS rebinding cannot reach a private network. Chrome sends EVERYTHING
+// here, loopback and link-local included (--proxy-bypass-list=<-loopback>: Chrome otherwise skips
+// the proxy for 169.254.0.0/16 and fe80::/10, i.e. cloud metadata). Listens on 127.0.0.1:8899.
 import http from 'node:http';
 import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { isPublicAddress } from './ip-guard.mjs';
 
 const PORT = 8899;
+const TOKEN = process.env.GUARD_PROXY_TOKEN || ''; // the handler's byte-budget reset, not a page's
+const LOOPBACK = new Set(['127.0.0.1', '::1']);
 const MAX_BYTES = 200 * 1024 * 1024; // per page load, all requests together: a runaway page stops here
 let total = 0;
 
@@ -14,6 +18,8 @@ async function resolvePublic(host) {
   const h = host.replace(/^\[|\]$/g, '');
   const addrs = net.isIP(h) ? [{ address: h, family: net.isIP(h) }] : await lookup(h, { all: true });
   if (!addrs.length) throw new Error('no address');
+  // Loopback is the checker's own server (and nothing else listens there but this proxy).
+  if (addrs.every((a) => LOOPBACK.has(a.address))) return addrs[0];
   for (const a of addrs) if (!isPublicAddress(a.address)) throw new Error(`blocked address ${a.address}`);
   return addrs[0];
 }
@@ -22,7 +28,7 @@ function count(n) { total += n; return total <= MAX_BYTES; }
 
 const server = http.createServer(async (req, res) => {
   // Plain http: the request line carries an absolute URL.
-  if (req.url === '/__reset') { total = 0; res.writeHead(204).end(); return; } // handler, before each job
+  if (TOKEN && req.url === `/__reset?t=${TOKEN}`) { total = 0; res.writeHead(204).end(); return; } // handler, before each job
   let u;
   try { u = new URL(req.url); } catch { res.writeHead(400).end(); return; }
   if (u.protocol !== 'http:') { res.writeHead(400).end(); return; }

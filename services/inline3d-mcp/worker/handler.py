@@ -7,18 +7,19 @@
 #                  worker's Chrome only, deleted when the job ends
 # Options for both checks: max_texture, viewport ("WxH"), fallback (bool).
 # Nothing is stored: the report goes back in the job output and the job's files are removed.
-import json, os, re, shutil, subprocess, tempfile, time, urllib.request
+import json, os, re, secrets, shutil, subprocess, tempfile, time, urllib.request
 import runpod
 
 BOOT = time.time()
 CLI = "/app/node_modules/@displayxr/inline3d-tools/bin/inline3d-tools.mjs"
-PROXY = subprocess.Popen(["node", "/app/guard-proxy.mjs"])
+TOKEN = secrets.token_hex(16)
+PROXY = subprocess.Popen(["node", "/app/guard-proxy.mjs"], env={**os.environ, "GUARD_PROXY_TOKEN": TOKEN})
 MAX_FILES, MAX_BYTES = 60, 4 * 1024 * 1024
 SAFE_PATH = re.compile(r"^(?!/)(?!.*(^|/)\.\.(/|$))[A-Za-z0-9._/-]{1,200}$")
 
 def reset_proxy():
     try:
-        urllib.request.urlopen("http://127.0.0.1:8899/__reset", timeout=2).read()
+        urllib.request.urlopen(f"http://127.0.0.1:8899/__reset?t={TOKEN}", timeout=2).read()
     except Exception:
         pass
 
