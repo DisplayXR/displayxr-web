@@ -49,8 +49,12 @@ not a local install. Differences from the local instructions below:
 - Where the text below says \`npx ... check\`, use check_files or check_url instead. Doc paths under
   node_modules/@displayxr/inline3d/docs/ are also at ${DOCS_URL}/.
 - To view a page in 3D, the user opens its public URL in the DisplayXR Browser on a 3D display; in
-  any other browser it shows the 2D fallback. The user deploys it (GitHub Pages, Netlify, Vercel,
-  any static host): the page is static files, no server needed.
+  any other browser it shows the 2D fallback. The page is static files, so any static host works:
+  - In ChatGPT, publish it as a public Site if that tool is available (it gives a top-level public
+    URL), then run check_url on that URL.
+  - Otherwise give the user the files to deploy (GitHub Pages, Netlify, Vercel, ...). A Claude
+    artifact link is not enough: artifacts run inside a sandboxed frame that blocks models, images
+    and video from other origins.
 
 ---
 
