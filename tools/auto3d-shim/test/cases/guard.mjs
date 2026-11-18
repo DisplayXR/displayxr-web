@@ -311,11 +311,12 @@ export default function cases({ P, NEW, MARKS }) {
         await page.waitForFunction(() => window.__fakeXR.layers.length >= 1, { timeout: 20000, polling: 100 });
         await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'converting' && /frame-rate guard/.test(r.reason || '')), { timeout: 30000, polling: 100 }).catch(() => {});
         const at = await page.evaluate(() => performance.now() - window.__fakeXR.layers[0].at);
-        await h.sleep(800); // the console line reaches the harness a beat after the report
         return { at, out: await page.evaluate(readOut) };
       },
       check(r, t) {
-        t('tripped, announcing the one retry', r.ok && r.log.some((l) => /back to 2D: frame-rate guard: .*retrying once/.test(l)), r.error || r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
+        const O = r.out, rep = O && O.reports.find((x) => x.status === 'converting' && /frame-rate guard: .*retrying once/.test(x.reason || ''));
+        // The report, not the console: the "back to 2D" line comes after the fade-out, which at ~11 fps can outlast the wait.
+        t('tripped, announcing the one retry (report converting, reason frame-rate guard … retrying once)', r.ok && !!rep, r.error || (O && O.reports.map((x) => x.status + (x.reason ? ` (${x.reason})` : '')).join(' -> ')));
         t('not before the cap (layer + hold + guardLoadMaxMs 6 s)', r.at > 1200 + 6000, `${r.at && r.at.toFixed(0)} ms after the layer`);
       },
     },
