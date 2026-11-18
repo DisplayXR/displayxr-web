@@ -149,7 +149,7 @@ function dxrBabylon(core) {
     Object.assign(st, {
       eng: engine, scene: null, lastScene: null, cam: null, rigOn: null, eyes: null, qualify: null,
       L: { w: realW(canvas), h: realH(canvas), pr: 1 }, // what the PAGE believes: its own store, in pixels
-      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, rtProbes: new Map(), rtFrame: 0, rtFixed: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
+      frame: { drew: false, idle: 0, n: 0 }, replaying: false, vp: null, gbufEyes: 0, rtEyes: 0, rtProbes: new Map(), rtFrame: 0, rtFixed: 0, rtUnlatched: 0, scale: 0, hw0: 1, follows: false, pxGui: false,
       tmp: { mrh: new Float64Array(16), e: new Float64Array(16), p: new Float64Array(16) },
     });
     engines.set(engine, st);
@@ -364,7 +364,7 @@ function dxrBabylon(core) {
         detection: via.get(st.eng), version: engineVersion(st), device: st.eng.isWebGPU ? 'webgpu' : 'webgl' + (st.eng.webGLVersion || ''),
         camera: st.cam ? `${st.cam.name} (${className(st.cam)})` : null, rigOn: st.rigOn ? st.rigOn.name : null,
         handedness: st.scene ? (st.scene.useRightHandedSystem ? 'right' : 'left') : null, reverseDepth: !!st.eng.useReverseDepthBuffer,
-        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, customRtOwnView: st.rtFixed || 0, eyeTargets: !!st.eyeTargetsOn,
+        viewport: st.vp ? [st.vp.x, st.vp.y, st.vp.w, st.vp.h] : null, gbufferPerEye: st.gbufEyes || 0, customRtPerEye: st.rtEyes || 0, customRtOwnView: st.rtFixed || 0, customRtOwnViewReleased: st.rtUnlatched || 0, customRtProbes: st.rtProbes ? st.rtProbes.size : 0, eyeTargets: !!st.eyeTargetsOn,
         hwScale: hwLevel(st), scale: st.scale || 1, followsResize: st.follows, pixelGui: st.pxGui, postProcesses: st.cam ? (st.cam._postProcesses || []).filter(Boolean).length : 0,
         surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null, autoRender: st.frame.idle < 2,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].__dxrP.m) : null, // what the engine draws eye 0 with
@@ -473,6 +473,13 @@ function dxrBabylon(core) {
   // 3 frames running, the target is left to the scene's single draw (v0.7.2). A mirror (a view of its own,
   // but the reflected eye's) and a screen-space refraction (the eye's view) stay per eye.
   // T.bjsCustomRTOwnView false (TEST ONLY, A/B): every target drawn per eye, as v0.7.1.
+  //
+  // The decision is not final (v0.7.8, #257 review). A latched target is no longer drawn in the eyes' passes,
+  // so its own view is re-checked in the scene's single draw instead: drawn with the page camera's view 3
+  // frames running (a target that switched from a light to the camera), it is released and drawn per eye
+  // again. T.bjsCustomRTOwnViewRecheck false (TEST ONLY, A/B): latched for good, as v0.7.2-v0.7.7.
+  // A probe also goes with its target: dropped when the page disposes the target, not kept until the rig is
+  // removed. T.bjsRtProbeDispose false (TEST ONLY, A/B): kept, as v0.7.2-v0.7.7.
   const RT_OWN_VIEW_FRAMES = 3;
   function eyeRenderTargets(st, scene, eye) {
     const list = scene.customRenderTargets;
@@ -502,19 +509,36 @@ function dxrBabylon(core) {
     let p = st.rtProbes.get(rt);
     if (p) return p;
     const vp = () => new Float64Array(32);
-    p = { v: [vp(), vp()], e: [vp(), vp()], mine: [false, false], at: [-1, -1], same: 0, own: false, ob: null, obs: null };
+    p = { v: [vp(), vp()], e: [vp(), vp()], mine: [false, false], at: [-1, -1], same: 0, own: false, ob: null, obs: null,
+      mv: vp(), mc: vp(), back: 0, disp: null, dispObs: null };
     st.rtProbes.set(rt, p);
+    // Dropped with its target (#257 review: a strong Map kept disposed targets until the rig went).
+    const disp = rt.onDisposeObservable;
+    if (core.T.bjsRtProbeDispose !== false && disp && typeof disp.add === 'function') {
+      p.disp = disp;
+      p.dispObs = disp.add(() => dropViewProbe(st, rt));
+    }
     // Right before the draw, after every onBeforeRender observer (ObjectRenderer, 7.x-9.x); else onBeforeRender.
     const ob = (rt._objectRenderer && rt._objectRenderer.onBeforeRenderingManagerRenderObservable) || rt.onBeforeRenderObservable;
     if (!ob || typeof ob.add !== 'function') return p;
     p.ob = ob;
     p.obs = ob.add((pass) => {
       try {
-        if (pass || p.own || !st.eyes) return;
+        if (pass || !st.eyes) return;
         const cam = scene.activeCamera, i = cam === st.eyes[0] ? 0 : cam === st.eyes[1] ? 1 : -1;
-        if (i < 0) return; // the scene's own (mono) draw
+        if (!cam || (i < 0 && !p.own) || (i >= 0 && p.own)) return; // eye draws decide a latch; the single draw re-checks one
         const sv = scene.getViewMatrix(), sp = scene.getProjectionMatrix(), cv = cam.getViewMatrix(), cp = cam.getProjectionMatrix();
         if (!sv || !sp || !cv || !cp || !sv.m || !sp.m || !cv.m || !cp.m) return;
+        if (i < 0) {
+          // The scene's own (mono) draw of a latched target: drawn with the page camera's view now?
+          if (core.T.bjsCustomRTOwnViewRecheck === false) return;
+          readVP(p.mv, sv, sp); readVP(p.mc, cv, cp);
+          p.back = sameM(p.mv, p.mc) ? p.back + 1 : 0;
+          if (p.back < RT_OWN_VIEW_FRAMES) return;
+          p.own = false; p.same = 0; p.back = 0;
+          if (st.rtUnlatched++ < 4) info(`render target ${rt.name || '?'} now draws from the camera: drawn again for each eye`);
+          return;
+        }
         readVP(p.v[i], sv, sp); readVP(p.e[i], cv, cp);
         p.mine[i] = !sameM(p.v[i], p.e[i]);
         p.at[i] = st.rtFrame;
@@ -528,8 +552,18 @@ function dxrBabylon(core) {
     });
     return p;
   }
+  function unhookViewProbe(p) {
+    try { if (p.ob && p.obs) p.ob.remove(p.obs); } catch (e) { /* ignore */ }
+    try { if (p.disp && p.dispObs) p.disp.remove(p.dispObs); } catch (e) { /* ignore */ }
+  }
+  function dropViewProbe(st, rt) {
+    const p = st.rtProbes.get(rt);
+    if (!p) return;
+    unhookViewProbe(p);
+    st.rtProbes.delete(rt);
+  }
   function dropViewProbes(st) {
-    for (const p of st.rtProbes.values()) { try { if (p.ob && p.obs) p.ob.remove(p.obs); } catch (e) { /* ignore */ } }
+    for (const p of st.rtProbes.values()) unhookViewProbe(p);
     st.rtProbes.clear();
   }
   // IBL shadows' temporal accumulation (IblShadowsAccumulationPass): its output is drawn after EVERY
