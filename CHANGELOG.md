@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.56.1 — 2026-11-18
+
 ### Fixed — `rectCover` no longer covers a tile the browser is still weaving (core; `'auto'` on `./splat` and `./model`)
 
 On a browser that reports `XRDisplayLayer.wovenState` (DisplayXR Browser on Windows), the cover now
