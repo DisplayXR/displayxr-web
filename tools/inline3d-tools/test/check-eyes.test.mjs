@@ -13,11 +13,13 @@ const REPO = join(HERE, '..', '..', '..');
 const PAGE = join(HERE, 'fixtures', 'scene.html');
 const skip = findChrome() ? false : 'no Chrome on this machine';
 const eyes = (r) => r.checks.find((c) => c.id === 'eyes-not-blank');
+// What the page did, for a failure message: did it reach a session, draw frames, log errors?
+const why = (r) => r.checks.filter((c) => ['session', 'console', 'buffer'].includes(c.id)).map((c) => `${c.id}=${c.status}: ${c.summary}`).join(' | ');
 
 test('an eye missing from 1 frame in 3 is not reported blank', { skip, timeout: 240000 }, async () => {
   for (let i = 0; i < 3; i++) {
     const r = await runCheck(`${PAGE}?bug=flicker-left`, { root: REPO, fallback: false });
-    assert.equal(eyes(r).status, 'pass', `run ${i + 1}: ${eyes(r).summary}`);
+    assert.equal(eyes(r).status, 'pass', `run ${i + 1}: ${eyes(r).summary} [${why(r)}]`);
   }
 });
 
@@ -26,5 +28,6 @@ test('an eye that is never drawn still fails', { skip, timeout: 60000 }, async (
   const c = eyes(r);
   assert.equal(c.status, 'fail', c.summary);
   assert.match(c.summary, /left eye/);
+  assert.equal(c.details[0].right.blank, false, `the right eye must be drawn, or this proves nothing [${why(r)}]`);
   assert.equal(c.details[0].snapshots, 6, 'it looked again before failing');
 });
