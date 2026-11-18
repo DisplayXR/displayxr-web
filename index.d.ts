@@ -36,6 +36,13 @@ export interface TileOptions {
    * filled with `color` and, with `snapshot`, the last frame: the left eye, cover-fit to the new
    * box, captured once at the change with one `drawImage` (never `toDataURL`).
    *
+   * Where the browser reports {@link WovenState} (DisplayXR Browser on Windows), the cover follows
+   * that report instead of the hold: nothing is raised while the tile stays `'woven'` through the
+   * change; it goes up on a `'pending'` / `'withheld'` read after the change (the tile left the
+   * weave, so the page's own raster of it is on screen) and comes down on the first `'woven'` read.
+   * A cover over a tile the browser is still weaving would be woven with it: its 2D left eye, read
+   * as a side-by-side pair, puts half of the picture, twice as wide, into each eye.
+   *
    * - `'auto'` — `{ color: '#000', snapshot: true, live: true }`.
    * - `'off'` — nothing; a page that runs its own cover passes this.
    * - `{ color?, snapshot?, live? }` — `color` any CSS color (default `'#000'`); `snapshot` default

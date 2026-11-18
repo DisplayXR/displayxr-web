@@ -87,7 +87,8 @@ function makeCanvas(w = 400, h = 200, parent = makeParent()) {
   return c;
 }
 
-function installEnv() {
+/** `report: true` gives the layer class a `wovenState` / `withheldReason` pair reading `env.state`, as the patched browser does. */
+function installEnv({ report = false } = {}) {
   const made = [];
   globalThis.document = {
     createElement(tag) {
@@ -146,7 +147,8 @@ function installEnv() {
   globalThis.XRDisplayLayer = FakeDisplayLayer;
   globalThis.IntersectionObserver = undefined;
   globalThis.MutationObserver = undefined;
-  return {
+  const env = {
+    state: 'woven',
     made,
     covers: () => made.filter((e) => e.dataset && 'inline3dCover' in e.dataset),
     fire(type) {
@@ -160,6 +162,11 @@ function installEnv() {
       cb(clock, { getViewerPose: () => (n ? { views } : null) });
     },
   };
+  if (report) {
+    Object.defineProperty(FakeDisplayLayer.prototype, 'wovenState', { get: () => env.state, configurable: true });
+    Object.defineProperty(FakeDisplayLayer.prototype, 'withheldReason', { get: () => (env.state === 'withheld' ? 'no-quad' : null), configurable: true });
+  }
+  return env;
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -433,4 +440,92 @@ test('./splat and ./model default rectCover to auto at every addScene call site'
     assert.equal(calls, 1, `${f}: one addScene call`);
     assert.match(src, /rectCover: opts\.rectCover === undefined \? 'auto' : opts\.rectCover,/, f);
   }
+});
+
+// Where the browser reports `XRDisplayLayer.wovenState`, the cover follows the report, not the hold:
+// a cover over a tile the browser is still weaving is woven with it (browser-pvt#364).
+
+test('report: a change while the tile stays woven raises nothing', async () => {
+  clock = 0;
+  const env = installEnv({ report: true });
+  const { wall, canvas } = await wovenScene(env, { rectCover: 'auto' });
+  env.runFrame(2); // baseline look
+  for (let i = 0; i < 20; i++) {
+    clock += 16;
+    canvas.clientWidth = 400 - i; // a corner drag: a new box every frame
+    env.runFrame(2);
+  }
+  assert.equal(env.covers().length, 0, 'never made: the tile never left the weave');
+  wall.close();
+});
+
+test('report: the tile leaves the weave after a change → cover up, then down on the first woven read', async () => {
+  clock = 0;
+  const env = installEnv({ report: true });
+  const { wall, canvas } = await wovenScene(env, { rectCover: 'auto' });
+  env.runFrame(2);
+  canvas.left = 640; // the change, still reported woven on this frame
+  env.runFrame(2);
+  assert.equal(env.covers().length, 0, 'nothing on the change itself');
+
+  env.state = 'withheld'; // the browser dropped the tile: its own raster shows now
+  clock += 16;
+  env.runFrame(2);
+  const [cover] = env.covers();
+  assert.ok(cover, 'raised over the dropped tile');
+  assert.equal(cover.style.display, 'block');
+  assert.deepEqual([cover.style.left, cover.style.width], ['640px', '400px']);
+  assert.equal(cover.draws.length, 1, 'one snapshot');
+  const [src, sx, sy, sw, sh] = cover.draws[0];
+  assert.equal(src, canvas);
+  assert.deepEqual([sx, sy, sw, sh], [0, 0, 400, 200], 'cropped from the buffer’s own eye aspect');
+
+  clock += 16;
+  env.runFrame(2);
+  assert.equal(cover.style.display, 'block', 'still dropped: stays up');
+
+  env.state = 'woven';
+  clock += 16;
+  env.runFrame(2);
+  assert.equal(cover.style.display, 'none', 'down on the frame the tile is woven again');
+  wall.close();
+});
+
+test('report: a tile that stays withheld does not keep the cover up past the cap', async () => {
+  clock = 0;
+  const env = installEnv({ report: true });
+  const { wall, canvas } = await wovenScene(env, { rectCover: 'auto' });
+  env.runFrame(2);
+  canvas.top = 300;
+  env.state = 'withheld';
+  env.runFrame(2);
+  const [cover] = env.covers();
+  assert.equal(cover.style.display, 'block');
+  clock += 4799; // the cap: four default holds (1200 ms) from the change
+  env.runFrame(2);
+  assert.equal(cover.style.display, 'block');
+  clock += 1;
+  env.runFrame(2);
+  assert.equal(cover.style.display, 'none', 'capped');
+  clock += 16;
+  env.runFrame(2);
+  assert.equal(cover.style.display, 'none', 'the episode is closed: not raised again');
+  wall.close();
+});
+
+test('report: once a woven read is about the new rect, a later withhold raises nothing', async () => {
+  clock = 0;
+  const env = installEnv({ report: true });
+  const { wall, canvas } = await wovenScene(env, { rectCover: 'auto' });
+  env.runFrame(2);
+  canvas.left = 100;
+  for (let i = 0; i < 4; i++) {
+    clock += 16;
+    env.runFrame(2); // woven, three or more frames past the change: the episode closes
+  }
+  env.state = 'withheld'; // not a rect change (a frost, a CSS effect): not the cover's business
+  clock += 16;
+  env.runFrame(2);
+  assert.equal(env.covers().length, 0);
+  wall.close();
 });

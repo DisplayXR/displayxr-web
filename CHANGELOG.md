@@ -7,6 +7,16 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — `rectCover` no longer covers a tile the browser is still weaving (core; `'auto'` on `./splat` and `./model`)
+
+On a browser that reports `XRDisplayLayer.wovenState` (DisplayXR Browser on Windows), the cover now
+follows that report. Nothing is raised while the tile stays `woven` through a move or resize; the
+cover goes up only when the tile leaves the weave (`pending` / `withheld`) and comes down on the
+first `woven` read. Before, it went up on every change and stayed up for a hold. On browser 1.10.3
+the tile stays woven through a corner-drag resize, so the cover was woven with it: each eye got half
+of its 2D left eye, twice as wide, over the black fill (browser-pvt#364). Browsers without the report
+(macOS, Linux, Android, older Windows builds) keep the hold-based cover as before.
+
 ### Fixed — a devicePixelRatio-only change now reaches scene windows (core + `./viewer`)
 
 A browser zoom or a drag to a monitor at a different scale changes devicePixelRatio without moving
