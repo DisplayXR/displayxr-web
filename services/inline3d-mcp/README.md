@@ -107,7 +107,9 @@ node test/live.mjs --checks              # + one check_url and one check_files (
 vercel deploy --prod                     # from this directory (project displayxr-mcp)
 ```
 
-Worker image: on main, CI builds `ghcr.io/displayxr/inline3d-checker:<sha>`. Roll the endpoint by
+Worker image: on main, CI builds `ghcr.io/displayxr/inline3d-checker:<sha>`. The package is PUBLIC
+and the endpoint pulls it with no registry credential: a private, credentialed GHCR pull stalled
+for 16+ minutes on RunPod, the public pull cold-starts in about a minute. Roll the endpoint by
 setting its image to the new tag (RunPod console or API); running workers finish on the old image.
 Keep `@displayxr/inline3d-tools` at the same version in `package.json`, `worker/Dockerfile` and
 `lib/server.mjs` (`TOOLS_VERSION`): CI checks it.
