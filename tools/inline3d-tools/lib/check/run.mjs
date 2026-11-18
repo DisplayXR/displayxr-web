@@ -15,6 +15,12 @@ const PROBE_SRC = readFileSync(join(HERE, 'probe.js'), 'utf8');
 const FAKE_SRC = readFileSync(join(HERE, 'fake-env.js'), 'utf8');
 export const VERSION = JSON.parse(readFileSync(join(HERE, '..', '..', 'package.json'), 'utf8')).version;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const SNAP_TRIES = 6, SNAP_RETRY_MS = 150;
+function eyeBlank(snap) {
+  if (!snap || !snap.sw || snap.error) return false; // reported as is; nothing to retry against
+  const [L, R] = halves(fromBase64Rgba(snap.rgba, snap.sw, snap.sh));
+  return contentStats(L).blank || contentStats(R).blank;
+}
 const DOCS = 'node_modules/@displayxr/inline3d/docs';
 const MPP = 0.3456 / 1920; // metres per CSS px on the fake panel (see fake-env.js)
 
@@ -181,7 +187,18 @@ async function fakeRun(conn, url, opt, origin) {
   summary = await ev(page, '__dxrCheck.summary()').catch(() => summary);
   const layers = [];
   for (const l of (summary ? summary.layers : []).filter((x) => x.open).slice(0, 4)) {
-    const snap = await ev(page, `__dxrCheck.snap(${l.index}, 640)`).catch((e) => ({ error: String(e) }));
+    // One commit-time frame can catch an eye not yet drawn on a fast GPU (seen on a cloud GPU: the
+    // left half transparent, the right half drawn, in ~4 of 10 runs of a page that passes
+    // everywhere else). The readiness loop above already saw both halves drawn, so re-take the
+    // snapshot a few times before reporting a blank eye; a page whose eye is really blank stays
+    // blank in every sample and still fails.
+    let snap = await ev(page, `__dxrCheck.snap(${l.index}, 640)`).catch((e) => ({ error: String(e) }));
+    let snapTries = 1;
+    while (snapTries < SNAP_TRIES && eyeBlank(snap)) {
+      await sleep(SNAP_RETRY_MS);
+      snap = await ev(page, `__dxrCheck.snap(${l.index}, 640)`).catch((e) => ({ error: String(e) }));
+      snapTries++;
+    }
     const buffer = await ev(page, `__dxrProbe.bufferInfo(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
     const occlusion = await ev(page, `__dxrProbe.occlusionAudit(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
     const css = await ev(page, `__dxrProbe.cssAudit(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
@@ -194,7 +211,7 @@ async function fakeRun(conn, url, opt, origin) {
     const cssAll = seen
       ? { problems: [...seen.problems.values()], decorations: [...seen.decorations], animations: [...seen.animations.values()] }
       : css || { problems: [], decorations: [], animations: [] };
-    layers.push({ ...l, snap, buffer, occlusion, css: cssAll });
+    layers.push({ ...l, snap, snapTries, buffer, occlusion, css: cssAll });
   }
   const shaderErrors = await ev(page, '__dxrProbe.shaderErrors').catch(() => []);
   const scrollY = await ev(page, 'window.scrollY').catch(() => 0);
@@ -443,7 +460,7 @@ function buildChecks(fake, plain, opt) {
     for (const l of open) {
       if (!l.px) continue;
       const f = (st) => ({ blank: st.blank, black: !!st.black, transparent: !!st.transparent, contentPct: +(st.contentFraction * 100).toFixed(2), meanLum: +st.meanLum.toFixed(1) });
-      details.push({ selector: l.selector, left: f(l.px.statsL), right: f(l.px.statsR) });
+      details.push({ selector: l.selector, left: f(l.px.statsL), right: f(l.px.statsR), snapshots: l.snapTries || 1 });
     }
     if (details.length) {
       const bad = details.filter((d) => d.left.blank || d.right.blank);
