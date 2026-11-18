@@ -11,7 +11,15 @@ import { runCheck } from '../lib/check/run.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..', '..');
 const PAGE = join(HERE, 'fixtures', 'scene.html');
-const skip = findChrome() ? false : 'no Chrome on this machine';
+// These need a Chrome that can actually draw WebGL. GitHub's hosted Linux runners cannot (the
+// context is lost and the drawing buffer is 0x0), so first check the correct fixture page draws
+// both eyes, and skip with the reason if it does not.
+let skip = findChrome() ? false : 'no Chrome on this machine';
+if (!skip) {
+  const base = await runCheck(PAGE, { root: REPO, fallback: false });
+  const c = base.checks.find((x) => x.id === 'eyes-not-blank');
+  if (c.status !== 'pass') skip = `this Chrome cannot render the fixture (${c.summary}); WebGL unavailable?`;
+}
 const eyes = (r) => r.checks.find((c) => c.id === 'eyes-not-blank');
 // What the page did, for a failure message: did it reach a session, draw frames, log errors?
 const why = (r) => r.checks.filter((c) => ['session', 'console', 'buffer'].includes(c.id)).map((c) => `${c.id}=${c.status}: ${c.summary}`).join(' | ');
