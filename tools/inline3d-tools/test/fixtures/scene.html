@@ -134,6 +134,7 @@ else {
   else {
     let cover = null;
     if (bug === 'none' || bug === 'stuck-cover') { cover = document.createElement('div'); cover.className = 'cover'; cover.id = 'cover'; stage.appendChild(cover); }
+    let frameNo = 0;
     const handle = wall.addScene(canvas, (views, layer) => {
       if (views.length < 2) return;
       const vps = views.map((v) => layer.getViewport(v));
@@ -143,7 +144,11 @@ else {
       gl.viewport(0, 0, canvas.width, canvas.height); gl.scissor(0, 0, canvas.width, canvas.height);
       if (bug === 'black') { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); gl.disable(gl.SCISSOR_TEST); return; } // WRONG: draws nothing
       clear();
+      frameNo++;
       views.forEach((v, i) => {
+        // blank-left: WRONG, the left eye is never drawn. flicker-left: fine, but the left eye is
+        // missing from 1 frame in 3, like a one-frame race the checker must not call a blank eye.
+        if (i === 0 && (bug === 'blank-left' || (bug === 'flicker-left' && frameNo % 3 === 0))) return;
         const vp = vps[i];
         gl.viewport(vp.x, vp.y, vp.width, vp.height); gl.scissor(vp.x, vp.y, vp.width, vp.height);
         const src = bug === 'same-eyes' ? views[0] : v; // WRONG for same-eyes: one camera in both halves
