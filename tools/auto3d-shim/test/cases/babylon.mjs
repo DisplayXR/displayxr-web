@@ -34,6 +34,10 @@
 //   bjs-rt-own     v0.7.2: a customRenderTargets target drawn from a view of its own, the same for both eyes (as
 //                  Babylon's ReflectiveShadowMap draws from its light): drawn once per frame, the refraction target
 //                  next to it still per eye; bjs-rt-own-ab (A/B, bjsCustomRTOwnView false): drawn 3 times a frame
+//   bjs-rt-own-cam v0.7.8: the same target switches to the camera's view after the latch: released, drawn per
+//                  eye again; bjs-rt-own-cam-ab (A/B, bjsCustomRTOwnViewRecheck false): stays drawn once
+//   bjs-rt-own-dispose v0.7.8: the page disposes the light target: its probe goes with it (one probe left, the
+//                  refraction target's); bjs-rt-own-dispose-ab (A/B, bjsRtProbeDispose false): two kept
 //   bjs-ss-late    live before any material compiled: the eye targets are tried again each second and come on
 //   bjs-trap-clean a three.js page (WebGL, no Babylon): no `_gl` key on Object.prototype after the task, three converts
 //   bjs-scope-*    v0.7.1: the trap is armed only by a getContext that looks like Babylon's (counted from the page:
@@ -195,6 +199,35 @@ export default function cases({ P, NEW, productShim }) {
       alsoCheck(r, t, h, R) {
         const last = r.probe || [];
         t('control: not recognised, the light target drawn 3 times a frame', R.customRtOwnView === 0 && last.length === 40 && last.every((n) => n === 3), `customRtOwnView ${R.customRtOwnView}; ${JSON.stringify(last)}`);
+      } },
+    // v0.7.8 (#257 review): the latch is re-checked. The light target switches to the camera's view at frame
+    // 170, after it was recognised; seen in the scene's single draw with the page camera's view 3 frames
+    // running, it is released and drawn per eye again.
+    { ...base, id: 'bjs-rt-own-cam', name: 'Babylon.js, a target with a view of its own that switches to the camera: released, drawn per eye again', url: U + '?cam=arc&keep=1&refr=1&lightrt=1&lightcam=170&freeze=260',
+      probe: '(() => window.__lightPerFrame.slice(-40))()',
+      alsoCheck(r, t, h, R) {
+        const last = r.probe || [];
+        t('recognised first, then released once (logged)', R.customRtOwnView === 1 && R.customRtOwnViewReleased === 1 && r.log.some((l) => /render target lightview now draws from the camera/.test(l)), `customRtOwnView ${R.customRtOwnView}, released ${R.customRtOwnViewReleased}; ${r.log.filter((l) => /lightview/.test(l)).join(' | ')}`);
+        t('drawn 3 times a frame again (the last 40 frames)', last.length === 40 && last.every((n) => n === 3), JSON.stringify(last));
+      } },
+    { ...base, id: 'bjs-rt-own-cam-ab', name: 'A/B: the same, the latch not re-checked (bjsCustomRTOwnViewRecheck false): still drawn once', url: U + '?cam=arc&keep=1&refr=1&lightrt=1&lightcam=170&freeze=260', cfg: { bjsCustomRTOwnViewRecheck: false },
+      probe: '(() => window.__lightPerFrame.slice(-40))()',
+      alsoCheck(r, t, h, R) {
+        const last = r.probe || [];
+        t('control: never released, the target drawn once a frame from the camera', R.customRtOwnViewReleased === 0 && last.length === 40 && last.every((n) => n === 1), `released ${R.customRtOwnViewReleased}; ${JSON.stringify(last)}`);
+      } },
+    // v0.7.8 (#257 review): a probe goes with its target. The page disposes the light target at frame 170;
+    // the refraction target's probe is the only one left.
+    { ...base, id: 'bjs-rt-own-dispose', name: "Babylon.js, the page disposes a probed render target: the probe is dropped with it", url: U + '?cam=arc&keep=1&refr=1&lightrt=1&lightdispose=170&freeze=220',
+      probe: '(() => window.__lightDisposed === true)()',
+      alsoCheck(r, t, h, R) {
+        t('the target was disposed', r.probe === true, String(r.probe));
+        t('one probe left (the refraction target)', R.customRtProbes === 1, `customRtProbes ${R.customRtProbes}`);
+      } },
+    { ...base, id: 'bjs-rt-own-dispose-ab', name: 'A/B: the same, probes not dropped on dispose (bjsRtProbeDispose false): two kept', url: U + '?cam=arc&keep=1&refr=1&lightrt=1&lightdispose=170&freeze=220', cfg: { bjsRtProbeDispose: false },
+      probe: '(() => window.__lightDisposed === true)()',
+      alsoCheck(r, t, h, R) {
+        t('control: the disposed target keeps its probe (two)', r.probe === true && R.customRtProbes === 2, `disposed ${r.probe}, customRtProbes ${R.customRtProbes}`);
       } },
     { ...base, id: 'bjs-gbuf-shared', name: 'A/B: SSAO2 on the geometry buffer, converted WITHOUT the right eye\'s G-buffer (the left eye\'s reused)', url: U + '?cam=arc&fx=ssao', cfg: { bjsGBuffer: 'shared' },
       alsoCheck(r, t, h, R) {

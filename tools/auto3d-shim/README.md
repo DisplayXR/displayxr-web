@@ -758,6 +758,14 @@ eyes the same mono picture.
     view) stay per eye.
   - Static bakes were never redrawn (`refreshRate` 0). `ReflectionProbe` does not use
     `customRenderTargets`.
+  - **The decision is re-checked (v0.7.8, `T.bjsCustomRTOwnViewRecheck`, from David's review of
+    #257).** A target left to the scene's single draw is no longer drawn in the eyes' passes, so the
+    check moves to that single draw: drawn with the page camera's view three frames running (a target
+    that switched from a light to the camera), it is released and drawn per eye again. It logs `render
+    target <name> now draws from the camera …`.
+  - **A probe goes with its target (v0.7.8, `T.bjsRtProbeDispose`).** It is dropped on the target's
+    `onDisposeObservable`, not kept until the rig is removed. `state()` reports
+    `customRtOwnViewReleased` and `customRtProbes`.
 - **Harness.**
   - `bjs-refr`: a window in front of the scene samples such a target at `gl_FragCoord`. The pair
     matches at the fake's shift through it (residual 0.04). `bjs-refr-mono` (A/B, not drawn per
@@ -765,6 +773,11 @@ eyes the same mono picture.
   - `bjs-rt-own`: next to it, a target drawn from a fixed light view, as `ReflectiveShadowMap` is. It
     is drawn once a frame over the last 40 frames, and the window still matches per eye.
     `bjs-rt-own-ab` (A/B, the probe off): three times a frame.
+  - `bjs-rt-own-cam`: the same light target switches to the camera's view after it was recognised. It
+    is released once and drawn three times a frame again over the last 40 frames.
+    `bjs-rt-own-cam-ab` (A/B, no re-check): never released, once a frame.
+  - `bjs-rt-own-dispose`: the page disposes the light target. One probe is left, the refraction
+    target's. `bjs-rt-own-dispose-ab` (A/B, kept on dispose): two.
 
 **Eye targets: each eye renders like a mono frame (`T.bjsEyeTarget`).** An eye drawn straight into
 half the canvas breaks every screen-space lookup keyed to the render target, `uv = gl_FragCoord.xy /
@@ -1610,6 +1623,17 @@ Open after the device run (not fixed here):
 - `demos/car-showcase`: the car body's reflections differ between the eyes. They are the box-projected
   environment and the area lights' highlights, which are view-dependent and correctly per eye (as they are
   in life); with a clear coat and low roughness they differ a lot, which crosstalk makes tiring. Not a bug.
+
+**Headless, v0.7.8 (from David's review of #257: the own-view decision re-checked; a probe dropped with its
+target), Windows, ANGLE D3D11 + WebGPU:** 4 new cases in `test/cases/babylon.mjs`.
+- **Full pass.** 197 run, 2 skipped (`c` / `d`: no `ports_25.sog`), all green.
+- **Re-check** (`bjs-rt-own-cam`, `bjs-rt-own-cam-ab`). The light target of `bjs-rt-own` switches to the
+  camera's view at frame 170, after it was recognised. It is released once, logged, and drawn three times a
+  frame over the last 40 frames. Without the re-check (A/B): never released, once a frame.
+- **Dispose** (`bjs-rt-own-dispose`, `bjs-rt-own-dispose-ab`). The page disposes the light target at frame
+  170: one probe left, the refraction target's. Without the drop (A/B): two.
+- The third note (a page's `Error.prepareStackTrace` sees the raised limit during the WebGPU check) is left
+  as is: the effect is negligible.
 
 **Headless, v0.7.4 (PlayCanvas 2.24 and engine versions side by side), macOS, ANGLE Metal + WebGPU (Apple
 M1 Pro):** the official PlayCanvas examples (playcanvas.com/examples, engine 2.24.0), every one of the
