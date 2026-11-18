@@ -31,3 +31,6 @@ test/bundlers/out/
 
 # Panel e2e run output (test/e2e/samples-panel.e2e.mjs): screenshots, logs, results
 test/e2e/out/
+# The hosted connector has real (pinned) dependencies too: its CI installs them with `npm ci`.
+!services/inline3d-mcp/package-lock.json
+services/inline3d-mcp/.vercel/

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [{ "source": "/mcp", "destination": "/api/mcp" }],
+  "functions": { "api/mcp.mjs": { "maxDuration": 60 } },
+  "headers": [{ "source": "/(.*)", "headers": [{ "key": "x-content-type-options", "value": "nosniff" }] }]
+}
