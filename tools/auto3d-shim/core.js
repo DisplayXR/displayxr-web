@@ -82,6 +82,9 @@ function dxrCore(cfg, cap, S) {
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
     guardSteadyMs: 2000, // ... once the page's own 2D rate has been steady this long (a page still streaming is not judged again yet) ...
     guardRetryMaxMs: 30000, // ... or after this long at the latest
+    guardLoadQuietMs: 1000, // ... no window counts while the page is loading: the document not complete, or a resource
+                            // (fetch / XHR / image / script) finished within this long (v0.7.7) ...
+    guardLoadMaxMs: 20000,  // ... but only up to this long after the cover drop: a page that never stops loading is judged anyway
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
     gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)

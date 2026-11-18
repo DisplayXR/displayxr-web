@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.6 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.7 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,7 +489,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.6'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.7'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -520,6 +520,8 @@ function dxrCore(cfg, cap, S) {
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
     guardSteadyMs: 2000, // ... once the page's own 2D rate has been steady this long (a page still streaming is not judged again yet) ...
     guardRetryMaxMs: 30000, // ... or after this long at the latest
+    guardLoadQuietMs: 1000, // ... no window counts while the page is loading: the document not complete, or a resource
+    guardLoadMaxMs: 20000,  // ... but only up to this long after the cover drop: a page that never stops loading is judged anyway
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
     gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
@@ -1617,6 +1619,14 @@ function dxrGuard(core) {
   let retryTimer = 0, retryAt = 0;
   const waitDraws = []; // page draw times during the retry wait (any canvas): the steadiness test
 
+  let lastResourceEnd = 0, loadNoted = false;
+  try {
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) if (e.responseEnd > lastResourceEnd) lastResourceEnd = e.responseEnd;
+    }).observe({ type: 'resource', buffered: true });
+  } catch (e) { /* no Resource Timing: the readyState test alone */ }
+  const loading = (t) => document.readyState !== 'complete' || (lastResourceEnd > 0 && t - lastResourceEnd < T.guardLoadQuietMs);
+
   document.addEventListener('visibilitychange', () => {
     for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
   });
@@ -1653,6 +1663,11 @@ function dxrGuard(core) {
     s.last = t;
     const warm = (st.coverDropAt || st.layerAt || 0) + T.guardWarmupMs;
     if (t - s.readyAt < ARM_MS || t < warm || !prev) return;
+    if (t - (st.coverDropAt || st.layerAt || 0) < T.guardLoadMaxMs && loading(t)) {
+      s.dts.length = 0; s.sum = 0;
+      if (!loadNoted) { loadNoted = true; core.info('frame-rate guard: the page is still loading, not judging the frame rate yet'); }
+      return;
+    }
     const dt = t - prev;
     if (!(dt > 0) || dt > MAX_DT) return; // a hitch (GC, tab switch, debugger) is not a rate
     s.dts.push(dt); s.sum += dt;

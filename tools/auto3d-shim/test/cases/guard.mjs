@@ -74,6 +74,17 @@ const streamingPrelude = (loadMs) => `(() => {
   };
   requestAnimationFrame(f);
 })();`;
+// loadingPrelude plus a request every 300 ms over the same window (a page pulling its assets):
+// Resource Timing sees each one finish. loadMs < 0: requests forever.
+const fetchingPrelude = (ms, loadMs) => loadingPrelude(ms, loadMs < 0 ? 1e9 : loadMs) + `(() => {
+  let n = 0;
+  const f = () => {
+    const L = window.__fakeXR && window.__fakeXR.layers[0];
+    if (!L || ${loadMs} < 0 || performance.now() - L.at < 1200 + ${loadMs}) fetch('/tools/auto3d-shim/manifest.json?n=' + n++, { cache: 'no-store' }).then((r) => r.text()).catch(() => {}); // read the body: Chrome adds a fetch's Resource Timing entry only once its body is consumed
+    if (!L || ${loadMs} < 0 || performance.now() - L.at < 1200 + ${loadMs}) setTimeout(f, 300);
+  };
+  f();
+})();`;
 const fpsOver = async (page, ms) => {
   const a = await page.evaluate(() => ({ f: window.__fakeXR.frames, t: performance.now() }));
   await new Promise((r) => setTimeout(r, ms));
@@ -266,6 +277,47 @@ export default function cases({ P, NEW, MARKS }) {
         if (!O) return;
         t('ends LIVE, no guard report', !!S && !O.reports.some((x) => x.status === 'guard') && O.reports[O.reports.length - 1].status === 'live',
           `active ${!!S}, sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+      },
+    },
+    {
+      // v0.7.7: the same 8 s load as g-loading-long, but the page is pulling assets (a request every
+      // 300 ms) while it is slow. The guard sees the load and does not judge it: no trip, no retry, one
+      // session (Lume Pad 2, villa-sales: tripped at 15 fps on load, no baseline, 2D blip until the retry).
+      id: 'g-loading-fetch', name: 'frame-rate guard: 90 ms a frame for 8 s after go-live WHILE fetching assets -> not judged: no trip, one session, LIVE',
+      url: P + 'pc-orbit.html', shim: [fetchingPrelude(90, 8000), ...NEW], cfg: { guardFps: 15 },
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.layers.length >= 1, { timeout: 20000, polling: 100 });
+        const slow = await fpsOver(page, 3000);
+        await page.waitForFunction(() => performance.now() - window.__fakeXR.layers[0].at > 17000, { timeout: 30000, polling: 200 });
+        await page.waitForFunction(settled(), { timeout: 20000, polling: 100 });
+        return { slow, out: await page.evaluate(readOut) };
+      },
+      check(r, t) {
+        const O = r.out, S = O && O.state.renderers.find((x) => x.active);
+        t('the loading phase really ran below guardFps (15) in 3D', r.ok && r.slow < 15, r.error || `${r.slow && r.slow.toFixed(1)} session fps`);
+        t('the guard said it was waiting for the load', r.log.some((l) => /frame-rate guard: the page is still loading/.test(l)), r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
+        t('no trip (no "back to 2D: frame-rate guard")', !r.log.some((l) => /back to 2D: frame-rate guard/.test(l)), r.log.filter((l) => /frame-rate guard/.test(l)).join(' | '));
+        if (!O) return;
+        t('LIVE on the first session: one session, no close, no guard report', !!S && O.sessions === 1 && O.closes.length === 0 && !O.reports.some((x) => x.status === 'guard'),
+          `active ${!!S}, sessions ${O.sessions}, closes ${O.closes.length}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+      },
+    },
+    {
+      // v0.7.7: a page that never stops loading (requests forever) and stays slow is still judged once
+      // guardLoadMaxMs has passed (shortened to 6 s here): the first trip, as before.
+      id: 'g-loading-cap', name: 'frame-rate guard: slow AND fetching forever -> judged after guardLoadMaxMs anyway (first trip)',
+      url: P + 'pc-orbit.html', shim: [fetchingPrelude(90, -1), ...NEW], cfg: { guardFps: 15, guardLoadMaxMs: 6000 },
+      async run(page, h) {
+        await page.waitForFunction(() => window.__fakeXR.layers.length >= 1, { timeout: 20000, polling: 100 });
+        await page.waitForFunction(() => (window.__dxrAuto3DReports || []).some((r) => r.status === 'converting' && /frame-rate guard/.test(r.reason || '')), { timeout: 30000, polling: 100 }).catch(() => {});
+        const at = await page.evaluate(() => performance.now() - window.__fakeXR.layers[0].at);
+        return { at, out: await page.evaluate(readOut) };
+      },
+      check(r, t) {
+        const O = r.out, rep = O && O.reports.find((x) => x.status === 'converting' && /frame-rate guard: .*retrying once/.test(x.reason || ''));
+        // The report, not the console: the "back to 2D" line comes after the fade-out, which at ~11 fps can outlast the wait.
+        t('tripped, announcing the one retry (report converting, reason frame-rate guard … retrying once)', r.ok && !!rep, r.error || (O && O.reports.map((x) => x.status + (x.reason ? ` (${x.reason})` : '')).join(' -> ')));
+        t('not before the cap (layer + hold + guardLoadMaxMs 6 s)', r.at > 1200 + 6000, `${r.at && r.at.toFixed(0)} ms after the layer`);
       },
     },
     {

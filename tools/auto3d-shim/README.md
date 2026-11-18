@@ -931,7 +931,12 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
   hitches > 250 ms and hidden time are excluded, and a `visibilitychange` starts over. **Warm-up
   (v0.5.2):** no window starts within `guardWarmupMs` (4 s) of the cover drop, so a page that is
   still loading its assets is not judged by its load (Spark hello-world / streaming-lod tripped at
-  25-39 fps 4-5 s after go-live on the panel, then run at a steady 60 / ~44). Trip: under
+  25-39 fps 4-5 s after go-live on the panel, then run at a steady 60 / ~44). **Still loading
+  (v0.7.7):** after the warm-up, no window counts while the document is not complete or a resource
+  (fetch / XHR / image / script) finished within `guardLoadQuietMs` (1 s), up to `guardLoadMaxMs`
+  (20 s) after the cover drop (Lume Pad 2, villa-sales: still pulling assets past the warm-up, it
+  tripped at 15 fps with no baseline and blipped to 2D for the retry). A load that makes no requests
+  (pure CPU) is not seen and keeps the trip + one retry. Trip: under
   `guardFps` (**15** since v0.5.3; 24 in v0.5.2, 40 before; David, 2026-09-28: 24 still reverted heavy splat worlds that read well at 25-44 fps) over `guardMs` (2 s) **and**, when there is a baseline, under **0.6** × baseline (0.8 before; David, 2026-09-28: heavy splat worlds run 25-44 fps in 3D on the panel and look great) (a
   page that already runs at 30 fps in 2D is not the conversion's fault).
   **Retry once (v0.5.2).** On ANY first trip in a document: the ordinary turn-off (fade, out-cover,
@@ -967,6 +972,8 @@ dev build only.
 | `guardRetryMs` | 6000 | after a first guard trip, wait at least this long before the one retry ... |
 | `guardSteadyMs` | 2000 | ... and until the page's 2D rate has been steady this long ... |
 | `guardRetryMaxMs` | 30000 | ... or this long at the latest |
+| `guardLoadQuietMs` | 1000 | no window counts while a resource finished within this long, or the document is not complete (v0.7.7) ... |
+| `guardLoadMaxMs` | 20000 | ... up to this long after the cover drop |
 | `eyesOffMs` | 1000 | the chip's dot goes amber only after this long without two-view frames |
 | `eyesOnMs` | 300 | ... and back to green after this long with them |
 | `eyeScale` | 0.5 | per-eye width / the element's device width (before v0.5.2: of the page's store) |

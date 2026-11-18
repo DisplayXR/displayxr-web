@@ -17,7 +17,13 @@
 // T.guardWarmupMs (4 s) after the cover drop (P0.2: a page that is still loading its assets —
 // Spark's hello-world and streaming-lod on the panel, 25-39 fps for the first seconds, then a steady
 // 60 / 44 — must not be judged by its loading phase). Intervals over 250 ms and hidden-page time are
-// excluded, and a visibilitychange starts over. Trip: the mean rate over the last T.guardMs is below
+// excluded, and a visibilitychange starts over. No window counts while the page is still LOADING
+// (v0.7.7): the document is not complete, or a resource (fetch / XHR / image / script, Resource
+// Timing) finished within T.guardLoadQuietMs (1 s), up to T.guardLoadMaxMs (20 s) after the cover
+// drop. Lume Pad 2, villa-sales (PlayCanvas 2.24): still pulling its assets past the 4 s warm-up, it
+// tripped at 15 fps with no 2D baseline, went 2D, and came back on the retry 6 s later; a needless
+// 2D blip on load. A load that is pure CPU (no requests) is not seen this way and keeps the trip +
+// one retry below. Trip: the mean rate over the last T.guardMs is below
 // T.guardFps (15; 24 in v0.5.2) AND, when there is a baseline, below GUARD_REL (0.6) × baseline (a page that runs at
 // 30 fps in 2D is not the conversion's fault). David, 2026-09-28: heavy splat worlds (Marble via Spark
 // streaming-lod) run 25-44 fps in 3D on the panel and look great; the old 40 / 0.8 kept reverting them,
@@ -45,6 +51,17 @@ function dxrGuard(core) {
   let retried = false; // the one retry this document gets
   let retryTimer = 0, retryAt = 0;
   const waitDraws = []; // page draw times during the retry wait (any canvas): the steadiness test
+
+  // The page is still loading: the document is not complete, or a resource finished within
+  // guardLoadQuietMs. Resource Timing sees a request only once it has finished, so a single long
+  // download in flight reads as quiet; most pages pull many assets and finish one every few hundred ms.
+  let lastResourceEnd = 0, loadNoted = false;
+  try {
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) if (e.responseEnd > lastResourceEnd) lastResourceEnd = e.responseEnd;
+    }).observe({ type: 'resource', buffered: true });
+  } catch (e) { /* no Resource Timing: the readyState test alone */ }
+  const loading = (t) => document.readyState !== 'complete' || (lastResourceEnd > 0 && t - lastResourceEnd < T.guardLoadQuietMs);
 
   // A hidden page runs no frames (or throttled ones): whatever was measured around it is not the
   // conversion's cost. Start over, 2D ring included.
@@ -86,6 +103,12 @@ function dxrGuard(core) {
     // The warm-up: no window starts within guardWarmupMs of the cover drop (the page may be loading).
     const warm = (st.coverDropAt || st.layerAt || 0) + T.guardWarmupMs;
     if (t - s.readyAt < ARM_MS || t < warm || !prev) return;
+    // Still loading (inside the cap): no window counts; the window starts over once the page is quiet.
+    if (t - (st.coverDropAt || st.layerAt || 0) < T.guardLoadMaxMs && loading(t)) {
+      s.dts.length = 0; s.sum = 0;
+      if (!loadNoted) { loadNoted = true; core.info('frame-rate guard: the page is still loading, not judging the frame rate yet'); }
+      return;
+    }
     const dt = t - prev;
     if (!(dt > 0) || dt > MAX_DT) return; // a hitch (GC, tab switch, debugger) is not a rate
     s.dts.push(dt); s.sum += dt;
