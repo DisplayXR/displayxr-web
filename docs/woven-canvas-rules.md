@@ -265,7 +265,10 @@ the frame the change is seen: a solid color with the last frame's left eye, cove
 the cover is **live**: while it is up, it redraws the left eye of each new frame once the page has
 redrawn for the new box, so a window drag shows the content moving in 2D rather than one frozen
 frame for the whole drag (`rectCover: { live: false }` keeps the still). The cover
-comes down when `rewoven()` settles. Pass `rectCover: 'off'` if the page runs its own cover. On
+comes down when `rewoven()` settles. Where the browser reports `wovenState` (DisplayXR Browser on
+Windows), the cover follows the report instead: it goes up only if the tile actually leaves the weave
+after the change, and comes down on the first `woven` read, so a drag the browser keeps weaving shows
+no cover at all (measured below). Pass `rectCover: 'off'` if the page runs its own cover. On
 core windows (`addScene` / `addImage` / `addVideo`) the same primitive is opt-in: pass
 `rectCover: 'auto'` (or `{ color, snapshot }`), or keep your own cover and release it on
 `handle.rewoven()`. A move is seen at the next session frame, so a move your page makes after that
@@ -280,6 +283,13 @@ flash of the **whole browser viewport** about a second later. With it, the pictu
 page cover can hide it. That is why the player's cover is opt-in. Keep the rule for a page whose
 resize does show the pair.
 
+**Measured on a DS1 (4K, 300 %), browser 1.10.3, 18 November:** through every step of a hand
+corner-drag of the Shop demo, the browser reported the tile `woven`, and the cover (raised on each
+change, as before the report path) was woven with it. Each eye got half of the cover's 2D left eye,
+stretched twice as wide, over its black fill, until the drag stopped (browser-pvt#364). With the
+cover hidden, the drag stayed 3D apart from an occasional dropped frame, which is the browser's
+(browser-pvt#351). A cover of your own over a tile that is still woven is woven the same way.
+
 A scroll is not a resize. The canvas keeps its size and its identity, and nothing needs covering.
 
 #### Resize checklist (November 2026)
@@ -287,9 +297,10 @@ A scroll is not a resize. The canvas keeps its size and its identity, and nothin
 From a study of two production pages on the 8K panel: one that blinked black on every resize step
 (cover off, canvas moved a frame late) and one that went flat for the whole drag (cover on, a still
 frame restarted at every step). The rules below are what keeps a resize as short and as clean as the
-page can make it. During a continuous window drag nothing a page does keeps the tile **3D**: every
-step re-joins the rect, and the gap is the browser's (§4). What a page controls is whether that gap
-shows black, a stale frame, or live 2D.
+page can make it. On that panel's browser, nothing a page did kept the tile **3D** during a
+continuous window drag: every step re-joined the rect, and the gap is the browser's (§4). What a page
+controls is whether that gap shows black, a stale frame, or live 2D. (Browser 1.10.3 on Windows keeps
+the tile woven through a corner drag; see the measurement above.)
 
 1. **Let the SDK size the buffer, or size it inside `onResize`.** For an `addScene` canvas, resize
    the backing store in the `onResize(box)` callback and draw a frame in that same callback (it runs
@@ -309,8 +320,10 @@ shows black, a stale frame, or live 2D.
 6. **Use a cover, and prefer the SDK's** (`rectCover: 'auto'`, live since 1.52). Without one, every
    step of a drag shows the gap; with a still cover, the whole drag is one frozen frame. The live
    cover is 2D for the drag plus about one hold after it, and 3D comes back when `rewoven()` settles.
-   Running your own cover: raise it before the change, release it on `handle.rewoven()`, and keep its
-   picture updated if the change can last longer than a second.
+   Where the browser reports `wovenState`, the SDK's cover goes up only while the tile is out of the
+   weave. Running your own cover: raise it before the change, release it on `handle.rewoven()`, and
+   keep its picture updated if the change can last longer than a second. On a browser that reports
+   `handle.wovenState`, keep it down while that reads `'woven'`: a cover over a woven tile is woven.
 7. **Don't fight the cap.** A box that never stops changing settles anyway after four holds
    (`hold-capped`), and the cover comes down for at least a frame. That is deliberate: an endless CSS
    transition must not hide a tile for good.

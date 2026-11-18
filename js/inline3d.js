@@ -1118,7 +1118,8 @@ class Inline3D {
    *        border-radius can't: it would round the packed SBS square's outer corners and
    *        come out lopsided after the eye-split).
    * @param {'auto'|'off'|{color?:string, snapshot?:boolean}} [opts.rectCover='off']  (every add*())
-   *        cover the canvas across a later move/resize until rewoven() settles; see _rectCoverCheck.
+   *        cover the canvas across a later move/resize until rewoven() settles (where the browser
+   *        reports wovenState: only while the tile is out of the weave); see _rectCoverCheck.
    * @param {number} [opts.feather=0]  fade each eye's outer edges to transparent over this
    *        many buffer px, so the 3D window dissolves into the page instead of ending at a
    *        hard rectangle. Same reason CSS can't do it: a mask/filter on the canvas applies
@@ -2551,7 +2552,23 @@ class Inline3D {
       // box: the last key seen (null = not looked yet); el: the cover element, made on first use;
       // up: showing; snapped/snapWanted: this cycle's one snapshot; waiting: the rewoven promise
       // that takes it down; w/h: the CSS box at the last look (the snapshot's source aspect).
-      win.rc = { cfg: rcCfg, box: null, el: null, up: false, snapped: false, snapWanted: false, waiting: null, w: 0, h: 0 };
+      // armed/armedAt/changeFrame: the report path's episode (see _rectCoverFollowReport) — open
+      // from a change until a 'woven' read is about the new rect, when it started, and the session
+      // frame of its last change.
+      win.rc = {
+        cfg: rcCfg,
+        box: null,
+        el: null,
+        up: false,
+        snapped: false,
+        snapWanted: false,
+        waiting: null,
+        w: 0,
+        h: 0,
+        armed: false,
+        armedAt: 0,
+        changeFrame: null,
+      };
     }
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
@@ -3704,11 +3721,27 @@ class Inline3D {
   // canvas: two 2:1 candidates in one region are refused as ambiguous, rule 6), raised on the
   // frame the change is seen and cut when rewoven() settles.
 
-  /** Per frame, before the draw: has the box (size, dpr, page position) changed since the last look? */
+  /**
+   * Per frame, before the draw: has the box (size, dpr, page position) changed since the last look?
+   *
+   * Where the browser reports `wovenState`, the cover follows that report instead of the hold
+   * (_rectCoverFollowReport): a cover is only useful over a tile that is NOT in the weave. Over a
+   * tile the browser is still weaving it is worse than nothing, because it is part of the picture
+   * that gets woven: a 2D left eye, read as a side-by-side pair, puts each half of it, stretched
+   * twice as wide, into one eye (browser-pvt#364, a corner-drag resize on Windows, where the tile
+   * stays 'woven' through every step of the drag).
+   */
   _rectCoverCheck(win) {
     const rc = win.rc;
+    const ws = win.wsLive && win.layer ? readWovenState(win.layer) : null;
     const key = boxKeyOf(win.canvas);
-    if (key === rc.box) return;
+    if (key !== rc.box) this._rectCoverChanged(win, key, ws);
+    if (ws && rc.armed) this._rectCoverFollowReport(win, ws);
+  }
+
+  /** The box changed this frame (@p ws: the browser's report this frame, or null where it has none). */
+  _rectCoverChanged(win, key, ws) {
+    const rc = win.rc;
     const first = rc.box === null;
     const prevW = rc.w;
     const prevH = rc.h;
@@ -3721,6 +3754,16 @@ class Inline3D {
     // will not weave has nothing to wait for. A confirmed withheld first result still covers.
     const fw = win.fwResult;
     if (!fw || win.rwGone || !(fw.woven || fw.confirmed)) return;
+    if (ws) {
+      // The report path: nothing is raised on the change itself. The episode stays open until a
+      // 'woven' read is about the new rect; a 'pending' / 'withheld' read inside it raises the cover.
+      if (!rc.armed) {
+        rc.armed = true;
+        rc.armedAt = nowMs();
+      }
+      rc.changeFrame = this._frameCount;
+      return;
+    }
     if (!rc.up) {
       if (!rc.snapped) rc.aspect = prevH > 0 ? prevW / prevH : 0; // what the eye looked like on screen
       this._raiseCover(win);
@@ -3742,6 +3785,41 @@ class Inline3D {
         this._lowerCover(win);
       });
     }
+  }
+
+  /**
+   * The report path, once per session frame while an episode is open (a change seen, no 'woven'
+   * read about the new rect yet):
+   *
+   * - 'woven': the tile is in the weave, so the cover comes down on this frame if it is up. The
+   *   report trails the weave by 1-3 frames (WOVEN_STATE_LAG_FRAMES), so a cover raised over a
+   *   rejoin shows woven for at most that long. The episode closes once the read is that many
+   *   frames past the last change: it is about the new rect.
+   * - 'pending' / 'withheld': the tile left the weave, and the page's own raster of it (black, or
+   *   the squeezed pair) is what is on screen. The cover goes up over it, as plain 2D.
+   *
+   * A layer that never comes back (a CSS effect on an ancestor, rule 7) must not keep a cover up
+   * for good: the same cap as rewoven()'s, from the start of the episode, lowers it and closes it.
+   */
+  _rectCoverFollowReport(win, ws) {
+    const rc = win.rc;
+    if (ws === 'woven') {
+      if (rc.up) this._lowerCover(win);
+      if (this._frameCount - rc.changeFrame >= WOVEN_STATE_LAG_FRAMES) rc.armed = false;
+      return;
+    }
+    const cap = REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+    if (nowMs() - rc.armedAt >= cap) {
+      if (rc.up) this._lowerCover(win);
+      rc.armed = false;
+      return;
+    }
+    if (rc.up) return;
+    // Raised a frame or more after the change, so the page has usually drawn at the new size by
+    // now: the snapshot crops from the buffer's own eye aspect rather than the old box's.
+    rc.aspect = 0;
+    this._raiseCover(win);
+    if (rc.cfg.snapshot && rc.w > 0 && rc.h > 0) rc.snapWanted = true;
   }
 
   _raiseCover(win) {
