@@ -1,0 +1,62 @@
+name: inline3d hosted connector
+
+# services/inline3d-mcp: the hosted MCP connector (Vercel front end) and its GPU checker worker
+# image (RunPod). Tests run on every PR that touches it. On main, a worker change builds and pushes
+# ghcr.io/displayxr/inline3d-checker:<short sha>; rolling the endpoint onto it is a manual step
+# (services/inline3d-mcp/README.md, "Deploy").
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/inline3d-mcp/**"
+      - ".github/workflows/inline3d-mcp.yml"
+  pull_request:
+    paths:
+      - "services/inline3d-mcp/**"
+      - ".github/workflows/inline3d-mcp.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        working-directory: services/inline3d-mcp
+        run: npm ci
+      - name: Tests
+        working-directory: services/inline3d-mcp
+        run: npm test
+      - name: Worker and front end pin the same tools version
+        run: |
+          set -e
+          a=$(node -p "require('./services/inline3d-mcp/package.json').dependencies['@displayxr/inline3d-tools']")
+          b=$(grep -o '@displayxr/inline3d-tools@[0-9.]*' services/inline3d-mcp/worker/Dockerfile | cut -d@ -f3)
+          c=$(grep -o "TOOLS_VERSION = '[0-9.]*'" services/inline3d-mcp/lib/server.mjs | grep -o "[0-9.]*")
+          echo "package.json $a, Dockerfile $b, server.mjs $c"
+          test "$a" = "$b" && test "$a" = "$c"
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          tag=ghcr.io/displayxr/inline3d-checker:$(git rev-parse --short=10 HEAD)
+          docker build -t "$tag" services/inline3d-mcp/worker
+          docker push "$tag"
+          echo "pushed $tag" >> "$GITHUB_STEP_SUMMARY"
