@@ -88,6 +88,11 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
   const server = new McpServer({ name: 'displayxr-inline3d', title: 'DisplayXR inline 3D', version: SERVER_VERSION }, {
     instructions: 'Tools for building @displayxr/inline3d web pages: glasses-free 3D that the DisplayXR Browser shows on 3D displays, with a 2D fallback everywhere else. Read get_authoring_guide before writing a page, start from scaffold_page, and run check_files (or check_url for a deployed page) before calling the page done.',
   });
+  // Directories read the tool's display name from annotations.title as well as the top-level
+  // title (the Claude directory flags a tool without it), so every tool carries both, equal.
+  const register = server.registerTool.bind(server);
+  server.registerTool = (name, cfg, cb) => register(name, { ...cfg, annotations: { title: cfg.title, ...cfg.annotations } }, cb);
+
 
   // Start a worker when none is up, so the check that usually follows finds it warm.
   async function warm(reason) {
