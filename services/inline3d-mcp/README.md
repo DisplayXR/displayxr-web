@@ -120,3 +120,19 @@ Keep `@displayxr/inline3d-tools` at the same version in `package.json`, `worker/
 - **Claude Code**: `claude mcp add --transport http displayxr-inline3d https://mcp.displayxr.org/mcp`
 - **ChatGPT** (developer mode): Settings → Apps → Create → the URL, no authentication.
 - **Codex**: `codex mcp add displayxr-inline3d --url https://mcp.displayxr.org/mcp`
+
+## OpenAI plugin package
+
+`openai-plugin/` is the package submitted to the OpenAI (ChatGPT and Codex) plugin directory, in the
+Agent Plugins format: `plugin.json` (listing fields under `extensions.com.openai.interface`, review
+test cases under `extensions.com.openai.review`), `mcp.json` (this server, no authentication), one
+skill that points at this server's tools, and the icon. `review.test_cases.*.tools_triggered` must
+be a string (comma-separated), not a list: the portal rejects a list although the schema allows it.
+Build the upload with:
+
+```sh
+mkdir -p /tmp/oaipkg && cp -R openai-plugin /tmp/oaipkg/displayxr-inline-3d && (cd /tmp/oaipkg && zip -qr ../displayxr-inline-3d-openai.zip displayxr-inline-3d)
+```
+
+`public/.well-known/openai-apps-challenge` is the portal's domain-verification token (public by
+design; served as text/plain, no trailing newline).
