@@ -56,6 +56,15 @@ test('every tool is read-only with explicit hints and a title (both directories 
   }
 });
 
+test('tool descriptions state facts only: no tool names another tool (directory policy)', async () => {
+  const c = await connect({});
+  const { tools } = await c.listTools();
+  const names = tools.map((t) => t.name);
+  for (const t of tools) {
+    for (const other of names) if (other !== t.name) assert.ok(!t.description.includes(other), `${t.name} description names ${other}`);
+  }
+});
+
 test('guide carries the hosted note and the checklist, and warms a worker once', async () => {
   const rp = fakeRunpod();
   const limits = budget(memoryStore());

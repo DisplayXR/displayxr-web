@@ -164,7 +164,7 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
 
   server.registerTool('get_authoring_guide', {
     title: 'Inline-3D authoring guide',
-    description: 'The authoring checklist for @displayxr/inline3d pages (glasses-free 3D on 3D displays in the DisplayXR Browser, 2D everywhere else): content type and entry point, view rig, depth and comfort, woven-canvas rules, page chrome, exact pins, assets. Read it before writing or fixing a page.',
+    description: 'The authoring checklist for @displayxr/inline3d pages (glasses-free 3D on 3D displays in the DisplayXR Browser, 2D everywhere else): content type and entry point, view rig, depth and comfort, woven-canvas rules, page chrome, exact pins, assets.',
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => {
@@ -238,7 +238,7 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
 
   server.registerTool('check_files', {
     title: 'Check an inline-3D page (files)',
-    description: 'Run the inline-3D checker on a page passed as its own text files: headless Chrome on a GPU loads it twice, inside a simulated DisplayXR Browser (two real eye views) and plain (the 2D fallback), and reports pass/warn/fail per rule (session, stereo, blank eyes, flat side-by-side, buffer, CSS, overlay, layer lost, console, 2D fallback, detection, pins, depth). The files are served only to the checker and deleted afterwards. Assets the page loads must be at public URLs. Takes 10-20 s, plus about a minute if the checker has to start: then it returns a job_id for get_check_result.',
+    description: 'Run the inline-3D checker on a page passed as its own text files: headless Chrome on a GPU loads it twice, inside a simulated DisplayXR Browser (two real eye views) and plain (the 2D fallback), and reports pass/warn/fail per rule (session, stereo, blank eyes, flat side-by-side, buffer, CSS, overlay, layer lost, console, 2D fallback, detection, pins, depth). The files are served only to the checker and deleted afterwards. Assets the page loads must be at public URLs. Takes 10-20 s, plus about a minute when the checker has to start; a check still running after 40 s returns a job_id instead of the report.',
     inputSchema: {
       files: z.array(z.object({
         path: z.string().regex(/^(?!\/)(?!.*(^|\/)\.\.(\/|$))[A-Za-z0-9._/-]{1,200}$/).describe('Relative path, e.g. index.html or js/app.js'),
@@ -258,7 +258,7 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
 
   server.registerTool('check_url', {
     title: 'Check an inline-3D page (URL)',
-    description: 'Run the inline-3D checker on a deployed page at a public http(s) URL (a site or a deploy preview; not localhost). Same checks as check_files: simulated DisplayXR Browser plus plain 2D run, pass/warn/fail per rule. Takes 10-20 s, plus about a minute if the checker has to start: then it returns a job_id for get_check_result.',
+    description: 'Run the inline-3D checker on a deployed page at a public http(s) URL (a site or a deploy preview; not localhost). Same checks as the file check: simulated DisplayXR Browser plus plain 2D run, pass/warn/fail per rule. Takes 10-20 s, plus about a minute when the checker has to start; a check still running after 40 s returns a job_id instead of the report.',
     inputSchema: {
       url: z.string().url().describe('Public http(s) URL of the page'),
       ...checkOptions,
@@ -274,7 +274,7 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
 
   server.registerTool('get_check_result', {
     title: 'Get a running check\'s result',
-    description: 'Collect the result of a check_files or check_url call that answered with a job_id. Waits up to 40 s; if the check is still running, says so and you call again.',
+    description: 'Returns the report of a page check that answered with a job_id. Waits up to 40 s; if the check is still running it says so. Results are kept 30 minutes.',
     inputSchema: { job_id: z.string().regex(/^[A-Za-z0-9_-]{8,120}$/).describe('The job_id a check tool returned') },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async ({ job_id }) => {
