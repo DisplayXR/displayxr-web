@@ -1,0 +1,97 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "displayxr-inline-3d",
+  "version": "0.1.1",
+  "description": "Build and check web pages that show 3D on Spatial Displays: an authoring guide, a starter template, a page checker that runs the page in a simulated DisplayXR Browser and in plain 2D, and a glTF/GLB model check. Read-only; no sign-in.",
+  "author": {
+    "name": "DisplayXR",
+    "url": "https://displayxr.org"
+  },
+  "homepage": "https://mcp.displayxr.org/",
+  "repository": "https://github.com/DisplayXR/displayxr-web",
+  "license": "Apache-2.0",
+  "keywords": [
+    "displayxr",
+    "inline-3d",
+    "spatial-displays",
+    "3d-display",
+    "webxr",
+    "gltf"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "DisplayXR inline 3D",
+        "shortDescription": "Build and check 3D web pages",
+        "longDescription": "DisplayXR inline 3D helps you build web pages with @displayxr/inline3d: pages that show 3D on Spatial Displays in the DisplayXR Browser, and a normal 2D view in every other browser.\n\n- Authoring guide: the rules that make a 3D page look right: content type, view rig, depth and comfort, canvas rules, page chrome, exact version pins.\n- Starter template: a known-good page to start from.\n- Page checker: loads the page in a simulated DisplayXR Browser (two real eye views) and in a plain browser, and reports pass, warn or fail per rule: real stereo, no blank eye, no flat side-by-side flash, nothing covering the 3D canvas, a working 2D fallback, and depth inside the comfort zone. Check a deployed page by URL, or send the page's files directly; nothing is hosted or kept.\n- Model check: whether a .glb or .gltf is ready for a 3D page: size, triangles, textures, materials and pivot.\n\nAll tools are read-only. No sign-in. A passing check means the page works in a simulated 3D browser; it is not a test on a real Spatial Display.",
+        "developerName": "David Fattal",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Read"
+        ],
+        "websiteURL": "https://mcp.displayxr.org/",
+        "supportURL": "https://github.com/DisplayXR/displayxr-web/issues",
+        "privacyPolicyURL": "https://displayxr.org/privacy#hosted-checker",
+        "termsOfServiceURL": "https://displayxr.org/terms",
+        "defaultPrompt": [
+          "Build a web page that shows a rotating 3D model on a Spatial Display, with a 2D fallback.",
+          "Check my 3D page for problems: <paste URL>",
+          "Is this .glb model ready for a 3D page on a tablet? <paste URL>"
+        ],
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Build a 3D page from the template and check it",
+              "prompt": "Build me a web page that shows a slowly rotating torus knot in 3D on a Spatial Display, with a 2D fallback, and check it.",
+              "tools_triggered": "get_authoring_guide, scaffold_page, check_files",
+              "expected_behavior": "Reads the guide, starts from the template, edits app.js to show a torus knot, and runs check_files on the files. The report's verdict line is PASS (or every FAIL is fixed and the page checked again)."
+            },
+            {
+              "description": "Check a deployed page by URL",
+              "prompt": "Check my 3D page for problems: https://displayxr.github.io/displayxr-web/samples/hello-cube/",
+              "tools_triggered": "check_url",
+              "expected_behavior": "Runs check_url (and get_check_result if a job_id comes back). Reports verdict WARN with the no-flat-sbs rule: the raw side-by-side pair may flash on load; the fix is to cover the canvas until the first woven frame."
+            },
+            {
+              "description": "Check a glTF model against the tablet budget",
+              "prompt": "Is this model ready for a 3D page on a tablet? https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@main/Models/Duck/glTF-Binary/Duck.glb",
+              "tools_triggered": "check_asset_url",
+              "expected_behavior": "Runs check_asset_url and reports verdict WARN: the pivot is off-centre and should be recentred; every other check (triangles, textures, materials, size) passes."
+            },
+            {
+              "description": "Diagnose a blank eye",
+              "prompt": "Here is my 3D page. On the 3D display the left eye is black. What's wrong? (index.html, app.js and style.css pasted below)",
+              "tools_triggered": "check_files",
+              "expected_behavior": "Runs check_files on the pasted files. The eyes-not-blank rule fails and names the left eye; the assistant explains the cause, proposes a fix and checks again."
+            },
+            {
+              "description": "Answer a depth question from the guide",
+              "prompt": "How far in front of the screen can objects come before it gets uncomfortable on a 3D display?",
+              "tools_triggered": "get_authoring_guide",
+              "expected_behavior": "Answers from the guide's depth and comfort section (keep content near the display plane, inside the comfort zone) without running a check."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Local dev server",
+              "prompt": "Check my dev server at http://localhost:5173 for 3D issues."
+            },
+            {
+              "description": "Model generation request",
+              "prompt": "Generate a 3D model of a red sports car."
+            },
+            {
+              "description": "Ordinary 2D page",
+              "prompt": "Write me a normal marketing landing page with a contact form."
+            }
+          ]
+        },
+        "demo_recording_url": "https://youtu.be/hFOdYtiMjEA"
+      }
+    }
+  }
+}
