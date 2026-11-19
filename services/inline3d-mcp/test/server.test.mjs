@@ -49,9 +49,19 @@ test('every tool is read-only with explicit hints and a title (both directories 
   assert.deepEqual(tools.map((t) => t.name).sort(), ['check_asset_url', 'check_files', 'check_url', 'get_authoring_guide', 'get_check_result', 'scaffold_page']);
   for (const t of tools) {
     assert.ok(t.title, `${t.name} title`);
+    assert.equal(t.annotations.title, t.title, `${t.name} annotations.title`);
     assert.equal(t.annotations.readOnlyHint, true, t.name);
     assert.equal(t.annotations.destructiveHint, false, t.name);
     assert.equal(typeof t.annotations.openWorldHint, 'boolean', t.name);
+  }
+});
+
+test('tool descriptions state facts only: no tool names another tool (directory policy)', async () => {
+  const c = await connect({});
+  const { tools } = await c.listTools();
+  const names = tools.map((t) => t.name);
+  for (const t of tools) {
+    for (const other of names) if (other !== t.name) assert.ok(!t.description.includes(other), `${t.name} description names ${other}`);
   }
 });
 
