@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "displayxr-inline-3d",
-  "version": "0.1.0",
-  "description": "Build and check web pages that show glasses-free 3D on 3D displays: an authoring guide, a starter template, a page checker that runs the page in a simulated DisplayXR Browser and in plain 2D, and a glTF/GLB model check. Read-only; no sign-in.",
+  "version": "0.1.1",
+  "description": "Build and check web pages that show 3D on Spatial Displays: an authoring guide, a starter template, a page checker that runs the page in a simulated DisplayXR Browser and in plain 2D, and a glTF/GLB model check. Read-only; no sign-in.",
   "author": {
     "name": "DisplayXR",
     "url": "https://displayxr.org"
@@ -13,7 +13,7 @@
   "keywords": [
     "displayxr",
     "inline-3d",
-    "glasses-free-3d",
+    "spatial-displays",
     "3d-display",
     "webxr",
     "gltf"
@@ -23,7 +23,7 @@
       "interface": {
         "displayName": "DisplayXR inline 3D",
         "shortDescription": "Build and check 3D web pages",
-        "longDescription": "DisplayXR inline 3D helps you build web pages with @displayxr/inline3d: pages that show glasses-free 3D on 3D displays in the DisplayXR Browser, and a normal 2D view in every other browser.\n\n- Authoring guide: the rules that make a 3D page look right: content type, view rig, depth and comfort, canvas rules, page chrome, exact version pins.\n- Starter template: a known-good page to start from.\n- Page checker: loads the page in a simulated DisplayXR Browser (two real eye views) and in a plain browser, and reports pass, warn or fail per rule: real stereo, no blank eye, no flat side-by-side flash, nothing covering the 3D canvas, a working 2D fallback, and depth inside the comfort zone. Check a deployed page by URL, or send the page's files directly; nothing is hosted or kept.\n- Model check: whether a .glb or .gltf is ready for a 3D page: size, triangles, textures, materials and pivot.\n\nAll tools are read-only. No sign-in. A passing check means the page works in a simulated 3D browser; it is not a test on a real 3D display.",
+        "longDescription": "DisplayXR inline 3D helps you build web pages with @displayxr/inline3d: pages that show 3D on Spatial Displays in the DisplayXR Browser, and a normal 2D view in every other browser.\n\n- Authoring guide: the rules that make a 3D page look right: content type, view rig, depth and comfort, canvas rules, page chrome, exact version pins.\n- Starter template: a known-good page to start from.\n- Page checker: loads the page in a simulated DisplayXR Browser (two real eye views) and in a plain browser, and reports pass, warn or fail per rule: real stereo, no blank eye, no flat side-by-side flash, nothing covering the 3D canvas, a working 2D fallback, and depth inside the comfort zone. Check a deployed page by URL, or send the page's files directly; nothing is hosted or kept.\n- Model check: whether a .glb or .gltf is ready for a 3D page: size, triangles, textures, materials and pivot.\n\nAll tools are read-only. No sign-in. A passing check means the page works in a simulated 3D browser; it is not a test on a real Spatial Display.",
         "developerName": "David Fattal",
         "category": "Developer Tools",
         "capabilities": [
@@ -34,7 +34,7 @@
         "privacyPolicyURL": "https://displayxr.org/privacy#hosted-checker",
         "termsOfServiceURL": "https://displayxr.org/terms",
         "defaultPrompt": [
-          "Build a web page that shows a rotating 3D model in glasses-free 3D, with a 2D fallback.",
+          "Build a web page that shows a rotating 3D model on a Spatial Display, with a 2D fallback.",
           "Check my 3D page for problems: <paste URL>",
           "Is this .glb model ready for a 3D page on a tablet? <paste URL>"
         ],
@@ -46,7 +46,7 @@
           "positive": [
             {
               "description": "Build a 3D page from the template and check it",
-              "prompt": "Build me a web page that shows a slowly rotating torus knot in glasses-free 3D, with a 2D fallback, and check it.",
+              "prompt": "Build me a web page that shows a slowly rotating torus knot in 3D on a Spatial Display, with a 2D fallback, and check it.",
               "tools_triggered": "get_authoring_guide, scaffold_page, check_files",
               "expected_behavior": "Reads the guide, starts from the template, edits app.js to show a torus knot, and runs check_files on the files. The report's verdict line is PASS (or every FAIL is fixed and the page checked again)."
             },
@@ -89,7 +89,8 @@
               "prompt": "Write me a normal marketing landing page with a contact form."
             }
           ]
-        }
+        },
+        "demo_recording_url": "https://youtu.be/hFOdYtiMjEA"
       }
     }
   }
