@@ -261,7 +261,9 @@ itself. The SDK's player (`addPlayer`) does this for its own fullscreen button w
 
 **The SDK covers rect changes for you on `./splat` and `./model`** (1.38, `rectCover: 'auto'` by
 default there). After the first join, a move or resize of the canvas raises a cover over it on
-the frame the change is seen: a solid color with the last frame's left eye, cover-fit. Since 1.52
+the frame the change is seen: a solid color with the last frame's left eye, cover-fit. The color is
+the page's opaque background behind the canvas (black where that is not one opaque color) unless the
+page names one, so a cover that shows for a frame reads as the page's own 2D. Since 1.52
 the cover is **live**: while it is up, it redraws the left eye of each new frame once the page has
 redrawn for the new box, so a window drag shows the content moving in 2D rather than one frozen
 frame for the whole drag (`rectCover: { live: false }` keeps the still). The cover

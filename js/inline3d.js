@@ -847,15 +847,56 @@ function sceneBoxOf(canvas) {
  */
 function resolveRectCover(v) {
   if (v === undefined || v === null || v === false || v === 'off') return null;
-  if (v === 'auto' || v === true) return { color: '#000', snapshot: true, live: true };
+  // color null: the page named none, so each raise fills with what is behind the canvas (coverFillBehind).
+  if (v === 'auto' || v === true) return { color: null, snapshot: true, live: true };
   if (typeof v === 'object') {
     if (v.color !== undefined && typeof v.color !== 'string') {
       throw new TypeError('[inline3d] rectCover.color must be a CSS color string.');
     }
     const snapshot = v.snapshot !== false;
-    return { color: v.color || '#000', snapshot, live: snapshot && v.live !== false };
+    return { color: v.color || null, snapshot, live: snapshot && v.live !== false };
   }
   throw new TypeError(`[inline3d] rectCover: expected 'auto', 'off' or { color?, snapshot?, live? }; got ${JSON.stringify(v)}.`);
+}
+
+/**
+ * The cover's fill when the page named no color: the background behind the canvas, so a cover
+ * that shows for a frame or two (a tile that drops out of the weave mid-drag) reads as the page's
+ * own 2D, not as a black box. The fill has to be OPAQUE, because it hides the canvas's own raster
+ * under the cover (black, or the squeezed pair); its being black never mattered. So: the first
+ * background color from the canvas up, if that color is opaque; the document's own canvas color
+ * (CSS `Canvas`, which follows color-scheme) when nothing from the canvas up paints one; black when
+ * the backdrop is not one opaque color (a translucent color, an image or gradient) or cannot be read.
+ * Read at each raise, so a theme switch between two raises is followed.
+ */
+function coverFillBehind(canvas) {
+  if (typeof getComputedStyle !== 'function') return '#000';
+  try {
+    for (let el = canvas; el; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (!cs) return '#000';
+      if (cs.backgroundImage && cs.backgroundImage !== 'none') return '#000';
+      const a = cssColorAlpha(cs.backgroundColor);
+      if (a === 0) continue;
+      return a === 1 ? cs.backgroundColor : '#000';
+    }
+    return 'Canvas';
+  } catch {
+    return '#000';
+  }
+}
+
+/** Alpha of a computed CSS color (`rgb()` / `rgba()` / `transparent`), or null when it is not one of those. */
+function cssColorAlpha(c) {
+  if (typeof c !== 'string') return null;
+  const s = c.trim();
+  if (s === 'transparent') return 0;
+  const m = /^rgba?\(([^)]*)\)$/i.exec(s);
+  if (!m) return null;
+  const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+  if (parts.length < 4) return 1;
+  const a = parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+  return Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : null;
 }
 
 /**
@@ -3836,7 +3877,6 @@ class Inline3D {
       st.margin = '0';
       st.border = '0';
       st.padding = '0';
-      st.background = rc.cfg.color;
       st.display = 'none';
       // Stack with the canvas, not under it: a canvas the page raised gets the same z-index.
       try {
@@ -3848,6 +3888,7 @@ class Inline3D {
       rc.el = el;
     }
     this._placeCover(win);
+    rc.el.style.background = rc.cfg.color || coverFillBehind(win.canvas);
     rc.el.style.display = 'block';
     rc.up = true;
     // Declared through the existing exclusion path. On a draw-order browser that is a no-op and

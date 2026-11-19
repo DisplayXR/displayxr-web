@@ -43,10 +43,17 @@ export interface TileOptions {
    * A cover over a tile the browser is still weaving would be woven with it: its 2D left eye, read
    * as a side-by-side pair, puts half of the picture, twice as wide, into each eye.
    *
-   * - `'auto'` — `{ color: '#000', snapshot: true, live: true }`.
+   * The fill has to be opaque, because it hides the canvas's own raster under the cover. Without a
+   * `color`, each raise takes the page's background behind the canvas: the first background color
+   * from the canvas up, if it is opaque, or the document's canvas color (CSS `Canvas`, which follows
+   * `color-scheme`) when nothing paints one. It is black when that backdrop is not one opaque color
+   * (a translucent color, an image or a gradient). So a cover that shows for a frame reads as the
+   * page's own 2D rather than a black box.
+   *
+   * - `'auto'` — `{ snapshot: true, live: true }`, filled from the page as above.
    * - `'off'` — nothing; a page that runs its own cover passes this.
-   * - `{ color?, snapshot?, live? }` — `color` any CSS color (default `'#000'`); `snapshot` default
-   *   true; `live` (1.52) default true: while the cover is up its picture follows the canvas (the
+   * - `{ color?, snapshot?, live? }` — `color` any CSS color (default: from the page, as above);
+   *   `snapshot` default true; `live` (1.52) default true: while the cover is up its picture follows the canvas (the
    *   left eye of each new frame, once the page has redrawn for the new box), so a window drag
    *   shows moving 2D content instead of one still frame. `live: false` keeps the single still.
    *

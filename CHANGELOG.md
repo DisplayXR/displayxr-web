@@ -7,6 +7,16 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Changed — `rectCover`'s fill comes from the page behind the canvas, not black (core; `'auto'` on `./splat` and `./model`)
+
+Without a `color`, the cover is now filled with the page's background behind the canvas: the first
+background color from the canvas up, if it is opaque, or the document's canvas color (CSS `Canvas`,
+which follows `color-scheme`) when nothing paints one. It is read at each raise, so a theme switch is
+followed. It stays black when the backdrop is not one opaque color (a translucent color, an image or
+a gradient). The fill only has to be opaque to hide the canvas's own raster, and a black one stood
+out: since the cover goes up only when a tile drops out of the weave, it is often a single frame in a
+drag, and on a light page that read as a black flash. A `color` the page names is used as before.
+
 ## 1.56.1 — 2026-11-18
 
 ### Fixed — `rectCover` no longer covers a tile the browser is still weaving (core; `'auto'` on `./splat` and `./model`)
