@@ -1,4 +1,4 @@
-// inline3d-tools assets — is this glTF/GLB ready for an inline-3D page on a glasses-free 3D display?
+// inline3d-tools assets — is this glTF/GLB ready for an inline-3D page on a Spatial Display?
 // Zero dependencies: reads the glTF JSON, the accessor bounds and the image headers itself.
 //
 //   inline3d-tools assets <file.glb|file.gltf> [--json] [--target desktop|tablet]

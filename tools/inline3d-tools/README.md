@@ -1,6 +1,6 @@
 # @displayxr/inline3d-tools
 
-Tools for building glasses-free 3D web pages on
+Tools for building 3D web pages for Spatial Displays on
 [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d), for any coding agent
 or a human: a headless page checker, a glTF/GLB asset check, page scaffolds, optional paid asset
 generation with provenance, and a stdio [MCP](https://modelcontextprotocol.io) server exposing the

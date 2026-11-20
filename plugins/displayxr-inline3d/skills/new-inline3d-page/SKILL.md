@@ -1,6 +1,6 @@
 ---
 name: new-inline3d-page
-description: Scaffold a new glasses-free 3D web page or app on @displayxr/inline3d from a known-good template (vanilla ESM + import map, or Vite), with one persistent canvas, a cover that always comes off, a 2D fallback and exact version pins. Use when starting a new inline-3D page, demo or app from scratch.
+description: Scaffold a new 3D web page or app for Spatial Displays on @displayxr/inline3d from a known-good template (vanilla ESM + import map, or Vite), with one persistent canvas, a cover that always comes off, a 2D fallback and exact version pins. Use when starting a new inline-3D page, demo or app from scratch.
 argument-hint: "[esm|vite] [target-dir] [model|splat|image|video|player|scene]"
 ---
 

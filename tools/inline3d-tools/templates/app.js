@@ -139,7 +139,7 @@ async function start() {
     // would leave the last side-by-side pair on screen, unwoven.
     onLayerLost: () => start2D('3D layer lost'),
   });
-  statusEl.textContent = 'glasses-free 3D';
+  statusEl.textContent = '3D on a Spatial Display';
   addEventListener('pagehide', () => wall.close());
   const result = await handle.firstWoven; // never rejects
   clearTimeout(coverTimer);

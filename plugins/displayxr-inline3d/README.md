@@ -1,7 +1,7 @@
-# displayxr-inline3d: a Claude Code plugin for glasses-free 3D web pages
+# displayxr-inline3d: a Claude Code plugin for 3D web pages on Spatial Displays
 
 Helps a coding agent build pages on [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d)
-(woven glasses-free 3D in the DisplayXR Browser, plain 2D everywhere else) and **check them
+(woven 3D on Spatial Displays in the DisplayXR Browser, plain 2D everywhere else) and **check them
 before calling them done**.
 
 The plugin itself is instructions only: Markdown skills, plus this README, a licence

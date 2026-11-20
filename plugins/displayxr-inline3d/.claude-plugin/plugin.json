@@ -10,7 +10,7 @@
   "homepage": "https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d",
   "repository": "https://github.com/DisplayXR/displayxr-web",
   "license": "Apache-2.0",
-  "keywords": ["displayxr", "inline-3d", "glasses-free-3d", "3d-display", "webxr", "three", "playcanvas", "stereo", "gltf"],
+  "keywords": ["displayxr", "inline-3d", "spatial-display", "3d-display", "webxr", "three", "playcanvas", "stereo", "gltf"],
   "icon": "./.claude-plugin/icon.png",
   "documentationUrl": "https://github.com/DisplayXR/displayxr-web/blob/main/plugins/displayxr-inline3d/README.md",
   "supportUrl": "https://github.com/DisplayXR/displayxr-web/issues",

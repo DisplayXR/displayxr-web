@@ -1,6 +1,6 @@
 ---
 name: inline3d-assets
-description: Find, convert, optimise, check and (optionally) generate the 3D assets an inline-3D page shows — glTF/GLB models, textures, posters — so they load fast on a tablet and look right on a glasses-free 3D display. Use when a @displayxr/inline3d page needs a model it does not have yet, when an asset is FBX/OBJ/STL/.blend/huge/uncompressed/in centimetres, when the user mentions Blender, glTF-Transform, Meshy, Tripo or AI-generated 3D, or before shipping any model. Records where every asset came from in ASSETS.md.
+description: Find, convert, optimise, check and (optionally) generate the 3D assets an inline-3D page shows — glTF/GLB models, textures, posters — so they load fast on a tablet and look right on a Spatial Display. Use when a @displayxr/inline3d page needs a model it does not have yet, when an asset is FBX/OBJ/STL/.blend/huge/uncompressed/in centimetres, when the user mentions Blender, glTF-Transform, Meshy, Tripo or AI-generated 3D, or before shipping any model. Records where every asset came from in ASSETS.md.
 ---
 
 # Assets for inline-3D pages

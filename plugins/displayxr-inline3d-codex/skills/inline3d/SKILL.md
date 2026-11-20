@@ -1,6 +1,6 @@
 ---
 name: inline3d
-description: Build or fix web pages that show glasses-free 3D with @displayxr/inline3d (the DisplayXR Browser weaves a canvas; any other browser shows 2D). Use whenever code imports @displayxr/inline3d, calls createInline3D / addImage / addVideo / addScene / addPlayer / addModel / addSplat, or the user asks for a 3D web page, 3D photo/video/model/splat viewer, or "inline 3D" for a spatial display. Covers the content type and entry point, the view rig, depth/comfort, the woven-canvas rules, page chrome, exact version pins, and running the checker (`@displayxr/inline3d-tools`, an exact-pinned npm package) before saying done.
+description: Build or fix web pages that show 3D on Spatial Displays with @displayxr/inline3d (the DisplayXR Browser weaves a canvas; any other browser shows 2D). Use whenever code imports @displayxr/inline3d, calls createInline3D / addImage / addVideo / addScene / addPlayer / addModel / addSplat, or the user asks for a 3D web page, 3D photo/video/model/splat viewer, or "inline 3D" for a spatial display. Covers the content type and entry point, the view rig, depth/comfort, the woven-canvas rules, page chrome, exact version pins, and running the checker (`@displayxr/inline3d-tools`, an exact-pinned npm package) before saying done.
 ---
 
 # Building on @displayxr/inline3d

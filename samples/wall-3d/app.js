@@ -100,7 +100,11 @@ function setStatus(mode, detail) {
   // Lazy is the DEFAULT (rootMargin '50% 0px' pre-arms a window half a viewport early, so a fast
   // scroll never reveals a raw un-woven tile). Detection opens a real session -- createInline3D
   // avoids isSessionSupported(), which false-negatives before the OS weave service binds.
-  const wall = await createInline3D();
+  const wall = await createInline3D().catch((err) => {
+    // a rejection must not leave a blank page: log it and take the 2D path below
+    console.warn('inline 3D unavailable, showing 2D', err);
+    return /** @type {import('@displayxr/inline3d').Inline3DUnsupported} */ ({ supported: false, trackingState: 'unknown', error: err });
+  });
 
   if (!wall.supported) {
     for (const t of tiles) {

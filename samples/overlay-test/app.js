@@ -45,7 +45,11 @@ function draw(views, layer) {
 }
 
 (async () => {
-  const xr = await startInline3D(canvas, { onFrame: draw, virtualDisplayHeight: 0.12 });
+  const xr = await startInline3D(canvas, { onFrame: draw, virtualDisplayHeight: 0.12 }).catch((err) => {
+    // a rejection must not leave a blank page: log it and take the 2D path below
+    console.warn('inline 3D unavailable, showing 2D', err);
+    return /** @type {import('@displayxr/inline3d').Inline3DUnsupported} */ ({ supported: false, trackingState: 'unknown', error: err });
+  });
   const probes = ['p5', 'p1', 'p2', 'p3', 'p4'].map((id) => document.getElementById(id));
   if (xr.supported) {
     sbs = true;

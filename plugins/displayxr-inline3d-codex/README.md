@@ -1,8 +1,8 @@
-# displayxr-inline3d-codex: the OpenAI Codex plugin for glasses-free 3D web pages
+# displayxr-inline3d-codex: the OpenAI Codex plugin for 3D web pages on Spatial Displays
 
 The Codex edition of the [`displayxr-inline3d`](../displayxr-inline3d) Claude Code plugin. It has the
 same four skills for pages built on [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d)
-(woven glasses-free 3D in the DisplayXR Browser, plain 2D everywhere else), plus the
+(woven 3D on Spatial Displays in the DisplayXR Browser, plain 2D everywhere else), plus the
 [`@displayxr/inline3d-tools`](https://www.npmjs.com/package/@displayxr/inline3d-tools) MCP server,
 so Codex can check a page from outside its sandbox.
 
