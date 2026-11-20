@@ -242,3 +242,74 @@ export function regionDiff(A, B) {
   for (let i = 0; i < a.length; i++) t += Math.abs(a[i] - b[i]);
   return t / a.length;
 }
+
+/** depth-underused: a camera rig using less than this share of the comfort zone WARNs (= cameraRigComfortFactor above ~3.3). */
+export const DEPTH_ZONE_USE_FLOOR = 0.3;
+/** depth-underused: a display rig with ipdFactor below this (and above 0, which is 2D on purpose) WARNs. */
+export const DISPLAY_IPD_UNDERUSED = 0.5;
+
+/**
+ * Is the page using the depth the display can show? A report, never a limit.
+ *
+ * - Camera rig: MEASURED. `measured` = on-glass disparities (mm, signed, < 0 in front) of the
+ *   textured blocks of the captured default view. Share of the zone used = the binding side,
+ *   max(|p05| / zone.frontMm, p95 / zone.behindMm) (the side cameraRigComfortFactor binds on; its
+ *   factor is 1 / this share). WARN below DEPTH_ZONE_USE_FLOOR: near-zero disparity is a defect.
+ *   A rig converged at infinity WARNs from the rig alone.
+ * - Display rig: from the RIG. ipdFactor / parallaxFactor 1 are the natural depth (full roundness at
+ *   real proportions), so a shallow measured span is not judged; ipdFactor below 0.5 WARNs.
+ * @returns {{status: 'pass'|'warn'|'skip', summary: string, hint?: string, details: object|null}}
+ */
+export function rigDepthUse(rig, measured, zone) {
+  if (rig === undefined) return { status: 'skip', summary: 'no woven layer: no view rig to read', details: null };
+  if (!rig || rig.type !== 'camera') {
+    const ipd = rig && typeof rig.ipdFactor === 'number' ? rig.ipdFactor : 1;
+    const details = { type: 'display', ipdFactor: ipd };
+    if (ipd === 0) return { status: 'pass', summary: 'display rig at ipdFactor 0: 2D on purpose', details };
+    if (ipd < DISPLAY_IPD_UNDERUSED) {
+      return {
+        status: 'warn',
+        summary: `display rig ipdFactor ${+ipd.toFixed(3)}: below ${DISPLAY_IPD_UNDERUSED}, the subject is drawn at under half its natural depth and reads flat`,
+        hint: 'On a display rig ipdFactor and parallaxFactor 1 are the natural depth (full roundness at real proportions): keep them at 1 unless you can name the reason. Too little depth is a failure too.',
+        details,
+      };
+    }
+    return { status: 'pass', summary: `display rig at ipdFactor ${+ipd.toFixed(3)} (1 = natural depth)`, details };
+  }
+  const ipd = typeof rig.ipdFactor === 'number' ? rig.ipdFactor : 1;
+  const m2v = rig.metersToVirtual || 1;
+  const dio = typeof rig.convergenceDiopters === 'number' ? rig.convergenceDiopters : 0;
+  const details = { type: 'camera', ipdFactor: ipd, metersToVirtual: m2v, convergenceDiopters: dio };
+  if (ipd === 0) return { status: 'pass', summary: 'camera rig at ipdFactor 0: 2D on purpose', details };
+  if (!(dio > 0)) {
+    return {
+      status: 'warn',
+      summary: 'camera rig converged at infinity (convergenceDiopters 0): the whole scene sits in front of the glass',
+      hint: 'Converge on the centre of interest (convergence = its distance from the camera), so the subject straddles the glass; then metersToVirtual = the true conversion, or convergence / 2 for a world with no true scale, and ipdFactor ≈ 1 (more for a bounded scene, via cameraRigComfortFactor).',
+      details,
+    };
+  }
+  if (!measured || measured.length < 8 || !zone) {
+    return { status: 'skip', summary: 'camera rig: too few textured blocks to measure its disparity', details };
+  }
+  const D = 1 / dio;
+  const front = Math.max(0, -quantile(measured, 0.05)), back = Math.max(0, quantile(measured, 0.95));
+  const use = Math.max(front / zone.frontMm, isFinite(zone.behindMm) ? back / zone.behindMm : 0);
+  const normM2v = D / 2; // rule 2: the centre of interest declared 2 real metres away
+  const normIpd = (ipd * m2v) / normM2v; // this rig's eye separation on that scale
+  Object.assign(details, {
+    zoneUsed: +use.toFixed(3), floor: DEPTH_ZONE_USE_FLOOR, frontMm: +front.toFixed(2), behindMm: +back.toFixed(2),
+    zoneMm: { front: +zone.frontMm.toFixed(1), behind: +zone.behindMm.toFixed(1) },
+    normalisedMetersToVirtual: +normM2v.toPrecision(3), ipdFactorOnThatScale: +normIpd.toPrecision(3),
+    fillMultiplier: use > 0 ? +(1 / use).toPrecision(3) : null,
+  });
+  if (use < DEPTH_ZONE_USE_FLOOR) {
+    return {
+      status: 'warn',
+      summary: `the scene uses ${Math.round(use * 100)}% of the comfort zone at the default view (measured: ${front.toFixed(1)} mm in front, ${back.toFixed(1)} mm behind the glass): it reads nearly flat`,
+      hint: `Camera-rig rule: (1) convergence = the distance to the centre of interest (here ${+D.toPrecision(3)}), so the subject straddles the glass; (2) never rescale the world, set metersToVirtual: the true conversion if the world has a true scale (metres 1, centimetres 100), else convergence / 2 = ${details.normalisedMetersToVirtual} (the subject declared 2 m away; this rig is ipdFactor ${details.ipdFactorOnThatScale} on that scale), re-set per frame if the camera zooms a lot; (3) ipdFactor tunes depth: ≈ 1 for an open scene, more for a bounded one (typically 1.5–2.5): 0.8–1× of cameraRigComfortFactor({ zNear, zFar, convergence, verticalFov, aspect, tileHeightM, viewerM, ipdFactor, metersToVirtual }) from @displayxr/inline3d/depth. Disparity scales with ipdFactor${details.fillMultiplier ? `: ×${details.fillMultiplier} would fill the zone here` : ''}. Keep parallaxFactor with it.`,
+      details,
+    };
+  }
+  return { status: 'pass', summary: `the scene uses ${Math.round(use * 100)}% of the comfort zone at the default view (${front.toFixed(1)} mm in front, ${back.toFixed(1)} mm behind)`, details };
+}

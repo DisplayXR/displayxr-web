@@ -157,10 +157,14 @@ else {
       });
       gl.disable(gl.SCISSOR_TEST);
     }, {
-      ...(params.get('rig') === 'camera'
+      ...(params.get('rig') === 'camera' || bug === 'depth-underused-camera'
         // A camera rig: the camera 0.26 m in front of the boxes, converged on them.
-        ? { viewRig: { type: 'camera', position: { x: 0, y: 0, z: 0.26 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, verticalFov: 0.5, convergenceDiopters: 1 / 0.26 } }
-        : { virtualDisplayHeight: 0.12 }),
+        // WRONG for depth-underused-camera: ipdFactor 0.04 -> comfort product 0.1, nearly flat.
+        ? { viewRig: { type: 'camera', position: { x: 0, y: 0, z: 0.26 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, verticalFov: 0.5, convergenceDiopters: 1 / 0.26, ...(bug === 'depth-underused-camera' ? { ipdFactor: 0.04, parallaxFactor: 0.04 } : {}) } }
+        // WRONG for depth-underused-display: a display rig turned down to ipdFactor 0.3 for no reason.
+        : bug === 'depth-underused-display'
+          ? { viewRig: { type: 'display', virtualDisplayHeight: 0.12, ipdFactor: 0.3, parallaxFactor: 0.3 } }
+          : { virtualDisplayHeight: 0.12 }),
       // The layer went away for good: go flat (one mono view), the same path as no support.
       // WRONG for noop-layerlost: the last side-by-side pair stays on screen.
       onLayerLost: bug === 'noop-layerlost' ? () => {} : () => fallback(),

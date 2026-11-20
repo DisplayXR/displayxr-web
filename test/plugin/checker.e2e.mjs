@@ -58,6 +58,28 @@ test('camera rig: reported with its comfort number, real stereo', { skip, timeou
   assert.equal(r.info.rig.type, 'camera', show(r));
   assert.ok(Math.abs(r.info.comfort - 0.65 / 0.26) < 0.01, `comfort ${r.info.comfort}`);
   assert.equal(byId(r, 'stereo').status, 'pass', show(r));
+  assert.equal(byId(r, 'depth-underused').status, 'pass', show(r));
+});
+
+test('a nearly flat camera rig WARNs depth-underused from the MEASURED disparity, with the fix', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?bug=depth-underused-camera`);
+  const c = byId(r, 'depth-underused');
+  assert.equal(c.status, 'warn', show(r));
+  assert.ok(c.details.zoneUsed < c.details.floor, JSON.stringify(c.details));
+  assert.equal(c.details.normalisedMetersToVirtual, 0.13); // convergence 0.26 / 2
+  assert.match(c.hint, /cameraRigComfortFactor/);
+});
+
+test('the same camera rig at full eye separation measures above the floor', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?rig=camera`);
+  const c = byId(r, 'depth-underused');
+  assert.equal(c.status, 'pass', show(r));
+  assert.ok(c.details.zoneUsed > c.details.floor, JSON.stringify(c.details));
+});
+
+test('good fixture: depth-underused passes on the natural display rig', { skip, timeout: 60000 }, async () => {
+  const r = await run(FIXTURE);
+  assert.equal(byId(r, 'depth-underused').status, 'pass', show(r));
 });
 
 const CASES = [
@@ -81,6 +103,8 @@ const CASES = [
   ['issupported', 'detection', 'warn'],
   ['noop-layerlost', 'layer-lost', 'fail'],
   ['sticky-blend', 'overlay', 'warn'],
+  ['depth-underused-camera', 'depth-underused', 'warn'],
+  ['depth-underused-display', 'depth-underused', 'warn'],
 ];
 for (const [bug, id, expected, opt] of CASES) {
   test(`broken: ?bug=${bug} -> ${id} ${expected}${opt ? ` ${JSON.stringify(opt)}` : ''}`, { skip, timeout: 60000 }, async () => {

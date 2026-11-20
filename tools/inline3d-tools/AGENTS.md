@@ -15,11 +15,11 @@ sandboxed agent, prefer the MCP server** (below): MCP servers run outside the sa
 sandbox. Otherwise run them as shell commands:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
-npx -y @displayxr/inline3d-tools@0.1.2 assets <file.glb> [--target tablet|desktop]
-npx -y @displayxr/inline3d-tools@0.1.2 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
-npx -y @displayxr/inline3d-tools@0.1.2 scaffold <esm|vite> <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.2 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
+npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.3 assets <file.glb> [--target tablet|desktop]
+npx -y @displayxr/inline3d-tools@0.1.3 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
+npx -y @displayxr/inline3d-tools@0.1.3 scaffold <esm|vite> <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.3 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
 ```
 
 or, with the MCP server configured (`inline3d-tools mcp`; config snippets for Codex, Cursor and
@@ -70,8 +70,23 @@ three when the page already is a three.js app (`addScene` + `EyeCamera`, see
   and zooms): the camera moves, so it is a camera rig. Tie `convergence` to the ground at the view
   centre (raycast the centre of the screen to the ground plane), not to the cursor or a gaze point,
   and cap zoom-in so the comfort product stays ≤ 1.
-- Details: `docs/authoring-inline-3d.md` § View rigs. Comfort on a camera rig:
-  `ipdFactor × metersToVirtual × convergenceDiopters × ~0.6` must stay ≤ 1; never `convergence: 0`.
+- **Use most of the comfort zone: too little depth is a failure too** (near-zero disparity reads
+  flat). Camera-rig eyes are real eyes, `0.063 m × ipdFactor × metersToVirtual` apart (world units
+  per real metre). Rule:
+  1. `convergence` = camera to centre of interest; the subject straddles the glass.
+  2. Never rescale your world; set `metersToVirtual`: true scale (metres, cm, ported VR) → the true
+     conversion (1, 100); no true scale (most games) → `convergence / 2` in your units (subject at
+     2 m; 13.4 → 6.7). If zoom changes the distance a lot, re-set it per frame in `setViewRig`.
+  3. `ipdFactor` tunes depth: ≈ 1 for an open scene (to the horizon); bounded (board, room, track):
+     0.8–1× of `cameraRigComfortFactor({ zNear, zFar, convergence, verticalFov, aspect, tileHeightM,
+     viewerM, ipdFactor, metersToVirtual })` (`@displayxr/inline3d/depth`; fills the zone; often 1.5–2.5).
+  `parallaxFactor` = `ipdFactor`; perspective, tilted camera; never `convergence: 0`. Comfort
+  `ipdFactor × metersToVirtual × convergenceDiopters × N` ≤ 1 (N = `nominalViewerPosition.z`, else
+  0.6 m) is a ceiling, not a target. Example: 13.4 units out, `ipdFactor: 2.5`, `metersToVirtual: 1`
+  uses ~20% of the zone, flat; rule: `metersToVirtual: 6.7`, `ipdFactor` ≈ 1.4–1.7.
+- **Display rig:** `ipdFactor`/`parallaxFactor` 1 = natural, full roundness; don't lower without a reason.
+- Budgets are reports, not limits to stay far inside: never lower depth as the user zooms.
+  Details: `docs/authoring-inline-3d.md` § Aim for real depth.
 
 ### 3. Depth and comfort (`docs/making-3d-look-right.md`, nine rules)
 
@@ -151,8 +166,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ### 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.52.3**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d.js`,
+`@displayxr/inline3d` **1.56.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -160,7 +175,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ### 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
@@ -188,8 +203,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user may be asked to approve the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.2 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.3 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.3 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -199,7 +214,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 | `app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
 | `style.css` | page styles; the canvas and its ancestors carry no CSS effects |
 | `index.html` (esm) | no build step: an import map with exact CDN pins |
-| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.52.3, `three` 0.180.0) |
+| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.56.1, `three` 0.180.0) |
 
 ### Steps
 
@@ -230,18 +245,19 @@ It never overwrites an existing file (`--force` replaces). What it writes:
    without `player.firstWoven`, wait for the first frame and then ~1200 ms more.
 
    Add `"playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs"` and
-   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d-model-entry.js"`
+   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d-model-entry.js"`
    (or `.../js/inline3d-splat-pc-entry.js` for `/splat/playcanvas`) to the import map, or
    `"playcanvas": "2.24.0"` to `package.json`. Images and video use `wall.addImage(canvas, 'pic_2x1.jpg')`
    / `wall.addVideo(canvas, videoEl)` in the 3D branch and an `<img>` of the left half (or a mono
    video) in the 2D branch. Check each export against the installed `.d.ts` before using it.
+   A camera-rig world or game: set its depth by the rule in "Building on @displayxr/inline3d" §2.
 4. Run it: esm → serve the directory (`python3 -m http.server`), or let the checker
    serve it; vite → `npm install && npm run dev`.
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.2 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.2 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.3 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.3 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the
@@ -258,17 +274,17 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.2 assets` (exact pin, from npm; Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.3 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.2 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.3 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ### 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `npx -y @displayxr/inline3d-tools@0.1.2 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+   `npx -y @displayxr/inline3d-tools@0.1.3 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
 2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
    Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
@@ -298,7 +314,7 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
+npx -y @displayxr/inline3d-tools@0.1.3 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
 It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
@@ -314,8 +330,8 @@ helmet is ~0.3 m, not 2 m).
 ### 3. Check it (before the page uses it)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 assets out.glb            # tablet budget (default)
-npx -y @displayxr/inline3d-tools@0.1.2 assets out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.3 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.3 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -329,7 +345,7 @@ animations. Fix every FAIL; act on WARNs or say why not. Then run the page check
 ### 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 gen providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.3 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -350,7 +366,7 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   shippable.
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.3 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ### 5. ASSETS.md

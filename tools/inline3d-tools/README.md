@@ -9,7 +9,7 @@ same operations. [`AGENTS.md`](AGENTS.md) is the matching authoring checklist fo
 Needs Node ≥ 18. `check` also needs a local Chrome or Chromium. Always run an **exact version**:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 <command> ...
+npx -y @displayxr/inline3d-tools@0.1.3 <command> ...
 ```
 
 ## CLI
@@ -47,7 +47,7 @@ environment only and are redacted from every tool result.
 ### Claude Code
 
 ```sh
-claude mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.2 mcp
+claude mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.3 mcp
 ```
 
 or in a project's `.mcp.json`:
@@ -57,7 +57,7 @@ or in a project's `.mcp.json`:
   "mcpServers": {
     "inline3d-tools": {
       "command": "npx",
-      "args": ["-y", "@displayxr/inline3d-tools@0.1.2", "mcp"]
+      "args": ["-y", "@displayxr/inline3d-tools@0.1.3", "mcp"]
     }
   }
 }
@@ -77,7 +77,7 @@ needs you to approve running it outside the sandbox. In `~/.codex/config.toml` (
 ```toml
 [mcp_servers.inline3d-tools]
 command = "npx"
-args = ["-y", "@displayxr/inline3d-tools@0.1.2", "mcp"]
+args = ["-y", "@displayxr/inline3d-tools@0.1.3", "mcp"]
 # cwd = "/path/to/your/project"   # relative paths in tool calls resolve here
 startup_timeout_sec = 30          # first run downloads the package (default 10)
 tool_timeout_sec = 180            # a page check takes 10-60 s; generation can take minutes (default 60)
@@ -85,11 +85,11 @@ tool_timeout_sec = 180            # a page check takes 10-60 s; generation can t
 # env_vars = ["MESHY_API_KEY", "TRIPO_API_KEY", "OPENAI_API_KEY"]
 ```
 
-or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.2 mcp`. The
+or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.3 mcp`. The
 [`displayxr-inline3d-codex` plugin](https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d-codex)
 sets the server up for you in Codex.
 
-**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.2 --version`.
+**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.3 --version`.
 Codex starts MCP servers when a session starts and can stop one before a cold `npx` download
 finishes. The interrupted download leaves a broken entry in npm's `_npx` cache (`node_modules`
 without a `package.json`), and from then on the server fails at every start with
@@ -109,7 +109,7 @@ In `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project):
   "mcpServers": {
     "inline3d-tools": {
       "command": "npx",
-      "args": ["-y", "@displayxr/inline3d-tools@0.1.2", "mcp"]
+      "args": ["-y", "@displayxr/inline3d-tools@0.1.3", "mcp"]
     }
   }
 }
@@ -151,7 +151,7 @@ forwarding). Never paste a key into an agent chat.
 ## check
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
+npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
 ```
 
 Needs Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome` overrides the default location). It
@@ -183,9 +183,10 @@ disparity, so the checker can measure depth in millimetres of screen disparity.
 | `detection` | runtime `isSessionSupported('inline-3d')` calls; static scan of same-origin scripts for it and for UA sniffing next to "DisplayXR" | approximate |
 | `pins` | import-map CDN URLs and `package.json` versions for the SDK, playcanvas and three are exact | approximate |
 | `depth` | block-matched disparity of the primary canvas, in mm of screen disparity, against the Shibata comfort zone at 0.65 m; subject entirely off the glass | approximate |
+| `depth-underused` | too little depth is a failure too (a report, never a limit), 0.1.3. **Camera rig: measured** from the two eye images: the share of the Shibata comfort zone (0.65 m) the default view uses, on its binding side (`max(|p05| / front, p95 / behind)` of the block disparities, mm on the glass; `cameraRigComfortFactor` ≈ 1 / that share). Below 30 % is a WARN; a rig converged at infinity WARNs too. The hint gives the rule: convergence on the centre of interest, `metersToVirtual` = the true conversion or `convergence / 2` (no true scale), then `ipdFactor` ≈ 1 (open scene) or 0.8–1× `cameraRigComfortFactor` (bounded). **Display rig: from the rig** (its natural depth is the subject's real proportions, so the measured span is not judged): `ipdFactor` below 0.5 is a WARN (0 = 2D on purpose) | camera: approximate; display: real |
 
 Also reported: the rig (display/camera and its fields) and, for a camera rig, the comfort number
-`ipdFactor × metersToVirtual × convergenceDiopters × 0.65`.
+`ipdFactor × metersToVirtual × convergenceDiopters × 0.65` (the divergence ceiling: keep ≤ 1).
 
 **Blind spots.** It is not a panel: no weave, no real compositor join, no eye tracking, no crosstalk.
 Views come from the most recently created layer, so a page with several tiles on different rigs is

@@ -10,8 +10,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user approves the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.2 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.3 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.3 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -21,7 +21,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 | `app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
 | `style.css` | page styles; the canvas and its ancestors carry no CSS effects |
 | `index.html` (esm) | no build step: an import map with exact CDN pins |
-| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.52.3, `three` 0.180.0) |
+| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.56.1, `three` 0.180.0) |
 
 ## Steps
 
@@ -52,18 +52,19 @@ It never overwrites an existing file (`--force` replaces). What it writes:
    without `player.firstWoven`, wait for the first frame and then ~1200 ms more.
 
    Add `"playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs"` and
-   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d-model-entry.js"`
+   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d-model-entry.js"`
    (or `.../js/inline3d-splat-pc-entry.js` for `/splat/playcanvas`) to the import map, or
    `"playcanvas": "2.24.0"` to `package.json`. Images and video use `wall.addImage(canvas, 'pic_2x1.jpg')`
    / `wall.addVideo(canvas, videoEl)` in the 3D branch and an `<img>` of the left half (or a mono
    video) in the 2D branch. Check each export against the installed `.d.ts` before using it.
+   A camera-rig world or game: set its depth by the rule in "Building on @displayxr/inline3d" §2.
 4. Run it: esm → serve the directory (`python3 -m http.server`), or let the checker
    serve it; vite → `npm install && npm run dev`.
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.2 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.2 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.3 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.3 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the
