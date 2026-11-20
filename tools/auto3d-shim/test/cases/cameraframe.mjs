@@ -25,7 +25,7 @@ function blockLum(px, w, h, x, y, r = 3) {
 }
 // The background row at 20 % of the height (above the scene) of each eye, at 3 %, 50 % and 97 % of the eye width: a per-eye
 // vignette darkens BOTH edges of each eye alike; one vignette over the pair darkens the outer edges only.
-function vignetteProfile(px, w, h, e) {
+export function vignetteProfile(px, w, h, e) {
   const ew = w / 2, x0 = e * ew, y = Math.round(0.2 * h);
   const at = (f) => blockLum(px, w, h, Math.round(x0 + f * ew), y);
   return { l: at(0.03), m: at(0.5), r: at(0.97) };
@@ -33,7 +33,7 @@ function vignetteProfile(px, w, h, e) {
 // The emissive sphere of pc-cf-mesh.html in eye e: the saturated pixels (min channel >= thr) near the
 // eye's centre; its centroid and radius, and the mean luma of the ring 1.35 r .. 1.9 r around it (the
 // bloom halo, over the blue box behind the sphere).
-function sphere(px, w, h, e, thr = 250) {
+export function sphere(px, w, h, e, thr = 250) {
   const ew = w / 2, x0 = e * ew;
   let n = 0, sx = 0, sy = 0;
   for (let y = Math.round(0.25 * h); y < Math.round(0.75 * h); y++) for (let x = x0 + Math.round(0.15 * ew); x < x0 + Math.round(0.85 * ew); x++) {
@@ -50,10 +50,10 @@ function sphere(px, w, h, e, thr = 250) {
   }
   return { cx: cx - x0, cy, r, ring: s / (k || 1) };
 }
-const settled = (minFrames = 90, extra = 'true') => `(() => { const s = window.__dxrAuto3D && window.__dxrAuto3D.state(); const r = s && s.renderers.find((x) => x.active);
+export const settled = (minFrames = 90, extra = 'true') => `(() => { const s = window.__dxrAuto3D && window.__dxrAuto3D.state(); const r = s && s.renderers.find((x) => x.active);
   return !!(r && r.stats.twoView > ${minFrames} && r.rampK === 1 && !r.ramping && (${extra})); })()`;
-const active = () => { const r = window.__dxrAuto3D.state().renderers.find((x) => x.active); return r ? JSON.parse(JSON.stringify(r)) : null; };
-const frameOf = (g) => ({ w: g.w, h: g.h, px: Buffer.from(g.b64, 'base64'), png: g.png });
+export const active = () => { const r = window.__dxrAuto3D.state().renderers.find((x) => x.active); return r ? JSON.parse(JSON.stringify(r)) : null; };
+export const frameOf = (g) => ({ w: g.w, h: g.h, px: Buffer.from(g.b64, 'base64'), png: g.png });
 // The split, as state() describes it: both eyes on eye-sized targets, eye 0's compose clears and draws
 // into the left half, eye 1's draws into the right half and clears nothing.
 function splitChecks(t, R, want = {}) {

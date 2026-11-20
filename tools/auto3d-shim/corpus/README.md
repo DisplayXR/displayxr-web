@@ -54,8 +54,11 @@ so subframes get nothing in either load.
 
 Each load gets a 30 s navigation budget (`--budget-ms`). If `load` never fires, the partial page is
 judged and the site is marked REVIEW. After load the page is watched for 6 s (plain), 12 s
-(engine) or 10 s (sdk). A terminal report (`live`, `flat`, `standdown`, `guard`, `optout`) ends the
-watch 2 s later. Then the injected tab is reloaded three times for the **warm** sentinel cost.
+(engine) or 10 s (sdk); a site's own `"settleMs"` in `sites.json` replaces its group's (a page whose
+scene arrives late: `arrival-space`, 40 s). A terminal report (`live`, `standdown`, `guard`, `optout`)
+ends the watch 2 s later. `flat` does not (since v0.7.9): it describes the camera the page had at that
+moment, and a page that is still loading may replace it, so the outcome is the last report of the
+window (arrival.space shows an orthographic loading camera first; the watch used to end there). Then the injected tab is reloaded three times for the **warm** sentinel cost.
 Only the injected load reloads. Console errors, page errors and our log lines from those reloads go
 into separate buckets (`warmErrors`, shown as `+N` in the table) and are **not judged**. The verdict
 compares the two first loads, like for like. Repeat visits log things a first visit does not: FedCM
