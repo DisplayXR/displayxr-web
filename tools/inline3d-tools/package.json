@@ -1,6 +1,6 @@
 {
   "name": "@displayxr/inline3d-tools",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent-agnostic tools for @displayxr/inline3d pages: a headless checker (fake DisplayXR Browser + plain 2D run), a glTF/GLB asset check, page scaffolds, optional asset generation with provenance, and a stdio MCP server exposing the same operations.",
   "type": "module",
   "bin": {
@@ -30,7 +30,7 @@
   "keywords": [
     "displayxr",
     "inline-3d",
-    "glasses-free-3d",
+    "spatial-display",
     "3d-display",
     "mcp",
     "model-context-protocol",

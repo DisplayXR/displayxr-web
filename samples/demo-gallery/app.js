@@ -134,7 +134,11 @@ function setStatus(mode, detail) {
   // isSessionSupported(), an async round-trip that resolves FALSE if it runs before the OS
   // weave service has bound -- a false negative that silently drops the page to 2D.)
   // lazy:false: five tiles, all on screen; no point arming an IntersectionObserver.
-  const wall = await createInline3D({ lazy: false });
+  const wall = await createInline3D({ lazy: false }).catch((err) => {
+    // a rejection must not leave a blank page: log it and take the 2D path below
+    console.warn('inline 3D unavailable, showing 2D', err);
+    return /** @type {import('@displayxr/inline3d').Inline3DUnsupported} */ ({ supported: false, trackingState: 'unknown', error: err });
+  });
 
   if (!wall.supported) {
     // Flat: WE own the canvases. Paint the left eye once loaded (they may already be).

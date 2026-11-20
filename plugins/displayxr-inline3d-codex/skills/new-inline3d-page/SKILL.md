@@ -1,6 +1,6 @@
 ---
 name: new-inline3d-page
-description: Scaffold a new glasses-free 3D web page or app on @displayxr/inline3d from a known-good template (vanilla ESM + import map, or Vite), with one persistent canvas, a cover that always comes off, a 2D fallback and exact version pins. Use when starting a new inline-3D page, demo or app from scratch.
+description: Scaffold a new 3D web page or app for Spatial Displays on @displayxr/inline3d from a known-good template (vanilla ESM + import map, or Vite), with one persistent canvas, a cover that always comes off, a 2D fallback and exact version pins. Use when starting a new inline-3D page, demo or app from scratch.
 argument-hint: "[esm|vite] [target-dir] [model|splat|image|video|player|scene]"
 ---
 
@@ -10,8 +10,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user approves the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.1 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.2 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.2 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -37,7 +37,10 @@ It never overwrites an existing file (`--force` replaces). What it writes:
    ```js
    import { createInline3D } from '@displayxr/inline3d';
    import { addModel } from '@displayxr/inline3d/model';          // or: import { addSplat } from '@displayxr/inline3d/splat/playcanvas';
-   const wall = await createInline3D().catch(() => null);           // unsupported -> the viewer draws 2D
+   const wall = await createInline3D().catch((err) => {             // a rejection must not blank the page:
+     console.warn('inline 3D unavailable, showing 2D', err);          // log it, then the viewer draws 2D
+     return null;
+   });
    const handle = addModel(wall, canvas, './assets/model.glb');     // addSplat(wall, canvas, './scene.sog', { engine: 'playcanvas' })
    // the page behind the tile shows around the subject: keep it a soft colour (or pass clearColor)
    Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]).finally(dropCover);
@@ -59,8 +62,8 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.1 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.1 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.2 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.2 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the

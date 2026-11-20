@@ -14,7 +14,11 @@ const q = new URLSearchParams(location.search);
 const signal = q.get('signal') || '';
 const signaling = signal === 'peerjs' ? peerjsCloud() : signal === 'dev' ? dxrSignaling('ws://localhost:8787') : signal ? dxrSignaling(signal) : dxrSignaling();
 
-const wall = await createInline3D({ untrackedFallback: q.get('untracked') === 'mono' ? 'mono' : 'none' });
+const wall = await createInline3D({ untrackedFallback: q.get('untracked') === 'mono' ? 'mono' : 'none' }).catch((err) => {
+  // a rejection must not leave a blank page: log it and take the 2D path below
+  console.warn('inline 3D unavailable, showing 2D', err);
+  return /** @type {import('@displayxr/inline3d').Inline3DUnsupported} */ ({ supported: false, trackingState: 'unknown', error: err });
+});
 const status = document.getElementById('status');
 status.className = 'status ' + (wall.supported ? 'woven' : 'flat');
 status.textContent = wall.supported

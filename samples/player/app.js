@@ -11,6 +11,10 @@ import { addPlayer, PLAYER_ACCENTS } from '@displayxr/inline3d/player';
 //      1.0.5 and earlier, stock Chromium builds).
 // Both are 640x360 per eye: a 3D display's render scale throws the rest away after the interlace.
 // Both players start muted (autoplay policy); unmute from the transport.
+// MP4 is first here ONLY because this sample's WebM has no audio track. With two equivalent
+// encodes, list the VP9/AV1 WebM first and the MP4 as the fallback (docs/authoring-inline-3d.md,
+// "Hosting video"): an MP4 fails on older DisplayXR Browsers, stock Chromium builds and machines
+// without hardware H.264 decode.
 const SRC = [
   { src: '../windows/assets/flymetothemoon_2x1.mp4', type: 'video/mp4; codecs="avc1.640028, mp4a.40.2"' },
   { src: '../windows/assets/flymetothemoon_sbs.webm', type: 'video/webm; codecs="vp9"' },

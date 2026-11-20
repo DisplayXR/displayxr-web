@@ -1,6 +1,6 @@
 # @displayxr/inline3d-tools
 
-Tools for building glasses-free 3D web pages on
+Tools for building 3D web pages for Spatial Displays on
 [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d), for any coding agent
 or a human: a headless page checker, a glTF/GLB asset check, page scaffolds, optional paid asset
 generation with provenance, and a stdio [MCP](https://modelcontextprotocol.io) server exposing the
@@ -9,7 +9,7 @@ same operations. [`AGENTS.md`](AGENTS.md) is the matching authoring checklist fo
 Needs Node ≥ 18. `check` also needs a local Chrome or Chromium. Always run an **exact version**:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 <command> ...
+npx -y @displayxr/inline3d-tools@0.1.2 <command> ...
 ```
 
 ## CLI
@@ -47,7 +47,7 @@ environment only and are redacted from every tool result.
 ### Claude Code
 
 ```sh
-claude mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.1 mcp
+claude mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.2 mcp
 ```
 
 or in a project's `.mcp.json`:
@@ -57,7 +57,7 @@ or in a project's `.mcp.json`:
   "mcpServers": {
     "inline3d-tools": {
       "command": "npx",
-      "args": ["-y", "@displayxr/inline3d-tools@0.1.1", "mcp"]
+      "args": ["-y", "@displayxr/inline3d-tools@0.1.2", "mcp"]
     }
   }
 }
@@ -77,7 +77,7 @@ needs you to approve running it outside the sandbox. In `~/.codex/config.toml` (
 ```toml
 [mcp_servers.inline3d-tools]
 command = "npx"
-args = ["-y", "@displayxr/inline3d-tools@0.1.1", "mcp"]
+args = ["-y", "@displayxr/inline3d-tools@0.1.2", "mcp"]
 # cwd = "/path/to/your/project"   # relative paths in tool calls resolve here
 startup_timeout_sec = 30          # first run downloads the package (default 10)
 tool_timeout_sec = 180            # a page check takes 10-60 s; generation can take minutes (default 60)
@@ -85,11 +85,11 @@ tool_timeout_sec = 180            # a page check takes 10-60 s; generation can t
 # env_vars = ["MESHY_API_KEY", "TRIPO_API_KEY", "OPENAI_API_KEY"]
 ```
 
-or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.1 mcp`. The
+or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.2 mcp`. The
 [`displayxr-inline3d-codex` plugin](https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d-codex)
 sets the server up for you in Codex.
 
-**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.1 --version`.
+**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.2 --version`.
 Codex starts MCP servers when a session starts and can stop one before a cold `npx` download
 finishes. The interrupted download leaves a broken entry in npm's `_npx` cache (`node_modules`
 without a `package.json`), and from then on the server fails at every start with
@@ -109,7 +109,7 @@ In `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project):
   "mcpServers": {
     "inline3d-tools": {
       "command": "npx",
-      "args": ["-y", "@displayxr/inline3d-tools@0.1.1", "mcp"]
+      "args": ["-y", "@displayxr/inline3d-tools@0.1.2", "mcp"]
     }
   }
 }
@@ -151,7 +151,7 @@ forwarding). Never paste a key into an agent chat.
 ## check
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 check <url | dir | page.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
+npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
 ```
 
 Needs Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome` overrides the default location). It
@@ -177,8 +177,9 @@ disparity, so the checker can measure depth in millimetres of screen disparity.
 | (f) `single-session` | concurrent live sessions, a canvas registered twice, overlapping woven canvases | real |
 | (f) `overlay` | grid hit-test (pointer-events forced on) for opaque elements above the canvas after `firstWoven`; a cover present at registration and still there = "never came off"; then a **scroll sweep** over the whole page: chrome that passes over a tile with a filter, blend mode or 3D context, a whole-tile frost, or a section painted over the whole tile. Partial chrome (sticky header, buy card), opaque or translucent, passes: current browsers occlude by draw order | real, grid-sampled |
 | (f) `layer-lost` | ends the session, then compares each canvas with what it showed before: unchanged = the page left its side-by-side pair up (no-op `onLayerLost`) | real |
-| (g) `console` | console errors, uncaught exceptions, HTTP ≥ 400, GL errors, failed shader compile/link | real |
+| (g) `console` | console errors, uncaught exceptions and unhandled promise rejections (labelled as such, 0.1.2), HTTP ≥ 400, GL errors, failed shader compile/link | real |
 | (h) `fallback-2d` | second run without the fake: no errors, and each canvas that wove shows something | real |
+| (h) `startup-guard` | static scan of same-origin scripts: a `createInline3D()` / `sharedInline3D()` / `startInline3D()` call in a file with no `.catch(` or `try`/`catch` at all is a WARN (a rejection there leaves a blank or covered canvas), 0.1.2 | approximate |
 | `detection` | runtime `isSessionSupported('inline-3d')` calls; static scan of same-origin scripts for it and for UA sniffing next to "DisplayXR" | approximate |
 | `pins` | import-map CDN URLs and `package.json` versions for the SDK, playcanvas and three are exact | approximate |
 | `depth` | block-matched disparity of the primary canvas, in mm of screen disparity, against the Shibata comfort zone at 0.65 m; subject entirely off the glass | approximate |

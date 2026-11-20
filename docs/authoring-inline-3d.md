@@ -45,8 +45,9 @@ hands you.
 <canvas id="pic" style="width:240px; height:240px"></canvas>
 <script type="module">
   import { createInline3D } from './js/inline3d.js';
-  const wall = await createInline3D({ lazy: false });
-  if (wall.supported) {
+  const wall = await createInline3D({ lazy: false })
+    .catch((err) => { console.warn('inline 3D unavailable, showing 2D', err); return null; });
+  if (wall?.supported) {
     wall.addImage(document.getElementById('pic'), 'photos/cat_2x1.jpg');
   }
   // else: the <canvas> stays blank on non-DisplayXR browsers — put a 2D <img> fallback
@@ -1324,6 +1325,24 @@ Blink-local `requestSession` path, which resolves correctly and immediately.
 ```js
 import { inline3DAvailable } from './js/inline3d.js';
 if (!inline3DAvailable()) showFlat2D();        // cheap, synchronous, no false-negative
+```
+
+**Handle a rejection too.** Where the session cannot open, `createInline3D()` resolves
+`{ supported:false, error }` rather than throwing, but the promise can still reject, and the
+startup around it (the renderer, a WebGL context, an asset load) often does. An unhandled
+rejection leaves the page with a blank or still-covered canvas: no 3D and no 2D. Catch it, log
+the reason, and fall back to a visible 2D view (or a visible error state):
+
+```js
+async function start() {
+  const wall = await createInline3D();
+  if (!wall.supported) return showFlat2D();
+  // … add windows, load assets …
+}
+start().catch((err) => {
+  console.warn('inline 3D setup failed, showing 2D', err);
+  showFlat2D();                                // and drop any cover over the canvas
+});
 ```
 
 ## Knowing when nobody is tracked

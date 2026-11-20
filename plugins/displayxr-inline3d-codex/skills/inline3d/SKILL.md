@@ -1,6 +1,6 @@
 ---
 name: inline3d
-description: Build or fix web pages that show glasses-free 3D with @displayxr/inline3d (the DisplayXR Browser weaves a canvas; any other browser shows 2D). Use whenever code imports @displayxr/inline3d, calls createInline3D / addImage / addVideo / addScene / addPlayer / addModel / addSplat, or the user asks for a 3D web page, 3D photo/video/model/splat viewer, or "inline 3D" for a spatial display. Covers the content type and entry point, the view rig, depth/comfort, the woven-canvas rules, page chrome, exact version pins, and running the checker (`@displayxr/inline3d-tools`, an exact-pinned npm package) before saying done.
+description: Build or fix web pages that show 3D on Spatial Displays with @displayxr/inline3d (the DisplayXR Browser weaves a canvas; any other browser shows 2D). Use whenever code imports @displayxr/inline3d, calls createInline3D / addImage / addVideo / addScene / addPlayer / addModel / addSplat, or the user asks for a 3D web page, 3D photo/video/model/splat viewer, or "inline 3D" for a spatial display. Covers the content type and entry point, the view rig, depth/comfort, the woven-canvas rules, page chrome, exact version pins, and running the checker (`@displayxr/inline3d-tools`, an exact-pinned npm package) before saying done.
 ---
 
 # Building on @displayxr/inline3d
@@ -95,9 +95,12 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 - [ ] **Never draw one full-width flat picture into a woven canvas.** To show 2D on purpose, call
       `wall.setStereoEnabled(false)` (fall back to easing `ipdFactor` to 0 on `NotSupportedError`).
 - [ ] **2D fallback**: on `!wall.supported` render one mono view or show an `<img>` (the left eye),
-      never the packed side-by-side pair. `createInline3D()` can also **reject**. Guard it with
-      `await createInline3D().catch(() => null)` (or `try`/`catch`) and treat `null` like
-      `!wall.supported`. An uncaught rejection leaves the page with no 3D and no 2D fallback.
+      never the packed side-by-side pair. `createInline3D()` and the startup around it can also
+      **reject** (an unexpected error, no WebGL, a failed import or asset). Guard it, log the reason:
+      `const wall = await createInline3D().catch((err) => { console.warn('inline 3D unavailable, showing 2D', err); return null; });`
+      (or wrap the whole startup in `start().catch(...)`, as the scaffold's `app.js` does), then
+      treat `null` like `!wall.supported`: draw the 2D view, or show a visible error, and drop the
+      cover. An unhandled rejection leaves a blank or still-covered canvas: no 3D and no 2D.
 
 ## 5. Page chrome, HUD and detection
 
@@ -127,7 +130,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;

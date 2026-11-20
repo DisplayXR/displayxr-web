@@ -1,4 +1,4 @@
-// inline3d-tools check — does this @displayxr/inline3d page really render glasses-free 3D?
+// inline3d-tools check — does this @displayxr/inline3d page really render 3D on a Spatial Display?
 //
 //   inline3d-tools check <url | dir | file.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
 //

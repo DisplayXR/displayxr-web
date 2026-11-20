@@ -1,6 +1,6 @@
 ---
 name: inline3d-check
-description: Check an @displayxr/inline3d page in headless Chrome (a fake DisplayXR Browser with two real eye views, plus a plain 2D run) and fix what fails. Use when the user asks to check, test, verify or validate an inline-3D / glasses-free 3D page, or before saying such a page is done.
+description: Check an @displayxr/inline3d page in headless Chrome (a fake DisplayXR Browser with two real eye views, plus a plain 2D run) and fix what fails. Use when the user asks to check, test, verify or validate an inline-3D page, or before saying such a page is done.
 argument-hint: "<url | dir | page.html> [--root <dir>] [--max-texture 4096]"
 allowed-tools: Read, Grep, Glob
 ---
@@ -14,7 +14,7 @@ Run the checker from the exact-pinned `@displayxr/inline3d-tools` npm package (t
 downloads it; the user approves the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 check <url | dir | page.html>
+npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html>
 ```
 
 If the `inline3d-tools` MCP server is configured, its `check` tool does the same (`target`, `root`,

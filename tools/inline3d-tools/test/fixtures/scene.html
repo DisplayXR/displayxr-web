@@ -119,6 +119,7 @@ function fallback() {
 // ---- 3D ------------------------------------------------------------------------------------
 if (bug === 'console-error') { console.error('fixture: something failed'); setTimeout(() => { throw new Error('fixture: uncaught'); }, 50); }
 if (bug === 'gl-error') { gl.bindTexture(12345, null); }
+if (bug === 'unhandled-rejection') Promise.reject(new Error('fixture: setup rejected'));
 
 let supported = false;
 // (spelled indirectly so only the runtime half of the detection check sees it, not the source scan)

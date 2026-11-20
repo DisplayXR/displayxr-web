@@ -192,7 +192,11 @@ function onFrame(views, layer) {
 
 document.getElementById('go').onclick = async () => {
   document.getElementById('go').disabled = true;
-  wall = await createInline3D({ lazy: false });
+  wall = await createInline3D({ lazy: false }).catch((err) => {
+    // a rejection must not leave a blank page: log it and take the 2D path below
+    console.warn('inline 3D unavailable, showing 2D', err);
+    return /** @type {import('@displayxr/inline3d').Inline3DUnsupported} */ ({ supported: false, trackingState: 'unknown', error: err });
+  });
   if (!wall.supported) {
     log('inline-3D not supported here (not the DisplayXR Browser?) — nothing to track.');
     showGate('unknown');

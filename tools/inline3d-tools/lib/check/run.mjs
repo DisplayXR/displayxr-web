@@ -58,7 +58,11 @@ function collect(page, pageOrigin) {
   });
   page.on('Runtime.exceptionThrown', (p) => {
     const d = p.exceptionDetails || {};
-    log.exceptions.push({ text: ((d.exception && d.exception.description) || d.text || 'exception').slice(0, 600), at: d.url ? `${d.url}:${(d.lineNumber || 0) + 1}` : undefined });
+    log.exceptions.push({
+      text: ((d.exception && d.exception.description) || d.text || 'exception').slice(0, 600),
+      at: d.url ? `${d.url}:${(d.lineNumber || 0) + 1}` : undefined,
+      rejection: /in promise/i.test(d.text || ''), // Chrome: "Uncaught (in promise)"
+    });
   });
   page.on('Log.entryAdded', (p) => {
     const e = p.entry || {};
@@ -114,8 +118,20 @@ async function screenshot(page) {
   return decodePng(Buffer.from(data, 'base64'));
 }
 
+// A page script that opens the session (createInline3D / sharedInline3D / startInline3D) but has
+// no catch anywhere: a rejection there is unhandled and leaves a blank or covered canvas.
+// Approximate on purpose: one `.catch(` or `try/catch` anywhere in the file counts as guarded.
+const CREATE_CALL_RE = /\b(?:createInline3D|sharedInline3D|startInline3D)\s*\(/;
+const CATCH_RE = /\.catch\s*\(|\bcatch\s*[({]/;
+export function unguardedCreateCall(source) {
+  const code = String(source || '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1'); // line comments, not the // in a URL
+  return CREATE_CALL_RE.test(code) && !CATCH_RE.test(code);
+}
+
 async function staticScan(page, log) {
-  const findings = { isSessionSupported: [], uaSniff: [], importMaps: [] };
+  const findings = { isSessionSupported: [], uaSniff: [], importMaps: [], createCalls: [], unguardedCreate: [] };
   for (const s of log.scripts.slice(0, 40)) {
     let body = '';
     try {
@@ -125,6 +141,8 @@ async function staticScan(page, log) {
     if (body.length > 3_000_000) continue;
     if (/isSessionSupported\s*\(\s*['"`]inline-3d/.test(body)) findings.isSessionSupported.push(s.url);
     if (/navigator\.(userAgent|userAgentData)/.test(body) && /displayxr/i.test(body)) findings.uaSniff.push(s.url);
+    if (unguardedCreateCall(body)) findings.unguardedCreate.push(s.url);
+    else if (CREATE_CALL_RE.test(body)) findings.createCalls.push(s.url);
     if (s.type === 'Document') {
       const re = /<script[^>]*type\s*=\s*["']importmap["'][^>]*>([\s\S]*?)<\/script>/gi;
       let m;
@@ -358,7 +376,7 @@ function classify(log, shaderErrors) {
       else warnings.push(c.text);
     }
   }
-  for (const e of log.exceptions) errors.push(`uncaught: ${e.text}${e.at ? ` (${e.at})` : ''}`);
+  for (const e of log.exceptions) errors.push(`${e.rejection ? 'unhandled rejection' : 'uncaught'}: ${e.text}${e.at ? ` (${e.at})` : ''}`);
   for (const e of log.logEntries) {
     if (GL_RE.test(e.text)) { gl.push(e.text); continue; }
     if (e.level === 'error' && !ignoreUrl(e.url) && e.source !== 'network') errors.push(`${e.source}: ${e.text}`);
@@ -640,7 +658,9 @@ function buildChecks(fake, plain, opt) {
     checks.push(check('console', 'g', 'No console errors, shader or GL errors', status,
       c.gl[0] ? `GL/shader: ${c.gl[0]}` : c.errors[0] || (c.sdkWarnings[0] ? `SDK warning: ${c.sdkWarnings[0]}` : 'clean console'), {
         details: c,
-        hint: c.sdkWarnings.length && !c.errors.length && !c.gl.length ? 'The SDK warns ([inline3d] ...) only about a page mistake it detected. Read the message: it names the fix.' : undefined,
+        hint: c.errors.some((e) => e.startsWith('unhandled rejection')) && !c.gl.length
+          ? 'A promise rejected with no handler. Await createInline3D() and the setup around it inside try/catch (or start().catch(...)): log the error and show the 2D view, so a failure never leaves a blank or covered canvas.'
+          : c.sdkWarnings.length && !c.errors.length && !c.gl.length ? 'The SDK warns ([inline3d] ...) only about a page mistake it detected. Read the message: it names the fix.' : undefined,
       }));
   }
 
@@ -677,6 +697,22 @@ function buildChecks(fake, plain, opt) {
     if (S.isSessionSupportedCalls.some((c) => c.mode === 'inline-3d') || st.isSessionSupported.length) warns.push(`gates on navigator.xr.isSessionSupported('inline-3d') (${st.isSessionSupported[0] || 'at runtime'}): it can resolve false before the weave service binds. Use createInline3D() / inline3DAvailable().`);
     if (st.uaSniff.length) warns.push(`reads the user agent next to "DisplayXR" (${st.uaSniff[0]}): detect by capability (createInline3D, inline3DAvailable), never the UA string (the Android browser sends a desktop UA).`);
     checks.push(check('detection', 'f', 'Detects support by capability, not isSessionSupported or the UA string', warns.length ? 'warn' : 'pass', warns[0] || 'no isSessionSupported/UA gating seen', { details: warns, approximate: true }));
+  }
+
+  // startup guard (static): a rejecting createInline3D() / startup must not go unhandled
+  {
+    const st = fake.statics;
+    const bad = st.unguardedCreate || [];
+    const seen = bad.length + (st.createCalls || []).length;
+    checks.push(check('startup-guard', 'h', 'A rejecting createInline3D() is handled (logged, then a 2D view)', bad.length ? 'warn' : seen ? 'pass' : 'skip',
+      bad.length
+        ? `${bad[0]} calls createInline3D() with no .catch or try/catch anywhere: a rejection (no WebGL, a failed import or asset) goes unhandled and leaves a blank or covered canvas`
+        : seen ? `${seen} script(s) open the session with a catch in place` : 'no createInline3D() call seen in same-origin page scripts', {
+        details: { guarded: st.createCalls || [], unguarded: bad },
+        approximate: true,
+        hint: bad.length ? "const wall = await createInline3D().catch((err) => { console.warn('inline 3D unavailable, showing 2D', err); return null; }); then treat null like !wall.supported, or wrap the whole startup in start().catch(...) as the scaffold does." : undefined,
+        doc: `${DOCS}/authoring-inline-3d.md#detecting-support--do-this-not-that`,
+      }));
   }
 
   // version pins (import maps + package.json)

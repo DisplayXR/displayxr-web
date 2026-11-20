@@ -1,15 +1,15 @@
-# displayxr-inline3d-codex: the OpenAI Codex plugin for glasses-free 3D web pages
+# displayxr-inline3d-codex: the OpenAI Codex plugin for 3D web pages on Spatial Displays
 
 The Codex edition of the [`displayxr-inline3d`](../displayxr-inline3d) Claude Code plugin. It has the
 same four skills for pages built on [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d)
-(woven glasses-free 3D in the DisplayXR Browser, plain 2D everywhere else), plus the
+(woven 3D on Spatial Displays in the DisplayXR Browser, plain 2D everywhere else), plus the
 [`@displayxr/inline3d-tools`](https://www.npmjs.com/package/@displayxr/inline3d-tools) MCP server,
 so Codex can check a page from outside its sandbox.
 
 ## Install
 
 ```
-npx -y @displayxr/inline3d-tools@0.1.1 --version
+npx -y @displayxr/inline3d-tools@0.1.2 --version
 codex plugin marketplace add DisplayXR/displayxr-web
 codex plugin add displayxr-inline3d-codex@displayxr
 ```
@@ -32,7 +32,7 @@ install that one.
 |---|---|
 | `skills/` | the Claude plugin's four skills, copied byte for byte. Codex lists them as `displayxr-inline3d-codex:inline3d`, `:new-inline3d-page`, `:inline3d-assets` and `:inline3d-check` |
 | `.codex-plugin/plugin.json` | the Codex manifest: listing metadata, and `mcpServers` → `.mcp.json` |
-| `.mcp.json` | one stdio server, `npx -y @displayxr/inline3d-tools@0.1.1 mcp`, with a 60 s start-up and 180 s tool timeout |
+| `.mcp.json` | one stdio server, `npx -y @displayxr/inline3d-tools@0.1.2 mcp`, with a 60 s start-up and 180 s tool timeout |
 | `assets/icon.png`, `LICENSE` | copies from the Claude plugin |
 
 Everything except this README is generated from `plugins/displayxr-inline3d/` by
@@ -42,7 +42,7 @@ drift. Edit the Claude plugin's skills, never these copies.
 ## Use the MCP `check` tool in Codex
 
 Codex runs a plugin's MCP server outside its sandbox, so the `check` tool works there. The skills
-also show the shell form (`npx -y @displayxr/inline3d-tools@0.1.1 check …`), which fails inside
+also show the shell form (`npx -y @displayxr/inline3d-tools@0.1.2 check …`), which fails inside
 Codex's default sandbox (`listen EPERM 127.0.0.1`: the checker's local file server cannot listen)
 unless you approve running it outside the sandbox.
 
