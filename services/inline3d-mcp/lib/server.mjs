@@ -85,7 +85,12 @@ function trimForStructured(rep) {
 }
 
 export function createServer({ runpod, limits, clientIp = 'unknown', log = () => {} } = {}) {
-  const server = new McpServer({ name: 'displayxr-inline3d', title: 'DisplayXR inline 3D', version: SERVER_VERSION }, {
+  const server = new McpServer({
+    name: 'displayxr-inline3d', title: 'DisplayXR inline 3D', version: SERVER_VERSION,
+    websiteUrl: 'https://mcp.displayxr.org/',
+    // Clients (ChatGPT's composer chip, Claude) show this icon; without it ChatGPT draws a broken image.
+    icons: [{ src: 'https://mcp.displayxr.org/icon.png', mimeType: 'image/png', sizes: ['512x512'] }],
+  }, {
     instructions: 'Tools for building @displayxr/inline3d web pages: glasses-free 3D that the DisplayXR Browser shows on 3D displays, with a 2D fallback everywhere else. Read get_authoring_guide before writing a page, start from scaffold_page, and run check_files (or check_url for a deployed page) before calling the page done.',
   });
   // Directories read the tool's display name from annotations.title as well as the top-level
