@@ -148,7 +148,7 @@ test('no RunPod configured: checks explain the local alternative', async () => {
   const c = await connect({});
   const r = await c.callTool({ name: 'check_files', arguments: { files: PAGE } });
   assert.ok(r.isError);
-  assert.match(r.content[0].text, /npx -y @displayxr\/inline3d-tools@0\.1\.2 check/);
+  assert.match(r.content[0].text, /npx -y @displayxr\/inline3d-tools@0\.1\.3 check/);
 });
 
 test('budget exhausted: checks refuse, guide still works and does not warm', async () => {
