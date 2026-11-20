@@ -532,7 +532,8 @@ are offset from it by a few ipd × m2v.
 | WebGPU device | **3D** since v0.6.0 (see [WebGPU](#webgpu-v060)); before, 2D with `WebGPU device — the prototype drives WebGL2 apps only` |
 | two or more cameras render to the canvas (UI camera, picture-in-picture) | **2D**, HUD reason |
 | `CameraFrame` (the engine's post chain: SSAO, TAA, bloom, DOF, grading, vignette, fringing, sharpening) | **3D** since v0.6.2, the whole chain per eye (see [CameraFrame](#playcanvas-cameraframe-v062)); before, 2D with `CameraFrame / frame passes on the camera — needs per-eye targets (next)` |
-| legacy post effects (`camera.postEffects`), or `framePasses` that are not one `CameraFrame` | **2D**, HUD reason |
+| legacy post effects (`camera.postEffects`, the engine's `PostEffectQueue`: `posteffect-bloom` and friends, what PlayCanvas Editor apps use) | **3D** since v0.7.9, the page's chain run per eye, WebGL2 and WebGPU (see [legacy post effects](#playcanvas-legacy-post-effects-v079)); before, 2D. Still **2D**, HUD reason: an effect that reads the scene depth (`needsDepthBuffer`: SSAO, bokeh, outline), or a camera with a viewport `rect` |
+| `framePasses` that are not one `CameraFrame` | **2D**, HUD reason |
 | the page sizes the canvas by writing `canvas.width / height` itself (supersplat-viewer) | **3D** since v0.6.2: the writes are recorded as the page's size, the store stays side by side (below) |
 | orthographic camera | **2D**, HUD reason |
 | nothing 3D for the camera: its layers hold only screen-space UI (a 2D menu, a loading screen; playcanvas.com/examples `user-interface/*`) | **2D** since v0.7.4, `nothing 3D for the camera to render (screen-space UI only)`; re-checked on every activation attempt, so 3D content that arrives later converts (cases `pc-ui-only`, `pc-ui-then-3d`; immediate-mode lines count as 3D, `pc-ui-lines`). Before, two identical halves at half the horizontal resolution. The engine's MiniStats overlay is screen-space too (v0.7.5: with the examples' stats toggle on, those pages converted; `pc-ui-stats`), and the reason is logged once, not on every attempt |
@@ -1279,6 +1280,11 @@ running), so the rig is always sampled at the configured depth.
 | `pc-cf` / `pc-cf-webgpu` | `pc-cf-mesh.html`: bloom + SSAO + TAA + grading + vignette on a grey clear colour; then the same page with `?bloom=0` | split with taa / bloom / ssao in both chains; the jitter non-zero and moving frame to frame; the sphere in both eyes, 64 px apart; the ring around it brighter than without bloom in BOTH eyes (~205 vs ~110); the vignette per eye (both edges of each eye alike, ~146, centre ~205) |
 | `pc-cf-unsplit-ctl` | `pc-cf-mesh.html?taa=0`, `pcCameraFrame: false` (approach a: the CameraFrame left as is under `xrViews`) | a pair comes out, but the vignette is the pair's: each eye's seam side ~205, its outer edge ~146 |
 | `pc-cf-toggle` | `pc-cf-mesh.html` on WebGPU; the page sets `cf.enabled = false`, then `true` + `update()` while converted | off: still converted, no split, the camera's `framePasses` empty, both eyes drawn by the plain path; on: the new pass split, same session, both eyes; no stand-down |
+| `pc-pe` / `-aa` / `-webgpu` / `-webgpu-aa`, `pc-pe@2.20`, `pc-pe@2.24`, `pc-pe-aa@2.24`, `pc-pe-webgpu@2.24` | `pages/pc-postfx.html`: LEGACY post effects (`camera.postEffects`), two `pc.PostEffect` subclasses (a bloom with its own half-size targets, then a vignette; GLSL + WGSL) over `pc-cf-mesh.html`'s scene; `?aa=1` an MSAA device; then the same page with `?bloom=0` | converts; `state().postEffects`: both effects, the hook ours, the queue's target = the store (1280 × 720; `-aa`: 4 samples), one 640 × 720 eye target per effect, every frame per eye (`mono` 0); the bloom's own targets built once at 320 × 360; the sphere in both eyes, 64 px apart; the ring around it ~137 in BOTH eyes vs ~112 without bloom; the vignette per eye (both edges of each eye ~43, centre 127) |
+| `pc-pe-unsplit-ctl` | `pcPostEffects: 'unsplit'` (one chain over the pair) | a pair comes out, but the vignette is the pair's: each eye's seam side 127, its outer edge ~41 |
+| `pc-pe-depth` / `pc-pe-rect` / `pc-pe-off-ctl` | `?depth=1` (an effect with `needsDepthBuffer`) / `?rect=1` (a camera rect) / `pcPostEffects: false` | stays 2D: no session, the reason in `state()` and on the HUD |
+| `pc-pe-kill` | `pc-postfx.html`, `Ctrl+Alt+3` off, then on | off: `postEffects` null, `xrViews` released, the queue enabled with the camera on its input target at the mono size, ONE vignette over the canvas (41 / 127 / 41), no pair; on: the chain per eye again |
+| `pc-pe-toggle` | the page removes both effects, then adds them again, while converted | removed: still converted, plain eyes, `camera.renderTarget` null and no hook left; added: the chain per eye again, same session, no stand-down |
 | `pc-cf-gsplat` / `-webgpu` | `pages/pc-cf-gsplat.html`: a unified gsplat (the 3 × 3 grid) under the viewer's CameraFrame configuration; fake `pixelAspect: 2` | split (bloom compiled out on the RGBA8 target, as on the viewer); 64 px shift; the white centre splat ~2:1 tall in store px in each eye (round on the display) |
 | `ssv` / `ssv-webgl` | the REAL supersplat-viewer 1.37.0 (WebGPU / `?webgl`) on `.deps/gen/grid.ply` with post effects on; `maxSbsWidth` 1024 so the SBS store (1024) is narrower than the viewer's (1280), as on the panel | converts (found through the id trap); the viewer's own `canvas.width` writes recorded (~300) and the store kept 1024 × 720; the split; 51 px shift; round centre splat in each eye |
 | `ssv-webgl-trap-ctl` | the same, `pcCanvasTrap: false` | the viewer pulls the store back to its own 1280 |
@@ -1545,6 +1551,83 @@ per frame in `state()`, not on pixels; image quality under motion is the panel's
 (harness only): `pcCameraFrame: false` (unsplit, approach a), `pcTaaJitter: false`, `pcCanvasTrap: false`,
 `pcTaaEyeHistory: false` (2.24: eye 0 reads eye 1's TAA history), `pcSbsDepth: false` (the after pass reads the eye-sized scene depth, as before v0.7.6).
 
+## PlayCanvas legacy post effects (v0.7.9)
+
+`camera.postEffects` is the engine's older post-processing path: a `PostEffectQueue` of `pc.PostEffect`
+objects (`scripts/posteffects/posteffect-*.js`: bloom, vignette, FXAA, sepia, and a page's own).
+PlayCanvas **Editor** apps use it a lot. arrival.space is the page this was done for (#319): every space
+is an Editor app on engine 2.22.6 with gaussian splats, a few hundred meshes and one camera carrying a
+`BloomEffect` of its own (bloom plus brightness / contrast / saturation / sharpening, GLSL and WGSL).
+Read at playcanvas 2.22.6 (`framework/components/camera/post-effect-queue.js`); the queue is the same
+from 2.20 to 2.24.
+
+**What the queue does.** Enabled, it sets `camera.renderTarget` to its first effect's input target (a
+canvas-sized target with depth, multisampled as the device is, named `<camera>-posteffect-0`), keeps the
+page's own target as `destinationRenderTarget` (null = the canvas), and sets
+`camera.onPostprocessing`. The forward renderer runs that as a frame pass after the last layer before
+`camera.disablePostEffectsLayer` (UI by default): `effects[j].effect.render(input j, input j+1, null)`,
+and for the last one `render(input, destination, camera.rect)`. The layers from that one on draw
+straight to the canvas.
+
+**Why it stayed 2D.** `pickCamera` dropped every camera with a `renderTarget` (`no enabled camera renders
+to the canvas`), and refused a camera with effects (`post effects on the camera — needs per-eye targets
+(next)`). Checked first on a live space: with the bloom removed from the queue (so the camera draws to
+the canvas again) v0.7.8 converted at once, convergence `fixed: open scene`, both eyes drawn. The
+queue was the only blocker.
+
+**What is done.** A camera whose `renderTarget` is its own enabled queue's input target, with no
+destination target, counts as a canvas camera. Under `xrViews` the scene passes then draw **both eyes
+side by side into the queue's input target**: it follows the store (the queue resizes on the device's
+`resizecanvas`; the adapter asks for a resize itself on a page that sizes the canvas by hand), so the
+scene colour / depth grabs and `screen_size` stay in one layout, exactly as on the plain path. What
+has to be per eye is the chain: one chain over the pair blurs across the seam and centres a vignette
+on the pair (control case `pc-pe-unsplit-ctl`: each eye's seam side 127, its outer edge 41). So while
+converted `camera.onPostprocessing` is the adapter's:
+
+1. the eye's half of the queue's input target is copied into an eye-sized target (WebGL2:
+   `blitFramebuffer` from the target's resolve framebuffer; WebGPU: `copyTextureToTexture` on the
+   frame's command encoder, from the target's resolve texture);
+2. the page's effects run in order over eye-sized targets of the adapter's (one per effect, in the
+   format the queue chose for that effect's input, shared by the two eyes);
+3. the last effect draws into the eye's half of the canvas, through the `rect` argument the engine
+   itself passes for a camera rect (`PostEffect.drawQuad` turns it into the viewport).
+
+The effects are the page's own objects: their settings are read live, and an effect's internal targets
+(a bloom's half-size pair) are sized from the input it is given, the eye's, so they are built once.
+The page adding or removing an effect, or switching the queue off and on, is followed on the next
+`prerender` (`queue.enable()` sets its own hook again; the adapter re-wraps it). Stand-down puts the
+page's hook back and destroys the eye targets; the queue shrinks its targets with the store.
+`state().renderers[0].postEffects` = `{ effects, source, samples, eye, frames, mono, hooked }`:
+`frames` counts frames through the per-eye chain, `mono` frames that went through the page's own chain
+over the pair (0 in every run).
+
+**Stays 2D, with the reason on the HUD:**
+- an effect with `needsDepthBuffer` (the engine's `posteffect-ssao`, `-bokeh`, `-outline`...): it samples
+  `uSceneDepthMap` with the quad's UV, and the depth map is the pair's (`a post effect that reads the
+  scene depth on the camera — not split per eye`);
+- a camera with a viewport `rect` (`post effects on a camera with a viewport rect — not split`);
+- post effects together with `framePasses` on one camera; a queue that renders into a page target is
+  not a canvas camera, as before.
+- A chain that throws while it runs per eye: that frame goes through the page's own chain (a whole
+  picture, over the pair), the canvas goes back to 2D on the next frame and stays there
+  (`the camera's post effects could not be run per eye`).
+
+**Limits.**
+- An effect that ignores its `rect` argument on its last draw would cover the whole store with one eye.
+  None of the engine's `posteffect-*` scripts does (a camera rect needs it too); it is not detected.
+- A kernel measured in pixels (blur taps, FXAA, sharpening) works on the eye target. Where the eye is
+  narrower than the page's mono store (the 3072 cap, a half-width eye) a glow is wider, relative to
+  the picture, than in 2D. The same holds for a CameraFrame's bloom.
+- An effect that keeps a history between frames would share it between the eyes (none of the engine's does).
+- `effect.hdr` (a float input target) takes the same path; no case exercises it.
+- WebGPU: the engine wraps the camera's passes in `FramePassMultiView`, which with no XR sub-images
+  runs them once, the post-processing pass included. Its debug build logs `per-camera postprocessing
+  [is] not yet supported with WebGPU stereo XR` once: that is about its own multiview loop, which this
+  path never enters.
+- Cost: one eye-sized copy and one run of the chain per eye; the scene is drawn as on the plain path.
+- Test switches (harness only): `pcPostEffects: false` (v0.7.8's behaviour: 2D), `'unsplit'` (convert
+  with ONE chain over the pair).
+
 ## PlayCanvas engine versions (v0.7.4, v0.7.5)
 
 Sites ship the engine they were built with (superspl.at 2.23.0, others 2.22.x and older 2.x), and
@@ -1623,6 +1706,38 @@ Open after the device run (not fixed here):
 - `demos/car-showcase`: the car body's reflections differ between the eyes. They are the box-projected
   environment and the area lights' highlights, which are view-dependent and correctly per eye (as they are
   in life); with a clear coat and low roughness they differ a lot, which crosstalk makes tiring. Not a bug.
+
+**Headless, v0.7.9 (PlayCanvas legacy post effects per eye, #319), Windows, ANGLE D3D11 + WebGPU
+(RTX 3080):** 14 new cases in `test/cases/pc-posteffects.mjs` (table above), page `pages/pc-postfx.html`.
+- **Full pass.** 213 run, 2 skipped (`c` / `d`: no `ports_25.sog`), all green (199 before this change, all green).
+- **arrival.space, live, headless** (the dev bundle + the fake session, 1280 x 720, three spaces). v0.7.8's
+  committed bundle never converts: `the camera is orthographic` for the loading camera, then `no enabled
+  camera renders to the canvas` (the HUD keeps showing the orthographic line). v0.7.9 converts as soon
+  as the real camera appears (20 to 28 s after navigation), logs `legacy post effects run per eye:
+  BloomEffect`, and keeps drawing: `postEffects.frames` follows `stats.twoView`, `mono` 0, no page error
+  of ours. Frames between two reads 8 s apart on the first space, still loading: 81 with the chain per
+  eye, 71 with the bloom removed (v0.7.8's behaviour, the step-1 check); a second WebGL2 space drew
+  838 frames in its first 14 s. The canvas read back as a side-by-side pair, both halves with the 2D
+  page's toning (with the bloom removed the pair is visibly darker; the camera had moved between the
+  runs). WebGPU: `?webgpu` on the first space and a space that runs WebGPU by its own setting both
+  convert (735 frames in 14 s), checked on compositor screenshots (a WebGPU canvas does not read back
+  between frames): a pair, both halves drawn.
+- **Corpus** (`corpus/run-corpus.mjs --only arrival-space`, the product bundle): PASS, `converted`,
+  sentinel 0.2 ms warm. The runner no longer ends a watch on `flat` (see `corpus/README.md`).
+- **PlayCanvas examples** (`corpus/run-pc-examples.mjs`, 277 examples, engine 2.24, v0.7.8's committed
+  dev bundle against these sources, both runs on this box the same night): **PASS 209 → 211, REVIEW 31 → 29, FLAT 36, ERROR 1** (`corpus/results/2026-11-20-pc-examples-v0.7.9.json`; v0.7.8's run of the same night is not committed). No example uses legacy post effects, so this is a regression check only. The two that changed, `loaders/bundle` and `loaders/glb`, flip between REVIEW (`shift 64 != 32`) and PASS from run to run on either bundle (re-run three times: the capture lands while the model is still loading); every other verdict is identical.
+- **Not verified: the panel.** Nothing here was woven. For the tester, on
+  `https://arrival.space/16538486_8412` (WebGL2) and on a space that runs WebGPU (add `?webgpu`):
+  1. it converts once the space has loaded (the chip goes 3D; the console shows `legacy post effects
+     run per eye: BloomEffect`, then `live on canvas…`); `__dxrAuto3D.state().renderers[0].postEffects`
+     has `frames` growing and `mono` 0;
+  2. the splats and meshes are in real stereo, and the picture's brightness / glow matches the 2D
+     page in BOTH eyes (close each eye in turn), with no bright or dark band down the middle of the
+     window (a chain run over the pair shows there);
+  3. the page's own UI (the profile badge, the buttons, the `Click to Start` overlay) stays 2D and sharp;
+  4. `Ctrl+Alt+3` off and on: back to the page's own picture, then 3D again; walk around (WASD, drag);
+  5. frame rate before and after (every converted draw runs twice, plus the chain twice at half width);
+  6. glow width: bright edges should not look wider than in 2D (limit 2 above).
 
 **Headless, v0.7.8 (from David's review of #257: the own-view decision re-checked; a probe dropped with its
 target), Windows, ANGLE D3D11 + WebGPU:** 4 new cases in `test/cases/babylon.mjs`.
