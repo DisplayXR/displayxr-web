@@ -147,6 +147,9 @@ async function start() {
   if (!result.woven) statusEl.textContent = `3D (${result.reason})`;
 }
 
+// createInline3D() and the setup around it can reject (no WebGL, a failed import, a bad asset).
+// Keep this catch: log the reason and show the 2D view, never an unhandled rejection over a
+// blank or still-covered canvas.
 start().catch((err) => {
   console.warn('inline 3D setup failed, showing 2D', err);
   start2D('error');

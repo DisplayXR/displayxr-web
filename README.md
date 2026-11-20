@@ -129,8 +129,9 @@ non-DisplayXR browser, so a page is safe to ship anywhere.
 ```js
 import { createInline3D } from '@displayxr/inline3d';
 
-const wall = await createInline3D();       // opens an inline-3d session (detects support)
-if (!wall.supported) {
+const wall = await createInline3D()       // opens an inline-3d session (detects support)
+  .catch((err) => { console.warn('inline 3D unavailable, showing 2D', err); return null; });
+if (!wall?.supported) {
   // Not the DisplayXR Browser (or no 3D display) — your page's normal 2D content shows. Done.
 } else {
   // Woven 3D. Add content — one call per element:

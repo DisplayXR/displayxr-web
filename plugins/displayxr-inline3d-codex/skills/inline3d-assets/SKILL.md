@@ -14,17 +14,17 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.1 assets` (exact pin, from npm; Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.2 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.1 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.2 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ## 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `npx -y @displayxr/inline3d-tools@0.1.1 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+   `npx -y @displayxr/inline3d-tools@0.1.2 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
 2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
    Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
@@ -54,7 +54,7 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
+npx -y @displayxr/inline3d-tools@0.1.2 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
 It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
@@ -70,8 +70,8 @@ helmet is ~0.3 m, not 2 m).
 ## 3. Check it (before the page uses it)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 assets out.glb            # tablet budget (default)
-npx -y @displayxr/inline3d-tools@0.1.1 assets out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.2 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.2 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -86,7 +86,7 @@ skill §7): the asset check is about the file, the page check about how it is sh
 ## 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 gen providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.2 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -107,7 +107,7 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   shippable.
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.1 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.2 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ## 5. ASSETS.md

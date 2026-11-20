@@ -9,7 +9,7 @@ and an icon. It contains no scripts, no hooks and no MCP server. The tools the s
 checker, the asset check, the page templates and the optional generators) live in the open-source
 npm package [`@displayxr/inline3d-tools`](https://www.npmjs.com/package/@displayxr/inline3d-tools)
 ([source](https://github.com/DisplayXR/displayxr-web/tree/main/tools/inline3d-tools)), which the
-skills run at one exact pinned version, `npx -y @displayxr/inline3d-tools@0.1.1 <command>`, as an
+skills run at one exact pinned version, `npx -y @displayxr/inline3d-tools@0.1.2 <command>`, as an
 ordinary shell command that you approve.
 
 | part | what it does |
@@ -27,7 +27,7 @@ agent proposes and you approve, and the paid ones need your yes first.
 | part | runs | network | writes |
 |---|---|---|---|
 | skills | nothing by themselves (instructions to the agent) | none | none |
-| `npx -y @displayxr/inline3d-tools@0.1.1 …` (any command below) | `npx`, when the agent runs it | the npm registry, to fetch that exact version of the package and its pinned dependencies (first run; then npm's cache) | npm's cache directory |
+| `npx -y @displayxr/inline3d-tools@0.1.2 …` (any command below) | `npx`, when the agent runs it | the npm registry, to fetch that exact version of the package and its pinned dependencies (first run; then npm's cache) | npm's cache directory |
 | `… check` | `node` + a headless Chrome it starts (local install, or `CHROME=`) and closes; a static file server on `127.0.0.1`, random port, when you pass a directory | whatever the page under test loads (for example its CDN imports); nothing else | a throwaway Chrome profile in the OS temp directory, deleted when Chrome closes; a JSON report only with `--out` |
 | `… assets <file>` | `node`, reads a GLB/glTF | none | none |
 | `… assets prep` | your **already installed** Blender, headless, with the package's prep script; never installs Blender | none | the output file you name |

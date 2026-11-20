@@ -1060,7 +1060,11 @@ export function undockUrl(el: Element, opts: UndockOptions): string;
 /** An element's rect in physical screen pixels — where the native viewer places its window. */
 export function tileScreenRect(el: Element): { x: number; y: number; w: number; h: number; dpr: number };
 
-/** Open the page's inline-3D session and return a manager you add windows to. */
+/**
+ * Open the page's inline-3D session and return a manager you add windows to. Resolves
+ * `{ supported: false }` where inline 3D is unavailable. The promise can still reject: `await` it
+ * inside a `try`/`catch` (or `.catch()` the startup), log the error and show the 2D view.
+ */
 export function createInline3D(
   opts?: CreateInline3DOptions,
 ): Promise<Inline3D | Inline3DUnsupported>;

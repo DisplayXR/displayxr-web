@@ -96,6 +96,14 @@ test('good fixture: opaque sticky header + buy card over part of the tile pass; 
   assert.equal(byId(r, 'layer-lost').status, 'pass', show(r));
 });
 
+test('an unhandled rejection fails the console check, labelled, with the catch-and-2D hint', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?bug=unhandled-rejection`);
+  const c = byId(r, 'console');
+  assert.equal(c.status, 'fail', show(r));
+  assert.match(c.summary, /^unhandled rejection: .*fixture: setup rejected/, show(r));
+  assert.match(c.hint, /createInline3D\(\)/);
+});
+
 test('stuck cover is reported as a cover that never came off', { skip, timeout: 60000 }, async () => {
   const r = await run(`${FIXTURE}?bug=stuck-cover`);
   assert.match(byId(r, 'overlay').summary, /never came off/, show(r));
