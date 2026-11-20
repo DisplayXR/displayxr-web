@@ -8,7 +8,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@displayxr/inline3d-tools": "0.1.2",
+    "@displayxr/inline3d-tools": "0.1.3",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@neondatabase/serverless": "1.0.2",
     "zod": "4.6.7"
