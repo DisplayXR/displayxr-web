@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certifi
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # Keep this pin equal to the front end's (../package.json).
-RUN npm i --omit=dev @displayxr/inline3d-tools@0.1.1 && npm cache clean --force
+RUN npm i --omit=dev @displayxr/inline3d-tools@0.1.2 && npm cache clean --force
 COPY chrome-gpu.sh guard-proxy.mjs ip-guard.mjs handler.py /app/
 RUN chmod +x /app/chrome-gpu.sh
 CMD ["python3", "-u", "/app/handler.py"]
