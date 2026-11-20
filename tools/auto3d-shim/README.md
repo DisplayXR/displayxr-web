@@ -1722,8 +1722,17 @@ Open after the device run (not fixed here):
   runs). WebGPU: `?webgpu` on the first space and a space that runs WebGPU by its own setting both
   convert (735 frames in 14 s), checked on compositor screenshots (a WebGPU canvas does not read back
   between frames): a pair, both halves drawn.
-- **Corpus** (`corpus/run-corpus.mjs --only arrival-space`, the product bundle): PASS, `converted`,
-  sentinel 0.2 ms warm. The runner no longer ends a watch on `flat` (see `corpus/README.md`).
+- **Corpus** (`corpus/run-corpus.mjs --only arrival-space`, the product bundle): `converted`, no new
+  console error, sentinel 0.2 ms warm. PASS on one run and REVIEW on two (`fps 8 converted vs 23
+  control`). The runner no longer ends a watch on `flat` (see `corpus/README.md`).
+- **Frame rate on that space (WebGL2, headless, 1280 x 720).** 2D ran at 23 to 36 fps; converted it
+  settled at ~13.6 fps (82 frames per 6 s over 80 s), and ~9 to 10 fps while the space was still loading.
+  The cost is the stereo draw itself, not the chain: with the bloom removed the converted page drew at
+  the same rate (71 frames in 8 s against 81). The same space on WebGPU ran ~53 fps converted, and a
+  lighter WebGL2 space 60. With the product's `guardFps` 40 the frame-rate guard did what it is for:
+  `back to 2D: frame-rate guard: 9.4 fps in 3D over 2.0 s (2D ran at 35.8) — retrying once in 6.0 s`,
+  then its one retry, which stayed live. **On the panel a heavy WebGL2 space may be sent back to 2D by
+  the guard**; that is the guard working, and the number to bring back.
 - **PlayCanvas examples** (`corpus/run-pc-examples.mjs`, 277 examples, engine 2.24, v0.7.8's committed
   dev bundle against these sources, both runs on this box the same night): **PASS 209 → 211, REVIEW 31 → 29, FLAT 36, ERROR 1** (`corpus/results/2026-11-20-pc-examples-v0.7.9.json`; v0.7.8's run of the same night is not committed). No example uses legacy post effects, so this is a regression check only. The two that changed, `loaders/bundle` and `loaders/glb`, flip between REVIEW (`shift 64 != 32`) and PASS from run to run on either bundle (re-run three times: the capture lands while the model is still loading); every other verdict is identical.
 - **Not verified: the panel.** Nothing here was woven. For the tester, on
