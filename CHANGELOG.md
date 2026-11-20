@@ -7,6 +7,23 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Docs — a depth floor for camera rigs, not just a ceiling (docs only; no API change)
+
+The guidance gave a camera rig's comfort product as a ceiling (≤ 1) and no floor or default, and
+pages built to it came out nearly flat. Every SDK-owned surface now carries one rule
+([authoring-inline-3d.md § Aim for real depth](docs/authoring-inline-3d.md#aim-for-real-depth)):
+use most of the comfort zone, since too little depth is a failure too; converge on the centre of
+interest so the subject straddles the glass; never rescale the world, set `metersToVirtual` (the
+true conversion, or `convergence / 2` for a world with no true scale, re-set per frame if the camera
+zooms a lot); then `ipdFactor` ≈ 1 for an open scene, or 0.8–1× of `cameraRigComfortFactor` for a
+bounded one. The comfort product stays the divergence ceiling. A display rig's `ipdFactor` /
+`parallaxFactor` 1 are its natural depth. Covered: `llms.txt`, `making-3d-look-right.md` rules 1
+and 4, `porting-three-js-apps.md` (Comfort, mistakes 13 and 14), the `metersToVirtual` /
+`ipdFactor` / `convergenceDiopters` doc comments in `index.d.ts` and `three.d.ts`, and
+`cameraRigComfortFactor` in `depth.d.ts`. `samples/camera-rig/` follows the rule: `ipdFactor` from
+the helper with a depth slider, the share of the zone in its readout, a textured floor in place of
+a line grid, a cover until `firstWoven`, and a flat view on `onLayerLost`.
+
 ### Changed — `rectCover`'s fill comes from the page behind the canvas, not black (core; `'auto'` on `./splat` and `./model`)
 
 Without a `color`, the cover is now filled with the page's background behind the canvas: the first

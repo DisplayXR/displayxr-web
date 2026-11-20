@@ -194,7 +194,11 @@ export function flatWideVerdict(buf) {
   const fwd = blockDisparity(L, R), back = blockDisparity(R, L);
   const textured = fwd.textured + back.textured;
   const matchRatio = textured ? (fwd.length + back.length) / textured : 1;
-  const sameScene = cmp.identical || (cmp.madBest < Math.max(3, 0.35 * cmp.baseline) && (textured < 8 || matchRatio >= 0.35));
+  // A scene with real depth has no ONE shift that explains it (near and far content move apart),
+  // so strong local evidence on its own (most textured blocks of both halves matched) also counts.
+  const sameScene = cmp.identical
+    || (cmp.madBest < Math.max(3, 0.35 * cmp.baseline) && (textured < 8 || matchRatio >= 0.35))
+    || (textured >= 8 && matchRatio >= 0.6);
   // The seam is evidence, not a gate: on a mostly uniform background the "typical" column step is
   // ~0 and any content crossing the middle looks like a break. Two halves that no shift within
   // ±12 % of the eye width explains are not a stereo pair a display could fuse either way.

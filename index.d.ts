@@ -177,17 +177,17 @@ export interface XRViewRigInit {
   orientation?: DOMPointInit;
   /** **Display rig.** Metres of virtual display; `m2v = this / the element's physical height`. */
   virtualDisplayHeight?: number;
-  /** Eye separation — display rig: relative, 1 = correct, `[0,1]` a comfort dial (above 1 exaggerates); camera rig: absolute `>= 0`. */
+  /** Eye separation — display rig: relative, 1 = correct, `[0,1]` a comfort dial (above 1 exaggerates); camera rig: absolute `>= 0`, the depth dial (≈ 1 open scene, cameraRigComfortFactor-filled when bounded; docs/authoring-inline-3d.md § Aim for real depth). */
   ipdFactor?: number;
   /** Head-tracking response — display rig: `[0,1]`; camera rig: absolute `>= 0`. */
   parallaxFactor?: number;
   /** **Display rig only**, `[0.1,10]`: exaggerates or flattens the off-axis skew. */
   perspectiveFactor?: number;
-  /** **Camera rig.** `1 / (convergence distance in world units)`; `0` = infinity. */
+  /** **Camera rig.** `1 / (convergence distance in world units)`; `0` = infinity. Converge on the centre of interest so the subject straddles the glass. */
   convergenceDiopters?: number;
   /** **Camera rig.** The FULL vertical angle, in RADIANS (three's `camera.fov` is degrees). */
   verticalFov?: number;
-  /** **Camera rig.** Metres → world units on the eye; `0`/unset means 1. */
+  /** **Camera rig.** World units per real metre; `0`/unset means 1. True scale → the true conversion; no true scale → convergence / 2 (docs/authoring-inline-3d.md § Aim for real depth). */
   metersToVirtual?: number;
 }
 

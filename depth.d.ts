@@ -151,6 +151,7 @@ export function comfortDepthFactor(o: {
  * comfort zone. Measurement only; the page decides whether to apply it. Unlike the display-rig
  * factor it can EXCEED 1, because a camera rig's 1 (63 mm × metersToVirtual in scene units) is
  * only physical in metre-scale worlds — in large scene units it renders nearly flat.
+ * The camera-rig depth rule sets `ipdFactor` to 0.8–1× of this for a bounded scene (docs/authoring-inline-3d.md § Aim for real depth).
  *
  * Disparity `f = b · (1/D − 1/z) / (2 · tan(verticalFov/2) · aspect)` of the tile width
  * (b = 0.063 · ipdFactor · metersToVirtual), on the glass `p = f · aspect · tileHeightM`, in

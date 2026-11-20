@@ -792,8 +792,10 @@ canvas), so it uses about 88 % of the zone.
 4. **A canvas much smaller than the FOV-matched size (`k < 1`) shows proportionally less depth.**
    Use the helper with the real `tileHeightM`; don't rely on the comfort product alone.
 5. **The comfort product `ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1` stays the
-   divergence ceiling** (`N` = `XRDisplayInfo.nominalViewerPosition.z`, 0.6 m when the display
-   reports none). With the `convergence / 2` convention it equals `ipdFactor × N / 2`: 0.3 at
+   divergence ceiling** for content at infinity on a FOV-matched canvas (`N` =
+   `XRDisplayInfo.nominalViewerPosition.z`, 0.6 m when the display reports none). A bounded scene
+   or a small canvas (`k < 1`) can sit above 1 and still inside the zone: there the helper binds
+   (`samples/camera-rig/`, a metre-scale bounded scene in a small canvas, can read well above 1). With the `convergence / 2` convention it equals `ipdFactor × N / 2`: 0.3 at
    `ipdFactor` 1 on a 0.6 m panel.
 
 Keep `parallaxFactor` equal to `ipdFactor`, so the look-around matches the stereo. Keep the camera

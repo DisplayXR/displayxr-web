@@ -82,7 +82,7 @@ three when the page already is a three.js app (`addScene` + `EyeCamera`, see
      viewerM, ipdFactor, metersToVirtual })` (`@displayxr/inline3d/depth`; fills the zone; often 1.5–2.5).
   `parallaxFactor` = `ipdFactor`; perspective, tilted camera; never `convergence: 0`. Comfort
   `ipdFactor × metersToVirtual × convergenceDiopters × N` ≤ 1 (N = `nominalViewerPosition.z`, else
-  0.6 m) is a ceiling, not a target. Example: 13.4 units out, `ipdFactor: 2.5`, `metersToVirtual: 1`
+  0.6 m) is the ceiling for content at infinity, not a target. Example: 13.4 units out, `ipdFactor: 2.5`, `metersToVirtual: 1`
   uses ~20% of the zone, flat; rule: `metersToVirtual: 6.7`, `ipdFactor` ≈ 1.4–1.7.
 - **Display rig:** `ipdFactor`/`parallaxFactor` 1 = natural, full roundness; don't lower without a reason.
 - Budgets are reports, not limits to stay far inside: never lower depth as the user zooms.

@@ -54,11 +54,11 @@ export interface CameraRigOptions {
   convergence?: number;
   /** Emit an IDENTITY pose for the attach pattern ({@link EyeCamera.setLocalFromMatrices}). */
   attach?: boolean;
-  /** Eye separation, ABSOLUTE on a camera rig (default 1); 0 collapses to mono. */
+  /** Eye separation, ABSOLUTE on a camera rig (default 1); 0 collapses to mono. The depth dial: ≈ 1 open scene, cameraRigComfortFactor-filled when bounded (docs/authoring-inline-3d.md § Aim for real depth). */
   ipdFactor?: number;
   /** Head-tracking response, absolute likewise (default 1). */
   parallaxFactor?: number;
-  /** Metres → world units on the eye (default 1). */
+  /** World units per real metre (default 1). True scale → the true conversion; no true scale → convergence / 2. */
   metersToVirtual?: number;
   /** A descriptor to overwrite instead of allocating one (for a per-frame call). */
   out?: XRViewRigInit;

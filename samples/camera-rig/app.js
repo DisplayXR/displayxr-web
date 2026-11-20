@@ -19,13 +19,21 @@
 // against a display rig on the C key needs one subject both rigs can show. Do not copy the rig
 // choice out of this file into a model/splat/avatar viewer.
 //
-// Authored at METRE scale (a 40 cm cube, orbited from ~1.2 m), which is not a style choice: on a
-// camera rig `ipdFactor` and `metersToVirtual` are ABSOLUTE, so the comfort rule
-// (ipd × m2v × diopters × 0.5 ≤ 1) reads directly as "keep convergence past ~0.5 world units". A
-// scene authored in centimetres would sail past that at every plausible distance.
+// DEPTH follows the camera-rig rule (docs/authoring-inline-3d.md § Aim for real depth):
+//   1. convergence = the distance to the centre of interest (the orbit distance), so the cube
+//      straddles the glass;
+//   2. never rescale the world, set metersToVirtual: this world HAS a true scale (metres: a 40 cm
+//      cube orbited from ~1.2 m), so metersToVirtual is 1 (a game world with no true scale would
+//      use convergence / 2);
+//   3. ipdFactor tunes the depth: the scene is bounded (the cube and a 4 m floor), so it is set
+//      to `depth` × cameraRigComfortFactor(...), the multiplier that fills the comfort zone, from
+//      the canvas's real size and the display's nominal viewing distance. Too little depth is a
+//      failure too; the readout shows how much of the zone is used.
+// The comfort product (ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1) is printed as
+// what it is: the divergence ceiling for content at infinity, not a target. Nothing is clamped.
 
 import * as THREE from 'three';
-import { createInline3D, inline3dViewRigSupported } from '@displayxr/inline3d';
+import { createInline3D, inline3dViewRigSupported, cameraRigComfortFactor } from '@displayxr/inline3d';
 import { EyeCamera, cameraRigFromCamera, displayRig } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('stage');
@@ -45,6 +53,7 @@ const S = {
   pitch: 0.18,
   radius: 1.2,        // metres from the cube — also the default convergence distance
   convergence: 0,     // 0 = follow the orbit distance
+  depth: 0.9,         // share of the comfort zone the scene's nearest / farthest content fills
   attach: true,
   cameraRig: true,    // false = the display rig, toggled with C
 };
@@ -59,7 +68,8 @@ renderer.setPixelRatio(1);
 renderer.autoClear = false;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0c12);
+// A mid-tone background, not black: a bright edge on black is where the display ghosts first.
+scene.background = new THREE.Color(0x5d6578);
 scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 1.0));
 const key = new THREE.DirectionalLight(0xffffff, 1.1);
 key.position.set(1.2, 2.0, 1.4);
@@ -70,9 +80,35 @@ const cube = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0xd8823a, roughness: 0.55, metalness: 0.1 }),
 );
 scene.add(cube);
-const grid = new THREE.GridHelper(4, 20, 0x4d5a80, 0x2b3350);
-grid.position.y = -0.5;
-scene.add(grid);
+// The floor: a soft, NON-repeating texture rather than a line grid. One-pixel lines alias and
+// shimmer as the head moves, and a regular grid gives the eyes (and any depth check) nothing to
+// lock onto but its period.
+function floorTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#7d8799';
+  g.fillRect(0, 0, 512, 512);
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 900; i++) {
+    const v = Math.round(95 + rnd() * 90);
+    g.fillStyle = `rgba(${v},${v + 8},${v + 22},0.55)`;
+    g.beginPath();
+    g.arc(rnd() * 512, rnd() * 512, 4 + rnd() * 18, 0, Math.PI * 2);
+    g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(4, 4),
+  new THREE.MeshStandardMaterial({ map: floorTexture(), roughness: 0.9 }),
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -0.5;
+scene.add(floor);
 
 // The app's own camera. IN THE SCENE on purpose: the attach pattern parents the eye cameras
 // under it, and three only reaches a parented camera through a scene traversal (renderer.render
@@ -155,10 +191,46 @@ function convergenceDistance() {
   return S.convergence > 0 ? S.convergence : S.radius;
 }
 
+// The canvas in physical units (handle.displayMetrics(), refreshed on resize). Until it is known
+// the eye separation is the real one (ipdFactor 1).
+const metrics = { tileHeightM: 0, viewerM: 0.6 };
+function readMetrics() {
+  if (!handle) return;
+  handle.displayMetrics().then((m) => {
+    metrics.tileHeightM = m.canvasSizeM[1];
+    metrics.viewerM = m.nominalViewerM;
+  }).catch(() => {});
+}
+
+// Rule 3: the scene's nearest and farthest visible content (the cube's near corner, the floor's
+// far corner) put at `S.depth` of the comfort zone's edge. A measurement; the page applies it.
+function fillFactor() {
+  if (!(metrics.tileHeightM > 0)) return NaN;
+  return cameraRigComfortFactor({
+    zNear: Math.max(0.05, S.radius - 0.35),
+    zFar: S.radius + 2.8,
+    convergence: convergenceDistance(),
+    verticalFov: THREE.MathUtils.degToRad(S.fov),
+    aspect: appCam.aspect,
+    tileHeightM: metrics.tileHeightM,
+    viewerM: metrics.viewerM,
+    ipdFactor: 1,
+    metersToVirtual: 1,
+  });
+}
+function ipdFactorForDepth() {
+  const k = fillFactor();
+  return Number.isFinite(k) && k > 0 ? S.depth * k : 1;
+}
+
 function currentRig() {
   if (S.cameraRig) {
+    const ipd = ipdFactorForDepth();
     return cameraRigFromCamera(THREE, appCam, {
       convergence: convergenceDistance(),
+      metersToVirtual: 1,     // rule 2: a true-scale (metre) world
+      ipdFactor: ipd,         // rule 3: the helper fills the zone
+      parallaxFactor: ipd,    // look-around matches the stereo
       attach: S.attach,
       out: camScratch,
     });
@@ -225,6 +297,7 @@ function drawEyes() {
 // old store is never shown stretched onto the new box. The new store's eye halves are its halves.
 function onResize({ width, height, dpr }) {
   sizeToCanvas(width, height, dpr);
+  readMetrics();
   if (!last) return;
   const w = canvas.width / 2;
   last.forEach((e, i) => { e.vp = { x: i * w, y: 0, width: w, height: canvas.height }; });
@@ -232,6 +305,18 @@ function onResize({ width, height, dpr }) {
 }
 
 // ---- 2D fallback ------------------------------------------------------------------------------
+let monoRunning = false;
+function goFlat() {
+  // No session, or the layer went away for good (onLayerLost): ONE mono view across the whole
+  // canvas on our own rAF loop — never the last side-by-side pair left on screen.
+  handle = null;
+  sbsMode = false;
+  sizeToCanvas();
+  if (monoRunning) return;
+  monoRunning = true;
+  new ResizeObserver(() => sizeToCanvas()).observe(canvas);
+  requestAnimationFrame(onMonoFrame);
+}
 function onMonoFrame() {
   requestAnimationFrame(onMonoFrame);
   renderer.clear();
@@ -283,6 +368,8 @@ function buildUI() {
   // default and the thing an app usually wants (convergence on whatever you are looking at).
   slider('convergence', 'convergence', 0, 4, 0.05, (v) => (v > 0 ? `${v.toFixed(2)}m` : 'auto'));
   slider('distance', 'radius', 0.6, 3, 0.05, (v) => `${v.toFixed(2)}m`, placeCamera);
+  // Share of the comfort zone the nearest / farthest content fills (rule 3). Below ~0.3 it reads flat.
+  slider('depth', 'depth', 0, 1.2, 0.05, (v) => `${Math.round(v * 100)}%`);
   checkbox('attach (parent the eyes under the app camera — no rig lag)', 'attach', pushRig);
   checkbox('camera rig (uncheck, or press C, for a display rig)', 'cameraRig', pushRig).id = 'rigToggle';
   addEventListener('keydown', (e) => {
@@ -296,21 +383,34 @@ function buildUI() {
 function updateReadout() {
   const d = convergenceDistance();
   const diopters = d > 0 ? 1 / d : 0;
-  // The runtime's rule, verbatim: ipdFactor × metersToVirtual × convergenceDiopters × N, with N
-  // the ~0.5 m nominal viewing distance. At 1 the viewer's eyes are parallel on infinitely far
-  // content; past it they diverge and nobody can fuse it. Reported, never enforced — the runtime
-  // clamps its own inputs, and a sample that refused to show you the bad end would teach nothing.
-  const comfort = 1 * 1 * diopters * 0.5;
-  const bad = comfort > 1;
+  const ipd = S.cameraRig ? ipdFactorForDepth() : 1;
+  const known = metrics.tileHeightM > 0;
+  // The runtime's rule, verbatim: ipdFactor × metersToVirtual × convergenceDiopters × N, with N the
+  // display's nominal viewing distance. At 1 the viewer's eyes are parallel on content at INFINITY
+  // seen through a canvas that matches the camera's field of view. This scene ends at the floor's
+  // far edge and the canvas is smaller than that (rule 4), so here the zone share the helper
+  // computes is what binds, and the product can read above 1 while the scene stays inside the zone.
+  // Both are reported, never enforced.
+  const comfort = ipd * 1 * diopters * metrics.viewerM;
+  const bad = known && S.cameraRig ? S.depth > 1 : comfort > 1;
   readoutEl.innerHTML =
     `rig <b>${S.cameraRig ? 'camera' : 'display'}</b>` +
     (S.cameraRig ? ` · pose <b>${S.attach ? 'identity (attached)' : 'world'}</b>` : '') +
     ` · convergence <b>${d.toFixed(2)} m</b> = ${diopters.toFixed(2)} D` +
-    ` · comfort <span class="${bad ? 'warn' : ''}">${comfort.toFixed(2)}</span>` +
-    (bad ? ' <span class="warn">— far content asks the eyes to diverge</span>' : '');
+    (S.cameraRig ? ` · ipdFactor <b>${ipd.toFixed(2)}</b>` +
+      (known ? ` (zone used <b>${Math.round(S.depth * 100)}%</b>)` : ' (canvas size not known yet)') : '') +
+    ` · comfort product ${comfort.toFixed(2)} (N ${metrics.viewerM.toFixed(2)} m; ceiling 1 for content at infinity on a FOV-matched canvas)` +
+    (bad ? ` <span class="warn">— ${known && S.cameraRig ? 'past the comfort zone' : 'far content asks the eyes to diverge'}</span>` : '');
 }
 
 // ---- boot ---------------------------------------------------------------------------------------
+// An opaque cover over the canvas until the first woven frame: before the browser joins the
+// canvas, its side-by-side buffer would show raw.
+function dropCover() {
+  const cover = document.getElementById('cover');
+  if (cover) cover.remove();
+}
+
 (async () => {
   buildUI();
   updateReadout();
@@ -323,9 +423,9 @@ function updateReadout() {
     statusEl.className = 'status flat';
     statusEl.innerHTML = '<b>2D fallback</b> — open in the ' +
       '<a href="https://github.com/DisplayXR/displayxr-browser">DisplayXR Browser</a> on a ' +
-      'DisplayXR display for glasses-free 3D. Drag still orbits.';
-    new ResizeObserver(() => sizeToCanvas()).observe(canvas);
-    requestAnimationFrame(onMonoFrame);
+      'Spatial Display for 3D. Drag still orbits.';
+    dropCover();
+    goFlat();
     return;
   }
   sbsMode = true;
@@ -333,7 +433,19 @@ function updateReadout() {
   // The FIRST rig is passed at construction rather than pushed after: the layer's very first
   // located frame is then already on the app's camera, so the scene never shows one frame of
   // default framing on the way in.
-  handle = wall.addScene(canvas, onXRFrame, { viewRig: currentRig(), onResize });
+  handle = wall.addScene(canvas, onXRFrame, {
+    viewRig: currentRig(),
+    onResize,
+    onLayerLost: () => {
+      statusEl.className = 'status flat';
+      statusEl.innerHTML = '<b>2D</b> — the 3D layer went away; showing one flat view';
+      goFlat();
+    },
+  });
+  readMetrics();
+  // The cover comes off when the browser first weaves the canvas — and on a timeout, so a missed
+  // signal never leaves the page without its scene.
+  Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]).then(dropCover, dropCover);
   // Each eye's projection is built from the session's near/far: give it the app camera's.
   wall.session.updateRenderState({ depthNear: appCam.near, depthFar: appCam.far });
   setAttach(S.cameraRig && S.attach);
@@ -342,4 +454,8 @@ function updateReadout() {
     ? '<b style="color:#4ade80">inline-3D active</b> — driving a camera rig each frame · drag to orbit'
     : '<b style="color:#fbbf24">inline-3D active, no setViewRig</b> — this browser ignores the rig ' +
       'and keeps its default display framing; the sliders are inert';
-})();
+})().catch((err) => {
+  console.warn('camera-rig: startup failed, showing 2D', err);
+  dropCover();
+  goFlat();
+});

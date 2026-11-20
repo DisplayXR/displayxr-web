@@ -59,7 +59,10 @@ in vec3 p; in vec3 c; uniform mat4 uP, uV; uniform vec3 uO; uniform float uS; ou
 void main(){ vec3 w = p * uS + uO; vl = p; vc = c; gl_Position = uP * uV * vec4(w, 1.0); }`;
 const fs = `#version 300 es
 precision mediump float; in vec3 vc; in vec3 vl; out vec4 o;
-void main(){ float k = mod(floor(vl.x*6.0)+floor(vl.y*6.0)+floor(vl.z*6.0), 2.0); o = vec4(vc * (0.65 + 0.35*k), 1.0); }`;
+// A NON-repeating texture (a hash per cell): a periodic checker gives the block matcher false
+// matches one period away, which read as disparity on a page that has none.
+float h(vec3 c){ return fract(sin(dot(c, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+void main(){ float k = h(floor(vl * 12.0)); o = vec4(vc * (0.5 + 0.5*k), 1.0); }`;
 function sh(t, s) { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(x)); return x; }
 const prog = gl.createProgram();
 gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(prog);
@@ -86,7 +89,11 @@ function invRigid(m) {
 }
 function perspective(fovy, aspect, n, f) { const t = 1 / Math.tan(fovy / 2), o = new Float32Array(16); o[0] = t / aspect; o[5] = t; o[10] = -(f + n) / (f - n); o[11] = -1; o[14] = (-2 * f * n) / (f - n); return o; }
 function lookFrom(x, y, z) { const m = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -x, -y, -z, 1]); return m; }
-const BOXES = [[-0.035, 0, 0.0, 0.03], [0.0, 0.004, 0.018, 0.022], [0.038, -0.004, -0.03, 0.03]]; // x y z size (metres, display rig vdh 0.12)
+const CAMERA_RIG = params.get('rig') === 'camera' || bug === 'depth-underused-camera';
+const BOXES = CAMERA_RIG
+  // camera rig: a world the camera looks INTO, 0.20 … 0.35 m from it, straddling the 0.26 m convergence
+  ? [[-0.03, 0, 0.06, 0.025], [0.0, 0.004, 0.0, 0.022], [0.045, -0.004, -0.09, 0.03]]
+  : [[-0.035, 0, 0.0, 0.03], [0.0, 0.004, 0.018, 0.022], [0.038, -0.004, -0.03, 0.03]]; // x y z size (metres, display rig vdh 0.12)
 function drawScene(proj, view) {
   gl.useProgram(prog); gl.bindVertexArray(vao);
   gl.uniformMatrix4fv(uP, false, proj); gl.uniformMatrix4fv(uV, false, view);
@@ -157,9 +164,10 @@ else {
       });
       gl.disable(gl.SCISSOR_TEST);
     }, {
-      ...(params.get('rig') === 'camera' || bug === 'depth-underused-camera'
-        // A camera rig: the camera 0.26 m in front of the boxes, converged on them.
-        // WRONG for depth-underused-camera: ipdFactor 0.04 -> comfort product 0.1, nearly flat.
+      ...(CAMERA_RIG
+        // A camera rig: the camera 0.26 m in front of the boxes, converged on the middle one. A
+        // true-scale (metres) world, so metersToVirtual 1 and ipdFactor 1 (the camera-rig rule).
+        // WRONG for depth-underused-camera: ipdFactor 0.04, nearly flat.
         ? { viewRig: { type: 'camera', position: { x: 0, y: 0, z: 0.26 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, verticalFov: 0.5, convergenceDiopters: 1 / 0.26, ...(bug === 'depth-underused-camera' ? { ipdFactor: 0.04, parallaxFactor: 0.04 } : {}) } }
         // WRONG for depth-underused-display: a display rig turned down to ipdFactor 0.3 for no reason.
         : bug === 'depth-underused-display'

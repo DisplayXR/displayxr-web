@@ -35,7 +35,7 @@ async function run(path, opt = {}) {
 }
 
 // ---- known-good pages: no check fails -----------------------------------------------------
-for (const sample of ['samples/hello-cube/', 'samples/model/', 'samples/splat/', 'samples/player/', `${FIXTURE}`]) {
+for (const sample of ['samples/hello-cube/', 'samples/model/', 'samples/splat/', 'samples/player/', 'samples/camera-rig/', `${FIXTURE}`]) {
   test(`good: ${sample} has no failing check`, { skip, timeout: 90000 }, async () => {
     const r = await run(sample);
     const failed = r.checks.filter((c) => c.status === 'fail');
@@ -131,4 +131,16 @@ test('an unhandled rejection fails the console check, labelled, with the catch-a
 test('stuck cover is reported as a cover that never came off', { skip, timeout: 60000 }, async () => {
   const r = await run(`${FIXTURE}?bug=stuck-cover`);
   assert.match(byId(r, 'overlay').summary, /never came off/, show(r));
+});
+
+test('samples/camera-rig/ follows the camera-rig depth rule: passes depth-underused', { skip, timeout: 90000 }, async () => {
+  const r = await run('samples/camera-rig/');
+  const c = byId(r, 'depth-underused');
+  assert.equal(c.status, 'pass', show(r));
+  assert.ok(c.details.zoneUsed > 0.3, JSON.stringify(c.details));
+});
+
+test('flat camera fixture measures well under 10% of the zone (no periodic false matches)', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?bug=depth-underused-camera`);
+  assert.ok(byId(r, 'depth-underused').details.zoneUsed < 0.1, show(r));
 });
