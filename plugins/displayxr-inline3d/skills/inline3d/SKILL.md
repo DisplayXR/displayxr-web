@@ -40,8 +40,23 @@ three when the page already is a three.js app (`addScene` + `EyeCamera`, see
   and zooms): the camera moves, so it is a camera rig. Tie `convergence` to the ground at the view
   centre (raycast the centre of the screen to the ground plane), not to the cursor or a gaze point,
   and cap zoom-in so the comfort product stays ≤ 1.
-- Details: `docs/authoring-inline-3d.md` § View rigs. Comfort on a camera rig:
-  `ipdFactor × metersToVirtual × convergenceDiopters × ~0.6` must stay ≤ 1; never `convergence: 0`.
+- **Use most of the comfort zone: too little depth is a failure too** (near-zero disparity reads
+  flat). Camera-rig eyes are real eyes, `0.063 m × ipdFactor × metersToVirtual` apart (world units
+  per real metre). Rule:
+  1. `convergence` = camera to centre of interest; the subject straddles the glass.
+  2. Never rescale your world; set `metersToVirtual`: true scale (metres, cm, ported VR) → the true
+     conversion (1, 100); no true scale (most games) → `convergence / 2` in your units (subject at
+     2 m; 13.4 → 6.7). If zoom changes the distance a lot, re-set it per frame in `setViewRig`.
+  3. `ipdFactor` tunes depth: ≈ 1 for an open scene (to the horizon); bounded (board, room, track):
+     0.8–1× of `cameraRigComfortFactor({ zNear, zFar, convergence, verticalFov, aspect, tileHeightM,
+     viewerM, ipdFactor, metersToVirtual })` (`@displayxr/inline3d/depth`; fills the zone; often 1.5–2.5).
+  `parallaxFactor` = `ipdFactor`; perspective, tilted camera; never `convergence: 0`. Comfort
+  `ipdFactor × metersToVirtual × convergenceDiopters × N` ≤ 1 (N = `nominalViewerPosition.z`, else
+  0.6 m) is the ceiling for content at infinity, not a target. Example: 13.4 units out, `ipdFactor: 2.5`, `metersToVirtual: 1`
+  uses ~20% of the zone, flat; rule: `metersToVirtual: 6.7`, `ipdFactor` ≈ 1.4–1.7.
+- **Display rig:** `ipdFactor`/`parallaxFactor` 1 = natural, full roundness; don't lower without a reason.
+- Budgets are reports, not limits to stay far inside: never lower depth as the user zooms.
+  Details: `docs/authoring-inline-3d.md` § Aim for real depth.
 
 ## 3. Depth and comfort (`docs/making-3d-look-right.md`, nine rules)
 
@@ -121,8 +136,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ## 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.52.3**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.52.3/js/inline3d.js`,
+`@displayxr/inline3d` **1.56.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -130,7 +145,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;

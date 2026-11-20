@@ -14,7 +14,7 @@ Run the checker from the exact-pinned `@displayxr/inline3d-tools` npm package (t
 downloads it; the user approves the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.2 check <url | dir | page.html>
+npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html>
 ```
 
 If the `inline3d-tools` MCP server is configured, its `check` tool does the same (`target`, `root`,
@@ -28,5 +28,7 @@ Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome` overrides the location)
 
 Then, for every FAIL: fix it in the page, following the line's `fix:` hint and the doc it names under
 `node_modules/@displayxr/inline3d/docs/`; re-run until nothing fails. Report WARN lines to the user
-with a one-line judgement each (fixed, or why it is acceptable). Say plainly that a passing run is a
+with a one-line judgement each (fixed, or why it is acceptable). A `depth-underused` WARN means the
+page reads nearly flat: raise the rig's depth as its hint says (convergence on the subject, `metersToVirtual` set, not the world
+rescaled, then `ipdFactor`), don't explain it away as "comfortable". Say plainly that a passing run is a
 fake-environment check, not a test on a real 3D panel.

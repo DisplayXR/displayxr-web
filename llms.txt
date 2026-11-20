@@ -13,8 +13,12 @@ Pick the view rig before writing code — decide by what the user moves, not by 
 owns a camera. The user turns a SUBJECT (model, product, diorama, simulation, chart), even with an
 orbit control: DISPLAY rig (keep the orbit camera and pose the portal from it with
 displayRig({ position: target, orientation: camera.quaternion, virtualDisplayHeight: 2·d·tan(fov/2) })).
-The user moves through a WORLD (first person, game, map, editor, ported VR): CAMERA rig. Then
-check depth at three window sizes and in full screen: the subject must stay on the glass.
+The user moves through a WORLD (first person, game, map, editor, ported VR): CAMERA rig, with
+this depth rule (too little depth is a failure too): convergence = the distance to the subject;
+never rescale the world, set metersToVirtual (the true scale, or convergence/2 when the world has
+none); ipdFactor ≈ 1 for an open scene, cameraRigComfortFactor-filled when bounded
+(docs/authoring-inline-3d.md § Aim for real depth). Then check depth at three window sizes and in
+full screen: the subject must stay on the glass.
 
 Four mistakes a page makes most often (each looks fine in a 2D browser):
 - a cover over a new canvas comes off on handle.firstWoven (a player's too: player.firstWoven),

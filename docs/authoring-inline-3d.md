@@ -667,17 +667,21 @@ bad number degrades the look rather than killing the window.
 Note the display/camera split on `ipdFactor` and `parallaxFactor`. On a display rig they are
 *relative* — `1` is what the display would naturally do, and lowering them is a comfort dial. On a
 camera rig they are *absolute*, in the app's own units. `metersToVirtual` is the unit conversion
-that goes with that, for a scene not authored in metres: a scene built in centimetres would
-otherwise get a 63 mm eye separation measured in *its* units. It is a unit fix, not a depth dial —
-if you are reaching for it to make a scene look deeper, read the section below and then the
-[rig choice](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera) again.
+that goes with that: how many world units make one real metre, i.e. the world's scale. A scene
+built in centimetres would otherwise get a 63 mm eye separation measured in *its* units. It is a
+unit fix, not a depth dial — but for a made-up game world there is no true scale, so *choosing*
+the scale **is** the unit fix. Never rescale your world to get depth; set `metersToVirtual`. A
+world with a true scale uses the true conversion; a world without one declares the centre of
+interest to be 2 real metres away, `metersToVirtual = convergence / 2` in its own units. Either
+way `ipdFactor` stays the depth dial (see [Aim for real depth](#aim-for-real-depth)).
 
-So on a camera rig `ipdFactor: 1` is **not** "correct" by default: it means real eye separation
-only when the world is in metres at real-world scale. In arbitrary units, or for a scene framed
-small or far from the camera, 1 is just a number and often gives almost no depth. There is no
-cap: scale the eye separation to the scene, so that its nearest and farthest visible points land
-inside the comfort zone at the device's viewing distance (see *Comfort is set in diopters*
-below). Only on a display rig is 1 the natural value and anything above it an exaggeration.
+So on a camera rig `ipdFactor: 1` is **not** "correct" by default with an arbitrary
+`metersToVirtual`: it means real eye separation only when the world's declared scale is right. In
+arbitrary units at `metersToVirtual: 1`, or for a scene framed small or far from the camera, 1 is
+just a number and often gives almost no depth. Normalise the scale first (the rule below), then
+treat `ipdFactor` as a strength dial whose job is to put the scene's nearest and farthest visible
+points inside — and across most of — the comfort zone. Only on a display rig is 1 the natural
+value and anything above it an exaggeration.
 
 ### Which way is out
 
@@ -735,7 +739,87 @@ flat": a flat window is a budget problem and comfort will not report it. (The tw
 naive orbit viewer, where convergence is set to the framing distance, which is how the two get
 confused.) Nothing enforces either: neither this SDK nor the runtime clamps a rig the page declares (the
 runtime's convergence clamp applies only to legacy-profile and keyboard-driven rigs). Keep comfort
-≤ 1 yourself; the budget numbers are in [making-3d-look-right.md § 3](making-3d-look-right.md#3-stay-inside-the-depth-budget). `samples/camera-rig/` prints comfort live.
+≤ 1 yourself; for the budget, see *Aim for real depth* below. `samples/camera-rig/` prints comfort live.
+
+### Aim for real depth
+
+A comfort *ceiling* with no target gets read as "stay far inside it", and the page comes out nearly
+flat. **Use most of the comfort zone. Near-zero disparity is a defect on these displays, not a safe
+default — too little depth is a failure too.**
+
+**The model.** On a camera rig the eyes are *real eyes*: their separation in world units is
+`0.063 m × ipdFactor × metersToVirtual`. A point at camera distance `z` lands, in diopters from the
+glass,
+
+```
+ΔD(z) = ipdFactor × metersToVirtual × (1/D − 1/z) × k        k = tileHeightM / (2·tan(fov/2) · viewerM)
+```
+
+with `D` the convergence distance. `k` is 1 when the camera's field of view matches how the viewer
+sees the canvas, and below 1 for a wide FOV in a small canvas. The comfort zone is about 0.55 D in
+front and 0.65 D behind at 0.6 m (`comfortZone()`).
+
+**Reference point** (the runtime's keyboard-device defaults, known to look right): a real-scale
+world, `ipdFactor` 1, `metersToVirtual` 1, convergence 2 m (0.5 D). Infinity lands 0.5 D behind,
+content at 1 m lands 0.5 D in front; `cameraRigComfortFactor` gives 1.14 (zNear 1, zFar ∞, matched
+canvas), so it uses about 88 % of the zone.
+
+**The rule** (camera rig):
+
+1. **Convergence = the distance from the camera to the centre of interest.** The subject straddles
+   the glass: a little in front, a little behind — not under it, not at the far wall. For a game,
+   the ground at the view centre.
+2. **Never rescale your world; set `metersToVirtual`.** Apps keep their own unit system.
+   - *A world with a true scale* (metres, centimetres, a ported VR app): `metersToVirtual` is the
+     true conversion (1, 100, …), and `ipdFactor` alone tunes depth, with the helper (rule 3).
+   - *A world with no true scale* (most games): `metersToVirtual = convergence / 2` in the app's own
+     units — the subject declared 2 m away, as in the reference — and `ipdFactor` ≈ 1.
+   - Rescaling the scene so the subject sits 2 units away with `metersToVirtual` 1 is equivalent;
+     there is no reason to do it.
+   - If the camera zooms or the subject distance changes a lot, track it: set `metersToVirtual =
+     convergence / 2` every frame through `setViewRig`, so the depth stays constant. That changes
+     the rig, not the world, so it is consistent with "never scale the world per frame".
+
+   Examples: subject 13.4 units away → `metersToVirtual` 6.7. A centimetre scene with the subject
+   200 units away → 100, either way (the true conversion and the convention agree).
+3. **`ipdFactor` tunes the depth.** **Open scene** (content reaches the horizon or a far
+   background): keep `ipdFactor` ≈ 1. **Bounded scene** (a top-down board, a room, a track; nothing much past ~2× the convergence
+   distance): raise it until the nearest and farthest visible content fill the zone, typically
+   1.5–2.5. Compute it: `cameraRigComfortFactor({ zNear, zFar, convergence, verticalFov, aspect,
+   tileHeightM, viewerM, ipdFactor, metersToVirtual })` from `@displayxr/inline3d/depth` returns the
+   multiplier that fills the zone; aim for 0.8–1× of it. `tileHeightM` = `canvasSizeM[1]` and
+   `viewerM` = `nominalViewerM` from `await handle.displayMetrics()`.
+4. **A canvas much smaller than the FOV-matched size (`k < 1`) shows proportionally less depth.**
+   Use the helper with the real `tileHeightM`; don't rely on the comfort product alone.
+5. **The comfort product `ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1` stays the
+   divergence ceiling** for content at infinity on a FOV-matched canvas (`N` =
+   `XRDisplayInfo.nominalViewerPosition.z`, 0.6 m when the display reports none). A bounded scene
+   or a small canvas (`k < 1`) can sit above 1 and still inside the zone: there the helper binds
+   (`samples/camera-rig/`, a metre-scale bounded scene in a small canvas, can read well above 1). With the `convergence / 2` convention it equals `ipdFactor × N / 2`: 0.3 at
+   `ipdFactor` 1 on a 0.6 m panel.
+
+Keep `parallaxFactor` equal to `ipdFactor`, so the look-around matches the stereo. Keep the camera
+perspective and tilted, so the ground ramps through depth (rule 2 of
+[making-3d-look-right.md](making-3d-look-right.md)); don't shear the ground flat onto the glass.
+
+- **Display rig: `ipdFactor` and `parallaxFactor` 1 are the natural depth** (full roundness at real
+  proportions). Don't lower them without a reason you can name.
+- **Budgets are reports.** Pop-out and recession numbers (`comfortZone`, `cameraRigComfortFactor`,
+  `groundPlaneRig`) tell you where the scene sits; they are not limits to stay far inside. Never
+  lower the depth as the user zooms; if zooming in goes too far, cap the zoom.
+- When you test, assert a visible-disparity **floor** at the default view, not only a ceiling.
+  `inline3d-tools check` measures a camera-rig page's disparity in the two eye images and warns
+  `depth-underused` below about 30 % of the zone; it warns for a display rig whose `ipdFactor` is
+  below 0.5.
+
+**Worked example.** A top-down racing game: three.js camera, `fov` 46°, converged on the track
+13.4 units away, built with `cameraRigFromCamera(THREE, cam, { convergence: 13.4, ipdFactor: 2.5,
+parallaxFactor: 2.5 })` at `metersToVirtual` 1. With visible content from about 8 to 30 units,
+`cameraRigComfortFactor` (matched canvas) gives about 11 at `ipdFactor` 1, so 2.5 uses roughly 20 %
+of the zone: on the panel it reads flat. By the rule (a game world, no true scale):
+`metersToVirtual: 6.7` (13.4 / 2), and then `ipdFactor` 1 is the same eye separation as 6.7 at `metersToVirtual` 1. The track is bounded, so
+raise it to 0.8–1× of the fill multiplier: about 11 / 6.7 ≈ 1.7, i.e. `ipdFactor` ≈ 1.4–1.7,
+`parallaxFactor` the same. Then judge it on the panel.
 
 **Convergence at infinity** (`convergence: 0`) is legal and keeps a perfectly finite budget; it
 just puts the entire scene in front of the glass, which is comfortable for almost nothing. It is
@@ -2172,8 +2256,8 @@ What decides whether a clip plays at all, and whether it stays smooth, is mostly
 - **Release what a content swap replaces,** programs included: destroying an entity does not free
   the programs its materials linked ([content lifecycle rules](content-lifecycle-rules.md)).
 - **Scenes: author at ~0.24 virtual height (pass the same `virtualDisplayHeight` to the viewer and
-  to `addScene`);** put focused content at `z=0`, and keep its depth inside the
-  [budget](making-3d-look-right.md#3-stay-inside-the-depth-budget).
+  to `addScene`);** put focused content at `z=0`, and use the depth: most of the comfort
+  zone on a camera rig, `ipdFactor` 1 on a display rig ([Aim for real depth](#aim-for-real-depth)).
 - **Shallower = rigid:** never fit depth by scaling display `z` on a parent of a turned or tilted
   subject. That shears it: right angles collapse in stereo while the 2D view looks fine. Re-orient
   or scale uniformly ([Making a subject shallower](#making-a-subject-shallower-keep-it-rigid)).

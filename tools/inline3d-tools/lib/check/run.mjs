@@ -7,7 +7,7 @@ import { launchChrome, withTimeout } from './cdp.mjs';
 import { serveDir } from './server.mjs';
 import { decodePng } from './png.mjs';
 import {
-  crop, halves, contentStats, regionDiff, compareEyes, blockDisparity, quantile, flatWideVerdict, sbsPairVerdict, shibataZoneMm, fromBase64Rgba,
+  crop, halves, contentStats, regionDiff, compareEyes, blockDisparity, quantile, flatWideVerdict, sbsPairVerdict, shibataZoneMm, fromBase64Rgba, rigDepthUse,
 } from './analyze.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -742,13 +742,15 @@ function buildChecks(fake, plain, opt) {
   }
 
   // depth / comfort (measured)
+  const zone = shibataZoneMm(0.65);
+  let measuredMm = null; // on-glass disparity per textured block of the primary canvas, mm, signed
   {
     let status = 'skip', summary = 'no stereo pair to measure';
     let details = null;
-    const zone = shibataZoneMm(0.65);
     if (primary && primary.px && primary.px.blocks.length >= 3 && primary.occlusion) {
       const k = (primary.occlusion.rect.width / primary.px.eyeW) * MPP * 1000; // mm per eye px
       const ds = primary.px.blocks.map((b) => b.d * k);
+      measuredMm = ds;
       const p05 = quantile(ds, 0.05), p50 = quantile(ds, 0.5), p95 = quantile(ds, 0.95);
       details = { frontMostMm: +p05.toFixed(2), medianMm: +p50.toFixed(2), backMostMm: +p95.toFixed(2), comfortZoneMm: { front: +zone.frontMm.toFixed(1), behind: +zone.behindMm.toFixed(1) }, blocks: ds.length, sign: '- = in front of the glass, + = behind' };
       const warns = [];
@@ -760,6 +762,19 @@ function buildChecks(fake, plain, opt) {
       summary = warns.length ? warns.join('; ') : `screen disparity ${p05.toFixed(1)} … ${p95.toFixed(1)} mm (median ${p50.toFixed(1)}), inside the comfort zone`;
     }
     checks.push(check('depth', '-', 'Depth sits on the glass and inside the comfort zone (measured, approximate)', status, summary, { details, approximate: true, doc: `${DOCS}/making-3d-look-right.md` }));
+  }
+
+  // depth used: too little depth is a failure too. A report, never a limit. Camera rig: the measured
+  // disparity of the captured (default, no-input) view against a floor; display rig: its ipdFactor.
+  {
+    const rig = primary ? (primary.firstRig !== undefined ? primary.firstRig : primary.rig) : undefined;
+    const r = rigDepthUse(rig, measuredMm, zone);
+    checks.push(check('depth-underused', '-', 'The scene uses the depth the display can show (camera rig: at least ~30% of the comfort zone, measured; display rig: ipdFactor near 1)', r.status, r.summary, {
+      details: r.details,
+      hint: r.hint,
+      approximate: !!(rig && rig.type === 'camera'),
+      doc: `${DOCS}/authoring-inline-3d.md#aim-for-real-depth`,
+    }));
   }
   return checks;
 }
@@ -776,7 +791,7 @@ function rigInfo(fake) {
     const m2v = rig.metersToVirtual || 1;
     const dio = typeof rig.convergenceDiopters === 'number' ? rig.convergenceDiopters : 0;
     out.comfort = +(ipd * m2v * dio * 0.65).toFixed(3);
-    out.comfortNote = 'ipdFactor x metersToVirtual x convergenceDiopters x 0.65 m (nominal viewer); keep <= 1';
+    out.comfortNote = 'ipdFactor x metersToVirtual x convergenceDiopters x 0.65 m (nominal viewer); the divergence ceiling, keep <= 1';
   } else {
     out.comfort = null;
     out.comfortNote = 'display rig: ipdFactor/parallaxFactor are relative comfort dials in [0,1]';
@@ -858,7 +873,7 @@ export function formatHuman(r) {
     if ((c.status === 'fail' || c.status === 'warn') && c.doc) lines.push(`        see: ${c.doc}`);
   }
   const rig = r.info.rig;
-  lines.push(`  rig: ${rig.type || 'n/a'}${rig.type === 'camera' ? `, comfort ${rig.comfort} (keep <= 1)` : ''}${rig.virtualDisplayHeight ? `, virtualDisplayHeight ${rig.virtualDisplayHeight}` : ''}`);
+  lines.push(`  rig: ${rig.type || 'n/a'}${rig.type === 'camera' ? `, comfort ${rig.comfort} (ceiling 1)` : ''}${rig.virtualDisplayHeight ? `, virtualDisplayHeight ${rig.virtualDisplayHeight}` : ''}`);
   lines.push(`  verdict: ${r.verdict.toUpperCase()} in ${(r.durationMs / 1000).toFixed(1)} s`);
   return lines.join('\n');
 }

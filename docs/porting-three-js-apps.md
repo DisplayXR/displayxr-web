@@ -202,10 +202,16 @@ to *keep convergence past about N world units* (0.6 on a desktop panel).
 Which is why **the units your scene is authored in are now load-bearing**. On a camera rig
 `ipdFactor` and `metersToVirtual` are **absolute**, in your world units — a scene built in
 centimetres, or in "1 unit = 1 tile", sails past the comfort limit at every plausible convergence
-and there is no clue in the code that anything is wrong. Either author at metre scale, or set
-`metersToVirtual` to your units-per-metre and leave it there. Nothing enforces the rule (neither the SDK
-nor the runtime clamps a rig the page declares); `samples/camera-rig/` prints it live, and
-is the fastest way to develop an intuition for it.
+and there is no clue in the code that anything is wrong. Never rescale the world; set
+`metersToVirtual`: your units-per-metre when the world has a true scale, else `convergence / 2`
+(the subject declared 2 m away). Nothing enforces the rule (neither the SDK nor the runtime clamps
+a rig the page declares); `samples/camera-rig/` prints it live.
+
+That is a **ceiling**. The floor matters as much: **too little depth is a failure too**, and a
+ported world kept far inside the ceiling comes out flat. Converge on the subject, set
+`metersToVirtual` as above, then `ipdFactor` ≈ 1 for an open scene or most of
+`cameraRigComfortFactor(...)` for a bounded one —
+[authoring — Aim for real depth](authoring-inline-3d.md#aim-for-real-depth).
 
 ### Capability gate and fallback
 
@@ -637,15 +643,19 @@ Consolidated, in the order they tend to bite:
 12. **A rig set this frame drives NEXT frame's views.** Use the attach pattern; never predict the
     camera forward.
 13. **Absolute rig units on a camera rig.** `ipdFactor` and `metersToVirtual` are in *your* world
-    units — `metersToVirtual` is the unit conversion for a scene not authored in metres, not a
-    depth dial. Keep `ipd × m2v × diopters × 0.5` ≤ 1 or the background diverges.
+    units — `metersToVirtual` is world units per real metre: the true conversion, or
+    `convergence / 2` for a world with no true scale. Keep `ipd × m2v × diopters × N` ≤ 1 or the
+    background diverges, and use most of the comfort zone or the scene reads flat
+    ([Aim for real depth](authoring-inline-3d.md#aim-for-real-depth)).
 14. **Reading comfort as a depth meter.** It is not one. Comfort bounds where the depth budget
     *sits* (the background against divergence); the budget itself is
     `(baseline / tan(vFov/2)) × (1/z_near − 1/z_far)`, which convergence cancels out of exactly.
     A scene that weaves but looks **flat** is a budget problem — a 63 mm baseline framing a large
     subject from far away — and comfort will happily report a healthy number while it happens.
-    Do not paper over it by scaling the baseline: a camera rig that needs a scale correction is a
-    scene that wanted a **display rig**, which is scale-invariant by construction.
+    If the content is a subject the user turns, it wanted a **display rig**, which is
+    scale-invariant by construction. If it is a world, apply the camera-rig depth rule
+    ([Aim for real depth](authoring-inline-3d.md#aim-for-real-depth)): it is the scale correction,
+    done on the rig, never by rescaling the world.
 15. **Convergence left at 0.** That is infinity — the entire scene in front of the glass. And in
     first person, convergence to the orbit target is ~0, which is the same mistake from the other
     end.

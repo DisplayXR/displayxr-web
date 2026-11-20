@@ -206,7 +206,7 @@ Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-
 index.html            landing (Pages entry point)
 samples/
   camera-rig/         the camera rig — an orbiting scene that sends its OWN camera each frame;
-                      convergence + comfort, the attach pattern, C to A/B a display rig
+                      convergence + the depth rule, the attach pattern, C to A/B a display rig
   windows/            mixed 3D windows — still photos + a live video + a real-time three.js scene,
                       each woven with one SDK call, all on one session
   splat/              a 3D Gaussian splat in a tile (PlayCanvas; ?engine=spark), with a 2D plate over it

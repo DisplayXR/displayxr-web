@@ -35,7 +35,7 @@ async function run(path, opt = {}) {
 }
 
 // ---- known-good pages: no check fails -----------------------------------------------------
-for (const sample of ['samples/hello-cube/', 'samples/model/', 'samples/splat/', 'samples/player/', `${FIXTURE}`]) {
+for (const sample of ['samples/hello-cube/', 'samples/model/', 'samples/splat/', 'samples/player/', 'samples/camera-rig/', `${FIXTURE}`]) {
   test(`good: ${sample} has no failing check`, { skip, timeout: 90000 }, async () => {
     const r = await run(sample);
     const failed = r.checks.filter((c) => c.status === 'fail');
@@ -58,6 +58,28 @@ test('camera rig: reported with its comfort number, real stereo', { skip, timeou
   assert.equal(r.info.rig.type, 'camera', show(r));
   assert.ok(Math.abs(r.info.comfort - 0.65 / 0.26) < 0.01, `comfort ${r.info.comfort}`);
   assert.equal(byId(r, 'stereo').status, 'pass', show(r));
+  assert.equal(byId(r, 'depth-underused').status, 'pass', show(r));
+});
+
+test('a nearly flat camera rig WARNs depth-underused from the MEASURED disparity, with the fix', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?bug=depth-underused-camera`);
+  const c = byId(r, 'depth-underused');
+  assert.equal(c.status, 'warn', show(r));
+  assert.ok(c.details.zoneUsed < c.details.floor, JSON.stringify(c.details));
+  assert.equal(c.details.normalisedMetersToVirtual, 0.13); // convergence 0.26 / 2
+  assert.match(c.hint, /cameraRigComfortFactor/);
+});
+
+test('the same camera rig at full eye separation measures above the floor', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?rig=camera`);
+  const c = byId(r, 'depth-underused');
+  assert.equal(c.status, 'pass', show(r));
+  assert.ok(c.details.zoneUsed > c.details.floor, JSON.stringify(c.details));
+});
+
+test('good fixture: depth-underused passes on the natural display rig', { skip, timeout: 60000 }, async () => {
+  const r = await run(FIXTURE);
+  assert.equal(byId(r, 'depth-underused').status, 'pass', show(r));
 });
 
 const CASES = [
@@ -81,6 +103,8 @@ const CASES = [
   ['issupported', 'detection', 'warn'],
   ['noop-layerlost', 'layer-lost', 'fail'],
   ['sticky-blend', 'overlay', 'warn'],
+  ['depth-underused-camera', 'depth-underused', 'warn'],
+  ['depth-underused-display', 'depth-underused', 'warn'],
 ];
 for (const [bug, id, expected, opt] of CASES) {
   test(`broken: ?bug=${bug} -> ${id} ${expected}${opt ? ` ${JSON.stringify(opt)}` : ''}`, { skip, timeout: 60000 }, async () => {
@@ -107,4 +131,16 @@ test('an unhandled rejection fails the console check, labelled, with the catch-a
 test('stuck cover is reported as a cover that never came off', { skip, timeout: 60000 }, async () => {
   const r = await run(`${FIXTURE}?bug=stuck-cover`);
   assert.match(byId(r, 'overlay').summary, /never came off/, show(r));
+});
+
+test('samples/camera-rig/ follows the camera-rig depth rule: passes depth-underused', { skip, timeout: 90000 }, async () => {
+  const r = await run('samples/camera-rig/');
+  const c = byId(r, 'depth-underused');
+  assert.equal(c.status, 'pass', show(r));
+  assert.ok(c.details.zoneUsed > 0.3, JSON.stringify(c.details));
+});
+
+test('flat camera fixture measures well under 10% of the zone (no periodic false matches)', { skip, timeout: 60000 }, async () => {
+  const r = await run(`${FIXTURE}?bug=depth-underused-camera`);
+  assert.ok(byId(r, 'depth-underused').details.zoneUsed < 0.1, show(r));
 });

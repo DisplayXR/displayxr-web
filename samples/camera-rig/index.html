@@ -19,7 +19,9 @@
      splits it down the middle, so any spatially-varying CSS here — border, radius, shadow —
      would be composited into that pair and then halved: each eye would get one edge and two of
      the four corners, stretched 2x by the un-squeeze. */
-  #stage{display:block;width:100%;max-width:800px;aspect-ratio:16/9;margin:0 auto;cursor:grab;touch-action:none}
+  .stagewrap{position:relative;max-width:800px;margin:0 auto}
+  #stage{display:block;width:100%;aspect-ratio:16/9;cursor:grab;touch-action:none}
+  .cover{position:absolute;inset:0;background:#0f1014}
   #stage.dragging{cursor:grabbing}
   .panel{max-width:800px;margin:14px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
          gap:10px 20px;background:#ffffff08;border:1px solid #ffffff14;border-radius:10px;padding:14px 16px}
@@ -55,20 +57,27 @@
 
   <div id="status" class="status flat">Detecting DisplayXR Browser…</div>
 
-  <canvas id="stage"></canvas>
+  <div class="stagewrap"><canvas id="stage"></canvas><div class="cover" id="cover"></div></div>
 
   <div class="panel" id="panel"></div>
   <div class="readout" id="readout"></div>
 
   <div class="cols">
     <div>
-      <h2>Convergence is the knob that matters</h2>
-      <p class="small">It is the distance where content sits <em>on</em> the glass — nearer pops
-         out, further recedes. Left at the orbit distance the cube straddles the display. Wind it
-         in and the cube leaps forward; wind it out and the whole scene sinks behind the panel.
-         The runtime's comfort rule is
-         <code>ipd × metersToVirtual × diopters × 0.5 ≤ 1</code>; the readout above turns red past
-         it, which is where far content starts asking your eyes to diverge.</p>
+      <h2>Convergence places the scene; ipdFactor sizes it</h2>
+      <p class="small">Convergence is the distance where content sits <em>on</em> the glass —
+         nearer pops out, further recedes. Left at the orbit distance the cube straddles the
+         display. Wind it in and the cube leaps forward; wind it out and the whole scene sinks
+         behind the panel.</p>
+      <p class="small">This world is in real metres, so <code>metersToVirtual</code> stays 1, and
+         <code>ipdFactor</code> is set so the nearest and farthest content fill the
+         <strong>depth</strong> share of the comfort zone (<code>cameraRigComfortFactor</code>).
+         Too little depth is a failure too: below about 30 % the scene reads flat. The comfort
+         number, <code>ipdFactor × metersToVirtual × diopters × N ≤ 1</code>, is the ceiling for
+         content at infinity through a canvas that matches the camera's view; this scene ends at
+         the floor's edge and the canvas is smaller, so it can read above 1 here while the zone
+         share stays under 100 %. The readout turns red when the scene leaves the zone. See
+         <a href="../../docs/authoring-inline-3d.md#aim-for-real-depth">Aim for real depth</a>.</p>
     </div>
     <div>
       <h2><kbd>C</kbd> — camera rig ⇄ display rig</h2>

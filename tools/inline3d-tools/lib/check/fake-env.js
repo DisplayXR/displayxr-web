@@ -422,6 +422,7 @@
       ageMs: now() - r.createdAt,
       init: r.init,
       rig: r.layer.rig ? safeClone(r.layer.rig) : null,
+      firstRig: r.rigs.length ? r.rigs[0] : null, // the rig at the default view (before any user input)
       rigPushes: r.rigPushes,
       sameCanvasLiveAtCreate: r.sameCanvasLiveAtCreate,
       coverAtCreate: r.coverAtCreate,

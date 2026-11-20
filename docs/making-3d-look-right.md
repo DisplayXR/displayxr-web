@@ -5,11 +5,13 @@ on real panels; everything else about how your scene looks is your call.
 
 1. **The default depth is the glass. Keep the viewer's placement, and frame the first view.**
    Centre your subject on z = 0 so it straddles the screen: a little in front, most of it just
-   behind, with as little total disparity as its shape allows. `addModel`, `addSplat` and
+   behind, at its real proportions (no exaggeration). `addModel`, `addSplat` and
    `SceneViewer` do this for you: they scale the subject to its real proportions and centre it on
    the glass. A scene you build yourself follows the same rule. Don't push it back, shrink it or
    flatten it to make it "more comfortable": recession costs disparity and crosstalk like pop-out
-   does, and only buys softness. Recede content only where it must clear something flat in front
+   does, and only buys softness. **Too little depth is a failure too**: near-zero disparity reads
+   as a flat picture on these displays. A display rig's `ipdFactor: 1` is the natural depth; don't
+   lower it without a reason. Recede content only where it must clear something flat in front
    of it (an HTML label over the scene), and only that part; HTML beside the scene needs no room.
    The first view shows the whole subject, centred: a globe or a tank
    that starts low and cut off by the frame reads as broken. If the user can zoom, cap zoom-in
@@ -23,10 +25,18 @@ on real panels; everything else about how your scene looks is your call.
    viewer are where pop-out becomes uncomfortable. Keep their paths mostly at or behind the glass,
    and fade them out as they come close to the viewer. A follow camera keeps its subject in frame
    on fast moves.
-4. **Worlds: keep convergence fixed, and keep near things away.** On a camera rig, set
-   `convergence` once for the scene, or change it slowly when the scene changes. Never set it from
-   where the user is looking: whatever they look at lands on the glass and goes flat. Never set it
-   to 0. Near geometry is where a world goes wrong: a window frame, a wall or a crossbar close to
+4. **Worlds: real depth, fixed convergence, near things away.** On a camera rig, set
+   `convergence` to the distance from the camera to the centre of interest, so the subject
+   straddles the glass. Never rescale the world; set `metersToVirtual`: the true conversion if the
+   world has a true scale, else `convergence / 2` (the subject declared 2 m away), re-set per
+   frame if the camera zooms a lot. Then let `ipdFactor` tune the depth: ≈ 1 for an open scene, raised
+   for a bounded one (a board, a room, a track) until the nearest and farthest visible content
+   fill most of the comfort zone (`cameraRigComfortFactor`; typically 1.5–2.5). Rule and worked
+   example: [authoring-inline-3d.md § Aim for real depth](authoring-inline-3d.md#aim-for-real-depth).
+   Set `convergence` once for the scene, or change it slowly when the scene changes, and
+   never lower the depth as the user zooms: budgets are reports, not limits. Never set convergence
+   from where the user is looking: whatever they look at lands on the glass and goes flat. Never
+   set it to 0. Near geometry is where a world goes wrong: a window frame, a wall or a crossbar close to
    the camera comes far out of the glass and ghosts. Keep the visitor's camera well clear of
    walls and furniture, or lower `ipdFactor` while it is close.
 5. **Low contrast between the subject and what is behind it.** The display's crosstalk correction
