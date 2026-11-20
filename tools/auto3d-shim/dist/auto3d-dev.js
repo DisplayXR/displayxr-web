@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.8 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.9 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,7 +489,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.8'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.9'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -527,6 +527,7 @@ function dxrCore(cfg, cap, S) {
     gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
+    pcPostEffects: true, // TEST ONLY (A/B): false keeps a PlayCanvas camera with legacy post effects (camera.postEffects) 2D; 'unsplit' converts it with ONE chain over the pair (v0.7.9 runs the chain per eye)
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
     chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
@@ -3487,22 +3488,24 @@ function dxrPlayCanvas(core) {
 
   function pickCamera(app, st) {
     const list = (app.systems.camera && app.systems.camera.cameras) || [];
-    const cams = list.filter((c) => c && c.enabled && c.entity && c.entity.enabled && !c.renderTarget);
+    const cams = list.filter((c) => c && c.enabled && c.entity && c.entity.enabled && (!c.renderTarget || queueOf(c)));
     if (!cams.length) return { why: 'no enabled camera renders to the canvas' };
     if (cams.length > 1) return { why: `${cams.length} cameras render to the canvas (UI / multi-view) — not split in this prototype`, flat: true };
     const c = cams[0];
     if (!c.camera || !('xrViews' in c.camera)) return { why: 'this PlayCanvas engine has no Camera.xrViews (added in 2.20) — left 2D', flat: true };
     if (c.projection === 1) return { why: 'the camera is orthographic', flat: true };
-    const pe = c.postEffects;
-    if (c.postEffectsEnabled !== false && pe && Array.isArray(pe.effects) && pe.effects.length) return { why: 'post effects on the camera — needs per-eye targets (next)', flat: true };
+    const pe = queueOf(c);
+    const noPe = pe && postEffectsBlocker(st, c, pe);
+    if (noPe) return { why: noPe, flat: true };
     const fp = getFP(c);
     let cf = null;
     if (fp && fp.length) {
+      if (pe) return { why: 'post effects and frame passes on the same camera — not split', flat: true };
       if (st && st.cf && fp === st.cf.list) cf = st.cf.A;
       else if (fp.length === 1 && isCameraFramePass(fp[0])) cf = core.T.pcCameraFrame === false ? null : fp[0]; // false: TEST ONLY, unsplit
       else return { why: 'frame passes on the camera that are not one CameraFrame — not split', flat: true };
     }
-    return { cam: c, cf };
+    return { cam: c, cf, pe: pe && core.T.pcPostEffects !== 'unsplit' ? pe : null }; // 'unsplit': TEST ONLY (A/B)
   }
   function pageCam(st) {
     const c = st.cam.camera;
@@ -3556,7 +3559,9 @@ function dxrPlayCanvas(core) {
       trapCanvasSize(st);
       applyRealSize(st);
       bindViews(st);
-      syncCameraFrame(st, pickCamera(st.app, st).cf || null);
+      const pick = pickCamera(st.app, st);
+      syncCameraFrame(st, pick.cf || null);
+      syncPostEffects(st, pick.pe || null);
     },
     firstDraw(st) { st.app.renderNextFrame = true; },
     redraw(st) {
@@ -3566,6 +3571,7 @@ function dxrPlayCanvas(core) {
     },
     restore(st, wasLive) {
       uninstallCameraFrame(st);
+      uninstallPostEffects(st);
       restoreShadows(st);
       if (st.cam && st.cam.camera) { try { st.cam.camera.xrViews = null; } catch (e) { /* ignore */ } }
       st.cam = null; st.views = null; st.frustumKey = '';
@@ -3617,7 +3623,7 @@ function dxrPlayCanvas(core) {
         footprint: { ...st.footprint }, device: st.dev.isWebGPU ? 'webgpu' : 'webgl2', autoRender: st.app.autoRender,
         surface: st.surf ? st.surf.kind : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.views && st.views[0] ? Array.from(st.views[0].projMat.data) : null, // what the engine draws eye 0 with
-        cameraFrame: describeCameraFrame(st), pageSizeWrites: st.pageSizeWrites || 0,
+        cameraFrame: describeCameraFrame(st), postEffects: describePostEffects(st), pageSizeWrites: st.pageSizeWrites || 0,
       },
     }),
   };
@@ -3677,6 +3683,7 @@ function dxrPlayCanvas(core) {
       return;
     }
     syncCameraFrame(st, pick.cf || null); // the page may switch its CameraFrame on or off, or rebuild it
+    syncPostEffects(st, pick.pe || null); // or add / remove a legacy post effect, or switch its queue on or off
     updateViews(st);
   }
 
@@ -3761,6 +3768,119 @@ function dxrPlayCanvas(core) {
     if (key !== st.frustumKey) { st.frustumKey = key; st.cam.camera.setXrProperties({ ...f, horizontalFov: false }); }
     if (st.cf) cameraFrameJitter(st);
     offsetShadows(st);
+  }
+
+  function queueOf(c) {
+    const q = c && c.postEffects;
+    if (!q || !q.enabled || !Array.isArray(q.effects) || !q.effects.length) return null;
+    const e0 = q.effects[0];
+    return e0 && e0.inputTarget && c.renderTarget === e0.inputTarget && !q.destinationRenderTarget ? q : null;
+  }
+  function postEffectsBlocker(st, c, q) {
+    if (core.T.pcPostEffects === false) return 'post effects on the camera — per-eye split switched off'; // TEST ONLY
+    if (st && st.peFailed) return 'the camera\'s post effects could not be run per eye';
+    const r = c.rect;
+    if (r && (r.x !== 0 || r.y !== 0 || r.z !== 1 || r.w !== 1)) return 'post effects on a camera with a viewport rect — not split';
+    for (const e of q.effects) {
+      const fx = e && e.effect;
+      if (!fx || typeof fx.render !== 'function' || !e.inputTarget || !e.inputTarget.colorBuffer) return 'a post effect of an unknown shape on the camera — not split';
+      if (fx.needsDepthBuffer) return 'a post effect that reads the scene depth on the camera — not split per eye';
+    }
+    const dev = st && st.dev;
+    if (dev && !dev.isWebGPU && !(dev.gl && typeof dev.gl.blitFramebuffer === 'function')) return 'post effects on the camera — no framebuffer blit on this device';
+    return null;
+  }
+  function syncPostEffects(st, q) {
+    let P = st.pe;
+    if (P && P.queue !== q) { uninstallPostEffects(st); P = null; }
+    if (!q) return;
+    const cam = st.cam;
+    if (!P) {
+      P = st.pe = { queue: q, cam, orig: null, fn: null, eye: [], rect: null, frames: 0, mono: 0, names: '' };
+      P.fn = function () {
+        if (st.pe === P && st.active && st.views && perEyeEffects(st, P)) return undefined;
+        P.mono++;
+        return typeof P.orig === 'function' ? P.orig.apply(this, arguments) : undefined;
+      };
+    }
+    if (cam.onPostprocessing !== P.fn) { P.orig = cam.onPostprocessing; cam.onPostprocessing = P.fn; }
+    const names = q.effects.map((e) => e.name || '?').join(', ');
+    if (names !== P.names) { P.names = names; info(`legacy post effects run per eye: ${names}`); }
+    const src = q.effects[0].inputTarget, dev = st.dev;
+    if (st.R && (src.width !== st.R.W || src.height !== st.R.H) && dev.width === st.R.W && dev.height === st.R.H && typeof q.resizeRenderTargets === 'function') {
+      try { q.resizeRenderTargets(); } catch (e) { warnOnce('pc-pe-size', 'could not resize the post-effect targets to the side-by-side store', e); }
+    }
+  }
+  function uninstallPostEffects(st) {
+    const P = st.pe;
+    if (!P) return;
+    st.pe = null;
+    try { if (P.cam.onPostprocessing === P.fn) P.cam.onPostprocessing = P.orig; } catch (e) { /* ignore */ }
+    for (const rt of P.eye) { try { rt.destroyTextureBuffers(); rt.destroy(); } catch (e) { /* ignore */ } }
+    P.eye.length = 0;
+  }
+  function perEyeEffects(st, P) {
+    const fx = P.queue.effects, n = fx.length, R = st.R;
+    const src = n ? fx[0].inputTarget : null;
+    if (!src || !R || P.failed || src.width !== R.W || src.height !== R.H) return false;
+    try {
+      const w = R.eyeW, h = R.eyeH;
+      for (let j = 0; j < n; j++) {
+        const like = fx[j].inputTarget, t = like.colorBuffer;
+        let rt = P.eye[j];
+        if (rt && rt.colorBuffer.format !== t.format) { rt.destroyTextureBuffers(); rt.destroy(); rt = null; }
+        if (!rt) {
+          const tex = new t.constructor(st.dev, { name: `DxrPostEffectEye-${j}`, width: w, height: h, format: t.format, mipmaps: false,
+            minFilter: t.minFilter, magFilter: t.magFilter, addressU: t.addressU, addressV: t.addressV });
+          rt = P.eye[j] = new like.constructor({ name: `DxrPostEffectEye-${j}`, colorBuffer: tex, depth: false });
+        } else if (rt.width !== w || rt.height !== h) rt.resize(w, h);
+      }
+      while (P.eye.length > n) { const rt = P.eye.pop(); rt.destroyTextureBuffers(); rt.destroy(); }
+      const rect = P.rect || (P.rect = P.cam.rect.clone());
+      for (let i = 0; i < 2; i++) {
+        if (!copyEye(st, src, P.eye[0], i)) throw new Error('the eye copy is not available on this device');
+        for (let j = 0; j < n; j++) {
+          const last = j === n - 1;
+          if (last) rect.set(i * 0.5, 0, 0.5, 1);
+          fx[j].effect.render(P.eye[j], last ? null : P.eye[j + 1], last ? rect : null);
+        }
+      }
+    } catch (e) {
+      P.failed = true; st.peFailed = true;
+      warnOnce('pc-pe', 'could not run the post effects per eye — the canvas goes back to 2D', e);
+      return false;
+    }
+    P.frames++;
+    return true;
+  }
+  function copyEye(st, src, dst, i) {
+    const dev = st.dev, w = dst.width, h = dst.height;
+    if (typeof dev.initRenderTarget === 'function') dev.initRenderTarget(dst);
+    if (dev.isWebGPU) {
+      const enc = typeof dev.getCommandEncoder === 'function' ? dev.getCommandEncoder() : dev.commandEncoder;
+      const s = src.colorBuffer.impl && src.colorBuffer.impl.gpuTexture, d = dst.colorBuffer.impl && dst.colorBuffer.impl.gpuTexture;
+      if (!enc || !s || !d) return false;
+      enc.copyTextureToTexture({ texture: s, origin: [i * w, 0, 0] }, { texture: d }, { width: w, height: h, depthOrArrayLayers: 1 });
+      return true;
+    }
+    const gl = dev.gl, si = src.impl, di = dst.impl;
+    const sfb = si && (si._glResolveFrameBuffer || si._glFrameBuffer), dfb = di && di._glFrameBuffer;
+    if (!gl || !sfb || !dfb) return false;
+    const pr = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), pd = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, sfb);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dfb);
+    dev.setScissor(0, 0, w, h); // a blit is scissored; through the device, whose cache then stays right
+    gl.blitFramebuffer(i * w, 0, i * w + w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, pr);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, pd);
+    return true;
+  }
+  function describePostEffects(st) {
+    const P = st.pe;
+    if (!P) return null;
+    const src = P.queue.effects[0] && P.queue.effects[0].inputTarget;
+    return { effects: P.queue.effects.map((e) => e.name || '?'), source: src ? [src.width, src.height] : null, samples: src ? src.samples : 0,
+      eye: P.eye.map((rt) => [rt.width, rt.height]), frames: P.frames, mono: P.mono, hooked: P.cam.onPostprocessing === P.fn };
   }
 
   const isCameraFramePass = (p) => !!p && typeof p === 'object' && !!p.cameraFrame && !!p.composePass && !!p.sceneOptions &&

@@ -183,13 +183,17 @@ async function load(browser, site, injected) {
       out.nav = { ok: hasDoc, status: null, ms: Date.now() - t0, error: String(e.message || e).slice(0, 160), partial: hasDoc };
     }
     if (out.nav.ok) {
-      // Watch the page: engines get the whole window; a terminal report ends it 2 s early.
-      const tEnd = Date.now() + (SETTLE_MS[site.group] || 8000);
+      // Watch the page: engines get the whole window (a site's own "settleMs" in sites.json replaces
+      // its group's); a terminal report ends it 2 s early. `flat` is NOT terminal: it describes the
+      // camera the page had at that moment, and a page still loading may replace it (arrival.space
+      // shows an orthographic loading camera for ~2 s, its real camera ~20 s later: the watch used to
+      // end on 'flat (the camera is orthographic)', #319). The outcome is the LAST report of the window.
+      const tEnd = Date.now() + (site.settleMs || SETTLE_MS[site.group] || 8000);
       while (Date.now() < tEnd) {
         await new Promise((r) => setTimeout(r, 500));
         if (!injected) continue;
         const last = await withTimeout(page.evaluate(() => { const H = window.__dxrFakeHost; const r = H && H.reports[H.reports.length - 1]; return r ? r.status : null; }), 3000, 'poll').catch(() => null);
-        if (['live', 'flat', 'standdown', 'guard', 'optout'].includes(last) && tEnd - Date.now() > 2000) { await new Promise((r) => setTimeout(r, 2000)); break; }
+        if (['live', 'standdown', 'guard', 'optout'].includes(last) && tEnd - Date.now() > 2000) { await new Promise((r) => setTimeout(r, 2000)); break; }
       }
       out.fps = await withTimeout(page.evaluate(() => new Promise((res) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1500) requestAnimationFrame(f); else res(Math.round((n * 1000) / (performance.now() - t0))); }; requestAnimationFrame(f); })), 5000, 'fps').catch(() => null);
       out.probe = await withTimeout(page.evaluate(() => window.__dxrCorpusProbe ? window.__dxrCorpusProbe.read() : null), 10000, 'probe').catch((e) => ({ error: String(e.message || e) }));

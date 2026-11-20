@@ -24,6 +24,8 @@ and 4, `porting-three-js-apps.md` (Comfort, mistakes 13 and 14), the `metersToVi
 the helper with a depth slider, the share of the zone in its readout, a textured floor in place of
 a line grid, a cover until `firstWoven`, and a flat view on `onLayerLost`.
 
+## 1.56.2 — 2026-11-20
+
 ### Changed — `rectCover`'s fill comes from the page behind the canvas, not black (core; `'auto'` on `./splat` and `./model`)
 
 Without a `color`, the cover is now filled with the page's background behind the canvas: the first
@@ -33,6 +35,12 @@ followed. It stays black when the backdrop is not one opaque color (a translucen
 a gradient). The fill only has to be opaque to hide the canvas's own raster, and a black one stood
 out: since the cover goes up only when a tile drops out of the weave, it is often a single frame in a
 drag, and on a light page that read as a black flash. A `color` the page names is used as before.
+
+### Docs — `createInline3D()` can still reject
+
+The `createInline3D` JSDoc and the README quick start now say so: it resolves `{ supported: false }`
+where inline 3D is unavailable, but the promise can reject, so catch it, log the error and show the
+2D view. No code change.
 
 ## 1.56.1 — 2026-11-18
 
