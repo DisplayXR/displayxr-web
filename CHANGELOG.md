@@ -7,6 +7,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+## 1.56.3 — 2026-11-20
+
 ### Docs — a depth floor for camera rigs, not just a ceiling (docs only; no API change)
 
 The guidance gave a camera rig's comfort product as a ceiling (≤ 1) and no floor or default, and
