@@ -4,6 +4,8 @@
 //
 //   node build.mjs           write dist/ + VENDOR.json
 //   node build.mjs --check   rebuild in memory, diff against the committed output, exit 1 on drift
+//   node build.mjs --locate [ref]   print the commit on <ref> (default origin/main) whose sources
+//                            hash to VENDOR.json's sourceSha256: the commit a re-vendor should record
 //
 // Outputs (each part file is one top-level `function dxr…`; see README "Architecture"):
 //   dist/auto3d-sentinel.js  (function (cfg, cap) { <sentinel.js> return dxrSentinel(cfg, cap); })
@@ -19,6 +21,9 @@
 // token __DXR_AUTO3D_VERSION__ replaced by manifest.json's version. sourceSha256 hashes the source
 // files in SOURCES order as `<name>\n<bytes>\n<LF-normalised text>`. sourceCommit is the last commit
 // touching them, suffixed `+dirty` when the working tree differs (--check rejects a dirty one).
+// sourceCommit is only a hint: dist/ is built on a PR branch, and a squash or rebase merge gives the
+// same sources a new commit on main, so the recorded one is often not on main at all.
+// sourceSha256 is the identity. `--locate` maps it back to the commit on main that carries it.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -94,6 +99,37 @@ function git(root, args) {
   try { return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; }
 }
 
+// git output byte-for-byte (git() trims, which would change a file's hash), or null.
+function gitRaw(root, args) {
+  try { return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 }); } catch { return null; }
+}
+
+// sourceSha256 over { <SOURCES name>: LF-normalised text }.
+export const hashSources = (src) => sha256(SOURCES.map((f) => `${f}\n${Buffer.byteLength(src[f])}\n${src[f]}`).join(''));
+
+// --locate: the newest commit on `ref` that touched the sources and whose sources hash to `want`
+// (VENDOR.json's sourceSha256 by default). Returns { commit, scanned } or { commit: null, scanned }.
+export function locate(root = here, ref = null, want = null) {
+  want = want || JSON.parse(readFileSync(join(root, 'VENDOR.json'), 'utf8')).sourceSha256;
+  ref = ref || ['origin/main', 'main', 'HEAD'].find((r) => git(root, ['rev-parse', '--verify', '-q', r + '^{commit}']));
+  const prefix = git(root, ['rev-parse', '--show-prefix']) || '';
+  const log = git(root, ['log', '--format=%H', ref, '--', ...SOURCES]);
+  const commits = log ? log.split('\n').filter(Boolean) : [];
+  let scanned = 0;
+  for (const c of commits) {
+    scanned++;
+    const src = {};
+    let complete = true;
+    for (const f of SOURCES) {
+      const text = gitRaw(root, ['show', `${c}:${prefix}${f}`]);
+      if (text === null) { complete = false; break; } // a source that did not exist yet: an older layout
+      src[f] = lf(text);
+    }
+    if (complete && hashSources(src) === want) return { commit: c, ref, scanned };
+  }
+  return { commit: null, ref, scanned };
+}
+
 // Builds everything in memory. Returns { version, files: { 'dist/…': text, 'VENDOR.json': text }, vendor }.
 export function build(root = here) {
   const src = {};
@@ -114,7 +150,7 @@ export function build(root = here) {
     if (files[f].includes(VERSION_TOKEN)) throw new Error(`${f}: version token left unstamped`);
     try { new vm.Script(files[f], { filename: f }); } catch (e) { throw new Error(`${f} does not parse: ${e.message}`); }
   }
-  const sourceSha256 = sha256(SOURCES.map((f) => `${f}\n${Buffer.byteLength(src[f])}\n${src[f]}`).join(''));
+  const sourceSha256 = hashSources(src);
   const last = git(root, ['log', '-1', '--format=%H', '--', ...SOURCES]);
   const dirty = git(root, ['status', '--porcelain', '--', ...SOURCES]);
   const vendor = {
@@ -150,7 +186,13 @@ export function check(root = here) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
-  if (process.argv.includes('--check')) {
+  const li = process.argv.indexOf('--locate');
+  if (li !== -1) {
+    const arg = process.argv[li + 1];
+    const { commit, ref, scanned } = locate(here, arg && !arg.startsWith('--') ? arg : null);
+    if (!commit) { console.error(`build --locate: no commit on ${ref} carries these sources (scanned ${scanned})`); process.exit(1); }
+    console.log(commit);
+  } else if (process.argv.includes('--check')) {
     const problems = check();
     if (problems.length) { console.error('build --check: FAILED\n  ' + problems.join('\n  ') + '\nRun `node build.mjs` and commit dist/ + VENDOR.json.'); process.exit(1); }
     console.log('build --check: dist/ and VENDOR.json match the sources');

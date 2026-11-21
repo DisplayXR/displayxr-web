@@ -22,7 +22,10 @@ VENDOR.json               { name, version, sourceCommit, sourceSha256, files: { 
 
 The browser vendors `dist/auto3d-sentinel.js` + `dist/auto3d-core.js` **verbatim** and checks them
 against `VENDOR.json`: fix here, `node build.mjs`, re-vendor. `node build.mjs --check` fails when the
-committed `dist/` is not what the sources build to. The two product files are **expressions**: the
+committed `dist/` is not what the sources build to. `sourceCommit` in `VENDOR.json` is the commit the build ran
+on, usually a PR branch, so after a squash or rebase merge it is often not on main.
+`sourceSha256` is the identity. When re-vendoring, record the commit
+`node build.mjs --locate` prints: the commit on `origin/main` whose sources hash to it. The two product files are **expressions**: the
 host evaluates the sentinel in the page's main world at document start and calls it with a frozen
 `cfg` and a capability object `cap`; the sentinel asks `cap.loadCore()` for the core. Parts hand
 each other plain function arguments inside one lexical scope; nothing is put on `window` except a
