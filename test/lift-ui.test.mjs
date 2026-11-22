@@ -158,3 +158,85 @@ test('chipLayout: a native lift waiting for the converter shows the label (spinn
   // waiting only matters while live
   assert.deepEqual(on(chipLayout('explore', { kind: 'video', canDownload: true, waiting: true })), on(chipLayout('explore', { kind: 'video', canDownload: true })));
 });
+
+test('chipLayout: no GAUSSIANS (canExplore false) → no Explore, Exit stays — a converted video and a live picture alike', () => {
+  const on = (L) => Object.keys(L).filter((k) => L[k]).sort();
+  // A live picture runs the video layout (lift.js machineKind), so 'video' covers both.
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true, canExplore: false })), ['exit', 'label']);
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true, canExplore: true })), ['exit', 'explore', 'label']);
+  // omitted = the old layout (Explore offered)
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true })), ['exit', 'explore', 'label']);
+  // error / a still keep Exit whatever canExplore says
+  assert.deepEqual(on(chipLayout('error', { kind: 'video', canExplore: false })), ['exit', 'label']);
+  assert.deepEqual(on(chipLayout('error', { kind: 'still', canExplore: false })), ['exit', 'label']);
+});
+
+// A minimal DOM for createChip (no jsdom in this repo): elements with hidden / classList / listeners.
+function fakeDom() {
+  const mkEl = (tag) => ({
+    tagName: tag.toUpperCase(),
+    children: [],
+    hidden: false,
+    disabled: false,
+    textContent: '',
+    title: '',
+    type: '',
+    className: '',
+    attrs: {},
+    listeners: {},
+    classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
+    setAttribute(k, v) {
+      this.attrs[k] = v;
+    },
+    addEventListener(t, f) {
+      (this.listeners[t] ||= []).push(f);
+    },
+    removeEventListener() {},
+    append(...c) {
+      this.children.push(...c);
+    },
+    remove() {},
+    contains: () => false,
+  });
+  return { createElement: mkEl };
+}
+
+async function mountChip(actions) {
+  const prev = globalThis.document;
+  globalThis.document = fakeDom();
+  try {
+    const { createChip } = await import('../js/lift/ui.js');
+    const root = {
+      children: [],
+      append(...c) {
+        this.children.push(...c);
+      },
+      ownerDocument: globalThis.document,
+    };
+    const chip = createChip(root, { onExplore() {}, onResume() {}, onExit() {}, onDownload() {}, ...actions });
+    const btn = (text) => chip.el.children.find((b) => b.textContent === text);
+    return { chip, btn };
+  } finally {
+    globalThis.document = prev;
+  }
+}
+
+test('createChip: canExplore false → Explore hidden, Exit shown; setCanExplore(true) brings Explore back', async () => {
+  const { chip, btn } = await mountChip({ kind: 'video', canExplore: false });
+  chip.setState('live');
+  assert.equal(btn('Explore').hidden, true, 'no GAUSSIANS: no Explore');
+  assert.equal(btn('Exit').hidden, false, 'Exit stays (it turns 3D off)');
+  assert.equal(chip.el.hidden, false, 'the chip itself stays');
+  chip.setCanExplore(true);
+  assert.equal(btn('Explore').hidden, false, 'GAUSSIANS showed up: Explore');
+  assert.equal(btn('Exit').hidden, false);
+  chip.setCanExplore(false);
+  assert.equal(btn('Explore').hidden, true);
+});
+
+test('createChip: canExplore true (GAUSSIANS available) → Explore + Exit while live', async () => {
+  const { chip, btn } = await mountChip({ kind: 'video', canExplore: true });
+  chip.setState('live');
+  assert.equal(btn('Explore').hidden, false);
+  assert.equal(btn('Exit').hidden, false);
+});

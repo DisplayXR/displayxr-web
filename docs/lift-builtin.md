@@ -47,8 +47,12 @@ offers *Explore / Exit* (*↓ SOG* in explore). The built-in passes **`ownLiftAt
 element's lift state (the browser's menu has already set `dxr-lift="auto"` when `lift()` runs), so the
 chip's *Exit*, a toggle-off `convertAt` and `cancelAll()` — all of which end in `handle.remove()` —
 **remove** every `dxr-lift*` attribute instead of restoring the menu's "auto". *Explore* asks the
-runtime for a Gaussian scene (`POST displayxr-lift://lift/gaussians`, docs/lift.md § Vendor modules);
-a module without `gaussians` has no explore scene and the pick reports a lift error.
+runtime for a Gaussian scene (`POST displayxr-lift://lift/gaussians`, docs/lift.md § Vendor modules).
+*Explore* is shown **only when the runtime advertises GAUSSIANS** (caps `modes` lists `gaussians`,
+which the runtime does only with a photo → splats provider, on any OS) or the page passed
+`providers.lift`. Without one the chip has no *Explore* — for pictures and videos alike — and keeps
+*Exit*, the way to turn 3D off (`handle.canExplore`; a lift created while the converter warms asks
+caps once more on its first READY).
 `convertAt` resolves `mode: 'native'`; `status()` adds `caps` and each lift's `native`.
 
 **Waiting is not a failure.** The browser's coarse lift state is `waiting | ready | unavailable`

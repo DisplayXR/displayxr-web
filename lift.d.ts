@@ -157,6 +157,8 @@ export interface LiftHandle {
   readonly native: boolean;
   /** The capabilities the lift was decided on (null when not queried). */
   readonly caps: LiftCapabilities | null;
+  /** Whether Explore can run: the runtime's caps list `gaussians` or a lift provider was passed. False: the builtin chip shows no Explore (Exit stays) and explore() fails 'unsupported'. */
+  readonly canExplore: boolean;
   /** Native only: the browser's coarse lift state (`waiting` = the element's 2D frame + a spinner until the converter is READY); null without a runtime converter. */
   readonly liftState: 'waiting' | 'ready' | 'unavailable' | null;
   /** Native only: the browser reports a new coarse lift state. No-op without a runtime converter. */
@@ -168,6 +170,7 @@ export interface LiftHandle {
   readonly stats: LiftStats;
   on(type: 'statechange', cb: (d: { state: LiftState; from: LiftState; reason: string }) => void): () => void;
   on(type: 'progress', cb: (d: LiftProgress) => void): () => void;
+  on(type: 'canexplorechange', cb: (d: { canExplore: boolean }) => void): () => void;
   on(type: 'liftstatechange', cb: (d: { liftState: 'waiting' | 'ready' | 'unavailable' }) => void): () => void;
   on(type: 'error', cb: (d: { error: unknown; fatal: boolean; phase?: string }) => void): () => void;
   off(type: string, cb: (...a: any[]) => void): void;

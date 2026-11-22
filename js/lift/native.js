@@ -123,6 +123,17 @@ export function defaultLiftProviderFor(caps, providers = {}) {
   return caps && caps.native && Array.isArray(caps.modes) && caps.modes.includes('gaussians') ? 'native-gaussians' : null;
 }
 
+/**
+ * Can Explore be offered for these caps? Explore opens a Gaussian scene, so it needs a stage that
+ * makes one: the runtime's GAUSSIANS converter (caps `modes` lists 'gaussians' — the runtime
+ * advertises it only with a photo → splats provider, on every OS) or a lift provider the page
+ * passed. Depth alone is not enough: there is no depth-built explore scene. The chip hides its
+ * Explore button when this is false and keeps Exit.
+ */
+export function exploreAvailable(caps, providers = {}) {
+  return !!defaultLiftProviderFor(caps, providers);
+}
+
 // ── attributes: native live mode ────────────────────────────────────────────────────────────
 
 /** `'high'|'normal'|'low'|'paused'` → itself; anything else → null. */
