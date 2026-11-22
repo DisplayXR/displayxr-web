@@ -28,7 +28,7 @@ import { createInline3D } from '../inline3d.js';
 import { createLiftMachine, STATES, resolveLiftMode } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
 import { createChip, shieldInput } from './ui.js';
-import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, normalizePriority, NativeLiftError } from './native.js';
+import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, exploreAvailable, normalizePriority, NativeLiftError } from './native.js';
 import { getRegistry } from './providers/registry.js';
 
 export { resolveMediaAt, STATES };
@@ -205,6 +205,11 @@ export async function lift(element, opts = {}) {
     const lp = defaultLiftProviderFor(caps, o.providers);
     if (lp) o.providers.lift = lp; // native-gaussians (a registered LiftProvider)
   }
+  // Explore is offered only when something can make its Gaussian scene: the runtime advertises
+  // GAUSSIANS (a photo → splats provider) or the caller passed providers.lift. Otherwise the chip
+  // shows no Explore — same for pictures and videos, on every OS — and keeps Exit.
+  let canExplore = exploreAvailable(caps, o.providers);
+  const callerLiftProv = !!(opts.providers && opts.providers.lift);
   // Nothing can convert this element: no runtime converter and no provider the caller brought.
   // (A page that wants a still lifted without a runtime module passes `providers.lift`, e.g. the
   // remote SHARP demo; that is explore-only, there is no in-page live conversion.)
@@ -532,6 +537,7 @@ export async function lift(element, opts = {}) {
         if (liftProv && typeof liftProv.load === 'function') await liftProv.load({ signal });
       } catch (error) {
         liftProv = null;
+        setCanExplore(false);
         emit('error', { error, fatal: false, phase: 'lift-provider' });
       }
       await mediaReady();
@@ -850,6 +856,7 @@ export async function lift(element, opts = {}) {
       placement.shadow,
       {
         kind: machineKind,
+        canExplore,
         onExplore: () => handle.explore(),
         onResume: () => handle.resume(),
         onExit: () => handle.remove(),
@@ -859,6 +866,34 @@ export async function lift(element, opts = {}) {
     );
   }
   syncBacking(true);
+
+  function setCanExplore(v) {
+    v = !!v;
+    if (v === canExplore) return;
+    canExplore = v;
+    if (chip && chip.setCanExplore) chip.setCanExplore(v);
+    emit('canexplorechange', { canExplore: v });
+  }
+  // A lift created while the runtime's converter was warming may hold caps whose `modes` were not
+  // final yet. On the first READY, ask once more (one caps query per lift, never per frame) and
+  // offer Explore if GAUSSIANS showed up. A caller-chosen provider is never second-guessed.
+  let capsRechecked = false;
+  async function recheckGaussians() {
+    if (capsRechecked || canExplore || callerLiftProv || !native) return;
+    capsRechecked = true;
+    const fresh = await liftCapabilities().catch(() => null);
+    if (disposed || canExplore || !fresh || !exploreAvailable(fresh, {})) return;
+    ensureNativeProviders(fresh);
+    o.providers.lift = defaultLiftProviderFor(fresh, {});
+    try {
+      liftProv = await resolveLiftProvider();
+      if (liftProv && typeof liftProv.load === 'function') await liftProv.load({ signal: loadAbort.signal });
+    } catch {
+      liftProv = null;
+      return;
+    }
+    if (!disposed && liftProv) setCanExplore(true);
+  }
 
   // Native, not READY yet (runtime conversion-providers §7.4): the browser shows the element's own
   // 2D frame until its converter is up, and the chip says so with a spinner. This is a wait, never a
@@ -882,6 +917,14 @@ export async function lift(element, opts = {}) {
     native,
     /** The capabilities native mode was decided on (null when not queried). */
     caps,
+    /**
+     * Whether Explore can run: the runtime advertises GAUSSIANS or a lift provider was passed. When
+     * false the builtin chip shows no Explore (Exit stays) and explore() fails 'unsupported'.
+     * Changes are emitted as 'canexplorechange' {canExplore}.
+     */
+    get canExplore() {
+      return canExplore;
+    },
     /** Native only: the browser's coarse `waiting | ready | unavailable`; null on the web path. */
     get liftState() {
       return liftState;
@@ -894,6 +937,7 @@ export async function lift(element, opts = {}) {
       if (!native || !['waiting', 'ready', 'unavailable'].includes(s) || s === liftState) return;
       liftState = s;
       if (chip && chip.setWaiting) chip.setWaiting(s === 'waiting');
+      if (s === 'ready') recheckGaussians();
       emit('liftstatechange', { liftState: s });
     },
     /** Timings: fps (explore frames drawn), loadMs, generateMs (the lift provider's round trip),

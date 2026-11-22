@@ -6,6 +6,8 @@
 //
 // Shows: loading/converting progress, and the actions that apply to the current state —
 //   live → "Explore"   explore → "SOG" (download) + "Resume" (videos) + "Exit"   error → "Exit"
+// "Explore" only when something can make the Gaussian scene it opens (`canExplore`: the runtime
+// advertises GAUSSIANS — caps `modes` lists 'gaussians' — or the page passed `providers.lift`).
 // `ui: 'none'` never creates it; the page drives the handle itself.
 //
 // Auto-hide (`autoHideMs`, lift.js defaults it ON in native mode only): the DisplayXR Browser's
@@ -152,8 +154,11 @@ export function createAutoHide(o) {
  *     Exit is offered while it converts too.
  *   waiting (native, the browser's converter not READY yet): the label (with a spinner) + Exit; no
  *     Explore until the converter is up (explore would need the in-page converter).
+ *   canExplore false (nothing can make a Gaussian scene: the runtime advertises no GAUSSIANS and the
+ *     page brought no lift provider): never Explore. The chip and its Exit stay — Exit is how 3D is
+ *     turned off. Omitted = true (the old layout, for callers that do not say).
  * @param {string} state
- * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean}} o
+ * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean, canExplore?:boolean}} o
  * @returns {{label:boolean, explore:boolean, sog:boolean, resume:boolean, exit:boolean}}
  */
 export function chipLayout(state, o) {
@@ -162,7 +167,7 @@ export function chipLayout(state, o) {
   const wait = !!o.waiting && state === 'live';
   return {
     label: still ? busy || state === 'error' || wait : true,
-    explore: !still && state === 'live' && !wait,
+    explore: !still && state === 'live' && !wait && o.canExplore !== false,
     sog: state === 'explore' && !!o.canDownload,
     resume: !still && state === 'explore',
     exit: still ? state !== 'disposed' && state !== 'idle' : state === 'explore' || state === 'error' || state === 'live',
@@ -171,7 +176,8 @@ export function chipLayout(state, o) {
 
 /**
  * @param {ShadowRoot} root
- * @param {{kind:'video'|'still', onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
+ * @param {{kind:'video'|'still', canExplore?:boolean, onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
+ *        `canExplore` (default true): whether Explore is offered at all; `setCanExplore()` changes it.
  * @param {{autoHideMs?:number, activityRect?:() => DOMRect|{left:number,top:number,right:number,bottom:number}|null}} [opts]
  *        autoHideMs > 0: fade out after that long without pointer activity inside `activityRect()`
  *        (the lifted element's rect) or over the chip.
@@ -213,13 +219,14 @@ export function createChip(root, actions, opts = {}) {
   let saving = false;
   let note = null; // a provider's own status ("Lifting with SHARP… 7s"), shown instead of the % while busy
   let waiting = false; // native: the browser's converter is not READY yet (2D source + spinner)
+  let canExplore = actions.canExplore !== false; // something can make the Gaussian scene Explore opens
   const render = () => {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
     const wait = waiting && state === 'live';
     label.textContent = wait ? WAITING_LABEL : busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
     label.classList.toggle('waiting', wait);
-    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting });
+    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting, canExplore });
     label.hidden = !L.label;
     bExplore.hidden = !L.explore;
     bSog.hidden = !L.sog;
@@ -304,6 +311,13 @@ export function createChip(root, actions, opts = {}) {
       waiting = v;
       render();
       if (auto.enabled) auto.poke();
+    },
+    /** Whether Explore is offered at all (the runtime advertises GAUSSIANS, or a lift provider). */
+    setCanExplore(on) {
+      const v = !!on;
+      if (v === canExplore) return;
+      canExplore = v;
+      render();
     },
     /** A status line that replaces the percentage while busy (null clears it). */
     setNote(text) {

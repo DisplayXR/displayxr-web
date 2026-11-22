@@ -16,6 +16,7 @@ import {
   createNativeGaussiansLift,
   ensureNativeProviders,
   defaultLiftProviderFor,
+  exploreAvailable,
   sniffSplatFormat,
   NATIVE_CAPS_URL,
   NATIVE_DEPTH_URL,
@@ -554,6 +555,20 @@ test('gaussians provider selection: native-gaussians is the default only when th
   // no gaussians mode → not registered
   assert.deepEqual(ensureNativeProviders({ ...CAPS, modes: ['depth'] }, { registry: r }), ['native']);
   r.registerDepthProvider('native', () => null, {})();
+});
+
+test('exploreAvailable: Explore needs GAUSSIANS (or a caller lift provider) — depth / SBS alone is not enough', () => {
+  // SBS only (a box with no photo → splats provider): no Explore
+  assert.equal(exploreAvailable({ native: true, liftState: 'ready', modes: ['sbs'] }), false);
+  assert.equal(exploreAvailable({ native: true, liftState: 'ready', modes: ['depth', 'sbs', 'nview'] }), false, 'native depth does not make an explore scene');
+  assert.equal(exploreAvailable(null), false);
+  assert.equal(exploreAvailable({ native: false, modes: ['gaussians'] }), false, 'not the browser\'s lift world');
+  // the runtime advertises GAUSSIANS: Explore
+  assert.equal(exploreAvailable(CAPS), true);
+  assert.equal(exploreAvailable({ native: true, liftState: 'waiting', modes: ['sbs', 'gaussians'] }), true);
+  // a page that brought its own lift provider can explore without the runtime's GAUSSIANS
+  assert.equal(exploreAvailable({ native: true, modes: ['sbs'] }, { lift: 'remote-sharp' }), true);
+  assert.equal(exploreAvailable(null, { lift: 'remote-sharp' }), true);
 });
 
 // ── no in-page converter ──────────────────────────────────────────────────────────────────

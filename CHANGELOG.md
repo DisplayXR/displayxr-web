@@ -22,6 +22,16 @@ which tier they touch, because that is what tells you whether an upgrade can mov
   wasm to one 1.4 MB file. Explore for a still or a paused frame needs a converter that lists
   `gaussians` (or a caller-supplied lift provider such as the remote SHARP demo).
 
+### Changed
+
+- **lift: the built-in chip offers *Explore* only when something can make a Gaussian scene** — the
+  runtime advertises GAUSSIANS (caps `modes` lists `gaussians`, which the runtime does only with a
+  photo → splats provider) or the page passed `providers.lift`. Without one the chip shows no
+  *Explore*, for a converted video and a live picture alike, on every OS; the chip and its *Exit*
+  stay. New: `handle.canExplore`, event `canexplorechange`, `chip.setCanExplore()`, and the pure
+  `chipLayout(…, { canExplore })` option (omitted = offered, the old layout). A lift created while the
+  converter warms asks caps once more on its first READY.
+
 Adds a **preview-tier** subpath; nothing existing changes.
 
 ### Added
