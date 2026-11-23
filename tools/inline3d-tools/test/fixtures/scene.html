@@ -53,7 +53,11 @@ if (bug !== 'no-fallback') { const c = document.createElement('div'); c.classNam
 if (bug === 'sticky-blend') document.getElementById('topbar').style.mixBlendMode = 'multiply';
 
 // ---- a tiny WebGL renderer: three checkered boxes at three depths ------------------------
-const gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
+// WRONG for css-backdrop: a see-through canvas over a page picture, which sits on the glass while
+// the far box is behind it. css-backdrop-opaque keeps the picture but the canvas hides it: fine.
+const BACKDROP = bug === 'css-backdrop';
+if (BACKDROP || bug === 'css-backdrop-opaque') stage.style.backgroundImage = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23345'/%3E%3Ccircle cx='32' cy='32' r='20' fill='%23789'/%3E%3C/svg%3E\")";
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: BACKDROP });
 const vs = `#version 300 es
 in vec3 p; in vec3 c; uniform mat4 uP, uV; uniform vec3 uO; uniform float uS; out vec3 vc; out vec3 vl;
 void main(){ vec3 w = p * uS + uO; vl = p; vc = c; gl_Position = uP * uV * vec4(w, 1.0); }`;
@@ -99,7 +103,7 @@ function drawScene(proj, view) {
   gl.uniformMatrix4fv(uP, false, proj); gl.uniformMatrix4fv(uV, false, view);
   for (const [x, y, z, s] of BOXES) { gl.uniform3f(uO, x, y, z); gl.uniform1f(uS, s); gl.drawArrays(gl.TRIANGLES, 0, 36); }
 }
-function clear(r = 0.62, g = 0.6, b = 0.56) { gl.clearColor(r, g, b, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); }
+function clear(r = 0.62, g = 0.6, b = 0.56) { if (BACKDROP) gl.clearColor(0, 0, 0, 0); else gl.clearColor(r, g, b, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); }
 function mono(w, h, x = 0) { gl.viewport(0, 0, w, h); clear(); drawScene(perspective(0.5, w / h, 0.01, 10), lookFrom(x, 0, 0.26)); }
 
 // ---- 2D fallback ---------------------------------------------------------------------------

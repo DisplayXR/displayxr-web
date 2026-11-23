@@ -7,7 +7,7 @@ import { launchChrome, withTimeout } from './cdp.mjs';
 import { serveDir } from './server.mjs';
 import { decodePng } from './png.mjs';
 import {
-  crop, halves, contentStats, regionDiff, compareEyes, blockDisparity, quantile, flatWideVerdict, sbsPairVerdict, shibataZoneMm, fromBase64Rgba, rigDepthUse,
+  crop, halves, contentStats, regionDiff, compareEyes, blockDisparity, quantile, flatWideVerdict, sbsPairVerdict, shibataZoneMm, fromBase64Rgba, rigDepthUse, backdropOnGlass,
 } from './analyze.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -220,6 +220,7 @@ async function fakeRun(conn, url, opt, origin) {
     const buffer = await ev(page, `__dxrProbe.bufferInfo(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
     const occlusion = await ev(page, `__dxrProbe.occlusionAudit(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
     const css = await ev(page, `__dxrProbe.cssAudit(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
+    const backdrop = await ev(page, `__dxrProbe.backdropAudit(__dxrCheck.layerCanvas(${l.index}))`).catch(() => null);
     const seen = cssSeen.get(l.index);
     if (css && seen) {
       for (const p of css.problems) seen.problems.set(`${p.element}|${p.prop}`, p);
@@ -229,7 +230,7 @@ async function fakeRun(conn, url, opt, origin) {
     const cssAll = seen
       ? { problems: [...seen.problems.values()], decorations: [...seen.decorations], animations: [...seen.animations.values()] }
       : css || { problems: [], decorations: [], animations: [] };
-    layers.push({ ...l, snap, snapTries, buffer, occlusion, css: cssAll });
+    layers.push({ ...l, snap, snapTries, buffer, occlusion, backdrop, css: cssAll });
   }
   const shaderErrors = await ev(page, '__dxrProbe.shaderErrors').catch(() => []);
   const scrollY = await ev(page, 'window.scrollY').catch(() => 0);
@@ -774,6 +775,20 @@ function buildChecks(fake, plain, opt) {
       hint: r.hint,
       approximate: !!(rig && rig.type === 'camera'),
       doc: `${DOCS}/authoring-inline-3d.md#aim-for-real-depth`,
+    }));
+  }
+
+  // backdrop on the glass (rule 10): a page image showing through a see-through canvas, under
+  // content that reaches behind the glass. A report, never a limit.
+  {
+    const px = primary && primary.px;
+    const seeThrough = px ? 1 - (px.statsL.opaqueFraction + px.statsR.opaqueFraction) / 2 : null;
+    const r = backdropOnGlass(primary ? primary.backdrop : null, seeThrough, measuredMm, zone);
+    checks.push(check('backdrop-on-glass', '-', 'A backdrop sits behind the subject, never on the glass (a page image under a see-through canvas is on the glass)', r.status, r.summary, {
+      details: r.details,
+      hint: r.hint,
+      approximate: true,
+      doc: `${DOCS}/making-3d-look-right.md`,
     }));
   }
   return checks;

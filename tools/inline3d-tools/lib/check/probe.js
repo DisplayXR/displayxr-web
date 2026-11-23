@@ -215,6 +215,64 @@
     };
   };
 
+  // Rule 10: what picture does the PAGE draw under the canvas? Hit-test a grid, start at the canvas
+  // and walk down the paint order to the first thing that fills the point: a CSS background-image
+  // (url), an <img>/<video>/<picture>, or an opaque colour (which ends the walk with no picture).
+  // A picture there is at the depth of the glass.
+  // Like occlusionAudit, it forces pointer-events on for the hit test, on purpose (a picture with
+  // pointer-events: none still paints); the rule is removed in `finally`, within the same task, so
+  // the page is never painted with it.
+  P.backdropAudit = function (canvas, cols = 9, rows = 6) {
+    const style = document.createElement('style');
+    style.textContent = '*{pointer-events:auto !important}';
+    document.documentElement.appendChild(style);
+    const r = canvas.getBoundingClientRect();
+    let total = 0, image = 0;
+    const sources = new Map();
+    const paints = (el) => {
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return null;
+      const tag = el.tagName;
+      if (el !== canvas && (tag === 'IMG' || tag === 'VIDEO' || tag === 'PICTURE')) return tag.toLowerCase();
+      const bg = cs.backgroundImage || '';
+      if (/url\(/.test(bg)) return 'css';
+      if (el === canvas) return null; // its own background colour is under its pixels, not a picture
+      if (tag === 'CANVAS' || tag === 'IFRAME' || tag === 'svg' || bg !== 'none') return 'opaque';
+      const m = /rgba?\(([^)]+)\)/.exec(cs.backgroundColor || '');
+      if (!m) return null;
+      const parts = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+      return (parts.length >= 4 ? parts[3] : 1) >= 0.9 ? 'opaque' : null;
+    };
+    try {
+      for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < cols; i++) {
+          const x = r.left + ((i + 0.5) / cols) * r.width;
+          const y = r.top + ((j + 0.5) / rows) * r.height;
+          if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+          const list = document.elementsFromPoint(x, y);
+          const at = list.indexOf(canvas);
+          if (at < 0) continue;
+          total++;
+          for (let k = at; k < list.length; k++) {
+            const kind = paints(list[k]);
+            if (!kind) continue;
+            if (kind !== 'opaque') {
+              image++;
+              const s = selectorOf(list[k]) || list[k].tagName.toLowerCase();
+              const rec = sources.get(s) || { selector: s, kind, hits: 0 };
+              rec.hits++;
+              sources.set(s, rec);
+            }
+            break;
+          }
+        }
+      }
+    } finally {
+      style.remove();
+    }
+    return { total, imageFraction: total ? image / total : 0, sources: [...sources.values()].sort((a, b) => b.hits - a.hits) };
+  };
+
   // Media elements big enough to show a picture (for the "raw side-by-side shown flat" scan).
   P.mediaElements = function (exclude = []) {
     const out = [];
