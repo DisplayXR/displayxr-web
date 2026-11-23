@@ -7,6 +7,25 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — `backdropPlacement()`: where a backdrop plane goes behind a subject (core, `./depth`, `./three`)
+
+A pure helper, like `comfortDepthFactor`: give it how far the subject reaches behind the glass (at
+any turn and the largest zoom you allow, tile heights) and the canvas's physical height, and it
+returns the depth for a backdrop plane fixed to the display, at roughly 40% of the rear comfort
+budget and at least a small margin behind the subject. It also returns the plane size that hides
+its edge from any head position within 20 cm, the share of the budget used and the plane's
+disparity. It measures and never clamps: a subject past the budget gets a plane past it too, and
+`budgetUsed > 1` says so. The defaults reproduce the depth a page chose by eye on a 15.6" panel.
+
+### Docs — rule 10: a backdrop sits behind the subject, never on the glass
+
+`making-3d-look-right.md` gains a tenth rule. A CSS image behind a transparent canvas sits on the
+glass, so any part of the subject behind the glass hides a surface that disparity puts in front of
+it. Draw a photo backdrop in the scene instead: one unlit plane fixed to the display (on PlayCanvas,
+a child of `viewer.rigNode`), behind the subject, pre-blurred, mid-tone. No skybox, which is past
+the rear comfort zone on a display rig. `PlayCanvasSplatViewer.rigNode` and `.vH` are now in the
+types, marked ADVANCED; they already existed.
+
 ## 1.56.3 — 2026-11-20
 
 ### Docs — a depth floor for camera rigs, not just a ceiling (docs only; no API change)

@@ -207,6 +207,75 @@ export function comfortDepthFactor({ frontH, backH, tileHeightM, viewerM = DEPTH
 }
 
 /**
+ * Where to put a BACKDROP on a DISPLAY rig: a plane fixed to the display (it does not turn with
+ * the orbit), behind the subject's farthest point at any turn and zoom, at a chosen share of the
+ * rear comfort budget. A backdrop on the glass (a CSS image behind a transparent canvas) has zero
+ * disparity, so any part of the subject behind the glass hides a surface that disparity puts in
+ * front of it; this places one behind instead (docs/making-3d-look-right.md rule 10).
+ *
+ * Depth, tile heights behind the glass: `max(fraction · budget, backH + margin · budget)`, where
+ * `budget` is the rear comfort zone's depth ({@link comfortZone} `behindD`, `1/(1/V − behindD) − V`
+ * metres) in tile heights. A measurement, not a limit: a subject that reaches past the budget gets
+ * a depth past it too, and `budgetUsed > 1` says so. Size: the plane must cover the tile seen from
+ * any eye within `headTravelM` of centre, so its edge never shows: `(1 + d/V)` tile heights
+ * (perspective) plus `2 · headTravelM · d / V` (parallax), and the same over the width.
+ *
+ * Reference (the dinosaur page, 15.6" laptop panel at 0.6 m, canvas ~0.19 m tall): rear reach 0.72
+ * tile heights at full zoom; defaults give 0.81 tile heights (~43% of the budget), the depth
+ * chosen by eye there, which reads as ~3% of the tile width of disparity behind the glass.
+ *
+ * @param {object} o
+ * @param {number} o.backH  MAGNITUDE, tile heights the subject reaches behind the glass at ANY turn
+ *   and at the largest zoom you allow (the swept rear, not the framed one). 0 = nothing behind.
+ * @param {number} o.tileHeightM  the tile's (canvas's) physical height, metres (displayMetrics()).
+ * @param {number} [o.aspect=16/9]  the tile's width / height.
+ * @param {number} [o.viewerM=0.6]  NOMINAL viewer distance, metres.
+ * @param {'shibata'|'percival'|number} [o.zone='shibata']
+ * @param {number} [o.fraction=0.4]  share of the rear budget to sit at, at least.
+ * @param {number} [o.margin=0.05]  share of the rear budget to keep between the subject and it.
+ * @param {number} [o.headTravelM=0.2]  sideways head motion the plane must overfill for, metres.
+ * @returns {{depthH:number, depthM:number, heightH:number, widthH:number, budgetH:number,
+ *            budgetUsed:number, disparityPct:number}}  NaN fields on bad input; budgetH Infinity
+ *            (budgetUsed 0) when the zone has no rear bound (a distant viewer); the depth is then
+ *            `backH · (1 + margin)`, or `margin` tile heights when nothing is behind the glass.
+ */
+export function backdropPlacement({
+  backH,
+  tileHeightM,
+  aspect = 16 / 9,
+  viewerM = DEPTH_DEFAULT_VIEWER_M,
+  zone = 'shibata',
+  fraction = 0.4,
+  margin = 0.05,
+  headTravelM = 0.2,
+} = {}) {
+  const bad = { depthH: NaN, depthM: NaN, heightH: NaN, widthH: NaN, budgetH: NaN, budgetUsed: NaN, disparityPct: NaN };
+  if (!num(backH) || backH < 0 || !num(tileHeightM) || !(tileHeightM > 0) || !num(aspect) || !(aspect > 0)) return bad;
+  if (!num(viewerM) || !(viewerM > 0) || !num(fraction) || fraction < 0 || !num(margin) || margin < 0) return bad;
+  if (!num(headTravelM) || headTravelM < 0) return bad;
+  const z = comfortZone({ viewerM, zone });
+  if (Number.isNaN(z.behindD)) return bad;
+  const V = viewerM;
+  const far = 1 / V - z.behindD;
+  const budgetH = far > 0 ? (1 / far - V) / tileHeightM : Infinity;
+  const depthH = Number.isFinite(budgetH)
+    ? Math.max(fraction * budgetH, backH + margin * budgetH)
+    : backH * (1 + margin) || margin;
+  const d = depthH * tileHeightM;
+  const parallaxH = (2 * headTravelM * d) / V / tileHeightM;
+  const persp = 1 + d / V;
+  return {
+    depthH,
+    depthM: d,
+    heightH: persp + parallaxH,
+    widthH: aspect * persp + parallaxH,
+    budgetH,
+    budgetUsed: Number.isFinite(budgetH) ? depthH / budgetH : 0,
+    disparityPct: disparityPct({ depthH: -depthH, aspect, viewerM: V, heightM: tileHeightM }),
+  };
+}
+
+/**
  * The CAMERA-rig counterpart of {@link comfortDepthFactor}: the multiplier `m` on the eye
  * separation (the rig's ipdFactor) that puts the scene's nearest point (`zNear`) and farthest
  * (`zFar`, may be Infinity) at the edge of the comfort zone, at the given viewing distance.

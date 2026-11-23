@@ -583,7 +583,8 @@ above 1 distorts shapes, and real proportions on a 32" monitor already give 20 c
 `getDisplayInfo()` reports the device's nominal viewer distance and `displayMetrics()` the
 canvas's physical size. The `./depth` helpers do this arithmetic: `comfortZone({ viewerM, zone })`
 gives the zone in diopters and on-glass mm; `comfortDepthFactor(...)` the display-rig factor
-(never above 1) that keeps a subject inside it; `cameraRigComfortFactor(...)` the camera-rig
+(never above 1) that keeps a subject inside it; `backdropPlacement(...)` where a backdrop plane goes
+behind a subject, and how big it must be; `cameraRigComfortFactor(...)` the camera-rig
 eye-separation multiplier (uncapped) that fits a scene's nearest and farthest points into it. On
 `addModel` / `addSplat`, the opt-in `depth: 'auto'` (or `{ zone: 'percival' }`) applies the
 display-rig factor from the nominal distance and the canvas size, once per framing, resize or
@@ -1116,7 +1117,9 @@ is transparent (`clearColor` unset), so the page behind the canvas shows through
 Browser pre-blends that page under both eyes at zero disparity, so it reads as a flat backdrop on
 the glass, sampled at half horizontal resolution. Keep what sits behind a splat tile soft (a colour
 or a gentle gradient, light or mid-tone, never black behind a bright subject: [making 3D look
-right](making-3d-look-right.md)); text or a photo there smears. To pin the backdrop regardless of
+right](making-3d-look-right.md)); text or a photo there smears, and a photo there also sits on the
+glass, in front of any part of the subject that is behind it. Put a photo backdrop in the scene
+instead, behind the subject (rule 10 there; `backdropPlacement()` gives its depth and size). To pin the backdrop regardless of
 the page, pass an opaque `clearColor` (0..1):
 
 ```js

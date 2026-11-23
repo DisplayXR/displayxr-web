@@ -250,10 +250,11 @@ export {
   depthBudgetFromBounds,
   comfortZone,
   comfortDepthFactor,
+  backdropPlacement,
   cameraRigComfortFactor,
   withheldReasonHint,
 } from './depth.js';
-export type { DepthReport, DepthReportBasis, ComfortZoneName, ComfortZoneReport } from './depth.js';
+export type { DepthReport, DepthReportBasis, ComfortZoneName, ComfortZoneReport, BackdropPlacement } from './depth.js';
 
 export const DISPLAY_METRICS_DEFAULTS: Readonly<{
   displaySizeM: readonly [number, number];

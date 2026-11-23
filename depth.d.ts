@@ -145,6 +145,53 @@ export function comfortDepthFactor(o: {
   zone?: ComfortZoneName;
 }): number;
 
+/** What {@link backdropPlacement} returns. Tile heights unless named otherwise. */
+export interface BackdropPlacement {
+  /** Behind the glass, tile heights (a magnitude: place the plane at z = −depthH). */
+  depthH: number;
+  /** The same, metres on the physical display. */
+  depthM: number;
+  /** Plane size that overfills the tile from any eye within the head travel. */
+  heightH: number;
+  widthH: number;
+  /** The rear comfort budget, tile heights; Infinity when the zone has no rear bound. */
+  budgetH: number;
+  /** depthH / budgetH: 0.4 by default, above 1 when the subject itself reaches past the budget. */
+  budgetUsed: number;
+  /** The plane's disparity, % of the tile width (positive: behind the glass). */
+  disparityPct: number;
+}
+
+/**
+ * Where to put a BACKDROP (a photo or a scene behind the subject) on a DISPLAY rig: a plane fixed
+ * to the display, not turning with the orbit, behind the subject's farthest point at any turn and
+ * zoom, at a share of the rear comfort budget, and big enough that no eye within `headTravelM` sees
+ * its edge. A backdrop drawn ON the glass (a CSS image behind a transparent canvas) has zero
+ * disparity and conflicts with any part of the subject behind the glass; see
+ * docs/making-3d-look-right.md rule 10. A measurement, never a limit: a subject past the budget
+ * gets a plane past it too, and `budgetUsed > 1` says so.
+ *
+ * Depth = `max(fraction · budget, backH + margin · budget)`. NaN fields on bad input.
+ */
+export function backdropPlacement(o: {
+  /** MAGNITUDE, tile heights the subject reaches behind the glass at ANY turn and the largest zoom allowed. */
+  backH: number;
+  /** The tile's (canvas's) physical height, metres (`displayMetrics()`). */
+  tileHeightM: number;
+  /** The tile's width / height. Default 16/9. */
+  aspect?: number;
+  /** NOMINAL viewer distance, metres. Default 0.6. */
+  viewerM?: number;
+  /** Default 'shibata'. */
+  zone?: ComfortZoneName;
+  /** Share of the rear budget to sit at, at least. Default 0.4. */
+  fraction?: number;
+  /** Share of the rear budget kept between the subject and the plane. Default 0.05. */
+  margin?: number;
+  /** Sideways head motion the plane overfills for, metres. Default 0.2. */
+  headTravelM?: number;
+}): BackdropPlacement;
+
 /**
  * The CAMERA-rig counterpart: the multiplier on the eye separation (ipdFactor) that puts the
  * scene's nearest (`zNear`) and farthest (`zFar`, may be Infinity) points at the edge of the

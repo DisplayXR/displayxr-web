@@ -76,6 +76,16 @@ export interface PlayCanvasSplatViewer {
   depthOffset: number;
   /** The engine's `AppBase`, once booted. */
   readonly app: unknown;
+  /**
+   * ADVANCED (not covered by the semver promise): the camera rig's `pc.Entity`. Its LOCAL frame is
+   * the display frame: the glass at the origin, +z toward the viewer, one tile height = `vH` units.
+   * A child of it stays fixed on the display while the subject turns and
+   * zooms, which is where a backdrop plane goes (`backdropPlacement`, making-3d-look-right rule 10).
+   * Null until the engine has booted.
+   */
+  readonly rigNode: unknown;
+  /** The display rig's virtual display height: one tile height, in rigNode-local units. */
+  readonly vH: number;
   fitTo(center: number[], extent: number[]): void;
   setPose(pose?: OrbitPose): void;
   getPose(opts?: { target?: boolean }): Required<OrbitPose>;
