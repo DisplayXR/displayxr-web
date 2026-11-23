@@ -317,3 +317,42 @@ export function rigDepthUse(rig, measured, zone) {
   }
   return { status: 'pass', summary: `the scene uses ${Math.round(use * 100)}% of the comfort zone at the default view (${front.toFixed(1)} mm in front, ${back.toFixed(1)} mm behind)`, details };
 }
+
+/** backdrop-on-glass: the canvas counts as see-through when at least this share of an eye image is not opaque. */
+export const BACKDROP_SEE_THROUGH = 0.1;
+/** backdrop-on-glass: an image counts as "behind the canvas" when it shows under at least this share of it. */
+export const BACKDROP_IMAGE_SHARE = 0.1;
+/** backdrop-on-glass: content "extends behind the glass" past this share of the rear comfort zone (and 1 mm). */
+export const BACKDROP_BEHIND_SHARE = 0.1;
+
+/**
+ * Rule 10: a backdrop sits behind the subject, never on the glass. A picture the page draws under a
+ * see-through woven canvas (a CSS background-image, an <img> or a <video>) is at the depth of the
+ * glass, so any part of the subject that disparity puts behind the glass is drawn over a surface
+ * that is nearer than it. A report, never a limit.
+ * @param audit       __dxrProbe.backdropAudit(): { total, imageFraction, sources: [{selector, kind, hits}] }
+ * @param seeThrough  share of the eye images that is not opaque (0..1), or null when not captured
+ * @param measured    on-glass disparities of the textured blocks, mm, signed (> 0 behind the glass)
+ * @param zone        shibataZoneMm()
+ * @returns {{status: 'pass'|'warn'|'skip', summary: string, hint?: string, details: object|null}}
+ */
+export function backdropOnGlass(audit, seeThrough, measured, zone) {
+  if (!audit || !audit.total) return { status: 'skip', summary: 'no woven canvas on screen to look behind', details: null };
+  const src = audit.sources && audit.sources[0];
+  const details = { imageBehind: +audit.imageFraction.toFixed(3), sources: audit.sources || [], seeThrough: seeThrough == null ? null : +seeThrough.toFixed(3) };
+  if (audit.imageFraction < BACKDROP_IMAGE_SHARE || !src) return { status: 'pass', summary: 'no page image behind the woven canvas', details };
+  if (seeThrough == null) return { status: 'skip', summary: 'no eye images to tell whether the canvas is see-through', details };
+  if (seeThrough < BACKDROP_SEE_THROUGH) return { status: 'pass', summary: `${src.selector} is behind the canvas, but the canvas is opaque, so it does not show through`, details };
+  if (!measured || measured.length < 3 || !zone) return { status: 'skip', summary: 'a page image shows through the canvas, but too few textured blocks to measure where the content sits', details };
+  const back = Math.max(0, quantile(measured, 0.95));
+  const limit = Math.max(1, BACKDROP_BEHIND_SHARE * (isFinite(zone.behindMm) ? zone.behindMm : 25));
+  Object.assign(details, { behindMm: +back.toFixed(2), behindLimitMm: +limit.toFixed(2) });
+  if (back <= limit) return { status: 'pass', summary: `${src.selector} shows through the canvas, and the content stays on or in front of the glass (${back.toFixed(1)} mm behind)`, details };
+  const what = src.kind === 'css' ? 'a CSS background-image' : `a <${src.kind}>`;
+  return {
+    status: 'warn',
+    summary: `${what} (${src.selector}) shows through the woven canvas, so it sits on the glass, while the content reaches ${back.toFixed(1)} mm behind the glass: the backdrop is in front of the part of the subject it should be behind`,
+    hint: 'Rule 10: a backdrop sits behind the subject, never on the glass. Draw the picture in the scene instead: one unlit plane fixed to the display (PlayCanvas: a child of viewer.rigNode), behind the subject, at about 40% of the rear comfort budget; backdropPlacement() from @displayxr/inline3d/depth gives its depth and size. Or keep the page image and bring the whole subject on or in front of the glass.',
+    details,
+  };
+}
