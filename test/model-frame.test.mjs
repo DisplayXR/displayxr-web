@@ -134,7 +134,7 @@ test('full-box guard: a thin tail is trimmed from the fit, but the FULL box neve
   // The guard binds on z: the full box about the pivot is 2 × 3 = 6 deep, so the fit extent is
   // at least 6 × margin / 0.9 — much more than the trimmed ~1.
   const symFullZ = 2 * Math.max(box.center[2] + box.extent[2] / 2 - f.center[2], f.center[2] - (box.center[2] - box.extent[2] / 2));
-  near(f.extent[2], (symFullZ * margin) / FULL_BOX_CAP, 1e-9, 'z extent = the guard');
+  near(f.extent[2], (symFullZ * margin) / FULL_BOX_CAP, 1e-5, 'z extent = the guard');
   // And on the screen: the full box about the pivot, at the fitted scale, is at most
   // FULL_BOX_CAP of the tile on the axes the margin binds ('contain': both). ('height' keeps its
   // own rule for the width: it may run to the tile's edge, never past it.)
@@ -266,4 +266,36 @@ test('fitTo screenPlaneZ: that depth lands on the glass, the pivot stays the cen
   assert.equal(sv._framedDepth, null);
   sv.dispose();
   pv.dispose();
+});
+
+// ── parity with displayxr-common (the native model viewer's rule) ───────────────────────────
+
+test("bit-exact with displayxr-common's dxr::RobustFrameSampler (values printed by the C++ header)", async () => {
+  const { lcg, ROBUST_SEED } = await import('../js/inline3d-model-frame.js');
+  // The RNG: common's 64-bit LCG, (s >> 11)·2^-53, against a BigInt reference.
+  let s = 0x9e3779b97f4a7c15n;
+  const r = lcg(ROBUST_SEED);
+  for (let i = 0; i < 100000; i++) {
+    s = BigInt.asUintN(64, s * 6364136223846793005n + 1442695040888963407n);
+    assert.equal(r(), Number(s >> 11n) / 9007199254740992, `draw ${i}`);
+  }
+  // A unit cube's faces (z, x, y at +0.5 then at -0.5) and a thin tail to z = -3, fill 0.8. The
+  // expected numbers are robust_frame.h (displayxr-common v2.35.0) run on these exact triangles,
+  // printed %.9g (which round-trips a float).
+  const meshes = [];
+  for (const at of [0.5, -0.5]) {
+    meshes.push(rect('z', at, [-0.5, 0.5], [-0.5, 0.5]), rect('x', at, [-0.5, 0.5], [-0.5, 0.5]), rect('y', at, [-0.5, 0.5], [-0.5, 0.5]));
+  }
+  meshes.push(rect('y', 0, [-0.01, 0.01], [-3, -0.5]));
+  const f = robustFrame(meshes, boxOf(meshes), { margin: 0.8 });
+  const same = (got, want, what) => assert.equal(Math.fround(got), Math.fround(want), `${what}: ${got} vs common ${want}`);
+  same(f.center[0], 0.000271227211, 'pivot x (median)');
+  same(f.center[1], 0, 'pivot y (box centre)');
+  same(f.center[2], -0.00843921304, 'pivot z (median)');
+  same(f.screenPlaneZ, 0.37236613, 'screen plane (p75 z)');
+  same(f.depthRange[0], -0.5, 'p01 z');
+  same(f.depthRange[1], 0.5, 'p99 z');
+  same(f.extent[0], 1, 'fit extent x');
+  same(f.extent[1], 1, 'fit extent y');
+  same(f.extent[2], 5.31833029, 'fit extent z (the full-box guard)');
 });

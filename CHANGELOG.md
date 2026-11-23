@@ -5,6 +5,22 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Changed — `addModel`'s robust framing now uses displayxr-common's sampler exactly (`./model`, preview tier)
+
+1.57.0 shipped the robust-framing rule with its own random sampler (mulberry32, a different seed,
+nearest-rank rounding in double). The native model viewer frames with displayxr-common's
+`robust_frame.h` (v2.35.0), so the two agreed to within a fraction of a percent but not exactly:
+the dino's screen plane came out 0.219 on the web against 0.221 natively. The sampler in
+`inline3d-model-frame.js` is now a bit-exact port of common's: the same 64-bit LCG and seed, the
+same float32 arithmetic for areas, sample points and percentile indices, degenerate triangles
+skipped the same way, and the full-box guard computed as `RobustFitExtent` does. On the same
+triangles the web and native numbers now match exactly (pinned by a test with values printed by the
+C++ header). The rule itself is unchanged; pages see a sub-percent shift in pivot, screen plane and
+fit. `ROBUST_SEED` is now a BigInt (`0x9e3779b97f4a7c15n`). The sampler costs about 60 ms for 200k
+triangles, against about 40 ms before.
+
 ## 1.57.0 — 2026-11-23
 
 ### Changed — `addModel` frames a mesh robustly by default (`./model`, preview tier: default pixels move)

@@ -23,8 +23,9 @@
 //                                                   is in front of the glass
 //
 // The 25% target matches the runtime's own default for auto-convergence. The native model viewer
-// (displayxr-demo-modelviewer#192) applies the same rule, so an undocked product keeps its size
-// and placement.
+// (displayxr-demo-modelviewer#193) frames with displayxr-common's robust_frame.h, and the sampler
+// below is a bit-exact port of it: given the same triangles, both produce the same numbers, so an
+// undocked product keeps its size and placement.
 //
 // ANIMATION. Sampled once, at load, in the model's bind / rest pose (the pose the SDK first draws;
 // it does not play clips itself). A page that plays a clip which moves the subject a long way can
@@ -32,8 +33,8 @@
 
 /** Area-weighted surface samples drawn at load (deterministic: a fixed seed). */
 export const ROBUST_SAMPLES = 65536;
-/** The sampler's fixed seed, so a model always frames the same. */
-export const ROBUST_SEED = 0x2545f491;
+/** The sampler's fixed seed (a BigInt: the RNG is 64-bit), so a model always frames the same: displayxr-common's kRobustFrameSeed. */
+export const ROBUST_SEED = 0x9e3779b97f4a7c15n;
 /** Trimmed extent: this percentile and its complement, per axis. */
 export const TRIM_PERCENTILE = 0.01;
 /** The depth (content z, + toward the viewer) placed on the glass: ~25% of the surface in front. */
@@ -57,108 +58,150 @@ export function resolveFraming(v, tag = '@displayxr/inline3d/model') {
   return v;
 }
 
-/** mulberry32: a small deterministic PRNG, uniform in [0, 1). */
-function rng(seed) {
-  let a = seed >>> 0;
+// ── THE SAMPLER: a bit-exact port of displayxr-common's dxr::RobustFrameSampler ─────────────
+//
+// common/robust_frame.h (displayxr-common v2.35.0) is the vetted rule the native model viewer
+// frames with, and it fully specifies the sampling so that ports agree number for number (an
+// undocked product keeps its size and placement as it leaves the page). Everything below mirrors
+// it, including its float32 arithmetic (Math.fround at each C++ float operation):
+//   - triangles in the order given, float corners; area 0.5·|e1×e2| in float, accumulated in
+//     double; zero-area, non-finite and out-of-range triangles skipped;
+//   - RNG: the 64-bit LCG s = s·6364136223846793005 + 1442695040888963407 (mod 2^64), seeded
+//     with ROBUST_SEED; each draw (s >> 11)·2^-53;
+//   - per sample: lower_bound on the cumulative area, then u, v drawn as float and folded
+//     (u + v > 1 → 1 − u, 1 − v), point a + u(b − a) + v(c − a) in float;
+//   - percentile q of n sorted samples = element min(n − 1, trunc(q·(n − 1) + 0.5)), in float.
+// test/model-frame.test.mjs pins values produced by the C++ header itself.
+
+const f32 = Math.fround;
+// The LCG's constants as 32-bit halves (mod-2^64 arithmetic on two uint32 limbs: exact, and several
+// times faster than BigInt in the sampling loop).
+const MUL_HI = 0x5851f42d, MUL_LO = 0x4c957f2d; // 6364136223846793005
+const INC_HI = 0x14057b7e, INC_LO = 0xf767814f; // 1442695040888963407
+const TWO_M32 = 1 / 4294967296;
+const TWO_M53 = 1 / 9007199254740992;
+
+/**
+ * displayxr-common's draw: s = s·MUL + INC (mod 2^64), returning (s >> 11)·2^-53, a uniform double
+ * in [0, 1). `seed` is a BigInt (or a safe integer).
+ */
+export function lcg(seed) {
+  const s0 = BigInt.asUintN(64, BigInt(seed));
+  let hi = Number(s0 >> 32n) >>> 0;
+  let lo = Number(s0 & 0xffffffffn) >>> 0;
   return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    // lo·MUL_LO as a full 64-bit product, from 16-bit pieces.
+    const a0 = lo & 0xffff, a1 = lo >>> 16;
+    const b0 = MUL_LO & 0xffff, b1 = MUL_LO >>> 16;
+    const p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    const mid = (p00 >>> 16) + (p01 & 0xffff) + (p10 & 0xffff);
+    let nlo = (((mid & 0xffff) << 16) | (p00 & 0xffff)) >>> 0;
+    let nhi = (p11 + (p01 >>> 16) + (p10 >>> 16) + (mid >>> 16)) >>> 0;
+    nhi = (nhi + Math.imul(lo, MUL_HI) + Math.imul(hi, MUL_LO)) >>> 0;
+    // + INC, with the carry out of the low limb.
+    const sum = nlo + INC_LO;
+    nlo = sum >>> 0;
+    nhi = (nhi + INC_HI + (sum > 0xffffffff ? 1 : 0)) >>> 0;
+    hi = nhi;
+    lo = nlo;
+    return hi * TWO_M32 + (lo >>> 11) * TWO_M53;
   };
 }
 
-/**
- * Draw `samples` points uniformly over the surface (probability ∝ triangle area).
- *
- * @param {{positions: ArrayLike<number>, indices?: ArrayLike<number>|null}[]} meshes  content-space
- *        xyz triplets; `indices` (triangle list) or null for a non-indexed triangle list.
- * @returns {{x: Float64Array, y: Float64Array, z: Float64Array, area: number, triangles: number}|null}
- *          null when there is no surface with area.
- */
-export function sampleSurface(meshes, { samples = ROBUST_SAMPLES, seed = ROBUST_SEED } = {}) {
-  let triCount = 0;
+/** Every triangle with area, in order, as float32 corners (9 per triangle), with its cumulative area. */
+function collectTriangles(meshes) {
+  let max = 0;
   for (const m of meshes || []) {
     if (!m || !m.positions) continue;
-    const n = m.indices ? m.indices.length : m.positions.length / 3;
-    triCount += Math.floor(n / 3);
+    max += Math.floor((m.indices ? m.indices.length : m.positions.length / 3) / 3);
   }
-  if (!triCount) return null;
-  // Cumulative area over every triangle, and where each mesh starts in that list.
-  const cum = new Float64Array(triCount);
-  const starts = [];
+  if (!max) return null;
+  const T = new Float32Array(max * 9);
+  const cum = new Float64Array(max);
+  let n = 0;
   let total = 0;
-  let k = 0;
   for (const m of meshes) {
     if (!m || !m.positions) continue;
     const P = m.positions;
     const I = m.indices || null;
-    const nv = P.length / 3;
-    const n = Math.floor((I ? I.length : nv) / 3);
-    starts.push({ at: k, mesh: m, n });
-    for (let t = 0; t < n; t++, k++) {
+    const nv = Math.floor(P.length / 3);
+    const nt = Math.floor((I ? I.length : nv) / 3);
+    for (let t = 0; t < nt; t++) {
       const i0 = I ? I[3 * t] : 3 * t;
       const i1 = I ? I[3 * t + 1] : 3 * t + 1;
       const i2 = I ? I[3 * t + 2] : 3 * t + 2;
-      let a = 0;
-      if (i0 < nv && i1 < nv && i2 < nv) {
-        const ax = P[3 * i0], ay = P[3 * i0 + 1], az = P[3 * i0 + 2];
-        const ux = P[3 * i1] - ax, uy = P[3 * i1 + 1] - ay, uz = P[3 * i1 + 2] - az;
-        const vx = P[3 * i2] - ax, vy = P[3 * i2 + 1] - ay, vz = P[3 * i2 + 2] - az;
-        const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
-        a = 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
-        if (!Number.isFinite(a)) a = 0;
-      }
-      total += a;
-      cum[k] = total;
+      if (!(i0 < nv && i1 < nv && i2 < nv)) continue;
+      const ax = f32(P[3 * i0]), ay = f32(P[3 * i0 + 1]), az = f32(P[3 * i0 + 2]);
+      const bx = f32(P[3 * i1]), by = f32(P[3 * i1 + 1]), bz = f32(P[3 * i1 + 2]);
+      const cx = f32(P[3 * i2]), cy = f32(P[3 * i2 + 1]), cz = f32(P[3 * i2 + 2]);
+      const e1x = f32(bx - ax), e1y = f32(by - ay), e1z = f32(bz - az);
+      const e2x = f32(cx - ax), e2y = f32(cy - ay), e2z = f32(cz - az);
+      const nx = f32(f32(e1y * e2z) - f32(e1z * e2y));
+      const ny = f32(f32(e1z * e2x) - f32(e1x * e2z));
+      const nz = f32(f32(e1x * e2y) - f32(e1y * e2x));
+      const area = 0.5 * f32(Math.sqrt(f32(f32(f32(nx * nx) + f32(ny * ny)) + f32(nz * nz))));
+      if (!(area > 0) || !Number.isFinite(area)) continue;
+      const o = 9 * n;
+      T[o] = ax; T[o + 1] = ay; T[o + 2] = az;
+      T[o + 3] = bx; T[o + 4] = by; T[o + 5] = bz;
+      T[o + 6] = cx; T[o + 7] = cy; T[o + 8] = cz;
+      total += area;
+      cum[n++] = total;
     }
   }
-  if (!(total > 0)) return null;
-  const x = new Float64Array(samples);
-  const y = new Float64Array(samples);
-  const z = new Float64Array(samples);
-  const rand = rng(seed);
+  if (!n || !(total > 0)) return null;
+  return { T, cum: cum.subarray(0, n), n, total };
+}
+
+/**
+ * Draw `samples` points uniformly over the surface (probability ∝ triangle area), exactly as
+ * displayxr-common's RobustFrameSampler::compute does.
+ *
+ * @param {{positions: ArrayLike<number>, indices?: ArrayLike<number>|null}[]} meshes  content-space
+ *        xyz triplets; `indices` (triangle list) or null for a non-indexed triangle list.
+ * @param {{samples?: number, seed?: bigint|number}} [o]
+ * @returns {{x: Float32Array, y: Float32Array, z: Float32Array, area: number, triangles: number}|null}
+ *          null when there is no surface with area; `triangles` counts the triangles with area.
+ */
+export function sampleSurface(meshes, { samples = ROBUST_SAMPLES, seed = ROBUST_SEED } = {}) {
+  const tri = collectTriangles(meshes);
+  if (!tri || !(samples > 0)) return null;
+  const { T, cum, n, total } = tri;
+  const x = new Float32Array(samples);
+  const y = new Float32Array(samples);
+  const z = new Float32Array(samples);
+  const out = [x, y, z];
+  const rnd = lcg(seed);
   for (let s = 0; s < samples; s++) {
-    // lower_bound(cum, r): the first triangle whose cumulative area reaches r.
-    const r = rand() * total;
+    // lower_bound(cum, r): the first triangle whose cumulative area is >= r.
+    const r = rnd() * total;
     let lo = 0;
-    let hi = triCount - 1;
+    let hi = n;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
       if (cum[mid] < r) lo = mid + 1;
       else hi = mid;
     }
-    // Which mesh holds triangle `lo` (few meshes: a linear walk from the back is fine).
-    let j = starts.length - 1;
-    while (j > 0 && starts[j].at > lo) j--;
-    const { at, mesh } = starts[j];
-    const t = lo - at;
-    const P = mesh.positions;
-    const I = mesh.indices || null;
-    const i0 = I ? I[3 * t] : 3 * t;
-    const i1 = I ? I[3 * t + 1] : 3 * t + 1;
-    const i2 = I ? I[3 * t + 2] : 3 * t + 2;
-    let u = rand();
-    let v = rand();
-    if (u + v > 1) {
-      u = 1 - u;
-      v = 1 - v;
+    const o = 9 * Math.min(lo, n - 1);
+    let u = f32(rnd());
+    let v = f32(rnd());
+    if (f32(u + v) > 1) {
+      u = f32(1 - u);
+      v = f32(1 - v);
     }
     for (let c = 0; c < 3; c++) {
-      const a = P[3 * i0 + c];
-      const p = a + u * (P[3 * i1 + c] - a) + v * (P[3 * i2 + c] - a);
-      (c === 0 ? x : c === 1 ? y : z)[s] = p;
+      const a = T[o + c];
+      out[c][s] = f32(f32(a + f32(u * f32(T[o + 3 + c] - a))) + f32(v * f32(T[o + 6 + c] - a)));
     }
   }
-  return { x, y, z, area: total, triangles: triCount };
+  return { x, y, z, area: total, triangles: n };
 }
 
-/** The q-quantile of a SORTED array (nearest rank, the native viewer's convention). */
+/** The q-quantile of a SORTED array, displayxr-common's rule: element min(n − 1, trunc(q·(n − 1) + 0.5)), in float. */
 export function percentileSorted(a, q) {
   const n = a.length;
   if (!n) return NaN;
-  return a[Math.min(n - 1, Math.max(0, Math.round(q * (n - 1))))];
+  return a[Math.min(n - 1, Math.trunc(f32(f32(f32(q) * f32(n - 1)) + 0.5)))];
 }
 
 /**
@@ -200,12 +243,14 @@ export function robustFrame(meshes, box, { margin = 0.8, samples = ROBUST_SAMPLE
   const p = (i, q) => percentileSorted(axes[i], q);
   const center = [p(0, 0.5), box.center[1], p(2, 0.5)];
   const fill = Number.isFinite(margin) && margin > 0 ? margin : 0.8;
+  // displayxr-common's RobustFitExtent, in its float arithmetic: the 1st–99th percentile extent,
+  // never so small that the FULL box measured about the pivot (the subject turns about it) would
+  // pass FULL_BOX_CAP of the tile once the fit scales the binding axis to `margin`.
+  const scale = f32(f32(fill) / f32(FULL_BOX_CAP));
   const extent = [0, 1, 2].map((i) => {
-    const trimmed = Math.max(p(i, 1 - TRIM_PERCENTILE) - p(i, TRIM_PERCENTILE), 1e-6);
-    // The full box measured about the pivot (the subject turns about it), so a fit on `extent`
-    // at `margin` never puts the full box past FULL_BOX_CAP of the tile.
-    const symFull = 2 * Math.max(max[i] - center[i], center[i] - min[i]);
-    return Math.max(trimmed, (symFull * fill) / FULL_BOX_CAP, 1e-6);
+    const trimmed = Math.max(f32(p(i, 1 - TRIM_PERCENTILE) - p(i, TRIM_PERCENTILE)), f32(1e-6));
+    const symFull = f32(2 * Math.max(Math.abs(f32(f32(max[i]) - f32(center[i]))), Math.abs(f32(f32(center[i]) - f32(min[i])))));
+    return Math.max(trimmed, f32(symFull * scale));
   });
   return {
     center,
