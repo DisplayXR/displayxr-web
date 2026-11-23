@@ -21,8 +21,22 @@ export interface ModelOptions {
   engine?: 'playcanvas' | 'three';
   /** Metres of world the tile's height spans (default 0.24). */
   virtualDisplayHeight?: number;
-  /** Precomputed subject bounds. Rarely needed for a mesh — its bounds are exact. */
+  /**
+   * Precomputed subject bounds: overrides `framing` entirely. `center` is the pivot and goes on the
+   * glass unless you also give `screenPlaneZ`. Copy `handle.frame` from one load to pin a framing.
+   */
   frame?: SubjectBounds;
+  /**
+   * How the model is framed when `frame` is not given (both engines). Default `'robust'`: the
+   * surface is sampled at load (uniform by triangle area, bind / rest pose), the screen plane goes
+   * at its 75th-percentile depth toward the viewer (about 25% of the surface in front of the
+   * glass, the runtime's own auto-convergence target), the model turns about the surface's median
+   * (x, z; y is the box centre), and the fit uses the per-axis 1st–99th percentile extent, never
+   * tighter than the full box at 90% of the tile — so a thin tail or antenna moves neither size nor
+   * depth. `'box'`: the axis-aligned bounding box, centre on the glass, as before robust framing became the default. Falls back to
+   * the box (one console line) when the triangles cannot be read. Anything else throws at the call.
+   */
+  framing?: 'robust' | 'box';
   /** Degrees/second of turntable once idle (default 8). */
   idleSpin?: number;
   orbit?: boolean;
@@ -235,7 +249,10 @@ export interface ModelHandle {
    * under it), `camera` the eye camera. Null on three and until the engine has booted.
    */
   readonly engine: { readonly app: unknown; readonly root: unknown; readonly camera: unknown } | null;
-  /** Bounds used for framing; null until `ready` resolves. */
+  /**
+   * The frame used; null until `ready` resolves. Robust framing: `center` (pivot), `extent` (fit),
+   * `screenPlaneZ`, `depthRange` and the original `box`. `framing: 'box'`: `center` and `extent`.
+   */
   frame: SubjectBounds | null;
   /** Resolves once the model has loaded and been framed; rejects if the load failed. */
   readonly ready: Promise<ModelHandle>;

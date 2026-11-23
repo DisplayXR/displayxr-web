@@ -4,7 +4,9 @@
 > canvas, the DisplayXR Browser weaves them for the panel; an ordinary browser shows the page in 2D.
 
 Read first: docs/making-3d-look-right.md — nine depth and comfort rules from real panels
-(the default depth is the glass: centre the subject on z = 0 and frame the first view; tilt flat
+(the subject straddles the glass, about a quarter in front: addModel puts the screen plane at the
+surface's 75th-percentile depth, pivot at the surface median, fit from trimmed extents, framing:'box'
+for the old box framing; frame the first view; tilt flat
 arrangements about an axis through the glass, don't push them back; keep moving things' forward swing small, fixed convergence and no near geometry in worlds,
 low contrast behind the subject, text as HTML near the glass, no coplanar surfaces, no sub-pixel
 detail, a cover that always comes off). The SDK's defaults do the rest.

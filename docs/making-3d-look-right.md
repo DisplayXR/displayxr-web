@@ -3,11 +3,15 @@
 The SDK's defaults already give comfortable, real-looking 3D. These rules cover the mistakes seen
 on real panels; everything else about how your scene looks is your call.
 
-1. **The default depth is the glass. Keep the viewer's placement, and frame the first view.**
-   Centre your subject on z = 0 so it straddles the screen: a little in front, most of it just
-   behind, at its real proportions (no exaggeration). `addModel`, `addSplat` and
-   `SceneViewer` do this for you: they scale the subject to its real proportions and centre it on
-   the glass. A scene you build yourself follows the same rule. Don't push it back, shrink it or
+1. **The subject straddles the glass: about a quarter in front, the rest just behind. Keep the
+   viewer's placement, and frame the first view.** Put the glass (z = 0) through the subject so a
+   little of it comes out and most of it sits just behind, at its real proportions (no
+   exaggeration). For a mesh, "a quarter" is measured on its surface: `addModel` puts the screen
+   plane at the surface's 75th-percentile depth toward the viewer, turns the model about the
+   surface's median and fits it from trimmed extents, so a thin tail or antenna moves neither its
+   size nor its depth ([authoring-inline-3d.md § How addModel frames a model](authoring-inline-3d.md#how-addmodel-frames-a-model)).
+   `addSplat` and `SceneViewer.fitTo(center, extent)` centre the subject's robust centre on the
+   glass. A scene you build yourself follows the same rule. Don't push it back, shrink it or
    flatten it to make it "more comfortable": recession costs disparity and crosstalk like pop-out
    does, and only buys softness. **Too little depth is a failure too**: near-zero disparity reads
    as a flat picture on these displays. A display rig's `ipdFactor: 1` is the natural depth; don't

@@ -5,8 +5,31 @@ import type { ViewerEaseOption } from './index.js';
 
 /** Model-space bounds of the subject a viewer frames on. */
 export interface SubjectBounds {
+  /** The turn pivot, and the point on the glass unless `screenPlaneZ` is given. */
   center: number[];
+  /** The size the fit scales to the tile. */
   extent: number[];
+  /**
+   * Model-space z placed on the zero-disparity plane (+z toward the viewer), when it is not
+   * `center[2]`. `addModel`'s robust framing sets it to the surface's 75th-percentile depth.
+   */
+  screenPlaneZ?: number;
+  /** `[back, front]` model-space z the `depth: 'auto'` option measures, when not the fit box. */
+  depthRange?: number[];
+  /** `addModel` robust framing only: the bounding box it started from (`framing: 'box'`'s frame). */
+  box?: { center: number[]; extent: number[] };
+}
+
+/** `fitTo`'s optional third argument. Omit it for the classic fit (centre on the glass). */
+export interface FitToOptions {
+  /**
+   * Model-space z to put on the zero-disparity plane. The subject still turns about `center`; the
+   * slide is in display space and scales with fit × zoom, so this depth stays on the glass under
+   * zoom. Survives `resetPose` (it is framing, not pose); a later `fitTo` without it drops it.
+   */
+  screenPlaneZ?: number;
+  /** `[back, front]` model-space z for the `depth: 'auto'` measure. Unset: the fit box. */
+  depthRange?: number[];
 }
 
 export interface SceneViewerOptions {
@@ -134,10 +157,15 @@ export declare class SceneViewer {
 
   /** The `clearColor` option, parsed (`[r,g,b,a]`), or null = the transparent clear. */
   readonly clearColor: number[] | null;
-  /** Centre the subject on the zero-disparity plane and scale it to the tile. */
+  /**
+   * Centre the subject on the zero-disparity plane and scale it to the tile. With
+   * `opts.screenPlaneZ`, that depth goes on the glass instead and `center` stays the turn pivot.
+   * The two-argument call is unchanged.
+   */
   fitTo(
     center: number[] | { x: number; y: number; z: number },
     extent: number[] | { x: number; y: number; z: number },
+    opts?: FitToOptions,
   ): void;
 
   /** Snap the pose. Writes the eased value and its target together. */

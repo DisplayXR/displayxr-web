@@ -974,6 +974,44 @@ factors are applied in the runtime's eye maths and always arrive a frame later. 
 `s = 0`: every view becomes identical and head motion stops moving the picture. The panel's lens
 stays on, so it is a softer 2D than the real 1-view mode.
 
+### How addModel frames a model
+
+*(`@displayxr/inline3d/model`, both engines; the default since the robust-framing release, web#327.)*
+
+`addModel` does not frame a mesh on its bounding box. At load it samples the surface, uniformly by
+triangle area (65 536 points, a fixed seed, the model's bind / rest pose), and takes three
+separate numbers from that sample:
+
+| | the rule | why |
+|---|---|---|
+| **Screen plane** | the surface's 75th-percentile depth toward the viewer | about 25% of the surface is in front of the glass, the rest just behind (the runtime's own auto-convergence target) |
+| **Turn pivot** | the surface's median in x and z; y is the box centre | the model turns about its body, not about a point a tail pulled away |
+| **Fit extent** | the per-axis 1st–99th percentile, never tighter than the full box at 90% of the tile | an outlier does not shrink the subject, and nothing runs off the tile |
+
+`margin`, `fitSweep` (the swept width) and `depthLimit` apply to the fit extent exactly as before.
+Weighting by area rather than by vertex keeps dense detail (eyes, a text decal) from dominating.
+`handle.frame` reports what was used: `center` (the pivot), `extent`, `screenPlaneZ`, `depthRange`
+(the 1st–99th percentile depth, which `depth: 'auto'` measures against the screen plane) and the
+original `box`.
+
+To override:
+
+```js
+addModel(wall, canvas, 'dino.glb', { framing: 'box' });    // the bounding box, centre on the glass
+addModel(wall, canvas, 'dino.glb', { frame: savedFrame }); // your own frame; overrides `framing`
+```
+
+`frame` takes the same shape as `handle.frame`, so a page can load once, copy `handle.frame`, and
+pin it; give `screenPlaneZ` to choose the depth on the glass, or leave it out to put `center` there.
+A clip that moves the subject far from its rest pose is not followed: pass a `frame` for it. A page
+that sizes something from the subject's depth (a backdrop's rear reach, a pop-out readout) measures
+from this screen plane: `getSubjectBounds()` below already includes it.
+
+The same rule is in `SceneViewer.fitTo(center, extent, { screenPlaneZ, depthRange })` for a page
+that frames its own subject; without the third argument `fitTo` puts `center` on the glass, as it
+always has. The native model viewer frames the same way, so a product keeps its size and placement
+when it is undocked.
+
 ### Reading back where the subject is — `getSubjectBounds()`
 
 *(`@displayxr/inline3d/viewer`; added 1.6.0.)*

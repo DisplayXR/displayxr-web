@@ -22,6 +22,7 @@
 // neither, `ready` rejects naming both. An explicit `engine` never falls back.
 
 import { guardedAttach, validateSetStereo, resolveDepthOption } from './inline3d-splat-shared.js';
+import { resolveFraming } from './inline3d-model-frame.js';
 /** The engines `addModel` renders with; the first is the default. */
 export const MODEL_ENGINES = Object.freeze(['playcanvas', 'three']);
 
@@ -72,6 +73,7 @@ export function validateModelCall(canvas, src, opts, route) {
     throw new Error(`@displayxr/inline3d/model: orbitStyle must be 'turntable' or 'tilt' (got ${String(opts.orbitStyle)}).`);
   }
   resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
+  resolveFraming(opts.framing);
   if (route.engine === 'three' && route.explicit) {
     const bad = PLAYCANVAS_ONLY.filter((k) => opts[k] !== undefined && !(k === 'controls' && opts[k] === 'viewer'));
     if (bad.length) {

@@ -2,7 +2,7 @@
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
 import type { CursorOptions } from './cursor-depth.js';
-import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
+import type { SceneViewer, SubjectBounds, OrbitPose, FitToOptions } from './viewer.js';
 import type { HandControlOptions, HandControls } from './hands.js';
 import type { FirstWovenResult, RectCoverOption, ViewerEaseOption, DisplayMetrics } from './index.js';
 
@@ -86,7 +86,8 @@ export interface PlayCanvasSplatViewer {
   readonly rigNode: unknown;
   /** The display rig's virtual display height: one tile height, in rigNode-local units. */
   readonly vH: number;
-  fitTo(center: number[], extent: number[]): void;
+  /** SceneViewer.fitTo, same arithmetic; `opts` as there. */
+  fitTo(center: number[], extent: number[], opts?: FitToOptions): void;
   setPose(pose?: OrbitPose): void;
   getPose(opts?: { target?: boolean }): Required<OrbitPose>;
   /**
