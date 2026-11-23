@@ -47,7 +47,8 @@ on real panels; everything else about how your scene looks is your call.
    the glass, contrast matters more than the depth number: the same pop-out read fine on a
    mid-tone globe and ghosted on a dark one. Keep bright subjects off near-black backgrounds,
    above all the ones that come closest. Soften high-contrast detail far from the glass in the colours and
-   materials, not with fog, since camera-distance fog follows the viewer's head.
+   materials, not with fog, since camera-distance fog follows the viewer's head. A photo behind the
+   subject goes in the scene, behind it (rule 10).
 6. **Text: flat HTML near the glass, at a readable size.** Text drawn in the 3D scene, especially
    white on dark, ghosts. Put titles, labels and values in HTML, or keep in-scene labels close to
    the glass, facing the viewer, and show them on hover. Never shrink text to hide ghosting.
@@ -67,6 +68,22 @@ on real panels; everything else about how your scene looks is your call.
    flat picture into a canvas the browser is still weaving: it splits it, so each eye sees a
    different half of the room. To show a flat picture on purpose, remove the scene first, or call
    `setStereoEnabled(false)` and keep drawing every view you are given.
+
+10. **A backdrop sits behind the subject, never on the glass.** A CSS image behind a transparent
+   canvas is drawn identically for both eyes, so it sits on the glass. Any part of the subject
+   behind the glass then hides a surface its disparity puts in front of it, and the eye reads the
+   conflict at the silhouette (a tail that seems cut off). Draw a photo backdrop inside the scene
+   as one plane fixed to the display, not to the subject: it does not turn with the orbit or grow
+   with the zoom. Put it behind the subject's farthest point at any turn and at the largest zoom
+   you allow (cap the zoom so this holds), at roughly 40% of the rear comfort budget, and make it
+   large enough that no head position sees its edge. `backdropPlacement()` in `./depth` gives the
+   depth and the size in tile heights. On PlayCanvas, parent the plane to `handle.viewer.rigNode`,
+   whose local frame is the display (+z toward the viewer, one tile height = `viewer.vH`), and
+   draw it unlit. Pre-blur the image and keep it mid-tone (rule 5): blur weakens its own
+   disparity, so its exact depth matters less, and reads as distance. No skybox or environment
+   map as a backdrop: infinity is far past the rear comfort zone on a display rig, and an
+   environment turns with the subject. A plain colour or a soft gradient needs none of this: it
+   carries no disparity cue to conflict with.
 
 The mechanics (one view per eye, CSS that breaks the weave, the 2D/3D switch) are in
 [woven-canvas-rules.md](woven-canvas-rules.md) and [authoring-inline-3d.md](authoring-inline-3d.md),

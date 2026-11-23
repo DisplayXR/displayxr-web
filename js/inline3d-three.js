@@ -83,6 +83,7 @@ export {
   depthBudgetFromBounds,
   comfortZone,
   comfortDepthFactor,
+  backdropPlacement,
   cameraRigComfortFactor,
 } from './inline3d-depth-budget.js';
 

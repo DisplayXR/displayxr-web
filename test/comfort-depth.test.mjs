@@ -258,3 +258,50 @@ test('addSplat (./splat/playcanvas): an invalid depth throws at the call', async
   assert.throws(() => addSplat(null, canvas, 'a.sog', { depth: 'yes' }), /@displayxr\/inline3d\/splat: depth must be 'auto'/);
   assert.throws(() => addSplat(null, canvas, 'a.sog', { depth: { zone: 'x' } }), /depth.zone must be/);
 });
+
+// ── backdropPlacement ────────────────────────────────────────────────────────────────────────
+
+const { backdropPlacement } = await import('../js/inline3d-depth-budget.js');
+
+test('backdropPlacement: the dinosaur page (15.6" laptop at 0.6 m) lands where it was chosen by eye', () => {
+  // Rear reach 0.72 tile heights at max zoom; the page put its plane at 0.8 on the panel.
+  const b = backdropPlacement({ backH: 0.72, tileHeightM: 0.194, aspect: 16 / 9, viewerM: 0.6 });
+  const z = comfortZone({ viewerM: 0.6 });
+  const budgetM = 1 / (1 / 0.6 - z.behindD) - 0.6;
+  near(b.budgetH, budgetM / 0.194, 1e-12, 'budget = the rear zone depth in tile heights');
+  near(b.depthH, 0.72 + 0.05 * b.budgetH, 1e-12, 'margin wins over the 40% floor here');
+  assert.ok(Math.abs(b.depthH - 0.8) < 0.03, `depth ${b.depthH} near the 0.8 chosen on the panel`);
+  near(b.depthM, b.depthH * 0.194, 1e-12);
+  near(b.budgetUsed, b.depthH / b.budgetH, 1e-12);
+  assert.ok(b.disparityPct > 0, 'behind the glass: positive disparity');
+});
+
+test('backdropPlacement: an empty rear sits at the fraction; the size overfills by perspective + head travel', () => {
+  const b = backdropPlacement({ backH: 0, tileHeightM: 0.2, aspect: 2, viewerM: 0.6, headTravelM: 0.1 });
+  near(b.budgetUsed, 0.4, 1e-12);
+  const d = b.depthM;
+  near(b.heightH, 1 + d / 0.6 + (2 * 0.1 * d) / 0.6 / 0.2, 1e-12);
+  near(b.widthH, 2 * (1 + d / 0.6) + (2 * 0.1 * d) / 0.6 / 0.2, 1e-12);
+  assert.ok(b.heightH > 1 && b.widthH > 2, 'always larger than the tile');
+});
+
+test('backdropPlacement: a subject past the budget gets a plane past it, reported, never clamped', () => {
+  const b = backdropPlacement({ backH: 5, tileHeightM: 0.2 });
+  assert.ok(b.depthH > 5, 'behind the subject still');
+  assert.ok(b.budgetUsed > 1, 'and says it is past the budget');
+});
+
+test('backdropPlacement: no rear bound (a distant viewer), and bad input', () => {
+  const far = backdropPlacement({ backH: 0.5, tileHeightM: 0.3, viewerM: 3 });
+  assert.equal(far.budgetH, Infinity);
+  assert.equal(far.budgetUsed, 0);
+  near(far.depthH, 0.5 * 1.05, 1e-12);
+  for (const bad of [{}, { backH: -1, tileHeightM: 0.2 }, { backH: 1, tileHeightM: 0 }, { backH: 1, tileHeightM: 0.2, zone: 'nope' }, { backH: 1, tileHeightM: 0.2, viewerM: -1 }]) {
+    assert.ok(Number.isNaN(backdropPlacement(bad).depthH), JSON.stringify(bad));
+  }
+});
+
+test('backdropPlacement is exported from the root, ./depth and ./three', () => {
+  assert.equal(root.backdropPlacement, backdropPlacement);
+  assert.equal(three.backdropPlacement, backdropPlacement);
+});
