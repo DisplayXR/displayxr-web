@@ -6,6 +6,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  robustRng,
+  percentileSorted,
   sampleSurface,
   robustFrame,
   resolveFraming,
@@ -79,6 +81,39 @@ test('the sample is deterministic (fixed seed) and the default size', () => {
   assert.deepEqual(Array.from(a.z.slice(0, 64)), Array.from(b.z.slice(0, 64)));
   assert.equal(sampleSurface([]), null);
   assert.equal(sampleSurface([{ positions: new Float32Array(9), indices: null }]), null, 'zero area: nothing to sample');
+});
+
+test('parity with displayxr-common robust_frame.h: same RNG, same samples, same percentiles', () => {
+  // Reference values printed by common v2.35.0's dxr::RobustFrameSampler (clang, with and without
+  // FMA contraction: identical) on this exact mesh: a bumpy 16x16 grid, a thin tail to z = -3 and
+  // one zero-area triangle (skipped by both).
+  const r = robustRng();
+  assert.equal(r(), 0.17545975040345752);
+  assert.equal(r(), 0.6660226166951394);
+  assert.equal(r(), 0.70221807305384065);
+  const P = [];
+  const I = [];
+  for (let i = 0; i <= 16; i++) for (let j = 0; j <= 16; j++) P.push(i / 16 - 0.5, j / 16 - 0.5, ((i * 7 + j * 3) % 11) / 32);
+  for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) {
+    const a = i * 17 + j, b = a + 1, c = a + 17, d = c + 1;
+    I.push(a, c, b, b, c, d);
+  }
+  const n = P.length / 3;
+  P.push(0, 0, 0, 0.0078125, 0, 0, 0, 0, -3, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5);
+  I.push(n, n + 1, n + 2, n + 3, n + 4, n + 5);
+  const S = sampleSurface([{ positions: new Float32Array(P), indices: new Uint32Array(I) }]);
+  assert.equal(S.triangles, 513, 'the zero-area triangle is skipped, as natively');
+  assert.equal(S.area, 3.6731711886823177);
+  const want = [ // p01, median, p75, p99 (float32, printed %.9g)
+    [-0.489537597, -0.00345028564, 0.245313749, 0.489295691],
+    [-0.489615798, 0.000791821629, 0.250767171, 0.490390062],
+    [0.0256452262, 0.155955851, 0.196587831, 0.28074193],
+  ];
+  [S.x, S.y, S.z].forEach((a, i) => {
+    a.sort();
+    const got = [0.01, 0.5, 0.75, 0.99].map((q) => percentileSorted(a, q));
+    assert.deepEqual(got, want[i].map(Math.fround), `axis ${i}`);
+  });
 });
 
 test('AREA weighting: a dense cluster of tiny triangles does not drag the pivot or the screen plane', () => {
