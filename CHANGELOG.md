@@ -5,6 +5,18 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.57.1 — 2026-11-23
+
+### Changed — `addModel`'s robust framing now samples exactly as the native model viewer does
+
+The surface sampler behind `framing: 'robust'` now uses displayxr-common's specification
+(`common/robust_frame.h`, v2.35.0): the same 64-bit generator and seed, float32 arithmetic where
+the native code uses float, zero-area triangles skipped, and the same percentile index. The web
+and the native model viewer now draw the same samples and get the same pivot, screen plane and
+fit for a model (dino.glb's screen plane was 0.219 on the web vs 0.221 natively, only because the
+generators differed), so an undocked product keeps its exact size and placement. A model's frame
+moves by sampling noise only (well under 1% of its size).
+
 ## 1.57.0 — 2026-11-23
 
 ### Changed — `addModel` frames a mesh robustly by default (`./model`, preview tier: default pixels move)
