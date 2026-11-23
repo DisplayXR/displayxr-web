@@ -587,3 +587,121 @@ test('lift(): with no converter (runtime not native, no providers.lift) it rejec
     (e) => e instanceof NativeLiftError && e.code === 'unavailable' && asked.length === 0,
   );
 });
+
+// ── XR_DXR_lift spec 6: the runtime's camera block frames a local PLY like a cloud SOG ─────
+
+const b64json = (o) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64');
+const CAMERA_BLOCK = {
+  source: 'auto',
+  convention: 'opencv',
+  rig: 'camera',
+  rest: { position: [0, 0, 0], rotation: [0, 0, 0, 1] },
+  intrinsics: { fx: 1462.2, fy: 1462.2, cx: 1008, cy: 672, width: 2016, height: 1344 },
+  focus: { point: [0, 0, 0.6092], subject_m: 0.6092, near_m: 0.5773, far_m: 22.64, source: 'auto' },
+  dxr: { ipd_factor: 1, parallax_factor: 1 },
+};
+const FACTS = { intrinsics: { fx: 1462.2, source: 'estimated' }, metric: false };
+
+/** A frame of a given size that "encodes" without a DOM (createCanvas is injected). */
+function sizedFrame(w, h, drawn = []) {
+  const src = { naturalWidth: w, naturalHeight: h };
+  const createCanvas = (cw, ch) => ({
+    width: cw,
+    height: ch,
+    getContext: () => ({ drawImage: (...a) => drawn.push([cw, ch, a]) }),
+    convertToBlob: async () => new Blob([new Uint8Array([0xff, 0xd8, cw & 255, ch & 255])], { type: 'image/jpeg' }),
+  });
+  return { src, createCanvas };
+}
+
+/** A binary PLY in the 3DGS layout, splats at z = 1 spread over |x| <= half. */
+function tinyPly(n, half = 0.5) {
+  const props = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+  const head = new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\nelement vertex ${n}\n${props.map((p) => `property float ${p}`).join('\n')}\nend_header\n`);
+  const f = new Float32Array(n * props.length);
+  for (let i = 0; i < n; i++) f.set([((i / (n - 1)) * 2 - 1) * half, 0, 1, 0, 0, 0, 0, -5, -5, -5, 1, 0, 0, 0], i * props.length);
+  const out = new Uint8Array(head.length + f.byteLength);
+  out.set(head, 0);
+  out.set(new Uint8Array(f.buffer), head.length);
+  return out;
+}
+
+test('native gaussians (spec 6): the camera block goes through the cloud parser — focal, pivot, size, verbatim block', async () => {
+  const { liftMetaFromSogMeta } = await import('../js/lift/sog-input.js');
+  const ply = tinyPly(64);
+  const { src, createCanvas } = sizedFrame(2016, 1344);
+  const g = createNativeGaussiansLift({
+    createCanvas,
+    maxSide: 0, // the block's 2016 x 1344 is the photo as sent
+    fetch: browserFetch({
+      [NATIVE_GAUSSIANS_URL]: () =>
+        new Response(ply, {
+          headers: {
+            'x-dxr-lift-camera': b64json(CAMERA_BLOCK),
+            'x-dxr-lift-facts': b64json(FACTS),
+            // what the browser fills for older SDKs; the block wins
+            'x-dxr-lift-meta': JSON.stringify({ focalPx: 1462.2, w: 1536, h: 1024, pivotZ: 0.6092 }),
+          },
+        }),
+    }),
+  });
+  const res = await g.generateLift({ rgb: src });
+  const want = liftMetaFromSogMeta({ version: 2, count: 64, camera: CAMERA_BLOCK }, {});
+  for (const k of ['focalPx', 'pivotZ', 'w', 'h', 'axes', 'convention', 'space', 'splatCount', 'focusSource']) {
+    assert.deepEqual(res.meta[k], want[k], k);
+  }
+  assert.equal(res.meta.focalPx, 1462.2);
+  assert.equal(res.meta.pivotZ, 0.6092, 'the screen plane is the block focus, not 2');
+  assert.equal(res.meta.splatCount, 64);
+  assert.deepEqual(res.meta.cameraBlock, CAMERA_BLOCK, 'kept verbatim for the download');
+  assert.deepEqual(res.meta.facts, FACTS);
+  assert.equal(res.meta.focalSource, 'estimated');
+});
+
+test('native gaussians: a frame is sent at long side <= 1536, and a focal only when the caller has one', async () => {
+  const ply = tinyPly(16);
+  const calls = [];
+  const drawn = [];
+  const { src, createCanvas } = sizedFrame(6016, 4000, drawn);
+  const reply = () => new Response(ply, { headers: { 'x-dxr-lift-camera': b64json(CAMERA_BLOCK) } });
+  const focalUrl = `${NATIVE_GAUSSIANS_URL}?focalPx=1200`;
+  const g = createNativeGaussiansLift({ createCanvas, fetch: browserFetch({ [NATIVE_GAUSSIANS_URL]: reply, [focalUrl]: reply }, calls) });
+  const res = await g.generateLift({ rgb: src });
+  assert.equal(calls[0].url, NATIVE_GAUSSIANS_URL, 'no ?focalPx= when nothing is known: the provider estimates');
+  assert.deepEqual([res.meta.sent.w, res.meta.sent.h], [1536, 1021]);
+  assert.deepEqual(drawn[0].slice(0, 2), [1536, 1021]);
+  // a still depth's focal (in bitmap pixels, focalGridW) is restated in the JPEG's pixels
+  await g.generateLift({ rgb: src, depth: { intrinsics: { focalPx: 4700, focalGridW: 6016 } } });
+  assert.equal(calls[1].url, focalUrl);
+});
+
+test('native gaussians (spec 6): a block without intrinsics takes the focal from the splats, assumes none', async () => {
+  const noLens = { ...CAMERA_BLOCK };
+  delete noLens.intrinsics;
+  const { src, createCanvas } = sizedFrame(1000, 500);
+  const g = createNativeGaussiansLift({
+    createCanvas,
+    fetch: browserFetch({ [NATIVE_GAUSSIANS_URL]: () => new Response(tinyPly(200, 0.5), { headers: { 'x-dxr-lift-camera': b64json(noLens) } }) }),
+  });
+  const res = await g.generateLift({ rgb: src });
+  // 98th percentile of |x/z| ~ 0.49 spans half of 1000 px -> ~1020 px
+  assert.ok(res.meta.focalPx > 950 && res.meta.focalPx < 1100, `focal ${res.meta.focalPx}`);
+  assert.equal(res.meta.w, 1000);
+  assert.equal(res.meta.pivotZ, 0.6092);
+  assert.equal(res.meta.focalSource, 'splat-extent');
+});
+
+test('native gaussians: a conversion the runtime reports failed is a prompt 502, not a wait', async () => {
+  const g = createNativeGaussiansLift({
+    fetch: browserFetch({ [NATIVE_GAUSSIANS_URL]: () => new Response('failed', { status: 502, headers: { 'x-dxr-lift-error': 'conversion-failed' } }) }),
+  });
+  await assert.rejects(g.generateLift({ rgb: frame }), (e) => e.code === 'http' && e.status === 502 && /conversion-failed/.test(e.message));
+});
+
+test('decodeHeaderJson: base64 UTF-8 JSON objects only', async () => {
+  const { decodeHeaderJson } = await import('../js/lift/native.js');
+  assert.deepEqual(decodeHeaderJson(b64json({ a: 'é' })), { a: 'é' });
+  assert.equal(decodeHeaderJson(b64json([1, 2])), null);
+  assert.equal(decodeHeaderJson('not base64 ***'), null);
+  assert.equal(decodeHeaderJson(null), null);
+});

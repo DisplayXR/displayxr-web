@@ -401,3 +401,42 @@ test('sog: an aborted signal stops the export at its next yield (AbortError)', a
   );
   assert.ok(seen < 1, 'never finished');
 });
+
+// ── XR_DXR_lift spec 6: the runtime's camera block, verbatim ─────────────────────────────
+
+const RUNTIME_BLOCK = {
+  source: 'auto',
+  convention: 'opencv',
+  rig: 'camera',
+  rest: { position: [0, 0, 0], rotation: [0, 0, 0, 1] },
+  intrinsics: { fx: 1462.2, fy: 1462.2, cx: 1008, cy: 672, width: 2016, height: 1344 },
+  focus: { point: [0, 0, 0.6092], subject_m: 0.6092, near_m: 0.5773, far_m: 22.64, source: 'auto' },
+  dxr: { ipd_factor: 1, parallax_factor: 1 },
+};
+
+test('sog: cameraBlock is embedded VERBATIM (not rebuilt from pivotZ), camera overrides ignored', async () => {
+  const { ply } = makePly(200);
+  const { bytes } = await buildSog({ ply, meta: META, cameraBlock: RUNTIME_BLOCK, camera: { focus: { point: [0, 0, 9] } } });
+  const m = await readSogMeta(bytes);
+  assert.deepEqual(m.camera, RUNTIME_BLOCK);
+  assert.deepEqual(Object.keys(m).slice(0, 3), ['version', 'count', 'camera']);
+  assert.equal(sogCameraFromMeta(m).focus.point[2], 0.6092);
+});
+
+test('sog: addCameraBlockToSog adds a block only when the .sog has none, never overwriting', async () => {
+  const { addCameraBlockToSog, zipEntryNames } = await import('../js/lift/sog-export.js');
+  const { ply } = makePly(200);
+  const bare = (await buildSog({ ply, meta: META, camera: false })).bytes;
+  assert.equal((await readSogMeta(bare)).camera, undefined);
+  const added = await addCameraBlockToSog(bare, RUNTIME_BLOCK);
+  const m = await readSogMeta(added);
+  assert.deepEqual(m.camera, RUNTIME_BLOCK);
+  assert.deepEqual(Object.keys(m).slice(0, 3), ['version', 'count', 'camera']);
+  assert.deepEqual(zipEntryNames(added), zipEntryNames(bare));
+  for (const name of zipEntryNames(bare).filter((n) => n !== 'meta.json')) {
+    assert.deepEqual(await readZipEntry(added, name), await readZipEntry(bare, name), name);
+  }
+  // an authored block stays: the very same bytes come back
+  const authored = (await buildSog({ ply, meta: META })).bytes;
+  assert.equal(await addCameraBlockToSog(authored, RUNTIME_BLOCK), authored);
+});

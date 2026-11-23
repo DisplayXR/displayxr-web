@@ -359,6 +359,9 @@ export function zipStored(entries) {
  * @param {object} [o.splats]  {count, positions, fdc, opacity(logit), scales(log), rotations(w,x,y,z)}
  * @param {object} o.meta  the lift meta (focalPx, pivotZ, w, h, subjectZ, depthRange, intrinsics…)
  * @param {object|false} [o.camera]  overrides merged onto the camera block; `false` omits it.
+ * @param {object} [o.cameraBlock]  a camera block v2 to embed VERBATIM instead of building one from
+ *        `meta` (the runtime's block for a local lift, XR_DXR_lift spec 6). `o.camera` is ignored
+ *        then: an authored or runtime block is never rewritten.
  * @param {(p:number)=>void} [o.onProgress]
  * @param {AbortSignal} [o.signal]  checked at every yield: an abort rejects with an AbortError
  *        (lift.js aborts a download when explore is left — play must not wait on the encode).
@@ -448,7 +451,9 @@ export async function buildSog(o) {
   const meta = {
     version: 2,
     count: n,
-    ...(o.camera === false ? {} : { camera: liftCameraBlock(o.meta, o.camera || null) }),
+    ...(o.camera === false && !o.cameraBlock
+      ? {}
+      : { camera: o.cameraBlock && typeof o.cameraBlock === 'object' ? o.cameraBlock : liftCameraBlock(o.meta, o.camera || null) }),
     means: { mins, maxs, files: ['means_l.webp', 'means_u.webp'] },
     scales: { codebook: Array.from(scalesCb), files: ['scales.webp'] },
     quats: { files: ['quats.webp'] },
@@ -468,6 +473,74 @@ export async function buildSog(o) {
 export async function exportSog(o) {
   const { bytes } = await buildSog(o);
   return new Blob([bytes], { type: 'application/octet-stream' });
+}
+
+// ── a camera block onto an existing .sog ───────────────────────────────────────────────────
+
+/** The entry names of a zip, from its central directory (no data read). */
+export function zipEntryNames(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 22 - 65535); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('sog-export: not a zip (no end of central directory)');
+  const n = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const names = [];
+  const dec = new TextDecoder();
+  for (let k = 0; k < n; k++) {
+    if (p + 46 > u8.length || dv.getUint32(p, true) !== 0x02014b50) throw new Error('sog-export: bad zip central directory');
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    names.push(dec.decode(u8.subarray(p + 46, p + 46 + nameLen)));
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return names;
+}
+
+/**
+ * A `.sog` that carries no camera block, given one: the same entries (re-stored), with `camera`
+ * inserted into meta.json right after `count` (the block's documented position). A `.sog` that
+ * already has a `camera` is returned UNCHANGED — an authored block is never overwritten.
+ *
+ * @param {Uint8Array|ArrayBuffer} bytes
+ * @param {object} block  a camera block v2 (verbatim)
+ * @returns {Promise<Uint8Array>}
+ */
+export async function addCameraBlockToSog(bytes, block) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const { readZipEntry } = await import('../inline3d-sog.js');
+  const rawMeta = await readZipEntry(u8, 'meta.json');
+  if (!rawMeta) throw new Error('sog-export: the .sog has no readable meta.json');
+  const meta = JSON.parse(new TextDecoder().decode(rawMeta));
+  if (meta && typeof meta === 'object' && meta.camera) return u8;
+  if (!block || typeof block !== 'object') return u8;
+  const out = {};
+  let placed = false;
+  for (const [k, v] of Object.entries(meta)) {
+    out[k] = v;
+    if (k === 'count') {
+      out.camera = block;
+      placed = true;
+    }
+  }
+  if (!placed) out.camera = block;
+  const entries = [];
+  for (const name of zipEntryNames(u8)) {
+    if (name === 'meta.json') {
+      entries.push({ name, data: new TextEncoder().encode(JSON.stringify(out)) });
+      continue;
+    }
+    const data = await readZipEntry(u8, name);
+    if (!data) throw new Error(`sog-export: cannot read ${name} from the .sog`);
+    entries.push({ name, data: data instanceof Uint8Array ? data : new Uint8Array(data) });
+  }
+  return zipStored(entries);
 }
 
 /** Unused by the export; the reader-side constant the engine applies to sh0 (tests). */

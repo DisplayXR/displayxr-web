@@ -155,12 +155,26 @@ update the attributes live; `state` is `live`, `stats.mode` is `'native'`.
   (`data` base64 float32 or a number array). `semantics`: `metric` (metres, 0 = invalid) or
   `disparity` (relative inverse depth, bigger = nearer; aliases `inverse-depth`,
   `relative-disparity`). Anything else is a `format` error.
-- `POST displayxr-lift://lift/gaussians`, same body. Answer a `.sog` (sniffed `PK\x03\x04`; its camera
-  block v2 is the rig) or a `.ply` (sniffed `ply\n`) **with** an `X-DXR-Lift-Meta` JSON header
-  (`{focalPx, w, h, pivotZ?, axes?}`, the generator's meta shape). The PLY is in the generator's
+- `POST displayxr-lift://lift/gaussians`. The body is what the cloud SHARP client sends: a JPEG with the
+  long side ≤ 1536 (`GAUSSIANS_MAX_SIDE`), plus `?focalPx=` (in pixels of the JPEG sent) **only when the
+  caller knows the focal**. With none, the runtime's provider estimates it and says so in its facts:
+  nothing assumes a field of view. Answer a `.sog` (sniffed `PK\x03\x04`; its camera block v2 is the
+  rig) or a `.ply` (sniffed `ply\n`). A `.ply` comes with the runtime's **camera block v2**
+  (`X-DXR-Lift-Camera`, base64 of the JSON, XR_DXR_lift spec 6: the very object a SOG's meta.json
+  carries as `camera`) and the provider's facts (`X-DXR-Lift-Facts`, base64 JSON). `nativeLiftMeta`
+  runs the block through **the cloud path's parser** (`liftMetaFromSogMeta`, as `readLiftSog` does
+  for a SHARP `.sog`), so a local lift is framed exactly like a cloud one: focalPx / w / h from
+  `camera.intrinsics`, pivotZ = `camera.focus.point[2]` (`focus.source` `auto` = the provider's
+  suggestion, `runtime` = the runtime's own estimate from the splats), axes OpenCV. The block is kept
+  verbatim on `meta.cameraBlock` (for Download SOG) and the facts on `meta.facts`. A block without
+  intrinsics (the provider reported none) gets its focal from the splats' robust angular extent
+  (`meta.focalSource: 'splat-extent'`), never from a nominal FOV. An older browser or runtime sends
+  only an `X-DXR-Lift-Meta` JSON header (`{focalPx, w, h, pivotZ?, axes?}`, the generator's meta
+  shape); only then does `pivotZ` fall back to 2. A failed conversion is HTTP 502 with
+  `X-DXR-Lift-Error: conversion-failed`, at once. The PLY is in the generator's
   frame: **OpenCV** — camera at the origin looking **+z**, **y down**, each splat at its pixel's
   unprojection `X = (u − w/2)·Z/focalPx`, `Y = (v − h/2)·Z/focalPx`, `Z` = its depth in metres;
-  `pivotZ` (default 2) the depth that sits on the glass. A header without `axes`/`convention` is
+  `pivotZ` (from the block; 2 only without one) the depth that sits on the glass. A header without `axes`/`convention` is
   read as `axes: 'opencv'` (`'opengl'` = looking −z, y up, if the module says so). A scene at
   `z ≤ 0` is behind/at the camera and draws nothing. 404/501 = not supported.
 - Errors are `NativeLiftError` with `code` `http | unsupported | unavailable | format | encode | network | aborted`
@@ -366,7 +380,11 @@ explored in the same PlayCanvas explore view (the file's own camera block is the
   `aborted` falls back to the local MoGe-3 + generator lift, with the reason on the chip
   ("SHARP quota reached — lifting locally"); `stats.liftFallback` records it.
 - **Download SOG** after a remote lift returns the worker's **original bytes** (its own camera block);
-  `exportSog({ camera })` overrides are ignored there.
+  `exportSog({ camera })` overrides are ignored there. The rule is provider-agnostic and decided by
+  sniffing the bytes: a `.sog` that carries a camera block is saved as-is; a `.sog` without one gets
+  the provider's block (`meta.cameraBlock`) or one built from meta added (`addCameraBlockToSog`), never
+  overwriting; a `.ply` is encoded, embedding the provider's block **verbatim** when there is one
+  (the runtime's, for a local lift: `buildSog({ cameraBlock })`), else one built from meta.
 - **Stats.** `liftSource` (`'remote-sharp'` | `'local'`), `remoteMs`, `remoteTimings` (`encodeMs`,
   `requestMs`, `downloadMs`, `totalMs`, `bytes`, `cacheHit`, `serverMs`).
 - **Latency / cost** (worker README): ~8.5 s warm, ~40 s cold on a Modal L4 (scale-to-zero), plus the
