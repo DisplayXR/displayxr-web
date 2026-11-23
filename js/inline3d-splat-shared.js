@@ -767,8 +767,14 @@ export function resolveDepthOption(v, tag = '@displayxr/inline3d/splat') {
 export function framedSubjectBounds(viewer) {
   const s = viewer._fitScale;
   const hz = viewer._subjectHalf?.[2];
-  const cz = viewer._depthOffset || 0;
   if (!(s > 0) || !Number.isFinite(hz)) return null;
+  const off = viewer._depthOffset || 0;
+  // A robust frame (addModel, web#327) hands fitTo the surface's own depth range relative to the
+  // glass: measure THAT, not the fit box, so the comfort factor sees the robust screen plane.
+  const fd = viewer._framedDepth;
+  if (fd) return { front: off + s * fd[1], back: off + s * fd[0] };
+  // The author's slide plus the framing's screen-plane slide (fitTo's screenPlaneZ), at zoom 1.
+  const cz = off + (viewer._screenPlaneShift || 0) * s;
   return { front: cz + s * hz, back: cz - s * hz };
 }
 

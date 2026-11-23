@@ -375,6 +375,9 @@ export class SceneViewer {
     // into a display-space box under the live pose; without them it would have to re-measure
     // the content every call.
     this._subjectHalf = [0, 0, 0];
+    // fitTo's opts.screenPlaneZ, as model units the pivot sits in front of the glass (0 = none).
+    this._screenPlaneShift = 0;
+    this._framedDepth = null;
     this._yaw = 0;
     this._pitch = 0;
     this._targetYaw = 0;
@@ -448,12 +451,31 @@ export class SceneViewer {
    * of virtual space through the glass, which is uncomfortable to look at and pushes content
    * past where the display can hold focus. `depthLimit` caps that in display-height units.
    *
-   * @param {number[]|{x:number,y:number,z:number}} center  subject centre, model space.
+   * @param {number[]|{x:number,y:number,z:number}} center  subject centre, model space: the turn
+   *        pivot, and (without `opts.screenPlaneZ`) the point on the zero-disparity plane.
    * @param {number[]|{x:number,y:number,z:number}} extent  subject size, model space.
+   * @param {object} [opts]
+   * @param {number} [opts.screenPlaneZ]  model-space z to put on the zero-disparity plane, when it
+   *        is not the pivot's (addModel's robust framing passes the surface's 75th-percentile
+   *        depth). The subject still turns about `center`; the slide is applied in display space
+   *        and scales with fit × zoom, so this depth stays on the glass under zoom. Unset: the
+   *        centre is on the glass, exactly as before.
+   * @param {number[]} [opts.depthRange]  `[back, front]` model-space z of the subject as the
+   *        `depth: 'auto'` comfort measure should see it (addModel's robust framing passes the
+   *        surface's 1st–99th percentile depth). Unset: the fit box, as before.
    */
-  fitTo(center, extent) {
+  fitTo(center, extent, opts) {
     const c = Array.isArray(center) ? center : [center.x, center.y, center.z];
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
+    // Model units the pivot sits IN FRONT of the screen plane (0 = the centre on the glass).
+    const zp = opts && opts.screenPlaneZ;
+    this._screenPlaneShift = Number.isFinite(zp) && Number.isFinite(c[2]) ? c[2] - zp : 0;
+    // opts.depthRange: the subject's [back, front] model z as the `depth` option should measure it
+    // (robust framing: the surface's 1st–99th percentile), kept relative to the glass. Null = the
+    // fit box (±extent/2 about the centre), as before.
+    const dr = opts && opts.depthRange;
+    const glassZ = c[2] - this._screenPlaneShift;
+    this._framedDepth = Array.isArray(dr) && Number.isFinite(dr[0]) && Number.isFinite(dr[1]) ? [Math.min(dr[0], dr[1]) - glassZ, Math.max(dr[0], dr[1]) - glassZ] : null;
 
     // Through the focus, not around it: framing a subject IS pointing the viewer at its centre,
     // and keeping the two in one place is what stops an orbit turning about somewhere the fit
@@ -497,7 +519,12 @@ export class SceneViewer {
         if (horiz * s > vW) s = vW / horiz;
       }
 
-      // DEPTH: the subject sits CENTRED on the zero-disparity plane, and that is the whole rule.
+      // DEPTH: the subject sits CENTRED on the zero-disparity plane, and that is the whole rule
+      // for a page that calls fitTo(center, extent). (addModel's robust framing, web#327, passes
+      // `screenPlaneZ` instead: the surface's 75th-percentile depth on the glass, so ~25% of the
+      // surface is in front. That one WAS compared on hardware, on three kinds of model, and
+      // preferred on all of them; it is a different rule from the biased variant below, which
+      // pushed the whole box back.)
       //
       // It is the native convention — displayxr-demo-gaussiansplat sets the rig pose to the
       // subject centre on all three axes, and displayxr-demo-modelviewer states it outright:
@@ -615,7 +642,7 @@ export class SceneViewer {
     const ex = s * (Math.abs(cr * a0 - sr * b0) * hx + Math.abs(cr * a1 - sr * b1) * hy + Math.abs(cr * a2 - sr * b2) * hz);
     const ey = s * (Math.abs(sr * a0 + cr * b0) * hx + Math.abs(sr * a1 + cr * b1) * hy + Math.abs(sr * a2 + cr * b2) * hz);
     const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
-    const cz = this._depthOffset;
+    const cz = this._depthOffset + this._screenPlaneShift * s;
     return {
       center: { x: 0, y: 0, z: cz },
       extent: { x: 2 * ex, y: 2 * ey, z: 2 * ez },
@@ -1092,7 +1119,7 @@ export class SceneViewer {
     this._pivot.position.set(
       this._orbitCentre.x,
       this._orbitCentre.y,
-      this._orbitCentre.z + this._depthOffset,
+      this._orbitCentre.z + this._depthOffset + this._screenPlaneShift * s,
     );
     // Order 'XYZ' == R = Rx(pitch) · Ry(yaw), and the order is the whole point.
     //

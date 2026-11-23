@@ -122,6 +122,7 @@
     "js/inline3d-model.js",
     "js/inline3d-model-entry.js",
     "js/inline3d-model-playcanvas.js",
+    "js/inline3d-model-frame.js",
     "js/inline3d-pc-look.js",
     "js/inline3d-pc-auto-release.js",
     "js/inline3d-pc-release.js",

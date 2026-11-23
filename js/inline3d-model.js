@@ -44,6 +44,7 @@ import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest, displayRig } from 
 import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { CURSOR_MODEL_RAYS_PER_FRAME } from './inline3d-cursor-perf.js';
 import { SceneViewer } from './inline3d-viewer.js';
+import { robustFrame, meshesOfThreeObject, resolveFraming, fitOptionsOf } from './inline3d-model-frame.js';
 // Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
 // is the default lighting path, so deferring it would only add a frame of unlit content.
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -401,6 +402,7 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     firstWovenHoldMs,
   } = opts;
 
+  const framing = resolveFraming(opts.framing);
   const paths = normalizeDecoderPath(decoderPath);
   const injected = { draco: injectedDraco, ktx2: injectedKtx2, meshopt: injectedMeshopt };
   // Opt-in comfort depth; a bad value throws here, at the call.
@@ -541,12 +543,15 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
     out.model = gltf.scene;
     viewer.content.add(gltf.scene);
 
-    // Meshes have exact bounds, so unlike a splat there is nothing to be robust ABOUT: no
-    // percentile trim, no flood-fill, no sidecar needed. Box3 is the whole story.
-    const bounds = frame || boundsOf(gltf.scene);
+    // Meshes have exact bounds, but exact is not the same as representative: one thin tail or
+    // antenna moves the box's centre and size (web#327). `frame` overrides everything; else the
+    // robust frame (the default, ./inline3d-model-frame.js) or the box (framing:'box').
+    const bounds = frame || frameOf(gltf.scene, { framing, margin });
     if (bounds) {
       out.frame = bounds;
-      viewer.fitTo(bounds.center, bounds.extent);
+      const fo = fitOptionsOf(bounds);
+      if (fo) viewer.fitTo(bounds.center, bounds.extent, fo);
+      else viewer.fitTo(bounds.center, bounds.extent);
       depth.refresh();
     }
     return out;
@@ -556,6 +561,16 @@ function addModelUnguarded(wall, canvas, src, opts = {}) {
   });
 
   return out;
+}
+
+/** addModel's frame on three: robust by default, the box for framing:'box' or no readable mesh. */
+function frameOf(object3d, { framing = 'robust', margin = 0.8 } = {}) {
+  const box = boundsOf(object3d);
+  if (!box || framing === 'box') return box;
+  const meshes = meshesOfThreeObject(THREE, object3d);
+  const f = meshes ? robustFrame(meshes, box, { margin }) : null;
+  if (!f) console.info("[inline3d/model] framing:'robust' fell back to the bounding box (no readable triangles).");
+  return f || box;
 }
 
 /** Exact model-space bounds of an object tree. */

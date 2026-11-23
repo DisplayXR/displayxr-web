@@ -7,6 +7,42 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Changed — `addModel` frames a mesh robustly by default (`./model`, preview tier: default pixels move)
+
+`addModel` used to frame a mesh on its axis-aligned bounding box: the box centre was both the turn
+pivot and the point on the screen plane, and the full box set the scale. One thin outlier (a tail,
+an antenna, a strap) skewed all three: the subject came out smaller, turned about a point behind
+its body, and most of it popped out of the glass. On both engines it now samples the surface at
+load (65 536 points, uniform by triangle area, fixed seed, in the bind / rest pose; a few tens of
+ms) and takes three numbers from it:
+
+- **Screen plane:** the surface's area-weighted 75th-percentile depth toward the viewer, so about
+  25% of the surface is in front of the glass. The 25% target matches the runtime's own default
+  for auto-convergence.
+- **Turn pivot:** the area-weighted median in x and z (y stays the box centre).
+- **Fit extent:** the per-axis 1st–99th percentile, with the same `margin`, swept width
+  (`fitSweep`) and `depthLimit` as before, but never tighter than the full box (measured about the
+  pivot) at 90% of the tile.
+
+Weighting by area, not vertex count, keeps dense detail (eyes, text) from dominating. A compact
+model with no outlier comes out at most ~12% larger than before; a model with an outlier is larger
+and sits further back. `handle.frame` now also carries `screenPlaneZ`, `depthRange` and the
+original `box`. `depth: 'auto'` measures the robust depth range against the new screen plane.
+Geometry the sampler cannot read (an InstancedMesh on three, an unreadable vertex stream) falls
+back to the box with one console line.
+
+**To keep the old framing,** pass `framing: 'box'`, which reproduces the previous numbers exactly;
+`frame:` still overrides everything. Any other `framing` value throws at the call. Details:
+[authoring-inline-3d.md § How addModel frames a model](docs/authoring-inline-3d.md#how-addmodel-frames-a-model).
+
+### Added — `fitTo(center, extent, { screenPlaneZ, depthRange })` (`./viewer`, `./splat` viewers)
+
+`SceneViewer.fitTo` and `PlayCanvasSplatViewer.fitTo` take an optional third argument:
+`screenPlaneZ` puts that model-space depth on the glass while the subject still turns about
+`center` (the slide scales with fit × zoom, so the depth stays on the glass under zoom), and
+`depthRange` is the `[back, front]` depth the `depth` option measures. The two-argument call is
+unchanged, bit for bit. `addSplat` does not use it.
+
 ### Added — `backdropPlacement()`: where a backdrop plane goes behind a subject (core, `./depth`, `./three`)
 
 A pure helper, like `comfortDepthFactor`: give it how far the subject reaches behind the glass (at

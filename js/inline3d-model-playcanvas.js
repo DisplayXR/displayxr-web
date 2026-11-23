@@ -40,6 +40,7 @@
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
 import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo, attachComfortDepth, resolveDepthOption, framedSubjectBounds } from './inline3d-splat-shared.js';
 import { displayRig } from './inline3d-three.js';
+import { robustFrame, meshesOfPlayCanvasEntity, resolveFraming, fitOptionsOf } from './inline3d-model-frame.js';
 import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, watchContent } from './inline3d-splat-diag.js';
 import {
   NEUTRAL_STUDIO,
@@ -360,6 +361,20 @@ export function boundsOfEntity(pc, entity) {
   };
 }
 
+/**
+ * The frame `addModel` fits on (web#327). `'robust'` (the default): pivot at the surface's
+ * area-weighted median, the 75th-percentile depth on the glass, fit from trimmed extents (see
+ * ./inline3d-model-frame.js); `'box'`: `boundsOfEntity`, as before robust framing became the default. Falls back to the box
+ * when the entity has no triangles it can read. Null when there is nothing to frame.
+ */
+export function frameOfEntity(pc, entity, { framing = 'robust', margin = 0.8 } = {}) {
+  const box = boundsOfEntity(pc, entity);
+  if (!box || framing === 'box') return box;
+  const f = robustFrame(meshesOfPlayCanvasEntity(entity), box, { margin });
+  if (!f) console.info(`${TAG} framing:'robust' fell back to the bounding box (no readable triangles).`);
+  return f || box;
+}
+
 // ── option validation (pure; ./model calls it synchronously, before anything loads) ──────────
 
 /** Options that only mean something on three's path: their values ARE three.js objects. */
@@ -441,6 +456,7 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     antialias = true,
   } = opts;
   const ctl = validatePlayCanvasModelOptions(opts);
+  const framing = resolveFraming(opts.framing);
   const pageMode = ctl.page;
   const depthOption = resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
   if (pageMode && ctl.ignored.length) {
@@ -720,10 +736,13 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     viewer.content.addChild(entity);
     out.model = entity;
     out.container = asset.resource; // animations, materials, textures (engine types)
-    const bounds = frame || boundsOfEntity(pc, entity);
+    // `frame` overrides everything; else the robust frame (default) or the box (framing:'box').
+    const bounds = frame || frameOfEntity(pc, entity, { framing, margin });
     if (bounds) {
       out.frame = bounds;
-      viewer.fitTo(bounds.center, bounds.extent);
+      const fo = fitOptionsOf(bounds);
+      if (fo) viewer.fitTo(bounds.center, bounds.extent, fo);
+      else viewer.fitTo(bounds.center, bounds.extent);
       depth.refresh();
     }
     return out;

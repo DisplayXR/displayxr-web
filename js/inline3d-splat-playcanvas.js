@@ -1033,6 +1033,10 @@ export class PlayCanvasSplatViewer {
     this._targetZoom = this._restZoom;
     this._depthOffset = 0;
     this._subjectHalf = [0, 0, 0];
+    // fitTo's opts.screenPlaneZ, as model units the pivot sits in front of the glass (0 = none):
+    // SceneViewer's, same use.
+    this._screenPlaneShift = 0;
+    this._framedDepth = null;
     this._yaw = 0;
     this._pitch = 0;
     this._targetYaw = 0;
@@ -1136,10 +1140,24 @@ export class PlayCanvasSplatViewer {
     this._applyTransform();
   }
 
-  fitTo(center, extent) {
+  /**
+   * SceneViewer.fitTo, same arithmetic. `opts.screenPlaneZ` (addModel's robust framing): the
+   * model-space z put on the glass when it is not the pivot's; the subject still turns about
+   * `center`. Unset: the centre is on the glass, as before. `opts.depthRange`: the subject's
+   * [back, front] model z for the `depth` option's measure (SceneViewer's, same use).
+   */
+  fitTo(center, extent, opts) {
     if (this.pageCamera) return; // the page frames its own camera
     const c = Array.isArray(center) ? center : [center.x, center.y, center.z];
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
+    const zp = opts && opts.screenPlaneZ;
+    this._screenPlaneShift = Number.isFinite(zp) && Number.isFinite(c[2]) ? c[2] - zp : 0;
+    // opts.depthRange: the subject's [back, front] model z as the `depth` option should measure it
+    // (robust framing: the surface's 1st–99th percentile), kept relative to the glass. Null = the
+    // fit box (±extent/2 about the centre), as before.
+    const dr = opts && opts.depthRange;
+    const glassZ = c[2] - this._screenPlaneShift;
+    this._framedDepth = Array.isArray(dr) && Number.isFinite(dr[0]) && Number.isFinite(dr[1]) ? [Math.min(dr[0], dr[1]) - glassZ, Math.max(dr[0], dr[1]) - glassZ] : null;
     this.setFocus(c, { snap: true });
     this._subjectHalf = [Math.abs(e[0]) / 2, Math.abs(e[1]) / 2, Math.abs(e[2]) / 2];
     const box = this.canvas.getBoundingClientRect();
@@ -1230,7 +1248,7 @@ export class PlayCanvasSplatViewer {
     const ex = s * (Math.abs(cr * a0 - sr * b0) * hx + Math.abs(cr * a1 - sr * b1) * hy + Math.abs(cr * a2 - sr * b2) * hz);
     const ey = s * (Math.abs(sr * a0 + cr * b0) * hx + Math.abs(sr * a1 + cr * b1) * hy + Math.abs(sr * a2 + cr * b2) * hz);
     const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
-    const cz = this._depthOffset;
+    const cz = this._depthOffset + this._screenPlaneShift * s;
     return {
       center: { x: 0, y: 0, z: cz },
       extent: { x: 2 * ex, y: 2 * ey, z: 2 * ez },
@@ -1430,6 +1448,8 @@ export class PlayCanvasSplatViewer {
   resetFit() {
     this._fitScale = 1;
     this._subjectHalf = [0, 0, 0];
+    this._screenPlaneShift = 0;
+    this._framedDepth = null;
     this._applyTransform();
   }
 
@@ -1980,7 +2000,7 @@ export class PlayCanvasSplatViewer {
   lensFrame() {
     const pose = Float64Array.from(this.mono.pose);
     const o = this._orbitCentre;
-    const fz = o.z + this._depthOffset;
+    const fz = o.z + this._liveDepthOffset();
     let c = -((o.x - pose[12]) * pose[8] + (o.y - pose[13]) * pose[9] + (fz - pose[14]) * pose[10]);
     if (!(c > 1e-6)) c = 1;
     return { rig: this.rigMatrix(), pose, c, t: Math.tan((this.mono.fov * DEG) / 2) };
@@ -2223,7 +2243,7 @@ export class PlayCanvasSplatViewer {
     const o = this._orbitCentre;
     const p = m.pose;
     // The focus's distance along the view axis (−z): the pivot puts it at the orbit centre.
-    const c = -((o.x - p[12]) * p[8] + (o.y - p[13]) * p[9] + (o.z + this._depthOffset - p[14]) * p[10]);
+    const c = -((o.x - p[12]) * p[8] + (o.y - p[13]) * p[9] + (o.z + this._liveDepthOffset() - p[14]) * p[10]);
     return offsetMonoView(p, m.proj, ox, oy, c, this.orbitMaxDeg, this._offPose, this._offProj)
       ? { proj: this._offProj, pose: this._offPose }
       : { proj: m.proj, pose: m.pose };
@@ -2725,8 +2745,17 @@ export class PlayCanvasSplatViewer {
       scale: this._fitScale * this._zoom,
       focus: [f.x, f.y, f.z],
       orbitCentre: [o.x, o.y, o.z],
-      depthOffset: this._depthOffset,
+      depthOffset: this._liveDepthOffset(),
     };
+  }
+
+  /**
+   * The display-space depth slide in force: the author's `depthOffset` plus the framing's
+   * screen-plane slide (fitTo's `screenPlaneZ`, which scales with fit × zoom). Equal to
+   * `depthOffset` for every subject framed without `screenPlaneZ`.
+   */
+  _liveDepthOffset() {
+    return this._depthOffset + this._screenPlaneShift * this._fitScale * this._zoom;
   }
 
   /**
