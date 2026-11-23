@@ -28,7 +28,7 @@ import { createInline3D } from '../inline3d.js';
 import { createLiftMachine, STATES, resolveLiftMode } from './state.js';
 import { mountCanvas, resolveMediaAt, findMediaInParentsAndSiblings, mediaSize } from './placement.js';
 import { createChip, shieldInput } from './ui.js';
-import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, exploreAvailable, normalizePriority, NativeLiftError } from './native.js';
+import { liftCapabilities, ensureNativeProviders, createNativeLiveAttrs, defaultLiftProviderFor, exploreAvailable, normalizePriority, NativeLiftError, sniffSplatFormat } from './native.js';
 import { getRegistry } from './providers/registry.js';
 
 export { resolveMediaAt, STATES };
@@ -1003,17 +1003,50 @@ export async function lift(element, opts = {}) {
      * The lifted scene as a `.sog` (SOG v2, lossless webp planes) with the DisplayXR camera block
      * v2 — the gallery / addSplat / the gauss demo open it on the photo's own camera rig at the
      * lift's convergence (docs/lift.md § Download SOG). Rejects when nothing has been lifted yet.
-     * `opts.camera` is merged onto the camera block (e.g. `{ focus: { point, source: 'manual' } }`).
+     *
+     * ALWAYS a .sog, whatever the provider, decided by SNIFFING the bytes (never the provider id):
+     *   a .sog       its ORIGINAL bytes; a block is added only when it has none (the provider's
+     *                block — e.g. the runtime's, `meta.cameraBlock` — else one built from meta).
+     *                An authored block is never overwritten.
+     *   a .ply       encoded (exportSog). When the provider returned a camera block
+     *                (`meta.cameraBlock`: the runtime's, XR_DXR_lift spec 6) it is embedded
+     *                VERBATIM; otherwise one is built from meta, and `opts.camera` is merged onto
+     *                it (e.g. `{ focus: { point, source: 'manual' } }`).
      */
     async exportSog(opts = {}) {
       if (!lifted) throw new Error('[inline3d/lift] exportSog: nothing lifted yet (explore first)');
-      // A provider's .sog (remote SHARP) is returned as the ORIGINAL bytes: it already carries the
-      // worker's camera block. `opts.camera` overrides are not applied to it.
-      if (lifted.sog) {
-        if (opts.camera) console.warn('[inline3d/lift] exportSog: camera overrides are ignored for a remote lift (original bytes)');
-        return new Blob([lifted.sog], { type: 'application/octet-stream' });
+      const src = lifted.sog || lifted.ply;
+      const u8 = src instanceof Uint8Array ? src : new Uint8Array(src);
+      const kind = sniffSplatFormat(u8);
+      const block = lifted.meta && lifted.meta.cameraBlock && typeof lifted.meta.cameraBlock === 'object' ? lifted.meta.cameraBlock : null;
+      if (kind === 'sog') {
+        const { readSogMeta } = await import('../inline3d-sog.js');
+        const sogMeta = await readSogMeta(u8);
+        if (sogMeta && sogMeta.camera) {
+          // The file's own block (the cloud worker's, or an authored one): the original bytes.
+          if (opts.camera) console.warn('[inline3d/lift] exportSog: camera overrides are ignored for a .sog that carries its own block (original bytes)');
+          return new Blob([u8], { type: 'application/octet-stream' });
+        }
+        const { addCameraBlockToSog, liftCameraBlock } = await import('./sog-export.js');
+        let add = block;
+        if (!add) {
+          try {
+            add = liftCameraBlock(lifted.meta, opts.camera || null);
+          } catch {
+            add = null; // no usable meta: the bytes as they came
+          }
+        }
+        const out = add ? await addCameraBlockToSog(u8, add) : u8;
+        return new Blob([out], { type: 'application/octet-stream' });
       }
+      if (kind !== 'ply') throw new Error('[inline3d/lift] exportSog: the lifted scene is neither a .sog nor a .ply');
       const { exportSog } = await import('./sog-export.js');
+      if (block) {
+        // The provider's block, byte-for-byte the object a cloud .sog would carry: never rebuilt
+        // from pivotZ, never rescaled by explore's comfort scale (the cloud's .sog is not either).
+        if (opts.camera) console.warn('[inline3d/lift] exportSog: camera overrides are ignored when the provider supplied the camera block');
+        return exportSog({ ply: u8, meta: lifted.meta, cameraBlock: block, onProgress: opts.onProgress, signal: opts.signal });
+      }
       // The file stays METRIC (the lift as generated). When explore applied its comfort scale k,
       // the block says so the way a camera rig expresses it — eye separation and head motion in
       // world units per real metre, ipd_factor = parallax_factor = 1/k — so a viewer that honours

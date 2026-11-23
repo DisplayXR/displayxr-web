@@ -20,6 +20,7 @@
 // rejects, and that rejection IS the feature detection → `native: false`.
 
 import { getRegistry } from './providers/registry.js';
+import { liftMetaFromSogMeta } from './sog-input.js';
 
 export const NATIVE_BASE = 'displayxr-lift://';
 export const NATIVE_CAPS_URL = NATIVE_BASE + 'caps';
@@ -260,13 +261,32 @@ function sizeOf(src) {
 }
 
 /**
- * The frame as an image Blob for the native endpoints (JPEG: the module resamples anyway, and the
- * encode is ~10× cheaper than PNG). A Blob passes through.
+ * The long side of the photo `native-gaussians` sends: the cloud SHARP client's 1536
+ * (providers/lift-remote-sharp.js `maxSide`). Photo models infer far below a camera's native size,
+ * so a 24 MP frame costs an encode, an upload and a runtime downscale for nothing.
  */
-export async function encodeFrame(src, { type = 'image/jpeg', quality = 0.92, createCanvas } = {}) {
-  if (typeof Blob !== 'undefined' && src instanceof Blob) return src;
-  const { w, h } = sizeOf(src || {});
-  if (!(w > 0 && h > 0)) throw new NativeLiftError('native lift: the frame has no size', 'encode');
+export const GAUSSIANS_MAX_SIDE = 1536;
+
+/**
+ * The frame as an image Blob for the native endpoints (JPEG: the module resamples anyway, and the
+ * encode is ~10× cheaper than PNG). A Blob passes through. `maxSide` (0 = none) caps the long side,
+ * aspect kept, never upscaling.
+ */
+export async function encodeFrame(src, opts = {}) {
+  return (await encodeFrameSized(src, opts)).blob;
+}
+
+/**
+ * encodeFrame + the size that was sent: `{blob, w, h, srcW, srcH}` (all 0 for a Blob passed
+ * through: its pixels are not known here).
+ */
+export async function encodeFrameSized(src, { type = 'image/jpeg', quality = 0.92, maxSide = 0, createCanvas } = {}) {
+  if (typeof Blob !== 'undefined' && src instanceof Blob) return { blob: src, w: 0, h: 0, srcW: 0, srcH: 0 };
+  const { w: sw, h: sh } = sizeOf(src || {});
+  if (!(sw > 0 && sh > 0)) throw new NativeLiftError('native lift: the frame has no size', 'encode');
+  const s = maxSide > 0 ? Math.min(1, maxSide / Math.max(sw, sh)) : 1;
+  const w = Math.max(1, Math.round(sw * s));
+  const h = Math.max(1, Math.round(sh * s));
   const c = createCanvas
     ? createCanvas(w, h)
     : typeof OffscreenCanvas === 'function'
@@ -280,7 +300,7 @@ export async function encodeFrame(src, { type = 'image/jpeg', quality = 0.92, cr
       ? await c.convertToBlob({ type, quality })
       : await new Promise((res) => c.toBlob(res, type, quality));
   if (!blob) throw new NativeLiftError('native lift: frame encode failed', 'encode');
-  return blob;
+  return { blob, w, h, srcW: sw, srcH: sh };
 }
 
 async function post(fetchImpl, url, blob, signal) {
@@ -292,7 +312,18 @@ async function post(fetchImpl, url, blob, signal) {
     throw new NativeLiftError(`native lift: ${url} unreachable: ${(e && e.message) || e}`, 'network');
   }
   if (r.status === 404 || r.status === 501) throw new NativeLiftError(`native lift: ${url} not supported (HTTP ${r.status})`, 'unsupported', { status: r.status });
-  if (!r.ok) throw new NativeLiftError(`native lift: ${url} → HTTP ${r.status}`, 'http', { status: r.status });
+  if (!r.ok) {
+    // 502 is also how the browser reports a conversion the runtime said FAILED (XR_DXR_lift spec 6,
+    // XR_ERROR_LIFT_CONVERSION_FAILED_DXR): at once, not after the endpoint's timeout.
+    let detail = '';
+    try {
+      const d = r.headers && r.headers.get('x-dxr-lift-error');
+      detail = d ? ` (${d})` : '';
+    } catch {
+      detail = '';
+    }
+    throw new NativeLiftError(`native lift: ${url} → HTTP ${r.status}${detail}`, 'http', { status: r.status });
+  }
   return r;
 }
 
@@ -406,28 +437,149 @@ export function sniffSplatFormat(u8) {
 }
 
 /**
+ * A JSON object the browser sent base64-encoded in a header (UTF-8 inside), or null.
+ * `X-DXR-Lift-Camera` / `X-DXR-Lift-Facts` travel this way: a header value must be ASCII.
+ */
+export function decodeHeaderJson(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const j = JSON.parse(new TextDecoder().decode(b64ToBytes(value.trim())));
+    return j && typeof j === 'object' && !Array.isArray(j) ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The vertex count in a binary PLY's header, or 0. */
+export function plyVertexCount(u8) {
+  try {
+    const head = new TextDecoder().decode(u8.subarray(0, Math.min(u8.length, 16384)));
+    const end = head.indexOf('end_header');
+    if (!head.startsWith('ply') || end < 0) return 0;
+    const n = +(/element vertex (\d+)/.exec(head.slice(0, end)) || [])[1];
+    return n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * A focal for a camera block that carries no intrinsics (the provider reported none and the
+ * runtime assumes nothing): the splats' own robust angular extent. The 98th percentile of |x/z|
+ * over the splats in front of the camera spans half the frame width `w`. 0 when the cloud says
+ * nothing (fewer than 16 splats in front, or not a PLY this reader parses).
+ */
+export async function focalFromPlyExtent(plyU8, w) {
+  if (!(w > 0)) return 0;
+  const { parseGaussianPly } = await import('./sog-export.js');
+  let s;
+  try {
+    s = parseGaussianPly(plyU8);
+  } catch {
+    return 0;
+  }
+  const t = [];
+  const p = s.positions;
+  const step = Math.max(1, Math.floor(s.count / 200000)); // a subsample is plenty for a percentile
+  for (let i = 0; i < s.count; i += step) {
+    const z = p[i * 3 + 2];
+    if (z > 1e-6) t.push(Math.abs(p[i * 3] / z));
+  }
+  if (t.length < 16) return 0;
+  t.sort((x, y) => x - y);
+  const tx = t[Math.min(t.length - 1, Math.floor(t.length * 0.98))];
+  return tx > 0 ? w / 2 / tx : 0;
+}
+
+/**
+ * The lift meta for a runtime `.ply`, built the way the cloud path builds it from a `.sog`
+ * (providers/lift-remote-sharp.js → readLiftSog → liftMetaFromSogMeta). The runtime's camera block
+ * v2 (`X-DXR-Lift-Camera`, XR_DXR_lift spec 6: the same JSON object a SOG's meta.json carries as
+ * `camera`) goes through the SAME parser, so explore frames a local lift exactly as a cloud one:
+ * focalPx / w / h from `camera.intrinsics`, pivotZ = `camera.focus.point[2]`, axes 'opencv'.
+ *
+ *   camera   the runtime's block, a parsed JSON object; kept VERBATIM on `meta.cameraBlock`, which
+ *            is what Download embeds (never a block rebuilt from pivotZ)
+ *   facts    the provider's facts (`meta.facts`; `facts.intrinsics.source` = given / estimated / …)
+ *   legacy   the `X-DXR-Lift-Meta` header ({focalPx, w, h}) of a browser or runtime without the
+ *            block. Then, and only then, pivotZ falls back to 2.
+ *   sent     {w, h} of the image POSTed (the block's intrinsics are in those pixels)
+ *   ply      the PLY bytes (vertex count; the focal fallback when the block has no intrinsics)
+ *
+ * Returns null when there is neither a block nor a usable legacy meta.
+ */
+export async function nativeLiftMeta({ camera, facts, legacy, sent = {}, ply } = {}) {
+  const u8 = ply instanceof Uint8Array ? ply : ply ? new Uint8Array(ply) : null;
+  const count = u8 ? plyVertexCount(u8) : 0;
+  if (camera && typeof camera === 'object') {
+    const w = +sent.w || +legacy?.w || 0;
+    const h = +sent.h || +legacy?.h || 0;
+    const fallback = { w, h };
+    if (!(+camera.intrinsics?.fx > 0)) {
+      // No lens in the block: nothing was assumed upstream, and nothing is assumed here either.
+      const f = u8 ? await focalFromPlyExtent(u8, w) : 0;
+      if (f > 0) fallback.focalPx = f;
+    }
+    let meta;
+    try {
+      meta = liftMetaFromSogMeta({ version: 2, count, camera }, fallback);
+    } catch (e) {
+      throw new NativeLiftError(`native gaussians: the camera block is unusable (${e.message})`, 'format');
+    }
+    meta.cameraBlock = camera;
+    if (facts) meta.facts = facts;
+    meta.focalSource = facts?.intrinsics?.source ?? (meta.intrinsics ? null : 'splat-extent');
+    return meta;
+  }
+  // An older browser or runtime: the {focalPx, w, h} header alone, and no screen plane.
+  const meta = legacy && typeof legacy === 'object' ? { ...legacy } : null;
+  if (!meta || !(meta.focalPx > 0) || !(meta.w > 0) || !(meta.h > 0)) return null;
+  if (!(meta.pivotZ > 0)) meta.pivotZ = 2;
+  // "The generator's meta shape": the generator's PLY is OpenCV (camera at the origin looking
+  // +z, y down). A header that names no convention means that — NOT explore's own 'opengl'
+  // default, under which a +z scene sits behind the camera and explore draws solid black.
+  if (!meta.axes && !meta.convention) meta.axes = 'opencv';
+  if (count && !meta.splatCount) meta.splatCount = count;
+  return meta;
+}
+
+/**
  * The `native-gaussians` LiftProvider (the remote-sharp contract, docs/lift.md § Provider
- * interfaces): `{ id, needsDepth:false, generateLift({rgb, signal, onProgress}) → {sog} | {ply, meta} }`.
- * A `.sog` carries its own camera block v2 (explore reads the rig off it); a `.ply` must come with
- * an `X-DXR-Lift-Meta` JSON header ({focalPx, pivotZ, w, h, …} — the generator's meta shape), else
- * it is a `format` error.
+ * interfaces): `{ id, needsDepth:false, generateLift({rgb, depth?, signal, onProgress}) → {sog} | {ply, meta} }`.
+ *
+ * It sends what the cloud SHARP client sends: a JPEG, long side ≤ GAUSSIANS_MAX_SIDE (1536), and a
+ * focal (`?focalPx=`, in pixels of the JPEG sent) ONLY when the caller knows one. With none the
+ * runtime's provider estimates it and says so in its facts: nothing here assumes a field of view.
+ *
+ * A `.sog` carries its own camera block v2 (explore reads the rig off it). A `.ply` comes with the
+ * runtime's camera block (`X-DXR-Lift-Camera`, base64 JSON, XR_DXR_lift spec 6) and is framed by
+ * the cloud path's parser (nativeLiftMeta). An older browser sends only `X-DXR-Lift-Meta`
+ * ({focalPx, w, h}); a `.ply` with neither header is a `format` error.
  */
 export function createNativeGaussiansLift(opts = {}) {
   const fetchImpl = opts.fetch || ((...a) => globalThis.fetch(...a));
+  const maxSide = opts.maxSide === undefined ? GAUSSIANS_MAX_SIDE : +opts.maxSide || 0;
   let unsupported = false;
   return {
     id: 'native-gaussians',
     needsDepth: false,
     provider: opts.provider || null,
     async load() {},
-    async generateLift({ rgb, signal, onProgress } = {}) {
+    async generateLift({ rgb, depth, signal, onProgress } = {}) {
       if (unsupported) throw new NativeLiftError('native gaussians: not supported by this module', 'unsupported');
       const t0 = now();
-      const blob = await encodeFrame(rgb);
+      const enc = await encodeFrameSized(rgb, { maxSide, createCanvas: opts.createCanvas });
+      // A focal only when the caller has one (lift-remote-sharp.js's rule), restated in pixels of
+      // the JPEG sent. lift.js hands a still depth's focal in pixels of the frozen bitmap
+      // (`focalGridW`); a raw depth map's is in its own grid (`w`).
+      const fp = +depth?.intrinsics?.focalPx;
+      const gridW = +depth?.intrinsics?.focalGridW || +depth?.w || enc.srcW || enc.w;
+      const focalSent = fp > 0 && gridW > 0 && enc.w > 0 ? (fp * enc.w) / gridW : null;
+      const url = focalSent ? `${NATIVE_GAUSSIANS_URL}?focalPx=${+focalSent.toFixed(3)}` : NATIVE_GAUSSIANS_URL;
       if (onProgress) onProgress({ stage: 'lifting', progress: 0.1, elapsedS: 0 });
       let r;
       try {
-        r = await post(fetchImpl, NATIVE_GAUSSIANS_URL, blob, signal);
+        r = await post(fetchImpl, url, enc.blob, signal);
       } catch (e) {
         if (e && e.code === 'unsupported') unsupported = true;
         throw e;
@@ -436,22 +588,27 @@ export function createNativeGaussiansLift(opts = {}) {
       const fmtName = sniffSplatFormat(u8);
       const ms = Math.round(now() - t0);
       if (onProgress) onProgress({ stage: 'lifting', progress: 1, elapsedS: ms / 1000 });
-      if (fmtName === 'sog') return { sog: u8, meta: { timings: { nativeMs: ms } } };
+      const sent = { w: enc.w, h: enc.h, bytes: enc.blob.size, focalPx: focalSent };
+      if (fmtName === 'sog') return { sog: u8, meta: { sent, timings: { nativeMs: ms } } };
       if (fmtName === 'ply') {
-        let meta = null;
+        const H = (k) => (r.headers && r.headers.get(k)) || null;
+        let legacy = null;
         try {
-          meta = JSON.parse((r.headers && r.headers.get('x-dxr-lift-meta')) || 'null');
+          legacy = JSON.parse(H('x-dxr-lift-meta') || 'null');
         } catch {
-          meta = null;
+          legacy = null;
         }
-        if (!meta || !(meta.focalPx > 0) || !(meta.w > 0) || !(meta.h > 0))
-          throw new NativeLiftError('native gaussians: a .ply needs an X-DXR-Lift-Meta header with focalPx/w/h', 'format');
-        if (!(meta.pivotZ > 0)) meta.pivotZ = 2;
-        // "The generator's meta shape": the generator's PLY is OpenCV (camera at the origin looking
-        // +z, y down). A header that names no convention means that — NOT explore's own 'opengl'
-        // default, under which a +z scene sits behind the camera and explore draws solid black.
-        if (!meta.axes && !meta.convention) meta.axes = 'opencv';
-        return { ply: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength), meta: { ...meta, timings: { nativeMs: ms } } };
+        const meta = await nativeLiftMeta({
+          camera: decodeHeaderJson(H('x-dxr-lift-camera')),
+          facts: decodeHeaderJson(H('x-dxr-lift-facts')),
+          legacy,
+          sent,
+          ply: u8,
+        });
+        if (!meta) {
+          throw new NativeLiftError('native gaussians: a .ply needs an X-DXR-Lift-Camera (or X-DXR-Lift-Meta) header', 'format');
+        }
+        return { ply: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength), meta: { ...meta, sent, timings: { nativeMs: ms } } };
       }
       throw new NativeLiftError('native gaussians: response is neither a .sog nor a .ply', 'format');
     },
