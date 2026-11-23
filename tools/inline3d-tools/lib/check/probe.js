@@ -219,6 +219,9 @@
   // and walk down the paint order to the first thing that fills the point: a CSS background-image
   // (url), an <img>/<video>/<picture>, or an opaque colour (which ends the walk with no picture).
   // A picture there is at the depth of the glass.
+  // Like occlusionAudit, it forces pointer-events on for the hit test, on purpose (a picture with
+  // pointer-events: none still paints); the rule is removed in `finally`, within the same task, so
+  // the page is never painted with it.
   P.backdropAudit = function (canvas, cols = 9, rows = 6) {
     const style = document.createElement('style');
     style.textContent = '*{pointer-events:auto !important}';
