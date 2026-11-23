@@ -182,8 +182,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ### 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.57.0**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.0/js/inline3d.js`,
+`@displayxr/inline3d` **1.57.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -230,7 +230,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 | `app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
 | `style.css` | page styles; the canvas and its ancestors carry no CSS effects |
 | `index.html` (esm) | no build step: an import map with exact CDN pins |
-| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.57.0, `three` 0.180.0) |
+| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.57.1, `three` 0.180.0) |
 
 ### Steps
 
@@ -261,7 +261,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
    without `player.firstWoven`, wait for the first frame and then ~1200 ms more.
 
    Add `"playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs"` and
-   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.0/js/inline3d-model-entry.js"`
+   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d-model-entry.js"`
    (or `.../js/inline3d-splat-pc-entry.js` for `/splat/playcanvas`) to the import map, or
    `"playcanvas": "2.24.0"` to `package.json`. Images and video use `wall.addImage(canvas, 'pic_2x1.jpg')`
    / `wall.addVideo(canvas, videoEl)` in the 3D branch and an `<img>` of the left half (or a mono
