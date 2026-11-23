@@ -16,6 +16,7 @@ import {
   ROBUST_SAMPLES,
   SCREEN_PLANE_PERCENTILE,
   FULL_BOX_CAP,
+  robustFitExtent,
   FRAMINGS,
 } from '../js/inline3d-model-frame.js';
 import { boundsOfEntity, frameOfEntity } from '../js/inline3d-model-playcanvas.js';
@@ -169,15 +170,15 @@ test('full-box guard: a thin tail is trimmed from the fit, but the FULL box neve
   // The guard binds on z: the full box about the pivot is 2 × 3 = 6 deep, so the fit extent is
   // at least 6 × margin / 0.9 — much more than the trimmed ~1.
   const symFullZ = 2 * Math.max(box.center[2] + box.extent[2] / 2 - f.center[2], f.center[2] - (box.center[2] - box.extent[2] / 2));
-  near(f.extent[2], (symFullZ * margin) / FULL_BOX_CAP, 1e-9, 'z extent = the guard');
+  near(f.extent[2], (symFullZ * margin) / FULL_BOX_CAP, 1e-6, 'z extent = the guard (float32, as common)');
   // And on the screen: the full box about the pivot, at the fitted scale, is at most
   // FULL_BOX_CAP of the tile on the axes the margin binds ('contain': both). ('height' keeps its
   // own rule for the width: it may run to the tile's edge, never past it.)
   const vH = 0.24;
   const horizFull = Math.hypot(2 * Math.max(0.5 - f.center[0], f.center[0] + 0.5), symFullZ);
   const sc = fitScale({ extent: f.extent, fit: 'contain', margin, vH, aspect: 1, fitSweep: true, depthLimit: 100 });
-  assert.ok(horizFull * sc <= FULL_BOX_CAP * vH + 1e-9, `contain: swept full box ${horizFull * sc} > ${FULL_BOX_CAP * vH}`);
-  assert.ok(1 * sc <= FULL_BOX_CAP * vH + 1e-9, 'contain: full height');
+  assert.ok(horizFull * sc <= FULL_BOX_CAP * vH + 1e-6, `contain: swept full box ${horizFull * sc} > ${FULL_BOX_CAP * vH}`);
+  assert.ok(1 * sc <= FULL_BOX_CAP * vH + 1e-6, 'contain: full height');
   const sh = fitScale({ extent: f.extent, fit: 'height', margin, vH, aspect: 1, fitSweep: true, depthLimit: 100 });
   assert.ok(1 * sh <= FULL_BOX_CAP * vH + 1e-9, 'height: full height');
   // A compact subject with no outlier (a cube's faces reach its box): the trimmed extent IS the
@@ -301,4 +302,16 @@ test('fitTo screenPlaneZ: that depth lands on the glass, the pivot stays the cen
   assert.equal(sv._framedDepth, null);
   sv.dispose();
   pv.dispose();
+});
+
+test('full-box guard parity with displayxr-common RobustFitExtent (float32)', () => {
+  // Printed by common/robust_frame.h v2.35.0 RobustFitExtent (clang -O2, also with -ffp-contract=on).
+  const trimmed = [0.31, 0.2, 0.05];
+  const min = [-0.7, -0.33, -3.1];
+  const max = [0.41, 0.9, 0.27];
+  const c = [0.013, 0.285, 0.11];
+  assert.deepEqual(robustFitExtent(trimmed, min, max, c, 0.8),
+    [1.2675555944442749, 1.0933334827423096, 5.7066669464111328]);
+  assert.deepEqual(robustFitExtent(trimmed, min, max, c, 0.67),
+    [1.0615777969360352, 0.91566675901412964, 4.7793331146240234]);
 });

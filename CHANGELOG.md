@@ -5,6 +5,15 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — the robust-framing fit guard now matches the native viewer to the last bit (`./model`)
+
+1.57.1 matched displayxr-common's sampling exactly, but the full-box guard on the fit extent was
+still computed in double. It now follows common's `RobustFitExtent` in float32, so the fit extent,
+and with it the model's scale, is identical between web and native when the guard binds. The change
+is in the last float bits only.
+
 ## 1.57.1 — 2026-11-23
 
 ### Changed — `addModel`'s robust framing now samples exactly as the native model viewer does

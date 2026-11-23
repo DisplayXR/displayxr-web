@@ -239,13 +239,11 @@ export function robustFrame(meshes, box, { margin = 0.8, samples = ROBUST_SAMPLE
   const p = (i, q) => percentileSorted(axes[i], q);
   const center = [p(0, 0.5), box.center[1], p(2, 0.5)];
   const fill = Number.isFinite(margin) && margin > 0 ? margin : 0.8;
-  const extent = [0, 1, 2].map((i) => {
-    const trimmed = Math.max(Math.fround(p(i, 1 - TRIM_PERCENTILE) - p(i, TRIM_PERCENTILE)), Math.fround(1e-6));
-    // The full box measured about the pivot (the subject turns about it), so a fit on `extent`
-    // at `margin` never puts the full box past FULL_BOX_CAP of the tile.
-    const symFull = 2 * Math.max(max[i] - center[i], center[i] - min[i]);
-    return Math.max(trimmed, (symFull * fill) / FULL_BOX_CAP, 1e-6);
-  });
+  const trimmed = [0, 1, 2].map((i) =>
+    Math.max(Math.fround(p(i, 1 - TRIM_PERCENTILE) - p(i, TRIM_PERCENTILE)), Math.fround(1e-6)));
+  // The full box measured about the pivot (the subject turns about it), so a fit on `extent`
+  // at `margin` never puts the full box past FULL_BOX_CAP of the tile.
+  const extent = robustFitExtent(trimmed, min, max, center, fill);
   return {
     center,
     extent,
@@ -266,6 +264,20 @@ export function fitOptionsOf(bounds) {
   if (Number.isFinite(bounds.screenPlaneZ)) o.screenPlaneZ = bounds.screenPlaneZ;
   if (Array.isArray(bounds.depthRange) && bounds.depthRange.length === 2) o.depthRange = bounds.depthRange;
   return Object.keys(o).length ? o : undefined;
+}
+
+/**
+ * displayxr-common `RobustFitExtent`, bit for bit (float32): per axis, the trimmed extent, but never
+ * less than the full box measured symmetrically about `center`, times `fill / FULL_BOX_CAP`.
+ */
+export function robustFitExtent(trimmed, min, max, center, fill) {
+  const f32 = Math.fround;
+  const scale = f32(f32(fill) / f32(FULL_BOX_CAP));
+  return [0, 1, 2].map((i) => {
+    const c = f32(center[i]);
+    const symFull = f32(2 * Math.max(Math.abs(f32(f32(max[i]) - c)), Math.abs(f32(c - f32(min[i])))));
+    return Math.max(f32(trimmed[i]), f32(symFull * scale));
+  });
 }
 
 /**
