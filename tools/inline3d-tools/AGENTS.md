@@ -102,12 +102,14 @@ axis through the glass. Keep moving things' forward swing small. Worlds: fixed c
 camera clear of near geometry. Light/mid-tone low-contrast backgrounds (never pure black behind a
 bright subject). **A backdrop sits behind the subject, never on the glass** (rule 10): a CSS image
 behind a transparent canvas is on the glass and conflicts with any part of the subject behind it.
-Draw a photo backdrop in the scene as ONE unlit plane fixed to the display (PlayCanvas: a child of
+Draw a photo backdrop in the scene as ONE unlit plane fixed to the display, NOT to the subject (it
+does not turn with the orbit or grow with the zoom; never parent it to the model. PlayCanvas: a child of
 `handle.viewer.rigNode`; +z toward the viewer, one tile height = `viewer.vH`), behind the subject's
-farthest point at any turn and the largest zoom, at about 40% of the rear comfort budget:
+farthest point at any turn and the largest zoom you allow (cap the zoom so this holds), at about 40% of the rear comfort budget:
 `backdropPlacement({ backH, tileHeightM })` from `@displayxr/inline3d/depth` returns its depth
 (`depthH`) and size (`widthH` × `heightH`), tile heights. Pre-blurred, mid-tone; no skybox or
-environment map as a backdrop. A plain colour or soft gradient needs none of this. Text as HTML near the glass, not in the scene. No coplanar faces (z-fighting), no
+environment map as a backdrop. A plain colour or soft gradient needs none of this.
+Text as HTML near the glass, not in the scene. No coplanar faces (z-fighting), no
 sub-pixel detail. Scene units: metres for a `virtualDisplayHeight` (0.24 by default); never scale the
 world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
