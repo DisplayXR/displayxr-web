@@ -758,7 +758,7 @@ function buildChecks(fake, plain, opt) {
       if (p05 < -zone.frontMm) warns.push(`pops out ${(-p05).toFixed(1)} mm (comfort zone ${zone.frontMm.toFixed(1)} mm in front)`);
       if (p95 > zone.behindMm) warns.push(`recedes ${p95.toFixed(1)} mm (comfort zone ${zone.behindMm.toFixed(1)} mm behind)`);
       const span = Math.max(1e-6, p95 - p05);
-      if (Math.abs(p50) > Math.max(1.5, 0.6 * span) && (p05 > 0 || p95 < 0)) warns.push(`the subject sits entirely ${p50 > 0 ? 'behind' : 'in front of'} the glass (median ${p50.toFixed(1)} mm): centre it on z = 0`);
+      if (Math.abs(p50) > Math.max(1.5, 0.6 * span) && (p05 > 0 || p95 < 0)) warns.push(`the subject sits entirely ${p50 > 0 ? 'behind' : 'in front of'} the glass (median ${p50.toFixed(1)} mm): put the glass through it (about a quarter in front, the rest just behind)`);
       status = warns.length ? 'warn' : 'pass';
       summary = warns.length ? warns.join('; ') : `screen disparity ${p05.toFixed(1)} … ${p95.toFixed(1)} mm (median ${p50.toFixed(1)}), inside the comfort zone`;
     }

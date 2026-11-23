@@ -15,11 +15,11 @@ sandboxed agent, prefer the MCP server** (below): MCP servers run outside the sa
 sandbox. Otherwise run them as shell commands:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
-npx -y @displayxr/inline3d-tools@0.1.3 assets <file.glb> [--target tablet|desktop]
-npx -y @displayxr/inline3d-tools@0.1.3 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
-npx -y @displayxr/inline3d-tools@0.1.3 scaffold <esm|vite> <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.3 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
+npx -y @displayxr/inline3d-tools@0.1.4 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.4 assets <file.glb> [--target tablet|desktop]
+npx -y @displayxr/inline3d-tools@0.1.4 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
+npx -y @displayxr/inline3d-tools@0.1.4 scaffold <esm|vite> <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.4 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
 ```
 
 or, with the MCP server configured (`inline3d-tools mcp`; config snippets for Codex, Cursor and
@@ -88,13 +88,28 @@ three when the page already is a three.js app (`addScene` + `EyeCamera`, see
 - Budgets are reports, not limits to stay far inside: never lower depth as the user zooms.
   Details: `docs/authoring-inline-3d.md` § Aim for real depth.
 
-### 3. Depth and comfort (`docs/making-3d-look-right.md`, nine rules)
+### 3. Depth and comfort (`docs/making-3d-look-right.md`, ten rules)
 
-Centre the subject on z = 0 (the glass), at real proportions; don't push it back or flatten it.
+The subject straddles the glass (z = 0): about a quarter in front, the rest just behind, at real
+proportions; don't push it back, shrink it or flatten it. `addModel` does this by default (SDK
+1.57.0+): screen plane at the surface's 75th-percentile depth toward the viewer, pivot at the surface's
+median, fit from trimmed extents, so a thin tail or antenna moves neither size nor depth; keep that
+placement (`framing: 'box'` restores the old bounding-box centring, only for a reason you can name).
+`addSplat` and `SceneViewer.fitTo(center, extent)` centre the subject's robust centre on the glass; a
+scene you build yourself follows the same rule.
 `+z` is OUT of the glass. Frame the whole subject in the first view. Tilt flat layouts 25–40° about an
 axis through the glass. Keep moving things' forward swing small. Worlds: fixed convergence, keep the
 camera clear of near geometry. Light/mid-tone low-contrast backgrounds (never pure black behind a
-bright subject). Text as HTML near the glass, not in the scene. No coplanar faces (z-fighting), no
+bright subject). **A backdrop sits behind the subject, never on the glass** (rule 10): a CSS image
+behind a transparent canvas is on the glass and conflicts with any part of the subject behind it.
+Draw a photo backdrop in the scene as ONE unlit plane fixed to the display, NOT to the subject (it
+does not turn with the orbit or grow with the zoom; never parent it to the model. PlayCanvas: a child of
+`handle.viewer.rigNode`; +z toward the viewer, one tile height = `viewer.vH`), behind the subject's
+farthest point at any turn and the largest zoom you allow (cap the zoom so this holds), at about 40% of the rear comfort budget:
+`backdropPlacement({ backH, tileHeightM })` from `@displayxr/inline3d/depth` returns its depth
+(`depthH`) and size (`widthH` × `heightH`), tile heights. Pre-blurred, mid-tone; no skybox or
+environment map as a backdrop. A plain colour or soft gradient needs none of this.
+Text as HTML near the glass, not in the scene. No coplanar faces (z-fighting), no
 sub-pixel detail. Scene units: metres for a `virtualDisplayHeight` (0.24 by default); never scale the
 world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
@@ -122,8 +137,9 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
       `woven-canvas-rules.md` §11).
 - [ ] **What is behind a transparent tile is part of the picture.** `addSplat` / `addModel` clear
       transparent by default, and the browser pre-blends the page under both eyes, flat, at half
-      horizontal resolution. Make that page area a soft light or mid-tone colour or gradient (no
-      text or photo behind a tile, never black behind a bright subject), or pass an opaque
+      horizontal resolution, on the glass. Make that page area a soft light or mid-tone colour or gradient (no
+      text or photo behind a tile, never black behind a bright subject; a photo backdrop goes IN the
+      scene, behind the subject: §3, rule 10), or pass an opaque
       `clearColor: [r, g, b, 1]` (0..1).
 - [ ] **`onLayerLost` goes flat** (`addScene` pages): pass `onLayerLost` and, in it, render ONE mono
       camera across the whole canvas on your own rAF loop (the `!wall.supported` path) or show a 2D
@@ -166,8 +182,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ### 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.56.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.57.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -175,7 +191,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ### 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.4 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
@@ -203,8 +219,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user may be asked to approve the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.3 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.4 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.4 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -214,7 +230,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 | `app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
 | `style.css` | page styles; the canvas and its ancestors carry no CSS effects |
 | `index.html` (esm) | no build step: an import map with exact CDN pins |
-| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.56.1, `three` 0.180.0) |
+| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.57.1, `three` 0.180.0) |
 
 ### Steps
 
@@ -245,7 +261,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
    without `player.firstWoven`, wait for the first frame and then ~1200 ms more.
 
    Add `"playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs"` and
-   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d-model-entry.js"`
+   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d-model-entry.js"`
    (or `.../js/inline3d-splat-pc-entry.js` for `/splat/playcanvas`) to the import map, or
    `"playcanvas": "2.24.0"` to `package.json`. Images and video use `wall.addImage(canvas, 'pic_2x1.jpg')`
    / `wall.addVideo(canvas, videoEl)` in the 3D branch and an `<img>` of the left half (or a mono
@@ -256,8 +272,8 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.3 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.3 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.4 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.4 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the
@@ -274,17 +290,17 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.3 assets` (exact pin, from npm; Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.4 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.3 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.4 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ### 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `npx -y @displayxr/inline3d-tools@0.1.3 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+   `npx -y @displayxr/inline3d-tools@0.1.4 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
 2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
    Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
@@ -314,7 +330,7 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
+npx -y @displayxr/inline3d-tools@0.1.4 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
 It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
@@ -323,15 +339,16 @@ metres (`--metres` = metres per source unit: 0.01 for centimetres), decimates, r
 the glTF-Transform `optimize` line on its output (Blender writes PNG textures; WebP is far smaller).
 No Blender: say the format cannot be converted here, and ask for a GLB.
 
-Units: `addModel` frames the model on the glass from its bounds, so units and offset do not break
+Units: `addModel` frames the model on the glass from its surface (screen plane at the 75th-percentile
+depth, pivot at the median, fit from trimmed extents), so units, offset and a thin tail do not break
 it; a model you place in your own `addScene` must be in **metres, centred** (its real size: a
 helmet is ~0.3 m, not 2 m).
 
 ### 3. Check it (before the page uses it)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 assets out.glb            # tablet budget (default)
-npx -y @displayxr/inline3d-tools@0.1.3 assets out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.4 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.4 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -345,7 +362,7 @@ animations. Fix every FAIL; act on WARNs or say why not. Then run the page check
 ### 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 gen providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.4 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -366,7 +383,7 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   shippable.
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.4 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ### 5. ASSETS.md

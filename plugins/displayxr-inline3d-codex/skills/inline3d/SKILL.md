@@ -58,13 +58,28 @@ three when the page already is a three.js app (`addScene` + `EyeCamera`, see
 - Budgets are reports, not limits to stay far inside: never lower depth as the user zooms.
   Details: `docs/authoring-inline-3d.md` § Aim for real depth.
 
-## 3. Depth and comfort (`docs/making-3d-look-right.md`, nine rules)
+## 3. Depth and comfort (`docs/making-3d-look-right.md`, ten rules)
 
-Centre the subject on z = 0 (the glass), at real proportions; don't push it back or flatten it.
+The subject straddles the glass (z = 0): about a quarter in front, the rest just behind, at real
+proportions; don't push it back, shrink it or flatten it. `addModel` does this by default (SDK
+1.57.0+): screen plane at the surface's 75th-percentile depth toward the viewer, pivot at the surface's
+median, fit from trimmed extents, so a thin tail or antenna moves neither size nor depth; keep that
+placement (`framing: 'box'` restores the old bounding-box centring, only for a reason you can name).
+`addSplat` and `SceneViewer.fitTo(center, extent)` centre the subject's robust centre on the glass; a
+scene you build yourself follows the same rule.
 `+z` is OUT of the glass. Frame the whole subject in the first view. Tilt flat layouts 25–40° about an
 axis through the glass. Keep moving things' forward swing small. Worlds: fixed convergence, keep the
 camera clear of near geometry. Light/mid-tone low-contrast backgrounds (never pure black behind a
-bright subject). Text as HTML near the glass, not in the scene. No coplanar faces (z-fighting), no
+bright subject). **A backdrop sits behind the subject, never on the glass** (rule 10): a CSS image
+behind a transparent canvas is on the glass and conflicts with any part of the subject behind it.
+Draw a photo backdrop in the scene as ONE unlit plane fixed to the display, NOT to the subject (it
+does not turn with the orbit or grow with the zoom; never parent it to the model. PlayCanvas: a child of
+`handle.viewer.rigNode`; +z toward the viewer, one tile height = `viewer.vH`), behind the subject's
+farthest point at any turn and the largest zoom you allow (cap the zoom so this holds), at about 40% of the rear comfort budget:
+`backdropPlacement({ backH, tileHeightM })` from `@displayxr/inline3d/depth` returns its depth
+(`depthH`) and size (`widthH` × `heightH`), tile heights. Pre-blurred, mid-tone; no skybox or
+environment map as a backdrop. A plain colour or soft gradient needs none of this.
+Text as HTML near the glass, not in the scene. No coplanar faces (z-fighting), no
 sub-pixel detail. Scene units: metres for a `virtualDisplayHeight` (0.24 by default); never scale the
 world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
@@ -92,8 +107,9 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
       `woven-canvas-rules.md` §11).
 - [ ] **What is behind a transparent tile is part of the picture.** `addSplat` / `addModel` clear
       transparent by default, and the browser pre-blends the page under both eyes, flat, at half
-      horizontal resolution. Make that page area a soft light or mid-tone colour or gradient (no
-      text or photo behind a tile, never black behind a bright subject), or pass an opaque
+      horizontal resolution, on the glass. Make that page area a soft light or mid-tone colour or gradient (no
+      text or photo behind a tile, never black behind a bright subject; a photo backdrop goes IN the
+      scene, behind the subject: §3, rule 10), or pass an opaque
       `clearColor: [r, g, b, 1]` (0..1).
 - [ ] **`onLayerLost` goes flat** (`addScene` pages): pass `onLayerLost` and, in it, render ONE mono
       camera across the whole canvas on your own rAF loop (the `!wall.supported` path) or show a 2D
@@ -136,8 +152,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ## 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.56.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.57.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -145,7 +161,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.3 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.4 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
