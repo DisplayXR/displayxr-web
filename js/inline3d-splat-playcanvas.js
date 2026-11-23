@@ -5066,7 +5066,11 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       pose: {
         _yaw: v._yaw, _pitch: v._pitch, _targetYaw: v._targetYaw, _targetPitch: v._targetPitch,
         _roll: v._roll, _targetRoll: v._targetRoll,
+        // The author's slide and the framing's screen-plane slide (fitTo's screenPlaneZ, web#327)
+        // are kept APART, as the viewer holds them: exitVideo assigns these back, so recording the
+        // effective sum in _depthOffset would apply the screen-plane slide twice on restore.
         _zoom: v._zoom, _targetZoom: v._targetZoom, _depthOffset: v._depthOffset,
+        _screenPlaneShift: v._screenPlaneShift, _framedDepth: v._framedDepth,
         _focusSettled: v._focusSettled, _focusRecentres: v._focusRecentres, _orbitMode: v._orbitMode, _lastInput: v._lastInput,
       },
       focus: { ...v._focus },
