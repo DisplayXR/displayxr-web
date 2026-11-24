@@ -16,7 +16,10 @@
 // weaves a bound canvas; layer.close() stops the weave AT ONCE (it reaches the browser on its own
 // channel, not with the next commit), so from that moment the last committed frame is on screen
 // unwoven until the next commit lands. The harness then asserts that neither the frame committed
-// before close() nor the next few is a side-by-side pair (unless the cover hides the canvas).
+// before close() nor the next few is a side-by-side pair (unless the cover hides the canvas). The
+// same holds the other way at go-live: new XRDisplayLayer() also reaches the browser ahead of the
+// task's commit, so the frame committed before it must already be the side-by-side store under the
+// cover (layers[i].committedAtCreate vs storeAtCreate). The page's canvas is watched from the start.
 // Everything the harness asserts on is on window.__fakeXR.
 //
 // window.__fakeXROpts (per case):
@@ -66,7 +69,9 @@
     const probe = document.createElement('div');
     Object.assign(probe.style, { position: 'fixed', left: '-10px', top: '0', width: '1px', height: '1px', pointerEvents: 'none' });
     const ro = new ResizeObserver(() => {
-      const c = H.watch;
+      // The page's canvas from the start (go-live: what the browser holds when the layer arrives),
+      // the bound one once there is a layer.
+      const c = H.watch || document.querySelector('canvas:not([data-dxr-auto3d-cover])');
       if (!c) return;
       let s = null;
       try { s = snap(c); } catch (e) { return; }
@@ -93,7 +98,14 @@
       this.rig = opts && opts.viewRig ? JSON.parse(JSON.stringify(opts.viewRig)) : null;
       session._layer = this;
       H.watch = canvas;
-      H.layers.push({ canvas: canvas.id || canvas.tagName, opts: JSON.parse(JSON.stringify(opts || {})), at: performance.now(), coverAtCreate: coverUp(), closedAt: null });
+      // Go-live (commit model): new XRDisplayLayer() reaches the browser on its own channel, ahead of
+      // this task's commit, and a canvas the page has had for a while is joined at once. So the frame
+      // the browser may weave first is the one committed BEFORE this call: it must already be the
+      // side-by-side store, under the cover. A mono frame there, woven, gives each eye half of the
+      // picture at twice the width (#339).
+      const cm = H.committed;
+      H.layers.push({ canvas: canvas.id || canvas.tagName, opts: JSON.parse(JSON.stringify(opts || {})), at: performance.now(), coverAtCreate: coverUp(), closedAt: null,
+        storeAtCreate: { w: CANVAS_W.get.call(canvas), h: CANVAS_H.get.call(canvas) }, committedAtCreate: cm ? { w: cm.w, h: cm.h, covered: cm.covered, ago: performance.now() - cm.at } : null });
       this._rec = H.layers[H.layers.length - 1];
       if (this.rig) H.lastRig = this.rig;
       if (OPTS.noDisplayApi) { this.getDisplayInfo = undefined; this.getRenderingModes = undefined; }

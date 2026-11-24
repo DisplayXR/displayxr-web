@@ -216,6 +216,21 @@ still up at turn-off stays until the release. Leaving for good (the page asked f
 WebXR itself, the canvas or document is going away) still releases at once: the page needs the
 session back.
 
+**Going live: the layer after the commit (v0.7.10, #339).** The flip (the page's mono frame just
+drawn) puts the go-live cover up, resizes the store to the side-by-side size and starts the session,
+but `new XRDisplayLayer()` waits until a frame has been drawn on the side-by-side store and two
+animation frames have passed, i.e. until the pair and the cover are **committed** (at most `bindMaxMs`
+500 ms after the flip, for a page that draws nothing). Through v0.7.9 the layer was created in the
+flip task. Like `layer.close()`, it reaches the browser on its own channel, ahead of the task's commit,
+and a canvas the page has had for a while is joined at once, so the browser could weave the frame
+committed before it: the page's mono picture, with no cover yet. Woven as a pair, each eye got half of
+it at twice the width: one horizontally stretched frame on the panel as the canvas went 3D (DisplayXR
+Browser 1.10.6: three.js `webgl_animation_keyframes` 2 of 5 switches, the PlayCanvas car configurator
+now and then). Until the layer exists the adapter draws the flat pair under the cover; the cover hold,
+the no-eyes timer and the frame-rate guard count from the layer, as before. Harness: the commit model
+records the frame committed before each layer (`a-golive`, `b-golive`; every `commits` case).
+`T.bindAfterCommit = false` (TEST ONLY) restores the old order.
+
 **Re-enabling a page that draws on demand.** `Ctrl+Alt+3` back on asks each adapter for one frame
 (`wake`): three.js replays the page's last mono frame through the wrapped renderer, PlayCanvas sets
 `app.renderNextFrame`. Without it a render-on-demand page (three.js `webgl_geometry_teapot`,
@@ -1222,6 +1237,8 @@ running), so the rig is always sampled at the configured depth.
 | `b-late` | `pc-mesh.html?stallMs=2500`: the page draws nothing for 2.5 s once the layer exists; the fake has no eyes until 3.2 s and no display API; `noViewsMs` 1.5 s | converts with ONE layer and no false no-eyes stand-down (the timer starts at the first draw, ~2.5 s in) |
 | `b-noviews` | `pc-mesh.html`, no eyes ever, no display API, `noViewsMs` 1.5 s | back to 2D (layer closed) 1.5-2.5 s after the FIRST DRAW, with the reason in the console: the timer still fires |
 | `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
+| `a-golive` / `b-golive` | three.js keyframes / PlayCanvas meshes, `maxSbsWidth` 1024 (the store 1024 wide on a 1280 page, as 3072 on a 3840 panel), commit model | as `a` / `b`, plus the go-live (#339): the frame committed before the layer is the side-by-side store (1024 × 720), under the cover |
+| `a-golive-ab` / `b-golive-ab` | the same, `bindAfterCommit: false` (TEST ONLY: the layer in the flip task, v0.7.9) | the frame committed before the layer is the page's mono picture (1280 × 720), uncovered: the check sees the bug |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
 | `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so, no `app found` line after the stand-down |
 | `d-pc` | `pc-mesh.html?xrFirst=1`: the page asks for `inline-3d` before its app exists | as `d`; fails without v0.5.4 (the app's constructor loaded the core, which stood down, and the same find then took the app on: `PlayCanvas app found` after `standing down`) |
@@ -1299,7 +1316,9 @@ the fake takes a 128×72 copy of the bound canvas: the frame this document commi
 modelled as reaching the browser at once, so the frame committed before it, and the next few, are
 what the browser shows unwoven; none may be a side-by-side pair unless the cover is up. It is a
 model of the browser, not the browser: it catches an ordering that closes before the mono frame is
-committed, and says nothing about the real compositor's timing.
+committed, and says nothing about the real compositor's timing. The same holds at go-live (v0.7.10):
+the page's canvas is watched from the start, and every `commits` case asserts that the frame committed
+before each `new XRDisplayLayer()` is the side-by-side store under the cover (`committedAtCreate`).
 
 **WebGPU cases** carry `webgpu: true`; when the browser has no WebGPU adapter they are **skipped**
 with a loud line (the startup line names the adapter, or why there is none). Chrome 154 headless on
@@ -1709,6 +1728,22 @@ Open after the device run (not fixed here):
 - `demos/car-showcase`: the car body's reflections differ between the eyes. They are the box-projected
   environment and the area lights' highlights, which are view-dependent and correctly per eye (as they are
   in life); with a clear coat and low roughness they differ a lot, which crosstalk makes tiring. Not a bug.
+
+**v0.7.10 (#339: one stretched frame at go-live; the layer now follows the committed side-by-side store,
+"Going live" under [Architecture](#architecture-a-sentinel-one-core-one-adapter-per-engine)), Windows:**
+- **Panel.** Leia 15.6" 4K, DisplayXR Browser 1.10.6 with its built-in auto-3D off and the dev extension,
+  bundle 2.9.41 (runtime 2.70.3, Leia SR plug-in 2.23.4), LeiaSR 1.39.0+3697. The stretched frame shows
+  when a page goes 3D while it is still loading (a reload; the browser's own Ctrl+Shift+3 reloads too):
+  the flip task's commit comes late and the layer gets there first. The PlayCanvas car configurator,
+  reloaded: on nearly every reload on v0.7.9, none in 20 on v0.7.10 (the runtime logged 20 go-lives).
+  three.js keyframes did not show it on this box on v0.7.9 (10 dev-hotkey switches, 10 reloads; 2 of 5
+  Ctrl+Shift+3 switches in the 2026-11-24 dry run) nor on v0.7.10 (5 reloads). `Ctrl+Alt+3` on a page
+  that has finished loading commits at once, so it rarely shows there.
+- **Headless.** 4 new cases (`test/cases/golive.mjs`: `a-golive`, `b-golive` and their `-ab` controls,
+  which see the mono frame with `bindAfterCommit: false`), plus the go-live check on every `commits` case
+  (`a-kill`, `b-kill`, `b-flip`, `bjs-cap`). Full run: 217 run, 2 skipped (`c` / `d`: no `ports_25.sog`),
+  213 pass. `bjs-global`, `bjs-ss-late` and `a-legacy` fail on this box on main as well;
+  `pc-cf-webgpu` failed once on its TAA read (two reads in one frame) and passes 3 of 3 alone.
 
 **Headless, v0.7.9 (PlayCanvas legacy post effects per eye, #319), Windows, ANGLE D3D11 + WebGPU
 (RTX 3080):** 14 new cases in `test/cases/pc-posteffects.mjs` (table above), page `pages/pc-postfx.html`.

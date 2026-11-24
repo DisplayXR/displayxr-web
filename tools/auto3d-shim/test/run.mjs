@@ -322,8 +322,10 @@ async function runCase(browser, base, c) {
     } catch { again = false; }
     after.reenable = { again, ms: Date.now() - t1, ...(await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, frozen: !!window.__frozen, pageFrames: window.__pageFrames ?? null }))) };
   }
+  // #339: what the browser held each time a layer was created (the go-live of every activation).
+  const goLive = c.commits ? await page.evaluate(() => window.__fakeXR.layers.map((l) => ({ store: l.storeAtCreate, committed: l.committedAtCreate }))) : null;
   await ctx.close();
-  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, probe, stall: stall || { from: NaN, ms: 0 } };
+  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, probe, goLive, stall: stall || { from: NaN, ms: 0 } };
 }
 
 // Is a small (128x72) committed frame a side-by-side pair? The fake's skew shifts the right half
@@ -359,6 +361,16 @@ function rawPairAtClose(close) {
   const res = frames.map((f) => pairResidual(snapPx(f)));
   const bad = res.map((e, i) => ({ i, e, covered: frames[i].covered })).filter((f) => f.e < cut && !f.covered);
   return { frames: frames.length, bad, pairBase, monoBase, discriminates: pairBase < 0.7 * monoBase || !isFinite(monoBase), atClose: res[0] };
+}
+
+// #339, the go-live in the commit model: new XRDisplayLayer() reaches the browser ahead of the task's
+// commit and an old canvas is joined at once, so the frame committed before each layer is the first
+// one the browser can weave. It must be the side-by-side store, under the cover: a mono frame there
+// is woven as a pair (each eye half the picture, twice as wide: one stretched frame on the panel).
+function goLiveCommitted(layers) {
+  const okOne = (l) => l.committed && l.committed.covered && l.committed.w === l.store.w && l.committed.h === l.store.h;
+  const one = (l) => (l.committed ? `${l.committed.w}x${l.committed.h} ${l.committed.covered ? 'covered' : 'UNCOVERED'}` : 'nothing committed') + ` vs store ${l.store.w}x${l.store.h}`;
+  return { n: layers.length, bad: layers.filter((l) => !okOne(l)).length, detail: layers.map(one).join(' | ') };
 }
 
 // ------------------------------------------------------------ assertions
@@ -508,6 +520,11 @@ function check(r, results) {
     t('depth stored per site PER RIG: localStorage and a reload give camera 0.4, display 0.8', rl && near(rl.depths.camera, 0.4) && near(rl.depths.display, 0.8) && st.depths && near(st.depths.camera, 0.4) && near(st.depths.display, 0.8) && !('depth' in st),
       `stored ${D && D.again.stored}; after reload ${JSON.stringify(rl)}`);
   }
+  if (c.commits && r.goLive) {
+    const g = goLiveCommitted(r.goLive);
+    if (c.goLiveExpect === 'mono') t("A/B (bindAfterCommit false, v0.7.9's order): the frame committed before each new layer is the page's mono picture, uncovered: the check sees #339", g.n >= 1 && g.bad === g.n, g.detail);
+    else t('go-live: the frame committed before each new layer is the side-by-side store under the cover (commit model, #339)', g.n >= 1 && g.bad === 0, g.detail);
+  }
   // c.unstableBytes: a case's documented allowance (bjs-vp: one pixel steps 1 LSB once as reading starts, then stays bit-stable).
   t('frame stable across two reads' + (c.unstableBytes ? ` (≤ ${c.unstableBytes} bytes)` : ''), diffCount(pixels.px, pixels.px2) <= (c.unstableBytes || 0), `${diffCount(pixels.px, pixels.px2)} bytes differ`);
   if (c.alsoCheck) c.alsoCheck(r, t, HELPERS, R); // a case's own assertions ON TOP of the generic ones
@@ -527,6 +544,8 @@ function checkFlip(r, t, A) {
   const L = r.fake.layers;
   t('each perspective phase is a fresh session + layer (released on ortho)', L.length >= 3 && L.slice(0, -1).every((l) => l.closedAt !== null), `layers ${L.length}, closed ${L.filter((l) => l.closedAt !== null).length}`);
   t('so each fresh layer gets the full join-window cover', L.length >= 2 && L.every((l) => l.coverAtCreate), `cover up at layer creation: ${L.map((l) => l.coverAtCreate).join(', ')}`);
+  const gl = goLiveCommitted(L.map((l) => ({ store: l.storeAtCreate, committed: l.committedAtCreate })));
+  t('go-live: the frame committed before each new layer is the side-by-side store under the cover (commit model, #339)', gl.n >= 2 && gl.bad === 0, gl.detail);
   const rps = r.fake.closes.map(rawPairAtClose);
   t('camera switch: no raw side-by-side frame once each layer is closed (commit model)', rps.length >= 2 && rps.every((x) => x.discriminates && x.bad.length === 0),
     rps.map((x) => `at close ${x.atClose.toFixed(2)} (pair ${x.pairBase.toFixed(2)}, mono ${x.monoBase.toFixed(2)}), raw pairs [${x.bad.map((b) => b.i).join(', ')}]`).join(' | '));
@@ -537,7 +556,7 @@ function checkFlip(r, t, A) {
 // What a case's own run() / check() / alsoCheck() may use. Case hooks: before(page) runs before
 // page.goto; probe (a page function) is evaluated right after settling (r.probe); alsoCheck(r, t, h, R)
 // adds assertions after the generic 'convert' ones (R = the active renderer).
-const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae, diffCount, bestShift, pairResidual, rawPairAtClose, W, H };
+const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae, diffCount, bestShift, pairResidual, rawPairAtClose, goLiveCommitted, W, H };
 
 // ------------------------------------------------------------ main
 const only = process.argv.slice(2);
