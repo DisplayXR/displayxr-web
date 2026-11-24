@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.7.9 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.10 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.9'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.10'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -17,6 +17,7 @@ function dxrCore(cfg, cap, S) {
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
     coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
+    bindMaxMs: 500,     // go-live: create the layer this long after the flip at the latest, pair drawn or not (#339)
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
@@ -42,6 +43,7 @@ function dxrCore(cfg, cap, S) {
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcPostEffects: true, // TEST ONLY (A/B): false keeps a PlayCanvas camera with legacy post effects (camera.postEffects) 2D; 'unsplit' converts it with ONE chain over the pair (v0.7.9 runs the chain per eye)
+    bindAfterCommit: true, // TEST ONLY (A/B): false creates the layer in the flip task, as v0.7.9 did (one stretched frame at go-live on the panel, #339)
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
     chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
@@ -139,7 +141,7 @@ function dxrCore(cfg, cap, S) {
   function newState(engine, canvas, ad) {
     const st = {
       engine, canvas, ad,
-      active: false, pending: false, armed: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
+      active: false, pending: false, armed: null, binding: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
       session: null, ref: null, layer: null, layerAt: 0, rig: { position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       V: [0, 1].map(() => ({ proj: new Float32Array(16), pose: new Float32Array(16) })),
       haveViews: false, near: NaN, far: NaN, R: null,
@@ -294,28 +296,22 @@ function dxrCore(cfg, cap, S) {
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
-    const rig = buildRig(st, ad.rigFov(st));
-    try {
-      st.layer = T.noLayer ? null : new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: { ...rig } } : { virtualDisplayHeight: 0.24 });
-    } catch (e) {
-      warnOnce('layer', 'new XRDisplayLayer() failed — staying 2D', e);
-      stand(st, 'XRDisplayLayer refused the canvas');
-      st.nextTry = Infinity;
-      return;
-    }
-    st.layerAt = now(); st.coverDropAt = 0;
+    buildRig(st, ad.rigFov(st));
+    st.layer = null; st.layerAt = 0; st.coverDropAt = 0;
     st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
-    guard.onFlip(st);
-    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store after the layer (drew())
     st.displayOk = null;
     st.lastTwoAt = 0; st.noDisplay = false; st.nd = false; st.eyesOn = false; st.twoRun = 0; st.shortRun = 0;
     st.rampK = T.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
     if (!st.cover && st.rampK < 1) startRamp(st, 1);
-    if (st.layer && !T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
     if (T.noLayer) {
+      st.layerAt = now();
+      guard.onFlip(st);
       if (T.fakeViews) { fakeViews(st); st.haveViews = true; }
       setTimeout(() => dropCover(st), T.holdMs);
     }
+    else if (T.bindAfterCommit === false) { makeLayer(st); if (!st.active) return; } // TEST ONLY: v0.7.9's order
+    else bindLayer(st); // once the side-by-side store and the cover are committed (#339)
     const session = st.session;
     const loop = (t, f) => {
       if (!st.active || st.session !== session) return;
@@ -330,11 +326,37 @@ function dxrCore(cfg, cap, S) {
     st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
     notify();
   }
+  function bindLayer(st) {
+    const session = st.session, b = (st.binding = { drawn: false, frames: 0, at: now() });
+    const step = () => {
+      if (st.binding !== b) return;
+      if (!st.active || st.session !== session) { st.binding = null; return; }
+      if ((b.drawn && ++b.frames >= 2) || now() - b.at >= T.bindMaxMs) { st.binding = null; makeLayer(st); return; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  function makeLayer(st) {
+    const rig = buildRig(st, st.ad.rigFov(st));
+    try {
+      st.layer = new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: { ...rig } } : { virtualDisplayHeight: 0.24 });
+    } catch (e) {
+      warnOnce('layer', 'new XRDisplayLayer() failed — staying 2D', e);
+      stand(st, 'XRDisplayLayer refused the canvas');
+      st.nextTry = Infinity;
+      return;
+    }
+    st.layerAt = now(); st.coverDropAt = 0;
+    guard.onFlip(st);
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store from here
+    if (!T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
+    notify();
+  }
   function stand(st, reason, opts) {
     if (st.releasing) { release(st); return; } // a second stand while one is staged: finish it now
     const was = st.active || st.pending || !!st.armed;
     const wasLive = st.active; // only a live canvas was resized to the SBS store
-    st.active = false; st.pending = false; st.armed = null;
+    st.active = false; st.pending = false; st.armed = null; st.binding = null;
     st.haveViews = false;
     const staged = !!(opts && opts.staged) && wasLive && !!st.layer && !!st.session && st.canvas.isConnected;
     if (staged) {
@@ -363,7 +385,11 @@ function dxrCore(cfg, cap, S) {
     if (st.layer) { try { st.layer.close(); } catch (e) { /* ignore */ } st.layer = null; }
     if (st.session) { const s = st.session; st.session = null; try { s.end().catch(() => {}); } catch (e) { /* ignore */ } }
   }
-  function drew(st) { if (st.active && !st.drawnAt) st.drawnAt = now(); }
+  function drew(st) {
+    if (!st.active) return;
+    if (st.binding) st.binding.drawn = true; // the SBS store holds a pair: the layer may follow (bindLayer)
+    else if (!st.drawnAt) st.drawnAt = now();
+  }
   function monoDrawn(st) { if (st.releasing) st.releasing.drawn = true; }
   function release(st) {
     const rel = st.releasing;
@@ -504,7 +530,7 @@ function dxrCore(cfg, cap, S) {
       if (!st.shortRun) st.shortRun = t;
       if (st.eyesOn && t - st.shortRun >= T.eyesOffMs) st.eyesOn = false;
     }
-    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && t - st.layerAt > T.coverMaxMs));
+    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt > T.coverMaxMs));
     if (nd !== st.nd) {
       st.nd = nd;
       if (nd) info(`no 2-view frame in the ${T.coverMaxMs} ms since the layer: 3D display not available to this window (another browser instance holding it?) — flat until one arrives`);
@@ -850,14 +876,14 @@ function dxrCore(cfg, cap, S) {
       if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp) startRamp(st, 1); }
       return;
     }
-    if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
+    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
       if (st.rampK < 1) startRamp(st, 1);
       return;
     }
-    if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
+    if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs) {
       dropCover(st);
       st.coverDropAt = t;
       st.coverForced = true;
