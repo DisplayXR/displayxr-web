@@ -21,7 +21,7 @@ import { assetCheck, formatAssetReport } from '../node_modules/@displayxr/inline
 import { scaffold } from '../node_modules/@displayxr/inline3d-tools/lib/scaffold.mjs';
 import { parsePublicUrl, assertResolvesPublic, guardedGet, GuardError } from './url-guard.mjs';
 
-export const TOOLS_VERSION = '0.1.5';
+export const TOOLS_VERSION = '0.1.6';
 export const SERVER_VERSION = '0.1.0';
 const PKG = new URL('../node_modules/@displayxr/inline3d-tools/', import.meta.url);
 const DOCS_URL = 'https://github.com/DisplayXR/displayxr-web/blob/main/docs';
