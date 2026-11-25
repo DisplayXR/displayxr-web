@@ -220,7 +220,7 @@ async function runCase(browser, base, c) {
     // A WebGPU page reads back EMPTY once its frame is presented: it supplies window.__grabFrame(),
     // which draws one frame and reads it in its drawing task (pages/pc-webgpu-*.html).
     const grab = () => page.evaluate(() => window.__grabFrame ? window.__grabFrame() : new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
-      const src = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
+      const src = window.__fakeXRCanvas ? window.__fakeXRCanvas() : document.querySelector('canvas:not([data-dxr-auto3d-cover])');
       const w = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width').get.call(src);
       const h = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height').get.call(src);
       const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
@@ -291,7 +291,7 @@ async function runCase(browser, base, c) {
         const oc = window.__outCover, w = 128, h = 72;
         const img = new Image(); img.src = oc.src; await img.decode();
         const px = (src) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(src, 0, 0, w, h); return g.getImageData(0, 0, w, h).data; };
-        let mono = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
+        let mono = window.__fakeXRCanvas ? window.__fakeXRCanvas() : document.querySelector('canvas:not([data-dxr-auto3d-cover])');
         if (window.__grabFrame) { const g = await window.__grabFrame(); mono = new Image(); mono.src = g.png; await mono.decode(); } // WebGPU: read in the drawing task
         const a = px(img), b = px(mono);
         const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -307,7 +307,7 @@ async function runCase(browser, base, c) {
     }
     // A page that renders on demand is asked for one repaint by the restore; read what is on the canvas now.
     const g = await page.evaluate(() => window.__grabFrame ? window.__grabFrame() : new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
-      const src = document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
+      const src = window.__fakeXRCanvas ? window.__fakeXRCanvas() : document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
       const x = c2.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0);
       const d = x.getImageData(0, 0, c2.width, c2.height).data; let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
       res({ w: c2.width, h: c2.height, b64: btoa(s) });
