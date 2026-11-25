@@ -1073,7 +1073,8 @@ export interface SceneBufferSizeOptions {
   /**
    * The runtime's recommended view scale: pass the {@link XRDisplayInfo} from
    * `handle.getDisplayInfo()`, or `{x, y}` / `[x, y]`. Per eye is then window device px × scale,
-   * the native runtime's rule: the weave shows no more pixels per view than that.
+   * the native runtime's rule: the weave shows no more pixels per view than that. Ignored when
+   * `sbs` is false: the view scale is the 3D mode's, and the flat (2D) store is the full window.
    */
   viewScale?: XRDisplayInfo | { x: number; y: number } | [number, number] | null;
   /** The page's GL context, for its exact limits. Default: a probed throwaway context. */

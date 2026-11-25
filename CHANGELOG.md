@@ -5,6 +5,14 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — `sceneBufferSize` ignores `viewScale` for the flat store (`sbs: false`)
+
+The recommended view scale belongs to the 3D mode (half the width per eye on a Leia panel). A page
+that kept passing it after falling back to 2D got a flat canvas at half resolution. The mono store
+is now always the full window (CSS box × devicePixelRatio ≤ 2), whatever `viewScale` says.
+
 ## 1.58.0 — 2026-11-24
 
 ### Added — `sceneBufferSize(canvas, opts)` sizes an `addScene` canvas the way a native app does (core)

@@ -242,7 +242,9 @@ export function sceneBufferSize(canvas, opts = {}) {
   const { sbs = true, renderScale = 1, maxPixelRatio = 2, gl = null } = opts;
   const rawDpr = (typeof window !== 'undefined' && window && window.devicePixelRatio) || 1;
   const cap = Number.isFinite(maxPixelRatio) && maxPixelRatio > 0 ? maxPixelRatio : 2;
-  const vs = readViewScale(opts.viewScale);
+  // The view scale is the 3D mode's (half width per eye on a Leia panel); the mono store is the 2D
+  // mode, which shows the full window, so a view scale never applies to it.
+  const vs = sbs ? readViewScale(opts.viewScale) : null;
   // With a view scale the base is the window's DEVICE px (the native rule); without, the capped dpr.
   const pixelRatio = vs ? rawDpr : Math.min(rawDpr, cap);
   const rs = Number.isFinite(renderScale) && renderScale > 0 ? renderScale : 1;
