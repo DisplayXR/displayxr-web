@@ -19,6 +19,7 @@ Object.defineProperty(globalThis, 'performance', {
   writable: true,
 });
 
+let currentInfo = null; // what the fake layer's getDisplayInfo() answers (null = INFO)
 const INFO = {
   displayWidthMeters: 0.6,
   displayHeightMeters: 0.34,
@@ -69,7 +70,7 @@ function installEnv({ report = false, displayModes = false, storage = null } = {
   }
   if (displayModes) {
     FakeDisplayLayer.prototype.getDisplayInfo = function () {
-      return INFO;
+      return currentInfo || INFO;
     };
     FakeDisplayLayer.prototype.getRenderingModes = function () {
       return [{ index: 0, viewCount: 2 }];
@@ -340,5 +341,58 @@ test('wall.displayInfo: blocked storage is not an error', async () => {
   await flush();
   await flush();
   assert.equal(wall.displayInfo, INFO);
+  wall.close();
+});
+
+test('a display whose views halve the width only (viewScale 0.5 x 1): a box-shaped store is RIGHT, no warning', async () => {
+  // The inline3d-tools checker's fake 2x1 panel (960x1080 per view on 1920x1080) found this: with
+  // recommendedViewScaleX/Y = 0.5/1 the correct side-by-side store is exactly box-shaped.
+  clock = 0;
+  currentInfo = { ...INFO, recommendedViewScaleX: 0.5, recommendedViewScaleY: 1 };
+  try {
+    const env = installEnv({ displayModes: true });
+    const wall = await newWall();
+    const canvas = makeCanvas(640, 320);
+    canvas.width = 640; // eye 320x320 x 2: what sceneBufferSize gives for this display
+    canvas.height = 320;
+    const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 0 });
+    const log = await recording(async () => {
+      env.runFrame(2); // before the SDK's read: not judged
+      await flush();
+      await flush();
+      env.runFrame(2);
+      env.runFrame(2);
+    });
+    assert.equal(log.warn.filter((w) => /store is/.test(w)).length, 0, log.warn.join('\n'));
+    assert.notEqual((await peek(h.firstWoven)).reason, 'store-capped');
+    // ... and the same display still catches a store that IS wrong for it (twice too wide per eye).
+    canvas.width = 1280;
+    const log2 = await recording(async () => {
+      env.runFrame(2);
+    });
+    assert.equal(log2.warn.length, 1);
+    assert.match(log2.warn[0], /do not have the box aspect/);
+    wall.close();
+  } finally {
+    currentInfo = null;
+  }
+});
+
+test('a flat store on a 0.5 x 0.5 display is still caught once the display info is known', async () => {
+  clock = 0;
+  const env = installEnv({ displayModes: true });
+  const wall = await newWall();
+  const canvas = makeCanvas(400, 200);
+  canvas.width = 400;
+  canvas.height = 200;
+  wall.addScene(canvas, () => {}, { firstWovenHoldMs: 0 });
+  const log = await recording(async () => {
+    env.runFrame(2);
+    await flush();
+    await flush();
+    env.runFrame(2);
+  });
+  assert.equal(log.warn.length, 1);
+  assert.match(log.warn[0], /still shaped for FLAT/);
   wall.close();
 });

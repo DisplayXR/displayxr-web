@@ -7,6 +7,17 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — the store-shape guard (1.59.0) misfired on a display whose views halve the width only
+
+- On a display with recommendedViewScaleX / Y = 0.5 / 1 (a 2x1 stereo mode at 960x1080 per view on a
+  1920x1080 panel) the correct side-by-side store is exactly box-shaped, and 1.59.0 warned that it was
+  "still shaped for FLAT" and held firstWoven. The check now expects each eye tile to have the box
+  aspect times the display's recommendedViewScaleX / Y, and does not judge a layer that can report
+  its display until the SDK has read it. A cached display info (another page's) also allows the
+  panel-aspect shape, so a stale cache never fires it. Found by the inline3d-tools checker's fake
+  panel. Leia SR displays (0.5 x 0.5) were not affected.
+
+
 ### Added — `@displayxr/inline3d/lift` ("Convert to 3D", experimental, preview tier)
 
 - **The lift module lands on main** (was the `feat/lift` branch, displayxr-web#289). `lift(element, opts)`

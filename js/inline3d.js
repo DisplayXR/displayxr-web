@@ -806,15 +806,32 @@ function chromeTextPlates(root) {
 const REWOVEN_MAX_HOLDS = 4;
 
 /**
- * Does one woven eye tile (`vw` x `vh` store px, as getViewport() reports it) have the canvas
- * box's aspect (`bw` x `bh` CSS px)? Each eye's image spans the whole box, so it must. A store
- * sized 1:1 to the box while woven fails by a factor of two: each eye gets half the scene.
- * The tolerance absorbs rounding only (an integer CSS box, a rounded store): 4 px or 2 %.
+ * Does one woven eye tile (`vw` x `vh` store px, as getViewport() reports it) have the shape the
+ * display wants for the canvas box (`bw` x `bh` CSS px)? Each eye's image spans the whole box, so
+ * its aspect is the box's times `k` = recommendedViewScaleX / recommendedViewScaleY: 1 on a display
+ * whose views keep the panel's pixel aspect (Leia SR: 0.5 x 0.5), 0.5 on one whose stereo mode
+ * halves each view's width only (a 2x1 mode at 960x1080 on a 1920x1080 panel). There a correct
+ * side-by-side store is exactly box-shaped, so `k` must come from the display, never be assumed 1.
+ * A store sized 1:1 to the box on a k = 1 display fails by a factor of two: each eye gets half the
+ * scene. The tolerance absorbs rounding only (an integer CSS box, a rounded store): 4 px or 2 %.
  */
-function storeShapeOk(vw, vh, bw, bh) {
+function storeShapeOk(vw, vh, bw, bh, k = 1) {
   if (!(vw > 0 && vh > 0 && bw > 0 && bh > 0)) return true; // nothing to judge
-  const want = (vh * bw) / bh;
+  const want = ((vh * bw) / bh) * k;
   return Math.abs(vw - want) <= Math.max(4, 0.02 * want);
+}
+
+/**
+ * The eye-tile aspect factors a display allows (see storeShapeOk): [vsX / vsY] from its info, or
+ * [1] when there is none. A CACHED info (another page's display, maybe another monitor) also
+ * allows 1, so a stale cache never fires the warning before this document reads its own.
+ */
+function eyeAspectFactors(info) {
+  const x = info && Number(info.recommendedViewScaleX);
+  const y = info && Number(info.recommendedViewScaleY);
+  const k = x > 0 && y > 0 && Number.isFinite(x / y) ? x / y : 1;
+  if (Math.abs(k - 1) < 1e-6) return [1];
+  return info.cached ? [k, 1] : [k];
 }
 
 // The last display info this origin read (`wall.displayInfo` before this document has read its
@@ -3263,7 +3280,7 @@ class Inline3D {
 
   /**
    * The SHAPE of a woven, page-sized scene store, every stereo frame: each eye tile must have the
-   * canvas box's aspect. The usual failure is a store still sized for flat (1:1 to the box) on
+   * canvas box's aspect times the display's recommendedViewScaleX / Y (storeShapeOk). The usual failure is a store still sized for flat (1:1 to the box) on
    * the first woven frames, because the page resized it after an await or in a later rAF: each
    * eye then shows half the scene, which reads as broken 3D until the resize lands.
    *
@@ -3283,11 +3300,18 @@ class Inline3D {
       vp = null;
     }
     if (!vp || !(vp.width > 0 && vp.height > 0)) return;
-    if (!storeShapeOk(vp.width, vp.height, bw, bh)) {
+    // The right eye aspect depends on the display (storeShapeOk). A layer that can say which
+    // display it is on, and has not yet answered (the SDK's own read is released by the first
+    // frame), is not judged: a guess of k = 1 would call a correct store wrong on a k = 0.5 display.
+    if (!this._displayInfo && win.layer && typeof win.layer.getDisplayInfo === 'function') return;
+    const ks = eyeAspectFactors(this._displayInfo);
+    if (!ks.some((k) => storeShapeOk(vp.width, vp.height, bw, bh, k))) {
       win.storeBadFrames++;
       win.storeWrong = true;
       if (!win.warnedStoreShape) {
         win.warnedStoreShape = true;
+        // Flat-shaped = the store is 1:1 to the box. Only a diagnosis when the display wants a
+        // different eye aspect: with k = 0.5 a box-shaped store is the CORRECT one and passed above.
         const mono = storeShapeOk(c.width, c.height, bw, bh);
         console.warn(
           `[inline3d] this woven scene canvas's store is ${c.width}×${c.height}, so each eye tile is ` +
