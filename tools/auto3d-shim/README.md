@@ -228,7 +228,8 @@ it at twice the width: one horizontally stretched frame on the panel as the canv
 Browser 1.10.6: three.js `webgl_animation_keyframes` 2 of 5 switches, the PlayCanvas car configurator
 now and then). Until the layer exists the adapter draws the flat pair under the cover; the cover hold,
 the no-eyes timer and the frame-rate guard count from the layer, as before. Harness: the commit model
-records the frame committed before each layer (`a-golive`, `b-golive`; every `commits` case).
+records the frame committed before each layer, on the canvas that goes live (`a-golive`, `b-golive`,
+`a-golive-decoy`; every `commits` case).
 `T.bindAfterCommit = false` (TEST ONLY) restores the old order.
 
 **Re-enabling a page that draws on demand.** `Ctrl+Alt+3` back on asks each adapter for one frame
@@ -1239,6 +1240,7 @@ running), so the rig is always sampled at the configured depth.
 | `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
 | `a-golive` / `b-golive` | three.js keyframes / PlayCanvas meshes, `maxSbsWidth` 1024 (the store 1024 wide on a 1280 page, as 3072 on a 3840 panel), commit model | as `a` / `b`, plus the go-live (#339): the frame committed before the layer is the side-by-side store (1024 × 720), under the cover |
 | `a-golive-ab` / `b-golive-ab` | the same, `bindAfterCommit: false` (TEST ONLY: the layer in the flip task, v0.7.9) | the frame committed before the layer is the page's mono picture (1280 × 720), uncovered: the check sees the bug |
+| `a-golive-decoy` / `a-golive-decoy-ab` | `a-golive` / `a-golive-ab` with a 96 × 48 2D canvas (a logo) ahead of the 3D one in the DOM (`?decoy=1`) | as `a-golive` / `a-golive-ab`: the go-live check and the pixel reads use the canvas that goes live, not the page's first (a harness that read the first canvas compared the 96 × 48 logo with the store) |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
 | `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so, no `app found` line after the stand-down |
 | `d-pc` | `pc-mesh.html?xrFirst=1`: the page asks for `inline-3d` before its app exists | as `d`; fails without v0.5.4 (the app's constructor loaded the core, which stood down, and the same find then took the app on: `PlayCanvas app found` after `standing down`) |
@@ -1317,8 +1319,11 @@ modelled as reaching the browser at once, so the frame committed before it, and 
 what the browser shows unwoven; none may be a side-by-side pair unless the cover is up. It is a
 model of the browser, not the browser: it catches an ordering that closes before the mono frame is
 committed, and says nothing about the real compositor's timing. The same holds at go-live (v0.7.10):
-the page's canvas is watched from the start, and every `commits` case asserts that the frame committed
-before each `new XRDisplayLayer()` is the side-by-side store under the cover (`committedAtCreate`).
+while no layer is open every canvas on the page is watched, each on its own (`committedBy`), and every
+`commits` case asserts that the frame committed on the layer's canvas before each `new XRDisplayLayer()`
+is the side-by-side store under the cover (`committedAtCreate`). The pixel reads use the canvas last
+bound to a layer (`window.__fakeXRCanvas()`), so a page with a smaller canvas ahead of its 3D one reads
+the right one (`a-golive-decoy`).
 
 **WebGPU cases** carry `webgpu: true`; when the browser has no WebGPU adapter they are **skipped**
 with a loud line (the startup line names the adapter, or why there is none). Chrome 154 headless on
@@ -1739,11 +1744,14 @@ Open after the device run (not fixed here):
   three.js keyframes did not show it on this box on v0.7.9 (10 dev-hotkey switches, 10 reloads; 2 of 5
   Ctrl+Shift+3 switches in the 2026-11-24 dry run) nor on v0.7.10 (5 reloads). `Ctrl+Alt+3` on a page
   that has finished loading commits at once, so it rarely shows there.
-- **Headless.** 4 new cases (`test/cases/golive.mjs`: `a-golive`, `b-golive` and their `-ab` controls,
-  which see the mono frame with `bindAfterCommit: false`), plus the go-live check on every `commits` case
-  (`a-kill`, `b-kill`, `b-flip`, `bjs-cap`). Full run: 217 run, 2 skipped (`c` / `d`: no `ports_25.sog`),
-  213 pass. `bjs-global`, `bjs-ss-late` and `a-legacy` fail on this box on main as well;
-  `pc-cf-webgpu` failed once on its TAA read (two reads in one frame) and passes 3 of 3 alone.
+- **Headless.** 6 new cases (`test/cases/golive.mjs`: `a-golive`, `b-golive`, `a-golive-decoy` and their
+  `-ab` controls, which see the mono frame with `bindAfterCommit: false`), plus the go-live check on every
+  `commits` case (`a-kill`, `b-kill`, `b-flip`, `bjs-cap`). The `-decoy` pair puts a small 2D canvas ahead
+  of the 3D one: the commit model and the pixel reads follow the canvas that goes live (with the first
+  canvas, `a-golive-decoy` compared the 96 × 48 logo with the store and failed). Full run: 219 run,
+  2 skipped (`c` / `d`: no `ports_25.sog`), 216 pass. `bjs-global`, `bjs-ss-late` and `a-legacy` fail on
+  this box on main as well. An earlier run had `pc-cf-webgpu` fail once on its TAA read (two reads in one
+  frame); it passes 3 of 3 alone and passed in the full run.
 
 **Headless, v0.7.9 (PlayCanvas legacy post effects per eye, #319), Windows, ANGLE D3D11 + WebGPU
 (RTX 3080):** 14 new cases in `test/cases/pc-posteffects.mjs` (table above), page `pages/pc-postfx.html`.

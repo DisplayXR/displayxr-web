@@ -19,7 +19,8 @@
 // before close() nor the next few is a side-by-side pair (unless the cover hides the canvas). The
 // same holds the other way at go-live: new XRDisplayLayer() also reaches the browser ahead of the
 // task's commit, so the frame committed before it must already be the side-by-side store under the
-// cover (layers[i].committedAtCreate vs storeAtCreate). The page's canvas is watched from the start.
+// cover (layers[i].committedAtCreate vs storeAtCreate). While no layer is open, every canvas on the
+// page is watched, each on its own, so on a page with several the check reads the one that goes live.
 // Everything the harness asserts on is on window.__fakeXR.
 //
 // window.__fakeXROpts (per case):
@@ -51,7 +52,10 @@
   const OPTS = window.__fakeXROpts || {};
   const CANVAS_W = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
   const CANVAS_H = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
-  const H = (window.__fakeXR = { skew: SKEW, sessions: [], sessionObjs: [], layers: [], rigPushes: 0, lastRig: null, frames: 0, renderStates: [], closes: [], committed: null, history: [], watch: null });
+  const H = (window.__fakeXR = { skew: SKEW, sessions: [], sessionObjs: [], layers: [], rigPushes: 0, lastRig: null, frames: 0, renderStates: [], closes: [], committed: null, history: [], watch: null, committedBy: new Map() });
+  let openLayer = null; // the FakeLayer not yet closed (kept off H: the harness reads H.layers by value)
+  // The canvas the harness reads pixels from: the last one bound to a layer, else the page's first.
+  window.__fakeXRCanvas = () => H.watch || document.querySelector('canvas:not([data-dxr-auto3d-cover])');
   const coverUp = () => { const c = document.querySelector('[data-dxr-auto3d-cover]'); return !!(c && c.offsetWidth > 0 && c.offsetHeight > 0); };
 
   // ------------------------------------------------------------ commit model (see header)
@@ -69,15 +73,22 @@
     const probe = document.createElement('div');
     Object.assign(probe.style, { position: 'fixed', left: '-10px', top: '0', width: '1px', height: '1px', pointerEvents: 'none' });
     const ro = new ResizeObserver(() => {
-      // The page's canvas from the start (go-live: what the browser holds when the layer arrives),
-      // the bound one once there is a layer.
-      const c = H.watch || document.querySelector('canvas:not([data-dxr-auto3d-cover])');
-      if (!c) return;
-      let s = null;
-      try { s = snap(c); } catch (e) { return; }
-      H.committed = s;
-      H.history.push(s); if (H.history.length > 12) H.history.shift();
-      for (const cl of H.closes) if (cl.after.length < 8) cl.after.push(s);
+      // The bound canvas once there is a layer (H.committed, history, the close() frames). While no
+      // layer is open, also every canvas the page has, each on its own (H.committedBy): the layer
+      // about to be made reads the frame committed before it on ITS canvas, whichever of a page's
+      // canvases goes live (go-live: what the browser holds when the layer arrives).
+      const main = H.watch || document.querySelector('canvas:not([data-dxr-auto3d-cover])');
+      const cs = new Set(main ? [main] : []);
+      if (!openLayer) for (const c of document.querySelectorAll('canvas:not([data-dxr-auto3d-cover])')) cs.add(c);
+      for (const c of cs) {
+        let s = null;
+        try { s = snap(c); } catch (e) { continue; } // a 0x0 canvas, a lost context
+        H.committedBy.set(c, s);
+        if (c !== main) continue;
+        H.committed = s;
+        H.history.push(s); if (H.history.length > 12) H.history.shift();
+        for (const cl of H.closes) if (cl.after.length < 8) cl.after.push(s);
+      }
     });
     const tick = () => { probe.style.width = probe.style.width === '1px' ? '2px' : '1px'; requestAnimationFrame(tick); };
     const start = () => { document.documentElement.appendChild(probe); ro.observe(probe); requestAnimationFrame(tick); };
@@ -103,7 +114,8 @@
       // the browser may weave first is the one committed BEFORE this call: it must already be the
       // side-by-side store, under the cover. A mono frame there, woven, gives each eye half of the
       // picture at twice the width (#339).
-      const cm = H.committed;
+      const cm = H.committedBy.get(canvas) || null;
+      openLayer = this;
       H.layers.push({ canvas: canvas.id || canvas.tagName, opts: JSON.parse(JSON.stringify(opts || {})), at: performance.now(), coverAtCreate: coverUp(), closedAt: null,
         storeAtCreate: { w: CANVAS_W.get.call(canvas), h: CANVAS_H.get.call(canvas) }, committedAtCreate: cm ? { w: cm.w, h: cm.h, covered: cm.covered, ago: performance.now() - cm.at } : null });
       this._rec = H.layers[H.layers.length - 1];
@@ -117,6 +129,7 @@
     close() {
       if (this.closed) return;
       this.closed = true;
+      if (openLayer === this) openLayer = null;
       this._rec.closedAt = performance.now();
       // The frame last committed is what the browser now shows unwoven (commit model).
       // `before`: the frames committed while the layer was open (the pair baseline for the harness).
