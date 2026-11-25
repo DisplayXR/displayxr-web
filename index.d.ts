@@ -204,8 +204,9 @@ export type XRHardwareDisplayMode = '2d' | '3d';
  * `null` there means the machine has no such display.
  *
  * `recommendedViewScaleX/Y` are **advisory**. The browser cannot resize a page's canvas, so
- * nothing applies them for you — a page honours them by sizing its own backing store. Ignoring
- * them costs sharpness or fill rate, never correctness.
+ * nothing applies them for you — a page honours them by sizing its own backing store, most simply
+ * with `sceneBufferSize(canvas, { viewScale: info })`. Ignoring them costs sharpness or fill
+ * rate (on a big panel, a lot of it), never correctness.
  */
 export interface XRDisplayInfo {
   displayWidthMeters: number;
@@ -1060,6 +1061,57 @@ export function undockUrl(el: Element, opts: UndockOptions): string;
 
 /** An element's rect in physical screen pixels — where the native viewer places its window. */
 export function tileScreenRect(el: Element): { x: number; y: number; w: number; h: number; dpr: number };
+
+/** {@link sceneBufferSize}'s options. */
+export interface SceneBufferSizeOptions {
+  /** Side-by-side (two eyes wide) while woven; `false` for the 1:1 mono store. Default `true`. */
+  sbs?: boolean;
+  /** A quality multiplier on the per-eye size (scale the store, never `setPixelRatio`). Default 1. */
+  renderScale?: number;
+  /** The devicePixelRatio cap when no `viewScale` is given. Default 2, as the SDK's own windows. */
+  maxPixelRatio?: number;
+  /**
+   * The runtime's recommended view scale: pass the {@link XRDisplayInfo} from
+   * `handle.getDisplayInfo()`, or `{x, y}` / `[x, y]`. Per eye is then window device px × scale,
+   * the native runtime's rule: the weave shows no more pixels per view than that.
+   */
+  viewScale?: XRDisplayInfo | { x: number; y: number } | [number, number] | null;
+  /** The page's GL context, for its exact limits. Default: a probed throwaway context. */
+  gl?: WebGLRenderingContext | WebGL2RenderingContext | null;
+  /** Override the CSS box (default `canvas.clientWidth` / `clientHeight`). */
+  cssWidth?: number;
+  cssHeight?: number;
+}
+
+/** {@link sceneBufferSize}'s result: what to set the canvas to, and why. */
+export interface SceneBufferSize {
+  /** The whole store: `canvas.width` / `renderer.setSize(width, height, false)`. */
+  width: number;
+  height: number;
+  /** One eye (half of `width` when `sbs`): set the camera aspect from these. */
+  eyeWidth: number;
+  eyeHeight: number;
+  /** The devicePixelRatio used (capped unless a view scale was given). */
+  pixelRatio: number;
+  /** The view scale applied, or null. */
+  viewScale: [number, number] | null;
+  /** renderScale × any device-limit shrink. */
+  scale: number;
+  /** True when the device's GL limits shrank the store (warned once per canvas). */
+  clamped: boolean;
+  /** The binding limit, e.g. `'MAX_TEXTURE_SIZE 4096'`, or null. */
+  limit: string | null;
+}
+
+/**
+ * The backing store an `addScene` page should give its own canvas: per eye, window device px ×
+ * the runtime's recommended view scale (or CSS box × devicePixelRatio capped at 2 without one),
+ * times `renderScale`, shrunk to fit the device's GL limits. Hand-rolled
+ * `clientWidth × devicePixelRatio × 2` overshoots on big panels (an 8K desktop at dpr 3 asks for
+ * 15360×4320) and past the GL limits the browser silently shrinks the drawing buffer, which puts
+ * the eyes off-centre. Since 1.58.0.
+ */
+export function sceneBufferSize(canvas: { clientWidth?: number; clientHeight?: number }, opts?: SceneBufferSizeOptions): SceneBufferSize;
 
 /**
  * Open the page's inline-3D session and return a manager you add windows to. Resolves

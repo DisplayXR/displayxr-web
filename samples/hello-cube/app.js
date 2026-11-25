@@ -7,7 +7,7 @@
 // so the page still shows a spinning cube in any browser.
 
 import * as THREE from 'three';
-import { createInline3D, inline3dViewRigSupported } from '@displayxr/inline3d';
+import { createInline3D, inline3dViewRigSupported, sceneBufferSize } from '@displayxr/inline3d';
 import { EdgeFeather, displayRig, DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('cube');
@@ -102,13 +102,17 @@ function setCameraFromView(view) {
 //
 // Mono stays 1:1 — the flat fallback draws the whole canvas, so a 2:1 store would just stretch
 // it. updateStyle=false: the layout owns the CSS box, never the renderer.
+//
+// sceneBufferSize does the arithmetic: per eye, window device px x the display's view scale once
+// we know it (what a native app renders), else CSS box x dpr capped at 2; then it fits the store
+// inside the GL limits and the browser's drawing-buffer area cap. Hand-rolled
+// clientWidth x dpr x 2 overflows that cap full screen on an 8K panel and the eyes land off-centre.
 let sbsMode = false;
+let viewInfo = null; // handle.getDisplayInfo(), once woven
 function sizeToCanvas() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round((canvas.clientWidth || 512) * dpr);
-  const h = Math.round((canvas.clientHeight || 256) * dpr);
-  renderer.setSize(sbsMode ? w * 2 : w, h, false);
-  monoCam.aspect = w / h; monoCam.updateProjectionMatrix();
+  const s = sceneBufferSize(canvas, { sbs: sbsMode, viewScale: sbsMode ? viewInfo : null });
+  renderer.setSize(s.width, s.height, false);
+  monoCam.aspect = s.eyeWidth / s.eyeHeight; monoCam.updateProjectionMatrix();
 }
 window.addEventListener('resize', sizeToCanvas);
 sizeToCanvas();
@@ -306,6 +310,7 @@ function onMonoFrame(now) {
     // Only now do we know we render side-by-side — re-size the backing store to 2x width.
     sbsMode = true;
     sizeToCanvas();
+    handle.getDisplayInfo().then((info) => { viewInfo = info; sizeToCanvas(); }).catch(() => {});
     statusEl.innerHTML = '<b style="color:#4ade80">inline-3D active</b> — weaving glasses-free 3D · ' +
       'move your head to look around';
     if (DEBUG_HUD) buildRigPanel(handle);

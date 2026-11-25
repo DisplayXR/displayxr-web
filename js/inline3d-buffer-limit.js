@@ -1,7 +1,7 @@
 // inline3d-buffer-limit.js — keep a woven canvas's backing store inside the device's GL limits.
 //
-// Internal to the SDK (core, ./viewer, ./splat on both engines, ./model on both engines). Not a
-// public entry point; renderer-free and dependency-free, so the core can import it.
+// Internal to the SDK (core, ./viewer, ./splat on both engines, ./model on both engines), except
+// sceneBufferSize(), which the core re-exports. Renderer-free and dependency-free.
 //
 // WHY (measured, an Android 3D tablet on Adreno 740, DisplayXR Browser 154): a full-screen SBS
 // canvas asked for 5120×1348 (2560 per eye) with renderScale 1. The browser reports
@@ -19,6 +19,15 @@
 //   2. bufferScale(): if the drawing buffer STILL differs from canvas.width/height after a resize
 //      (a clamp we did not predict), the caller maps the layer's canvas-space viewports onto the
 //      real drawing buffer with these factors — never canvas.width / 2.
+
+/**
+ * The browser's cap on a WebGL drawing buffer's AREA, separate from the per-axis GL limits.
+ * MEASURED (DisplayXR Browser 1.10.6 / Chromium 158, RTX 3080, an 8K panel at 300%): a
+ * 15360×4320 store (66.4 Mpx) came out 10861×3054 (33.17 Mpx, the same aspect) with
+ * MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE 16384 and MAX_VIEWPORT_DIMS 32767, so no per-axis
+ * limit explains it; 7608×2001 (15.2 Mpx) was not clamped. Kept just under the measured result.
+ */
+export const MAX_DRAWING_BUFFER_AREA = 33_000_000;
 
 /** @typedef {{ maxW: number, maxH: number, nameW: string, nameH: string, valueW: number, valueH: number }} BufferLimits */
 
@@ -114,8 +123,11 @@ export function clampEyeBuffer(eyeW, eyeH, limits, { cols = 2, rows = 1 } = {}) 
   if (!limits || !(eyeW > 0) || !(eyeH > 0)) return base;
   const sw = limits.maxW / reqW;
   const sh = limits.maxH / reqH;
-  const s = Math.min(sw, sh);
+  const maxArea = limits.maxArea > 0 ? limits.maxArea : MAX_DRAWING_BUFFER_AREA;
+  const sa = Math.sqrt(maxArea / (reqW * reqH));
+  const s = Math.min(sw, sh, sa);
   if (!(s < 1)) return base;
+  const byArea = sa < Math.min(sw, sh);
   const byW = sw <= sh;
   // Floor (never round up past the limit), and never above the per-axis cap either way.
   const w = Math.max(1, Math.min(Math.floor(eyeW * s + 1e-9), Math.floor(limits.maxW / cols)));
@@ -130,8 +142,8 @@ export function clampEyeBuffer(eyeW, eyeH, limits, { cols = 2, rows = 1 } = {}) 
     reqH,
     bufW: w * cols,
     bufH: h * rows,
-    limitName: byW ? limits.nameW : limits.nameH,
-    limitValue: byW ? limits.valueW : limits.valueH,
+    limitName: byArea ? 'the browser drawing-buffer area cap' : byW ? limits.nameW : limits.nameH,
+    limitValue: byArea ? maxArea : byW ? limits.valueW : limits.valueH,
   };
 }
 
@@ -195,4 +207,81 @@ export function mismatchWarning(
     `${tag} the browser clamped this canvas's drawing buffer to ${b.w}×${b.h} (canvas.width/height ` +
     `say ${canvas.width}×${canvas.height}); ${tail}`
   );
+}
+
+const warnedScene = typeof WeakSet === 'function' ? new WeakSet() : null;
+
+/**
+ * PUBLIC (re-exported by the core as `sceneBufferSize`): the backing store an `addScene` page
+ * should give its canvas. The SDK sizes every canvas it owns this way; a scene canvas is the
+ * page's to size, and hand-rolled `clientWidth × devicePixelRatio × 2` goes wrong on big panels:
+ *
+ *   - devicePixelRatio is NOT capped there. An 8K desktop at 300% scaling is dpr 3, so a
+ *     full-window SBS store is 15360×4320 (66 Mpx, plus MSAA) — 8× a tablet's, for detail the
+ *     weave cannot show (each eye gets a fraction of the panel's pixels anyway).
+ *   - Nothing keeps the store inside the GL limits. Past them the browser SILENTLY shrinks the
+ *     drawing buffer while `canvas.width` keeps the requested value, `getViewport()` keeps
+ *     splitting `canvas.width`, and the eye boundary lands off-centre: a double image.
+ *
+ * Per eye it is the native runtime's rule, `window device px × recommendedViewScale`, when the
+ * page passes `viewScale` (the `getDisplayInfo()` result, or `{x, y}` / `[x, y]`): the weave can
+ * only show that many pixels per view, so more is fill rate spent on nothing. Without it (no
+ * display info yet, a plain browser) it is the CSS box × devicePixelRatio capped at
+ * `maxPixelRatio` (default 2, as the SDK's own windows). Then `renderScale`, then both axes
+ * shrink by one factor to fit min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS) —
+ * warned once per canvas, never thrown.
+ *
+ * @param {{ clientWidth?: number, clientHeight?: number }} canvas
+ * @param {{ sbs?: boolean, renderScale?: number, maxPixelRatio?: number, gl?: object|null,
+ *           viewScale?: object|number[]|null, cssWidth?: number, cssHeight?: number }} [opts]
+ * @returns {{ width: number, height: number, eyeWidth: number, eyeHeight: number,
+ *             pixelRatio: number, viewScale: [number, number]|null, scale: number,
+ *             clamped: boolean, limit: string|null }}
+ */
+export function sceneBufferSize(canvas, opts = {}) {
+  const { sbs = true, renderScale = 1, maxPixelRatio = 2, gl = null } = opts;
+  const rawDpr = (typeof window !== 'undefined' && window && window.devicePixelRatio) || 1;
+  const cap = Number.isFinite(maxPixelRatio) && maxPixelRatio > 0 ? maxPixelRatio : 2;
+  const vs = readViewScale(opts.viewScale);
+  // With a view scale the base is the window's DEVICE px (the native rule); without, the capped dpr.
+  const pixelRatio = vs ? rawDpr : Math.min(rawDpr, cap);
+  const rs = Number.isFinite(renderScale) && renderScale > 0 ? renderScale : 1;
+  const cssW = Number.isFinite(opts.cssWidth) ? opts.cssWidth : canvas?.clientWidth || 0;
+  const cssH = Number.isFinite(opts.cssHeight) ? opts.cssHeight : canvas?.clientHeight || 0;
+  const eyeW = Math.max(1, Math.round((cssW || 1) * pixelRatio * (vs ? vs[0] : 1) * rs));
+  const eyeH = Math.max(1, Math.round((cssH || 1) * pixelRatio * (vs ? vs[1] : 1) * rs));
+  const limits = (gl && glBufferLimits(gl)) || probeBufferLimits();
+  const c = clampEyeBuffer(eyeW, eyeH, limits, { cols: sbs ? 2 : 1 });
+  if (c.clamped && canvas && typeof canvas === 'object' && warnedScene && !warnedScene.has(canvas)) {
+    warnedScene.add(canvas);
+    try {
+      console.warn(clampWarning('[inline3d] sceneBufferSize:', c, rs));
+    } catch {
+      /* no console */
+    }
+  }
+  return {
+    width: c.bufW,
+    height: c.bufH,
+    eyeWidth: c.eyeW,
+    eyeHeight: c.eyeH,
+    pixelRatio,
+    viewScale: vs,
+    scale: rs * c.scale,
+    clamped: c.clamped,
+    limit: c.clamped ? `${c.limitName} ${c.limitValue}` : null,
+  };
+}
+
+/** `getDisplayInfo()`'s recommendedViewScaleX/Y, `{x, y}` or `[x, y]` → [sx, sy] in (0, 1], or null. */
+function readViewScale(v) {
+  if (!v) return null;
+  let x, y;
+  if (Array.isArray(v)) [x, y] = v;
+  else if (typeof v === 'object') {
+    x = v.recommendedViewScaleX ?? v.viewScaleX ?? v.x;
+    y = v.recommendedViewScaleY ?? v.viewScaleY ?? v.y;
+  }
+  const ok = (n) => Number.isFinite(n) && n > 0 && n <= 1;
+  return ok(x) && ok(y) ? [x, y] : null;
 }
