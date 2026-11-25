@@ -5,7 +5,7 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased
+## 1.58.1 — 2026-11-24
 
 ### Fixed — `sceneBufferSize` ignores `viewScale` for the flat store (`sbs: false`)
 
