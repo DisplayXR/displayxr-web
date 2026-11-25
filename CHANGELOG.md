@@ -7,6 +7,25 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Added — `sceneBufferSize(canvas, opts)` sizes an `addScene` canvas the way a native app does (core)
+
+An `addScene` page sizes its own canvas, and the porting guide and samples taught
+`clientWidth × devicePixelRatio × 2`. On an 8K panel at 300% scaling that is a 15360×4320 store
+full screen; the browser silently shrank the drawing buffer to 10861×3054 (its area cap; no GL
+limit was hit) while `canvas.width` kept 15360, so `getViewport()` split the wrong width and the
+panel showed both images in one eye. `sceneBufferSize` returns the store to set: per eye, window
+device px × the display's recommended view scale when you pass `getDisplayInfo()` (the native
+rule: 3840×2160 per eye on that panel, a quarter of the pixels), else CSS box × devicePixelRatio
+capped at 2; then `renderScale`; then fitted to the GL limits **and** the browser's drawing-buffer
+area cap, warning once if it shrank. The porting guide (§4) and the `hello-cube` and `camera-rig`
+samples now use it.
+
+### Changed — the SDK's own buffers also respect the browser's drawing-buffer area cap
+
+The internal clamp behind `addImage`, `addVideo`, `./viewer`, `./splat` and `./model` now also
+caps the store's area at Chromium's own drawing-buffer cap (5760², 33.2 Mpx), not only the per-axis GL
+limits. It changes nothing below that size.
+
 ### Fixed — the robust-framing fit guard now matches the native viewer to the last bit (`./model`)
 
 1.57.1 matched displayxr-common's sampling exactly, but the full-box guard on the fit extent was

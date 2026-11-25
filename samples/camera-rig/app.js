@@ -33,7 +33,7 @@
 // what it is: the divergence ceiling for content at infinity, not a target. Nothing is clamped.
 
 import * as THREE from 'three';
-import { createInline3D, inline3dViewRigSupported, cameraRigComfortFactor } from '@displayxr/inline3d';
+import { createInline3D, inline3dViewRigSupported, cameraRigComfortFactor, sceneBufferSize } from '@displayxr/inline3d';
 import { EyeCamera, cameraRigFromCamera, displayRig } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('stage');
@@ -152,12 +152,14 @@ canvas.addEventListener('pointercancel', endDrag);
 // canvas.width in half, so each eye gets a full-resolution half, and the browser squashing that
 // 2:1 buffer into the 16:9 CSS box IS the side-by-side squeeze the weave un-squeezes. Mono stays
 // 1:1 — the flat fallback draws the whole canvas.
+// sceneBufferSize: per eye, window device px x the display's view scale (what a native app
+// renders), else CSS box x dpr capped at 2, fitted to the GL limits and the browser's area cap.
 let sbsMode = false;
-function sizeToCanvas(cssW = canvas.clientWidth || 640, cssH = canvas.clientHeight || 360, dpr = window.devicePixelRatio || 1) {
-  const w = Math.round(cssW * dpr);
-  const h = Math.round(cssH * dpr);
-  renderer.setSize(sbsMode ? w * 2 : w, h, false);
-  appCam.aspect = w / h;
+let viewInfo = null; // handle.getDisplayInfo(), once woven
+function sizeToCanvas(cssW = canvas.clientWidth || 640, cssH = canvas.clientHeight || 360) {
+  const s = sceneBufferSize(canvas, { sbs: sbsMode, viewScale: sbsMode ? viewInfo : null, cssWidth: cssW, cssHeight: cssH });
+  renderer.setSize(s.width, s.height, false);
+  appCam.aspect = s.eyeWidth / s.eyeHeight;
   appCam.updateProjectionMatrix();
 }
 sizeToCanvas();
@@ -295,8 +297,8 @@ function drawEyes() {
 
 // The SDK calls this inside its ResizeObserver, before paint: resize and redraw at once, so the
 // old store is never shown stretched onto the new box. The new store's eye halves are its halves.
-function onResize({ width, height, dpr }) {
-  sizeToCanvas(width, height, dpr);
+function onResize({ width, height }) {
+  sizeToCanvas(width, height);
   readMetrics();
   if (!last) return;
   const w = canvas.width / 2;
@@ -443,6 +445,11 @@ function dropCover() {
     },
   });
   readMetrics();
+  // The display's view scale sizes each eye like a native app (window x scale): resize + redraw once known.
+  handle.getDisplayInfo().then((info) => {
+    viewInfo = info;
+    onResize({ width: canvas.clientWidth, height: canvas.clientHeight });
+  }).catch(() => {});
   // The cover comes off when the browser first weaves the canvas — and on a timeout, so a missed
   // signal never leaves the page without its scene.
   Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]).then(dropCover, dropCover);

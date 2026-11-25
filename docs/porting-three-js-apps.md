@@ -386,19 +386,37 @@ Two ordering rules around the swap:
 
 ### Resize and quality scaling
 
+Size the store with **`sceneBufferSize`** (core, 1.58.0+), not by hand. Pass it the display info
+once you have it, so each eye gets what a native DisplayXR app renders: **window device px ×
+the runtime's recommended view scale**.
+
 ```js
+import { sceneBufferSize } from '@displayxr/inline3d';
+
+let viewInfo = null; // handle.getDisplayInfo(), once the layer is live (null until then: fine)
 function sizeSBS() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round(canvas.clientWidth * dpr * renderScale);
-  const h = Math.round(canvas.clientHeight * dpr * renderScale);
-  const bufW = woven ? w * 2 : w;                       // DOUBLE-WIDTH while woven, 1:1 in mono
+  const s = sceneBufferSize(canvas, { sbs: woven, viewScale: viewInfo, renderScale });
   const el = renderer.domElement;
-  if (el.width === bufW && el.height === h) return;     // observer fired, geometry didn't move
-  renderer.setSize(bufW, h, false);
-  appCam.aspect = w / h; appCam.updateProjectionMatrix();
-  replayLastGood();                                     // repaint NOW, not next frame
+  if (el.width === s.width && el.height === s.height) return; // observer fired, nothing moved
+  renderer.setSize(s.width, s.height, false);
+  appCam.aspect = s.eyeWidth / s.eyeHeight; appCam.updateProjectionMatrix();
+  replayLastGood();                                           // repaint NOW, not next frame
 }
+// after addScene():
+handle.getDisplayInfo().then((info) => { viewInfo = info; sizeSBS(); }).catch(() => {});
 ```
+
+**Why not `clientWidth × devicePixelRatio × 2`.** It is what a tablet forgives and a big panel
+does not. Measured on an 8K panel at 300% scaling (dpr 3, DisplayXR Browser 1.10.6): a full-screen
+canvas sized that way asked for **15360×4320** (66 Mpx). The browser silently shrank the drawing
+buffer to 10861×3054: Chromium caps a WebGL drawing buffer at 5760² px on every platform (no GL limit was hit: MAX_TEXTURE_SIZE was 16384), while
+`canvas.width` still said 15360. `getViewport()` splits `canvas.width`, so each eye was drawn
+off-centre and the panel showed both images in one eye. A native app on the same panel renders
+3840×2160 per view (window × view scale 0.5), a quarter of that: the weave cannot show more.
+`sceneBufferSize` gives exactly that with `viewScale`, and without it caps devicePixelRatio at 2
+and fits the store inside both the GL limits and the browser's area cap (warning once if it had
+to shrink). The SDK's `[inline3d] the browser clamped this canvas's drawing buffer…` console
+warning is this failure: treat it as a bug, not noise.
 
 Two rules, both learned the same way:
 

@@ -60,6 +60,8 @@ import { noteCameraRigOrbit } from './inline3d-rig-hint.js';
 // The device-limit clamp on a backing store (MAX_TEXTURE_SIZE & co.), shared with ./viewer,
 // ./splat and ./model. Dependency-free.
 import { probeBufferLimits, clampEyeBuffer, clampWarning, bufferScale, mismatchWarning } from './inline3d-buffer-limit.js';
+// The same sizing, for an addScene page's own canvas.
+export { sceneBufferSize } from './inline3d-buffer-limit.js';
 
 import {
   ModeSwitch,

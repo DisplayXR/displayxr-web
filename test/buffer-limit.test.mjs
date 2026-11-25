@@ -18,6 +18,7 @@ import {
   clampEyeBuffer,
   clampWarning,
   bufferScale,
+  sceneBufferSize,
 } from '../js/inline3d-buffer-limit.js';
 
 installDom();
@@ -286,4 +287,65 @@ test('splat handle (engine:playcanvas): renderScale reports the value in force, 
     console.error = realErr;
     console.warn = realWarn;
   }
+});
+
+// sceneBufferSize: the public sizing for an addScene page's own canvas.
+function limitsGl(n) {
+  return { MAX_TEXTURE_SIZE: 1, MAX_RENDERBUFFER_SIZE: 2, MAX_VIEWPORT_DIMS: 3, getParameter: (p) => (p === 3 ? [n, n] : n) };
+}
+function withDpr(dpr, fn) {
+  const prev = globalThis.window.devicePixelRatio;
+  globalThis.window.devicePixelRatio = dpr;
+  try { return fn(); } finally { globalThis.window.devicePixelRatio = prev; }
+}
+
+test('sceneBufferSize: an 8K desktop at dpr 3 is capped at dpr 2, not 15360×4320', () => {
+  const r = withDpr(3, () => sceneBufferSize({ clientWidth: 2560, clientHeight: 1440 }, { gl: limitsGl(16384) }));
+  assert.deepEqual([r.width, r.height, r.eyeWidth, r.eyeHeight, r.pixelRatio, r.clamped], [10240, 2880, 5120, 2880, 2, false]);
+});
+
+test('sceneBufferSize: the runtime view scale gives the native rule, window device px × scale', () => {
+  const info = { recommendedViewScaleX: 0.5, recommendedViewScaleY: 0.5 };
+  const r = withDpr(3, () => sceneBufferSize({ clientWidth: 2560, clientHeight: 1440 }, { gl: limitsGl(16384), viewScale: info }));
+  assert.deepEqual([r.width, r.height, r.eyeWidth, r.pixelRatio], [7680, 2160, 3840, 3]);
+  assert.deepEqual(r.viewScale, [0.5, 0.5]);
+  // [x, y] and {x, y} read the same; nonsense is ignored (falls back to the capped dpr).
+  const a = withDpr(3, () => sceneBufferSize({ clientWidth: 2560, clientHeight: 1440 }, { gl: limitsGl(16384), viewScale: [0.5, 0.5] }));
+  const b = withDpr(3, () => sceneBufferSize({ clientWidth: 2560, clientHeight: 1440 }, { gl: limitsGl(16384), viewScale: { x: 0.5, y: 0.5 } }));
+  const bad = withDpr(3, () => sceneBufferSize({ clientWidth: 2560, clientHeight: 1440 }, { gl: limitsGl(16384), viewScale: { x: 0, y: 2 } }));
+  assert.equal(a.width, 7680);
+  assert.equal(b.width, 7680);
+  assert.deepEqual([bad.viewScale, bad.width], [null, 10240]);
+});
+
+test('sceneBufferSize: past the GL limit both axes shrink by one factor and it warns once', () => {
+  const canvas = { clientWidth: 1280, clientHeight: 800 };
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (m) => warns.push(m);
+  try {
+    const r = withDpr(2, () => sceneBufferSize(canvas, { gl: limitsGl(4096) }));
+    withDpr(2, () => sceneBufferSize(canvas, { gl: limitsGl(4096) }));
+    assert.deepEqual([r.width, r.height, r.eyeWidth, r.clamped, r.limit], [4096, 1280, 2048, true, 'MAX_TEXTURE_SIZE 4096']);
+    assert.equal(r.scale, 0.8);
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(warns.length, 1);
+});
+
+test('sceneBufferSize: renderScale and mono', () => {
+  const r = withDpr(1, () => sceneBufferSize({ clientWidth: 1000, clientHeight: 500 }, { gl: limitsGl(16384), renderScale: 0.5, sbs: false }));
+  assert.deepEqual([r.width, r.height, r.eyeWidth, r.scale], [500, 250, 500, 0.5]);
+});
+
+test('clampEyeBuffer: the browser area cap (measured 8K: 15360x4320 drawn at 10861x3054) is applied with no per-axis limit hit', () => {
+  const lim = { maxW: 16384, maxH: 16384, nameW: 'MAX_TEXTURE_SIZE', nameH: 'MAX_TEXTURE_SIZE', valueW: 16384, valueH: 16384 };
+  const c = clampEyeBuffer(7680, 4320, lim);
+  assert.equal(c.clamped, true);
+  assert.ok(c.bufW * c.bufH <= 5760 * 5760, `${c.bufW}x${c.bufH}`);
+  assert.ok(Math.abs(c.bufW / c.bufH - 15360 / 4320) < 0.01, 'aspect kept');
+  assert.match(clampWarning('[t]', c), /area cap/);
+  // The measured unclamped case stays unclamped.
+  assert.equal(clampEyeBuffer(3804, 2001, lim).clamped, false);
 });
