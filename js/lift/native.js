@@ -242,7 +242,54 @@ export function createNativeLiveAttrs(el, o = {}) {
 
 // ── native providers (the paused frame) ──────────────────────────────────────────────────────
 
-/** A native-module failure. `code`: http | unsupported | format | encode | network | aborted | timeout | unavailable. */
+/** Below this 99th-percentile splat luminance a native Gaussians result is "black" (web#341). */
+export const BLACK_SCENE_LUMA = 0.08;
+
+/**
+ * The colour of a 3DGS PLY, from a strided sample of its splats' degree-0 colour
+ * (0.5 + C0·f_dc, clamped, Rec. 709 luma). Properties are read by name, so any layout works.
+ * Returns null when the bytes are not a little-endian float PLY with f_dc_0..2 (no verdict).
+ * @param {Uint8Array} u8
+ * @param {number} [maxSamples]
+ * @returns {{samples:number, p99:number, mean:number}|null}
+ */
+export function plyColourStats(u8, maxSamples = 4096) {
+  const head = new TextDecoder().decode(u8.subarray(0, Math.min(u8.length, 16384)));
+  const endTok = 'end_header\n';
+  const end = head.indexOf(endTok);
+  if (!head.startsWith('ply') || end < 0 || !/format binary_little_endian 1\.0/.test(head)) return null;
+  const count = +(/element vertex (\d+)/.exec(head) || [])[1];
+  if (!(count > 0)) return null;
+  const sizeOf = { float: 4, float32: 4, double: 8, uchar: 1, uint8: 1, char: 1, int8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4 };
+  let stride = 0;
+  const off = {};
+  const vtx = head.slice(head.indexOf('element vertex'), end).split('\nelement ')[0];
+  for (const m of vtx.matchAll(/property (\S+) (\S+)/g)) {
+    off[m[2]] = { at: stride, type: m[1] };
+    stride += sizeOf[m[1]] ?? 4;
+  }
+  const keys = ['f_dc_0', 'f_dc_1', 'f_dc_2'];
+  if (keys.some((k) => !off[k] || (off[k].type !== 'float' && off[k].type !== 'float32'))) return null;
+  const base = end + endTok.length;
+  if (u8.byteLength - base < count * stride) return null;
+  const dv = new DataView(u8.buffer, u8.byteOffset + base, count * stride);
+  const step = Math.max(1, Math.floor(count / maxSamples));
+  const C0 = 0.28209479177387814;
+  const lum = [];
+  let sum = 0;
+  for (let i = 0; i < count; i += step) {
+    const c = keys.map((k) => Math.min(1, Math.max(0, 0.5 + C0 * dv.getFloat32(i * stride + off[k].at, true))));
+    const y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    if (!Number.isFinite(y)) continue;
+    lum.push(y);
+    sum += y;
+  }
+  if (!lum.length) return null;
+  lum.sort((a, b) => a - b);
+  return { samples: lum.length, p99: lum[Math.min(lum.length - 1, Math.floor(lum.length * 0.99))], mean: sum / lum.length };
+}
+
+/** A native-module failure. `code`: http | unsupported | format | encode | network | aborted | timeout | unavailable | black. */
 export class NativeLiftError extends Error {
   constructor(message, code, extra = {}) {
     super(message);
@@ -476,6 +523,16 @@ export function createNativeGaussiansLift(opts = {}) {
         // +z, y down). A header that names no convention means that — NOT explore's own 'opengl'
         // default, under which a +z scene sits behind the camera and explore draws solid black.
         if (!meta.axes && !meta.convention) meta.axes = 'opencv';
+        // A scene whose every splat is black came from a black frame (web#341: the browser's grab of
+        // a hardware-decoded video read back black). Say so rather than open an empty black scene.
+        const col = plyColourStats(u8);
+        if (col && col.p99 < BLACK_SCENE_LUMA) {
+          throw new NativeLiftError(
+            `native gaussians: the scene is black (99th-percentile splat luminance ${col.p99.toFixed(3)} over ${col.samples} samples) — the frame it was made from was black`,
+            'black',
+            { colour: col },
+          );
+        }
         return { ply: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength), meta: { ...meta, timings: { nativeMs: ms } } };
       }
       throw new NativeLiftError('native gaussians: response is neither a .sog nor a .ply', 'format');
