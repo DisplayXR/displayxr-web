@@ -134,14 +134,20 @@ say which one is in use: `target`, `estimator`, `fixed`, or `manual` once `Ctrl+
 chip's Focus nearer / farther) has scaled it (`convergenceVia` names the target's origin, e.g.
 `camera.lookAt`, or `open scene`).
 
-**Convergence, three tiers** (David's call for open scenes, 2026-09-28):
+**Convergence, three tiers** (David's call for open scenes, 2026-09-28; the open rule and its latch
+v0.7.10, #319):
 
 1. **The page's target** (above), when there is one and the camera is looking at it.
-2. **A bounded subject**: the estimator (below) on what is in view, when anything bounded is in view
-   (a model, a SplatMesh seen from outside, a mesh among volume pieces: then only the bounded items
-   count, the room around them is no subject).
-3. **An open scene** (no target, and every sampled bound is a volume around the camera: a World Labs
-   / Marble world, a sky + floor): **no dynamic convergence**. A FIXED focus, as legacy WebXR had:
+2. **The estimator** (below) on what is in view, when the camera is outside every sampled bound (an
+   object viewer: a model, a SplatMesh seen from outside).
+3. **An open scene** (no target, and the camera stands inside a world: a sampled bound holds it, or it
+   stands among a volume's pieces: a World Labs / Marble world, an arrival.space space, a sky + floor).
+   **Bounded props in view do not veto it** (v0.7.10; before, any one sent the scene back to the
+   estimator, and arrival.space, ~400 meshes inside its splat world, flipped between `estimator` and
+   `fixed` as the viewer walked: the depth kept changing, and the estimator's m2v lifted the eyes metres
+   above the page camera). **Open latches:** once a canvas's scene has been open it stays `fixed: open
+   scene` for the rest of the page (logged once: `open scene: the camera stands inside a world`), even
+   if the camera later leaves every bound; the page's target still wins over it. **No dynamic convergence**. A FIXED focus, as legacy WebXR had:
    converge `T.openSceneConvM` (**2**) units in front of the page camera, at **real scale**. The rig
    declares `metersToVirtual = 1` (one scene unit = one metre, so the viewer's own IPD applies) and
    `convergenceDiopters = 1/2`; the user's depth scales the eye separation instead of m2v:
@@ -158,8 +164,8 @@ chip's Focus nearer / farther) has scaled it (`convergenceVia` names the target'
    farther`). It does not act on it: **Focus nearer / farther** (`Ctrl+Alt+9` / `0`, or the chip) is the
    escape, and scales the fixed focus at real scale.
 
-   The estimator keeps running every 30 frames, so a subject that appears later (a model that loads
-   into the world) takes over (`fixed` -> `estimator`), and back when it leaves the view. The fixed
+   Before v0.7.10 a subject that appeared later (a model that loads into the world) took over
+   (`fixed` -> `estimator`), and back when it left the view; the latch ends that. The fixed
    focus is constant: it snaps rather than eases. `T.openSceneMode = 'percentile'` restores the 0.5.3
    room rule (below) instead of the fixed focus, for an A/B on the panel:
    `window.__dxrAuto3DTestCfg = { openSceneMode: 'percentile' }` on a dev build.
@@ -1000,7 +1006,8 @@ dev build only.
 | `maxSbsWidth` | 3072 | the SBS store's width cap (browser-pvt#24), then the GL limits |
 | `maxSbsArea` | 5760² | the SBS store's area cap (Chromium's WebGL `kMaxArea`, as `@displayxr/inline3d`'s `MAX_DRAWING_BUFFER_AREA`) (v0.7.10) |
 | `coverMaxMs` | 5000 | the join cover's longest hold; also the "no display" threshold |
-| `openSceneMode` | `'fixed'` | open scenes (no target, no bounded subject): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
+| `openSceneMode` | `'fixed'` | open scenes (no target, the camera inside a world; latched, v0.7.10): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
+| `scaleSamples` / `scaleSpread` / `scaleMaxWaitMs` | 3 / 0.1 / 8000 | the rig's scale is decided once per activation: from this many consistent estimates within this spread, on a quiet page, or after this long (v0.7.10) |
 | `openSceneConvM` | 2 | `'fixed'`: the focus distance in front of the page camera, in scene units read as metres |
 | `openSceneRealDepth` | 0.5 | `'fixed'`: the camera-rig depth that means the viewer's real IPD (`ipdFactor` 1); less scales it down linearly |
 | `convRoomPercentile` | 0.7 | `'percentile'`: the percentile of the in-view apparent-size-weighted depths; `'fixed'`: only the scale-sanity note |
@@ -1089,14 +1096,33 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
 
 ### Rigs: camera by default, display on Ctrl+Alt+P
 
+**The scale is set once (v0.7.10, David: "if we ever use m2v it cannot change, the scale is set once and
+we'd better get it right").** A rig's scale puts the eyes at the viewer's head offset × m2v from the
+page camera, so a scale that follows the estimate moves the eyes through the scene as the viewer walks
+(arrival.space on the panel, #319: page camera at y 1.23, eyes at y 6.8). So, per activation:
+- **open scene:** m2v 1, at once (and for good: open latches). It is the one change allowed after a
+  decision: an estimator scale is replaced once if the scene turns out to be open (logged).
+- **page target:** its distance, at once (exact);
+- **estimator:** `T.scaleSamples` (3) consecutive estimates (every 10 frames until decided) within
+  `T.scaleSpread` (10 %) of their median, on a quiet page (the guard's loading test: document complete,
+  no resource for 1 s), else what there is `T.scaleMaxWaitMs` (8 s) after the flip. Until then the
+  rig is flat (both eyes on the page camera) and the depth fades in once it is set.
+- logged once: `scale set: m2v X (basis; distance D units)` (display rig: the portal's height).
+Then frozen: the camera rig's `metersToVirtual = depth × d_scale × Focus / 0.5` and the whole display
+rig (portal distance and height = `d_scale × Focus`). The camera rig's **convergence** (`1/d`) keeps
+following the estimate / target. Only the user changes the scale afterwards: Focus nearer / farther,
+the depth keys, reset, or a new activation (a turn-off and on, a guard retry, a stand-down and
+re-conversion each decide again).
+
 - **Camera rig (default).** `{type:'camera', verticalFov, convergenceDiopters = 1/d,
-  metersToVirtual = depth·d/0.5, ipd/parallax 1}`, attached to the page camera (identity pose).
-  It keeps the author's FOV and framing; comfort = ipd × m2v × diopters × 0.5 = `depth`.
+  metersToVirtual = depth·d_scale/0.5, ipd/parallax 1}`, attached to the page camera (identity pose).
+  It keeps the author's FOV and framing; comfort = ipd × m2v × diopters × 0.5 = `depth` while the
+  convergence is where the scale was set (`depth × d_scale / d` after it moves).
   In an **open scene** (fixed focus, see Convergence): `metersToVirtual = 1` (real scale),
   `convergenceDiopters = 1/2`, `ipd/parallax = clamp(depth / 0.5, 0, 1)`: comfort 0.25 at depth 0.5.
 - **Display rig (`Ctrl+Alt+P`).** For object-centric scenes, like the P key in the legacy WebXR
-  apps. `{type:'display', position (0, 0, −d), identity orientation, virtualDisplayHeight =
-  2·d·tan(vfov/2), ipdFactor = parallaxFactor = depth, perspective 1}`, in the page camera's space. The
+  apps. `{type:'display', position (0, 0, −d_scale), identity orientation, virtualDisplayHeight =
+  2·d_scale·tan(vfov/2), ipdFactor = parallaxFactor = depth, perspective 1}`, in the page camera's space. The
   canvas becomes a portal on the convergence plane, square to the page camera and exactly as tall
   as the page camera's view there, so what the author framed at the subject is what the portal
   shows, sitting on the glass. The runtime puts the eyes at the viewer's real distance (m2v = portal
@@ -1198,7 +1224,10 @@ running), so the rig is always sampled at the configured depth.
 | `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera): an open scene | as `a`, convergence exactly 2 from `fixed` (via `open scene`), rig at real scale: `metersToVirtual` 1, ipd = parallax = 1 at depth 0.5 |
 | `spark-room-percentile` | the same page, cfg `openSceneMode: 'percentile'` | convergence 8.6 ± 5 % from the `estimator` (the 0.5.3 room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
 | `spark-room-percentile-p50` | the same, plus cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the weighted median: the key is live) |
-| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | `fixed` (2, m2v 1) before; `estimator` after, converging on the box (3 ± 5 %), m2v = d again; ONE `convergence settled: ~3 units (estimator)` console line |
+| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | v0.7.10: `fixed` (2, m2v 1, latched) before AND 5 s after the box, no settle line (≤ 0.7.9: `estimator` after, converging on the box) |
+| `spark-room-props` | `three-spark.html?room=1&subject=1`: the box in view from the start | open with a bounded prop in view: `fixed`, convergence 2 (v0.7.10) |
+| `spark-room-latch` | `three-spark.html?room=1`, fake head offset (0, 0.1, 0.6) m, then `__leaveRoom()` (camera 40 back, outside every bound) | `fixed` 2, latched, m2v 1, eye 0 within 0.7 of the page camera before AND 4 s after (v0.7.10) |
+| `spark-est-head` | `three-spark.html?at=7`, the same head offset, then a 3-unit box 3 ahead | estimator scale set once (d 7, m2v 7, logged once); eye 0 at head × m2v (4.3) from the camera; the box moves the convergence > 5 %, m2v stays one value over 4 s, the eye never farther than head × m2v (v0.7.10) |
 | `e-postfx-view0` | `three-postfx.html?view=identity`: the chain, its camera kept at `setViewOffset(w, h, 0, 0, w, h)` (the sandworm page at rest), an unlit magenta marker at (0, 1.5, 3) | as `a`, plus the marker's height in the left eye = the page's own projection of it (`window.__expectNdcY`, ± 0.02 NDC). The fake skews x only, so without the view both halves are equally wrong and only this check sees it. Fails before v0.6.3: never converts, with the sandworm page's 2D line |
 | `e-postfx-shift` | `?view=shift`: a kept lens shift, 12 % of the height down | as `e-postfx-view0` (marker at 0.515; 0.275 without the view) |
 | `e-postfx-crop` | `?view=crop`: a kept 2× crop, off centre | as `e-postfx-view0` (marker at −0.051; 0.275 without the view), the pair shift doubled: 128 px (`pairShift` 0.2) |
@@ -1751,6 +1780,20 @@ maximised window, vsync and the frame-rate limit off, the guard off), `arrival.s
   (`corpus/results/2026-11-25-pc-examples-v0.7.10.json`). The two that changed are run-to-run noise:
   `loaders/glb` (PASS → REVIEW `shift 64 != 32`, the known flip) and `demos/car-showcase` (REVIEW
   `still converting` → NONE), each re-run twice with `--only`: PASS and REVIEW, as in v0.7.9.
+- **Open world + scale once (second change in this PR, from David's panel pass on v0.7.10).** On the
+  panel the depth kept changing on arrival.space: the source flipped between `estimator` (2.56, and
+  10.3 on WebGPU after 63 s) and `fixed: open scene`, because any of the space's meshes in view vetoed
+  the open scene; and in estimator mode m2v = depth × d / 0.5 put the eyes at the head offset × m2v,
+  measured at y 6.8 against the page camera's 1.23 ("head on top of a tree"). Now a splat volume
+  holding the camera makes the scene open whatever else is in view, open latches, and the rig's scale is
+  set once per activation (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp) and Convergence).
+  Headless check on arrival.space (fake head offset (0, 0.1, 0.6) m, the page's own WASD + drag-turns
+  for 70-110 s, camera over x −4.6…10.5, z −8.3…8.1), WebGL2 and WebGPU: the source `fixed: open scene`
+  in every sample, one `scale set: m2v 1 (open scene)` line, m2v 1 throughout, eye 0 at 0.61 from the
+  render camera at every rest (head 0.61 m × m2v 1). The space feeds one unified gsplat (radius 93)
+  that holds the camera, plus 21 enclosing meshes (grid plane, glass, boxes). The same walk on the
+  pre-latch build did not flip either: this path never put a vetoing prop in view headless, so the
+  flip itself is covered by the harness cases (`spark-room-props`, `-subject`, `-latch`), not this walk.
 - **Not verified: the panel.** For the tester, maximised on the 8K panel, WebGL2 and `?webgpu=1`: the log
   says `SBS 3072x1566 (eye 1536x1566)`; the 3D frame rate and whether the guard still trips; that the
   picture is still sharp enough (2.5× fewer rows than v0.7.9; a joint scale was judged a loss on

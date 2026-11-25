@@ -1305,7 +1305,7 @@ function dxrPlayCanvas(core) {
       const s = Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
       const r = Math.hypot(bb.halfExtents.x, bb.halfExtents.y, bb.halfExtents.z) * s;
       if (!(r >= 0) || !isFinite(r)) continue;
-      more = cb(wx, wy, wz, r) !== false;
+      more = cb(wx, wy, wz, r, false, true) !== false; // a splat volume: holding the camera, it is a world (core estimateSubjectDistance)
     }
   }
 

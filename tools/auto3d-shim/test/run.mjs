@@ -424,10 +424,12 @@ function check(r, results) {
   const rig = fake.lastRig || {};
   const d = R.convergence;
   // An open scene's fixed focus is at REAL scale: metersToVirtual 1 (depth 0.5 = the real IPD: ipd/parallax 1).
-  const m2v = R.convergenceSource === 'fixed' ? 1 : (0.5 * d) / 0.5;
+  // v0.7.10: m2v is set once per activation from the distance the scale was decided at (R.scale.d), then
+  // frozen; the convergence (diopters) stays live.
+  const m2v = R.convergenceSource === 'fixed' ? 1 : (0.5 * ((R.rigScale && R.rigScale.d) || d)) / 0.5;
   const rigOk = rig.type === 'camera' && Math.abs(rig.verticalFov - (c.fovDeg * Math.PI) / 180) < 1e-6 && Math.abs(rig.convergenceDiopters - 1 / d) < 1e-3 * (1 / d) &&
-    Math.abs(rig.metersToVirtual - m2v) < 1e-3 * m2v && rig.ipdFactor === 1 && rig.parallaxFactor === 1;
-  t(`rig pushed: camera, page fov, 1/d, ${R.convergenceSource === 'fixed' ? 'm2v 1 (real scale, fixed focus)' : '0.5·d/0.5'}, ipd/parallax 1`, rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
+    Math.abs(rig.metersToVirtual - m2v) < 1e-3 * m2v && rig.ipdFactor === 1 && rig.parallaxFactor === 1 && (c.shim === LEGACY || !!R.rigScale);
+  t(`rig pushed: camera, page fov, 1/d, ${R.convergenceSource === 'fixed' ? 'm2v 1 (real scale, fixed focus)' : '0.5·d_scale/0.5 (frozen)'}, ipd/parallax 1, scale decided`, rigOk, `type=${rig.type} vfov=${(rig.verticalFov * 180 / Math.PI).toFixed(3)}° diopters=${rig.convergenceDiopters?.toFixed(5)} m2v=${rig.metersToVirtual?.toFixed(4)} ipd=${rig.ipdFactor} parallax=${rig.parallaxFactor} pushes=${fake.frames}`);
   const exp = fake.expected;
   t('convergence ≈ known subject distance (±5 %)', exp && Math.abs(d - exp) / exp < 0.05, `estimated ${d.toFixed(3)}, expected ${exp && exp.toFixed(3)}, source ${R.convergenceSource}${R.convergenceVia ? ' (' + R.convergenceVia + ')' : ''}`);
   if (fake.expectedSource) {
@@ -444,8 +446,14 @@ function check(r, results) {
       const m = mae(other.pixels.px, pixels.px);
       t(`parity with case ${c.parityOf} (byte-identical frame)`, m === 0, `MAE ${m.toFixed(3)}, ${diffCount(other.pixels.px, pixels.px)} bytes differ of ${pixels.px.length}`);
       const oR = other.state.renderers.find((x) => x.active);
-      t(`parity with case ${c.parityOf} (rig + counters)`, JSON.stringify(oR.rig) === JSON.stringify(R.rig) && oR.convergence === R.convergence,
-        `rig ${JSON.stringify(oR.rig) === JSON.stringify(R.rig) ? 'identical' : 'DIFFERS'}, convergence ${oR.convergence} vs ${R.convergence}`);
+      // v0.7.10: the scale is set once and frozen (m2v from the distance it was decided at), and the
+      // estimator samples faster until then, so the scale fields and the convergence's last digits no
+      // longer match the pre-split script, which followed every estimate: compared without the two
+      // scale fields, convergence within 1 %.
+      const noScale = (g) => JSON.stringify({ ...g, metersToVirtual: undefined, convergenceDiopters: undefined });
+      const rigSame = noScale(oR.rig) === noScale(R.rig), convSame = Math.abs(oR.convergence - R.convergence) <= 0.01 * oR.convergence;
+      t(`parity with case ${c.parityOf} (rig without its scale fields, convergence ±1 %)`, rigSame && convSame,
+        `rig ${rigSame ? 'identical' : 'DIFFERS'}, convergence ${oR.convergence} vs ${R.convergence}`);
     } else t(`parity with case ${c.parityOf}`, false, 'no frame to compare');
   }
   if (c.killAfter) {
@@ -476,7 +484,9 @@ function check(r, results) {
   }
   if (c.displayAfter) {
     const D = r.display, g = D && D.rig, S = D && D.state.renderers.find((x) => x.active);
-    const dd = S ? S.convergence : NaN, fov = (c.fovDeg * Math.PI) / 180;
+    // v0.7.10: the scale distance (rigScale.d, frozen once decided) sets m2v and the display portal.
+    const sd = (R) => (R && R.rigScale && R.rigScale.d) || (R && R.convergence);
+    const dd = S ? sd(S) : NaN, fov = (c.fovDeg * Math.PI) / 180;
     const want = 2 * dd * Math.tan(fov / 2);
     const near = (a, b) => Math.abs(a - b) < 1e-9;
     const hudDepth = (h) => ((h || '').match(/depth (\d+\.\d+)/) || [])[1];
@@ -488,8 +498,8 @@ function check(r, results) {
     t('display rig on the HUD, in state() and remembered for the site', D && D.state.rigMode === 'display' && /display rig/.test(D.hud || '') && JSON.parse(D.stored || '{}').rig === 'display',
       `rigMode=${D && D.state.rigMode} hud="${D && D.hud}" stored=${D && D.stored}`);
     const C = D && D.cam, cg = C && C.rig, cd = C && C.state.renderers.find((x) => x.active);
-    t('camera rig, Ctrl+Alt+-: depth 0.5 -> 0.4 (m2v = 0.4·d/0.5), HUD + state()', cg && cg.type === 'camera' && near(C.state.depth, 0.4) && Math.abs(cg.metersToVirtual - (0.4 * cd.convergence) / 0.5) < 1e-6 * cd.convergence && hudDepth(C.hud) === '0.40',
-      cg ? `depth ${C.state.depth}, m2v ${cg.metersToVirtual} (want ${((0.4 * cd.convergence) / 0.5).toFixed(6)}), HUD depth ${hudDepth(C.hud)}` : 'n/a');
+    t('camera rig, Ctrl+Alt+-: depth 0.5 -> 0.4 (m2v = 0.4·d/0.5), HUD + state()', cg && cg.type === 'camera' && near(C.state.depth, 0.4) && Math.abs(cg.metersToVirtual - (0.4 * sd(cd)) / 0.5) < 1e-6 * sd(cd) && hudDepth(C.hud) === '0.40',
+      cg ? `depth ${C.state.depth}, m2v ${cg.metersToVirtual} (want ${((0.4 * sd(cd)) / 0.5).toFixed(6)}: the frozen scale distance ${sd(cd)}), HUD depth ${hudDepth(C.hud)}` : 'n/a');
     const dn = D && D.down, dg = dn && dn.rig;
     t('display rig, Ctrl+Alt+-: ONE joint control, ipdFactor = parallaxFactor = depth = 0.8; the camera rig keeps 0.4',
       dg && dg.type === 'display' && near(dg.ipdFactor, 0.8) && near(dg.parallaxFactor, 0.8) && near(dn.state.depth, 0.8) && hudDepth(dn.hud) === '0.80' && near(dn.state.depths.camera, 0.4) && near(dn.state.depths.display, 0.8),
@@ -499,7 +509,7 @@ function check(r, results) {
       ug ? `ipd ${ug.ipdFactor}, parallax ${ug.parallaxFactor}, depth ${up.state.depth}` : 'n/a');
     const b = D && D.back, bg = b && b.rig, bd = b && b.state.renderers.find((x) => x.active);
     t('Ctrl+Alt+P again: back to the camera rig WITH its own depth 0.4 (not the display rig\'s 0.8)',
-      bg && bg.type === 'camera' && b.state.rigMode === 'camera' && near(b.state.depth, 0.4) && Math.abs(bg.metersToVirtual - (0.4 * bd.convergence) / 0.5) < 1e-6 * bd.convergence && hudDepth(b.hud) === '0.40',
+      bg && bg.type === 'camera' && b.state.rigMode === 'camera' && near(b.state.depth, 0.4) && Math.abs(bg.metersToVirtual - (0.4 * sd(bd)) / 0.5) < 1e-6 * sd(bd) && hudDepth(b.hud) === '0.40',
       bg ? `type=${bg.type} rigMode=${b.state.rigMode} depth ${b.state.depth} m2v ${bg.metersToVirtual} HUD depth ${hudDepth(b.hud)}` : 'n/a');
     const ag = D && D.again && D.again.rig;
     t('Ctrl+Alt+P once more: the display rig restores ITS 0.8', ag && ag.type === 'display' && near(ag.ipdFactor, 0.8) && near(ag.parallaxFactor, 0.8) && near(D.again.state.depth, 0.8),

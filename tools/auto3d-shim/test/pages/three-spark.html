@@ -21,7 +21,13 @@
      toward its back, expected 8.6 (measured 8.63), source 'estimator'. &p=0.5 on top (cfg
      convRoomPercentile 0.5, case spark-room-percentile-p50): the weighted median, expected 8 (8.06).
      window.__addSubject(): adds a bounded mesh (a 0.4-unit box) 3 units ahead of the camera, inside
-     the room (case spark-room-subject): the estimator converges on it (3), source 'estimator'.
+     the room (case spark-room-subject). Since v0.7.10 a bounded prop in view does not end an open scene
+     (and open latches): the source stays 'fixed', convergence 2. &subject=1: the box from the start
+     (case spark-room-props: open with a prop in view, 'fixed' from the first estimate).
+     window.__addSubject(size): the same box, `size` units on a side (case spark-est-head: 3, big enough to
+     pull an object viewer's estimate in from 7).
+     window.__leaveRoom(): moves the camera 40 units back, outside the room's bounds (case
+     spark-room-latch: the open latch keeps 'fixed'; the estimator alone would find the lattice ~48 ahead).
      ?freeze=N: N drawn frames after the splats are ready (sorted), the page stops drawing (render on demand: the shim replays).
      Instrumentation (window.__spark, read by cases/spark.mjs): every SparkRenderer.updateInternal
      call (Spark's per-frame generate + sort driver, run from its onBeforeRender), whether it
@@ -89,13 +95,15 @@ const splats = new SplatMesh({
   },
 });
 scene.add(splats);
+if (ROOM && Q.has('subject')) queueMicrotask(() => window.__addSubject());
 // A bounded subject that appears later (a model that loads into an open world): see the header.
 // Test hooks (cases/pivot.mjs): the page camera's world matrix, and an in-place turn (a first-person
 // look: the camera rotates about itself).
 window.__camWorld = () => { camera.updateMatrixWorld(); return Array.from(camera.matrixWorld.elements); };
 window.__yaw = (rad) => { camera.rotateY(rad); };
-window.__addSubject = () => {
-  const box = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), new THREE.MeshBasicMaterial({ color: 0xd08040 }));
+window.__leaveRoom = () => { camera.position.set(0, 0, 40); };
+window.__addSubject = (size = 0.4) => {
+  const box = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), new THREE.MeshBasicMaterial({ color: 0xd08040 }));
   box.position.set(0, 0, -3);
   scene.add(box);
   window.__subjectAt = performance.now();

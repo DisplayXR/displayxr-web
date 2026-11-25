@@ -65,6 +65,9 @@ function dxrCore(cfg, cap, S) {
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
+    scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.10): from this many consecutive estimator samples ...
+    scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
+    scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
     // OPEN scenes (no target, and every sampled bound holds the camera: a room-scale splat world, a
     // sky + floor). David's call, 2026-09-28: no dynamic convergence; a FIXED focus, as legacy WebXR.
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
@@ -459,6 +462,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
+    st.rigScale = null; st.rigScaleWait = null; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     const rig = buildRig(st, ad.rigFov(st));
@@ -701,8 +705,9 @@ function dxrCore(cfg, cap, S) {
         try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ending */ }
       }
       // The page's explicit target is cheap and followed every frame; the estimator walks the scene,
-      // so it runs every 30 frames, as before.
-      if (!estimateConvergence(st, false, true) && st.stats.xrFrames % 30 === 0) estimateConvergence(st, false);
+      // so it runs every 30 frames, as before — every 10 while the scale is still undecided (its
+      // samples, setScaleOnce: a slow page would otherwise wait seconds per sample).
+      if (!estimateConvergence(st, false, true) && st.stats.xrFrames % (st.rigScale ? 30 : 10) === 0) estimateConvergence(st, false);
       tickRamp(st, t);
       // Pushed every frame and before any draw: a rig drives the NEXT locate.
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
@@ -815,7 +820,10 @@ function dxrCore(cfg, cap, S) {
         display: { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       };
     }
-    const d = rigDistance(st);
+    const d = rigDistance(st), ds = scaleDistance(st);
+    // Flat (both eyes on the page camera) until the scale is decided: no eye pose is ever built on a
+    // provisional scale (setScaleOnce).
+    const k = st.rigScale ? rampK(st) : 0;
     if (rigMode() === 'display') {
       // DISPLAY rig, for object-centric scenes (the P key of legacy WebXR apps): the canvas is a
       // portal onto a virtual display. Framing: the portal sits on the convergence plane, square to
@@ -831,11 +839,13 @@ function dxrCore(cfg, cap, S) {
       // The portal stays at (0, 0, -d) in the page camera's space; where that camera is in the world
       // while in this rig (so that the page's own rotations pivot about the portal) is pivotOffset's
       // business, applied by the adapters when they compose the eyes (eyePose).
+      // Its scale IS the portal (the runtime's m2v = virtualDisplayHeight / the canvas's physical
+      // height, and the eyes sit at the viewer's offset × m2v from it), so the whole portal is placed
+      // at the frozen scale distance (v0.7.10): it no longer follows a moving estimate.
       const r = st.rigs.display;
-      r.position.x = r.position.y = 0; r.position.z = -d;
+      r.position.x = r.position.y = 0; r.position.z = -ds;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * d * Math.tan(verticalFov / 2);
-      const k = rampK(st);
+      r.virtualDisplayHeight = 2 * ds * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -845,7 +855,7 @@ function dxrCore(cfg, cap, S) {
     }
     const rig = st.rigs.camera;
     rig.type = 'camera';
-    const k = rampK(st); // the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
+    // k: the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
     // attach: identity pose — the page camera's world transform supplies THIS frame's pose at draw time.
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
@@ -865,17 +875,71 @@ function dxrCore(cfg, cap, S) {
       st.rig = rig;
       return rig;
     }
-    // metersToVirtual grows with the convergence distance: the depth budget is then the same for a
-    // 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
-    // comfort = ipd × m2v × diopters × 0.5 = the camera rig's depth by construction.
-    rig.metersToVirtual = (depthOf('camera') * d) / 0.5;
+    // metersToVirtual grows with the distance the scale was decided at: the depth budget is then the
+    // same for a 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
+    // comfort = ipd × m2v × diopters × 0.5 = the camera rig's depth while the convergence is still
+    // where the scale was set. FROZEN for the activation (scaleDistance, v0.7.10): the convergence
+    // (diopters, above) keeps following the estimate / target, m2v does not, so the eyes never move
+    // relative to the page camera when the estimate does.
+    rig.metersToVirtual = (depthOf('camera') * ds) / 0.5;
     rig.ipdFactor = k;
     rig.parallaxFactor = k;
     st.rig = rig;
     return rig;
   }
-  // The convergence distance both rigs use: the camera rig's convergence plane, the display rig's portal.
+  // The camera rig's convergence plane (live: it follows the estimate / target).
   const rigDistance = (st) => Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+  // The SCALE distance (v0.7.10, David: "if we ever use m2v it cannot change, the scale is set once and
+  // we'd better get it right"): the distance the rig's scale was decided at (setScaleOnce), times the
+  // user's Focus. It sets the camera rig's metersToVirtual (∝ it) and the whole display rig (its portal
+  // distance and height, hence the runtime's m2v). Frozen for the activation: only the user's Focus /
+  // depth keys / reset, or a new activation, change the scale. The eyes then never sit farther from the
+  // page camera than the viewer's head offset × that m2v. Before (≤ 0.7.9) m2v followed every estimate:
+  // on arrival.space the estimator's m2v put the eyes ~5.6 units above the page camera (#319).
+  const scaleDistance = (st) => Math.max(1e-6, ((st.rigScale && st.rigScale.d) || st.conv.d || 1) * site.convScale);
+  // Decides the scale once per activation (st.rigScale = { d, basis, m2v? }), from estimateConvergence:
+  //   - an open scene: real scale (m2v 1), at once; it also replaces an earlier estimator decision (once:
+  //     open latches), logged;
+  //   - the page's explicit target: its distance, at once (exact);
+  //   - the estimator: T.scaleSamples consecutive real estimates within T.scaleSpread of their median,
+  //     on a quiet page (the guard's loading test), else whatever there is T.scaleMaxWaitMs after the flip.
+  // Until then the rig stays flat (buildRig: k 0), so no eye pose is ever built on a provisional scale.
+  function setScaleOnce(st, src, raw) {
+    if (!st.active) return;
+    const S = st.rigScale;
+    if (src === 'fixed') {
+      if (S && S.open) return;
+      st.rigScale = { d: 0, open: true, basis: 'open scene' };
+      info(`scale set: m2v 1 (open scene${S ? `; replaces ${scaleText(st, S)} (${S.basis})` : ''})`);
+      scaleReady(st);
+      return;
+    }
+    if (S) return;
+    if (src === 'target' && raw > 0) {
+      st.rigScale = { d: raw, basis: `target${st.conv.via ? ': ' + st.conv.via : ''}` };
+    } else {
+      const W = st.rigScaleWait || (st.rigScaleWait = { t0: now(), xs: [] });
+      if (src === 'estimator' && raw > 0) { W.xs.push(raw); if (W.xs.length > T.scaleSamples) W.xs.shift(); }
+      const t = now(), xs = W.xs.slice().sort((a, b) => a - b), med = xs.length ? xs[xs.length >> 1] : 0;
+      const consistent = xs.length >= T.scaleSamples && med > 0 && xs[xs.length - 1] - xs[0] <= T.scaleSpread * med;
+      const quiet = !(guard.loading && guard.loading(t));
+      const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
+      if (!(consistent && quiet) && !late) return;
+      const d = med > 0 ? med : st.conv.d || 1;
+      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
+    }
+    info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
+    scaleReady(st);
+  }
+  // A decided scale, for the log: the camera rig's m2v at the user's current depth / Focus, or the
+  // display rig's portal (the runtime's m2v = its height / the canvas's physical height).
+  function scaleText(st, S) {
+    if (S.open && rigMode() !== 'display') return 'm2v 1';
+    const d = Math.max(1e-6, (S.d || st.conv.d || 1) * site.convScale);
+    return rigMode() === 'display' ? `display portal ${(2 * d * Math.tan(st.ad.rigFov(st) / 2)).toPrecision(3)} units tall at ${d.toPrecision(3)}` : `m2v ${((depthOf('camera') * d) / 0.5).toPrecision(3)}`;
+  }
+  // The depth fades in once the scale is set (it waited flat), when the cover is already down.
+  function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
 
   // ------------------------------------------------------------ the display rig's pivot
   // RULE (David, panel 2026-09-29): in the display rig the virtual display's centre IS the pivot of
@@ -906,7 +970,7 @@ function dxrCore(cfg, cap, S) {
   const ZERO3 = Object.freeze([0, 0, 0]);
   function pivotOffset(st, m) {
     if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
-    const d = rigDistance(st), P = st.piv;
+    const d = scaleDistance(st), P = st.piv; // the portal's distance (buildRig places it at the scale distance)
     if (P && P.d === d) {
       let same = true;
       for (let k = 0; k < 16; k++) if (P.m[k] !== m[k]) { same = false; break; }
@@ -951,22 +1015,31 @@ function dxrCore(cfg, cap, S) {
     return o[i];
   }
   // Convergence, three tiers: (1) the page's explicit target when it has one and the camera is
-  // actually looking at it; else (2) the scene estimator on a bounded subject; else, in an OPEN
-  // scene (every sampled bound holds the camera: a room-scale world, a sky + floor), (3) a FIXED
-  // focus T.openSceneConvM (2) units ahead at real scale (buildRig), as legacy WebXR did. David's
-  // call, 2026-09-28 (T.openSceneMode 'percentile' restores the 0.5.3 room rule instead). The
-  // estimator keeps running, so a subject that appears later (a model loads) takes over again.
+  // actually looking at it; else, in an OPEN scene (the camera stands inside a world: a sampled bound
+  // holds it, or it stands among a volume's pieces), (3) a FIXED focus T.openSceneConvM (2) units ahead
+  // at real scale (buildRig), as legacy WebXR did (David's call, 2026-09-28; T.openSceneMode
+  // 'percentile' restores the 0.5.3 room rule instead); else (2) the scene estimator on what is in
+  // view (an object viewer: the camera outside every bound).
+  // OPEN LATCHES (v0.7.10, #319): once a state's scene has been open it stays 'fixed: open scene' for
+  // the rest of that state (the canvas, this document), bounded props in view or not. arrival.space
+  // has ~400 meshes (props, signs, portals) inside its splat world: before, any one in view made the
+  // scene "bounded" and the source flipped between the estimator (m2v ∝ d) and the fixed rig every
+  // 30 frames as the viewer walked: the depth kept changing on the panel. The page's explicit target
+  // still wins over the latch, as over the open rule. (The 0.7.x rule 'a subject appearing in an open
+  // scene takes over again' is gone with it.)
   // Returns false when there was nothing to go on (targetOnly: no usable target).
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
-    let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target';
+    let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target', raw = d;
     if (!(d > 0)) {
       if (targetOnly) return false;
       src = 'estimator'; st.conv.via = null;
       const o = {};
-      d = estimateSubjectDistance(s, o);
-      if (o.open) {
+      d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
+      raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      if (st.openLatched || o.open) {
+        if (!st.openLatched) { st.openLatched = true; info('open scene: the camera stands inside a world — fixed focus for the rest of this page'); }
         src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
         // Scale sanity, a note only: a world whose typical depth in view is millimetres or
         // kilometres is probably not in metres, and the 2 m focus will read wrong there.
@@ -982,6 +1055,7 @@ function dxrCore(cfg, cap, S) {
     st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
+    setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     if (st.active && st.convLogged) settleLog(st);
     return true;
@@ -1055,11 +1129,16 @@ function dxrCore(cfg, cap, S) {
   //                      world fed as its splats in view): the camera stands among the items, so the median rule applies
   // }
   //
-  // out (optional), T.openSceneMode 'fixed' only: out.open = true when the scene is OPEN (at least
-  // one sampled bound holds the camera and nothing BOUNDED is in view: every item in view is a piece
-  // of such a volume); the caller then uses the fixed focus, and out.p is the T.convRoomPercentile
-  // depth of what is in view (0 if nothing), for a scale-sanity note only. In 'fixed' mode a bounded
-  // subject in view among volume pieces is converged on by itself: the room around it is no subject.
+  // out (optional), T.openSceneMode 'fixed' only: out.open = true when the scene is OPEN: the camera
+  // stands inside a WORLD, i.e. a splat volume holds it (cb's isSplat: a PlayCanvas gsplat's bound) or
+  // it stands among a volume's pieces (three.js Spark: `among`); bounded props in view do not veto it
+  // (v0.7.10, #319: arrival.space's ~400 meshes inside its splat world did). A bound that holds the
+  // camera but is NOT a splat volume (a floor plane, a skybox / dome mesh, a room mesh) makes the scene
+  // open only when nothing bounded is in view, as before: an object viewer on a 40-unit floor (harness
+  // case a) is still an object viewer. The caller then uses the fixed focus (and latches it), and
+  // out.p is the T.convRoomPercentile depth of what is in view (0 if nothing), for a scale-sanity note
+  // only. A camera outside every bound is never open: the estimator below.
+  // forEachBounds(cb): cb(wx, wy, wz, worldRadius, among?, isSplat?).
   function estimateSubjectDistance(s, out) {
     const cw = s.cameraPose;
     const vm = s.viewMatrix || invert4(cw);
@@ -1068,12 +1147,12 @@ function dxrCore(cfg, cap, S) {
     const near = s.near;
     const fixedMode = T.openSceneMode !== 'percentile';
     let items = [];
-    let n = 0, among = false, enclosing = 0, bounded = 0;
-    s.forEachBounds((wx, wy, wz, wr, inVolume) => {
+    let n = 0, among = false, enclosing = 0, world = 0, bounded = 0;
+    s.forEachBounds((wx, wy, wz, wr, inVolume, isSplat) => {
       if (n >= 4000) return false;
       n++;
-      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; return true; }
-      if (inVolume) { among = true; enclosing++; }
+      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; if (isSplat) world++; return true; }
+      if (inVolume) { among = true; enclosing++; world++; }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
@@ -1083,11 +1162,10 @@ function dxrCore(cfg, cap, S) {
       if (!inVolume) bounded++;
       return true;
     });
-    if (fixedMode && enclosing && !bounded) {
+    if (fixedMode && (world || (enclosing && !bounded))) {
       if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
       return 0;
     }
-    if (fixedMode && among) { items = items.filter((it) => !it.v); among = false; }
     if (!items.length) return 0;
     let cx = 0, cy = 0, cz = 0, ws = 0;
     for (const it of items) { const k = it.r * it.r + 1e-12; cx += it.x * k; cy += it.y * k; cz += it.w * k; ws += k; }
@@ -1229,14 +1307,14 @@ function dxrCore(cfg, cap, S) {
     const cv = st.cover;
     if (!cv) {
       // Dropped at coverMaxMs with no stereo frame: the depth fades in from the first one instead.
-      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp) startRamp(st, 1); }
+      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp && st.rigScale) startRamp(st, 1); }
       return;
     }
     if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
-      if (st.rampK < 1) startRamp(st, 1);
+      if (st.rampK < 1 && st.rigScale) startRamp(st, 1); // else it fades in once the scale is set (scaleReady)
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
