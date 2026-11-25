@@ -28,9 +28,11 @@ Five mistakes a page makes most often (each looks fine in a 2D browser):
 - what sits behind a transparent tile (a splat's default clear) shows through flat, at half horizontal
   resolution: keep it a soft light/mid-tone colour, or pass an opaque clearColor;
 - an addScene page passes onLayerLost that draws ONE mono view across the canvas, never a no-op;
-- an addScene page sizes its canvas with sceneBufferSize(canvas, { sbs, viewScale: await handle.getDisplayInfo() }),
-  never clientWidth x devicePixelRatio x 2: full screen on an 8K panel that overflows the browser's
-  drawing-buffer cap, the eyes land off-centre and one eye shows both images (fine on a tablet);
+- an addScene page sizes its canvas with sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })
+  in the SAME task as addScene (never after an await or in a later rAF: the first woven frames would
+  go out flat-shaped, each eye half the scene), re-sizes when handle.getDisplayInfo() resolves, and
+  never uses clientWidth x devicePixelRatio x 2: full screen on an 8K panel that overflows the
+  browser's drawing-buffer cap, the eyes land off-centre and one eye shows both images;
 - page chrome over a tile (sticky header, buy card, caption) is fine as ordinary HTML, opaque or
   translucent, as long as it covers part of the tile; no filter/blend on it, frost only a partial region.
 

@@ -108,7 +108,7 @@ function setCameraFromView(view) {
 // inside the GL limits and the browser's drawing-buffer area cap. Hand-rolled
 // clientWidth x dpr x 2 overflows that cap full screen on an 8K panel and the eyes land off-centre.
 let sbsMode = false;
-let viewInfo = null; // handle.getDisplayInfo(), once woven
+let viewInfo = null; // wall.displayInfo at boot, then handle.getDisplayInfo() once woven
 function sizeToCanvas() {
   const s = sceneBufferSize(canvas, { sbs: sbsMode, viewScale: sbsMode ? viewInfo : null });
   renderer.setSize(s.width, s.height, false);
@@ -307,8 +307,12 @@ function onMonoFrame(now) {
         requestAnimationFrame(onMonoFrame);
       },
     });
-    // Only now do we know we render side-by-side — re-size the backing store to 2x width.
+    // Only now do we know we render side-by-side — re-size the backing store to 2x width, in this
+    // task (the layer's first frame comes later): never after an await or in a later rAF, or the
+    // first woven frames go out flat-shaped and each eye shows half the scene. wall.displayInfo
+    // is the view scale already known (null on a first visit; the read below fills it in).
     sbsMode = true;
+    viewInfo = wall.displayInfo;
     sizeToCanvas();
     handle.getDisplayInfo().then((info) => { viewInfo = info; sizeToCanvas(); }).catch(() => {});
     statusEl.innerHTML = '<b style="color:#4ade80">inline-3D active</b> — weaving glasses-free 3D · ' +

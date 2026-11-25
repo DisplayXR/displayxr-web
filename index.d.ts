@@ -117,6 +117,11 @@ export type WovenWithheldReason =
  * - `woven: true, reason: 'hold-capped'` — `rewoven()`: the canvas kept resizing or moving, so
  *   it stopped waiting four holds after the call; with the report, also a 'woven' read that never
  *   qualified (see {@link TileHandle.rewoven}). Drop the cover; the rect may still be settling.
+ * - `woven: true, reason: 'store-capped'` (since 1.59.0) — a scene canvas whose page-sized store
+ *   never got the side-by-side shape (each eye tile the canvas box's aspect) within four holds of
+ *   the layer. firstWoven waits while the store is wrong, then holds from when it became right;
+ *   this is the cap on that wait. The console says what the store and box were. Fix the sizing:
+ *   the woven frames are wrong, not just late.
  * - `woven: false, confirmed: true`, `reason` a {@link WovenWithheldReason} or `'pending'` — the
  *   browser kept reporting the layer withheld (or never listed it) for the whole cap: four holds,
  *   at least 4.8 s. A safety release, not a loss: the canvas is NOT taken flat and `rewoven()`
@@ -137,6 +142,7 @@ export interface FirstWovenResult {
     | 'woven'
     | 'hold-elapsed'
     | 'hold-capped'
+    | 'store-capped'
     | 'layer-failed'
     | 'session-ended'
     | 'removed'
@@ -712,6 +718,18 @@ export interface Inline3D {
   readonly refSpace: XRReferenceSpace | null;
   /** Number of currently-active (weaving) windows. */
   readonly liveCount: number;
+  /**
+   * The panel, synchronously. Since 1.59.0.
+   *
+   * The last {@link getDisplayInfo} answer this document read (the SDK reads it itself on the
+   * first live layer), else the one the last page on this origin read — a frozen copy of the six
+   * numeric fields with `cached: true` — else `null`. A display read needs a layer that has
+   * delivered a frame, so this is how a page sizes its FIRST woven frames at the right view
+   * scale: `sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })` in the same task
+   * as `addScene`. A cached value can name another display; it costs resolution until the live
+   * read lands (re-size then), never geometry.
+   */
+  readonly displayInfo: (XRDisplayInfo & { readonly cached?: true }) | null;
 
   // The panel is the DOCUMENT's, not a tile's, so the display API lives here; the same names are
   // on every tile handle, routed to whichever window currently holds a live layer.

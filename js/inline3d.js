@@ -806,6 +806,64 @@ function chromeTextPlates(root) {
 const REWOVEN_MAX_HOLDS = 4;
 
 /**
+ * Does one woven eye tile (`vw` x `vh` store px, as getViewport() reports it) have the canvas
+ * box's aspect (`bw` x `bh` CSS px)? Each eye's image spans the whole box, so it must. A store
+ * sized 1:1 to the box while woven fails by a factor of two: each eye gets half the scene.
+ * The tolerance absorbs rounding only (an integer CSS box, a rounded store): 4 px or 2 %.
+ */
+function storeShapeOk(vw, vh, bw, bh) {
+  if (!(vw > 0 && vh > 0 && bw > 0 && bh > 0)) return true; // nothing to judge
+  const want = (vh * bw) / bh;
+  return Math.abs(vw - want) <= Math.max(4, 0.02 * want);
+}
+
+// The last display info this origin read (`wall.displayInfo` before this document has read its
+// own): the six numbers sceneBufferSize and displayMetrics use, nothing else.
+const DISPLAY_INFO_KEY = 'dxr-inline3d:displayInfo';
+const DISPLAY_INFO_FIELDS = [
+  'displayWidthMeters',
+  'displayHeightMeters',
+  'displayPixelWidth',
+  'displayPixelHeight',
+  'recommendedViewScaleX',
+  'recommendedViewScaleY',
+];
+
+/** The stored display info, frozen and marked `cached: true`; null when absent or unreadable. */
+function readCachedDisplayInfo() {
+  try {
+    const ls = typeof localStorage !== 'undefined' ? localStorage : null;
+    const raw = ls ? ls.getItem(DISPLAY_INFO_KEY) : null;
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    const out = { cached: true };
+    for (const k of DISPLAY_INFO_FIELDS) {
+      if (!Number.isFinite(o[k])) return null;
+      out[k] = o[k];
+    }
+    return Object.freeze(out);
+  } catch {
+    return null;
+  }
+}
+
+/** Store the numeric fields of a live answer (read one by one: browser objects have getters). */
+function writeCachedDisplayInfo(info) {
+  try {
+    const ls = typeof localStorage !== 'undefined' ? localStorage : null;
+    if (!ls) return;
+    const o = {};
+    for (const k of DISPLAY_INFO_FIELDS) {
+      if (!Number.isFinite(info[k])) return;
+      o[k] = info[k];
+    }
+    ls.setItem(DISPLAY_INFO_KEY, JSON.stringify(o));
+  } catch {
+    /* private mode / blocked storage: the live value still serves this document */
+  }
+}
+
+/**
  * The CSS size + dpr + PAGE position of a window's canvas: what a pending rewoven() restarts on,
  * and what a rect cover goes up on.
  *
@@ -958,6 +1016,9 @@ class Inline3D {
     // `viewRig` always holds what the page asked for, untouched).
     this._stereoCollapsed = false;
     this._displayListeners = new Map(); // event type -> Set(callback), for on()/off()
+    // wall.displayInfo: the last getDisplayInfo() answer this document read (any window, any
+    // caller), else the last one this origin stored, else null. See _noteDisplayInfo.
+    this._displayInfo = readCachedDisplayInfo();
     this._primedDisplayState = false;
     // ── the eased 2D<->3D transition (opts.modeSwitch) ───────────────────────────────
     // The collapse above is a LATCH; what actually reaches each layer is that latch turned into a
@@ -1029,6 +1090,22 @@ class Inline3D {
     this._bindLifecycle();
     this._armDprWatch();
     this._requestFrame();
+  }
+
+  /**
+   * The panel, SYNCHRONOUSLY: the last getDisplayInfo() answer this document read, else the one
+   * the last page on this origin read (frozen, `cached: true`), else null. For sizing the first
+   * woven frames: sceneBufferSize(canvas, { viewScale: wall.displayInfo }) in the same task as
+   * addScene. The SDK reads it on the first live layer, so it is current within a few frames.
+   */
+  get displayInfo() {
+    return this._displayInfo;
+  }
+
+  _noteDisplayInfo(r) {
+    if (!r || typeof r !== 'object') return;
+    this._displayInfo = r;
+    writeCachedDisplayInfo(r);
   }
 
   /** Number of windows whose weave layer is currently live (on-screen in lazy mode). */
@@ -1255,6 +1332,9 @@ class Inline3D {
     // The SDK's own renderers (./viewer, ./splat, ./model) clamp their buffers before sizing and
     // say so, so the core never inspects (or creates!) their GL context — see _checkSceneBuffer.
     if (opts.bufferClamped === true) win.warnedBufMismatch = true;
+    // The page-owned store's SHAPE is checked every stereo frame (_checkSceneStore); the SDK's
+    // renderers size their own and are left alone.
+    win.storeCheck = opts.bufferClamped !== true;
     return this._handle(canvas, win);
   }
 
@@ -1865,6 +1945,29 @@ class Inline3D {
    * rejected promise is what a page can actually handle.
    */
   _layerCall(win, method, label, args = []) {
+    if (method === 'getDisplayInfo') {
+      // One read in flight per layer: the SDK's own first-layer read (wall.displayInfo) and a
+      // page's call made at the same time share it rather than asking the browser twice.
+      const layer = win && win.layer;
+      if (layer && win.diPending && win.diPending.layer === layer) return win.diPending.p;
+      const p = this._layerCallRaw(win, method, label, args).then(
+        (r) => {
+          if (win && win.diPending && win.diPending.p === p) win.diPending = null;
+          this._noteDisplayInfo(r);
+          return r;
+        },
+        (e) => {
+          if (win && win.diPending && win.diPending.p === p) win.diPending = null;
+          throw e;
+        },
+      );
+      if (layer) win.diPending = { layer, p };
+      return p;
+    }
+    return this._layerCallRaw(win, method, label, args);
+  }
+
+  _layerCallRaw(win, method, label, args = []) {
     if (!hasDisplayModes()) {
       return Promise.reject(
         new Error(
@@ -1894,7 +1997,7 @@ class Inline3D {
     // above) or been rebuilt (-> wait for the new one) meanwhile.
     const deferred = LAYER_CALLS_AFTER_FIRST_FRAME.has(method);
     if (deferred && !win.layerFramed && this._layerReadPending(win)) {
-      return this._whenLayerFramed(win).then(() => this._layerCall(win, method, label, args));
+      return this._whenLayerFramed(win).then(() => this._layerCallRaw(win, method, label, args));
     }
     // Wrapped so a SYNCHRONOUS throw from the browser (requestRenderingMode raises TypeError
     // that way for a non-2-view mode) arrives as a rejection like every other failure.
@@ -1917,7 +2020,7 @@ class Inline3D {
         return r;
       }
       if (!this._layerReadPending(win)) return r; // at the cap: null / [] is a real absence
-      return this._whenLayerFramed(win).then(() => this._layerCall(win, method, label, args));
+      return this._whenLayerFramed(win).then(() => this._layerCallRaw(win, method, label, args));
     });
   }
 
@@ -2571,6 +2674,14 @@ class Inline3D {
       fwRegAt: nowMs(),
       fwLayerAt: null,
       fwStereo: false,
+      // The scene store's shape (_checkSceneStore): wrong now, stereo frames drawn wrong (ever),
+      // and when / at which session frame it last became right after being wrong (null = never
+      // wrong on this layer). firstWoven waits while it is wrong and holds from storeOkAt.
+      storeCheck: false,
+      storeWrong: false,
+      storeBadFrames: 0,
+      storeOkAt: null,
+      storeOkFrame: null,
       // handle.rewoven(): null, or the pending { promise, resolve, calledAt, at, stereo, box } —
       // firstWoven's two halves again, counted from the call (and from each later box change).
       rw: null,
@@ -2729,6 +2840,9 @@ class Inline3D {
     if (!win.fwResult) {
       win.fwLayerAt = nowMs();
       win.fwStereo = false;
+      win.storeWrong = false;
+      win.storeOkAt = null;
+      win.storeOkFrame = null;
     }
     win.wsLive = hasWovenState();
     // A new layer has delivered nothing yet (see _layerCall). Reads queued on the previous one
@@ -2750,6 +2864,13 @@ class Inline3D {
     // with the panel already flat, and the rig has to be collapsed for that too — and (b) what
     // this build can undock. Both best-effort and unawaited: they run inside the scroll-driven
     // activation path and must never break it.
+    // (c) The panel's view scale, for wall.displayInfo — so a page sizing its next store has it.
+    if (!this._primedDisplayInfo && hasDisplayModes()) {
+      this._primedDisplayInfo = true;
+      this._layerCall(win, 'getDisplayInfo', 'getDisplayInfo()').catch(() => {
+        this._primedDisplayInfo = false;
+      });
+    }
     if (!this._primedDisplayState && hasDisplayModes()) {
       this._primedDisplayState = true; // one attempt per manager, not one per activation
       this._getRenderingModes(win).catch(() => {
@@ -3137,6 +3258,59 @@ class Inline3D {
             'gl.drawingBufferWidth/Height.',
         ),
       );
+    }
+  }
+
+  /**
+   * The SHAPE of a woven, page-sized scene store, every stereo frame: each eye tile must have the
+   * canvas box's aspect. The usual failure is a store still sized for flat (1:1 to the box) on
+   * the first woven frames, because the page resized it after an await or in a later rAF: each
+   * eye then shows half the scene, which reads as broken 3D until the resize lands.
+   *
+   * A warning and a count, nothing else — the store is the page's, and it is never resized here.
+   * firstWoven waits while it is wrong (see _tickFirstWoven), so a page that reveals on it hides
+   * those frames.
+   */
+  _checkSceneStore(win, views) {
+    const c = win.canvas;
+    const bw = c.clientWidth || 0;
+    const bh = c.clientHeight || 0;
+    if (!(bw > 0 && bh > 0 && c.width > 0 && c.height > 0) || !views || !views.length) return;
+    let vp = null;
+    try {
+      vp = win.layer.getViewport(views[0]);
+    } catch {
+      vp = null;
+    }
+    if (!vp || !(vp.width > 0 && vp.height > 0)) return;
+    if (!storeShapeOk(vp.width, vp.height, bw, bh)) {
+      win.storeBadFrames++;
+      win.storeWrong = true;
+      if (!win.warnedStoreShape) {
+        win.warnedStoreShape = true;
+        const mono = storeShapeOk(c.width, c.height, bw, bh);
+        console.warn(
+          `[inline3d] this woven scene canvas's store is ${c.width}×${c.height}, so each eye tile is ` +
+            `${vp.width}×${vp.height}, but the canvas box is ${bw}×${bh}: ` +
+            (mono
+              ? 'the store is still shaped for FLAT, so each eye shows half the scene. '
+              : 'the eye tiles do not have the box aspect, so each eye is stretched. ') +
+            'Size it for side-by-side before the first woven frame, in the same task as addScene ' +
+            '(sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })), never after an ' +
+            'await or in a later rAF. firstWoven waits until it is right.',
+          c,
+        );
+      }
+    } else if (win.storeWrong) {
+      win.storeWrong = false;
+      win.storeOkAt = nowMs();
+      win.storeOkFrame = this._frameCount;
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug(
+          `[inline3d] scene store now ${c.width}×${c.height}, eye tiles match the box; ` +
+            `${win.storeBadFrames} stereo frame(s) so far were drawn into a wrong-shaped store.`,
+        );
+      }
     }
   }
 
@@ -3537,6 +3711,7 @@ class Inline3D {
               win.fwStereo = true;
               win.lfStereo = true;
               if (!win.warnedBufMismatch) this._checkSceneBuffer(win);
+              if (win.storeCheck) this._checkSceneStore(win, views);
               if (win.rw) win.rw.stereo = true;
             }
           } catch (err) {
@@ -3611,7 +3786,16 @@ class Inline3D {
       }
     }
     if (win.fwResult || !win.fwStereo || win.fwLayerAt === null) return;
-    if (nowMs() - win.fwLayerAt < win.fwHoldMs) return;
+    const t = nowMs();
+    // A wrong-shaped store (see _checkSceneStore) is not "safe to reveal": wait for it, then run
+    // the whole hold from when it became right. Capped like every other wait, so a page that
+    // never fixes its store does not keep its cover up for good.
+    if (win.storeWrong) {
+      if (t - win.fwLayerAt >= this._layerFramedCap(win)) this._settleFirstWoven(win, true, 'store-capped');
+      return;
+    }
+    const from = win.storeOkAt !== null && win.storeOkAt > win.fwLayerAt ? win.storeOkAt : win.fwLayerAt;
+    if (t - from < win.fwHoldMs) return;
     this._settleFirstWoven(win, true, 'hold-elapsed');
   }
 
@@ -3658,9 +3842,13 @@ class Inline3D {
       }
     }
     if (win.fwResult || win.fwLayerAt === null) return;
-    if (win.fwStereo && state === 'woven') this._settleFirstWoven(win, true, 'woven', true);
+    // The report trails the frame by a few frames, so a store that just became right is trusted
+    // only WOVEN_STATE_LAG_FRAMES later (an earlier 'woven' read can be of the wrong store).
+    const storeReady =
+      !win.storeWrong && (win.storeOkFrame === null || this._frameCount - win.storeOkFrame >= WOVEN_STATE_LAG_FRAMES);
+    if (win.fwStereo && state === 'woven' && storeReady) this._settleFirstWoven(win, true, 'woven', true);
     else if (t - win.fwLayerAt >= cap) {
-      if (state === 'woven') this._settleFirstWoven(win, true, 'hold-capped', true);
+      if (state === 'woven') this._settleFirstWoven(win, true, win.storeWrong ? 'store-capped' : 'hold-capped', true);
       else this._settleFirstWoven(win, false, readWithheldReason(win.layer) || state, true);
     }
   }
