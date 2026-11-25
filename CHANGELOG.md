@@ -7,6 +7,15 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased — proposed 1.25.0 (minor: a new experimental subpath)
 
+### Fixed — lift: a black Gaussians scene is reported, not opened (web#341)
+
+- When the frame handed to the runtime's Gaussians converter was black (a grab of a
+  hardware-decoded video on Windows), Explore opened a scene of black splats. The native result is
+  now checked: when 99 % of its splats are darker than 0.08 luminance (read from `f_dc_*` by name,
+  any PLY layout) `generateLift` rejects with `NativeLiftError` code `black` and the chip says
+  "3D failed: the frame came out black". Explore stays on offer for the next frame.
+- `js/lift/native.js` gains `plyColourStats(u8)` and `BLACK_SCENE_LUMA` (internal; not re-exported from `./lift`).
+
 ### Fixed — lift: Explore no longer hangs when the runtime's Gaussians converter fails (web#341)
 
 - With a Gaussians converter installed but unable to load, Explore paused the video and then
