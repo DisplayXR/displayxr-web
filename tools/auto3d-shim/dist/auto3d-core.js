@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.7.9 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.10 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.9'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.10'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -13,6 +13,7 @@ function dxrCore(cfg, cap, S) {
     eyeScale: 0.5,      // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
     maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
+    maxSbsArea: 5760 * 5760, // Chromium's WebGL drawing-buffer area cap (kMaxArea): past it the buffer is silently scaled down while canvas.width keeps the value (@displayxr/inline3d MAX_DRAWING_BUFFER_AREA)
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
     coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
@@ -171,8 +172,15 @@ function dxrCore(cfg, cap, S) {
       if (sf) st.lim = sf.limit(); // cached per canvas: a context's limits do not change
     }
     const lim = T.glLimit > 0 ? T.glLimit : st.lim || Infinity;
-    eyeW = Math.max(2, Math.min(eyeW, Math.floor(Math.min(T.maxSbsWidth, lim) / 2)));
-    eyeH = Math.max(2, Math.min(eyeH, Math.floor(lim)));
+    return fitEyes(eyeW, eyeH, lim);
+  }
+  function fitEyes(eyeW, eyeH, lim) {
+    const maxW = Math.min(T.maxSbsWidth, lim);
+    const s = Math.min(1, maxW / (2 * eyeW), lim / eyeH, Math.sqrt(T.maxSbsArea / (2 * eyeW * eyeH)));
+    if (s < 1) {
+      eyeW = Math.max(2, Math.min(Math.floor(eyeW * s + 1e-9), Math.floor(maxW / 2)));
+      eyeH = Math.max(2, Math.min(Math.floor(eyeH * s + 1e-9), Math.floor(lim)));
+    }
     return { eyeW, eyeH, W: 2 * eyeW, H: eyeH };
   }
   function virtualizeCanvas(st, onWrite) {
@@ -971,7 +979,7 @@ function dxrCore(cfg, cap, S) {
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
     newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
-    realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
+    realSizeFor, fitEyes, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
@@ -2951,7 +2959,12 @@ function dxrPlayCanvas(core) {
   function wrapDevice(st) {
     const dev = st.dev;
     const orig = dev.setResolution;
-    st.setRes = (w, h) => { st.depth++; try { orig.call(dev, w, h); } finally { st.depth--; } };
+    st.setRes = (w, h) => {
+      if (dev.isWebGPU && typeof dev.submit === 'function' && (realW(st.canvas) !== w || realH(st.canvas) !== h)) {
+        try { dev.submit(); } catch (e) { warnOnce('pc-gpu-submit', 'could not submit the frame before a resize', e); }
+      }
+      st.depth++; try { orig.call(dev, w, h); } finally { st.depth--; }
+    };
     dev.setResolution = function (w, h) {
       if (!st.active || st.depth > 0) { if (!st.active) { st.L.w = w; st.L.h = h; } return orig.call(dev, w, h); }
       st.L.w = w; st.L.h = h;
@@ -4428,7 +4441,7 @@ function dxrBabylon(core) {
       const dpr = Math.min(window.devicePixelRatio || 1, core.T.maxEyeDpr);
       st.pxGui = pixelGui(st.scene);
       if (!st.pxGui) k = Math.max(kPage, dpr);
-      k = Math.min(k, Math.min(core.T.maxSbsWidth, lim) / cw, lim / ch);
+      k = Math.min(k, Math.min(core.T.maxSbsWidth, lim) / cw, lim / ch, Math.sqrt(core.T.maxSbsArea / (cw * ch))); // core fitEyes' caps, one factor
     }
     const want = k / kPage;
     if (Math.abs(want - (st.scale || 1)) > 1e-3) setScale(st, want);
@@ -4471,7 +4484,7 @@ function dxrBabylon(core) {
     try { eng.resize(); } catch (e) { warnOnce('bjs-scale', 'could not resize the store for the eyes', e); }
     st.stats.resizes++;
     info(`store ${realW(st.canvas)}x${realH(st.canvas)}: x${s.toFixed(3)} the page's (hardware scaling ${eng._hardwareScalingLevel.toFixed(3)}, the page's ${st.hw0}) — ` +
-      (s < 1 ? `the side-by-side width limit is ${core.T.maxSbsWidth}` : "the element's device pixels"));
+      (s < 1 ? `the side-by-side width limit is ${core.T.maxSbsWidth} (area ${core.T.maxSbsArea})` : "the element's device pixels"));
   }
   function unScale(st) {
     if (!st.scale) return;
