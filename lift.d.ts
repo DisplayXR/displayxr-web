@@ -161,7 +161,7 @@ export interface LiftHandle {
   readonly liftState: 'waiting' | 'ready' | 'unavailable' | null;
   /** True when Explore can run: the runtime offers Gaussians (caps list `gaussians`) or the page passed a lift provider. The chip shows Explore only then; explore() without it emits a non-fatal 'error' and does nothing else. */
   readonly canExplore: boolean;
-  /** Native only: the browser reports a new coarse lift state. No-op without a runtime converter. */
+  /** Native only: the browser reports a new coarse lift state. No-op without a runtime converter. Calling it again with 'ready' while already ready means the converter set changed: the handle re-reads the caps and shows or hides Explore (canExplore), with no 'liftstatechange' event. */
   setLiftState(s: 'waiting' | 'ready' | 'unavailable'): void;
   /** Native live: `dxr-lift-priority`. Returns false for an unknown value. */
   setPriority(p: LiftPriority): boolean;

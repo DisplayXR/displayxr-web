@@ -925,7 +925,13 @@ export async function lift(element, opts = {}) {
      * `waiting` the chip shows a spinner over the element's own 2D frame. No-op on the web path.
      */
     setLiftState(s) {
-      if (!native || !['waiting', 'ready', 'unavailable'].includes(s) || s === liftState) return;
+      if (!native || !['waiting', 'ready', 'unavailable'].includes(s)) return;
+      // A repeated 'ready' is the browser saying its converter set changed while the coarse state
+      // stayed ready (one turned on or off): re-read whether Explore can run, nothing else (web#341).
+      if (s === liftState) {
+        if (s === 'ready') refreshExploreCaps().catch(() => {});
+        return;
+      }
       liftState = s;
       if (chip && chip.setWaiting) chip.setWaiting(s === 'waiting');
       emit('liftstatechange', { liftState: s });
