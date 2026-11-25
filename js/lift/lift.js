@@ -52,6 +52,7 @@ export const EXPLORE_RETRY_MS = 60000;
 const EXPLORE_FAILED_REASON = 'the 3D converter on this PC failed to start';
 const EXPLORE_FAILED_FLASH = "Explore failed: 3D converter didn't start";
 const EXPLORE_TIMEOUT_FLASH = 'Explore timed out: 3D converter not responding';
+const EXPLORE_BLACK_FLASH = '3D failed: the frame came out black';
 const NOMINAL_IPD_M = 0.063;
 
 /**
@@ -709,7 +710,11 @@ export async function lift(element, opts = {}) {
       if (chip && chip.setNote) chip.setNote(null);
       // The runtime's own converter failed (not a page provider, not an abort): grey Explore out
       // and say so, rather than offering a button that hangs again (web#341).
-      if (liftProv && liftProv.id === 'native-gaussians' && !pageLiftProv && !(error && error.code === 'aborted')) {
+      // A black scene: the converter worked but was handed a black frame (web#341). Say so; Explore
+      // stays on offer, since the next frame may grab fine.
+      if (error && error.code === 'black') {
+        if (chip && chip.flash) chip.flash(EXPLORE_BLACK_FLASH);
+      } else if (liftProv && liftProv.id === 'native-gaussians' && !pageLiftProv && !(error && error.code === 'aborted')) {
         blockExplore(EXPLORE_FAILED_REASON);
         if (chip && chip.flash) chip.flash(error && error.code === 'timeout' ? EXPLORE_TIMEOUT_FLASH : EXPLORE_FAILED_FLASH);
       }
