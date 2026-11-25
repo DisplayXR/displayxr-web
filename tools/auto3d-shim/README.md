@@ -1722,6 +1722,40 @@ Open after the device run (not fixed here):
   environment and the area lights' highlights, which are view-dependent and correctly per eye (as they are
   in life); with a clear coat and low roughness they differ a lot, which crosstalk makes tiring. Not a bug.
 
+**Headless, v0.7.10 (arrival.space too slow in 3D on the 8K panel, #319: one factor for both eye axes,
+WebGPU submit before a mid-frame resize), Windows, ANGLE D3D11 + WebGPU (RTX 3080).** Measured with
+`corpus/profile-2d-3d.mjs` (one page, 2D and 3D toggled in place, 2560 × 1305 CSS at DPR 3 = the panel's
+maximised window, vsync and the frame-rate limit off, the guard off), `arrival.space/16538486_8412`.
+- **Profile (v0.7.9).** The space draws ~15 M splats. The page is GPU-bound in both modes, and 3D was not
+  slower than 2D headless: WebGL2 2D 14-27 fps, 3D 30-41 fps; WebGPU 2D 18-25, 3D 24-32. WebGPU's pass
+  timings: the forward pass (splat raster) 30 ms of a 34 ms frame in 3D (46 of 50 ms in 2D), the
+  splat sort + projection ~3 ms, once per frame for both eyes (2.22's stereo projector: no per-eye sort,
+  no thrash), the per-eye bloom chain and its copies under 0.3 ms. On WebGL2 the CPU time is GL calls
+  waiting on the GPU (`uniformMatrix4fv`, `viewport`), not the adapter. So the page's own cost does not
+  explain the panel's 3D at 7-9 fps against 2D at 34 on WebGPU; what differs there is the browser's weave
+  of the canvas, not measurable headless. Fewer store pixels is what this side can give it.
+- **Before / after** (v0.7.9's committed `dist/` against v0.7.10's, alternated, two runs each, two 6 s
+  3D phases per run; the 2D rows are the page's own and only show the streaming noise):
+
+  | backend | v0.7.9: 3D store, fps, GPU ms | v0.7.10: 3D store, fps, GPU ms | 2D fps (both) |
+  |---|---|---|---|
+  | WebGL2 | 3072 × 3915: 30.5-41.5 fps, GPU 30-57 ms | 3072 × 1566: 49-63 fps, GPU 19-27 ms | 14-27 |
+  | WebGPU | 3072 × 3915: 24-32 fps, GPU 32-43 ms | 3072 × 1566: 29-49 fps (3 of 4 phases 42-49), GPU 20-36 ms | 18-29 |
+
+  `Destroyed texture … used in a submit`: 3 per WebGPU run before (one per conversion), 0 after.
+- **Harness.** 216 run, 2 skipped (`c` / `d`: no `ports_25.sog`), all green; new cases `a-cap-square-three`,
+  `a-cap-square-pc` (DPR 3: eye 1536 × 1728, not 1536 × 2160) and `a-cap-area`; `g-clamp-*` now expect
+  the one-factor 256 × 288.
+- **PlayCanvas examples** (`corpus/run-pc-examples.mjs`, 277, engine 2.24, 1280 × 720 at DPR 1, so under
+  every cap: only the WebGPU submit is exercised): **PASS 211 → 210, REVIEW 29, FLAT 36, NONE 0 → 1, ERROR 1**
+  (`corpus/results/2026-11-25-pc-examples-v0.7.10.json`). The two that changed are run-to-run noise:
+  `loaders/glb` (PASS → REVIEW `shift 64 != 32`, the known flip) and `demos/car-showcase` (REVIEW
+  `still converting` → NONE), each re-run twice with `--only`: PASS and REVIEW, as in v0.7.9.
+- **Not verified: the panel.** For the tester, maximised on the 8K panel, WebGL2 and `?webgpu=1`: the log
+  says `SBS 3072x1566 (eye 1536x1566)`; the 3D frame rate and whether the guard still trips; that the
+  picture is still sharp enough (2.5× fewer rows than v0.7.9; a joint scale was judged a loss on
+  2026-09-28, on another page); no `Destroyed texture` line at conversion.
+
 **Headless, v0.7.9 (PlayCanvas legacy post effects per eye, #319), Windows, ANGLE D3D11 + WebGPU
 (RTX 3080):** 14 new cases in `test/cases/pc-posteffects.mjs` (table above), page `pages/pc-postfx.html`.
 - **Full pass.** 213 run, 2 skipped (`c` / `d`: no `ports_25.sog`), all green (199 before this change, all green).
