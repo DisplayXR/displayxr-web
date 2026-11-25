@@ -7,6 +7,22 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased — proposed 1.25.0 (minor: a new experimental subpath)
 
+### Fixed — lift: Explore no longer hangs when the runtime's Gaussians converter fails (web#341)
+
+- With a Gaussians converter installed but unable to load, Explore paused the video and then
+  waited for minutes: caps list `gaussians` for any installed converter, ready or not, and the
+  browser reads a failed job as not-ready until its own 180 s deadline. The native Gaussians wait
+  is now bounded (`NATIVE_GAUSSIANS_TIMEOUT_MS`, 90 s) and ends in a `timeout` error. The chip
+  counts the wait ("Making 3D… 12s") so it never looks frozen.
+- After the runtime's converter fails or times out, the chip flashes why and keeps Explore
+  greyed out with the reason as its tooltip. `canExplore` reads false and `explore()` emits a
+  non-fatal `unavailable` error. The block lifts after 60 s (`EXPLORE_RETRY_MS`), or at once
+  when the browser reports that converter ready.
+- `liftCapabilities()` passes through an optional `gaussiansState: {state, reason?}` for
+  browsers that report the Gaussians task's own readiness. `failed` greys Explore out, and any
+  other state lifts the block. No browser sends it yet.
+- A page-supplied lift provider is untouched.
+
 ### Removed (ADR-053 P4: the runtime converts)
 
 - **lift: the in-page converter is gone.** `@displayxr/inline3d/lift` carries no model, no ONNX

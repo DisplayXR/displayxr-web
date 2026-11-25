@@ -38,6 +38,8 @@ button:hover{background:rgba(255,255,255,.3)}
 button:focus-visible{outline:2px solid #7cb7ff;outline-offset:1px}
 button[hidden]{display:none}
 button[disabled]{opacity:.6;cursor:progress}
+button.blocked{opacity:.45;cursor:not-allowed}
+button.blocked:hover{background:rgba(255,255,255,.16)}
 `;
 
 /** The chip's label while a native lift waits for the runtime's converter (2D source shown). */
@@ -154,17 +156,22 @@ export function createAutoHide(o) {
  *     Explore until the converter is up (explore would need the in-page converter).
  *   canExplore false (no converter makes Gaussians — the runtime's caps do not list `gaussians` and
  *     the page passed no lift provider): no Explore, ever; it would do nothing (web#341).
+ *   canExplore false WITH an exploreReason (a converter exists but it failed): Explore shown
+ *     greyed out (`exploreBlocked`), its reason as the tooltip; a click does nothing.
  * @param {string} state
- * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean, canExplore?:boolean}} o
- * @returns {{label:boolean, explore:boolean, sog:boolean, resume:boolean, exit:boolean}}
+ * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean, canExplore?:boolean, exploreReason?:string|null}} o
+ * @returns {{label:boolean, explore:boolean, exploreBlocked:boolean, sog:boolean, resume:boolean, exit:boolean}}
  */
 export function chipLayout(state, o) {
   const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
   const still = o.kind === 'still';
   const wait = !!o.waiting && state === 'live';
+  const slot = !still && state === 'live' && !wait;
+  const blocked = slot && o.canExplore === false && !!o.exploreReason;
   return {
     label: still ? busy || state === 'error' || wait : true,
-    explore: !still && state === 'live' && !wait && o.canExplore !== false,
+    explore: (slot && o.canExplore !== false) || blocked,
+    exploreBlocked: blocked,
     sog: state === 'explore' && !!o.canDownload,
     resume: !still && state === 'explore',
     exit: still ? state !== 'disposed' && state !== 'idle' : state === 'explore' || state === 'error' || state === 'live',
@@ -174,7 +181,8 @@ export function chipLayout(state, o) {
 /**
  * @param {ShadowRoot} root
  * @param {{kind:'video'|'still', canExplore?:boolean, onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
- *        canExplore: false hides Explore until setCanExplore(true) (no Gaussians converter yet).
+ *        canExplore: false hides Explore until setCanExplore(true) (no Gaussians converter yet);
+ *        setCanExplore(false, reason) greys it out with that reason instead (the converter failed).
  * @param {{autoHideMs?:number, activityRect?:() => DOMRect|{left:number,top:number,right:number,bottom:number}|null}} [opts]
  *        autoHideMs > 0: fade out after that long without pointer activity inside `activityRect()`
  *        (the lifted element's rect) or over the chip.
@@ -200,7 +208,10 @@ export function createChip(root, actions, opts = {}) {
     b.addEventListener('pointerdown', (e) => e.stopPropagation());
     return b;
   };
-  const bExplore = mk('Explore', actions.onExplore);
+  const bExplore = mk('Explore', () => {
+    if (!canExplore) return; // greyed out: the reason is its tooltip
+    actions.onExplore();
+  });
   const bResume = mk('Resume', actions.onResume);
   const bExit = mk('Exit', actions.onExit);
   // "Download SOG": the lifted scene as a .sog with the camera block (lift.js downloadSog).
@@ -217,15 +228,21 @@ export function createChip(root, actions, opts = {}) {
   let note = null; // a provider's own status ("Lifting with SHARP… 7s"), shown instead of the % while busy
   let waiting = false; // native: the browser's converter is not READY yet (2D source + spinner)
   let canExplore = actions.canExplore !== false; // a converter that makes Gaussians exists
+  let exploreReason = null; // why Explore is greyed out (a converter exists but failed)
+  let flash = null; // a short message on the label (an explore that failed), cleared by a timer
+  let flashTimer = 0;
   const render = () => {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
     const wait = waiting && state === 'live';
-    label.textContent = wait ? WAITING_LABEL : busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
+    label.textContent = wait ? WAITING_LABEL : busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : flash || base;
     label.classList.toggle('waiting', wait);
-    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting, canExplore });
+    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting, canExplore, exploreReason });
     label.hidden = !L.label;
     bExplore.hidden = !L.explore;
+    bExplore.classList.toggle('blocked', L.exploreBlocked);
+    bExplore.setAttribute('aria-disabled', L.exploreBlocked ? 'true' : 'false');
+    bExplore.title = L.exploreBlocked ? exploreReason : '';
     bSog.hidden = !L.sog;
     bSog.disabled = saving;
     bSog.textContent = saving ? 'Saving…' : '↓ SOG';
@@ -309,13 +326,24 @@ export function createChip(root, actions, opts = {}) {
       render();
       if (auto.enabled) auto.poke();
     },
-    /** Whether a converter that makes Gaussians exists: Explore is shown only when it does. */
-    setCanExplore(on) {
+    /** Whether a converter that makes Gaussians exists: Explore is shown only when it does. With
+     *  `on` false and a `reason`, Explore stays visible but greyed out, the reason its tooltip. */
+    setCanExplore(on, reason = null) {
       const v = !!on;
-      if (v === canExplore) return;
+      const why = v ? null : reason ? String(reason) : null;
+      if (v === canExplore && why === exploreReason) return;
       canExplore = v;
+      exploreReason = why;
       render();
       if (auto.enabled) auto.poke();
+    },
+    /** A short message on the label for `ms` (an explore that failed); null clears it. */
+    flash(text, ms = 6000) {
+      clearTimeout(flashTimer);
+      flash = text ? String(text) : null;
+      if (flash) flashTimer = setTimeout(() => ((flash = null), render()), ms);
+      render();
+      if (flash && auto.enabled) auto.poke();
     },
     /** A status line that replaces the percentage while busy (null clears it). */
     setNote(text) {
@@ -329,6 +357,7 @@ export function createChip(root, actions, opts = {}) {
       if (progress != null && auto.enabled) auto.poke();
     },
     dispose() {
+      clearTimeout(flashTimer);
       offActivity();
       offShield();
       chip.remove();

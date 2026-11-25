@@ -36,6 +36,9 @@ export const LIFT_ATTRS = Object.freeze({
 export const LIFT_PRIORITIES = Object.freeze(['high', 'normal', 'low', 'paused']);
 const MODES = new Set(['depth', 'sbs', 'nview', 'gaussians']);
 const CAPS_TIMEOUT_MS = 2000;
+/** How long explore waits for the runtime's Gaussians before it gives up (a cold model's warm is
+ *  capped at 60 s by the runtime's watchdog, a conversion takes seconds once warm). */
+export const NATIVE_GAUSSIANS_TIMEOUT_MS = 90000;
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -63,6 +66,14 @@ export function parseNativeCaps(json) {
   out.modes = Array.isArray(j.modes) ? j.modes.filter((m) => MODES.has(m)) : [];
   if (Number.isFinite(j.maxStreams) && j.maxStreams >= 0) out.maxStreams = Math.floor(j.maxStreams);
   if (Number.isFinite(j.approxMsPerConvert) && j.approxMsPerConvert >= 0) out.approxMsPerConvert = +j.approxMsPerConvert;
+  // The Gaussians task's own readiness, when the browser reports it (web#341): `modes` lists
+  // `gaussians` whenever a converter is INSTALLED, so it cannot tell a failed one from a ready one.
+  // Shape: {gaussiansState: {state: ready|warming|installed|downloading|evicted|failed|..., reason?}}.
+  const gs = j.gaussiansState;
+  if (gs && typeof gs === 'object' && typeof gs.state === 'string' && gs.state) {
+    out.gaussiansState = { state: gs.state };
+    if (typeof gs.reason === 'string' && gs.reason) out.gaussiansState.reason = gs.reason;
+  }
   return out;
 }
 
@@ -231,7 +242,7 @@ export function createNativeLiveAttrs(el, o = {}) {
 
 // ── native providers (the paused frame) ──────────────────────────────────────────────────────
 
-/** A native-module failure. `code`: http | unsupported | format | encode | network | aborted. */
+/** A native-module failure. `code`: http | unsupported | format | encode | network | aborted | timeout | unavailable. */
 export class NativeLiftError extends Error {
   constructor(message, code, extra = {}) {
     super(message);
@@ -403,6 +414,7 @@ export function sniffSplatFormat(u8) {
  */
 export function createNativeGaussiansLift(opts = {}) {
   const fetchImpl = opts.fetch || ((...a) => globalThis.fetch(...a));
+  const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : NATIVE_GAUSSIANS_TIMEOUT_MS;
   let unsupported = false;
   return {
     id: 'native-gaussians',
@@ -414,14 +426,38 @@ export function createNativeGaussiansLift(opts = {}) {
       const t0 = now();
       const blob = await encodeFrame(rgb);
       if (onProgress) onProgress({ stage: 'lifting', progress: 0.1, elapsedS: 0 });
-      let r;
+      // Bounded (web#341): a converter that is installed but fails to load never answers this
+      // POST with an error today (the browser reads its failed job as not-ready until its own
+      // 180 s deadline), so the page would sit in `lifting` for minutes. Our own abort ends it
+      // with a `timeout` error; the caller's signal still wins. A ticking elapsed count keeps
+      // the chip visibly alive meanwhile.
+      const ctl = new AbortController();
+      let timedOut = false;
+      const onAbort = () => ctl.abort();
+      if (signal) {
+        if (signal.aborted) throw new NativeLiftError('native lift: aborted', 'aborted');
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      const timer = setTimeout(() => {
+        timedOut = true;
+        ctl.abort();
+      }, timeoutMs);
+      const tick = onProgress ? setInterval(() => onProgress({ stage: 'lifting', progress: 0.1, elapsedS: (now() - t0) / 1000 }), 1000) : null;
+      let r, u8;
       try {
-        r = await post(fetchImpl, NATIVE_GAUSSIANS_URL, blob, signal);
+        r = await post(fetchImpl, NATIVE_GAUSSIANS_URL, blob, ctl.signal);
+        u8 = new Uint8Array(await r.arrayBuffer());
       } catch (e) {
+        if (timedOut && !(signal && signal.aborted))
+          throw new NativeLiftError(`native gaussians: no answer within ${Math.round(timeoutMs / 1000)} s`, 'timeout');
+        if (signal && signal.aborted) throw new NativeLiftError('native lift: aborted', 'aborted');
         if (e && e.code === 'unsupported') unsupported = true;
         throw e;
+      } finally {
+        clearTimeout(timer);
+        if (tick) clearInterval(tick);
+        if (signal) signal.removeEventListener('abort', onAbort);
       }
-      const u8 = new Uint8Array(await r.arrayBuffer());
       const fmtName = sniffSplatFormat(u8);
       const ms = Math.round(now() - t0);
       if (onProgress) onProgress({ stage: 'lifting', progress: 1, elapsedS: ms / 1000 });

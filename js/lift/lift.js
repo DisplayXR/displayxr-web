@@ -45,6 +45,13 @@ const MAX_EYE_PX = 2048; // cap on one view's backing width
  *  0.7-3.0 m at f = 1.2 W, ~8 % of the width: 4-5x the live depth (David, panel: "the SOG has more
  *  depth than the already-lifted pictures"). */
 export const EXPLORE_DEPTH_BUDGET = 0.018;
+
+/** web#341: how long Explore stays greyed out after the runtime's converter failed, when the
+ *  browser cannot report that converter's own state (then the next click tries again). */
+export const EXPLORE_RETRY_MS = 60000;
+const EXPLORE_FAILED_REASON = 'the 3D converter on this PC failed to start';
+const EXPLORE_FAILED_FLASH = "Explore failed: 3D converter didn't start";
+const EXPLORE_TIMEOUT_FLASH = 'Explore timed out: 3D converter not responding';
 const NOMINAL_IPD_M = 0.063;
 
 /**
@@ -266,6 +273,11 @@ export async function lift(element, opts = {}) {
   // created it, so we dispose it.
   let liftProv = null;
   let ownLiftProv = false;
+  // web#341: the runtime's Gaussians converter is installed but failed (it did not answer, or the
+  // browser reported its job failed). Explore is greyed out with this reason until the browser says
+  // it is ready again (a per-task state in caps) or, where the browser cannot say, the cooldown ends.
+  let exploreBlocked = null; // null | reason string
+  let exploreBlockTimer = 0;
   let explore = null;
   let pendingExplore = null;
   // The provider's output behind the explore scene — { ply|sog, meta } — kept for exportSog(). The
@@ -496,11 +508,32 @@ export async function lift(element, opts = {}) {
    * installed, turned on or off). Only touches the runtime's own `native-gaussians`; a provider the
    * page passed is left alone.
    */
+  function blockExplore(reason, ms = EXPLORE_RETRY_MS) {
+    exploreBlocked = reason;
+    clearTimeout(exploreBlockTimer);
+    if (ms > 0)
+      exploreBlockTimer = setTimeout(() => {
+        exploreBlocked = null;
+        refreshExploreCaps().catch(() => {});
+      }, ms);
+    if (chip) chip.setCanExplore(false, reason);
+  }
+  function unblockExplore() {
+    if (!exploreBlocked) return;
+    exploreBlocked = null;
+    clearTimeout(exploreBlockTimer);
+  }
+
   async function refreshExploreCaps() {
     if (!native || disposed || pageLiftProv) return;
     const c = await liftCapabilities({}).catch(() => null);
     if (!c || disposed) return;
     const has = !!(c.native && Array.isArray(c.modes) && c.modes.includes('gaussians'));
+    // A browser that reports the Gaussians task's own state (caps.gaussiansState) says FAILED and
+    // READY outright; one that does not leaves a block to its cooldown.
+    const gs = c.gaussiansState;
+    if (gs && gs.state === 'failed') blockExplore(EXPLORE_FAILED_REASON, 0);
+    else if (gs && gs.state) unblockExplore();
     if (has && !liftProv) {
       ensureNativeProviders(c);
       o.providers.lift = 'native-gaussians';
@@ -516,7 +549,7 @@ export async function lift(element, opts = {}) {
       liftProv = null;
       o.providers.lift = undefined;
     }
-    if (chip) chip.setCanExplore(!!liftProv);
+    if (chip) chip.setCanExplore(!!liftProv && !exploreBlocked, exploreBlocked);
   }
 
   /** Remote/provider progress → the chip ("Lifting with SHARP… 7s") and 'progress' events. */
@@ -528,7 +561,8 @@ export async function lift(element, opts = {}) {
       const who = liftProv && liftProv.id === 'remote-sharp' ? 'SHARP' : (liftProv && liftProv.id) || 'provider';
       const secs = elapsedS !== undefined ? ` ${Math.round(elapsedS)}s` : '';
       const cached = p && p.cacheHit === true ? ' (cached)' : '';
-      chip.setNote(stage === 'downloading' ? `Downloading ${who} scene${cached}…${secs}` : `Lifting with ${who}…${secs}`);
+      if (liftProv && liftProv.id === 'native-gaussians') chip.setNote(`Making 3D…${secs}`);
+      else chip.setNote(stage === 'downloading' ? `Downloading ${who} scene${cached}…${secs}` : `Lifting with ${who}…${secs}`);
     }
   }
 
@@ -671,7 +705,15 @@ export async function lift(element, opts = {}) {
       pendingLifted = { ply: res.ply || null, sog: res.sog || null, meta: ex.meta || meta, sceneScale: ex.sceneScale || 1, source };
       machine.send('lifted', { gen });
     } catch (error) {
-      if (!dropped(gen, 'lift error')) machine.send('lift-failed', { gen, error });
+      if (dropped(gen, 'lift error')) return;
+      if (chip && chip.setNote) chip.setNote(null);
+      // The runtime's own converter failed (not a page provider, not an abort): grey Explore out
+      // and say so, rather than offering a button that hangs again (web#341).
+      if (liftProv && liftProv.id === 'native-gaussians' && !pageLiftProv && !(error && error.code === 'aborted')) {
+        blockExplore(EXPLORE_FAILED_REASON);
+        if (chip && chip.flash) chip.flash(error && error.code === 'timeout' ? EXPLORE_TIMEOUT_FLASH : EXPLORE_FAILED_FLASH);
+      }
+      machine.send('lift-failed', { gen, error });
     }
   }
 
@@ -843,6 +885,7 @@ export async function lift(element, opts = {}) {
     if (disposed) return;
     disposed = true;
     offShield();
+    clearTimeout(exploreBlockTimer);
     loadAbort.abort();
     if (abort) abort.abort();
     cancelSogExport();
@@ -940,7 +983,7 @@ export async function lift(element, opts = {}) {
     },
     /** True when Explore can run: a converter that makes Gaussians exists (web#341). */
     get canExplore() {
-      return !!liftProv;
+      return !!liftProv && !exploreBlocked;
     },
     /** Timings: fps (explore frames drawn), loadMs, generateMs (the lift provider's round trip),
      *  exploreLoadMs (PLY parse + upload), pauseToExploreMs, splats. Read-only snapshot. */
@@ -964,6 +1007,12 @@ export async function lift(element, opts = {}) {
       // (web#341). The chip hides Explore in this case; this covers a page calling explore().
       if (!liftProv) {
         const error = new NativeLiftError('3D exploration is not available on this PC (no converter makes Gaussians)', 'unsupported');
+        console.warn(`[inline3d/lift] ${error.message}`);
+        emit('error', { error, fatal: false, phase: 'explore' });
+        return;
+      }
+      if (exploreBlocked) {
+        const error = new NativeLiftError(`3D exploration is unavailable: ${exploreBlocked}`, 'unavailable');
         console.warn(`[inline3d/lift] ${error.message}`);
         emit('error', { error, fatal: false, phase: 'explore' });
         return;
