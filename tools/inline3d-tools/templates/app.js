@@ -2,7 +2,7 @@
 // Display rig (the user turns a SUBJECT). Scene units are metres for a 0.24 m virtual display;
 // the subject straddles z = 0 (the glass). Replace buildScene() with your content.
 import * as THREE from 'three';
-import { createInline3D } from '@displayxr/inline3d';
+import { createInline3D, sceneBufferSize } from '@displayxr/inline3d';
 import { EyeCamera } from '@displayxr/inline3d/three';
 
 const VIRTUAL_DISPLAY_HEIGHT = 0.24; // metres of virtual display the canvas shows
@@ -52,21 +52,19 @@ function animate(now) {
   subject.rotation.x = 0.35;
 }
 
-// ---- backing store: 2 x the box in 3D, 1 x in 2D; dpr <= 2; within the GPU's limits ---------
+// ---- backing store: sceneBufferSize, never clientWidth x devicePixelRatio x 2 ----------------
+// Per eye it gives window device px x the runtime's recommended view scale (once getDisplayInfo()
+// has answered; devicePixelRatio <= 2 until then), fitted to the GL limits and the browser's
+// drawing-buffer area cap. The view scale is the 3D mode's: never pass it for the flat 2D store.
+// A hand-rolled store overflows that cap on a big panel: the browser
+// shrinks the buffer silently, the eyes land off-centre and one eye shows both images.
+let viewInfo = null;
 function sizeBuffer(stereo) {
-  const r = canvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  let w = Math.round(r.width * dpr * (stereo ? 2 : 1));
-  let h = Math.round(r.height * dpr);
-  const gl = renderer.getContext();
-  const max = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
-  const k = Math.min(1, max / Math.max(w, h)); // one factor for both axes keeps the eyes' shape
-  w = Math.max(2, Math.floor(w * k) & ~1);
-  h = Math.max(1, Math.floor(h * k));
+  const s = sceneBufferSize(canvas, { sbs: stereo, viewScale: stereo ? viewInfo : null, gl: renderer.getContext() });
   // Writing width/height clears the buffer even when the value is the same: only on a change.
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
+  if (canvas.width !== s.width || canvas.height !== s.height) {
+    canvas.width = s.width;
+    canvas.height = s.height;
     return true;
   }
   return false;
@@ -140,6 +138,10 @@ async function start() {
     onLayerLost: () => start2D('3D layer lost'),
   });
   statusEl.textContent = '3D on a Spatial Display';
+  handle.getDisplayInfo().then((info) => {
+    viewInfo = info;
+    if (sizeBuffer(true) && haveLast) drawEyes(lastGood);
+  }).catch(() => {});
   addEventListener('pagehide', () => wall.close());
   const result = await handle.firstWoven; // never rejects
   clearTimeout(coverTimer);

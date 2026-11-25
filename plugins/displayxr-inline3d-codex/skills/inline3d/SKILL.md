@@ -117,8 +117,15 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
       `onLayerLost: viewer.onLayerLost`; `addSplat` / `addModel` / `addPlayer` handle it themselves.
 - [ ] **Nothing opaque above the canvas**; backgrounds and black go *under* it. Never overlap two
       woven canvases (hide the lower one with `display: none`).
-- [ ] **Buffer = 2 × eye width**: `addScene` pages size it themselves (2× the box aspect, devicePixelRatio
-      ≤ 2, every side ≤ 4096 for tablets) and draw into `gl.drawingBufferWidth/Height`. three.js:
+- [ ] **Buffer = 2 × eye width, from `sceneBufferSize`** (core, 1.58.0+): an `addScene` page sizes its
+      canvas with `sceneBufferSize(canvas, { sbs, viewScale: sbs ? await handle.getDisplayInfo() : null })` (set
+      `canvas.width/height`, or `renderer.setSize(s.width, s.height, false)`, only when they change;
+      camera aspect from `s.eyeWidth / s.eyeHeight`), never `clientWidth × devicePixelRatio × 2`. Per eye
+      it is window device px × the runtime's view scale (dpr ≤ 2 without one), fitted to the GL limits
+      and the browser's drawing-buffer area cap. Hand-rolled on an 8K panel at 300% it asks for
+      15360×4320; the browser silently shrinks the buffer, the eyes land off-centre and one eye shows
+      both images. The SDK's `the browser clamped this canvas's drawing buffer` warning is that bug.
+      Draw into `gl.drawingBufferWidth/Height`. three.js:
       `renderer.setPixelRatio(1)` when you use `getViewport()`.
 - [ ] **Validate before you clear**: skip the clear when `views.length < 2` or a viewport is `null`;
       repaint the last good frame. Copy `XRViewport` / `XRView` fields by name (their fields are
@@ -152,8 +159,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ## 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.57.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.58.0**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.58.0/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -161,7 +168,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.5 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
