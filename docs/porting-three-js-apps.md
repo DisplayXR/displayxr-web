@@ -409,7 +409,7 @@ handle.getDisplayInfo().then((info) => { viewInfo = info; sizeSBS(); }).catch(()
 **Why not `clientWidth × devicePixelRatio × 2`.** It is what a tablet forgives and a big panel
 does not. Measured on an 8K panel at 300% scaling (dpr 3, DisplayXR Browser 1.10.6): a full-screen
 canvas sized that way asked for **15360×4320** (66 Mpx). The browser silently shrank the drawing
-buffer to 10861×3054, its area cap (no GL limit was hit: MAX_TEXTURE_SIZE was 16384), while
+buffer to 10861×3054: Chromium caps a WebGL drawing buffer at 5760² px on every platform (no GL limit was hit: MAX_TEXTURE_SIZE was 16384), while
 `canvas.width` still said 15360. `getViewport()` splits `canvas.width`, so each eye was drawn
 off-centre and the panel showed both images in one eye. A native app on the same panel renders
 3840×2160 per view (window × view scale 0.5), a quarter of that: the weave cannot show more.

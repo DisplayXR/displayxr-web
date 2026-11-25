@@ -343,7 +343,7 @@ test('clampEyeBuffer: the browser area cap (measured 8K: 15360x4320 drawn at 108
   const lim = { maxW: 16384, maxH: 16384, nameW: 'MAX_TEXTURE_SIZE', nameH: 'MAX_TEXTURE_SIZE', valueW: 16384, valueH: 16384 };
   const c = clampEyeBuffer(7680, 4320, lim);
   assert.equal(c.clamped, true);
-  assert.ok(c.bufW * c.bufH <= 33_000_000, `${c.bufW}x${c.bufH}`);
+  assert.ok(c.bufW * c.bufH <= 5760 * 5760, `${c.bufW}x${c.bufH}`);
   assert.ok(Math.abs(c.bufW / c.bufH - 15360 / 4320) < 0.01, 'aspect kept');
   assert.match(clampWarning('[t]', c), /area cap/);
   // The measured unclamped case stays unclamped.

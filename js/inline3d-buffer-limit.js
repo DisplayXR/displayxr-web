@@ -21,13 +21,13 @@
 //      real drawing buffer with these factors — never canvas.width / 2.
 
 /**
- * The browser's cap on a WebGL drawing buffer's AREA, separate from the per-axis GL limits.
- * MEASURED (DisplayXR Browser 1.10.6 / Chromium 158, RTX 3080, an 8K panel at 300%): a
- * 15360×4320 store (66.4 Mpx) came out 10861×3054 (33.17 Mpx, the same aspect) with
- * MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE 16384 and MAX_VIEWPORT_DIMS 32767, so no per-axis
- * limit explains it; 7608×2001 (15.2 Mpx) was not clamped. Kept just under the measured result.
+ * The browser's cap on a WebGL drawing buffer's AREA, separate from the per-axis GL limits:
+ * Chromium's `WebGLRenderingContextBase::Reshape` (`kMaxArea = 5760 * 5760`, "resolution of an
+ * 8K monitor"), the same on every platform. Past it the drawing buffer is scaled by
+ * sqrt(kMaxArea / area), aspect kept, while `canvas.width` keeps the requested value. MEASURED on
+ * an 8K panel at 300% (DisplayXR Browser 1.10.6 / Chromium 158): 15360×4320 drew at 10861×3054.
  */
-export const MAX_DRAWING_BUFFER_AREA = 33_000_000;
+export const MAX_DRAWING_BUFFER_AREA = 5760 * 5760;
 
 /** @typedef {{ maxW: number, maxH: number, nameW: string, nameH: string, valueW: number, valueH: number }} BufferLimits */
 

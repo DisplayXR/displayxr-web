@@ -23,7 +23,7 @@ samples now use it.
 ### Changed — the SDK's own buffers also respect the browser's drawing-buffer area cap
 
 The internal clamp behind `addImage`, `addVideo`, `./viewer`, `./splat` and `./model` now also
-caps the store's area (33 Mpx, just under the measured browser cap), not only the per-axis GL
+caps the store's area at Chromium's own drawing-buffer cap (5760², 33.2 Mpx), not only the per-axis GL
 limits. It changes nothing below that size.
 
 ### Fixed — the robust-framing fit guard now matches the native viewer to the last bit (`./model`)
